@@ -234,6 +234,9 @@ async def test_dst_fall_back_reads_the_first_occurrence(db, seeded_user):
     ({"clock_out": "2026-09-25 07:01"}, "The shift is longer than 24 hours."),
     ({"clock_in": "2026-09-25 13:00", "clock_out": "2026-09-25 18:00"},
      "Clock-in is in the future."),
+    # 7:00 AM EDT is before NOW (8:00 AM EDT); 9:00 AM EDT is after it
+    ({"clock_in": "2026-09-25 07:00", "clock_out": "2026-09-25 09:00"},
+     "Clock-out is in the future."),
     ({"break_minutes": "abc"}, "The break must be a whole number of minutes, 0 or more."),
     ({"break_minutes": "-5"}, "The break must be a whole number of minutes, 0 or more."),
     ({"break_minutes": "510"}, "The break is as long as the shift or longer."),
@@ -355,6 +358,41 @@ async def test_an_exact_repeat_with_a_row_error_is_still_an_error(db, seeded_use
     assert row["errors"] == [
         "The break must be a whole number of minutes, 0 or more.",
         "Overlaps Ana Lopez's existing entry on Sep 24, 7:00 AM – 3:30 PM EDT."]
+
+
+async def test_no_overlap_checks_while_the_time_zone_is_unresolved(db, seeded_user):
+    ana = await worker(db, "Ana", "Lopez")
+    await worker(db, "Ben", "Ng")
+    chi = await site(db, "DC Central", tz="America/Chicago")
+    await site(db, "DC Twin")
+    await site(db, "DC Twin")
+    await job(db, "Dallas Move", site_=chi)
+    await job(db, "Dallas Move", site_=chi)
+    # 6:00–9:00 AM EDT on Sep 24; every Ana row below overlaps it in Eastern time
+    db.add(TimeEntry(person_id=ana.id, clock_in_at=utc(24, 10), clock_out_at=utc(24, 13),
+                     status="approved"))
+    await db.commit()
+    rows = by_row(await preview(db, [
+        shift(site="Nowhere DC"),                            # unknown site
+        shift(site="DC Twin"),                               # ambiguous site
+        shift(job="Dallas Move"),                            # no site: the job's site decides
+        shift(job="Dallas Move", site="DC Central"),         # own site known: checked
+        shift(worker="Ben Ng", site="Nowhere DC"),
+        shift(worker="Ben Ng", clock_in="2026-09-24 15:00", clock_out="2026-09-24 20:00"),
+    ]))
+    for n in (1, 2, 3, 5):
+        assert (rows[n]["action"], rows[n]["errors"]) == ("attention", []), rows[n]
+        assert rows[n]["issues"]                             # still needs a match
+    assert rows[4]["action"] == "error"
+    assert rows[4]["errors"] == [
+        "Overlaps Ana Lopez's existing entry on Sep 24, 5:00 AM – 8:00 AM CDT."]
+    assert (rows[6]["action"], rows[6]["errors"]) == ("add", [])   # row 5 is not a clash yet
+    # once the site is picked, the checks run
+    east = await site(db, "DC East", tz="America/New_York")
+    picked = by_row(await preview(db, [shift(site="Nowhere DC")],
+                                  overrides={1: {"site": str(east.id)}}))
+    assert picked[1]["errors"] == [
+        "Overlaps Ana Lopez's existing entry on Sep 24, 6:00 AM – 9:00 AM EDT."]
 
 
 async def test_overlaps_within_the_file(db, seeded_user):

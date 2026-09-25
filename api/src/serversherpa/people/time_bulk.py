@@ -212,6 +212,8 @@ def _read_times(cells: dict, zone: ZoneInfo, now: datetime, errors: list[str],
         errors.append("The break must be a whole number of minutes, 0 or more.")
     if start is not None and start > now:
         errors.append("Clock-in is in the future.")
+    if end is not None and end > now:
+        errors.append("Clock-out is in the future.")
     if start is None or end is None:
         return None, None, brk
     if end <= start:
@@ -235,14 +237,21 @@ def _same_shift(e: TimeEntry, start: datetime, end: datetime) -> bool:
 
 
 async def _check_existing(db: AsyncSession, rows: list[dict],
-                          spans: dict[int, tuple[datetime, datetime, ZoneInfo]]) -> None:
+                          spans: dict[int, tuple[datetime, datetime, ZoneInfo]],
+                          zone_open: set[int]) -> None:
     """Against the database: an exact repeat becomes `duplicate` (and leaves
     `spans`, so it cannot clash with another row); anything else that meets
     the worker's non-rejected time is an error naming that entry.
 
     Only rows with a resolved worker reach here (a span needs one). A row
     with errors is never a duplicate, but an unresolved job or site does not
-    stop one: the shift is already there, so there is nothing to pick."""
+    stop one: the shift is already there, so there is nothing to pick.
+
+    A row in `zone_open` (its time zone still hangs on an unresolved site or
+    job) may have its times read in the wrong zone, so it gets no overlap
+    errors: it leaves `spans` after the duplicate test, which also keeps it
+    out of the file check. It still needs attention for the open match, and
+    the commit re-runs all of this once the match is picked."""
     if not spans:
         return
     by_row = {r["row"]: r for r in rows}
@@ -266,6 +275,9 @@ async def _check_existing(db: AsyncSession, rows: list[dict],
             row["issues"] = []
             del spans[n]
             continue
+        if n in zone_open:
+            del spans[n]
+            continue
         who = row["person_name"]
         for e in mine:
             if e.status == "rejected":
@@ -284,11 +296,15 @@ def _check_file(rows: list[dict], spans: dict[int, tuple[datetime, datetime, Zon
     both errors. Each row names the first OVERLAP_NAMES rows it overlaps (in
     clock-in order), then says how many more there are.
 
-    Bounded work per row, even on a file where every row is one worker:
-    the count comes from two bisects (rows starting before this one ends,
-    minus rows ending by the time it starts, minus itself); the names come
-    from a scan that stops at OVERLAP_NAMES. The backward part of that scan
-    starts MAX_SHIFT before the row's clock-in, since no span is longer."""
+    Bounded output per row, not bounded work. Each row gets at most
+    OVERLAP_NAMES + 1 sentences, however many rows it overlaps. The count
+    comes from two bisects (rows starting before this one ends, minus rows
+    ending by the time it starts, minus itself). The names come from a scan
+    that starts MAX_SHIFT before the row's clock-in, since no span is
+    longer. The scan stops once it has OVERLAP_NAMES names, but its
+    backward part can still walk every earlier row in that window that does
+    not overlap. On a file where one worker has thousands of rows in a
+    single day, that is quadratic (about 0.3 s at 5,000 rows)."""
     by_row = {r["row"]: r for r in rows}
     groups: dict[str, list[int]] = {}
     for n in spans:
@@ -344,6 +360,7 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
     now = now or datetime.now(UTC)
     out: list[dict] = []
     spans: dict[int, tuple[datetime, datetime, ZoneInfo]] = {}
+    zone_open: set[int] = set()
     for n, cells in numbered:
         row = _blank_row(n, cells)
         out.append(row)
@@ -361,6 +378,11 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
         job, _ = _resolve(ref, "job", cells["job"], picks.get("job"), issues, errors)
         site, _ = _resolve(ref, "site", cells["site"], picks.get("site"), issues, errors)
         zone = _zone(ref, site, job)
+        # The zone is a guess while the site it comes from is unresolved:
+        # the row's own site, or, with no site cell, the job's.
+        open_fields = {i["field"] for i in issues}
+        if "site" in open_fields or (site is None and "job" in open_fields):
+            zone_open.add(n)
         start, end, brk = _read_times(cells, zone, now, errors)
         row.update(zone=zone.key, break_minutes=brk, matched_by=how,
                    job_id=str(job.id) if job else None, job_name=job.name if job else None,
@@ -376,7 +398,7 @@ async def preview_rows(db: AsyncSession, numbered: list[tuple[int, dict]], *,
                        minutes=max(0, span - (brk or 0)))
             if person is not None:
                 spans[n] = (start, end, zone)
-    await _check_existing(db, out, spans)
+    await _check_existing(db, out, spans, zone_open)
     _check_file(out, spans)
     counts = dict.fromkeys(ACTION_ORDER, 0)
     for row in out:
