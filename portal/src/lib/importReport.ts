@@ -144,6 +144,13 @@ export function buildImportReport(input: ImportReportInput): ImportReportFile {
 // the written package is patched through its bundled zip library (CFB):
 // one bold font and cell format are added to xl/styles.xml, and the Rows
 // sheet's header cells use that format under a frozen first row.
+//
+// The patch relies on the exact XML shape SheetJS happens to write today.
+// If a future SheetJS version (or a workbook shape we didn't anticipate)
+// changes that XML enough that a regex no longer matches, patching fails
+// or would silently produce a half-patched file. Either way we fall back
+// to the unpatched but valid `raw` bytes: a plain, unstyled download beats
+// a broken one.
 
 interface ZipEntry { content: Uint8Array; size: number }
 const CFB = XLSX.CFB as {
@@ -161,38 +168,65 @@ function patchEntry(zip: object, path: string, edit: (xml: string) => string): v
 }
 
 export function workbookBytes(workbook: XLSX.WorkBook): Uint8Array {
-  const raw = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer;
-  const zip = CFB.read(new Uint8Array(raw), { type: 'array' });
+  const raw = new Uint8Array(XLSX.write(workbook, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer);
 
-  let boldXf = -1;
-  patchEntry(zip, '/xl/styles.xml', (xml) => {
-    let boldFont = -1;
-    return xml
-      .replace(/<fonts count="(\d+)">(<font>[\s\S]*?<\/font>)([\s\S]*?)<\/fonts>/,
-        (_m, n: string, first: string, rest: string) => {
-          boldFont = Number(n);
-          const bold = first.replace('<font>', '<font><b/>');
-          return `<fonts count="${boldFont + 1}">${first}${rest}${bold}</fonts>`;
+  try {
+    const zip = CFB.read(raw, { type: 'array' });
+
+    let boldXf = -1;
+    patchEntry(zip, '/xl/styles.xml', (xml) => {
+      let boldFont = -1;
+      let fontsMatched = false;
+      let xfsMatched = false;
+      const next = xml
+        .replace(/<fonts count="(\d+)">(<font>[\s\S]*?<\/font>)([\s\S]*?)<\/fonts>/,
+          (_m, n: string, first: string, rest: string) => {
+            fontsMatched = true;
+            boldFont = Number(n);
+            const bold = first.replace('<font>', '<font><b/>');
+            return `<fonts count="${boldFont + 1}">${first}${rest}${bold}</fonts>`;
+          })
+        .replace(/<cellXfs count="(\d+)">([\s\S]*?)<\/cellXfs>/,
+          (_m, n: string, xfs: string) => {
+            xfsMatched = true;
+            boldXf = Number(n);
+            return `<cellXfs count="${boldXf + 1}">${xfs}`
+              + `<xf numFmtId="0" fontId="${boldFont}" fillId="0" borderId="0" xfId="0" applyFont="1"/>`
+              + '</cellXfs>';
+          });
+      if (!fontsMatched || !xfsMatched) {
+        throw new Error('import report: styles.xml did not match the expected shape');
+      }
+      return next;
+    });
+    if (boldXf < 0) throw new Error('import report: styles.xml has no cellXfs');
+
+    patchEntry(zip, '/xl/worksheets/sheet1.xml', (xml) => {
+      let viewMatched = false;
+      let rowMatched = false;
+      const next = xml
+        .replace('<sheetView workbookViewId="0"/>', () => {
+          viewMatched = true;
+          return '<sheetView workbookViewId="0">'
+            + '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
+            + '</sheetView>';
         })
-      .replace(/<cellXfs count="(\d+)">([\s\S]*?)<\/cellXfs>/,
-        (_m, n: string, xfs: string) => {
-          boldXf = Number(n);
-          return `<cellXfs count="${boldXf + 1}">${xfs}`
-            + `<xf numFmtId="0" fontId="${boldFont}" fillId="0" borderId="0" xfId="0" applyFont="1"/>`
-            + '</cellXfs>';
+        .replace(/<row r="1"([^>]*)>([\s\S]*?)<\/row>/, (_m, attrs: string, cells: string) => {
+          rowMatched = true;
+          return `<row r="1"${attrs}>${cells.replace(/<c r="([A-Z]+1)"/g, `<c r="$1" s="${boldXf}"`)}</row>`;
         });
-  });
-  if (boldXf < 0) throw new Error('import report: styles.xml has no cellXfs');
+      if (!viewMatched || !rowMatched) {
+        throw new Error('import report: sheet1.xml did not match the expected shape');
+      }
+      return next;
+    });
 
-  patchEntry(zip, '/xl/worksheets/sheet1.xml', (xml) => xml
-    .replace('<sheetView workbookViewId="0"/>',
-      '<sheetView workbookViewId="0">'
-      + '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>'
-      + '</sheetView>')
-    .replace(/<row r="1"([^>]*)>([\s\S]*?)<\/row>/, (_m, attrs: string, cells: string) =>
-      `<row r="1"${attrs}>${cells.replace(/<c r="([A-Z]+1)"/g, `<c r="$1" s="${boldXf}"`)}</row>`));
-
-  return new Uint8Array(CFB.write(zip, { fileType: 'zip', type: 'array' }));
+    return new Uint8Array(CFB.write(zip, { fileType: 'zip', type: 'array' }));
+  } catch {
+    // Styling is cosmetic; a plain, unstyled but valid workbook is better
+    // than a broken download or a silently half-patched file.
+    return raw;
+  }
 }
 
 /** Writes the workbook and hands it to the browser as a download. */

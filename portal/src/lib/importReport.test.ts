@@ -130,6 +130,23 @@ describe('Rows sheet', () => {
     expect(back.SheetNames).toEqual(['Rows', 'Summary']);
     expect(rowsOf(back)).toEqual(rowsOf(build().workbook));
   });
+
+  it('falls back to a plain, unstyled workbook when the styles.xml patch cannot be applied', () => {
+    const cfb = XLSX.CFB as unknown as { find: (zip: object, path: string) => unknown };
+    const originalFind = cfb.find;
+    const spy = vi.spyOn(cfb, 'find').mockImplementation((zip: object, path: string) => (
+      path === '/xl/styles.xml' ? null : originalFind(zip, path)
+    ));
+
+    const bytes = workbookBytes(build().workbook);
+    spy.mockRestore();
+
+    // Still opens, with the same rows, but with no frozen pane or bold style.
+    const back = XLSX.read(bytes, { type: 'array' });
+    expect(back.SheetNames).toEqual(['Rows', 'Summary']);
+    expect(rowsOf(back)).toEqual(rowsOf(build().workbook));
+    expect(xmlOf(bytes, '/xl/worksheets/sheet1.xml')).not.toContain('<pane');
+  });
 });
 
 describe('Summary sheet', () => {
