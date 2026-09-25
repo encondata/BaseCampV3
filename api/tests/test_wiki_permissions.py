@@ -366,7 +366,11 @@ async def test_levels_for_nodes_uses_a_bounded_number_of_queries(db):
     assert again == levels
     # memoized: the second pass walks no chains at all
     assert walks_first == 50 and walks == walks_first
-    assert len(statements) <= 4 * len(spaces), statements
+    # _load_spaces batches its 3 queries across every missing space in one
+    # call, so this is 3 total regardless of len(spaces) — pinned exact
+    # since it's proven stable, not just bounded.
+    assert len(statements) > 0
+    assert len(statements) == 3, statements
     assert all(v in ("view", "edit", None) for v in levels.values())
 
 

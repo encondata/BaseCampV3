@@ -96,11 +96,11 @@ async def principal_for(db: AsyncSession, user: AuthContext) -> Principal:
     )
 
 
-def _as_uuid(value: str | None) -> uuid.UUID | None:
+def _as_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
     if not value:
         return None
     try:
-        return uuid.UUID(value)
+        return uuid.UUID(str(value))
     except (ValueError, TypeError, AttributeError):
         return None
 
@@ -256,6 +256,8 @@ class AccessIndex:
         return await self._level(node.space_id, self._chain(node))
 
     async def levels_for_nodes(self, nodes: Sequence[WikiNode]) -> dict[uuid.UUID, str | None]:
+        """Does NOT filter deleted nodes — a caller listing a mix of live
+        and soft-deleted nodes must filter `deleted_at` itself first."""
         if self.p.can_view_wiki and not self.p.is_admin:
             await self._load_spaces({n.space_id for n in nodes})
         return {n.id: await self.level_for_node(n) for n in nodes}
@@ -264,7 +266,14 @@ class AccessIndex:
                                space_id: uuid.UUID) -> list[EffectiveGrantRow]:
         """Every grant in the final set for `node` (or the space itself when
         `node` is None), labeled and attributed to its source. This lists
-        the grants, not the caller's access — no admin/archived rules."""
+        the grants, not the caller's access — no admin/archived rules.
+
+        When `node` is given, its own `space_id` is what's walked — the
+        `space_id` argument must then agree (a mismatch is a caller bug,
+        not a recoverable condition)."""
+        if node is not None and node.space_id != space_id:
+            raise ValueError(
+                f"node.space_id ({node.space_id}) != space_id ({space_id})")
         await self._load_spaces([space_id])
         data = self._spaces[space_id]
         grants = self._final_set(data, self._chain(node) if node else [])
