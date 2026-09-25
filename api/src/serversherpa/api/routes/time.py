@@ -13,9 +13,22 @@ from sqlalchemy import func, select
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession, require_permission
 from serversherpa.api.schemas import (
-    ClockInIn, ClockOutIn, PunchOption, TimeDayStat, TimeEntryCreateIn,
-    TimeEntryItem, TimeEntryPatchIn, TimeEntryRejectIn, TimeMeOut,
-    TimePunchOptionsOut, TimeStatsSummaryOut, TimeSummaryOut, TimeSummaryPerson,
+    ClockInIn,
+    ClockOutIn,
+    PunchOption,
+    TimeBulkApproveIn,
+    TimeBulkFilterIn,
+    TimeBulkRejectIn,
+    TimeDayStat,
+    TimeEntryCreateIn,
+    TimeEntryItem,
+    TimeEntryPatchIn,
+    TimeEntryRejectIn,
+    TimeMeOut,
+    TimePunchOptionsOut,
+    TimeStatsSummaryOut,
+    TimeSummaryOut,
+    TimeSummaryPerson,
 )
 from serversherpa.db.models import Initiative, Person, Site, StatusValue, TimeEntry
 from serversherpa.services import timeclock
@@ -114,6 +127,125 @@ def _can_clock(actor: AuthContext) -> bool:
     return actor.access.can("time", "view") or "worker" in actor.roles
 
 
+# ── shared by the list, the single-row and the bulk routes ──────────
+
+# Bulk approve / reject (the Timesheet's checkboxes and "Approve all
+# pending in this view"): the single-row rules, one entry at a time, with
+# a skipped entry reported under one of these reasons.
+BULK_LIMIT = 5000
+SKIP_NOT_FOUND = "not found"
+SKIP_OWN = "your own entry"
+SKIP_NOT_PENDING = "no longer pending"
+
+
+def _entry_conditions(
+    *, person_id: uuid.UUID | None = None, initiative_id: uuid.UUID | None = None,
+    site_id: uuid.UUID | None = None, since: datetime | None = None,
+    until: datetime | None = None,
+) -> list:
+    """The Timesheet's filter semantics, shared by GET /time/entries and the
+    bulk-approve filter: exact person / job / site, and a clock-in window
+    inclusive at both ends."""
+    conds = []
+    if person_id is not None:
+        conds.append(TimeEntry.person_id == person_id)
+    if initiative_id is not None:
+        conds.append(TimeEntry.initiative_id == initiative_id)
+    if site_id is not None:
+        conds.append(TimeEntry.site_id == site_id)
+    if since is not None:
+        conds.append(TimeEntry.clock_in_at >= since)
+    if until is not None:
+        conds.append(TimeEntry.clock_in_at <= until)
+    return conds
+
+
+def _approve_entry(db: DbSession, entry: TimeEntry, actor_id: uuid.UUID,
+                   now: datetime) -> None:
+    """Approve one pending entry and add its audit row; the caller commits."""
+    fields = ["status", "approved_by", "approved_at"]
+    before = snapshot(entry, fields)
+    entry.status = "approved"
+    entry.approved_by = actor_id
+    entry.approved_at = now
+    entry.updated_at = now
+    audit(db, actor_id=actor_id, entity_type="time_entry", entity_id=str(entry.id),
+          action="update", changes=diff(before, snapshot(entry, fields)))
+
+
+def _reject_entry(db: DbSession, entry: TimeEntry, actor_id: uuid.UUID,
+                  reason: str, now: datetime) -> None:
+    """Reject one pending entry and add its audit row; the caller commits."""
+    fields = ["status", "reject_reason"]
+    before = snapshot(entry, fields)
+    entry.status = "rejected"
+    entry.reject_reason = reason
+    entry.updated_at = now
+    audit(db, actor_id=actor_id, entity_type="time_entry", entity_id=str(entry.id),
+          action="update", changes=diff(before, snapshot(entry, fields)))
+
+
+async def _bulk_targets(
+    db: DbSession, *, entry_ids: list[uuid.UUID] | None,
+    flt: TimeBulkFilterIn | None, lock: bool,
+) -> tuple[list[TimeEntry], list[uuid.UUID]]:
+    """(entries, ids that matched no row). With ids: every named entry,
+    whatever its status, so the caller can say why one was skipped. With a
+    filter: pending entries only. Rows are locked FOR UPDATE, in id order so
+    two bulk runs cannot deadlock, before any status is read, so a
+    concurrent single-row action cannot race the run. A dry run only counts
+    and takes no lock. `time` is visible to global actors only
+    (access/resources.py) and has no row scoping, so every existing entry is
+    visible to a time:change holder; an id matching no row is the one
+    "not found" case."""
+    if flt is not None:
+        query = (select(TimeEntry)
+                 .where(TimeEntry.status == "pending", *_entry_conditions(
+                     person_id=flt.person_id, initiative_id=flt.initiative_id,
+                     site_id=flt.site_id, since=flt.from_, until=flt.to))
+                 .limit(BULK_LIMIT + 1))
+        ids: list[uuid.UUID] = []
+    else:
+        ids = list(dict.fromkeys(entry_ids or []))
+        if len(ids) > BULK_LIMIT:
+            raise _err(422, "too_many", limit=BULK_LIMIT)
+        if not ids:
+            return [], []
+        query = select(TimeEntry).where(TimeEntry.id.in_(ids))
+    query = query.order_by(TimeEntry.id).execution_options(populate_existing=True)
+    if lock:
+        query = query.with_for_update()
+    entries = list(await db.scalars(query))
+    if len(entries) > BULK_LIMIT:
+        raise _err(422, "too_many", limit=BULK_LIMIT)
+    found = {e.id for e in entries}
+    return entries, [i for i in ids if i not in found]
+
+
+async def _partition(
+    db: DbSession, entries: list[TimeEntry], missing: list[uuid.UUID],
+    actor_id: uuid.UUID,
+) -> tuple[list[TimeEntry], list[dict]]:
+    """(entries to act on, skipped) — the single-row routes' checks, in
+    their order: the actor's own entry first, then anything not pending."""
+    ready: list[TimeEntry] = []
+    held: list[tuple[TimeEntry, str]] = []
+    for e in entries:
+        if e.person_id == actor_id:
+            held.append((e, SKIP_OWN))
+        elif e.status != "pending":
+            held.append((e, SKIP_NOT_PENDING))
+        else:
+            ready.append(e)
+    names = await _people_names(db, {e.person_id for e, _ in held})
+    skipped = [{"entry_id": str(e.id), "person": names.get(e.person_id),
+                "date": e.clock_in_at.isoformat(), "reason": reason}
+               for e, reason in held]
+    skipped += [{"entry_id": str(i), "person": None, "date": None,
+                 "reason": SKIP_NOT_FOUND} for i in missing]
+    return ready, skipped
+
+
 @router.post("/clock-in", response_model=TimeEntryItem)
 async def clock_in(body: ClockInIn, db: DbSession, user: CurrentUser) -> TimeEntryItem:
     if not _can_clock(user):
@@ -210,6 +342,7 @@ async def list_time_entries(
     actor: AuthContext = require_permission("time", "view"),
     person_id: uuid.UUID | None = None,
     initiative_id: uuid.UUID | None = None,
+    site_id: uuid.UUID | None = None,
     status: str | None = None,
     since: datetime | None = None,
     until: datetime | None = None,
@@ -217,18 +350,12 @@ async def list_time_entries(
     offset: int = Query(0, ge=0),
 ) -> list[TimeEntryItem]:
     query = (select(TimeEntry)
-            .order_by(TimeEntry.clock_in_at.desc(), TimeEntry.id.desc())
-            .offset(offset).limit(limit))
-    if person_id is not None:
-        query = query.where(TimeEntry.person_id == person_id)
-    if initiative_id is not None:
-        query = query.where(TimeEntry.initiative_id == initiative_id)
+             .where(*_entry_conditions(person_id=person_id, initiative_id=initiative_id,
+                                       site_id=site_id, since=since, until=until))
+             .order_by(TimeEntry.clock_in_at.desc(), TimeEntry.id.desc())
+             .offset(offset).limit(limit))
     if status is not None:
         query = query.where(TimeEntry.status == status)
-    if since is not None:
-        query = query.where(TimeEntry.clock_in_at >= since)
-    if until is not None:
-        query = query.where(TimeEntry.clock_in_at <= until)
     entries = list(await db.scalars(query))
     return await _items(db, entries)
 
@@ -267,6 +394,48 @@ async def create_time_entry(
           changes={"status": {"from": None, "to": "pending"}})
     await db.commit()
     return await _to_item(db, entry)
+
+
+@router.post("/entries/approve")
+async def bulk_approve_time_entries(
+    body: TimeBulkApproveIn, db: DbSession,
+    actor: AuthContext = require_permission("time", "change"),
+    dry_run: bool = False,
+) -> dict:
+    """Approve many pending entries in one transaction: the ticked ids, or
+    every pending entry the Timesheet's filters match (which reaches rows
+    the list has not loaded). `?dry_run=1` counts what would be approved
+    and writes nothing."""
+    if (body.entry_ids is None) == (body.filter is None):
+        raise _err(422, "ids_or_filter")
+    entries, missing = await _bulk_targets(
+        db, entry_ids=body.entry_ids, flt=body.filter, lock=not dry_run)
+    ready, skipped = await _partition(db, entries, missing, actor.person.id)
+    if dry_run:
+        return {"count": len(ready)}
+    now = datetime.now(UTC)
+    for entry in ready:
+        _approve_entry(db, entry, actor.person.id, now)
+    await db.commit()
+    return {"approved": len(ready), "skipped": skipped}
+
+
+@router.post("/entries/reject")
+async def bulk_reject_time_entries(
+    body: TimeBulkRejectIn, db: DbSession,
+    actor: AuthContext = require_permission("time", "change"),
+) -> dict:
+    """Reject the ticked entries with one reason, in one transaction."""
+    reason = body.reason.strip()
+    if not reason:
+        raise _err(422, "reason_required")
+    entries, missing = await _bulk_targets(db, entry_ids=body.entry_ids, flt=None, lock=True)
+    ready, skipped = await _partition(db, entries, missing, actor.person.id)
+    now = datetime.now(UTC)
+    for entry in ready:
+        _reject_entry(db, entry, actor.person.id, reason, now)
+    await db.commit()
+    return {"rejected": len(ready), "skipped": skipped}
 
 
 @router.patch("/entries/{entry_id}", response_model=TimeEntryItem)
@@ -361,15 +530,7 @@ async def approve_time_entry(
     if entry.status != "pending":
         raise _err(409, "not_pending")
 
-    fields = ["status", "approved_by", "approved_at"]
-    before = snapshot(entry, fields)
-    entry.status = "approved"
-    entry.approved_by = actor.person.id
-    entry.approved_at = datetime.now(UTC)
-    entry.updated_at = entry.approved_at
-    changes = diff(before, snapshot(entry, fields))
-    audit(db, actor_id=actor.person.id, entity_type="time_entry",
-          entity_id=str(entry_id), action="update", changes=changes)
+    _approve_entry(db, entry, actor.person.id, datetime.now(UTC))
     await db.commit()
     return await _to_item(db, entry)
 
@@ -387,14 +548,7 @@ async def reject_time_entry(
     if entry.status != "pending":
         raise _err(409, "not_pending")
 
-    fields = ["status", "reject_reason"]
-    before = snapshot(entry, fields)
-    entry.status = "rejected"
-    entry.reject_reason = body.reason
-    entry.updated_at = datetime.now(UTC)
-    changes = diff(before, snapshot(entry, fields))
-    audit(db, actor_id=actor.person.id, entity_type="time_entry",
-          entity_id=str(entry_id), action="update", changes=changes)
+    _reject_entry(db, entry, actor.person.id, body.reason, datetime.now(UTC))
     await db.commit()
     return await _to_item(db, entry)
 
