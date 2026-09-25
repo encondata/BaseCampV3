@@ -106,6 +106,11 @@ _RESOURCES = [
     # Not a portal page, so no routes. Workers are self-anchored, hence
     # "self" in visible_to; no client/partner role holds it by default.
     Resource("kiosk", "Kiosk", visible_to=frozenset({"global", "self"})),
+    # The wiki portal (wiki/): client_owner/admin/viewer, vendor_*, and
+    # worker/external roles all hold wiki:view by default — every anchor
+    # kind needs to clear this hard gate.
+    Resource("wiki", "Wiki",
+             visible_to=frozenset({"global", "client", "partner", "self"})),
 ]
 
 REGISTRY: dict[str, Resource] = {r.id: r for r in _RESOURCES}

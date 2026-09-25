@@ -6,10 +6,12 @@ from datetime import date, datetime, time
 from decimal import Decimal
 
 from sqlalchemy import (
-    BigInteger, Boolean, CheckConstraint, Date, ForeignKey, Identity, Integer, Numeric,
+    BigInteger, Boolean, CheckConstraint, Date, Float, ForeignKey, Identity, Integer, Numeric,
     SmallInteger, String, Text, Time, text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, BYTEA, CITEXT, INET, JSONB, TIMESTAMP, UUID
+from sqlalchemy.dialects.postgresql import (
+    ARRAY, BYTEA, CITEXT, INET, JSONB, TIMESTAMP, TSVECTOR, UUID,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -1618,3 +1620,258 @@ class Notification(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     read_at: Mapped[datetime | None]
     dismissed_at: Mapped[datetime | None]
+
+
+class WikiSpace(Base):
+    """A wiki space: a top-level, separately permissioned collection of
+    pages and files (e.g. "Ops Guides"). `key` is the URL slug."""
+    __tablename__ = "wiki_spaces"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    key: Mapped[str] = mapped_column(CITEXT, unique=True)
+    name: Mapped[str]
+    description: Mapped[str | None]
+    icon: Mapped[str | None]
+    color: Mapped[str | None]
+    home_node_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="SET NULL"))
+    # phase 2/3 knobs (readers_can_comment, require_approval,
+    # review_interval_months, allow_public_links)
+    settings: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    archived_at: Mapped[datetime | None]
+
+    __table_args__ = (
+        CheckConstraint("key ~ '^[a-z0-9][a-z0-9-]{1,39}$'",
+                        name="wiki_spaces_key_check"),
+    )
+
+
+class WikiNode(Base):
+    """The tree: one row per folder, page, or file. `path` holds ancestor
+    ids (root first, excluding self) so a subtree query is `path @>
+    ARRAY[:id]`; it's maintained by the API on create/move, not the DB."""
+    __tablename__ = "wiki_nodes"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wiki_spaces.id", ondelete="CASCADE"))
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"))
+    path: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), server_default=text("'{}'"))
+    kind: Mapped[str]                      # 'folder' | 'page' | 'file'
+    title: Mapped[str]
+    position: Mapped[float] = mapped_column(Float, server_default="0")
+    inherit_permissions: Mapped[bool] = mapped_column(server_default=text("true"))
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    deleted_at: Mapped[datetime | None]
+    deleted_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    # a subtree soft-deleted together shares one batch id so it restores together
+    deleted_batch: Mapped[uuid.UUID | None]
+    search_tsv: Mapped[str | None] = mapped_column(TSVECTOR)
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('folder','page','file')",
+                        name="wiki_nodes_kind_check"),
+        CheckConstraint("char_length(title) BETWEEN 1 AND 200",
+                        name="wiki_nodes_title_length_check"),
+    )
+
+
+class WikiPage(Base):
+    """1:1 with a page node. `ydoc`/`draft_json`/`draft_text` are the live
+    shared draft, written by the collab server on every store; the
+    content a reader sees is `published_version_id`'s row."""
+    __tablename__ = "wiki_pages"
+
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"), primary_key=True)
+    ydoc: Mapped[bytes | None] = mapped_column(BYTEA)
+    # none_as_null: a bare JSONB type stores Python None as a JSON 'null'
+    # literal (still non-NULL); draft_json is absent until the first store.
+    draft_json: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    draft_text: Mapped[str | None]
+    draft_updated_at: Mapped[datetime | None]
+    draft_updated_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    published_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("wiki_page_versions.id", ondelete="SET NULL"))
+    has_unpublished_changes: Mapped[bool] = mapped_column(server_default=text("false"))
+    last_autosave_version_at: Mapped[datetime | None]
+
+
+class WikiPageVersion(Base):
+    """A snapshot of a page's content: autosaved periodically, or written
+    on publish/restore/import. `version_no` is per-node, 1..n."""
+    __tablename__ = "wiki_page_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"))
+    version_no: Mapped[int] = mapped_column(Integer)
+    title: Mapped[str]
+    content_json: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    content_text: Mapped[str | None]
+    kind: Mapped[str]                      # 'autosave' | 'published' | 'restored' | 'imported'
+    note: Mapped[str | None]               # publish change note
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('autosave','published','restored','imported')",
+            name="wiki_page_versions_kind_check"),
+    )
+
+
+class WikiFile(Base):
+    """1:1 with a file node — the per-file row pointing at its current
+    version."""
+    __tablename__ = "wiki_files"
+
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"), primary_key=True)
+    current_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("wiki_file_versions.id", ondelete="SET NULL"))
+    description: Mapped[str] = mapped_column(server_default="")
+
+
+class WikiFileVersion(Base):
+    """An uploaded revision of a file: the object, its preview (native
+    render or converted PDF), and any extracted text for search."""
+    __tablename__ = "wiki_file_versions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"))
+    version_no: Mapped[int] = mapped_column(Integer)
+    storage_key: Mapped[str]
+    filename: Mapped[str]
+    content_type: Mapped[str]
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    sha256: Mapped[str | None]
+    preview_kind: Mapped[str]              # 'native' | 'pdf' | 'none'
+    preview_key: Mapped[str | None]        # converted PDF, when preview_kind='pdf'
+    preview_status: Mapped[str] = mapped_column(server_default="pending")
+    text_extract: Mapped[str | None]
+    extract_status: Mapped[str] = mapped_column(server_default="pending")
+    note: Mapped[str | None]
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        CheckConstraint("preview_kind IN ('native','pdf','none')",
+                        name="wiki_file_versions_preview_kind_check"),
+        CheckConstraint(
+            "preview_status IN ('pending','ready','failed','skipped')",
+            name="wiki_file_versions_preview_status_check"),
+        CheckConstraint(
+            "extract_status IN ('pending','ready','failed','skipped')",
+            name="wiki_file_versions_extract_status_check"),
+    )
+
+
+class WikiPageAsset(Base):
+    """An image or attachment embedded in a page's body (not a tree item
+    of its own). Readable by anyone who can view the page."""
+    __tablename__ = "wiki_page_assets"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"))
+    storage_key: Mapped[str]
+    filename: Mapped[str]
+    content_type: Mapped[str]
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    uploaded_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    deleted_at: Mapped[datetime | None]
+
+
+class WikiGrant(Base):
+    """Space membership or a node-level override. `node_id` null means a
+    space-level grant. Unique on (space_id, node_id, principal_type,
+    principal_id) with `coalesce()` standing in for NULL so 'everyone'/
+    'internal' rows (principal_id null) still dedupe correctly."""
+    __tablename__ = "wiki_grants"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    space_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wiki_spaces.id", ondelete="CASCADE"))
+    node_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"))
+    # 'everyone' | 'internal' | 'role' | 'access_group' | 'person' | 'client' | 'partner'
+    principal_type: Mapped[str]
+    # role name, or uuid as text; null for 'everyone'/'internal'
+    principal_id: Mapped[str | None]
+    level: Mapped[str]                     # 'view' | 'edit' | 'manage'
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        CheckConstraint(
+            "principal_type IN ('everyone','internal','role','access_group',"
+            "'person','client','partner')",
+            name="wiki_grants_principal_type_check"),
+        CheckConstraint("level IN ('view','edit','manage')",
+                        name="wiki_grants_level_check"),
+    )
+
+
+class WikiFavorite(Base):
+    """A person's starred node, for a quick-access list."""
+    __tablename__ = "wiki_favorites"
+
+    person_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("people.id", ondelete="CASCADE"), primary_key=True)
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class WikiJob(Base):
+    """Queued background wiki work (file preview render, text extract,
+    trash purge). The API only creates rows and serves status; a
+    separate worker claims queued rows and does the processing."""
+    __tablename__ = "wiki_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    kind: Mapped[str]                      # 'file_preview' | 'file_extract' | 'purge'
+    node_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="SET NULL"))
+    file_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("wiki_file_versions.id", ondelete="SET NULL"))
+    payload: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    status: Mapped[str] = mapped_column(server_default="queued")
+    attempts: Mapped[int] = mapped_column(Integer, server_default="0")
+    error: Mapped[str | None]
+    result: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    started_at: Mapped[datetime | None]
+    progress_at: Mapped[datetime | None]
+    finished_at: Mapped[datetime | None]
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('file_preview','file_extract','purge')",
+                        name="wiki_jobs_kind_check"),
+        CheckConstraint("status IN ('queued','running','done','failed')",
+                        name="wiki_jobs_status_check"),
+    )
