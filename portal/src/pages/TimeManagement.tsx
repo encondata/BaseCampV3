@@ -366,19 +366,25 @@ export default function TimeManagement() {
     });
   }, [timesheet, filters, query, statusPill, sortKey, sortDir, haystack]);
 
-  // A reload drops ids that are no longer loaded and pending (approved
-  // elsewhere, filtered away), so the count never includes a row that
-  // cannot be acted on.
+  const pendingShown = useMemo(
+    () => visibleEntries.filter((e) => e.status === 'pending').map((e) => e.id), [visibleEntries]);
+
+  // Selection stays in sync with what's visible: prune `selected` down to
+  // the pending ids currently shown whenever that set changes — a reload
+  // (approved/rejected elsewhere), a search, a column filter, or the status
+  // pill. Without this, a row hidden by search or a column filter stayed
+  // selected, so the "N selected" chip and Approve/Reject selected still
+  // counted and acted on an entry the user could no longer see — this is a
+  // payroll action, so the header checkbox, the chip, and the ids sent must
+  // always agree with what is on screen.
   useEffect(() => {
-    const pending = new Set((timesheet ?? []).filter((e) => e.status === 'pending').map((e) => e.id));
+    const pending = new Set(pendingShown);
     setSelected((prev) => {
       const next = new Set([...prev].filter((id) => pending.has(id)));
       return next.size === prev.size ? prev : next;
     });
-  }, [timesheet]);
+  }, [pendingShown]);
 
-  const pendingShown = useMemo(
-    () => visibleEntries.filter((e) => e.status === 'pending').map((e) => e.id), [visibleEntries]);
   const selectedShown = pendingShown.filter((id) => selected.has(id)).length;
   const allSelected = pendingShown.length > 0 && selectedShown === pendingShown.length;
   const someSelected = selectedShown > 0 && !allSelected;

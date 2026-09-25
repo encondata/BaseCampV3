@@ -205,6 +205,26 @@ it('without time:change there are no checkboxes and no bulk buttons', async () =
   expect(screen.queryByRole('button', { name: 'Approve selected' })).toBeNull();
 });
 
+it('hiding a selected row with search prunes it from the selection', async () => {
+  render(<TimeManagement />);
+  await screen.findByText('Alice Tech');
+  fireEvent.click(within(rowOf('Alice Tech')).getByRole('checkbox'));
+  expect(screen.getByText('1 selected')).toBeTruthy();
+
+  // Search for "Cy" hides Alice's row, so the selection it held is no
+  // longer visible — the chip and the bulk button must disappear with it.
+  fireEvent.change(screen.getByPlaceholderText('Filter entries…'), { target: { value: 'Cy' } });
+  await waitFor(() => expect(screen.queryByText('Alice Tech')).toBeNull());
+  expect(screen.queryByText('1 selected')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Approve selected' })).toBeNull();
+
+  // Clearing the search brings Alice's row back, but pruning already
+  // dropped her id from `selected`, so the checkbox comes back unchecked.
+  fireEvent.change(screen.getByPlaceholderText('Filter entries…'), { target: { value: '' } });
+  await screen.findByText('Alice Tech');
+  expect((within(rowOf('Alice Tech')).getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+});
+
 it('a zero dry-run count replaces the result and collapses an open skipped list', async () => {
   api.bulkApproveTimeEntries.mockResolvedValue({
     approved: 0,
