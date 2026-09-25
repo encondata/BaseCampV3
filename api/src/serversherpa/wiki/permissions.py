@@ -252,6 +252,15 @@ class AccessIndex:
     async def level_for_space(self, space_id: uuid.UUID) -> str | None:
         return await self._level(space_id, [])
 
+    async def levels_for_spaces(
+            self, space_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str | None]:
+        """The caller's level on each space, loading every not-yet-cached
+        space in one batch (the same 3 queries as a single space)."""
+        ids = list(dict.fromkeys(space_ids))
+        if self.p.can_view_wiki and not self.p.is_admin:
+            await self._load_spaces(ids)
+        return {sid: await self.level_for_space(sid) for sid in ids}
+
     async def level_for_node(self, node: WikiNode) -> str | None:
         return await self._level(node.space_id, self._chain(node))
 

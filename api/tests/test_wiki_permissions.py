@@ -374,6 +374,47 @@ async def test_levels_for_nodes_uses_a_bounded_number_of_queries(db):
     assert all(v in ("view", "edit", None) for v in levels.values())
 
 
+async def test_levels_for_spaces_batches_every_space_in_three_queries(db):
+    x = await _person(db)
+    spaces = []
+    for i in range(6):
+        space = await _space(db, key=f"lfs-{uuid.uuid4().hex[:8]}", name=f"LFS {i}")
+        spaces.append(space)
+        if i % 2 == 0:
+            await _grant(db, space, "internal", None, "view")
+        if i % 3 == 0:
+            await _grant(db, space, "person", x.id, "manage")
+    await db.commit()
+
+    statements: list[str] = []
+
+    def _count(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    engine = get_engine().sync_engine
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        ix = AccessIndex(db, _staff(x.id))
+        levels = await ix.levels_for_spaces(s.id for s in spaces)
+        again = await ix.levels_for_spaces([s.id for s in spaces])
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)
+
+    assert levels == again
+    assert [levels[s.id] for s in spaces] == [
+        "manage", None, "view", "manage", "view", None]
+    assert len(statements) == 3, statements
+
+
+async def test_levels_for_spaces_admin_and_no_wiki_view_skip_loading(db):
+    space = await _space(db, key=f"lfs-{uuid.uuid4().hex[:8]}")
+    await db.commit()
+    assert await AccessIndex(db, _staff(is_admin=True)).levels_for_spaces(
+        [space.id]) == {space.id: "manage"}
+    assert await AccessIndex(db, _staff(can_view_wiki=False)).levels_for_spaces(
+        [space.id]) == {space.id: None}
+
+
 # ── require_* guards ────────────────────────────────────────────────
 
 

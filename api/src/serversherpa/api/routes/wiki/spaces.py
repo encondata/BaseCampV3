@@ -57,10 +57,8 @@ async def _can_manage_any_space(ctx: WikiContext) -> bool:
     if ctx.principal.is_admin:
         return True
     space_ids = (await ctx.db.scalars(select(WikiSpace.id))).all()
-    for space_id in space_ids:
-        if await ctx.ix.level_for_space(space_id) == "manage":
-            return True
-    return False
+    levels = await ctx.ix.levels_for_spaces(space_ids)
+    return any(level == "manage" for level in levels.values())
 
 
 # ── /me ──────────────────────────────────────────────────────────────
@@ -84,13 +82,8 @@ async def list_spaces(ctx: WikiContext, include_archived: bool = False) -> list[
     if not include_archived:
         q = q.where(WikiSpace.archived_at.is_(None))
     spaces = (await ctx.db.scalars(q)).all()
-    out = []
-    for space in spaces:
-        level = await ctx.ix.level_for_space(space.id)
-        if level is None:
-            continue
-        out.append(space_out(space, level))
-    return out
+    levels = await ctx.ix.levels_for_spaces(s.id for s in spaces)
+    return [space_out(s, levels[s.id]) for s in spaces if levels[s.id] is not None]
 
 
 @router.post("/spaces", response_model=SpaceOut, status_code=201)

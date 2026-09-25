@@ -337,3 +337,34 @@ async def test_writes_are_audited(client, db):
     assert ("wiki_space", "create") in actions_by_entity
     assert ("wiki_space", "update") in actions_by_entity
     assert ("wiki_grant", "replace") in actions_by_entity
+
+
+async def test_list_spaces_statement_count_does_not_grow_with_spaces(client, db):
+    from sqlalchemy import event
+
+    from serversherpa.db.engine import get_engine
+
+    headers, _ = await login_as(client, db, roles=("staff",))
+
+    async def _statements_for_list() -> int:
+        statements: list[str] = []
+
+        def _count(conn, cursor, statement, *args):
+            statements.append(statement)
+
+        engine = get_engine().sync_engine
+        event.listen(engine, "before_cursor_execute", _count)
+        try:
+            resp = await client.get("/wiki/spaces", headers=headers)
+        finally:
+            event.remove(engine, "before_cursor_execute", _count)
+        assert resp.status_code == 200
+        return len(statements)
+
+    await _create_space(client, headers, key=f"n1-{uuid.uuid4().hex[:8]}")
+    before = await _statements_for_list()
+    for _ in range(5):
+        await _create_space(client, headers, key=f"n1-{uuid.uuid4().hex[:8]}",
+                            default_access="internal")
+    after = await _statements_for_list()
+    assert after == before
