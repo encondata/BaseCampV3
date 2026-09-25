@@ -8,12 +8,7 @@ from sqlalchemy import func, select
 from serversherpa.db.models import AuditLog, WikiNode, WikiPage, WikiPageVersion
 from serversherpa.wiki import pages
 from serversherpa.wiki.content import EMPTY_DOC
-from tests.test_wiki_nodes_api import _create, _setup
-
-
-def _doc(*texts):
-    return {"type": "doc", "content": [
-        {"type": "paragraph", "content": [{"type": "text", "text": t}]} for t in texts]}
+from tests.wiki_helpers import _create, _doc, _setup, publish_via_api
 
 
 async def _set_draft(db, node_id, content):
@@ -23,13 +18,6 @@ async def _set_draft(db, node_id, content):
     row.draft_json = content
     row.has_unpublished_changes = True
     await db.commit()
-
-
-async def _publish(client, headers, node_id, note=None, expect=201):
-    resp = await client.post(f"/wiki/pages/{node_id}/publish", headers=headers,
-                             json={"note": note} if note is not None else {})
-    assert resp.status_code == expect, resp.text
-    return resp.json()
 
 
 async def _content(client, headers, node_id, version=None, expect=200):
@@ -54,7 +42,7 @@ async def test_publish_snapshots_the_draft_once(client, db):
     page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
     await _set_draft(db, page["id"], _doc("step one"))
 
-    body = await _publish(client, s["editor"], page["id"], note="  First cut  ")
+    body = await publish_via_api(client, s["editor"], page["id"], note="  First cut  ")
     assert body["version_no"] == 1
     assert body["kind"] == "published"
     assert body["title"] == "Runbook"
@@ -78,7 +66,7 @@ async def test_publish_snapshots_the_draft_once(client, db):
 
     # a changed draft publishes as version 2
     await _set_draft(db, page["id"], _doc("step one", "step two"))
-    body = await _publish(client, s["editor"], page["id"])
+    body = await publish_via_api(client, s["editor"], page["id"])
     assert body["version_no"] == 2 and body["note"] is None
 
     rows = await _audits(db, page["id"], "publish")
@@ -90,18 +78,18 @@ async def test_publish_snapshots_the_draft_once(client, db):
 async def test_publish_without_a_draft_publishes_an_empty_page(client, db):
     s = await _setup(client, db)
     page = await _create(client, s["owner"], s["space"], "Blank", kind="page")
-    body = await _publish(client, s["owner"], page["id"])
+    body = await publish_via_api(client, s["owner"], page["id"])
     version = await db.get(WikiPageVersion, uuid.UUID(body["id"]))
     assert version.content_json == EMPTY_DOC
     # and a published page with no draft has nothing more to publish
-    await _publish(client, s["owner"], page["id"], expect=409)
+    await publish_via_api(client, s["owner"], page["id"], expect=409)
 
 
 async def test_publish_needs_edit(client, db):
     s = await _setup(client, db)
     page = await _create(client, s["owner"], s["space"], "P", kind="page")
     await _set_draft(db, page["id"], _doc("a"))
-    await _publish(client, s["owner"], page["id"])
+    await publish_via_api(client, s["owner"], page["id"])
     await _set_draft(db, page["id"], _doc("b"))
     resp = await client.post(f"/wiki/pages/{page['id']}/publish", headers=s["viewer"],
                              json={})
@@ -116,7 +104,7 @@ async def test_publish_refreshes_the_search_index(client, db):
     s = await _setup(client, db)
     page = await _create(client, s["owner"], s["space"], "Router reboot", kind="page")
     await _set_draft(db, page["id"], _doc("power cycle the switch"))
-    await _publish(client, s["owner"], page["id"])
+    await publish_via_api(client, s["owner"], page["id"])
     db.expire_all()
     for term in ("router", "switch"):
         hit = await db.scalar(select(WikiNode.id).where(
@@ -132,7 +120,7 @@ async def test_viewers_see_published_content_and_editors_the_draft(client, db):
     s = await _setup(client, db)
     page = await _create(client, s["owner"], s["space"], "Guide", kind="page")
     await _set_draft(db, page["id"], _doc("published words"))
-    published = await _publish(client, s["owner"], page["id"])
+    published = await publish_via_api(client, s["owner"], page["id"])
     await _set_draft(db, page["id"], _doc("draft words"))
 
     body = await _content(client, s["viewer"], page["id"])
@@ -196,7 +184,7 @@ async def _history(client, db, s):
     v1_id = str(v1.id)
     await db.commit()
     await _set_draft(db, page["id"], _doc("v2"))
-    v2 = await _publish(client, s["owner"], page["id"], note="Go live")
+    v2 = await publish_via_api(client, s["owner"], page["id"], note="Go live")
     node = await db.get(WikiNode, uuid.UUID(page["id"]))
     v3 = await pages.add_version(db, node, kind="autosave", title="History",
                                  content_json=_doc("v3"), actor_id=s["editor_id"])
@@ -288,7 +276,7 @@ async def test_imported_page_records_an_imported_version_and_can_publish(client,
     assert [(v["version_no"], v["kind"]) for v in resp.json()] == [(1, "imported")]
     drafts = (await client.get("/wiki/drafts", headers=s["editor"])).json()
     assert page["id"] in [d["id"] for d in drafts]
-    body = await _publish(client, s["editor"], page["id"])
+    body = await publish_via_api(client, s["editor"], page["id"])
     assert body["version_no"] == 2
     assert (await _content(client, s["viewer"], page["id"]))["content_json"] == imported
 

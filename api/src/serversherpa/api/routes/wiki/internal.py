@@ -29,6 +29,7 @@ from serversherpa.api.deps import (
     enforce_read_only,
     enforce_session_scope,
 )
+from serversherpa.api.routes.wiki.errors import err
 from serversherpa.api.routes.wiki.schemas import (
     CollabAuthorizeOut,
     PageStateIn,
@@ -38,6 +39,7 @@ from serversherpa.api.routes.wiki.schemas import (
 from serversherpa.config import get_settings
 from serversherpa.db.models import Person, WikiNode, WikiPage
 from serversherpa.wiki import pages
+from serversherpa.wiki.content import MAX_DOC_BYTES
 from serversherpa.wiki.permissions import AccessIndex, principal_for
 
 _bearer = HTTPBearer(auto_error=False)
@@ -46,13 +48,15 @@ _bearer = HTTPBearer(auto_error=False)
 # read-only mode freezes its stores like any other write
 _SERVICE_USER = SimpleNamespace(roles=())
 
-
-def _err(status: int, code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code, "message": message})
+# a bare cap on the encoded Yjs update PUT /state accepts, well above any
+# legitimate document (MAX_DOC_BYTES caps the ProseMirror JSON alongside
+# it) — big enough for normal editing history, small enough to refuse an
+# abusive or corrupt payload before it's held in memory
+MAX_YDOC_BYTES = 4 * MAX_DOC_BYTES
 
 
 def _not_found() -> HTTPException:
-    return _err(404, "not_found", "Not found.")
+    return err(404, "not_found", "Not found.")
 
 
 async def service_auth(
@@ -63,10 +67,10 @@ async def service_auth(
     for a missing or wrong one (constant-time compare)."""
     expected = get_settings().wiki_service_token.get_secret_value()
     if not expected:
-        raise _err(503, "internal_disabled", "The wiki internal API isn't configured.")
+        raise err(503, "internal_disabled", "The wiki internal API isn't configured.")
     if not x_wiki_service_token or not hmac.compare_digest(
             x_wiki_service_token.encode(), expected.encode()):
-        raise _err(401, "bad_service_token", "Bad service token.")
+        raise err(401, "bad_service_token", "Bad service token.")
 
 
 router = APIRouter(prefix="/internal", dependencies=[Depends(service_auth)])
@@ -85,12 +89,12 @@ async def authorize(
     404 for anything that isn't a live page they can see (a view-only
     user can't see a never-published page)."""
     if credentials is None:
-        raise _err(401, "unauthenticated", "Sign in to edit.")
+        raise err(401, "unauthenticated", "Sign in to edit.")
     try:
         user = await authenticate_token(db, credentials.credentials)
     except HTTPException as exc:
         if exc.status_code == 401:
-            raise _err(401, "unauthenticated", "Sign in to edit.") from None
+            raise err(401, "unauthenticated", "Sign in to edit.") from None
         raise
     enforce_session_scope(request, user)
     enforce_forced_password_change(request, user)
@@ -139,16 +143,19 @@ async def get_state(node_id: uuid.UUID, db: DbSession) -> PageStateOut:
 async def put_state(node_id: uuid.UUID, body: PageStateIn, request: Request,
                     db: DbSession) -> Response:
     """Store the live document. 409 `deleted` once the page is in the
-    trash; read-only mode refuses it like any write. `editor_ids` that
-    aren't people are ignored."""
+    trash; 413 `too_large` for a ydoc above MAX_YDOC_BYTES decoded; read-only
+    mode refuses it like any write. `editor_ids` that aren't people are
+    ignored."""
     await enforce_read_only(db, request, _SERVICE_USER)
     node, page = await _page(db, node_id)
     if node.deleted_at is not None:
-        raise _err(409, "deleted", "This page is in the trash.")
+        raise err(409, "deleted", "This page is in the trash.")
     try:
         ydoc = base64.b64decode(body.ydoc_b64, validate=True)
     except (binascii.Error, ValueError):
-        raise _err(422, "bad_ydoc", "ydoc_b64 isn't valid base64.") from None
+        raise err(422, "bad_ydoc", "ydoc_b64 isn't valid base64.") from None
+    if len(ydoc) > MAX_YDOC_BYTES:
+        raise err(413, "too_large", "The document is larger than 20 MB.")
 
     editor_ids = body.editor_ids
     if editor_ids:

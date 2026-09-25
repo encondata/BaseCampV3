@@ -20,51 +20,15 @@ from serversherpa.db.models import (
     WikiSpace,
 )
 from serversherpa.wiki import tree
-from tests.wiki_helpers import login_as
+from tests.wiki_helpers import _create, _put_grants, _setup, _space, publish_via_db
 
 ELLIPSIS = "…"
 
 
 # ── helpers ─────────────────────────────────────────────────────────
-
-
-async def _space(client, headers, default_access="internal", name="Tree Space"):
-    resp = await client.post("/wiki/spaces", headers=headers, json={
-        "key": f"t4-{uuid.uuid4().hex[:10]}", "name": name,
-        "default_access": default_access})
-    assert resp.status_code == 201, resp.text
-    return resp.json()
-
-
-async def _put_grants(client, headers, space, grants):
-    resp = await client.put(f"/wiki/spaces/{space['key']}/grants",
-                            headers=headers, json={"grants": grants})
-    assert resp.status_code == 200, resp.text
-
-
-async def _create(client, headers, space, title, kind="folder", parent=None,
-                  expect=201, **extra):
-    resp = await client.post("/wiki/nodes", headers=headers, json={
-        "space_id": space["id"], "parent_id": parent["id"] if parent else None,
-        "kind": kind, "title": title, **extra})
-    assert resp.status_code == expect, resp.text
-    return resp.json()
-
-
-async def _publish(db, node_id, content=None):
-    """Give a page a published version directly (the publish route is a
-    later task)."""
-    node_id = uuid.UUID(str(node_id))
-    version = WikiPageVersion(
-        node_id=node_id, version_no=1, title="Published",
-        content_json=content or {"type": "doc", "content": [{"type": "paragraph"}]},
-        kind="published")
-    db.add(version)
-    await db.flush()
-    page = await db.get(WikiPage, node_id)
-    page.published_version_id = version.id
-    await db.commit()
-    return version
+# `_space`, `_put_grants`, `_create`, `_setup`, and `publish_via_db` live
+# in tests/wiki_helpers.py so every wiki test module can import them
+# without cross-importing this one.
 
 
 async def _node_row(db, node_id) -> WikiNode:
@@ -83,23 +47,6 @@ async def _tree(client, headers, space, parent=None):
 
 def _titles(nodes):
     return [n["title"] for n in nodes]
-
-
-async def _setup(client, db):
-    """A space owned by `owner` (manage), with `editor` granted edit and
-    every other staff user (`viewer`) getting view through `internal`."""
-    owner_h, owner_id = await login_as(client, db, roles=("staff",))
-    editor_h, editor_id = await login_as(client, db, roles=("staff",))
-    viewer_h, viewer_id = await login_as(client, db, roles=("staff",))
-    space = await _space(client, owner_h)
-    await _put_grants(client, owner_h, space, [
-        {"principal_type": "person", "principal_id": str(owner_id), "level": "manage"},
-        {"principal_type": "person", "principal_id": str(editor_id), "level": "edit"},
-        {"principal_type": "internal", "level": "view"},
-    ])
-    return {"space": space, "owner": owner_h, "owner_id": owner_id,
-            "editor": editor_h, "editor_id": editor_id,
-            "viewer": viewer_h, "viewer_id": viewer_id}
 
 
 async def _break_inheritance(db, node_id, *, person_id, level="manage"):
@@ -262,7 +209,7 @@ async def test_view_only_tree_hides_unpublished_pages_and_broken_inheritance(cli
     s = await _setup(client, db)
     space = s["space"]
     published = await _create(client, s["owner"], space, "Published", kind="page")
-    await _publish(db, published["id"])
+    await publish_via_db(db, published["id"])
     draft = await _create(client, s["owner"], space, "Draft only", kind="page")
     secret = await _create(client, s["owner"], space, "Secret")
     await _break_inheritance(db, secret["id"], person_id=s["owner_id"])
@@ -298,7 +245,7 @@ async def test_tree_listing_uses_a_bounded_number_of_statements(client, db):
             child = await _create(client, s["owner"], space, f"{prefix}{i}",
                                   kind=("page", "folder")[i % 2], parent=parent)
             if i == 0:
-                await _publish(db, child["id"])
+                await publish_via_db(db, child["id"])
 
     engine = get_engine().sync_engine
     counts = []
@@ -324,7 +271,7 @@ async def test_node_detail_breadcrumbs_hide_unviewable_ancestors(client, db):
     top = await _create(client, s["owner"], space, "Top")
     hidden = await _create(client, s["owner"], space, "Hidden", parent=top)
     leaf = await _create(client, s["owner"], space, "Leaf", kind="page", parent=hidden)
-    await _publish(db, leaf["id"])
+    await publish_via_db(db, leaf["id"])
     await _break_inheritance(db, hidden["id"], person_id=s["owner_id"])
     db.add(WikiGrant(space_id=uuid.UUID(space["id"]), node_id=uuid.UUID(leaf["id"]),
                      principal_type="person", principal_id=str(s["viewer_id"]),
@@ -351,7 +298,7 @@ async def test_rename_needs_edit_and_is_audited(client, db):
     s = await _setup(client, db)
     space = s["space"]
     page = await _create(client, s["owner"], space, "Old", kind="page")
-    await _publish(db, page["id"])
+    await publish_via_db(db, page["id"])
 
     resp = await client.patch(f"/wiki/nodes/{page['id']}", headers=s["viewer"],
                               json={"title": "Viewer rename"})
@@ -498,7 +445,7 @@ async def test_copy_page_copies_draft_and_assets_not_versions_or_grants(client, 
     space = s["space"]
     folder = await _create(client, s["owner"], space, "Docs")
     page = await _create(client, s["owner"], space, "Guide", kind="page", parent=folder)
-    await _publish(db, page["id"])
+    await publish_via_db(db, page["id"])
     page_id = uuid.UUID(page["id"])
     used = WikiPageAsset(node_id=page_id, storage_key="assets/abc.png",
                          filename="abc.png", content_type="image/png", size_bytes=5)
@@ -631,7 +578,7 @@ async def test_view_only_copy_takes_only_what_the_caller_can_see(client, db):
     pub = await _create(client, s["owner"], space, "Pub", kind="page", parent=folder)
     published = {"type": "doc", "content": [
         {"type": "paragraph", "content": [{"type": "text", "text": "published"}]}]}
-    await _publish(db, pub["id"], published)
+    await publish_via_db(db, pub["id"], published)
     row = await db.get(WikiPage, uuid.UUID(pub["id"]))
     row.draft_json = {"type": "doc", "content": [
         {"type": "paragraph", "content": [{"type": "text", "text": "secret draft"}]}]}
@@ -668,7 +615,7 @@ async def test_view_only_copy_takes_only_the_published_contents_assets(client, d
     db.add_all([shown, secret])
     await db.flush()
     shown_image = {"type": "wikiImage", "attrs": {"assetId": str(shown.id)}}
-    await _publish(db, page_id, {"type": "doc", "content": [shown_image]})
+    await publish_via_db(db, page_id, {"type": "doc", "content": [shown_image]})
     row = await db.get(WikiPage, page_id)
     row.draft_json = {"type": "doc", "content": [
         shown_image,
@@ -738,7 +685,7 @@ async def test_favorites_are_idempotent(client, db):
     s = await _setup(client, db)
     space = s["space"]
     page = await _create(client, s["owner"], space, "Fav", kind="page")
-    await _publish(db, page["id"])
+    await publish_via_db(db, page["id"])
     folder = await _create(client, s["owner"], space, "Fav folder")
 
     for _ in range(2):
@@ -778,7 +725,7 @@ async def test_recent_lists_viewable_pages_and_files_newest_first(client, db):
     await _create(client, s["owner"], space, "A folder")
     elsewhere = await _create(client, s["owner"], other, "Elsewhere", kind="page")
     for n in (old, new, elsewhere):
-        await _publish(db, n["id"])
+        await publish_via_db(db, n["id"])
     now = datetime.now(UTC)
     homes = ({"id": space["home_node_id"]}, {"id": other["home_node_id"]})
     for node, age in ((old, 30), (new, 1), (unpublished, 0), (elsewhere, 5),

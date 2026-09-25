@@ -109,6 +109,8 @@ async def store_draft(db: AsyncSession, page: WikiPage, node: WikiNode, *,
     AUTOSAVE_EVERY old (or there's none yet), an `autosave` version is
     taken too. Raises 422 `bad_doc` / 413 `too_large` (see `check_doc`)."""
     check_doc(content_json)
+    await _lock_page(db, node.id)
+    await db.refresh(page)     # the draft as of the lock, not the request start
     now = utcnow()
     editor_id = editor_ids[-1] if editor_ids else None
     changed = not docs_equal(page.draft_json, content_json)

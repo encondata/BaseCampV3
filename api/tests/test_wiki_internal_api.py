@@ -13,8 +13,7 @@ from serversherpa.config import get_settings
 from serversherpa.db.models import WikiNode, WikiPage, WikiPageVersion
 from serversherpa.wiki import pages
 from serversherpa.wiki.content import MAX_DOC_BYTES
-from tests.test_wiki_nodes_api import _create, _publish, _setup, _space
-from tests.wiki_helpers import login_as
+from tests.wiki_helpers import _create, _doc, _setup, _space, login_as, publish_via_db
 
 TOKEN = "collab-service-token-for-tests"
 ENV = "SS_WIKI_SERVICE_TOKEN"
@@ -39,11 +38,6 @@ def service_token():
 
 
 SVC = {"X-Wiki-Service-Token": TOKEN}
-
-
-def _doc(*texts):
-    return {"type": "doc", "content": [
-        {"type": "paragraph", "content": [{"type": "text", "text": t}]} for t in texts]}
 
 
 async def _put_state(client, node_id, content, *, editors=(), ydoc=b"\x01\x02\x03",
@@ -107,7 +101,7 @@ async def _authorize(client, user_headers, node_id, expect=200):
 async def test_authorize_reports_level_person_and_color(client, db):
     s = await _setup(client, db)
     page = await _create(client, s["owner"], s["space"], "Live", kind="page")
-    await _publish(db, page["id"])
+    await publish_via_db(db, page["id"])
 
     body = await _authorize(client, s["editor"], page["id"])
     assert body["level"] == "edit"
@@ -125,7 +119,7 @@ async def test_authorize_refuses_what_the_user_cant_see(client, db):
     folder = await _create(client, s["owner"], space, "Folder")
     private = await _space(client, s["owner"], default_access="private", name="Private")
     hidden = await _create(client, s["owner"], private, "Hidden", kind="page")
-    await _publish(db, hidden["id"])
+    await publish_via_db(db, hidden["id"])
 
     # a view-only user can't open a never-published page; an editor can
     await _authorize(client, s["viewer"], page["id"], expect=404)
@@ -152,7 +146,7 @@ async def test_authorize_needs_a_valid_user_bearer(client, db):
 async def test_authorize_needs_wiki_view(client, db):
     s = await _setup(client, db)
     page = await _create(client, s["owner"], s["space"], "P", kind="page")
-    await _publish(db, page["id"])
+    await publish_via_db(db, page["id"])
     # a client-portal user without wiki:view can't see the page, even
     # though the space grants everyone view
     resp = await client.put(
@@ -246,7 +240,7 @@ async def test_put_state_tracks_unpublished_changes_against_the_published_versio
     s = await _setup(client, db)
     page = await _create(client, s["owner"], s["space"], "Tracked", kind="page")
     node_id = uuid.UUID(page["id"])
-    await _publish(db, node_id, _doc("live"))
+    await publish_via_db(db, node_id, _doc("live"))
 
     await _put_state(client, node_id, _doc("edited"), editors=[s["editor_id"]])
     assert (await _page_row(db, node_id)).has_unpublished_changes is True
@@ -278,6 +272,16 @@ async def test_put_state_rejects_bad_and_oversized_documents(client, db):
         "ydoc_b64": "not base64!", "content_json": _doc("x"), "editor_ids": []})
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "bad_ydoc"
+    row = await _page_row(db, page["id"])
+    assert row.draft_json is None and row.ydoc is None
+
+
+async def test_put_state_rejects_an_oversized_ydoc(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "P", kind="page")
+    huge_ydoc = b"\x00" * (4 * MAX_DOC_BYTES + 1)
+    resp = await _put_state(client, page["id"], _doc("x"), ydoc=huge_ydoc, expect=413)
+    assert resp.json()["detail"]["code"] == "too_large"
     row = await _page_row(db, page["id"])
     assert row.draft_json is None and row.ydoc is None
 

@@ -20,6 +20,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from serversherpa.api.routes.wiki.deps import WikiContext, space_by_key
+from serversherpa.api.routes.wiki.errors import err, is_edit
 from serversherpa.api.routes.wiki.schemas import (
     Breadcrumb,
     NodeCopyIn,
@@ -37,7 +38,6 @@ from serversherpa.wiki import tree
 from serversherpa.wiki.pages import check_doc
 from serversherpa.wiki.permissions import (
     AccessIndex,
-    level_rank,
     require_node_level,
     require_space_level,
 )
@@ -50,24 +50,16 @@ DRAFTS_LIMIT = 50
 NODE_FIELDS = ["title", "owner_id"]
 
 
-def _err(status: int, code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code, "message": message})
-
-
 def _not_found() -> HTTPException:
-    return _err(404, "not_found", "Not found.")
+    return err(404, "not_found", "Not found.")
 
 
 def _forbidden(needed: str) -> HTTPException:
-    return _err(403, "forbidden", f"You need {needed} access to do that.")
+    return err(403, "forbidden", f"You need {needed} access to do that.")
 
 
 def _tree_error(exc: tree.TreeError) -> HTTPException:
-    return _err(422, exc.code, exc.message)
-
-
-def _is_edit(level: str | None) -> bool:
-    return level_rank(level) >= level_rank("edit")
+    return err(422, exc.code, exc.message)
 
 
 async def _visible(ctx: WikiContext, nodes: Sequence[WikiNode],
@@ -121,7 +113,7 @@ async def _nodes_out_for(ctx: WikiContext, nodes: Sequence[WikiNode],
 @router.post("/nodes", response_model=NodeOut, status_code=201)
 async def create(body: NodeCreateIn, ctx: WikiContext) -> NodeOut:
     space, parent, level = await _destination(ctx, body.space_id, body.parent_id)
-    if not _is_edit(level):
+    if not is_edit(level):
         raise _forbidden("edit")
     try:
         tree.check_parent(parent, space.id)
@@ -201,7 +193,7 @@ async def get_node(node_id: uuid.UUID, ctx: WikiContext) -> NodeDetailOut:
 async def patch_node(node_id: uuid.UUID, body: NodePatchIn, ctx: WikiContext) -> NodeOut:
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "edit")
     if body.owner_id is not None and await ctx.db.get(Person, body.owner_id) is None:
-        raise _err(422, "bad_owner", "That owner doesn't exist.")
+        raise err(422, "bad_owner", "That owner doesn't exist.")
 
     before = snapshot(node, NODE_FIELDS)
     if body.title is not None:
@@ -229,7 +221,7 @@ async def move(node_id: uuid.UUID, body: NodeMoveIn, ctx: WikiContext) -> NodeOu
         ctx, body.space_id or node.space_id, body.parent_id)
     if space.id != node.space_id and await ctx.ix.level_for_node(node) != "manage":
         raise _forbidden("manage")
-    if not _is_edit(dest_level):
+    if not is_edit(dest_level):
         raise _forbidden("edit")
 
     fields = ["space_id", "parent_id", "position"]
@@ -258,7 +250,7 @@ async def copy(node_id: uuid.UUID, body: NodeCopyIn, ctx: WikiContext) -> NodeOu
         raise _not_found()
     space, parent, dest_level = await _destination(
         ctx, body.space_id or node.space_id, body.parent_id)
-    if not _is_edit(dest_level):
+    if not is_edit(dest_level):
         raise _forbidden("edit")
 
     subtree = (await ctx.db.scalars(
@@ -291,7 +283,7 @@ async def delete_node(node_id: uuid.UUID, ctx: WikiContext) -> NodeDeleteOut:
     home_id = await ctx.db.scalar(
         select(WikiSpace.home_node_id).where(WikiSpace.id == node.space_id))
     if home_id == node.id:
-        raise _err(422, "is_home", "The space home page can't be deleted.")
+        raise err(422, "is_home", "The space home page can't be deleted.")
 
     actor_id = ctx.user.person.id
     batch_id = uuid.uuid4()
@@ -394,5 +386,5 @@ async def list_drafts(ctx: WikiContext) -> list[NodeOut]:
         .limit(DRAFTS_LIMIT)
     )).all()
     levels = await ctx.ix.levels_for_nodes(nodes)
-    editable = [n for n in nodes if _is_edit(levels[n.id])]
+    editable = [n for n in nodes if is_edit(levels[n.id])]
     return await nodes_out(ctx, editable, levels)

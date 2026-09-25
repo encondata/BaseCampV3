@@ -12,10 +12,11 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from sqlalchemy import select
 
 from serversherpa.api.routes.wiki.deps import WikiContext
+from serversherpa.api.routes.wiki.errors import err, is_edit
 from serversherpa.api.routes.wiki.schemas import (
     PageContentOut,
     PersonRef,
@@ -34,14 +35,6 @@ from serversherpa.wiki.permissions import level_rank, require_node_level
 router = APIRouter()
 
 
-def _err(status: int, code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=status, detail={"code": code, "message": message})
-
-
-def _is_edit(level: str | None) -> bool:
-    return level_rank(level) >= level_rank("edit")
-
-
 async def _page_for(ctx: WikiContext, node_id: uuid.UUID, needed: str,
                     ) -> tuple[WikiNode, WikiPage, str | None]:
     """(node, page, the caller's level) for a live page they can see: 404
@@ -51,12 +44,12 @@ async def _page_for(ctx: WikiContext, node_id: uuid.UUID, needed: str,
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "view")
     page = await ctx.db.get(WikiPage, node.id) if node.kind == "page" else None
     if page is None:
-        raise _err(404, "not_found", "Not found.")
+        raise err(404, "not_found", "Not found.")
     level = await ctx.ix.level_for_node(node)
-    if not _is_edit(level) and page.published_version_id is None:
-        raise _err(404, "not_published", "This page hasn't been published yet.")
+    if not is_edit(level) and page.published_version_id is None:
+        raise err(404, "not_published", "This page hasn't been published yet.")
     if level_rank(level) < level_rank(needed):
-        raise _err(403, "forbidden", f"You need {needed} access to do that.")
+        raise err(403, "forbidden", f"You need {needed} access to do that.")
     return node, page, level
 
 
@@ -66,9 +59,9 @@ async def _version_for(ctx: WikiContext, node: WikiNode, level: str | None,
     isn't a published one and the caller only has view."""
     version = await ctx.db.get(WikiPageVersion, version_id)
     if version is None or version.node_id != node.id:
-        raise _err(404, "not_found", "Not found.")
-    if version.kind != "published" and not _is_edit(level):
-        raise _err(403, "forbidden", "You need edit access to do that.")
+        raise err(404, "not_found", "Not found.")
+    if version.kind != "published" and not is_edit(level):
+        raise err(403, "forbidden", "You need edit access to do that.")
     return version
 
 
@@ -100,8 +93,8 @@ async def get_content(node_id: uuid.UUID, ctx: WikiContext,
     node, page, level = await _page_for(ctx, node_id, "view")
 
     if version == "draft":
-        if not _is_edit(level):
-            raise _err(403, "forbidden", "You need edit access to do that.")
+        if not is_edit(level):
+            raise err(403, "forbidden", "You need edit access to do that.")
         content = page.draft_json
         if content is None:
             content = await pages.published_content(ctx.db, page) or EMPTY_DOC
@@ -113,13 +106,13 @@ async def get_content(node_id: uuid.UUID, ctx: WikiContext,
 
     if version == "published":
         if page.published_version_id is None:
-            raise _err(404, "not_published", "This page hasn't been published yet.")
+            raise err(404, "not_published", "This page hasn't been published yet.")
         row = await ctx.db.get(WikiPageVersion, page.published_version_id)
     else:
         try:
             version_id = uuid.UUID(version)
         except ValueError:
-            raise _err(422, "bad_version",
+            raise err(422, "bad_version",
                        "version must be published, draft, or a version id.") from None
         row = await _version_for(ctx, node, level, version_id)
 
@@ -155,7 +148,7 @@ async def list_versions(node_id: uuid.UUID, ctx: WikiContext) -> list[VersionOut
     """Newest first; view-only callers get the published versions only."""
     node, _, level = await _page_for(ctx, node_id, "view")
     q = select(WikiPageVersion).where(WikiPageVersion.node_id == node.id)
-    if not _is_edit(level):
+    if not is_edit(level):
         q = q.where(WikiPageVersion.kind == "published")
     versions = (await ctx.db.scalars(
         q.order_by(WikiPageVersion.version_no.desc()))).all()
