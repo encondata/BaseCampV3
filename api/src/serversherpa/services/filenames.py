@@ -1,12 +1,15 @@
-"""ASCII-safe filenames for HTTP headers.
+"""ASCII-safe filenames for HTTP headers, and the one filename-cleaning
+primitive shared with `wiki.files.sanitize_filename`.
 
 `services.storage.content_disposition` needs an ASCII fallback for a
 Content-Disposition header's plain `filename=` parameter — RFC 6266
 requires that token to be ASCII, so anything else has to be stripped or
-replaced. This is the same restricted character set `wiki.files.
-sanitize_filename` uses for storage keys (`[A-Za-z0-9._ -]`, whitespace
-collapsed), kept in `services/` so storage doesn't have to import the
-wiki package just for this — `wiki.files` may import it back if useful.
+replaced. `wiki.files.sanitize_filename` needs the same restricted
+character set for storage keys (`[A-Za-z0-9._ -]`, whitespace
+collapsed, 120 chars). Both go through `clean_filename` here — the
+single source for the regexes and the length cap — kept in `services/`
+so storage doesn't have to import the wiki package for it; `wiki.files`
+imports this module instead of redefining the rules.
 
 The one behavioral difference from a storage key: when a name's stem is
 entirely outside that character set, the header fallback still keeps
@@ -21,13 +24,17 @@ from pathlib import PurePosixPath
 
 _UNSAFE_RE = re.compile(r"[^A-Za-z0-9._ -]")
 _MULTI_WS_RE = re.compile(r"\s+")
-_MAX_LEN = 120
+MAX_CLEAN_FILENAME_LEN = 120
 
 
-def _clean(text: str) -> str:
+def clean_filename(text: str) -> str:
+    """`text` restricted to `[A-Za-z0-9._ -]`, runs of whitespace
+    collapsed to one space, surrounding spaces/periods trimmed, and cut
+    to `MAX_CLEAN_FILENAME_LEN` characters (trimmed again after the
+    cut). May return "" — callers supply their own fallback."""
     text = _UNSAFE_RE.sub("", text)
     text = _MULTI_WS_RE.sub(" ", text).strip(" .")
-    return text[:_MAX_LEN].strip(" .")
+    return text[:MAX_CLEAN_FILENAME_LEN].strip(" .")
 
 
 def ascii_header_filename(name: str) -> str:
@@ -39,6 +46,6 @@ def ascii_header_filename(name: str) -> str:
     cleaned stem (or "file")."""
     base = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
     path = PurePosixPath(base)
-    suffix = _clean(path.suffix)
-    stem = _clean(path.stem) or "file"
+    suffix = clean_filename(path.suffix)
+    stem = clean_filename(path.stem) or "file"
     return f"{stem}.{suffix}" if suffix else stem

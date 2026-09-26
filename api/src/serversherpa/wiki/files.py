@@ -20,7 +20,6 @@ before deleting the object.
 """
 from __future__ import annotations
 
-import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
@@ -31,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import WikiJob
+from serversherpa.services.filenames import clean_filename
 
 UPLOAD_TOKEN_AUD = "wiki-upload"
 UPLOAD_TOKEN_TTL = timedelta(hours=1)
@@ -55,9 +55,6 @@ ACTIVE_MARKUP_EXTS = {".svg", ".html", ".htm", ".xhtml"}
 DEFAULT_CONTENT_TYPE = "application/octet-stream"
 INLINE_TEXT_CONTENT_TYPE = "text/plain; charset=utf-8"
 
-_UNSAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._ -]")
-_MULTI_WS_RE = re.compile(r"\s+")
-_MAX_SAFE_FILENAME_LEN = 120
 _MAX_TITLE_LEN = 200
 
 
@@ -80,12 +77,11 @@ def sanitize_filename(name: str) -> str:
     before the last one — are dropped first, so a path-traversal attempt
     like "../../etc/passwd" becomes "passwd". This is for the storage
     key only; the node title and the version's display filename keep the
-    caller's original name (see `display_filename`)."""
+    caller's original name (see `display_filename`). The cleaning itself
+    is `services.filenames.clean_filename` — the same rules storage's
+    Content-Disposition fallback uses."""
     base = (name or "").replace("\\", "/").rsplit("/", 1)[-1]
-    base = _UNSAFE_FILENAME_RE.sub("", base)
-    base = _MULTI_WS_RE.sub(" ", base).strip(" .")
-    base = base[:_MAX_SAFE_FILENAME_LEN].strip(" .")
-    return base or "file"
+    return clean_filename(base) or "file"
 
 
 def display_filename(name: str) -> str:
