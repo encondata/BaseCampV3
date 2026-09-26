@@ -246,8 +246,10 @@ export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
       connection.close();
       return;
     }
-    // A client told read-write at sign-in doesn't learn it went read-only;
-    // closing makes the provider reconnect and come back read-only.
+    // Dropping to plain view access answers null above (live editing is for
+    // editors). `view` here is an editor frozen by read-only maintenance
+    // mode: a client told read-write at sign-in doesn't learn it went
+    // read-only, so closing makes the provider reconnect read-only.
     if (level === 'view' && !connection.readOnly) {
       log('info', 'closing a connection that lost edit', { document: name, person: user?.id });
       connection.close();
@@ -333,6 +335,14 @@ export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
       const refused = states.get(documentName)?.refused;
       if (refused) {
         reply({ type: 'flushed', id: message.id, ok: false, code: refused });
+        return;
+      }
+      // Only editors connect (the API refuses view-level users), so a
+      // read-only connection is an editor during a maintenance freeze:
+      // its store would be refused anyway, and a full-document PUT on
+      // demand isn't something a read-only connection gets to trigger.
+      if (connection.readOnly) {
+        reply({ type: 'flushed', id: message.id, ok: false, code: 'read_only' });
         return;
       }
       const result = await store(documentName, document, false);

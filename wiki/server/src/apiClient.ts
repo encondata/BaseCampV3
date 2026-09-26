@@ -88,12 +88,13 @@ export function makeApi(cfg: ServerConfig, fetchImpl: typeof fetch = fetch) {
     /** A person's level on a page, by id and the service token alone —
      *  re-authorization of open connections, long after the access token
      *  they connected with expired. Null when they may no longer open it
-     *  live (404: no active account, no view, not a live page); any other
-     *  failure throws, since it says nothing about the person. */
+     *  live (404: no active account, no view, not a live page; 403: only
+     *  view — live editing is for editors); any other failure throws,
+     *  since it says nothing about the person. */
     async level(nodeId: string, personId: string): Promise<Level | null> {
       const res = await call(
         `/collab/level?node=${encodeURIComponent(nodeId)}&person=${encodeURIComponent(personId)}`);
-      if (res.status === 404) {
+      if (res.status === 404 || res.status === 403) {
         await res.body?.cancel();
         return null;
       }

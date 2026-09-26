@@ -121,6 +121,8 @@ describe('PageView — view mode', () => {
     renderPage(makeDetail('p1', { my_level: 'view', page: never }));
     expect(await screen.findByText('This page hasn\'t been published yet')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Publish' })).toBeNull();
+    // no live connection is even attempted: live editing is for editors
+    expect(screen.queryByTestId('wiki-editor')).toBeNull();
   });
 
   it('gives viewers no edit controls, even with ?edit=1', async () => {
@@ -226,6 +228,9 @@ describe('PageView — live editing ends', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'server refuses' }));
     expect(toast.mock.calls[0][0]).toMatch(/^Live editing stopped/);
     expect(screen.queryByTestId('wiki-editor')).toBeNull();
+    // back in View mode, on the published version
+    expect(await screen.findByText('Hello from the published page.')).toBeTruthy();
+    expect(screen.getByTestId('page-view').getAttribute('data-mode')).toBe('view');
   });
 });
 

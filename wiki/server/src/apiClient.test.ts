@@ -105,8 +105,12 @@ describe('makeApi.level', () => {
     expect(headers.get('authorization')).toBeNull();
   });
 
-  it('answers null when the person may no longer open the page', async () => {
-    const api = makeApi(cfg, (async () => reply(404, { detail: { code: 'not_found' } })) as typeof fetch);
+  it.each([
+    [404, 'not_found'],
+    // dropped to view: live editing is for editors, so the connection goes
+    [403, 'forbidden'],
+  ])('answers null when the person may no longer open the page live (%s)', async (status, code) => {
+    const api = makeApi(cfg, (async () => reply(status, { detail: { code } })) as typeof fetch);
     await expect(api.level(NODE, PERSON)).resolves.toBeNull();
   });
 

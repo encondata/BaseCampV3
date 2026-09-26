@@ -21,6 +21,7 @@ function flushFailure(err: FlushError): string {
     case 'bad_doc':
     case 'unstorable': return 'This page can\'t be saved, so it can\'t be published.';
     case 'deleted': return 'This page is in the trash.';
+    case 'read_only': return 'The wiki is in read-only mode right now, so nothing can be published.';
     default: return 'Couldn\'t save the latest changes before publishing. Check your connection and try again.';
   }
 }

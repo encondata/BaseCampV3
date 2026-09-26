@@ -369,8 +369,8 @@ async def list_principals(
             stmt = stmt.where(_anchored_people(p))
         stmt = stmt.order_by(Person.last_name, Person.first_name).limit(20)
         rows = (await ctx.db.scalars(stmt)).all()
-        return [PrincipalOut(type="person", id=str(p.id), label=p.display_name)
-                for p in rows]
+        return [PrincipalOut(type="person", id=str(person.id), label=person.display_name)
+                for person in rows]
 
     if principal_type == "role":
         stmt = select(Role)

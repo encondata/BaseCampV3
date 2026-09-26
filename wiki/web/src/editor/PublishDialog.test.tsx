@@ -90,6 +90,11 @@ describe('PublishDialog', () => {
     expect(publishPage).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Publish' })).toBeTruthy();
 
+    flush.mockRejectedValue(new FlushError('read_only'));
+    fireEvent.click(screen.getByRole('button', { name: 'Publish' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/read-only mode/i));
+    expect(publishPage).not.toHaveBeenCalled();
+
     flush.mockRejectedValue(new FlushError('too_large'));
     fireEvent.click(screen.getByRole('button', { name: 'Publish' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/too large/i));

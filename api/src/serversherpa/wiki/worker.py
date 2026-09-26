@@ -383,8 +383,9 @@ async def _requeue_stale(maker, state: dict) -> None:
 
 
 async def _backfill_search(maker) -> None:
-    """Start-up: index by title any node from before every node was
-    indexed at creation. Best effort — search just misses them until the
+    """Once per start (after any read-only freeze lifts — it writes):
+    index by title any node from before every node was indexed at
+    creation. Best effort — search just misses them until the
     next start if this fails."""
     try:
         async with maker() as db:
@@ -408,10 +409,10 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
     claim_state = {"failed": False}
     stale_state = {"failed": False}
     expiry_state = {"failed": False}
+    backfilled = False
     heartbeat = start_heartbeat(PROCESS_NAME, "worker", meta_fn=lambda: dict(pause_state))
     maker = get_sessionmaker()
     try:
-        await _backfill_search(maker)
         await _requeue_stale(maker, stale_state)            # startup sweep
         stale_at = time.monotonic()
         expired_at = -EXPIRY_SWEEP_SECONDS                  # first pass = start-up
@@ -428,6 +429,9 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
             if pause_state["paused"]:
                 logger.info("resumed")
             pause_state["paused"] = False
+            if not backfilled:                              # a write: after any freeze
+                backfilled = True
+                await _backfill_search(maker)
             if time.monotonic() - stale_at >= STALE_SWEEP_SECONDS:
                 stale_at = time.monotonic()
                 await _requeue_stale(maker, stale_state)

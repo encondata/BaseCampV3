@@ -117,8 +117,10 @@ async def test_authorize_reports_level_person_and_color(client, db):
     assert body["person"]["id"] == str(s["editor_id"])
     assert body["person"]["name"].startswith("Wiki Tester")
     assert body["color"] == pages.person_color(s["editor_id"])
-    assert (await _authorize(client, s["viewer"], page["id"]))["level"] == "view"
     assert (await _authorize(client, s["owner"], page["id"]))["level"] == "manage"
+    # live editing is for editors: the live document IS the draft
+    body = await _authorize(client, s["viewer"], page["id"], expect=403)
+    assert body["detail"]["code"] == "forbidden"
 
 
 async def test_authorize_refuses_what_the_user_cant_see(client, db):
@@ -164,7 +166,7 @@ async def test_authorize_needs_wiki_view(client, db):
              "level": "manage"},
             {"principal_type": "everyone", "level": "view"}]})
     assert resp.status_code == 200, resp.text
-    assert (await _authorize(client, s["viewer"], page["id"]))["level"] == "view"
+    await _authorize(client, s["viewer"], page["id"], expect=403)
     outsider_h, _ = await login_as(client, db, roles=())
     await _authorize(client, outsider_h, page["id"], expect=404)
 
@@ -190,7 +192,30 @@ async def test_level_reports_each_persons_level(client, db):
 
     assert await _level(client, page["id"], s["owner_id"]) == {"level": "manage"}
     assert await _level(client, page["id"], s["editor_id"]) == {"level": "edit"}
-    assert await _level(client, page["id"], s["viewer_id"]) == {"level": "view"}
+    body = await _level(client, page["id"], s["viewer_id"], expect=403)
+    assert body["detail"]["code"] == "forbidden"
+
+
+async def test_viewers_never_open_the_live_draft(client, db, monkeypatch):
+    """A view-only reader gets the published version over REST and is
+    refused the draft (403); the live document is that draft, so a
+    live connection is refused the same way — also during a freeze, when
+    editors still connect, read-only."""
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    await publish_via_db(db, page["id"])
+    resp = await client.get(f"/wiki/pages/{page['id']}/content",
+                            headers=s["viewer"], params={"version": "draft"})
+    assert resp.status_code == 403
+    await _authorize(client, s["viewer"], page["id"], expect=403)
+    await _level(client, page["id"], s["viewer_id"], expect=403)
+
+    async def _read_only(_db):
+        return {"read_only": True, "read_only_message": "Down for maintenance."}
+    monkeypatch.setattr("serversherpa.system.admin_config.read_admin_config", _read_only)
+    await _authorize(client, s["viewer"], page["id"], expect=403)
+    await _level(client, page["id"], s["viewer_id"], expect=403)
+    assert (await _authorize(client, s["editor"], page["id"]))["level"] == "view"
 
 
 async def test_level_follows_authorize_for_what_a_person_cant_see(client, db):

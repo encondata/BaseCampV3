@@ -472,6 +472,14 @@ async def test_run_forever_idles_while_paused_then_resumes(db, monkeypatch):
         calls["n"] += 1
 
     monkeypatch.setattr(worker, "claim_next", counting_claim)
+    backfills = {"n": 0}
+
+    async def counting_backfill(session):
+        backfills["n"] += 1
+        return 0
+
+    # the start-up search backfill writes, so it waits out a freeze too
+    monkeypatch.setattr(worker, "backfill_search_vectors", counting_backfill)
     task = asyncio.create_task(worker.run_forever(poll_seconds=0.05))
     try:
         row = None
@@ -484,12 +492,14 @@ async def test_run_forever_idles_while_paused_then_resumes(db, monkeypatch):
                 break
         assert row is not None and row.meta == {"paused": True}
         assert calls["n"] == 0
+        assert backfills["n"] == 0
         paused["on"] = False
         for _ in range(60):
             await asyncio.sleep(0.05)
             if calls["n"]:
                 break
         assert calls["n"] > 0
+        assert backfills["n"] == 1
         assert not task.done()
     finally:
         task.cancel()

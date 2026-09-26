@@ -316,3 +316,19 @@ async def test_moving_hidden_items_to_another_space_is_refused(client, db):
     resp = await client.post(f"/wiki/nodes/{folder['id']}/move", headers=ctx["editor"],
                              json={"parent_id": other["id"]})
     assert resp.status_code == 200, resp.text
+
+
+async def test_a_never_published_page_seen_only_at_view_counts_as_hidden(client, db):
+    """At view, a never-published page is hidden (the tree drops it), so
+    deleting its folder would trash something the caller can't see."""
+    ctx = await _setup(client, db)
+    folder = await _create(client, ctx["owner"], ctx["space"], "Plans")
+    draft = await _create(client, ctx["owner"], ctx["space"], "Unannounced",
+                          kind="page", parent=folder)
+    await _put_permissions(client, ctx["owner"], draft["id"], inherit=False, grants=[
+        {"principal_type": "person", "principal_id": str(ctx["owner_id"]), "level": "manage"},
+        {"principal_type": "person", "principal_id": str(ctx["editor_id"]), "level": "view"}])
+    resp = await client.delete(f"/wiki/nodes/{folder['id']}", headers=ctx["editor"])
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "hidden_items"
+    assert await _live(db, draft["id"])

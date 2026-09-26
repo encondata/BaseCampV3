@@ -184,17 +184,18 @@ async def patch_node(node_id: uuid.UUID, body: NodePatchIn, ctx: WikiContext) ->
 
 async def _refuse_hidden_descendants(ctx: WikiContext, node: WikiNode) -> None:
     """409 `hidden_items` when `node`'s live subtree holds anything the
-    caller can't view (a descendant behind broken inheritance): a delete
-    or cross-space move would act on content its owner never shared with
-    them — and a cross-space move would hand it to the destination
-    space's managers. Wiki administrators see everything, so never hit
-    this."""
+    caller can't see — a descendant behind broken inheritance, or a
+    never-published page they only have view on (`visible_nodes`, the
+    tree's own rule): a delete or cross-space move would act on content
+    its owner never shared with them — and a cross-space move would hand
+    it to the destination space's managers. Wiki administrators see
+    everything, so never hit this."""
     subtree = (await ctx.db.scalars(
         select(WikiNode).where(WikiNode.path.contains([node.id]),
                                WikiNode.deleted_at.is_(None))
     )).all()
-    levels = await ctx.ix.levels_for_nodes(subtree)
-    if any(level is None for level in levels.values()):
+    shown, _ = await visible_nodes(ctx, subtree)
+    if len(shown) < len(subtree):
         raise err(409, "hidden_items",
                   "This contains items you can't see, so you can't move it to another "
                   "space or delete it. Ask a space manager.")

@@ -4,8 +4,10 @@ browser. Every route presents the shared service token
 gate, since the caller is a service, not a user.
 
 - `GET /internal/collab/authorize?node=` — may this user (their own
-  bearer token, passed through) open this page live, and how? (Read-only
-  maintenance mode answers `view` to all but developers.)
+  bearer token, passed through) open this page live, and how? Editors
+  only (the live document is the draft): 404 when they can't view it,
+  403 when they only have view. Read-only maintenance mode answers
+  `view` to editors (all but developers), so they connect read-only.
 - `GET /internal/collab/level?node=&person=` — the same answer for a
   person, without their token: the collab server re-checks open
   connections with it long after the connecting access token expired.
@@ -36,7 +38,7 @@ from serversherpa.api.deps import (
     enforce_read_only,
     enforce_session_scope,
 )
-from serversherpa.api.routes.wiki.errors import err, not_found
+from serversherpa.api.routes.wiki.errors import err, forbidden, not_found
 from serversherpa.api.routes.wiki.schemas import (
     CollabAuthorizeOut,
     CollabLevelOut,
@@ -96,7 +98,8 @@ async def authorize(
     """The user's level on a page they may open live, with their name and
     cursor color. 401 `unauthenticated` for a missing or invalid bearer;
     404 for anything that isn't a live page they can see (a view-only
-    user can't see a never-published page)."""
+    user can't see a never-published page); 403 when they only have view
+    (see `_live_level`)."""
     if credentials is None:
         raise err(401, "unauthenticated", "Sign in to edit.")
     try:
@@ -157,8 +160,12 @@ async def _frozen_to_view(db, level: str, roles) -> str:
 
 
 async def _live_level(db, principal: Principal, node_id: uuid.UUID) -> str:
-    """The principal's level on a live page they may open, or 404: not a
-    live page, no level, or view-only on a page never published."""
+    """The principal's level on a page they may edit live — edit or
+    manage — before any freeze (`_frozen_to_view`). The live document IS
+    the page's draft, which the REST API never shows a view-only reader,
+    so live editing is for editors only: 404 when it isn't a live page or
+    they can't view it (a view-only reader of a never-published page
+    can't), 403 `forbidden` when they only have view."""
     row = await db.get(WikiNode, node_id)
     if row is None or row.deleted_at is not None or row.kind != "page":
         raise not_found()
@@ -170,6 +177,7 @@ async def _live_level(db, principal: Principal, node_id: uuid.UUID) -> str:
             select(WikiPage.published_version_id).where(WikiPage.node_id == row.id))
         if published_id is None:
             raise not_found()
+        raise forbidden("edit")
     return level
 
 

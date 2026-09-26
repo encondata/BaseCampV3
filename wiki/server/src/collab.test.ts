@@ -400,6 +400,14 @@ describe('flush, saved and refused announcements', () => {
     expect(replies(conn).at(-1)).toEqual({ type: 'flushed', id: 'f4', ok: false, code: 'too_large' });
   });
 
+  it('does not store for a read-only connection (a freeze), and says why', async () => {
+    const document = loadedDocument();
+    const conn = { ...connection(), readOnly: true };
+    await stateless(document, conn, { type: 'flush', id: 'f5', client: 1 });
+    expect(api.storeState).not.toHaveBeenCalled();
+    expect(replies(conn)).toEqual([{ type: 'flushed', id: 'f5', ok: false, code: 'read_only' }]);
+  });
+
   it('ignores stateless messages it does not know', async () => {
     const document = loadedDocument();
     const conn = connection();
