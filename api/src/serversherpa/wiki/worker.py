@@ -162,11 +162,6 @@ def _source_path(workdir: Path, filename: str) -> Path:
     return workdir / f"source{PurePosixPath(sanitize_filename(filename)).suffix.lower()}"
 
 
-def _clean_text(value: str) -> str:
-    # Postgres text can't hold NUL
-    return value.replace("\x00", "")[:convert.TEXT_LIMIT]
-
-
 async def _read_text_file(path: Path) -> str:
     def _read() -> bytes:
         with path.open("rb") as fh:
@@ -210,7 +205,8 @@ async def _run_extract(db: AsyncSession, job: WikiJob) -> None:
               "preview_key": version.preview_key if version.preview_status == "ready" else None}
     await db.commit()                    # no transaction held across the work
 
-    with tempfile.TemporaryDirectory(prefix="wiki-extract-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="wiki-extract-",
+                                     ignore_cleanup_errors=True) as tmp:
         extracted = await _extract_text(Path(tmp), **source)
 
     version = await db.get(WikiFileVersion, version_id, populate_existing=True)
@@ -220,7 +216,7 @@ async def _run_extract(db: AsyncSession, job: WikiJob) -> None:
         version.extract_status = "skipped"
         _done(job, {"skipped": "no_text"})
     else:
-        version.text_extract = _clean_text(extracted)
+        version.text_extract = convert._clean_text(extracted)
         version.extract_status = "ready"
         await refresh_search(db, version.node_id)
         _done(job, {"chars": len(version.text_extract)})
@@ -238,7 +234,8 @@ async def _run_preview(db: AsyncSession, job: WikiJob) -> None:
     await db.commit()
 
     key = PREVIEW_KEY.format(version_id=version_id)
-    with tempfile.TemporaryDirectory(prefix="wiki-preview-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="wiki-preview-",
+                                     ignore_cleanup_errors=True) as tmp:
         workdir = Path(tmp)
         src = _source_path(workdir, filename)
         await storage.download_to(storage_key, src)

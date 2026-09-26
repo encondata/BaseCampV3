@@ -81,11 +81,15 @@ async def list_batches(db: AsyncSession, space_id: uuid.UUID) -> list[TrashedBat
 async def restore_batch(db: AsyncSession, root: WikiNode) -> int:
     """Bring `root`'s batch back; returns how many nodes came back.
 
-    The root goes back under its old parent, keeping its old position —
-    unless that parent is in the trash itself, or gone, in which case it
-    lands at the end of the space root. Either way the subtree's paths
-    are rewritten from the root's current place (an ancestor may have
-    been moved, or deleted forever, while it sat in the trash)."""
+    The root goes back under its old parent, at the end of that parent's
+    live children — unless that parent is in the trash itself, or gone,
+    in which case it lands at the end of the space root instead. Its
+    position is always recomputed (never the position it had before
+    being trashed): a live sibling can have taken that slot while the
+    batch sat in the trash, so keeping the old value risks two siblings
+    sharing one position. Either way the subtree's paths are rewritten
+    from the root's current place (an ancestor may have been moved, or
+    deleted forever, while it sat in the trash)."""
     batch_id = root.deleted_batch
     parent = await db.get(WikiNode, root.parent_id) if root.parent_id else None
     if parent is not None and (parent.deleted_at is not None
@@ -94,8 +98,7 @@ async def restore_batch(db: AsyncSession, root: WikiNode) -> int:
     new_parent_id = parent.id if parent is not None else None
     new_prefix = [*(parent.path or []), parent.id] if parent is not None else []
 
-    if new_parent_id != root.parent_id:
-        root.position = await tree.next_position(db, root.space_id, new_parent_id)
+    root.position = await tree.next_position(db, root.space_id, new_parent_id)
     if list(root.path or []) != new_prefix:
         await tree.repath_subtree(db, root, new_prefix, space_id=root.space_id)
     root.parent_id = new_parent_id

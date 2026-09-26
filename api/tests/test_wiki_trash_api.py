@@ -41,6 +41,19 @@ async def _node(db, node_id) -> WikiNode:
         .execution_options(populate_existing=True))
 
 
+async def _live_siblings(db, space_id, parent_id) -> list[tuple[str, float]]:
+    """(id, position) of the live children of `parent_id` (None = the
+    space root), ordered by position — for checking that a restored
+    root landed last, distinct from whatever else is already there."""
+    conds = [WikiNode.space_id == uuid.UUID(str(space_id)), WikiNode.deleted_at.is_(None)]
+    conds.append(WikiNode.parent_id.is_(None) if parent_id is None
+                 else WikiNode.parent_id == uuid.UUID(str(parent_id)))
+    rows = (await db.execute(
+        select(WikiNode.id, WikiNode.position).where(*conds)
+        .order_by(WikiNode.position))).all()
+    return [(str(r.id), r.position) for r in rows]
+
+
 async def _file_in(db, space, parent, *, key, preview_key=None, title="spec.docx"):
     """A file node with one version, written straight to the DB (the
     upload flow itself is Task 6's business)."""
@@ -124,6 +137,10 @@ async def test_restore_puts_the_batch_back_under_its_parent(client, db):
     sub = await _create(client, s["owner"], s["space"], "Network", parent=folder)
     page = await _create(client, s["owner"], s["space"], "VLANs", kind="page", parent=sub)
     batch = await _delete(client, s["owner"], sub)
+    # a new sibling takes over the slot `sub` used to occupy under
+    # `folder` while `sub` sits in the trash — restoring `sub` must not
+    # land it back on top of that live sibling's position
+    sibling = await _create(client, s["owner"], s["space"], "Ops", kind="page", parent=folder)
 
     resp = await client.post(f"/wiki/trash/{batch}/restore", headers=s["owner"])
     assert resp.status_code == 200, resp.text
@@ -140,8 +157,12 @@ async def test_restore_puts_the_batch_back_under_its_parent(client, db):
                                                    uuid.UUID(sub["id"])]
     tree_resp = await client.get(f"/wiki/spaces/{s['space']['key']}/tree",
                                  headers=s["owner"], params={"parent_id": folder["id"]})
-    assert [n["id"] for n in tree_resp.json()] == [sub["id"]]
+    assert [n["id"] for n in tree_resp.json()] == [sibling["id"], sub["id"]]
     assert await _trash(client, s["owner"], s["space"]) == []
+
+    siblings = await _live_siblings(db, s["space"]["id"], folder["id"])
+    assert [node_id for node_id, _ in siblings] == [sibling["id"], sub["id"]]
+    assert len({position for _, position in siblings}) == len(siblings)   # distinct
 
     audit_row = await db.scalar(select(AuditLog).where(
         AuditLog.entity_type == "wiki_node", AuditLog.action == "restore",
@@ -187,12 +208,19 @@ async def test_restore_goes_to_the_space_root_when_the_parent_is_gone(client, db
     assert await _node(db, folder["id"]) is None
     # deleting the parent's batch forever didn't take the child's batch with it
     assert [b["batch_id"] for b in await _trash(client, s["owner"], s["space"])] == [sub_batch]
+    # a live node already sits at the space root sub is about to land in
+    root_sibling = await _create(client, s["owner"], s["space"], "Standalone")
 
     resp = await client.post(f"/wiki/trash/{sub_batch}/restore", headers=s["owner"])
     assert resp.status_code == 200, resp.text
     assert resp.json()["parent_id"] is None
     assert (await _node(db, sub["id"])).path == []
     assert (await _node(db, page["id"])).path == [uuid.UUID(sub["id"])]
+
+    siblings = await _live_siblings(db, s["space"]["id"], None)
+    assert siblings[-1][0] == sub["id"]                                # restored root lands last
+    assert root_sibling["id"] in [node_id for node_id, _ in siblings]
+    assert len({position for _, position in siblings}) == len(siblings)   # distinct
     assert (await _node(db, page["id"])).deleted_at is None
 
 

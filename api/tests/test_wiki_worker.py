@@ -118,7 +118,7 @@ class FakeTools:
         self.pdftotext_rc = pdftotext_rc
         self.calls: list[list[str]] = []
 
-    async def run(self, cmd, *, timeout):
+    async def run(self, cmd, *, timeout, max_stdout=None):
         self.calls.append(list(cmd))
         if cmd[0] == "soffice":
             if self.soffice_rc:
