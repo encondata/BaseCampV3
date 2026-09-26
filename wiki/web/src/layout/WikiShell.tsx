@@ -2,7 +2,7 @@
  *  sidebar (button or Ctrl/⌘+B, remembered in localStorage), the routed
  *  page and the upload tray. Owns the dialogs pages and the tree ask for
  *  through the shell context: New page/folder, Delete, Move…, Copy…,
- *  Permissions… and Share…. */
+ *  Permissions…, Share… and Export…. */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Route, Routes, useNavigate } from 'react-router-dom';
 
@@ -11,6 +11,7 @@ import { useToast } from '@portal/lib/notificationsContext';
 
 import AnalyticsPage from '../analytics/AnalyticsPage';
 import ConfirmDialog from '../components/ConfirmDialog';
+import ExportDialog from '../components/ExportDialog';
 import MoveCopyDialog from '../components/MoveCopyDialog';
 import NewNodeDialog from '../components/NewNodeDialog';
 import PermissionsDialog from '../components/PermissionsDialog';
@@ -21,6 +22,7 @@ import type { NodeDetailOut, NodeOut, SpaceOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
 import { deleteNode, errorMessage, listSpaces } from '../lib/wikiApi';
 import AdminPage from '../pages/AdminPage';
+import ExportPage from '../pages/ExportPage';
 import HelpLinksPage from '../pages/HelpLinksPage';
 import Home from '../pages/Home';
 import NewSpace from '../pages/NewSpace';
@@ -38,7 +40,7 @@ import SearchPage from '../search/SearchPage';
 import { isFileDrag } from '../uploads/DropZone';
 import { enqueue } from '../uploads/uploadQueue';
 import UploadTray from '../uploads/UploadTray';
-import { ShellContext, type NewNodeTarget, type ShellValue } from './shellContext';
+import { ShellContext, type ExportTarget, type NewNodeTarget, type ShellValue } from './shellContext';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 
@@ -75,6 +77,7 @@ export default function WikiShell() {
   const [moving, setMoving] = useState<{ node: NodeOut; mode: 'move' | 'copy' } | null>(null);
   const [permissionsFor, setPermissionsFor] = useState<NodeOut | null>(null);
   const [sharing, setSharing] = useState<NodeOut | null>(null);
+  const [exporting, setExporting] = useState<ExportTarget | null>(null);
 
   const reloadSpaces = useCallback(() => {
     listSpaces().then(setSpaces).catch(() => setSpaces((cur) => cur ?? []));
@@ -222,6 +225,8 @@ export default function WikiShell() {
   const closePermissions = useCallback(() => setPermissionsFor(null), []);
   const requestShare = useCallback((node: NodeOut) => setSharing(node), []);
   const closeShare = useCallback(() => setSharing(null), []);
+  const requestExport = useCallback((target: ExportTarget) => setExporting(target), []);
+  const closeExport = useCallback(() => setExporting(null), []);
 
   const shell = useMemo<ShellValue>(() => ({
     setCurrentNode,
@@ -232,7 +237,9 @@ export default function WikiShell() {
     requestCopy,
     requestPermissions,
     requestShare,
-  }), [setCurrentSpace, openNewNode, requestDelete, requestMove, requestCopy, requestPermissions, requestShare]);
+    requestExport,
+  }), [setCurrentSpace, openNewNode, requestDelete, requestMove, requestCopy, requestPermissions, requestShare,
+    requestExport]);
 
   return (
     <ShellContext.Provider value={shell}>
@@ -281,6 +288,7 @@ export default function WikiShell() {
               <Route path="/watching" element={<WatchingPage />} />
               <Route path="/reviews" element={<ReviewsPage />} />
               <Route path="/reviews/:reviewId" element={<ReviewDetail />} />
+              <Route path="/exports/:jobId" element={<ExportPage />} />
               <Route path="/n/:nodeId" element={<NodePage />} />
               <Route path="/n/:nodeId/history" element={(
                 <Suspense fallback={<div className="portal-page wiki-page"><p className="page-hint">Loading…</p></div>}>
@@ -304,6 +312,7 @@ export default function WikiShell() {
         <PermissionsDialog target={{ kind: 'node', node: permissionsFor }} onClose={closePermissions} />
       )}
       {sharing && <ShareDialog node={sharing} onClose={closeShare} />}
+      {exporting && <ExportDialog target={exporting} onClose={closeExport} />}
       {deleting && (
         <ConfirmDialog
           eyebrow="Delete"

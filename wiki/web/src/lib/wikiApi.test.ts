@@ -12,6 +12,7 @@ import {
   approveReview,
   completeUpload,
   createNode,
+  createExport,
   createShareLink,
   createTemplate,
   deleteComment,
@@ -21,6 +22,7 @@ import {
   getReview,
   getWatchState,
   getAnalytics,
+  getExport,
   getAssetUrls,
   getMyFeedback,
   getPageContent,
@@ -408,6 +410,20 @@ describe('share links', () => {
     fetchMock.mockResolvedValueOnce(reply(200, []));
     await listAllShareLinks();
     expect(lastCall().path).toBe('/wiki/share-links');
+  });
+});
+
+describe('exports', () => {
+  it('queues an export and reads it back', async () => {
+    fetchMock.mockResolvedValueOnce(reply(202, { job_id: 'j1' }));
+    await createExport({ node_id: 'n1', format: 'zip', zip_format: 'md' });
+    expect(lastCall().path).toBe('/wiki/exports');
+    expect(lastCall().init.method).toBe('POST');
+    expect(JSON.parse(lastCall().init.body as string)).toEqual({ node_id: 'n1', format: 'zip', zip_format: 'md' });
+
+    fetchMock.mockResolvedValueOnce(reply(200, { id: 'j1', status: 'queued' }));
+    await getExport('j/1');
+    expect(lastCall().path).toBe('/wiki/exports/j%2F1');
   });
 });
 

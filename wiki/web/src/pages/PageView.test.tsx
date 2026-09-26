@@ -251,6 +251,7 @@ describe('PageView — the ⋯ menu', () => {
     const shell: ShellValue = {
       setCurrentNode: vi.fn(), setCurrentSpace: vi.fn(), openNewNode: vi.fn(),
       requestDelete: vi.fn(), requestMove: vi.fn(), requestCopy: vi.fn(), requestPermissions: vi.fn(), requestShare: vi.fn(),
+      requestExport: vi.fn(),
     };
     const node = makeDetail('p1', { title: 'Rack power', my_level: 'manage', page: published });
     render(
@@ -265,7 +266,7 @@ describe('PageView — the ⋯ menu', () => {
 
     open();
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(
-      ['Move…', 'Copy…', 'Copy link', 'Save as template…', 'Review schedule…', 'Permissions…', 'Share…', 'Delete']);
+      ['Move…', 'Copy…', 'Copy link', 'Export…', 'Save as template…', 'Review schedule…', 'Permissions…', 'Share…', 'Delete']);
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move…' }));
     expect(shell.requestMove).toHaveBeenCalledWith(node);
     open();
@@ -277,6 +278,9 @@ describe('PageView — the ⋯ menu', () => {
     open();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Share…' }));
     expect(shell.requestShare).toHaveBeenCalledWith(node);
+    open();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Export…' }));
+    expect(shell.requestExport).toHaveBeenCalledWith({ kind: 'node', node });
     open();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }));
     expect(shell.requestDelete).toHaveBeenCalledWith(node);

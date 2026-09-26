@@ -574,3 +574,34 @@ export interface AnalyticsOut {
   stale_pages: { node: AnalyticsNodeRef; updated_at: string }[];
   overdue_reviews: { node: AnalyticsNodeRef; next_review_at: string }[];
 }
+
+// ── exports ─────────────────────────────────────────────────────────
+
+/** What a page exports as — and, in a .zip, what its pages are. */
+export type ExportPageFormat = 'pdf' | 'docx' | 'md';
+
+/** POST /wiki/exports: a node (`node_id`) or a whole space (`space_key`).
+ *  A page is pdf/docx/md, or a zip when it has subpages; a folder or a
+ *  space is a zip whose pages are `zip_format` (pdf by default). */
+export interface ExportIn {
+  node_id?: string;
+  space_key?: string;
+  format: ExportPageFormat | 'zip';
+  zip_format?: ExportPageFormat;
+}
+
+export interface ExportCreatedOut {
+  job_id: string;
+}
+
+export type ExportStatus = 'queued' | 'running' | 'done' | 'failed';
+
+/** GET /wiki/exports/{id} (the requester only): `url` is a fresh download
+ *  link (10 minutes) once `done`; `error` says why once `failed`. */
+export interface ExportOut {
+  id: string;
+  status: ExportStatus;
+  filename: string;
+  url: string | null;
+  error: string | null;
+}

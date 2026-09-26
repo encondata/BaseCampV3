@@ -21,6 +21,7 @@ function fakeShell(): ShellValue {
     requestCopy: vi.fn(),
     requestPermissions: vi.fn(),
     requestShare: vi.fn(),
+    requestExport: vi.fn(),
   };
 }
 
@@ -45,7 +46,7 @@ describe('RowMenu', () => {
   it('shows the edit items at edit level, but not Permissions', () => {
     open(makeNode('n1', { kind: 'folder', my_level: 'edit' }));
     expect(items()).toEqual([
-      'New page here', 'New folder here', 'Rename', 'Move…', 'Copy…', 'Copy link', 'Delete',
+      'New page here', 'New folder here', 'Rename', 'Move…', 'Copy…', 'Copy link', 'Export…', 'Delete',
     ]);
   });
 
@@ -132,6 +133,28 @@ describe('RowMenu', () => {
     cleanup();
     open(makeNode('d1', { kind: 'folder', my_level: 'manage' }), { onUseAsHelp });
     expect(items()).not.toContain('Use as help for…');
+  });
+
+  it('offers Export… on a folder, and on a page once published or with subpages — never a file', () => {
+    const published = { is_home: false, published_version_id: 'v1', published_at: null, has_unpublished_changes: false };
+    const folder = makeNode('f', { kind: 'folder', my_level: 'view' });
+    const { shell } = open(folder);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Export…' }));
+    expect(shell.requestExport).toHaveBeenCalledWith({ kind: 'node', node: folder });
+    cleanup();
+
+    open(makeNode('p', { my_level: 'view', page: published }));
+    expect(items()).toContain('Export…');
+    cleanup();
+    open(makeNode('p', { my_level: 'edit', has_children: true }));
+    expect(items()).toContain('Export…');
+    cleanup();
+    // a never-published page on its own has nothing to export
+    open(makeNode('p', { my_level: 'edit' }));
+    expect(items()).not.toContain('Export…');
+    cleanup();
+    open(makeNode('f', { kind: 'file', my_level: 'manage' }));
+    expect(items()).not.toContain('Export…');
   });
 
   it('copies the canonical link and says so', async () => {

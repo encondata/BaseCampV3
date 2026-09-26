@@ -14,6 +14,7 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
 }));
 vi.mock('./NodePage', () => ({ default: ({ nodeId }: { nodeId: string }) => <div>home page {nodeId}</div> }));
 
+import { ShellContext, type ShellValue } from '../layout/shellContext';
 import { resetTreeStore } from '../lib/treeStore';
 import type { SpaceOut } from '../lib/types';
 import { getSpace, getTree, listDueReviews, listWatches, watch } from '../lib/wikiApi';
@@ -41,6 +42,24 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('SpaceHome', () => {
+  it('exports the whole space through the shell', async () => {
+    const space = makeSpace({ home_node_id: 'home-1' });
+    vi.mocked(getSpace).mockResolvedValue(space);
+    const requestExport = vi.fn();
+    const shell = {
+      setCurrentNode: vi.fn(), setCurrentSpace: vi.fn(), requestExport,
+    } as unknown as ShellValue;
+    render(
+      <ShellContext.Provider value={shell}>
+        <MemoryRouter initialEntries={['/s/ops']}>
+          <Routes><Route path="/s/:spaceKey" element={<SpaceHome />} /></Routes>
+        </MemoryRouter>
+      </ShellContext.Provider>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Export space…' }));
+    expect(requestExport).toHaveBeenCalledWith({ kind: 'space', space });
+  });
+
   it('shows a plain header with a space Watch button when there is no home page', async () => {
     renderSpace(makeSpace({ home_node_id: null }));
     await screen.findByText('Operations');

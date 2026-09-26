@@ -23,7 +23,7 @@ type State =
 
 export default function SpaceHome() {
   const { spaceKey = '' } = useParams();
-  const { setCurrentSpace, setCurrentNode } = useWikiShell();
+  const { setCurrentSpace, setCurrentNode, requestExport } = useWikiShell();
   const [state, setState] = useState<State | null>(null);
   const shown = state?.key === spaceKey ? state : null;
   const space = shown?.status === 'ready' ? shown.space : null;
@@ -87,9 +87,15 @@ export default function SpaceHome() {
               {dueCount === 1 ? '1 page due for review' : `${dueCount} pages due for review`}
             </Link>
           )}
-          {shown.space.home_node_id && (
-            <WatchButton target={{ kind: 'space', spaceId: shown.space.id, spaceKey: shown.space.key }} />
-          )}
+          <div className="wiki-space-contents-actions">
+            <button type="button" className="btn-ghost"
+                    onClick={() => requestExport({ kind: 'space', space: shown.space })}>
+              Export space…
+            </button>
+            {shown.space.home_node_id && (
+              <WatchButton target={{ kind: 'space', spaceId: shown.space.id, spaceKey: shown.space.key }} />
+            )}
+          </div>
         </div>
         <ContentsList label="What's in this space" nodes={items} error={error}
                       emptyTitle="Nothing here yet" empty="Pages and folders added at the top of the space show up here." />

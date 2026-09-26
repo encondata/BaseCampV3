@@ -1509,3 +1509,22 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 .wiki-review-buttons { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .segmented.wiki-reviews-tabs { padding: 3px; }
 .segmented.wiki-reviews-tabs button { padding: 6px 14px; }
+
+/* ── export ───────────────────────────────────────────────────────── */
+.wiki-space-contents-actions { display: flex; align-items: center; gap: 8px; }
+.wiki-export-body { display: flex; flex-direction: column; gap: 10px; }
+.wiki-export-body .modal-section { margin-top: 4px; }
+.segmented.wiki-export-scope, .segmented.wiki-export-format { align-self: flex-start; padding: 3px; }
+.segmented.wiki-export-scope button, .segmented.wiki-export-format button { padding: 6px 14px; }
+.wiki-export-progress { display: flex; flex-direction: column; gap: 10px; }
+.wiki-export-status { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.wiki-export-status b { overflow-wrap: anywhere; }
+.wiki-export-done { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.wiki-export-spinner {
+  flex: none; width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid var(--paper-line); border-top-color: var(--accent);
+  animation: wiki-export-spin 0.8s linear infinite;
+}
+@keyframes wiki-export-spin { to { transform: rotate(360deg); } }
+[data-motion='off'] .wiki-export-spinner { animation: none; }
+.wiki-export-page { max-width: 560px; }

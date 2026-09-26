@@ -209,7 +209,7 @@ export default function SpaceSettings() {
   const { spaceKey = '' } = useParams();
   const toast = useToast();
   const me = useWikiMe();
-  const { setCurrentSpace, setCurrentNode } = useWikiShell();
+  const { setCurrentSpace, setCurrentNode, requestExport } = useWikiShell();
   const [state, setState] = useState<State | null>(null);
   const [archiving, setArchiving] = useState<{ busy: boolean; error: string } | null>(null);
   const [unarchiving, setUnarchiving] = useState(false);
@@ -349,6 +349,16 @@ export default function SpaceSettings() {
       <CollaborationSection space={space} onSaved={replace} />
 
       <SharingSection space={space} onSaved={replace} />
+
+      <section className="wiki-settings-section" aria-label="Export">
+        <div className="wiki-section-label">Export</div>
+        <div className="wiki-settings-row">
+          <p className="page-hint">Download the whole space as a .zip — every page and file you can see, in its folders.</p>
+          <button type="button" className="btn-ghost" onClick={() => requestExport({ kind: 'space', space })}>
+            Export space…
+          </button>
+        </div>
+      </section>
 
       <section className="wiki-settings-section" aria-label="Trash">
         <div className="wiki-section-label">Trash</div>

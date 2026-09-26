@@ -14,6 +14,7 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
 }));
 vi.mock('../uploads/uploadQueue', () => ({ enqueue: vi.fn(), enqueueWalked: vi.fn() }));
 
+import { ShellContext, type ShellValue } from '../layout/shellContext';
 import { resetTreeStore } from '../lib/treeStore';
 import type { NodeDetailOut } from '../lib/types';
 import {
@@ -157,6 +158,20 @@ describe('FolderView', () => {
     renderFolder();
     fireEvent.click(await screen.findByRole('button', { name: 'Watch' }));
     await vi.waitFor(() => expect(watch).toHaveBeenCalledWith({ node_id: 'f1' }));
+  });
+
+  it('exports the folder through the shell, for anyone who can view it', async () => {
+    const requestExport = vi.fn();
+    const node = { ...FOLDER, my_level: 'view' as const };
+    render(
+      <ShellContext.Provider value={{ requestExport } as unknown as ShellValue}>
+        <MemoryRouter initialEntries={['/n/f1']}>
+          <Routes><Route path="/n/f1" element={<FolderView node={node} />} /></Routes>
+        </MemoryRouter>
+      </ShellContext.Provider>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Export…' }));
+    expect(requestExport).toHaveBeenCalledWith({ kind: 'node', node });
   });
 
   it('keeps the edit controls, uploads and drops from a viewer', async () => {

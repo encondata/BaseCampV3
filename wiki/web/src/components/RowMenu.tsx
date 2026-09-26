@@ -1,10 +1,11 @@
 /** The ⋯ menu on a tree row (also opened by right-clicking the row) and in
  *  a page's header: New page/folder here, Rename, Move…, Copy…, Copy link,
+ *  Export… (a folder, or a page once published or with subpages),
  *  (a page's header only: Save as template…, Review schedule…),
  *  Permissions…, Share… (pages and files), Use as help for… (a page's or
  *  file's header, wiki admins), Delete — each shown only at the
- *  level it needs. Move, Copy, Permissions, Share and Delete open the
- *  shell's dialogs. The menu is
+ *  level it needs. Move, Copy, Permissions, Share, Export and Delete open
+ *  the shell's dialogs. The menu is
  *  position:fixed so the sidebar's scroll box never clips it; it closes on
  *  any outside click, scroll, resize or Escape. */
 import {
@@ -119,6 +120,14 @@ const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
   }
   items.push({ label: 'Copy…', action: () => shell.requestCopy(node), icon: <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></> });
   items.push({ label: 'Copy link', action: copyLink, icon: <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" /> });
+  const exportable = node.kind === 'folder'
+    || (node.kind === 'page' && (!!node.page?.published_version_id || node.has_children));
+  if (exportable) {
+    items.push({
+      label: 'Export…', action: () => shell.requestExport({ kind: 'node', node }),
+      icon: <path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14" />,
+    });
+  }
   if (node.kind === 'page' && canEdit && onSaveAsTemplate) {
     items.push({
       label: 'Save as template…', action: onSaveAsTemplate,

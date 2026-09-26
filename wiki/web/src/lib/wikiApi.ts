@@ -17,6 +17,9 @@ import type {
   CommentOut,
   CommentThread,
   ContentVersion,
+  ExportCreatedOut,
+  ExportIn,
+  ExportOut,
   FeedbackIn,
   FeedbackOut,
   FileUrlOut,
@@ -412,3 +415,15 @@ export const getMyFeedback = (pageId: string) =>
 /** Wiki admins (any space, or all of them) and space managers (a space they manage). */
 export const getAnalytics = ({ space, days }: AnalyticsParams) =>
   request<AnalyticsOut>('GET', '/analytics', { query: { space, days } });
+
+// ── exports ─────────────────────────────────────────────────────────
+
+/** Queues an export (view on the node or space). 422 `use_download` for a
+ *  file, `bad_format` for a format the node can't take, `not_published`
+ *  for a single never-published page; 429 `too_many_exports` with three
+ *  already in progress. */
+export const createExport = (body: ExportIn) =>
+  request<ExportCreatedOut>('POST', '/exports', { body });
+
+/** The caller's own export (404 for anyone else's, or once it's purged). */
+export const getExport = (jobId: string) => request<ExportOut>('GET', `/exports/${seg(jobId)}`);

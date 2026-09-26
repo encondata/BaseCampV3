@@ -19,6 +19,7 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   getTree: vi.fn(),
 }));
 
+import { ShellContext, type ShellValue } from '../layout/shellContext';
 import { resetTreeStore } from '../lib/treeStore';
 import type { SpaceOut } from '../lib/types';
 import { clearWikiMe } from '../lib/useWikiMe';
@@ -83,6 +84,24 @@ describe('SpaceSettings', () => {
     expect(getSpaceGrants).toHaveBeenCalledWith('ops');
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByRole('link', { name: /Trash/ }).getAttribute('href')).toBe('/trash/ops');
+  });
+
+  it('exports the whole space through the shell', async () => {
+    const space = makeSpace({ my_level: 'manage' });
+    vi.mocked(getSpace).mockResolvedValue(space);
+    vi.mocked(getMe).mockResolvedValue(makeMe());
+    const requestExport = vi.fn();
+    const shell = { setCurrentNode: vi.fn(), setCurrentSpace: vi.fn(), requestExport } as unknown as ShellValue;
+    render(
+      <ShellContext.Provider value={shell}>
+        <MemoryRouter initialEntries={['/s/ops/settings']}>
+          <Routes><Route path="/s/:spaceKey/settings" element={<SpaceSettings />} /></Routes>
+        </MemoryRouter>
+      </ShellContext.Provider>,
+    );
+    const section = await screen.findByRole('region', { name: 'Export' });
+    fireEvent.click(within(section).getByRole('button', { name: 'Export space…' }));
+    expect(requestExport).toHaveBeenCalledWith({ kind: 'space', space });
   });
 
   it('archives after a confirmation', async () => {
