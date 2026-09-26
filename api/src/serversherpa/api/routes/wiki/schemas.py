@@ -107,6 +107,19 @@ class PrincipalOut(BaseModel):
     label: str
 
 
+class NodePermissionsOut(BaseModel):
+    inherit: bool
+    grants: list[GrantOut]
+    effective: list[EffectiveGrant]
+
+
+class NodePermissionsPutIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    inherit: bool
+    grants: list[GrantIn] | None = None
+
+
 # ── me ────────────────────────────────────────────────────────────────
 
 
