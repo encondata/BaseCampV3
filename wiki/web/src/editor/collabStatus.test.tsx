@@ -75,4 +75,13 @@ describe('live editing status', () => {
     act(() => { vi.advanceTimersByTime(2000); });
     expect(screen.getByTestId('banner').textContent).toBe('banner');
   });
+
+  it('says Loading… while connected but before the first load, not Saving…', () => {
+    render(<Harness provider={provider} />);
+    act(() => { provider.setStatus('connected'); });
+    expect(status()).toBe('Loading…');
+    expect(screen.getByTestId('dim').textContent).toBe('dimmed');
+    act(() => { provider.setSynced(true); });
+    expect(status()).toBe('Saved');
+  });
 });

@@ -42,9 +42,14 @@ function assignIds(headings: { level: number; text: string }[]): TocEntry[] {
   });
 }
 
+/** Stands in for a page link in heading text: its stored title may be
+ *  stale or name a page the reader can't see, and both walks must agree so
+ *  the ids match. */
+const PAGE_LINK_TOKEN = 'page';
+
 function jsonText(node: JSONContent): string {
   if (node.type === 'text') return node.text ?? '';
-  if (node.type === 'pageLink') return String(node.attrs?.title ?? '');
+  if (node.type === 'pageLink') return PAGE_LINK_TOKEN;
   if (node.type === 'hardBreak') return ' ';
   return (node.content ?? []).map(jsonText).join('');
 }
@@ -68,7 +73,7 @@ function pmText(node: PMNode): string {
   let out = '';
   node.descendants((child) => {
     if (child.isText) out += child.text ?? '';
-    else if (child.type.name === 'pageLink') out += String(child.attrs.title ?? '');
+    else if (child.type.name === 'pageLink') out += PAGE_LINK_TOKEN;
     else if (child.type.name === 'hardBreak') out += ' ';
     return true;
   });

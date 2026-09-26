@@ -1,5 +1,5 @@
 /** The live-editing connection as the editor shows it: the save state
- *  ("Connecting…", "Saving…", "Saved", "Offline"), whether the page is
+ *  ("Connecting…", "Loading…", "Saving…", "Saved", "Offline"), whether the page is
  *  still loading (dimmed), and whether the reconnecting banner shows.
  *
  *  Being connected and being synced are tracked apart: the provider resets
@@ -69,6 +69,8 @@ export function saveState({ connected, synced, everSynced, unsynced }: CollabSta
   if (!connected) {
     return everSynced ? { text: 'Offline', tone: 'offline' } : { text: 'Connecting…', tone: 'pending' };
   }
+  // connected, but the document hasn't loaded yet: nothing is being saved
+  if (!synced && !everSynced) return { text: 'Loading…', tone: 'pending' };
   if (!synced || unsynced > 0) return { text: 'Saving…', tone: 'pending' };
   return { text: 'Saved', tone: 'saved' };
 }

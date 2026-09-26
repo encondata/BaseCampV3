@@ -62,4 +62,22 @@ describe('buildToc', () => {
     const pm = PMNode.fromJSON(getSchema(wikiExtensions()), doc);
     expect(headingIdsOf(pm).map((h) => h.id)).toEqual(buildToc(doc).map((t) => t.id));
   });
+
+  it('never reads a page link\'s stored title (it may be stale or private), same in both walks', () => {
+    const linked = {
+      type: 'doc',
+      content: [{
+        type: 'heading',
+        attrs: { level: 2, textAlign: null },
+        content: [
+          { type: 'text', text: 'See ' },
+          { type: 'pageLink', attrs: { nodeId: 'n-1', title: 'Secret merger plan' } },
+        ],
+      }],
+    };
+    const toc = buildToc(linked);
+    expect(toc).toEqual([{ level: 2, text: 'See page', id: 'h-see-page' }]);
+    const pm = PMNode.fromJSON(getSchema(wikiExtensions()), linked);
+    expect(headingIdsOf(pm).map((h) => h.id)).toEqual(['h-see-page']);
+  });
 });

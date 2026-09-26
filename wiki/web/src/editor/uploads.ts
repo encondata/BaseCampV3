@@ -247,6 +247,10 @@ export function uploadFiles(editor: Editor, files: File[], pos: number, opts: Fi
         removePlaceholder();
         opts.onError(`“${file.name}” was uploaded, but couldn't be added to the page. Add it again.`);
       }
+    }).catch(() => {
+      // one file failing to land never holds up the files after it
+      removePlaceholder();
+      opts.onError(`“${file.name}” was uploaded, but couldn't be added to the page. Add it again.`);
     });
   }
 }

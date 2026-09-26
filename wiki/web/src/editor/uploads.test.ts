@@ -213,3 +213,23 @@ describe('uploads that cannot land', () => {
     expect(onError.mock.calls[0][0]).toMatch(/rack\.png/);
   });
 });
+
+describe('a landing that throws', () => {
+  it('reports that file and still lands the files after it', async () => {
+    vi.mocked(startUpload).mockImplementation(async (body) => ({
+      upload_id: `up-${body.filename}`, url: 'https://s3/put', headers: {},
+    }));
+    vi.mocked(completeUpload).mockImplementation(async (id: string) => ({
+      id: `asset-${id.slice(3, 4)}`, filename: id.slice(3), content_type: 'image/png', size_bytes: 1,
+    }));
+    const realChain = editor.chain.bind(editor);
+    vi.spyOn(editor, 'chain').mockImplementationOnce(() => { throw new Error('boom'); })
+      .mockImplementation(realChain);
+    drop(editor, [new File(['a'], 'a.png', { type: 'image/png' }), new File(['b'], 'b.png', { type: 'image/png' })]);
+    await vi.waitFor(() => expect(blocks().filter((b) => b.type === 'wikiImage')).toHaveLength(1));
+    expect(blocks().find((b) => b.type === 'wikiImage')?.attrs?.assetId).toBe('asset-b');
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0][0]).toMatch(/a\.png/);
+    expect(editor.view.dom.querySelector('.wiki-upload-placeholder')).toBeNull();
+  });
+});

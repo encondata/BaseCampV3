@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '../testing/pmDom';
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -80,7 +80,7 @@ describe('ReadOnlyDoc', () => {
 const para = (...content: object[]) => ({ type: 'doc', content: [{ type: 'paragraph', content }] });
 
 describe('ReadOnlyDoc — unverified targets', () => {
-  it('never shows a page link\'s stored title: "Loading…" first, "Missing page" on any error', async () => {
+  it('never shows a page link\'s stored title while loading or after a failed lookup', async () => {
     let fail!: (e: unknown) => void;
     vi.mocked(getNode).mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
     render(<MemoryRouter><ReadOnlyDoc content={para(
@@ -89,8 +89,44 @@ describe('ReadOnlyDoc — unverified targets', () => {
     expect(await screen.findByText('Loading…')).toBeTruthy();
     expect(screen.queryByText(/Stored secret title/)).toBeNull();
     fail(new Error('network down'));
-    expect(await screen.findByText('Missing page')).toBeTruthy();
+    expect(await screen.findByText('Couldn\'t load link')).toBeTruthy();
     expect(screen.queryByText(/Stored secret title/)).toBeNull();
+    expect(screen.queryByText('Missing page')).toBeNull();
+  });
+
+  describe('a failed lookup (not 404/403)', () => {
+    beforeEach(() => { vi.mocked(getNode).mockClear(); vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }); });
+    afterEach(() => { vi.useRealTimers(); });
+    const flush = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+
+    it('retries once after 5 s and then shows the title', async () => {
+      vi.mocked(getNode)
+        .mockRejectedValueOnce(new Error('network down'))
+        .mockResolvedValueOnce(makeDetail('n-flaky', { title: 'Cabling standards' }));
+      render(<MemoryRouter><ReadOnlyDoc content={para(
+        { type: 'pageLink', attrs: { nodeId: 'n-flaky', title: '' } },
+      )} /></MemoryRouter>);
+      await flush(0);
+      expect(screen.getByText('Couldn\'t load link')).toBeTruthy();
+      expect(getNode).toHaveBeenCalledTimes(1);
+      await flush(4900);
+      expect(getNode).toHaveBeenCalledTimes(1);
+      await flush(200);
+      expect(getNode).toHaveBeenCalledTimes(2);
+      expect(screen.getByRole('link', { name: 'Cabling standards' })).toBeTruthy();
+    });
+
+    it('retries only once', async () => {
+      vi.mocked(getNode).mockReset().mockRejectedValue(new Error('network down'));
+      render(<MemoryRouter><ReadOnlyDoc content={para(
+        { type: 'pageLink', attrs: { nodeId: 'n-down', title: '' } },
+      )} /></MemoryRouter>);
+      await flush(0);
+      await flush(5100);
+      await flush(20_000);
+      expect(getNode).toHaveBeenCalledTimes(2);
+      expect(screen.getByText('Couldn\'t load link')).toBeTruthy();
+    });
   });
 
   it('encodes node ids in the links it builds', async () => {

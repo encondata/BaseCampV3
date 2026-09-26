@@ -3,7 +3,8 @@
  *  show while the editor is editable):
  *    - WikiImage: resolves its asset URL, caption and alt text, a resize handle
  *    - FileEmbed: a card with an inline PDF/image/video preview
- *    - PageLink: the target's current title ("Missing page" when it's gone)
+ *    - PageLink: the target's current title ("Missing page" when it's gone,
+ *      "Couldn't load link" when the lookup failed — retried once)
  *    - Callout: the variant's icon and a variant switcher
  *    - Details: an open/close toggle (open state is per reader, not stored)
  *  `withNodeViews` swaps them into the shared schema's extension list. */
@@ -188,27 +189,53 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
 
 // ── page link ─────────────────────────────────────────────────────────
 
+/** How long a failed title lookup waits before its one retry. */
+export const PAGE_LINK_RETRY_MS = 5000;
+
+type TitleLookup =
+  | { id: string; status: 'ok'; title: string }
+  | { id: string; status: 'missing' }
+  | { id: string; status: 'error' };
+
 function PageLinkView({ node }: NodeViewProps) {
   // the stored title is never shown: it may be stale, or name a page the
   // reader can't see
   const { nodeId } = node.attrs as { nodeId: string | null };
   const navigate = useNavigate();
-  const [title, setTitle] = useState<{ id: string; title: string | null } | null>(null);
+  const [lookup, setLookup] = useState<TitleLookup | null>(null);
 
   useEffect(() => {
     if (!nodeId) return undefined;
     let live = true;
-    nodeTitle(nodeId)
-      .then((t) => { if (live) setTitle({ id: nodeId, title: t }); })
-      .catch(() => { if (live) setTitle({ id: nodeId, title: null }); });
-    return () => { live = false; };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const look = (retry: boolean) => {
+      nodeTitle(nodeId)
+        .then((t) => {
+          if (live) setLookup(t === null ? { id: nodeId, status: 'missing' } : { id: nodeId, status: 'ok', title: t });
+        })
+        .catch(() => {
+          // gone or not viewable answers null; this is anything else (offline, 5xx)
+          if (!live) return;
+          setLookup({ id: nodeId, status: 'error' });
+          if (retry) timer = setTimeout(() => look(false), PAGE_LINK_RETRY_MS);
+        });
+    };
+    look(true);
+    return () => { live = false; clearTimeout(timer); };
   }, [nodeId]);
 
-  const current = title?.id === nodeId ? title : null;
-  if (!nodeId || (current && current.title === null)) {
+  const current = lookup?.id === nodeId ? lookup : null;
+  if (!nodeId || current?.status === 'missing') {
     return (
       <NodeViewWrapper as="span" className="wiki-page-link missing" title="This page was removed or isn't shared with you">
         <Icon name="pageLink" className="wiki-page-link-icon" />Missing page
+      </NodeViewWrapper>
+    );
+  }
+  if (current?.status === 'error') {
+    return (
+      <NodeViewWrapper as="span" className="wiki-page-link missing" title="The link's page couldn't be looked up">
+        <Icon name="pageLink" className="wiki-page-link-icon" />Couldn't load link
       </NodeViewWrapper>
     );
   }
