@@ -5,7 +5,8 @@
  *  point at another origin — never through the router, which would read
  *  them as portal paths. An absolute URL on the portal's own origin
  *  stays in the app, as does a malformed absolute link (to the portal's
- *  home page). */
+ *  home page). The wiki follows the same rule (wiki/web/src/lib/inboxLinks.ts):
+ *  keep the two in step. */
 
 export type InboxTarget = { kind: 'app'; to: string } | { kind: 'external'; href: string };
 
