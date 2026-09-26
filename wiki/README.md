@@ -180,13 +180,19 @@ client and renderer.
   rate-limited per client address and answers every failure the same way
   (unknown, revoked or expired token; the space's public links off; the
   node deleted; a page never published) with a 404 that never says which.
-  Its presigned asset/download URLs live at most 10 minutes. **This is
-  what the Spaces bucket CORS `GET` rule in the Production checklist below
-  is really for**: a public visitor's browser has no portal session, so
-  it fetches those presigned URLs straight from Spaces itself — without
-  `GET` allowed from the wiki origin, a public page's images and a public
-  file's preview/download both fail for exactly the audience share links
-  exist for.
+  Its presigned asset/download URLs live at most 10 minutes, and every
+  answer (200, 404 or 429) is `Cache-Control: no-store`. The public page's
+  images, video, PDF preview and Download are plain `<img>`/`<video>`/
+  `<iframe>` loads and navigations, not CORS requests, so share links need
+  no bucket CORS rule of their own.
+  **Behavior to know:** a link isn't re-checked against its creator's
+  current rights — it stays live until it expires or is revoked, even if
+  the page's permissions are tightened later. Restoring a trashed page, or
+  turning a space's public links back on, brings back every un-revoked
+  link to it. An archived space keeps serving its links until a wiki
+  administrator (or the link's creator) revokes them. Public pages keep
+  @mention names (never person ids). View counts are approximate: the
+  page's own URL refreshes (`?refresh=1`) aren't counted.
 - **Help links.** The "?" button in the portal's top bar
   (`portal/src/components/HelpButton.tsx`, over the React-free
   `portal/src/lib/wikiHelp.ts`) asks `GET /wiki/help?context=` for a
@@ -284,12 +290,10 @@ it's done.
   on the `wiki` container to the same secret.
 - Add a Spaces bucket CORS rule from the wiki origin allowing `PUT` with
   the `Content-Type` header (uploads go straight from the browser to
-  Spaces via a presigned URL) **and `GET`** (the file view fetches text
-  and Markdown previews from their presigned URL, and — see Phase 3
-  features above — a public share link's anonymous visitor fetches their
-  page's images and a shared file's preview/download the same way;
-  without it those all fail in production, the share-link case for
-  everyone who was never signed in to begin with).
+  Spaces via a presigned URL) **and `GET`** (the file view `fetch()`es
+  text and Markdown previews from their presigned URL; without it those
+  previews fail. Images, PDF previews, downloads and public share-link
+  pages are not CORS reads and work either way).
 - Exports need the `wiki-worker` image's WeasyPrint/LibreOffice
   dependencies and `SS_WIKI_RENDER_URL` pointing at the `wiki` container —
   see Exports above; `wiki/docker-compose.yml` already wires this up, so
