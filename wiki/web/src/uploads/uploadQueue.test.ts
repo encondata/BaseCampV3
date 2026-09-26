@@ -7,12 +7,13 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   startUpload: vi.fn(),
   completeUpload: vi.fn(),
   createNode: vi.fn(),
+  getTree: vi.fn(),
 }));
 vi.mock('../lib/treeStore', () => ({ noteCreated: vi.fn(), noteChanged: vi.fn() }));
 
 import { noteChanged, noteCreated } from '../lib/treeStore';
 import type { NodeCreateIn, UploadStartIn } from '../lib/types';
-import { completeUpload, createNode, startUpload } from '../lib/wikiApi';
+import { completeUpload, createNode, getTree, startUpload } from '../lib/wikiApi';
 import { FakeXhr } from '../testing/fakeXhr';
 import { makeNode } from '../testing/fixtures';
 import {
@@ -38,6 +39,7 @@ beforeEach(() => {
   vi.mocked(completeUpload).mockReset().mockImplementation(async (uploadId: string) =>
     makeNode(`node-${uploadId}`, { kind: 'file', parent_id: 'f1', page: null }));
   vi.mocked(createNode).mockReset();
+  vi.mocked(getTree).mockReset().mockResolvedValue([]);
   vi.mocked(noteCreated).mockReset();
   vi.mocked(noteChanged).mockReset();
 });
@@ -105,6 +107,13 @@ describe('uploadQueue', () => {
     FakeXhr.instances[1].respond(200);
     await vi.waitFor(() => expect(item(id).status).toBe('done'));
     expect(startUpload).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows a generic message for a raw error instead of leaking browser text', async () => {
+    vi.mocked(startUpload).mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const [id] = enqueue(files('a.txt'), TARGET);
+    await vi.waitFor(() => expect(item(id).status).toBe('error'));
+    expect(item(id).error).toBe('Upload failed — try again.');
   });
 
   it('carries the server\'s refusal as the error', async () => {
@@ -207,6 +216,24 @@ describe('enqueueWalked', () => {
         ['a2.pdf', 'dir-1', 'Site A'],
         ['b1.pdf', 'dir-3', 'Site B'],
       ]);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('reuses an existing live child folder with a matching title (case-insensitively) instead of duplicating it', async () => {
+    vi.mocked(getTree).mockImplementation(async (spaceKey, parentId) => (
+      spaceKey === 'ops' && parentId === 'f1'
+        ? [makeNode('dir-existing', { kind: 'folder', title: 'site a', parent_id: 'f1', page: null })]
+        : []));
+    const onError = vi.fn();
+    const f = (name: string) => new File([name], name);
+    await enqueueWalked([
+      { path: ['Site A'], file: f('a1.pdf') },
+    ], { spaceId: 'space-1', spaceKey: 'ops', parentId: 'f1', label: 'Guides' }, onError);
+
+    expect(createNode).not.toHaveBeenCalled();
+    expect(noteCreated).not.toHaveBeenCalled();
+    expect(getSnapshot().map((i) => [i.file.name, i.target.kind === 'node' && i.target.parentId, i.target.label]))
+      .toEqual([['a1.pdf', 'dir-existing', 'site a']]);
     expect(onError).not.toHaveBeenCalled();
   });
 

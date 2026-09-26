@@ -184,9 +184,11 @@ function Versions({ node, canEdit }: { node: NodeDetailOut; canEdit: boolean }) 
       <div className="wiki-section-label">Versions</div>
       <div className="dir-list list-scroll" role="table" aria-label="Versions">
         <div className="list-head" style={VERSION_GRID} role="row">
-          {['No.', 'File name', 'Size', 'Uploaded by', 'When', '', ''].map((h, i) => (
-            <span key={i} role="columnheader">{h}</span>
+          {['No.', 'File name', 'Size', 'Uploaded by', 'When'].map((h) => (
+            <span key={h} role="columnheader">{h}</span>
           ))}
+          <span role="columnheader"><span className="sr-only">Download</span></span>
+          <span role="columnheader"><span className="sr-only">Restore</span></span>
         </div>
         {versions?.map((v) => (
           <div key={v.id} className="dir-row" role="row">

@@ -26,17 +26,21 @@ type State =
 
 function DetailsForm({ space, onSaved }: { space: SpaceOut; onSaved: (space: SpaceOut) => void }) {
   const toast = useToast();
+  // a null color shows the first swatch, but that's a display default, not
+  // a change — dirty-checking against it (not the raw `space.color`) keeps
+  // a freshly loaded form clean until someone actually picks a color
+  const initialColor = space.color ?? PRESET_COLORS[0].value;
   const [name, setName] = useState(space.name);
   const [description, setDescription] = useState(space.description ?? '');
   const [icon, setIcon] = useState(space.icon ?? '');
-  const [color, setColor] = useState(space.color ?? PRESET_COLORS[0].value);
+  const [color, setColor] = useState(initialColor);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
   const trimmed = name.trim();
   const tooLong = trimmed.length > 200;
   const changed = trimmed !== space.name || description.trim() !== (space.description ?? '')
-    || icon.trim() !== (space.icon ?? '') || color !== (space.color ?? '');
+    || icon.trim() !== (space.icon ?? '') || color !== initialColor;
   const canSave = !!trimmed && !tooLong && changed && !busy;
 
   const submit = async (e: FormEvent) => {
@@ -213,7 +217,9 @@ export default function SpaceSettings() {
     return (
       <div className="portal-page wiki-page">
         {head}
-        <p className="page-hint">Only space managers can change these settings.</p>
+        <p className="page-hint">
+          {archived ? 'This space is archived.' : 'Only space managers can change these settings.'}
+        </p>
         {archived && isAdmin && archiveSection}
       </div>
     );

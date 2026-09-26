@@ -161,6 +161,16 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
     }, { replace: true });
   }, [setParams]);
 
+  // `?restore=` only means something in edit mode. If it lingers while
+  // editing isn't possible — a plain viewer, or editing blocked (e.g. by
+  // access loss) before the restore ever got to apply — tell the reader
+  // once and drop it, rather than leaving a dead param in the URL.
+  useEffect(() => {
+    if (mode === 'edit' || !params.get('restore')) return;
+    toast('Couldn\'t restore — you can\'t edit this page right now.');
+    clearRestore();
+  }, [mode, params, toast, clearRestore]);
+
   useEffect(() => {
     if (!restoreId) return undefined;
     let live = true;

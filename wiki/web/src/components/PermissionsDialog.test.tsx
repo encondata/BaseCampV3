@@ -130,6 +130,29 @@ describe('PermissionsDialog — a page', () => {
     await waitFor(() => expect(putNodePermissions).toHaveBeenCalledWith('n1', { inherit: false }));
   });
 
+  it('keeps Escape and the scrim from closing while a save is in flight, and ignores it landing after the dialog is gone', async () => {
+    let resolveSave!: (v: NodePermissionsOut) => void;
+    vi.mocked(putNodePermissions).mockImplementation(() => new Promise((r) => { resolveSave = r; }));
+    const onClose = vi.fn();
+    const { unmount } = render(<PermissionsDialog target={{ kind: 'node', node: NODE }} onClose={onClose} />);
+    await screen.findByText('Grace Hopper', { selector: '.wiki-perm-who b' });
+    fireEvent.click(within(rowFor('Grace Hopper')).getByRole('button', { name: 'Remove Grace Hopper' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(screen.getByRole('button', { name: 'Saving…' })).toHaveProperty('disabled', true);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.mouseDown(screen.getByRole('dialog').parentElement as HTMLElement);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveProperty('disabled', true);
+
+    // the dialog closes (unmounted) before the slow save comes back —
+    // its result must not touch state that no longer exists
+    unmount();
+    resolveSave(PERMS);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+
   it('shows a lock-out refusal inline', async () => {
     vi.mocked(putNodePermissions).mockRejectedValue(
       new ApiError(422, 'would_lock_out', undefined, 'This change would remove your own manage access to this page.'));

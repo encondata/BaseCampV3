@@ -10,6 +10,18 @@ export class UploadAbortedError extends Error {
   }
 }
 
+/** A failure from the storage PUT itself (a non-2xx answer, or the
+ *  connection dropping) — worded well enough to show as-is. Anything else
+ *  the upload queue sees (a raw browser error from somewhere else in the
+ *  chain) is not assumed to be presentable and falls back to a generic
+ *  message instead. */
+export class PutUploadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'PutUploadError';
+  }
+}
+
 export interface PutUploadOptions {
   /** 0…1 as the bytes go out. */
   onProgress?: (fraction: number) => void;
@@ -35,9 +47,9 @@ export function putUpload(
     };
     xhr.onload = () => settle(() => {
       if (xhr.status >= 200 && xhr.status < 300) resolve();
-      else reject(new Error(`The storage service refused the upload (${xhr.status}).`));
+      else reject(new PutUploadError(`The storage service refused the upload (${xhr.status}).`));
     });
-    xhr.onerror = () => settle(() => reject(new Error('The upload failed: a network error.')));
+    xhr.onerror = () => settle(() => reject(new PutUploadError('The upload failed: a network error.')));
     xhr.onabort = () => settle(() => reject(new UploadAbortedError()));
     signal?.addEventListener('abort', onAbort);
     xhr.send(body);

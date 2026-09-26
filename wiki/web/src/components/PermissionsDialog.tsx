@@ -156,11 +156,14 @@ interface Baseline {
   effective: Entry[];
 }
 
-export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel }: {
+export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel, onBusyChange }: {
   target: PermissionsTarget;
   layout?: 'inline' | 'modal';
   onSaved?: () => void;
   onCancel?: () => void;
+  /** Tells a wrapping dialog when a save is in flight, so it can keep
+   *  Escape and the scrim from closing it mid-save. */
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const toast = useToast();
   const isNode = target.kind === 'node';
@@ -184,6 +187,9 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
 
   const targetRef = useRef(target);
   targetRef.current = target;
+  const liveRef = useRef(true);
+  useEffect(() => () => { liveRef.current = false; }, []);
+  useEffect(() => { onBusyChange?.(busy); }, [busy, onBusyChange]);
 
   const applyNode = useCallback((out: NodePermissionsOut, nodeId: string) => {
     const next: Baseline = {
@@ -263,16 +269,20 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
         const out = await putNodePermissions(t.node.id, copyPending
           ? { inherit: false }
           : { inherit, grants: own.map(toGrantIn) });
+        if (!liveRef.current) return;
         applyNode(out, t.node.id);
         noteAccessChanged(t.node.space_key);
       } else {
-        applySpace(await putSpaceGrants(t.space.key, own.map(toGrantIn)));
+        const grants = await putSpaceGrants(t.space.key, own.map(toGrantIn));
+        if (!liveRef.current) return;
+        applySpace(grants);
         noteAccessChanged(t.space.key);
       }
       toast('Permissions saved.');
       setBusy(false);
       onSaved?.();
     } catch (err) {
+      if (!liveRef.current) return;
       setBusy(false);
       if (err instanceof ApiError && err.code === 'no_manager') {
         setError(errorMessage(err, 'Keep at least one entry with Manage access, so someone can look after the space.'));
@@ -428,13 +438,14 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
 }
 
 export default function PermissionsDialog({ target, onClose }: { target: PermissionsTarget; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !e.defaultPrevented) onClose();
+      if (e.key === 'Escape' && !e.defaultPrevented && !busy) onClose();
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [busy, onClose]);
 
   const title = target.kind === 'node' ? target.node.title : target.space.name;
   const description = target.kind === 'node'
@@ -442,7 +453,7 @@ export default function PermissionsDialog({ target, onClose }: { target: Permiss
     : 'Who can read, edit and manage everything in this space.';
 
   return (
-    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
       <div className="modal-card reports-modal-card rgm-card wiki-perm-card" role="dialog"
            aria-modal="true" aria-labelledby="wiki-perm-title">
         <div className="modal-head">
@@ -451,12 +462,12 @@ export default function PermissionsDialog({ target, onClose }: { target: Permiss
             <h3 id="wiki-perm-title">Who can access “{title}”</h3>
             <p className="page-hint">{description}</p>
           </div>
-          <button type="button" className="modal-close" aria-label="Close" onClick={onClose}>
+          <button type="button" className="modal-close" aria-label="Close" onClick={onClose} disabled={busy}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
                  strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
           </button>
         </div>
-        <PermissionsEditor target={target} layout="modal" onSaved={onClose} onCancel={onClose} />
+        <PermissionsEditor target={target} layout="modal" onSaved={onClose} onCancel={onClose} onBusyChange={setBusy} />
       </div>
     </div>
   );

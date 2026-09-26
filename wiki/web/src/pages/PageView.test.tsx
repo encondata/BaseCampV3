@@ -245,10 +245,22 @@ describe('PageView — restoring a version', () => {
     expect(toast).toHaveBeenCalledWith('Restored version 2. Publish when it\'s ready for readers.');
   });
 
-  it('ignores the param for someone who can\'t edit', async () => {
+  it('ignores the param for someone who can\'t edit, clearing it with a toast', async () => {
     vi.mocked(getVersion).mockReset();
     renderPage(makeDetail('p1', { my_level: 'view', page: published }), '/n/p1?edit=1&restore=v2');
     await screen.findByText('Hello from the published page.');
     expect(getVersion).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith('Couldn\'t restore — you can\'t edit this page right now.');
+    await waitFor(() => expect(screen.getByTestId('probe').textContent).toBe('/n/p1?edit=1'));
+  });
+
+  it('clears the param and tells the user when editing is blocked before the restore can apply', async () => {
+    vi.mocked(getVersion).mockReset().mockReturnValue(new Promise(() => {})); // never resolves — access is lost first
+    renderPage(makeDetail('p1', { my_level: 'edit', page: published }), '/n/p1?edit=1&restore=v2');
+    await screen.findByTestId('wiki-editor');
+    fireEvent.click(screen.getByRole('button', { name: 'server says read-only' }));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Couldn\'t restore — you can\'t edit this page right now.'));
+    await waitFor(() => expect(screen.getByTestId('probe').textContent).toBe('/n/p1?edit=1'));
+    expect(screen.queryByTestId('wiki-editor')).toBeNull();
   });
 });

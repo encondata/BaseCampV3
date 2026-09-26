@@ -10,10 +10,10 @@ import { useSyncExternalStore } from 'react';
 
 import { ApiError } from '@portal/lib/api';
 
-import { putUpload, UploadAbortedError } from '../lib/putUpload';
+import { PutUploadError, putUpload, UploadAbortedError } from '../lib/putUpload';
 import { noteChanged, noteCreated } from '../lib/treeStore';
 import type { NodeOut, UploadStartIn } from '../lib/types';
-import { completeUpload, createNode, errorMessage, startUpload } from '../lib/wikiApi';
+import { completeUpload, createNode, errorMessage, getTree, startUpload } from '../lib/wikiApi';
 import type { WalkedFile } from './folderWalk';
 
 export const MAX_PARALLEL = 3;
@@ -37,9 +37,12 @@ export interface UploadItem {
   result?: NodeOut;
 }
 
-/** A folder (or the space's top level: `parentId` null) to drop into. */
+/** A folder (or the space's top level: `parentId` null) to drop into.
+ *  `spaceKey` is only needed for folder drops (`enqueueWalked` looks up
+ *  each level's existing children by it); a plain file drop never reads it. */
 export interface DropDestination {
   spaceId: string;
+  spaceKey?: string;
   parentId: string | null;
   label: string;
 }
@@ -84,11 +87,16 @@ function startBody(item: UploadItem): UploadStartIn {
     : { target: 'version', node_id: target.nodeId, ...common };
 }
 
+/** A server refusal keeps its own message; a PutUploadError is already
+ *  worded for people (a specific storage failure); anything else — a raw
+ *  browser error from somewhere else in the chain — is never shown
+ *  verbatim, so the tray never leaks something like "Failed to fetch". */
 function failure(err: unknown): string {
   if (err instanceof UploadAbortedError) return CANCELED;
-  const fallback = 'The upload failed. Try again.';
-  if (err instanceof Error && !(err instanceof ApiError) && err.message) return err.message;
-  return errorMessage(err, fallback);
+  const fallback = 'Upload failed — try again.';
+  if (err instanceof ApiError) return errorMessage(err, fallback);
+  if (err instanceof PutUploadError) return err.message;
+  return fallback;
 }
 
 async function run(item: UploadItem, ctl: AbortController) {
@@ -190,11 +198,22 @@ export async function enqueueWalked(
       if (!folders.has(key)) {
         const title = path[depth - 1];
         try {
-          const node = await createNode({
-            space_id: dest.spaceId, parent_id: parent.id, kind: 'folder', title,
-          });
-          noteCreated(node);
-          folders.set(key, { id: node.id, label: node.title });
+          // a folder with the same name already sitting here (case-
+          // insensitively) is reused rather than duplicated — dropping the
+          // same tree twice, or into a folder someone already made by hand,
+          // shouldn't pile up "Site A", "Site A" siblings
+          const siblings = dest.spaceKey ? await getTree(dest.spaceKey, parent.id) : [];
+          const existing = siblings.find(
+            (n) => n.kind === 'folder' && n.title.toLowerCase() === title.toLowerCase());
+          if (existing) {
+            folders.set(key, { id: existing.id, label: existing.title });
+          } else {
+            const node = await createNode({
+              space_id: dest.spaceId, parent_id: parent.id, kind: 'folder', title,
+            });
+            noteCreated(node);
+            folders.set(key, { id: node.id, label: node.title });
+          }
         } catch (err) {
           folders.set(key, null);
           failed.set(key, { name: title, reason: errorMessage(err, ''), count: 0 });

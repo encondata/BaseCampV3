@@ -88,48 +88,71 @@ export default function ImportDialog({ spaceId, parentId, parentTitle, onClose }
     const set = (i: number, patch: Partial<Entry>) =>
       setEntries((cur) => cur.map((e, j) => (j === i ? { ...e, ...patch } : e)));
     const outcome: Entry[] = entries.map((e) => ({ ...e }));
-    const { baseName, importFile, importKind, unsupportedMessage } = await import('./importers');
 
-    for (let i = 0; i < outcome.length; i += 1) {
-      const { file } = outcome[i];
-      const finish = (patch: Partial<Entry>) => { Object.assign(outcome[i], patch); set(i, patch); };
-      if (!importKind(file.name)) {
-        finish({ status: 'error', message: unsupportedMessage(file.name) });
-        continue;
-      }
-      let page: NodeOut | null = null;
-      try {
-        finish({ status: 'creating' });
-        page = await createNode({
-          space_id: spaceId, parent_id: parentId, kind: 'page',
-          title: baseName(file.name).slice(0, 200).trim() || 'Untitled',
-        });
-        noteCreated(page);
-        finish({ status: 'converting' });
-        const pageId = page.id;
-        const { title, doc, warnings } = await importFile(file, {
-          uploadAsset: (blob, name) => uploadAsset(pageId, blob, name),
-        });
-        finish({ status: 'saving' });
-        if (title !== page.title) noteChanged(await updateNode(page.id, { title }));
-        await putDraft(page.id, doc);
-        finish({ status: 'done', nodeId: page.id, warnings });
-      } catch (err) {
-        if (page) {
-          const made = page;
-          await deleteNode(made.id).then(() => noteDeleted(made)).catch(() => {});
+    try {
+      const { baseName, importFile, importKind, unsupportedMessage } = await import('./importers');
+
+      for (let i = 0; i < outcome.length; i += 1) {
+        const { file } = outcome[i];
+        const finish = (patch: Partial<Entry>) => { Object.assign(outcome[i], patch); set(i, patch); };
+        if (!importKind(file.name)) {
+          finish({ status: 'error', message: unsupportedMessage(file.name) });
+          continue;
         }
-        finish({ status: 'error', message: failureText(err, file.name) });
+        let page: NodeOut | null = null;
+        try {
+          finish({ status: 'creating' });
+          page = await createNode({
+            space_id: spaceId, parent_id: parentId, kind: 'page',
+            title: baseName(file.name).slice(0, 200).trim() || 'Untitled',
+          });
+          noteCreated(page);
+          finish({ status: 'converting' });
+          const pageId = page.id;
+          const { title, doc, warnings } = await importFile(file, {
+            uploadAsset: (blob, name) => uploadAsset(pageId, blob, name),
+          });
+          finish({ status: 'saving' });
+          // a page that was created and converted is a successful import even
+          // if the rename fails — keep it under its filename title rather
+          // than trashing good work over a rename
+          const allWarnings = [...warnings];
+          if (title !== page.title) {
+            try {
+              noteChanged(await updateNode(page.id, { title }));
+            } catch {
+              allWarnings.push(`Couldn't rename it to “${title}” — kept “${page.title}”.`);
+            }
+          }
+          await putDraft(page.id, doc);
+          finish({ status: 'done', nodeId: page.id, warnings: allWarnings });
+        } catch (err) {
+          if (page) {
+            const made = page;
+            await deleteNode(made.id).then(() => noteDeleted(made)).catch(() => {});
+          }
+          finish({ status: 'error', message: failureText(err, file.name) });
+        }
       }
+    } catch (err) {
+      // the whole run couldn't proceed (e.g. the importers chunk failed to
+      // load): every file that hadn't already finished ends in error, not
+      // stuck on "Importing…" forever
+      outcome.forEach((e, i) => {
+        if (e.status === 'done' || e.status === 'error') return;
+        const patch: Partial<Entry> = { status: 'error', message: failureText(err, e.file.name) };
+        Object.assign(outcome[i], patch);
+        set(i, patch);
+      });
+    } finally {
+      setPhase('finished');
     }
 
     const [only] = outcome;
     if (outcome.length === 1 && only.status === 'done' && !only.warnings?.length) {
       onClose();
       navigate(`/n/${only.nodeId}?edit=1`);
-      return;
     }
-    setPhase('finished');
   };
 
   return (

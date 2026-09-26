@@ -147,7 +147,8 @@ describe('FolderView', () => {
     expect(screen.getByRole('button', { name: 'Upload' })).toBeTruthy();
     const files = [new File(['a'], 'a.pdf'), new File(['b'], 'b.png')];
     fireEvent.change(screen.getByLabelText('Upload files to Guides'), { target: { files } });
-    expect(enqueue).toHaveBeenCalledWith(files, { kind: 'node', spaceId: 'space-1', parentId: 'f1', label: 'Guides' });
+    expect(enqueue).toHaveBeenCalledWith(files,
+      { kind: 'node', spaceId: 'space-1', spaceKey: 'ops', parentId: 'f1', label: 'Guides' });
   });
 
   it('opens the import dialog for the folder', async () => {
@@ -170,7 +171,7 @@ describe('FolderView', () => {
     fireEvent.drop(list, { dataTransfer });
     expect(screen.queryByText('Drop to upload to Guides')).toBeNull();
     await vi.waitFor(() => expect(enqueueWalked).toHaveBeenCalledWith(
-      [{ path: [], file }], { spaceId: 'space-1', parentId: 'f1', label: 'Guides' }, expect.any(Function)));
+      [{ path: [], file }], { spaceId: 'space-1', spaceKey: 'ops', parentId: 'f1', label: 'Guides' }, expect.any(Function)));
   });
 
   it('ignores drags that aren\'t files', async () => {

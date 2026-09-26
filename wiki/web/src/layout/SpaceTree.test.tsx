@@ -209,7 +209,7 @@ describe('SpaceTree', () => {
     expect(drop.defaultPrevented).toBe(true);
     expect(row('f1').getAttribute('data-drop')).toBeNull();
     await vi.waitFor(() => expect(enqueueWalked).toHaveBeenCalledWith(
-      [{ path: [], file }], { spaceId: 'space-1', parentId: 'f1', label: 'Guides' }, expect.any(Function)));
+      [{ path: [], file }], { spaceId: 'space-1', spaceKey: 'ops', parentId: 'f1', label: 'Guides' }, expect.any(Function)));
     expect(moveMock).not.toHaveBeenCalled();
   });
 

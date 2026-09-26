@@ -126,8 +126,13 @@ function takeTitle(doc: JSONContent): string | null {
 
 const IMAGE_EXTS: Record<string, string> = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
-  'image/bmp': 'bmp', 'image/tiff': 'tiff', 'image/x-emf': 'emf', 'image/x-wmf': 'wmf',
+  'image/bmp': 'bmp', 'image/tiff': 'tiff',
 };
+
+/** Windows metafile formats: browsers can't display them, so they're
+ *  skipped rather than uploaded and embedded as an unrenderable image. */
+const UNDISPLAYABLE_IMAGE_TYPES = new Set(['image/x-emf', 'image/x-wmf']);
+const SKIPPED_IMAGES_WARNING = 'Some images couldn\'t be imported.';
 
 async function docxToDoc(file: File, ctx: ImportContext, warnings: string[]): Promise<JSONContent> {
   // loaded on first use: the Markdown helpers here also serve the file view
@@ -136,6 +141,10 @@ async function docxToDoc(file: File, ctx: ImportContext, warnings: string[]): Pr
   let n = 0;
   const convertImage = mammoth.images.imgElement(async (image) => {
     n += 1;
+    if (UNDISPLAYABLE_IMAGE_TYPES.has(image.contentType)) {
+      if (!warnings.includes(SKIPPED_IMAGES_WARNING)) warnings.push(SKIPPED_IMAGES_WARNING);
+      return { src: '' };
+    }
     const name = `image-${n}.${IMAGE_EXTS[image.contentType] ?? 'bin'}`;
     try {
       const blob = new Blob([await image.readAsArrayBuffer()], { type: image.contentType });

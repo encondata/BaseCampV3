@@ -157,7 +157,7 @@ export default function FolderView({ node }: { node: NodeDetailOut }) {
   const [importing, setImporting] = useState(false);
   const uploadRef = useRef<HTMLInputElement>(null);
   const canEdit = atLeast(node.my_level, 'edit');
-  const dest = { spaceId: node.space_id, parentId: node.id, label: node.title };
+  const dest = { spaceId: node.space_id, spaceKey: node.space_key, parentId: node.id, label: node.title };
 
   const onPick = (e: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);

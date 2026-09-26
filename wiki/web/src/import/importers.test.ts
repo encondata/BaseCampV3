@@ -75,6 +75,33 @@ describe('importFile: .docx', () => {
     expect(find(doc, 'image')).toEqual([]);
     expect(warnings).toEqual(["An image (image-1.png) couldn't be uploaded and was left out."]);
   });
+
+  it('skips EMF/WMF images (browsers can\'t display them) instead of uploading something undisplayable', async () => {
+    vi.doMock('mammoth', () => ({
+      default: {
+        images: { imgElement: (convert: (image: unknown) => Promise<{ src: string }>) => convert },
+        convertToHtml: async (
+          _input: unknown, opts: { convertImage: (image: unknown) => Promise<{ src: string }> },
+        ) => {
+          const asTag = (r: { src: string }) => (r.src ? `<img src="${r.src}" alt="">` : '');
+          const wmf = await opts.convertImage({ contentType: 'image/x-wmf', readAsArrayBuffer: async () => new ArrayBuffer(4) });
+          const png = await opts.convertImage({ contentType: 'image/png', readAsArrayBuffer: async () => new ArrayBuffer(4) });
+          return { value: `<p>${asTag(wmf)}${asTag(png)}</p>` };
+        },
+      },
+    }));
+    vi.resetModules();
+    const { importFile: importFileFresh } = await import('./importers');
+    const uploadAsset = vi.fn().mockResolvedValue('asset-9');
+    const { doc, warnings } = await importFileFresh(new File(['x'], 'Plan.docx'), { uploadAsset });
+    // only the displayable image is uploaded and embedded
+    expect(uploadAsset).toHaveBeenCalledTimes(1);
+    expect(find(doc, 'wikiImage')).toHaveLength(1);
+    expect(find(doc, 'wikiImage')[0].attrs).toMatchObject({ assetId: 'asset-9' });
+    expect(warnings).toEqual(["Some images couldn't be imported."]);
+    vi.doUnmock('mammoth');
+    vi.resetModules();
+  });
 });
 
 describe('importFile: Markdown', () => {

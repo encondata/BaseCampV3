@@ -70,6 +70,12 @@ describe('SpaceSettings', () => {
     expect(toast).toHaveBeenCalledWith('Settings saved.');
   });
 
+  it('does not start dirty when the space has no color set', async () => {
+    renderSettings(makeSpace({ my_level: 'manage', color: null }));
+    await screen.findByLabelText('Name');
+    expect(screen.getByRole('button', { name: 'Save settings' })).toHaveProperty('disabled', true);
+  });
+
   it('manages members inline on the page and links to the trash', async () => {
     renderSettings(makeSpace({ my_level: 'manage' }));
     const members = await screen.findByRole('region', { name: 'Members' });
@@ -97,7 +103,14 @@ describe('SpaceSettings', () => {
     cleanup();
     clearWikiMe();
     renderSettings(makeSpace({ my_level: 'view', archived_at: '2026-09-25T00:00:00Z' }), false);
-    expect(await screen.findByText(/only space managers/i)).toBeTruthy();
+    expect(await screen.findByText('This space is archived.')).toBeTruthy();
+    expect(screen.queryByText(/only space managers/i)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Unarchive space' })).toBeNull();
+  });
+
+  it('tells a non-manager of an active space that only managers can change settings', async () => {
+    renderSettings(makeSpace({ my_level: 'view' }));
+    expect(await screen.findByText('Only space managers can change these settings.')).toBeTruthy();
+    expect(screen.queryByText('This space is archived.')).toBeNull();
   });
 });

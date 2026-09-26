@@ -182,7 +182,8 @@ export default function SpaceTree({ space, activeId, revealIds, ...handlers }: P
       if (takesFiles(e, node)) {
         e.preventDefault();
         setDrop(null);
-        dropUpload(e.dataTransfer, { spaceId: node.space_id, parentId: node.id, label: node.title }, toast);
+        dropUpload(e.dataTransfer,
+          { spaceId: node.space_id, spaceKey: node.space_key, parentId: node.id, label: node.title }, toast);
         setOpen(node.id, true);
         return;
       }

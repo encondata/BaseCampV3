@@ -143,6 +143,34 @@ describe('ImportDialog', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it('keeps a successfully converted page under its filename title if the rename fails, and still saves it', async () => {
+    vi.mocked(updateNode).mockRejectedValue(new ApiError(422, 'bad_title'));
+    renderDialog();
+    choose(new File(['# Cutover\n\nStep one.'], 'runbook.md', { type: 'text/markdown' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    const item = await screen.findByRole('listitem', { name: 'runbook.md' });
+    await vi.waitFor(() => expect(within(item).getByText('Imported')).toBeTruthy());
+    expect(deleteNode).not.toHaveBeenCalled();
+    expect(putDraft).toHaveBeenCalledWith('page-1', expect.any(Object));
+    expect(within(item).getByText('Couldn\'t rename it to “Cutover” — kept “runbook”.')).toBeTruthy();
+    expect(within(item).getByRole('link', { name: 'Open' }).getAttribute('href')).toBe('/n/page-1?edit=1');
+    // a warning keeps it on the list rather than auto-opening it
+    expect(screen.queryByText(/^at /)).toBeNull();
+  });
+
+  it('never leaves the dialog stuck on "Importing…" if the importers module fails to load', async () => {
+    vi.doMock('./importers', () => { throw new Error('Failed to fetch dynamically imported module'); });
+    renderDialog();
+    choose(new File(['# Cutover\n\nStep one.'], 'runbook.md', { type: 'text/markdown' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    const item = await screen.findByRole('listitem', { name: 'runbook.md' });
+    await vi.waitFor(() => expect(
+      within(item).getByText('Couldn\'t read “runbook.md”. Check that it opens, then try again.')).toBeTruthy());
+    expect(screen.getByRole('button', { name: 'Done' })).toBeTruthy();
+    expect(createNode).not.toHaveBeenCalled();
+    vi.doUnmock('./importers');
+  });
+
   it('takes the new page back to the trash when saving its content fails', async () => {
     vi.mocked(putDraft).mockRejectedValue(new ApiError(413, 'too_large', undefined, 'The page content is larger than 5 MB.'));
     renderDialog();

@@ -179,7 +179,7 @@ describe('FileView details', () => {
     renderFile(node);
     const table = await screen.findByRole('table', { name: 'Versions' });
     const headers = within(table).getAllByRole('columnheader').map((h) => h.textContent);
-    expect(headers).toEqual(['No.', 'File name', 'Size', 'Uploaded by', 'When', '', '']);
+    expect(headers).toEqual(['No.', 'File name', 'Size', 'Uploaded by', 'When', 'Download', 'Restore']);
     const rows = within(table).getAllByRole('row').slice(1);
     expect(rows).toHaveLength(2);
     expect(within(rows[0]).getByText('2')).toBeTruthy();
