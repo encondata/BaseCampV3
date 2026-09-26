@@ -1,5 +1,7 @@
 /** Where an export stands, for the person who asked for it: checked every
- *  EXPORT_POLL_MS while it's queued or running, then a Download button
+ *  EXPORT_POLL_MS while it's queued or running (backing off to
+ *  EXPORT_POLL_MAX_MS while checks fail, and stopping for good on a 401 or
+ *  403 — no amount of retrying fixes those), then a Download button
  *  once it's done (which asks for a fresh link on every click — a link
  *  only lives ten minutes), or why it failed. Shared by the Export dialog
  *  and the `/exports/:jobId` page an inbox notification opens. */
@@ -12,13 +14,16 @@ import type { ExportOut } from '../lib/types';
 import { errorMessage, getExport } from '../lib/wikiApi';
 
 export const EXPORT_POLL_MS = 2000;
+export const EXPORT_POLL_MAX_MS = 30000;
 
 const GONE = 'This export isn’t available. Exports are kept for 7 days, and only the person who asked for one can download it.';
+const DENIED = 'You can’t check on this export any more. Sign in again, or ask a wiki administrator about your access.';
 
 type State =
   | { status: 'loading' }
   | { status: 'ready'; job: ExportOut; error: string }
-  | { status: 'gone' };
+  | { status: 'gone' }
+  | { status: 'denied' };
 
 export default function ExportProgress({ jobId }: { jobId: string }) {
   const [state, setState] = useState<State>({ status: 'loading' });
@@ -28,23 +33,30 @@ export default function ExportProgress({ jobId }: { jobId: string }) {
   useEffect(() => {
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let delay = EXPORT_POLL_MS;
     const check = async () => {
       try {
         const job = await getExport(jobId);
         if (!live) return;
+        delay = EXPORT_POLL_MS;
         setState({ status: 'ready', job, error: '' });
-        if (job.status === 'queued' || job.status === 'running') timer = setTimeout(check, EXPORT_POLL_MS);
+        if (job.status === 'queued' || job.status === 'running') timer = setTimeout(check, delay);
       } catch (err) {
         if (!live) return;
         if (err instanceof ApiError && err.status === 404) {
           setState({ status: 'gone' });
           return;
         }
-        // a blip: say so, and keep checking
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          setState({ status: 'denied' });
+          return;
+        }
+        // a blip or an outage: say so, and keep checking, less often
         setState((cur) => (cur.status === 'ready'
           ? { ...cur, error: errorMessage(err, 'Couldn’t check on the export. Still trying…') }
           : cur));
-        timer = setTimeout(check, EXPORT_POLL_MS);
+        delay = Math.min(delay * 2, EXPORT_POLL_MAX_MS);
+        timer = setTimeout(check, delay);
       }
     };
     void check();
@@ -70,6 +82,7 @@ export default function ExportProgress({ jobId }: { jobId: string }) {
 
   if (state.status === 'loading') return <p className="page-hint">Checking on the export…</p>;
   if (state.status === 'gone') return <p className="page-hint">{GONE}</p>;
+  if (state.status === 'denied') return <p className="page-hint">{DENIED}</p>;
 
   const { job, error } = state;
   return (

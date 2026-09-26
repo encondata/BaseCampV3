@@ -17,7 +17,7 @@ import type { ExportOut } from '../lib/types';
 import { createExport, getExport } from '../lib/wikiApi';
 import { makeNode, makeSpace } from '../testing/fixtures';
 import ExportDialog from './ExportDialog';
-import { EXPORT_POLL_MS } from './ExportProgress';
+import { EXPORT_POLL_MAX_MS, EXPORT_POLL_MS } from './ExportProgress';
 
 const PUBLISHED = { is_home: false, published_version_id: 'v1', published_at: '2026-09-20T12:00:00Z', has_unpublished_changes: false };
 const PAGE = makeNode('n1', { title: 'Rack Guide', my_level: 'view', page: PUBLISHED });
@@ -130,6 +130,39 @@ describe('ExportDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Export' }));
     expect(await screen.findByText('“Rack Guide” was deleted.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Download' })).toBeNull();
+  });
+
+  it('stops checking once the export is off-limits', async () => {
+    renderDialog({ kind: 'node', node: PAGE });
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+    expect(await screen.findByText(/Preparing/)).toBeTruthy();
+    vi.mocked(getExport).mockRejectedValue(new ApiError(403, 'forbidden', undefined, 'Nope'));
+    await act(async () => { await vi.advanceTimersByTimeAsync(EXPORT_POLL_MS); });
+    expect(await screen.findByText(/can’t check on this export/)).toBeTruthy();
+    const calls = vi.mocked(getExport).mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(EXPORT_POLL_MS * 10); });
+    expect(getExport).toHaveBeenCalledTimes(calls);
+  });
+
+  it('backs off while the server is unreachable, then resumes', async () => {
+    renderDialog({ kind: 'node', node: PAGE });
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+    expect(await screen.findByText(/Preparing/)).toBeTruthy();
+    vi.mocked(getExport).mockRejectedValue(new ApiError(503, 'unavailable'));
+    const at = () => vi.mocked(getExport).mock.calls.length;
+    const start = at();
+    // 2 s, then 4 s, 8 s, 16 s, 30 s, 30 s… — not every 2 s
+    await act(async () => { await vi.advanceTimersByTimeAsync(EXPORT_POLL_MS * 30); });
+    expect(at() - start).toBeLessThanOrEqual(6);
+    expect(at() - start).toBeGreaterThanOrEqual(4);
+    expect(screen.getByText(/Still trying/)).toBeTruthy();
+
+    vi.mocked(getExport).mockResolvedValue(job({ status: 'running' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(EXPORT_POLL_MAX_MS); });
+    const back = at();
+    await act(async () => { await vi.advanceTimersByTimeAsync(EXPORT_POLL_MS); });
+    expect(at()).toBe(back + 1);                                   // normal pace again
+    expect(screen.queryByText(/Still trying/)).toBeNull();
   });
 
   it('closes on Done, Cancel and Escape', async () => {

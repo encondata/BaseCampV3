@@ -39,7 +39,7 @@ function GuidePicker({ value, onChange, disabled }: {
     if (!q) { setResults([]); return undefined; }
     let live = true;
     const timer = setTimeout(() => {
-      search({ q, limit: 10 })
+      search({ q, limit: 10, log: false })   // as you type: not logged
         .then((hits) => {
           if (live) setResults(hits.filter((h) => h.node.kind !== 'folder').map(fromHit));
         })

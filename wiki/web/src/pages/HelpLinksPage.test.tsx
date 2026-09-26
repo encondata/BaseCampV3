@@ -105,6 +105,8 @@ describe('HelpLinksPage', () => {
     const dialog = screen.getByRole('dialog', { name: 'Add help link' });
     fireEvent.change(within(dialog).getByLabelText('Context'), { target: { value: 'kiosk:/enroll' } });
     await pickGuide('enroll', 'Enroll Guide');
+    // an as-you-type picker: half-typed words stay out of the search log
+    expect(search).toHaveBeenLastCalledWith({ q: 'enroll', limit: 10, log: false });
     // folders can't be guides
     expect(screen.queryByRole('button', { name: /^Enroll Folder/ })).toBeNull();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add link' }));

@@ -43,7 +43,7 @@ describe('PageLinkMenu ([[)', () => {
     render(<PageLinkMenu editor={editor} />);
     type('See [[cab');
     expect(await screen.findByRole('option', { name: /Cabling standards/ })).toBeTruthy();
-    expect(search).toHaveBeenLastCalledWith({ q: 'cab', kind: 'page', limit: 8 });
+    expect(search).toHaveBeenLastCalledWith({ q: 'cab', kind: 'page', limit: 8, log: false });
 
     act(() => { fireEvent.keyDown(editor.view.dom, { key: 'Enter' }); });
     expect(screen.queryByRole('listbox')).toBeNull();

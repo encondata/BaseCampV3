@@ -29,7 +29,7 @@ export function useNodeSearch(query: string, kind: NodeKind): SearchState {
     let live = true;
     setState((s) => ({ status: 'loading', hits: s.hits }));
     const timer = setTimeout(() => {
-      search({ q, kind, limit: 8 })
+      search({ q, kind, limit: 8, log: false })   // as you type: not logged
         .then((hits) => { if (live) setState({ status: 'done', hits }); })
         .catch(() => { if (live) setState({ status: 'error', hits: [] }); });
     }, DEBOUNCE_MS);
