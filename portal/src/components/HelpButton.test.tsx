@@ -21,7 +21,7 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 
 let open: MockInstance<typeof window.open>;
 beforeEach(() => {
-  open = vi.spyOn(window, 'open').mockReturnValue(null);
+  open = vi.spyOn(window, 'open').mockReturnValue({ opener: window } as unknown as Window);
   vi.mocked(apiFetch).mockReset();
 });
 afterEach(() => {
@@ -46,9 +46,25 @@ it('opens this screen’s guide in a new tab', async () => {
   }));
   renderAt('/bulk/time');
   fireEvent.click(screen.getByRole('button', { name: 'Help for this page' }));
-  await waitFor(() => expect(open).toHaveBeenCalledWith('https://wiki.test/n/n1', '_blank', 'noopener'));
+  await waitFor(() => expect(open).toHaveBeenCalledWith('https://wiki.test/n/n1', '_blank'));
   expect(apiFetch).toHaveBeenCalledWith('/wiki/help?context=portal%3A%2Fbulk%2Ftime');
   expect(screen.queryByText('No guide for this page yet')).toBeNull();
+});
+
+it('offers the guide as a link when the browser blocks the new tab', async () => {
+  // a slow lookup can outlast the click's permission to open a tab
+  open.mockReturnValue(null);
+  vi.mocked(apiFetch).mockResolvedValue(json(200, {
+    node_id: 'n1', title: 'Time Guide', url: 'https://wiki.test/n/n1', context: 'portal:/bulk/time',
+  }));
+  renderAt('/bulk/time');
+  fireEvent.click(screen.getByRole('button', { name: 'Help for this page' }));
+  const link = await screen.findByRole('link', { name: 'Open “Time Guide”' });
+  expect(link.getAttribute('href')).toBe('https://wiki.test/n/n1');
+  expect(link.getAttribute('target')).toBe('_blank');
+  expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+  fireEvent.click(link);
+  expect(screen.queryByRole('link', { name: 'Open “Time Guide”' })).toBeNull();
 });
 
 it('says there’s no guide yet, without Link a guide for someone who isn’t a wiki admin', async () => {
@@ -68,7 +84,7 @@ it('offers wiki admins Link a guide, opening the wiki’s Help links page on thi
   fireEvent.click(await screen.findByRole('button', { name: 'Link a guide' }));
   expect(open).toHaveBeenCalledWith(
     `${location.protocol}//${location.hostname}:5176/admin/help-links?context=portal%3A%2Fsites%2F42`,
-    '_blank', 'noopener');
+    '_blank');
   // the popover closes once it's done its job
   expect(screen.queryByText('No guide for this page yet')).toBeNull();
 });

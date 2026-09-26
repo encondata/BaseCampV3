@@ -40,8 +40,15 @@ describe('wikiHelp', () => {
   });
 
   it('opens a URL in a new tab without handing it this window', () => {
-    const open = vi.spyOn(window, 'open').mockReturnValue(null);
-    openInNewTab('https://wiki.test/n/n1');
-    expect(open).toHaveBeenCalledWith('https://wiki.test/n/n1', '_blank', 'noopener');
+    const tab = { opener: window } as unknown as Window;
+    const open = vi.spyOn(window, 'open').mockReturnValue(tab);
+    expect(openInNewTab('https://wiki.test/n/n1')).toBe(true);
+    expect(open).toHaveBeenCalledWith('https://wiki.test/n/n1', '_blank');
+    expect(tab.opener).toBeNull();
+  });
+
+  it('says when the browser blocked the new tab', () => {
+    vi.spyOn(window, 'open').mockReturnValue(null);
+    expect(openInNewTab('https://wiki.test/n/n1')).toBe(false);
   });
 });

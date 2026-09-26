@@ -32,7 +32,15 @@ export function helpLinkAdminUrl(context: string): string {
   return `${wikiOrigin()}/admin/help-links?context=${encodeURIComponent(context)}`;
 }
 
-/** A new tab that can't reach back into this one. */
-export function openInNewTab(url: string): void {
-  window.open(url, '_blank', 'noopener');
+/** A new tab that can't reach back into this one (its opener is cut
+ *  before it loads). False when the browser blocked it — after an awaited
+ *  lookup the click's permission to open a tab may have run out (Safari
+ *  keeps it about a second) — so the caller can offer a plain link. Not
+ *  `'noopener'`: with it, window.open always returns null and a block
+ *  can't be told apart. */
+export function openInNewTab(url: string): boolean {
+  const tab = window.open(url, '_blank');
+  if (!tab) return false;
+  tab.opener = null;
+  return true;
 }

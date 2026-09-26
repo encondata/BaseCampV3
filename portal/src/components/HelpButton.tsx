@@ -3,7 +3,9 @@
  * guide (`portal:<pathname>`, see lib/wikiHelp.ts) and opens it in a new
  * tab. With none yet, a small popover says so — and offers wiki admins
  * (wiki:delete) "Link a guide", which opens the wiki's Help links page with
- * this screen's context filled in.
+ * this screen's context filled in. If the browser blocks the new tab (a
+ * slow lookup can outlast the click's permission to open one), the
+ * popover offers the guide as a link instead.
  */
 import { useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
@@ -12,7 +14,7 @@ import { useAuth } from '../auth/AuthContext';
 import { apiFetch } from '../lib/api';
 import { helpContext, helpLinkAdminUrl, lookupHelp, openInNewTab } from '../lib/wikiHelp';
 
-type Pop = null | 'none' | 'error';
+type Pop = null | 'none' | 'error' | { blocked: { url: string; title: string } };
 
 export default function HelpButton({ onOpen }: {
   /** Called on each click — the top bar closes its other popovers. */
@@ -53,8 +55,8 @@ export default function HelpButton({ onOpen }: {
     try {
       const found = await lookupHelp(apiFetch, context);
       if (mine !== seq.current) return;
-      if (found.found) openInNewTab(found.url);
-      else setPop('none');
+      if (!found.found) setPop('none');
+      else if (!openInNewTab(found.url)) setPop({ blocked: { url: found.url, title: found.title } });
     } catch {
       if (mine === seq.current) setPop('error');
     } finally {
@@ -75,9 +77,16 @@ export default function HelpButton({ onOpen }: {
       {pop && (
         <div className="pop-menu" role="dialog" aria-label="Help">
           <div className="pop-title">Help</div>
-          <div className="pop-empty">
-            {pop === 'none' ? 'No guide for this page yet' : 'Couldn’t look up a guide. Try again.'}
-          </div>
+          {typeof pop === 'object' ? (
+            <a className="pop-item" href={pop.blocked.url} target="_blank" rel="noopener noreferrer"
+               onClick={() => setPop(null)}>
+              Open “{pop.blocked.title}”
+            </a>
+          ) : (
+            <div className="pop-empty">
+              {pop === 'none' ? 'No guide for this page yet' : 'Couldn’t look up a guide. Try again.'}
+            </div>
+          )}
           {pop === 'none' && can('wiki', 'delete') && (
             <button type="button" className="pop-item"
                     onClick={() => { setPop(null); openInNewTab(helpLinkAdminUrl(context)); }}>
