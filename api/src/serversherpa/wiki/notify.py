@@ -20,7 +20,9 @@ they simply stop producing notifications.
 
 The link is the absolute wiki URL of the node (`<wiki_origin>/n/<id>`,
 plus `#comment-<id>` for a comment), so the portal's inbox opens it on
-the wiki. `payload` is `{"node_id", "space_key", "event"}`. Like
+the wiki. `payload` is `{"node_id", "space_key", "event"}`. An event
+about something that isn't a node goes through `to_person` instead (one
+recipient, any wiki path). Like
 `inbox.notify`, nothing here commits — the caller's transaction does.
 """
 from __future__ import annotations
@@ -326,3 +328,24 @@ async def on_review_due(db: AsyncSession, node: WikiNode, *,
         return set()
     return await _send(db, node, [owner_id], actor_id=None, kind="wiki_review_due",
                        title=f"{node.title} is due for review", event="review_due")
+
+
+async def to_person(db: AsyncSession, person_id: uuid.UUID, *, kind: str, title: str,
+                    path: str, event: str, body: str = "",
+                    payload: dict | None = None) -> bool:
+    """One notification to one person about something that isn't a node
+    (Phase 3's export-ready: the requester only, linking to
+    `<wiki_origin><path>`) — still through `inbox.notify`, and still only
+    to an active account. Who may see what it links to is the caller's
+    check. Returns whether it was sent."""
+    active = await db.scalar(
+        select(UserAccount.person_id)
+        .join(Person, Person.id == UserAccount.person_id)
+        .where(UserAccount.person_id == person_id, UserAccount.disabled_at.is_(None),
+               Person.archived_at.is_(None)))
+    if active is None:
+        return False
+    await notify(db, person_id, kind, title, body=body,
+                 link=f"{get_settings().wiki_origin.rstrip('/')}{path}",
+                 payload={**(payload or {}), "event": event})
+    return True

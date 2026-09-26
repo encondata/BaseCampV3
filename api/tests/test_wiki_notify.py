@@ -502,3 +502,24 @@ async def test_review_decided_names_approvals_and_rejects_other_statuses(client,
         with pytest.raises(ValueError):
             await notify.on_review_decided(db, node, review, actor_id=s["owner_id"])
     assert len(await _inbox(db, s["editor_id"])) == 1
+
+
+async def test_to_person_links_anywhere_in_the_wiki_for_one_active_person(client, db):
+    """For events about something that isn't a node (Phase 3's export
+    ready): one recipient, any wiki path, still through inbox.notify and
+    still only to an active account."""
+    _, person_id = await login_as(client, db)
+    sent = await notify.to_person(db, person_id, kind="wiki_update", title="Your export is ready",
+                                  path="/exports/abc", event="export_ready",
+                                  payload={"job_id": "abc"})
+    assert sent is True
+    [note] = await _inbox(db, person_id)
+    assert note.link == f"{get_settings().wiki_origin.rstrip('/')}/exports/abc"
+    assert note.payload == {"job_id": "abc", "event": "export_ready"}
+
+    account = await db.scalar(select(UserAccount).where(UserAccount.person_id == person_id))
+    account.disabled_at = func.now()
+    await db.flush()
+    assert await notify.to_person(db, person_id, kind="wiki_update", title="Again",
+                                  path="/exports/abc", event="export_ready") is False
+    assert len(await _inbox(db, person_id)) == 1
