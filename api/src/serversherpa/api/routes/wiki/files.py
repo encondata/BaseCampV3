@@ -65,8 +65,9 @@ from serversherpa.wiki.files import (
     read_upload_token,
     sanitize_filename,
 )
-from serversherpa.wiki.pages import refresh_search, utcnow
+from serversherpa.wiki.pages import utcnow
 from serversherpa.wiki.permissions import require_node_level
+from serversherpa.wiki.search import refresh_search
 
 router = APIRouter()
 
@@ -367,6 +368,7 @@ async def patch_file(node_id: uuid.UUID, body: FilePatchIn, ctx: WikiContext) ->
     if changes:
         audit(ctx.db, actor_id=ctx.user.person.id, entity_type="wiki_node",
               entity_id=str(node.id), action="update", changes=changes)
+        await refresh_search(ctx.db, node.id)
         await ctx.db.commit()
     return await node_out(ctx, node, await ctx.ix.level_for_node(node))
 

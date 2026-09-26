@@ -18,7 +18,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import WikiNode, WikiPage, WikiPageVersion
@@ -29,6 +29,10 @@ from serversherpa.wiki.content import (
     doc_text,
     docs_equal,
 )
+# re-exported: callers that only need the search refresh can still reach
+# it as `pages.refresh_search` (Task 7 moved the implementation to
+# `wiki.search`, which also owns the query side of search).
+from serversherpa.wiki.search import refresh_search
 
 # the least time between two autosave versions of a page
 AUTOSAVE_EVERY = timedelta(minutes=10)
@@ -162,20 +166,3 @@ async def publish(db: AsyncSession, node: WikiNode, page: WikiPage, *,
     await db.flush()
     await refresh_search(db, node.id)
     return version
-
-
-# Task 7 moves this into the search module and extends it (weights, file
-# text); for now a page's index is its title plus its published text.
-_REFRESH_SEARCH_SQL = text("""
-    UPDATE wiki_nodes n SET search_tsv = to_tsvector('english',
-        n.title || ' ' || coalesce((
-            SELECT v.content_text FROM wiki_pages p
-            JOIN wiki_page_versions v ON v.id = p.published_version_id
-            WHERE p.node_id = n.id), ''))
-    WHERE n.id = :node_id
-""")
-
-
-async def refresh_search(db: AsyncSession, node_id: uuid.UUID) -> None:
-    """Recompute a node's `search_tsv` from its title and published text."""
-    await db.execute(_REFRESH_SEARCH_SQL, {"node_id": node_id})

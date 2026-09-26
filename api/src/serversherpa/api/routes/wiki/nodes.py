@@ -46,6 +46,7 @@ from serversherpa.wiki.permissions import (
     require_node_level,
     require_space_level,
 )
+from serversherpa.wiki.search import refresh_search
 
 router = APIRouter()
 
@@ -167,6 +168,8 @@ async def patch_node(node_id: uuid.UUID, body: NodePatchIn, ctx: WikiContext) ->
         node.updated_at = datetime.now(UTC)
         audit(ctx.db, actor_id=actor_id, entity_type="wiki_node",
               entity_id=str(node.id), action="update", changes=changes)
+        if "title" in changes:
+            await refresh_search(ctx.db, node.id)
         await ctx.db.commit()
     return await node_out(ctx, node, await ctx.ix.level_for_node(node))
 
@@ -226,10 +229,12 @@ async def copy(node_id: uuid.UUID, body: NodeCopyIn, ctx: WikiContext) -> NodeOu
                                            levels=levels)
     except tree.TreeError as exc:
         raise _tree_error(exc) from exc
-    count = len(await tree.subtree_ids(ctx.db, new_root))
+    new_ids = await tree.subtree_ids(ctx.db, new_root)
+    for new_id in new_ids:
+        await refresh_search(ctx.db, new_id)
     audit(ctx.db, actor_id=actor_id, entity_type="wiki_node",
           entity_id=str(new_root.id), action="copy",
-          changes={"from": str(node.id), "count": count})
+          changes={"from": str(node.id), "count": len(new_ids)})
     await ctx.db.commit()
     return await node_out(ctx, new_root, await ctx.ix.level_for_node(new_root))
 
