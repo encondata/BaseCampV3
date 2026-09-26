@@ -133,7 +133,6 @@ function marksPlugin(key: PluginKey<MarksState>, onClick: (ids: string[]) => voi
         if (!tr.docChanged) return value;
         if (touchesCommentMarks(tr)) return { ...value, deco: decorate(state.doc, value) };
         return { ...value, deco: value.deco.map(tr.mapping, tr.doc) };
-        return value;
       },
     },
     props: {

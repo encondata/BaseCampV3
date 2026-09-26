@@ -78,6 +78,23 @@ describe('CommentComposer', () => {
     expect(onSubmit).toHaveBeenCalledWith({ text: 'never mind', mentions: [] });
   });
 
+  it('shows a counter near the limit and disables Post past it', async () => {
+    const box = setup({ maxLength: 150 });
+    const post = screen.getByRole('button', { name: 'Comment' }) as HTMLButtonElement;
+    typeInto(box, 'short');
+    expect(screen.queryByText(/\/150/)).toBeNull();
+
+    fireEvent.change(box, { target: { value: 'a'.repeat(60) } });
+    expect(screen.getByText('60/150')).toBeTruthy();
+    expect(post.disabled).toBe(false);
+
+    fireEvent.change(box, { target: { value: 'a'.repeat(151) } });
+    expect(screen.getByText('151/150')).toBeTruthy();
+    expect(post.disabled).toBe(true);
+    await act(async () => { fireEvent.click(post); });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('starts from an existing comment and keeps the text when posting fails', async () => {
     onSubmit.mockRejectedValueOnce(new Error('nope'));
     const box = setup({

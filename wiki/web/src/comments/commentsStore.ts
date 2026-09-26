@@ -24,13 +24,10 @@ export function canCommentOn(level: Level | null, space: SpaceOut): boolean {
   return level === 'view' && !space.archived_at && space.settings.readers_can_comment !== false;
 }
 
-/** Editors, and whoever started the thread — taken from the first
- *  comment that still names its author (a deleted first comment may
- *  not; the API goes by the first comment's author regardless). */
+/** Editors, and whoever started the thread. */
 export function canResolveThread(thread: CommentThread, level: Level | null, meId: string | null): boolean {
   if (atLeast(level, 'edit')) return true;
-  const author = thread.comments.find((c) => c.author)?.author;
-  return !!meId && author?.id === meId;
+  return !!meId && thread.comments[0]?.author?.id === meId;
 }
 
 /** Your own comment, or any as a manager. */

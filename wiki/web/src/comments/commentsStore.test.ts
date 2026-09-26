@@ -56,14 +56,6 @@ describe('who may do what', () => {
     expect(canDeleteComment(theirs.comments[0], 'manage', me.id)).toBe(true);
     expect(canDeleteComment({ ...mine.comments[0], deleted: true }, 'manage', me.id)).toBe(false);
   });
-
-  it('takes the thread\'s author from the first comment that still names one', () => {
-    const anonymousRoot = { ...thread('t3'), comments: [
-      comment('t3', { author: null, deleted: true }), comment('c4', { thread_id: 't3', author: me }),
-    ] };
-    expect(canResolveThread(anonymousRoot, 'view', me.id)).toBe(true);
-    expect(canResolveThread(anonymousRoot, 'view', ada.id)).toBe(false);
-  });
 });
 
 describe('arrangeThreads', () => {

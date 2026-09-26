@@ -94,8 +94,9 @@ export default function CommentComposer({
   };
 
   const trimmed = text.trim();
+  const overLimit = text.length > maxLength;
   const submit = async () => {
-    if (!trimmed || busy) return;
+    if (!trimmed || busy || overLimit) return;
     setBusy(true);
     try {
       await onSubmit({ text: trimmed, mentions: mentionsIn(trimmed, picked) });
@@ -185,8 +186,11 @@ export default function CommentComposer({
       </div>
       <div className="wiki-comment-composer-foot">
         <span className="wiki-comment-hint">Ctrl/⌘ + Enter to post</span>
+        {maxLength - text.length <= 100 && (
+          <span className={`wiki-comment-counter${overLimit ? ' over' : ''}`}>{text.length}/{maxLength}</span>
+        )}
         {onCancel && <button type="button" className="mini-btn" onClick={onCancel} disabled={busy}>Cancel</button>}
-        <button type="button" className="btn-solid wiki-comment-post" disabled={!trimmed || busy}
+        <button type="button" className="btn-solid wiki-comment-post" disabled={!trimmed || busy || overLimit}
                 onClick={() => void submit()}>
           {busy ? 'Posting…' : submitLabel}
         </button>
