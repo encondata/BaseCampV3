@@ -80,14 +80,14 @@ async def create(body: NodeCreateIn, ctx: WikiContext) -> NodeOut:
         tree.check_parent(parent, space.id)
     except tree.TreeError as exc:
         raise _tree_error(exc) from exc
-    if body.initial_content is not None:
-        check_doc(body.initial_content)
+    initial_content = (check_doc(body.initial_content)
+                       if body.initial_content is not None else None)
 
     actor_id = ctx.user.person.id
     node = await tree.create_node(
         ctx.db, space=space, parent=parent, kind=body.kind, title=body.title,
         actor_id=actor_id, after_id=body.after_id,
-        initial_content=body.initial_content)
+        initial_content=initial_content)
     audit(ctx.db, actor_id=actor_id, entity_type="wiki_node",
           entity_id=str(node.id), action="create",
           changes=diff({}, {"kind": node.kind, "title": node.title,

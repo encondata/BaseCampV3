@@ -49,7 +49,8 @@ describe('PageLinkMenu ([[)', () => {
     expect(screen.queryByRole('listbox')).toBeNull();
     expect(editor.getJSON().content?.[0].content).toEqual([
       { type: 'text', text: 'See ' },
-      { type: 'pageLink', attrs: { nodeId: 'n9', title: 'Cabling standards' } },
+      // the target's title is never stored — viewers look up the live one
+      { type: 'pageLink', attrs: { nodeId: 'n9', title: '' } },
       { type: 'text', text: ' ' },
     ]);
   });
@@ -62,7 +63,7 @@ describe('PageLinkMenu ([[)', () => {
     expect(screen.getByRole('option', { name: /Cable colors/ }).getAttribute('aria-selected')).toBe('true');
     fireEvent.mouseDown(screen.getByRole('option', { name: /Cable colors/ }));
     expect(editor.getJSON().content?.[0].content?.[0]).toEqual(
-      { type: 'pageLink', attrs: { nodeId: 'n10', title: 'Cable colors' } });
+      { type: 'pageLink', attrs: { nodeId: 'n10', title: '' } });
   });
 
   it('asks for a search term before searching', () => {

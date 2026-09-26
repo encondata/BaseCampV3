@@ -1,6 +1,8 @@
-/** An inline link to another wiki node. `title` is the target's title when
- *  the link was made; the editor's node view shows the live title (or
- *  "Missing page"). DOM-free. */
+/** An inline link to another wiki node. The editor's node view shows the
+ *  live title (or "Missing page"). `title` is kept only so older or pasted
+ *  content still parses: new links don't set it, and the API strips it
+ *  before storing — the target may be hidden from this page's readers.
+ *  DOM-free. */
 import { Node } from '@tiptap/core';
 
 export const PageLink = Node.create({

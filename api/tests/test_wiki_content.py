@@ -6,6 +6,7 @@ from serversherpa.wiki.content import (
     docs_equal,
     referenced_asset_ids,
     rewrite_asset_ids,
+    strip_reference_labels,
 )
 
 
@@ -65,8 +66,39 @@ def test_doc_text_flattens_every_kind_of_block():
         "quoted\n\n"
         "More\nhidden\n\n"
         "Rack photo\nRow 4\n"
-        "See Runbook.\n"
+        "See .\n"
         "spec.pdf")
+
+
+# A link or file embed to another node records nothing about the target
+# that a reader of THIS page might not be allowed to see: the target's
+# title is looked up live, per viewer.
+LINKED = {"type": "doc", "content": [
+    _p(_t("See "), {"type": "pageLink", "attrs": {"nodeId": "n1", "title": "Q4 reduction plan"}}),
+    {"type": "fileEmbed", "attrs": {"nodeId": "n2", "assetId": None,
+                                    "filename": "layoffs.xlsx", "contentType": "x"}},
+    {"type": "fileEmbed", "attrs": {"nodeId": None, "assetId": "a1",
+                                    "filename": "own-asset.pdf", "contentType": "y"}},
+]}
+
+
+def test_doc_text_leaves_out_what_links_and_file_node_embeds_name():
+    text = doc_text(LINKED)
+    assert "Q4 reduction plan" not in text
+    assert "layoffs.xlsx" not in text
+    # the page's own uploaded asset is its own content
+    assert "own-asset.pdf" in text
+
+
+def test_strip_reference_labels_drops_target_titles_and_keeps_the_rest():
+    stripped = strip_reference_labels(LINKED)
+    link = stripped["content"][0]["content"][1]
+    assert link == {"type": "pageLink", "attrs": {"nodeId": "n1"}}
+    node_embed, asset_embed = stripped["content"][1:]
+    assert node_embed["attrs"] == {"nodeId": "n2", "assetId": None, "contentType": "x"}
+    assert asset_embed["attrs"]["filename"] == "own-asset.pdf"
+    # a copy: the input is untouched
+    assert LINKED["content"][0]["content"][1]["attrs"]["title"] == "Q4 reduction plan"
 
 
 def test_doc_text_handles_empty_and_odd_input():

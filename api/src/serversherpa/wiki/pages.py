@@ -30,6 +30,7 @@ from serversherpa.wiki.content import (
     doc_bytes,
     doc_text,
     docs_equal,
+    strip_reference_labels,
 )
 # re-exported: callers that only need the search refresh can still reach
 # it as `pages.refresh_search` (Task 7 moved the implementation to
@@ -62,14 +63,16 @@ def _err(status: int, code: str, message: str) -> HTTPException:
 
 
 def check_doc(content_json: object) -> dict:
-    """`content_json` if it's a storable document: a `{"type": "doc", …}`
-    object (else 422 `bad_doc`) of at most MAX_DOC_BYTES (else 413
-    `too_large`)."""
+    """`content_json` as it may be stored: a `{"type": "doc", …}` object
+    (else 422 `bad_doc`) of at most MAX_DOC_BYTES (else 413 `too_large`),
+    returned without the target titles its links and file embeds carry
+    (`strip_reference_labels`). Every write path stores what this
+    returns, never its input."""
     if not isinstance(content_json, dict) or content_json.get("type") != "doc":
         raise _err(422, "bad_doc", "The page content isn't a document.")
     if doc_bytes(content_json) > MAX_DOC_BYTES:
         raise _err(413, "too_large", "The page content is larger than 5 MB.")
-    return content_json
+    return strip_reference_labels(content_json)
 
 
 async def _lock_page(db: AsyncSession, node_id: uuid.UUID) -> None:
@@ -82,7 +85,10 @@ async def _lock_page(db: AsyncSession, node_id: uuid.UUID) -> None:
 async def add_version(db: AsyncSession, node: WikiNode, *, kind: str, title: str,
                       content_json: dict, actor_id: uuid.UUID | None,
                       note: str | None = None) -> WikiPageVersion:
-    """Record the next version (1..n per page) of `node`'s content."""
+    """Record the next version (1..n per page) of `node`'s content —
+    without the target titles its links carry (`strip_reference_labels`),
+    whichever path it came from."""
+    content_json = strip_reference_labels(content_json)
     await _lock_page(db, node.id)
     last = await db.scalar(select(func.max(WikiPageVersion.version_no))
                            .where(WikiPageVersion.node_id == node.id))
@@ -114,7 +120,7 @@ async def store_draft(db: AsyncSession, page: WikiPage, node: WikiNode, *,
     as they were. When the content changed and the last autosave is
     AUTOSAVE_EVERY old (or there's none yet), an `autosave` version is
     taken too. Raises 422 `bad_doc` / 413 `too_large` (see `check_doc`)."""
-    check_doc(content_json)
+    content_json = check_doc(content_json)
     await _lock_page(db, node.id)
     await db.refresh(page)     # the draft as of the lock, not the request start
     now = utcnow()

@@ -125,6 +125,18 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
   };
   const [preview, setPreview] = useState<Preview>(undefined);
   const [open, setOpen] = useState(true);
+  // a file node shows its live title; the stored name is the page's own
+  // asset's (a file node's is never stored — it may name a hidden file)
+  const [liveTitle, setLiveTitle] = useState<{ id: string; title: string | null } | null>(null);
+
+  useEffect(() => {
+    if (!nodeId) return undefined;
+    let live = true;
+    nodeTitle(nodeId)
+      .then((title) => { if (live) setLiveTitle({ id: nodeId, title }); })
+      .catch(() => { if (live) setLiveTitle({ id: nodeId, title: null }); });
+    return () => { live = false; };
+  }, [nodeId]);
 
   useEffect(() => {
     let live = true;
@@ -142,12 +154,14 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
     return () => { live = false; };
   }, [nodeId, assetId, contentType]);
 
-  const type = fileType(preview?.type ?? contentType, filename);
+  const titleLoading = !!nodeId && liveTitle?.id !== nodeId;
+  const shownName = nodeId ? (liveTitle?.id === nodeId ? liveTitle.title ?? '' : '') : filename;
+  const type = fileType(preview?.type ?? contentType, shownName);
   const previewable = type === 'pdf' || type === 'image' || type === 'video';
-  const loading = preview === undefined;
-  const missing = !loading && !preview.url;
+  const loading = preview === undefined || titleLoading;
+  const missing = !loading && !preview?.url;
   // the stored name shows only once the reader is known to be able to see the file
-  const name = loading ? 'Loading…' : missing ? 'File unavailable' : filename || 'Untitled file';
+  const name = loading ? 'Loading…' : missing ? 'File unavailable' : shownName || 'Untitled file';
   const label = { pdf: 'PDF', image: 'Image', video: 'Video', doc: 'Document', sheet: 'Spreadsheet',
     slides: 'Presentation', other: 'File' }[type];
 
@@ -157,7 +171,7 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
       <div className="wiki-file-card" data-drag-handle="">
         <span className={`wiki-file-icon wiki-file-${type}`}><Icon name="file" /></span>
         <span className="wiki-file-text">
-          <b title={loading || missing ? undefined : filename}>{name}</b>
+          <b title={loading || missing ? undefined : shownName}>{name}</b>
           <span>{missing ? 'Removed, or not shared with you' : loading ? '' : label}</span>
         </span>
         <span className="wiki-file-actions" contentEditable={false}>
@@ -178,8 +192,8 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
       </div>
       {open && preview?.url && previewable && (
         <div className="wiki-file-preview" contentEditable={false}>
-          {type === 'image' && <img src={preview.url} alt={filename} draggable={false} />}
-          {type === 'pdf' && <iframe src={preview.url} title={`Preview of ${filename}`} loading="lazy" />}
+          {type === 'image' && <img src={preview.url} alt={shownName} draggable={false} />}
+          {type === 'pdf' && <iframe src={preview.url} title={`Preview of ${shownName}`} loading="lazy" />}
           {type === 'video' && <video src={preview.url} controls preload="metadata" />}
         </div>
       )}

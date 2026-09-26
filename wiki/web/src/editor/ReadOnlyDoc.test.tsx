@@ -147,4 +147,18 @@ describe('ReadOnlyDoc — unverified targets', () => {
     expect(screen.queryByText(/salaries/)).toBeNull();
     expect(screen.queryByRole('link', { name: /Open/ })).toBeNull();
   });
+
+  it('shows a file node embed by the file\'s current title, never the stored name', async () => {
+    vi.mocked(getFileUrl).mockResolvedValue({ url: 'https://s3/f', content_type: 'application/zip', preview_status: 'none' });
+    vi.mocked(getNode).mockImplementation(async (id) => {
+      if (id === 'f-live') return makeDetail('f-live', { title: 'Current name.zip', kind: 'file' });
+      throw new ApiError(404, 'not_found');
+    });
+    render(<MemoryRouter><ReadOnlyDoc content={{ type: 'doc', content: [{
+      type: 'fileEmbed',
+      attrs: { nodeId: 'f-live', assetId: null, filename: 'Old name.zip', contentType: '' },
+    }] }} /></MemoryRouter>);
+    expect(await screen.findByText('Current name.zip')).toBeTruthy();
+    expect(screen.queryByText('Old name.zip')).toBeNull();
+  });
 });

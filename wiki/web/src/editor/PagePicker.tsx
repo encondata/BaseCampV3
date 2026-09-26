@@ -84,7 +84,9 @@ export function insertPageLink(editor: Editor, node: PickedNode, range?: { from:
   const chain = editor.chain().focus();
   (range ? chain.deleteRange(range) : chain)
     .insertContent([
-      { type: 'pageLink', attrs: { nodeId: node.id, title: node.title } },
+      // no title: the target may be hidden from some of this page's readers,
+      // who each see its live title (or "Missing page") instead
+      { type: 'pageLink', attrs: { nodeId: node.id } },
       { type: 'text', text: ' ' },
     ])
     .run();

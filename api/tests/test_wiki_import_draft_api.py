@@ -140,3 +140,20 @@ async def test_seeding_validates_the_document(client, db, monkeypatch):
     db.expire_all()
     row = await db.get(WikiPage, uuid.UUID(page["id"]))
     assert row.draft_json is None
+
+
+async def test_imports_never_store_a_links_target_title(client, db):
+    s = await _setup(client, db)
+    linking = {"type": "doc", "content": [{"type": "paragraph", "content": [
+        {"type": "pageLink", "attrs": {"nodeId": str(uuid.uuid4()), "title": "Hidden plan"}}]}]}
+    seeded = await _create(client, s["owner"], s["space"], "Seeded", kind="page")
+    await _put_draft(client, s["editor"], seeded["id"], linking)
+    created = await _create(client, s["owner"], s["space"], "Created", kind="page",
+                            initial_content=linking)
+    db.expire_all()
+    for page in (seeded, created):
+        row = await db.get(WikiPage, uuid.UUID(page["id"]))
+        assert "Hidden plan" not in str(row.draft_json)
+        versions = (await db.scalars(select(WikiPageVersion).where(
+            WikiPageVersion.node_id == uuid.UUID(page["id"])))).all()
+        assert versions and all("Hidden plan" not in str(v.content_json) for v in versions)

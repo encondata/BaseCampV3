@@ -159,7 +159,8 @@ function CollabEditor({ pageId, doc, provider, user, onToc, onFirstSync }: {
     } else {
       editor.chain().focus().insertContent({
         type: 'fileEmbed',
-        attrs: { nodeId: node.id, assetId: null, filename: node.title, contentType: '' },
+        // no filename: readers see the file's live title, when they may
+        attrs: { nodeId: node.id, assetId: null, contentType: '' },
       }).run();
     }
   };

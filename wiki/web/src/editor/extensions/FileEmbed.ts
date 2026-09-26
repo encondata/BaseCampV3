@@ -1,5 +1,8 @@
 /** A card for a wiki file node (`nodeId`) or a page asset (`assetId`).
- *  DOM-free: the editor's node view adds the inline PDF/image/video preview. */
+ *  `filename` is the asset's name; a file node's is never stored (the API
+ *  strips it — the file may be hidden from this page's readers) and the
+ *  node view shows its live title instead. DOM-free: the editor's node
+ *  view adds the inline PDF/image/video preview. */
 import { Node } from '@tiptap/core';
 
 export const FileEmbed = Node.create({

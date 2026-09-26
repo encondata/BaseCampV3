@@ -460,3 +460,38 @@ async def test_put_state_is_refused_in_read_only_mode(client, db, monkeypatch):
     # reads still work
     resp = await client.get(f"/wiki/internal/pages/{page['id']}/state", headers=SVC)
     assert resp.status_code == 200
+
+
+# ── link titles never stored ────────────────────────────────────────
+
+LINKING = {"type": "doc", "content": [
+    {"type": "paragraph", "content": [
+        {"type": "text", "text": "See "},
+        {"type": "pageLink", "attrs": {"nodeId": str(uuid.uuid4()),
+                                       "title": "Quartermaster reduction plan"}}]},
+    {"type": "fileEmbed", "attrs": {"nodeId": str(uuid.uuid4()), "assetId": None,
+                                    "filename": "quartermaster.xlsx", "contentType": ""}},
+]}
+
+
+async def test_stored_and_published_content_never_names_a_links_target(client, db):
+    """A restricted page's title must not reach readers of a page that
+    links to it: not in the stored draft, the published version, the
+    content API, or the search index."""
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Linking page", kind="page")
+    await _put_state(client, page["id"], LINKING, editors=[s["editor_id"]])
+    row = await _page_row(db, page["id"])
+    for text in (str(row.draft_json), row.draft_text):
+        assert "Quartermaster" not in text and "quartermaster" not in text
+
+    resp = await client.post(f"/wiki/pages/{page['id']}/publish", headers=s["editor"],
+                             json={})
+    assert resp.status_code == 201, resp.text
+    resp = await client.get(f"/wiki/pages/{page['id']}/content", headers=s["viewer"])
+    assert resp.status_code == 200
+    assert "uartermaster" not in resp.text
+    resp = await client.get("/wiki/search", headers=s["viewer"],
+                            params={"q": "quartermaster"})
+    assert resp.status_code == 200
+    assert resp.json() == []

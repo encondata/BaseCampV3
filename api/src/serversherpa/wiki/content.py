@@ -2,7 +2,9 @@
 empty Tiptap document new pages start from, plain-text extraction
 (`doc_text`, for `content_text`/`draft_text` — search and previews), a
 canonical comparison of two documents (`docs_equal`), the stored-size cap
-(`MAX_DOC_BYTES`), and the embedded-asset walkers page copy uses.
+(`MAX_DOC_BYTES`), the embedded-asset walkers page copy uses, and
+`strip_reference_labels`, which drops what a link or embed recorded about
+ANOTHER node (its title) before a document is stored.
 
 Server-side Python never renders HTML; it only reads the ProseMirror JSON
 the editor's shared schema produces.
@@ -48,8 +50,11 @@ def doc_text(doc: dict | None) -> str:
     `hardBreak` a newline, and every block (paragraph, heading, list/task
     item, blockquote, code block, table cell/header, callout, details*)
     ends with a newline. A `wikiImage` contributes its alt text and
-    caption (a line each), a `pageLink` its title, and a `fileEmbed` its
-    filename (a line). Runs of three or more newlines collapse to two,
+    caption (a line each), and a `fileEmbed` of the page's own asset its
+    filename (a line). A `pageLink`, or a `fileEmbed` of a file node,
+    contributes nothing: what it once recorded about its target (the
+    target's title) may name something this page's readers can't see
+    (see `strip_reference_labels`). Runs of three or more newlines collapse to two,
     and the result is stripped. Walks iteratively, so a pathologically
     deep document can't exhaust the stack."""
     if not doc:
@@ -73,11 +78,9 @@ def doc_text(doc: dict | None) -> str:
                 parts.append(text)
         elif node_type == "hardBreak":
             parts.append("\n")
-        elif node_type == "pageLink":
-            parts.append(_attr(node, "title") or "")
         elif node_type == "wikiImage":
             parts.extend(f"{v}\n" for v in (_attr(node, "alt"), _attr(node, "caption")) if v)
-        elif node_type == "fileEmbed":
+        elif node_type == "fileEmbed" and not _attr(node, "nodeId"):
             filename = _attr(node, "filename")
             if filename:
                 parts.append(f"{filename}\n")
@@ -87,6 +90,46 @@ def doc_text(doc: dict | None) -> str:
         if isinstance(content, list):
             stack.extend(reversed(content))
     return re.sub(r"\n{3,}", "\n\n", "".join(parts)).strip()
+
+
+def _references_node(node: dict) -> bool:
+    """A pageLink, or a fileEmbed of a wiki file node (not of the page's
+    own uploaded asset)."""
+    node_type = node.get("type")
+    return node_type == "pageLink" or (node_type == "fileEmbed" and bool(_attr(node, "nodeId")))
+
+
+# what a node that points at another wiki node may have recorded about
+# its target when it was inserted — never stored (see strip_reference_labels)
+_REFERENCE_LABELS = {"pageLink": ("title",), "fileEmbed": ("filename",)}
+
+
+def strip_reference_labels(doc: dict) -> dict:
+    """A deep copy of `doc` without the target titles its page links
+    (`pageLink.title`) and file-node embeds (`fileEmbed.filename` where
+    `nodeId` is set) carry. Those attributes are the target's title when
+    the link was made, and the target may be behind broken inheritance:
+    stored, they'd reach every reader of THIS page through the content
+    API, the search index and exports. Viewers resolve the live title of
+    what they may see instead. A page's own uploaded asset keeps its
+    filename (it's the page's own content)."""
+    out = copy.deepcopy(doc)
+    stack: list[Any] = [out]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(node)
+            continue
+        if not isinstance(node, dict):
+            continue
+        attrs = node.get("attrs")
+        if isinstance(attrs, dict) and _references_node(node):
+            for name in _REFERENCE_LABELS[node["type"]]:
+                attrs.pop(name, None)
+        content = node.get("content")
+        if isinstance(content, list):
+            stack.extend(content)
+    return out
 
 
 def _canonical(doc: Any) -> str:
