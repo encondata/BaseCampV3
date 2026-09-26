@@ -24,6 +24,7 @@ import { Link, useNavigate } from 'react-router-dom';
 
 import { fileType } from '../components/NodeIcon';
 import { resolveAssetUrl } from '../lib/assetUrls';
+import { openDownload } from '../lib/download';
 import { nodeTitle } from '../lib/nodeTitles';
 import { personName } from '../lib/personNames';
 import { getFileUrl } from '../lib/wikiApi';
@@ -34,21 +35,29 @@ import { Icon, type IconName } from './icons';
 
 type AssetUrlMap = Record<string, string>;
 
-interface PublicShareOptions {
+/** What a public view's node views may ask of the page around them. */
+export interface PublicShareHooks {
+  /** An image or video failed to load — its URL may have expired. */
+  onAssetError: () => void;
+  /** The URLs may have expired (an iframe can't say so: it shows the error page). */
+  isStale: () => boolean;
+  /** Re-read the share: fresh asset URLs, or null when that failed. */
+  refresh: () => Promise<AssetUrlMap | null>;
+}
+
+interface PublicShareOptions extends PublicShareHooks {
   /** Every asset URL the view may show (asset id → presigned URL). */
   assetUrls: AssetUrlMap;
-  /** An image, video or preview failed to load — its URL may have expired. */
-  onAssetError: () => void;
 }
 
 /** Puts a view in public mode (see the header comment). */
 export const PublicShare = Extension.create<PublicShareOptions>({
   name: 'publicShare',
   addOptions() {
-    return { assetUrls: {}, onAssetError: () => {} };
+    return { assetUrls: {}, onAssetError: () => {}, isStale: () => false, refresh: async () => null };
   },
   addStorage() {
-    return { assetUrls: this.options.assetUrls, onAssetError: this.options.onAssetError };
+    return { ...this.options };
   },
 });
 
@@ -170,7 +179,8 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
   const { nodeId, assetId, filename, contentType } = node.attrs as {
     nodeId: string | null; assetId: string | null; filename: string; contentType: string;
   };
-  const publicUrls = publicAssets(editor);
+  const share = publicShareOf(editor);
+  const publicUrls = share?.assetUrls ?? null;
   const [preview, setPreview] = useState<Preview>(undefined);
   const [open, setOpen] = useState(true);
   // a file node shows its live title; the stored name is the page's own
@@ -230,7 +240,11 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
         </span>
         <span className="wiki-file-actions" contentEditable={false}>
           {previewable && preview?.url && (
-            <button type="button" className="we-chip-btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+            <button type="button" className="we-chip-btn" aria-expanded={open} onClick={() => {
+              // reopening a public preview whose URL may have expired: fresh URLs first
+              if (!open && share?.isStale()) void share.refresh();
+              setOpen((o) => !o);
+            }}>
               <Icon name="eye" />{open ? 'Hide preview' : 'Preview'}
             </button>
           )}
@@ -238,7 +252,12 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
             <Link className="we-chip-btn" to={nodePath(nodeId)}><Icon name="external" />Open</Link>
           )}
           {!nodeId && preview?.url && (
-            <a className="we-chip-btn" href={preview.url} target="_blank" rel="noopener noreferrer">
+            <a className="we-chip-btn" href={preview.url} target="_blank" rel="noopener noreferrer"
+               onClick={(e) => {
+                 if (!share?.isStale() || !assetId) return;
+                 e.preventDefault();
+                 void share.refresh().then((urls) => { const u = urls?.[assetId]; if (u) openDownload(u); });
+               }}>
               <Icon name="download" />Download
             </a>
           )}
@@ -250,7 +269,7 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
             <img src={preview.url} alt={shownName} draggable={false} onError={publicOnError(editor)} />
           )}
           {type === 'pdf' && (
-            <iframe src={preview.url} title={`Preview of ${shownName}`} loading="lazy" onError={publicOnError(editor)} />
+            <iframe src={preview.url} title={`Preview of ${shownName}`} loading="lazy" />
           )}
           {type === 'video' && <video src={preview.url} controls preload="metadata" onError={publicOnError(editor)} />}
         </div>

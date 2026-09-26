@@ -1364,6 +1364,15 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 .wiki-public-preview audio { display: block; width: calc(100% - 32px); margin: 24px 16px; }
 .wiki-public-nopreview { margin: 0; padding: 48px 20px; text-align: center; }
 .wiki-public-notice { padding-top: 48px; text-align: center; }
+.wiki-public-refresh-note {
+  margin: 0 0 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  background: var(--surface-2, #f6f7f9);
+  color: var(--text-mute);
+  font-size: 12.5px;
+}
 
 /* ── reviews ───────────────────────────────────────────────── */
 

@@ -487,6 +487,8 @@ export interface PublicPageOut {
   content_json: JSONContent;
   published_at: string;
   asset_urls: Record<string, string>;
+  /** How long the URLs live. */
+  url_ttl_seconds: number;
 }
 
 /** …and for a file: `url` renders in the browser when `inline`, else it
@@ -500,6 +502,8 @@ export interface PublicFileOut {
   inline: boolean;
   url: string;
   download_url: string;
+  /** How long the URLs live. */
+  url_ttl_seconds: number;
 }
 
 export type PublicShareOut = PublicPageOut | PublicFileOut;

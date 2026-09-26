@@ -39,6 +39,13 @@ MAX_TOKEN_LENGTH = 128
 # presigned URLs a public read hands out live at most this long
 PUBLIC_URL_TTL_SECONDS = 600
 
+
+def public_url_ttl() -> int:
+    """How long a public read's presigned URLs really live: the storage
+    setting, capped at PUBLIC_URL_TTL_SECONDS (what `presign_get`'s
+    `max_ttl_seconds` does)."""
+    return min(get_settings().spaces_presign_ttl_seconds, PUBLIC_URL_TTL_SECONDS)
+
 PUBLIC_RATE_LIMIT = 60
 PUBLIC_RATE_WINDOW_SECONDS = 60
 
@@ -95,10 +102,11 @@ class IpRateLimiter:
 
     A new bucket arriving at a full table triggers a sweep of the windows
     that have passed — at most one sweep per window, so a flood of new
-    addresses can't make every request pay for one. If the sweep frees
-    nothing, the oldest buckets are evicted down to three quarters of the
-    cap. Once the window's sweep is spent, a new bucket finding the table
-    full is refused (the caller answers 429) until the next window."""
+    addresses can't make every request pay for one. If the table is still
+    full (the sweep freed nothing, or this window's sweep is spent), the
+    oldest bucket is evicted to make room: a new visitor is never refused
+    just because the table is full. A flood of new addresses can push an
+    abuser's bucket out early; the /64 keying makes such a flood costly."""
 
     def __init__(self, *, limit: int, window_seconds: float, max_keys: int = 10_000):
         self.limit = limit
@@ -111,25 +119,21 @@ class IpRateLimiter:
         self._lock = threading.Lock()
 
     def _sweep(self, now: float) -> None:
-        """Drop expired buckets; if the table is still full, the oldest."""
+        """Drop the buckets whose window has passed."""
         self._hits = {k: v for k, v in self._hits.items() if now - v[0] < self.window}
-        excess = len(self._hits) - self.max_keys * 3 // 4
-        if len(self._hits) >= self.max_keys and excess > 0:
-            for key in list(self._hits)[:excess]:
-                del self._hits[key]
 
     def hit(self, address: str, now: float | None = None) -> bool:
-        """Count one request from `address`; False when it's over the limit
-        (or it's a new bucket and the table is full)."""
+        """Count one request from `address`; False when it's over the limit."""
         now = time.monotonic() if now is None else now
         key = bucket_for(address)
         with self._lock:
             entry = self._hits.get(key)
             if entry is None and len(self._hits) >= self.max_keys:
-                if now - self._last_sweep < self.window:
-                    return False
-                self._last_sweep = now
-                self._sweep(now)   # always leaves room: at most 3/4 full
+                if now - self._last_sweep >= self.window:
+                    self._last_sweep = now
+                    self._sweep(now)
+                while len(self._hits) >= self.max_keys:
+                    self._hits.pop(next(iter(self._hits)))   # the oldest
             if entry is not None and now - entry[0] >= self.window:
                 del self._hits[key]
                 entry = None

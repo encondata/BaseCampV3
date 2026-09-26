@@ -14,9 +14,11 @@ only credential.
   assets that content embeds. A file answers its current version. Every
   presigned URL follows the uploads' inline rules
   (`files.presign_view`) and lives at most PUBLIC_URL_TTL_SECONDS.
+- Both say how long their URLs live (`url_ttl_seconds`), so the SPA can
+  re-read before they expire; its re-reads pass `?refresh=1`.
 - A successful read counts a view with one UPDATE (no read-modify-write)
-  — except in read-only maintenance mode (the flag `enforce_read_only`
-  reads), when it's served without counting.
+  — except a `refresh` re-read, and in read-only maintenance mode (the
+  flag `enforce_read_only` reads), when it's served without counting.
 """
 from __future__ import annotations
 
@@ -50,6 +52,7 @@ from serversherpa.wiki.share_links import (
     PUBLIC_URL_TTL_SECONDS,
     hash_token,
     public_limiter,
+    public_url_ttl,
 )
 from serversherpa.wiki.space_settings import space_setting
 
@@ -82,7 +85,8 @@ async def _page_out(db: AsyncSession, node: WikiNode) -> PublicPageOut:
             for raw in wanted[asset.id]:
                 urls[raw] = url
     return PublicPageOut(title=node.title, content_json=content,
-                         published_at=version.created_at, asset_urls=urls)
+                         published_at=version.created_at, asset_urls=urls,
+                         url_ttl_seconds=public_url_ttl())
 
 
 async def _file_out(db: AsyncSession, node: WikiNode) -> PublicFileOut:
@@ -101,12 +105,15 @@ async def _file_out(db: AsyncSession, node: WikiNode) -> PublicFileOut:
                          max_ttl_seconds=PUBLIC_URL_TTL_SECONDS),
         download_url=storage.presign_get(version.storage_key,
                                          download_filename=version.filename,
-                                         max_ttl_seconds=PUBLIC_URL_TTL_SECONDS))
+                                         max_ttl_seconds=PUBLIC_URL_TTL_SECONDS),
+        url_ttl_seconds=public_url_ttl())
 
 
 @router.get("/public/{token}", response_model=PublicPageOut | PublicFileOut)
 async def public_share(token: str, request: Request, response: Response,
-                       db: DbSession) -> PublicPageOut | PublicFileOut:
+                       db: DbSession, refresh: bool = False) -> PublicPageOut | PublicFileOut:
+    """`refresh`: the SPA re-reading an open link for fresh URLs — served
+    the same, but not counted as another view."""
     if not public_limiter.hit(rate_limit_ip(request)):
         raise err(429, "rate_limited", "Too many requests. Try again in a minute.")
     if not token or len(token) > MAX_TOKEN_LENGTH:
@@ -131,7 +138,7 @@ async def public_share(token: str, request: Request, response: Response,
         raise not_found()
 
     # maintenance mode freezes writes: still serve, just don't count
-    if not (await admin_config.read_admin_config(db))["read_only"]:
+    if not refresh and not (await admin_config.read_admin_config(db))["read_only"]:
         await db.execute(update(WikiShareLink).where(WikiShareLink.id == link.id).values(
             view_count=WikiShareLink.view_count + 1, last_viewed_at=func.now()))
         await db.commit()

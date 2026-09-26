@@ -467,19 +467,18 @@ def test_limiter_table_stays_bounded_and_sweeps_once_per_window(monkeypatch):
     real_sweep = limiter._sweep
     monkeypatch.setattr(limiter, "_sweep", lambda now: (sweeps.append(now), real_sweep(now)))
 
-    answers = []
     for i in range(40):   # far more distinct keys than the table holds, one window
-        answers.append(limiter.hit(f"10.0.0.{i}", now=1 + i * 0.1))
+        # a new visitor is never refused just because the table is full:
+        # the oldest bucket makes room
+        assert limiter.hit(f"10.0.0.{i}", now=1 + i * 0.1)
         assert len(limiter._hits) <= 10
     assert len(sweeps) == 1
-    # the first ten got in; once the one sweep of the window is spent, a
-    # new key finding the table full is refused
-    assert all(answers[:10]) and not answers[-1]
+    assert "10.0.0.39" in limiter._hits and "10.0.0.0" not in limiter._hits
 
-    # the next window sweeps again (everything has expired) and admits
+    # the next window sweeps again (everything has expired)
     assert limiter.hit("10.0.1.1", now=70)
     assert len(sweeps) == 2
-    assert len(limiter._hits) <= 10
+    assert list(limiter._hits) == ["10.0.1.1"]
 
 
 def test_limiter_evicts_the_oldest_when_a_sweep_frees_nothing():
@@ -518,3 +517,39 @@ async def test_public_read_counts_no_view_in_read_only_mode(client, db, monkeypa
     row = await db.get(WikiShareLink, uuid.UUID(created["id"]))
     await db.refresh(row)
     assert row.view_count == 0 and row.last_viewed_at is None
+
+
+async def test_public_response_says_how_long_its_urls_live(client, db, monkeypatch):
+    s = await _setup(client, db)
+    await _allow(client, s)
+    page = await _page(client, s, db)
+    file_id = await _file(db, s)
+    page_token = _token(await _share(client, s["owner"], page["id"]))
+    file_token = _token(await _share(client, s["owner"], file_id))
+
+    assert (await _public(client, page_token)).json()["url_ttl_seconds"] == 600
+    assert (await _public(client, file_token)).json()["url_ttl_seconds"] == 600
+
+    monkeypatch.setenv("SS_SPACES_PRESIGN_TTL_SECONDS", "300")
+    get_settings.cache_clear()
+    try:
+        body = (await _public(client, file_token)).json()
+        assert body["url_ttl_seconds"] == 300
+        assert parse_qs(urlparse(body["url"]).query)["X-Amz-Expires"] == ["300"]
+    finally:
+        monkeypatch.delenv("SS_SPACES_PRESIGN_TTL_SECONDS")
+        get_settings.cache_clear()
+
+
+async def test_public_refresh_reads_count_no_view(client, db):
+    s = await _setup(client, db)
+    await _allow(client, s)
+    page = await _page(client, s, db)
+    created = await _share(client, s["owner"], page["id"])
+    assert (await client.get(f"/wiki/public/{_token(created)}?refresh=1")).status_code == 200
+    row = await db.get(WikiShareLink, uuid.UUID(created["id"]))
+    await db.refresh(row)
+    assert row.view_count == 0
+    assert (await _public(client, _token(created))).status_code == 200
+    await db.refresh(row)
+    assert row.view_count == 1

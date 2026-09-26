@@ -675,6 +675,8 @@ class PublicPageOut(BaseModel):
     content_json: dict
     published_at: datetime
     asset_urls: dict[str, str]
+    # how long the URLs live — the SPA re-reads before they expire
+    url_ttl_seconds: int
 
 
 class PublicFileOut(BaseModel):
@@ -689,6 +691,7 @@ class PublicFileOut(BaseModel):
     inline: bool
     url: str
     download_url: str
+    url_ttl_seconds: int
 
 
 # ── internal (collab server) ─────────────────────────────────────────

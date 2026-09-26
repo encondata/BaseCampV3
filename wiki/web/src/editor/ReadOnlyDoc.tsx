@@ -6,27 +6,33 @@ import type { Editor, JSONContent } from '@tiptap/core';
 import { EditorContent, useEditor } from '@tiptap/react';
 import { useEffect, useMemo, useRef } from 'react';
 
-import { PublicShare, withNodeViews } from './nodeViews';
+import { PublicShare, withNodeViews, type PublicShareHooks } from './nodeViews';
 import { wikiExtensions } from './schema';
 import { HeadingIds } from './toc';
 
-export default function ReadOnlyDoc({ content, className, onEditor, publicAssets, onPublicAssetError }: {
+export default function ReadOnlyDoc({ content, className, onEditor, publicAssets, publicHooks }: {
   content: JSONContent;
   className?: string;
   /** The view's editor once it exists (null again when it goes) — e.g. to show comment marks. */
   onEditor?: (editor: Editor | null) => void;
   /** Public mode: every asset URL the content may show (asset id → URL). */
   publicAssets?: Record<string, string>;
-  /** Public mode: an image or preview failed to load (its URL may have expired). */
-  onPublicAssetError?: () => void;
+  /** Public mode: keeping those URLs fresh (see PublicShareHooks). */
+  publicHooks?: PublicShareHooks;
 }) {
-  const onAssetErrorRef = useRef(onPublicAssetError);
-  onAssetErrorRef.current = onPublicAssetError;
+  // read through a ref: new hooks must not rebuild the editor
+  const hooksRef = useRef(publicHooks);
+  hooksRef.current = publicHooks;
   const extensions = useMemo(() => [
     ...withNodeViews(wikiExtensions()),
     HeadingIds,
     ...(publicAssets
-      ? [PublicShare.configure({ assetUrls: publicAssets, onAssetError: () => onAssetErrorRef.current?.() })]
+      ? [PublicShare.configure({
+        assetUrls: publicAssets,
+        onAssetError: () => hooksRef.current?.onAssetError(),
+        isStale: () => hooksRef.current?.isStale() ?? false,
+        refresh: () => hooksRef.current?.refresh() ?? Promise.resolve(null),
+      })]
       : []),
   ], [publicAssets]);
   const editor = useEditor({

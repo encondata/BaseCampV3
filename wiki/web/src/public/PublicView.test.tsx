@@ -29,6 +29,7 @@ const PAGE: PublicPageOut = {
   title: 'Rack Guide',
   published_at: '2026-09-20T12:00:00Z',
   asset_urls: { [ASSET]: 'https://s3/rack.png' },
+  url_ttl_seconds: 600,
   content_json: { type: 'doc', content: [
     { type: 'paragraph', content: [{ type: 'text', text: 'Torque the rails to spec.' }] },
     { type: 'wikiImage', attrs: { assetId: ASSET, alt: 'Rack front', caption: '', width: null } },
@@ -38,6 +39,17 @@ const PAGE: PublicPageOut = {
 const FILE: PublicFileOut = {
   kind: 'file', title: 'manual.pdf', filename: 'manual.pdf', content_type: 'application/pdf',
   size_bytes: 2048, inline: true, url: 'https://s3/manual-inline', download_url: 'https://s3/manual-dl',
+  url_ttl_seconds: 600,
+};
+
+const PDF_ASSET = '1f4d6a2e-3b1c-4c7e-9a55-1d2e3f405162';
+const PAGE_WITH_PDF: PublicPageOut = {
+  ...PAGE,
+  asset_urls: { [PDF_ASSET]: 'https://s3/spec.pdf' },
+  content_json: { type: 'doc', content: [
+    { type: 'paragraph', content: [{ type: 'text', text: 'The spec:' }] },
+    { type: 'fileEmbed', attrs: { nodeId: null, assetId: PDF_ASSET, filename: 'spec.pdf', contentType: 'application/pdf' } },
+  ] },
 };
 
 function answer(status: number, body?: unknown) {
@@ -121,18 +133,51 @@ describe('PublicView', () => {
 });
 
 describe('PublicView — expired URLs', () => {
-  it('re-reads the share once when a page image fails to load', async () => {
+  const clock = () => {
+    const start = Date.now();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(start);
+    return (ms: number) => now.mockReturnValue(start + ms);
+  };
+
+  it('re-reads the share (as a refresh) when a page image fails; once per set of URLs until they go stale', async () => {
+    const at = clock();
     answer(200, PAGE);
     answer(200, { ...PAGE, asset_urls: { [ASSET]: 'https://s3/rack-fresh.png' } });
+    answer(200, { ...PAGE, asset_urls: { [ASSET]: 'https://s3/rack-later.png' } });
     renderAt('tok123');
     fireEvent.error(await screen.findByRole('img', { name: 'Rack front' }));
     await waitFor(() => expect(screen.getByRole('img', { name: 'Rack front' }).getAttribute('src'))
       .toBe('https://s3/rack-fresh.png'));
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-    // a second failure doesn't loop
+    expect(fetched()).toEqual(['http://api.test/wiki/public/tok123', 'http://api.test/wiki/public/tok123?refresh=1']);
+    // the fresh URLs failing right away: no loop
     fireEvent.error(screen.getByRole('img', { name: 'Rack front' }));
     await new Promise((r) => { setTimeout(r, 20); });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+    // a later expiry recovers again
+    at(481_000);
+    fireEvent.error(screen.getByRole('img', { name: 'Rack front' }));
+    await waitFor(() => expect(screen.getByRole('img', { name: 'Rack front' }).getAttribute('src'))
+      .toBe('https://s3/rack-later.png'));
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps the page on screen with a notice when a refresh is refused or fails', async () => {
+    answer(200, PAGE);
+    answer(429);
+    renderAt('tok123');
+    fireEvent.error(await screen.findByRole('img', { name: 'Rack front' }));
+    expect(await screen.findByRole('status')).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toMatch(/Couldn’t refresh/);
+    expect(screen.getByText('Torque the rails to spec.')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Rack Guide' })).toBeTruthy();
+  });
+
+  it('shows the link is gone when a refresh finds it revoked', async () => {
+    answer(200, PAGE);
+    answer(404);
+    renderAt('tok123');
+    fireEvent.error(await screen.findByRole('img', { name: 'Rack front' }));
+    expect(await screen.findByText('This link isn’t available')).toBeTruthy();
   });
 
   it('re-reads the share once when a file preview fails to load', async () => {
@@ -155,19 +200,48 @@ describe('PublicView — expired URLs', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('re-reads the share before downloading once the URL may have expired', async () => {
-    const start = Date.now();
-    const now = vi.spyOn(Date, 'now').mockReturnValue(start);
-    answer(200, FILE);
-    answer(200, { ...FILE, download_url: 'https://s3/manual-dl-fresh' });
+  it('re-reads the share before downloading once 80% of the URL lifetime has passed', async () => {
+    const at = clock();
+    answer(200, { ...FILE, url_ttl_seconds: 100 });
+    answer(200, { ...FILE, url_ttl_seconds: 100, download_url: 'https://s3/manual-dl-fresh' });
     renderAt('tok123');
     const link = await screen.findByRole('link', { name: /Download/ });
-    now.mockReturnValue(start + 9 * 60_000);
+    at(79_000);
+    const early = new MouseEvent('click', { bubbles: true, cancelable: true });
+    link.dispatchEvent(early);
+    expect(early.defaultPrevented).toBe(false);
+    at(81_000);
+    const late = new MouseEvent('click', { bubbles: true, cancelable: true });
+    link.dispatchEvent(late);
+    expect(late.defaultPrevented).toBe(true);
+    await waitFor(() => expect(openDownload).toHaveBeenCalledWith('https://s3/manual-dl-fresh'));
+    expect(fetched()[1]).toBe('http://api.test/wiki/public/tok123?refresh=1');
+  });
+
+  it('re-reads the share before reopening an embedded PDF preview whose URL may have expired', async () => {
+    const at = clock();
+    answer(200, PAGE_WITH_PDF);
+    answer(200, { ...PAGE_WITH_PDF, asset_urls: { [PDF_ASSET]: 'https://s3/spec-fresh.pdf' } });
+    renderAt('tok123');
+    fireEvent.click(await screen.findByRole('button', { name: /Hide preview/ }));
+    at(500_000);
+    fireEvent.click(screen.getByRole('button', { name: /Preview/ }));
+    await waitFor(() => expect(screen.getByTitle('Preview of spec.pdf').getAttribute('src'))
+      .toBe('https://s3/spec-fresh.pdf'));
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-reads the share before downloading an embedded file whose URL may have expired', async () => {
+    const at = clock();
+    answer(200, PAGE_WITH_PDF);
+    answer(200, { ...PAGE_WITH_PDF, asset_urls: { [PDF_ASSET]: 'https://s3/spec-fresh.pdf' } });
+    renderAt('tok123');
+    const link = await screen.findByRole('link', { name: /Download/ });
+    at(500_000);
     const click = new MouseEvent('click', { bubbles: true, cancelable: true });
     link.dispatchEvent(click);
     expect(click.defaultPrevented).toBe(true);
-    await waitFor(() => expect(openDownload).toHaveBeenCalledWith('https://s3/manual-dl-fresh'));
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(openDownload).toHaveBeenCalledWith('https://s3/spec-fresh.pdf'));
   });
 });
 

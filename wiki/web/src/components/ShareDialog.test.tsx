@@ -133,6 +133,14 @@ describe('ShareDialog', () => {
     expect(screen.getByRole('link', { name: 'Admin page' }).getAttribute('href')).toBe('/admin');
   });
 
+  it('says nothing about an archived space\'s links when public links are off there', async () => {
+    vi.mocked(getSpace).mockResolvedValue(makeSpace({
+      my_level: 'manage', archived_at: '2026-09-25T00:00:00Z', settings: {} }));
+    renderDialog();
+    expect(await screen.findByText('Public links are turned off for this space.')).toBeTruthy();
+    expect(screen.queryByText(/public links keep working/)).toBeNull();
+  });
+
   it('reports a failed create', async () => {
     vi.mocked(createShareLink).mockRejectedValue(new Error('nope'));
     renderDialog();

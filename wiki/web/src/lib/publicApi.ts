@@ -13,9 +13,14 @@ export class PublicShareError extends Error {
   }
 }
 
-/** 404 for every way a link can be unusable; 429 past the rate limit. */
-export async function getPublicShare(token: string): Promise<PublicShareOut> {
-  const resp = await fetch(`${apiUrl()}/wiki/public/${encodeURIComponent(token)}`, {
+/** 404 for every way a link can be unusable; 429 past the rate limit.
+ *  `refresh`: re-reading an open link for fresh URLs — not counted as
+ *  another view. */
+export async function getPublicShare(
+  token: string, { refresh = false }: { refresh?: boolean } = {},
+): Promise<PublicShareOut> {
+  const qs = refresh ? '?refresh=1' : '';
+  const resp = await fetch(`${apiUrl()}/wiki/public/${encodeURIComponent(token)}${qs}`, {
     credentials: 'omit',
     cache: 'no-store',
   });
