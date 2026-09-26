@@ -189,13 +189,15 @@ async def import_draft(db: AsyncSession, page: WikiPage, node: WikiNode, *,
 
 async def _publish_content(db: AsyncSession, node: WikiNode, page: WikiPage,
                            content_json: dict, *, actor_id: uuid.UUID | None,
-                           note: str | None) -> tuple[WikiPageVersion, set[uuid.UUID]]:
+                           note: str | None, mention_actor_id: uuid.UUID | None = None,
+                           ) -> tuple[WikiPageVersion, set[uuid.UUID]]:
     """Make `content_json` what readers see: a `published` version of it,
     `has_unpublished_changes` recomputed against the draft, the search
     vector refreshed, and a `wiki_mention` for each person it @mentions
-    who wasn't in the previous published version. The page must already
-    be locked (`lock_page`) and refreshed. Returns the version and who
-    got that mention."""
+    who wasn't in the previous published version — from
+    `mention_actor_id` (who wrote the content) when given, else the
+    publisher. The page must already be locked (`lock_page`) and
+    refreshed. Returns the version and who got that mention."""
     previous = await published_content(db, page)
     version = await add_version(db, node, kind="published", title=node.title,
                                 content_json=content_json, actor_id=actor_id, note=note)
@@ -210,7 +212,7 @@ async def _publish_content(db: AsyncSession, node: WikiNode, page: WikiPage,
     mentioned: set[uuid.UUID] = set()
     if added:
         mentioned = await on_mentions(db, node, sorted(uuid.UUID(pid) for pid in added),
-                                      actor_id=actor_id, context="page")
+                                      actor_id=mention_actor_id or actor_id, context="page")
     return version, mentioned
 
 
@@ -239,11 +241,14 @@ async def publish_snapshot(db: AsyncSession, node: WikiNode, page: WikiPage,
     """Publish exactly `snapshot`'s content (an approved review's
     `submitted` version) — whatever the draft holds by now, which stays
     the draft (`has_unpublished_changes` says whether it differs). Same
-    mentions and return value as `publish`."""
+    mentions and return value as `publish`, except that a mention comes
+    from whoever submitted the snapshot (they wrote it), not the
+    approver."""
     await lock_page(db, node.id)
     await db.refresh(page)
     content = snapshot.content_json if snapshot.content_json is not None else EMPTY_DOC
-    return await _publish_content(db, node, page, content, actor_id=actor_id, note=note)
+    return await _publish_content(db, node, page, content, actor_id=actor_id, note=note,
+                                  mention_actor_id=snapshot.created_by)
 
 
 async def has_changes(db: AsyncSession, page: WikiPage) -> bool:

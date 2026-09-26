@@ -76,7 +76,7 @@ export default function SaveAsTemplateDialog({ node, onClose }: { node: NodeDeta
               </div>
               <div className="full">
                 <label htmlFor="wiki-st-desc">Description</label>
-                <input id="wiki-st-desc" value={description} disabled={busy} placeholder="What this is for"
+                <input id="wiki-st-desc" value={description} disabled={busy} placeholder="What this is for" maxLength={500}
                        onChange={(e) => setDescription(e.target.value)} />
               </div>
               <div>

@@ -381,6 +381,20 @@ async def test_soft_delete_clears_the_stored_body(client, db):
     assert row.body == {"text": "", "mentions": []}
 
 
+async def test_only_editors_start_inline_threads(client, db):
+    """An inline thread needs its anchor mark written into the page, which
+    only an editor can do: a reader's `anchor: true` makes a page thread
+    (not one born detached)."""
+    s = await _setup(client, db)
+    page = await _page(client, db, s)
+    by_reader = await _post(client, s["viewer"], page, "reader note", anchor=True)
+    by_editor = await _post(client, s["editor"], page, "editor note", anchor=True)
+    threads = {t["thread_id"]: t for t in (await client.get(
+        f"/wiki/nodes/{page['id']}/comments", headers=s["editor"])).json()}
+    assert threads[by_reader["thread_id"]]["anchor"] is False
+    assert threads[by_editor["thread_id"]]["anchor"] is True
+
+
 async def test_reply_and_delete_lock_the_thread_start(client, db):
     """A reply and a delete both take the thread's first comment FOR
     UPDATE, so a hard delete can't cascade away a reply being added."""

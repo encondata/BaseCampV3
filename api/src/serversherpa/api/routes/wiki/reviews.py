@@ -213,11 +213,17 @@ async def reject(review_id: uuid.UUID, body: ReviewRejectIn, ctx: WikiContext) -
 
 @router.post("/reviews/{review_id}/withdraw", response_model=ReviewOut)
 async def withdraw(review_id: uuid.UUID, ctx: WikiContext) -> ReviewOut:
-    """The requester, or a manager of the page, takes the request back."""
-    review, _, _, level = await _review_for(ctx, review_id)
+    """The requester, or a manager of the page, takes the request back —
+    not in an archived space, which is read-only below edit (for everyone
+    but a wiki administrator)."""
+    review, node, _, level = await _review_for(ctx, review_id)
     actor_id = ctx.user.person.id
     if review.requested_by != actor_id and level != "manage":
         raise forbidden("manage")
+    if not is_edit(level):
+        space = await ctx.db.get(WikiSpace, node.space_id)
+        if space.archived_at is not None:
+            raise forbidden("edit")
     review = await reviews.lock_review(ctx.db, review)
     reviews.require_pending(review)
     reviews.decide(review, "withdrawn", actor_id=actor_id, note=None)

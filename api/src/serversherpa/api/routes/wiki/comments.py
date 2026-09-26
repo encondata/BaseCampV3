@@ -161,9 +161,11 @@ async def post_comment(node_id: uuid.UUID, body: CommentIn,
         if comments.set_resolved(thread, None):
             _audit(ctx, thread.id, "reopen", {
                 "node_id": str(node.id), "thread_id": str(thread.id), "by_reply": True})
+    # an inline thread's mark is written into the page, which only an
+    # editor can do: below edit, a new thread is a page thread
     comment = await comments.post(
         ctx.db, node, author_id=ctx.principal.person_id, text=body.body.text,
-        mentions=body.body.mentions, thread=thread, anchor=body.anchor)
+        mentions=body.body.mentions, thread=thread, anchor=body.anchor and is_edit(level))
     _audit(ctx, comment.id, "create", {
         "node_id": str(node.id), "thread_id": str(comment.thread_id),
         "parent_id": str(comment.parent_id) if comment.parent_id else None,

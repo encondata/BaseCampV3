@@ -419,6 +419,9 @@ class AssetUrlsOut(BaseModel):
 # a template's name (wiki_templates.name is CHECKed to 1-120 characters)
 TemplateName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
                                                 max_length=120)]
+# the listing goes to every wiki viewer: keep what it carries small
+TemplateDescription = Annotated[str, StringConstraints(max_length=500)]
+TemplateIcon = Annotated[str, StringConstraints(max_length=16)]
 
 
 class TemplateOut(BaseModel):
@@ -446,8 +449,8 @@ class TemplateCreateIn(BaseModel):
 
     space_id: uuid.UUID | None = None
     name: TemplateName
-    description: str = ""
-    icon: str = ""
+    description: TemplateDescription = ""
+    icon: TemplateIcon = ""
     content_json: dict | None = None
     from_node_id: uuid.UUID | None = None
 
@@ -462,8 +465,8 @@ class TemplatePatchIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: TemplateName | None = None
-    description: str | None = None
-    icon: str | None = None
+    description: TemplateDescription | None = None
+    icon: TemplateIcon | None = None
     content_json: dict | None = None
 
 

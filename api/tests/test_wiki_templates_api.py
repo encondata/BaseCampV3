@@ -117,6 +117,17 @@ async def test_builtin_templates_list_with_glyph_icons(client, db):
                         "Troubleshooting": "🔧", "Meeting notes": "👥"}
 
 
+async def test_template_description_and_icon_are_capped(client, db):
+    s = await _setup(client, db)
+    base = {"space_id": s["space"]["id"], "content_json": _doc("x")}
+    await _post(client, s["owner"], expect=422, name="Long", description="d" * 501, **base)
+    await _post(client, s["owner"], expect=422, name="Icon", icon="i" * 17, **base)
+    tmpl = await _post(client, s["owner"], name="Fits", description="d" * 500,
+                       icon="🧭" * 8, **base)
+    await _patch(client, s["owner"], tmpl["id"], expect=422, description="d" * 501)
+    await _patch(client, s["owner"], tmpl["id"], expect=422, icon="i" * 17)
+
+
 async def test_list_hides_space_templates_the_caller_cant_see(client, db):
     s = await _setup(client, db)
     await _post(client, s["owner"], space_id=s["space"]["id"], name="Space Only",

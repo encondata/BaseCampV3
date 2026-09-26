@@ -247,7 +247,7 @@ function EditView({ templateId, isAdmin, space, onBack, onDeleted }: {
         </div>
         <div className="full">
           <label htmlFor="wiki-tpl-desc">Description</label>
-          <input id="wiki-tpl-desc" value={description} disabled={!canManage || busy}
+          <input id="wiki-tpl-desc" value={description} disabled={!canManage || busy} maxLength={500}
                  onChange={(e) => setDescription(e.target.value)} />
         </div>
       </div>

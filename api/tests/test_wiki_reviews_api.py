@@ -17,6 +17,7 @@ from serversherpa.db.models import (
     Client,
     Notification,
     Partner,
+    Person,
     PersonRole,
     Role,
     WikiNode,
@@ -202,6 +203,24 @@ async def test_withdraw_is_for_the_requester_or_a_manager(client, db):
     assert out["status"] == "withdrawn"
 
 
+async def test_a_requester_cannot_withdraw_in_an_archived_space(client, db):
+    """An archived space is read-only below edit — and everyone but a wiki
+    administrator is below edit there — so the requester can't withdraw;
+    a wiki administrator still can."""
+    s = await _setup(client, db)
+    page = await _page(client, s)
+    await publish_via_api(client, s["owner"], page["id"])     # readers can see it
+    await _set_draft(client, s["editor"], page["id"], "second")
+    review = await _submit(client, s["editor"], page["id"])
+    resp = await client.post(f"/wiki/spaces/{s['space']['key']}/archive", headers=s["owner"])
+    assert resp.status_code == 200, resp.text
+
+    await _decide(client, s["editor"], review["id"], "withdraw", expect=403)
+    assert (await _fresh(db, WikiReview, review["id"])).status == "pending"
+    admin_h, _ = await login_as(client, db, roles=("admin",))
+    assert (await _decide(client, admin_h, review["id"], "withdraw"))["status"] == "withdrawn"
+
+
 # ── approve / reject ─────────────────────────────────────────────────
 
 
@@ -232,7 +251,11 @@ async def test_approve_publishes_the_snapshot_even_if_the_draft_moved_on(client,
     decisions = await _inbox(db, s["editor_id"], "wiki_review_decision")
     assert len(decisions) == 1 and "approved" in decisions[0].title
     assert decisions[0].body == "Nice"
-    assert len(await _inbox(db, s["viewer_id"], "wiki_mention")) == 1
+    mentions = await _inbox(db, s["viewer_id"], "wiki_mention")
+    assert len(mentions) == 1
+    # the requester wrote the mention; the approver only published it
+    editor = (await db.get(Person, s["editor_id"])).display_name
+    assert mentions[0].title == f"{editor} mentioned you in Runbook"
     assert await _inbox(db, s["viewer_id"], "wiki_update") == []
     assert len(await _audits(db, "wiki_review", "approve")) == 1
 
