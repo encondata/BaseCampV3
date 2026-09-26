@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1
+# ServerSherpa wiki worker — `serversherpa wiki-worker` (api/src/
+# serversherpa/wiki/worker.py): office-file PDF previews and search-text
+# extraction (LibreOffice + poppler), page/report exports (WeasyPrint,
+# which needs pango), trash purges, and the review-reminder sweep. It
+# talks to Postgres and Spaces directly, the same as the API — it needs
+# the full set of SS_* settings (see wiki/.env.example), not just the
+# wiki-specific ones. Kept separate from wiki/Dockerfile (Node, small)
+# because LibreOffice makes this image ~500 MB.
+#
+#   docker build -f wiki/Dockerfile.worker -t serversherpa-wiki-worker .
+#   docker run --rm --env-file wiki/.env serversherpa-wiki-worker
+
+FROM python:3.13-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/home/wiki-worker
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libreoffice-writer libreoffice-calc libreoffice-impress poppler-utils \
+      fonts-dejavu libpango-1.0-0 libpangoft2-1.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY api ./api
+RUN pip install --no-cache-dir ./api && rm -rf ./api
+# LibreOffice needs a writable HOME for its per-run profile
+# (api/src/serversherpa/wiki/convert.py isolates one per conversion under it).
+RUN useradd --system --create-home --uid 10001 --home-dir /home/wiki-worker wiki-worker \
+    && chown -R wiki-worker /home/wiki-worker
+USER wiki-worker
+CMD ["serversherpa", "wiki-worker"]
