@@ -24,7 +24,7 @@ from serversherpa.api.routes.wiki.schemas import (
     NodePermissionsOut,
     NodePermissionsPutIn,
 )
-from serversherpa.api.routes.wiki.spaces import _principal_exists
+from serversherpa.api.routes.wiki.spaces import _principal_exists, reject_duplicate_principals
 from serversherpa.db.models import WikiGrant, WikiNode
 from serversherpa.services.audit import audit
 from serversherpa.wiki.permissions import (
@@ -90,6 +90,7 @@ async def get_node_permissions(node_id: uuid.UUID, ctx: WikiContext) -> NodePerm
 async def put_node_permissions(node_id: uuid.UUID, body: NodePermissionsPutIn,
                                ctx: WikiContext) -> NodePermissionsOut:
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "manage")
+    reject_duplicate_principals(body.grants or [])
 
     for g in (body.grants or []):
         if not await _principal_exists(ctx.db, g.principal_type, g.principal_id):

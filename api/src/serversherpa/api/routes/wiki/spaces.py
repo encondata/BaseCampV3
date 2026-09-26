@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Query
 from sqlalchemy import or_, select
+from sqlalchemy.sql.elements import ColumnElement
 
 from serversherpa.api.routes.wiki.deps import WikiContext, space_by_key
 from serversherpa.api.routes.wiki.errors import err
@@ -33,6 +34,7 @@ from serversherpa.db.models import (
     Client,
     Partner,
     Person,
+    PersonRole,
     Role,
     UserAccount,
     WikiGrant,
@@ -251,9 +253,24 @@ async def _principal_exists(db, principal_type: str, principal_id: str | None) -
     return await db.get(model, row_id) is not None
 
 
+def reject_duplicate_principals(grants) -> None:
+    """422 `duplicate_principal` when a grant list names one principal
+    twice — a principal holds one level per space or node (and the
+    unique index would otherwise turn it into a 500)."""
+    seen: set[tuple[str, str | None]] = set()
+    for g in grants:
+        key = (g.principal_type, g.principal_id)
+        if key in seen:
+            raise err(422, "duplicate_principal",
+                      "Each person, group or role can appear only once.",
+                      principal_type=g.principal_type, principal_id=g.principal_id)
+        seen.add(key)
+
+
 @router.put("/spaces/{key}/grants", response_model=GrantsOut)
 async def put_space_grants(key: str, body: GrantsPutIn, ctx: WikiContext) -> GrantsOut:
     space = await require_space_level(ctx.ix, await space_by_key(ctx.db, key), "manage")
+    reject_duplicate_principals(body.grants)
 
     for g in body.grants:
         if not await _principal_exists(ctx.db, g.principal_type, g.principal_id):
@@ -292,28 +309,64 @@ async def put_space_grants(key: str, body: GrantsPutIn, ctx: WikiContext) -> Gra
 # ── principals ───────────────────────────────────────────────────────
 
 
+# a person search needs at least this many characters: an empty or
+# one-letter query would page through the directory
+PERSON_QUERY_MIN = 2
+
+
+def _anchored_people(p) -> ColumnElement:
+    """People who share one of the caller's client/partner anchors — a
+    live role grant anchored to one of the same clients or partners (the
+    caller included) — the only people a non-internal manager may find."""
+    anchors = []
+    if p.client_ids:
+        anchors.append(PersonRole.client_id.in_(p.client_ids))
+    if p.partner_ids:
+        anchors.append(PersonRole.partner_id.in_(p.partner_ids))
+    if not anchors:
+        return Person.id == p.person_id
+    return Person.id.in_(
+        select(PersonRole.person_id)
+        .where(PersonRole.revoked_at.is_(None), or_(*anchors)))
+
+
 @router.get("/principals", response_model=list[PrincipalOut])
 async def list_principals(
     ctx: WikiContext, principal_type: PrincipalType = Query(..., alias="type"),
     q: str = "",
 ) -> list[PrincipalOut]:
+    """The grant picker's search, for anyone who manages a space.
+
+    Internal staff and wiki administrators search the whole directory.
+    Anyone else (a client- or partner-anchored user made a space manager)
+    only finds their own tenant, like the rest of the portal's
+    client-anchor scoping (`access/scope.py`): people who share one of
+    their client/partner anchors, their own clients and partners, and the
+    access groups they belong to. Roles are the system-wide, fixed list,
+    the same for everyone. A person search needs PERSON_QUERY_MIN
+    characters (fewer returns nothing) so it can't page the directory."""
     if not await _can_manage_any_space(ctx):
         raise err(403, "forbidden",
                   "You need manage access on at least one space to search principals.")
 
+    p = ctx.principal
+    whole_directory = p.is_internal or p.is_admin
     query = q.strip()
     like = f"%{query}%"
 
     if principal_type == "person":
+        if len(query) < PERSON_QUERY_MIN:
+            return []
         stmt = (
             select(Person)
             .join(UserAccount, UserAccount.person_id == Person.id)
             .where(Person.archived_at.is_(None))
-        )
-        if query:
-            stmt = stmt.where(or_(
+            .where(or_(
                 Person.first_name.ilike(like), Person.last_name.ilike(like),
                 Person.preferred_name.ilike(like), Person.email.ilike(like)))
+        )
+        if not whole_directory:
+            stmt = stmt.where(_anchored_people(p))
         stmt = stmt.order_by(Person.last_name, Person.first_name).limit(20)
         rows = (await ctx.db.scalars(stmt)).all()
         return [PrincipalOut(type="person", id=str(p.id), label=p.display_name)
@@ -332,6 +385,12 @@ async def list_principals(
     if model is None:
         raise err(422, "bad_type")
     stmt = select(model)
+    if not whole_directory:
+        own = {"client": p.client_ids, "partner": p.partner_ids,
+               "access_group": p.group_ids}[principal_type]
+        if not own:
+            return []
+        stmt = stmt.where(model.id.in_(own))
     if hasattr(model, "archived_at"):
         stmt = stmt.where(model.archived_at.is_(None))
     if query:

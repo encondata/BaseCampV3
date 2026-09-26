@@ -5,7 +5,8 @@ import uuid
 from sqlalchemy import select
 
 from serversherpa.db.models import (
-    AuditLog, Client, Person, WikiGrant, WikiNode, WikiPage, WikiPageVersion,
+    AccessGroup, AccessGroupMember, AuditLog, Client, Partner, Person, WikiGrant, WikiNode,
+    WikiPage, WikiPageVersion,
 )
 from serversherpa.wiki.content import EMPTY_DOC
 from tests.wiki_helpers import login_as
@@ -388,3 +389,84 @@ async def test_list_spaces_statement_count_does_not_grow_with_spaces(client, db)
                             default_access="internal")
     after = await _statements_for_list()
     assert after == before
+
+
+# ── principals: who a manager may find (final review I2) ───────────
+
+
+async def _principals(client, headers, ptype, q=""):
+    resp = await client.get("/wiki/principals", headers=headers,
+                            params={"type": ptype, "q": q})
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+async def test_a_client_side_space_manager_only_finds_their_own_tenant(client, db):
+    acme, globex = Client(name="Acme"), Client(name="Globex")
+    vendor = Partner(name="Vendorco")
+    db.add_all([acme, globex, vendor])
+    await db.commit()
+
+    staff_h, staff_id = await login_as(client, db, roles=("staff",))
+    admin_h, admin_id = await login_as(client, db, roles=("client_admin",),
+                                       client_id=acme.id)
+    _, colleague_id = await login_as(client, db, roles=("client_viewer",),
+                                     client_id=acme.id)
+    _, outsider_id = await login_as(client, db, roles=("client_viewer",),
+                                    client_id=globex.id,
+                                    email="globex-person@test.example.com")
+    member_of = AccessGroup(name="Acme onsite team")
+    not_member_of = AccessGroup(name="Internal escalations")
+    db.add_all([member_of, not_member_of])
+    await db.flush()
+    db.add(AccessGroupMember(group_id=member_of.id, person_id=admin_id))
+    await db.commit()
+
+    assert (await _create_space(client, staff_h, key="tenant-space")).status_code == 201
+    resp = await client.put("/wiki/spaces/tenant-space/grants", headers=staff_h, json={
+        "grants": [
+            {"principal_type": "person", "principal_id": str(staff_id), "level": "manage"},
+            {"principal_type": "person", "principal_id": str(admin_id), "level": "manage"}]})
+    assert resp.status_code == 200, resp.text
+
+    # people: only those who share an anchor with the caller, and never
+    # the whole directory for an empty or one-letter query
+    assert await _principals(client, admin_h, "person", "") == []
+    assert await _principals(client, admin_h, "person", "W") == []
+    found = {p["id"] for p in await _principals(client, admin_h, "person", "Wiki")}
+    assert found == {str(admin_id), str(colleague_id)}
+    assert await _principals(client, admin_h, "person", "globex-person") == []
+    # orgs: their own only
+    assert [p["id"] for p in await _principals(client, admin_h, "client")] == [str(acme.id)]
+    assert await _principals(client, admin_h, "client", "Glob") == []
+    assert await _principals(client, admin_h, "partner") == []
+    assert [p["id"] for p in await _principals(client, admin_h, "access_group")] \
+        == [str(member_of.id)]
+    # roles are the fixed, system-wide list
+    assert any(p["id"] == "client_viewer" for p in await _principals(client, admin_h, "role"))
+
+    # internal staff search the whole directory — still not with an empty query
+    assert await _principals(client, staff_h, "person", "") == []
+    found = {p["id"] for p in await _principals(client, staff_h, "person", "Wiki")}
+    assert {str(outsider_id), str(colleague_id), str(staff_id)} <= found
+    assert {p["id"] for p in await _principals(client, staff_h, "client")} \
+        >= {str(acme.id), str(globex.id)}
+
+
+async def test_the_same_principal_twice_in_one_grant_list_is_a_422(client, db):
+    headers, staff_id = await login_as(client, db, roles=("staff",))
+    assert (await _create_space(client, headers, key="dup-space")).status_code == 201
+    twice = [{"principal_type": "person", "principal_id": str(staff_id), "level": "manage"},
+             {"principal_type": "person", "principal_id": str(staff_id), "level": "view"}]
+    resp = await client.put("/wiki/spaces/dup-space/grants", headers=headers,
+                            json={"grants": twice})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "duplicate_principal"
+
+    space = (await client.get("/wiki/spaces/dup-space", headers=headers)).json()
+    node = await client.post("/wiki/nodes", headers=headers, json={
+        "space_id": space["id"], "parent_id": None, "kind": "folder", "title": "F"})
+    resp = await client.put(f"/wiki/nodes/{node.json()['id']}/permissions", headers=headers,
+                            json={"inherit": False, "grants": twice})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "duplicate_principal"
