@@ -74,6 +74,7 @@ import type { CommentThread } from '../lib/types';
 import { longDate } from '@portal/lib/format';
 
 import { resetTreeStore, useTreeRevision } from '../lib/treeStore';
+import { clearWikiMe } from '../lib/useWikiMe';
 import type { NodeReviewOut } from '../lib/types';
 import {
   createTemplate, deleteComment, getMe, getPageContent, getReview, getVersion, getWatchState, listComments,
@@ -244,6 +245,30 @@ describe('PageView — the ⋯ menu', () => {
     open();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }));
     expect(shell.requestDelete).toHaveBeenCalledWith(node);
+  });
+
+  it('offers wiki admins Use as help for…, which opens the help-link form with the page', async () => {
+    clearWikiMe();
+    vi.mocked(getMe).mockResolvedValue(makeMe({ is_admin: true }));
+    try {
+      const node = makeDetail('p1', { title: 'Rack power', my_level: 'manage', page: published });
+      render(
+        <MemoryRouter initialEntries={['/n/p1']}>
+          <Routes>
+            <Route path="/n/:nodeId" element={<PageView node={node} />} />
+            <Route path="/admin/help-links" element={<Probe />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+      await screen.findByText('Hello from the published page.');
+      await waitFor(() => expect(getMe).toHaveBeenCalled());
+      await act(async () => {});
+      fireEvent.click(screen.getByRole('button', { name: 'Actions for Rack power' }));
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Use as help for…' }));
+      expect(screen.getByTestId('probe').textContent).toBe('/admin/help-links?node=p1');
+    } finally {
+      clearWikiMe();
+    }
   });
 
   it('opens Save as template… and creates one from the page', async () => {

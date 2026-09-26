@@ -2,8 +2,9 @@
  *  any page they can't view): every space, including archived ones (which
  *  never show up in the ordinary space list), with a link to each space's
  *  settings and trash, and Unarchive — the one thing only a wiki admin,
- *  not even a space manager, can do. Below, every public share link in
- *  the wiki (newest first), with Revoke. */
+ *  not even a space manager, can do. Below, the way to the portal/kiosk
+ *  Help links page, and every public share link in the wiki (newest
+ *  first), with Revoke. */
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -222,6 +223,16 @@ export default function AdminPage() {
           {state.spaces.length === 0 && <div className="dir-empty"><b>No spaces yet</b></div>}
         </div>
       )}
+
+      <section className="wiki-admin-section" aria-label="Help links">
+        <div className="dir-head wiki-folder-head">
+          <div>
+            <h2 className="wiki-section-title">Help links</h2>
+            <p className="page-hint">Which guide the ? button opens on each portal and kiosk screen.</p>
+          </div>
+          <Link className="btn-ghost" to="/admin/help-links">Manage help links</Link>
+        </div>
+      </section>
 
       <PublicLinksSection />
     </div>

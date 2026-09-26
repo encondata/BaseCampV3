@@ -507,3 +507,22 @@ export interface PublicFileOut {
 }
 
 export type PublicShareOut = PublicPageOut | PublicFileOut;
+
+// ── help links ────────────────────────────────────────────────────────
+
+/** A portal or kiosk screen's guide, as wiki admins see it. `context` is
+ *  stored normalized (`portal:/sites/:id`); `trashed`: the guide is in the
+ *  trash, so the link finds nothing until it's restored. */
+export interface HelpLinkOut {
+  id: string;
+  context: string;
+  node: { id: string; title: string; kind: NodeKind; space_key: string; space_name: string };
+  trashed: boolean;
+  created_by: PersonRef | null;
+  created_at: string;
+}
+
+export interface HelpLinkIn {
+  context: string;
+  node_id: string;
+}

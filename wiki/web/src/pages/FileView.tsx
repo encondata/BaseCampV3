@@ -23,6 +23,7 @@ import { markdownToDoc } from '../import/importers';
 import { openDownload } from '../lib/download';
 import { noteChanged } from '../lib/treeStore';
 import type { FileVersionOut, NodeDetailOut } from '../lib/types';
+import { useHelpLinkAction } from '../lib/useHelpLinkAction';
 import { errorMessage, getFileUrl, listFileVersions, restoreFileVersion, updateFile } from '../lib/wikiApi';
 import { enqueue } from '../uploads/uploadQueue';
 import { Breadcrumbs, formatSize, InlineTitle } from './FolderView';
@@ -269,6 +270,7 @@ function Description({ node, canEdit }: { node: NodeDetailOut; canEdit: boolean 
 
 export default function FileView({ node }: { node: NodeDetailOut }) {
   const toast = useToast();
+  const useAsHelp = useHelpLinkAction(node.id);
   const inputRef = useRef<HTMLInputElement>(null);
   const canEdit = atLeast(node.my_level, 'edit');
   const current = node.file?.current_version ?? null;
@@ -319,7 +321,7 @@ export default function FileView({ node }: { node: NodeDetailOut }) {
               <input ref={inputRef} type="file" hidden aria-label="Upload new version" onChange={onPick} />
             </>
           )}
-          <RowMenu node={node} />
+          <RowMenu node={node} onUseAsHelp={useAsHelp} />
         </div>
       </header>
 

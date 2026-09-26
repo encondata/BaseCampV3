@@ -21,6 +21,8 @@ import type {
   GrantIn,
   GrantOut,
   GrantsOut,
+  HelpLinkIn,
+  HelpLinkOut,
   MeOut,
   NodeCopyIn,
   NodeCreateIn,
@@ -369,3 +371,18 @@ export const revokeShareLink = (id: string) =>
 
 /** Wiki administrators: every link, newest first. */
 export const listAllShareLinks = () => request<ShareLinkOut[]>('GET', '/share-links');
+
+// ── help links (wiki admins) ─────────────────────────────────────────
+
+/** Every portal/kiosk help link, by context. */
+export const listHelpLinks = () => request<HelpLinkOut[]>('GET', '/help-links');
+
+/** The server normalizes `context`: 422 `bad_context`, 409 `context_taken`,
+ *  422 `bad_kind` unless the node is a page or file. */
+export const createHelpLink = (body: HelpLinkIn) =>
+  request<HelpLinkOut>('POST', '/help-links', { body });
+
+export const updateHelpLink = (id: string, body: Partial<HelpLinkIn>) =>
+  request<HelpLinkOut>('PATCH', `/help-links/${seg(id)}`, { body });
+
+export const deleteHelpLink = (id: string) => request<void>('DELETE', `/help-links/${seg(id)}`);

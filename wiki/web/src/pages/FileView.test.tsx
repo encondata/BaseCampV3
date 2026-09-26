@@ -2,13 +2,15 @@
 import '../testing/pmDom';
 
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const toast = vi.fn();
 vi.mock('@portal/lib/notificationsContext', () => ({ useToast: () => toast }));
+vi.mock('@portal/auth/AuthContext', () => ({ useAuth: () => ({ person: { id: 'p-1' } }) }));
 vi.mock('../lib/wikiApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/wikiApi')>()),
+  getMe: vi.fn(),
   getFileUrl: vi.fn(),
   listFileVersions: vi.fn(),
   updateFile: vi.fn(),
@@ -25,8 +27,9 @@ vi.mock('../uploads/uploadQueue', () => ({ enqueue: vi.fn() }));
 import { openDownload } from '../lib/download';
 import { noteChanged } from '../lib/treeStore';
 import type { FileVersionOut, NodeDetailOut } from '../lib/types';
-import { getFileUrl, listFileVersions, restoreFileVersion, updateFile } from '../lib/wikiApi';
-import { makeDetail, makeNode } from '../testing/fixtures';
+import { clearWikiMe } from '../lib/useWikiMe';
+import { getFileUrl, getMe, listFileVersions, restoreFileVersion, updateFile } from '../lib/wikiApi';
+import { makeDetail, makeMe, makeNode } from '../testing/fixtures';
 import { enqueue } from '../uploads/uploadQueue';
 import FileView, { MAX_TEXT_PREVIEW } from './FileView';
 
@@ -55,6 +58,8 @@ function renderFile(node: NodeDetailOut) {
 
 beforeEach(() => {
   toast.mockReset();
+  clearWikiMe();
+  vi.mocked(getMe).mockReset().mockResolvedValue(makeMe());
   vi.mocked(getFileUrl).mockReset().mockResolvedValue({
     url: 'https://s3/inline', content_type: 'application/pdf', preview_status: 'ready',
   });
@@ -233,5 +238,35 @@ describe('FileView details', () => {
     expect(screen.queryByLabelText('Description')).toBeNull();
     expect(screen.getByText('Second floor')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Rename/ })).toBeNull();
+  });
+
+  it('offers wiki admins Use as help for…, which opens the help-link form with the file', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe({ is_admin: true }));
+    function Probe() {
+      const loc = useLocation();
+      return <div data-testid="probe">{loc.pathname}{loc.search}</div>;
+    }
+    const node = fileNode(version(2), { my_level: 'view' });
+    render(
+      <MemoryRouter initialEntries={['/n/file-1']}>
+        <Routes>
+          <Route path="/n/:nodeId" element={<FileView node={node} />} />
+          <Route path="/admin/help-links" element={<Probe />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await screen.findByRole('table', { name: 'Versions' });
+    await act(async () => {});
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for floorplan.pdf' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Use as help for…' }));
+    expect(screen.getByTestId('probe').textContent).toBe('/admin/help-links?node=file-1');
+  });
+
+  it('leaves Use as help for… out for everyone else', async () => {
+    renderFile(fileNode(version(2), { my_level: 'manage' }));
+    await screen.findByRole('table', { name: 'Versions' });
+    await act(async () => {});
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for floorplan.pdf' }));
+    expect(screen.queryByRole('menuitem', { name: 'Use as help for…' })).toBeNull();
   });
 });

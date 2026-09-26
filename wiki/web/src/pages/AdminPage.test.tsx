@@ -72,6 +72,14 @@ describe('AdminPage', () => {
     expect(toast).toHaveBeenCalledWith('“Old Projects” is back in use.');
   });
 
+  it('links to the Help links page', async () => {
+    vi.mocked(listSpaces).mockResolvedValue([]);
+    renderAdmin();
+    const section = await screen.findByRole('region', { name: 'Help links' });
+    expect(within(section).getByRole('link', { name: 'Manage help links' }).getAttribute('href'))
+      .toBe('/admin/help-links');
+  });
+
   it('lists every public link, and revokes an active one', async () => {
     const link = (over: Partial<ShareLinkOut>): ShareLinkOut => ({
       id: 'l1',

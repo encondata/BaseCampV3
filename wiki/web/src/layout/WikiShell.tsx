@@ -20,6 +20,7 @@ import type { NodeDetailOut, NodeOut, SpaceOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
 import { deleteNode, errorMessage, listSpaces } from '../lib/wikiApi';
 import AdminPage from '../pages/AdminPage';
+import HelpLinksPage from '../pages/HelpLinksPage';
 import Home from '../pages/Home';
 import NewSpace from '../pages/NewSpace';
 import NodePage from '../pages/NodePage';
@@ -273,6 +274,7 @@ export default function WikiShell() {
               <Route path="/trash/:spaceKey" element={<TrashPage />} />
               <Route path="/search" element={<SearchPage />} />
               <Route path="/admin" element={<AdminPage />} />
+              <Route path="/admin/help-links" element={<HelpLinksPage />} />
               <Route path="/templates" element={<TemplatesPage />} />
               <Route path="/watching" element={<WatchingPage />} />
               <Route path="/reviews" element={<ReviewsPage />} />

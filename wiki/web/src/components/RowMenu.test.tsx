@@ -116,6 +116,24 @@ describe('RowMenu', () => {
     expect(items()).not.toContain('Save as template…');
   });
 
+  it('offers Use as help for… on a page or file only where the caller passes it (wiki admins)', () => {
+    open(makeNode('n1', { kind: 'page', my_level: 'manage' }));
+    expect(items()).not.toContain('Use as help for…');
+    cleanup();
+    const onUseAsHelp = vi.fn();
+    // a wiki admin's level anywhere is manage, but the handler is the gate
+    open(makeNode('n1', { kind: 'page', my_level: 'view' }), { onUseAsHelp });
+    expect(items()).toContain('Use as help for…');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Use as help for…' }));
+    expect(onUseAsHelp).toHaveBeenCalled();
+    cleanup();
+    open(makeNode('f1', { kind: 'file', my_level: 'manage' }), { onUseAsHelp });
+    expect(items()).toContain('Use as help for…');
+    cleanup();
+    open(makeNode('d1', { kind: 'folder', my_level: 'manage' }), { onUseAsHelp });
+    expect(items()).not.toContain('Use as help for…');
+  });
+
   it('copies the canonical link and says so', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });

@@ -1,7 +1,8 @@
 /** The ⋯ menu on a tree row (also opened by right-clicking the row) and in
  *  a page's header: New page/folder here, Rename, Move…, Copy…, Copy link,
  *  (a page's header only: Save as template…, Review schedule…),
- *  Permissions…, Share… (pages and files), Delete — each shown only at the
+ *  Permissions…, Share… (pages and files), Use as help for… (a page's or
+ *  file's header, wiki admins), Delete — each shown only at the
  *  level it needs. Move, Copy, Permissions, Share and Delete open the
  *  shell's dialogs. The menu is
  *  position:fixed so the sidebar's scroll box never clips it; it closes on
@@ -30,6 +31,9 @@ export interface RowMenuProps {
   onSaveAsTemplate?: () => void;
   /** Likewise (a page's header; manage). */
   onReviewSchedule?: () => void;
+  /** A page's or file's header, for wiki admins: link it as a portal/kiosk
+   *  screen's help guide. */
+  onUseAsHelp?: () => void;
 }
 
 export interface RowMenuHandle {
@@ -40,7 +44,7 @@ export interface RowMenuHandle {
 const MENU_WIDTH = 210;
 
 const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
-  { node, onNewChild, onRename, onSaveAsTemplate, onReviewSchedule }, ref,
+  { node, onNewChild, onRename, onSaveAsTemplate, onReviewSchedule, onUseAsHelp }, ref,
 ) {
   const toast = useToast();
   const shell = useWikiShell();
@@ -134,6 +138,12 @@ const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
     items.push({
       label: 'Share…', action: () => shell.requestShare(node),
       icon: <><circle cx="18" cy="5" r="2.5" /><circle cx="6" cy="12" r="2.5" /><circle cx="18" cy="19" r="2.5" /><path d="M8.2 10.8l7.6-4.4M8.2 13.2l7.6 4.4" /></>,
+    });
+  }
+  if (onUseAsHelp && (node.kind === 'page' || node.kind === 'file')) {
+    items.push({
+      label: 'Use as help for…', action: onUseAsHelp,
+      icon: <><circle cx="12" cy="12" r="9" /><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6M12 17h.01" /></>,
     });
   }
   if (canEdit && !isHome) {

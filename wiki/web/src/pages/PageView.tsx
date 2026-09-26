@@ -53,6 +53,7 @@ import WikiEditor, { type EditorUser } from '../editor/WikiEditor';
 import { PERSON_COLORS, personColor } from '../lib/personColor';
 import { noteChanged } from '../lib/treeStore';
 import type { NodeDetailOut, PageContentOut, VersionDetail, VersionOut } from '../lib/types';
+import { useHelpLinkAction } from '../lib/useHelpLinkAction';
 import { useWikiMe } from '../lib/useWikiMe';
 import {
   errorMessage, getPageContent, getVersion, markReviewed, recordRestore, setFavorite,
@@ -166,6 +167,7 @@ function NotPublished({ canEdit }: { canEdit: boolean }) {
 export default function PageView({ node }: { node: NodeDetailOut }) {
   const toast = useToast();
   const user = useEditorUser();
+  const useAsHelp = useHelpLinkAction(node.id);
   const [params, setParams] = useSearchParams();
   const [reload, setReload] = useState(0);
   const [publishing, setPublishing] = useState(false);
@@ -480,7 +482,7 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
             <Icon name="star" />
           </button>
           <RowMenu node={node} onSaveAsTemplate={() => setSavingTemplate(true)}
-                   onReviewSchedule={() => setScheduling(true)} />
+                   onReviewSchedule={() => setScheduling(true)} onUseAsHelp={useAsHelp} />
         </div>
       </header>
 
