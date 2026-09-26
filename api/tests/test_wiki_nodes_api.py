@@ -13,6 +13,7 @@ from serversherpa.db.models import (
     WikiFile,
     WikiFileVersion,
     WikiGrant,
+    WikiJob,
     WikiNode,
     WikiPage,
     WikiPageAsset,
@@ -792,3 +793,47 @@ async def test_drafts_lists_my_pages_with_unpublished_changes(client, db):
 async def test_lists_need_wiki_view(client, db, path):
     resp = await client.get(path)
     assert resp.status_code == 401
+
+
+async def test_copying_a_file_still_being_processed_queues_its_own_jobs(client, db):
+    """The original's pending extract/preview jobs only update the
+    original's version row — the copy's needs jobs of its own, or it
+    stays "Preparing preview…" and unsearchable forever."""
+    s = await _setup(client, db)
+    space = s["space"]
+    folder = await _create(client, s["owner"], space, "Folder")
+    file_node = WikiNode(space_id=uuid.UUID(space["id"]), parent_id=uuid.UUID(folder["id"]),
+                         path=[uuid.UUID(folder["id"])], kind="file", title="plan.docx",
+                         position=1.0)
+    db.add(file_node)
+    await db.flush()
+    db.add(WikiFile(node_id=file_node.id, description=""))
+    version = WikiFileVersion(
+        node_id=file_node.id, version_no=1, storage_key="files/plan", filename="plan.docx",
+        content_type="application/octet-stream", size_bytes=10, preview_kind="pdf",
+        preview_status="pending", extract_status="pending")
+    db.add(version)
+    await db.flush()
+    (await db.get(WikiFile, file_node.id)).current_version_id = version.id
+    await db.commit()
+
+    resp = await client.post(f"/wiki/nodes/{folder['id']}/copy", headers=s["owner"],
+                             json={"parent_id": None})
+    assert resp.status_code == 201, resp.text
+    copied = (await _tree(client, s["owner"], space, resp.json()))[0]
+    copied_version = await db.scalar(select(WikiFileVersion).where(
+        WikiFileVersion.node_id == uuid.UUID(copied["id"])))
+    jobs = (await db.scalars(select(WikiJob).where(
+        WikiJob.file_version_id == copied_version.id))).all()
+    assert sorted(j.kind for j in jobs) == ["file_extract", "file_preview"]
+    assert all(j.node_id == uuid.UUID(copied["id"]) for j in jobs)
+
+
+async def test_a_copied_page_shows_in_the_copiers_drafts(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Checklist", kind="page")
+    resp = await client.post(f"/wiki/nodes/{page['id']}/copy", headers=s["editor"],
+                             json={"parent_id": None})
+    assert resp.status_code == 201, resp.text
+    drafts = await client.get("/wiki/drafts", headers=s["editor"])
+    assert [n["id"] for n in drafts.json()] == [resp.json()["id"]]

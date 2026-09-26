@@ -40,6 +40,7 @@ from serversherpa.wiki.content import (
     referenced_asset_ids,
     rewrite_asset_ids,
 )
+from serversherpa.wiki.files import enqueue
 from serversherpa.wiki.pages import add_version, utcnow
 from serversherpa.wiki.permissions import level_rank
 from serversherpa.wiki.search import refresh_search
@@ -341,7 +342,8 @@ async def copy_subtree(db: AsyncSession, node: WikiNode, *,
     source's current draft (`ydoc` left NULL so the collab server seeds
     from `draft_json`); the asset rows that content embeds are copied
     with the same storage keys, and the copied content points at them. A file copy gets one version: a copy of the source's current
-    version row, same object keys (objects are never copied).
+    version row, same object keys (objects are never copied) — with its
+    own extract/preview jobs queued when the source's were still pending.
 
     `levels`, when given, is the caller's level per node: a descendant
     with no level is skipped along with its subtree, and where the
@@ -462,6 +464,8 @@ async def copy_subtree(db: AsyncSession, node: WikiNode, *,
         db.add(WikiPage(node_id=new_ids[source_id], draft_json=draft_json,
                         # only NULL before first live load: collab.ts seeds a fixed Yjs client id
                         draft_text=draft_text, ydoc=None,
+                        # the copier's draft: it shows in their "My drafts"
+                        draft_updated_by=actor_id, draft_updated_at=utcnow(),
                         has_unpublished_changes=True))
 
     file_ids = [n.id for n in included if n.kind == "file"]
@@ -492,6 +496,13 @@ async def copy_subtree(db: AsyncSession, node: WikiNode, *,
     await db.flush()
     for new_file, new_version in new_files:
         new_file.current_version_id = new_version.id
+        # the source's own jobs only ever update the source's version row
+        if new_version.extract_status == "pending":
+            await enqueue(db, "file_extract", node_id=new_version.node_id,
+                          file_version_id=new_version.id)
+        if new_version.preview_status == "pending":
+            await enqueue(db, "file_preview", node_id=new_version.node_id,
+                          file_version_id=new_version.id)
     await db.flush()
 
     return new_nodes[0]
