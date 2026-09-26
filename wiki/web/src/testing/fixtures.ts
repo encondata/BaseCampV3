@@ -47,7 +47,10 @@ export function makeNode(
       : null,
     file: null,
     review: kind === 'page'
-      ? { interval_months: null, next_review_at: null, last_reviewed_at: null, state: null, pending_review_id: null }
+      ? {
+        interval_months: null, own_interval_months: null, next_review_at: null,
+        last_reviewed_at: null, state: null, pending_review_id: null,
+      }
       : null,
     ...over,
   };

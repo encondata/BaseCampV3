@@ -16,6 +16,8 @@ from serversherpa.db.models import (
     AuditLog,
     Client,
     Notification,
+    Partner,
+    PersonRole,
     Role,
     WikiNode,
     WikiPage,
@@ -281,7 +283,11 @@ async def test_approvers_are_the_manage_level_holders_of_the_page(client, db, ca
     role = Role(name=f"wiki_rev_{uuid.uuid4().hex[:6]}", description="test-only")
     group = AccessGroup(name=f"Reviewers {uuid.uuid4().hex[:6]}")
     acme = Client(name=f"Acme {uuid.uuid4().hex[:6]}")
-    db.add_all([role, group, acme])
+    vendor = Partner(name=f"Vendor {uuid.uuid4().hex[:6]}")
+    db.add_all([role, group, acme, vendor])
+    await db.commit()
+    _, by_partner = await login_as(client, db, roles=("external",))
+    db.add(PersonRole(person_id=by_partner, role="vendor_viewer", partner_id=vendor.id))
     await db.commit()
     _, by_role = await login_as(client, db, roles=("staff", role.name))
     _, by_group = await login_as(client, db, roles=("staff",))
@@ -295,19 +301,22 @@ async def test_approvers_are_the_manage_level_holders_of_the_page(client, db, ca
         {"principal_type": "role", "principal_id": role.name, "level": "manage"},
         {"principal_type": "access_group", "principal_id": str(group.id), "level": "manage"},
         {"principal_type": "client", "principal_id": str(acme.id), "level": "manage"},
+        {"principal_type": "partner", "principal_id": str(vendor.id), "level": "manage"},
         {"principal_type": "internal", "level": "manage"},
+        {"principal_type": "everyone", "level": "manage"},
     ])
     page = await _page(client, s)
     node = await _fresh(db, WikiNode, page["id"])
 
     with caplog.at_level(logging.INFO, logger="serversherpa.wiki.reviews"):
         ids = await reviews.approver_ids(db, node, exclude=s["editor_id"])
-    assert set(ids) == {s["owner_id"], by_role, by_group, by_client}
-    assert admin_id not in ids
-    assert "internal" in caplog.text
+    assert set(ids) == {s["owner_id"], by_role, by_group, by_client, by_partner}
+    # internal/everyone manage grants are too broad to expand: not the viewer
+    assert admin_id not in ids and s["viewer_id"] not in ids
+    assert "internal" in caplog.text and "everyone" in caplog.text
 
     await _submit(client, s["editor"], page["id"])
-    for pid in (s["owner_id"], by_role, by_group, by_client):
+    for pid in (s["owner_id"], by_role, by_group, by_client, by_partner):
         assert len(await _inbox(db, pid, "wiki_review_request")) == 1, pid
     assert await _inbox(db, s["editor_id"], "wiki_review_request") == []
     assert await _inbox(db, admin_id, "wiki_review_request") == []
@@ -486,9 +495,9 @@ async def test_due_reviews_lists_pages_due_within_two_weeks_in_order(client, db)
     later = await _node(client, s["viewer"], pages["Later"])
     assert later["review"]["state"] == "ok"
     unscheduled = await _node(client, s["viewer"], pages["Unscheduled"])
-    assert unscheduled["review"] == {"interval_months": None, "next_review_at": None,
-                                     "last_reviewed_at": None, "state": None,
-                                     "pending_review_id": None}
+    assert unscheduled["review"] == {"interval_months": None, "own_interval_months": None,
+                                     "next_review_at": None, "last_reviewed_at": None,
+                                     "state": None, "pending_review_id": None}
 
 
 async def test_folders_and_files_have_no_review_block(client, db):
@@ -516,3 +525,132 @@ async def test_viewers_do_not_see_the_pending_review_id(client, db):
 ])
 def test_add_months_clamps_to_the_end_of_the_month(start, months, expected):
     assert reviews.add_months(start, months) == expected
+
+
+# ── review follow-ups: search, stale, duplicates, limits, own interval ──
+
+
+async def test_approve_refreshes_the_search_vector(client, db):
+    s = await _setup(client, db)
+    page = await _page(client, s, text="zanzibarquokka procedure")
+    review = await _submit(client, s["editor"], page["id"])
+    await _decide(client, s["owner"], review["id"], "approve")
+    resp = await client.get("/wiki/search", headers=s["viewer"],
+                            params={"q": "zanzibarquokka"})
+    assert resp.status_code == 200, resp.text
+    assert [hit["node"]["id"] for hit in resp.json()] == [page["id"]]
+
+
+async def test_review_detail_is_stale_once_the_page_was_published_after_submit(client, db):
+    s = await _setup(client, db)
+    page = await _page(client, s, text="v1")
+    await publish_via_api(client, s["owner"], page["id"])
+    await _set_draft(client, s["editor"], page["id"], "v2")
+    review = await _submit(client, s["editor"], page["id"])
+
+    async def detail():
+        resp = await client.get(f"/wiki/reviews/{review['id']}", headers=s["owner"])
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    assert (await detail())["stale"] is False
+    await _set_draft(client, s["editor"], page["id"], "v3")
+    await publish_via_api(client, s["owner"], page["id"])
+    assert (await detail())["stale"] is True
+
+
+async def test_unpublished_page_review_is_not_stale(client, db):
+    s = await _setup(client, db)
+    page = await _page(client, s)
+    review = await _submit(client, s["editor"], page["id"])
+    resp = await client.get(f"/wiki/reviews/{review['id']}", headers=s["owner"])
+    assert resp.json()["stale"] is False
+
+
+async def test_approving_what_is_already_published_adds_no_version(client, db):
+    s = await _setup(client, db)
+    page = await _page(client, s, text="same text")
+    review = await _submit(client, s["editor"], page["id"])
+    # a manager publishes the very same draft directly meanwhile
+    await publish_via_api(client, s["owner"], page["id"])
+    published_before = (await _fresh(db, WikiPage, page["id"])).published_version_id
+
+    out = await _decide(client, s["owner"], review["id"], "approve")
+    assert out["status"] == "approved"
+    assert (await _fresh(db, WikiPage, page["id"])).published_version_id == published_before
+    count = len((await db.scalars(select(WikiPageVersion).where(
+        WikiPageVersion.node_id == uuid.UUID(page["id"]),
+        WikiPageVersion.kind == "published"))).all())
+    assert count == 1
+    decisions = await _inbox(db, s["editor_id"], "wiki_review_decision")
+    assert len(decisions) == 1 and "approved" in decisions[0].title
+
+
+async def test_decided_review_lists_are_bounded_in_sql(client, db, monkeypatch):
+    s = await _setup(client, db)
+    hidden = await _create(client, s["owner"], s["space"], "Hidden", kind="page")
+    shown = await _create(client, s["owner"], s["space"], "Shown", kind="page")
+    # the editor can't see `hidden` (inheritance broken, owner only)
+    resp = await client.put(f"/wiki/nodes/{hidden['id']}/permissions", headers=s["owner"],
+                            json={"inherit": False, "grants": []})
+    assert resp.status_code == 200, resp.text
+    base = datetime.now(UTC) - timedelta(days=1)
+
+    async def approved(node_id, minutes):
+        version = WikiPageVersion(node_id=uuid.UUID(node_id), version_no=minutes + 1,
+                                  title="t", content_json={"type": "doc", "content": []},
+                                  kind="submitted")
+        db.add(version)
+        await db.flush()
+        db.add(WikiReview(node_id=uuid.UUID(node_id), version_id=version.id,
+                          requested_by=s["editor_id"], status="approved",
+                          created_at=base + timedelta(minutes=minutes)))
+
+    await approved(shown["id"], 0)                       # the oldest
+    for minutes in range(1, 5):                          # four newer, hidden
+        await approved(hidden["id"], minutes)
+    await db.commit()
+
+    from serversherpa.api.routes.wiki import reviews as review_routes
+    monkeypatch.setattr(review_routes, "LIST_LIMIT", 1)
+    resp = await client.get("/wiki/reviews", headers=s["editor"],
+                            params={"status": "approved"})
+    assert resp.status_code == 200, resp.text
+    # 4 x LIST_LIMIT rows are read: all hidden, so nothing comes back
+    assert resp.json() == []
+    monkeypatch.setattr(review_routes, "LIST_LIMIT", 2)
+    resp = await client.get("/wiki/reviews", headers=s["editor"],
+                            params={"status": "approved"})
+    assert [r["node"]["id"] for r in resp.json()] == [shown["id"]]
+
+
+async def test_due_reviews_is_limited(client, db, monkeypatch):
+    s = await _setup(client, db)
+    now = datetime.now(UTC)
+    for i in range(3):
+        page = await _page(client, s, title=f"Due {i}")
+        await publish_via_api(client, s["owner"], page["id"])
+        node = await _fresh(db, WikiNode, page["id"])
+        node.review_interval_months = 12
+        node.next_review_at = now - timedelta(days=3 - i)
+        await db.commit()
+    from serversherpa.api.routes.wiki import reviews as review_routes
+    monkeypatch.setattr(review_routes, "DUE_LIMIT", 2)
+    resp = await client.get(f"/wiki/spaces/{s['space']['key']}/due-reviews",
+                            headers=s["viewer"])
+    assert resp.status_code == 200, resp.text
+    assert [n["title"] for n in resp.json()] == ["Due 0", "Due 1"]
+
+
+async def test_review_block_tells_own_interval_from_the_space_default(client, db):
+    s = await _setup(client, db)
+    await _settings(client, s, review_interval_months=6)
+    page = await _page(client, s)
+    node = await _node(client, s["owner"], page["id"])
+    assert node["review"]["interval_months"] == 6
+    assert node["review"]["own_interval_months"] is None
+    resp = await client.patch(f"/wiki/nodes/{page['id']}", headers=s["owner"],
+                              json={"review_interval_months": 3})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["review"]["interval_months"] == 3
+    assert resp.json()["review"]["own_interval_months"] == 3

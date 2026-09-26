@@ -12,8 +12,10 @@ any number of workers can run without a broker) and runs them:
 - `purge` — deletes the storage keys in its payload that no row
   references any more (copies, restored versions and copied page assets
   share objects, so every key is reference-counted first).
-- `reminders` — `wiki_review_due` to the owner (else the last publisher)
-  of each page whose periodic review has come due, once per due date
+- `reminders` — first schedules published pages a space-level interval
+  now covers (and clears due dates no interval covers), then sends
+  `wiki_review_due` to the owner (else the last publisher) of each page
+  whose periodic review has come due, once per due date
   (`review_notified_for`). The loop queues one at start-up and then
   whenever the last was queued more than a day ago — the job rows are
   the record of when it last ran (`ensure_reminders_job`).
@@ -40,6 +42,7 @@ import asyncio
 import logging
 import tempfile
 import time
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 
@@ -319,25 +322,39 @@ async def ensure_reminders_job(db: AsyncSession, *, now: datetime | None = None,
     return job
 
 
-async def _run_reminders(db: AsyncSession, job: WikiJob) -> None:
-    """Notify each due page's owner — or, with no owner, whoever published
-    its current version — then record the due date as notified, so the
-    next run skips it until the date moves (`mark-reviewed`, a publish).
-    A recipient who can't view the page any more gets nothing, but the
-    date is still spent. Commits after each page."""
-    ids = (await db.scalars(
+async def _due_page_ids(db: AsyncSession, now: datetime) -> list[uuid.UUID]:
+    """The pages due by `now` not yet notified for that date, soonest first."""
+    return list((await db.scalars(
         select(WikiNode.id)
         .join(WikiSpace, WikiSpace.id == WikiNode.space_id)
-        .where(reviews.due_filter(_now()), reviews.not_yet_notified())
-        .order_by(WikiNode.next_review_at, WikiNode.id))).all()
+        .where(reviews.due_filter(now), reviews.not_yet_notified())
+        .order_by(WikiNode.next_review_at, WikiNode.id))).all())
+
+
+async def _run_reminders(db: AsyncSession, job: WikiJob) -> None:
+    """First bring due dates in line with space-level interval changes
+    (`reviews.backfill_due_dates`). Then notify each due page's owner —
+    or, with no owner, whoever published its current version — and
+    record the due date as notified, so the next run skips it until the
+    date moves (`mark-reviewed`, a publish). Each page is re-checked
+    under its row lock, so one marked reviewed since the scan is left
+    alone. A recipient who can't view the page any more gets nothing,
+    but the date is still spent. Commits after each page."""
+    now = _now()
+    scheduled, cleared = await reviews.backfill_due_dates(db)
+    await db.commit()
+    ids = await _due_page_ids(db, now)
     await db.commit()
     notified = 0
     for node_id in ids:
-        node = await db.scalar(select(WikiNode).where(WikiNode.id == node_id)
-                               .with_for_update(skip_locked=True)
-                               .execution_options(populate_existing=True))
-        if node is None or node.next_review_at is None \
-                or node.review_notified_for == node.next_review_at:
+        node = await db.scalar(
+            select(WikiNode)
+            .join(WikiSpace, WikiSpace.id == WikiNode.space_id)
+            .where(WikiNode.id == node_id, reviews.due_filter(now),
+                   reviews.not_yet_notified())
+            .with_for_update(of=WikiNode, skip_locked=True)
+            .execution_options(populate_existing=True))
+        if node is None:                 # rescheduled, notified or busy since the scan
             await db.rollback()
             continue
         owner_id = node.owner_id or await db.scalar(
@@ -347,7 +364,8 @@ async def _run_reminders(db: AsyncSession, job: WikiJob) -> None:
         notified += len(await notify.on_review_due(db, node, owner_id=owner_id))
         node.review_notified_for = node.next_review_at
         await db.commit()
-    _done(job, {"notified": notified, "pages": len(ids)})
+    _done(job, {"notified": notified, "pages": len(ids), "scheduled": scheduled,
+                "cleared": cleared})
     await db.commit()
 
 

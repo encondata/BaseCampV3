@@ -115,7 +115,7 @@ async def get_content(node_id: uuid.UUID, ctx: WikiContext,
             version_id = uuid.UUID(version)
         except ValueError:
             raise err(422, "bad_version",
-                       "version must be published, draft, or a version id.") from None
+                      "version must be published, draft, or a version id.") from None
         row = await _version_for(ctx, node, level, version_id)
 
     people = await person_refs(ctx.db, [row.created_by])

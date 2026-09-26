@@ -123,11 +123,13 @@ export interface NodePageOut {
  *  `next_review_at` has passed, `due_soon` within 14 days, else `ok`. */
 export type ReviewState = 'ok' | 'due_soon' | 'overdue';
 
-/** A page's review cycle. `interval_months` is the page's own interval,
- *  else its space's; `state` is null when there's no interval or nothing
- *  is scheduled yet. `pending_review_id` is shown to editors only. */
+/** A page's review cycle. `interval_months` is the interval in effect:
+ *  `own_interval_months` (the page's own; null = inherit), else its
+ *  space's. `state` is null when there's no interval or nothing is
+ *  scheduled yet. `pending_review_id` is shown to editors only. */
 export interface NodeReviewOut {
   interval_months: number | null;
+  own_interval_months: number | null;
   next_review_at: string | null;
   last_reviewed_at: string | null;
   state: ReviewState | null;
@@ -437,6 +439,9 @@ export interface ReviewDetail extends ReviewOut {
   submitted_content: JSONContent;
   published_version_id: string | null;
   published_content: JSONContent | null;
+  /** The page was published after this was submitted: approving would
+   *  replace content the submitter never saw. */
+  stale: boolean;
 }
 
 /** `approver`: reviews of pages I manage; `requester`: my own requests;

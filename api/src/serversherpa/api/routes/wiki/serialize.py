@@ -172,7 +172,8 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
                 has_unpublished_changes=unpublished)
             interval = reviews.interval_for(n, space_row)
             review = NodeReviewOut(
-                interval_months=interval, next_review_at=n.next_review_at,
+                interval_months=interval, own_interval_months=n.review_interval_months,
+                next_review_at=n.next_review_at,
                 last_reviewed_at=n.last_reviewed_at,
                 state=reviews.review_state(interval, n.next_review_at, now),
                 pending_review_id=(pending_id if level_rank(level) >= level_rank("edit")

@@ -122,7 +122,8 @@ async def test_reminders_notify_the_owner_once_per_due_date(client, db):
     await _due_page(db, space_id, owner_id=s["editor_id"], due_in_days=5, title="Not yet")
 
     job = await _run(db)
-    assert job.status == "done" and job.result == {"notified": 1, "pages": 1}
+    assert job.status == "done"
+    assert job.result == {"notified": 1, "pages": 1, "scheduled": 0, "cleared": 0}
     notes = await _due_notes(db, s["editor_id"])
     assert len(notes) == 1 and notes[0].title == "Due page is due for review"
 
@@ -185,3 +186,79 @@ async def test_an_owner_who_cannot_view_is_not_notified_but_the_date_is_spent(cl
     assert fresh.review_notified_for == fresh.next_review_at
     assert await db.scalar(select(func.count()).select_from(Notification).where(
         Notification.kind == "wiki_review_due")) == 0
+
+
+async def test_a_page_rescheduled_between_scan_and_lock_is_not_notified(client, db,
+                                                                        monkeypatch):
+    s = await _setup(client, db)
+    node = await _due_page(db, uuid.UUID(s["space"]["id"]), owner_id=s["editor_id"])
+    node_id = node.id
+    future = datetime.now(UTC) + timedelta(days=90)
+    scan = worker._due_page_ids
+
+    async def scan_then_mark_reviewed(session, now):
+        ids = await scan(session, now)
+        # someone marks the page reviewed after the scan, before the lock
+        async with get_sessionmaker()() as other:
+            await other.execute(update(WikiNode).where(WikiNode.id == node_id)
+                                .values(next_review_at=future))
+            await other.commit()
+        return ids
+
+    monkeypatch.setattr(worker, "_due_page_ids", scan_then_mark_reviewed)
+    job = await _run(db)
+    assert job.result["notified"] == 0
+    assert await _due_notes(db, s["editor_id"]) == []
+    fresh = await db.scalar(select(WikiNode).where(WikiNode.id == node_id)
+                            .execution_options(populate_existing=True))
+    assert fresh.review_notified_for is None
+    assert fresh.next_review_at == future
+
+
+async def test_reminders_schedule_published_pages_once_the_space_has_an_interval(client, db):
+    s = await _setup(client, db)
+    space_id = uuid.UUID(s["space"]["id"])
+    old = await _due_page(db, space_id, owner_id=s["editor_id"], title="Old")
+    recent = await _due_page(db, space_id, owner_id=s["editor_id"], title="Recent")
+    draft = WikiNode(space_id=space_id, path=[], kind="page", title="Draft")
+    db.add(draft)
+    await db.flush()
+    db.add(WikiPage(node_id=draft.id))
+    published_old = datetime(2025, 1, 31, 12, tzinfo=UTC)
+    published_recent = datetime.now(UTC) - timedelta(days=1)
+    for node, when in ((old, published_old), (recent, published_recent)):
+        row = await db.get(WikiNode, node.id)
+        row.review_interval_months = None
+        row.next_review_at = None
+        await db.execute(update(WikiPageVersion).where(WikiPageVersion.node_id == node.id)
+                         .values(created_at=when))
+    await db.commit()
+    resp = await client.patch(f"/wiki/spaces/{s['space']['key']}", headers=s["owner"],
+                              json={"settings": {"review_interval_months": 6}})
+    assert resp.status_code == 200, resp.text
+
+    job = await _run(db)
+    assert job.result["scheduled"] == 3          # Old, Recent and the space's home page
+    old_row = await db.get(WikiNode, old.id, populate_existing=True)
+    recent_row = await db.get(WikiNode, recent.id, populate_existing=True)
+    assert old_row.next_review_at == datetime(2025, 7, 31, 12, tzinfo=UTC)
+    assert recent_row.next_review_at > datetime.now(UTC)
+    assert (await db.get(WikiNode, draft.id, populate_existing=True)).next_review_at is None
+    # the backfilled due date is notified in the same run
+    notes = await _due_notes(db, s["editor_id"])
+    assert [n.title for n in notes] == ["Old is due for review"]
+
+
+async def test_reminders_clear_due_dates_once_no_interval_applies(client, db):
+    s = await _setup(client, db)
+    space_id = uuid.UUID(s["space"]["id"])
+    cleared = await _due_page(db, space_id, owner_id=s["editor_id"], due_in_days=30)
+    kept = await _due_page(db, space_id, owner_id=s["editor_id"], due_in_days=30,
+                           title="Kept")
+    (await db.get(WikiNode, cleared.id)).review_interval_months = None
+    await db.commit()
+
+    job = await _run(db)
+    assert job.result["cleared"] == 1
+    assert (await db.get(WikiNode, cleared.id, populate_existing=True)).next_review_at is None
+    assert (await db.get(WikiNode, kept.id, populate_existing=True)).next_review_at is not None

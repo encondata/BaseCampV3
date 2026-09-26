@@ -165,12 +165,14 @@ class NodeFileOut(BaseModel):
 
 
 class NodeReviewOut(BaseModel):
-    """A page's review cycle. `interval_months` is the page's own interval,
-    else its space's; `state` is `overdue` once `next_review_at` has
-    passed, `due_soon` within 14 days, else `ok` — null when there's no
-    interval or nothing scheduled yet. `pending_review_id` is the page's
-    pending review (shown to editors only)."""
+    """A page's review cycle. `interval_months` is the interval in effect
+    — the page's own (`own_interval_months`; null = inherit), else its
+    space's; `state` is `overdue` once `next_review_at` has passed,
+    `due_soon` within 14 days, else `ok` — null when there's no interval
+    or nothing scheduled yet. `pending_review_id` is the page's pending
+    review (shown to editors only)."""
     interval_months: int | None
+    own_interval_months: int | None
     next_review_at: datetime | None
     last_reviewed_at: datetime | None
     state: Literal["ok", "due_soon", "overdue"] | None
@@ -611,11 +613,14 @@ class ReviewOut(BaseModel):
 
 class ReviewDetail(ReviewOut):
     """The review plus both sides of its diff: the submitted snapshot and
-    the page's published content now (null if never published)."""
+    the page's published content now (null if never published). `stale`:
+    the page was published after the review was submitted, so approving
+    replaces content the submitter never saw."""
     submitted_version_no: int
     submitted_content: dict
     published_version_id: uuid.UUID | None
     published_content: dict | None
+    stale: bool
 
 
 # ── internal (collab server) ─────────────────────────────────────────

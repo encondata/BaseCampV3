@@ -27,7 +27,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import HTTPException
-from sqlalchemy import Integer, and_, cast, func, select
+from sqlalchemy import Integer, and_, cast, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import (
@@ -41,7 +41,7 @@ from serversherpa.db.models import (
     WikiSpace,
 )
 from serversherpa.wiki import pages
-from serversherpa.wiki.content import EMPTY_DOC
+from serversherpa.wiki.content import EMPTY_DOC, docs_equal
 from serversherpa.wiki.permissions import AccessIndex, Principal
 from serversherpa.wiki.space_settings import space_setting
 
@@ -276,15 +276,23 @@ def decide(review: WikiReview, status: str, *, actor_id: uuid.UUID | None,
 
 async def approve(db: AsyncSession, node: WikiNode, page: WikiPage, review: WikiReview, *,
                   actor_id: uuid.UUID | None, note: str | None,
-                  ) -> tuple[WikiPageVersion, set[uuid.UUID]]:
+                  ) -> tuple[WikiPageVersion | None, set[uuid.UUID]]:
     """Publish the review's snapshot (the submitter's note is its change
     note), close it as approved with `note` as the decision note, and
     start the next review period. Returns the published version and who
-    got a mention for it (see `pages.publish_snapshot`)."""
+    got a mention for it (see `pages.publish_snapshot`) — or (None, ∅)
+    when the snapshot is exactly the published content already: the
+    review is approved without publishing a duplicate version."""
     snapshot = await db.get(WikiPageVersion, review.version_id)
+    content = snapshot.content_json if snapshot.content_json is not None else EMPTY_DOC
+    decide(review, "approved", actor_id=actor_id, note=note)
+    if docs_equal(content, await pages.published_content(db, page)):
+        # already what readers see (published directly meanwhile): no
+        # duplicate version, no new review period
+        await db.flush()
+        return None, set()
     version, mentioned = await pages.publish_snapshot(
         db, node, page, snapshot, actor_id=actor_id, note=review.note or None)
-    decide(review, "approved", actor_id=actor_id, note=note)
     await after_publish(db, node)
     await db.flush()
     return version, mentioned
@@ -301,3 +309,35 @@ def due_filter(now: datetime):
 def not_yet_notified():
     """WHERE clause: the reminders job hasn't notified for this due date."""
     return WikiNode.review_notified_for.is_distinct_from(WikiNode.next_review_at)
+
+
+async def backfill_due_dates(db: AsyncSession) -> tuple[int, int]:
+    """Bring `next_review_at` in line with intervals that changed at the
+    space level (the space's setting isn't copied onto its pages):
+    schedule each live published page that now has an interval but no
+    due date at its current version's publish time + the interval, and
+    clear the due date of pages no interval applies to any more. Pages
+    another transaction holds are left for the next run. Returns
+    (scheduled, cleared); the caller commits."""
+    rows = (await db.execute(
+        select(WikiNode, WikiPageVersion.created_at, interval_sql())
+        .join(WikiSpace, WikiSpace.id == WikiNode.space_id)
+        .join(WikiPage, WikiPage.node_id == WikiNode.id)
+        .join(WikiPageVersion, WikiPageVersion.id == WikiPage.published_version_id)
+        .where(WikiNode.kind == "page", WikiNode.deleted_at.is_(None),
+               WikiNode.next_review_at.is_(None), interval_sql().is_not(None))
+        .with_for_update(of=WikiNode, skip_locked=True)
+    )).all()
+    for node, published_at, interval in rows:
+        node.next_review_at = add_months(published_at, interval)
+    no_space_interval = select(WikiSpace.id).where(
+        cast(WikiSpace.settings["review_interval_months"].astext, Integer).is_(None))
+    cleared = await db.execute(
+        update(WikiNode)
+        .where(WikiNode.kind == "page", WikiNode.next_review_at.is_not(None),
+               WikiNode.review_interval_months.is_(None),
+               WikiNode.space_id.in_(no_space_interval))
+        .values(next_review_at=None)
+        .execution_options(synchronize_session=False))
+    await db.flush()
+    return len(rows), cleared.rowcount

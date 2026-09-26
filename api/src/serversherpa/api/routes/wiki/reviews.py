@@ -31,14 +31,17 @@ from serversherpa.api.routes.wiki.schemas import (
 from serversherpa.api.routes.wiki.serialize import node_out, nodes_out, person_refs
 from serversherpa.db.models import WikiNode, WikiPage, WikiPageVersion, WikiReview, WikiSpace
 from serversherpa.services.audit import audit
-from serversherpa.wiki import notify, pages, reviews
+from serversherpa.wiki import notify, reviews
 from serversherpa.wiki.content import EMPTY_DOC
 from serversherpa.wiki.permissions import require_node_level, require_space_level
 
 router = APIRouter()
 
-# the most reviews one queue listing returns
+# the most reviews one queue listing returns; a decided-review listing
+# reads at most 4x this many rows before the visibility filter
 LIST_LIMIT = 200
+# the most pages the due-for-review list returns
+DUE_LIMIT = 200
 
 
 async def _reviews_out(ctx: WikiContext, rows: list[WikiReview]) -> list[ReviewOut]:
@@ -127,6 +130,8 @@ async def list_reviews(ctx: WikiContext, status: ReviewStatus = "pending",
          .order_by(WikiReview.created_at.desc(), WikiReview.id))
     if mine == "requester":
         q = q.where(WikiReview.requested_by == ctx.principal.person_id)
+    if status != "pending":           # decided reviews pile up; pending stay few
+        q = q.limit(4 * LIST_LIMIT)
     rows = (await ctx.db.execute(q)).all()
     shown, levels = await visible_nodes(ctx, list(dict.fromkeys(n for _, n in rows)))
     shown_ids = {n.id for n in shown}
@@ -150,13 +155,17 @@ async def get_review(review_id: uuid.UUID, ctx: WikiContext) -> ReviewDetail:
     if not is_edit(level) and review.requested_by != ctx.principal.person_id:
         raise forbidden("edit")
     submitted = await ctx.db.get(WikiPageVersion, review.version_id)
+    published = (await ctx.db.get(WikiPageVersion, page.published_version_id)
+                 if page.published_version_id else None)
     out = await _review_out(ctx, review)
+    submitted_content = (submitted.content_json if submitted.content_json is not None
+                         else EMPTY_DOC)
     return ReviewDetail(
         **out.model_dump(), submitted_version_no=submitted.version_no,
-        submitted_content=submitted.content_json if submitted.content_json is not None
-        else EMPTY_DOC,
+        submitted_content=submitted_content,
         published_version_id=page.published_version_id,
-        published_content=await pages.published_content(ctx.db, page))
+        published_content=published.content_json if published else None,
+        stale=published is not None and published.created_at > review.created_at)
 
 
 # ── decisions ────────────────────────────────────────────────────────
@@ -164,8 +173,9 @@ async def get_review(review_id: uuid.UUID, ctx: WikiContext) -> ReviewDetail:
 
 @router.post("/reviews/{review_id}/approve", response_model=ReviewOut)
 async def approve(review_id: uuid.UUID, body: ReviewIn, ctx: WikiContext) -> ReviewOut:
-    """Publish exactly the submitted snapshot (manage). 409 `not_pending`
-    for a review already decided or withdrawn."""
+    """Publish exactly the submitted snapshot (manage) — unless it already
+    is the published content, when the review is approved without a new
+    version. 409 `not_pending` for a review already decided or withdrawn."""
     review, node, page, level = await _review_for(ctx, review_id)
     if level != "manage":
         raise forbidden("manage")
@@ -174,9 +184,9 @@ async def approve(review_id: uuid.UUID, body: ReviewIn, ctx: WikiContext) -> Rev
     actor_id = ctx.user.person.id
     version, mentioned = await reviews.approve(ctx.db, node, page, review,
                                                actor_id=actor_id, note=body.note or None)
-    _audit(ctx, review, "approve", version_id=str(version.id),
-           version_no=version.version_no, submitted_version_id=str(review.version_id),
-           note=review.decision_note)
+    _audit(ctx, review, "approve", version_id=str(version.id) if version else None,
+           version_no=version.version_no if version else None,
+           submitted_version_id=str(review.version_id), note=review.decision_note)
     await notify.auto_watch(ctx.db, actor_id, node.id)
     # the decision announces the publish too (no on_published)
     await notify.on_review_decided(ctx.db, node, review, actor_id=actor_id, skip=mentioned)
@@ -239,7 +249,8 @@ async def mark_reviewed(node_id: uuid.UUID, ctx: WikiContext) -> NodeOut:
 @router.get("/spaces/{key}/due-reviews", response_model=list[NodeOut])
 async def due_reviews(key: str, ctx: WikiContext) -> list[NodeOut]:
     """The space's pages whose review falls due within two weeks (or is
-    overdue), soonest first — those the caller can see."""
+    overdue), soonest first — those the caller can see, of the first
+    DUE_LIMIT."""
     space = await require_space_level(ctx.ix, await space_by_key(ctx.db, key), "view")
     nodes = (await ctx.db.scalars(
         select(WikiNode)
@@ -247,6 +258,7 @@ async def due_reviews(key: str, ctx: WikiContext) -> list[NodeOut]:
         .where(WikiNode.space_id == space.id,
                reviews.due_filter(reviews.utcnow() + reviews.DUE_SOON))
         .order_by(WikiNode.next_review_at, WikiNode.id)
+        .limit(DUE_LIMIT)
     )).all()
     shown, levels = await visible_nodes(ctx, nodes)
     return await nodes_out(ctx, shown, levels)
