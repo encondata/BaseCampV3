@@ -3,7 +3,8 @@
 
 - `GET /nodes/{id}/comments` — the page's threads (view).
 - `POST /nodes/{id}/comments` — start a thread or reply (edit, or view
-  while the space's `readers_can_comment` is on).
+  while the space's `readers_can_comment` is on); a reply reopens a
+  resolved thread.
 - `PATCH /comments/{id}` — edit your own comment.
 - `DELETE /comments/{id}` — delete your own, or any as a manager.
 - `POST /comments/threads/{thread_id}/resolve` and `/reopen` — edit, or
@@ -43,7 +44,7 @@ router = APIRouter()
 MENTIONABLE_LIMIT = 10
 # the most name/email matches checked for access per lookup — each costs
 # an access resolution, and the picker asks again as the query narrows
-MENTIONABLE_SCAN = 30
+MENTIONABLE_SCAN = 100
 
 
 # ── lookups ─────────────────────────────────────────────────────────
@@ -152,6 +153,10 @@ async def post_comment(node_id: uuid.UUID, body: CommentIn,
         thread = await comments.thread_start(ctx.db, node, body.thread_id)
         if thread is None:
             raise not_found()
+        # a reply reopens a resolved thread
+        if comments.set_resolved(thread, None):
+            _audit(ctx, thread.id, "reopen", {
+                "node_id": str(node.id), "thread_id": str(thread.id), "by_reply": True})
     comment = await comments.post(
         ctx.db, node, author_id=ctx.principal.person_id, text=body.body.text,
         mentions=body.body.mentions, thread=thread, anchor=body.anchor)

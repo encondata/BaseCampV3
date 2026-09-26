@@ -318,3 +318,25 @@ async def test_an_archived_space_is_read_only_for_its_readers(client, db):
     assert resp.status_code == 403
     resp = await client.delete(f"/wiki/comments/{mine['id']}", headers=s["viewer"])
     assert resp.status_code == 403
+
+
+async def test_a_reply_reopens_a_resolved_thread(client, db):
+    s = await _setup(client, db)
+    page = await _page(client, db, s)
+    first = await _post(client, s["editor"], page, "question")
+    resp = await client.post(f"/wiki/comments/threads/{first['id']}/resolve",
+                             headers=s["editor"])
+    assert resp.status_code == 200
+
+    await _post(client, s["viewer"], page, "one more thing", thread_id=first["id"])
+
+    [thread] = await _threads(client, s["viewer"], page)
+    assert thread["resolved_at"] is None and thread["resolved_by"] is None
+    rows = await _audits(db, first["id"])
+    assert [(r.action, r.actor_person_id, r.changes.get("by_reply")) for r in rows] == [
+        ("create", s["editor_id"], None), ("resolve", s["editor_id"], None),
+        ("reopen", s["viewer_id"], True)]
+
+    # a reply to an open thread records no reopen
+    await _post(client, s["viewer"], page, "and another", thread_id=first["id"])
+    assert len(await _audits(db, first["id"])) == 3

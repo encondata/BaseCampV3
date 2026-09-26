@@ -6,7 +6,8 @@ comment's `thread_id` is its own id, and a reply copies it (with
 inline thread (`anchor`) is tied to a `commentThread` mark in the page
 whose id is the thread id; the mark may later be deleted from the page,
 and the thread stays (the rail shows it as orphaned). Whether a thread
-is resolved lives on its first comment.
+is resolved lives on its first comment; a reply reopens a resolved
+thread (the route does that, and audits it).
 
 A body is plain text plus the ids of the people it @mentions,
 `{"text": str, "mentions": [uuid str]}` — never HTML. Only people who

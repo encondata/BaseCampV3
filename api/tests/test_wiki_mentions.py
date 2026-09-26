@@ -210,3 +210,25 @@ async def test_mentionable_is_capped_and_needs_view(client, db):
     resp = await client.get(f"/wiki/nodes/{page['id']}/mentionable",
                             headers=s["editor"], params={"q": f"cap-{tag}"})
     assert len(resp.json()) == 10
+
+
+async def test_mentionable_looks_past_people_who_cannot_view(client, db):
+    """More than 30 matches who can't view the page sort ahead of the one
+    who can — still found (the scan covers 100 candidates)."""
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    await publish_via_db(db, page["id"])
+    tag = uuid.uuid4().hex[:8]
+    for i in range(40):     # accounts without any role: no wiki access
+        email = f"scan-{tag}-{i:02}@test.example.com"
+        person = Person(first_name="No", last_name=f"Access {tag} {i:02}", email=email)
+        db.add(person)
+        await db.flush()
+        db.add(UserAccount(person_id=person.id, email=email, password_hash="x"))
+    await db.commit()
+    _, viewer = await login_as(client, db, email=f"scan-{tag}-zz@test.example.com")
+
+    resp = await client.get(f"/wiki/nodes/{page['id']}/mentionable",
+                            headers=s["editor"], params={"q": f"scan-{tag}"})
+    assert resp.status_code == 200, resp.text
+    assert [p["id"] for p in resp.json()] == [str(viewer)]
