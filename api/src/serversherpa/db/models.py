@@ -1987,3 +1987,93 @@ class WikiReview(Base):
         CheckConstraint("status IN ('pending','approved','rejected','withdrawn')",
                         name="wiki_reviews_status_check"),
     )
+
+
+class WikiShareLink(Base):
+    """A public, unauthenticated read-only link to one page or file node.
+    Only `token_hash` (sha256) is stored — the raw token is shown once, on
+    creation. Requires the node's manage level and the space's
+    `allow_public_links` setting to create; `GET /wiki/public/{token}`
+    checks `revoked_at`/`expires_at` at request time."""
+    __tablename__ = "wiki_share_links"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"))
+    token_hash: Mapped[str] = mapped_column(unique=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    expires_at: Mapped[datetime | None]
+    revoked_at: Mapped[datetime | None]
+    view_count: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    last_viewed_at: Mapped[datetime | None]
+
+
+class WikiHelpLink(Base):
+    """Maps a portal/kiosk route context (e.g. `portal:/bulk/time`) to the
+    wiki page that explains it. `GET /wiki/help?context=` matches the
+    longest registered prefix."""
+    __tablename__ = "wiki_help_links"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    context: Mapped[str] = mapped_column(unique=True)
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        CheckConstraint("char_length(context) BETWEEN 1 AND 300",
+                        name="wiki_help_links_context_length_check"),
+    )
+
+
+class WikiPageView(Base):
+    """One row per (page, viewer, day) — upserted on each view, `count`
+    incremented. No surrogate id: both FKs are ON DELETE CASCADE, so the
+    row simply disappears with either side. Retained 365 days by the
+    worker's daily sweep."""
+    __tablename__ = "wiki_page_views"
+
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"), primary_key=True)
+    person_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("people.id", ondelete="CASCADE"), primary_key=True)
+    viewed_on: Mapped[date] = mapped_column(Date, primary_key=True)
+    count: Mapped[int] = mapped_column(Integer)
+
+
+class WikiFeedback(Base):
+    """A reader's "Was this page helpful?" response — one row per (page,
+    person), replaced on re-submission. No surrogate id, same
+    ON-DELETE-CASCADE reasoning as `WikiPageView`."""
+    __tablename__ = "wiki_feedback"
+
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"), primary_key=True)
+    person_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("people.id", ondelete="CASCADE"), primary_key=True)
+    helpful: Mapped[bool]
+    comment: Mapped[str | None]
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        CheckConstraint("comment IS NULL OR char_length(comment) <= 2000",
+                        name="wiki_feedback_comment_length_check"),
+    )
+
+
+class WikiSearchLog(Base):
+    """One row per wiki search, for the "searches with no results"
+    analytics view. `person_id` is ON DELETE SET NULL — the log outlives
+    whoever ran the search. Retained 90 days by the worker's daily sweep."""
+    __tablename__ = "wiki_search_log"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    person_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    query: Mapped[str]
+    result_count: Mapped[int] = mapped_column(Integer)
+    at: Mapped[datetime] = mapped_column(server_default=text("now()"))

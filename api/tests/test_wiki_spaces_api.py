@@ -204,12 +204,24 @@ async def test_patch_settings_rejects_unknown_keys(client, db):
     assert (await _create_space(
         client, headers, key="settings-space", default_access="private")).status_code == 201
 
-    # allow_public_links is a real future (phase 3) key — still unknown today.
     resp = await client.patch(
         "/wiki/spaces/settings-space", headers=headers,
-        json={"settings": {"allow_public_links": True}})
+        json={"settings": {"totally_unknown_setting": True}})
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "bad_setting"
+
+
+async def test_patch_settings_accepts_allow_public_links(client, db):
+    headers, _ = await login_as(client, db, roles=("staff",))
+    assert (await _create_space(
+        client, headers, key="settings-public-links",
+        default_access="private")).status_code == 201
+
+    resp = await client.patch(
+        "/wiki/spaces/settings-public-links", headers=headers,
+        json={"settings": {"allow_public_links": True}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["settings"]["allow_public_links"] is True
 
 
 async def test_patch_settings_accepts_the_three_phase2_keys(client, db):
@@ -240,6 +252,8 @@ async def test_patch_settings_accepts_the_three_phase2_keys(client, db):
     {"require_approval": 1},
     {"review_interval_months": "6"},
     {"review_interval_months": True},
+    {"allow_public_links": "yes"},
+    {"allow_public_links": 1},
 ])
 async def test_patch_settings_rejects_bad_types(client, db, settings):
     headers, _ = await login_as(client, db, roles=("staff",))

@@ -125,6 +125,9 @@ class Settings(BaseSettings):
     wiki_max_upload_bytes: int = 1_073_741_824
     # days a soft-deleted node stays restorable before the purge job drops it
     wiki_trash_days: int = 30
+    # the wiki server's own origin, used by the worker for POST
+    # /internal/render (export-to-PDF/docx) with X-Wiki-Service-Token.
+    wiki_render_url: str = "http://localhost:5177"
 
     @property
     def sync_database_url(self) -> str:

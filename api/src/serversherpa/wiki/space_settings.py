@@ -12,12 +12,14 @@ ALLOWED: dict[str, type | tuple] = {
     "readers_can_comment": bool,
     "require_approval": bool,
     "review_interval_months": (int, None),
+    "allow_public_links": bool,
 }
 
 DEFAULTS: dict[str, bool | int | None] = {
     "readers_can_comment": True,
     "require_approval": False,
     "review_interval_months": None,
+    "allow_public_links": False,
 }
 
 REVIEW_INTERVAL_MONTHS_MIN = 1

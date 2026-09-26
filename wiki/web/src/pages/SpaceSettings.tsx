@@ -23,7 +23,9 @@ import { archiveSpace, errorMessage, getSpace, unarchiveSpace, updateSpace } fro
 import NotFound from './NotFound';
 
 /** Mirrors the API's `space_setting` (serversherpa/wiki/space_settings.py):
- *  the stored value, or `fallback` when the space never overrode it. */
+ *  the stored value, or `fallback` when the space never overrode it. Each
+ *  call site's `fallback` must match that module's `DEFAULTS[key]` — there
+ *  is no shared constant here, so keep them in sync by hand. */
 function spaceSetting<T>(space: SpaceOut, key: string, fallback: T): T {
   const v = space.settings[key];
   return v === undefined ? fallback : (v as T);
