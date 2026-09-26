@@ -1,9 +1,9 @@
 /** /n/:nodeId (and a space's home page): loads the node, tells the shell
  *  what's showing, and hands it to the view for its kind — FolderView for
- *  folders; the page view (Task 12) and file view (Task 14) are
- *  placeholders until then. Refetches whenever the tree changes, so a
- *  rename or move anywhere shows up here. */
-import { useEffect, useState } from 'react';
+ *  folders, PageView for pages; the file view (Task 14) is a placeholder
+ *  until then. Refetches whenever the tree changes, so a rename or move
+ *  anywhere shows up here. */
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 
 import { ApiError } from '@portal/lib/api';
@@ -14,6 +14,9 @@ import type { NodeDetailOut } from '../lib/types';
 import { errorMessage, getNode } from '../lib/wikiApi';
 import FolderView, { Breadcrumbs } from './FolderView';
 import NotFound from './NotFound';
+
+// the editor (Tiptap, Yjs, syntax highlighting) loads with the first page
+const PageView = lazy(() => import('./PageView'));
 
 type State =
   | { id: string; status: 'ready'; node: NodeDetailOut }
@@ -64,6 +67,12 @@ export default function NodePage({ nodeId }: { nodeId?: string }) {
   }
   const { node } = shown;
   if (node.kind === 'folder') return <FolderView node={node} />;
-  if (node.kind === 'page') return <Placeholder node={node} testId="page-view" />;
+  if (node.kind === 'page') {
+    return (
+      <Suspense fallback={<div className="portal-page wiki-page"><p className="page-hint">Loading…</p></div>}>
+        <PageView node={node} />
+      </Suspense>
+    );
+  }
   return <Placeholder node={node} testId="file-view" />;
 }

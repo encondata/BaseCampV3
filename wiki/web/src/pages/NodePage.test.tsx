@@ -4,17 +4,22 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@portal/lib/notificationsContext', () => ({ useToast: () => vi.fn() }));
+vi.mock('@portal/auth/AuthContext', () => ({
+  useAuth: () => ({ person: { id: 'p-1', display_name: 'Jimmy Henderson' } }),
+}));
 vi.mock('../lib/wikiApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/wikiApi')>()),
   getNode: vi.fn(),
   getTree: vi.fn(),
+  getPageContent: vi.fn(),
+  getMe: vi.fn(),
 }));
 
 import { ApiError } from '@portal/lib/api';
 
 import { resetTreeStore } from '../lib/treeStore';
-import { getNode, getTree } from '../lib/wikiApi';
-import { makeDetail } from '../testing/fixtures';
+import { getMe, getNode, getPageContent, getTree } from '../lib/wikiApi';
+import { makeDetail, makeMe } from '../testing/fixtures';
 import NodePage from './NodePage';
 
 function renderAt(path: string) {
@@ -28,6 +33,8 @@ function renderAt(path: string) {
 beforeEach(() => {
   resetTreeStore();
   vi.mocked(getTree).mockResolvedValue([]);
+  vi.mocked(getMe).mockResolvedValue(makeMe());
+  vi.mocked(getPageContent).mockRejectedValue(new ApiError(404, 'not_published'));
 });
 afterEach(cleanup);
 
@@ -40,7 +47,7 @@ describe('NodePage', () => {
   });
 
   it('hands a page to the page view', async () => {
-    vi.mocked(getNode).mockResolvedValue(makeDetail('p1', { title: 'Intro' }));
+    vi.mocked(getNode).mockResolvedValue(makeDetail('p1', { title: 'Intro', my_level: 'view' }));
     renderAt('/n/p1');
     expect(await screen.findByTestId('page-view')).toBeTruthy();
   });

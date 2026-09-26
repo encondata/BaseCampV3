@@ -47,7 +47,11 @@ export function Breadcrumbs({ node }: { node: NodeDetailOut }) {
   );
 }
 
-function InlineTitle({ node }: { node: NodeDetailOut }) {
+/** The node's title as a heading; editors rename it in place (pencil,
+ *  Enter saves, Escape cancels). */
+export function InlineTitle({ node, label = 'Folder title', showIcon = true }: {
+  node: NodeDetailOut; label?: string; showIcon?: boolean;
+}) {
   const toast = useToast();
   const [title, setTitle] = useState(node.title);
   const [editing, setEditing] = useState(false);
@@ -81,7 +85,7 @@ function InlineTitle({ node }: { node: NodeDetailOut }) {
 
   if (editing) {
     return (
-      <input className="wiki-title-input" aria-label="Folder title" value={draft} autoFocus maxLength={220}
+      <input className="wiki-title-input" aria-label={label} value={draft} autoFocus maxLength={220}
              onChange={(e) => setDraft(e.target.value)} onKeyDown={onKey} onBlur={() => void save()}
              onFocus={(e) => e.currentTarget.select()} />
     );
@@ -89,7 +93,7 @@ function InlineTitle({ node }: { node: NodeDetailOut }) {
   return (
     <div className="wiki-title-row">
       <h1 className="page-title wiki-title">
-        <NodeIcon node={node} className="wiki-title-icon" />
+        {showIcon && <NodeIcon node={node} className="wiki-title-icon" />}
         <span>{title}</span>
       </h1>
       {canEdit && (

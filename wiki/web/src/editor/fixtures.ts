@@ -116,6 +116,13 @@ export const fixtureDoc: JSONContent = {
       content: [text('ipmitool power status')],
     },
     { type: 'blockquote', content: [para(text('Measure twice.'))] },
+    {
+      type: 'details',
+      content: [
+        { type: 'detailsSummary', content: [text('Why not hot-swap?')] },
+        { type: 'detailsContent', content: [para(text('The PDU has no redundant feed.'))] },
+      ],
+    },
     { type: 'horizontalRule' },
     para(text('Line one'), { type: 'hardBreak' }, text('line two', [{ type: 'strike' }])),
   ],

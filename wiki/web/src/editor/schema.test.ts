@@ -87,6 +87,13 @@ describe('wikiExtensions: custom nodes render to HTML', () => {
     expect(html()).toContain('<pre><code class="language-bash">ipmitool power status</code></pre>');
   });
 
+  it('renders a collapsible section as a native details element', () => {
+    expect(html()).toContain(
+      '<details data-details=""><summary>Why not hot-swap?</summary>'
+      + '<div data-details-content=""><p>The PDU has no redundant feed.</p></div></details>',
+    );
+  });
+
   it('renders the empty document as one empty paragraph', () => {
     expect(EMPTY_DOC).toEqual({ type: 'doc', content: [{ type: 'paragraph' }] });
     expect(generateHTML(EMPTY_DOC, wikiExtensions())).toBe('<p></p>');
@@ -133,6 +140,21 @@ describe('wikiExtensions: HTML round trip', () => {
     expect(parsed.content[0]).toMatchObject({ type: 'callout', attrs: { variant: 'info' } });
   });
 
+  it('parses a plain details element (importers emit these) into summary and content', () => {
+    const parsed = generateJSON('<details><summary>More</summary><p>Hidden</p></details>',
+      wikiExtensions());
+    expect(parsed.content[0]).toEqual({
+      type: 'details',
+      content: [
+        { type: 'detailsSummary', content: [{ type: 'text', text: 'More' }] },
+        {
+          type: 'detailsContent',
+          content: [{ type: 'paragraph', attrs: { textAlign: null }, content: [{ type: 'text', text: 'Hidden' }] }],
+        },
+      ],
+    });
+  });
+
   it('parses a bare image figure (importers emit these) with empty alt and caption', () => {
     const parsed = generateJSON(`<figure data-wiki-image="${FIXTURE_IMAGE_ASSET}"></figure>`,
       wikiExtensions());
@@ -165,12 +187,15 @@ describe('wikiExtensions: options', () => {
       ['collaboration', 'collaborationCursor', 'placeholder']));
     expect(exts.find((e) => e.name === 'starterKit')?.options.history).toBe(false);
     expect(exts.find((e) => e.name === 'collaboration')?.options.document).toBe(doc);
+    // the wiki server stores and seeds this same Y.Doc field
+    expect(exts.find((e) => e.name === 'collaboration')?.options.field).toBe('default');
   });
 
   it('builds a schema with the custom node types', () => {
     const schema = getSchema(wikiExtensions());
     expect(Object.keys(schema.nodes)).toEqual(expect.arrayContaining(
-      ['callout', 'wikiImage', 'fileEmbed', 'pageLink', 'table', 'taskList', 'codeBlock']));
+      ['callout', 'wikiImage', 'fileEmbed', 'pageLink', 'table', 'taskList', 'codeBlock',
+        'details', 'detailsSummary', 'detailsContent']));
     expect(schema.nodes.pageLink.isInline).toBe(true);
     expect(schema.nodes.pageLink.isAtom).toBe(true);
     expect(schema.nodes.wikiImage.isAtom).toBe(true);

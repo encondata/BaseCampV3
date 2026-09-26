@@ -31,6 +31,8 @@ import { common, createLowlight } from 'lowlight';
 import type { Doc } from 'yjs';
 
 import { Callout } from './extensions/Callout.js';
+import { renderCursor, renderSelection } from './extensions/cursors.js';
+import { Details, DetailsContent, DetailsSummary } from './extensions/Details.js';
 import { FileEmbed } from './extensions/FileEmbed.js';
 import { PageLink } from './extensions/PageLink.js';
 import { WikiImage } from './extensions/WikiImage.js';
@@ -137,16 +139,23 @@ export function wikiExtensions(opts: WikiExtensionOptions = {}): Extensions {
     WikiCodeBlock.configure({ lowlight }),
     Typography,
     Callout,
+    Details,
+    DetailsSummary,
+    DetailsContent,
     WikiImage,
     FileEmbed,
     PageLink,
   ];
   if (placeholder) extensions.push(Placeholder.configure({ placeholder }));
   if (collab) {
-    extensions.push(Collaboration.configure({ document: collab.doc }));
+    // the wiki server stores and seeds this same field (server/src/collab.ts COLLAB_FIELD)
+    extensions.push(Collaboration.configure({ document: collab.doc, field: 'default' }));
     if (collab.provider) {
       extensions.push(CollaborationCursor.configure({
         provider: collab.provider,
+        // other people's awareness is untrusted: draw it without style strings
+        render: renderCursor,
+        selectionRender: renderSelection,
         ...(collab.user ? { user: collab.user } : {}),
       }));
     }

@@ -14,6 +14,7 @@ import '@portal/styles/reports.css';
 
 import App from './App';
 import './styles/wiki.css';
+import './styles/editor.css';
 
 // Same nesting as the portal: the system status (read-only / broadcast
 // banners, also shown on the sign-in page) and AuthProvider (which also

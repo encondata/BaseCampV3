@@ -8,6 +8,14 @@
     "moduleResolution": "bundler",
     "noEmit": true
   },
-  "include": ["server/src/**/*.ts", "web/src/editor/**/*.ts"],
+  // the shared (DOM-free) schema and its tests; the rest of web/src/editor
+  // is browser code that tsconfig.json checks
+  "include": [
+    "server/src/**/*.ts",
+    "web/src/editor/schema.ts",
+    "web/src/editor/schema.test.ts",
+    "web/src/editor/fixtures.ts",
+    "web/src/editor/extensions/**/*.ts"
+  ],
   "exclude": []
 }
