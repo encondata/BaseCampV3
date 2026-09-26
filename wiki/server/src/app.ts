@@ -84,7 +84,7 @@ export function createApp(cfg: ServerConfig, api: WikiApi) {
     },
   }));
 
-  // History fallback: client-side routes (/n/<id>, /s/<key>, …) get the
+  // History fallback: client-side routes (/n/<id>, /library/<key>, …) get the
   // SPA. A path whose last segment has a dot is a file that doesn't exist,
   // and gets a 404 rather than HTML under a script's name.
   app.use((req, res, next) => {

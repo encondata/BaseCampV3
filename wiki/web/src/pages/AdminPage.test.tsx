@@ -63,9 +63,9 @@ describe('AdminPage', () => {
     expect(screen.getAllByText('Active')).toHaveLength(1);
     expect(screen.getAllByText('Archived')).toHaveLength(1);
     const links = screen.getAllByRole('link', { name: 'Settings' }).map((a) => a.getAttribute('href'));
-    expect(links).toEqual(['/s/ops/settings', '/s/old/settings']);
+    expect(links).toEqual(['/library/ops/settings', '/library/old/settings']);
     const trashLinks = screen.getAllByRole('link', { name: 'Trash' }).map((a) => a.getAttribute('href'));
-    expect(trashLinks).toEqual(['/trash/ops', '/trash/old']);
+    expect(trashLinks).toEqual(['/library/ops/trash', '/library/old/trash']);
   });
 
   it('unarchives a space', async () => {

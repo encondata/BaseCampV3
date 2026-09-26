@@ -76,7 +76,7 @@ export default function WatchButton({ target, className }: { target: WatchTarget
   };
 
   if (state.watching && !own) {
-    const via = state.via === 'ancestor' ? 'folder' : 'space';
+    const via = state.via === 'ancestor' ? 'folder' : 'library';
     return (
       <span className={`chip wiki-watch-chip${className ? ` ${className}` : ''}`}
             title={`You're watching the whole ${via}.`}>

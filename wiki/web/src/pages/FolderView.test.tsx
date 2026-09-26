@@ -97,7 +97,7 @@ describe('FolderView', () => {
   it('shows breadcrumbs and lists the folder\'s children with type, author and size', async () => {
     renderFolder();
     const nav = screen.getByRole('navigation', { name: 'Breadcrumb' });
-    expect(within(nav).getByRole('link', { name: 'Operations' }).getAttribute('href')).toBe('/s/ops');
+    expect(within(nav).getByRole('link', { name: 'Operations' }).getAttribute('href')).toBe('/library/ops');
     expect(within(nav).getByRole('link', { name: 'Library' }).getAttribute('href')).toBe('/n/top');
 
     const list = await screen.findByRole('list', { name: 'Contents of Guides' });

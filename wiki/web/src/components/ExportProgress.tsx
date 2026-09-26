@@ -94,7 +94,7 @@ export default function ExportProgress({ jobId }: { jobId: string }) {
             <b>Preparing “{job.filename}”…</b>
           </div>
           <p className="page-hint">
-            A big folder or space can take a few minutes. You can close this — you’ll get a notification when it’s ready.
+            A big folder or library can take a few minutes. You can close this — you’ll get a notification when it’s ready.
           </p>
         </>
       )}

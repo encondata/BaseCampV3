@@ -45,7 +45,7 @@ describe('TemplatePicker', () => {
     await screen.findByRole('radio', { name: /Runbook/ });
     const options = screen.getAllByRole('radio');
     expect(options.map((o) => o.textContent)).toEqual([
-      'Blank pageStart with nothing', '📋 RunbookA standard runbook', 'Move planThis space',
+      'Blank pageStart with nothing', '📋 RunbookA standard runbook', 'Move planThis library',
     ]);
     expect(listTemplates).toHaveBeenCalledWith('ops');
   });
@@ -58,7 +58,7 @@ describe('TemplatePicker', () => {
     renderPicker();
     await screen.findByRole('radio', { name: /How-to guide/ });
     expect(screen.getAllByRole('radio').map((o) => o.textContent)).toEqual([
-      'Blank pageStart with nothing', '🧭 How-to guideA standard runbook', 'Move planThis space',
+      'Blank pageStart with nothing', '🧭 How-to guideA standard runbook', 'Move planThis library',
     ]);
   });
 

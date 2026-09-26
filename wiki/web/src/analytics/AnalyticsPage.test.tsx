@@ -85,10 +85,10 @@ describe('AnalyticsPage — who sees it', () => {
     vi.mocked(getAnalytics).mockResolvedValue(analytics({ space_key: 'ops', failed_searches: [] }));
     renderPage();
     await waitFor(() => expect(getAnalytics).toHaveBeenCalledWith({ space: 'ops', days: 30 }));
-    const combo = await screen.findByRole('combobox', { name: 'Space' });
+    const combo = await screen.findByRole('combobox', { name: 'Library' });
     fireEvent.focus(combo);
     expect(screen.queryByRole('button', { name: 'Guides' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'All spaces' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'All libraries' })).toBeNull();
     fireEvent.mouseDown(await screen.findByRole('button', { name: 'People Ops' }));
     await waitFor(() => expect(getAnalytics).toHaveBeenLastCalledWith({ space: 'hr', days: 30 }));
     expect(screen.getByTestId('probe').textContent).toBe('/analytics?space=hr');
@@ -142,7 +142,7 @@ describe('AnalyticsPage — the numbers', () => {
     await waitFor(() => expect(getAnalytics).toHaveBeenLastCalledWith({ space: undefined, days: 90 }));
     expect(screen.getByTestId('probe').textContent).toBe('/analytics?days=90');
 
-    const combo = await screen.findByRole('combobox', { name: 'Space' });
+    const combo = await screen.findByRole('combobox', { name: 'Library' });
     fireEvent.focus(combo);
     fireEvent.mouseDown(await screen.findByRole('button', { name: 'Guides' }));
     await waitFor(() => expect(getAnalytics).toHaveBeenLastCalledWith({ space: 'guides', days: 90 }));

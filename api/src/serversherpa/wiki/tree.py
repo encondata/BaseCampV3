@@ -230,7 +230,7 @@ def check_parent(parent: WikiNode | None, space_id: uuid.UUID, *,
     if parent.kind == "file":
         raise TreeError("bad_parent", "A file can't contain other items.")
     if parent.deleted_at is not None or parent.space_id != space_id:
-        raise TreeError("bad_parent", "That parent isn't in this space.")
+        raise TreeError("bad_parent", "That parent isn't in this library.")
     if moving is not None and (parent.id == moving.id
                                or moving.id in (parent.path or [])):
         raise TreeError("bad_parent", "An item can't go inside itself.")
@@ -292,7 +292,7 @@ async def move_node(db: AsyncSession, node: WikiNode, *,
         home_id = await db.scalar(
             select(WikiSpace.home_node_id).where(WikiSpace.id == node.space_id))
         if home_id == node.id:
-            raise TreeError("is_home", "The space home page can't be moved.")
+            raise TreeError("is_home", "The library's home page can't be moved.")
 
     position = await next_position(db, new_space.id, new_parent_id,
                                    before_id=before_id, after_id=after_id,

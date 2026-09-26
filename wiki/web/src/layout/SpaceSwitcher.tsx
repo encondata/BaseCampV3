@@ -1,10 +1,11 @@
-/** The top bar's space picker: a ComboBox over the spaces the person can
- *  view; picking one opens its home. */
+/** The top bar's library picker: a ComboBox over the spaces (libraries)
+ *  the person can view; picking one opens its home. */
 import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import ComboBox, { type ComboOption } from '@portal/components/ComboBox';
 
+import { libraryPath } from '../lib/paths';
 import type { SpaceOut } from '../lib/types';
 
 export default function SpaceSwitcher({ spaces, current }: { spaces: SpaceOut[] | null; current: SpaceOut | null }) {
@@ -19,9 +20,9 @@ export default function SpaceSwitcher({ spaces, current }: { spaces: SpaceOut[] 
       <ComboBox
         options={options}
         value={current?.key ?? ''}
-        onChange={(key) => { if (key) navigate(`/s/${key}`); }}
-        placeholder={spaces && spaces.length === 0 ? 'No spaces yet' : 'Choose a space…'}
-        ariaLabel="Space"
+        onChange={(key) => { if (key) navigate(libraryPath(key)); }}
+        placeholder={spaces && spaces.length === 0 ? 'No libraries yet' : 'Choose a library…'}
+        ariaLabel="Library"
         disabled={!spaces || spaces.length === 0}
       />
     </div>

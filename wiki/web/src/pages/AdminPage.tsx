@@ -13,6 +13,7 @@ import { useToast } from '@portal/lib/notificationsContext';
 
 import { SpaceBadge } from '../components/NodeIcon';
 import { useWikiShell } from '../layout/shellContext';
+import { libraryPath } from '../lib/paths';
 import type { ShareLinkOut, ShareLinkStatus, SpaceOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
 import {
@@ -83,7 +84,7 @@ function PublicLinksSection() {
       <div className="dir-head wiki-folder-head">
         <div>
           <h2 className="wiki-section-title">Public links</h2>
-          <p className="page-hint">Links anyone can open without signing in. A space can turn them off in its settings.</p>
+          <p className="page-hint">Links anyone can open without signing in. A library can turn them off in its settings.</p>
         </div>
       </div>
       {state.status === 'loading' && <p className="page-hint">Loading…</p>}
@@ -151,7 +152,7 @@ export default function AdminPage() {
     let live = true;
     listSpaces(true)
       .then((spaces) => { if (live) setState({ status: 'ready', spaces }); })
-      .catch((err) => { if (live) setState({ status: 'error', message: errorMessage(err, 'Couldn\'t load the spaces.') }); });
+      .catch((err) => { if (live) setState({ status: 'error', message: errorMessage(err, 'Couldn\'t load the libraries.') }); });
     return () => { live = false; };
   }, [me?.is_admin]);
 
@@ -178,7 +179,7 @@ export default function AdminPage() {
       <div className="dir-head wiki-folder-head">
         <div>
           <div className="eyebrow">Wiki admin</div>
-          <h1 className="page-title">All spaces</h1>
+          <h1 className="page-title">All libraries</h1>
         </div>
       </div>
 
@@ -187,9 +188,9 @@ export default function AdminPage() {
       {state.status === 'ready' && (
         <div className="dir-list list-scroll wiki-admin-list">
           <div className="list-head" style={GRID} aria-hidden="true">
-            <span>Space</span><span>Key</span><span>Status</span><span />
+            <span>Library</span><span>Key</span><span>Status</span><span />
           </div>
-          <div role="list" aria-label="All spaces">
+          <div role="list" aria-label="All libraries">
             {state.spaces.map((s) => (
               <div className="dir-row" role="listitem" key={s.id}>
                 <div className="row-main" style={GRID}>
@@ -207,8 +208,8 @@ export default function AdminPage() {
                       : <span className="chip c-green"><span className="dot" />Active</span>}
                   </div>
                   <div className="cell wiki-admin-actions">
-                    <Link className="btn-ghost" to={`/s/${s.key}/settings`}>Settings</Link>
-                    <Link className="btn-ghost" to={`/trash/${s.key}`}>Trash</Link>
+                    <Link className="btn-ghost" to={libraryPath(s.key, 'settings')}>Settings</Link>
+                    <Link className="btn-ghost" to={libraryPath(s.key, 'trash')}>Trash</Link>
                     {s.archived_at && (
                       <button type="button" className="btn-ghost" disabled={working === s.key}
                               onClick={() => void unarchive(s)}>
@@ -220,7 +221,7 @@ export default function AdminPage() {
               </div>
             ))}
           </div>
-          {state.spaces.length === 0 && <div className="dir-empty"><b>No spaces yet</b></div>}
+          {state.spaces.length === 0 && <div className="dir-empty"><b>No libraries yet</b></div>}
         </div>
       )}
 

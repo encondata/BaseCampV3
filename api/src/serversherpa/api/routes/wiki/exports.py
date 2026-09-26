@@ -89,7 +89,7 @@ async def create_export(body: ExportIn, ctx: WikiContext) -> ExportCreatedOut:
         space = await require_space_level(
             ctx.ix, await space_by_key(ctx.db, body.space_key), "view")
         if body.format != "zip":
-            raise err(422, "bad_format", "A space exports as a .zip.")
+            raise err(422, "bad_format", "A library exports as a .zip.")
         title = space.name
         target = {"space_id": str(space.id), "space_key": space.key}
     else:

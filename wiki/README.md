@@ -1,11 +1,17 @@
 # ServerSherpa wiki
 
 A wiki portal for everyone who can sign in to ServerSherpa (staff, clients,
-partners, workers) — spaces with their own members and levels, folders and
-pages with a live co-editing block editor, file uploads with previews and
+partners, workers) — libraries with their own members and levels, folders
+and pages with a live co-editing block editor, file uploads with previews and
 versions, `.docx`/`.md` import, version history, and search across pages
 and file contents. Sign-in is the portal's own login page and session, so
 signing out of either signs out of both.
+
+**Libraries vs. spaces.** People see "library" and "libraries" everywhere in
+the UI (and at `/library/<key>`); the code, the API (`/wiki/spaces`,
+`space_key`, `space_id`), the database and settings keys still say "space".
+They're the same thing — only the word on screen changed. Old
+`/s/<key>…`, `/trash/<key>` and `/spaces/new` links redirect.
 
 It ships as two Docker images, separate from the main API and portal:
 
@@ -115,15 +121,15 @@ the worker's.
 ## Collaboration features
 
 Phase 2 added comments, templates, watching, and reviews on top of the
-Phase 1 spaces/pages/files foundation. All of it is enforced by the main
+Phase 1 libraries/pages/files foundation. All of it is enforced by the main
 API (`api/src/serversherpa/wiki/`); the `wiki` SPA is just the client.
 
 - **Comments and @mentions.** Threaded, page-anchored comments
-  (`readers_can_comment` in a space's settings controls whether a viewer,
+  (`readers_can_comment` in a library's settings controls whether a viewer,
   not just an editor, can post — see below). A comment body is plain
   text plus the ids of the people it @mentions; only people who can
   already view the page can be mentioned, so mentioning someone with no
-  access to the space silently drops them rather than granting access.
+  access to the library silently drops them rather than granting access.
   Mentions, comments, and everything else in this section land in the
   same portal inbox as the rest of ServerSherpa's notifications — there
   is no separate wiki inbox. Each notification's link is the absolute
@@ -131,31 +137,31 @@ API (`api/src/serversherpa/wiki/`); the `wiki` SPA is just the client.
   it from the portal inbox lands on the wiki, not the portal.
 - **Templates.** "New page" offers Blank plus a set of templates: four
   seeded builtins (SOP, How-to guide, Troubleshooting, Meeting notes),
-  any other global templates, and the current space's own — in that
+  any other global templates, and the current library's own — in that
   order. A page can be saved as a new template from its current content.
   Builtins are read-only for everyone, including a wiki administrator.
-  A space template can be added, changed, or removed by anyone with
-  manage on that space; a non-builtin global template needs wiki
+  A library template can be added, changed, or removed by anyone with
+  manage on that library; a non-builtin global template needs wiki
   administrator rights.
 - **Watching.** Creating a page or folder, or publishing a page,
   auto-watches it for the actor (an existing watch is left alone).
-  Watching a folder or a space also covers everything under it.
+  Watching a folder or a library also covers everything under it.
   Watchers get a `wiki_update` notification on publish and on new
   content appearing under something they watch — always narrowed to
   people who can currently view the node, and a reader never sees a
   page that's never been published.
-- **Reviews and approvals.** Each space has three settings (`PATCH
+- **Reviews and approvals.** Each library has three settings (`PATCH
   /wiki/spaces/{key}`, manage level): `readers_can_comment` (default on),
   `require_approval` (default off — when on, only a manager can publish
   a page directly; anyone else submits their draft for review), and
   `review_interval_months` (default off; a page can also set its own
-  interval, overriding the space's). Submitting a page for review
+  interval, overriding the library's). Submitting a page for review
   notifies its approvers (everyone holding manage on the page); an
   approval publishes the submitted snapshot and starts the next review
   period, a rejection sends the requester a note. Once a review interval
   applies, the **wiki-worker must be running** — it queues a daily
   `reminders` job that backfills `next_review_at` for pages affected by
-  an interval change at the space level, and sends the page's owner (or
+  an interval change at the library level, and sends the page's owner (or
   its last publisher, if it has no owner) a `wiki_review_due`
   notification once per due date. Without the worker, reviews still get
   requested and decided, but nothing ever reminds an owner that a page's
@@ -167,7 +173,7 @@ Same rule as above: all of it is enforced by the main API
 (`api/src/serversherpa/wiki/`), the `wiki` SPA and server are just the
 client and renderer.
 
-- **Public share links.** Manage on a page or file — and the space's
+- **Public share links.** Manage on a page or file — and the library's
   `allow_public_links` setting (`PATCH /wiki/spaces/{key}`, manage level;
   off by default) — lets anyone create a link that needs no sign-in
   (`POST /wiki/nodes/{id}/share-links`). Its token (32 random bytes) is
@@ -178,7 +184,7 @@ client and renderer.
   page's PUBLISHED content only — no comment anchors, no links into the
   rest of the wiki, no person ids — or a file's current version; it's
   rate-limited per client address and answers every failure the same way
-  (unknown, revoked or expired token; the space's public links off; the
+  (unknown, revoked or expired token; the library's public links off; the
   node deleted; a page never published) with a 404 that never says which.
   Its presigned asset/download URLs live at most 10 minutes, and every
   answer (200, 404 or 429) is `Cache-Control: no-store`. The public page's
@@ -188,8 +194,8 @@ client and renderer.
   **Behavior to know:** a link isn't re-checked against its creator's
   current rights — it stays live until it expires or is revoked, even if
   the page's permissions are tightened later. Restoring a trashed page, or
-  turning a space's public links back on, brings back every un-revoked
-  link to it. An archived space keeps serving its links until a wiki
+  turning a library's public links back on, brings back every un-revoked
+  link to it. An archived library keeps serving its links until a wiki
   administrator (or the link's creator) revokes them. Public pages keep
   @mention names (never person ids). View counts are approximate: the
   page's own URL refreshes (`?refresh=1`) aren't counted.
@@ -217,8 +223,8 @@ client and renderer.
   for exactly that context, so fixing a missing guide is one click from
   wherever it was missing. Links themselves are managed at
   `GET/POST/PATCH/DELETE /wiki/help-links` (wiki administrators).
-- **Analytics.** `GET /wiki/analytics` (wiki administrators, and space
-  managers scoped to their own spaces) shows total page/file views and a
+- **Analytics.** `GET /wiki/analytics` (wiki administrators, and library
+  managers scoped to their own libraries) shows total page/file views and a
   daily breakdown over a chosen window (7/30/90/365 days), the most-viewed
   pages, "Was this page helpful?" Yes/No rates with recent "No" comments,
   searches that found nothing, published pages untouched for 12 months,
@@ -232,7 +238,7 @@ client and renderer.
 ## Exports
 
 `POST /wiki/exports` (spec §8) queues a page as PDF, Word (`.docx`) or
-Markdown, or a folder or whole space as a `.zip`, run by the wiki worker
+Markdown, or a folder or whole library as a `.zip`, run by the wiki worker
 as the person who asked — only what they can currently view goes in; a
 never-published page an editor can see is named in `_skipped.txt` inside
 the zip rather than included. PDF and Word pages go through the wiki

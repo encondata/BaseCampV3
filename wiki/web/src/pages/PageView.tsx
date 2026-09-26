@@ -304,7 +304,7 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
     setPublishing(false);
     setReviewRequired(true);
     setSubmitting(true);
-    toast('This space needs a manager\'s approval — submit your changes for review.');
+    toast('This library needs a manager\'s approval — submit your changes for review.');
   };
 
   const markAsReviewed = async () => {

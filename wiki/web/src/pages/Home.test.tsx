@@ -47,11 +47,11 @@ describe('Home', () => {
   it('lists the spaces as cards linking to each space', async () => {
     vi.mocked(getMe).mockResolvedValue(makeMe());
     renderHome();
-    const grid = await screen.findByRole('list', { name: 'Spaces' });
+    const grid = await screen.findByRole('list', { name: 'Libraries' });
     const ops = await within(grid).findByRole('link', { name: /Operations/ });
-    expect(ops.getAttribute('href')).toBe('/s/ops');
+    expect(ops.getAttribute('href')).toBe('/library/ops');
     expect(within(grid).getByText('How we run moves')).toBeTruthy();
-    expect(within(grid).getByRole('link', { name: /Sales/ }).getAttribute('href')).toBe('/s/sales');
+    expect(within(grid).getByRole('link', { name: /Sales/ }).getAttribute('href')).toBe('/library/sales');
   });
 
   it('hides the New space card from someone who can\'t create spaces', async () => {
@@ -59,14 +59,14 @@ describe('Home', () => {
     renderHome();
     await screen.findByRole('link', { name: /Operations/ });
     await vi.waitFor(() => expect(getMe).toHaveBeenCalled());
-    expect(screen.queryByRole('link', { name: /New space/ })).toBeNull();
+    expect(screen.queryByRole('link', { name: /New library/ })).toBeNull();
   });
 
   it('offers the New space card to a creator', async () => {
     vi.mocked(getMe).mockResolvedValue(makeMe({ can_create_spaces: true }));
     renderHome();
-    const card = await screen.findByRole('link', { name: /New space/ });
-    expect(card.getAttribute('href')).toBe('/spaces/new');
+    const card = await screen.findByRole('link', { name: /New library/ });
+    expect(card.getAttribute('href')).toBe('/libraries/new');
   });
 
   it('shows favorites, the ten most recently updated, and my drafts', async () => {
@@ -84,7 +84,7 @@ describe('Home', () => {
     renderHome();
     const section = await screen.findByRole('region', { name: 'Watching' });
     expect(within(section).getByRole('link', { name: /Runbook/ }).getAttribute('href')).toBe('/n/wpg');
-    expect(within(section).getByRole('link', { name: /Facilities/ }).getAttribute('href')).toBe('/s/facilities');
+    expect(within(section).getByRole('link', { name: /Facilities/ }).getAttribute('href')).toBe('/library/facilities');
     expect(within(section).getByRole('link', { name: 'See all watching' }).getAttribute('href')).toBe('/watching');
   });
 });

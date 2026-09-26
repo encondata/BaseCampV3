@@ -79,7 +79,7 @@ async def create_share_link(node_id: uuid.UUID, body: ShareLinkCreateIn,
         raise err(422, "bad_kind", "Only pages and files can be shared publicly.")
     space = await ctx.db.get(WikiSpace, node.space_id)
     if not space_setting(space, "allow_public_links"):
-        raise err(422, "links_disabled", "Public links are turned off for this space.")
+        raise err(422, "links_disabled", "Public links are turned off for this library.")
 
     token = new_token()
     now = utcnow()

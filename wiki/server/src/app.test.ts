@@ -133,7 +133,7 @@ describe('the SPA', () => {
     expect(res.text).toBe('console.log("wiki")');
   });
 
-  it.each(['/', '/n/abc', '/s/OPS', '/spaces/new', '/p/share-token_1'])('falls back to index.html for %s', async (path) => {
+  it.each(['/', '/n/abc', '/library/ops', '/libraries/new', '/s/OPS', '/spaces/new', '/p/share-token_1'])('falls back to index.html for %s', async (path) => {
     const res = await request(build().app).get(path);
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toMatch(/text\/html/);

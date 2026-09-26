@@ -44,7 +44,7 @@ export default function ReviewScheduleDialog({ node, onClose, onSaved }: Props) 
   const options = useMemo(() => {
     const months = own !== null && !INTERVALS.includes(own) ? [...INTERVALS, own].sort((a, b) => a - b) : INTERVALS;
     return [
-      { value: INHERIT, label: `Space default: ${spaceLabel}` },
+      { value: INHERIT, label: `Library default: ${spaceLabel}` },
       ...months.map((m) => ({ value: String(m), label: every(m) })),
     ];
   }, [own, spaceLabel]);
@@ -92,8 +92,8 @@ export default function ReviewScheduleDialog({ node, onClose, onSaved }: Props) 
                         disabled={busy} ariaLabel="Review every" />
               <p className="wiki-field-note">
                 {own === null
-                  ? 'This page follows the space\'s schedule.'
-                  : `This page has its own schedule (the space default is ${spaceLabel}).`}
+                  ? 'This page follows the library\'s schedule.'
+                  : `This page has its own schedule (the library default is ${spaceLabel}).`}
                 {nextReview ? ` Next review: ${longDate(nextReview)}.` : ''}
               </p>
             </div>

@@ -82,8 +82,8 @@ export default function SearchPage() {
           options={spaceOptions}
           value={space}
           onChange={(v) => patch({ space: v })}
-          placeholder="All spaces"
-          ariaLabel="Space"
+          placeholder="All libraries"
+          ariaLabel="Library"
           clearable
           disabled={!spaces}
         />

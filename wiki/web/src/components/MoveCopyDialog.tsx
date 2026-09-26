@@ -48,7 +48,7 @@ export default function MoveCopyDialog({ node, mode, onClose }: Props) {
     let live = true;
     listSpaces()
       .then((all) => { if (live) setSpaces(all); })
-      .catch((err) => { if (live) { setSpaces([]); setError(errorMessage(err, 'Couldn\'t load the spaces.')); } });
+      .catch((err) => { if (live) { setSpaces([]); setError(errorMessage(err, 'Couldn\'t load the libraries.')); } });
     return () => { live = false; };
   }, []);
 

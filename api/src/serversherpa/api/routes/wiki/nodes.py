@@ -231,7 +231,7 @@ async def _refuse_hidden_descendants(ctx: WikiContext, node: WikiNode) -> None:
     if len(shown) < len(subtree):
         raise err(409, "hidden_items",
                   "This contains items you can't see, so you can't move it to another "
-                  "space or delete it. Ask a space manager.")
+                  "library or delete it. Ask a library manager.")
 
 
 @router.post("/nodes/{node_id}/move", response_model=NodeOut)
@@ -315,7 +315,7 @@ async def delete_node(node_id: uuid.UUID, ctx: WikiContext) -> NodeDeleteOut:
     home_id = await ctx.db.scalar(
         select(WikiSpace.home_node_id).where(WikiSpace.id == node.space_id))
     if home_id == node.id:
-        raise err(422, "is_home", "The space home page can't be deleted.")
+        raise err(422, "is_home", "The library's home page can't be deleted.")
     await _refuse_hidden_descendants(ctx, node)
 
     actor_id = ctx.user.person.id

@@ -1,8 +1,8 @@
-/** The wiki's top bar: the wiki mark, the space switcher, the search box
+/** The wiki's top bar: the wiki mark, the library switcher, the search box
  *  (instant results, ⌘K / Ctrl+K focuses it — see SearchBox.tsx), Reviews
  *  (with a count of the reviews waiting on me — see ReviewsLink.tsx), the
- *  New menu (Page, Folder, Upload files, Space), and the avatar menu
- *  (Analytics for wiki admins and space managers, Back to portal, Sign
+ *  New menu (Page, Folder, Upload files, Library), and the avatar menu
+ *  (Analytics for wiki admins and library managers, Back to portal, Sign
  *  out). */
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode, type RefObject } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -12,6 +12,7 @@ import { avatarGradient, initials } from '@portal/lib/format';
 
 import { portalOrigin } from '../lib/origins';
 import { clearSessionCaches } from '../lib/sessionCaches';
+import { NEW_LIBRARY_PATH } from '../lib/paths';
 import type { MeOut, SpaceOut } from '../lib/types';
 import ReviewsLink from '../reviews/ReviewsLink';
 import SearchBox from '../search/SearchBox';
@@ -124,23 +125,23 @@ export default function TopBar({
             <div className="pop-menu" role="menu" aria-label="New">
               <MenuItem icon={<><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5" /></>}
                         onClick={() => pick('page')} disabled={!onNew}
-                        hint={onNew ? undefined : 'Open a space you can edit first'}>Page</MenuItem>
+                        hint={onNew ? undefined : 'Open a library you can edit first'}>Page</MenuItem>
               <MenuItem icon={<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />}
                         onClick={() => pick('folder')} disabled={!onNew}
-                        hint={onNew ? undefined : 'Open a space you can edit first'}>Folder</MenuItem>
+                        hint={onNew ? undefined : 'Open a library you can edit first'}>Folder</MenuItem>
               <MenuItem icon={<><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5M10.5 15.5a2 2 0 0 0 2.8 0l1.5-1.5a2 2 0 0 0-2.8-2.8l-.5.5" /></>}
                         onClick={() => { setNewOpen(false); onNewFromTemplate?.(); }} disabled={!onNewFromTemplate}
-                        hint={onNewFromTemplate ? undefined : 'Open a space you can edit first'}>From template…</MenuItem>
+                        hint={onNewFromTemplate ? undefined : 'Open a library you can edit first'}>From template…</MenuItem>
               <MenuItem icon={<path d="M12 16V4M7 9l5-5 5 5M5 20h14" />}
                         onClick={() => { setNewOpen(false); uploadRef.current?.click(); }} disabled={!onUpload}
-                        hint={onUpload ? undefined : 'Open a space you can edit first'}>
+                        hint={onUpload ? undefined : 'Open a library you can edit first'}>
                 Upload files
               </MenuItem>
               {me?.can_create_spaces && (
                 <>
                   <div className="pop-sep" />
                   <MenuItem icon={<><rect x="3.5" y="3.5" width="7" height="7" rx="1.5" /><rect x="13.5" y="3.5" width="7" height="7" rx="1.5" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.5" /><path d="M17 14v6M14 17h6" /></>}
-                            onClick={() => { setNewOpen(false); navigate('/spaces/new'); }}>Space</MenuItem>
+                            onClick={() => { setNewOpen(false); navigate(NEW_LIBRARY_PATH); }}>Library</MenuItem>
                 </>
               )}
             </div>

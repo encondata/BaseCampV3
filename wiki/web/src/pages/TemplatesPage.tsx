@@ -32,8 +32,8 @@ const GRID = { gridTemplateColumns: 'minmax(200px, 3fr) minmax(100px, 1fr) minma
 function scopeLabel(t: TemplateOut, current: SpaceOut | null, spaces: SpaceOut[] | null): string {
   if (t.is_builtin) return 'Built in';
   if (t.space_id === null) return 'Global';
-  if (t.space_id === current?.id) return 'This space';
-  return spaces?.find((s) => s.id === t.space_id)?.name ?? t.space_key ?? 'Another space';
+  if (t.space_id === current?.id) return 'This library';
+  return spaces?.find((s) => s.id === t.space_id)?.name ?? t.space_key ?? 'Another library';
 }
 
 /** Whether the caller may change (or delete) `t` — a builtin never; a
@@ -313,7 +313,7 @@ export default function TemplatesPage() {
         </div>
         {!editingId && (
           <ComboBox options={options} value={scope} onChange={(v) => { setScope(v); }}
-                    ariaLabel="Scope" placeholder="Choose a space" />
+                    ariaLabel="Scope" placeholder="Choose a library" />
         )}
       </div>
 

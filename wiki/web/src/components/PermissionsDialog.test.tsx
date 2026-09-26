@@ -73,7 +73,7 @@ describe('PermissionsDialog — a page', () => {
   it('lists current access with where each entry comes from', async () => {
     render(<PermissionsDialog target={{ kind: 'node', node: NODE }} onClose={() => {}} />);
     expect(await screen.findByText('All internal staff', { selector: '.wiki-perm-who b' })).toBeTruthy();
-    expect(within(rowFor('All internal staff')).getByText('Space')).toBeTruthy();
+    expect(within(rowFor('All internal staff')).getByText('Library')).toBeTruthy();
     expect(within(rowFor('Staff')).getByText('Inherited from Guides')).toBeTruthy();
     expect(within(rowFor('Grace Hopper')).getByText('This page')).toBeTruthy();
     // only the page's own entries can be removed

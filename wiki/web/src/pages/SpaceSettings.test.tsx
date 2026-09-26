@@ -35,8 +35,8 @@ function renderSettings(space: SpaceOut, admin = false) {
   vi.mocked(getSpace).mockResolvedValue(space);
   vi.mocked(getMe).mockResolvedValue(makeMe({ is_admin: admin }));
   return render(
-    <MemoryRouter initialEntries={[`/s/${space.key}/settings`]}>
-      <Routes><Route path="/s/:spaceKey/settings" element={<SpaceSettings />} /></Routes>
+    <MemoryRouter initialEntries={[`/library/${space.key}/settings`]}>
+      <Routes><Route path="/library/:spaceKey/settings" element={<SpaceSettings />} /></Routes>
     </MemoryRouter>,
   );
 }
@@ -83,7 +83,7 @@ describe('SpaceSettings', () => {
     expect(await within(members).findByText('Jimmy Henderson')).toBeTruthy();
     expect(getSpaceGrants).toHaveBeenCalledWith('ops');
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.getByRole('link', { name: /Trash/ }).getAttribute('href')).toBe('/trash/ops');
+    expect(screen.getByRole('link', { name: /Trash/ }).getAttribute('href')).toBe('/library/ops/trash');
   });
 
   it('exports the whole space through the shell', async () => {
@@ -94,13 +94,13 @@ describe('SpaceSettings', () => {
     const shell = { setCurrentNode: vi.fn(), setCurrentSpace: vi.fn(), requestExport } as unknown as ShellValue;
     render(
       <ShellContext.Provider value={shell}>
-        <MemoryRouter initialEntries={['/s/ops/settings']}>
-          <Routes><Route path="/s/:spaceKey/settings" element={<SpaceSettings />} /></Routes>
+        <MemoryRouter initialEntries={['/library/ops/settings']}>
+          <Routes><Route path="/library/:spaceKey/settings" element={<SpaceSettings />} /></Routes>
         </MemoryRouter>
       </ShellContext.Provider>,
     );
     const section = await screen.findByRole('region', { name: 'Export' });
-    fireEvent.click(within(section).getByRole('button', { name: 'Export space…' }));
+    fireEvent.click(within(section).getByRole('button', { name: 'Export library…' }));
     expect(requestExport).toHaveBeenCalledWith({ kind: 'space', space });
   });
 
@@ -108,7 +108,7 @@ describe('SpaceSettings', () => {
     const space = makeSpace({ my_level: 'manage' });
     vi.mocked(archiveSpace).mockResolvedValue({ ...space, archived_at: '2026-09-25T00:00:00Z', my_level: 'view' });
     renderSettings(space);
-    fireEvent.click(await screen.findByRole('button', { name: 'Archive space' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Archive library' }));
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Archive' }));
     await waitFor(() => expect(archiveSpace).toHaveBeenCalledWith('ops'));
   });
@@ -117,20 +117,20 @@ describe('SpaceSettings', () => {
     const archived = makeSpace({ my_level: 'manage', archived_at: '2026-09-25T00:00:00Z' });
     vi.mocked(unarchiveSpace).mockResolvedValue({ ...archived, archived_at: null });
     renderSettings(archived, true);
-    fireEvent.click(await screen.findByRole('button', { name: 'Unarchive space' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Unarchive library' }));
     await waitFor(() => expect(unarchiveSpace).toHaveBeenCalledWith('ops'));
     cleanup();
     clearWikiMe();
     renderSettings(makeSpace({ my_level: 'view', archived_at: '2026-09-25T00:00:00Z' }), false);
-    expect(await screen.findByText('This space is archived.')).toBeTruthy();
-    expect(screen.queryByText(/only space managers/i)).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Unarchive space' })).toBeNull();
+    expect(await screen.findByText('This library is archived.')).toBeTruthy();
+    expect(screen.queryByText(/only library managers/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Unarchive library' })).toBeNull();
   });
 
   it('tells a non-manager of an active space that only managers can change settings', async () => {
     renderSettings(makeSpace({ my_level: 'view' }));
-    expect(await screen.findByText('Only space managers can change these settings.')).toBeTruthy();
-    expect(screen.queryByText('This space is archived.')).toBeNull();
+    expect(await screen.findByText('Only library managers can change these settings.')).toBeTruthy();
+    expect(screen.queryByText('This library is archived.')).toBeNull();
   });
 });
 
@@ -202,13 +202,13 @@ describe('SpaceSettings — Collaboration', () => {
 
   it('says nothing about links for an archived space that never allowed them', async () => {
     renderSettings(makeSpace({ my_level: 'view', archived_at: '2026-09-25T00:00:00Z', settings: {} }));
-    expect(await screen.findByText('This space is archived.')).toBeTruthy();
+    expect(await screen.findByText('This library is archived.')).toBeTruthy();
     expect(screen.queryByText(/public links keep working/)).toBeNull();
   });
 
   it('links to the space\'s pages due for review', async () => {
     renderSettings(makeSpace({ my_level: 'manage', settings: {} }));
     const section = await screen.findByRole('region', { name: 'Collaboration' });
-    expect(within(section).getByRole('link', { name: 'Pages due for review' }).getAttribute('href')).toBe('/s/ops/due');
+    expect(within(section).getByRole('link', { name: 'Pages due for review' }).getAttribute('href')).toBe('/library/ops/due');
   });
 });

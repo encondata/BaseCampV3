@@ -24,8 +24,8 @@ const due = (over: Partial<NodeReviewOut>): NodeReviewOut => ({
 
 function renderPage() {
   return render(
-    <MemoryRouter initialEntries={['/s/ops/due']}>
-      <Routes><Route path="/s/:spaceKey/due" element={<DueReviewsPage />} /></Routes>
+    <MemoryRouter initialEntries={['/library/ops/due']}>
+      <Routes><Route path="/library/:spaceKey/due" element={<DueReviewsPage />} /></Routes>
     </MemoryRouter>,
   );
 }
@@ -46,7 +46,7 @@ describe('DueReviewsPage', () => {
     renderPage();
     expect(await screen.findByRole('heading', { name: 'Due for review' })).toBeTruthy();
     expect(listDueReviews).toHaveBeenCalledWith('ops');
-    expect(screen.getByRole('link', { name: 'Operations' }).getAttribute('href')).toBe('/s/ops');
+    expect(screen.getByRole('link', { name: 'Operations' }).getAttribute('href')).toBe('/library/ops');
     const rows = within(await screen.findByRole('list', { name: 'Due for review' })).getAllByRole('listitem');
     expect(within(rows[0]).getByRole('link', { name: 'Rack power' }).getAttribute('href')).toBe('/n/p1');
     expect(within(rows[0]).getByText('Review overdue')).toBeTruthy();
@@ -66,6 +66,6 @@ describe('DueReviewsPage', () => {
     vi.mocked(getSpace).mockRejectedValue(new ApiError(404, 'not_found'));
     vi.mocked(listDueReviews).mockRejectedValue(new ApiError(404, 'not_found'));
     renderPage();
-    expect(await screen.findByText(/This space doesn't exist/)).toBeTruthy();
+    expect(await screen.findByText(/This library doesn't exist/)).toBeTruthy();
   });
 });

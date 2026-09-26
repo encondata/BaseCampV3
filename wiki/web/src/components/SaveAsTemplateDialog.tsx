@@ -88,14 +88,14 @@ export default function SaveAsTemplateDialog({ node, onClose }: { node: NodeDeta
             <div className="modal-section">Where it shows up</div>
             {noScope ? (
               <p className="page-hint">
-                You need manage rights on this space, or to be a wiki administrator, to save a template.
+                You need manage rights on this library, or to be a wiki administrator, to save a template.
               </p>
             ) : (
               <div className="segmented wiki-template-scope" role="group" aria-label="Scope">
                 <button type="button" className={scope === 'space' ? 'on' : undefined} aria-pressed={scope === 'space'}
-                        disabled={busy || !canSpace} title={canSpace ? undefined : 'You need manage rights on this space'}
+                        disabled={busy || !canSpace} title={canSpace ? undefined : 'You need manage rights on this library'}
                         onClick={() => setScope('space')}>
-                  This space
+                  This library
                 </button>
                 <button type="button" className={scope === 'global' ? 'on' : undefined} aria-pressed={scope === 'global'}
                         disabled={busy || !canGlobal} title={canGlobal ? undefined : 'Only wiki administrators can add global templates'}

@@ -21,7 +21,7 @@ export interface MeOut {
   can_create_spaces: boolean;
 }
 
-// ── spaces ────────────────────────────────────────────────────────────
+// ── spaces (people see them as "libraries" — see lib/paths) ─────────
 
 export interface SpaceOut {
   id: string;

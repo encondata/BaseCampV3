@@ -168,7 +168,7 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
   const toast = useToast();
   const isNode = target.kind === 'node';
   const targetId = target.kind === 'node' ? target.node.id : target.space.key;
-  const noun = target.kind === 'node' ? nodeNoun(target.node) : 'space';
+  const noun = target.kind === 'node' ? nodeNoun(target.node) : 'library';
   const ownSource = `This ${noun}`;
 
   const [loaded, setLoaded] = useState<Loaded>({ status: 'loading' });
@@ -285,7 +285,7 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
       if (!liveRef.current) return;
       setBusy(false);
       if (err instanceof ApiError && err.code === 'no_manager') {
-        setError(errorMessage(err, 'Keep at least one entry with Manage access, so someone can look after the space.'));
+        setError(errorMessage(err, 'Keep at least one entry with Manage access, so someone can look after the library.'));
       } else if (err instanceof ApiError && err.code === 'would_lock_out') {
         setError(errorMessage(err, 'That change would remove your own Manage access here.'));
       } else {
@@ -297,7 +297,7 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
   // inherited entries show while this node follows its parent (as loaded)
   const showInherited = isNode && inherit && base.inherit;
   const sourceOf = (e: EffectiveGrant): string => {
-    if (e.source.kind === 'space') return 'Space';
+    if (e.source.kind === 'space') return 'Library';
     return e.source.title ? `Inherited from ${e.source.title}` : 'Inherited from a parent folder';
   };
   const grid = { gridTemplateColumns: isNode
@@ -324,7 +324,7 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
               <span className="wiki-field-note">
                 {inherit
                   ? `Everyone with access above this ${noun} has it here too; entries added here add to that.`
-                  : `Only the entries below have access to this ${noun} and what's inside it. Space managers always keep access.`}
+                  : `Only the entries below have access to this ${noun} and what's inside it. Library managers always keep access.`}
               </span>
               {!inherit && copyPending && (
                 <p className="wiki-perm-note">Current access will be copied here so nothing changes until you edit it.</p>
@@ -449,8 +449,8 @@ export default function PermissionsDialog({ target, onClose }: { target: Permiss
 
   const title = target.kind === 'node' ? target.node.title : target.space.name;
   const description = target.kind === 'node'
-    ? `Access comes from the space and the folders above unless this ${nodeNoun(target.node)} stops inheriting.`
-    : 'Who can read, edit and manage everything in this space.';
+    ? `Access comes from the library and the folders above unless this ${nodeNoun(target.node)} stops inheriting.`
+    : 'Who can read, edit and manage everything in this library.';
 
   return (
     <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>

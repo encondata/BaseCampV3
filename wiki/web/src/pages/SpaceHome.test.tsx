@@ -24,8 +24,8 @@ import SpaceHome from './SpaceHome';
 function renderSpace(space: SpaceOut) {
   vi.mocked(getSpace).mockResolvedValue(space);
   return render(
-    <MemoryRouter initialEntries={[`/s/${space.key}`]}>
-      <Routes><Route path="/s/:spaceKey" element={<SpaceHome />} /></Routes>
+    <MemoryRouter initialEntries={[`/library/${space.key}`]}>
+      <Routes><Route path="/library/:spaceKey" element={<SpaceHome />} /></Routes>
     </MemoryRouter>,
   );
 }
@@ -51,12 +51,12 @@ describe('SpaceHome', () => {
     } as unknown as ShellValue;
     render(
       <ShellContext.Provider value={shell}>
-        <MemoryRouter initialEntries={['/s/ops']}>
-          <Routes><Route path="/s/:spaceKey" element={<SpaceHome />} /></Routes>
+        <MemoryRouter initialEntries={['/library/ops']}>
+          <Routes><Route path="/library/:spaceKey" element={<SpaceHome />} /></Routes>
         </MemoryRouter>
       </ShellContext.Provider>,
     );
-    fireEvent.click(await screen.findByRole('button', { name: 'Export space…' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Export library…' }));
     expect(requestExport).toHaveBeenCalledWith({ kind: 'space', space });
   });
 
@@ -78,7 +78,7 @@ describe('SpaceHome', () => {
     vi.mocked(listDueReviews).mockResolvedValue([makeNode('p1'), makeNode('p2')]);
     renderSpace(makeSpace({ home_node_id: 'home-1' }));
     const link = await screen.findByRole('link', { name: '2 pages due for review' });
-    expect(link.getAttribute('href')).toBe('/s/ops/due');
+    expect(link.getAttribute('href')).toBe('/library/ops/due');
     expect(listDueReviews).toHaveBeenCalledWith('ops');
   });
 

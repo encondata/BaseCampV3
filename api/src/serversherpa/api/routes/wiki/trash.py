@@ -65,7 +65,7 @@ async def _managed_batch(ctx: WikiContext, batch_id: uuid.UUID, *,
     if level is None:
         raise not_found()
     if restoring and space.archived_at is not None:
-        raise err(422, "read_only", "This space is archived, so nothing can be restored into it.")
+        raise err(422, "read_only", "This library is archived, so nothing can be restored into it.")
     if level != "manage":
         raise not_found()
     return root, space

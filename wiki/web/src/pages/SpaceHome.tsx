@@ -1,4 +1,4 @@
-/** /s/:spaceKey — the space's home page (a normal page flagged by
+/** /library/:spaceKey — the space's home page (a normal page flagged by
  *  `home_node_id`, shown through NodePage) and "What's in this space": the
  *  space's top-level items, with a link to the pages due for review while
  *  any are. */
@@ -9,6 +9,7 @@ import { ApiError } from '@portal/lib/api';
 
 import WatchButton from '../components/WatchButton';
 import { useWikiShell } from '../layout/shellContext';
+import { libraryPath } from '../lib/paths';
 import { useChildren } from '../lib/treeStore';
 import type { SpaceOut } from '../lib/types';
 import { errorMessage, getSpace, listDueReviews } from '../lib/wikiApi';
@@ -53,13 +54,13 @@ export default function SpaceHome() {
       .catch((err) => {
         if (!live) return;
         if (err instanceof ApiError && err.status === 404) setState({ key: spaceKey, status: 'missing' });
-        else setState({ key: spaceKey, status: 'error', message: errorMessage(err, 'Couldn\'t load this space.') });
+        else setState({ key: spaceKey, status: 'error', message: errorMessage(err, 'Couldn\'t load this library.') });
       });
     return () => { live = false; };
   }, [spaceKey, setCurrentSpace, setCurrentNode]);
 
   if (!shown) return <div className="portal-page wiki-page"><p className="page-hint">Loading…</p></div>;
-  if (shown.status === 'missing') return <NotFound what="space" />;
+  if (shown.status === 'missing') return <NotFound what="library" />;
   if (shown.status === 'error') {
     return <div className="portal-page wiki-page"><p className="pf-error">{shown.message}</p></div>;
   }
@@ -71,7 +72,7 @@ export default function SpaceHome() {
         <div className="portal-page wiki-page">
           <div className="dir-head">
             <div>
-              <div className="eyebrow">Space</div>
+              <div className="eyebrow">Library</div>
               <h1 className="page-title">{shown.space.name}</h1>
               {shown.space.description && <p className="page-hint">{shown.space.description}</p>}
             </div>
@@ -79,26 +80,26 @@ export default function SpaceHome() {
           </div>
         </div>
       )}
-      <section className="portal-page wiki-page wiki-space-contents" aria-label="What's in this space">
+      <section className="portal-page wiki-page wiki-space-contents" aria-label="What's in this library">
         <div className="wiki-section-label wiki-space-contents-head">
-          What's in this space
+          What's in this library
           {dueCount > 0 && (
-            <Link className="chip c-amber wiki-due-link" to={`/s/${shown.space.key}/due`}>
+            <Link className="chip c-amber wiki-due-link" to={libraryPath(shown.space.key, 'due')}>
               {dueCount === 1 ? '1 page due for review' : `${dueCount} pages due for review`}
             </Link>
           )}
           <div className="wiki-space-contents-actions">
             <button type="button" className="btn-ghost"
                     onClick={() => requestExport({ kind: 'space', space: shown.space })}>
-              Export space…
+              Export library…
             </button>
             {shown.space.home_node_id && (
               <WatchButton target={{ kind: 'space', spaceId: shown.space.id, spaceKey: shown.space.key }} />
             )}
           </div>
         </div>
-        <ContentsList label="What's in this space" nodes={items} error={error}
-                      emptyTitle="Nothing here yet" empty="Pages and folders added at the top of the space show up here." />
+        <ContentsList label="What's in this library" nodes={items} error={error}
+                      emptyTitle="Nothing here yet" empty="Pages and folders added at the top of the library show up here." />
       </section>
     </>
   );

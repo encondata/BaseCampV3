@@ -89,7 +89,7 @@ export default function HelpfulFooter({ pageId }: { pageId: string }) {
       {phase === 'comment' && (
         <div className="wiki-helpful-comment">
           <label htmlFor={`wiki-helpful-${pageId}`} className="wiki-helpful-q">What was missing or wrong?</label>
-          <span className="page-hint">Optional — the space's managers read these to improve the page.</span>
+          <span className="page-hint">Optional — the library's managers read these to improve the page.</span>
           <textarea id={`wiki-helpful-${pageId}`} rows={3} maxLength={COMMENT_MAX} value={comment}
                     onChange={(e) => setComment(e.target.value)} />
           <div className="wiki-helpful-actions">

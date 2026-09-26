@@ -45,8 +45,8 @@ describe('ReviewScheduleDialog', () => {
       space: makeSpace({ settings: { review_interval_months: 6 } }),
     }));
     expect(screen.getByRole('dialog', { name: 'Review schedule for “Rack power”' })).toBeTruthy();
-    expect(picker().value).toBe('Space default: 6 months');
-    expect(screen.getByText('This page follows the space\'s schedule.')).toBeTruthy();
+    expect(picker().value).toBe('Library default: 6 months');
+    expect(screen.getByText('This page follows the library\'s schedule.')).toBeTruthy();
   });
 
   it('shows a page\'s own schedule, and a space with none', () => {
@@ -54,7 +54,7 @@ describe('ReviewScheduleDialog', () => {
       my_level: 'manage', review: { ...review, interval_months: 12, own_interval_months: 12 }, space: makeSpace(),
     }));
     expect(picker().value).toBe('Every 12 months');
-    expect(screen.getByText('This page has its own schedule (the space default is none).')).toBeTruthy();
+    expect(screen.getByText('This page has its own schedule (the library default is none).')).toBeTruthy();
   });
 
   it('saves a page\'s own interval', async () => {
@@ -79,7 +79,7 @@ describe('ReviewScheduleDialog', () => {
       space: makeSpace({ settings: { review_interval_months: 6 } }),
     }));
     fireEvent.focus(picker());
-    fireEvent.mouseDown(screen.getByRole('button', { name: 'Space default: 6 months' }));
+    fireEvent.mouseDown(screen.getByRole('button', { name: 'Library default: 6 months' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(updateNode).toHaveBeenCalledWith('p1', { review_interval_months: null }));
   });

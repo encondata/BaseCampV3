@@ -14,6 +14,7 @@ import ComboBox from '@portal/components/ComboBox';
 import { longDate, relativeTime } from '@portal/lib/format';
 import { useToast } from '@portal/lib/notificationsContext';
 
+import { libraryPath } from '../lib/paths';
 import { spaceSetting } from '../lib/spaceSettings';
 import type { NodeOut, ShareExpiryDays, ShareLinkOut, SpaceOut } from '../lib/types';
 import {
@@ -173,17 +174,17 @@ export default function ShareDialog({ node, onClose }: { node: NodeOut; onClose:
           </>
         ) : (
           <p className="page-hint wiki-share-off">
-            <span>Public links are turned off for this space.</span>
+            <span>Public links are turned off for this library.</span>
             {' '}
             {atLeast(loaded.space.my_level, 'manage') ? (
-              <Link to={`/s/${loaded.space.key}/settings`} onClick={onClose}>Space settings</Link>
-            ) : <span>Ask a space manager to turn them on.</span>}
+              <Link to={libraryPath(loaded.space.key, 'settings')} onClick={onClose}>Library settings</Link>
+            ) : <span>Ask a library manager to turn them on.</span>}
           </p>
         )}
 
         {loaded.space.archived_at && allowed && (
           <p className="page-hint">
-            This space is archived: its public links keep working until a wiki administrator revokes them on
+            This library is archived: its public links keep working until a wiki administrator revokes them on
             the <Link to="/admin" onClick={onClose}>Admin page</Link>.
           </p>
         )}

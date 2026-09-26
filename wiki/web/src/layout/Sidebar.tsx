@@ -6,6 +6,7 @@ import { Link } from 'react-router-dom';
 
 import NodeIcon, { SpaceBadge } from '../components/NodeIcon';
 import { atLeast } from '../components/RowMenu';
+import { libraryPath } from '../lib/paths';
 import { useTreeRevision } from '../lib/treeStore';
 import type { NodeOut, SpaceOut } from '../lib/types';
 import { listFavorites, listRecent } from '../lib/wikiApi';
@@ -61,14 +62,14 @@ export default function Sidebar({
     <aside className="wiki-sidebar" aria-label="Wiki navigation">
       <div className="wiki-side-head">
         {space ? (
-          <Link to={`/s/${space.key}`} className="wiki-side-space" title={space.name}>
+          <Link to={libraryPath(space.key)} className="wiki-side-space" title={space.name}>
             <SpaceBadge space={space} />
             <span className="wiki-side-space-name">{space.name}</span>
           </Link>
-        ) : <span className="wiki-side-label">Spaces</span>}
+        ) : <span className="wiki-side-label">Libraries</span>}
         {space && atLeast(space.my_level, 'manage') && (
-          <Link to={`/s/${space.key}/settings`} className="wiki-side-icon-btn" aria-label={`${space.name} settings`}
-                title="Space settings">
+          <Link to={libraryPath(space.key, 'settings')} className="wiki-side-icon-btn" aria-label={`${space.name} settings`}
+                title="Library settings">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
                  strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <circle cx="12" cy="12" r="3" />
@@ -99,7 +100,7 @@ export default function Sidebar({
           <ul className="wiki-side-links">
             {(spaces ?? []).map((s) => (
               <li key={s.id}>
-                <Link to={`/s/${s.key}`} className="wiki-side-link">
+                <Link to={libraryPath(s.key)} className="wiki-side-link">
                   <SpaceBadge space={s} size="sm" />
                   <span>{s.name}</span>
                 </Link>

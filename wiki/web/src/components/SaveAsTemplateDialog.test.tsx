@@ -35,7 +35,7 @@ describe('SaveAsTemplateDialog', () => {
   it('defaults the name to the page title and scope to the space, when the caller manages it', async () => {
     renderDialog({ space: { ...makeDetail('p1').space, my_level: 'manage' } });
     expect(await screen.findByLabelText('Name')).toHaveProperty('value', 'Cutover plan');
-    expect(screen.getByRole('button', { name: 'This space' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'This library' }).getAttribute('aria-pressed')).toBe('true');
   });
 
   it('saves to the space with a custom name and description', async () => {
@@ -62,7 +62,7 @@ describe('SaveAsTemplateDialog', () => {
     renderDialog({ space: { ...makeDetail('p1').space, my_level: 'view' } }, true);
     const globalBtn = await screen.findByRole('button', { name: 'Global' });
     expect(globalBtn.getAttribute('aria-pressed')).toBe('true');
-    expect(screen.getByRole('button', { name: 'This space' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'This library' })).toHaveProperty('disabled', true);
     fireEvent.click(screen.getByRole('button', { name: 'Save as template' }));
     await waitFor(() => expect(createTemplate).toHaveBeenCalledWith(expect.objectContaining({ space_id: null })));
   });

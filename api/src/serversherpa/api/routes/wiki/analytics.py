@@ -115,7 +115,7 @@ async def _scope(ctx: WikiContext, space_key: str | None) -> WikiSpace | None:
             raise not_found()
         return space
     if space is None or await ctx.ix.level_for_space(space.id) != "manage":
-        raise err(403, "forbidden", "Analytics are for wiki admins and space managers.")
+        raise err(403, "forbidden", "Analytics are for wiki admins and library managers.")
     return space
 
 

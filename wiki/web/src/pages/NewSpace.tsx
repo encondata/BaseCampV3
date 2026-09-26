@@ -1,4 +1,5 @@
-/** /spaces/new — create a space (people with wiki:add). A modal in the
+/** /libraries/new — create a library (a space in the code; people with
+ *  wiki:add). A modal in the
  *  portal's header pattern over the wiki: name, key (filled from the name
  *  until edited by hand), description, icon, color and who can read it. */
 import { useEffect, useState, type FormEvent } from 'react';
@@ -8,6 +9,7 @@ import { ApiError } from '@portal/lib/api';
 import { PRESET_COLORS } from '@portal/lib/variables';
 
 import { SpaceBadge } from '../components/NodeIcon';
+import { libraryPath } from '../lib/paths';
 import type { SpaceCreateIn } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
 import { createSpace, errorMessage } from '../lib/wikiApi';
@@ -29,14 +31,14 @@ type Access = SpaceCreateIn['default_access'];
 const ACCESS: { value: Access; label: string; hint: string }[] = [
   { value: 'internal', label: 'All internal staff', hint: 'Everyone on the internal team can read it.' },
   { value: 'everyone', label: 'Everyone who can sign in', hint: 'Clients and partners with wiki access can read it too.' },
-  { value: 'private', label: 'Only people I add', hint: 'Only you, until you add people in the space\'s permissions.' },
+  { value: 'private', label: 'Only people I add', hint: 'Only you, until you add people in the library\'s permissions.' },
 ];
 
 const DEFAULT_COLOR = PRESET_COLORS.find((c) => c.label === 'Blue')?.value ?? PRESET_COLORS[0].value;
 
 function createError(err: unknown): string {
   if (err instanceof ApiError && err.code === 'key_taken') return 'That key is already in use. Pick another.';
-  return errorMessage(err, 'Couldn\'t create the space. Try again.');
+  return errorMessage(err, 'Couldn\'t create the library. Try again.');
 }
 
 export default function NewSpace() {
@@ -67,8 +69,8 @@ export default function NewSpace() {
     return (
       <div className="portal-page wiki-page">
         <div className="eyebrow">Wiki</div>
-        <h1 className="page-title">New space</h1>
-        <p className="page-hint">You can't create spaces. Ask a wiki administrator for access.</p>
+        <h1 className="page-title">New library</h1>
+        <p className="page-hint">You can't create libraries. Ask a wiki administrator for access.</p>
       </div>
     );
   }
@@ -97,7 +99,7 @@ export default function NewSpace() {
         color,
         default_access: access,
       });
-      navigate(`/s/${space.key}`);
+      navigate(libraryPath(space.key));
     } catch (err) {
       setError(createError(err));
       setBusy(false);
@@ -113,7 +115,7 @@ export default function NewSpace() {
         <div className="modal-head">
           <div className="rgm-head-text">
             <div className="eyebrow">Wiki</div>
-            <h3 id="wiki-new-space-title">New space</h3>
+            <h3 id="wiki-new-space-title">New library</h3>
             <p className="page-hint">A home for a team or topic, with its own pages, folders and permissions.</p>
           </div>
           <button type="button" className="modal-close" aria-label="Close" onClick={close} disabled={busy}>
@@ -142,7 +144,7 @@ export default function NewSpace() {
                       2–40 lowercase letters, digits or dashes, starting with a letter or digit.
                     </p>
                   ) : (
-                    <p className="wiki-field-note">Used in links: /s/{key || 'key'}</p>
+                    <p className="wiki-field-note">Used in links: {libraryPath(key || 'key')}</p>
                   )}
                 </div>
                 <div>
@@ -186,7 +188,7 @@ export default function NewSpace() {
               <div className="wiki-space-card wiki-space-card-static">
                 <SpaceBadge space={{ icon: icon.trim() || null, name: trimmedName || 'N', color }} size="lg" />
                 <span className="wiki-space-card-text">
-                  <b>{trimmedName || 'New space'}</b>
+                  <b>{trimmedName || 'New library'}</b>
                   <span>{description.trim() || 'What lives here'}</span>
                 </span>
               </div>
@@ -196,7 +198,7 @@ export default function NewSpace() {
           </div>
           <div className="modal-foot">
             <button className="btn-solid" type="submit" disabled={!canSubmit}>
-              {busy ? 'Creating…' : 'Create space'}
+              {busy ? 'Creating…' : 'Create library'}
             </button>
             <button className="mini-btn" type="button" onClick={close} disabled={busy}>Cancel</button>
           </div>

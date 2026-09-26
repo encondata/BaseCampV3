@@ -1,4 +1,4 @@
-/** /trash/:spaceKey — a space's trash (space managers): each deleted batch
+/** /library/:spaceKey/trash — a space's trash (space managers): each deleted batch
  *  (what, how many items, who deleted it and when, when it's purged) with
  *  Restore (back to where it was, or the top of the space if that's gone)
  *  and Delete forever. */
@@ -13,6 +13,7 @@ import ConfirmDialog from '../components/ConfirmDialog';
 import NodeIcon from '../components/NodeIcon';
 import { atLeast } from '../components/RowMenu';
 import { useWikiShell } from '../layout/shellContext';
+import { libraryPath } from '../lib/paths';
 import { noteCreated } from '../lib/treeStore';
 import type { SpaceOut, TrashBatch } from '../lib/types';
 import { errorMessage, getSpace, getSpaceTrash, purgeTrash, restoreTrash } from '../lib/wikiApi';
@@ -93,7 +94,7 @@ export default function TrashPage() {
   };
 
   if (!shown) return <div className="portal-page wiki-page"><p className="page-hint">Loading…</p></div>;
-  if (shown.status === 'missing') return <NotFound what="space" />;
+  if (shown.status === 'missing') return <NotFound what="library" />;
   if (shown.status === 'error') {
     return <div className="portal-page wiki-page"><p className="pf-error">{shown.message}</p></div>;
   }
@@ -103,10 +104,10 @@ export default function TrashPage() {
     <>
       {space && (
         <nav className="wiki-crumbs" aria-label="Breadcrumb">
-          <Link to={`/s/${space.key}`}>{space.name}</Link>
+          <Link to={libraryPath(space.key)}>{space.name}</Link>
           {atLeast(space.my_level, 'manage') && (
             <span className="wiki-crumb"><span className="wiki-crumb-sep" aria-hidden="true">/</span>
-              <Link to={`/s/${space.key}/settings`}>Settings</Link></span>
+              <Link to={libraryPath(space.key, 'settings')}>Settings</Link></span>
           )}
         </nav>
       )}
@@ -123,7 +124,7 @@ export default function TrashPage() {
     return (
       <div className="portal-page wiki-page">
         {head}
-        <p className="page-hint">Only space managers can see and restore what's in a space's trash.</p>
+        <p className="page-hint">Only library managers can see and restore what's in a library's trash.</p>
       </div>
     );
   }
@@ -135,7 +136,7 @@ export default function TrashPage() {
       {head}
       <p className="page-hint wiki-trash-hint">
         {readOnly
-          ? 'This space is archived, so nothing here can be restored or deleted until it\'s unarchived.'
+          ? 'This library is archived, so nothing here can be restored or deleted until it\'s unarchived.'
           : 'Deleted items stay here until their purge date, then they\'re removed for good.'}
       </p>
       <div className="dir-list list-scroll wiki-trash-list">

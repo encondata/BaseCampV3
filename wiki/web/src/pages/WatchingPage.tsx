@@ -8,6 +8,7 @@ import { useToast } from '@portal/lib/notificationsContext';
 
 import NodeIcon, { nodeTypeLabel } from '../components/NodeIcon';
 import { useWikiShell } from '../layout/shellContext';
+import { libraryPath } from '../lib/paths';
 import type { WatchOut } from '../lib/types';
 import { errorMessage, listWatches, unwatch } from '../lib/wikiApi';
 
@@ -17,15 +18,15 @@ const GRID = { gridTemplateColumns: 'minmax(240px, 3fr) minmax(110px, 1fr) minma
 type State = WatchOut[] | 'loading' | 'error';
 
 function targetHref(w: WatchOut): string {
-  return w.node ? `/n/${w.node.id}` : `/s/${w.space?.key}`;
+  return w.node ? `/n/${w.node.id}` : libraryPath(w.space?.key ?? '');
 }
 
 function targetLabel(w: WatchOut): string {
-  return w.node ? w.node.title : (w.space?.name ?? 'Space');
+  return w.node ? w.node.title : (w.space?.name ?? 'Library');
 }
 
 function typeLabel(w: WatchOut): string {
-  return w.node ? nodeTypeLabel({ kind: w.node.kind, title: w.node.title, file: null }) : 'Space';
+  return w.node ? nodeTypeLabel({ kind: w.node.kind, title: w.node.title, file: null }) : 'Library';
 }
 
 export default function WatchingPage() {
@@ -62,7 +63,7 @@ export default function WatchingPage() {
         <div>
           <div className="eyebrow">Wiki</div>
           <h1 className="page-title">Watching</h1>
-          <p className="page-hint">Pages, folders and spaces you get notified about.</p>
+          <p className="page-hint">Pages, folders and libraries you get notified about.</p>
         </div>
       </div>
 
@@ -99,7 +100,7 @@ export default function WatchingPage() {
         </div>
         {state === 'loading' && <div className="dir-empty">Loading…</div>}
         {Array.isArray(state) && state.length === 0 && (
-          <div className="dir-empty"><b>Nothing watched yet</b>Watch a page, folder or space to hear about changes there.</div>
+          <div className="dir-empty"><b>Nothing watched yet</b>Watch a page, folder or library to hear about changes there.</div>
         )}
       </div>
     </div>

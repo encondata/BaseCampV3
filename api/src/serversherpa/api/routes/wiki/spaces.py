@@ -93,7 +93,7 @@ async def list_spaces(ctx: WikiContext, include_archived: bool = False) -> list[
 @router.post("/spaces", response_model=SpaceOut, status_code=201)
 async def create_space(body: SpaceCreateIn, ctx: WikiContext) -> SpaceOut:
     if not ctx.user.access.can("wiki", "add"):
-        raise err(403, "forbidden", "You need wiki:add access to create a space.")
+        raise err(403, "forbidden", "You need wiki:add access to create a library.")
 
     key = body.key.strip().lower()
     if not KEY_RE.match(key):
@@ -201,7 +201,7 @@ async def unarchive_space(key: str, ctx: WikiContext) -> SpaceOut:
     # checks the Principal directly so the 403 says what's actually needed.
     space = await require_space_level(ctx.ix, await space_by_key(ctx.db, key), "view")
     if not ctx.principal.is_admin:
-        raise err(403, "forbidden", "Only a wiki administrator can unarchive a space.")
+        raise err(403, "forbidden", "Only a wiki administrator can unarchive a library.")
 
     if space.archived_at is not None:
         space.archived_at = None
@@ -352,7 +352,7 @@ async def list_principals(
     characters (fewer returns nothing) so it can't page the directory."""
     if not await _can_manage_any_space(ctx):
         raise err(403, "forbidden",
-                  "You need manage access on at least one space to search principals.")
+                  "You need manage access on at least one library to search principals.")
 
     p = ctx.principal
     whole_directory = p.is_internal or p.is_admin

@@ -94,7 +94,7 @@ export default function ReviewsPage() {
 
       <div className="dir-list list-scroll wiki-reviews-list">
         <div className="list-head" style={GRID} aria-hidden="true">
-          <span>Page</span><span>Space</span><span>{tab === 'approve' ? 'Requested by' : 'Status'}</span>
+          <span>Page</span><span>Library</span><span>{tab === 'approve' ? 'Requested by' : 'Status'}</span>
           <span>Submitted</span><span>Note</span>
         </div>
         <div role="list" aria-label={label}>

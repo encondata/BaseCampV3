@@ -155,7 +155,7 @@ async def publish(node_id: uuid.UUID, body: PublishIn, ctx: WikiContext) -> Vers
     space = await ctx.db.get(WikiSpace, node.space_id)
     if space_setting(space, "require_approval") and level != "manage":
         raise err(409, "review_required",
-                  "This space requires approval: submit the page for review instead.")
+                  "This library requires approval: submit the page for review instead.")
     actor_id = ctx.user.person.id
     version, mentioned = await pages.publish(ctx.db, node, page, actor_id=actor_id,
                                              note=body.note or None)

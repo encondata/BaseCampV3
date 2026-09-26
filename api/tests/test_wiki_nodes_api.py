@@ -397,6 +397,8 @@ async def test_move_rejects_bad_parents_home_and_viewers(client, db):
                              headers=s["owner"], json={"parent_id": f1["id"]})
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "is_home"
+    # people see "library" (the code says space)
+    assert resp.json()["detail"]["message"] == "The library's home page can't be moved."
 
     resp = await client.post(f"/wiki/nodes/{f2['id']}/move", headers=s["viewer"],
                              json={"parent_id": None})
@@ -672,6 +674,7 @@ async def test_delete_marks_the_live_subtree_with_one_batch(client, db):
     resp = await client.delete(f"/wiki/nodes/{space['home_node_id']}", headers=s["owner"])
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "is_home"
+    assert resp.json()["detail"]["message"] == "The library's home page can't be deleted."
 
     audit = (await db.scalars(select(AuditLog).where(
         AuditLog.entity_type == "wiki_node", AuditLog.entity_id == folder["id"],

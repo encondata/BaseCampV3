@@ -18,15 +18,15 @@ import { makeMe, makeSpace } from '../testing/fixtures';
 import NewSpace, { slugify } from './NewSpace';
 
 function SpaceProbe() {
-  return <div>space {useParams().spaceKey}</div>;
+  return <div>library {useParams().spaceKey}</div>;
 }
 
 function renderPage() {
   return render(
-    <MemoryRouter initialEntries={['/spaces/new']}>
+    <MemoryRouter initialEntries={['/libraries/new']}>
       <Routes>
-        <Route path="/spaces/new" element={<NewSpace />} />
-        <Route path="/s/:spaceKey" element={<SpaceProbe />} />
+        <Route path="/libraries/new" element={<NewSpace />} />
+        <Route path="/library/:spaceKey" element={<SpaceProbe />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -65,7 +65,7 @@ describe('NewSpace', () => {
     fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Ops' } });
     fireEvent.change(input('Key'), { target: { value: 'Bad Key' } });
     expect(screen.getByText(/2–40 lowercase letters, digits or dashes/)).toBeTruthy();
-    const submit = screen.getByRole('button', { name: 'Create space' }) as HTMLButtonElement;
+    const submit = screen.getByRole('button', { name: 'Create library' }) as HTMLButtonElement;
     expect(submit.disabled).toBe(true);
 
     fireEvent.change(input('Key'), { target: { value: '-ops' } });
@@ -83,9 +83,9 @@ describe('NewSpace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Violet' }));
     expect(screen.getByRole('button', { name: 'All internal staff' }).getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(screen.getByRole('button', { name: 'Only people I add' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Create space' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create library' }));
 
-    expect(await screen.findByText('space field-ops')).toBeTruthy();
+    expect(await screen.findByText('library field-ops')).toBeTruthy();
     expect(createSpace).toHaveBeenCalledWith({
       name: 'Field Ops',
       key: 'field-ops',
@@ -101,14 +101,14 @@ describe('NewSpace', () => {
       new ApiError(409, 'key_taken'));
     renderPage();
     fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'Ops' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Create space' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create library' }));
     expect(await screen.findByText('That key is already in use. Pick another.')).toBeTruthy();
   });
 
   it('is not offered to someone who can\'t create spaces', async () => {
     vi.mocked(getMe).mockResolvedValue(makeMe({ can_create_spaces: false }));
     renderPage();
-    expect(await screen.findByText(/can't create spaces/)).toBeTruthy();
+    expect(await screen.findByText(/can't create libraries/)).toBeTruthy();
     expect(screen.queryByLabelText('Name')).toBeNull();
   });
 });

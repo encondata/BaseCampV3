@@ -57,7 +57,7 @@ describe('WatchButton', () => {
   it('shows an inherited watch as a disabled chip naming the space', async () => {
     vi.mocked(getWatchState).mockResolvedValue({ watching: true, via: 'space', watch_id: 'w3' });
     render(<WatchButton target={{ kind: 'node', nodeId: 'n1' }} />);
-    expect(await screen.findByText('Watching via space')).toBeTruthy();
+    expect(await screen.findByText('Watching via library')).toBeTruthy();
   });
 
   it('reports a failed toggle without changing the shown state', async () => {

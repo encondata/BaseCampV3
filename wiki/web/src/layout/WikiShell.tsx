@@ -17,6 +17,7 @@ import NewNodeDialog from '../components/NewNodeDialog';
 import PermissionsDialog from '../components/PermissionsDialog';
 import { atLeast } from '../components/RowMenu';
 import ShareDialog from '../components/ShareDialog';
+import { libraryPath, NEW_LIBRARY_PATH } from '../lib/paths';
 import { noteDeleted } from '../lib/treeStore';
 import type { NodeDetailOut, NodeOut, SpaceOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
@@ -40,6 +41,7 @@ import SearchPage from '../search/SearchPage';
 import { isFileDrag } from '../uploads/DropZone';
 import { enqueue } from '../uploads/uploadQueue';
 import UploadTray from '../uploads/UploadTray';
+import { legacyLibraryRoutes } from './legacyLibraryRoutes';
 import { ShellContext, type ExportTarget, type NewNodeTarget, type ShellValue } from './shellContext';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
@@ -212,7 +214,7 @@ export default function WikiShell() {
       noteDeleted(node);
       const showing = currentNode
         && (currentNode.id === node.id || currentNode.breadcrumbs.some((b) => b.id === node.id));
-      if (showing) navigate(node.parent_id ? `/n/${node.parent_id}` : `/s/${node.space_key}`);
+      if (showing) navigate(node.parent_id ? `/n/${node.parent_id}` : libraryPath(node.space_key));
     } catch (err) {
       setDeleting({ node, busy: false, error: errorMessage(err, `Couldn't delete “${node.title}”.`) });
     }
@@ -275,11 +277,13 @@ export default function WikiShell() {
           <main className="wiki-main">
             <Routes>
               <Route path="/" element={<Home />} />
-              <Route path="/spaces/new" element={<><Home /><NewSpace /></>} />
-              <Route path="/s/:spaceKey" element={<SpaceHome />} />
-              <Route path="/s/:spaceKey/settings" element={<SpaceSettings />} />
-              <Route path="/s/:spaceKey/due" element={<DueReviewsPage />} />
-              <Route path="/trash/:spaceKey" element={<TrashPage />} />
+              {/* a "library" on screen is a space in the code (see lib/paths) */}
+              <Route path={NEW_LIBRARY_PATH} element={<><Home /><NewSpace /></>} />
+              <Route path="/library/:spaceKey" element={<SpaceHome />} />
+              <Route path="/library/:spaceKey/settings" element={<SpaceSettings />} />
+              <Route path="/library/:spaceKey/due" element={<DueReviewsPage />} />
+              <Route path="/library/:spaceKey/trash" element={<TrashPage />} />
+              {legacyLibraryRoutes()}
               <Route path="/search" element={<SearchPage />} />
               <Route path="/admin" element={<AdminPage />} />
               <Route path="/admin/help-links" element={<HelpLinksPage />} />
@@ -318,8 +322,8 @@ export default function WikiShell() {
           eyebrow="Delete"
           title={`Delete “${deleting.node.title}”?`}
           description={deleting.node.kind === 'folder'
-            ? 'The folder and everything in it move to the space\'s trash, where a space manager can restore them.'
-            : 'It moves to the space\'s trash, where a space manager can restore it.'}
+            ? 'The folder and everything in it move to the library\'s trash, where a library manager can restore them.'
+            : 'It moves to the library\'s trash, where a library manager can restore it.'}
           confirmLabel="Move to trash"
           busyLabel="Deleting…"
           danger

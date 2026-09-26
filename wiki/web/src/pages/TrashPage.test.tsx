@@ -38,8 +38,8 @@ const BATCHES: TrashBatch[] = [
 
 function renderTrash() {
   return render(
-    <MemoryRouter initialEntries={['/trash/ops']}>
-      <Routes><Route path="/trash/:spaceKey" element={<TrashPage />} /></Routes>
+    <MemoryRouter initialEntries={['/library/ops/trash']}>
+      <Routes><Route path="/library/:spaceKey/trash" element={<TrashPage />} /></Routes>
     </MemoryRouter>,
   );
 }
@@ -93,6 +93,6 @@ describe('TrashPage', () => {
     vi.mocked(getSpace).mockResolvedValue(makeSpace({ my_level: 'edit' }));
     vi.mocked(getSpaceTrash).mockRejectedValue(new ApiError(403, 'forbidden'));
     renderTrash();
-    expect(await screen.findByText(/only space managers/i)).toBeTruthy();
+    expect(await screen.findByText(/only library managers/i)).toBeTruthy();
   });
 });

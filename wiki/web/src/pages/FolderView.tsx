@@ -16,6 +16,7 @@ import WatchButton from '../components/WatchButton';
 import ImportDialog from '../import/ImportDialog';
 import { useWikiShell } from '../layout/shellContext';
 import ReviewChip from '../reviews/ReviewChip';
+import { libraryPath } from '../lib/paths';
 import { noteChanged, useChildren } from '../lib/treeStore';
 import type { NodeDetailOut, NodeOut } from '../lib/types';
 import { errorMessage, updateNode } from '../lib/wikiApi';
@@ -40,7 +41,7 @@ export function formatSize(bytes: number): string {
 export function Breadcrumbs({ node }: { node: NodeDetailOut }) {
   return (
     <nav className="wiki-crumbs" aria-label="Breadcrumb">
-      <Link to={`/s/${node.space.key}`}>{node.space.name}</Link>
+      <Link to={libraryPath(node.space.key)}>{node.space.name}</Link>
       {node.breadcrumbs.map((c, i) => (
         <span key={c.id ?? `hidden-${i}`} className="wiki-crumb">
           <span className="wiki-crumb-sep" aria-hidden="true">/</span>

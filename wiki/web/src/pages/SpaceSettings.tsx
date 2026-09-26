@@ -1,4 +1,4 @@
-/** /s/:spaceKey/settings — for space managers: the space's name,
+/** /library/:spaceKey/settings — for space managers: the space's name,
  *  description, icon and color; its members (the permissions editor,
  *  inline); collaboration settings, with a link to the pages due for
  *  review; sharing (public links); archiving (unarchiving is for wiki
@@ -17,6 +17,7 @@ import { SpaceBadge } from '../components/NodeIcon';
 import { PermissionsEditor } from '../components/PermissionsDialog';
 import { atLeast } from '../components/RowMenu';
 import { useWikiShell } from '../layout/shellContext';
+import { libraryPath } from '../lib/paths';
 import { spaceSetting } from '../lib/spaceSettings';
 import type { SpaceOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
@@ -91,7 +92,7 @@ function CollaborationSection({ space, onSaved }: { space: SpaceOut; onSaved: (s
       </div>
       <div className="wiki-settings-row">
         <p className="page-hint">Pages whose review is overdue or due within two weeks.</p>
-        <Link className="btn-ghost" to={`/s/${space.key}/due`}>Pages due for review</Link>
+        <Link className="btn-ghost" to={libraryPath(space.key, 'due')}>Pages due for review</Link>
       </div>
     </section>
   );
@@ -181,8 +182,8 @@ function DetailsForm({ space, onSaved }: { space: SpaceOut; onSaved: (space: Spa
         </div>
         <div>
           <span className="wiki-settings-label">Key</span>
-          <p className="wiki-settings-key mono">/s/{space.key}</p>
-          <p className="wiki-field-note">A space's key can't be changed.</p>
+          <p className="wiki-settings-key mono">{libraryPath(space.key)}</p>
+          <p className="wiki-field-note">A library's key can't be changed.</p>
         </div>
       </div>
       <div className="modal-section">Color</div>
@@ -226,14 +227,14 @@ export default function SpaceSettings() {
       .catch((err) => {
         if (!live) return;
         if (err instanceof ApiError && err.status === 404) setState({ key: spaceKey, status: 'missing' });
-        else setState({ key: spaceKey, status: 'error', message: errorMessage(err, 'Couldn\'t load this space.') });
+        else setState({ key: spaceKey, status: 'error', message: errorMessage(err, 'Couldn\'t load this library.') });
       });
     return () => { live = false; };
   }, [spaceKey, setCurrentSpace, setCurrentNode]);
 
   const shown = state?.key === spaceKey ? state : null;
   if (!shown) return <div className="portal-page wiki-page"><p className="page-hint">Loading…</p></div>;
-  if (shown.status === 'missing') return <NotFound what="space" />;
+  if (shown.status === 'missing') return <NotFound what="library" />;
   if (shown.status === 'error') {
     return <div className="portal-page wiki-page"><p className="pf-error">{shown.message}</p></div>;
   }
@@ -254,10 +255,10 @@ export default function SpaceSettings() {
 
   const head = (
     <>
-      <nav className="wiki-crumbs" aria-label="Breadcrumb"><Link to={`/s/${space.key}`}>{space.name}</Link></nav>
+      <nav className="wiki-crumbs" aria-label="Breadcrumb"><Link to={libraryPath(space.key)}>{space.name}</Link></nav>
       <div className="dir-head wiki-folder-head">
         <div>
-          <div className="eyebrow">Space settings</div>
+          <div className="eyebrow">Library settings</div>
           <h1 className="page-title">{space.name}</h1>
         </div>
         {archived && <span className="chip c-amber"><span className="dot" />Archived</span>}
@@ -271,7 +272,7 @@ export default function SpaceSettings() {
       replace(await unarchiveSpace(space.key));
       toast(`“${space.name}” is back in use.`);
     } catch (err) {
-      toast(errorMessage(err, 'Couldn\'t unarchive the space.'));
+      toast(errorMessage(err, 'Couldn\'t unarchive the library.'));
     } finally {
       setUnarchiving(false);
     }
@@ -284,7 +285,7 @@ export default function SpaceSettings() {
       setArchiving(null);
       toast(`Archived “${space.name}”.`);
     } catch (err) {
-      setArchiving({ busy: false, error: errorMessage(err, 'Couldn\'t archive the space.') });
+      setArchiving({ busy: false, error: errorMessage(err, 'Couldn\'t archive the library.') });
     }
   };
 
@@ -294,22 +295,22 @@ export default function SpaceSettings() {
       {archived ? (
         <div className="wiki-settings-row">
           <p className="page-hint">
-            Archived spaces are read-only and hidden from the space list.
+            Archived libraries are read-only and hidden from the library list.
             {isAdmin ? '' : ' Ask a wiki administrator to unarchive it.'}
           </p>
           {isAdmin && (
             <button type="button" className="btn-ghost" disabled={unarchiving} onClick={() => void unarchive()}>
-              {unarchiving ? 'Unarchiving…' : 'Unarchive space'}
+              {unarchiving ? 'Unarchiving…' : 'Unarchive library'}
             </button>
           )}
         </div>
       ) : (
         <div className="wiki-settings-row">
           <p className="page-hint">
-            Archiving makes the space read-only and hides it from the space list. Only a wiki administrator can undo it.
+            Archiving makes the library read-only and hides it from the library list. Only a wiki administrator can undo it.
           </p>
           <button type="button" className="btn-ghost wiki-danger" onClick={() => setArchiving({ busy: false, error: '' })}>
-            Archive space
+            Archive library
           </button>
         </div>
       )}
@@ -323,7 +324,7 @@ export default function SpaceSettings() {
       <div className="portal-page wiki-page">
         {head}
         <p className="page-hint">
-          {archived ? 'This space is archived.' : 'Only space managers can change these settings.'}
+          {archived ? 'This library is archived.' : 'Only library managers can change these settings.'}
         </p>
         {archivedLinksNote}
         {archived && isAdmin && archiveSection}
@@ -342,7 +343,7 @@ export default function SpaceSettings() {
 
       <section className="wiki-settings-section" aria-label="Members">
         <div className="wiki-section-label">Members</div>
-        <p className="page-hint">Who can read, edit and manage everything in this space. Pages and folders can add to this or replace it.</p>
+        <p className="page-hint">Who can read, edit and manage everything in this library. Pages and folders can add to this or replace it.</p>
         <PermissionsEditor target={{ kind: 'space', space }} />
       </section>
 
@@ -353,9 +354,9 @@ export default function SpaceSettings() {
       <section className="wiki-settings-section" aria-label="Export">
         <div className="wiki-section-label">Export</div>
         <div className="wiki-settings-row">
-          <p className="page-hint">Download the whole space as a .zip — every page and file you can see, in its folders.</p>
+          <p className="page-hint">Download the whole library as a .zip — every page and file you can see, in its folders.</p>
           <button type="button" className="btn-ghost" onClick={() => requestExport({ kind: 'space', space })}>
-            Export space…
+            Export library…
           </button>
         </div>
       </section>
@@ -364,7 +365,7 @@ export default function SpaceSettings() {
         <div className="wiki-section-label">Trash</div>
         <div className="wiki-settings-row">
           <p className="page-hint">Deleted pages, folders and files wait in the trash until they're purged.</p>
-          <Link className="btn-ghost" to={`/trash/${space.key}`}>Open the Trash</Link>
+          <Link className="btn-ghost" to={libraryPath(space.key, 'trash')}>Open the Trash</Link>
         </div>
       </section>
 
@@ -375,7 +376,7 @@ export default function SpaceSettings() {
         <ConfirmDialog
           eyebrow="Archive"
           title={`Archive “${space.name}”?`}
-          description="Everyone keeps read access, but nothing can be changed and it leaves the space list. Only a wiki administrator can unarchive it."
+          description="Everyone keeps read access, but nothing can be changed and it leaves the library list. Only a wiki administrator can unarchive it."
           confirmLabel="Archive"
           busyLabel="Archiving…"
           danger

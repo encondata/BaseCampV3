@@ -1,4 +1,4 @@
-/** /s/:spaceKey/due — the space's pages whose periodic review is due within
+/** /library/:spaceKey/due — the space's pages whose periodic review is due within
  *  two weeks or overdue, soonest first, with their state, owner and when
  *  they were last reviewed. Linked from the space's settings, and from its
  *  home page while anything is due. */
@@ -10,6 +10,7 @@ import { longDate } from '@portal/lib/format';
 
 import NodeIcon from '../components/NodeIcon';
 import { useWikiShell } from '../layout/shellContext';
+import { libraryPath } from '../lib/paths';
 import type { NodeOut, SpaceOut } from '../lib/types';
 import { errorMessage, getSpace, listDueReviews } from '../lib/wikiApi';
 import NotFound from '../pages/NotFound';
@@ -48,7 +49,7 @@ export default function DueReviewsPage() {
 
   const shown = state?.key === spaceKey ? state : null;
   if (!shown) return <div className="portal-page wiki-page"><p className="page-hint">Loading…</p></div>;
-  if (shown.status === 'missing') return <NotFound what="space" />;
+  if (shown.status === 'missing') return <NotFound what="library" />;
   if (shown.status === 'error') {
     return <div className="portal-page wiki-page"><p className="pf-error">{shown.message}</p></div>;
   }
@@ -56,7 +57,7 @@ export default function DueReviewsPage() {
   const { space, nodes } = shown;
   return (
     <div className="portal-page wiki-page" data-testid="due-reviews-page">
-      <nav className="wiki-crumbs" aria-label="Breadcrumb"><Link to={`/s/${space.key}`}>{space.name}</Link></nav>
+      <nav className="wiki-crumbs" aria-label="Breadcrumb"><Link to={libraryPath(space.key)}>{space.name}</Link></nav>
       <div className="dir-head wiki-folder-head">
         <div>
           <div className="eyebrow">Page reviews</div>

@@ -273,8 +273,8 @@ export default function AnalyticsPage() {
           options={options}
           value={space}
           onChange={(v) => patch({ space: v })}
-          placeholder="All spaces"
-          ariaLabel="Space"
+          placeholder="All libraries"
+          ariaLabel="Library"
           clearable={isAdmin}
         />
         <div className="segmented wiki-an-period" role="group" aria-label="Period">

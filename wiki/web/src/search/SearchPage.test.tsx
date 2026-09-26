@@ -76,7 +76,7 @@ describe('SearchPage', () => {
   it('filters by space and updates the URL', async () => {
     renderPage();
     await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
-    const combo = await screen.findByRole('combobox', { name: 'Space' });
+    const combo = await screen.findByRole('combobox', { name: 'Library' });
     fireEvent.focus(combo);
     fireEvent.mouseDown(await screen.findByRole('button', { name: 'Guides' }));
     await waitFor(() => expect(search).toHaveBeenCalledWith({ q: 'rack', space: 'guides', kind: undefined, limit: 50 }));

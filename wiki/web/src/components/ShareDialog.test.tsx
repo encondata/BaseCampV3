@@ -104,10 +104,10 @@ describe('ShareDialog', () => {
   it('explains when the space has public links turned off, with the way to turn them on for a space manager', async () => {
     vi.mocked(getSpace).mockResolvedValue(makeSpace({ my_level: 'manage', settings: {} }));
     const onClose = renderDialog();
-    expect(await screen.findByText('Public links are turned off for this space.')).toBeTruthy();
+    expect(await screen.findByText('Public links are turned off for this library.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Create link' })).toBeNull();
-    const settings = screen.getByRole('link', { name: 'Space settings' });
-    expect(settings.getAttribute('href')).toBe('/s/ops/settings');
+    const settings = screen.getByRole('link', { name: 'Library settings' });
+    expect(settings.getAttribute('href')).toBe('/library/ops/settings');
     fireEvent.click(settings);
     expect(onClose).toHaveBeenCalled();
   });
@@ -115,9 +115,9 @@ describe('ShareDialog', () => {
   it('points someone who can’t manage the space to a space manager', async () => {
     vi.mocked(getSpace).mockResolvedValue(makeSpace({ my_level: 'edit', settings: {} }));
     renderDialog();
-    expect(await screen.findByText('Public links are turned off for this space.')).toBeTruthy();
-    expect(screen.queryByRole('link', { name: 'Space settings' })).toBeNull();
-    expect(screen.getByText(/Ask a space manager/)).toBeTruthy();
+    expect(await screen.findByText('Public links are turned off for this library.')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Library settings' })).toBeNull();
+    expect(screen.getByText(/Ask a library manager/)).toBeTruthy();
   });
 
   it('warns that a never-published page won’t open until it is published', async () => {
@@ -129,7 +129,7 @@ describe('ShareDialog', () => {
     vi.mocked(getSpace).mockResolvedValue(makeSpace({
       my_level: 'manage', archived_at: '2026-09-25T00:00:00Z', settings: { allow_public_links: true } }));
     renderDialog();
-    expect(await screen.findByText(/This space is archived: its public links keep working/)).toBeTruthy();
+    expect(await screen.findByText(/This library is archived: its public links keep working/)).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Admin page' }).getAttribute('href')).toBe('/admin');
   });
 
@@ -137,7 +137,7 @@ describe('ShareDialog', () => {
     vi.mocked(getSpace).mockResolvedValue(makeSpace({
       my_level: 'manage', archived_at: '2026-09-25T00:00:00Z', settings: {} }));
     renderDialog();
-    expect(await screen.findByText('Public links are turned off for this space.')).toBeTruthy();
+    expect(await screen.findByText('Public links are turned off for this library.')).toBeTruthy();
     expect(screen.queryByText(/public links keep working/)).toBeNull();
   });
 

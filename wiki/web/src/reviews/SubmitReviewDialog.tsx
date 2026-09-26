@@ -77,7 +77,7 @@ export default function SubmitReviewDialog({
             <div className="eyebrow">Review</div>
             <h3 id="wiki-submit-review-title">Submit “{pageTitle}” for review</h3>
             <p className="page-hint">
-              This space needs a manager's approval before changes go live. Readers keep seeing the
+              This library needs a manager's approval before changes go live. Readers keep seeing the
               published version until then.
             </p>
           </div>

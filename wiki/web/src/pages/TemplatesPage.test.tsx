@@ -102,7 +102,7 @@ describe('TemplatesPage — list', () => {
     expect(within(rows[2]).getByRole('button', { name: 'Edit' })).toBeTruthy();
     expect((screen.getByRole('button', { name: 'New template' }) as HTMLButtonElement).disabled).toBe(false);
     // the picked space's own templates read "This space", like the picker
-    expect(within(rows[2]).getByText('This space')).toBeTruthy();
+    expect(within(rows[2]).getByText('This library')).toBeTruthy();
   });
 
   it('names another space\'s template by the space\'s name, not its key', async () => {

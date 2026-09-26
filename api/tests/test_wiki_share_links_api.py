@@ -121,6 +121,7 @@ async def test_create_needs_the_space_to_allow_public_links(client, db):
                              headers=s["owner"], json={})
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "links_disabled"
+    assert resp.json()["detail"]["message"] == "Public links are turned off for this library."
 
 
 async def test_create_returns_the_token_once_and_stores_only_its_hash(client, db):

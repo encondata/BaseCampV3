@@ -693,7 +693,7 @@ describe('PageView — reviews', () => {
     expect(await screen.findByRole('dialog', { name: 'Submit “Rack power” for review' })).toBeTruthy();
     // the header's button reads that way from now on
     expect(document.querySelector('.wiki-publish-btn')!.textContent).toBe('Submit for review');
-    expect(toast).toHaveBeenCalledWith('This space needs a manager\'s approval — submit your changes for review.');
+    expect(toast).toHaveBeenCalledWith('This library needs a manager\'s approval — submit your changes for review.');
   });
 
   it('shows my pending request with Withdraw, and no Review now for an editor', async () => {

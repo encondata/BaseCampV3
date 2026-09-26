@@ -41,8 +41,8 @@ describe('WatchingPage', () => {
     expect(rows).toHaveLength(2);
     expect(within(rows[0]).getByRole('link', { name: 'Rack power' }).getAttribute('href')).toBe('/n/n1');
     expect(within(rows[0]).getByText('Page')).toBeTruthy();
-    expect(within(rows[1]).getByRole('link', { name: 'Facilities' }).getAttribute('href')).toBe('/s/facilities');
-    expect(within(rows[1]).getByText('Space')).toBeTruthy();
+    expect(within(rows[1]).getByRole('link', { name: 'Facilities' }).getAttribute('href')).toBe('/library/facilities');
+    expect(within(rows[1]).getByText('Library')).toBeTruthy();
 
     fireEvent.click(within(rows[0]).getByRole('button', { name: 'Stop watching Rack power' }));
     await waitFor(() => expect(unwatch).toHaveBeenCalledWith('w1'));

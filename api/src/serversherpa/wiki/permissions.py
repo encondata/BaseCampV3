@@ -414,10 +414,10 @@ async def require_space_level(ix: AccessIndex, space: WikiSpace | None,
     """The space, if the caller has at least `needed` on it (404 when they
     can't see it at all, 403 when they can but not enough)."""
     if space is None:
-        raise _not_found("Space not found.")
+        raise _not_found("Library not found.")
     level = await ix.level_for_space(space.id)
     if level is None:
-        raise _not_found("Space not found.")
+        raise _not_found("Library not found.")
     if level_rank(level) < level_rank(needed):
         raise _forbidden(needed)
     return space

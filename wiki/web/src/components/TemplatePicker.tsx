@@ -20,7 +20,7 @@ type Templates = TemplateOut[] | 'loading' | 'error';
 
 function scopeLabel(t: TemplateOut): string {
   if (t.is_builtin) return 'Built in';
-  return t.space_id === null ? 'Global' : 'This space';
+  return t.space_id === null ? 'Global' : 'This library';
 }
 
 export default function TemplatePicker({ spaceKey, value, onChange }: TemplatePickerProps) {
