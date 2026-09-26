@@ -140,6 +140,9 @@ three probes in a cycle run concurrently.
 
 - Page header: ServerSherpa logo (copied from `portal/public/images/serversherpa-logo.png`)
   + "System Status" in Geologica; small mono "Updated HH:MM:SS".
+- Every clock time on the page (Updated, Last checked, the stale notice) is the viewer's
+  local time followed by its UTC offset — "1:27:39 PM UTC-6", "UTC+5:30", or "UTC" — an
+  offset, never a city or zone name (added 2026-09-26).
 - Overall banner: green "All systems operational" / red "N service(s) down" /
   slate "Checking…" (unknown), using the portal's `--c-green*` / `--c-red*` / `--c-slate*`
   chip tokens.

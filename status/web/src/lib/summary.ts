@@ -54,8 +54,20 @@ export function formatDay(day: string): string {
   return DAY_FMT.format(new Date(`${day}T00:00:00Z`));
 }
 
+/** The viewer's offset from UTC at that moment ("UTC-6", "UTC+5:30", "UTC"),
+ *  so DST is right for the time shown. An offset, not a zone name. */
+export function utcOffsetLabel(at: Date): string {
+  const ahead = -at.getTimezoneOffset();
+  if (ahead === 0) return 'UTC';
+  const abs = Math.abs(ahead);
+  const minutes = abs % 60;
+  return `UTC${ahead > 0 ? '+' : '-'}${Math.floor(abs / 60)}${minutes ? `:${String(minutes).padStart(2, '0')}` : ''}`;
+}
+
+/** Clock time in the viewer's zone, labeled with its UTC offset. */
 export function formatClock(at: string | Date): string {
-  return CLOCK_FMT.format(typeof at === 'string' ? new Date(at) : at);
+  const date = typeof at === 'string' ? new Date(at) : at;
+  return `${CLOCK_FMT.format(date)} ${utcOffsetLabel(date)}`;
 }
 
 /** The footer's "how this page works" line, driven by the configured
