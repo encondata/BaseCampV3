@@ -626,6 +626,70 @@ class ReviewDetail(ReviewOut):
     stale: bool
 
 
+# ── public share links ───────────────────────────────────────────────
+
+
+class ShareLinkCreateIn(BaseModel):
+    """`expires_in_days`: 1, 7, 30 or 90, or null for a link that never
+    expires; left out, 30."""
+    model_config = ConfigDict(extra="forbid")
+
+    expires_in_days: Literal[1, 7, 30, 90] | None = 30
+
+
+class ShareLinkCreatedOut(BaseModel):
+    """The one response that carries the token (inside `url`)."""
+    id: uuid.UUID
+    url: str
+    expires_at: datetime | None
+
+
+class ShareNodeRef(BaseModel):
+    id: uuid.UUID
+    title: str
+    kind: NodeKind
+    space_key: str
+    space_name: str
+
+
+class ShareLinkOut(BaseModel):
+    """A link as its node's managers and wiki admins see it — never its
+    token or token hash."""
+    id: uuid.UUID
+    node: ShareNodeRef
+    status: Literal["active", "expired", "revoked"]
+    created_by: PersonRef | None
+    created_at: datetime
+    expires_at: datetime | None
+    revoked_at: datetime | None
+    view_count: int
+    last_viewed_at: datetime | None
+
+
+class PublicPageOut(BaseModel):
+    """A shared page's published content, made safe to show anyone
+    (`wiki.content.public_doc`), and presigned URLs for the page assets
+    it embeds, keyed by asset id."""
+    kind: Literal["page"] = "page"
+    title: str
+    content_json: dict
+    published_at: datetime
+    asset_urls: dict[str, str]
+
+
+class PublicFileOut(BaseModel):
+    """A shared file's current version: `url` shows it in the browser
+    where the inline rules allow (an attachment otherwise);
+    `download_url` always downloads it."""
+    kind: Literal["file"] = "file"
+    title: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    url: str
+    download_url: str
+
+
 # ── internal (collab server) ─────────────────────────────────────────
 
 

@@ -46,7 +46,8 @@ def content_disposition(filename: str, *, inline: bool = False) -> str:
 
 
 def presign_get(key: str | None, *, download_filename: str | None = None,
-                inline: bool = False, content_type: str | None = None) -> str | None:
+                inline: bool = False, content_type: str | None = None,
+                max_ttl_seconds: int | None = None) -> str | None:
     """Short-lived read URL for a private object (None passes through so
     callers can presign optional keys like avatar_key directly).
 
@@ -60,10 +61,17 @@ def presign_get(key: str | None, *, download_filename: str | None = None,
     `content_type`, when given, overrides the response's Content-Type
     (`ResponseContentType`) — used to force `text/plain` on an inline
     text preview so the bucket's origin can never serve stored text back
-    as HTML or SVG that could run script."""
+    as HTML or SVG that could run script.
+
+    The URL lives `spaces_presign_ttl_seconds`, or `max_ttl_seconds` when
+    that is shorter (a public share link's URLs never outlive 10 minutes,
+    whatever the setting says)."""
     if not key:
         return None
     s = get_settings()
+    ttl = s.spaces_presign_ttl_seconds
+    if max_ttl_seconds is not None:
+        ttl = min(ttl, max_ttl_seconds)
     params: dict = {"Bucket": s.spaces_bucket, "Key": key}
     if download_filename:
         params["ResponseContentDisposition"] = content_disposition(
@@ -71,7 +79,7 @@ def presign_get(key: str | None, *, download_filename: str | None = None,
     if content_type:
         params["ResponseContentType"] = content_type
     return _client().generate_presigned_url(
-        "get_object", Params=params, ExpiresIn=s.spaces_presign_ttl_seconds,
+        "get_object", Params=params, ExpiresIn=ttl,
     )
 
 

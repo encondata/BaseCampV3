@@ -7,7 +7,8 @@ canonical comparison of two documents that ignores comment anchors
 (`MAX_DOC_BYTES`), the embedded-asset walkers page copy uses, the
 people a document @mentions (`mention_ids`), and
 `strip_reference_labels`, which drops what a link or embed recorded about
-ANOTHER node (its title) before a document is stored.
+ANOTHER node (its title) before a document is stored, and `public_doc`,
+the form a page's published content takes behind a public share link.
 
 Server-side Python never renders HTML; it only reads the ProseMirror JSON
 the editor's shared schema produces.
@@ -313,3 +314,90 @@ def strip_asset_nodes(doc: dict) -> dict:
     no `assetId`) is kept — that reference is wiki-wide, not tied to the
     source page."""
     return _drop_nodes(copy.deepcopy(doc), _is_page_asset_node)
+
+
+# ── public share links ───────────────────────────────────────────────
+
+# what a public reader sees in place of a link to (or embed of) another
+# wiki node — never its title or id: the target may not be shared at all
+PUBLIC_PAGE_TEXT = "(linked page)"
+PUBLIC_FILE_TEXT = "(linked file)"
+
+# the only hrefs a public copy keeps as links: the editor also allows
+# internal `/n/<id>` routes, which name a node and lead to a sign-in
+_PUBLIC_HREF = re.compile(r"^(https?:|mailto:|tel:)", re.IGNORECASE)
+
+
+def _public_marks(marks: Any) -> list | None:
+    """`marks` without links that aren't web/mail/phone links."""
+    if not isinstance(marks, list):
+        return None
+    kept = []
+    for mark in marks:
+        if isinstance(mark, dict) and mark.get("type") == "link":
+            attrs = mark.get("attrs")
+            href = attrs.get("href") if isinstance(attrs, dict) else None
+            if not (isinstance(href, str) and _PUBLIC_HREF.match(href)):
+                continue
+        kept.append(mark)
+    return kept
+
+
+def _public_text(text: str, marks: list | None) -> dict:
+    node: dict[str, Any] = {"type": "text", "text": text}
+    if marks:
+        node["marks"] = marks
+    return node
+
+
+def public_doc(doc: dict, *, node_id: str | uuid.UUID, title: str) -> dict:
+    """A deep copy of a page's published `doc` as a public share link
+    serves it — nothing in it names or leads to another part of the wiki:
+
+    - a `pageLink` becomes plain text: the shared page's own `title` when
+      it links to itself (`node_id`), else PUBLIC_PAGE_TEXT;
+    - a `fileEmbed` of a wiki file node becomes a paragraph of
+      PUBLIC_FILE_TEXT (an embed of the page's own asset is kept — its
+      `assetId` is what the public response's `asset_urls` are keyed by);
+    - `link` marks other than web, mail and phone links are dropped (their
+      text stays);
+    - a `mention` keeps its label but not the person's id;
+    - comment anchors are dropped (`strip_comment_marks`), which also
+      joins the text runs all of the above split apart."""
+    self_id = str(node_id).lower()
+    out = copy.deepcopy(doc)
+    stack: list[Any] = [out]
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict):
+            continue
+        content = node.get("content")
+        if not isinstance(content, list):
+            continue
+        rebuilt: list[Any] = []
+        for child in content:
+            if not isinstance(child, dict):
+                rebuilt.append(child)
+                continue
+            child_type = child.get("type")
+            if child_type == "pageLink":
+                target = (_attr(child, "nodeId") or "").lower()
+                text = title if target and target == self_id else PUBLIC_PAGE_TEXT
+                rebuilt.append(_public_text(text, _public_marks(child.get("marks"))))
+                continue
+            if child_type == "fileEmbed" and _attr(child, "nodeId"):
+                rebuilt.append({"type": "paragraph",
+                                "content": [_public_text(PUBLIC_FILE_TEXT, None)]})
+                continue
+            if "marks" in child:
+                marks = _public_marks(child["marks"])
+                if marks:
+                    child["marks"] = marks
+                else:
+                    del child["marks"]
+            if child_type == "mention" and isinstance(child.get("attrs"), dict):
+                child["attrs"]["personId"] = None
+            rebuilt.append(child)
+            stack.append(child)
+        node["content"] = rebuilt
+    return strip_comment_marks(out)

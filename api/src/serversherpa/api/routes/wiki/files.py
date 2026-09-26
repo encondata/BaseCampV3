@@ -313,18 +313,21 @@ async def list_file_versions(node_id: uuid.UUID, ctx: WikiContext) -> list[FileV
     return [file_version_out(v, people) for v in versions]
 
 
-def _presign_view(key: str, filename: str, content_type: str, *,
-                    preview_kind: str | None = None) -> str | None:
+def presign_view(key: str, filename: str, content_type: str, *,
+                 preview_kind: str | None = None,
+                 max_ttl_seconds: int | None = None) -> str | None:
     """A presigned read meant for in-browser display: inline with the
     type `inline_content_type` allows, or — for anything that could run
     as active content, or simply has no native preview — an attachment
-    served as application/octet-stream."""
+    served as application/octet-stream. (Also the public share link's
+    rule, `routes/wiki/public.py`.)"""
     inline_type = inline_content_type(filename, content_type, preview_kind)
     if inline_type is None:
         return storage.presign_get(key, download_filename=filename,
-                                   content_type=DEFAULT_CONTENT_TYPE)
+                                   content_type=DEFAULT_CONTENT_TYPE,
+                                   max_ttl_seconds=max_ttl_seconds)
     return storage.presign_get(key, download_filename=filename, inline=True,
-                               content_type=inline_type)
+                               content_type=inline_type, max_ttl_seconds=max_ttl_seconds)
 
 
 @router.get("/files/{node_id}/url", response_model=FileUrlOut)
@@ -354,7 +357,7 @@ async def file_url(node_id: uuid.UUID, ctx: WikiContext,
         return FileUrlOut(url=url, content_type="application/pdf", preview_status="ready")
 
     if disposition == "inline":
-        url = _presign_view(version.storage_key, version.filename, version.content_type,
+        url = presign_view(version.storage_key, version.filename, version.content_type,
                               preview_kind=version.preview_kind)
     else:
         url = storage.presign_get(version.storage_key, download_filename=version.filename)
@@ -440,7 +443,7 @@ async def asset_urls(body: AssetUrlsIn, ctx: WikiContext) -> AssetUrlsOut:
     for asset in assets:
         if asset.node_id not in shown_ids:
             continue
-        url = _presign_view(asset.storage_key, asset.filename, asset.content_type)
+        url = presign_view(asset.storage_key, asset.filename, asset.content_type)
         if url is not None:
             urls[asset.id] = url
     return AssetUrlsOut(urls=urls)

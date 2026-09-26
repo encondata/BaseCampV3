@@ -206,3 +206,78 @@ def test_strip_comment_marks_is_public_and_leaves_the_source_alone():
         _t("Check the "), {"type": "text", "text": "spare", "marks": [{"type": "bold"}]},
         _t(" PDU stock."))]}
     assert "commentThread" in str(anchored)
+
+
+# ── public_doc (Phase 3 public share links) ──────────────────────────
+
+SHARED_ID = "11111111-1111-1111-1111-111111111111"
+OTHER_ID = "22222222-2222-2222-2222-222222222222"
+
+
+def _link(node_id, **attrs):
+    return {"type": "pageLink", "attrs": {"nodeId": node_id, **attrs}}
+
+
+def test_public_doc_turns_links_to_other_nodes_into_plain_text():
+    from serversherpa.wiki.content import PUBLIC_FILE_TEXT, PUBLIC_PAGE_TEXT, public_doc
+
+    doc = {"type": "doc", "content": [
+        _p(_t("See "), _link(OTHER_ID), _t(" and "), _link(SHARED_ID), _t(".")),
+        {"type": "fileEmbed", "attrs": {"nodeId": OTHER_ID, "assetId": None,
+                                        "filename": "", "contentType": ""}},
+    ]}
+    out = public_doc(doc, node_id=SHARED_ID, title="Rack Guide")
+    assert out == {"type": "doc", "content": [
+        _p(_t(f"See {PUBLIC_PAGE_TEXT} and Rack Guide.")),
+        _p(_t(PUBLIC_FILE_TEXT)),
+    ]}
+    # nothing in the result names another node
+    assert OTHER_ID not in str(out) and SHARED_ID not in str(out)
+    # the source is left alone
+    assert doc["content"][0]["content"][1]["type"] == "pageLink"
+
+
+def test_public_doc_keeps_a_links_own_marks_on_its_text():
+    from serversherpa.wiki.content import PUBLIC_PAGE_TEXT, public_doc
+
+    doc = {"type": "doc", "content": [
+        _p({**_link(OTHER_ID), "marks": [{"type": "bold"}]})]}
+    out = public_doc(doc, node_id=SHARED_ID, title="T")
+    assert out["content"][0]["content"] == [
+        {"type": "text", "text": PUBLIC_PAGE_TEXT, "marks": [{"type": "bold"}]}]
+
+
+def test_public_doc_strips_comment_anchors_internal_hrefs_and_mention_ids():
+    from serversherpa.wiki.content import public_doc
+
+    person = "33333333-3333-3333-3333-333333333333"
+    doc = {"type": "doc", "content": [_p(
+        {"type": "text", "text": "anchored",
+         "marks": [{"type": "commentThread", "attrs": {"threadId": "t-1"}}]},
+        {"type": "text", "text": " internal",
+         "marks": [{"type": "link", "attrs": {"href": f"/n/{OTHER_ID}"}}]},
+        {"type": "text", "text": " web",
+         "marks": [{"type": "link", "attrs": {"href": "https://example.com"}}]},
+        {"type": "mention", "attrs": {"personId": person, "label": "Pat Doe"}},
+    )]}
+    out = public_doc(doc, node_id=SHARED_ID, title="T")
+    assert out["content"][0]["content"] == [
+        _t("anchored internal"),
+        {"type": "text", "text": " web",
+         "marks": [{"type": "link", "attrs": {"href": "https://example.com"}}]},
+        {"type": "mention", "attrs": {"personId": None, "label": "Pat Doe"}},
+    ]
+    assert "t-1" not in str(out) and person not in str(out) and OTHER_ID not in str(out)
+
+
+def test_public_doc_keeps_the_pages_own_assets():
+    from serversherpa.wiki.content import public_doc
+
+    doc = {"type": "doc", "content": [
+        {"type": "wikiImage", "attrs": {"assetId": "a1", "alt": "", "caption": "", "width": None}},
+        {"type": "fileEmbed", "attrs": {"nodeId": None, "assetId": "a2",
+                                        "filename": "spec.pdf", "contentType": "application/pdf"}},
+    ]}
+    out = public_doc(doc, node_id=SHARED_ID, title="T")
+    assert out == doc
+    assert referenced_asset_ids(out) == {"a1", "a2"}

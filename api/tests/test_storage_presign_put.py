@@ -67,6 +67,24 @@ def test_presign_get_attachment_is_the_default_disposition():
     assert "response-content-type=" not in url
 
 
+def test_presign_get_max_ttl_only_ever_shortens(monkeypatch):
+    from serversherpa.config import get_settings
+
+    monkeypatch.setenv("SS_SPACES_PRESIGN_TTL_SECONDS", "3600")
+    get_settings.cache_clear()
+    try:
+        def expires(**kw):
+            url = storage.presign_get("wiki/a/b/c.pdf", **kw)
+            return parse_qs(urlparse(url).query)["X-Amz-Expires"]
+
+        assert expires() == ["3600"]
+        assert expires(max_ttl_seconds=600) == ["600"]
+        assert expires(max_ttl_seconds=7200) == ["3600"]
+    finally:
+        monkeypatch.delenv("SS_SPACES_PRESIGN_TTL_SECONDS")
+        get_settings.cache_clear()
+
+
 def test_presign_get_none_key_passes_through():
     assert storage.presign_get(None) is None
 

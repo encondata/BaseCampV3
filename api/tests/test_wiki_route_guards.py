@@ -7,7 +7,10 @@ remembering to write its test:
   `wiki:view`;
 - every mutating user-facing route answers 423 in read-only maintenance
   mode — except the reads made through POST listed in READ_ONLY_READS;
-- every `/wiki/internal` route answers 401 without the service token.
+- every `/wiki/internal` route answers 401 without the service token;
+- every `/wiki/public` route (a share link's read) is a GET that answers
+  a made-up token with 404 `not_found` without any credentials, and is
+  held to the IP rate limit.
 """
 import os
 import re
@@ -38,8 +41,10 @@ def _wiki_routes() -> list[tuple[str, str]]:
 
 
 ROUTES = _wiki_routes()
-USER_ROUTES = [r for r in ROUTES if not r[1].startswith("/wiki/internal/")]
+USER_ROUTES = [r for r in ROUTES
+               if not r[1].startswith(("/wiki/internal/", "/wiki/public/"))]
 INTERNAL_ROUTES = [r for r in ROUTES if r[1].startswith("/wiki/internal/")]
+PUBLIC_ROUTES = [r for r in ROUTES if r[1].startswith("/wiki/public/")]
 
 
 def _url(path: str) -> str:
@@ -54,6 +59,7 @@ def test_the_sweep_sees_the_wiki_api():
     # a guard over nothing guards nothing
     assert len(USER_ROUTES) >= 30
     assert INTERNAL_ROUTES
+    assert PUBLIC_ROUTES
 
 
 @pytest.fixture
@@ -114,3 +120,28 @@ async def test_every_internal_route_needs_the_service_token(client):
         else:
             os.environ[env] = before
         get_settings.cache_clear()
+
+
+async def test_every_public_route_is_an_uncredentialed_read(client):
+    from serversherpa.wiki import share_links
+
+    share_links.public_limiter.reset()
+    try:
+        wrong = []
+        for method, path in PUBLIC_ROUTES:
+            if method != "GET":
+                wrong.append((method, path, "not a GET"))
+                continue
+            resp = await client.get(_url(path))
+            if resp.status_code != 404 or resp.json()["detail"]["code"] != "not_found":
+                wrong.append((method, path, resp.status_code))
+        assert wrong == []
+
+        # and the limiter answers before anything is looked up
+        for method, path in PUBLIC_ROUTES:
+            share_links.public_limiter.reset()
+            for _ in range(share_links.PUBLIC_RATE_LIMIT):
+                await client.get(_url(path))
+            assert (await client.get(_url(path))).status_code == 429, path
+    finally:
+        share_links.public_limiter.reset()
