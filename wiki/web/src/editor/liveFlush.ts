@@ -10,11 +10,15 @@
  *    Yjs client id).
  *  - `flushPage(pageId)`: for a page not open in this tab (Publish from
  *    View mode): a short-lived connection, so edits other people are
- *    making live are stored too.
+ *    making live are stored too. When the server won't open the page live
+ *    for this user at all (live editing switched off — no service token —
+ *    or no live access), there is no live document to store and it
+ *    resolves: the stored draft is all there is, and the publish itself
+ *    still checks the user's access.
  *
  *  Both reject with a `FlushError` whose `code` is the server's reason
  *  (`too_large`, `bad_doc`, `deleted`, `unavailable`) or `offline`,
- *  `timeout`, `not_saved`, `forbidden`. */
+ *  `timeout`, `not_saved`. */
 import { HocuspocusProvider, HocuspocusProviderWebsocket } from '@hocuspocus/provider';
 import * as Y from 'yjs';
 
@@ -71,7 +75,7 @@ export async function flushPage(pageId: string, timeoutMs = FLUSH_TIMEOUT_MS): P
   const socket = new HocuspocusProviderWebsocket({ url: collabUrl() });
   let provider: HocuspocusProvider | null = null;
   try {
-    await new Promise<void>((resolve, reject) => {
+    const live = await new Promise<boolean>((resolve, reject) => {
       const timer = setTimeout(() => reject(new FlushError('offline')), timeoutMs);
       provider = new HocuspocusProvider({
         websocketProvider: socket,
@@ -81,15 +85,15 @@ export async function flushPage(pageId: string, timeoutMs = FLUSH_TIMEOUT_MS): P
         onSynced: ({ state }) => {
           if (!state) return;
           clearTimeout(timer);
-          resolve();
+          resolve(true);
         },
         onAuthenticationFailed: () => {
           clearTimeout(timer);
-          reject(new FlushError('forbidden'));
+          resolve(false);
         },
       });
     });
-    await flushLive(provider!, timeoutMs);
+    if (live) await flushLive(provider!, timeoutMs);
   } finally {
     (provider as HocuspocusProvider | null)?.destroy();
     socket.destroy();

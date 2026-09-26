@@ -21,7 +21,6 @@ function flushFailure(err: FlushError): string {
     case 'bad_doc':
     case 'unstorable': return 'This page can\'t be saved, so it can\'t be published.';
     case 'deleted': return 'This page is in the trash.';
-    case 'forbidden': return 'You can\'t edit this page right now.';
     default: return 'Couldn\'t save the latest changes before publishing. Check your connection and try again.';
   }
 }
