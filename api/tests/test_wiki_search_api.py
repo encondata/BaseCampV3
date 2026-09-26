@@ -4,9 +4,16 @@ snippets — plus a direct test of `wiki.search.refresh_search`'s file
 body text."""
 import uuid
 
-from serversherpa.db.models import Client, WikiFile, WikiFileVersion, WikiNode, WikiPage
+from serversherpa.db.models import (
+    Client,
+    WikiFile,
+    WikiFileVersion,
+    WikiGrant,
+    WikiNode,
+    WikiPage,
+)
 from serversherpa.wiki import search as wiki_search
-from tests.wiki_helpers import _create, _doc, _setup, login_as, publish_via_api
+from tests.wiki_helpers import _create, _doc, _setup, _space, login_as, publish_via_api
 
 
 async def _set_draft(db, node_id, content):
@@ -118,6 +125,30 @@ async def test_view_only_caller_does_not_see_internal_space_hits(client, db):
     outsider, _ = await login_as(client, db, roles=("client_viewer",), client_id=acme.id)
     hits = await _search(client, outsider, "router")
     assert hits == []
+
+
+async def test_node_level_grant_reaches_into_an_otherwise_private_space(client, db):
+    """A person with no space-level access at all — the space is
+    `private`, so there's no `internal`/`everyone` grant to fall back on
+    — but a `view` grant on one page must still find that page (they can
+    already open it by link) without surfacing its sibling."""
+    owner_h, _ = await login_as(client, db, roles=("staff",))
+    space = await _space(client, owner_h, default_access="private", name="Private Space")
+    page = await _create(client, owner_h, space, "Secret Runbook", kind="page")
+    await publish_via_api(client, owner_h, page["id"])
+    sibling = await _create(client, owner_h, space, "Secret Sibling", kind="page")
+    await publish_via_api(client, owner_h, sibling["id"])
+
+    outsider_h, outsider_id = await login_as(client, db, roles=("staff",))
+    db.add(WikiGrant(
+        space_id=uuid.UUID(space["id"]), node_id=uuid.UUID(page["id"]),
+        principal_type="person", principal_id=str(outsider_id), level="view"))
+    await db.commit()
+
+    hits = await _search(client, outsider_h, "secret")
+    ids = [h["node"]["id"] for h in hits]
+    assert page["id"] in ids
+    assert sibling["id"] not in ids
 
 
 async def test_unpublished_page_found_by_title_for_editors_only(client, db):

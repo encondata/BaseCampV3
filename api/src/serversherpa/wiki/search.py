@@ -26,12 +26,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.db.models import (
     WikiFile,
     WikiFileVersion,
+    WikiGrant,
     WikiNode,
     WikiPage,
     WikiPageVersion,
     WikiSpace,
 )
-from serversherpa.wiki.permissions import AccessIndex, level_rank
+from serversherpa.wiki.permissions import AccessIndex, grant_matches, level_rank
 
 KINDS = ("folder", "page", "file")
 
@@ -141,23 +142,50 @@ class _Candidate:
     space_name: str
 
 
+async def _node_grant_space_ids(db: AsyncSession, ix: AccessIndex) -> set[uuid.UUID]:
+    """Space ids reachable only through a node-level grant — someone
+    handed access to one page inside an otherwise-private space (no
+    space-level grant at all) must still be able to find it by search,
+    since they can already open it by link. One query over every
+    node-level grant, filtered in Python with the same `grant_matches`
+    rule `AccessIndex` itself uses. `levels_for_nodes` is still the
+    authority on which *nodes* actually come back — this only decides
+    which spaces are worth running the candidate query against."""
+    if not ix.p.can_view_wiki or ix.p.is_admin:
+        # an admin already gets every space back from `levels_for_spaces`
+        # (AccessIndex short-circuits admins to "manage" everywhere), so
+        # there's nothing this widens for them.
+        return set()
+    rows = (await db.execute(
+        select(WikiGrant.space_id, WikiGrant.principal_type, WikiGrant.principal_id)
+        .where(WikiGrant.node_id.is_not(None)))).all()
+    return {sid for sid, ptype, pid in rows if grant_matches(ix.p, ptype, pid)}
+
+
 async def _space_ids_for(db: AsyncSession, ix: AccessIndex,
                          space_key: str | None) -> list[uuid.UUID] | None:
     """The space ids to search: just the one named by `space_key` — None
-    when it doesn't exist or isn't viewable, so an unknown key looks
-    exactly like an unviewable one and can't be used to probe for a
-    space's existence — or every space the caller can view at all
+    when it doesn't exist, or the caller has neither a space-level grant
+    on it nor a node-level grant reaching into it, so an unknown key
+    looks exactly like an unviewable one and can't be used to probe for
+    a space's existence — or every space the caller can view at all,
+    either at the space level or only through a node-level grant
     (archived spaces included: their read-only content still turns up
     in search). None (rather than an empty list) means "search nothing"."""
     if space_key is not None:
         space = await db.scalar(select(WikiSpace).where(WikiSpace.key == space_key.strip()))
-        if space is None or await ix.level_for_space(space.id) is None:
+        if space is None:
             return None
-        return [space.id]
+        if await ix.level_for_space(space.id) is not None:
+            return [space.id]
+        node_grant_spaces = await _node_grant_space_ids(db, ix)
+        return [space.id] if space.id in node_grant_spaces else None
+
     all_ids = (await db.scalars(select(WikiSpace.id))).all()
     levels = await ix.levels_for_spaces(all_ids)
-    viewable = [sid for sid, level in levels.items() if level is not None]
-    return viewable or None
+    viewable = {sid for sid, level in levels.items() if level is not None}
+    viewable |= await _node_grant_space_ids(db, ix)
+    return list(viewable) or None
 
 
 async def _candidates(db: AsyncSession, q: str, *, space_ids: list[uuid.UUID],
