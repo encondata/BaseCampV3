@@ -1,14 +1,16 @@
-/** The ⋯ menu on a tree row (also opened by right-clicking the row): New
- *  page/folder here, Rename, Move…, Copy link, Permissions…, Delete — each
- *  shown only at the level it needs. The menu is position:fixed so the
- *  sidebar's scroll box never clips it; it closes on any outside click,
- *  scroll, resize or Escape. */
+/** The ⋯ menu on a tree row (also opened by right-clicking the row) and in
+ *  a page's header: New page/folder here, Rename, Move…, Copy…, Copy link,
+ *  Permissions…, Delete — each shown only at the level it needs. Move,
+ *  Copy, Permissions and Delete open the shell's dialogs. The menu is
+ *  position:fixed so the sidebar's scroll box never clips it; it closes on
+ *  any outside click, scroll, resize or Escape. */
 import {
   forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type ReactNode,
 } from 'react';
 
 import { useToast } from '@portal/lib/notificationsContext';
 
+import { useWikiShell } from '../layout/shellContext';
 import type { Level, NodeOut } from '../lib/types';
 
 const RANK: Record<Level, number> = { view: 1, edit: 2, manage: 3 };
@@ -22,9 +24,6 @@ export interface RowMenuProps {
   node: NodeOut;
   onNewChild?: (kind: 'page' | 'folder') => void;
   onRename?: () => void;
-  onDelete?: () => void;
-  onRequestMove: (node: NodeOut) => void;
-  onRequestPermissions: (node: NodeOut) => void;
 }
 
 export interface RowMenuHandle {
@@ -35,9 +34,10 @@ export interface RowMenuHandle {
 const MENU_WIDTH = 210;
 
 const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
-  { node, onNewChild, onRename, onDelete, onRequestMove, onRequestPermissions }, ref,
+  { node, onNewChild, onRename }, ref,
 ) {
   const toast = useToast();
+  const shell = useWikiShell();
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -105,14 +105,15 @@ const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
     items.push({ label: 'Rename', action: onRename, icon: <path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4" /> });
   }
   if (canEdit) {
-    items.push({ label: 'Move…', action: () => onRequestMove(node), icon: <path d="M5 12h14M13 6l6 6-6 6" /> });
+    items.push({ label: 'Move…', action: () => shell.requestMove(node), icon: <path d="M5 12h14M13 6l6 6-6 6" /> });
   }
+  items.push({ label: 'Copy…', action: () => shell.requestCopy(node), icon: <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></> });
   items.push({ label: 'Copy link', action: copyLink, icon: <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" /> });
   if (canManage) {
-    items.push({ label: 'Permissions…', action: () => onRequestPermissions(node), icon: <><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></> });
+    items.push({ label: 'Permissions…', action: () => shell.requestPermissions(node), icon: <><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></> });
   }
-  if (canEdit && !isHome && onDelete) {
-    items.push({ label: 'Delete', action: onDelete, danger: true, icon: <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" /> });
+  if (canEdit && !isHome) {
+    items.push({ label: 'Delete', action: () => shell.requestDelete(node), danger: true, icon: <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" /> });
   }
 
   return (

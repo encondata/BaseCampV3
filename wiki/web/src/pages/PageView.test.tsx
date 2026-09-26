@@ -21,14 +21,21 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   getAssetUrls: vi.fn(),
   setFavorite: vi.fn(),
   publishPage: vi.fn(),
+  getVersion: vi.fn(),
+  recordRestore: vi.fn(),
 }));
+/** What the stand-in editor hands PageView once it has first synced. */
+const fakeEditor = { isDestroyed: false, commands: { setContent: vi.fn() } };
 // live editing is verified in the browser; here the editor is a stand-in
 vi.mock('../editor/WikiEditor', () => ({
-  default: ({ pageId, onAccessLost }: { pageId: string; onAccessLost: (l: 'view' | 'none') => void }) => (
+  default: ({ pageId, onAccessLost, onFirstSync }: {
+    pageId: string; onAccessLost: (l: 'view' | 'none') => void; onFirstSync?: (editor: unknown) => void;
+  }) => (
     <div data-testid="wiki-editor">
       editing {pageId}
       <button type="button" onClick={() => onAccessLost('view')}>server says read-only</button>
       <button type="button" onClick={() => onAccessLost('none')}>server refuses</button>
+      <button type="button" onClick={() => onFirstSync?.(fakeEditor)}>first sync</button>
     </div>
   ),
 }));
@@ -37,7 +44,7 @@ import { ApiError } from '@portal/lib/api';
 
 import { ShellContext, type ShellValue } from '../layout/shellContext';
 import type { NodeDetailOut, PageContentOut } from '../lib/types';
-import { getMe, getPageContent, setFavorite } from '../lib/wikiApi';
+import { getMe, getPageContent, getVersion, recordRestore, setFavorite } from '../lib/wikiApi';
 import { makeDetail, makeMe } from '../testing/fixtures';
 import PageView from './PageView';
 
@@ -153,10 +160,10 @@ describe('PageView — editors', () => {
 });
 
 describe('PageView — the ⋯ menu', () => {
-  it('routes Move, Permissions and Delete through the shell, like the tree', async () => {
+  it('routes Move, Copy, Permissions and Delete through the shell, like the tree', async () => {
     const shell: ShellValue = {
       setCurrentNode: vi.fn(), setCurrentSpace: vi.fn(), openNewNode: vi.fn(),
-      requestDelete: vi.fn(), requestMove: vi.fn(), requestPermissions: vi.fn(),
+      requestDelete: vi.fn(), requestMove: vi.fn(), requestCopy: vi.fn(), requestPermissions: vi.fn(),
     };
     const node = makeDetail('p1', { title: 'Rack power', my_level: 'manage', page: published });
     render(
@@ -171,9 +178,12 @@ describe('PageView — the ⋯ menu', () => {
 
     open();
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(
-      ['Move…', 'Copy link', 'Permissions…', 'Delete']);
+      ['Move…', 'Copy…', 'Copy link', 'Permissions…', 'Delete']);
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move…' }));
     expect(shell.requestMove).toHaveBeenCalledWith(node);
+    open();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy…' }));
+    expect(shell.requestCopy).toHaveBeenCalledWith(node);
     open();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Permissions…' }));
     expect(shell.requestPermissions).toHaveBeenCalledWith(node);
@@ -206,5 +216,39 @@ describe('PageView — live editing ends', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'server refuses' }));
     expect(toast.mock.calls[0][0]).toMatch(/^Live editing stopped/);
     expect(screen.queryByTestId('wiki-editor')).toBeNull();
+  });
+});
+
+describe('PageView — restoring a version', () => {
+  it('applies the version after the first sync, records it and clears the param', async () => {
+    const content = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Old words' }] }] };
+    vi.mocked(getVersion).mockReset().mockResolvedValue({
+      id: 'v2', version_no: 2, kind: 'published', title: 'Rack power', note: null, created_by: null,
+      created_at: PUBLISHED.created_at!, content_json: content,
+    });
+    vi.mocked(recordRestore).mockReset().mockResolvedValue({
+      id: 'v9', version_no: 9, kind: 'restored', title: 'Rack power', note: 'Restored from version 2',
+      created_by: null, created_at: PUBLISHED.created_at!,
+    });
+    fakeEditor.commands.setContent.mockReset();
+    renderPage(makeDetail('p1', { my_level: 'edit', page: published }), '/n/p1?edit=1&restore=v2');
+    await screen.findByTestId('wiki-editor');
+    await waitFor(() => expect(getVersion).toHaveBeenCalledWith('p1', 'v2'));
+    // nothing is applied before the editor has the live document
+    expect(fakeEditor.commands.setContent).not.toHaveBeenCalled();
+    expect(recordRestore).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'first sync' }));
+    await waitFor(() => expect(recordRestore).toHaveBeenCalledWith('p1', 'v2'));
+    expect(fakeEditor.commands.setContent).toHaveBeenCalledWith(content, true);
+    await waitFor(() => expect(screen.getByTestId('probe').textContent).toBe('/n/p1?edit=1'));
+    expect(toast).toHaveBeenCalledWith('Restored version 2. Publish when it\'s ready for readers.');
+  });
+
+  it('ignores the param for someone who can\'t edit', async () => {
+    vi.mocked(getVersion).mockReset();
+    renderPage(makeDetail('p1', { my_level: 'view', page: published }), '/n/p1?edit=1&restore=v2');
+    await screen.findByText('Hello from the published page.');
+    expect(getVersion).not.toHaveBeenCalled();
   });
 });

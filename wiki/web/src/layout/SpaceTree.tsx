@@ -3,7 +3,7 @@
  *  right-click RowMenu and inline rename, and rows can be dragged (HTML5
  *  DnD) into a folder or page (middle half of the row) or before/after a
  *  sibling (top/bottom quarter). The keyboard alternative to dragging is
- *  the RowMenu's Move… dialog. */
+ *  the RowMenu's Move… dialog (the RowMenu opens the shell's dialogs). */
 import {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
   type DragEvent, type KeyboardEvent,
@@ -81,9 +81,6 @@ interface Props {
   /** Ancestors of the active node — expanded so it's in view. */
   revealIds?: string[];
   onNewChild: (parent: NodeOut, kind: 'page' | 'folder') => void;
-  onDelete: (node: NodeOut) => void;
-  onRequestMove: (node: NodeOut) => void;
-  onRequestPermissions: (node: NodeOut) => void;
 }
 
 interface Dragged { node: NodeOut; }
@@ -270,9 +267,6 @@ function Row({ node, depth, ancestors }: { node: NodeOut; depth: number; ancesto
           node={node}
           onNewChild={(kind) => ctx.onNewChild(node, kind)}
           onRename={() => ctx.setRenaming(node.id)}
-          onDelete={() => ctx.onDelete(node)}
-          onRequestMove={ctx.onRequestMove}
-          onRequestPermissions={ctx.onRequestPermissions}
         />
       </div>
       {open && (

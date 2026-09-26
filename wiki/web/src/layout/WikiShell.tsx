@@ -1,16 +1,17 @@
 /** The signed-in wiki: system banners, the top bar, the collapsible
  *  sidebar (button or Ctrl/⌘+B, remembered in localStorage) and the routed
- *  page. Owns the dialogs pages and the tree ask for (New page/folder,
- *  Delete); Move… and Permissions… are stubs until Task 13 adds their
- *  dialogs. */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+ *  page. Owns the dialogs pages and the tree ask for through the shell
+ *  context: New page/folder, Delete, Move…, Copy… and Permissions…. */
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Route, Routes, useNavigate } from 'react-router-dom';
 
 import SystemBanners from '@portal/components/SystemBanners';
 import { useToast } from '@portal/lib/notificationsContext';
 
 import ConfirmDialog from '../components/ConfirmDialog';
+import MoveCopyDialog from '../components/MoveCopyDialog';
 import NewNodeDialog from '../components/NewNodeDialog';
+import PermissionsDialog from '../components/PermissionsDialog';
 import { atLeast } from '../components/RowMenu';
 import { noteDeleted } from '../lib/treeStore';
 import type { NodeDetailOut, NodeOut, SpaceOut } from '../lib/types';
@@ -21,9 +22,14 @@ import NewSpace from '../pages/NewSpace';
 import NodePage from '../pages/NodePage';
 import NotFound from '../pages/NotFound';
 import SpaceHome from '../pages/SpaceHome';
+import SpaceSettings from '../pages/SpaceSettings';
+import TrashPage from '../pages/TrashPage';
 import { ShellContext, type NewNodeTarget, type ShellValue } from './shellContext';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
+
+// history renders versions with the editor's schema, which loads with the first page
+const HistoryPage = lazy(() => import('../history/HistoryPage'));
 
 const SIDEBAR_KEY = 'ss.wiki.sidebar';
 const LAST_SPACE_KEY = 'ss.wiki.lastSpace';
@@ -40,9 +46,6 @@ function isTypingTarget(e: KeyboardEvent): boolean {
   return t instanceof Element && !!t.closest('input, textarea, select, [contenteditable]');
 }
 
-// Move… and Permissions… open dialogs built in Task 13.
-const noopNode = (_node: NodeOut) => {};
-
 export default function WikiShell() {
   const me = useWikiMe();
   const toast = useToast();
@@ -53,20 +56,36 @@ export default function WikiShell() {
   const [collapsed, setCollapsed] = useState(() => readStored(SIDEBAR_KEY) === 'collapsed');
   const [creating, setCreating] = useState<{ target: NewNodeTarget; kind: 'page' | 'folder' } | null>(null);
   const [deleting, setDeleting] = useState<{ node: NodeOut; busy: boolean; error: string } | null>(null);
+  const [moving, setMoving] = useState<{ node: NodeOut; mode: 'move' | 'copy' } | null>(null);
+  const [permissionsFor, setPermissionsFor] = useState<NodeOut | null>(null);
 
   const reloadSpaces = useCallback(() => {
     listSpaces().then(setSpaces).catch(() => setSpaces((cur) => cur ?? []));
   }, []);
   useEffect(reloadSpaces, [reloadSpaces]);
 
-  // a space created (or first shared) since the list loaded
+  // a space created (or first shared) since the list loaded — asked once
+  // per space, since an archived one never shows up in the list
+  const reloadedFor = useRef(new Set<string>());
   useEffect(() => {
-    if (currentSpace && spaces && !spaces.some((s) => s.key === currentSpace.key)) reloadSpaces();
+    if (!currentSpace || !spaces || currentSpace.archived_at) return;
+    if (spaces.some((s) => s.key === currentSpace.key) || reloadedFor.current.has(currentSpace.key)) return;
+    reloadedFor.current.add(currentSpace.key);
+    reloadSpaces();
   }, [currentSpace, spaces, reloadSpaces]);
 
   const setCurrentSpace = useCallback((space: SpaceOut) => {
     setCurrentSpaceState(space);
     writeStored(LAST_SPACE_KEY, space.key);
+    // renamed, recolored or archived since the list loaded
+    setSpaces((cur) => {
+      if (!cur) return cur;
+      const i = cur.findIndex((s) => s.id === space.id);
+      if (i < 0) return cur;
+      if (space.archived_at) return cur.filter((s) => s.id !== space.id);
+      return cur[i].updated_at === space.updated_at && cur[i].my_level === space.my_level
+        ? cur : cur.map((s, j) => (j === i ? space : s));
+    });
   }, []);
 
   const toggleSidebar = useCallback(() => {
@@ -145,14 +164,21 @@ export default function WikiShell() {
     }
   };
 
+  const requestMove = useCallback((node: NodeOut) => setMoving({ node, mode: 'move' }), []);
+  const requestCopy = useCallback((node: NodeOut) => setMoving({ node, mode: 'copy' }), []);
+  const requestPermissions = useCallback((node: NodeOut) => setPermissionsFor(node), []);
+  const closeMoving = useCallback(() => setMoving(null), []);
+  const closePermissions = useCallback(() => setPermissionsFor(null), []);
+
   const shell = useMemo<ShellValue>(() => ({
     setCurrentNode,
     setCurrentSpace,
     openNewNode,
     requestDelete,
-    requestMove: noopNode,
-    requestPermissions: noopNode,
-  }), [setCurrentSpace, openNewNode, requestDelete]);
+    requestMove,
+    requestCopy,
+    requestPermissions,
+  }), [setCurrentSpace, openNewNode, requestDelete, requestMove, requestCopy, requestPermissions]);
 
   return (
     <ShellContext.Provider value={shell}>
@@ -177,9 +203,6 @@ export default function WikiShell() {
               onNewAtRoot={(s) => openNewNode({ spaceId: s.id, parentId: null, parentTitle: s.name }, 'page')}
               onNewChild={(parent, kind) => openNewNode(
                 { spaceId: parent.space_id, parentId: parent.id, parentTitle: parent.title }, kind)}
-              onDelete={requestDelete}
-              onRequestMove={noopNode}
-              onRequestPermissions={noopNode}
             />
           )}
           <main className="wiki-main">
@@ -187,7 +210,14 @@ export default function WikiShell() {
               <Route path="/" element={<Home />} />
               <Route path="/spaces/new" element={<><Home /><NewSpace /></>} />
               <Route path="/s/:spaceKey" element={<SpaceHome />} />
+              <Route path="/s/:spaceKey/settings" element={<SpaceSettings />} />
+              <Route path="/trash/:spaceKey" element={<TrashPage />} />
               <Route path="/n/:nodeId" element={<NodePage />} />
+              <Route path="/n/:nodeId/history" element={(
+                <Suspense fallback={<div className="portal-page wiki-page"><p className="page-hint">Loading…</p></div>}>
+                  <HistoryPage />
+                </Suspense>
+              )} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </main>
@@ -197,6 +227,10 @@ export default function WikiShell() {
       {creating && (
         <NewNodeDialog kind={creating.kind} spaceId={creating.target.spaceId} parentId={creating.target.parentId}
                        parentTitle={creating.target.parentTitle} onClose={() => setCreating(null)} />
+      )}
+      {moving && <MoveCopyDialog node={moving.node} mode={moving.mode} onClose={closeMoving} />}
+      {permissionsFor && (
+        <PermissionsDialog target={{ kind: 'node', node: permissionsFor }} onClose={closePermissions} />
       )}
       {deleting && (
         <ConfirmDialog

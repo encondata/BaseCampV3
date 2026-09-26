@@ -1,6 +1,8 @@
 /** What pages tell the shell (which space and node are showing) and the
- *  shell-owned actions they can ask for. Outside a WikiShell (tests) every
- *  member is a harmless no-op. */
+ *  shell-owned actions they can ask for — the one way the tree, the page
+ *  header's ⋯ menu and any other caller open the Delete, Move, Copy and
+ *  Permissions dialogs. Outside a WikiShell (tests) every member is a
+ *  harmless no-op. */
 import { createContext, useContext } from 'react';
 
 import type { NodeDetailOut, NodeOut, SpaceOut } from '../lib/types';
@@ -19,6 +21,7 @@ export interface ShellValue {
   openNewNode: (target: NewNodeTarget, kind: 'page' | 'folder') => void;
   requestDelete: (node: NodeOut) => void;
   requestMove: (node: NodeOut) => void;
+  requestCopy: (node: NodeOut) => void;
   requestPermissions: (node: NodeOut) => void;
 }
 
@@ -30,6 +33,7 @@ export const ShellContext = createContext<ShellValue>({
   openNewNode: noop,
   requestDelete: noop,
   requestMove: noop,
+  requestCopy: noop,
   requestPermissions: noop,
 });
 

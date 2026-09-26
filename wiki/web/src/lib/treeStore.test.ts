@@ -4,7 +4,7 @@ vi.mock('./wikiApi', () => ({ getTree: vi.fn() }));
 
 import { makeNode } from '../testing/fixtures';
 import {
-  getSnapshot, loadChildren, noteChanged, noteCreated, noteMoved, resetTreeStore, subscribe,
+  getSnapshot, loadChildren, noteAccessChanged, noteChanged, noteCreated, noteMoved, resetTreeStore, subscribe,
 } from './treeStore';
 import { getTree } from './wikiApi';
 
@@ -87,5 +87,17 @@ describe('treeStore', () => {
     first([makeNode('stale')]);
     await p1;
     expect(children('ops', null)?.nodes?.map((n) => n.id)).toEqual(['fresh']);
+  });
+
+  it('refetches every loaded parent in a space after an access change, and no other space', async () => {
+    getTreeMock.mockResolvedValue([]);
+    await loadChildren('ops', null);
+    await loadChildren('ops', 'f1');
+    await loadChildren('eng', null);
+    getTreeMock.mockClear();
+    const before = getSnapshot().revision;
+    noteAccessChanged('ops');
+    expect(getSnapshot().revision).toBe(before + 1);
+    expect(getTreeMock.mock.calls.map((c) => c.slice(0, 2))).toEqual([['ops', null], ['ops', 'f1']]);
   });
 });

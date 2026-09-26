@@ -45,9 +45,6 @@ afterEach(cleanup);
 function renderTree() {
   const handlers = {
     onNewChild: vi.fn(),
-    onDelete: vi.fn(),
-    onRequestMove: vi.fn(),
-    onRequestPermissions: vi.fn(),
   };
   const utils = render(
     <MemoryRouter>

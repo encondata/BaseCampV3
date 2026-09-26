@@ -112,6 +112,18 @@ export function noteDeleted(node: Pick<NodeOut, 'space_key' | 'parent_id'>): voi
   refresh(node.space_key, node.parent_id);
 }
 
+/** Grants changed somewhere in a space: any loaded list there may now show
+ *  more or fewer nodes (or other levels), so every one is refetched. */
+export function noteAccessChanged(spaceKey: string): void {
+  bump();
+  const prefix = `${spaceKey}:`;
+  for (const key of [...state.entries.keys()]) {
+    if (!key.startsWith(prefix)) continue;
+    const parentId = key.slice(prefix.length) || null;
+    void loadChildren(spaceKey, parentId, true);
+  }
+}
+
 /** Refetches one parent (after a failed move, the tree may be out of date). */
 export function refetchChildren(spaceKey: string, parentId: string | null): void {
   refresh(spaceKey, parentId);

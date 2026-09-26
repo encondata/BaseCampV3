@@ -5,7 +5,13 @@
  *
  *  View mode shows the published version read-only (ReadOnlyDoc). Edit
  *  mode (`?edit=1`, editors only — and where editors land on a page that
- *  was never published) mounts the live editor. */
+ *  was never published) mounts the live editor.
+ *
+ *  `?restore=<versionId>` (from History's Restore, edit mode only) loads
+ *  that version and, once the editor holds the live document, puts it in
+ *  (which syncs to everyone), records the `restored` version and drops the
+ *  param. */
+import type { Editor } from '@tiptap/core';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
@@ -21,12 +27,11 @@ import PublishDialog from '../editor/PublishDialog';
 import ReadOnlyDoc from '../editor/ReadOnlyDoc';
 import { buildToc, type TocEntry } from '../editor/toc';
 import WikiEditor, { type EditorUser } from '../editor/WikiEditor';
-import { useWikiShell } from '../layout/shellContext';
 import { PERSON_COLORS, personColor } from '../lib/personColor';
 import { noteChanged } from '../lib/treeStore';
-import type { NodeDetailOut, PageContentOut, VersionOut } from '../lib/types';
+import type { NodeDetailOut, PageContentOut, VersionDetail, VersionOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
-import { errorMessage, getPageContent, setFavorite } from '../lib/wikiApi';
+import { errorMessage, getPageContent, getVersion, recordRestore, setFavorite } from '../lib/wikiApi';
 import { Breadcrumbs, InlineTitle } from './FolderView';
 
 type Published =
@@ -121,7 +126,6 @@ function NotPublished({ canEdit }: { canEdit: boolean }) {
 
 export default function PageView({ node }: { node: NodeDetailOut }) {
   const toast = useToast();
-  const shell = useWikiShell();
   const user = useEditorUser();
   const [params, setParams] = useSearchParams();
   const [reload, setReload] = useState(0);
@@ -140,6 +144,48 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
   const neverPublished = !page?.published_version_id;
   const mode: 'view' | 'edit' = canEdit && (editParam === '1' || (neverPublished && editParam !== '0'))
     ? 'edit' : 'view';
+
+  // ── restoring a version (History → Restore) ──
+  const restoreId = mode === 'edit' ? params.get('restore') : null;
+  const [liveEditor, setLiveEditor] = useState<Editor | null>(null);
+  const [restoreSource, setRestoreSource] = useState<VersionDetail | null>(null);
+  const restoredRef = useRef<string | null>(null);
+  useEffect(() => { setLiveEditor(null); }, [node.id, mode]);
+  useEffect(() => { if (!restoreId) restoredRef.current = null; }, [restoreId]);
+
+  const clearRestore = useCallback(() => {
+    setParams((cur) => {
+      const p = new URLSearchParams(cur);
+      p.delete('restore');
+      return p;
+    }, { replace: true });
+  }, [setParams]);
+
+  useEffect(() => {
+    if (!restoreId) return undefined;
+    let live = true;
+    getVersion(node.id, restoreId)
+      .then((v) => { if (live) setRestoreSource(v); })
+      .catch((err) => {
+        if (!live) return;
+        toast(errorMessage(err, 'Couldn\'t load that version to restore it.'));
+        clearRestore();
+      });
+    return () => { live = false; };
+  }, [node.id, restoreId, toast, clearRestore]);
+
+  useEffect(() => {
+    if (!restoreId || !liveEditor || restoreSource?.id !== restoreId || restoredRef.current === restoreId) return;
+    if (liveEditor.isDestroyed) return;
+    restoredRef.current = restoreId;
+    const { version_no: versionNo, content_json: content } = restoreSource;
+    liveEditor.commands.setContent(content, true);
+    recordRestore(node.id, restoreId)
+      .then(() => toast(`Restored version ${versionNo}. Publish when it's ready for readers.`))
+      .catch((err) => toast(errorMessage(err,
+        `Version ${versionNo} is back in the editor, but couldn't be recorded in the history.`)))
+      .finally(clearRestore);
+  }, [node.id, restoreId, liveEditor, restoreSource, toast, clearRestore]);
 
   const setMode = (next: 'view' | 'edit') => {
     setParams((cur) => {
@@ -244,15 +290,15 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
                   aria-pressed={favorite} onClick={() => void toggleFavorite()}>
             <Icon name="star" />
           </button>
-          <RowMenu node={node} onDelete={() => shell.requestDelete(node)}
-                   onRequestMove={shell.requestMove} onRequestPermissions={shell.requestPermissions} />
+          <RowMenu node={node} />
         </div>
       </header>
 
       <div className={`wiki-page-body${toc.length ? ' has-toc' : ''}`}>
         <div className="wiki-page-content">
           {mode === 'edit' ? (
-            <WikiEditor pageId={node.id} user={user} onAccessLost={onAccessLost} onToc={setLiveToc} />
+            <WikiEditor pageId={node.id} user={user} onAccessLost={onAccessLost} onToc={setLiveToc}
+                        onFirstSync={setLiveEditor} />
           ) : (
             <>
               {published.status === 'loading' && <p className="page-hint">Loading…</p>}

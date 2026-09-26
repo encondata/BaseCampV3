@@ -5,24 +5,30 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const toast = vi.fn();
 vi.mock('@portal/lib/notificationsContext', () => ({ useToast: () => toast }));
 
+import { ShellContext, type ShellValue } from '../layout/shellContext';
 import { makeNode } from '../testing/fixtures';
 import RowMenu from './RowMenu';
 
 afterEach(() => { cleanup(); toast.mockReset(); });
 
-function open(node = makeNode('n1'), handlers: Partial<Parameters<typeof RowMenu>[0]> = {}) {
-  const props = {
-    node,
-    onNewChild: vi.fn(),
-    onRename: vi.fn(),
-    onDelete: vi.fn(),
-    onRequestMove: vi.fn(),
-    onRequestPermissions: vi.fn(),
-    ...handlers,
+function fakeShell(): ShellValue {
+  return {
+    setCurrentNode: vi.fn(),
+    setCurrentSpace: vi.fn(),
+    openNewNode: vi.fn(),
+    requestDelete: vi.fn(),
+    requestMove: vi.fn(),
+    requestCopy: vi.fn(),
+    requestPermissions: vi.fn(),
   };
-  render(<RowMenu {...props} />);
+}
+
+function open(node = makeNode('n1'), handlers: Partial<Parameters<typeof RowMenu>[0]> = {}) {
+  const props = { node, onNewChild: vi.fn(), onRename: vi.fn(), ...handlers };
+  const shell = fakeShell();
+  render(<ShellContext.Provider value={shell}><RowMenu {...props} /></ShellContext.Provider>);
   fireEvent.click(screen.getByRole('button', { name: `Actions for ${node.title}` }));
-  return props;
+  return { props, shell };
 }
 
 function items(): string[] {
@@ -30,15 +36,15 @@ function items(): string[] {
 }
 
 describe('RowMenu', () => {
-  it('shows only Copy link to someone who can view', () => {
+  it('shows Copy… and Copy link to someone who can view', () => {
     open(makeNode('n1', { my_level: 'view' }));
-    expect(items()).toEqual(['Copy link']);
+    expect(items()).toEqual(['Copy…', 'Copy link']);
   });
 
   it('shows the edit items at edit level, but not Permissions', () => {
     open(makeNode('n1', { kind: 'folder', my_level: 'edit' }));
     expect(items()).toEqual([
-      'New page here', 'New folder here', 'Rename', 'Move…', 'Copy link', 'Delete',
+      'New page here', 'New folder here', 'Rename', 'Move…', 'Copy…', 'Copy link', 'Delete',
     ]);
   });
 
@@ -58,14 +64,21 @@ describe('RowMenu', () => {
     expect(items()).not.toContain('Delete');
   });
 
-  it('hands Move… and Permissions… to the caller', () => {
+  it('hands Move…, Copy…, Permissions… and Delete to the shell', () => {
     const node = makeNode('n1', { kind: 'folder', my_level: 'manage' });
-    const props = open(node);
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Move…' }));
-    expect(props.onRequestMove).toHaveBeenCalledWith(node);
-    fireEvent.click(screen.getByRole('button', { name: 'Actions for n1' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Permissions…' }));
-    expect(props.onRequestPermissions).toHaveBeenCalledWith(node);
+    const { shell } = open(node);
+    const pick = (name: string) => {
+      if (!screen.queryByRole('menu')) fireEvent.click(screen.getByRole('button', { name: 'Actions for n1' }));
+      fireEvent.click(screen.getByRole('menuitem', { name }));
+    };
+    pick('Move…');
+    expect(shell.requestMove).toHaveBeenCalledWith(node);
+    pick('Copy…');
+    expect(shell.requestCopy).toHaveBeenCalledWith(node);
+    pick('Permissions…');
+    expect(shell.requestPermissions).toHaveBeenCalledWith(node);
+    pick('Delete');
+    expect(shell.requestDelete).toHaveBeenCalledWith(node);
   });
 
   it('copies the canonical link and says so', async () => {

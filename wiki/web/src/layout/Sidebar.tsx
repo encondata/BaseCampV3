@@ -19,9 +19,6 @@ interface Props {
   onCollapse: () => void;
   onNewAtRoot: (space: SpaceOut) => void;
   onNewChild: (parent: NodeOut, kind: 'page' | 'folder') => void;
-  onDelete: (node: NodeOut) => void;
-  onRequestMove: (node: NodeOut) => void;
-  onRequestPermissions: (node: NodeOut) => void;
 }
 
 /** Reloads whenever anything in the tree changes. */
@@ -69,6 +66,16 @@ export default function Sidebar({
             <span className="wiki-side-space-name">{space.name}</span>
           </Link>
         ) : <span className="wiki-side-label">Spaces</span>}
+        {space && atLeast(space.my_level, 'manage') && (
+          <Link to={`/s/${space.key}/settings`} className="wiki-side-icon-btn" aria-label={`${space.name} settings`}
+                title="Space settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
+                 strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+            </svg>
+          </Link>
+        )}
         {space && atLeast(space.my_level, 'edit') && (
           <button type="button" className="wiki-side-icon-btn" aria-label={`New page in ${space.name}`}
                   title="New page" onClick={() => onNewAtRoot(space)}>

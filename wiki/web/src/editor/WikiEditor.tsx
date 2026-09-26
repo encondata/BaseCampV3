@@ -42,14 +42,17 @@ export interface WikiEditorProps {
   onAccessLost: (level: 'view' | 'none') => void;
   /** The live table of contents, as the document changes. */
   onToc: (toc: TocEntry[]) => void;
+  /** Once, when the editor first holds the live document (e.g. to restore a version into it). */
+  onFirstSync?: (editor: Editor) => void;
 }
 
 const PLACEHOLDER = 'Type “/” for blocks, “[[” to link a page…';
 
 type Anchor = { top: number; left: number };
 
-function CollabEditor({ pageId, doc, provider, user, onToc }: {
+function CollabEditor({ pageId, doc, provider, user, onToc, onFirstSync }: {
   pageId: string; doc: Y.Doc; provider: HocuspocusProvider; user: EditorUser; onToc: (toc: TocEntry[]) => void;
+  onFirstSync?: (editor: Editor) => void;
 }) {
   const toast = useToast();
   const toastRef = useRef(toast);
@@ -58,6 +61,8 @@ function CollabEditor({ pageId, doc, provider, user, onToc }: {
   onTocRef.current = onToc;
   const userRef = useRef(user);
   userRef.current = user;
+  const onFirstSyncRef = useRef(onFirstSync);
+  onFirstSyncRef.current = onFirstSync;
   const [picker, setPicker] = useState<{ kind: 'page' | 'file'; anchor: Anchor } | null>(null);
   const [linkAt, setLinkAt] = useState<Anchor | null>(null);
   const imageInput = useRef<HTMLInputElement>(null);
@@ -114,16 +119,21 @@ function CollabEditor({ pageId, doc, provider, user, onToc }: {
     return () => { editor.off('update', emit); clearTimeout(timer); };
   }, [editor]);
 
-  // a new, empty page is ready to type into once it has first loaded
+  // once the live document has first loaded: a new, empty page is ready to
+  // type into, and the caller hears about it
   useEffect(() => {
     if (!editor) return undefined;
     let first = true;
-    const onSynced = ({ state }: { state: boolean }) => {
-      if (!state || !first) return;
+    const ready = () => {
+      if (!first || editor.isDestroyed) return;
       first = false;
-      if (!editor.isDestroyed && editor.isEmpty) editor.commands.focus('start');
+      if (editor.isEmpty) editor.commands.focus('start');
+      onFirstSyncRef.current?.(editor);
     };
+    const onSynced = ({ state }: { state: boolean }) => { if (state) ready(); };
     provider.on('synced', onSynced);
+    // it may have synced before the editor existed
+    if (provider.synced) ready();
     return () => { provider.off('synced', onSynced); };
   }, [editor, provider]);
 
@@ -201,7 +211,7 @@ function CollabEditor({ pageId, doc, provider, user, onToc }: {
   );
 }
 
-export default function WikiEditor({ pageId, user, onAccessLost, onToc }: WikiEditorProps) {
+export default function WikiEditor({ pageId, user, onAccessLost, onToc, onFirstSync }: WikiEditorProps) {
   const [collab, setCollab] = useState<{ doc: Y.Doc; provider: HocuspocusProvider } | null>(null);
   const lostRef = useRef(onAccessLost);
   lostRef.current = onAccessLost;
@@ -232,5 +242,5 @@ export default function WikiEditor({ pageId, user, onAccessLost, onToc }: WikiEd
 
   if (!collab) return <div className="we-shell"><p className="page-hint">Opening the editor…</p></div>;
   return <CollabEditor key={collab.doc.guid} pageId={pageId} doc={collab.doc} provider={collab.provider}
-                       user={user} onToc={onToc} />;
+                       user={user} onToc={onToc} onFirstSync={onFirstSync} />;
 }
