@@ -11,11 +11,14 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   listFavorites: vi.fn(),
   listRecent: vi.fn(),
   listDrafts: vi.fn(),
+  listWatches: vi.fn(),
 }));
 
 import { resetTreeStore } from '../lib/treeStore';
 import { clearWikiMe } from '../lib/useWikiMe';
-import { getMe, listDrafts, listFavorites, listRecent, listSpaces } from '../lib/wikiApi';
+import {
+  getMe, listDrafts, listFavorites, listRecent, listSpaces, listWatches,
+} from '../lib/wikiApi';
 import { makeMe, makeNode, makeSpace } from '../testing/fixtures';
 import Home from './Home';
 
@@ -29,6 +32,10 @@ beforeEach(() => {
   vi.mocked(listFavorites).mockResolvedValue([makeNode('fav', { title: 'Rack standards' })]);
   vi.mocked(listRecent).mockResolvedValue([makeNode('rec', { title: 'Cutover plan' })]);
   vi.mocked(listDrafts).mockResolvedValue([makeNode('dr', { title: 'Half-done guide' })]);
+  vi.mocked(listWatches).mockResolvedValue([
+    { id: 'w1', node: { id: 'wpg', title: 'Runbook', kind: 'page' }, space: { key: 'ops', name: 'Operations' }, created_at: '2026-09-20T00:00:00Z' },
+    { id: 'w2', node: null, space: { key: 'facilities', name: 'Facilities' }, created_at: '2026-09-21T00:00:00Z' },
+  ]);
 });
 afterEach(cleanup);
 
@@ -70,5 +77,14 @@ describe('Home', () => {
     expect(await screen.findByRole('link', { name: /Half-done guide/ })).toBeTruthy();
     expect(listRecent).toHaveBeenCalledWith({ limit: 10 });
     expect(screen.getByRole('link', { name: /Cutover plan/ }).getAttribute('href')).toBe('/n/rec');
+  });
+
+  it('shows a Watching section with a link and a see-all link', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe());
+    renderHome();
+    const section = await screen.findByRole('region', { name: 'Watching' });
+    expect(within(section).getByRole('link', { name: /Runbook/ }).getAttribute('href')).toBe('/n/wpg');
+    expect(within(section).getByRole('link', { name: /Facilities/ }).getAttribute('href')).toBe('/s/facilities');
+    expect(within(section).getByRole('link', { name: 'See all watching' }).getAttribute('href')).toBe('/watching');
   });
 });

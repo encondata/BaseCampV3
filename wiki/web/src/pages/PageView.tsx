@@ -35,6 +35,8 @@ import CommentsRail, { ReaderCommentBubble, type NewComment } from '../comments/
 import { canCommentOn, commentLinkTarget, useCommentThreads } from '../comments/commentsStore';
 import ConfirmDialog from '../components/ConfirmDialog';
 import RowMenu, { atLeast } from '../components/RowMenu';
+import SaveAsTemplateDialog from '../components/SaveAsTemplateDialog';
+import WatchButton from '../components/WatchButton';
 import { Icon } from '../editor/icons';
 import { flushPage } from '../editor/flushPage';
 import PublishDialog from '../editor/PublishDialog';
@@ -154,6 +156,7 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
   const [params, setParams] = useSearchParams();
   const [reload, setReload] = useState(0);
   const [publishing, setPublishing] = useState(false);
+  const [savingTemplate, setSavingTemplate] = useState(false);
   const [editBlocked, setEditBlocked] = useState(false);
   const [liveToc, setLiveToc] = useState<TocEntry[]>([]);
   const [favorite, setFavoriteState] = useState(node.is_favorite);
@@ -417,13 +420,14 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
           <Link className="btn-ghost wiki-history-btn" to={`/n/${node.id}/history`}>
             <Icon name="history" />History
           </Link>
+          <WatchButton target={{ kind: 'node', nodeId: node.id }} />
           <button type="button" className={`wiki-icon-btn wiki-fav-btn${favorite ? ' on' : ''}`}
                   aria-label={favorite ? 'Remove from favorites' : 'Add to favorites'}
                   title={favorite ? 'Remove from favorites' : 'Add to favorites'}
                   aria-pressed={favorite} onClick={() => void toggleFavorite()}>
             <Icon name="star" />
           </button>
-          <RowMenu node={node} />
+          <RowMenu node={node} onSaveAsTemplate={() => setSavingTemplate(true)} />
         </div>
       </header>
 
@@ -486,6 +490,9 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
       {publishing && (
         <PublishDialog pageId={node.id} pageTitle={node.title} flush={flushDraft}
                        onClose={() => setPublishing(false)} onPublished={onPublished} />
+      )}
+      {savingTemplate && (
+        <SaveAsTemplateDialog node={node} onClose={() => setSavingTemplate(false)} />
       )}
     </div>
   );

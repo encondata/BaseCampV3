@@ -19,7 +19,7 @@ describe('TopBar sign-out', () => {
     render(
       <MemoryRouter>
         <TopBar me={null} spaces={[]} currentSpace={null} sidebarCollapsed={false}
-                onShowSidebar={() => {}} onNew={null} onUpload={null} />
+                onShowSidebar={() => {}} onNew={null} onNewFromTemplate={null} onUpload={null} />
       </MemoryRouter>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Account menu' }));
@@ -34,7 +34,7 @@ describe('TopBar New › Upload files', () => {
     return render(
       <MemoryRouter>
         <TopBar me={null} spaces={[]} currentSpace={null} sidebarCollapsed={false}
-                onShowSidebar={() => {}} onNew={null} onUpload={onUpload} />
+                onShowSidebar={() => {}} onNew={null} onNewFromTemplate={null} onUpload={onUpload} />
       </MemoryRouter>,
     );
   }
@@ -60,5 +60,32 @@ describe('TopBar New › Upload files', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New' }));
     expect((screen.getByRole('menuitem', { name: 'Upload files' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByLabelText('Choose files to upload')).toBeNull();
+  });
+});
+
+describe('TopBar New › From template…', () => {
+  it('opens the template picker and closes the menu', () => {
+    const onNewFromTemplate = vi.fn();
+    render(
+      <MemoryRouter>
+        <TopBar me={null} spaces={[]} currentSpace={null} sidebarCollapsed={false}
+                onShowSidebar={() => {}} onNew={null} onNewFromTemplate={onNewFromTemplate} onUpload={null} />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'From template…' }));
+    expect(onNewFromTemplate).toHaveBeenCalled();
+    expect(screen.queryByRole('menu', { name: 'New' })).toBeNull();
+  });
+
+  it('is off where the user can\'t create pages', () => {
+    render(
+      <MemoryRouter>
+        <TopBar me={null} spaces={[]} currentSpace={null} sidebarCollapsed={false}
+                onShowSidebar={() => {}} onNew={null} onNewFromTemplate={null} onUpload={null} />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    expect((screen.getByRole('menuitem', { name: 'From template…' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

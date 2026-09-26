@@ -6,6 +6,7 @@ import { useParams } from 'react-router-dom';
 
 import { ApiError } from '@portal/lib/api';
 
+import WatchButton from '../components/WatchButton';
 import { useWikiShell } from '../layout/shellContext';
 import { useChildren } from '../lib/treeStore';
 import type { SpaceOut } from '../lib/types';
@@ -55,13 +56,23 @@ export default function SpaceHome() {
     <>
       {shown.space.home_node_id ? <NodePage nodeId={shown.space.home_node_id} /> : (
         <div className="portal-page wiki-page">
-          <div className="eyebrow">Space</div>
-          <h1 className="page-title">{shown.space.name}</h1>
-          {shown.space.description && <p className="page-hint">{shown.space.description}</p>}
+          <div className="dir-head">
+            <div>
+              <div className="eyebrow">Space</div>
+              <h1 className="page-title">{shown.space.name}</h1>
+              {shown.space.description && <p className="page-hint">{shown.space.description}</p>}
+            </div>
+            <WatchButton target={{ kind: 'space', spaceId: shown.space.id, spaceKey: shown.space.key }} />
+          </div>
         </div>
       )}
       <section className="portal-page wiki-page wiki-space-contents" aria-label="What's in this space">
-        <div className="wiki-section-label">What's in this space</div>
+        <div className="wiki-section-label wiki-space-contents-head">
+          What's in this space
+          {shown.space.home_node_id && (
+            <WatchButton target={{ kind: 'space', spaceId: shown.space.id, spaceKey: shown.space.key }} />
+          )}
+        </div>
         <ContentsList label="What's in this space" nodes={items} error={error}
                       emptyTitle="Nothing here yet" empty="Pages and folders added at the top of the space show up here." />
       </section>

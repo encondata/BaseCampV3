@@ -24,6 +24,8 @@ export interface RowMenuProps {
   node: NodeOut;
   onNewChild?: (kind: 'page' | 'folder') => void;
   onRename?: () => void;
+  /** Only offered where the caller passes it — a page's own header. */
+  onSaveAsTemplate?: () => void;
 }
 
 export interface RowMenuHandle {
@@ -34,7 +36,7 @@ export interface RowMenuHandle {
 const MENU_WIDTH = 210;
 
 const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
-  { node, onNewChild, onRename }, ref,
+  { node, onNewChild, onRename, onSaveAsTemplate }, ref,
 ) {
   const toast = useToast();
   const shell = useWikiShell();
@@ -109,6 +111,12 @@ const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
   }
   items.push({ label: 'Copy…', action: () => shell.requestCopy(node), icon: <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></> });
   items.push({ label: 'Copy link', action: copyLink, icon: <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" /> });
+  if (node.kind === 'page' && canEdit && onSaveAsTemplate) {
+    items.push({
+      label: 'Save as template…', action: onSaveAsTemplate,
+      icon: <><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5M10.5 15.5a2 2 0 0 0 2.8 0l1.5-1.5a2 2 0 0 0-2.8-2.8l-.5.5" /></>,
+    });
+  }
   if (canManage) {
     items.push({ label: 'Permissions…', action: () => shell.requestPermissions(node), icon: <><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></> });
   }

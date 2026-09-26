@@ -81,6 +81,23 @@ describe('RowMenu', () => {
     expect(shell.requestDelete).toHaveBeenCalledWith(node);
   });
 
+  it('offers Save as template… only for a page with edit and the handler given', () => {
+    open(makeNode('n1', { kind: 'page', my_level: 'edit' }));
+    expect(items()).not.toContain('Save as template…');
+    cleanup();
+    const onSaveAsTemplate = vi.fn();
+    open(makeNode('n1', { kind: 'page', my_level: 'edit' }), { onSaveAsTemplate });
+    expect(items()).toContain('Save as template…');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Save as template…' }));
+    expect(onSaveAsTemplate).toHaveBeenCalled();
+    cleanup();
+    open(makeNode('n1', { kind: 'page', my_level: 'view' }), { onSaveAsTemplate });
+    expect(items()).not.toContain('Save as template…');
+    cleanup();
+    open(makeNode('n1', { kind: 'folder', my_level: 'manage' }), { onSaveAsTemplate });
+    expect(items()).not.toContain('Save as template…');
+  });
+
   it('copies the canonical link and says so', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });

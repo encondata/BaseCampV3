@@ -27,6 +27,7 @@ const REACT_ALLOWLIST = [
   'components/totp/*',
   'components/SystemBanners',
   'components/ComboBox',
+  'components/Switch',
   'components/ToastHost',
   // the providers SystemBanners and ToastHost read from (without them the
   // banners never show and toasts are silently dropped)

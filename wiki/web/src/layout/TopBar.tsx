@@ -22,6 +22,8 @@ interface Props {
   onShowSidebar: () => void;
   /** null when there's nowhere to create (no space yet, or no edit access). */
   onNew: ((kind: 'page' | 'folder') => void) | null;
+  /** Opens a new page straight on the template picker; null when there's nowhere to create. */
+  onNewFromTemplate: (() => void) | null;
   /** Uploads picked files where New would create; null when there's nowhere to. */
   onUpload: ((files: File[]) => void) | null;
 }
@@ -57,7 +59,7 @@ function MenuItem({ icon, children, onClick, disabled, hint }: {
 }
 
 export default function TopBar({
-  me, spaces, currentSpace, sidebarCollapsed, onShowSidebar, onNew, onUpload,
+  me, spaces, currentSpace, sidebarCollapsed, onShowSidebar, onNew, onNewFromTemplate, onUpload,
 }: Props) {
   const { person, logout } = useAuth();
   const navigate = useNavigate();
@@ -120,6 +122,9 @@ export default function TopBar({
               <MenuItem icon={<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />}
                         onClick={() => pick('folder')} disabled={!onNew}
                         hint={onNew ? undefined : 'Open a space you can edit first'}>Folder</MenuItem>
+              <MenuItem icon={<><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5M10.5 15.5a2 2 0 0 0 2.8 0l1.5-1.5a2 2 0 0 0-2.8-2.8l-.5.5" /></>}
+                        onClick={() => { setNewOpen(false); onNewFromTemplate?.(); }} disabled={!onNewFromTemplate}
+                        hint={onNewFromTemplate ? undefined : 'Open a space you can edit first'}>From template…</MenuItem>
               <MenuItem icon={<path d="M12 16V4M7 9l5-5 5 5M5 20h14" />}
                         onClick={() => { setNewOpen(false); uploadRef.current?.click(); }} disabled={!onUpload}
                         hint={onUpload ? undefined : 'Open a space you can edit first'}>

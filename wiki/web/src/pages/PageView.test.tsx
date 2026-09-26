@@ -27,6 +27,8 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   listComments: vi.fn(),
   deleteComment: vi.fn(),
   postComment: vi.fn(),
+  getWatchState: vi.fn(),
+  createTemplate: vi.fn(),
 }));
 /** What the stand-in editor hands PageView once it has first synced: a
  *  real (unconnected) editor, so comment marks can attach to it, whose
@@ -64,8 +66,8 @@ import { flushPage } from '../editor/flushPage';
 import { wikiExtensions } from '../editor/schema';
 import type { CommentThread } from '../lib/types';
 import {
-  deleteComment, getMe, getPageContent, getVersion, listComments, postComment, publishPage, recordRestore,
-  setFavorite,
+  createTemplate, deleteComment, getMe, getPageContent, getVersion, getWatchState, listComments, postComment,
+  publishPage, recordRestore, setFavorite,
 } from '../lib/wikiApi';
 import { makeDetail, makeMe, makeSpace } from '../testing/fixtures';
 import PageView, { TARGET_HIGHLIGHT_MS } from './PageView';
@@ -112,6 +114,8 @@ beforeEach(() => {
   vi.mocked(getPageContent).mockReset().mockResolvedValue(PUBLISHED);
   vi.mocked(setFavorite).mockReset().mockResolvedValue(undefined);
   vi.mocked(listComments).mockReset().mockResolvedValue([]);
+  vi.mocked(getWatchState).mockReset().mockResolvedValue({ watching: false, via: null, watch_id: null });
+  vi.mocked(createTemplate).mockReset();
   vi.mocked(flushPage).mockReset().mockResolvedValue(undefined);
   editorFlush.mockReset().mockResolvedValue(undefined);
 });
@@ -179,6 +183,13 @@ describe('PageView — editors', () => {
     expect(screen.getByText('Not published yet')).toBeTruthy();
   });
 
+  it('offers a Watch button in the header', async () => {
+    renderPage(makeDetail('p1', { my_level: 'edit', page: published }));
+    await screen.findByText('Hello from the published page.');
+    expect(await screen.findByRole('button', { name: 'Watch' })).toBeTruthy();
+    expect(getWatchState).toHaveBeenCalledWith('p1');
+  });
+
   it('stars the page', async () => {
     renderPage(makeDetail('p1', { my_level: 'edit', page: published }));
     await screen.findByText('Hello from the published page.');
@@ -207,7 +218,7 @@ describe('PageView — the ⋯ menu', () => {
 
     open();
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(
-      ['Move…', 'Copy…', 'Copy link', 'Permissions…', 'Delete']);
+      ['Move…', 'Copy…', 'Copy link', 'Save as template…', 'Permissions…', 'Delete']);
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move…' }));
     expect(shell.requestMove).toHaveBeenCalledWith(node);
     open();
@@ -219,6 +230,24 @@ describe('PageView — the ⋯ menu', () => {
     open();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }));
     expect(shell.requestDelete).toHaveBeenCalledWith(node);
+  });
+
+  it('opens Save as template… and creates one from the page', async () => {
+    vi.mocked(createTemplate).mockResolvedValue({
+      id: 't-1', space_id: 'space-1', space_key: 'ops', name: 'Rack power', description: '', icon: '',
+      is_builtin: false, created_by: null, created_at: '2026-09-26T00:00:00Z', updated_at: '2026-09-26T00:00:00Z',
+    });
+    const node = makeDetail('p1', {
+      title: 'Rack power', my_level: 'manage', page: published, space: makeSpace({ my_level: 'manage' }),
+    });
+    renderPage(node);
+    await screen.findByText('Hello from the published page.');
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Rack power' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Save as template…' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save as template' }));
+    await waitFor(() => expect(createTemplate).toHaveBeenCalledWith(expect.objectContaining({
+      space_id: 'space-1', name: 'Rack power', from_node_id: 'p1',
+    })));
   });
 });
 

@@ -9,6 +9,7 @@ import type { NodeDetailOut, NodeOut, SpaceOut } from '../lib/types';
 
 export interface NewNodeTarget {
   spaceId: string;
+  spaceKey: string;
   parentId: string | null;
   parentTitle: string;
 }
@@ -18,7 +19,9 @@ export interface ShellValue {
   setCurrentNode: (node: NodeDetailOut | null) => void;
   /** The space being shown (the sidebar tree follows it). */
   setCurrentSpace: (space: SpaceOut) => void;
-  openNewNode: (target: NewNodeTarget, kind: 'page' | 'folder') => void;
+  /** `startStep: 'template'` opens a new page straight on the template
+   *  picker (the top bar's "From template…"), rather than the title field. */
+  openNewNode: (target: NewNodeTarget, kind: 'page' | 'folder', startStep?: 'template') => void;
   requestDelete: (node: NodeOut) => void;
   requestMove: (node: NodeOut) => void;
   requestCopy: (node: NodeOut) => void;

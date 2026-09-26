@@ -9,12 +9,16 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   getTree: vi.fn(),
   createNode: vi.fn(),
   updateNode: vi.fn(),
+  getWatchState: vi.fn(),
+  watch: vi.fn(),
 }));
 vi.mock('../uploads/uploadQueue', () => ({ enqueue: vi.fn(), enqueueWalked: vi.fn() }));
 
 import { resetTreeStore } from '../lib/treeStore';
 import type { NodeDetailOut } from '../lib/types';
-import { createNode, getTree, updateNode } from '../lib/wikiApi';
+import {
+  createNode, getTree, getWatchState, updateNode, watch,
+} from '../lib/wikiApi';
 import { makeDetail, makeNode } from '../testing/fixtures';
 import { enqueue, enqueueWalked } from '../uploads/uploadQueue';
 import FolderView from './FolderView';
@@ -64,6 +68,10 @@ beforeEach(() => {
   ]);
   vi.mocked(createNode).mockReset();
   vi.mocked(updateNode).mockReset();
+  vi.mocked(getWatchState).mockReset().mockResolvedValue({ watching: false, via: null, watch_id: null });
+  vi.mocked(watch).mockReset().mockResolvedValue({
+    id: 'w1', node: { id: 'f1', title: 'Guides', kind: 'folder' }, space: null, created_at: '2026-09-20T12:00:00Z',
+  });
 });
 afterEach(cleanup);
 
@@ -126,6 +134,12 @@ describe('FolderView', () => {
     fireEvent.change(field, { target: { value: 'How-to guides' } });
     fireEvent.keyDown(field, { key: 'Enter' });
     await vi.waitFor(() => expect(updateNode).toHaveBeenCalledWith('f1', { title: 'How-to guides' }));
+  });
+
+  it('offers a Watch button for the folder', async () => {
+    renderFolder();
+    fireEvent.click(await screen.findByRole('button', { name: 'Watch' }));
+    await vi.waitFor(() => expect(watch).toHaveBeenCalledWith({ node_id: 'f1' }));
   });
 
   it('keeps the edit controls, uploads and drops from a viewer', async () => {

@@ -114,3 +114,51 @@ describe('SpaceSettings', () => {
     expect(screen.queryByText('This space is archived.')).toBeNull();
   });
 });
+
+describe('SpaceSettings — Collaboration', () => {
+  it('defaults readers-can-comment on, approval off, and no review interval', async () => {
+    renderSettings(makeSpace({ my_level: 'manage', settings: {} }));
+    const section = await screen.findByRole('region', { name: 'Collaboration' });
+    expect(within(section).getByLabelText('Readers can comment')).toHaveProperty('checked', true);
+    expect(within(section).getByLabelText('Require approval to publish')).toHaveProperty('checked', false);
+    expect(within(section).getByRole('combobox', { name: 'Review reminders' })).toHaveProperty('value', 'None');
+  });
+
+  it('reflects stored settings', async () => {
+    renderSettings(makeSpace({
+      my_level: 'manage',
+      settings: { readers_can_comment: false, require_approval: true, review_interval_months: 6 },
+    }));
+    const section = await screen.findByRole('region', { name: 'Collaboration' });
+    expect(within(section).getByLabelText('Readers can comment')).toHaveProperty('checked', false);
+    expect(within(section).getByLabelText('Require approval to publish')).toHaveProperty('checked', true);
+    expect(within(section).getByRole('combobox', { name: 'Review reminders' })).toHaveProperty('value', '6 months');
+  });
+
+  it('saves a toggle immediately, merging just that key', async () => {
+    const space = makeSpace({ my_level: 'manage', settings: {} });
+    vi.mocked(updateSpace).mockResolvedValue({ ...space, settings: { readers_can_comment: false } });
+    renderSettings(space);
+    const section = await screen.findByRole('region', { name: 'Collaboration' });
+    fireEvent.click(within(section).getByLabelText('Readers can comment'));
+    await waitFor(() => expect(updateSpace).toHaveBeenCalledWith('ops', { settings: { readers_can_comment: false } }));
+  });
+
+  it('saves the review interval, and clearing it back to None', async () => {
+    const space = makeSpace({ my_level: 'manage', settings: {} });
+    vi.mocked(updateSpace).mockResolvedValue({ ...space, settings: { review_interval_months: 12 } });
+    renderSettings(space);
+    const section = await screen.findByRole('region', { name: 'Collaboration' });
+    fireEvent.focus(within(section).getByRole('combobox', { name: 'Review reminders' }));
+    fireEvent.mouseDown(screen.getByRole('button', { name: '12 months' }));
+    await waitFor(() => expect(updateSpace).toHaveBeenCalledWith('ops', { settings: { review_interval_months: 12 } }));
+  });
+
+  it('reports a failed save', async () => {
+    vi.mocked(updateSpace).mockRejectedValue(new Error('nope'));
+    renderSettings(makeSpace({ my_level: 'manage', settings: {} }));
+    const section = await screen.findByRole('region', { name: 'Collaboration' });
+    fireEvent.click(within(section).getByLabelText('Require approval to publish'));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Couldn\'t save this setting. Try again.'));
+  });
+});

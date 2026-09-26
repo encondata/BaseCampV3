@@ -25,7 +25,9 @@ import NodePage from '../pages/NodePage';
 import NotFound from '../pages/NotFound';
 import SpaceHome from '../pages/SpaceHome';
 import SpaceSettings from '../pages/SpaceSettings';
+import TemplatesPage from '../pages/TemplatesPage';
 import TrashPage from '../pages/TrashPage';
+import WatchingPage from '../pages/WatchingPage';
 import SearchPage from '../search/SearchPage';
 import { isFileDrag } from '../uploads/DropZone';
 import { enqueue } from '../uploads/uploadQueue';
@@ -60,7 +62,9 @@ export default function WikiShell() {
   const [currentSpace, setCurrentSpaceState] = useState<SpaceOut | null>(null);
   const [currentNode, setCurrentNode] = useState<NodeDetailOut | null>(null);
   const [collapsed, setCollapsed] = useState(() => readStored(SIDEBAR_KEY) === 'collapsed');
-  const [creating, setCreating] = useState<{ target: NewNodeTarget; kind: 'page' | 'folder' } | null>(null);
+  const [creating, setCreating] = useState<
+    { target: NewNodeTarget; kind: 'page' | 'folder'; startStep?: 'template' } | null
+  >(null);
   const [deleting, setDeleting] = useState<{ node: NodeOut; busy: boolean; error: string } | null>(null);
   const [moving, setMoving] = useState<{ node: NodeOut; mode: 'move' | 'copy' } | null>(null);
   const [permissionsFor, setPermissionsFor] = useState<NodeOut | null>(null);
@@ -125,8 +129,8 @@ export default function WikiShell() {
     [activeNode],
   );
 
-  const openNewNode = useCallback((target: NewNodeTarget, kind: 'page' | 'folder') => {
-    setCreating({ target, kind });
+  const openNewNode = useCallback((target: NewNodeTarget, kind: 'page' | 'folder', startStep?: 'template') => {
+    setCreating({ target, kind, startStep });
   }, []);
 
   /** Where the top bar's New page/folder lands: inside the folder on
@@ -135,18 +139,19 @@ export default function WikiShell() {
     if (activeNode) {
       if (activeNode.kind === 'folder') {
         return atLeast(activeNode.my_level, 'edit')
-          ? { spaceId: activeNode.space_id, parentId: activeNode.id, parentTitle: activeNode.title }
+          ? { spaceId: activeNode.space_id, spaceKey: activeNode.space_key, parentId: activeNode.id, parentTitle: activeNode.title }
           : null;
       }
       const parent = activeNode.breadcrumbs.at(-1);
       return {
         spaceId: activeNode.space_id,
+        spaceKey: activeNode.space_key,
         parentId: activeNode.parent_id,
         parentTitle: parent?.id ? parent.title : activeNode.space.name,
       };
     }
     if (sidebarSpace && atLeast(sidebarSpace.my_level, 'edit')) {
-      return { spaceId: sidebarSpace.id, parentId: null, parentTitle: sidebarSpace.name };
+      return { spaceId: sidebarSpace.id, spaceKey: sidebarSpace.key, parentId: null, parentTitle: sidebarSpace.name };
     }
     return null;
   }, [activeNode, sidebarSpace]);
@@ -230,6 +235,7 @@ export default function WikiShell() {
           sidebarCollapsed={collapsed}
           onShowSidebar={toggleSidebar}
           onNew={newTarget ? (kind) => openNewNode(newTarget, kind) : null}
+          onNewFromTemplate={newTarget ? () => openNewNode(newTarget, 'page', 'template') : null}
           onUpload={uploadTarget ? (files) => enqueue(files, {
             kind: 'node', spaceId: uploadTarget.spaceId, parentId: uploadTarget.parentId,
             label: uploadTarget.parentTitle,
@@ -243,9 +249,10 @@ export default function WikiShell() {
               activeId={activeNode?.id ?? null}
               revealIds={revealIds}
               onCollapse={toggleSidebar}
-              onNewAtRoot={(s) => openNewNode({ spaceId: s.id, parentId: null, parentTitle: s.name }, 'page')}
+              onNewAtRoot={(s) => openNewNode(
+                { spaceId: s.id, spaceKey: s.key, parentId: null, parentTitle: s.name }, 'page')}
               onNewChild={(parent, kind) => openNewNode(
-                { spaceId: parent.space_id, parentId: parent.id, parentTitle: parent.title }, kind)}
+                { spaceId: parent.space_id, spaceKey: parent.space_key, parentId: parent.id, parentTitle: parent.title }, kind)}
             />
           )}
           <main className="wiki-main">
@@ -257,6 +264,8 @@ export default function WikiShell() {
               <Route path="/trash/:spaceKey" element={<TrashPage />} />
               <Route path="/search" element={<SearchPage />} />
               <Route path="/admin" element={<AdminPage />} />
+              <Route path="/templates" element={<TemplatesPage />} />
+              <Route path="/watching" element={<WatchingPage />} />
               <Route path="/n/:nodeId" element={<NodePage />} />
               <Route path="/n/:nodeId/history" element={(
                 <Suspense fallback={<div className="portal-page wiki-page"><p className="page-hint">Loading…</p></div>}>
@@ -271,8 +280,9 @@ export default function WikiShell() {
       </div>
 
       {creating && (
-        <NewNodeDialog kind={creating.kind} spaceId={creating.target.spaceId} parentId={creating.target.parentId}
-                       parentTitle={creating.target.parentTitle} onClose={() => setCreating(null)} />
+        <NewNodeDialog kind={creating.kind} spaceId={creating.target.spaceId} spaceKey={creating.target.spaceKey}
+                       parentId={creating.target.parentId} parentTitle={creating.target.parentTitle}
+                       startStep={creating.startStep} onClose={() => setCreating(null)} />
       )}
       {moving && <MoveCopyDialog node={moving.node} mode={moving.mode} onClose={closeMoving} />}
       {permissionsFor && (

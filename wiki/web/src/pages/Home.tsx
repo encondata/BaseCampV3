@@ -8,9 +8,11 @@ import { relativeTime } from '@portal/lib/format';
 import NodeIcon, { SpaceBadge } from '../components/NodeIcon';
 import { useWikiShell } from '../layout/shellContext';
 import { useTreeRevision } from '../lib/treeStore';
-import type { NodeOut } from '../lib/types';
+import type { NodeOut, WatchOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
-import { listDrafts, listFavorites, listRecent, listSpaces } from '../lib/wikiApi';
+import { listDrafts, listFavorites, listRecent, listSpaces, listWatches } from '../lib/wikiApi';
+
+const WATCHING_SHOWN = 5;
 
 function useLoad<T>(load: () => Promise<T>, revision: number): T | null | 'error' {
   const [value, setValue] = useState<T | null | 'error'>(null);
@@ -45,6 +47,35 @@ function NodeList({ label, nodes, empty }: { label: string; nodes: NodeOut[] | n
   );
 }
 
+function WatchingList({ watches }: { watches: WatchOut[] | null | 'error' }) {
+  return (
+    <section className="wiki-home-section" aria-label="Watching">
+      <div className="wiki-section-label">Watching</div>
+      <div className="dir-list mini-list wiki-mini-list">
+        {watches === null && <div className="mini-row wiki-mini-note">Loading…</div>}
+        {watches === 'error' && <div className="mini-row wiki-mini-note">Couldn't load this list.</div>}
+        {Array.isArray(watches) && watches.length === 0 && (
+          <div className="mini-row wiki-mini-note">Watch a page, folder or space to hear about changes there.</div>
+        )}
+        {Array.isArray(watches) && watches.slice(0, WATCHING_SHOWN).map((w) => {
+          const href = w.node ? `/n/${w.node.id}` : `/s/${w.space?.key}`;
+          const label = w.node ? w.node.title : (w.space?.name ?? 'Space');
+          return (
+            <Link key={w.id} to={href} className="mini-row flex wiki-mini-row">
+              {w.node ? <NodeIcon node={{ kind: w.node.kind, title: w.node.title, file: null }} /> : <span />}
+              <span className="cell-top cell-line wiki-mini-title">{label}</span>
+              <span className="cell-sub cell-line wiki-mini-meta">{w.node ? '' : 'Whole space'}</span>
+            </Link>
+          );
+        })}
+      </div>
+      {Array.isArray(watches) && watches.length > 0 && (
+        <Link to="/watching" className="wiki-home-section-link">See all watching</Link>
+      )}
+    </section>
+  );
+}
+
 export default function Home() {
   const me = useWikiMe();
   const { setCurrentNode } = useWikiShell();
@@ -53,6 +84,7 @@ export default function Home() {
   const favorites = useLoad(listFavorites, revision);
   const recent = useLoad(() => listRecent({ limit: 10 }), revision);
   const drafts = useLoad(listDrafts, revision);
+  const watches = useLoad(listWatches, revision);
 
   useEffect(() => { setCurrentNode(null); }, [setCurrentNode]);
 
@@ -95,6 +127,7 @@ export default function Home() {
         <NodeList label="Favorites" nodes={favorites} empty="Star a page to keep it here." />
         <NodeList label="Recently updated" nodes={recent} empty="Nothing updated yet." />
         <NodeList label="My drafts" nodes={drafts} empty="No unpublished changes." />
+        <WatchingList watches={watches} />
       </div>
     </div>
   );

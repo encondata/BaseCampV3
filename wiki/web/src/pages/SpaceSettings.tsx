@@ -5,6 +5,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
+import ComboBox from '@portal/components/ComboBox';
+import { Switch } from '@portal/components/Switch';
 import { ApiError } from '@portal/lib/api';
 import { useToast } from '@portal/lib/notificationsContext';
 import { PRESET_COLORS } from '@portal/lib/variables';
@@ -18,6 +20,76 @@ import type { SpaceOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
 import { archiveSpace, errorMessage, getSpace, unarchiveSpace, updateSpace } from '../lib/wikiApi';
 import NotFound from './NotFound';
+
+/** Mirrors the API's `space_setting` (serversherpa/wiki/space_settings.py):
+ *  the stored value, or `fallback` when the space never overrode it. */
+function spaceSetting<T>(space: SpaceOut, key: string, fallback: T): T {
+  const v = space.settings[key];
+  return v === undefined ? fallback : (v as T);
+}
+
+const REVIEW_INTERVAL_OPTIONS = [
+  { value: '', label: 'None' },
+  { value: '3', label: '3 months' },
+  { value: '6', label: '6 months' },
+  { value: '12', label: '12 months' },
+  { value: '24', label: '24 months' },
+];
+
+function CollaborationSection({ space, onSaved }: { space: SpaceOut; onSaved: (space: SpaceOut) => void }) {
+  const toast = useToast();
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+
+  const save = async (key: string, value: boolean | number | null) => {
+    setBusyKey(key);
+    try {
+      onSaved(await updateSpace(space.key, { settings: { [key]: value } }));
+    } catch (err) {
+      toast(errorMessage(err, 'Couldn\'t save this setting. Try again.'));
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const readersCanComment = spaceSetting(space, 'readers_can_comment', true);
+  const requireApproval = spaceSetting(space, 'require_approval', false);
+  const reviewInterval = spaceSetting<number | null>(space, 'review_interval_months', null);
+
+  return (
+    <section className="wiki-settings-section" aria-label="Collaboration">
+      <div className="wiki-section-label">Collaboration</div>
+      <div className="wiki-settings-row">
+        <div>
+          <span className="wiki-settings-label">Readers can comment</span>
+          <p className="page-hint">Off restricts commenting to editors and managers.</p>
+        </div>
+        <Switch checked={readersCanComment} disabled={busyKey === 'readers_can_comment'}
+                label="Readers can comment" onChange={(v) => void save('readers_can_comment', v)} />
+      </div>
+      <div className="wiki-settings-row">
+        <div>
+          <span className="wiki-settings-label">Require approval to publish</span>
+          <p className="page-hint">An editor's changes wait for a manager to approve before they go live.</p>
+        </div>
+        <Switch checked={requireApproval} disabled={busyKey === 'require_approval'}
+                label="Require approval to publish" onChange={(v) => void save('require_approval', v)} />
+      </div>
+      <div className="wiki-settings-row">
+        <div>
+          <span className="wiki-settings-label">Review reminders</span>
+          <p className="page-hint">Nudges an editor to confirm a page is still accurate, on this schedule (a page can set its own instead).</p>
+        </div>
+        <ComboBox
+          options={REVIEW_INTERVAL_OPTIONS}
+          value={reviewInterval === null ? '' : String(reviewInterval)}
+          disabled={busyKey === 'review_interval_months'}
+          ariaLabel="Review reminders"
+          onChange={(v) => void save('review_interval_months', v === '' ? null : Number(v))}
+        />
+      </div>
+    </section>
+  );
+}
 
 type State =
   | { key: string; status: 'ready'; space: SpaceOut }
@@ -239,6 +311,8 @@ export default function SpaceSettings() {
         <p className="page-hint">Who can read, edit and manage everything in this space. Pages and folders can add to this or replace it.</p>
         <PermissionsEditor target={{ kind: 'space', space }} />
       </section>
+
+      <CollaborationSection space={space} onSaved={replace} />
 
       <section className="wiki-settings-section" aria-label="Trash">
         <div className="wiki-section-label">Trash</div>

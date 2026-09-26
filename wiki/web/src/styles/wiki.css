@@ -369,6 +369,16 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
   color: var(--text-mute);
   margin: 0 0 10px;
 }
+.wiki-space-contents-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.wiki-home-section-link {
+  display: inline-block;
+  margin: 10px 16px 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--amber);
+  text-decoration: none;
+}
+.wiki-home-section-link:hover { text-decoration: underline; }
 .wiki-mini-list { padding: 4px 16px; }
 .wiki-mini-row { gap: 10px; color: var(--text-dark); text-decoration: none; }
 .wiki-mini-row:hover .wiki-mini-title { color: var(--amber); }
@@ -431,6 +441,8 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 /* ── dialogs ─────────────────────────────────────────────── */
 
 .modal-card.reports-modal-card.rgm-card.wiki-dialog-card { width: min(520px, 96vw); max-width: 96vw; }
+.modal-card.reports-modal-card.rgm-card.wiki-dialog-card.wiki-dialog-wide { width: min(760px, 96vw); }
+.wiki-new-node-template-link { margin-top: 4px; }
 .modal-card.reports-modal-card.rgm-card.wiki-new-space-card { width: min(860px, 96vw); max-width: 96vw; }
 .wiki-new-space-body {
   display: grid;
@@ -443,6 +455,41 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 .wiki-field-note { margin: 6px 0 0; font-size: 12px; font-weight: 300; color: var(--text-mute); }
 .wiki-field-note.pf-error { color: var(--c-red, #c03540); font-weight: 400; }
 .wiki-swatches { margin-top: 0; }
+
+.wiki-template-picker { display: grid; grid-template-columns: minmax(200px, 260px) 1fr; gap: 16px; min-height: 320px; }
+.wiki-template-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 420px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.wiki-template-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  cursor: pointer;
+  text-align: left;
+}
+.wiki-template-card b { font-size: 13px; font-weight: 600; }
+.wiki-template-card span { font-size: 11.5px; font-weight: 300; color: var(--text-mute); }
+.wiki-template-card:hover { border-color: var(--amber); }
+.wiki-template-card.selected { border-color: var(--amber); background: rgba(var(--accent-rgb), 0.08); }
+.wiki-template-preview {
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  padding: 16px;
+  overflow-y: auto;
+  max-height: 420px;
+  background: var(--surface-2);
+}
+.wiki-template-preview .wiki-doc { font-size: 13px; }
 @media (max-width: 760px) {
   .wiki-new-space-body { grid-template-columns: minmax(0, 1fr); }
 }
@@ -493,6 +540,9 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 .wiki-icon-btn svg { width: 16px; height: 16px; }
 .wiki-fav-btn.on { color: var(--amber); }
 .wiki-fav-btn.on svg { fill: currentColor; }
+.wiki-watch-btn.on { color: var(--amber); border-color: var(--amber); }
+.wiki-watch-chip { display: inline-flex; align-items: center; gap: 6px; cursor: default; }
+.wiki-watch-chip svg { width: 14px; height: 14px; }
 /* the tree's ⋯ button, always visible and full size in the page header */
 .wiki-page-actions .wiki-row-menu-btn {
   width: 34px;
@@ -864,6 +914,13 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 .wiki-trash-hint { margin: 0 0 12px; }
 .wiki-trash-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .wiki-trash-actions .btn-ghost { padding: 6px 12px; }
+.wiki-watching-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.wiki-watching-actions .btn-ghost { padding: 6px 12px; }
+
+.wiki-template-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.wiki-template-actions .btn-ghost { padding: 6px 12px; }
+.wiki-template-edit { display: flex; flex-direction: column; gap: 16px; margin-top: 10px; }
+.wiki-template-edit-actions { display: flex; gap: 10px; }
 
 /* ── space settings ──────────────────────────────────────── */
 

@@ -11,6 +11,7 @@ import { useToast } from '@portal/lib/notificationsContext';
 import NewNodeDialog from '../components/NewNodeDialog';
 import NodeIcon, { nodeTypeLabel } from '../components/NodeIcon';
 import { atLeast } from '../components/RowMenu';
+import WatchButton from '../components/WatchButton';
 import ImportDialog from '../import/ImportDialog';
 import { noteChanged, useChildren } from '../lib/treeStore';
 import type { NodeDetailOut, NodeOut } from '../lib/types';
@@ -174,8 +175,9 @@ export default function FolderView({ node }: { node: NodeDetailOut }) {
             <InlineTitle node={node} />
           </div>
 
-          {canEdit && (
-            <div className="dir-toolbar">
+          <div className="dir-toolbar">
+            <WatchButton target={{ kind: 'node', nodeId: node.id }} />
+            {canEdit && (
               <div className="toolbar-right wiki-toolbar">
                 <button type="button" className="btn-ghost" onClick={() => setCreating('page')}>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
@@ -202,8 +204,8 @@ export default function FolderView({ node }: { node: NodeDetailOut }) {
                   Import
                 </button>
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           <ContentsList label={`Contents of ${node.title}`} nodes={nodes} error={error}
                         empty={canEdit
@@ -215,8 +217,8 @@ export default function FolderView({ node }: { node: NodeDetailOut }) {
 
       {/* outside the drop zone: a file dropped on a dialog isn't an upload */}
       {creating && (
-        <NewNodeDialog kind={creating} spaceId={node.space_id} parentId={node.id} parentTitle={node.title}
-                       onClose={() => setCreating(null)} />
+        <NewNodeDialog kind={creating} spaceId={node.space_id} spaceKey={node.space_key} parentId={node.id}
+                       parentTitle={node.title} onClose={() => setCreating(null)} />
       )}
       {importing && (
         <ImportDialog spaceId={node.space_id} parentId={node.id} parentTitle={node.title}
