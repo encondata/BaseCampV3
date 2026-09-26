@@ -46,7 +46,7 @@ from serversherpa.db.models import (
     WikiWatch,
 )
 from serversherpa.notifications.inbox import notify
-from serversherpa.wiki.permissions import AccessIndex, principal_for_person
+from serversherpa.wiki.permissions import AccessIndex, level_rank, principal_for_person
 
 log = logging.getLogger(__name__)
 
@@ -275,25 +275,39 @@ async def on_review_decided(db: AsyncSession, node: WikiNode, review: WikiReview
                             actor_id: uuid.UUID | None,
                             skip: Iterable[uuid.UUID] = ()) -> None:
     """A review was approved or rejected: `wiki_review_decision` to the
-    requester and `wiki_update` to the page's watchers (the requester
-    only once); the decision note is the body. An approval's publish is
-    announced by this — callers don't also call `on_published` for it,
-    and pass as `skip` who `pages.publish` already mentioned: they get no
-    `wiki_update` (the requester still gets the decision).
-    Raises ValueError for a review that isn't approved or rejected."""
+    requester (the decision note is the body) and `wiki_update` to the
+    page's watchers (the requester only once). A review — and so its
+    decision note — is for the page's editors (`GET /reviews/{id}`):
+    watchers at edit or above get the note; view-only watchers hear about
+    an approval (the page they read changed) without it, and nothing
+    about a rejection (nothing they can see changed). An approval's
+    publish is announced by this — callers don't also call
+    `on_published` for it, and pass as `skip` who `pages.publish` already
+    mentioned: they get no `wiki_update` (the requester still gets the
+    decision). Raises ValueError for a review that isn't approved or
+    rejected."""
     verb = _DECISION_VERBS.get(review.status)
     if verb is None:
         raise ValueError(f"review {review.id} is {review.status!r}, not decided")
     actor = await _actor_name(db, actor_id)
     title = f"{actor} {verb} {node.title}"
-    body = review.decision_note or ""
+    note = review.decision_note or ""
     requester = [review.requested_by] if review.requested_by else []
     told = await _send(db, node, requester, actor_id=actor_id,
-                       kind="wiki_review_decision", title=title, body=body,
+                       kind="wiki_review_decision", title=title, body=note,
                        event="review_decided")
-    await _send(db, node, await watchers_for(db, node) - told - set(requester) - set(skip),
-                actor_id=actor_id, kind="wiki_update", title=title, body=body,
-                event="review_decided")
+    watchers = await watchers_for(db, node) - told - set(requester) - set(skip)
+    watchers.discard(actor_id)
+    editors: list[uuid.UUID] = []
+    readers: list[uuid.UUID] = []
+    for pid, ix in (await _viewers(db, node, watchers)).items():
+        is_editor = level_rank(await ix.level_for_node(node)) >= level_rank("edit")
+        (editors if is_editor else readers).append(pid)
+    await _deliver(db, node, editors, kind="wiki_update", title=title, body=note,
+                   event="review_decided")
+    if review.status == "approved":
+        await _deliver(db, node, readers, kind="wiki_update", title=title, body="",
+                       event="review_decided")
 
 
 async def on_review_due(db: AsyncSession, node: WikiNode, *,

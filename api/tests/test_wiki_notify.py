@@ -422,12 +422,13 @@ async def test_review_notifications(client, db):
     got = await _inbox(db, s["editor_id"], "wiki_review_decision")
     assert [(n.title, n.body) for n in got] == [
         (f"{owner} requested changes to Runbook", "Step 3 is wrong")]
-    # watchers hear about the decision too
-    got = await _inbox(db, s["viewer_id"], "wiki_update")
-    assert [n.title for n in got] == [f"{owner} requested changes to Runbook"]
+    # a rejection is about a draft readers can't see: view-only watchers
+    # don't hear about it (see test_review_decision_note_reaches_only_editors)
+    assert await _inbox(db, s["viewer_id"], "wiki_update") == []
 
     # skip: someone already told (e.g. mentioned in the approved version)
     review.status = "approved"
+    await notify.on_review_decided(db, node, review, actor_id=s["owner_id"])
     before = len(await _inbox(db, s["viewer_id"]))
     await notify.on_review_decided(db, node, review, actor_id=s["owner_id"],
                                    skip=[s["viewer_id"]])
@@ -437,6 +438,47 @@ async def test_review_notifications(client, db):
     got = await _inbox(db, s["owner_id"], "wiki_review_due")
     assert [(n.title, n.link) for n in got] == [("Runbook is due for review",
                                                  _link(page["id"]))]
+
+
+async def test_review_decision_note_reaches_only_editors(client, db):
+    """`GET /reviews/{id}` is for editors and the requester, so a decision
+    note is too: an edit-level watcher gets it; a view-only watcher hears
+    about an approval (the page changed) without the note, and nothing
+    about a rejection (nothing they can see changed)."""
+    s = await _setup(client, db)
+    editor2_h, editor2_id = await login_as(client, db, roles=("staff",))
+    await _put_grants(client, s["owner"], s["space"], [
+        {"principal_type": "person", "principal_id": str(s["owner_id"]), "level": "manage"},
+        {"principal_type": "person", "principal_id": str(s["editor_id"]), "level": "edit"},
+        {"principal_type": "person", "principal_id": str(editor2_id), "level": "edit"},
+        {"principal_type": "internal", "level": "view"},
+    ])
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    await publish_via_db(db, page["id"])
+    node = await _node(db, page["id"])
+    version_id = (await db.get(WikiPage, node.id)).published_version_id
+    await _watch(client, s["viewer"], node=page)
+    await _watch(client, editor2_h, node=page)
+    owner = await _name(db, s["owner_id"])
+
+    rejected = WikiReview(node_id=node.id, version_id=version_id, status="rejected",
+                          requested_by=s["editor_id"], decision_note="Step 3 is wrong")
+    db.add(rejected)
+    await db.flush()
+    await notify.on_review_decided(db, node, rejected, actor_id=s["owner_id"])
+    assert [(n.title, n.body) for n in await _inbox(db, editor2_id, "wiki_update")] == [
+        (f"{owner} requested changes to Runbook", "Step 3 is wrong")]
+    assert await _inbox(db, s["viewer_id"]) == []
+
+    approved = WikiReview(node_id=node.id, version_id=version_id, status="approved",
+                          requested_by=s["editor_id"], decision_note="Looks good now")
+    db.add(approved)
+    await db.flush()
+    await notify.on_review_decided(db, node, approved, actor_id=s["owner_id"])
+    assert [(n.title, n.body) for n in await _inbox(db, editor2_id, "wiki_update")][-1] == \
+        (f"{owner} approved Runbook", "Looks good now")
+    assert [(n.title, n.body) for n in await _inbox(db, s["viewer_id"])] == [
+        (f"{owner} approved Runbook", "")]
 
 
 async def test_review_decided_names_approvals_and_rejects_other_statuses(client, db):
