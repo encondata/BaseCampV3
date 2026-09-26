@@ -1,0 +1,226 @@
+/** Typed client for the `/wiki` API, one function per route (named after
+ *  it). Built on the portal's apiFetch, so the wiki shares the portal's
+ *  in-memory access token, silent refresh and session-ended handling.
+ *  Failures throw the portal's ApiError: `code` is the server's
+ *  `detail.code`, `message` its `detail.message` (or the code). */
+import type { JSONContent } from '@tiptap/core';
+
+import { ApiError, apiFetch, READ_ONLY_MESSAGE, refreshSystemStatus } from '@portal/lib/api';
+
+import type {
+  AssetOut,
+  AssetUrlsOut,
+  ContentVersion,
+  FileUrlOut,
+  FileUrlParams,
+  FileVersionOut,
+  GrantIn,
+  GrantOut,
+  GrantsOut,
+  MeOut,
+  NodeCopyIn,
+  NodeCreateIn,
+  NodeDeleteOut,
+  NodeDetailOut,
+  NodeMoveIn,
+  NodeOut,
+  NodePatchIn,
+  NodePermissionsOut,
+  NodePermissionsPutIn,
+  PageContentOut,
+  PrincipalOut,
+  PrincipalType,
+  SearchHit,
+  SearchParams,
+  SpaceCreateIn,
+  SpaceOut,
+  SpacePatchIn,
+  TrashBatch,
+  UploadStartIn,
+  UploadStartOut,
+  VersionDetail,
+  VersionOut,
+} from './types';
+
+type Query = Record<string, string | number | boolean | null | undefined>;
+
+async function errorFrom(resp: Response): Promise<ApiError> {
+  let code = 'unknown_error';
+  let detail: unknown;
+  let message: string | undefined;
+  try {
+    detail = (await resp.json())?.detail;
+    const d = detail as { code?: unknown; message?: unknown } | undefined;
+    if (d && typeof d.code === 'string') code = d.code;
+    if (d && typeof d.message === 'string' && d.message) message = d.message;
+  } catch {
+    /* non-JSON error body */
+  }
+  if (code === 'read_only_mode') {
+    // the banner is the primary signal — make sure it appears at once
+    refreshSystemStatus();
+    message = READ_ONLY_MESSAGE;
+  }
+  return new ApiError(resp.status, code, detail, message);
+}
+
+const seg = encodeURIComponent;
+
+async function request<T>(
+  method: string, path: string, opts: { query?: Query; body?: unknown } = {},
+): Promise<T> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(opts.query ?? {})) {
+    if (value !== undefined && value !== null) params.set(key, String(value));
+  }
+  const qs = params.toString();
+  const hasBody = opts.body !== undefined;
+  const resp = await apiFetch(`/wiki${path}${qs ? `?${qs}` : ''}`, {
+    method,
+    ...(hasBody
+      ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(opts.body) }
+      : {}),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  if (resp.status === 204) return undefined as T;
+  return resp.json() as Promise<T>;
+}
+
+// ── me / spaces ───────────────────────────────────────────────────────
+
+export const getMe = () => request<MeOut>('GET', '/me');
+
+export const listSpaces = (includeArchived = false) =>
+  request<SpaceOut[]>('GET', '/spaces', { query: { include_archived: includeArchived || undefined } });
+
+export const createSpace = (body: SpaceCreateIn) => request<SpaceOut>('POST', '/spaces', { body });
+
+export const getSpace = (key: string) => request<SpaceOut>('GET', `/spaces/${seg(key)}`);
+
+export const updateSpace = (key: string, body: SpacePatchIn) =>
+  request<SpaceOut>('PATCH', `/spaces/${seg(key)}`, { body });
+
+export const archiveSpace = (key: string) =>
+  request<SpaceOut>('POST', `/spaces/${seg(key)}/archive`);
+
+export const unarchiveSpace = (key: string) =>
+  request<SpaceOut>('POST', `/spaces/${seg(key)}/unarchive`);
+
+export const getSpaceGrants = async (key: string): Promise<GrantOut[]> =>
+  (await request<GrantsOut>('GET', `/spaces/${seg(key)}/grants`)).grants;
+
+/** Replaces the space's grants; 422 `no_manager` if no manage grant would remain. */
+export const putSpaceGrants = async (key: string, grants: GrantIn[]): Promise<GrantOut[]> =>
+  (await request<GrantsOut>('PUT', `/spaces/${seg(key)}/grants`, { body: { grants } })).grants;
+
+/** Viewable children of `parentId` (the space's top level when omitted), in position order. */
+export const getTree = (key: string, parentId?: string | null) =>
+  request<NodeOut[]>('GET', `/spaces/${seg(key)}/tree`, { query: { parent_id: parentId } });
+
+export const getSpaceTrash = (key: string) =>
+  request<TrashBatch[]>('GET', `/spaces/${seg(key)}/trash`);
+
+export const searchPrincipals = (type: PrincipalType, q = '') =>
+  request<PrincipalOut[]>('GET', '/principals', { query: { type, q } });
+
+// ── nodes ─────────────────────────────────────────────────────────────
+
+export const createNode = (body: NodeCreateIn) => request<NodeOut>('POST', '/nodes', { body });
+
+export const getNode = (id: string) => request<NodeDetailOut>('GET', `/nodes/${seg(id)}`);
+
+export const updateNode = (id: string, body: NodePatchIn) =>
+  request<NodeOut>('PATCH', `/nodes/${seg(id)}`, { body });
+
+export const moveNode = (id: string, body: NodeMoveIn) =>
+  request<NodeOut>('POST', `/nodes/${seg(id)}/move`, { body });
+
+export const copyNode = (id: string, body: NodeCopyIn) =>
+  request<NodeOut>('POST', `/nodes/${seg(id)}/copy`, { body });
+
+/** Moves the node and its subtree to the trash. */
+export const deleteNode = (id: string) =>
+  request<NodeDeleteOut>('DELETE', `/nodes/${seg(id)}`);
+
+export const getNodePermissions = (id: string) =>
+  request<NodePermissionsOut>('GET', `/nodes/${seg(id)}/permissions`);
+
+/** 422 `would_lock_out` when the change would leave the caller without manage. */
+export const putNodePermissions = (id: string, body: NodePermissionsPutIn) =>
+  request<NodePermissionsOut>('PUT', `/nodes/${seg(id)}/permissions`, { body });
+
+export const setFavorite = (id: string, favorite: boolean) =>
+  request<void>(favorite ? 'PUT' : 'DELETE', `/nodes/${seg(id)}/favorite`);
+
+export const listFavorites = () => request<NodeOut[]>('GET', '/favorites');
+
+export const listRecent = (opts: { space?: string; limit?: number } = {}) =>
+  request<NodeOut[]>('GET', '/recent', { query: opts });
+
+/** Pages I edited that have unpublished changes. */
+export const listDrafts = () => request<NodeOut[]>('GET', '/drafts');
+
+// ── pages / versions ────────────────────────────────────────────────
+
+/** 404 `not_published` for a view-only reader of a never-published page;
+ *  422 `bad_version` for an unknown version. */
+export const getPageContent = (id: string, version: ContentVersion = 'published') =>
+  request<PageContentOut>('GET', `/pages/${seg(id)}/content`, { query: { version } });
+
+/** 409 `nothing_to_publish` when the draft equals the published version. */
+export const publishPage = (id: string, note?: string) =>
+  request<VersionOut>('POST', `/pages/${seg(id)}/publish`, { body: note ? { note } : {} });
+
+export const listVersions = (id: string) =>
+  request<VersionOut[]>('GET', `/pages/${seg(id)}/versions`);
+
+export const getVersion = (id: string, versionId: string) =>
+  request<VersionDetail>('GET', `/pages/${seg(id)}/versions/${seg(versionId)}`);
+
+/** Seeds a page that was never opened live (409 `already_live` otherwise). */
+export const putDraft = (id: string, contentJson: JSONContent) =>
+  request<void>('PUT', `/nodes/${seg(id)}/draft`, { body: { content_json: contentJson } });
+
+/** Records the `restored` version after the editor loaded an old one. */
+export const recordRestore = (id: string, fromVersionId: string) =>
+  request<VersionOut>('POST', `/pages/${seg(id)}/versions/restored`,
+    { body: { from_version_id: fromVersionId } });
+
+// ── uploads / files / assets ────────────────────────────────────────
+
+export const startUpload = (body: UploadStartIn) =>
+  request<UploadStartOut>('POST', '/uploads', { body });
+
+/** A new file node or file version comes back as NodeOut, a page asset as AssetOut. */
+export const completeUpload = (uploadId: string) =>
+  request<NodeOut | AssetOut>('POST', '/uploads/complete', { body: { upload_id: uploadId } });
+
+export const listFileVersions = (id: string) =>
+  request<FileVersionOut[]>('GET', `/files/${seg(id)}/versions`);
+
+export const getFileUrl = (id: string, params: FileUrlParams = {}) =>
+  request<FileUrlOut>('GET', `/files/${seg(id)}/url`, { query: { ...params } });
+
+export const updateFile = (id: string, description: string) =>
+  request<NodeOut>('PATCH', `/files/${seg(id)}`, { body: { description } });
+
+export const restoreFileVersion = (id: string, versionId: string) =>
+  request<FileVersionOut>('POST', `/files/${seg(id)}/versions/${seg(versionId)}/restore`);
+
+/** Presigned URLs by asset id; unknown or unviewable ids are left out. */
+export const getAssetUrls = async (ids: string[]): Promise<Record<string, string>> => {
+  if (ids.length === 0) return {};
+  return (await request<AssetUrlsOut>('POST', '/assets/urls', { body: { ids } })).urls;
+};
+
+// ── search / trash ──────────────────────────────────────────────────
+
+export const search = ({ q, space, kind, limit }: SearchParams) =>
+  request<SearchHit[]>('GET', '/search', { query: { q, space, kind, limit } });
+
+export const restoreTrash = (batchId: string) =>
+  request<NodeOut>('POST', `/trash/${seg(batchId)}/restore`);
+
+/** Deletes the batch forever. */
+export const purgeTrash = (batchId: string) =>
+  request<void>('DELETE', `/trash/${seg(batchId)}`);

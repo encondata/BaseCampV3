@@ -1,0 +1,22 @@
+// The wiki server (Node ESM) plus the shared editor schema it renders with.
+// "DOM" is for Tiptap's type declarations only — the schema must not touch
+// the DOM at runtime (web/src/editor/schema.test.ts runs it under node).
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "rootDir": ".",
+    "outDir": "dist-server"
+  },
+  "include": ["server/src/**/*.ts", "web/src/editor/schema.ts"],
+  "exclude": ["**/*.test.ts"]
+}

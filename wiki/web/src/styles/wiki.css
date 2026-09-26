@@ -1,0 +1,22 @@
+/* ============================================================
+   wiki.css — the wiki SPA. Tokens, list typography and the modal
+   header pattern come from the portal stylesheets (main.tsx);
+   this file sets wiki layout only.
+   ============================================================ */
+
+/* The wiki borrows the portal shell's tokens and theme attributes
+   (.portal-shell) but not its nav + page grid. */
+.portal-shell.wiki-root {
+  display: block;
+  background: var(--paper);
+  color: var(--text-dark);
+  overflow: auto;
+}
+
+/* the no-access / change-password notice outside the shell */
+.portal-shell.wiki-notice {
+  display: block;
+  background: var(--paper);
+  color: var(--text-dark);
+}
+.wiki-notice a { color: var(--amber); }
