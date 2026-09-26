@@ -4,7 +4,7 @@
  *  through the shell context: New page/folder, Delete, Move…, Copy…,
  *  Permissions…, Share… and Export…. */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Route, Routes, useNavigate } from 'react-router-dom';
+import { Route, Routes, useMatch, useNavigate } from 'react-router-dom';
 
 import SystemBanners from '@portal/components/SystemBanners';
 import { useToast } from '@portal/lib/notificationsContext';
@@ -80,6 +80,8 @@ export default function WikiShell() {
   const [permissionsFor, setPermissionsFor] = useState<NodeOut | null>(null);
   const [sharing, setSharing] = useState<NodeOut | null>(null);
   const [exporting, setExporting] = useState<ExportTarget | null>(null);
+  // Home (and New library over it) shows favorites and recent itself
+  const onHome = !!useMatch('/') || !!useMatch(NEW_LIBRARY_PATH);
 
   const reloadSpaces = useCallback(() => {
     listSpaces().then(setSpaces).catch(() => setSpaces((cur) => cur ?? []));
@@ -265,6 +267,7 @@ export default function WikiShell() {
             <Sidebar
               space={sidebarSpace}
               spaces={spaces}
+              home={onHome}
               activeId={activeNode?.id ?? null}
               revealIds={revealIds}
               onCollapse={toggleSidebar}

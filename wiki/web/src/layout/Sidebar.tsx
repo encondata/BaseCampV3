@@ -1,6 +1,9 @@
-/** The left sidebar: the current space's tree, then Favorites and the five
- *  most recently updated items (in this space when there is one). With no
- *  space yet (first visit to Home) the tree's place lists the spaces. */
+/** The left sidebar: the current library's tree, then Favorites and the
+ *  five most recently updated items (in this library when there is one).
+ *  With no library yet (a first visit) the tree's place lists the
+ *  libraries. On Home it lists the libraries and nothing else — Home
+ *  itself shows Favorites and Recently updated, so the sidebar doesn't
+ *  repeat them. */
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -20,18 +23,21 @@ interface Props {
   onCollapse: () => void;
   onNewAtRoot: (space: SpaceOut) => void;
   onNewChild: (parent: NodeOut, kind: 'page' | 'folder') => void;
+  /** On Home: the library list only. */
+  home?: boolean;
 }
 
-/** Reloads whenever anything in the tree changes. */
-function useNodeList(load: () => Promise<NodeOut[]>, deps: unknown[]): NodeOut[] | null {
+/** Reloads whenever anything in the tree changes (never while `off`). */
+function useNodeList(load: () => Promise<NodeOut[]>, deps: unknown[], off = false): NodeOut[] | null {
   const revision = useTreeRevision();
   const [nodes, setNodes] = useState<NodeOut[] | null>(null);
   useEffect(() => {
+    if (off) return undefined;
     let live = true;
     load().then((n) => { if (live) setNodes(n); }).catch(() => { if (live) setNodes((cur) => cur ?? []); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [revision, ...deps]);
+  }, [revision, off, ...deps]);
   return nodes;
 }
 
@@ -53,10 +59,11 @@ function NodeLinks({ nodes, activeId, empty }: { nodes: NodeOut[] | null; active
 }
 
 export default function Sidebar({
-  space, spaces, activeId, revealIds, onCollapse, onNewAtRoot, ...treeHandlers
+  space: current, spaces, activeId, revealIds, onCollapse, onNewAtRoot, home = false, ...treeHandlers
 }: Props) {
-  const favorites = useNodeList(listFavorites, []);
-  const recent = useNodeList(() => listRecent({ space: space?.key, limit: 5 }), [space?.key]);
+  const space = home ? null : current;
+  const favorites = useNodeList(listFavorites, [], home);
+  const recent = useNodeList(() => listRecent({ space: space?.key, limit: 5 }), [space?.key], home);
 
   return (
     <aside className="wiki-sidebar" aria-label="Wiki navigation">
@@ -109,15 +116,19 @@ export default function Sidebar({
           </ul>
         )}
 
-        <section className="wiki-side-section" aria-label="Favorites">
-          <div className="wiki-side-label">Favorites</div>
-          <NodeLinks nodes={favorites} activeId={activeId} empty="Star a page to keep it here." />
-        </section>
+        {!home && (
+          <>
+            <section className="wiki-side-section" aria-label="Favorites">
+              <div className="wiki-side-label">Favorites</div>
+              <NodeLinks nodes={favorites} activeId={activeId} empty="Star a page to keep it here." />
+            </section>
 
-        <section className="wiki-side-section" aria-label="Recently updated">
-          <div className="wiki-side-label">Recently updated</div>
-          <NodeLinks nodes={recent} activeId={activeId} empty="Nothing updated yet." />
-        </section>
+            <section className="wiki-side-section" aria-label="Recently updated">
+              <div className="wiki-side-label">Recently updated</div>
+              <NodeLinks nodes={recent} activeId={activeId} empty="Nothing updated yet." />
+            </section>
+          </>
+        )}
       </div>
     </aside>
   );

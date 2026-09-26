@@ -87,4 +87,40 @@ describe('Home', () => {
     expect(within(section).getByRole('link', { name: /Facilities/ }).getAttribute('href')).toBe('/library/facilities');
     expect(within(section).getByRole('link', { name: 'See all watching' }).getAttribute('href')).toBe('/watching');
   });
+
+  it('puts the libraries first, before the lists', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe());
+    renderHome();
+    const grid = await screen.findByRole('list', { name: 'Libraries' });
+    const favorites = await screen.findByRole('region', { name: 'Favorites' });
+    expect(grid.compareDocumentPosition(favorites) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('collapses an empty list to one muted line instead of a card', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe());
+    vi.mocked(listDrafts).mockResolvedValue([]);
+    renderHome();
+    await screen.findByRole('link', { name: /Rack standards/ });
+    const drafts = await screen.findByRole('region', { name: 'My drafts' });
+    expect(drafts.textContent).toContain('No unpublished changes.');
+    expect(drafts.querySelector('.dir-list')).toBeNull();
+    expect(drafts.className).toContain('wiki-home-quiet');
+    // the lists with something in them stay cards
+    expect(screen.getByRole('region', { name: 'Favorites' }).querySelector('.dir-list')).not.toBeNull();
+  });
+
+  it('shows only the Favorites hint when every list is empty', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe());
+    vi.mocked(listFavorites).mockResolvedValue([]);
+    vi.mocked(listRecent).mockResolvedValue([]);
+    vi.mocked(listDrafts).mockResolvedValue([]);
+    vi.mocked(listWatches).mockResolvedValue([]);
+    renderHome();
+    const favorites = await screen.findByRole('region', { name: 'Favorites' });
+    expect(favorites.textContent).toContain('Star a page to keep it here.');
+    expect(favorites.querySelector('.dir-list')).toBeNull();
+    for (const name of ['Recently updated', 'My drafts', 'Watching']) {
+      expect(screen.queryByRole('region', { name })).toBeNull();
+    }
+  });
 });

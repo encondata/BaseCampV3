@@ -215,6 +215,7 @@
 .wiki-space-badge.sm { width: 20px; height: 20px; border-radius: 6px; font-size: 11px; }
 .wiki-space-badge.lg { width: 44px; height: 44px; border-radius: 12px; font-size: 22px; }
 .wiki-space-badge-new { --space-color: var(--amber); font-weight: 400; }
+.wiki-space-glyph { width: 60%; height: 60%; }
 
 /* ── tree ─────────────────────────────────────────────────── */
 
@@ -385,6 +386,15 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 .wiki-mini-title { flex: 1; min-width: 0; }
 .wiki-mini-meta { flex: none; max-width: 45%; }
 .wiki-mini-note { color: var(--text-mute); }
+.wiki-home-quiet-list { display: flex; flex-direction: column; gap: 8px; margin-top: 28px; }
+.wiki-home-lists + .wiki-home-quiet-list { margin-top: 20px; }
+.wiki-home-quiet { display: flex; align-items: baseline; gap: 14px; min-width: 0; }
+.wiki-home-quiet .wiki-section-label { flex: none; width: 130px; margin: 0; }
+.wiki-home-quiet-text { min-width: 0; font-size: 13px; font-weight: 300; color: var(--text-mute); }
+@media (max-width: 560px) {
+  .wiki-home-quiet { flex-direction: column; gap: 2px; }
+  .wiki-home-quiet .wiki-section-label { width: auto; }
+}
 
 /* ── folder view / space home ─────────────────────────────── */
 

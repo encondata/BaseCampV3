@@ -1,5 +1,7 @@
 /** Inline SVG icons for tree rows and lists: folder, page, and a file drawn
  *  by its type (PDF, image, video, office document, anything else). */
+import { PRESET_COLORS } from '@portal/lib/variables';
+
 import type { NodeOut, SpaceOut } from '../lib/types';
 
 export type FileType = 'pdf' | 'image' | 'video' | 'doc' | 'sheet' | 'slides' | 'other';
@@ -85,12 +87,29 @@ export default function NodeIcon({ node, className }: {
   );
 }
 
-/** A space's emoji (or initial) on its color. */
-export function SpaceBadge({ space, size }: { space: Pick<SpaceOut, 'icon' | 'name' | 'color'>; size?: 'lg' | 'sm' }) {
+/** A library's color: its own, else one picked from the portal palette by
+ *  its key — stable, so the same library always gets the same color. */
+export function libraryColor(space: { key?: string; color: string | null }): string {
+  if (space.color) return space.color;
+  let h = 0;
+  for (const ch of space.key ?? '') h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return PRESET_COLORS[h % PRESET_COLORS.length].value;
+}
+
+/** A library's emoji on its color, or (with no emoji) a book drawn in it. */
+export function SpaceBadge({ space, size }: {
+  space: Pick<SpaceOut, 'icon' | 'name' | 'color'> & { key?: string };
+  size?: 'lg' | 'sm';
+}) {
   return (
     <span className={`wiki-space-badge${size ? ` ${size}` : ''}`}
-          style={{ ['--space-color' as string]: space.color ?? undefined }} aria-hidden="true">
-      {space.icon || space.name.slice(0, 1).toUpperCase()}
+          style={{ ['--space-color' as string]: libraryColor(space) }} aria-hidden="true">
+      {space.icon || (
+        <svg viewBox="0 0 24 24" className="wiki-space-glyph" {...S}>
+          <path d="M5 18.5v-13A2.5 2.5 0 0 1 7.5 3H19v18H7.5a2.5 2.5 0 0 1 0-5H19" />
+          <path d="M9 7.5h6" />
+        </svg>
+      )}
     </span>
   );
 }

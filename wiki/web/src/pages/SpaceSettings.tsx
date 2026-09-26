@@ -13,7 +13,7 @@ import { useToast } from '@portal/lib/notificationsContext';
 import { PRESET_COLORS } from '@portal/lib/variables';
 
 import ConfirmDialog from '../components/ConfirmDialog';
-import { SpaceBadge } from '../components/NodeIcon';
+import { libraryColor, SpaceBadge } from '../components/NodeIcon';
 import { PermissionsEditor } from '../components/PermissionsDialog';
 import { atLeast } from '../components/RowMenu';
 import { useWikiShell } from '../layout/shellContext';
@@ -126,10 +126,11 @@ type State =
 
 function DetailsForm({ space, onSaved }: { space: SpaceOut; onSaved: (space: SpaceOut) => void }) {
   const toast = useToast();
-  // a null color shows the first swatch, but that's a display default, not
-  // a change — dirty-checking against it (not the raw `space.color`) keeps
-  // a freshly loaded form clean until someone actually picks a color
-  const initialColor = space.color ?? PRESET_COLORS[0].value;
+  // a null color shows the one derived from the key, but that's a display
+  // default, not a change — dirty-checking against it (not the raw
+  // `space.color`) keeps a freshly loaded form clean until someone
+  // actually picks a color
+  const initialColor = libraryColor(space);
   const [name, setName] = useState(space.name);
   const [description, setDescription] = useState(space.description ?? '');
   const [icon, setIcon] = useState(space.icon ?? '');
@@ -178,7 +179,7 @@ function DetailsForm({ space, onSaved }: { space: SpaceOut; onSaved: (space: Spa
           <label htmlFor="ss-icon">Icon</label>
           <input id="ss-icon" value={icon} disabled={busy} placeholder="📘" maxLength={8}
                  onChange={(e) => setIcon(e.target.value)} />
-          <p className="wiki-field-note">An emoji, or leave it blank for the first letter.</p>
+          <p className="wiki-field-note">An emoji, or leave it blank for a book in the library’s color.</p>
         </div>
         <div>
           <span className="wiki-settings-label">Key</span>
