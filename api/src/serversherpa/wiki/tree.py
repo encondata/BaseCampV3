@@ -1,6 +1,7 @@
 """Node-tree helpers: sibling positions (`next_position`), creating
 nodes (`create_node`; files arrive via Task 6's uploads flow), moving a
-subtree within or across spaces (`move_node`), copying one
+subtree within or across spaces (`move_node`; `repath_subtree` is the
+path rewrite it shares with trash restore), copying one
 (`copy_subtree`), listing one (`subtree_ids`), and
 `publish_empty_home`, used once by space creation to publish a
 brand-new home page's first version.
@@ -234,6 +235,20 @@ _REPATH_SQL = text(
     "WHERE path @> ARRAY[CAST(:node_id AS uuid)]")
 
 
+async def repath_subtree(db: AsyncSession, node: WikiNode, new_prefix: list[uuid.UUID],
+                         *, space_id: uuid.UUID) -> None:
+    """Rewrite the path (and space) of every descendant of `node` —
+    deleted ones included — for `node` now sitting under `new_prefix` in
+    `space_id`. Reads `node.path` as the OLD path, so call it before
+    setting the node's own new path (which is the caller's job)."""
+    await db.execute(_REPATH_SQL, {
+        "prefix": [*new_prefix, node.id],
+        "start": len(node.path or []) + 2,
+        "space_id": space_id,
+        "node_id": node.id,
+    })
+
+
 async def move_node(db: AsyncSession, node: WikiNode, *,
                     new_parent: WikiNode | None, new_space: WikiSpace,
                     before_id: uuid.UUID | None = None,
@@ -266,12 +281,7 @@ async def move_node(db: AsyncSession, node: WikiNode, *,
                 update(WikiGrant).where(WikiGrant.node_id.in_(ids))
                 .values(space_id=new_space.id)
                 .execution_options(synchronize_session=False))
-        await db.execute(_REPATH_SQL, {
-            "prefix": [*new_prefix, node.id],
-            "start": len(node.path or []) + 2,
-            "space_id": new_space.id,
-            "node_id": node.id,
-        })
+        await repath_subtree(db, node, new_prefix, space_id=new_space.id)
     node.parent_id = new_parent_id
     node.space_id = new_space.id
     node.path = new_prefix

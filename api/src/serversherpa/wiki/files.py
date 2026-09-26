@@ -141,7 +141,7 @@ def preview_kind_for(filename: str, content_type: str) -> str:
         return "none"
     if _is_inline_media(content_type) or is_text_like(filename, content_type):
         return "native"
-    if _ext(filename) in OFFICE_EXTS:
+    if is_office(filename):
         return "pdf"
     return "none"
 
@@ -168,12 +168,18 @@ def inline_content_type(filename: str, content_type: str,
     return None
 
 
+def is_office(filename: str) -> bool:
+    """An office document (by extension) — converted to PDF for preview
+    and, first, for text extraction."""
+    return _ext(filename) in OFFICE_EXTS
+
+
 def needs_extract(filename: str, content_type: str) -> bool:
     """Does this file get a `file_extract` job? PDFs, office documents
     (converted to a PDF first), and text-like files all carry searchable
     text; images/video/audio/everything else don't."""
     return (normalize_content_type(content_type) == "application/pdf"
-            or _ext(filename) in OFFICE_EXTS or is_text_like(filename, content_type))
+            or is_office(filename) or is_text_like(filename, content_type))
 
 
 def preview_status_for(preview_kind: str) -> str:

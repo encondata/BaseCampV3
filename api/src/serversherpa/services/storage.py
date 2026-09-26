@@ -139,3 +139,21 @@ async def delete_object(key: str) -> None:
         Bucket=s.spaces_bucket,
         Key=key,
     ))
+
+
+async def download_to(key: str, path) -> None:
+    """Stream a private object to a local file (boto3's managed transfer:
+    chunked, never the whole object in memory) — for the wiki worker,
+    whose uploads can run to the 1 GB upload cap."""
+    s = get_settings()
+    await asyncio.to_thread(partial(
+        _client().download_file, s.spaces_bucket, key, str(path)))
+
+
+async def upload_from(path, key: str, content_type: str) -> None:
+    """Upload a local file to `key` (managed transfer: multipart for large
+    files), stored with `content_type`."""
+    s = get_settings()
+    await asyncio.to_thread(partial(
+        _client().upload_file, str(path), s.spaces_bucket, key,
+        ExtraArgs={"ContentType": content_type}))
