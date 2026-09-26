@@ -64,6 +64,13 @@ async function errorFrom(resp: Response): Promise<ApiError> {
   return new ApiError(resp.status, code, detail, message);
 }
 
+/** A sentence for a toast or form error: the server's message when it
+ *  sent one, else `fallback` (network failures, bare codes). */
+export function errorMessage(err: unknown, fallback = 'Something went wrong. Try again.'): string {
+  if (err instanceof ApiError && err.message && err.message !== err.code) return err.message;
+  return fallback;
+}
+
 const seg = encodeURIComponent;
 
 async function request<T>(

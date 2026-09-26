@@ -28,6 +28,10 @@ const REACT_ALLOWLIST = [
   'components/SystemBanners',
   'components/ComboBox',
   'components/ToastHost',
+  // the providers SystemBanners and ToastHost read from (without them the
+  // banners never show and toasts are silently dropped)
+  'lib/systemStatusContext',
+  'lib/notificationsContext',
 ];
 
 // static `import … from '…'`, `import '…'` and `export … from '…'`; the
