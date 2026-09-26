@@ -71,7 +71,7 @@ async def _page_out(db: AsyncSession, node: WikiNode) -> PublicPageOut:
     urls: dict[str, str] = {}
     if wanted:
         assets = (await db.scalars(select(WikiPageAsset).where(
-            WikiPageAsset.id.in_(wanted), WikiPageAsset.node_id == node.id,
+            WikiPageAsset.id.in_(list(wanted)), WikiPageAsset.node_id == node.id,
             WikiPageAsset.deleted_at.is_(None)))).all()
         for asset in assets:
             url = presign_view(asset.storage_key, asset.filename, asset.content_type,
