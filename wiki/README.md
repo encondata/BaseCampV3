@@ -82,15 +82,27 @@ them) from the main API's `.env` into `wiki/.env`. See the comments in
 | `SS_WIKI_MAX_UPLOAD_BYTES` | `1073741824` (1 GiB) | Cap on a single file upload. |
 | `SS_WIKI_TRASH_DAYS` | `30` | Days a soft-deleted node stays restorable before the purge job drops it. |
 
+`SS_WIKI_TRASH_DAYS` and `SS_WIKI_MAX_UPLOAD_BYTES` must be the same on the
+API and in `wiki/.env` (the worker): the API shows each trash batch's
+purge date from its own value, but the worker's expiry sweep deletes on
+the worker's.
+
 ## Production checklist
 
 - Add `https://wiki.<domain>` to the main API's `SS_ALLOWED_ORIGINS`.
 - Set `SS_WIKI_ORIGIN` to that same URL.
 - Set `SS_WIKI_SERVICE_TOKEN` on the API and the matching `WIKI_SERVICE_TOKEN`
   on the `wiki` container to the same secret.
-- Add a Spaces bucket CORS rule allowing `PUT` and the `Content-Type`
-  header from the wiki origin (uploads go straight from the browser to
-  Spaces via a presigned URL).
+- Add a Spaces bucket CORS rule from the wiki origin allowing `PUT` with
+  the `Content-Type` header (uploads go straight from the browser to
+  Spaces via a presigned URL) **and `GET`** (the file view fetches text
+  and Markdown previews from their presigned URL; without it those
+  previews fail in production).
+- Run exactly **one** `wiki` container. The collab server holds each
+  open page in memory and stores it by overwriting the saved document,
+  so two replicas (or two overlapping during a rolling deploy) would
+  overwrite each other's edits. Stop the old container before starting
+  the new one.
 - Point the reverse proxy's `wiki.<domain>` host at the `wiki` container
   with WebSockets on (`/collab` needs it).
 - Review `SS_WIKI_MAX_UPLOAD_BYTES` for the largest file the wiki should

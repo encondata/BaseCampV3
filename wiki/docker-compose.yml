@@ -13,6 +13,8 @@
 name: serversherpa-wiki
 
 services:
+  # exactly ONE replica: the collab server keeps open pages in memory and
+  # overwrites the stored document on save — two would clobber each other
   wiki:
     build:
       context: ..
