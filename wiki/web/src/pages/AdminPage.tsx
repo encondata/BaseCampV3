@@ -4,7 +4,7 @@
  *  settings and trash, and Unarchive — the one thing only a wiki admin,
  *  not even a space manager, can do. Below, the way to the portal/kiosk
  *  Help links page, the way to Analytics, and every public share link in
- *  the wiki (newest first), with Revoke. */
+ *  the wiki (live ones first, each group newest first), with Revoke. */
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -33,7 +33,7 @@ const LINK_GRID = {
   gridTemplateColumns: 'minmax(220px, 2.4fr) minmax(96px, 0.8fr) minmax(150px, 1.2fr) minmax(120px, 1fr) 72px 110px',
 };
 
-/** The API's cap on GET /wiki/share-links (newest first). */
+/** The API's cap on GET /wiki/share-links (live links first, then newest). */
 export const ADMIN_LINKS_CAP = 500;
 
 const STATUS_CHIP: Record<ShareLinkStatus, { label: string; tone: string }> = {
@@ -131,7 +131,7 @@ function PublicLinksSection() {
         </div>
       )}
       {state.status === 'ready' && state.links.length >= ADMIN_LINKS_CAP && (
-        <p className="page-hint">Showing the newest {ADMIN_LINKS_CAP} links.</p>
+        <p className="page-hint">Showing {ADMIN_LINKS_CAP} links, live ones first.</p>
       )}
     </section>
   );

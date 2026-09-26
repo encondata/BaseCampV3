@@ -179,12 +179,15 @@ async def enforce_read_only(db: AsyncSession, request: Request,
 # Profile. This subtraction only bites a signed-in session (must_change_
 # password=True); the enroll/verify challenge path is unaffected either
 # way because a challenge holder has no session at all — totp_actor never
-# calls enforce_forced_password_change for it.
+# calls enforce_forced_password_change for it. Nor is `/wiki/assets/urls`:
+# read-only exempts that read-through-POST so a freeze doesn't blank every
+# wiki image, which is not part of signing in either.
 FORCED_CHANGE_EXEMPT_PATHS = (
     (READ_ONLY_EXEMPT_PATHS - {
         "/system/admin", "/kiosk/printer-events",
         "/auth/totp/verify", "/auth/totp/enroll/start",
         "/auth/totp/enroll/confirm", "/auth/totp/backup-codes/regenerate",
+        "/wiki/assets/urls",
     })
     | {"/auth/me", "/auth/me/sessions"}
 )

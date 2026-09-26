@@ -119,7 +119,7 @@ describe('AdminPage', () => {
     expect(toast).toHaveBeenCalledWith('Link revoked. It stops working right away.');
   });
 
-  it('says when the list stops at the newest 500 links', async () => {
+  it('says when the list stops at 500 links, live ones first', async () => {
     const many: ShareLinkOut[] = Array.from({ length: 500 }, (_, i) => ({
       id: `l${i}`,
       node: { id: `n${i}`, title: `Page ${i}`, kind: 'page', space_key: 'ops', space_name: 'Operations' },
@@ -129,11 +129,11 @@ describe('AdminPage', () => {
     vi.mocked(listSpaces).mockResolvedValue([]);
     vi.mocked(listAllShareLinks).mockResolvedValue(many);
     renderAdmin();
-    expect(await screen.findByText('Showing the newest 500 links.')).toBeTruthy();
+    expect(await screen.findByText('Showing 500 links, live ones first.')).toBeTruthy();
     cleanup();
     vi.mocked(listAllShareLinks).mockResolvedValue(many.slice(0, 3));
     renderAdmin();
     await screen.findByText('Page 0');
-    expect(screen.queryByText('Showing the newest 500 links.')).toBeNull();
+    expect(screen.queryByText('Showing 500 links, live ones first.')).toBeNull();
   });
 });

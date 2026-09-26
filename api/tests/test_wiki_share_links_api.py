@@ -248,6 +248,31 @@ async def test_admin_lists_every_link(client, db):
                                 headers=admin)).status_code == 204
 
 
+async def test_admin_list_puts_live_links_before_dead_ones(client, db, monkeypatch):
+    """The admin list is the only wiki-wide place to revoke a link (and the
+    only one at all for an archived space's), so its cap must never push
+    a live link out in favor of newer revoked or expired ones."""
+    from serversherpa.api.routes.wiki import share_links as share_links_routes
+
+    s = await _setup(client, db)
+    await _allow(client, s)
+    page = await _page(client, s, db)
+    old_live = await _share(client, s["owner"], page["id"])
+    newer = [await _share(client, s["owner"], page["id"]) for _ in range(3)]
+    await db.execute(text("UPDATE wiki_share_links SET created_at = now() - interval '1 day' "
+                          "WHERE id = :id"), {"id": old_live["id"]})
+    await db.execute(text("UPDATE wiki_share_links SET revoked_at = now() WHERE id = :id"),
+                     {"id": newer[0]["id"]})
+    await db.execute(text("UPDATE wiki_share_links SET expires_at = now() - interval '1 second' "
+                          "WHERE id = :id"), {"id": newer[1]["id"]})
+    await db.commit()
+    admin, _ = await login_as(client, db, roles=("admin",))
+    monkeypatch.setattr(share_links_routes, "ADMIN_LIST_LIMIT", 2)
+
+    listed = (await client.get("/wiki/share-links", headers=admin)).json()
+    assert [link["id"] for link in listed] == [newer[2]["id"], old_live["id"]]
+
+
 # ── public: pages ────────────────────────────────────────────────────
 
 
@@ -376,6 +401,9 @@ async def _expect_404(client, token):
     resp = await _public(client, token)
     assert resp.status_code == 404, resp.text
     assert resp.json()["detail"]["code"] == "not_found"
+    # a cache in front of the API mustn't keep answering "not available"
+    # once an admin turns a space's links back on
+    assert resp.headers.get("cache-control") == "no-store"
 
 
 async def test_public_unknown_token(client, db):
@@ -450,6 +478,7 @@ async def test_public_is_rate_limited_per_ip(client, db):
     resp = await _public(client, token, a)
     assert resp.status_code == 429
     assert resp.json()["detail"]["code"] == "rate_limited"
+    assert resp.headers.get("cache-control") == "no-store"
     # another address has its own bucket (the key is deps.rate_limit_ip's)
     assert (await _public(client, token, b)).status_code == 404
 

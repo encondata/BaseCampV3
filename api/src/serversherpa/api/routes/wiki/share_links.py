@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Sequence
 
 from fastapi import APIRouter, Response
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 
 from serversherpa.api.routes.wiki.deps import WikiContext
 from serversherpa.api.routes.wiki.errors import err, not_found
@@ -38,7 +38,7 @@ from serversherpa.wiki.space_settings import space_setting
 
 router = APIRouter()
 
-# the admin list's cap — newest first
+# the admin list's cap — live links first, then newest first
 ADMIN_LIST_LIMIT = 500
 
 SHAREABLE_KINDS = ("page", "file")
@@ -107,10 +107,17 @@ async def list_node_share_links(node_id: uuid.UUID, ctx: WikiContext) -> list[Sh
 
 @router.get("/share-links", response_model=list[ShareLinkOut])
 async def list_all_share_links(ctx: WikiContext) -> list[ShareLinkOut]:
-    """Wiki administrators: every link in the wiki, newest first."""
+    """Wiki administrators: every link in the wiki — the live ones first
+    (this is the only wiki-wide place to revoke one, so the cap must never
+    push a live link out for newer revoked or expired ones), each group
+    newest first."""
     if not ctx.principal.is_admin:
         raise err(403, "forbidden", "Only wiki administrators can see every public link.")
-    rows = (await ctx.db.execute(_links_query().limit(ADMIN_LIST_LIMIT))).all()
+    live = and_(WikiShareLink.revoked_at.is_(None),
+                or_(WikiShareLink.expires_at.is_(None), WikiShareLink.expires_at > func.now()))
+    query = _links_query().order_by(None).order_by(
+        live.desc(), WikiShareLink.created_at.desc(), WikiShareLink.id)
+    rows = (await ctx.db.execute(query.limit(ADMIN_LIST_LIMIT))).all()
     return await _links_out(ctx, rows)
 
 

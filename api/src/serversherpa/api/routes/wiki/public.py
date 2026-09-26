@@ -19,12 +19,15 @@ only credential.
 - A successful read counts a view with one UPDATE (no read-modify-write)
   — except a `refresh` re-read, and in read-only maintenance mode (the
   flag `enforce_read_only` reads), when it's served without counting.
+- Every answer, 200, 404 or 429, is `Cache-Control: no-store`: the URLs
+  inside expire within minutes, and a cached 404 would keep a link dead
+  after an admin turns its space's public links back on.
 """
 from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,6 +60,8 @@ from serversherpa.wiki.share_links import (
 from serversherpa.wiki.space_settings import space_setting
 
 router = APIRouter()
+
+NO_STORE = {"Cache-Control": "no-store"}
 
 
 async def _page_out(db: AsyncSession, node: WikiNode) -> PublicPageOut:
@@ -114,6 +119,17 @@ async def public_share(token: str, request: Request, response: Response,
                        db: DbSession, refresh: bool = False) -> PublicPageOut | PublicFileOut:
     """`refresh`: the SPA re-reading an open link for fresh URLs — served
     the same, but not counted as another view."""
+    try:
+        out = await _serve(token, request, db, refresh=refresh)
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), **NO_STORE}
+        raise
+    response.headers.update(NO_STORE)
+    return out
+
+
+async def _serve(token: str, request: Request, db: AsyncSession, *,
+                 refresh: bool) -> PublicPageOut | PublicFileOut:
     if not public_limiter.hit(rate_limit_ip(request)):
         raise err(429, "rate_limited", "Too many requests. Try again in a minute.")
     if not token or len(token) > MAX_TOKEN_LENGTH:
@@ -142,6 +158,4 @@ async def public_share(token: str, request: Request, response: Response,
         await db.execute(update(WikiShareLink).where(WikiShareLink.id == link.id).values(
             view_count=WikiShareLink.view_count + 1, last_viewed_at=func.now()))
         await db.commit()
-    # the URLs inside expire within minutes: never serve this from a cache
-    response.headers["Cache-Control"] = "no-store"
     return out
