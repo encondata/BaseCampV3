@@ -87,6 +87,55 @@ API and in `wiki/.env` (the worker): the API shows each trash batch's
 purge date from its own value, but the worker's expiry sweep deletes on
 the worker's.
 
+## Collaboration features
+
+Phase 2 added comments, templates, watching, and reviews on top of the
+Phase 1 spaces/pages/files foundation. All of it is enforced by the main
+API (`api/src/serversherpa/wiki/`); the `wiki` SPA is just the client.
+
+- **Comments and @mentions.** Threaded, page-anchored comments
+  (`readers_can_comment` in a space's settings controls whether a viewer,
+  not just an editor, can post — see below). A comment body is plain
+  text plus the ids of the people it @mentions; only people who can
+  already view the page can be mentioned, so mentioning someone with no
+  access to the space silently drops them rather than granting access.
+  Mentions, comments, and everything else in this section land in the
+  same portal inbox as the rest of ServerSherpa's notifications — there
+  is no separate wiki inbox. Each notification's link is the absolute
+  wiki URL of the node (and `#comment-<id>` for a comment), so opening
+  it from the portal inbox lands on the wiki, not the portal.
+- **Templates.** "New page" offers Blank plus a set of templates: four
+  seeded builtins (SOP, How-to guide, Troubleshooting, Meeting notes),
+  any other global templates, and the current space's own — in that
+  order. A page can be saved as a new template from its current content.
+  Builtins are read-only for everyone, including a wiki administrator.
+  A space template can be added, changed, or removed by anyone with
+  manage on that space; a non-builtin global template needs wiki
+  administrator rights.
+- **Watching.** Creating a page or folder, or publishing a page,
+  auto-watches it for the actor (an existing watch is left alone).
+  Watching a folder or a space also covers everything under it.
+  Watchers get a `wiki_update` notification on publish and on new
+  content appearing under something they watch — always narrowed to
+  people who can currently view the node, and a reader never sees a
+  page that's never been published.
+- **Reviews and approvals.** Each space has three settings (`PATCH
+  /wiki/spaces/{key}`, manage level): `readers_can_comment` (default on),
+  `require_approval` (default off — when on, only a manager can publish
+  a page directly; anyone else submits their draft for review), and
+  `review_interval_months` (default off; a page can also set its own
+  interval, overriding the space's). Submitting a page for review
+  notifies its approvers (everyone holding manage on the page); an
+  approval publishes the submitted snapshot and starts the next review
+  period, a rejection sends the requester a note. Once a review interval
+  applies, the **wiki-worker must be running** — it queues a daily
+  `reminders` job that backfills `next_review_at` for pages affected by
+  an interval change at the space level, and sends the page's owner (or
+  its last publisher, if it has no owner) a `wiki_review_due`
+  notification once per due date. Without the worker, reviews still get
+  requested and decided, but nothing ever reminds an owner that a page's
+  review has come due.
+
 ## Production checklist
 
 - Add `https://wiki.<domain>` to the main API's `SS_ALLOWED_ORIGINS`.
