@@ -11,6 +11,7 @@ import ComboBox, { type ComboOption } from '@portal/components/ComboBox';
 
 import NodeIcon from '../components/NodeIcon';
 import { useWikiShell } from '../layout/shellContext';
+import { libraryParam, useLibraryParamUpgrade } from '../lib/paths';
 import type { NodeKind, SearchHit, SpaceOut } from '../lib/types';
 import { errorMessage, listSpaces, search } from '../lib/wikiApi';
 
@@ -38,7 +39,8 @@ export default function SearchPage() {
   const { setCurrentNode } = useWikiShell();
   const [params, setParams] = useSearchParams();
   const q = (params.get('q') ?? '').trim();
-  const space = params.get('space') ?? '';
+  const space = libraryParam(params);
+  useLibraryParamUpgrade(params, setParams);
   const kind = (params.get('kind') ?? '') as KindFilter;
   const [spaces, setSpaces] = useState<SpaceOut[] | null>(null);
   const [state, setState] = useState<State>({ status: 'loading' });
@@ -61,7 +63,7 @@ export default function SearchPage() {
 
   const patch = (next: { space?: string; kind?: KindFilter }) => setParams((cur) => {
     const p = new URLSearchParams(cur);
-    if ('space' in next) { if (next.space) p.set('space', next.space); else p.delete('space'); }
+    if ('space' in next) { if (next.space) p.set('library', next.space); else p.delete('library'); }
     if ('kind' in next) { if (next.kind) p.set('kind', next.kind); else p.delete('kind'); }
     return p;
   }, { replace: true });

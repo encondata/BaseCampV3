@@ -1,5 +1,5 @@
 /** Review schedule… (a page's ⋯ menu, manage): how often the page asks
- *  to be confirmed still right. "Space default" follows the space's
+ *  to be confirmed still right. "Library default" follows the library's
  *  review interval (stored as null on the page); any other choice is the
  *  page's own. In the portal's modal header pattern, sized to its
  *  content. */

@@ -13,6 +13,7 @@ import { longDate, relativeTime } from '@portal/lib/format';
 
 import NodeIcon from '../components/NodeIcon';
 import { useWikiShell } from '../layout/shellContext';
+import { libraryParam, useLibraryParamUpgrade } from '../lib/paths';
 import type { AnalyticsDays, AnalyticsNodeRef, AnalyticsOut, SpaceOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
 import { errorMessage, getAnalytics, listSpaces } from '../lib/wikiApi';
@@ -223,7 +224,8 @@ export default function AnalyticsPage() {
   const managed = (spaces ?? []).filter((s) => s.my_level === 'manage');
   const eligible = isAdmin || managed.length > 0;
   const days = parseDays(params.get('days'));
-  const asked = params.get('space') ?? '';
+  const asked = libraryParam(params);
+  useLibraryParamUpgrade(params, setParams);
   // a manager always looks at one of their spaces; an admin may look at all
   const space = isAdmin ? asked : (managed.find((s) => s.key === asked) ?? managed[0])?.key ?? '';
   const ready = !!me && spaces !== null && eligible;
@@ -247,7 +249,7 @@ export default function AnalyticsPage() {
 
   const patch = (next: { space?: string; days?: AnalyticsDays }) => setParams((cur) => {
     const p = new URLSearchParams(cur);
-    if (next.space !== undefined) { if (next.space) p.set('space', next.space); else p.delete('space'); }
+    if (next.space !== undefined) { if (next.space) p.set('library', next.space); else p.delete('library'); }
     if (next.days !== undefined) {
       if (next.days === DEFAULT_DAYS) p.delete('days'); else p.set('days', String(next.days));
     }

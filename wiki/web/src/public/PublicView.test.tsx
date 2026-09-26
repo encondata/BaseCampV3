@@ -132,6 +132,18 @@ describe('PublicView', () => {
   });
 });
 
+/** Clicks `link` and says whether the page stopped the browser's own
+ *  navigation. jsdom can't navigate (it logs "Not implemented"), so once
+ *  the page has had its say the click is stopped here. */
+function clickPrevented(link: HTMLElement): boolean {
+  let prevented = false;
+  const settle = (e: Event) => { prevented = e.defaultPrevented; e.preventDefault(); };
+  window.addEventListener('click', settle);
+  link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  window.removeEventListener('click', settle);
+  return prevented;
+}
+
 describe('PublicView — expired URLs', () => {
   const clock = () => {
     const start = Date.now();
@@ -194,9 +206,7 @@ describe('PublicView — expired URLs', () => {
     answer(200, FILE);
     renderAt('tok123');
     const link = await screen.findByRole('link', { name: /Download/ });
-    const click = new MouseEvent('click', { bubbles: true, cancelable: true });
-    link.dispatchEvent(click);
-    expect(click.defaultPrevented).toBe(false);
+    expect(clickPrevented(link)).toBe(false);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -207,13 +217,9 @@ describe('PublicView — expired URLs', () => {
     renderAt('tok123');
     const link = await screen.findByRole('link', { name: /Download/ });
     at(79_000);
-    const early = new MouseEvent('click', { bubbles: true, cancelable: true });
-    link.dispatchEvent(early);
-    expect(early.defaultPrevented).toBe(false);
+    expect(clickPrevented(link)).toBe(false);
     at(81_000);
-    const late = new MouseEvent('click', { bubbles: true, cancelable: true });
-    link.dispatchEvent(late);
-    expect(late.defaultPrevented).toBe(true);
+    expect(clickPrevented(link)).toBe(true);
     await waitFor(() => expect(openDownload).toHaveBeenCalledWith('https://s3/manual-dl-fresh'));
     expect(fetched()[1]).toBe('http://api.test/wiki/public/tok123?refresh=1');
   });

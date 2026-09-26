@@ -96,15 +96,16 @@ describe('NewSpace', () => {
     });
   });
 
-  it('starts with a color and a default icon picked', async () => {
+  it('starts with a color picked and no icon, previewing the book in that color', async () => {
     vi.mocked(createSpace).mockResolvedValue(makeSpace({ key: 'hr' }));
     renderPage();
     fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'HR' } });
-    expect(input('Icon').value).toBe('📚');
+    expect(input('Icon').value).toBe('');
     expect(screen.getByRole('button', { name: 'Blue' }).getAttribute('aria-pressed')).toBe('true');
+    expect(document.querySelector('.wiki-new-space-preview svg.wiki-space-glyph')).not.toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Create library' }));
     await screen.findByText('library hr');
-    expect(createSpace).toHaveBeenCalledWith(expect.objectContaining({ icon: '📚', color: '#1668a7' }));
+    expect(createSpace).toHaveBeenCalledWith(expect.objectContaining({ icon: null, color: '#1668a7' }));
   });
 
   it('shows the server\'s refusal and stays put', async () => {

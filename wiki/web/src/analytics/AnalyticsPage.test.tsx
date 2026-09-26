@@ -91,7 +91,7 @@ describe('AnalyticsPage — who sees it', () => {
     expect(screen.queryByRole('button', { name: 'All libraries' })).toBeNull();
     fireEvent.mouseDown(await screen.findByRole('button', { name: 'People Ops' }));
     await waitFor(() => expect(getAnalytics).toHaveBeenLastCalledWith({ space: 'hr', days: 30 }));
-    expect(screen.getByTestId('probe').textContent).toBe('/analytics?space=hr');
+    expect(screen.getByTestId('probe').textContent).toBe('/analytics?library=hr');
     // searches aren't tied to a space: managers don't get that card
     expect(screen.queryByRole('region', { name: 'Searches with no results' })).toBeNull();
   });
@@ -146,12 +146,19 @@ describe('AnalyticsPage — the numbers', () => {
     fireEvent.focus(combo);
     fireEvent.mouseDown(await screen.findByRole('button', { name: 'Guides' }));
     await waitFor(() => expect(getAnalytics).toHaveBeenLastCalledWith({ space: 'guides', days: 90 }));
-    expect(screen.getByTestId('probe').textContent).toBe('/analytics?days=90&space=guides');
+    expect(screen.getByTestId('probe').textContent).toBe('/analytics?days=90&library=guides');
   });
 
-  it('reads the window and space from the URL', async () => {
+  it('reads the window and library from the URL', async () => {
+    renderPage('/analytics?library=ops&days=7');
+    await waitFor(() => expect(getAnalytics).toHaveBeenCalledWith({ space: 'ops', days: 7 }));
+  });
+
+  it('turns an old ?space= link into ?library=', async () => {
     renderPage('/analytics?space=ops&days=7');
     await waitFor(() => expect(getAnalytics).toHaveBeenCalledWith({ space: 'ops', days: 7 }));
+    await waitFor(() => expect(screen.getByTestId('probe').textContent).toBe('/analytics?days=7&library=ops'));
+    expect(getAnalytics).not.toHaveBeenCalledWith(expect.objectContaining({ space: undefined }));
   });
 
   it('shows friendly empty states', async () => {

@@ -6,10 +6,12 @@ import { Navigate, Route, useLocation, useParams } from 'react-router-dom';
 
 import { libraryPath, NEW_LIBRARY_PATH, type LibrarySection } from '../lib/paths';
 
-function LegacyLibraryRedirect({ section }: { section?: LibrarySection }) {
+/** To a library's page (or, with `newLibrary`, the New library form). */
+function LegacyLibraryRedirect({ section, newLibrary }: { section?: LibrarySection; newLibrary?: boolean }) {
   const { spaceKey = '' } = useParams();
   const { search, hash } = useLocation();
-  return <Navigate to={`${libraryPath(spaceKey, section)}${search}${hash}`} replace />;
+  const to = newLibrary ? NEW_LIBRARY_PATH : libraryPath(spaceKey, section);
+  return <Navigate to={`${to}${search}${hash}`} replace />;
 }
 
 /** Route elements to spread inside a <Routes> (a function, not a
@@ -17,7 +19,7 @@ function LegacyLibraryRedirect({ section }: { section?: LibrarySection }) {
 export function legacyLibraryRoutes() {
   return (
     <>
-      <Route path="/spaces/new" element={<Navigate to={NEW_LIBRARY_PATH} replace />} />
+      <Route path="/spaces/new" element={<LegacyLibraryRedirect newLibrary />} />
       <Route path="/s/:spaceKey" element={<LegacyLibraryRedirect />} />
       <Route path="/s/:spaceKey/settings" element={<LegacyLibraryRedirect section="settings" />} />
       <Route path="/s/:spaceKey/due" element={<LegacyLibraryRedirect section="due" />} />

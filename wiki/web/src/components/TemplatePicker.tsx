@@ -1,5 +1,5 @@
-/** A page's starting point: Blank first, then the space's builtin, other
- *  global and its own templates, in the order `listTemplates` returns them.
+/** A page's starting point: Blank first, then the library's builtin,
+ *  other global and its own templates, in the order `listTemplates` returns them.
  *  Hovering or focusing an option loads and shows its content in the side
  *  pane (fetched once per template, then cached for the picker's life). */
 import { useEffect, useRef, useState } from 'react';

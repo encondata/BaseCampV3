@@ -80,6 +80,13 @@ describe('SearchPage', () => {
     fireEvent.focus(combo);
     fireEvent.mouseDown(await screen.findByRole('button', { name: 'Guides' }));
     await waitFor(() => expect(search).toHaveBeenCalledWith({ q: 'rack', space: 'guides', kind: undefined, limit: 50 }));
-    expect(screen.getByTestId('probe').textContent).toBe('/search?q=rack&space=guides');
+    expect(screen.getByTestId('probe').textContent).toBe('/search?q=rack&library=guides');
+  });
+
+  it('reads the library from the URL, and turns an old ?space= link into ?library=', async () => {
+    renderPage('/search?q=rack&space=guides');
+    await waitFor(() => expect(search).toHaveBeenCalledWith({ q: 'rack', space: 'guides', kind: undefined, limit: 50 }));
+    await waitFor(() => expect(screen.getByTestId('probe').textContent).toBe('/search?q=rack&library=guides'));
+    expect(search).not.toHaveBeenCalledWith(expect.objectContaining({ space: undefined }));
   });
 });

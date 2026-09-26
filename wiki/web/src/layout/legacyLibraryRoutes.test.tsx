@@ -35,8 +35,11 @@ describe('legacy library routes', () => {
     expect(renderAt(from)).toBe(to);
   });
 
-  it('keeps the query and the hash', () => {
-    expect(renderAt('/s/ops/settings?tab=x#members')).toBe('/library/ops/settings?tab=x#members');
+  it.each([
+    ['/s/ops/settings?tab=x#members', '/library/ops/settings?tab=x#members'],
+    ['/spaces/new?from=menu#top', '/libraries/new?from=menu#top'],
+  ])('keeps the query and the hash: %s', (from, to) => {
+    expect(renderAt(from)).toBe(to);
   });
 
   it('leaves the new paths alone', () => {

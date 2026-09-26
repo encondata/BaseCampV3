@@ -1,9 +1,9 @@
 /** /templates — every template a page can start from: the built-ins, other
- *  global templates (added by a wiki admin), and — once a space is picked —
- *  that space's own. List, create, edit (name/description/icon plus its
+ *  global templates (added by a wiki admin), and — once a library is picked —
+ *  that library's own. List, create, edit (name/description/icon plus its
  *  content, in a standalone, non-collaborative editor) and delete, each
- *  gated the way the API gates them: a space template needs manage on its
- *  space, a global one needs a wiki admin, and a builtin is read-only for
+ *  gated the way the API gates them: a library template needs manage on
+ *  its library, a global one needs a wiki admin, and a builtin is read-only for
  *  everyone. */
 import type { JSONContent } from '@tiptap/core';
 import { useEffect, useState } from 'react';
@@ -27,8 +27,9 @@ import {
 const GLOBAL = '__global__';
 const GRID = { gridTemplateColumns: 'minmax(200px, 3fr) minmax(100px, 1fr) minmax(110px, 1fr) 160px' };
 
-/** Like the template picker: "This space" for the space being browsed,
- *  else that space's name (its key only while the spaces load). */
+/** Like the template picker: "This library" for the library being
+ *  browsed, else that library's name (its key only while the libraries
+ *  load). */
 function scopeLabel(t: TemplateOut, current: SpaceOut | null, spaces: SpaceOut[] | null): string {
   if (t.is_builtin) return 'Built in';
   if (t.space_id === null) return 'Global';
@@ -37,9 +38,9 @@ function scopeLabel(t: TemplateOut, current: SpaceOut | null, spaces: SpaceOut[]
 }
 
 /** Whether the caller may change (or delete) `t` — a builtin never; a
- *  global template needs a wiki admin; a space template needs manage on
- *  its space (the one currently browsed — the only one a listing can
- *  ever mix in, since `listTemplates` scopes space templates to it). */
+ *  global template needs a wiki admin; a library template needs manage
+ *  on its library (the one currently browsed — the only one a listing can
+ *  ever mix in, since `listTemplates` scopes library templates to it). */
 function canManageTemplate(
   t: Pick<TemplateOut, 'is_builtin' | 'space_id'>, isAdmin: boolean, spaceLevel: Level | null | undefined,
 ): boolean {

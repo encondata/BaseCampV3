@@ -35,7 +35,6 @@ const ACCESS: { value: Access; label: string; hint: string }[] = [
 ];
 
 const DEFAULT_COLOR = PRESET_COLORS.find((c) => c.label === 'Blue')?.value ?? PRESET_COLORS[0].value;
-const DEFAULT_ICON = '📚';
 
 function createError(err: unknown): string {
   if (err instanceof ApiError && err.code === 'key_taken') return 'That key is already in use. Pick another.';
@@ -49,7 +48,7 @@ export default function NewSpace() {
   const [key, setKey] = useState('');
   const [keyEdited, setKeyEdited] = useState(false);
   const [description, setDescription] = useState('');
-  const [icon, setIcon] = useState(DEFAULT_ICON);
+  const [icon, setIcon] = useState('');
   const [color, setColor] = useState(DEFAULT_COLOR);
   const [access, setAccess] = useState<Access>('internal');
   const [busy, setBusy] = useState(false);

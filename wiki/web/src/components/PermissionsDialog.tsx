@@ -1,13 +1,13 @@
-/** Who can see, edit and manage a space or a node.
+/** Who can see, edit and manage a library (a space in the code) or a node.
  *
  *  `PermissionsEditor` is the body: the current effective access (who,
- *  level, and where it comes from — "Space", "Inherited from <folder>",
+ *  level, and where it comes from — "Library", "Inherited from <folder>",
  *  "This page"), an add row (a principal type, then who, found by a server
  *  search, and a level) and Save. A node also has the "Inherit permissions
  *  from parent" switch: turned off, the current access is copied onto the
  *  node so nothing changes until it's edited (the server makes the copy).
  *  `PermissionsDialog` wraps the body in the modal header pattern; the
- *  space settings page shows the body inline. */
+ *  library settings page shows the body inline. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import ComboBox from '@portal/components/ComboBox';
