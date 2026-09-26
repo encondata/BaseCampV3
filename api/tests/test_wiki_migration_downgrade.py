@@ -40,7 +40,7 @@ def throwaway_url():
 def _alembic(url, *args):
     env = {**os.environ, "SS_DATABASE_URL": url.render_as_string(hide_password=False)}
     result = subprocess.run([str(API_DIR / ".venv/bin/alembic"), *args], cwd=API_DIR,
-                            env=env, capture_output=True, text=True)
+                            env=env, capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr[-2000:]
 
 
