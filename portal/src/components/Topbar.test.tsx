@@ -80,6 +80,16 @@ it('shows the AI button for a caller with ai:view', () => {
   expect(screen.getByRole('button', { name: 'AI assistant' })).toBeDefined();
 });
 
+it('shows the help button only for a caller with wiki:view', () => {
+  auth.can = (resource) => resource !== 'wiki';
+  renderTopbar();
+  expect(screen.queryByRole('button', { name: 'Help for this page' })).toBeNull();
+  cleanup();
+  auth.can = (resource, action) => resource === 'wiki' && action === 'view';
+  renderTopbar();
+  expect(screen.getByRole('button', { name: 'Help for this page' })).toBeDefined();
+});
+
 it('bell shows the unread badge and lists items; clicking one marks it read', async () => {
   bell.unreadCount = 2;
   bell.items = [{ id: 'n1', kind: 'report_ready', title: 'Move Report is ready', body: 'NAP11',
