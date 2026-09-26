@@ -9,12 +9,14 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/wikiApi')>()),
   getAssetUrls: vi.fn(),
   getNode: vi.fn(),
+  getFileUrl: vi.fn(),
 }));
 
 import { ApiError } from '@portal/lib/api';
 
 import { clearAssetUrls } from '../lib/assetUrls';
-import { getAssetUrls, getNode } from '../lib/wikiApi';
+import { clearNodeTitles } from '../lib/nodeTitles';
+import { getAssetUrls, getFileUrl, getNode } from '../lib/wikiApi';
 import { makeDetail } from '../testing/fixtures';
 import ReadOnlyDoc from './ReadOnlyDoc';
 
@@ -41,6 +43,7 @@ const doc = {
 
 beforeEach(() => {
   clearAssetUrls();
+  clearNodeTitles();
   vi.mocked(getAssetUrls).mockResolvedValue({ [SHOWN]: 'https://s3/rack.png' });
   vi.mocked(getNode).mockImplementation(async (id) => {
     if (id === 'n-live') return makeDetail('n-live', { title: 'Cabling standards' });
@@ -71,5 +74,41 @@ describe('ReadOnlyDoc', () => {
     const toggle = await screen.findByRole('button', { name: 'Expand section' });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(document.querySelector('[contenteditable="true"]')).toBeNull();
+  });
+});
+
+const para = (...content: object[]) => ({ type: 'doc', content: [{ type: 'paragraph', content }] });
+
+describe('ReadOnlyDoc — unverified targets', () => {
+  it('never shows a page link\'s stored title: "Loading…" first, "Missing page" on any error', async () => {
+    let fail!: (e: unknown) => void;
+    vi.mocked(getNode).mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
+    render(<MemoryRouter><ReadOnlyDoc content={para(
+      { type: 'pageLink', attrs: { nodeId: 'n-slow', title: 'Stored secret title' } },
+    )} /></MemoryRouter>);
+    expect(await screen.findByText('Loading…')).toBeTruthy();
+    expect(screen.queryByText(/Stored secret title/)).toBeNull();
+    fail(new Error('network down'));
+    expect(await screen.findByText('Missing page')).toBeTruthy();
+    expect(screen.queryByText(/Stored secret title/)).toBeNull();
+  });
+
+  it('encodes node ids in the links it builds', async () => {
+    vi.mocked(getNode).mockResolvedValue(makeDetail('a/b?x', { title: 'Odd id' }));
+    render(<MemoryRouter><ReadOnlyDoc content={para(
+      { type: 'pageLink', attrs: { nodeId: 'a/b?x', title: '' } },
+    )} /></MemoryRouter>);
+    expect((await screen.findByRole('link', { name: 'Odd id' })).getAttribute('href')).toBe('/n/a%2Fb%3Fx');
+  });
+
+  it('shows "File unavailable", not the stored file name, for a file the reader can\'t view', async () => {
+    vi.mocked(getFileUrl).mockRejectedValue(new ApiError(404, 'not_found'));
+    render(<MemoryRouter><ReadOnlyDoc content={{ type: 'doc', content: [{
+      type: 'fileEmbed',
+      attrs: { nodeId: 'f-hidden', assetId: null, filename: 'salaries-2026.xlsx', contentType: '' },
+    }] }} /></MemoryRouter>);
+    expect(await screen.findByText('File unavailable')).toBeTruthy();
+    expect(screen.queryByText(/salaries/)).toBeNull();
+    expect(screen.queryByRole('link', { name: /Open/ })).toBeNull();
   });
 });

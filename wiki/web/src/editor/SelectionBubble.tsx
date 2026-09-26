@@ -3,7 +3,7 @@
  *  selected (not inside a code block). */
 import type { Editor } from '@tiptap/core';
 import { TextSelection } from '@tiptap/pm/state';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { Icon, type IconName } from './icons';
 
@@ -41,16 +41,29 @@ function spotOf(editor: Editor): Spot | null {
   }
 }
 
+function sameSpot(a: Spot | null, b: Spot | null): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.top !== b.top || a.left !== b.left) return false;
+  return Object.keys(a.marks).every((k) => a.marks[k] === b.marks[k]);
+}
+
 export default function SelectionBubble({ editor, onLink }: {
   editor: Editor;
   onLink: (anchor: { top: number; left: number }) => void;
 }) {
   const [spot, setSpot] = useState<Spot | null>(null);
+  const shown = useRef<Spot | null>(null);
   const [pointerDown, setPointerDown] = useState(false);
 
   useEffect(() => {
-    const update = () => setSpot(spotOf(editor));
-    const hide = () => setSpot(null);
+    // remote changes re-run this constantly; re-render only on a real move
+    const update = () => {
+      const next = spotOf(editor);
+      if (sameSpot(shown.current, next)) return;
+      shown.current = next;
+      setSpot(next);
+    };
+    const hide = () => { shown.current = null; setSpot(null); };
     // wait for the drag-select to finish before showing
     const down = () => setPointerDown(true);
     const up = () => { setPointerDown(false); update(); };

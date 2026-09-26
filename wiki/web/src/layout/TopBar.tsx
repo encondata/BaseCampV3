@@ -8,8 +8,8 @@ import { useAuth } from '@portal/auth/AuthContext';
 import { avatarGradient, initials } from '@portal/lib/format';
 
 import { portalOrigin } from '../lib/origins';
+import { clearSessionCaches } from '../lib/sessionCaches';
 import type { MeOut, SpaceOut } from '../lib/types';
-import { clearWikiMe } from '../lib/useWikiMe';
 import SpaceSwitcher from './SpaceSwitcher';
 
 interface Props {
@@ -76,7 +76,7 @@ export default function TopBar({ me, spaces, currentSpace, sidebarCollapsed, onS
 
   const signOut = async () => {
     setUserOpen(false);
-    clearWikiMe();
+    clearSessionCaches();
     await logout();
     navigate('/login', { replace: true });
   };

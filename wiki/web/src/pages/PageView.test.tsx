@@ -5,7 +5,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@portal/lib/notificationsContext', () => ({ useToast: () => vi.fn() }));
+const toast = vi.fn();
+vi.mock('@portal/lib/notificationsContext', () => ({ useToast: () => toast }));
+const systemStatus = { read_only: false };
+vi.mock('@portal/lib/systemStatusContext', () => ({
+  useSystemStatus: () => ({ status: systemStatus, refresh: () => {} }),
+}));
 vi.mock('@portal/auth/AuthContext', () => ({
   useAuth: () => ({ person: { id: 'p-1', display_name: 'Jimmy Henderson' } }),
 }));
@@ -19,7 +24,13 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
 }));
 // live editing is verified in the browser; here the editor is a stand-in
 vi.mock('../editor/WikiEditor', () => ({
-  default: ({ pageId }: { pageId: string }) => <div data-testid="wiki-editor">editing {pageId}</div>,
+  default: ({ pageId, onAccessLost }: { pageId: string; onAccessLost: (l: 'view' | 'none') => void }) => (
+    <div data-testid="wiki-editor">
+      editing {pageId}
+      <button type="button" onClick={() => onAccessLost('view')}>server says read-only</button>
+      <button type="button" onClick={() => onAccessLost('none')}>server refuses</button>
+    </div>
+  ),
 }));
 
 import { ApiError } from '@portal/lib/api';
@@ -66,6 +77,8 @@ function renderPage(node: NodeDetailOut, path = `/n/${node.id}`) {
 }
 
 beforeEach(() => {
+  toast.mockReset();
+  systemStatus.read_only = false;
   vi.mocked(getMe).mockResolvedValue(makeMe());
   vi.mocked(getPageContent).mockReset().mockResolvedValue(PUBLISHED);
   vi.mocked(setFavorite).mockReset().mockResolvedValue(undefined);
@@ -167,5 +180,31 @@ describe('PageView — the ⋯ menu', () => {
     open();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Delete' }));
     expect(shell.requestDelete).toHaveBeenCalledWith(node);
+  });
+});
+
+describe('PageView — live editing ends', () => {
+  const editing = () => renderPage(makeDetail('p1', { my_level: 'edit', page: published }), '/n/p1?edit=1');
+
+  it('blames read-only mode when the wiki is in it', async () => {
+    systemStatus.read_only = true;
+    editing();
+    fireEvent.click(await screen.findByRole('button', { name: 'server says read-only' }));
+    expect(toast).toHaveBeenCalledWith('The wiki is in read-only mode right now — showing the published version.');
+    expect(screen.queryByTestId('wiki-editor')).toBeNull();
+    expect(await screen.findByText('Hello from the published page.')).toBeTruthy();
+  });
+
+  it('otherwise says editing is unavailable without guessing why', async () => {
+    editing();
+    fireEvent.click(await screen.findByRole('button', { name: 'server says read-only' }));
+    expect(toast).toHaveBeenCalledWith('You can\'t edit this page right now — showing the published version.');
+  });
+
+  it('says live editing stopped when the server refuses the connection', async () => {
+    editing();
+    fireEvent.click(await screen.findByRole('button', { name: 'server refuses' }));
+    expect(toast.mock.calls[0][0]).toMatch(/^Live editing stopped/);
+    expect(screen.queryByTestId('wiki-editor')).toBeNull();
   });
 });

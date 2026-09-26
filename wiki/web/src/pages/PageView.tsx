@@ -6,13 +6,14 @@
  *  View mode shows the published version read-only (ReadOnlyDoc). Edit
  *  mode (`?edit=1`, editors only — and where editors land on a page that
  *  was never published) mounts the live editor. */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '@portal/auth/AuthContext';
 import { ApiError } from '@portal/lib/api';
 import { relativeTime } from '@portal/lib/format';
 import { useToast } from '@portal/lib/notificationsContext';
+import { useSystemStatus } from '@portal/lib/systemStatusContext';
 
 import RowMenu, { atLeast } from '../components/RowMenu';
 import { Icon } from '../editor/icons';
@@ -149,13 +150,23 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
     }, { replace: true });
   };
 
+  // The server doesn't say why a connection went read-only or was refused;
+  // the system status tells read-only mode apart from everything else.
+  const { status: systemStatus, refresh: refreshSystemStatus } = useSystemStatus();
+  const readOnlyMode = useRef(systemStatus.read_only);
+  readOnlyMode.current = systemStatus.read_only;
   const onAccessLost = useCallback((level: 'view' | 'none') => {
     setEditBlocked(true);
-    toast(level === 'view'
-      ? 'You can view this page but can no longer edit it.'
-      : 'Live editing stopped — you may no longer have access to this page.');
+    if (readOnlyMode.current) {
+      toast('The wiki is in read-only mode right now — showing the published version.');
+    } else if (level === 'view') {
+      toast('You can\'t edit this page right now — showing the published version.');
+    } else {
+      toast('Live editing stopped — the page may have moved or your access changed. Refresh to try again.');
+    }
+    refreshSystemStatus();
     noteChanged(node);
-  }, [node, toast]);
+  }, [node, toast, refreshSystemStatus]);
 
   const onPublished = (version: VersionOut) => {
     setReload((n) => n + 1);

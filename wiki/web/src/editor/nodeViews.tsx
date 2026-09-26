@@ -15,11 +15,10 @@ import {
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
-import { ApiError } from '@portal/lib/api';
-
 import { fileType } from '../components/NodeIcon';
 import { resolveAssetUrl } from '../lib/assetUrls';
-import { getFileUrl, getNode } from '../lib/wikiApi';
+import { nodeTitle } from '../lib/nodeTitles';
+import { getFileUrl } from '../lib/wikiApi';
 import { CALLOUT_VARIANTS, type CalloutVariant } from './extensions/Callout';
 import { Icon, type IconName } from './icons';
 
@@ -40,21 +39,8 @@ function useAssetUrl(assetId: string | null): string | null | undefined {
   return url?.id === assetId ? url.url : undefined;
 }
 
-const TITLE_TTL_MS = 2 * 60_000;
-const titles = new Map<string, { at: number; title: Promise<string | null> }>();
-
-/** A node's current title (null: gone or not viewable), cached briefly. */
-function nodeTitle(id: string): Promise<string | null> {
-  const hit = titles.get(id);
-  if (hit && Date.now() - hit.at < TITLE_TTL_MS) return hit.title;
-  const title = getNode(id).then((n) => n.title).catch((err) => {
-    if (err instanceof ApiError && (err.status === 404 || err.status === 403)) return null;
-    titles.delete(id);   // a network failure is retried next time
-    throw err;
-  });
-  titles.set(id, { at: Date.now(), title });
-  return title;
-}
+/** The in-app route of a wiki node (ids come from client-written documents). */
+const nodePath = (id: string) => `/n/${encodeURIComponent(id)}`;
 
 // ── image ─────────────────────────────────────────────────────────────
 
@@ -157,7 +143,10 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
 
   const type = fileType(preview?.type ?? contentType, filename);
   const previewable = type === 'pdf' || type === 'image' || type === 'video';
-  const missing = preview !== undefined && !preview.url;
+  const loading = preview === undefined;
+  const missing = !loading && !preview.url;
+  // the stored name shows only once the reader is known to be able to see the file
+  const name = loading ? 'Loading…' : missing ? 'File unavailable' : filename || 'Untitled file';
   const label = { pdf: 'PDF', image: 'Image', video: 'Video', doc: 'Document', sheet: 'Spreadsheet',
     slides: 'Presentation', other: 'File' }[type];
 
@@ -167,8 +156,8 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
       <div className="wiki-file-card" data-drag-handle="">
         <span className={`wiki-file-icon wiki-file-${type}`}><Icon name="file" /></span>
         <span className="wiki-file-text">
-          <b title={filename}>{filename || 'Untitled file'}</b>
-          <span>{missing ? 'File unavailable' : label}</span>
+          <b title={loading || missing ? undefined : filename}>{name}</b>
+          <span>{missing ? 'Removed, or not shared with you' : loading ? '' : label}</span>
         </span>
         <span className="wiki-file-actions" contentEditable={false}>
           {previewable && preview?.url && (
@@ -177,7 +166,7 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
             </button>
           )}
           {nodeId && !missing && (
-            <Link className="we-chip-btn" to={`/n/${nodeId}`}><Icon name="external" />Open</Link>
+            <Link className="we-chip-btn" to={nodePath(nodeId)}><Icon name="external" />Open</Link>
           )}
           {!nodeId && preview?.url && (
             <a className="we-chip-btn" href={preview.url} target="_blank" rel="noopener noreferrer">
@@ -200,7 +189,9 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
 // ── page link ─────────────────────────────────────────────────────────
 
 function PageLinkView({ node }: NodeViewProps) {
-  const { nodeId } = node.attrs as { nodeId: string | null; title: string };
+  // the stored title is never shown: it may be stale, or name a page the
+  // reader can't see
+  const { nodeId } = node.attrs as { nodeId: string | null };
   const navigate = useNavigate();
   const [title, setTitle] = useState<{ id: string; title: string | null } | null>(null);
 
@@ -209,9 +200,9 @@ function PageLinkView({ node }: NodeViewProps) {
     let live = true;
     nodeTitle(nodeId)
       .then((t) => { if (live) setTitle({ id: nodeId, title: t }); })
-      .catch(() => { if (live) setTitle({ id: nodeId, title: (node.attrs.title as string) || null }); });
+      .catch(() => { if (live) setTitle({ id: nodeId, title: null }); });
     return () => { live = false; };
-  }, [nodeId, node.attrs.title]);
+  }, [nodeId]);
 
   const current = title?.id === nodeId ? title : null;
   if (!nodeId || (current && current.title === null)) {
@@ -221,11 +212,19 @@ function PageLinkView({ node }: NodeViewProps) {
       </NodeViewWrapper>
     );
   }
+  if (!current) {
+    return (
+      <NodeViewWrapper as="span" className="wiki-page-link loading">
+        <Icon name="pageLink" className="wiki-page-link-icon" />Loading…
+      </NodeViewWrapper>
+    );
+  }
+  const path = nodePath(nodeId);
   return (
     <NodeViewWrapper as="span" className="wiki-page-link">
-      <a href={`/n/${nodeId}`} onClick={(e) => { e.preventDefault(); navigate(`/n/${nodeId}`); }}>
+      <a href={path} onClick={(e) => { e.preventDefault(); navigate(path); }}>
         <Icon name="pageLink" className="wiki-page-link-icon" />
-        {current ? current.title : (node.attrs.title as string) || 'Loading…'}
+        {current.title}
       </a>
     </NodeViewWrapper>
   );

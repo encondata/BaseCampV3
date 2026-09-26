@@ -16,6 +16,7 @@ import { useToast } from '@portal/lib/notificationsContext';
 
 import { collabUrl } from '../lib/origins';
 import { currentAccessToken } from '../lib/session';
+import { CollabStatus, useCollabState } from './collabStatus';
 import { withNodeViews } from './nodeViews';
 import { insertPageLink, PageLinkMenu, PickerPopover, type PickedNode } from './PagePicker';
 import LinkPopover from './LinkPopover';
@@ -44,58 +45,8 @@ export interface WikiEditorProps {
 }
 
 const PLACEHOLDER = 'Type “/” for blocks, “[[” to link a page…';
-const BANNER_GRACE_MS = 1500;
 
 type Anchor = { top: number; left: number };
-
-function useCollabState(provider: HocuspocusProvider) {
-  const [status, setStatus] = useState<string>(provider.status);
-  const [unsynced, setUnsynced] = useState(provider.unsyncedChanges);
-  const [synced, setSynced] = useState(provider.synced);
-  const [everConnected, setEverConnected] = useState(provider.status === 'connected');
-  const [grace, setGrace] = useState(true);
-
-  useEffect(() => {
-    const onStatus = ({ status: next }: { status: string }) => {
-      setStatus(next);
-      if (next === 'connected') setEverConnected(true);
-    };
-    const onUnsynced = (n: number) => setUnsynced(n);
-    const onSynced = ({ state }: { state: boolean }) => setSynced(state);
-    provider.on('status', onStatus);
-    provider.on('unsyncedChanges', onUnsynced);
-    provider.on('synced', onSynced);
-    const timer = setTimeout(() => setGrace(false), BANNER_GRACE_MS);
-    return () => {
-      provider.off('status', onStatus);
-      provider.off('unsyncedChanges', onUnsynced);
-      provider.off('synced', onSynced);
-      clearTimeout(timer);
-    };
-  }, [provider]);
-
-  const connected = status === 'connected';
-  return {
-    connected,
-    synced,
-    unsynced,
-    // no banner for the first moments of the first connection
-    showBanner: !connected && (everConnected || !grace),
-  };
-}
-
-function SaveState({ connected, synced, unsynced }: { connected: boolean; synced: boolean; unsynced: number }) {
-  let text = 'Saved';
-  let tone = 'saved';
-  if (!synced && !connected) { text = 'Connecting…'; tone = 'pending'; }
-  else if (!connected) { text = 'Offline'; tone = 'offline'; }
-  else if (unsynced > 0) { text = 'Saving…'; tone = 'pending'; }
-  return (
-    <span className={`we-save we-save-${tone}`} role="status" aria-live="polite">
-      <span className="we-save-dot" aria-hidden="true" />{text}
-    </span>
-  );
-}
 
 function CollabEditor({ pageId, doc, provider, user, onToc }: {
   pageId: string; doc: Y.Doc; provider: HocuspocusProvider; user: EditorUser; onToc: (toc: TocEntry[]) => void;
@@ -111,7 +62,7 @@ function CollabEditor({ pageId, doc, provider, user, onToc }: {
   const [linkAt, setLinkAt] = useState<Anchor | null>(null);
   const imageInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const { connected, synced, unsynced, showBanner } = useCollabState(provider);
+  const collabState = useCollabState(provider);
 
   const cursorAnchor = useCallback((ed: Editor | null): Anchor => (
     ed ? menuPosition(ed, ed.state.selection.from, 380) : { top: 160, left: 160 }), []);
@@ -163,11 +114,14 @@ function CollabEditor({ pageId, doc, provider, user, onToc }: {
     return () => { editor.off('update', emit); clearTimeout(timer); };
   }, [editor]);
 
-  // a new, empty page is ready to type into once it has loaded
+  // a new, empty page is ready to type into once it has first loaded
   useEffect(() => {
     if (!editor) return undefined;
+    let first = true;
     const onSynced = ({ state }: { state: boolean }) => {
-      if (state && !editor.isDestroyed && editor.isEmpty) editor.commands.focus('start');
+      if (!state || !first) return;
+      first = false;
+      if (!editor.isDestroyed && editor.isEmpty) editor.commands.focus('start');
     };
     provider.on('synced', onSynced);
     return () => { provider.off('synced', onSynced); };
@@ -208,16 +162,16 @@ function CollabEditor({ pageId, doc, provider, user, onToc }: {
         {editor && <Toolbar editor={editor} actions={actions} />}
         <div className="we-status">
           <PresenceStack provider={provider} />
-          <SaveState connected={connected} synced={synced} unsynced={unsynced} />
+          <CollabStatus state={collabState} />
         </div>
       </div>
-      {showBanner && (
+      {collabState.showBanner && (
         <div className="we-banner" role="status">
           <span className="we-banner-spin" aria-hidden="true" />
           Reconnecting… your changes are kept on this device
         </div>
       )}
-      <EditorContent editor={editor} className={`wiki-doc wiki-doc-editing${synced ? '' : ' is-loading'}`} />
+      <EditorContent editor={editor} className={`wiki-doc wiki-doc-editing${collabState.dimmed ? ' is-loading' : ''}`} />
 
       <SlashMenu editor={editor} actions={actions} />
       <PageLinkMenu editor={editor} />

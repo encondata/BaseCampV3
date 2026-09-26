@@ -33,6 +33,10 @@ export function findTrigger(
   return { from: $from.pos - match[0].length, to: $from.pos, query: match[1] ?? '' };
 }
 
+function sameTrigger(a: Trigger | null, b: Trigger | null): boolean {
+  return a === b || (!!a && !!b && a.from === b.from && a.to === b.to && a.query === b.query);
+}
+
 /** The trigger under the cursor, re-read on every editor change. Escape
  *  (`dismiss`) hides it until the trigger goes away, and so does leaving
  *  the editor. */
@@ -41,6 +45,7 @@ export function useTrigger(
 ): [Trigger | null, () => void] {
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   const dismissedAt = useRef<number | null>(null);
+  const shown = useRef<Trigger | null>(null);
   const findRef = useRef(find);
   findRef.current = find;
 
@@ -49,11 +54,17 @@ export function useTrigger(
     const update = () => {
       const found = editor.isDestroyed ? null : findRef.current(editor.state);
       if (!found) dismissedAt.current = null;
-      setTrigger(found && found.from !== dismissedAt.current ? found : null);
+      const next = found && found.from !== dismissedAt.current ? found : null;
+      // most transactions (other people typing elsewhere) leave it as it
+      // was: don't even queue a state update for those
+      if (sameTrigger(shown.current, next)) return;
+      shown.current = next;
+      setTrigger(next);
     };
     const onBlur = () => {
       const found = findRef.current(editor.state);
       if (found) dismissedAt.current = found.from;
+      shown.current = null;
       setTrigger(null);
     };
     update();
@@ -66,10 +77,9 @@ export function useTrigger(
   }, [editor]);
 
   const dismiss = useCallback(() => {
-    setTrigger((cur) => {
-      if (cur) dismissedAt.current = cur.from;
-      return null;
-    });
+    if (shown.current) dismissedAt.current = shown.current.from;
+    shown.current = null;
+    setTrigger(null);
   }, []);
 
   return [trigger, dismiss];
