@@ -82,6 +82,13 @@ them) from the main API's `.env` into `wiki/.env`. See the comments in
 | `SS_WIKI_MAX_UPLOAD_BYTES` | `1073741824` (1 GiB) | Cap on a single file upload. |
 | `SS_WIKI_TRASH_DAYS` | `30` | Days a soft-deleted node stays restorable before the purge job drops it. |
 
+**On the wiki worker** (`wiki/.env`), exports are also capped:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SS_WIKI_EXPORT_MAX_PAGES` | `1000` | Most pages one export may hold. |
+| `SS_WIKI_EXPORT_MAX_BYTES` | `2147483648` (2 GiB) | Most bytes of files and page images one export may hold. |
+
 `SS_WIKI_TRASH_DAYS` and `SS_WIKI_MAX_UPLOAD_BYTES` must be the same on the
 API and in `wiki/.env` (the worker): the API shows each trash batch's
 purge date from its own value, but the worker's expiry sweep deletes on

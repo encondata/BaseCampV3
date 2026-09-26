@@ -39,7 +39,7 @@ _ESCAPE = re.compile(r"([\\`*_\[\]<>|~])")
 _LINE_START = re.compile(r"^(\s*)([#>+=-]|\d+[.)])")
 
 # emphasis marks, outermost first (a link wraps them; code is innermost)
-_EMPHASIS = {"bold": "**", "italic": "_", "strike": "~~"}
+_EMPHASIS = {"bold": "**", "italic": "*", "strike": "~~"}
 _MARK_ORDER = ("link", "bold", "italic", "strike", "code")
 
 
@@ -186,7 +186,8 @@ class _Writer:
             out.append(lead)
             open_marks(marks)
             if code:
-                out.append(_code_span(stripped))
+                # GFM splits table cells on `|` before reading code spans
+                out.append(_code_span(stripped.replace("|", "\\|") if in_table else stripped))
             else:
                 out.append(stripped if raw else escape(stripped))
             pending = trail
@@ -226,7 +227,9 @@ class _Writer:
         kind = node.get("type")
         content = _children(node)
         if kind == "paragraph":
-            return _escape_line_start(self.inline(content))
+            # every line: a hard break starts a new one
+            return "\n".join(_escape_line_start(line)
+                             for line in self.inline(content).split("\n"))
         if kind == "heading":
             level = _attr(node, "level")
             level = level if isinstance(level, int) and 1 <= level <= 6 else 1
@@ -322,8 +325,8 @@ class _Writer:
         caption = _str_attr(node, "caption")
         src = self.refs.image(_attr(node, "assetId") or None)
         line = f"![{escape(alt)}]({md_url(src)})" if src \
-            else f"_{escape(f'[Image: {alt}]' if alt else '[Image]')}_"
-        return f"{line}\n_{escape(caption)}_" if caption else line
+            else f"*{escape(f'[Image: {alt}]' if alt else '[Image]')}*"
+        return f"{line}\n*{escape(caption)}*" if caption else line
 
 
 def _prefix(text: str, prefix: str) -> str:

@@ -321,29 +321,42 @@ async def _notify_export(db: AsyncSession, job: WikiJob, *, ok: bool) -> None:
                            payload={"job_id": str(job.id)})
 
 
+async def _own_attempt(db: AsyncSession, job_id: uuid.UUID,
+                       attempt: int) -> tuple[WikiJob | None, bool]:
+    """(the job row locked FOR UPDATE, whether this attempt still owns
+    it). An attempt owns its job while the row is still `running` with
+    the attempt count it was claimed at: once the stale sweep re-queued
+    or failed it — or another worker re-claimed it — this attempt must
+    record nothing, or the job would be marked done (and its requester
+    notified) twice."""
+    row = await db.scalar(select(WikiJob).where(WikiJob.id == job_id).with_for_update()
+                          .execution_options(populate_existing=True))
+    return row, row is not None and row.status == "running" and row.attempts == attempt
+
+
 async def _run_export(db: AsyncSession, job: WikiJob) -> None:
-    job_id = job.id
+    job_id, attempt = job.id, job.attempts
     try:
         result = await export.run(db, job)
     except export.ExportError as exc:
         await db.rollback()
-        job = await db.get(WikiJob, job_id, populate_existing=True)
-        if job is None:
-            return
-        job.status = "failed"
-        job.error = str(exc)[:ERROR_MAX]
-        job.result = {"message": str(exc)}
-        job.finished_at = _now()
-        await _notify_export(db, job, ok=False)
+        row, owned = await _own_attempt(db, job_id, attempt)
+        if owned:
+            row.status = "failed"
+            row.error = str(exc)[:ERROR_MAX]
+            row.result = {"message": str(exc)}
+            row.finished_at = _now()
+            await _notify_export(db, row, ok=False)
         await db.commit()
         return
-    job = await db.get(WikiJob, job_id, populate_existing=True)
-    if job is None:                      # its row went while it ran: nothing to record
+    row, owned = await _own_attempt(db, job_id, attempt)
+    if row is None:                      # its row went while it ran: nothing to record
         await enqueue(db, "purge", payload={"keys": [result["key"]]})
-        await db.commit()
-        return
-    _done(job, result)
-    await _notify_export(db, job, ok=True)
+    elif owned:
+        _done(row, result)
+        await _notify_export(db, row, ok=True)
+    else:
+        logger.info("export %s: attempt %s was superseded; recording nothing", job_id, attempt)
     await db.commit()
 
 
@@ -517,8 +530,8 @@ async def run_once(sessionmaker=None) -> bool:
         job = await claim_next(db)
         if job is None:
             return False
-        job_id, kind = job.id, job.kind
-        logger.info("claimed job %s (%s, attempt %s)", job_id, kind, job.attempts)
+        job_id, kind, attempt = job.id, job.kind, job.attempts
+        logger.info("claimed job %s (%s, attempt %s)", job_id, kind, attempt)
         try:
             await process_job(db, job)
             status = "done"
@@ -529,13 +542,15 @@ async def run_once(sessionmaker=None) -> bool:
             except Exception:
                 logger.warning("could not roll back job %s's session", job_id, exc_info=True)
             async with maker() as fin:
-                row = await fin.get(WikiJob, job_id)
-                if row is not None:
+                row, owned = await _own_attempt(fin, job_id, attempt)
+                if row is None:
+                    status = "gone"
+                elif owned:
                     await _retry_or_fail(fin, row, f"{type(exc).__name__}: {exc}")
                     status = row.status
-                    await fin.commit()
-                else:
-                    status = "gone"
+                else:                # the stale sweep (or another worker) has it now
+                    status = "superseded"
+                await fin.commit()
         logger.info("job %s finished status=%s", job_id, status)
         return True
 

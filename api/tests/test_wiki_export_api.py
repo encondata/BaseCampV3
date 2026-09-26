@@ -73,6 +73,24 @@ async def test_formats_by_kind(client, db):
     assert job.payload["zip_format"] == "md" and job.payload["filename"] == "Runbooks.zip"
 
 
+async def test_a_zip_counts_only_subpages_the_caller_can_view(client, db):
+    s = await _setup(client, db)
+    parent = await _page(client, s, db, "Parent page")
+    child = await _page(client, s, db, "Hidden child", parent=parent)
+    resp = await client.put(f"/wiki/nodes/{child['id']}/permissions", headers=s["owner"],
+                            json={"inherit": False, "grants": []})
+    assert resp.status_code == 200, resp.text
+    # to the reader the page has no subpages: like a leaf page
+    resp = await _export(client, s["viewer"], 422, node_id=parent["id"], format="zip")
+    assert resp["detail"]["code"] == "bad_format"
+    await _export(client, s["owner"], node_id=parent["id"], format="zip")
+    # a never-published subpage is invisible to a reader too
+    other = await _page(client, s, db, "Other parent")
+    await _page(client, s, db, "Draft child", parent=other, publish=False)
+    await _export(client, s["viewer"], 422, node_id=other["id"], format="zip")
+    await _export(client, s["editor"], node_id=other["id"], format="zip")
+
+
 async def test_files_are_downloaded_not_exported(client, db):
     s = await _setup(client, db)
     node = WikiNode(space_id=uuid.UUID(s["space"]["id"]), kind="file", title="manual.pdf")

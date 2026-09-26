@@ -128,6 +128,10 @@ class Settings(BaseSettings):
     # the wiki server's own origin, used by the worker for POST
     # /internal/render (export-to-PDF/docx) with X-Wiki-Service-Token.
     wiki_render_url: str = "http://localhost:5177"
+    # the most one export (worker) may hold: pages, and the summed size of
+    # the files and page images it includes
+    wiki_export_max_pages: int = 1000
+    wiki_export_max_bytes: int = 2 * 1024 ** 3
 
     @property
     def sync_database_url(self) -> str:

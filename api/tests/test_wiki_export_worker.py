@@ -29,6 +29,7 @@ import pytest
 from sqlalchemy import select
 
 from serversherpa.config import get_settings
+from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     Notification,
     WikiFile,
@@ -71,6 +72,24 @@ def service_token():
         os.environ.pop("SS_WIKI_SERVICE_TOKEN", None)
     else:
         os.environ["SS_WIKI_SERVICE_TOKEN"] = before
+    get_settings.cache_clear()
+
+
+@pytest.fixture
+def settings_env():
+    """Set SS_* settings for one test (the cached settings are rebuilt)."""
+    saved: dict[str, str | None] = {}
+
+    def set_env(name, value):
+        saved.setdefault(name, os.environ.get(name))
+        os.environ[name] = str(value)
+        get_settings.cache_clear()
+    yield set_env
+    for name, value in saved.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
     get_settings.cache_clear()
 
 
@@ -158,7 +177,7 @@ def pdfs(monkeypatch):
     """WeasyPrint's stand-in: records each document, returns a tiny PDF."""
     documents: list[str] = []
 
-    def fake(document):
+    async def fake(document, workdir):
         documents.append(document)
         return f"%PDF-fake {len(documents)}".encode()
     monkeypatch.setattr(export_html, "html_to_pdf", fake)
@@ -338,7 +357,7 @@ async def test_a_page_as_markdown(client, db, store, renderer):
     [(key, content_type, data)] = store.uploads
     assert key.endswith("/Rack Guide.md") and content_type.startswith("text/markdown")
     # a lone Markdown file has nowhere to put images
-    assert data.decode() == "# Rack Guide\n\nCheck the **breaker**\n\n_\\[Image: Rack\\]_\n"
+    assert data.decode() == "# Rack Guide\n\nCheck the **breaker**\n\n*\\[Image: Rack\\]*\n"
     assert renderer.requests == []
 
 
@@ -402,7 +421,9 @@ async def test_a_folder_zip_for_a_reader(client, db, store, renderer):
     # D is viewable (just not in this export): its title, unlinked
     assert f"Go to D, not {PUBLIC_PAGE_TEXT}" in text
     assert "![Rack](../assets/rack.png)" in text
-    assert b"Hidden" not in store.uploads[0][2]
+    for name in zf.namelist():
+        assert "Hidden" not in name
+        assert b"Hidden" not in zf.read(name)
 
 
 async def test_a_folder_zip_for_an_editor(client, db, store, renderer):
@@ -523,6 +544,138 @@ async def test_a_render_failure_is_retried_then_fails(client, db, store, rendere
     assert note.kind == "wiki_export_failed" and note.body == export.FAILED_MESSAGE
 
 
+# ── progress, attempts and limits ────────────────────────────────────
+
+
+async def test_word_export_progress_advances_between_batches(client, db, store, renderer,
+                                                             monkeypatch):
+    monkeypatch.setattr(export, "TOUCH_SECONDS", 0)
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Guides")
+    for i in range(7):
+        page = await _create(client, s["owner"], s["space"], f"P{i}", kind="page", parent=folder)
+        await publish_via_db(db, page["id"], {"type": "doc", "content": [p(t(f"P{i}"))]})
+    job_id = await _request(client, s["viewer"], node_id=folder["id"], format="zip",
+                            zip_format="docx")
+    maker = get_sessionmaker()
+    seen: list[tuple[datetime, float, int]] = []
+
+    async def run(cmd, *, timeout, max_stdout=None):
+        async with maker() as other:
+            at = await other.scalar(select(WikiJob.progress_at).where(WikiJob.id == job_id))
+        sources = cmd[cmd.index("--outdir") + 2:]
+        seen.append((at, timeout, len(sources)))
+        for src in sources:
+            Path(src).with_suffix(".docx").write_bytes(b"DOCX")
+        return 0, b"", b""
+    monkeypatch.setattr(convert, "run", run)
+
+    job = await _run(db, job_id)
+
+    assert job.status == "done", job.error
+    # batches of five, each with its own timeout, and progress between them
+    assert [(timeout, n) for _, timeout, n in seen] == [(160, 5), (100, 2)]
+    assert seen[1][0] > seen[0][0]
+    assert job.progress_at > seen[1][0]
+
+
+async def test_a_superseded_attempt_records_nothing(client, db, store, renderer, monkeypatch):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Rack Guide", kind="page")
+    await publish_via_db(db, page["id"])
+    job_id = await _request(client, s["viewer"], node_id=page["id"], format="pdf")
+    maker = get_sessionmaker()
+
+    async def slow_pdf(document, workdir):
+        # meanwhile the stale sweep gave the job up and another worker took it
+        async with maker() as other:
+            row = await other.get(WikiJob, job_id)
+            row.attempts += 1
+            await other.commit()
+        return b"%PDF-late"
+    monkeypatch.setattr(export_html, "html_to_pdf", slow_pdf)
+
+    job = await _run(db, job_id)
+
+    assert job.status == "running" and job.attempts == 2 and job.result is None
+    assert await _notes(db, s["viewer_id"]) == []
+
+
+async def test_a_superseded_attempt_does_not_record_its_failure(client, db, store, renderer,
+                                                                monkeypatch):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Rack Guide", kind="page")
+    await publish_via_db(db, page["id"])
+    job_id = await _request(client, s["viewer"], node_id=page["id"], format="pdf")
+    maker = get_sessionmaker()
+
+    async def failing_pdf(document, workdir):
+        async with maker() as other:
+            row = await other.get(WikiJob, job_id)
+            row.status = "queued"
+            await other.commit()
+        raise RuntimeError("too late anyway")
+    monkeypatch.setattr(export_html, "html_to_pdf", failing_pdf)
+
+    job = await _run(db, job_id)
+
+    assert job.status == "queued" and job.error is None
+    assert await _notes(db, s["viewer_id"]) == []
+
+
+async def test_an_export_over_the_page_limit_fails(client, db, store, renderer, pdfs,
+                                                   settings_env):
+    settings_env("SS_WIKI_EXPORT_MAX_PAGES", 1)
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Guides")
+    for title in ("One", "Two"):
+        page = await _create(client, s["owner"], s["space"], title, kind="page", parent=folder)
+        await publish_via_db(db, page["id"])
+
+    job = await _run(db, await _request(client, s["viewer"], node_id=folder["id"],
+                                        format="zip"))
+
+    assert job.status == "failed" and job.attempts == 1
+    assert "2 pages" in job.result["message"] and "1 page" in job.result["message"]
+    assert pdfs == [] and store.uploads == []
+
+
+async def test_an_export_over_the_size_limit_fails(client, db, store, renderer, pdfs,
+                                                   settings_env):
+    settings_env("SS_WIKI_EXPORT_MAX_BYTES", 100)
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Guides")
+    await _file(db, store, s, folder, data=b"x" * 60)
+    page = await _create(client, s["owner"], s["space"], "Rack", kind="page", parent=folder)
+    asset_id = await _asset(db, store, page, data=b"y" * 60)
+    await publish_via_db(db, page["id"], {"type": "doc", "content": [image(asset_id)]})
+
+    job = await _run(db, await _request(client, s["viewer"], node_id=folder["id"],
+                                        format="zip"))
+
+    assert job.status == "failed"
+    assert "too large" in job.result["message"]
+    assert store.uploads == []
+
+
+async def test_a_page_inlines_images_up_to_its_budget(client, db, store, renderer, pdfs,
+                                                      monkeypatch):
+    monkeypatch.setattr(export, "MAX_INLINE_PAGE_IMAGE_BYTES", len(PNG) + 1)
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Rack Guide", kind="page")
+    first = await _asset(db, store, page)
+    second = await _asset(db, store, page, filename="rear.png")
+    await publish_via_db(db, page["id"], {"type": "doc", "content": [
+        image(first, alt="Front"), image(second, alt="Rear")]})
+
+    job = await _run(db, await _request(client, s["viewer"], node_id=page["id"], format="pdf"))
+
+    assert job.status == "done", job.error
+    [document] = pdfs
+    assert document.count("data:image/png;base64,") == 1
+    assert 'alt="Rear"' in document                      # past the budget: alt text only
+
+
 # ── retention ────────────────────────────────────────────────────────
 
 
@@ -589,7 +742,7 @@ def test_finish_fragment():
     assert "<details open data-details" in out
 
 
-def test_real_weasyprint_pdf():
+async def test_real_weasyprint_pdf(tmp_path):
     pytest.importorskip("weasyprint")
     body = export_html.finish_fragment(
         '<h2>Setup</h2><p data-text-align="center">See <a href="/n/'
@@ -606,6 +759,42 @@ def test_real_weasyprint_pdf():
     document = export_html.page_document(title="Rack Guide", breadcrumbs=["Ops", "Runbooks"],
                                          published_at=datetime(2026, 9, 26, tzinfo=UTC),
                                          body=body)
-    pdf = export_html.html_to_pdf(document)
+    # the real thing: WeasyPrint in its own process
+    pdf = await export_html.html_to_pdf(document, tmp_path)
     assert pdf.startswith(b"%PDF")
     assert len(pdf) > 1000
+
+
+def test_the_pdf_fetcher_loads_data_uris_only():
+    pytest.importorskip("weasyprint")
+    fetcher = export_html._data_only_fetcher()
+    for url in ("file:///etc/hosts", "http://127.0.0.1:9/x"):
+        with pytest.raises(ValueError):
+            fetcher(url)
+    fetcher("data:text/plain;base64,aGk=")
+
+
+def test_a_print_document_asks_only_for_data_uris():
+    pytest.importorskip("weasyprint")
+    urls_mod = pytest.importorskip("weasyprint.urls")
+    if not hasattr(urls_mod, "URLFetcher"):
+        pytest.skip("this WeasyPrint has no URLFetcher class")
+
+    class Recording(urls_mod.URLFetcher):
+        def __init__(self):
+            super().__init__(allowed_protocols={"data"})
+            self.urls: list[str] = []
+
+        def fetch(self, url, headers=None):
+            self.urls.append(url)
+            return super().fetch(url, headers)
+
+    body = export_html.finish_fragment(
+        '<p>Hi</p><figure data-wiki-image="img"><img alt="Rack"></figure>',
+        hrefs={}, images={"img": "data:image/png;base64," + base64.b64encode(PNG).decode()})
+    document = export_html.page_document(title="T", breadcrumbs=["Ops"], published_at=None,
+                                         body=body)
+    recording = Recording()
+    assert export_html.render_pdf(document, url_fetcher=recording).startswith(b"%PDF")
+    assert recording.urls
+    assert all(u.startswith("data:") for u in recording.urls)

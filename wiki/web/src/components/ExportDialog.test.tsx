@@ -88,6 +88,15 @@ describe('ExportDialog', () => {
       { node_id: 'n1', format: 'zip', zip_format: 'docx' }));
   });
 
+  it('forces a .zip for a never-published page with subpages', async () => {
+    renderDialog({ kind: 'node', node: makeNode('n2', { title: 'Draft', my_level: 'edit', has_children: true }) });
+    expect(pressed('With subpages (.zip)')).toBe('true');
+    expect(screen.getByRole('button', { name: 'This page' })).toHaveProperty('disabled', true);
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+    await waitFor(() => expect(createExport).toHaveBeenCalledWith(
+      { node_id: 'n2', format: 'zip', zip_format: 'pdf' }));
+  });
+
   it('exports a folder as a .zip', async () => {
     renderDialog({ kind: 'node', node: makeNode('f1', { kind: 'folder', title: 'Runbooks', my_level: 'view' }) });
     expect(screen.getByText(/every page and file in it you can see/)).toBeTruthy();

@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.routes.wiki.errors import conflict, not_found
-from serversherpa.db.models import WikiNode, WikiPage, WikiSpace
+from serversherpa.db.models import WikiNode, WikiSpace
 from serversherpa.system import admin_config
 from serversherpa.wiki import tree
 from serversherpa.wiki.permissions import (
@@ -38,6 +38,7 @@ from serversherpa.wiki.permissions import (
     principal_for,
     require_node_level,
     require_space_level,
+    viewable_nodes,
 )
 
 
@@ -104,21 +105,10 @@ async def lock_and_reread(ctx: WikiCtx, node: WikiNode, needed: str,
 
 async def visible_nodes(ctx: WikiCtx, nodes: Sequence[WikiNode],
                         ) -> tuple[list[WikiNode], dict[uuid.UUID, str | None]]:
-    """The live nodes the caller can see, in order, with their levels: a
-    level of at least view, and — for view-only — not a never-published
-    page. One extra query at most (the published check)."""
-    live = [n for n in nodes if n.deleted_at is None]
-    levels = await ctx.ix.levels_for_nodes(live)
-    view_only_pages = [n.id for n in live
-                       if n.kind == "page" and levels[n.id] == "view"]
-    unpublished: set[uuid.UUID] = set()
-    if view_only_pages:
-        unpublished = set((await ctx.db.scalars(
-            select(WikiPage.node_id).where(
-                WikiPage.node_id.in_(view_only_pages),
-                WikiPage.published_version_id.is_(None))
-        )).all())
-    return [n for n in live if levels[n.id] and n.id not in unpublished], levels
+    """The live nodes the caller can see, in order, with their levels
+    (`permissions.viewable_nodes`: a level of at least view, and — for
+    view-only — not a never-published page)."""
+    return await viewable_nodes(ctx.db, ctx.ix, nodes)
 
 
 async def read_only_mode(ctx: WikiCtx) -> bool:

@@ -18,22 +18,28 @@
    renderer drops `style` attributes — alignment arrives as
    `data-text-align`).
 
-`html_to_pdf` is WeasyPrint (blocking — callers run it in a thread)."""
+`html_to_pdf` is WeasyPrint, run in a process of its own with a timeout
+(`export_pdf`), so one pathological page can't hold the worker."""
 from __future__ import annotations
 
 import copy
 import html
 import re
+import sys
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
 from serversherpa.config import get_settings
+from serversherpa.wiki import convert
 
 RENDER_TIMEOUT_SECONDS = 30
+# the most one page's WeasyPrint conversion may take
+PDF_TIMEOUT_SECONDS = 300
 RENDER_PATH = "/internal/render"
 SERVICE_TOKEN_HEADER = "X-Wiki-Service-Token"
 
@@ -309,10 +315,32 @@ def _data_only_fetcher():
     return URLFetcher(allowed_protocols={"data"})
 
 
-def html_to_pdf(document: str) -> bytes:
-    """WeasyPrint. Blocking — run it in a thread. No base URL: a document
+def render_pdf(document: str, *, url_fetcher=None) -> bytes:
+    """WeasyPrint, in this process (blocking). No base URL: a document
     only refers to data URIs and relative paths inside its export, and
-    loads nothing but data URIs (`_data_only_fetcher`)."""
+    loads nothing but data URIs (`_data_only_fetcher`, unless a test
+    passes its own). The worker calls `html_to_pdf`, which runs this in
+    a separate process with a timeout."""
     # a slow import: keep it off module load
     from weasyprint import HTML
-    return HTML(string=document, url_fetcher=_data_only_fetcher()).write_pdf()
+    return HTML(string=document,
+                url_fetcher=url_fetcher or _data_only_fetcher()).write_pdf()
+
+
+async def html_to_pdf(document: str, workdir: Path) -> bytes:
+    """`render_pdf` in its own process (`python -m
+    serversherpa.wiki.export_pdf`, through `convert.run`), killed after
+    PDF_TIMEOUT_SECONDS. Uses (and cleans up) two files in `workdir`."""
+    src, out = workdir / "pdf-source.html", workdir / "pdf-output.pdf"
+    src.write_text(document, encoding="utf-8")
+    try:
+        rc, _, err = await convert.run(
+            [sys.executable, "-m", "serversherpa.wiki.export_pdf", str(src), str(out)],
+            timeout=PDF_TIMEOUT_SECONDS)
+        if rc != 0 or not out.exists():
+            tail = err.decode("utf-8", errors="replace").strip()[-500:]
+            raise convert.ConvertError(f"WeasyPrint exited {rc}: {tail}")
+        return out.read_bytes()
+    finally:
+        src.unlink(missing_ok=True)
+        out.unlink(missing_ok=True)

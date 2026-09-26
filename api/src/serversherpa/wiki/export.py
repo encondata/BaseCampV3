@@ -47,6 +47,7 @@ from typing import Any
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from serversherpa.config import get_settings
 from serversherpa.db.models import (
     Person,
     UserAccount,
@@ -70,7 +71,7 @@ from serversherpa.wiki.content import (
 )
 from serversherpa.wiki.files import normalize_content_type, sanitize_filename
 from serversherpa.wiki.markdown import MarkdownRefs, to_markdown
-from serversherpa.wiki.permissions import AccessIndex, principal_for_person
+from serversherpa.wiki.permissions import AccessIndex, principal_for_person, viewable_nodes
 
 PAGE_FORMATS = ("pdf", "docx", "md")
 FORMATS = (*PAGE_FORMATS, "zip")
@@ -95,6 +96,8 @@ HIDDEN_CRUMB = "…"
 # images a PDF/Word page inlines (never SVG: it's active markup)
 INLINE_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 MAX_INLINE_IMAGE_BYTES = 20 * 1024 * 1024
+# the most image data one PDF/Word page inlines; past it, alt text only
+MAX_INLINE_PAGE_IMAGE_BYTES = 50 * 1024 * 1024
 # how often a running export bumps its job's progress_at
 TOUCH_SECONDS = 60
 
@@ -164,6 +167,7 @@ class _Dir:
 class _File:
     storage_key: str
     filename: str
+    size_bytes: int
 
 
 @dataclass
@@ -291,11 +295,8 @@ async def _visible_titles(db: AsyncSession, ix: AccessIndex,
         return {}
     nodes = (await db.scalars(select(WikiNode).where(
         WikiNode.id.in_(ids), WikiNode.deleted_at.is_(None)))).all()
-    levels = await ix.levels_for_nodes(nodes)
-    published = await _published(db, [n.id for n in nodes if n.kind == "page"])
-    return {n.id: n.title for n in nodes
-            if levels[n.id] and not (n.kind == "page" and levels[n.id] == "view"
-                                     and n.id not in published)}
+    shown, _ = await viewable_nodes(db, ix, nodes)
+    return {n.id: n.title for n in shown}
 
 
 async def _gather(db: AsyncSession, payload: dict) -> _Plan:
@@ -324,7 +325,8 @@ async def _gather(db: AsyncSession, payload: dict) -> _Plan:
         rows = list((await db.scalars(select(WikiNode).where(
             WikiNode.space_id == space.id, WikiNode.deleted_at.is_(None)))).all())
 
-    levels = await ix.levels_for_nodes(rows)
+    shown, _ = await viewable_nodes(db, ix, rows)
+    shown_ids = {n.id for n in shown}
     published = await _published(db, [n.id for n in rows if n.kind == "page"])
     nodes = {n.id: _Node(id=n.id, kind=n.kind, title=n.title, parent_id=n.parent_id,
                          path=list(n.path or []), position=n.position) for n in rows}
@@ -334,9 +336,7 @@ async def _gather(db: AsyncSession, payload: dict) -> _Plan:
             node.content, node.published_at = published[node.id]
 
     def visible(node: _Node) -> bool:
-        level = levels[node.id]
-        return bool(level) and not (node.kind == "page" and level == "view"
-                                    and not node.published)
+        return node.id in shown_ids
 
     for node in sorted(nodes.values(), key=lambda n: (n.position, n.title.lower(), str(n.id))):
         parent = nodes.get(node.parent_id) if node.parent_id else None
@@ -373,12 +373,12 @@ async def _gather(db: AsyncSession, payload: dict) -> _Plan:
         file_ids = [n.id for n in tree_nodes if n.kind == "file"]
         if file_ids:
             by_id = {n.id: n for n in tree_nodes if n.kind == "file"}
-            for node_id, key, filename in (await db.execute(
+            for node_id, key, filename, size in (await db.execute(
                     select(WikiFile.node_id, WikiFileVersion.storage_key,
-                           WikiFileVersion.filename)
+                           WikiFileVersion.filename, WikiFileVersion.size_bytes)
                     .join(WikiFileVersion, WikiFileVersion.id == WikiFile.current_version_id)
                     .where(WikiFile.node_id.in_(file_ids)))).all():
-                by_id[node_id].file = _File(storage_key=key, filename=filename)
+                by_id[node_id].file = _File(storage_key=key, filename=filename, size_bytes=size)
         for node in tree_nodes:
             node.children = [c for c in node.children if c.kind != "file" or c.file]
         roots = plan.roots = [r for r in roots if r.kind != "file" or r.file]
@@ -400,6 +400,8 @@ async def _gather(db: AsyncSession, payload: dict) -> _Plan:
                         storage_key=asset.storage_key, filename=asset.filename,
                         content_type=normalize_content_type(asset.content_type),
                         size_bytes=asset.size_bytes)
+
+    _check_limits(plan, title)
 
     # what the pages link to: in this export, or elsewhere and viewable
     exported = {str(n.id): n for n in _iter_tree(roots)}
@@ -423,6 +425,37 @@ async def _gather(db: AsyncSession, payload: dict) -> _Plan:
         page.crumbs = [space.name if space else "",
                        *(known.get(a, HIDDEN_CRUMB) for a in page.path)]
     return plan
+
+
+def _human_size(size: int) -> str:
+    value = float(size)
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{int(value)} {unit}" if unit == "bytes" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{size} bytes"                  # pragma: no cover - the loop always returns
+
+
+def _check_limits(plan: _Plan, title: str) -> None:
+    """Refuse an export past `wiki_export_max_pages` pages, or whose files
+    and page images add up to more than `wiki_export_max_bytes`."""
+    s = get_settings()
+    pages = len(plan.pages)
+    if pages > s.wiki_export_max_pages:
+        most = s.wiki_export_max_pages
+        raise ExportError(
+            f"“{title}” has {pages:,} pages — more than the {most:,} "
+            f"{'page' if most == 1 else 'pages'} one export can hold. "
+            "Export a smaller folder instead.")
+    sizes = {n.file.storage_key: n.file.size_bytes for n in plan.files if n.file}
+    for page in plan.pages:
+        sizes.update({a.storage_key: a.size_bytes for a in page.assets.values()})
+    total = sum(sizes.values())
+    if total > s.wiki_export_max_bytes:
+        raise ExportError(
+            f"“{title}” is too large to export: its files and images add up to "
+            f"{_human_size(total)}, more than the {_human_size(s.wiki_export_max_bytes)} "
+            "one export can hold. Export a smaller folder instead.")
 
 
 def _iter_tree(nodes: list[_Node]) -> Iterator[_Node]:
@@ -541,13 +574,16 @@ async def _download(key: str, dest: Path) -> Path:
 
 async def _image_data(page: _Node, workdir: Path) -> dict[str, str]:
     """The page's embedded images as data URIs (PNG, JPEG, GIF and WebP
-    up to MAX_INLINE_IMAGE_BYTES; anything else keeps only its alt text)."""
+    up to MAX_INLINE_IMAGE_BYTES each and MAX_INLINE_PAGE_IMAGE_BYTES in
+    all; anything else keeps only its alt text)."""
     out: dict[str, str] = {}
+    budget = MAX_INLINE_PAGE_IMAGE_BYTES
     for raw in _image_asset_ids(page.content):
         asset = page.assets.get(raw)
         if asset is None or asset.content_type not in INLINE_IMAGE_TYPES \
-                or asset.size_bytes > MAX_INLINE_IMAGE_BYTES:
+                or asset.size_bytes > MAX_INLINE_IMAGE_BYTES or asset.size_bytes > budget:
             continue
+        budget -= asset.size_bytes
         dest = await _download(asset.storage_key, workdir / "image")
         data = await asyncio.to_thread(dest.read_bytes)
         dest.unlink(missing_ok=True)
@@ -569,7 +605,7 @@ async def _page_html(client, plan: _Plan, page: _Node, workdir: Path) -> str:
 
 async def _pdf(client, plan: _Plan, page: _Node, workdir: Path) -> bytes:
     document = await _page_html(client, plan, page, workdir)
-    return await asyncio.to_thread(export_html.html_to_pdf, document)
+    return await export_html.html_to_pdf(document, workdir)
 
 
 async def _docx_all(client, plan: _Plan, workdir: Path, touch: Touch) -> list[Path]:
@@ -582,7 +618,7 @@ async def _docx_all(client, plan: _Plan, workdir: Path, touch: Touch) -> list[Pa
         src.write_text(await _page_html(client, plan, page, workdir), encoding="utf-8")
         sources.append(src)
         await touch()
-    return await convert.html_to_docx(sources)
+    return await convert.html_to_docx(sources, touch=touch)
 
 
 async def _single(client, plan: _Plan, workdir: Path, touch: Touch) -> Path:

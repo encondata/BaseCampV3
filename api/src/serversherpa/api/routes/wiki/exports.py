@@ -6,7 +6,8 @@ and only to them — with a fresh download URL once it's done.
 - A node needs view (404 when the caller can't see it — including a
   never-published page they only have view on). A file is downloaded,
   not exported (422 `use_download`); a folder is a .zip only, a page
-  a .pdf/.docx/.md, or a .zip when it has subpages (422 `bad_format`
+  a .pdf/.docx/.md, or a .zip when it has subpages the caller can see
+  (the tree's visibility rule; 422 `bad_format`
   otherwise); a single page must have been published (422
   `not_published`).
 - A space (view on it) exports as a .zip.
@@ -20,7 +21,7 @@ import uuid
 from fastapi import APIRouter
 from sqlalchemy import func, select
 
-from serversherpa.api.routes.wiki.deps import WikiContext, space_by_key
+from serversherpa.api.routes.wiki.deps import WikiContext, space_by_key, visible_nodes
 from serversherpa.api.routes.wiki.errors import err, not_found
 from serversherpa.api.routes.wiki.schemas import ExportCreatedOut, ExportIn, ExportOut
 from serversherpa.db.models import WikiJob, WikiNode, WikiPage
@@ -39,9 +40,11 @@ router = APIRouter()
 EXPORT_LOCK_KEY = 0x5715_0007
 
 
-async def _has_live_children(ctx: WikiContext, node: WikiNode) -> bool:
-    return await ctx.db.scalar(select(WikiNode.id).where(
-        WikiNode.parent_id == node.id, WikiNode.deleted_at.is_(None)).limit(1)) is not None
+async def _has_viewable_children(ctx: WikiContext, node: WikiNode) -> bool:
+    """Does the page have a subpage (or file) the caller can see?"""
+    children = (await ctx.db.scalars(select(WikiNode).where(
+        WikiNode.parent_id == node.id, WikiNode.deleted_at.is_(None)))).all()
+    return bool((await visible_nodes(ctx, children))[0])
 
 
 async def _node_target(ctx: WikiContext, body: ExportIn) -> tuple[WikiNode, dict]:
@@ -55,7 +58,7 @@ async def _node_target(ctx: WikiContext, body: ExportIn) -> tuple[WikiNode, dict
         if not published and await ctx.ix.level_for_node(node) == "view":
             raise not_found()
     if body.format == "zip":
-        if node.kind == "page" and not await _has_live_children(ctx, node):
+        if node.kind == "page" and not await _has_viewable_children(ctx, node):
             raise err(422, "bad_format",
                       "Only a folder, or a page with subpages, exports as a .zip.")
     elif node.kind == "folder":

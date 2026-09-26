@@ -41,6 +41,7 @@ from serversherpa.db.models import (
     Role,
     WikiGrant,
     WikiNode,
+    WikiPage,
     WikiSpace,
 )
 
@@ -353,6 +354,30 @@ class AccessIndex:
             )
             for g in grants
         ]
+
+
+# ── what a person can see ───────────────────────────────────────────
+
+
+async def viewable_nodes(db: AsyncSession, ix: AccessIndex, nodes: Sequence[WikiNode],
+                         ) -> tuple[list[WikiNode], dict[uuid.UUID, str | None]]:
+    """The live nodes among `nodes` that `ix`'s person can see, in order,
+    with their levels — the one visibility rule every listing, the
+    notification fan-out's checks and exports share: a level of at least
+    view, and — for view-only — never a page that was never published
+    (a reader doesn't know it exists). One extra query at most (the
+    published check)."""
+    live = [n for n in nodes if n.deleted_at is None]
+    levels = await ix.levels_for_nodes(live)
+    view_only_pages = [n.id for n in live if n.kind == "page" and levels[n.id] == "view"]
+    unpublished: set[uuid.UUID] = set()
+    if view_only_pages:
+        unpublished = set((await db.scalars(
+            select(WikiPage.node_id).where(
+                WikiPage.node_id.in_(view_only_pages),
+                WikiPage.published_version_id.is_(None))
+        )).all())
+    return [n for n in live if levels[n.id] and n.id not in unpublished], levels
 
 
 # ── guards ──────────────────────────────────────────────────────────

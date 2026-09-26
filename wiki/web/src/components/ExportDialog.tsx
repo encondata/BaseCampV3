@@ -1,6 +1,7 @@
 /** Export… for a page, a folder or a whole space (view level). A page
  *  exports as a PDF, a Word document or Markdown — its published version,
- *  without comments — or, when it has subpages, as a .zip of it and them.
+ *  without comments — or, when it has subpages, as a .zip of it and them
+ *  (the only choice for a never-published page with subpages).
  *  A folder or a space exports as a .zip mirroring the tree: every page
  *  and file the person can see, pages in the chosen format. Once started,
  *  the dialog follows the export (ExportProgress) through to a Download
@@ -22,9 +23,11 @@ const FORMATS: { value: ExportPageFormat; label: string }[] = [
 export default function ExportDialog({ target, onClose }: { target: ExportTarget; onClose: () => void }) {
   const node = target.kind === 'node' ? target.node : null;
   const title = node ? node.title : target.kind === 'space' ? target.space.name : '';
-  const zipOnly = !node || node.kind === 'folder';
+  // a never-published page has nothing to export on its own: only its subpages
+  const unpublishedPage = node?.kind === 'page' && !node.page?.published_version_id;
+  const zipOnly = !node || node.kind === 'folder' || unpublishedPage;
   const [format, setFormat] = useState<ExportPageFormat>('pdf');
-  const [withSubpages, setWithSubpages] = useState(false);
+  const [withSubpages, setWithSubpages] = useState(unpublishedPage);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [jobId, setJobId] = useState<string | null>(null);
@@ -81,11 +84,13 @@ export default function ExportDialog({ target, onClose }: { target: ExportTarget
               <>
                 <div className="modal-section">What</div>
                 <div className="segmented wiki-export-scope" role="group" aria-label="What to export">
-                  <button type="button" className={!withSubpages ? 'on' : undefined} aria-pressed={!withSubpages}
-                          disabled={busy} onClick={() => setWithSubpages(false)}>
+                  <button type="button" className={!zip ? 'on' : undefined} aria-pressed={!zip}
+                          disabled={busy || unpublishedPage}
+                          title={unpublishedPage ? 'Only a published page exports on its own' : undefined}
+                          onClick={() => setWithSubpages(false)}>
                     This page
                   </button>
-                  <button type="button" className={withSubpages ? 'on' : undefined} aria-pressed={withSubpages}
+                  <button type="button" className={zip ? 'on' : undefined} aria-pressed={zip}
                           disabled={busy} onClick={() => setWithSubpages(true)}>
                     With subpages (.zip)
                   </button>

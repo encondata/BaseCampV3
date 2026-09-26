@@ -14,6 +14,7 @@ import asyncio
 import os
 import signal
 import tempfile
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 SOFFICE = "soffice"
@@ -149,18 +150,24 @@ async def office_to_pdf(src: Path, outdir: Path) -> Path:
     return pdf
 
 
-# the Word export filter, and how many HTML files one LibreOffice run
-# converts (each run pays LibreOffice's start-up once)
+# the Word export filter; how many HTML files one LibreOffice run converts
+# (each run pays LibreOffice's start-up once); and a run's timeout — a
+# base plus so much per file, so a batch scales with its size
 DOCX_FILTER = "docx:MS Word 2007 XML"
-DOCX_BATCH = 20
+DOCX_BATCH = 5
+DOCX_BASE_TIMEOUT = 60
+DOCX_PER_FILE_TIMEOUT = 20
 
 
-async def html_to_docx(sources: list[Path]) -> list[Path]:
+async def html_to_docx(sources: list[Path], *,
+                       touch: Callable[[], Awaitable[None]] | None = None) -> list[Path]:
     """Convert HTML files to Word documents, each written beside its
     source as `<stem>.docx` (same directory, so relative links in the
     HTML stay relative to the same place), and return those paths in
-    order. Up to DOCX_BATCH files share one LibreOffice run, each run
-    with a throwaway profile like `office_to_pdf`'s."""
+    order. Up to DOCX_BATCH files share one LibreOffice run (each with a
+    throwaway profile like `office_to_pdf`'s, and a timeout of
+    DOCX_BASE_TIMEOUT + DOCX_PER_FILE_TIMEOUT per file); `touch`, when
+    given, is awaited after each run — the caller's progress heartbeat."""
     out: list[Path] = []
     for i in range(0, len(sources), DOCX_BATCH):
         batch = sources[i:i + DOCX_BATCH]
@@ -175,7 +182,7 @@ async def html_to_docx(sources: list[Path]) -> list[Path]:
                     [SOFFICE, "--headless", f"-env:UserInstallation={profile.as_uri()}",
                      "--convert-to", DOCX_FILTER, "--outdir", str(outdir),
                      *(str(f) for f in files)],
-                    timeout=SOFFICE_TIMEOUT)
+                    timeout=DOCX_BASE_TIMEOUT + DOCX_PER_FILE_TIMEOUT * len(files))
             if rc != 0:
                 raise ConvertError(f"soffice exited {rc}: {_tail(err)}")
         for src in batch:
@@ -183,6 +190,8 @@ async def html_to_docx(sources: list[Path]) -> list[Path]:
             if not docx.exists():
                 raise ConvertError(f"soffice wrote no .docx for {src.name}")
             out.append(docx)
+        if touch is not None:
+            await touch()
     return out
 
 
