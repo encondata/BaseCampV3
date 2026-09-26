@@ -1881,7 +1881,8 @@ class WikiJob(Base):
     finished_at: Mapped[datetime | None]
 
     __table_args__ = (
-        CheckConstraint("kind IN ('file_preview','file_extract','purge','reminders')",
+        CheckConstraint("kind IN ('file_preview','file_extract','purge','reminders','export',"
+                        "'retention')",
                         name="wiki_jobs_kind_check"),
         CheckConstraint("status IN ('queued','running','done','failed')",
                         name="wiki_jobs_status_check"),

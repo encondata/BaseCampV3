@@ -9,7 +9,8 @@ It also holds the lookups more than one route module needs:
 is going, and the caller's level there), `lock_and_reread` (a tree
 mutation's lock-then-re-check of the node it acts on) and
 `visible_nodes` (the live nodes a caller may see, dropping
-never-published pages for view-only).
+never-published pages for view-only) and `read_only_mode` (whether
+telemetry — views, the search log — should be skipped).
 
 `AccessIndex` never invalidates its cache, so `ctx.ix` is only good for
 levels computed against the grants that existed when it was built. A
@@ -29,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
 from serversherpa.api.routes.wiki.errors import conflict, not_found
 from serversherpa.db.models import WikiNode, WikiPage, WikiSpace
+from serversherpa.system import admin_config
 from serversherpa.wiki import tree
 from serversherpa.wiki.permissions import (
     AccessIndex,
@@ -117,3 +119,9 @@ async def visible_nodes(ctx: WikiCtx, nodes: Sequence[WikiNode],
                 WikiPage.published_version_id.is_(None))
         )).all())
     return [n for n in live if levels[n.id] and n.id not in unpublished], levels
+
+
+async def read_only_mode(ctx: WikiCtx) -> bool:
+    """Is the system in read-only maintenance mode? Telemetry (a view, the
+    search log) is skipped then, rather than refused."""
+    return bool((await admin_config.read_admin_config(ctx.db))["read_only"])

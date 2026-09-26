@@ -26,8 +26,9 @@ from serversherpa.db.models import RolePermission
 from tests.wiki_helpers import login_as
 
 MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
-# reads made through POST that stay open during a maintenance freeze
-READ_ONLY_READS = {("POST", "/wiki/assets/urls")}
+# reads made through POST — and telemetry, answered but not recorded —
+# that stay open during a maintenance freeze
+READ_ONLY_READS = {("POST", "/wiki/assets/urls"), ("POST", "/wiki/nodes/{node_id}/view")}
 
 
 def _wiki_routes() -> list[tuple[str, str]]:

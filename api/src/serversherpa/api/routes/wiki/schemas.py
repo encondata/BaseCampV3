@@ -6,7 +6,7 @@ FileVersionOut, SearchHit, TrashBatch, ...), not new shape modules."""
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
@@ -733,6 +733,93 @@ class HelpLinkOut(BaseModel):
     trashed: bool
     created_by: PersonRef | None
     created_at: datetime
+
+
+# ── analytics ────────────────────────────────────────────────────────
+
+
+class FeedbackIn(BaseModel):
+    """A reader's answer to "Was this page helpful?". `comment` is
+    stripped (blank = none); control characters other than tab/newline
+    are a 422 `bad_comment`."""
+    model_config = ConfigDict(extra="forbid")
+
+    helpful: bool
+    comment: Annotated[str, StringConstraints(max_length=2000)] | None = None
+
+
+class FeedbackOut(BaseModel):
+    helpful: bool
+    comment: str | None
+    updated_at: datetime
+
+
+class AnalyticsNodeRef(BaseModel):
+    id: uuid.UUID
+    title: str
+    kind: NodeKind
+    space_key: str
+
+
+class TopPageOut(BaseModel):
+    node: AnalyticsNodeRef
+    views: int
+    viewers: int
+
+
+class DayViewsOut(BaseModel):
+    day: date
+    views: int
+
+
+class HelpfulnessOut(BaseModel):
+    """`pct`: the share of "Yes" answers, rounded to a whole percent."""
+    node: AnalyticsNodeRef
+    yes: int
+    no: int
+    pct: int
+
+
+class NoCommentOut(BaseModel):
+    node: AnalyticsNodeRef
+    comment: str
+    at: datetime
+
+
+class FailedSearchOut(BaseModel):
+    """A search with no results, grouped case-insensitively (`query` is
+    lowercased)."""
+    query: str
+    count: int
+    last_at: datetime
+
+
+class StalePageOut(BaseModel):
+    node: AnalyticsNodeRef
+    updated_at: datetime
+
+
+class OverdueReviewOut(BaseModel):
+    node: AnalyticsNodeRef
+    next_review_at: datetime
+
+
+class AnalyticsOut(BaseModel):
+    """`GET /wiki/analytics`: `space_key` is the space asked about (null =
+    every space, wiki admins only); `days` the window the views,
+    feedback and failed searches cover (`views_by_day` has one entry per
+    day of it, oldest first). `failed_searches` is always empty for a
+    space manager — searches aren't tied to a space. Stale pages and
+    overdue reviews are as of now, whatever the window."""
+    space_key: str | None
+    days: int
+    top_pages: list[TopPageOut]
+    views_by_day: list[DayViewsOut]
+    helpfulness: list[HelpfulnessOut]
+    recent_no_comments: list[NoCommentOut]
+    failed_searches: list[FailedSearchOut]
+    stale_pages: list[StalePageOut]
+    overdue_reviews: list[OverdueReviewOut]
 
 
 # ── internal (collab server) ─────────────────────────────────────────

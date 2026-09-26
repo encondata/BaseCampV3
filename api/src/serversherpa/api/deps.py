@@ -1,6 +1,7 @@
 """FastAPI dependencies: DB session, current user, permission guards."""
 
 import ipaddress
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -131,10 +132,15 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     "/wiki/assets/urls",
 })
 READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/kiosk/pair")
+# Paths with an id in them. `POST /wiki/nodes/{id}/view` is telemetry, not
+# a state change: the route answers 204 during a freeze and simply doesn't
+# count the view, so a reader opening a page never sees a read-only error.
+READ_ONLY_EXEMPT_PATTERNS = (re.compile(r"/wiki/nodes/[^/]+/view"),)
 
 
 def _read_only_exempt(path: str) -> bool:
-    return path in READ_ONLY_EXEMPT_PATHS or path.startswith(READ_ONLY_EXEMPT_PREFIXES)
+    return (path in READ_ONLY_EXEMPT_PATHS or path.startswith(READ_ONLY_EXEMPT_PREFIXES)
+            or any(p.fullmatch(path) for p in READ_ONLY_EXEMPT_PATTERNS))
 
 
 async def enforce_read_only(db: AsyncSession, request: Request,
