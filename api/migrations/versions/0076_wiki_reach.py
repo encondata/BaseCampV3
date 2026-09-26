@@ -5,10 +5,10 @@ analytics/export retention sweep).
 
 Design: docs/superpowers/specs/2026-09-25-wiki-design.md (§8 Phase 3).
 
-`wiki_share_links.created_by`/`wiki_help_links.created_by` follow the
-Phase 1 (0074) convention already on `wiki_nodes`: a column naming the
-*creator* of a record is a plain FK to `people` (no ondelete), since that
-history is never nulled out.
+`wiki_share_links.created_by`/`wiki_help_links.created_by` are plain FKs
+to `people` (no ondelete), like the `created_by` columns 0074 put on
+`wiki_spaces`, `wiki_page_versions`, `wiki_grants` and `wiki_jobs`.
+(`wiki_nodes.created_by` is the exception: it is ON DELETE SET NULL.)
 
 `wiki_search_log.person_id` is FK ... ON DELETE SET NULL instead — a log
 row outlives the person who triggered it, so the row stays (with

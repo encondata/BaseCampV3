@@ -142,6 +142,21 @@ async def test_help_link_context_length_check(db):
     db.add(WikiHelpLink(context="kiosk:/enroll", node_id=node_id))
     await db.commit()
 
+    # exactly the max length is fine
+    db.add(WikiHelpLink(context="y" * 300, node_id=node_id))
+    await db.commit()
+
+
+# ── supporting indexes (0078) ────────────────────────────────────────
+
+
+async def test_phase3_supporting_indexes_exist(db):
+    """The node cascades on share/help links and the person SET NULL on
+    the search log can't use any existing index without these."""
+    for name in ("wiki_share_links_node_idx", "wiki_help_links_node_idx",
+                 "wiki_search_log_person_idx"):
+        assert await db.scalar(text(f"SELECT to_regclass('{name}')")) is not None, name
+
 
 # ── wiki_page_views ──────────────────────────────────────────────────
 
