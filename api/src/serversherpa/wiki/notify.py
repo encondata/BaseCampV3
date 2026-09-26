@@ -185,11 +185,13 @@ async def _send(db: AsyncSession, node: WikiNode, candidates: Iterable[uuid.UUID
 
 
 async def on_published(db: AsyncSession, node: WikiNode, *, actor_id: uuid.UUID | None,
-                       version: WikiPageVersion) -> None:
+                       version: WikiPageVersion, skip: Iterable[uuid.UUID] = ()) -> None:
     """A page was published: `wiki_update` to its watchers (the page, its
-    ancestors, its space); the version's note is the body."""
+    ancestors, its space); the version's note is the body. `skip` is who
+    already got a mention for this version (`pages.publish` returns
+    them) — a mentioned watcher gets only the mention."""
     actor = await _actor_name(db, actor_id)
-    await _send(db, node, await watchers_for(db, node), actor_id=actor_id,
+    await _send(db, node, await watchers_for(db, node) - set(skip), actor_id=actor_id,
                 kind="wiki_update", title=f"{actor} published {node.title}",
                 body=version.note or "", event="published")
 
@@ -243,13 +245,13 @@ async def on_comment(db: AsyncSession, node: WikiNode, comment: WikiComment, *,
 
 async def on_mentions(db: AsyncSession, node: WikiNode, person_ids: Iterable[uuid.UUID], *,
                       actor_id: uuid.UUID | None, context: Literal["comment", "page"],
-                      link_suffix: str = "") -> None:
+                      link_suffix: str = "") -> set[uuid.UUID]:
     """People were @mentioned — `context` is `comment` (in a comment on
     the page) or `page` (in the page content): `wiki_mention` to each
-    who can view the page."""
+    who can view the page. Returns who was notified."""
     actor = await _actor_name(db, actor_id)
     where = f"a comment on {node.title}" if context == "comment" else node.title
-    await _send(db, node, person_ids, actor_id=actor_id, kind="wiki_mention",
+    return await _send(db, node, person_ids, actor_id=actor_id, kind="wiki_mention",
                 title=f"{actor} mentioned you in {where}", event="mention",
                 link_suffix=link_suffix)
 
@@ -270,11 +272,14 @@ _DECISION_VERBS = {"approved": "approved", "rejected": "requested changes to"}
 
 
 async def on_review_decided(db: AsyncSession, node: WikiNode, review: WikiReview, *,
-                            actor_id: uuid.UUID | None) -> None:
+                            actor_id: uuid.UUID | None,
+                            skip: Iterable[uuid.UUID] = ()) -> None:
     """A review was approved or rejected: `wiki_review_decision` to the
     requester and `wiki_update` to the page's watchers (the requester
     only once); the decision note is the body. An approval's publish is
-    announced by this — callers don't also call `on_published` for it.
+    announced by this — callers don't also call `on_published` for it,
+    and pass as `skip` who `pages.publish` already mentioned: they get no
+    `wiki_update` (the requester still gets the decision).
     Raises ValueError for a review that isn't approved or rejected."""
     verb = _DECISION_VERBS.get(review.status)
     if verb is None:
@@ -286,7 +291,7 @@ async def on_review_decided(db: AsyncSession, node: WikiNode, review: WikiReview
     told = await _send(db, node, requester, actor_id=actor_id,
                        kind="wiki_review_decision", title=title, body=body,
                        event="review_decided")
-    await _send(db, node, await watchers_for(db, node) - told - set(requester),
+    await _send(db, node, await watchers_for(db, node) - told - set(requester) - set(skip),
                 actor_id=actor_id, kind="wiki_update", title=title, body=body,
                 event="review_decided")
 

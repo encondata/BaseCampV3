@@ -16,7 +16,6 @@ would be circular.
 from __future__ import annotations
 
 import html
-import re
 import uuid
 from dataclasses import dataclass
 
@@ -34,6 +33,7 @@ from serversherpa.db.models import (
     WikiPageVersion,
     WikiSpace,
 )
+from serversherpa.wiki.content import CONTROL_CHARS
 from serversherpa.wiki.permissions import AccessIndex, grant_matches, level_rank
 
 KINDS = ("folder", "page", "file")
@@ -47,7 +47,6 @@ _HEADLINE_OPTIONS = (
     f"StartSel={_MARK_START}, StopSel={_MARK_STOP}, MaxFragments=2, "
     "MaxWords=24, MinWords=8")
 
-_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 _TITLE_SIMILARITY_THRESHOLD = 0.3
 # candidates fetched per requested hit, before permission filtering thins
@@ -320,7 +319,7 @@ async def _snippet_for(db: AsyncSession, q: str, candidate: _Candidate) -> str:
     so they can't collide with anything the escape step generated)."""
     # the mark sentinels (and every other C0 control but tab and
     # newline) can't be in the text, or a stray one would become a mark
-    body = _CONTROL_CHARS.sub("", await body_text(db, candidate.id, candidate.kind))
+    body = CONTROL_CHARS.sub("", await body_text(db, candidate.id, candidate.kind))
     raw = await db.scalar(select(func.ts_headline(
         "english", html.escape(body), func.websearch_to_tsquery("english", q),
         _HEADLINE_OPTIONS))) or ""

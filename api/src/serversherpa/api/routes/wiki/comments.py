@@ -148,6 +148,7 @@ async def post_comment(node_id: uuid.UUID, body: CommentIn,
                        ctx: WikiContext) -> CommentOut:
     node, level = await _page(ctx, node_id)
     await _require_can_comment(ctx, node, level)
+    comments.check_text(body.body.text)
     thread = None
     if body.thread_id is not None:
         thread = await comments.thread_start(ctx.db, node, body.thread_id)
@@ -176,6 +177,7 @@ async def edit_comment(comment_id: uuid.UUID, body: CommentPatchIn,
     if comment.author_id != ctx.principal.person_id:
         raise err(403, "forbidden", "You can only edit your own comments.")
     await _require_can_comment(ctx, node, level)
+    comments.check_text(body.body.text)
     added = await comments.edit(ctx.db, node, comment, actor_id=ctx.principal.person_id,
                                 text=body.body.text, mentions=body.body.mentions)
     _audit(ctx, comment.id, "edit", {
@@ -239,7 +241,13 @@ async def mentionable(node_id: uuid.UUID, ctx: WikiContext, q: str = "") -> list
     the first MENTIONABLE_SCAN matches by name, so a query that matches
     many people who can't see the page may find fewer than it could."""
     node, _ = await _page(ctx, node_id)
-    like = f"%{q.strip()}%"
+    # q is literal text: its %, _ and backslashes are not ILIKE wildcards
+    escaped = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like = f"%{escaped}%"
+
+    def matches(column):
+        return column.ilike(like, escape="\\")
+
     full_name = func.concat(func.coalesce(Person.preferred_name, Person.first_name),
                             " ", Person.last_name)
     people = (await ctx.db.scalars(
@@ -247,8 +255,8 @@ async def mentionable(node_id: uuid.UUID, ctx: WikiContext, q: str = "") -> list
         .join(UserAccount, UserAccount.person_id == Person.id)
         .where(UserAccount.disabled_at.is_(None), Person.archived_at.is_(None),
                Person.id != ctx.principal.person_id,
-               or_(full_name.ilike(like), Person.first_name.ilike(like),
-                   Person.last_name.ilike(like), Person.email.ilike(like)))
+               or_(matches(full_name), matches(Person.first_name),
+                   matches(Person.last_name), matches(Person.email)))
         .order_by(Person.last_name, Person.first_name, Person.id)
         .limit(MENTIONABLE_SCAN)
     )).all()

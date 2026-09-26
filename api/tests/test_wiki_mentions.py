@@ -213,8 +213,9 @@ async def test_mentionable_is_capped_and_needs_view(client, db):
 
 
 async def test_mentionable_looks_past_people_who_cannot_view(client, db):
-    """More than 30 matches who can't view the page sort ahead of the one
-    who can — still found (the scan covers 100 candidates)."""
+    """Dozens of matches who can't view the page sort ahead of the one
+    who can, and they're still found: access is checked for up to
+    MENTIONABLE_SCAN (100) candidates."""
     s = await _setup(client, db)
     page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
     await publish_via_db(db, page["id"])
@@ -232,3 +233,38 @@ async def test_mentionable_looks_past_people_who_cannot_view(client, db):
                             headers=s["editor"], params={"q": f"scan-{tag}"})
     assert resp.status_code == 200, resp.text
     assert [p["id"] for p in resp.json()] == [str(viewer)]
+
+
+async def test_mentionable_leaves_out_the_caller_and_escapes_wildcards(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    await publish_via_db(db, page["id"])
+    editor = await db.get(Person, s["editor_id"])
+
+    resp = await client.get(f"/wiki/nodes/{page['id']}/mentionable",
+                            headers=s["editor"], params={"q": editor.email})
+    assert resp.json() == []
+    resp = await client.get(f"/wiki/nodes/{page['id']}/mentionable",
+                            headers=s["viewer"], params={"q": editor.email})
+    assert [p["id"] for p in resp.json()] == [str(s["editor_id"])]
+
+    # % and _ are literal characters, not wildcards
+    for q in ("%", "_", "\\"):
+        resp = await client.get(f"/wiki/nodes/{page['id']}/mentionable",
+                                headers=s["viewer"], params={"q": q})
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == [], q
+
+
+async def test_a_newly_mentioned_watcher_gets_only_the_mention_on_publish(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["editor"], s["space"], "Runbook", kind="page")
+    await publish_via_api(client, s["editor"], page["id"])
+    resp = await client.put("/wiki/watches", headers=s["viewer"],
+                            json={"space_id": s["space"]["id"]})
+    assert resp.status_code == 200, resp.text
+
+    await _set_draft(client, s["editor"], page["id"], _doc(_mention(s["viewer_id"])))
+    await publish_via_api(client, s["editor"], page["id"])
+
+    assert [n.kind for n in await _inbox(db, s["viewer_id"])] == ["wiki_mention"]

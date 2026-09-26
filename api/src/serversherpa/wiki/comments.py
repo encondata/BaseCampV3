@@ -14,9 +14,10 @@ A body is plain text plus the ids of the people it @mentions,
 can view the page may be mentioned; anyone else is dropped silently.
 
 Deleting a comment that has replies keeps its row (`deleted_at` set, its
-body hidden from readers) so the thread still reads; any other comment's
-row is removed, and a thread left with nothing but deleted comments goes
-with it.
+body emptied) so the thread still reads; any other comment's row is
+removed, and a thread left with nothing but deleted comments goes with
+it. Replying and deleting both lock the thread's first comment, so a
+delete can't remove a thread a reply is joining.
 
 Like `pages`, these helpers only `flush()`; the routes check who may do
 what, audit, and commit.
@@ -28,11 +29,13 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from fastapi import HTTPException
 from sqlalchemy import delete, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import WikiComment, WikiNode, WikiSpace
 from serversherpa.wiki import notify
+from serversherpa.wiki.content import CONTROL_CHARS
 from serversherpa.wiki.permissions import level_rank
 from serversherpa.wiki.space_settings import space_setting
 
@@ -54,6 +57,16 @@ def can_comment(level: str | None, space: WikiSpace) -> bool:
         return True
     return (level == "view" and space.archived_at is None
             and bool(space_setting(space, "readers_can_comment")))
+
+
+def check_text(text: str) -> str:
+    """`text`, unless it carries control characters other than tab,
+    newline and carriage return (422 `bad_body`)."""
+    if CONTROL_CHARS.search(text):
+        raise HTTPException(status_code=422, detail={
+            "code": "bad_body",
+            "message": "The comment contains characters that can't be saved."})
+    return text
 
 
 def comment_link_suffix(comment: WikiComment) -> str:
@@ -88,10 +101,13 @@ def _body(text: str, mentions: Sequence[uuid.UUID]) -> dict:
 
 async def thread_start(db: AsyncSession, node: WikiNode,
                        thread_id: uuid.UUID) -> WikiComment | None:
-    """The first comment of thread `thread_id` on `node`, or None."""
-    return await db.scalar(select(WikiComment).where(
-        WikiComment.id == thread_id, WikiComment.thread_id == thread_id,
-        WikiComment.node_id == node.id))
+    """The first comment of thread `thread_id` on `node`, or None —
+    row-locked for the rest of the transaction (see `remove`)."""
+    return await db.scalar(
+        select(WikiComment).where(
+            WikiComment.id == thread_id, WikiComment.thread_id == thread_id,
+            WikiComment.node_id == node.id)
+        .with_for_update().execution_options(populate_existing=True))
 
 
 async def _notify_posted(db: AsyncSession, node: WikiNode, comment: WikiComment,
@@ -144,12 +160,18 @@ async def edit(db: AsyncSession, node: WikiNode, comment: WikiComment, *,
 
 
 async def remove(db: AsyncSession, comment: WikiComment) -> bool:
-    """Delete a comment — keeping its row when it has replies (see the
-    module docstring). Returns whether the row was kept."""
-    has_replies = await db.scalar(select(exists().where(
-        WikiComment.parent_id == comment.id)))
+    """Delete a comment — keeping its row, emptied, when it has replies
+    (see the module docstring). Returns whether the row was kept. Locks
+    the thread's first comment first, like a reply (`thread_start`)."""
+    await db.execute(select(WikiComment.id)
+                     .where(WikiComment.id == comment.thread_id).with_for_update())
+    # threads are flat: only a thread's first comment has replies
+    has_replies = comment.id == comment.thread_id and await db.scalar(select(exists().where(
+        WikiComment.node_id == comment.node_id, WikiComment.thread_id == comment.id,
+        WikiComment.id != comment.id)))
     if has_replies:
         comment.deleted_at = utcnow()
+        comment.body = _body("", [])
         await db.flush()
         return True
     thread_id = comment.thread_id

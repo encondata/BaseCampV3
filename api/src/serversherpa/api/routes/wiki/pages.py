@@ -149,14 +149,15 @@ async def put_draft(node_id: uuid.UUID, body: DraftIn, ctx: WikiContext) -> Resp
 async def publish(node_id: uuid.UUID, body: PublishIn, ctx: WikiContext) -> VersionOut:
     node, page, _ = await _page_for(ctx, node_id, "edit")
     actor_id = ctx.user.person.id
-    version = await pages.publish(ctx.db, node, page, actor_id=actor_id,
-                                  note=body.note or None)
+    version, mentioned = await pages.publish(ctx.db, node, page, actor_id=actor_id,
+                                             note=body.note or None)
     audit(ctx.db, actor_id=actor_id, entity_type="wiki_node",
           entity_id=str(node.id), action="publish",
           changes={"version_id": str(version.id), "version_no": version.version_no,
                    "note": version.note})
     await notify.auto_watch(ctx.db, actor_id, node.id)
-    await notify.on_published(ctx.db, node, actor_id=actor_id, version=version)
+    await notify.on_published(ctx.db, node, actor_id=actor_id, version=version,
+                              skip=mentioned)
     await ctx.db.commit()
     return await _one_version_out(ctx, version)
 

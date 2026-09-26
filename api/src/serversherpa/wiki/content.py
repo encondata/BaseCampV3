@@ -24,6 +24,10 @@ from typing import Any
 # page) starts published/drafted from.
 EMPTY_DOC: dict[str, Any] = {"type": "doc", "content": [{"type": "paragraph"}]}
 
+# C0 control characters (and DEL) other than tab, newline and carriage
+# return — what plain text the wiki stores or shows must not carry
+CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
 # the most a stored document (draft or version) may take, as compact JSON
 MAX_DOC_BYTES = 5 * 1024 * 1024
 

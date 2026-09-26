@@ -186,12 +186,15 @@ async def import_draft(db: AsyncSession, page: WikiPage, node: WikiNode, *,
 
 
 async def publish(db: AsyncSession, node: WikiNode, page: WikiPage, *,
-                  actor_id: uuid.UUID | None, note: str | None) -> WikiPageVersion:
+                  actor_id: uuid.UUID | None, note: str | None,
+                  ) -> tuple[WikiPageVersion, set[uuid.UUID]]:
     """Publish the current draft (the empty doc when there's none) as a
     `published` version. 409 `nothing_to_publish` when the page is
     already published and its draft adds nothing to that. People
     @mentioned in it who weren't in the previous published version get
-    a `wiki_mention` (see `notify.on_mentions`)."""
+    a `wiki_mention` (see `notify.on_mentions`). Returns the version and
+    who got that mention — the caller passes them as `skip` to the
+    publish announcement, so a mentioned watcher hears once."""
     await _lock_page(db, node.id)
     await db.refresh(page)     # the draft as of the lock, not the request start
     published = await published_content(db, page)
@@ -210,7 +213,8 @@ async def publish(db: AsyncSession, node: WikiNode, page: WikiPage, *,
     await db.flush()
     await refresh_search(db, node.id)
     added = mention_ids(version.content_json) - mention_ids(published)
+    mentioned: set[uuid.UUID] = set()
     if added:
-        await on_mentions(db, node, sorted(uuid.UUID(pid) for pid in added),
-                          actor_id=actor_id, context="page")
-    return version
+        mentioned = await on_mentions(db, node, sorted(uuid.UUID(pid) for pid in added),
+                                      actor_id=actor_id, context="page")
+    return version, mentioned

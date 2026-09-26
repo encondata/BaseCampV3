@@ -5,7 +5,8 @@ delete; orphaned inline threads; the notifications a comment sends
 mention); and the audit trail."""
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import event, select
+from sqlalchemy.engine import Engine
 
 from serversherpa.db.models import AuditLog, Client, Notification, WikiComment
 from tests.wiki_helpers import _create, _setup, login_as, publish_via_db
@@ -340,3 +341,64 @@ async def test_a_reply_reopens_a_resolved_thread(client, db):
     # a reply to an open thread records no reopen
     await _post(client, s["viewer"], page, "and another", thread_id=first["id"])
     assert len(await _audits(db, first["id"])) == 3
+
+
+async def test_control_characters_in_text_are_rejected(client, db):
+    s = await _setup(client, db)
+    page = await _page(client, db, s)
+    for text in ("nul\x00byte", "bell\x07", "del\x7f"):
+        resp = await client.post(f"/wiki/nodes/{page['id']}/comments", headers=s["editor"],
+                                 json={"body": {"text": text, "mentions": []}})
+        assert resp.status_code == 422, text
+        assert resp.json()["detail"]["code"] == "bad_body"
+    c = await _post(client, s["editor"], page, "tabs\tand\nnewlines\r\nare fine")
+    resp = await client.patch(f"/wiki/comments/{c['id']}", headers=s["editor"],
+                              json={"body": {"text": "bad\x00", "mentions": []}})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "bad_body"
+
+
+async def test_editing_after_readers_lose_commenting_is_forbidden(client, db):
+    s = await _setup(client, db)
+    page = await _page(client, db, s)
+    c = await _post(client, s["viewer"], page, "mine")
+    await _set_readers_can_comment(client, s, False)
+    resp = await client.patch(f"/wiki/comments/{c['id']}", headers=s["viewer"],
+                              json={"body": {"text": "edited", "mentions": []}})
+    assert resp.status_code == 403
+
+
+async def test_soft_delete_clears_the_stored_body(client, db):
+    s = await _setup(client, db)
+    page = await _page(client, db, s)
+    first = await _post(client, s["viewer"], page, "secret", mentions=[s["editor_id"]])
+    await _post(client, s["editor"], page, "reply", thread_id=first["id"])
+    resp = await client.delete(f"/wiki/comments/{first['id']}", headers=s["viewer"])
+    assert resp.status_code == 204
+    db.expire_all()
+    row = await db.get(WikiComment, uuid.UUID(first["id"]))
+    assert row.deleted_at is not None
+    assert row.body == {"text": "", "mentions": []}
+
+
+async def test_reply_and_delete_lock_the_thread_start(client, db):
+    """A reply and a delete both take the thread's first comment FOR
+    UPDATE, so a hard delete can't cascade away a reply being added."""
+    s = await _setup(client, db)
+    page = await _page(client, db, s)
+    first = await _post(client, s["editor"], page, "question")
+    seen = []
+
+    def _record(conn, cursor, statement, *args):
+        if "wiki_comments" in statement and "FOR UPDATE" in statement:
+            seen.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", _record)
+    try:
+        reply = await _post(client, s["viewer"], page, "answer", thread_id=first["id"])
+        assert len(seen) == 1
+        resp = await client.delete(f"/wiki/comments/{reply['id']}", headers=s["viewer"])
+        assert resp.status_code == 204
+        assert len(seen) == 2
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record)

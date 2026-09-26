@@ -426,6 +426,13 @@ async def test_review_notifications(client, db):
     got = await _inbox(db, s["viewer_id"], "wiki_update")
     assert [n.title for n in got] == [f"{owner} requested changes to Runbook"]
 
+    # skip: someone already told (e.g. mentioned in the approved version)
+    review.status = "approved"
+    before = len(await _inbox(db, s["viewer_id"]))
+    await notify.on_review_decided(db, node, review, actor_id=s["owner_id"],
+                                   skip=[s["viewer_id"]])
+    assert len(await _inbox(db, s["viewer_id"])) == before
+
     await notify.on_review_due(db, node, owner_id=s["owner_id"])
     got = await _inbox(db, s["owner_id"], "wiki_review_due")
     assert [(n.title, n.link) for n in got] == [("Runbook is due for review",
