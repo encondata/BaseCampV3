@@ -101,6 +101,23 @@ describe('TemplatesPage — list', () => {
     expect(within(rows[1]).queryByRole('button', { name: 'Edit' })).toBeNull();
     expect(within(rows[2]).getByRole('button', { name: 'Edit' })).toBeTruthy();
     expect((screen.getByRole('button', { name: 'New template' }) as HTMLButtonElement).disabled).toBe(false);
+    // the picked space's own templates read "This space", like the picker
+    expect(within(rows[2]).getByText('This space')).toBeTruthy();
+  });
+
+  it('names another space\'s template by the space\'s name, not its key', async () => {
+    vi.mocked(getMe).mockResolvedValue(makeMe({ is_admin: false }));
+    vi.mocked(listSpaces).mockResolvedValue([
+      makeSpace({ my_level: 'manage' }),
+      makeSpace({ id: 'space-2', key: 'net', name: 'Networking' }),
+    ]);
+    vi.mocked(listTemplates).mockResolvedValue([
+      BUILTIN, { ...SPACE_TPL, id: 's-2', space_id: 'space-2', space_key: 'net', name: 'Switch swap' },
+    ]);
+    renderPage();
+    const list = await screen.findByRole('list', { name: 'Templates' });
+    await waitFor(() => expect(within(list).getByText('Networking')).toBeTruthy());
+    expect(within(list).queryByText('net')).toBeNull();
   });
 
   it('deletes a template after confirming', async () => {

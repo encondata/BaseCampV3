@@ -26,9 +26,13 @@ import {
 const GLOBAL = '__global__';
 const GRID = { gridTemplateColumns: 'minmax(200px, 3fr) minmax(100px, 1fr) minmax(110px, 1fr) 160px' };
 
-function scopeLabel(t: TemplateOut): string {
+/** Like the template picker: "This space" for the space being browsed,
+ *  else that space's name (its key only while the spaces load). */
+function scopeLabel(t: TemplateOut, current: SpaceOut | null, spaces: SpaceOut[] | null): string {
   if (t.is_builtin) return 'Built in';
-  return t.space_id === null ? 'Global' : (t.space_key ?? 'This space');
+  if (t.space_id === null) return 'Global';
+  if (t.space_id === current?.id) return 'This space';
+  return spaces?.find((s) => s.id === t.space_id)?.name ?? t.space_key ?? 'Another space';
 }
 
 /** Whether the caller may change (or delete) `t` — a builtin never; a
@@ -44,9 +48,10 @@ function canManageTemplate(
 
 type ListState = TemplateOut[] | 'loading' | 'error';
 
-function ListView({ scope, space, isAdmin, canCreate, onEdit, onCreated }: {
+function ListView({ scope, space, spaces, isAdmin, canCreate, onEdit, onCreated }: {
   scope: string;
   space: SpaceOut | null;
+  spaces: SpaceOut[] | null;
   isAdmin: boolean;
   canCreate: boolean;
   onEdit: (id: string) => void;
@@ -117,7 +122,7 @@ function ListView({ scope, space, isAdmin, canCreate, onEdit, onCreated }: {
                     {t.description && <span className="cell-sub">{t.description}</span>}
                   </div>
                 </div>
-                <div className="cell"><span className="cell-top cell-line">{scopeLabel(t)}</span></div>
+                <div className="cell"><span className="cell-top cell-line">{scopeLabel(t, space, spaces)}</span></div>
                 <div className="cell"><span className="cell-top cell-line">{new Date(t.updated_at).toLocaleDateString()}</span></div>
                 <div className="cell wiki-template-actions">
                   {canManage(t) ? (
@@ -316,7 +321,7 @@ export default function TemplatesPage() {
                   onBack={() => setEditingId(null)}
                   onDeleted={() => setEditingId(null)} />
       ) : (
-        <ListView scope={scope} space={space} isAdmin={isAdmin} canCreate={canCreate}
+        <ListView scope={scope} space={space} spaces={spaces} isAdmin={isAdmin} canCreate={canCreate}
                   onEdit={setEditingId} onCreated={setEditingId} />
       )}
     </div>

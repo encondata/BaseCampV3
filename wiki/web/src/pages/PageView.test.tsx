@@ -516,7 +516,12 @@ describe('PageView — comments', () => {
 
     it('follows a new selection while nothing is written, and asks before moving a draft', async () => {
       renderPage(makeDetail('p1', { my_level: 'view', page: published }));
-      await waitFor(() => expect(document.querySelector('.wiki-page-content [data-comment-thread]')).not.toBeNull());
+      // Select only once the page's DOM has settled: registering the
+      // highlight plugin, and the threads arriving, redraw the marked text
+      // — a selection made before that is left on detached text nodes and
+      // the Comment button never shows.
+      await screen.findByRole('button', { name: 'Comments (1)' });
+      await waitFor(() => expect(document.querySelector('.wiki-page-content .wiki-comment-anchor')).not.toBeNull());
       await select('Check the ', 0, 5);
       expect(quote()).toBe('Check');
       // nothing written yet: the new selection simply takes over
