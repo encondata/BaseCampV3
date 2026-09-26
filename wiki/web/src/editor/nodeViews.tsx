@@ -34,22 +34,38 @@ import { Icon, type IconName } from './icons';
 
 type AssetUrlMap = Record<string, string>;
 
-/** Puts a view in public mode: `assetUrls` (asset id → presigned URL) is
- *  every asset URL it may show. */
-export const PublicShare = Extension.create<{ assetUrls: AssetUrlMap }>({
+interface PublicShareOptions {
+  /** Every asset URL the view may show (asset id → presigned URL). */
+  assetUrls: AssetUrlMap;
+  /** An image, video or preview failed to load — its URL may have expired. */
+  onAssetError: () => void;
+}
+
+/** Puts a view in public mode (see the header comment). */
+export const PublicShare = Extension.create<PublicShareOptions>({
   name: 'publicShare',
   addOptions() {
-    return { assetUrls: {} };
+    return { assetUrls: {}, onAssetError: () => {} };
   },
   addStorage() {
-    return { assetUrls: this.options.assetUrls };
+    return { assetUrls: this.options.assetUrls, onAssetError: this.options.onAssetError };
   },
 });
 
+function publicShareOf(editor: Editor): PublicShareOptions | null {
+  const storage = (editor.storage as Record<string, PublicShareOptions | undefined>).publicShare;
+  return storage?.assetUrls ? storage : null;
+}
+
 /** The public view's asset URLs, or null when this isn't a public view. */
 function publicAssets(editor: Editor): AssetUrlMap | null {
-  const storage = (editor.storage as Record<string, { assetUrls?: AssetUrlMap } | undefined>).publicShare;
-  return storage?.assetUrls ?? null;
+  return publicShareOf(editor)?.assetUrls ?? null;
+}
+
+/** An element's onError in public mode (undefined elsewhere). */
+function publicOnError(editor: Editor): (() => void) | undefined {
+  const share = publicShareOf(editor);
+  return share ? () => share.onAssetError() : undefined;
 }
 
 // ── shared lookups ────────────────────────────────────────────────────
@@ -120,7 +136,7 @@ function WikiImageView({ node, updateAttributes, editor, selected }: NodeViewPro
         {url === null && (
           <div className="wiki-image-missing"><Icon name="image" /><span>Image unavailable</span></div>
         )}
-        {url && <img src={url} alt={alt} draggable={false} />}
+        {url && <img src={url} alt={alt} draggable={false} onError={publicOnError(editor)} />}
         {editable && url && (
           <span className="wiki-image-resize" role="presentation" title="Drag to resize"
                 onPointerDown={startResize} />
@@ -230,9 +246,13 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
       </div>
       {open && preview?.url && previewable && (
         <div className="wiki-file-preview" contentEditable={false}>
-          {type === 'image' && <img src={preview.url} alt={shownName} draggable={false} />}
-          {type === 'pdf' && <iframe src={preview.url} title={`Preview of ${shownName}`} loading="lazy" />}
-          {type === 'video' && <video src={preview.url} controls preload="metadata" />}
+          {type === 'image' && (
+            <img src={preview.url} alt={shownName} draggable={false} onError={publicOnError(editor)} />
+          )}
+          {type === 'pdf' && (
+            <iframe src={preview.url} title={`Preview of ${shownName}`} loading="lazy" onError={publicOnError(editor)} />
+          )}
+          {type === 'video' && <video src={preview.url} controls preload="metadata" onError={publicOnError(editor)} />}
         </div>
       )}
     </NodeViewWrapper>

@@ -32,6 +32,9 @@ const LINK_GRID = {
   gridTemplateColumns: 'minmax(220px, 2.4fr) minmax(96px, 0.8fr) minmax(150px, 1.2fr) minmax(120px, 1fr) 72px 110px',
 };
 
+/** The API's cap on GET /wiki/share-links (newest first). */
+export const ADMIN_LINKS_CAP = 500;
+
 const STATUS_CHIP: Record<ShareLinkStatus, { label: string; tone: string }> = {
   active: { label: 'Active', tone: 'c-green' },
   expired: { label: 'Expired', tone: 'c-amber' },
@@ -125,6 +128,9 @@ function PublicLinksSection() {
           </div>
           {state.links.length === 0 && <div className="dir-empty"><b>No public links yet</b></div>}
         </div>
+      )}
+      {state.status === 'ready' && state.links.length >= ADMIN_LINKS_CAP && (
+        <p className="page-hint">Showing the newest {ADMIN_LINKS_CAP} links.</p>
       )}
     </section>
   );

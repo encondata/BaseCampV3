@@ -281,3 +281,30 @@ def test_public_doc_keeps_the_pages_own_assets():
     out = public_doc(doc, node_id=SHARED_ID, title="T")
     assert out == doc
     assert referenced_asset_ids(out) == {"a1", "a2"}
+
+
+def test_public_doc_reaches_links_nested_in_lists_tables_and_details():
+    from serversherpa.wiki.content import PUBLIC_FILE_TEXT, PUBLIC_PAGE_TEXT, public_doc
+
+    embed = {"type": "fileEmbed", "attrs": {"nodeId": OTHER_ID, "assetId": None,
+                                            "filename": "", "contentType": ""}}
+    doc = {"type": "doc", "content": [
+        {"type": "bulletList", "content": [{"type": "listItem", "content": [
+            _p(_t("item "), _link(OTHER_ID)), embed]}]},
+        {"type": "table", "content": [{"type": "tableRow", "content": [
+            {"type": "tableCell", "content": [_p(_link(SHARED_ID)), embed]}]}]},
+        {"type": "details", "content": [
+            {"type": "detailsSummary", "content": [_link(OTHER_ID)]},
+            {"type": "detailsContent", "content": [embed]}]},
+    ]}
+    out = public_doc(doc, node_id=SHARED_ID, title="Rack Guide")
+    assert OTHER_ID not in str(out) and SHARED_ID not in str(out)
+    assert "pageLink" not in str(out) and "fileEmbed" not in str(out)
+
+    item = out["content"][0]["content"][0]["content"]
+    assert item == [_p(_t(f"item {PUBLIC_PAGE_TEXT}")), _p(_t(PUBLIC_FILE_TEXT))]
+    cell = out["content"][1]["content"][0]["content"][0]["content"]
+    assert cell == [_p(_t("Rack Guide")), _p(_t(PUBLIC_FILE_TEXT))]
+    summary, body = out["content"][2]["content"]
+    assert summary["content"] == [_t(PUBLIC_PAGE_TEXT)]
+    assert body["content"] == [_p(_t(PUBLIC_FILE_TEXT))]

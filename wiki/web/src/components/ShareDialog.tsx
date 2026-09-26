@@ -181,6 +181,13 @@ export default function ShareDialog({ node, onClose }: { node: NodeOut; onClose:
           </p>
         )}
 
+        {loaded.space.archived_at && (
+          <p className="page-hint">
+            This space is archived: its public links keep working until a wiki administrator revokes them on
+            the <Link to="/admin" onClick={onClose}>Admin page</Link>.
+          </p>
+        )}
+
         <div className="modal-section">Links</div>
         {shown.length === 0 ? (
           <p className="page-hint">No public links to this {noun}.</p>

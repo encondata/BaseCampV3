@@ -14,7 +14,9 @@ only credential.
   assets that content embeds. A file answers its current version. Every
   presigned URL follows the uploads' inline rules
   (`files.presign_view`) and lives at most PUBLIC_URL_TTL_SECONDS.
-- A successful read counts a view with one UPDATE (no read-modify-write).
+- A successful read counts a view with one UPDATE (no read-modify-write)
+  — except in read-only maintenance mode (the flag `enforce_read_only`
+  reads), when it's served without counting.
 """
 from __future__ import annotations
 
@@ -39,6 +41,7 @@ from serversherpa.db.models import (
     WikiSpace,
 )
 from serversherpa.services import storage
+from serversherpa.system import admin_config
 from serversherpa.wiki.content import EMPTY_DOC, public_doc, referenced_asset_ids
 from serversherpa.wiki.files import inline_content_type
 from serversherpa.wiki.pages import utcnow
@@ -127,9 +130,11 @@ async def public_share(token: str, request: Request, response: Response,
     else:
         raise not_found()
 
-    await db.execute(update(WikiShareLink).where(WikiShareLink.id == link.id).values(
-        view_count=WikiShareLink.view_count + 1, last_viewed_at=func.now()))
-    await db.commit()
+    # maintenance mode freezes writes: still serve, just don't count
+    if not (await admin_config.read_admin_config(db))["read_only"]:
+        await db.execute(update(WikiShareLink).where(WikiShareLink.id == link.id).values(
+            view_count=WikiShareLink.view_count + 1, last_viewed_at=func.now()))
+        await db.commit()
     # the URLs inside expire within minutes: never serve this from a cache
     response.headers["Cache-Control"] = "no-store"
     return out

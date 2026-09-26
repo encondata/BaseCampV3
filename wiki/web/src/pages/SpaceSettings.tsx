@@ -245,6 +245,12 @@ export default function SpaceSettings() {
   };
   const isAdmin = !!me?.is_admin;
   const archived = !!space.archived_at;
+  const archivedLinksNote = archived && spaceSetting(space, 'allow_public_links') && (
+    <p className="page-hint">
+      Its public links keep working until a wiki administrator revokes them on
+      the <Link to="/admin">Admin page</Link>.
+    </p>
+  );
 
   const head = (
     <>
@@ -319,6 +325,7 @@ export default function SpaceSettings() {
         <p className="page-hint">
           {archived ? 'This space is archived.' : 'Only space managers can change these settings.'}
         </p>
+        {archivedLinksNote}
         {archived && isAdmin && archiveSection}
       </div>
     );
@@ -352,6 +359,7 @@ export default function SpaceSettings() {
       </section>
 
       {archiveSection}
+      {archivedLinksNote}
 
       {archiving && (
         <ConfirmDialog

@@ -174,6 +174,19 @@ describe('SpaceSettings — Collaboration', () => {
     await waitFor(() => expect(within(section).getByLabelText('Allow public links')).toHaveProperty('checked', true));
   });
 
+  it('tells everyone that an archived space\'s public links keep working', async () => {
+    renderSettings(makeSpace({
+      my_level: 'view', archived_at: '2026-09-25T00:00:00Z', settings: { allow_public_links: true } }));
+    expect(await screen.findByText(/public links keep working/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Admin page' }).getAttribute('href')).toBe('/admin');
+  });
+
+  it('says nothing about links for an archived space that never allowed them', async () => {
+    renderSettings(makeSpace({ my_level: 'view', archived_at: '2026-09-25T00:00:00Z', settings: {} }));
+    expect(await screen.findByText('This space is archived.')).toBeTruthy();
+    expect(screen.queryByText(/public links keep working/)).toBeNull();
+  });
+
   it('links to the space\'s pages due for review', async () => {
     renderSettings(makeSpace({ my_level: 'manage', settings: {} }));
     const section = await screen.findByRole('region', { name: 'Collaboration' });

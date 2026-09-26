@@ -125,6 +125,14 @@ describe('ShareDialog', () => {
     expect(await screen.findByText(/hasn’t been published yet/)).toBeTruthy();
   });
 
+  it('says an archived space\'s links keep working until a wiki admin revokes them', async () => {
+    vi.mocked(getSpace).mockResolvedValue(makeSpace({
+      my_level: 'manage', archived_at: '2026-09-25T00:00:00Z', settings: { allow_public_links: true } }));
+    renderDialog();
+    expect(await screen.findByText(/This space is archived: its public links keep working/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Admin page' }).getAttribute('href')).toBe('/admin');
+  });
+
   it('reports a failed create', async () => {
     vi.mocked(createShareLink).mockRejectedValue(new Error('nope'));
     renderDialog();

@@ -459,3 +459,62 @@ def test_limiter_window_resets():
     assert limiter.hit("ip", now=0) and limiter.hit("ip", now=1)
     assert not limiter.hit("ip", now=2)
     assert limiter.hit("ip", now=61)
+
+
+def test_limiter_table_stays_bounded_and_sweeps_once_per_window(monkeypatch):
+    limiter = share_links.IpRateLimiter(limit=5, window_seconds=60, max_keys=10)
+    sweeps = []
+    real_sweep = limiter._sweep
+    monkeypatch.setattr(limiter, "_sweep", lambda now: (sweeps.append(now), real_sweep(now)))
+
+    answers = []
+    for i in range(40):   # far more distinct keys than the table holds, one window
+        answers.append(limiter.hit(f"10.0.0.{i}", now=1 + i * 0.1))
+        assert len(limiter._hits) <= 10
+    assert len(sweeps) == 1
+    # the first ten got in; once the one sweep of the window is spent, a
+    # new key finding the table full is refused
+    assert all(answers[:10]) and not answers[-1]
+
+    # the next window sweeps again (everything has expired) and admits
+    assert limiter.hit("10.0.1.1", now=70)
+    assert len(sweeps) == 2
+    assert len(limiter._hits) <= 10
+
+
+def test_limiter_evicts_the_oldest_when_a_sweep_frees_nothing():
+    limiter = share_links.IpRateLimiter(limit=5, window_seconds=60, max_keys=4)
+    for i in range(4):
+        assert limiter.hit(f"k{i}", now=10 + i)
+    # nothing has expired, so the sweep evicts the oldest to make room
+    assert limiter.hit("new", now=20)
+    assert "k0" not in limiter._hits and "new" in limiter._hits
+    assert len(limiter._hits) <= 4
+
+
+def test_limiter_keys_ipv6_by_its_64():
+    limiter = share_links.IpRateLimiter(limit=2, window_seconds=60)
+    assert limiter.hit("2001:db8:1:2::1", now=0)
+    assert limiter.hit("2001:db8:1:2:ffff:ffff:ffff:ffff", now=1)
+    assert not limiter.hit("2001:db8:1:2::abcd", now=2)
+    # another /64 is another bucket; IPv4 (and IPv4-mapped) keep their address
+    assert limiter.hit("2001:db8:1:3::1", now=3)
+    assert share_links.bucket_for("192.0.2.1") == "192.0.2.1"
+    assert share_links.bucket_for("::ffff:192.0.2.1") == "192.0.2.1"
+    assert share_links.bucket_for("unknown") == "unknown"
+
+
+async def test_public_read_counts_no_view_in_read_only_mode(client, db, monkeypatch):
+    s = await _setup(client, db)
+    await _allow(client, s)
+    page = await _page(client, s, db)
+    created = await _share(client, s["owner"], page["id"])
+
+    async def _read_only(_db):
+        return {"read_only": True, "read_only_message": "Down for maintenance."}
+    monkeypatch.setattr("serversherpa.system.admin_config.read_admin_config", _read_only)
+
+    assert (await _public(client, _token(created))).status_code == 200
+    row = await db.get(WikiShareLink, uuid.UUID(created["id"]))
+    await db.refresh(row)
+    assert row.view_count == 0 and row.last_viewed_at is None

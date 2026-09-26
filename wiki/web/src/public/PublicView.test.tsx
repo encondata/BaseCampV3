@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '../testing/pmDom';
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,7 +11,11 @@ vi.mock('@portal/lib/api', async (importOriginal) => ({
   apiUrl: () => 'http://api.test',
 }));
 
+vi.mock('../lib/download', () => ({ openDownload: vi.fn() }));
+
 import { apiFetch } from '@portal/lib/api';
+
+import { openDownload } from '../lib/download';
 
 import type { PublicFileOut, PublicPageOut } from '../lib/types';
 import PublicApp, { isPublicPath } from './PublicApp';
@@ -51,8 +55,9 @@ beforeEach(() => {
   fetchSpy.mockReset();
   vi.stubGlobal('fetch', fetchSpy);
   vi.mocked(apiFetch).mockReset();
+  vi.mocked(openDownload).mockReset();
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('isPublicPath', () => {
   it('matches /p/<token> only', () => {
@@ -106,11 +111,63 @@ describe('PublicView', () => {
     expect(await screen.findByRole('heading', { name: 'Too many requests' })).toBeTruthy();
   });
 
-  it('keeps search engines out', async () => {
+  it('keeps search engines out and sends no referrer', async () => {
     answer(200, PAGE);
     renderAt('tok123');
     await screen.findByRole('heading', { name: 'Rack Guide' });
     expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toBe('noindex, nofollow');
+    expect(document.querySelector('meta[name="referrer"]')?.getAttribute('content')).toBe('no-referrer');
+  });
+});
+
+describe('PublicView — expired URLs', () => {
+  it('re-reads the share once when a page image fails to load', async () => {
+    answer(200, PAGE);
+    answer(200, { ...PAGE, asset_urls: { [ASSET]: 'https://s3/rack-fresh.png' } });
+    renderAt('tok123');
+    fireEvent.error(await screen.findByRole('img', { name: 'Rack front' }));
+    await waitFor(() => expect(screen.getByRole('img', { name: 'Rack front' }).getAttribute('src'))
+      .toBe('https://s3/rack-fresh.png'));
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    // a second failure doesn't loop
+    fireEvent.error(screen.getByRole('img', { name: 'Rack front' }));
+    await new Promise((r) => { setTimeout(r, 20); });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-reads the share once when a file preview fails to load', async () => {
+    const image = { ...FILE, title: 'rack.png', filename: 'rack.png', content_type: 'image/png', url: 'https://s3/old.png' };
+    answer(200, image);
+    answer(200, { ...image, url: 'https://s3/new.png' });
+    renderAt('tok123');
+    fireEvent.error(await screen.findByRole('img', { name: 'rack.png' }));
+    await waitFor(() => expect(screen.getByRole('img', { name: 'rack.png' }).getAttribute('src')).toBe('https://s3/new.png'));
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('downloads straight away while the URL is fresh', async () => {
+    answer(200, FILE);
+    renderAt('tok123');
+    const link = await screen.findByRole('link', { name: /Download/ });
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+    link.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(false);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-reads the share before downloading once the URL may have expired', async () => {
+    const start = Date.now();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(start);
+    answer(200, FILE);
+    answer(200, { ...FILE, download_url: 'https://s3/manual-dl-fresh' });
+    renderAt('tok123');
+    const link = await screen.findByRole('link', { name: /Download/ });
+    now.mockReturnValue(start + 9 * 60_000);
+    const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+    link.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    await waitFor(() => expect(openDownload).toHaveBeenCalledWith('https://s3/manual-dl-fresh'));
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 });
 
