@@ -8,8 +8,9 @@
  *  Works on any editor showing the page: the live one (edit mode) or the
  *  read-only one (view mode). */
 import type { Editor } from '@tiptap/core';
-import type { Node as PMNode } from '@tiptap/pm/model';
-import { Plugin, PluginKey } from '@tiptap/pm/state';
+import type { Node as PMNode, Slice } from '@tiptap/pm/model';
+import { Plugin, PluginKey, type Transaction } from '@tiptap/pm/state';
+import { AddMarkStep, RemoveMarkStep } from '@tiptap/pm/transform';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import { useEffect, useRef, useState } from 'react';
 import type { RelativePosition } from 'yjs';
@@ -94,6 +95,28 @@ function decorate(doc: PMNode, look: Look): DecorationSet {
   return DecorationSet.create(doc, decos);
 }
 
+function sliceHasMark(slice: Slice): boolean {
+  let found = false;
+  slice.content.descendants((node) => {
+    if (found) return false;
+    if (node.marks.some((m) => m.type.name === MARK)) found = true;
+    return !found;
+  });
+  return found;
+}
+
+/** Whether `tr` may have added or removed comment marks: a mark step for
+ *  one, or content put in that carries one (a paste, typing inside
+ *  marked text, a remote change). Anything else — typing elsewhere,
+ *  deleting text — only moves the highlights, so they're mapped. */
+function touchesCommentMarks(tr: Transaction): boolean {
+  return tr.steps.some((step) => {
+    if (step instanceof AddMarkStep || step instanceof RemoveMarkStep) return step.mark.type.name === MARK;
+    const { slice } = step as { slice?: Slice };
+    return !!slice && sliceHasMark(slice);
+  });
+}
+
 let pluginSeq = 0;
 
 function marksPlugin(key: PluginKey<MarksState>, onClick: (ids: string[]) => void): Plugin<MarksState> {
@@ -107,7 +130,9 @@ function marksPlugin(key: PluginKey<MarksState>, onClick: (ids: string[]) => voi
       apply(tr, value, _old, state) {
         const meta = tr.getMeta(key) as Look | undefined;
         if (meta) return { ...meta, deco: decorate(state.doc, meta) };
-        if (tr.docChanged) return { ...value, deco: decorate(state.doc, value) };
+        if (!tr.docChanged) return value;
+        if (touchesCommentMarks(tr)) return { ...value, deco: decorate(state.doc, value) };
+        return { ...value, deco: value.deco.map(tr.mapping, tr.doc) };
         return value;
       },
     },

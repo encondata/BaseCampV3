@@ -29,13 +29,15 @@ export interface ThreadProps {
   canComment: boolean;
   /** Picked (its text was clicked, or a link pointed here). */
   focused: boolean;
-  /** A comment a link pointed at. */
+  /** A comment in this thread a link pointed at: scrolled to once, and
+   *  highlighted while set. */
   targetCommentId?: string | null;
   onFocus: (threadId: string) => void;
   onHover: (threadId: string | null) => void;
-  /** Something changed: load the threads again. */
-  onChanged: () => Promise<void>;
-  /** The thread's last comment was deleted, so the thread is gone. */
+  /** Something changed: load the threads again (resolves with them, or
+   *  null when that failed). */
+  onChanged: () => Promise<CommentThread[] | null>;
+  /** After a delete, the reloaded threads no longer have this one. */
   onGone: (threadId: string) => void;
 }
 
@@ -64,13 +66,23 @@ export default function Thread({
   const resolved = !!thread.resolved_at;
   const mayResolve = canResolveThread(thread, level, meId);
 
+  // picked: the card scrolls into view once each time — unless a linked
+  // comment in it is what to show
+  const wasFocused = useRef(false);
+  const target = targetCommentId && thread.comments.some((c) => c.id === targetCommentId) ? targetCommentId : null;
   useEffect(() => {
-    if (focused && !targetCommentId) card.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
-  }, [focused, targetCommentId]);
+    if (focused && !wasFocused.current && !target) {
+      card.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+    }
+    wasFocused.current = focused;
+  }, [focused, target]);
+  // a linked comment scrolls into view once, not on every reload
+  const shownTarget = useRef<string | null>(null);
   useEffect(() => {
-    if (!targetCommentId || !thread.comments.some((c) => c.id === targetCommentId)) return;
-    document.getElementById(`comment-${targetCommentId}`)?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
-  }, [targetCommentId, thread.comments]);
+    if (!target || shownTarget.current === target) return;
+    shownTarget.current = target;
+    document.getElementById(`comment-${target}`)?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+  }, [target]);
 
   const failed = (err: unknown, fallback: string) => {
     toast(errorMessage(err, fallback));
@@ -120,11 +132,11 @@ export default function Thread({
       setDeleteError(errorMessage(err, 'Couldn\'t delete the comment.'));
       return;
     }
-    const gone = !thread.comments.some((c) => c.id !== deleting.id && !c.deleted);
     setBusy(false);
     setDeleting(null);
-    if (gone) onGone(thread.thread_id);
-    await onChanged();
+    // gone only if the server says so: a reply this page hasn't seen yet keeps it
+    const fresh = await onChanged();
+    if (fresh && !fresh.some((t) => t.thread_id === thread.thread_id)) onGone(thread.thread_id);
   };
 
   return (
@@ -137,12 +149,16 @@ export default function Thread({
       onMouseLeave={() => onHover(null)}
       onFocus={() => onHover(thread.thread_id)}
       onBlur={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onHover(null); }}
-      onClick={() => { if (!focused) onFocus(thread.thread_id); }}
+      onClick={(e) => {
+        // its buttons, links and composer do their own thing
+        if (e.target instanceof Element && e.target.closest('button, a, textarea, input, [role="option"]')) return;
+        if (!focused) onFocus(thread.thread_id);
+      }}
     >
       {anchorText && <blockquote className="wiki-thread-quote">{anchorText}</blockquote>}
       {thread.comments.map((c) => (
         <div key={c.id} id={`comment-${c.id}`}
-             className={`wiki-comment${c.id === targetCommentId ? ' is-target' : ''}`}>
+             className={`wiki-comment${c.id === target ? ' is-target' : ''}`}>
           <div className="wiki-comment-head">
             <span className="wiki-comment-avatar" aria-hidden="true"
                   style={{ background: c.author ? personColor(c.author.id) : undefined }}>

@@ -28,13 +28,13 @@ function thread(id: string, over: Partial<CommentThread> = {}, at = '2026-09-20T
   return { thread_id: id, anchor: false, resolved_at: null, resolved_by: null, comments: [c], ...over };
 }
 
-const refresh = vi.fn<() => Promise<void>>();
+const refresh = vi.fn<() => Promise<CommentThread[] | null>>();
 const onNewComment = vi.fn<(next: NewComment | null) => void>();
 const onFocusThread = vi.fn();
 
 beforeEach(() => {
   toast.mockReset();
-  refresh.mockReset().mockResolvedValue(undefined);
+  refresh.mockReset().mockResolvedValue([]);
   onNewComment.mockReset();
   onFocusThread.mockReset();
   vi.mocked(postComment).mockReset().mockResolvedValue({ thread_id: 'new-t' } as CommentOut);
@@ -136,6 +136,22 @@ describe('CommentsRail — starting a thread', () => {
     expect(postComment).toHaveBeenCalledWith('page-1', {
       body: { text: '> "the spare PDU"\n\nWhich one?', mentions: [] },
     });
+  });
+
+  it('keeps an unsent draft when the selection it quotes changes', () => {
+    const onDraftChange = vi.fn();
+    const { rerender } = renderRail({ newComment: { kind: 'quote', text: 'first bit' }, onDraftChange });
+    fireEvent.change(document.querySelector('textarea')!, { target: { value: 'half-written' } });
+    expect(onDraftChange).toHaveBeenLastCalledWith(true);
+    rerender(<CommentsRail pageId="page-1" mode="view" level="edit" meId={me.id} canComment threads={[]} error={null}
+                           anchors={new Map()} editor={null} focusedThread={null} targetCommentId={null}
+                           onFocusThread={onFocusThread} onHoverThread={() => {}}
+                           newComment={{ kind: 'quote', text: 'second bit' }} onNewComment={onNewComment}
+                           onDraftChange={onDraftChange} refresh={refresh} onThreadGone={() => {}} />);
+    expect(screen.getByText('second bit').tagName).toBe('BLOCKQUOTE');
+    expect(document.querySelector('textarea')!.value).toBe('half-written');
+    fireEvent.change(document.querySelector('textarea')!, { target: { value: '  ' } });
+    expect(onDraftChange).toHaveBeenLastCalledWith(false);
   });
 
   it('keeps the composer when posting is refused', async () => {

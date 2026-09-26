@@ -34,11 +34,13 @@ export interface CommentComposerProps {
   /** Resolves once posted (the text then clears); a rejection keeps it. */
   onSubmit: (body: CommentBodyIn) => Promise<void>;
   onCancel?: () => void;
+  /** The text, whenever it changes. */
+  onTextChange?: (text: string) => void;
 }
 
 export default function CommentComposer({
   pageId, label, submitLabel, placeholder, initialText = '', initialMentions = [],
-  maxLength = MAX_COMMENT_CHARS, autoFocus = false, onSubmit, onCancel,
+  maxLength = MAX_COMMENT_CHARS, autoFocus = false, onSubmit, onCancel, onTextChange,
 }: CommentComposerProps) {
   const [text, setText] = useState(initialText);
   const [picked, setPicked] = useState<PersonRef[]>([...initialMentions]);
@@ -51,6 +53,14 @@ export default function CommentComposer({
   const people = useMentionable(pageId, trigger?.query.trim() ?? '', !!trigger);
 
   useEffect(() => { setActive(0); }, [people.people]);
+
+  const onTextRef = useRef(onTextChange);
+  onTextRef.current = onTextChange;
+  const firstText = useRef(true);
+  useEffect(() => {
+    if (firstText.current) { firstText.current = false; return; }
+    onTextRef.current?.(text);
+  }, [text]);
 
   useEffect(() => {
     if (!autoFocus || !box.current) return;

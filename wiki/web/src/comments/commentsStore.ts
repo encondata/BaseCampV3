@@ -24,9 +24,13 @@ export function canCommentOn(level: Level | null, space: SpaceOut): boolean {
   return level === 'view' && !space.archived_at && space.settings.readers_can_comment !== false;
 }
 
-/** Editors, and whoever started the thread. */
+/** Editors, and whoever started the thread — taken from the first
+ *  comment that still names its author (a deleted first comment may
+ *  not; the API goes by the first comment's author regardless). */
 export function canResolveThread(thread: CommentThread, level: Level | null, meId: string | null): boolean {
-  return atLeast(level, 'edit') || (!!meId && thread.comments[0]?.author?.id === meId);
+  if (atLeast(level, 'edit')) return true;
+  const author = thread.comments.find((c) => c.author)?.author;
+  return !!meId && author?.id === meId;
 }
 
 /** Your own comment, or any as a manager. */
@@ -146,23 +150,28 @@ export interface CommentThreadsState {
   /** null until the first answer. */
   threads: CommentThread[] | null;
   error: string | null;
-  refresh: () => Promise<void>;
+  /** Reloads now. Resolves with what this request found (null when it
+   *  failed), even when a newer request's answer is the one shown. */
+  refresh: () => Promise<CommentThread[] | null>;
 }
 
-/** The page's threads: loaded once, then every POLL_MS while `poll` and
- *  the tab is visible (and at once when it becomes visible again).
- *  `refresh` reloads now; only the newest request's answer is kept. */
-export function useCommentThreads(pageId: string, poll: boolean): CommentThreadsState {
+/** The page's threads, once `enabled` (default on): loaded then, and
+ *  every POLL_MS while `poll` and the tab is visible (and at once when it
+ *  becomes visible again). Only the newest request's answer is shown. */
+export function useCommentThreads(
+  pageId: string, { enabled = true, poll }: { enabled?: boolean; poll: boolean },
+): CommentThreadsState {
   const [state, setState] = useState<{ pageId: string; threads: CommentThread[] | null; error: string | null }>(
     { pageId, threads: null, error: null });
   const seq = useRef(0);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<CommentThread[] | null> => {
     seq.current += 1;
     const mine = seq.current;
     try {
       const threads = await listComments(pageId);
       if (mine === seq.current) setState({ pageId, threads, error: null });
+      return threads;
     } catch (err) {
       if (mine === seq.current) {
         setState((s) => ({
@@ -171,17 +180,19 @@ export function useCommentThreads(pageId: string, poll: boolean): CommentThreads
           error: errorMessage(err, 'Couldn\'t load the comments.'),
         }));
       }
+      return null;
     }
   }, [pageId]);
 
   useEffect(() => {
+    if (!enabled) return undefined;
     void refresh();
     // a later page's answers only
     return () => { seq.current += 1; };
-  }, [refresh]);
+  }, [refresh, enabled]);
 
   useEffect(() => {
-    if (!poll) return undefined;
+    if (!poll || !enabled) return undefined;
     const tick = () => { if (document.visibilityState === 'visible') void refresh(); };
     const timer = setInterval(tick, POLL_MS);
     document.addEventListener('visibilitychange', tick);
@@ -189,7 +200,7 @@ export function useCommentThreads(pageId: string, poll: boolean): CommentThreads
       clearInterval(timer);
       document.removeEventListener('visibilitychange', tick);
     };
-  }, [poll, refresh]);
+  }, [poll, enabled, refresh]);
 
   const shown = state.pageId === pageId ? state : { threads: null, error: null };
   return { threads: shown.threads, error: shown.error, refresh };

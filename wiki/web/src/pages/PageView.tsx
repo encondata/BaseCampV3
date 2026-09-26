@@ -33,6 +33,7 @@ import { useSystemStatus } from '@portal/lib/systemStatusContext';
 import { captureSelection, revealAnchor, useCommentMarks } from '../comments/commentMarks';
 import CommentsRail, { ReaderCommentBubble, type NewComment } from '../comments/CommentsRail';
 import { canCommentOn, commentLinkTarget, useCommentThreads } from '../comments/commentsStore';
+import ConfirmDialog from '../components/ConfirmDialog';
 import RowMenu, { atLeast } from '../components/RowMenu';
 import { Icon } from '../editor/icons';
 import { flushPage } from '../editor/flushPage';
@@ -46,6 +47,9 @@ import type { NodeDetailOut, PageContentOut, VersionDetail, VersionOut } from '.
 import { useWikiMe } from '../lib/useWikiMe';
 import { errorMessage, getPageContent, getVersion, recordRestore, setFavorite } from '../lib/wikiApi';
 import { Breadcrumbs, InlineTitle } from './FolderView';
+
+/** How long a comment a link pointed at stands out. */
+export const TARGET_HIGHLIGHT_MS = 4000;
 
 type Published =
   | { status: 'loading' }
@@ -281,27 +285,50 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
   const linkedComment = commentLinkTarget(location.hash);
   const canComment = canCommentOn(node.my_level, node.space);
   const [tab, setTab] = useState<'contents' | 'comments'>(linkedComment ? 'comments' : 'contents');
-  const comments = useCommentThreads(node.id, tab === 'comments');
+  const showRail = mode === 'edit' || published.status === 'ready';
+  const comments = useCommentThreads(node.id, { enabled: showRail, poll: tab === 'comments' });
   const [viewEditor, setViewEditor] = useState<Editor | null>(null);
   const shownEditor = mode === 'edit' ? liveEditor : viewEditor;
   const [focusedThread, setFocusedThread] = useState<string | null>(null);
   const [hoveredThread, setHoveredThread] = useState<string | null>(null);
   const [newComment, setNewComment] = useState<NewComment | null>(null);
+  // whether the new comment's composer holds unsent text, and a selection
+  // waiting on "replace the one it's on?"
+  const hasDraft = useRef(false);
+  const [replacing, setReplacing] = useState<NewComment | null>(null);
+  // the comment a link pointed at, highlighted for a moment
+  const [target, setTarget] = useState<{ commentId: string; threadId: string } | null>(null);
   const docRef = useRef<HTMLDivElement>(null);
 
   // a held selection belongs to the document it was made in
-  useEffect(() => { setNewComment(null); setFocusedThread(null); }, [node.id, mode]);
+  useEffect(() => { setNewComment(null); setFocusedThread(null); setReplacing(null); }, [node.id, mode]);
+  useEffect(() => { if (!newComment) hasDraft.current = false; }, [newComment]);
   useEffect(() => { if (linkedComment) setTab('comments'); }, [linkedComment]);
 
-  // `#comment-<id>`: pick that comment's thread once the threads are in
+  // `#comment-<id>`: pick that comment's thread once the threads are in —
+  // once per link, not on every reload
   const linkedHandled = useRef<string | null>(null);
   useEffect(() => {
     if (!linkedComment || !comments.threads || linkedHandled.current === linkedComment) return;
     linkedHandled.current = linkedComment;
     const found = comments.threads.find((t) => t.comments.some((c) => c.id === linkedComment));
-    if (found) setFocusedThread(found.thread_id);
-    else toast('That comment isn\'t here any more — it may have been deleted.');
+    if (found) {
+      setFocusedThread(found.thread_id);
+      setTarget({ commentId: linkedComment, threadId: found.thread_id });
+    } else {
+      toast('That comment isn\'t here any more — it may have been deleted.');
+    }
   }, [linkedComment, comments.threads, toast]);
+  useEffect(() => {
+    if (!target) return undefined;
+    const timer = setTimeout(() => setTarget(null), TARGET_HIGHLIGHT_MS);
+    return () => clearTimeout(timer);
+  }, [target]);
+  /** Pick a thread; the linked comment stops standing out once another is picked. */
+  const pickThread = useCallback((threadId: string | null) => {
+    setFocusedThread(threadId);
+    setTarget((cur) => (cur && cur.threadId === threadId ? cur : null));
+  }, []);
 
   const threadsRef = useRef(comments.threads);
   threadsRef.current = comments.threads;
@@ -311,32 +338,34 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
     const picked = ids.find((id) => known(id, true)) ?? ids.find((id) => known(id, false));
     if (!picked) return;
     setTab('comments');
-    setFocusedThread(picked);
-  }, []);
+    pickThread(picked);
+  }, [pickThread]);
   const anchors = useCommentMarks(shownEditor, {
     active: hoveredThread ?? focusedThread, threads: comments.threads, onMarkClick,
   });
 
   // picked in the rail: bring its text into view too
   const focusThread = (threadId: string | null) => {
-    setFocusedThread(threadId);
+    pickThread(threadId);
     const anchor = threadId ? anchors?.get(threadId) : undefined;
     if (shownEditor && anchor) revealAnchor(shownEditor, anchor.pos);
   };
+  // a new selection takes over an empty composer; over unsent text, ask first
+  const startOn = useCallback((next: NewComment) => {
+    setTab('comments');
+    if (hasDraft.current) setReplacing(next);
+    else setNewComment(next);
+  }, []);
   const commentOnSelection = useCallback((editor: Editor) => {
     const captured = captureSelection(editor);
-    if (!captured) return;
-    setNewComment({ kind: 'inline', captured });
-    setTab('comments');
-  }, []);
-  const commentOnQuote = useCallback((text: string) => {
-    setNewComment({ kind: 'quote', text });
-    setTab('comments');
-  }, []);
+    if (captured) startOn({ kind: 'inline', captured });
+  }, [startOn]);
+  const commentOnQuote = useCallback((text: string) => startOn({ kind: 'quote', text }), [startOn]);
+  const onDraftChange = useCallback((draft: boolean) => { hasDraft.current = draft; }, []);
   // a deleted thread's text isn't commented any more (resolved threads keep theirs)
   const onThreadGone = (threadId: string) => {
     if (mode === 'edit' && liveEditor && !liveEditor.isDestroyed) liveEditor.commands.unsetCommentThread(threadId);
-    if (focusedThread === threadId) setFocusedThread(null);
+    if (focusedThread === threadId) pickThread(null);
   };
   const openThreads = comments.threads?.filter((t) => !t.resolved_at).length;
 
@@ -345,7 +374,6 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
     [published],
   );
   const toc = mode === 'edit' ? liveToc : viewToc;
-  const showRail = mode === 'edit' || published.status === 'ready';
 
   let meta = '';
   if (published.status === 'ready') {
@@ -434,9 +462,9 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
                 pageId={node.id} mode={mode} level={node.my_level} meId={meId} canComment={canComment}
                 threads={comments.threads} error={comments.error} anchors={anchors}
                 editor={mode === 'edit' ? liveEditor : null}
-                focusedThread={focusedThread} targetCommentId={linkedComment}
+                focusedThread={focusedThread} targetCommentId={target?.commentId ?? null}
                 onFocusThread={focusThread} onHoverThread={setHoveredThread}
-                newComment={newComment} onNewComment={setNewComment}
+                newComment={newComment} onNewComment={setNewComment} onDraftChange={onDraftChange}
                 refresh={comments.refresh} onThreadGone={onThreadGone}
               />
             )}
@@ -444,6 +472,17 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
         )}
       </div>
 
+      {replacing && (
+        <ConfirmDialog
+          eyebrow="Comments"
+          title="Replace the selection for this comment?"
+          description="What you've written stays; the comment would be on the text you just selected instead."
+          confirmLabel="Replace"
+          cancelLabel="Keep the current one"
+          onConfirm={() => { setNewComment(replacing); setReplacing(null); }}
+          onCancel={() => setReplacing(null)}
+        />
+      )}
       {publishing && (
         <PublishDialog pageId={node.id} pageTitle={node.title} flush={flushDraft}
                        onClose={() => setPublishing(false)} onPublished={onPublished} />

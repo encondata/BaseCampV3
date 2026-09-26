@@ -56,6 +56,14 @@ describe('who may do what', () => {
     expect(canDeleteComment(theirs.comments[0], 'manage', me.id)).toBe(true);
     expect(canDeleteComment({ ...mine.comments[0], deleted: true }, 'manage', me.id)).toBe(false);
   });
+
+  it('takes the thread\'s author from the first comment that still names one', () => {
+    const anonymousRoot = { ...thread('t3'), comments: [
+      comment('t3', { author: null, deleted: true }), comment('c4', { thread_id: 't3', author: me }),
+    ] };
+    expect(canResolveThread(anonymousRoot, 'view', me.id)).toBe(true);
+    expect(canResolveThread(anonymousRoot, 'view', ada.id)).toBe(false);
+  });
 });
 
 describe('arrangeThreads', () => {
@@ -127,7 +135,7 @@ describe('useCommentThreads', () => {
   const flush = () => act(async () => { await Promise.resolve(); });
 
   it('loads once, and polls every 20 s only while asked to and visible', async () => {
-    const { result, rerender } = renderHook(({ poll }) => useCommentThreads('p1', poll), {
+    const { result, rerender } = renderHook(({ poll }) => useCommentThreads('p1', { poll }), {
       initialProps: { poll: false },
     });
     await flush();
@@ -151,16 +159,38 @@ describe('useCommentThreads', () => {
   });
 
   it('refreshes on demand and keeps the newest answer', async () => {
-    const { result } = renderHook(() => useCommentThreads('p1', false));
+    const { result } = renderHook(() => useCommentThreads('p1', { poll: false }));
     await flush();
     let resolveSlow: (v: CommentThread[]) => void = () => {};
     vi.mocked(listComments)
       .mockImplementationOnce(() => new Promise((r) => { resolveSlow = r; }))
       .mockResolvedValueOnce([thread('new')]);
-    await act(async () => { void result.current.refresh(); void result.current.refresh(); });
+    let first: Promise<CommentThread[] | null> = Promise.resolve(null);
+    let second: Promise<CommentThread[] | null> = Promise.resolve(null);
+    await act(async () => { first = result.current.refresh(); second = result.current.refresh(); });
     await flush();
     resolveSlow([thread('stale')]);
     await flush();
     expect(result.current.threads?.map((t) => t.thread_id)).toEqual(['new']);
+    // each caller still hears what its own request found
+    expect((await first)?.map((t) => t.thread_id)).toEqual(['stale']);
+    expect((await second)?.map((t) => t.thread_id)).toEqual(['new']);
+    vi.mocked(listComments).mockRejectedValueOnce(new Error('offline'));
+    let failed: Promise<CommentThread[] | null> = Promise.resolve([]);
+    await act(async () => { failed = result.current.refresh(); });
+    expect(await failed).toBeNull();
+  });
+
+  it('fetches nothing until enabled', async () => {
+    const { result, rerender } = renderHook(({ enabled }) => useCommentThreads('p1', { enabled, poll: true }), {
+      initialProps: { enabled: false },
+    });
+    await act(async () => { vi.advanceTimersByTime(POLL_MS * 2); });
+    expect(listComments).not.toHaveBeenCalled();
+    expect(result.current.threads).toBeNull();
+    rerender({ enabled: true });
+    await flush();
+    expect(listComments).toHaveBeenCalledTimes(1);
+    expect(result.current.threads?.map((t) => t.thread_id)).toEqual(['t1']);
   });
 });

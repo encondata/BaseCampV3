@@ -2,6 +2,7 @@
 import '../testing/pmDom';
 
 import { Editor } from '@tiptap/core';
+import { DecorationSet } from '@tiptap/pm/view';
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -97,6 +98,30 @@ describe('useCommentMarks', () => {
       expect(result.current?.has('r')).toBe(false);
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('maps its highlights through plain typing, and redraws only when marks change', () => {
+    renderHook(() => useCommentMarks(editor, { active: 'a', threads: [thread('a'), thread('b')], onMarkClick: () => {} }));
+    const create = vi.spyOn(DecorationSet, 'create');
+    try {
+      act(() => { editor.commands.insertContentAt(1, 'Now: '); });           // before any mark
+      act(() => { editor.commands.insertContentAt(editor.state.doc.content.size - 1, '!'); });
+      expect(create).not.toHaveBeenCalled();
+      expect(decorated()).toEqual([
+        ['spare ', ''], ['PDU', 'is-active'], [' stock.', 'is-active'], ['call it in', 'is-stale'], ['wait', ''],
+      ]);
+      // a new anchor is drawn at once
+      act(() => { editor.commands.setCommentThread('a', { from: 1, to: 4 }); });
+      expect(create).toHaveBeenCalled();
+      expect(decorated()[0]).toEqual(['Now', 'is-active']);
+      // and a removed one goes
+      create.mockClear();
+      act(() => { editor.commands.unsetCommentThread('r'); });
+      expect(create).toHaveBeenCalled();
+      expect(decorated().map(([text]) => text)).not.toContain('call it in');
+    } finally {
+      create.mockRestore();
     }
   });
 

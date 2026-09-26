@@ -52,7 +52,9 @@ export interface CommentsRailProps {
   onHoverThread: (threadId: string | null) => void;
   newComment: NewComment | null;
   onNewComment: (next: NewComment | null) => void;
-  refresh: () => Promise<void>;
+  /** Whether the new comment's composer holds unsent text. */
+  onDraftChange?: (hasDraft: boolean) => void;
+  refresh: () => Promise<CommentThread[] | null>;
   /** The thread was deleted outright. */
   onThreadGone: (threadId: string) => void;
 }
@@ -61,7 +63,7 @@ const quoted = (text: string) => quoteSelection(text).slice(3, -3);
 
 export default function CommentsRail({
   pageId, mode, level, meId, canComment, threads, error, anchors, editor, focusedThread, targetCommentId,
-  onFocusThread, onHoverThread, newComment, onNewComment, refresh, onThreadGone,
+  onFocusThread, onHoverThread, newComment, onNewComment, onDraftChange, refresh, onThreadGone,
 }: CommentsRailProps) {
   const toast = useToast();
   const [showResolved, setShowResolved] = useState(false);
@@ -117,7 +119,7 @@ export default function CommentsRail({
     meId,
     canComment,
     focused: focusedThread === t.thread_id,
-    targetCommentId,
+    targetCommentId: targetCommentId && t.comments.some((c) => c.id === targetCommentId) ? targetCommentId : null,
     onFocus: onFocusThread,
     onHover: onHoverThread,
     onChanged: refresh,
@@ -139,8 +141,8 @@ export default function CommentsRail({
       {newComment && (
         <div className="wiki-thread wiki-thread-new">
           {selection !== null && <blockquote className="wiki-thread-quote">{quoted(selection)}</blockquote>}
+          {/* no key: a new selection keeps what's been written */}
           <CommentComposer
-            key={selection ?? 'page'}
             pageId={pageId}
             label={selection !== null ? 'Comment on the selected text' : 'New comment'}
             submitLabel="Comment"
@@ -148,6 +150,7 @@ export default function CommentsRail({
             maxLength={MAX_COMMENT_CHARS - quoteChars}
             onSubmit={start}
             onCancel={() => onNewComment(null)}
+            onTextChange={onDraftChange && ((text) => onDraftChange(!!text.trim()))}
           />
         </div>
       )}

@@ -30,14 +30,14 @@ function comment(id: string, over: Partial<CommentOut> = {}): CommentOut {
   };
 }
 
-const onChanged = vi.fn<() => Promise<void>>();
+const onChanged = vi.fn<() => Promise<CommentThread[] | null>>();
 const onGone = vi.fn();
 const onFocus = vi.fn();
 const onHover = vi.fn();
 
 beforeEach(() => {
   toast.mockReset();
-  onChanged.mockReset().mockResolvedValue(undefined);
+  onChanged.mockReset().mockResolvedValue([]);
   onGone.mockReset();
   onFocus.mockReset();
   onHover.mockReset();
@@ -47,12 +47,18 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-function renderThread(thread: CommentThread, opts: { level?: Level; canComment?: boolean; anchorText?: string } = {}) {
-  return render(
-    <Thread pageId="page-1" thread={thread} anchorText={opts.anchorText} level={opts.level ?? 'edit'} meId={me.id}
-            canComment={opts.canComment ?? true} focused={false} onFocus={onFocus} onHover={onHover}
-            onChanged={onChanged} onGone={onGone} />,
-  );
+interface Opts {
+  level?: Level; canComment?: boolean; anchorText?: string; focused?: boolean; targetCommentId?: string | null;
+}
+
+const threadEl = (thread: CommentThread, opts: Opts = {}) => (
+  <Thread pageId="page-1" thread={thread} anchorText={opts.anchorText} level={opts.level ?? 'edit'} meId={me.id}
+          canComment={opts.canComment ?? true} focused={opts.focused ?? false} targetCommentId={opts.targetCommentId}
+          onFocus={onFocus} onHover={onHover} onChanged={onChanged} onGone={onGone} />
+);
+
+function renderThread(thread: CommentThread, opts: Opts = {}) {
+  return render(threadEl(thread, opts));
 }
 
 const THREAD: CommentThread = {
@@ -148,8 +154,29 @@ describe('Thread', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
+  it('keeps the marks of a thread a reply (not yet seen here) kept alive', async () => {
+    const single = { ...THREAD, comments: [comment('t1')] };
+    // someone replied meanwhile: the thread is still in the refreshed list
+    onChanged.mockResolvedValue([{ ...single, comments: [comment('t1', { deleted: true }), comment('c9', { author: ada })] }]);
+    renderThread(single);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await act(async () => { fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' })); });
+    expect(deleteComment).toHaveBeenCalledWith('t1');
+    expect(onChanged).toHaveBeenCalled();
+    expect(onGone).not.toHaveBeenCalled();
+  });
+
+  it('keeps the marks when the refresh after a delete fails', async () => {
+    onChanged.mockResolvedValue(null);
+    renderThread({ ...THREAD, comments: [comment('t1')] });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await act(async () => { fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' })); });
+    expect(onGone).not.toHaveBeenCalled();
+  });
+
   it('keeps a thread that still has replies', async () => {
     const started = { ...THREAD, comments: [comment('t1'), comment('c2', { author: ada })] };
+    onChanged.mockResolvedValue([{ ...started, comments: [comment('t1', { deleted: true }), started.comments[1]] }]);
     renderThread(started);
     fireEvent.click(within(document.getElementById('comment-t1')!).getByRole('button', { name: 'Delete' }));
     expect(screen.getByText('Its replies stay; the comment shows as deleted.')).toBeTruthy();
@@ -166,5 +193,46 @@ describe('Thread', () => {
     expect(onHover).toHaveBeenLastCalledWith(null);
     fireEvent.click(card);
     expect(onFocus).toHaveBeenCalledWith('t1');
+  });
+
+  it('isn\'t picked by clicks on its buttons, links or composer', () => {
+    renderThread(THREAD);
+    fireEvent.click(screen.getByRole('button', { name: 'Reply' }));
+    fireEvent.click(screen.getByRole('textbox', { name: 'Reply' }));
+    fireEvent.click(within(document.getElementById('comment-c2')!).getByRole('button', { name: 'Edit' }));
+    expect(onFocus).not.toHaveBeenCalled();
+  });
+
+  describe('scrolling into view', () => {
+    const scroll = vi.fn();
+    beforeEach(() => {
+      scroll.mockReset();
+      Element.prototype.scrollIntoView = scroll;
+    });
+
+    it('scrolls to a linked comment once, however often the thread reloads', () => {
+      const { rerender } = renderThread(THREAD, { focused: true, targetCommentId: 'c2' });
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(scroll.mock.contexts[0]).toBe(document.getElementById('comment-c2'));
+      expect(document.getElementById('comment-c2')!.className).toContain('is-target');
+      // a poll hands over the same thread again, as new objects
+      rerender(threadEl({ ...THREAD, comments: THREAD.comments.map((c) => ({ ...c })) },
+        { focused: true, targetCommentId: 'c2' }));
+      // the highlight ends; the card stays where it is
+      rerender(threadEl(THREAD, { focused: true, targetCommentId: null }));
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(document.getElementById('comment-c2')!.className).not.toContain('is-target');
+    });
+
+    it('scrolls the card into view each time it\'s picked', () => {
+      const { rerender } = renderThread(THREAD);
+      expect(scroll).not.toHaveBeenCalled();
+      rerender(threadEl(THREAD, { focused: true }));
+      rerender(threadEl({ ...THREAD }, { focused: true }));
+      expect(scroll).toHaveBeenCalledTimes(1);
+      rerender(threadEl(THREAD, { focused: false }));
+      rerender(threadEl(THREAD, { focused: true }));
+      expect(scroll).toHaveBeenCalledTimes(2);
+    });
   });
 });

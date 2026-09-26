@@ -2,7 +2,7 @@
 import '../testing/pmDom';
 
 import { Editor } from '@tiptap/core';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -26,6 +26,7 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   recordRestore: vi.fn(),
   listComments: vi.fn(),
   deleteComment: vi.fn(),
+  postComment: vi.fn(),
 }));
 /** What the stand-in editor hands PageView once it has first synced: a
  *  real (unconnected) editor, so comment marks can attach to it, whose
@@ -63,10 +64,11 @@ import { flushPage } from '../editor/flushPage';
 import { wikiExtensions } from '../editor/schema';
 import type { CommentThread } from '../lib/types';
 import {
-  deleteComment, getMe, getPageContent, getVersion, listComments, publishPage, recordRestore, setFavorite,
+  deleteComment, getMe, getPageContent, getVersion, listComments, postComment, publishPage, recordRestore,
+  setFavorite,
 } from '../lib/wikiApi';
 import { makeDetail, makeMe, makeSpace } from '../testing/fixtures';
-import PageView from './PageView';
+import PageView, { TARGET_HIGHLIGHT_MS } from './PageView';
 
 const PUBLISHED: PageContentOut = {
   version_id: 'v3',
@@ -134,6 +136,8 @@ describe('PageView — view mode', () => {
     renderPage(makeDetail('p1', { my_level: 'view', page: never }));
     expect(await screen.findByText('This page hasn\'t been published yet')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Publish' })).toBeNull();
+    // no rail, so no comments are fetched
+    expect(listComments).not.toHaveBeenCalled();
     // no live connection is even attempted: live editing is for editors
     expect(screen.queryByTestId('wiki-editor')).toBeNull();
   });
@@ -398,7 +402,8 @@ describe('PageView — comments', () => {
 
   it('takes a deleted thread\'s marks out of the live document', async () => {
     const mine = { ...THREADS[0], comments: [{ ...THREADS[0].comments[0], author: { id: 'p-1', name: 'Jimmy Henderson' } }] };
-    vi.mocked(listComments).mockResolvedValue([mine]);
+    // the reload after the delete no longer has the thread
+    vi.mocked(listComments).mockResolvedValueOnce([mine]).mockResolvedValue([]);
     vi.mocked(deleteComment).mockReset().mockResolvedValue(undefined);
     fakeEditor.commands.unsetCommentThread.mockReset();
     renderPage(makeDetail('p1', { my_level: 'edit', page: published }), '/n/p1?edit=1');
@@ -410,6 +415,99 @@ describe('PageView — comments', () => {
     fireEvent.click(await within(rail).findByRole('button', { name: 'Delete' }));
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(fakeEditor.commands.unsetCommentThread).toHaveBeenCalledWith('t1'));
+  });
+
+  describe('a linked comment', () => {
+    const PAGE_THREAD: CommentThread = { thread_id: 't5', anchor: false, resolved_at: null, resolved_by: null, comments: [
+      { id: 't5', thread_id: 't5', parent_id: null, body: { text: 'Another thing', mentions: [] }, author: ada,
+        created_at: PUBLISHED.created_at!, edited_at: null, deleted: false },
+    ] };
+    const scroll = vi.fn();
+    beforeEach(() => {
+      scroll.mockReset();
+      Element.prototype.scrollIntoView = scroll;
+      vi.mocked(listComments).mockResolvedValue([THREADS[0], PAGE_THREAD]);
+      vi.mocked(postComment).mockReset().mockResolvedValue(THREADS[0].comments[1]);
+    });
+    afterEach(() => { vi.useRealTimers(); });
+    const target = () => document.querySelector('.wiki-comment.is-target')?.id ?? null;
+    const scrolledTo = (id: string) => scroll.mock.contexts.filter((el) => (el as Element).id === id).length;
+
+    it('is scrolled to once — not again when the comments reload', async () => {
+      renderPage(makeDetail('p1', { my_level: 'view', page: published }), '/n/p1#comment-c2');
+      await waitFor(() => expect(target()).toBe('comment-c2'));
+      expect(scrolledTo('comment-c2')).toBe(1);
+      // replying reloads the comments (listComments resolves again)
+      const t1 = document.querySelector('#thread-t1') as HTMLElement;
+      fireEvent.click(within(t1).getByRole('button', { name: 'Reply' }));
+      fireEvent.change(within(t1).getByRole('textbox', { name: 'Reply' }), { target: { value: 'Thanks' } });
+      await act(async () => { fireEvent.click(within(t1).getByRole('button', { name: 'Reply' })); });
+      expect(postComment).toHaveBeenCalled();
+      await waitFor(() => expect(listComments).toHaveBeenCalledTimes(2));
+      await act(async () => { await Promise.resolve(); });
+      expect(scrolledTo('comment-c2')).toBe(1);
+    });
+
+    it('stops standing out when another thread is picked, which then scrolls into view', async () => {
+      renderPage(makeDetail('p1', { my_level: 'view', page: published }), '/n/p1#comment-c2');
+      await waitFor(() => expect(target()).toBe('comment-c2'));
+      fireEvent.click(screen.getByText('Another thing'));
+      await waitFor(() => expect(target()).toBeNull());
+      expect(document.querySelector('#thread-t5')!.className).toContain('is-focused');
+      expect(scrolledTo('thread-t5')).toBe(1);
+    });
+
+    it('stops standing out after a few seconds', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      renderPage(makeDetail('p1', { my_level: 'view', page: published }), '/n/p1#comment-c2');
+      await waitFor(() => expect(target()).toBe('comment-c2'));
+      await act(async () => { vi.advanceTimersByTime(TARGET_HIGHLIGHT_MS); });
+      expect(target()).toBeNull();
+      // still the picked thread
+      expect(document.querySelector('#thread-t1')!.className).toContain('is-focused');
+    });
+  });
+
+  describe('a reader\'s selection', () => {
+    /** Selects `[start, end)` of the page's text node reading `text`, and lets go of the mouse. */
+    const select = async (text: string, start: number, end: number) => {
+      const node = [...document.querySelectorAll('.wiki-page-content .ProseMirror *')]
+        .flatMap((el) => [...el.childNodes]).find((n) => n.nodeType === 3 && n.textContent === text)!;
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, end);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      fireEvent.mouseUp(document);
+      fireEvent.click(within(await screen.findByRole('toolbar', { name: 'Selected text' }))
+        .getByRole('button', { name: 'Comment' }));
+    };
+    const box = () => screen.getByRole('textbox', { name: 'Comment on the selected text' }) as HTMLTextAreaElement;
+    const quote = () => document.querySelector('.wiki-thread-new .wiki-thread-quote')?.textContent;
+
+    it('follows a new selection while nothing is written, and asks before moving a draft', async () => {
+      renderPage(makeDetail('p1', { my_level: 'view', page: published }));
+      await waitFor(() => expect(document.querySelector('.wiki-page-content [data-comment-thread]')).not.toBeNull());
+      await select('Check the ', 0, 5);
+      expect(quote()).toBe('Check');
+      // nothing written yet: the new selection simply takes over
+      await select(' stock.', 1, 6);
+      expect(quote()).toBe('stock');
+      expect(screen.queryByRole('dialog')).toBeNull();
+
+      fireEvent.change(box(), { target: { value: 'Half a thought' } });
+      await select('Check the ', 0, 5);
+      const dialog = screen.getByRole('dialog');
+      expect(within(dialog).getByText('Replace the selection for this comment?')).toBeTruthy();
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Keep the current one' }));
+      expect(quote()).toBe('stock');
+      expect(box().value).toBe('Half a thought');
+
+      await select('Check the ', 0, 5);
+      fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Replace' }));
+      expect(quote()).toBe('Check');
+      expect(box().value).toBe('Half a thought');
+    });
   });
 
   it('offers no commenting when the space keeps readers from it', async () => {

@@ -8,6 +8,7 @@ interface Props {
   title: string;
   description: ReactNode;
   confirmLabel: string;
+  cancelLabel?: string;
   busyLabel?: string;
   danger?: boolean;
   busy?: boolean;
@@ -17,7 +18,7 @@ interface Props {
 }
 
 export default function ConfirmDialog({
-  eyebrow, title, description, confirmLabel, busyLabel = 'Working…', danger = false, busy = false,
+  eyebrow, title, description, confirmLabel, cancelLabel = 'Cancel', busyLabel = 'Working…', danger = false, busy = false,
   error, onConfirm, onCancel,
 }: Props) {
   useEffect(() => {
@@ -49,7 +50,7 @@ export default function ConfirmDialog({
                   onClick={onConfirm} autoFocus>
             {busy ? busyLabel : confirmLabel}
           </button>
-          <button type="button" className="mini-btn" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button type="button" className="mini-btn" onClick={onCancel} disabled={busy}>{cancelLabel}</button>
         </div>
       </div>
     </div>
