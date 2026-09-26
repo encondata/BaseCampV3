@@ -193,3 +193,16 @@ def test_strip_asset_nodes_drops_page_asset_embeds_but_keeps_file_node_embeds():
     assert [n["type"] for n in list_item_content] == ["paragraph"]
     # a copy: the input is untouched
     assert referenced_asset_ids(ASSET_DOC) == {"a1", "a2"}
+
+
+def test_strip_comment_marks_is_public_and_leaves_the_source_alone():
+    from serversherpa.wiki.content import strip_comment_marks
+
+    anchored = {"type": "doc", "content": [_p(
+        _t("Check the "), _thread("spare", "t-a", other=("bold",)), _thread(" PDU", "t-a"),
+        _t(" stock."))]}
+    stripped = strip_comment_marks(anchored)
+    assert stripped == {"type": "doc", "content": [_p(
+        _t("Check the "), {"type": "text", "text": "spare", "marks": [{"type": "bold"}]},
+        _t(" PDU stock."))]}
+    assert "commentThread" in str(anchored)

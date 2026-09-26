@@ -39,6 +39,7 @@ from serversherpa.wiki.content import (
     doc_text,
     referenced_asset_ids,
     rewrite_asset_ids,
+    strip_comment_marks,
 )
 from serversherpa.wiki.files import enqueue
 from serversherpa.wiki.pages import add_version, utcnow
@@ -430,6 +431,9 @@ async def copy_subtree(db: AsyncSession, node: WikiNode, *,
                 draft_json, draft_text = source.draft_json, source.draft_text
             elif version is not None:
                 draft_json, draft_text = version.content_json, version.content_text
+        # the source's comment anchors point at the source's threads
+        if draft_json is not None:
+            draft_json = strip_comment_marks(draft_json)
         contents[n.id] = (draft_json, draft_text)
 
     # only the assets that content embeds are copied (a draft-only image

@@ -2,7 +2,8 @@
 empty Tiptap document new pages start from, plain-text extraction
 (`doc_text`, for `content_text`/`draft_text` — search and previews), a
 canonical comparison of two documents that ignores comment anchors
-(`docs_equal`), the stored-size cap
+(`docs_equal`), dropping those anchors from content that leaves its page
+(`strip_comment_marks`), the stored-size cap
 (`MAX_DOC_BYTES`), the embedded-asset walkers page copy uses, the
 people a document @mentions (`mention_ids`), and
 `strip_reference_labels`, which drops what a link or embed recorded about
@@ -188,11 +189,13 @@ def _is_text(node: Any) -> bool:
         and isinstance(node.get("text"), str)
 
 
-def _without_comment_anchors(doc: dict) -> dict:
+def strip_comment_marks(doc: dict) -> dict:
     """A deep copy of `doc` without its `commentThread` marks, and with
     the text runs they split apart joined again (text nodes that now
     carry the same marks and attributes), so the result compares equal to
-    the same document never commented on."""
+    the same document never commented on. An anchor belongs to one page's
+    threads: use this wherever content leaves its page — a template, a
+    copy, and (Phase 3) a public share or an export."""
     out = copy.deepcopy(doc)
     stack: list[Any] = [out]
     while stack:
@@ -230,7 +233,7 @@ def docs_equal(a: dict | None, b: dict | None) -> bool:
     equals None."""
     if a is None or b is None:
         return a is b
-    return _canonical(_without_comment_anchors(a)) == _canonical(_without_comment_anchors(b))
+    return _canonical(strip_comment_marks(a)) == _canonical(strip_comment_marks(b))
 
 
 def doc_bytes(doc: Any) -> int:

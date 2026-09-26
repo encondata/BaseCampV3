@@ -35,7 +35,7 @@ from serversherpa.api.routes.wiki.serialize import person_refs
 from serversherpa.db.models import WikiNode, WikiPage, WikiSpace, WikiTemplate
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.wiki import pages
-from serversherpa.wiki.content import docs_equal, strip_asset_nodes
+from serversherpa.wiki.content import docs_equal, strip_asset_nodes, strip_comment_marks
 from serversherpa.wiki.permissions import require_node_level, require_space_level
 
 router = APIRouter()
@@ -90,6 +90,13 @@ async def _name_taken(ctx: WikiContext, space_id: uuid.UUID | None, name: str,
 
 
 # ── content sources ──────────────────────────────────────────────────
+
+
+def _template_doc(content: object) -> dict:
+    """What a template stores of `content`: a valid doc, without the page's
+    own assets (a template has none) or its comment anchors (they belong
+    to the page's threads)."""
+    return strip_comment_marks(strip_asset_nodes(pages.check_doc(content)))
 
 
 async def _content_from_node(ctx: WikiContext, node_id: uuid.UUID) -> dict:
@@ -185,7 +192,7 @@ async def create_template(body: TemplateCreateIn, ctx: WikiContext) -> TemplateO
         content = await _content_from_node(ctx, body.from_node_id)
     else:
         content = body.content_json
-    content = strip_asset_nodes(pages.check_doc(content))
+    content = _template_doc(content)
 
     if await _name_taken(ctx, body.space_id, body.name):
         raise err(409, "name_taken", "A template with that name already exists here.")
@@ -218,8 +225,8 @@ async def patch_template(template_id: uuid.UUID, body: TemplatePatchIn,
     if body.name is not None and await _name_taken(
             ctx, template.space_id, body.name, exclude_id=template.id):
         raise err(409, "name_taken", "A template with that name already exists here.")
-    new_content = (strip_asset_nodes(pages.check_doc(body.content_json))
-                  if body.content_json is not None else None)
+    new_content = (_template_doc(body.content_json)
+                   if body.content_json is not None else None)
 
     before = snapshot(template, TEMPLATE_FIELDS)
     if body.name is not None:

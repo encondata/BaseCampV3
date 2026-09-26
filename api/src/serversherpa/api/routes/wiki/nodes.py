@@ -42,6 +42,7 @@ from serversherpa.api.routes.wiki.templates import template_visible
 from serversherpa.db.models import Person, WikiFavorite, WikiNode, WikiPage, WikiSpace, WikiTemplate
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.wiki import notify, reviews, tree
+from serversherpa.wiki.content import strip_comment_marks
 from serversherpa.wiki.pages import check_doc
 from serversherpa.wiki.permissions import (
     AccessIndex,
@@ -97,7 +98,8 @@ async def create(body: NodeCreateIn, ctx: WikiContext) -> NodeOut:
         if template is None or not await template_visible(ctx, template):
             raise not_found()
         title = title or template.name
-        initial_content = check_doc(template.content_json)
+        # a template stores none, but one saved before that rule might
+        initial_content = strip_comment_marks(check_doc(template.content_json))
 
     actor_id = ctx.user.person.id
     node = await tree.create_node(
