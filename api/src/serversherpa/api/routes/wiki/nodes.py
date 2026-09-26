@@ -182,6 +182,24 @@ async def patch_node(node_id: uuid.UUID, body: NodePatchIn, ctx: WikiContext) ->
 # ── move / copy ──────────────────────────────────────────────────────
 
 
+async def _refuse_hidden_descendants(ctx: WikiContext, node: WikiNode) -> None:
+    """409 `hidden_items` when `node`'s live subtree holds anything the
+    caller can't view (a descendant behind broken inheritance): a delete
+    or cross-space move would act on content its owner never shared with
+    them — and a cross-space move would hand it to the destination
+    space's managers. Wiki administrators see everything, so never hit
+    this."""
+    subtree = (await ctx.db.scalars(
+        select(WikiNode).where(WikiNode.path.contains([node.id]),
+                               WikiNode.deleted_at.is_(None))
+    )).all()
+    levels = await ctx.ix.levels_for_nodes(subtree)
+    if any(level is None for level in levels.values()):
+        raise err(409, "hidden_items",
+                  "This contains items you can't see, so you can't move it to another "
+                  "space or delete it. Ask a space manager.")
+
+
 @router.post("/nodes/{node_id}/move", response_model=NodeOut)
 async def move(node_id: uuid.UUID, body: NodeMoveIn, ctx: WikiContext) -> NodeOut:
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "edit")
@@ -192,6 +210,10 @@ async def move(node_id: uuid.UUID, body: NodeMoveIn, ctx: WikiContext) -> NodeOu
         raise forbidden("manage")
     if not is_edit(dest_level):
         raise forbidden("edit")
+    if space.id != node.space_id:
+        # within its space a hidden descendant keeps its own grants; moved
+        # out, the destination's managers would gain it
+        await _refuse_hidden_descendants(ctx, node)
 
     fields = ["space_id", "parent_id", "position"]
     before = snapshot(node, fields)
@@ -257,6 +279,7 @@ async def delete_node(node_id: uuid.UUID, ctx: WikiContext) -> NodeDeleteOut:
         select(WikiSpace.home_node_id).where(WikiSpace.id == node.space_id))
     if home_id == node.id:
         raise err(422, "is_home", "The space home page can't be deleted.")
+    await _refuse_hidden_descendants(ctx, node)
 
     actor_id = ctx.user.person.id
     batch_id = uuid.uuid4()

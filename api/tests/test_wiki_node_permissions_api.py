@@ -258,3 +258,61 @@ async def test_put_permissions_is_audited(client, db):
     assert before_grants == []
     assert after_grants == [{"principal_type": "person",
                              "principal_id": str(ctx["owner_id"]), "level": "manage"}]
+
+
+# ── tree operations never act on what the caller can't see (I9) ──────
+
+
+async def _folder_with_a_hidden_page(client, ctx):
+    """A folder the editor can edit, holding a page that breaks inheritance
+    so only the space's manager (the owner) can see it."""
+    folder = await _create(client, ctx["owner"], ctx["space"], "Plans")
+    hidden = await _create(client, ctx["owner"], ctx["space"], "Q4 reductions",
+                           kind="page", parent=folder)
+    await _put_permissions(client, ctx["owner"], hidden["id"], inherit=False, grants=[
+        {"principal_type": "person", "principal_id": str(ctx["owner_id"]), "level": "manage"}])
+    return folder, hidden
+
+
+async def _live(db, node_id) -> bool:
+    row = await db.scalar(select(WikiNode).where(WikiNode.id == uuid.UUID(node_id))
+                          .execution_options(populate_existing=True))
+    return row is not None and row.deleted_at is None
+
+
+async def test_deleting_a_folder_with_items_the_caller_cant_see_is_refused(client, db):
+    ctx = await _setup(client, db)
+    folder, hidden = await _folder_with_a_hidden_page(client, ctx)
+    resp = await client.delete(f"/wiki/nodes/{folder['id']}", headers=ctx["editor"])
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "hidden_items"
+    assert await _live(db, folder["id"]) and await _live(db, hidden["id"])
+
+    # someone who can see everything in it may
+    resp = await client.delete(f"/wiki/nodes/{folder['id']}", headers=ctx["owner"])
+    assert resp.status_code == 200, resp.text
+
+
+async def test_moving_hidden_items_to_another_space_is_refused(client, db):
+    ctx = await _setup(client, db)
+    folder, hidden = await _folder_with_a_hidden_page(client, ctx)
+    # the editor manages the folder (not the space) and edits another space
+    await _put_permissions(client, ctx["owner"], folder["id"], inherit=True, grants=[
+        {"principal_type": "person", "principal_id": str(ctx["editor_id"]), "level": "manage"}])
+    elsewhere = await client.post("/wiki/spaces", headers=ctx["editor"], json={
+        "key": f"hid-{uuid.uuid4().hex[:8]}", "name": "Elsewhere", "default_access": "private"})
+    assert elsewhere.status_code == 201, elsewhere.text
+    space = elsewhere.json()
+
+    resp = await client.post(f"/wiki/nodes/{folder['id']}/move", headers=ctx["editor"],
+                             json={"space_id": space["id"], "parent_id": None})
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "hidden_items"
+    row = await db.get(WikiNode, uuid.UUID(hidden["id"]), populate_existing=True)
+    assert str(row.space_id) == ctx["space"]["id"]
+
+    # within the space the hidden page's own grants still decide who sees it
+    other = await _create(client, ctx["owner"], ctx["space"], "Archive")
+    resp = await client.post(f"/wiki/nodes/{folder['id']}/move", headers=ctx["editor"],
+                             json={"parent_id": other["id"]})
+    assert resp.status_code == 200, resp.text
