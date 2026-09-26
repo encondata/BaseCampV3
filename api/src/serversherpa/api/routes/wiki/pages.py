@@ -29,7 +29,7 @@ from serversherpa.api.routes.wiki.schemas import (
 from serversherpa.api.routes.wiki.serialize import person_refs
 from serversherpa.db.models import WikiNode, WikiPage, WikiPageVersion
 from serversherpa.services.audit import audit
-from serversherpa.wiki import pages
+from serversherpa.wiki import notify, pages
 from serversherpa.wiki.content import EMPTY_DOC
 from serversherpa.wiki.permissions import level_rank, require_node_level
 
@@ -155,6 +155,8 @@ async def publish(node_id: uuid.UUID, body: PublishIn, ctx: WikiContext) -> Vers
           entity_id=str(node.id), action="publish",
           changes={"version_id": str(version.id), "version_no": version.version_no,
                    "note": version.note})
+    await notify.auto_watch(ctx.db, actor_id, node.id)
+    await notify.on_published(ctx.db, node, actor_id=actor_id, version=version)
     await ctx.db.commit()
     return await _one_version_out(ctx, version)
 

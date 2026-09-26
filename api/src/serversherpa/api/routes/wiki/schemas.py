@@ -379,6 +379,51 @@ class AssetUrlsOut(BaseModel):
     urls: dict[uuid.UUID, str]
 
 
+# ── watches ──────────────────────────────────────────────────────────
+
+
+class WatchNodeRef(BaseModel):
+    id: uuid.UUID
+    title: str
+    kind: NodeKind
+
+
+class WatchSpaceRef(BaseModel):
+    key: str
+    name: str
+
+
+class WatchOut(BaseModel):
+    """A watch: `node` is null for a space watch; `space` is the watched
+    space, or the watched node's space."""
+    id: uuid.UUID
+    node: WatchNodeRef | None
+    space: WatchSpaceRef | None
+    created_at: datetime
+
+
+class WatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    node_id: uuid.UUID | None = None
+    space_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _one_target(self) -> WatchIn:
+        if (self.node_id is None) == (self.space_id is None):
+            raise ValueError("Give exactly one of node_id or space_id.")
+        return self
+
+
+class WatchStateOut(BaseModel):
+    """Whether the caller watches a node, and through what: the node
+    itself, one of its ancestors, or its space (the closest wins);
+    `watch_id` is that watch, for unwatching it."""
+    watching: bool
+    via: Literal["node", "ancestor", "space"] | None
+    watch_id: uuid.UUID | None
+
+
 # ── internal (collab server) ─────────────────────────────────────────
 
 

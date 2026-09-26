@@ -50,7 +50,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.services import storage
 from serversherpa.services.audit import audit, diff
-from serversherpa.wiki import tree
+from serversherpa.wiki import notify, tree
 from serversherpa.wiki.files import (
     DEFAULT_CONTENT_TYPE,
     UploadTokenError,
@@ -247,6 +247,8 @@ async def complete_upload(body: UploadCompleteIn, ctx: WikiContext) -> NodeOut |
                   "kind": "file", "filename": filename, "content_type": content_type,
                   "size_bytes": size}))
         await refresh_search(ctx.db, node.id)
+        # announced, but not auto-watched: watching every upload is noise
+        await notify.on_created(ctx.db, node, actor_id=actor_id)
         await ctx.db.commit()
         return await node_out(ctx, node, await ctx.ix.level_for_node(node))
 

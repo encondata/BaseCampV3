@@ -40,7 +40,7 @@ from serversherpa.api.routes.wiki.schemas import (
 from serversherpa.api.routes.wiki.serialize import node_out, nodes_out, space_out
 from serversherpa.db.models import Person, WikiFavorite, WikiNode, WikiPage, WikiSpace
 from serversherpa.services.audit import audit, diff, snapshot
-from serversherpa.wiki import tree
+from serversherpa.wiki import notify, tree
 from serversherpa.wiki.pages import check_doc
 from serversherpa.wiki.permissions import (
     AccessIndex,
@@ -98,6 +98,8 @@ async def create(body: NodeCreateIn, ctx: WikiContext) -> NodeOut:
           changes=diff({}, {"kind": node.kind, "title": node.title,
                             "space_id": str(space.id),
                             "parent_id": str(parent.id) if parent else None}))
+    await notify.auto_watch(ctx.db, actor_id, node.id)
+    await notify.on_created(ctx.db, node, actor_id=actor_id)
     await ctx.db.commit()
     return await node_out(ctx, node, await ctx.ix.level_for_node(node))
 
@@ -265,6 +267,9 @@ async def copy(node_id: uuid.UUID, body: NodeCopyIn, ctx: WikiContext) -> NodeOu
     audit(ctx.db, actor_id=actor_id, entity_type="wiki_node",
           entity_id=str(new_root.id), action="copy",
           changes={"from": str(node.id), "count": len(new_ids)})
+    if new_root.kind != "file":
+        await notify.auto_watch(ctx.db, actor_id, new_root.id)
+    await notify.on_created(ctx.db, new_root, actor_id=actor_id)
     await ctx.db.commit()
     return await node_out(ctx, new_root, await ctx.ix.level_for_node(new_root))
 

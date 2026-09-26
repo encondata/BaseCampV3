@@ -30,7 +30,6 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
-from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
     DbSession,
     authenticate_token,
@@ -54,7 +53,7 @@ from serversherpa.wiki.permissions import (
     AccessIndex,
     Principal,
     principal_for,
-    principal_from_access,
+    principal_for_person,
 )
 
 _bearer = HTTPBearer(auto_error=False)
@@ -141,10 +140,9 @@ async def level(node: uuid.UUID, person: uuid.UUID, db: DbSession) -> CollabLeve
         .limit(1))
     if live_session is None:
         raise not_found()
-    access = await resolve_access(db, person)
-    principal = await principal_from_access(db, person, access)
+    principal = await principal_for_person(db, person)
     level = await _live_level(db, principal, node)
-    return CollabLevelOut(level=await _frozen_to_view(db, level, access.role_names))
+    return CollabLevelOut(level=await _frozen_to_view(db, level, principal.roles))
 
 
 async def _frozen_to_view(db, level: str, roles) -> str:

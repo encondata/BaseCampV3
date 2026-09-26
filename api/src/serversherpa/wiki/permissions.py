@@ -31,6 +31,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from serversherpa.access.resolver import resolve_access
 from serversherpa.db.models import (
     AccessGroup,
     AccessGroupMember,
@@ -102,6 +103,15 @@ async def principal_from_access(db: AsyncSession, person_id: uuid.UUID,
         is_admin=access.can("wiki", "delete"),
         can_view_wiki=access.can("wiki", "view"),
     )
+
+
+async def principal_for_person(db: AsyncSession, person_id: uuid.UUID) -> Principal:
+    """A person's Principal by id alone — `resolve_access` then
+    `principal_from_access` — for acting on someone's behalf without
+    their token (the collab server's re-check, notification fan-out).
+    Checks nothing about their account: callers decide whether a
+    disabled or archived person counts."""
+    return await principal_from_access(db, person_id, await resolve_access(db, person_id))
 
 
 def _as_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
