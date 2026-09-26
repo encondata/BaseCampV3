@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import '../testing/pmDom';
 
+import { Editor } from '@tiptap/core';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -23,9 +24,16 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   publishPage: vi.fn(),
   getVersion: vi.fn(),
   recordRestore: vi.fn(),
+  listComments: vi.fn(),
+  deleteComment: vi.fn(),
 }));
-/** What the stand-in editor hands PageView once it has first synced. */
-const fakeEditor = { isDestroyed: false, commands: { setContent: vi.fn() } };
+/** What the stand-in editor hands PageView once it has first synced: a
+ *  real (unconnected) editor, so comment marks can attach to it, whose
+ *  commands are stand-ins. */
+const fakeEditor = Object.defineProperty(
+  Object.create(new Editor({ extensions: wikiExtensions() })), 'commands',
+  { value: { setContent: vi.fn(), unsetCommentThread: vi.fn() } },
+);
 /** The stand-in editor's own flush (its live connection's). */
 const editorFlush = vi.fn<() => Promise<void>>();
 // live editing is verified in the browser; here the editor is a stand-in
@@ -52,8 +60,12 @@ import { ApiError } from '@portal/lib/api';
 import { ShellContext, type ShellValue } from '../layout/shellContext';
 import type { NodeDetailOut, PageContentOut } from '../lib/types';
 import { flushPage } from '../editor/flushPage';
-import { getMe, getPageContent, getVersion, publishPage, recordRestore, setFavorite } from '../lib/wikiApi';
-import { makeDetail, makeMe } from '../testing/fixtures';
+import { wikiExtensions } from '../editor/schema';
+import type { CommentThread } from '../lib/types';
+import {
+  deleteComment, getMe, getPageContent, getVersion, listComments, publishPage, recordRestore, setFavorite,
+} from '../lib/wikiApi';
+import { makeDetail, makeMe, makeSpace } from '../testing/fixtures';
 import PageView from './PageView';
 
 const PUBLISHED: PageContentOut = {
@@ -97,6 +109,7 @@ beforeEach(() => {
   vi.mocked(getMe).mockResolvedValue(makeMe());
   vi.mocked(getPageContent).mockReset().mockResolvedValue(PUBLISHED);
   vi.mocked(setFavorite).mockReset().mockResolvedValue(undefined);
+  vi.mocked(listComments).mockReset().mockResolvedValue([]);
   vi.mocked(flushPage).mockReset().mockResolvedValue(undefined);
   editorFlush.mockReset().mockResolvedValue(undefined);
 });
@@ -313,5 +326,99 @@ describe('PageView — publishing the live document', () => {
     await waitFor(() => expect(publishPage).toHaveBeenCalledWith('p1', undefined));
     expect(editorFlush).toHaveBeenCalledTimes(1);
     expect(flushPage).not.toHaveBeenCalled();
+  });
+});
+
+describe('PageView — comments', () => {
+  const MARKED: PageContentOut = {
+    ...PUBLISHED,
+    content_json: {
+      type: 'doc',
+      content: [{ type: 'paragraph', content: [
+        { type: 'text', text: 'Check the ' },
+        { type: 'text', text: 'spare PDU', marks: [{ type: 'commentThread', attrs: { threadId: 't1' } }] },
+        { type: 'text', text: ' stock.' },
+      ] }],
+    },
+  };
+  const ada = { id: 'p-2', name: 'Ada Lovelace' };
+  const THREADS: CommentThread[] = [
+    { thread_id: 't1', anchor: true, resolved_at: null, resolved_by: null, comments: [
+      { id: 't1', thread_id: 't1', parent_id: null, body: { text: 'Which PDU?', mentions: [] }, author: ada,
+        created_at: PUBLISHED.created_at!, edited_at: null, deleted: false },
+      { id: 'c2', thread_id: 't1', parent_id: 't1', body: { text: 'The grey one.', mentions: [] }, author: ada,
+        created_at: PUBLISHED.created_at!, edited_at: null, deleted: false },
+    ] },
+    { thread_id: 't9', anchor: false, resolved_at: PUBLISHED.created_at!, resolved_by: ada, comments: [
+      { id: 't9', thread_id: 't9', parent_id: null, body: { text: 'Old question', mentions: [] }, author: ada,
+        created_at: PUBLISHED.created_at!, edited_at: null, deleted: false },
+    ] },
+  ];
+  beforeEach(() => {
+    vi.mocked(getPageContent).mockResolvedValue(MARKED);
+    vi.mocked(listComments).mockResolvedValue(THREADS);
+  });
+
+  it('switches the rail between contents and comments, counting open threads', async () => {
+    renderPage(makeDetail('p1', { my_level: 'view', page: published }));
+    const tab = await screen.findByRole('button', { name: 'Comments (1)' });
+    expect(screen.getByText('No headings on this page yet.')).toBeTruthy();
+    fireEvent.click(tab);
+    const rail = screen.getByRole('region', { name: 'Comments' });
+    expect(within(rail).getByText('Which PDU?')).toBeTruthy();
+    // the thread quotes the text it's on, from the page shown
+    expect(within(rail).getByText('spare PDU').tagName).toBe('BLOCKQUOTE');
+    expect(within(rail).getByRole('button', { name: 'Resolved (1)' })).toBeTruthy();
+    // readers may comment by default
+    expect(within(rail).getByRole('button', { name: 'New comment' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Contents' }));
+    expect(screen.queryByRole('region', { name: 'Comments' })).toBeNull();
+  });
+
+  it('opens the comments at a linked comment', async () => {
+    renderPage(makeDetail('p1', { my_level: 'view', page: published }), '/n/p1#comment-c2');
+    const rail = await screen.findByRole('region', { name: 'Comments' });
+    await waitFor(() => expect(rail.querySelector('#thread-t1')!.className).toContain('is-focused'));
+    expect(rail.querySelector('#comment-c2')!.className).toContain('is-target');
+  });
+
+  it('picks a thread when its text is clicked, and lights the text while picked', async () => {
+    renderPage(makeDetail('p1', { my_level: 'view', page: published }));
+    await screen.findByRole('button', { name: 'Comments (1)' });
+    const marked = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('.wiki-page-content [data-comment-thread="t1"]');
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    fireEvent.click(marked);
+    const rail = await screen.findByRole('region', { name: 'Comments' });
+    await waitFor(() => expect(rail.querySelector('#thread-t1')!.className).toContain('is-focused'));
+    await waitFor(() => expect(document.querySelector('.wiki-comment-anchor.is-active')?.textContent).toBe('spare PDU'));
+  });
+
+  it('takes a deleted thread\'s marks out of the live document', async () => {
+    const mine = { ...THREADS[0], comments: [{ ...THREADS[0].comments[0], author: { id: 'p-1', name: 'Jimmy Henderson' } }] };
+    vi.mocked(listComments).mockResolvedValue([mine]);
+    vi.mocked(deleteComment).mockReset().mockResolvedValue(undefined);
+    fakeEditor.commands.unsetCommentThread.mockReset();
+    renderPage(makeDetail('p1', { my_level: 'edit', page: published }), '/n/p1?edit=1');
+    fireEvent.click(await screen.findByRole('button', { name: 'first sync' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Comments (1)' }));
+    const rail = screen.getByRole('region', { name: 'Comments' });
+    // the live document has no such text: its thread is listed as on deleted text
+    expect(within(rail).getByText('On deleted text (1)')).toBeTruthy();
+    fireEvent.click(await within(rail).findByRole('button', { name: 'Delete' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(fakeEditor.commands.unsetCommentThread).toHaveBeenCalledWith('t1'));
+  });
+
+  it('offers no commenting when the space keeps readers from it', async () => {
+    renderPage(makeDetail('p1', {
+      my_level: 'view', page: published, space: makeSpace({ settings: { readers_can_comment: false } }),
+    }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Comments (1)' }));
+    const rail = screen.getByRole('region', { name: 'Comments' });
+    expect(within(rail).queryByRole('button', { name: 'New comment' })).toBeNull();
+    expect(within(rail).queryByRole('button', { name: 'Reply' })).toBeNull();
   });
 });

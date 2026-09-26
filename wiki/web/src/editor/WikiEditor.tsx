@@ -3,7 +3,8 @@
  *  its credential), the shared schema with the editor's node views, and
  *  the chrome around it — toolbar, presence, save state, the reconnecting
  *  banner, the slash menu, the "[[" page picker, the "@" mention picker,
- *  the selection bubble and the image/file/page pickers. Only mounted for people with edit; the
+ *  the selection bubble (with "Comment" when the page takes comments) and
+ *  the image/file/page pickers. Only mounted for people with edit; the
  *  server's answer still decides (a read-only or refused connection calls
  *  `onAccessLost`). */
 import { HocuspocusProvider, HocuspocusProviderWebsocket } from '@hocuspocus/provider';
@@ -50,15 +51,17 @@ export interface WikiEditorProps {
    *  — handed over once connected, and null again on unmount. Publish
    *  waits for it, so the published draft includes the last keystroke. */
   onLiveFlush?: (flush: (() => Promise<void>) | null) => void;
+  /** The selection bubble's "Comment" (omitted: no such button). */
+  onComment?: (editor: Editor) => void;
 }
 
 const PLACEHOLDER = 'Type “/” for blocks, “[[” to link a page, “@” to mention someone…';
 
 type Anchor = { top: number; left: number };
 
-function CollabEditor({ pageId, doc, provider, user, onToc, onFirstSync }: {
+function CollabEditor({ pageId, doc, provider, user, onToc, onFirstSync, onComment }: {
   pageId: string; doc: Y.Doc; provider: HocuspocusProvider; user: EditorUser; onToc: (toc: TocEntry[]) => void;
-  onFirstSync?: (editor: Editor) => void;
+  onFirstSync?: (editor: Editor) => void; onComment?: (editor: Editor) => void;
 }) {
   const toast = useToast();
   const toastRef = useRef(toast);
@@ -200,7 +203,10 @@ function CollabEditor({ pageId, doc, provider, user, onToc, onFirstSync }: {
       <SlashMenu editor={editor} actions={actions} />
       <PageLinkMenu editor={editor} />
       <MentionMenu editor={editor} pageId={pageId} />
-      {editor && <SelectionBubble editor={editor} onLink={setLinkAt} />}
+      {editor && (
+        <SelectionBubble editor={editor} onLink={setLinkAt}
+                         onComment={onComment && (() => onComment(editor))} />
+      )}
       {editor && linkAt && <LinkPopover editor={editor} anchor={linkAt} onClose={closeLink} />}
       {picker && (
         <PickerPopover
@@ -227,7 +233,7 @@ function CollabEditor({ pageId, doc, provider, user, onToc, onFirstSync }: {
 }
 
 export default function WikiEditor({
-  pageId, user, onAccessLost, onToc, onFirstSync, onLiveFlush,
+  pageId, user, onAccessLost, onToc, onFirstSync, onLiveFlush, onComment,
 }: WikiEditorProps) {
   const [collab, setCollab] = useState<{ doc: Y.Doc; provider: HocuspocusProvider } | null>(null);
   const lostRef = useRef(onAccessLost);
@@ -263,5 +269,5 @@ export default function WikiEditor({
 
   if (!collab) return <div className="we-shell"><p className="page-hint">Opening the editor…</p></div>;
   return <CollabEditor key={collab.doc.guid} pageId={pageId} doc={collab.doc} provider={collab.provider}
-                       user={user} onToc={onToc} onFirstSync={onFirstSync} />;
+                       user={user} onToc={onToc} onFirstSync={onFirstSync} onComment={onComment} />;
 }

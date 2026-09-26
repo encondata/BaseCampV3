@@ -1,7 +1,11 @@
 /** A page: breadcrumbs, title (renamed in place by editors), the meta line
  *  (who published it and when; "Unpublished changes" for editors), the
  *  actions (View ↔ Edit, Publish, History, Favorite, ⋯) and, beside the
- *  content, a table of contents built from its headings.
+ *  content, a rail that switches between a table of contents built from
+ *  its headings and the page's comments (`#comment-<id>` opens the
+ *  comments at that comment). Commented text is highlighted in the page
+ *  shown (the published version, or the live draft while editing):
+ *  clicking it picks its thread, and hovering a thread lights its text.
  *
  *  View mode shows the published version read-only (ReadOnlyDoc). Edit
  *  mode (`?edit=1`, editors only — and where editors land on a page that
@@ -18,7 +22,7 @@
  *  View mode (someone else may be editing). */
 import type { Editor } from '@tiptap/core';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '@portal/auth/AuthContext';
 import { ApiError } from '@portal/lib/api';
@@ -26,6 +30,9 @@ import { relativeTime } from '@portal/lib/format';
 import { useToast } from '@portal/lib/notificationsContext';
 import { useSystemStatus } from '@portal/lib/systemStatusContext';
 
+import { captureSelection, revealAnchor, useCommentMarks } from '../comments/commentMarks';
+import CommentsRail, { ReaderCommentBubble, type NewComment } from '../comments/CommentsRail';
+import { canCommentOn, commentLinkTarget, useCommentThreads } from '../comments/commentsStore';
 import RowMenu, { atLeast } from '../components/RowMenu';
 import { Icon } from '../editor/icons';
 import { flushPage } from '../editor/flushPage';
@@ -76,6 +83,13 @@ function useEditorUser(): EditorUser {
   return useMemo(() => ({ name, color: id ? personColor(id) : PERSON_COLORS[0] }), [id, name]);
 }
 
+/** The signed-in person's id. */
+function useMeId(): string | null {
+  const me = useWikiMe();
+  const { person } = useAuth();
+  return me?.person.id ?? person?.id ?? null;
+}
+
 function TableOfContents({ entries }: { entries: TocEntry[] }) {
   const [active, setActive] = useState<string | null>(null);
 
@@ -96,7 +110,7 @@ function TableOfContents({ entries }: { entries: TocEntry[] }) {
     return () => scroller.removeEventListener('scroll', onScroll);
   }, [entries]);
 
-  if (!entries.length) return null;
+  if (!entries.length) return <p className="page-hint wiki-rail-empty">No headings on this page yet.</p>;
   const base = Math.min(...entries.map((e) => e.level));
   return (
     <nav className="wiki-toc" aria-label="On this page">
@@ -261,11 +275,77 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
     }
   };
 
+  // ── comments ──
+  const meId = useMeId();
+  const location = useLocation();
+  const linkedComment = commentLinkTarget(location.hash);
+  const canComment = canCommentOn(node.my_level, node.space);
+  const [tab, setTab] = useState<'contents' | 'comments'>(linkedComment ? 'comments' : 'contents');
+  const comments = useCommentThreads(node.id, tab === 'comments');
+  const [viewEditor, setViewEditor] = useState<Editor | null>(null);
+  const shownEditor = mode === 'edit' ? liveEditor : viewEditor;
+  const [focusedThread, setFocusedThread] = useState<string | null>(null);
+  const [hoveredThread, setHoveredThread] = useState<string | null>(null);
+  const [newComment, setNewComment] = useState<NewComment | null>(null);
+  const docRef = useRef<HTMLDivElement>(null);
+
+  // a held selection belongs to the document it was made in
+  useEffect(() => { setNewComment(null); setFocusedThread(null); }, [node.id, mode]);
+  useEffect(() => { if (linkedComment) setTab('comments'); }, [linkedComment]);
+
+  // `#comment-<id>`: pick that comment's thread once the threads are in
+  const linkedHandled = useRef<string | null>(null);
+  useEffect(() => {
+    if (!linkedComment || !comments.threads || linkedHandled.current === linkedComment) return;
+    linkedHandled.current = linkedComment;
+    const found = comments.threads.find((t) => t.comments.some((c) => c.id === linkedComment));
+    if (found) setFocusedThread(found.thread_id);
+    else toast('That comment isn\'t here any more — it may have been deleted.');
+  }, [linkedComment, comments.threads, toast]);
+
+  const threadsRef = useRef(comments.threads);
+  threadsRef.current = comments.threads;
+  const onMarkClick = useCallback((ids: string[]) => {
+    const threads = threadsRef.current ?? [];
+    const known = (id: string, open: boolean) => threads.some((t) => t.thread_id === id && (!open || !t.resolved_at));
+    const picked = ids.find((id) => known(id, true)) ?? ids.find((id) => known(id, false));
+    if (!picked) return;
+    setTab('comments');
+    setFocusedThread(picked);
+  }, []);
+  const anchors = useCommentMarks(shownEditor, {
+    active: hoveredThread ?? focusedThread, threads: comments.threads, onMarkClick,
+  });
+
+  // picked in the rail: bring its text into view too
+  const focusThread = (threadId: string | null) => {
+    setFocusedThread(threadId);
+    const anchor = threadId ? anchors?.get(threadId) : undefined;
+    if (shownEditor && anchor) revealAnchor(shownEditor, anchor.pos);
+  };
+  const commentOnSelection = useCallback((editor: Editor) => {
+    const captured = captureSelection(editor);
+    if (!captured) return;
+    setNewComment({ kind: 'inline', captured });
+    setTab('comments');
+  }, []);
+  const commentOnQuote = useCallback((text: string) => {
+    setNewComment({ kind: 'quote', text });
+    setTab('comments');
+  }, []);
+  // a deleted thread's text isn't commented any more (resolved threads keep theirs)
+  const onThreadGone = (threadId: string) => {
+    if (mode === 'edit' && liveEditor && !liveEditor.isDestroyed) liveEditor.commands.unsetCommentThread(threadId);
+    if (focusedThread === threadId) setFocusedThread(null);
+  };
+  const openThreads = comments.threads?.filter((t) => !t.resolved_at).length;
+
   const viewToc = useMemo(
     () => (published.status === 'ready' ? buildToc(published.content.content_json) : []),
     [published],
   );
   const toc = mode === 'edit' ? liveToc : viewToc;
+  const showRail = mode === 'edit' || published.status === 'ready';
 
   let meta = '';
   if (published.status === 'ready') {
@@ -319,21 +399,49 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
         </div>
       </header>
 
-      <div className={`wiki-page-body${toc.length ? ' has-toc' : ''}`}>
-        <div className="wiki-page-content">
+      <div className={`wiki-page-body${showRail ? ' has-rail' : ''}`}>
+        <div className="wiki-page-content" ref={docRef}>
           {mode === 'edit' ? (
             <WikiEditor pageId={node.id} user={user} onAccessLost={onAccessLost} onToc={setLiveToc}
-                        onFirstSync={setLiveEditor} onLiveFlush={onLiveFlush} />
+                        onFirstSync={setLiveEditor} onLiveFlush={onLiveFlush}
+                        onComment={canComment ? commentOnSelection : undefined} />
           ) : (
             <>
               {published.status === 'loading' && <p className="page-hint">Loading…</p>}
               {published.status === 'error' && <p className="pf-error">{published.message}</p>}
               {published.status === 'unpublished' && <NotPublished canEdit={canEdit} />}
-              {published.status === 'ready' && <ReadOnlyDoc content={published.content.content_json} />}
+              {published.status === 'ready' && (
+                <ReadOnlyDoc content={published.content.content_json} onEditor={setViewEditor} />
+              )}
+              {published.status === 'ready' && canComment && (
+                <ReaderCommentBubble container={docRef} onComment={commentOnQuote} />
+              )}
             </>
           )}
         </div>
-        {toc.length > 0 && <aside className="wiki-page-rail"><TableOfContents entries={toc} /></aside>}
+        {showRail && (
+          <aside className="wiki-page-rail">
+            <div className="segmented wiki-rail-tabs" role="group" aria-label="Side panel">
+              <button type="button" className={tab === 'contents' ? 'on' : undefined} aria-pressed={tab === 'contents'}
+                      onClick={() => setTab('contents')}>Contents</button>
+              <button type="button" className={tab === 'comments' ? 'on' : undefined} aria-pressed={tab === 'comments'}
+                      onClick={() => setTab('comments')}>
+                {openThreads === undefined ? 'Comments' : `Comments (${openThreads})`}
+              </button>
+            </div>
+            {tab === 'contents' ? <TableOfContents entries={toc} /> : (
+              <CommentsRail
+                pageId={node.id} mode={mode} level={node.my_level} meId={meId} canComment={canComment}
+                threads={comments.threads} error={comments.error} anchors={anchors}
+                editor={mode === 'edit' ? liveEditor : null}
+                focusedThread={focusedThread} targetCommentId={linkedComment}
+                onFocusThread={focusThread} onHoverThread={setHoveredThread}
+                newComment={newComment} onNewComment={setNewComment}
+                refresh={comments.refresh} onThreadGone={onThreadGone}
+              />
+            )}
+          </aside>
+        )}
       </div>
 
       {publishing && (

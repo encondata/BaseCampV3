@@ -17,10 +17,11 @@ import {
 const DEBOUNCE_MS = 150;
 const MAX_PEOPLE = 10;
 
-type PeopleState = { status: 'idle' | 'loading' | 'done' | 'error'; people: PersonRef[] };
+export type PeopleState = { status: 'idle' | 'loading' | 'done' | 'error'; people: PersonRef[] };
 
-/** Debounced `listMentionable` while the picker is open; the newest query wins. */
-function useMentionable(pageId: string, query: string, open: boolean): PeopleState {
+/** Debounced `listMentionable` while the picker is open; the newest query
+ *  wins. Also used by the comment composer's picker. */
+export function useMentionable(pageId: string, query: string, open: boolean): PeopleState {
   const [state, setState] = useState<PeopleState>({ status: 'idle', people: [] });
   const q = query.trim();
   useEffect(() => {
@@ -53,7 +54,7 @@ export function insertMention(editor: Editor, person: PersonRef, range: { from: 
     .run();
 }
 
-const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2)
+export const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2)
   .map((part) => part[0]).join('').toUpperCase();
 
 const findMention = (state: Editor['state']) => findTrigger(state, MENTION_PATTERN);

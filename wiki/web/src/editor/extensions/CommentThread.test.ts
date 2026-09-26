@@ -37,6 +37,20 @@ describe('commentThread commands', () => {
     ]);
   });
 
+  it('anchors a thread to a given range, leaving the selection alone', () => {
+    editor.commands.setTextSelection(3);
+    expect(editor.commands.setCommentThread('t-a', { from: 11, to: 20 })).toBe(true);
+    expect(runs()).toEqual([
+      ['Check the ', []],
+      ['spare PDU', ['t-a']],
+      [' stock.', []],
+    ]);
+    expect(editor.state.selection.from).toBe(3);
+    // an empty or out-of-document range anchors nothing
+    expect(editor.commands.setCommentThread('t-b', { from: 5, to: 5 })).toBe(false);
+    expect(editor.commands.setCommentThread('t-b', { from: 5, to: 999 })).toBe(false);
+  });
+
   it('does nothing without a selection', () => {
     editor.commands.setTextSelection(5);
     expect(editor.commands.setCommentThread('t-a')).toBe(false);

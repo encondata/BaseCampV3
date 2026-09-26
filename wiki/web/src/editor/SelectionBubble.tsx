@@ -1,6 +1,7 @@
 /** A small floating bar over selected text: bold, italic, link, highlight,
- *  inline code. Shown while the editor has focus and a text range is
- *  selected (not inside a code block). */
+ *  inline code — and "Comment" when the page takes comments. Shown while
+ *  the editor has focus and a text range is selected (not inside a code
+ *  block). */
 import type { Editor } from '@tiptap/core';
 import { TextSelection } from '@tiptap/pm/state';
 import { useEffect, useRef, useState } from 'react';
@@ -14,8 +15,9 @@ interface Spot {
 }
 
 const WIDTH = 196;
+const COMMENT_WIDTH = 96;
 
-function spotOf(editor: Editor): Spot | null {
+function spotOf(editor: Editor, width: number): Spot | null {
   const { state, view } = editor;
   const { selection } = state;
   if (!editor.isEditable || !editor.isFocused || selection.empty || !(selection instanceof TextSelection)) return null;
@@ -27,7 +29,7 @@ function spotOf(editor: Editor): Spot | null {
     const top = Math.min(a.top, b.top) - 46;
     return {
       top: top < 8 ? Math.max(a.bottom, b.bottom) + 8 : top,
-      left: Math.max(8, Math.min(mid - WIDTH / 2, window.innerWidth - WIDTH - 8)),
+      left: Math.max(8, Math.min(mid - width / 2, window.innerWidth - width - 8)),
       marks: {
         bold: editor.isActive('bold'),
         italic: editor.isActive('italic'),
@@ -47,18 +49,21 @@ function sameSpot(a: Spot | null, b: Spot | null): boolean {
   return Object.keys(a.marks).every((k) => a.marks[k] === b.marks[k]);
 }
 
-export default function SelectionBubble({ editor, onLink }: {
+export default function SelectionBubble({ editor, onLink, onComment }: {
   editor: Editor;
   onLink: (anchor: { top: number; left: number }) => void;
+  /** Comment on the selected text. */
+  onComment?: () => void;
 }) {
   const [spot, setSpot] = useState<Spot | null>(null);
   const shown = useRef<Spot | null>(null);
   const [pointerDown, setPointerDown] = useState(false);
+  const width = onComment ? WIDTH + COMMENT_WIDTH : WIDTH;
 
   useEffect(() => {
     // remote changes re-run this constantly; re-render only on a real move
     const update = () => {
-      const next = spotOf(editor);
+      const next = spotOf(editor, width);
       if (sameSpot(shown.current, next)) return;
       shown.current = next;
       setSpot(next);
@@ -82,7 +87,7 @@ export default function SelectionBubble({ editor, onLink }: {
       dom.removeEventListener('mousedown', down);
       window.removeEventListener('mouseup', up);
     };
-  }, [editor]);
+  }, [editor, width]);
 
   if (!spot || pointerDown) return null;
   const btn = (icon: IconName, label: string, active: boolean, run: () => void) => (
@@ -100,6 +105,11 @@ export default function SelectionBubble({ editor, onLink }: {
       {btn('link', 'Link', spot.marks.link, () => onLink({ top: spot.top + 44, left: spot.left }))}
       {btn('highlight', 'Highlight', spot.marks.highlight, () => chain().toggleHighlight().run())}
       {btn('code', 'Inline code', spot.marks.code, () => chain().toggleCode().run())}
+      {onComment && (
+        <button type="button" className="we-tb-btn we-bubble-comment" onClick={onComment}>
+          <Icon name="comment" />Comment
+        </button>
+      )}
     </div>
   );
 }

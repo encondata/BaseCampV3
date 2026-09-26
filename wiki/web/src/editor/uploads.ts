@@ -73,7 +73,9 @@ function bindingOf(state: EditorState): YBinding | null {
   }
 }
 
-function toRelative(state: EditorState, pos: number): RelativePosition | null {
+/** `pos` as a position in the shared Y.Doc — it follows other people's
+ *  edits; null when the editor isn't collaborating. */
+export function toRelative(state: EditorState, pos: number): RelativePosition | null {
   const binding = bindingOf(state);
   if (!binding) return null;
   try {
@@ -83,7 +85,8 @@ function toRelative(state: EditorState, pos: number): RelativePosition | null {
   }
 }
 
-function fromRelative(state: EditorState, rel: RelativePosition | null): number | null {
+/** Where a `toRelative` position is now (null when not collaborating). */
+export function fromRelative(state: EditorState, rel: RelativePosition | null): number | null {
   const binding = bindingOf(state);
   if (!binding || !rel) return null;
   try {

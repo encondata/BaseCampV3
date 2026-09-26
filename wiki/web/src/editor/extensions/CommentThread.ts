@@ -8,8 +8,9 @@ import { Mark } from '@tiptap/core';
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
     commentThread: {
-      /** Anchor thread `threadId` to the current (non-empty) selection. */
-      setCommentThread: (threadId: string) => ReturnType;
+      /** Anchor thread `threadId` to `range`, or to the current
+       *  (non-empty) selection. */
+      setCommentThread: (threadId: string, range?: { from: number; to: number }) => ReturnType;
       /** Remove thread `threadId`'s anchor everywhere in the document
        *  (other threads on the same text stay). */
       unsetCommentThread: (threadId: string) => ReturnType;
@@ -42,12 +43,19 @@ export const CommentThread = Mark.create({
 
   addCommands() {
     return {
-      setCommentThread: (threadId) => ({ state, tr, dispatch }) => {
-        const { empty, ranges } = state.selection;
-        if (empty || !threadId) return false;
+      setCommentThread: (threadId, range) => ({ state, tr, dispatch }) => {
+        if (!threadId) return false;
+        let spans: { from: number; to: number }[];
+        if (range) {
+          if (range.from < 0 || range.to > state.doc.content.size || range.from >= range.to) return false;
+          spans = [range];
+        } else {
+          if (state.selection.empty) return false;
+          spans = state.selection.ranges.map(({ $from, $to }) => ({ from: $from.pos, to: $to.pos }));
+        }
         if (dispatch) {
           const mark = this.type.create({ threadId });
-          ranges.forEach(({ $from, $to }) => { tr.addMark($from.pos, $to.pos, mark); });
+          spans.forEach(({ from, to }) => { tr.addMark(from, to, mark); });
         }
         return true;
       },

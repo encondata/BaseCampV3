@@ -408,6 +408,8 @@
 .we-bubble .we-tb-btn { color: #c3ccd9; }
 .we-bubble .we-tb-btn:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
 .we-bubble .we-tb-btn.on { background: rgba(var(--accent-rgb), 0.28); color: #fff; }
+.we-bubble-comment, .wiki-reader-bubble .we-tb-btn { gap: 6px; padding: 0 10px; font-size: 12.5px; }
+.we-bubble-comment { margin-left: 2px; border-left: 1px solid rgba(255, 255, 255, 0.12); border-radius: 0 7px 7px 0; }
 
 /* small pill buttons inside node views */
 .we-chip-btn {
@@ -586,12 +588,24 @@
 }
 .ProseMirror-selectednode > .wiki-mention, .wiki-mention.ProseMirror-selectednode { box-shadow: 0 0 0 2px var(--amber); }
 
-/* text a comment thread is anchored to: a light highlight (hover and the
-   active thread come with the comments panel) */
+/* text a comment thread is anchored to: a light highlight */
 .wiki-comment-mark {
   background: rgba(var(--accent-rgb), 0.12);
   border-bottom: 2px solid rgba(var(--accent-rgb), 0.45);
 }
+/* on a page with the comments rail, a decoration draws it instead (one
+   highlight however many threads overlap): the thread in focus stands
+   out, a resolved thread's text is muted, a deleted thread's shows nothing */
+.wiki-comment-marks .wiki-comment-mark { background: none; border-bottom: 0; }
+.wiki-comment-anchor {
+  background: rgba(var(--accent-rgb), 0.12);
+  border-bottom: 2px solid rgba(var(--accent-rgb), 0.45);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.wiki-comment-anchor.is-active { background: rgba(var(--accent-rgb), 0.32); border-bottom-color: var(--amber); }
+.wiki-comment-anchor.is-resolved { background: none; border-bottom: 1px dashed rgba(125, 138, 160, 0.6); }
+.wiki-comment-anchor.is-stale { background: none; border-bottom: 0; cursor: auto; }
 
 .wiki-callout {
   --callout: var(--c-blue, #0369a1);
