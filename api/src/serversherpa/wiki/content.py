@@ -1,7 +1,8 @@
 """Page content helpers shared by the tree, page and internal routes: the
 empty Tiptap document new pages start from, plain-text extraction
 (`doc_text`, for `content_text`/`draft_text` — search and previews), a
-canonical comparison of two documents (`docs_equal`), the stored-size cap
+canonical comparison of two documents that ignores comment anchors
+(`docs_equal`), the stored-size cap
 (`MAX_DOC_BYTES`), the embedded-asset walkers page copy uses, the
 people a document @mentions (`mention_ids`), and
 `strip_reference_labels`, which drops what a link or embed recorded about
@@ -177,12 +178,59 @@ def _canonical(doc: Any) -> str:
     return json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+# the mark that anchors an inline comment thread to text (the editor's
+# CommentThread extension) — a comment, not content
+COMMENT_MARK = "commentThread"
+
+
+def _is_text(node: Any) -> bool:
+    return isinstance(node, dict) and node.get("type") == "text" \
+        and isinstance(node.get("text"), str)
+
+
+def _without_comment_anchors(doc: dict) -> dict:
+    """A deep copy of `doc` without its `commentThread` marks, and with
+    the text runs they split apart joined again (text nodes that now
+    carry the same marks and attributes), so the result compares equal to
+    the same document never commented on."""
+    out = copy.deepcopy(doc)
+    stack: list[Any] = [out]
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict):
+            continue
+        content = node.get("content")
+        if not isinstance(content, list):
+            continue
+        joined: list[Any] = []
+        for child in content:
+            if isinstance(child, dict) and isinstance(child.get("marks"), list):
+                kept = [m for m in child["marks"]
+                        if not (isinstance(m, dict) and m.get("type") == COMMENT_MARK)]
+                if kept:
+                    child["marks"] = kept
+                else:
+                    del child["marks"]
+            prev = joined[-1] if joined else None
+            if _is_text(child) and _is_text(prev) and \
+                    {k: v for k, v in child.items() if k != "text"} == \
+                    {k: v for k, v in prev.items() if k != "text"}:
+                prev["text"] += child["text"]
+                continue
+            joined.append(child)
+            stack.append(child)
+        node["content"] = joined
+    return out
+
+
 def docs_equal(a: dict | None, b: dict | None) -> bool:
-    """Do two documents hold the same content? Key order doesn't matter;
-    None only equals None."""
+    """Do two documents hold the same content? Key order doesn't matter,
+    and neither do comment anchors (`commentThread` marks): anchoring a
+    comment to published text isn't a change to publish. None only
+    equals None."""
     if a is None or b is None:
         return a is b
-    return _canonical(a) == _canonical(b)
+    return _canonical(_without_comment_anchors(a)) == _canonical(_without_comment_anchors(b))
 
 
 def doc_bytes(doc: Any) -> int:

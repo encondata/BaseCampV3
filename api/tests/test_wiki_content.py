@@ -126,6 +126,32 @@ def test_docs_equal_ignores_key_order():
     assert not docs_equal(None, EMPTY_DOC)
     assert not docs_equal(EMPTY_DOC, None)
 
+
+def _thread(text, *thread_ids, other=()):
+    return {"type": "text", "text": text, "marks": [
+        *({"type": m} for m in other),
+        *({"type": "commentThread", "attrs": {"threadId": t}} for t in thread_ids)]}
+
+
+def test_docs_equal_ignores_comment_anchors():
+    plain = {"type": "doc", "content": [_p(_t("Check the spare PDU stock."))]}
+    # an anchor splits the text into runs; without it they're one run again
+    anchored = {"type": "doc", "content": [_p(
+        _t("Check the "), _thread("spare ", "t-a"), _thread("PDU", "t-a", "t-b"),
+        _thread(" stock", "t-b"), _t("."))]}
+    assert docs_equal(plain, anchored)
+    assert docs_equal(anchored, plain)
+    # other marks still count, and so does the text
+    bold = {"type": "doc", "content": [_p(
+        _t("Check the "), _thread("spare", "t-a", other=("bold",)), _t(" PDU stock."))]}
+    assert not docs_equal(plain, bold)
+    assert docs_equal(bold, {"type": "doc", "content": [_p(
+        _t("Check the "), {"type": "text", "text": "spare", "marks": [{"type": "bold"}]},
+        _t(" PDU stock."))]})
+    assert not docs_equal(anchored, {"type": "doc", "content": [_p(_t("Check the spare PDU."))]})
+    # the documents themselves are left alone
+    assert anchored["content"][0]["content"][1]["marks"][0]["type"] == "commentThread"
+
 ASSET_DOC = {"type": "doc", "content": [
     {"type": "wikiImage", "attrs": {"assetId": "a1", "alt": "one"}},
     {"type": "bulletList", "content": [{"type": "listItem", "content": [

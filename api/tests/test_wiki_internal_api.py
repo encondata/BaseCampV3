@@ -418,6 +418,27 @@ async def test_put_state_tracks_unpublished_changes_against_the_published_versio
     assert row.draft_updated_by == s["editor_id"]
 
 
+async def test_comment_anchors_are_not_unpublished_changes(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Anchored", kind="page")
+    node_id = uuid.UUID(page["id"])
+    await publish_via_db(db, node_id, _doc("check the spare PDU stock"))
+
+    # an editor anchors a comment thread: the draft gains only a mark
+    anchored = {"type": "doc", "content": [{"type": "paragraph", "content": [
+        {"type": "text", "text": "check the "},
+        {"type": "text", "text": "spare PDU",
+         "marks": [{"type": "commentThread", "attrs": {"threadId": str(uuid.uuid4())}}]},
+        {"type": "text", "text": " stock"}]}]}
+    await _put_state(client, node_id, anchored, editors=[s["editor_id"]])
+    row = await _page_row(db, node_id)
+    assert row.draft_json == anchored
+    assert row.has_unpublished_changes is False
+    resp = await client.post(f"/wiki/pages/{node_id}/publish", headers=s["editor"], json={})
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"]["code"] == "nothing_to_publish"
+
+
 async def test_put_state_ignores_unknown_editor_ids(client, db):
     s = await _setup(client, db)
     page = await _create(client, s["owner"], s["space"], "P", kind="page")
