@@ -1,6 +1,7 @@
 /** A file: breadcrumbs, its title (renamed inline by editors), Download
  *  and Upload new version, a description (saved on blur), a preview by
- *  kind, and its versions (download any, restore an older one).
+ *  kind, and its versions (download any, restore an older one). Opening
+ *  it counts a view for analytics.
  *
  *  Previews: images, video and audio in their own elements; a PDF in the
  *  browser's viewer (an iframe of the inline URL); text fetched (at most
@@ -16,6 +17,7 @@ import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { relativeTime } from '@portal/lib/format';
 import { useToast } from '@portal/lib/notificationsContext';
 
+import { useRecordView } from '../analytics/useRecordView';
 import NodeIcon, { nodeTypeLabel } from '../components/NodeIcon';
 import RowMenu, { atLeast } from '../components/RowMenu';
 import ReadOnlyDoc from '../editor/ReadOnlyDoc';
@@ -274,6 +276,7 @@ export default function FileView({ node }: { node: NodeDetailOut }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const canEdit = atLeast(node.my_level, 'edit');
   const current = node.file?.current_version ?? null;
+  useRecordView(node.id, true);
 
   const downloadCurrent = async () => {
     try {

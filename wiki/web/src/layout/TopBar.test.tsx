@@ -14,6 +14,8 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
 }));
 
 import { clearSessionCaches } from '../lib/sessionCaches';
+import type { MeOut, SpaceOut } from '../lib/types';
+import { makeMe, makeSpace } from '../testing/fixtures';
 import TopBar from './TopBar';
 
 afterEach(cleanup);
@@ -103,5 +105,32 @@ describe('TopBar Reviews', () => {
       </MemoryRouter>,
     );
     expect(screen.getByRole('link', { name: 'Reviews' }).getAttribute('href')).toBe('/reviews');
+  });
+});
+
+describe('TopBar Analytics', () => {
+  function openAccountMenu(me: MeOut | null, spaces: SpaceOut[]) {
+    render(
+      <MemoryRouter>
+        <TopBar me={me} spaces={spaces} currentSpace={null} sidebarCollapsed={false}
+                onShowSidebar={() => {}} onNew={null} onNewFromTemplate={null} onUpload={null} />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Account menu' }));
+  }
+
+  it('is in the account menu for a wiki admin', () => {
+    openAccountMenu(makeMe({ is_admin: true }), []);
+    expect(screen.getByRole('menuitem', { name: 'Analytics' }).getAttribute('href')).toBe('/analytics');
+  });
+
+  it('is in the account menu for a space manager', () => {
+    openAccountMenu(makeMe(), [makeSpace({ my_level: 'manage' })]);
+    expect(screen.getByRole('menuitem', { name: 'Analytics' })).toBeTruthy();
+  });
+
+  it('is not there for everyone else', () => {
+    openAccountMenu(makeMe(), [makeSpace({ my_level: 'edit' })]);
+    expect(screen.queryByRole('menuitem', { name: 'Analytics' })).toBeNull();
   });
 });

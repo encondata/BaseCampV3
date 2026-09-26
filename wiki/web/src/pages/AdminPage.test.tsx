@@ -44,6 +44,13 @@ describe('AdminPage', () => {
     expect(listAllShareLinks).not.toHaveBeenCalled();
   });
 
+  it('links to the analytics page', async () => {
+    vi.mocked(listSpaces).mockResolvedValue([]);
+    renderAdmin();
+    const link = await screen.findByRole('link', { name: 'Open analytics' });
+    expect(link.getAttribute('href')).toBe('/analytics');
+  });
+
   it('lists every space including archived ones, with links to settings and trash', async () => {
     vi.mocked(listSpaces).mockResolvedValue([
       makeSpace({ id: 'space-1', key: 'ops', name: 'Operations' }),

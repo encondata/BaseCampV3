@@ -9,6 +9,7 @@ import { Route, Routes, useNavigate } from 'react-router-dom';
 import SystemBanners from '@portal/components/SystemBanners';
 import { useToast } from '@portal/lib/notificationsContext';
 
+import AnalyticsPage from '../analytics/AnalyticsPage';
 import ConfirmDialog from '../components/ConfirmDialog';
 import MoveCopyDialog from '../components/MoveCopyDialog';
 import NewNodeDialog from '../components/NewNodeDialog';
@@ -275,6 +276,7 @@ export default function WikiShell() {
               <Route path="/search" element={<SearchPage />} />
               <Route path="/admin" element={<AdminPage />} />
               <Route path="/admin/help-links" element={<HelpLinksPage />} />
+              <Route path="/analytics" element={<AnalyticsPage />} />
               <Route path="/templates" element={<TemplatesPage />} />
               <Route path="/watching" element={<WatchingPage />} />
               <Route path="/reviews" element={<ReviewsPage />} />

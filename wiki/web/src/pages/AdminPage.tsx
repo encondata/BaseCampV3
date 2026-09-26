@@ -3,8 +3,8 @@
  *  never show up in the ordinary space list), with a link to each space's
  *  settings and trash, and Unarchive — the one thing only a wiki admin,
  *  not even a space manager, can do. Below, the way to the portal/kiosk
- *  Help links page, and every public share link in the wiki (newest
- *  first), with Revoke. */
+ *  Help links page, the way to Analytics, and every public share link in
+ *  the wiki (newest first), with Revoke. */
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -231,6 +231,16 @@ export default function AdminPage() {
             <p className="page-hint">Which guide the ? button opens on each portal and kiosk screen.</p>
           </div>
           <Link className="btn-ghost" to="/admin/help-links">Manage help links</Link>
+        </div>
+      </section>
+
+      <section className="wiki-admin-section" aria-label="Analytics">
+        <div className="dir-head wiki-folder-head">
+          <div>
+            <h2 className="wiki-section-title">Analytics</h2>
+            <p className="page-hint">What people read, whether it helped, searches that found nothing, and pages that need attention.</p>
+          </div>
+          <Link className="btn-ghost" to="/analytics">Open analytics</Link>
         </div>
       </section>
 

@@ -44,7 +44,8 @@ describe('SearchBox', () => {
     renderBox();
     type('rack');
     expect(search).not.toHaveBeenCalled();
-    await waitFor(() => expect(search).toHaveBeenCalledWith({ q: 'rack', limit: 8 }));
+    // live results while typing aren't logged as searches
+    await waitFor(() => expect(search).toHaveBeenCalledWith({ q: 'rack', limit: 8, log: false }));
 
     expect(await screen.findByText('Rack power')).toBeTruthy();
     expect(screen.getByText('Operations / Guides')).toBeTruthy();

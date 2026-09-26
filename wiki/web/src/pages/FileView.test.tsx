@@ -23,6 +23,7 @@ vi.mock('../lib/treeStore', async (importOriginal) => ({
   noteChanged: vi.fn(),
 }));
 vi.mock('../uploads/uploadQueue', () => ({ enqueue: vi.fn() }));
+vi.mock('../analytics/useRecordView', () => ({ useRecordView: vi.fn() }));
 
 import { openDownload } from '../lib/download';
 import { noteChanged } from '../lib/treeStore';
@@ -31,6 +32,7 @@ import { clearWikiMe } from '../lib/useWikiMe';
 import { getFileUrl, getMe, listFileVersions, restoreFileVersion, updateFile } from '../lib/wikiApi';
 import { makeDetail, makeMe, makeNode } from '../testing/fixtures';
 import { enqueue } from '../uploads/uploadQueue';
+import { useRecordView } from '../analytics/useRecordView';
 import FileView, { MAX_TEXT_PREVIEW } from './FileView';
 
 function version(no: number, over: Partial<FileVersionOut> = {}): FileVersionOut {
@@ -268,5 +270,13 @@ describe('FileView details', () => {
     await act(async () => {});
     fireEvent.click(screen.getByRole('button', { name: 'Actions for floorplan.pdf' }));
     expect(screen.queryByRole('menuitem', { name: 'Use as help for…' })).toBeNull();
+  });
+});
+
+describe('FileView — analytics', () => {
+  it('counts a view of the file', async () => {
+    renderFile(fileNode(version(1)));
+    expect(useRecordView).toHaveBeenCalledWith('file-1', true);
+    await act(async () => {});
   });
 });

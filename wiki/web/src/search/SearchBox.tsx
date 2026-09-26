@@ -1,7 +1,9 @@
 /** The top bar's search box: type to see live results (debounced 200 ms,
  *  top 8), ↑↓ to move through them, Enter opens the highlighted hit or —
  *  with nothing highlighted — the full results page, Escape closes the
- *  dropdown. ⌘K / Ctrl+K focuses it from anywhere in the wiki.
+ *  dropdown. ⌘K / Ctrl+K focuses it from anywhere in the wiki. Live
+ *  results aren't logged for analytics (`log: false`) — half-typed words
+ *  would bury the real searches that found nothing; the results page is.
  *
  *  Every hit's snippet is `snippet_html`: server-escaped HTML with only
  *  `<mark></mark>` in it. Rendering it with `dangerouslySetInnerHTML` is
@@ -51,7 +53,7 @@ export default function SearchBox() {
     if (!q) { setHits([]); setActive(-1); return undefined; }
     const mine = ++requestSeq.current;
     const timer = setTimeout(() => {
-      search({ q, limit: LIMIT })
+      search({ q, limit: LIMIT, log: false })
         .then((found) => { if (requestSeq.current === mine) { setHits(found); setActive(-1); } })
         .catch(() => { if (requestSeq.current === mine) { setHits([]); setActive(-1); } });
     }, DEBOUNCE_MS);

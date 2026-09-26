@@ -1,8 +1,9 @@
 /** The wiki's top bar: the wiki mark, the space switcher, the search box
  *  (instant results, ⌘K / Ctrl+K focuses it — see SearchBox.tsx), Reviews
  *  (with a count of the reviews waiting on me — see ReviewsLink.tsx), the
- *  New menu (Page, Folder, Upload files, Space), and the avatar menu (Back
- *  to portal, Sign out). */
+ *  New menu (Page, Folder, Upload files, Space), and the avatar menu
+ *  (Analytics for wiki admins and space managers, Back to portal, Sign
+ *  out). */
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode, type RefObject } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -69,6 +70,8 @@ export default function TopBar({
   const [newOpen, setNewOpen, newRef] = usePopover();
   const [userOpen, setUserOpen, userRef] = usePopover();
   const name = person?.display_name ?? me?.person.name ?? '';
+  // wiki admins, and anyone who manages a space
+  const canSeeAnalytics = !!me?.is_admin || !!spaces?.some((s) => s.my_level === 'manage');
 
   const pick = (kind: 'page' | 'folder') => { setNewOpen(false); onNew?.(kind); };
   const pickFiles = (e: ChangeEvent<HTMLInputElement>) => {
@@ -157,6 +160,13 @@ export default function TopBar({
           {userOpen && (
             <div className="pop-menu" role="menu" aria-label="Account">
               <div className="pop-title">{name || 'Signed in'}</div>
+              {canSeeAnalytics && (
+                <Link role="menuitem" className="pop-item" to="/analytics" onClick={() => setUserOpen(false)}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
+                       strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2" /></svg>
+                  Analytics
+                </Link>
+              )}
               <a role="menuitem" className="pop-item" href={portalOrigin()}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"
                      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6" /></svg>

@@ -8,6 +8,8 @@ import type { JSONContent } from '@tiptap/core';
 import { ApiError, apiFetch, READ_ONLY_MESSAGE, refreshSystemStatus } from '@portal/lib/api';
 
 import type {
+  AnalyticsOut,
+  AnalyticsParams,
   AssetOut,
   AssetUrlsOut,
   CommentBodyIn,
@@ -15,6 +17,8 @@ import type {
   CommentOut,
   CommentThread,
   ContentVersion,
+  FeedbackIn,
+  FeedbackOut,
   FileUrlOut,
   FileUrlParams,
   FileVersionOut,
@@ -242,8 +246,12 @@ export const getAssetUrls = async (ids: string[]): Promise<Record<string, string
 
 // ── search / trash ──────────────────────────────────────────────────
 
-export const search = ({ q, space, kind, limit }: SearchParams) =>
-  request<SearchHit[]>('GET', '/search', { query: { q, space, kind, limit } });
+/** `log: false` leaves the search out of the analytics log (the top
+ *  bar's live results); by default every search is logged. */
+export const search = ({ q, space, kind, limit, log }: SearchParams) =>
+  request<SearchHit[]>('GET', '/search', {
+    query: { q, space, kind, limit, log: log === false ? false : undefined },
+  });
 
 export const restoreTrash = (batchId: string) =>
   request<NodeOut>('POST', `/trash/${seg(batchId)}/restore`);
@@ -386,3 +394,21 @@ export const updateHelpLink = (id: string, body: Partial<HelpLinkIn>) =>
   request<HelpLinkOut>('PATCH', `/help-links/${seg(id)}`, { body });
 
 export const deleteHelpLink = (id: string) => request<void>('DELETE', `/help-links/${seg(id)}`);
+
+// ── analytics ───────────────────────────────────────────────────────
+
+/** Count a view of a page or file (204; not counted in read-only mode). */
+export const recordView = (nodeId: string) =>
+  request<void>('POST', `/nodes/${seg(nodeId)}/view`);
+
+/** "Was this page helpful?" — replaces the caller's earlier answer. */
+export const putFeedback = (pageId: string, body: FeedbackIn) =>
+  request<FeedbackOut>('PUT', `/pages/${seg(pageId)}/feedback`, { body });
+
+/** The caller's answer for a page; 404 `not_found` when they haven't given one. */
+export const getMyFeedback = (pageId: string) =>
+  request<FeedbackOut>('GET', `/pages/${seg(pageId)}/feedback/mine`);
+
+/** Wiki admins (any space, or all of them) and space managers (a space they manage). */
+export const getAnalytics = ({ space, days }: AnalyticsParams) =>
+  request<AnalyticsOut>('GET', '/analytics', { query: { space, days } });
