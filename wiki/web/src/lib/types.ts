@@ -389,4 +389,5 @@ export interface TemplatePatchIn {
   name?: string;
   description?: string;
   icon?: string;
+  content_json?: JSONContent;
 }

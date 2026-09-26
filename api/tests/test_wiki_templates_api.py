@@ -317,6 +317,12 @@ async def test_builtins_cannot_be_patched_or_deleted_by_anyone(client, db):
     assert resp.status_code == 422, resp.text
     assert resp.json()["detail"]["code"] == "builtin"
 
+    # content edits are refused too, even for an admin
+    resp = await client.patch(f"/wiki/templates/{builtin.id}", headers=admin,
+                              json={"content_json": _doc("nope")})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "builtin"
+
     resp = await client.delete(f"/wiki/templates/{builtin.id}", headers=admin)
     assert resp.status_code == 422, resp.text
     assert resp.json()["detail"]["code"] == "builtin"
@@ -349,6 +355,37 @@ async def test_patch_updates_fields_checks_rights_and_uniqueness(client, db):
     detail = await _get(client, s["owner"], tmpl["id"])
     assert detail["content_json"] == _doc("x")
     assert other["name"] == "Other"
+
+    audits = (await db.scalars(select(AuditLog).where(
+        AuditLog.entity_type == "wiki_template", AuditLog.entity_id == tmpl["id"],
+        AuditLog.action == "update"))).all()
+    assert len(audits) == 1
+
+
+async def test_patch_can_update_content_json_validated_and_stripped(client, db):
+    s = await _setup(client, db)
+    tmpl = await _post(client, s["owner"], space_id=s["space"]["id"], name="Editable",
+                       content_json=_doc("original"))
+
+    await _patch(client, s["viewer"], tmpl["id"], expect=403, content_json=_doc("nope"))
+    await _patch(client, s["editor"], tmpl["id"], expect=403, content_json=_doc("nope"))
+
+    resp = await client.patch(f"/wiki/templates/{tmpl['id']}", headers=s["owner"],
+                              json={"content_json": {"not": "a doc"}})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "bad_doc"
+
+    new_content = {"type": "doc", "content": [
+        {"type": "wikiImage", "attrs": {"assetId": "11111111-1111-1111-1111-111111111111",
+                                        "alt": "photo", "caption": ""}},
+        {"type": "paragraph", "content": [{"type": "text", "text": "updated"}]},
+    ]}
+    updated = await _patch(client, s["owner"], tmpl["id"], content_json=new_content)
+    assert updated["name"] == "Editable"   # other fields untouched
+
+    detail = await _get(client, s["owner"], tmpl["id"])
+    assert [n["type"] for n in detail["content_json"]["content"]] == ["paragraph"]
+    assert detail["content_json"]["content"][0]["content"][0]["text"] == "updated"
 
     audits = (await db.scalars(select(AuditLog).where(
         AuditLog.entity_type == "wiki_template", AuditLog.entity_id == tmpl["id"],

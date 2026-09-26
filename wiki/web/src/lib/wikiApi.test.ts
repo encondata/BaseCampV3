@@ -257,6 +257,12 @@ describe('wikiApi requests', () => {
     await updateTemplate('t1', { name: 'Renamed' });
     expect(lastCall()).toMatchObject({ path: '/wiki/templates/t1', init: { method: 'PATCH' } });
 
+    const editedContent = { type: 'doc', content: [{ type: 'paragraph' }] };
+    fetchMock.mockResolvedValueOnce(reply(200, { ...detail, content_json: editedContent }));
+    await updateTemplate('t1', { content_json: editedContent });
+    expect(lastCall()).toMatchObject({ path: '/wiki/templates/t1', init: { method: 'PATCH' } });
+    expect(JSON.parse(String(lastCall().init.body))).toEqual({ content_json: editedContent });
+
     fetchMock.mockResolvedValueOnce(reply(204));
     await expect(deleteTemplate('t1')).resolves.toBeUndefined();
     expect(lastCall()).toMatchObject({ path: '/wiki/templates/t1', init: { method: 'DELETE' } });

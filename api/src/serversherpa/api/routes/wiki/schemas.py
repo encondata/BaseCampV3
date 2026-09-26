@@ -443,6 +443,7 @@ class TemplatePatchIn(BaseModel):
     name: TemplateName | None = None
     description: str | None = None
     icon: str | None = None
+    content_json: dict | None = None
 
 
 # ── watches ──────────────────────────────────────────────────────────

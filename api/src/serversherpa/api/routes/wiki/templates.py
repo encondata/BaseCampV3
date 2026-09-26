@@ -35,7 +35,7 @@ from serversherpa.api.routes.wiki.serialize import person_refs
 from serversherpa.db.models import WikiNode, WikiPage, WikiSpace, WikiTemplate
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.wiki import pages
-from serversherpa.wiki.content import strip_asset_nodes
+from serversherpa.wiki.content import docs_equal, strip_asset_nodes
 from serversherpa.wiki.permissions import require_node_level, require_space_level
 
 router = APIRouter()
@@ -218,6 +218,8 @@ async def patch_template(template_id: uuid.UUID, body: TemplatePatchIn,
     if body.name is not None and await _name_taken(
             ctx, template.space_id, body.name, exclude_id=template.id):
         raise err(409, "name_taken", "A template with that name already exists here.")
+    new_content = (strip_asset_nodes(pages.check_doc(body.content_json))
+                  if body.content_json is not None else None)
 
     before = snapshot(template, TEMPLATE_FIELDS)
     if body.name is not None:
@@ -227,6 +229,11 @@ async def patch_template(template_id: uuid.UUID, body: TemplatePatchIn,
     if body.icon is not None:
         template.icon = body.icon
     changes = diff(before, snapshot(template, TEMPLATE_FIELDS))
+    # the doc itself never goes in the audit log (see pages.publish, which
+    # logs version_id/note, never content) — just that it changed
+    if new_content is not None and not docs_equal(template.content_json, new_content):
+        template.content_json = new_content
+        changes["content_json"] = "changed"
     if changes:
         actor_id = ctx.user.person.id
         template.updated_at = pages.utcnow()
