@@ -443,6 +443,79 @@ async def test_interval_patch_needs_manage_and_a_page(client, db):
     assert [a.changes["review_interval_months"]["to"] for a in audits] == [3, None]
 
 
+async def _published_at(db, node_id):
+    page = await db.get(WikiPage, uuid.UUID(str(node_id)))
+    return (await db.get(WikiPageVersion, page.published_version_id)).created_at
+
+
+async def test_changing_the_space_interval_rebases_inheriting_pages(client, db):
+    """A page that inherits the space's interval is re-based on
+    `review_base` + the new interval when the space changes it — in the
+    same request; a page with its own interval, or never published, is
+    left alone, and clearing the space's interval clears their dates."""
+    s = await _setup(client, db)
+    await _settings(client, s, review_interval_months=12)
+    inherits = await _page(client, s, "Inherits")
+    own = await _page(client, s, "Own interval")
+    draft_only = await _page(client, s, "Draft only")
+    for page in (inherits, own):
+        await publish_via_api(client, s["owner"], page["id"])
+    resp = await client.patch(f"/wiki/nodes/{own['id']}", headers=s["owner"],
+                              json={"review_interval_months": 6})
+    assert resp.status_code == 200, resp.text
+    reviewed_at = datetime.now(UTC) + timedelta(days=2)
+    node = await _fresh(db, WikiNode, inherits["id"])
+    node.last_reviewed_at = reviewed_at          # later than the publish
+    await db.commit()
+    own_due = (await _fresh(db, WikiNode, own["id"])).next_review_at
+
+    await _settings(client, s, review_interval_months=3)
+    node = await _fresh(db, WikiNode, inherits["id"])
+    assert node.next_review_at == reviews.add_months(reviewed_at, 3)
+    assert (await _fresh(db, WikiNode, own["id"])).next_review_at == own_due
+    assert (await _fresh(db, WikiNode, draft_only["id"])).next_review_at is None
+
+    # other settings leave the dates alone
+    node.next_review_at = sentinel = datetime(2031, 1, 1, tzinfo=UTC)
+    await db.commit()
+    await _settings(client, s, readers_can_comment=False)
+    await _settings(client, s, review_interval_months=3)
+    assert (await _fresh(db, WikiNode, inherits["id"])).next_review_at == sentinel
+
+    await _settings(client, s, review_interval_months=None)
+    assert (await _fresh(db, WikiNode, inherits["id"])).next_review_at is None
+    assert (await _fresh(db, WikiNode, own["id"])).next_review_at == own_due
+
+    # and setting one again schedules from the publish
+    await _settings(client, s, review_interval_months=24)
+    published_at = await _published_at(db, inherits["id"])
+    assert (await _fresh(db, WikiNode, inherits["id"])).next_review_at == \
+        reviews.add_months(max(published_at, reviewed_at), 24)
+
+
+async def test_a_big_space_leaves_the_rebase_to_the_worker(client, db, monkeypatch, caplog):
+    """Past REBASE_INLINE_LIMIT inheriting pages, the request clears their
+    dates instead and the reminders job's backfill schedules them."""
+    s = await _setup(client, db)
+    await _settings(client, s, review_interval_months=12)
+    pages = [await _page(client, s, f"Page {i}") for i in range(2)]
+    for page in pages:
+        await publish_via_api(client, s["owner"], page["id"])
+    monkeypatch.setattr(reviews, "REBASE_INLINE_LIMIT", 1)
+
+    with caplog.at_level(logging.WARNING, logger="serversherpa.wiki.reviews"):
+        await _settings(client, s, review_interval_months=3)
+    assert any("backfill" in r.getMessage() for r in caplog.records)
+    for page in pages:
+        assert (await _fresh(db, WikiNode, page["id"])).next_review_at is None
+
+    await reviews.backfill_due_dates(db)
+    await db.commit()
+    for page in pages:
+        due = (await _fresh(db, WikiNode, page["id"])).next_review_at
+        assert due == reviews.add_months(await _published_at(db, page["id"]), 3)
+
+
 async def test_mark_reviewed_advances_the_due_date(client, db):
     s = await _setup(client, db)
     page = await _page(client, s)

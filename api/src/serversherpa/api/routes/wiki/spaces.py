@@ -41,7 +41,7 @@ from serversherpa.db.models import (
     WikiSpace,
 )
 from serversherpa.services.audit import audit, diff, snapshot
-from serversherpa.wiki import space_settings
+from serversherpa.wiki import reviews, space_settings
 from serversherpa.wiki.permissions import AccessIndex, principal_labels, require_space_level
 from serversherpa.wiki.tree import create_node, publish_empty_home
 
@@ -148,6 +148,7 @@ async def get_space(key: str, ctx: WikiContext) -> SpaceOut:
 async def patch_space(key: str, body: SpacePatchIn, ctx: WikiContext) -> SpaceOut:
     space = await require_space_level(ctx.ix, await space_by_key(ctx.db, key), "manage")
     before = snapshot(space, SPACE_FIELDS)
+    interval_before = space_settings.space_setting(space, "review_interval_months")
 
     if body.settings is not None:
         bad = sorted(k for k, v in body.settings.items() if not space_settings.validate(k, v))
@@ -162,6 +163,10 @@ async def patch_space(key: str, body: SpacePatchIn, ctx: WikiContext) -> SpaceOu
         space.icon = body.icon
     if body.color is not None:
         space.color = body.color
+
+    if space_settings.space_setting(space, "review_interval_months") != interval_before:
+        # pages inheriting the interval are due on the new one from now on
+        await reviews.rebase_space_due_dates(ctx.db, space)
 
     audit(ctx.db, actor_id=ctx.user.person.id, entity_type="wiki_space",
           entity_id=str(space.id), action="update",

@@ -53,6 +53,10 @@ MAX_APPROVERS = 200
 # how far ahead a review counts as "due soon" (and shows in due-reviews)
 DUE_SOON = timedelta(days=14)
 
+# the most inheriting pages a space-interval change re-bases within the
+# request; past this their dates are cleared for the worker's backfill
+REBASE_INLINE_LIMIT = 5000
+
 ReviewState = Literal["ok", "due_soon", "overdue"]
 
 
@@ -149,6 +153,46 @@ async def set_interval(db: AsyncSession, node: WikiNode, page: WikiPage,
                                        .where(WikiPageVersion.id == page.published_version_id))
         base = review_base(published_at, node.last_reviewed_at)
     await schedule_from(db, node, base)
+
+
+async def rebase_space_due_dates(db: AsyncSession, space: WikiSpace) -> int:
+    """The space's `review_interval_months` changed: bring every page that
+    inherits it (no interval of its own) in line, as `set_interval` does
+    for one page — a published page is due at `review_base` + the new
+    interval; with no interval now, nothing is due. Pages in the trash
+    are included (a restore brings their date back). Past
+    REBASE_INLINE_LIMIT pages, the dates are cleared instead and the
+    worker's daily backfill (`backfill_due_dates`) schedules them.
+    Returns how many pages changed; the caller commits."""
+    interval = space_setting(space, "review_interval_months")
+    inheriting = (WikiNode.space_id == space.id, WikiNode.kind == "page",
+                  WikiNode.review_interval_months.is_(None))
+
+    async def clear() -> int:
+        result = await db.execute(
+            update(WikiNode).where(*inheriting, WikiNode.next_review_at.is_not(None))
+            .values(next_review_at=None).execution_options(synchronize_session=False))
+        return result.rowcount
+
+    if interval is None:
+        return await clear()
+    published = (select(WikiNode, WikiPageVersion.created_at)
+                 .join(WikiPage, WikiPage.node_id == WikiNode.id)
+                 .join(WikiPageVersion, WikiPageVersion.id == WikiPage.published_version_id)
+                 .where(*inheriting))
+    count = await db.scalar(select(func.count()).select_from(published.subquery()))
+    if count > REBASE_INLINE_LIMIT:
+        log.warning("space %s review interval changed: %d pages inherit it, more than %d, "
+                    "so their due dates are cleared for the reminders backfill",
+                    space.id, count, REBASE_INLINE_LIMIT)
+        return await clear()
+    rows = (await db.execute(
+        published.order_by(WikiNode.id).with_for_update(of=WikiNode))).all()
+    for node, published_at in rows:
+        node.next_review_at = add_months(review_base(published_at, node.last_reviewed_at),
+                                         interval)
+    await db.flush()
+    return len(rows)
 
 
 # ── approvers ────────────────────────────────────────────────────────
@@ -320,7 +364,9 @@ def not_yet_notified():
 
 async def backfill_due_dates(db: AsyncSession) -> tuple[int, int]:
     """Bring `next_review_at` in line with intervals that changed at the
-    space level (the space's setting isn't copied onto its pages):
+    space level (the space's setting isn't copied onto its pages) — the
+    catch-up for what `rebase_space_due_dates` left to it (a big space's
+    cleared dates) or never saw (a setting written some other way):
     schedule each live published page that now has an interval but no
     due date at its `review_base` (later of publish and last review) +
     the interval, and

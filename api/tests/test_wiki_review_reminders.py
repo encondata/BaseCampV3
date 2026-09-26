@@ -232,10 +232,12 @@ async def test_reminders_schedule_published_pages_once_the_space_has_an_interval
         row.next_review_at = None
         await db.execute(update(WikiPageVersion).where(WikiPageVersion.node_id == node.id)
                          .values(created_at=when))
+    # the interval arrives without the PATCH route's inline re-base (as it
+    # does for a space past REBASE_INLINE_LIMIT pages): the backfill
+    # schedules the pages
+    space = await db.get(WikiSpace, space_id)
+    space.settings = {**(space.settings or {}), "review_interval_months": 6}
     await db.commit()
-    resp = await client.patch(f"/wiki/spaces/{s['space']['key']}", headers=s["owner"],
-                              json={"settings": {"review_interval_months": 6}})
-    assert resp.status_code == 200, resp.text
 
     job = await _run(db)
     assert job.result["scheduled"] == 3          # Old, Recent and the space's home page
