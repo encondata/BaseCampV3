@@ -16,6 +16,12 @@ vi.mock('../lib/notificationsContext', () => ({
 const api = vi.hoisted(() => ({ getReportRunDownloadUrl: vi.fn() }));
 vi.mock('../lib/api', async (importActual) => ({ ...(await importActual<typeof import('../lib/api')>()), ...api }));
 
+vi.mock('../lib/inboxLinks', async (importActual) => ({
+  ...(await importActual<typeof import('../lib/inboxLinks')>()),
+  leaveFor: vi.fn(),
+}));
+const { leaveFor } = await import('../lib/inboxLinks');
+
 const { default: ToastHost, INBOX_TOAST_MS } = await import('./ToastHost');
 afterEach(() => { cleanup(); vi.clearAllMocks(); ctx.newItems = []; ctx.local = []; });
 
@@ -84,6 +90,42 @@ it('Open navigates in-app by default, or hands the link to openLink when given',
   await user.click(screen.getByRole('button', { name: 'Open' }));
   expect(openLink).toHaveBeenCalledWith('/reports');
   expect(ctx.dismissNew).toHaveBeenCalledWith('n4');
+});
+
+it('Open leaves the portal for an absolute link on another origin', async () => {
+  const user = userEvent.setup();
+  ctx.newItems = [{ id: 'n5', kind: 'wiki_update', title: 'Pat published Runbook', body: '',
+    link: 'https://wiki.example.com/n/abc', payload: {} }];
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <Routes>
+        <Route path="/" element={<><ToastHost /><div>home page</div></>} />
+        <Route path="*" element={<div>somewhere else</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await user.click(screen.getByRole('button', { name: 'Open' }));
+  expect(leaveFor).toHaveBeenCalledWith('https://wiki.example.com/n/abc');
+  expect(screen.getByText('home page')).toBeTruthy();         // no in-app navigation
+  expect(ctx.markRead).toHaveBeenCalledWith('n5');
+  expect(ctx.dismissNew).toHaveBeenCalledWith('n5');
+});
+
+it('Open keeps an absolute link on the portal origin in the app', async () => {
+  const user = userEvent.setup();
+  ctx.newItems = [{ id: 'n6', kind: 'report_failed', title: 'Move Report failed', body: 'x',
+    link: `${window.location.origin}/reports`, payload: {} }];
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <Routes>
+        <Route path="/" element={<ToastHost />} />
+        <Route path="/reports" element={<div>reports page</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await user.click(screen.getByRole('button', { name: 'Open' }));
+  expect(screen.getByText('reports page')).toBeTruthy();
+  expect(leaveFor).not.toHaveBeenCalled();
 });
 
 it('renders local message toasts', () => {

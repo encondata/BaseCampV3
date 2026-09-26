@@ -24,6 +24,12 @@ vi.mock('../lib/api', async (importActual) => ({
   ...api,
 }));
 
+vi.mock('../lib/inboxLinks', async (importActual) => ({
+  ...(await importActual<typeof import('../lib/inboxLinks')>()),
+  leaveFor: vi.fn(),
+}));
+const { leaveFor } = await import('../lib/inboxLinks');
+
 const { default: NotificationsPanel } = await import('./NotificationsPanel');
 
 const item = (id: string, over: Partial<InboxItem> = {}): InboxItem => ({
@@ -83,6 +89,30 @@ it('row click marks read, closes, and navigates; action buttons do not navigate'
   await user.click(screen.getAllByRole('button', { name: 'Hide' })[1]);
   expect(ctx.hide).toHaveBeenCalledWith('b');
   expect(onClose).toHaveBeenCalledTimes(2);           // actions never close/navigate
+});
+
+it('row click follows a relative link in the app and leaves for an absolute one elsewhere', async () => {
+  const user = userEvent.setup();
+  ctx.items = [
+    item('a', { kind: 'report_failed', title: 'Move Report failed', link: '/reports' }),
+    item('w', { kind: 'wiki_update', title: 'Pat published Runbook', link: 'https://wiki.example.com/n/abc' }),
+  ];
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <Routes>
+        <Route path="/" element={<NotificationsPanel onClose={vi.fn()} />} />
+        <Route path="/reports" element={<div>reports page</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await user.click(screen.getByText('Pat published Runbook'));
+  expect(leaveFor).toHaveBeenCalledWith('https://wiki.example.com/n/abc');
+  expect(ctx.markRead).toHaveBeenCalledWith('w');
+  expect(screen.queryByText('reports page')).toBeNull();
+
+  await user.click(screen.getByText('Move Report failed'));
+  expect(screen.getByText('reports page')).toBeTruthy();
+  expect(leaveFor).toHaveBeenCalledTimes(1);
 });
 
 it('row action buttons carry a data-tip matching their label and no native title', () => {

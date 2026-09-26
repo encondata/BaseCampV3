@@ -10,12 +10,14 @@ import { ApiError, apiFetch, READ_ONLY_MESSAGE, refreshSystemStatus } from '@por
 
 import {
   completeUpload,
+  getWatchState,
   getAssetUrls,
   getPageContent,
   getSpaceGrants,
   getTree,
   listRecent,
   listSpaces,
+  listWatches,
   moveNode,
   publishPage,
   purgeTrash,
@@ -23,7 +25,9 @@ import {
   search,
   searchPrincipals,
   setFavorite,
+  unwatch,
   updateSpace,
+  watch,
 } from './wikiApi';
 
 const fetchMock = vi.mocked(apiFetch);
@@ -125,6 +129,32 @@ describe('wikiApi requests', () => {
     await expect(putDraft('p1', doc)).resolves.toBeUndefined();
     expect(lastCall()).toMatchObject({ path: '/wiki/nodes/p1/draft', init: { method: 'PUT' } });
     expect(JSON.parse(String(lastCall().init.body))).toEqual({ content_json: doc });
+  });
+
+  it('lists, adds and removes watches and reads a node\'s watch state', async () => {
+    fetchMock.mockResolvedValueOnce(reply(200, []));
+    await expect(listWatches()).resolves.toEqual([]);
+    expect(lastCall()).toMatchObject({ path: '/wiki/watches', init: {} });
+
+    const out = { id: 'w1', node: { id: 'n1', title: 'Runbook', kind: 'page' },
+      space: { key: 'ops', name: 'Ops' }, created_at: '2026-09-26T00:00:00Z' };
+    fetchMock.mockResolvedValueOnce(reply(200, out));
+    await expect(watch({ node_id: 'n1' })).resolves.toEqual(out);
+    expect(lastCall()).toMatchObject({ path: '/wiki/watches', init: { method: 'PUT' } });
+    expect(JSON.parse(String(lastCall().init.body))).toEqual({ node_id: 'n1' });
+
+    fetchMock.mockResolvedValueOnce(reply(200, { ...out, node: null }));
+    await watch({ space_id: 's1' });
+    expect(JSON.parse(String(lastCall().init.body))).toEqual({ space_id: 's1' });
+
+    fetchMock.mockResolvedValueOnce(reply(204));
+    await expect(unwatch('w1')).resolves.toBeUndefined();
+    expect(lastCall()).toMatchObject({ path: '/wiki/watches/w1', init: { method: 'DELETE' } });
+
+    const state = { watching: true, via: 'ancestor', watch_id: 'w2' };
+    fetchMock.mockResolvedValueOnce(reply(200, state));
+    await expect(getWatchState('n1')).resolves.toEqual(state);
+    expect(lastCall().path).toBe('/wiki/nodes/n1/watch');
   });
 
   it('unwraps the grants and asset-url envelopes', async () => {

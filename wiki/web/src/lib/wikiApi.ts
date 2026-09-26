@@ -40,6 +40,9 @@ import type {
   UploadStartOut,
   VersionDetail,
   VersionOut,
+  WatchIn,
+  WatchOut,
+  WatchStateOut,
 } from './types';
 
 type Query = Record<string, string | number | boolean | null | undefined>;
@@ -231,3 +234,17 @@ export const restoreTrash = (batchId: string) =>
 /** Deletes the batch forever. */
 export const purgeTrash = (batchId: string) =>
   request<void>('DELETE', `/trash/${seg(batchId)}`);
+
+// ── watches ─────────────────────────────────────────────────────────
+
+/** My watches, newest first — only those whose target I can still see. */
+export const listWatches = () => request<WatchOut[]>('GET', '/watches');
+
+/** Watch a node or a space (idempotent: an existing watch comes back). */
+export const watch = (body: WatchIn) => request<WatchOut>('PUT', '/watches', { body });
+
+export const unwatch = (watchId: string) =>
+  request<void>('DELETE', `/watches/${seg(watchId)}`);
+
+export const getWatchState = (nodeId: string) =>
+  request<WatchStateOut>('GET', `/nodes/${seg(nodeId)}/watch`);

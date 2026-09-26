@@ -10,6 +10,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   ApiError, approveMembershipRequest, rejectMembershipRequest, type InboxItem,
 } from '../lib/api';
+import { leaveFor, resolveInboxLink } from '../lib/inboxLinks';
 import { GROUP_ERRORS } from '../lib/notificationGroups';
 import { useNotifications } from '../lib/notificationsContext';
 /* .portal-shell's --list-* tokens live in directory.css and the shell does
@@ -189,7 +190,11 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
   const open = (n: InboxItem) => {
     if (!n.read_at) void markRead(n.id);
     onClose();
-    if (n.link) navigate(n.link);
+    if (!n.link) return;
+    // the portal's own paths navigate; another app's absolute links leave
+    const target = resolveInboxLink(n.link);
+    if (target.kind === 'app') navigate(target.to);
+    else leaveFor(target.href);
   };
 
   const onRowKey = (e: React.KeyboardEvent<HTMLDivElement>, n: InboxItem, idx: number) => {

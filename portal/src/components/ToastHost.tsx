@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { getReportRunDownloadUrl } from '../lib/api';
+import { leaveFor, resolveInboxLink } from '../lib/inboxLinks';
 import { useLocalToasts, useNotifications } from '../lib/notificationsContext';
 import { openPresigned } from '../lib/reports';
 import '../styles/toast.css';
@@ -12,9 +13,10 @@ import '../styles/toast.css';
 export const INBOX_TOAST_MS = 10_000;
 
 interface Props {
-  /** Follows an inbox item's link. Defaults to an in-app navigate — right
-   *  for the portal, whose links are its own paths; the wiki (which shares
-   *  this host) sends portal paths back to the portal. */
+  /** Follows an inbox item's link. Defaults to the portal's rule (see
+   *  lib/inboxLinks): its own paths navigate in-app, absolute links to
+   *  another app (the wiki) leave for it. The wiki, which shares this
+   *  host, passes its own rule that sends portal paths back to the portal. */
   openLink?: (link: string) => void;
 }
 
@@ -22,6 +24,11 @@ export default function ToastHost({ openLink }: Props = {}) {
   const { newItems, dismissNew, markRead } = useNotifications();
   const { toasts, dismiss } = useLocalToasts();
   const navigate = useNavigate();
+  const openHere = (link: string) => {
+    const target = resolveInboxLink(link);
+    if (target.kind === 'app') navigate(target.to);
+    else leaveFor(target.href);
+  };
 
   const shown = newItems.slice(0, 3);
   const shownIds = shown.map((i) => i.id).join(',');
@@ -37,7 +44,7 @@ export default function ToastHost({ openLink }: Props = {}) {
       const runId = item.payload.run_id;
       try { await openPresigned(() => getReportRunDownloadUrl(runId)); } catch { return; /* leave the toast in place */ }
     } else if (item.link) {
-      (openLink ?? navigate)(item.link);
+      (openLink ?? openHere)(item.link);
     }
     void markRead(item.id);
     dismissNew(item.id);

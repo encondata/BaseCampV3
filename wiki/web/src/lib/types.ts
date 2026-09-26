@@ -288,3 +288,27 @@ export interface TrashBatch {
   deleted_at: string;
   purge_at: string | null;
 }
+
+// ── watches ─────────────────────────────────────────────────────────
+
+/** A watch: `node` is null for a space watch; `space` is the watched
+ *  space, or the watched node's space. */
+export interface WatchOut {
+  id: string;
+  node: { id: string; title: string; kind: NodeKind } | null;
+  space: { key: string; name: string } | null;
+  created_at: string;
+}
+
+/** Exactly one of the two. */
+export type WatchIn = { node_id: string; space_id?: never } | { space_id: string; node_id?: never };
+
+export type WatchVia = 'node' | 'ancestor' | 'space';
+
+/** How the caller watches a node — the closest watch wins; `watch_id`
+ *  is that watch, for unwatching it. */
+export interface WatchStateOut {
+  watching: boolean;
+  via: WatchVia | null;
+  watch_id: string | null;
+}
