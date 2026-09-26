@@ -679,13 +679,14 @@ class PublicPageOut(BaseModel):
 
 class PublicFileOut(BaseModel):
     """A shared file's current version: `url` shows it in the browser
-    where the inline rules allow (an attachment otherwise);
+    where the inline rules allow (`inline`; an attachment otherwise);
     `download_url` always downloads it."""
     kind: Literal["file"] = "file"
     title: str
     filename: str
     content_type: str
     size_bytes: int
+    inline: bool
     url: str
     download_url: str
 

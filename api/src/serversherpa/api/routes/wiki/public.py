@@ -40,6 +40,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.services import storage
 from serversherpa.wiki.content import EMPTY_DOC, public_doc, referenced_asset_ids
+from serversherpa.wiki.files import inline_content_type
 from serversherpa.wiki.pages import utcnow
 from serversherpa.wiki.share_links import (
     MAX_TOKEN_LENGTH,
@@ -90,6 +91,8 @@ async def _file_out(db: AsyncSession, node: WikiNode) -> PublicFileOut:
     return PublicFileOut(
         title=node.title, filename=version.filename, content_type=version.content_type,
         size_bytes=version.size_bytes,
+        inline=inline_content_type(version.filename, version.content_type,
+                                   version.preview_kind) is not None,
         url=presign_view(version.storage_key, version.filename, version.content_type,
                          preview_kind=version.preview_kind,
                          max_ttl_seconds=PUBLIC_URL_TTL_SECONDS),

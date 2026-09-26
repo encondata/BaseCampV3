@@ -358,6 +358,7 @@ async def test_public_file_follows_the_inline_rules(client, db, filename, conten
     query = parse_qs(urlparse(body["url"]).query)
     assert int(query["X-Amz-Expires"][0]) <= 600
     disposition = query["response-content-disposition"][0]
+    assert body["inline"] is (inline_type is not None)
     if inline_type is None:
         assert disposition.startswith("attachment")
         assert query["response-content-type"] == ["application/octet-stream"]
