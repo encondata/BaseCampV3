@@ -335,11 +335,17 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Rows only this revision's kinds allow would fail the narrower checks:
+    # the worker queues a `reminders` job at start-up, and a review's
+    # snapshot is a `submitted` version. The review rows go with their
+    # table below; a snapshot stays in the page's history as an autosave.
+    op.execute("DELETE FROM wiki_jobs WHERE kind = 'reminders'")
     op.drop_constraint("wiki_jobs_kind_check", "wiki_jobs", type_="check")
     op.create_check_constraint(
         "wiki_jobs_kind_check", "wiki_jobs",
         "kind IN ('file_preview','file_extract','purge')")
 
+    op.execute("UPDATE wiki_page_versions SET kind = 'autosave' WHERE kind = 'submitted'")
     op.drop_constraint("wiki_page_versions_kind_check", "wiki_page_versions",
                        type_="check")
     op.create_check_constraint(

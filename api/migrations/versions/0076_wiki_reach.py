@@ -121,6 +121,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # The worker queues a `retention` job at start-up, so every database it
+    # has run against has one; the narrower check can't go back on while
+    # such rows exist. Their export files under wiki/exports/<job_id>/ are
+    # left in the bucket for manual cleanup.
+    op.execute("DELETE FROM wiki_jobs WHERE kind IN ('export','retention')")
     op.drop_constraint("wiki_jobs_kind_check", "wiki_jobs", type_="check")
     op.create_check_constraint(
         "wiki_jobs_kind_check", "wiki_jobs", JOB_KIND_CHECK_PRE_0076)
