@@ -37,7 +37,10 @@ export function Breadcrumbs({ node }: { node: NodeDetailOut }) {
       {node.breadcrumbs.map((c, i) => (
         <span key={c.id ?? `hidden-${i}`} className="wiki-crumb">
           <span className="wiki-crumb-sep" aria-hidden="true">/</span>
-          {c.id ? <Link to={`/n/${c.id}`}>{c.title}</Link> : <span title="Hidden">{c.title}</span>}
+          {c.id ? <Link to={`/n/${c.id}`}>{c.title}</Link> : (
+            // an ancestor the viewer can't see: never its title, whatever the API sent
+            <span title="A folder you don't have access to">…</span>
+          )}
         </span>
       ))}
     </nav>

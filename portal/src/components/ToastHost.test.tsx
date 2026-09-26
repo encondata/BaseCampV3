@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 
 const ctx = vi.hoisted(() => ({
@@ -61,6 +61,29 @@ it('other kinds get an Open action; dismiss removes without marking read', async
   await user.click(screen.getByRole('button', { name: 'Dismiss' }));
   expect(ctx.dismissNew).toHaveBeenCalledWith('n2');
   expect(ctx.markRead).not.toHaveBeenCalled();
+});
+
+it('Open navigates in-app by default, or hands the link to openLink when given', async () => {
+  const user = userEvent.setup();
+  ctx.newItems = [{ id: 'n4', kind: 'report_failed', title: 'Move Report failed', body: 'x', link: '/reports', payload: {} }];
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <Routes>
+        <Route path="/" element={<ToastHost />} />
+        <Route path="/reports" element={<div>reports page</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await user.click(screen.getByRole('button', { name: 'Open' }));
+  expect(screen.getByText('reports page')).toBeTruthy();
+  expect(ctx.markRead).toHaveBeenCalledWith('n4');
+  cleanup();
+
+  const openLink = vi.fn();
+  render(<MemoryRouter><ToastHost openLink={openLink} /></MemoryRouter>);
+  await user.click(screen.getByRole('button', { name: 'Open' }));
+  expect(openLink).toHaveBeenCalledWith('/reports');
+  expect(ctx.dismissNew).toHaveBeenCalledWith('n4');
 });
 
 it('renders local message toasts', () => {

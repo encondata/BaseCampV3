@@ -19,6 +19,12 @@ VersionKind = Literal["autosave", "published", "restored", "imported"]
 PreviewKind = Literal["native", "pdf", "none"]
 
 
+# A node title (wiki_nodes.title is CHECKed to 1-200 characters). A space's
+# name is one too: its home page is created with the space's name as title.
+Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
+                                         max_length=200)]
+
+
 class PersonRef(BaseModel):
     id: uuid.UUID
     name: str
@@ -46,7 +52,7 @@ class SpaceCreateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     key: str
-    name: str
+    name: Title
     description: str | None = None
     icon: str | None = None
     color: str | None = None
@@ -56,7 +62,7 @@ class SpaceCreateIn(BaseModel):
 class SpacePatchIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str | None = None
+    name: Title | None = None
     description: str | None = None
     icon: str | None = None
     color: str | None = None
@@ -188,10 +194,6 @@ class Breadcrumb(BaseModel):
 class NodeDetailOut(NodeOut):
     breadcrumbs: list[Breadcrumb]
     space: SpaceOut
-
-
-Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
-                                         max_length=200)]
 
 
 class NodeCreateIn(BaseModel):

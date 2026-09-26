@@ -11,7 +11,14 @@ import '../styles/toast.css';
 /** Inbox toasts fade themselves out; the item stays unread in the bell. */
 export const INBOX_TOAST_MS = 10_000;
 
-export default function ToastHost() {
+interface Props {
+  /** Follows an inbox item's link. Defaults to an in-app navigate — right
+   *  for the portal, whose links are its own paths; the wiki (which shares
+   *  this host) sends portal paths back to the portal. */
+  openLink?: (link: string) => void;
+}
+
+export default function ToastHost({ openLink }: Props = {}) {
   const { newItems, dismissNew, markRead } = useNotifications();
   const { toasts, dismiss } = useLocalToasts();
   const navigate = useNavigate();
@@ -30,7 +37,7 @@ export default function ToastHost() {
       const runId = item.payload.run_id;
       try { await openPresigned(() => getReportRunDownloadUrl(runId)); } catch { return; /* leave the toast in place */ }
     } else if (item.link) {
-      navigate(item.link);
+      (openLink ?? navigate)(item.link);
     }
     void markRead(item.id);
     dismissNew(item.id);

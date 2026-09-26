@@ -108,6 +108,26 @@ async def test_bad_key_is_rejected(client, db):
     assert resp.json()["detail"]["code"] == "bad_key"
 
 
+async def test_space_name_is_capped_like_a_page_title(client, db):
+    """The home page takes the space's name as its title (1-200 characters),
+    so create and rename refuse a name the title couldn't hold."""
+    headers, _ = await login_as(client, db, roles=("staff",))
+    assert (await _create_space(client, headers, key="too-long", name="x" * 201)).status_code == 422
+    assert (await _create_space(client, headers, key="blank-name", name="   ")).status_code == 422
+    assert (await db.scalar(select(WikiNode).where(WikiNode.title == "x" * 201))) is None
+
+    created = await _create_space(client, headers, key="just-fits", name="y" * 200)
+    assert created.status_code == 201, created.text
+    home = await db.get(WikiNode, uuid.UUID(created.json()["home_node_id"]))
+    assert home.title == "y" * 200
+
+    too_long = await client.patch("/wiki/spaces/just-fits", headers=headers, json={"name": "z" * 201})
+    assert too_long.status_code == 422
+    renamed = await client.patch("/wiki/spaces/just-fits", headers=headers, json={"name": "  Trimmed  "})
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "Trimmed"
+
+
 # ── visibility by default_access ────────────────────────────────────
 
 

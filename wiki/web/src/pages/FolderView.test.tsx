@@ -82,6 +82,20 @@ describe('FolderView', () => {
     expect(getTree).toHaveBeenCalledWith('ops', 'f1');
   });
 
+  it('masks an ancestor the viewer can\'t see as “…”, without a link', async () => {
+    renderFolder({
+      ...FOLDER,
+      breadcrumbs: [
+        { id: null, title: 'Secret plans', kind: 'folder' },
+        { id: 'top', title: 'Library', kind: 'folder' },
+      ],
+    });
+    const nav = screen.getByRole('navigation', { name: 'Breadcrumb' });
+    expect(nav.textContent).toBe('Operations/…/Library');
+    expect(within(nav).getAllByRole('link').map((a) => a.textContent)).toEqual(['Operations', 'Library']);
+    await screen.findByText('Cabling');
+  });
+
   it('opens a child from its row', async () => {
     renderFolder();
     fireEvent.click(await screen.findByText('Cabling'));
