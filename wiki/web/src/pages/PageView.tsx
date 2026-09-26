@@ -28,7 +28,7 @@ import { useSystemStatus } from '@portal/lib/systemStatusContext';
 
 import RowMenu, { atLeast } from '../components/RowMenu';
 import { Icon } from '../editor/icons';
-import { flushPage } from '../editor/liveFlush';
+import { flushPage } from '../editor/flushPage';
 import PublishDialog from '../editor/PublishDialog';
 import ReadOnlyDoc from '../editor/ReadOnlyDoc';
 import { buildToc, type TocEntry } from '../editor/toc';

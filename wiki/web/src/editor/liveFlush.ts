@@ -8,22 +8,16 @@
  *    resolves once the server has stored a state covering everything this
  *    editor typed (the server answers with how far its store covers our
  *    Yjs client id).
- *  - `flushPage(pageId)`: for a page not open in this tab (Publish from
- *    View mode): a short-lived connection, so edits other people are
- *    making live are stored too. When the server won't open the page live
- *    for this user at all (live editing switched off — no service token —
- *    or no live access), there is no live document to store and it
- *    resolves: the stored draft is all there is, and the publish itself
- *    still checks the user's access.
+ *  - `flushPage(pageId)` (flushPage.ts): for a page not open in this tab.
+ *
+ *  DOM- and portal-free, so the wiki server's tests can drive it too.
  *
  *  Both reject with a `FlushError` whose `code` is the server's reason
  *  (`too_large`, `bad_doc`, `deleted`, `unavailable`) or `offline`,
  *  `timeout`, `not_saved`. */
-import { HocuspocusProvider, HocuspocusProviderWebsocket } from '@hocuspocus/provider';
+import type { HocuspocusProvider } from '@hocuspocus/provider';
 import * as Y from 'yjs';
 
-import { collabUrl } from '../lib/origins';
-import { currentAccessToken } from '../lib/session';
 import { encodeMessage, parseServerMessage } from './collabMessages';
 
 export const FLUSH_TIMEOUT_MS = 15_000;
@@ -68,35 +62,4 @@ export function flushLive(provider: HocuspocusProvider, timeoutMs = FLUSH_TIMEOU
     provider.on('stateless', onMessage);
     provider.sendStateless(encodeMessage({ type: 'flush', id, client: doc.clientID }));
   });
-}
-
-export async function flushPage(pageId: string, timeoutMs = FLUSH_TIMEOUT_MS): Promise<void> {
-  const doc = new Y.Doc();
-  const socket = new HocuspocusProviderWebsocket({ url: collabUrl() });
-  let provider: HocuspocusProvider | null = null;
-  try {
-    const live = await new Promise<boolean>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new FlushError('offline')), timeoutMs);
-      provider = new HocuspocusProvider({
-        websocketProvider: socket,
-        name: `page:${pageId}`,
-        document: doc,
-        token: currentAccessToken,
-        onSynced: ({ state }) => {
-          if (!state) return;
-          clearTimeout(timer);
-          resolve(true);
-        },
-        onAuthenticationFailed: () => {
-          clearTimeout(timer);
-          resolve(false);
-        },
-      });
-    });
-    if (live) await flushLive(provider!, timeoutMs);
-  } finally {
-    (provider as HocuspocusProvider | null)?.destroy();
-    socket.destroy();
-    doc.destroy();
-  }
 }

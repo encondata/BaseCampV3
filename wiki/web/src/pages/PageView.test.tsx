@@ -45,16 +45,13 @@ vi.mock('../editor/WikiEditor', () => ({
   ),
 }));
 // a page not open in this tab is flushed over a short-lived connection
-vi.mock('../editor/liveFlush', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../editor/liveFlush')>()),
-  flushPage: vi.fn(),
-}));
+vi.mock('../editor/flushPage', () => ({ flushPage: vi.fn() }));
 
 import { ApiError } from '@portal/lib/api';
 
 import { ShellContext, type ShellValue } from '../layout/shellContext';
 import type { NodeDetailOut, PageContentOut } from '../lib/types';
-import { flushPage } from '../editor/liveFlush';
+import { flushPage } from '../editor/flushPage';
 import { getMe, getPageContent, getVersion, publishPage, recordRestore, setFavorite } from '../lib/wikiApi';
 import { makeDetail, makeMe } from '../testing/fixtures';
 import PageView from './PageView';
