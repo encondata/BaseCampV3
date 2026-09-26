@@ -19,7 +19,7 @@ import { prosemirrorJSONToYXmlFragment } from 'y-prosemirror';
 import * as Y from 'yjs';
 
 import { wikiExtensions } from '../../web/src/editor/schema.js';
-import { isRetryable, type Level, type WikiApi } from './apiClient.js';
+import { ApiError, isRetryable, type Level, type WikiApi } from './apiClient.js';
 import type { ServerConfig } from './config.js';
 import { describeError, log } from './log.js';
 
@@ -33,12 +33,11 @@ export function pageIdOf(documentName: string): string | null {
   return PAGE_NAME.exec(documentName)?.[1] ?? null;
 }
 
-/** What a connection carries once authenticated: who it is (for cursors
- *  and the editor list) and the token it connected with (re-authorization
- *  reuses it; never log it). */
+/** What a connection carries once authenticated: who it is — for
+ *  cursors, the editor list and re-authorization (by person id; the access
+ *  token it connected with expires within minutes and isn't kept). */
 export interface CollabContext {
   user: { id: string; name: string; color: string; level: Level };
-  token: string;
 }
 
 const RETRY_FIRST_MS = 2_000;
@@ -67,7 +66,7 @@ interface DocState {
   pinned: boolean;
 }
 
-type StoreOutcome = 'stored' | 'retry' | 'dropped';
+type StoreOutcome = 'stored' | 'retry' | 'dropped' | 'trashed';
 
 export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
   const schema = getSchema(wikiExtensions());
@@ -112,6 +111,11 @@ export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
       try {
         await api.storeState(nodeId, update, content, editors);
       } catch (error) {
+        if (error instanceof ApiError && error.status === 409 && error.code === 'deleted') {
+          log('error', 'store refused: the page is in the trash; closing its connections',
+            { document: name });
+          return 'trashed';
+        }
         const retry = isRetryable(error);
         log('error', retry ? 'store failed; will retry' : 'store refused; not retrying',
           { document: name, error: describeError(error) });
@@ -149,6 +153,9 @@ export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
       if (!state.retryTimer) scheduleRetry(name, document);
       return;
     }
+    // Editors of a trashed page would be typing into a document that can't
+    // be stored: send them away (the page view shows the trash state).
+    if (outcome === 'trashed') document.getConnections().forEach((connection) => connection.close());
     if (state.retryTimer) clearTimeout(state.retryTimer);
     state.retryTimer = null;
     state.retryDelay = RETRY_FIRST_MS;
@@ -165,32 +172,32 @@ export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
   }
 
   async function recheck(connection: Connection, name: string, nodeId: string): Promise<void> {
-    const context = connection.context as Partial<CollabContext> | undefined;
-    let authz;
+    const user = (connection.context as Partial<CollabContext> | undefined)?.user;
+    let level: Level | null;
     try {
-      authz = context?.token ? await api.authorize(context.token, nodeId) : null;
+      level = user?.id ? await api.level(nodeId, user.id) : null;
     } catch (error) {
       // an unreachable API doesn't cost anyone their session
       log('error', 're-authorization failed; keeping the connection',
         { document: name, error: describeError(error) });
       return;
     }
-    if (!authz) {
-      log('info', 'closing a connection that lost access', { document: name, person: context?.user?.id });
+    if (!level) {
+      log('info', 'closing a connection that lost access', { document: name, person: user?.id });
       connection.close();
       return;
     }
-    if (authz.level === 'view' && !connection.readOnly) {
-      connection.readOnly = true;
-      if (context?.user) context.user.level = 'view';
-      log('info', 'connection downgraded to read-only', { document: name, person: context?.user?.id });
+    // A client told read-write at sign-in doesn't learn it went read-only;
+    // closing makes the provider reconnect and come back read-only.
+    if (level === 'view' && !connection.readOnly) {
+      log('info', 'closing a connection that lost edit', { document: name, person: user?.id });
+      connection.close();
     }
   }
 
   let reauthorizing = false;
-  /** Re-run authorize for every open connection with the token it
-   *  connected with: close the ones that lost access, make read-only the
-   *  ones that lost edit. */
+  /** Re-check every open connection's person against the API: close the
+   *  ones that lost access or lost edit. */
   async function reauthorizeAll(): Promise<void> {
     if (reauthorizing) return;
     reauthorizing = true;
@@ -226,7 +233,6 @@ export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
       if (authz.level === 'view') connection.readOnly = true;
       return {
         user: { id: authz.person.id, name: authz.person.name, color: authz.color, level: authz.level },
-        token,
       };
     },
 

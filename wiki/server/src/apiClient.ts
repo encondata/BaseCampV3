@@ -85,6 +85,23 @@ export function makeApi(cfg: ServerConfig, fetchImpl: typeof fetch = fetch) {
       return isAuthz(body) ? body : null;
     },
 
+    /** A person's level on a page, by id and the service token alone —
+     *  re-authorization of open connections, long after the access token
+     *  they connected with expired. Null when they may no longer open it
+     *  live (404: no active account, no view, not a live page); any other
+     *  failure throws, since it says nothing about the person. */
+    async level(nodeId: string, personId: string): Promise<Level | null> {
+      const res = await call(
+        `/collab/level?node=${encodeURIComponent(nodeId)}&person=${encodeURIComponent(personId)}`);
+      if (res.status === 404) {
+        await res.body?.cancel();
+        return null;
+      }
+      if (!res.ok) throw await errorFrom(res);
+      const body = await res.json() as { level?: unknown };
+      return typeof body?.level === 'string' && LEVELS.has(body.level) ? body.level as Level : null;
+    },
+
     async loadState(nodeId: string): Promise<PageState> {
       const res = await call(pagePath(nodeId));
       if (!res.ok) throw await errorFrom(res);

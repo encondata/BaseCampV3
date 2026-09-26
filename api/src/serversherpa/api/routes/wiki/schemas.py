@@ -379,6 +379,10 @@ class CollabAuthorizeOut(BaseModel):
     color: str
 
 
+class CollabLevelOut(BaseModel):
+    level: Level
+
+
 class PageStateOut(BaseModel):
     ydoc_b64: str | None
     draft_json: dict | None

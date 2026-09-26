@@ -29,11 +29,13 @@ const authz = (level: Authz['level'], id = 'p1'): Authz => ({
 
 function fakeApi(): WikiApi & {
   authorize: ReturnType<typeof vi.fn>;
+  level: ReturnType<typeof vi.fn>;
   loadState: ReturnType<typeof vi.fn>;
   storeState: ReturnType<typeof vi.fn>;
 } {
   return {
     authorize: vi.fn(async () => authz('edit')),
+    level: vi.fn(async () => 'edit'),
     loadState: vi.fn(async () => ({ ydoc: null, draftJson: null })),
     storeState: vi.fn(async () => undefined),
   };
@@ -75,11 +77,10 @@ describe('onAuthenticate', () => {
     return { connection, result };
   };
 
-  it('lets an editor in read-write and keeps who they are and their token', async () => {
+  it('lets an editor in read-write and keeps who they are, not their token', async () => {
     const { connection, result } = authenticate(DOC_NAME);
     await expect(result).resolves.toEqual({
       user: { id: 'p1', name: 'Person p1', color: '#aa5500', level: 'edit' },
-      token: 'user-tok',
     });
     expect(connection.readOnly).toBe(false);
     expect(api.authorize).toHaveBeenCalledWith('user-tok', NODE);
@@ -209,14 +210,33 @@ describe('onStoreDocument', () => {
     expect(api.storeState.mock.calls[1][3]).toEqual([]);
   });
 
+  it('closes every connection when the page went to the trash', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const document = loadedDocument();
+    const editors = [{ close: vi.fn() }, { close: vi.fn() }];
+    vi.spyOn(document, 'getConnections').mockReturnValue(editors as never);
+    await change(document, { user: { id: 'p1' } });
+    api.storeState.mockRejectedValueOnce(new ApiError(409, 'deleted'));
+
+    await expect(store(document)).resolves.toBeUndefined();
+    editors.forEach((c) => expect(c.close).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(errors.mock.calls)).toContain('in the trash');
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(api.storeState).toHaveBeenCalledTimes(1);
+  });
+
   it('logs and gives up on a refusal that retrying cannot fix', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     const document = loadedDocument();
+    const editor = { close: vi.fn() };
+    vi.spyOn(document, 'getConnections').mockReturnValue([editor] as never);
     await change(document, { user: { id: 'p1' } });
-    api.storeState.mockRejectedValueOnce(new ApiError(409, 'deleted'));
+    api.storeState.mockRejectedValueOnce(new ApiError(413, 'too_large'));
     await expect(store(document)).resolves.toBeUndefined();
     expect(log).toHaveBeenCalled();
     expect(document.getConnectionsCount()).toBe(0);
+    // only a trashed page sends its editors away
+    expect(editor.close).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(120_000);
     expect(api.storeState).toHaveBeenCalledTimes(1);
@@ -331,12 +351,12 @@ describe('onStoreDocument', () => {
 describe('re-authorization', () => {
   interface FakeConnection {
     readOnly: boolean;
-    context: { token: string; user: { id: string; level: string } };
+    context: { user: { id: string; level: string } };
     close: ReturnType<typeof vi.fn>;
   }
-  const connection = (token: string, level = 'edit'): FakeConnection => ({
+  const connection = (personId: string, level = 'edit'): FakeConnection => ({
     readOnly: level === 'view',
-    context: { token, user: { id: 'p1', level } },
+    context: { user: { id: personId, level } },
     close: vi.fn(),
   });
 
@@ -344,52 +364,61 @@ describe('re-authorization', () => {
     hp.documents.set(name, { name, getConnections: () => connections } as unknown as Document);
   }
 
-  it('closes connections that lost access and downgrades the ones that lost edit', async () => {
-    const kept = connection('tok-kept');
-    const downgraded = connection('tok-lost-edit');
-    const revoked = connection('tok-revoked');
-    const apiDown = connection('tok-api-down');
-    openDocument(DOC_NAME, [kept, downgraded, revoked, apiDown]);
+  it('asks by person and closes connections that lost access or lost edit', async () => {
+    const kept = connection('p-kept');
+    const viewer = connection('p-viewer', 'view');
+    const downgraded = connection('p-lost-edit');
+    const revoked = connection('p-revoked');
+    const apiDown = connection('p-api-down');
+    openDocument(DOC_NAME, [kept, viewer, downgraded, revoked, apiDown]);
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
     const infos = vi.spyOn(console, 'log').mockImplementation(() => {});
-    api.authorize.mockImplementation(async (token: string) => {
-      if (token === 'tok-lost-edit') return authz('view');
-      if (token === 'tok-revoked') return null;
-      if (token === 'tok-api-down') throw new TypeError('fetch failed');
-      return authz('edit');
+    api.level.mockImplementation(async (_node: string, person: string) => {
+      if (person === 'p-viewer' || person === 'p-lost-edit') return 'view';
+      if (person === 'p-revoked') return null;
+      if (person === 'p-api-down') throw new TypeError('fetch failed');
+      return 'edit';
     });
 
     await vi.advanceTimersByTimeAsync(cfg.reauthMs - 1);
-    expect(api.authorize).not.toHaveBeenCalled();
+    expect(api.level).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
 
-    expect(api.authorize).toHaveBeenCalledTimes(4);
-    expect(api.authorize).toHaveBeenCalledWith('tok-kept', NODE);
-    expect(api.authorize).toHaveBeenCalledWith('tok-lost-edit', NODE);
-    expect(kept.readOnly).toBe(false);
+    expect(api.level).toHaveBeenCalledTimes(5);
+    expect(api.level).toHaveBeenCalledWith(NODE, 'p-kept');
+    // no user token involved: it expired long ago
+    expect(api.authorize).not.toHaveBeenCalled();
     expect(kept.close).not.toHaveBeenCalled();
-    expect(downgraded.readOnly).toBe(true);
-    expect(downgraded.context.user.level).toBe('view');
-    expect(downgraded.close).not.toHaveBeenCalled();
-    expect(revoked.close).toHaveBeenCalled();
+    // already read-only and still view: nothing to change
+    expect(viewer.close).not.toHaveBeenCalled();
+    // lost edit: closed, so the provider reconnects and comes back read-only
+    expect(downgraded.close).toHaveBeenCalledTimes(1);
+    expect(revoked.close).toHaveBeenCalledTimes(1);
     // an unreachable API doesn't cost anyone their session
     expect(apiDown.close).not.toHaveBeenCalled();
-    expect(apiDown.readOnly).toBe(false);
     expect(errors).toHaveBeenCalled();
-    // tokens never reach the logs
-    expect(JSON.stringify([...errors.mock.calls, ...infos.mock.calls])).not.toContain('tok-');
+    expect(infos).toHaveBeenCalled();
+  });
+
+  it('closes a connection it cannot identify', async () => {
+    const anonymous = { readOnly: false, context: {}, close: vi.fn() };
+    openDocument(DOC_NAME, [anonymous as unknown as FakeConnection]);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    await vi.advanceTimersByTimeAsync(cfg.reauthMs);
+    expect(api.level).not.toHaveBeenCalled();
+    expect(anonymous.close).toHaveBeenCalledTimes(1);
   });
 
   it('runs again on the next interval', async () => {
     openDocument(DOC_NAME, [connection('a')]);
     await vi.advanceTimersByTimeAsync(cfg.reauthMs * 2);
-    expect(api.authorize).toHaveBeenCalledTimes(2);
+    expect(api.level).toHaveBeenCalledTimes(2);
   });
 
   it('stops when the server is destroyed', async () => {
     openDocument(DOC_NAME, [connection('a')]);
     await hook(hp, 'onDestroy')({ instance: hp });
     await vi.advanceTimersByTimeAsync(cfg.reauthMs * 2);
-    expect(api.authorize).not.toHaveBeenCalled();
+    expect(api.level).not.toHaveBeenCalled();
   });
 });

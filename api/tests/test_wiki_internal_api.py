@@ -4,14 +4,15 @@ service-token gate, `collab/authorize`, and page state load/store
 import base64
 import os
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy import update as sa_update
 
 from serversherpa.api.routes.wiki import internal as internal_routes
 from serversherpa.config import get_settings
-from serversherpa.db.models import WikiNode, WikiPage, WikiPageVersion
+from serversherpa.db.models import Person, UserAccount, WikiNode, WikiPage, WikiPageVersion
 from serversherpa.wiki import pages
 from serversherpa.wiki.content import MAX_DOC_BYTES
 from tests.wiki_helpers import _create, _doc, _setup, _space, login_as, publish_via_db
@@ -159,6 +160,112 @@ async def test_authorize_needs_wiki_view(client, db):
     assert (await _authorize(client, s["viewer"], page["id"]))["level"] == "view"
     outsider_h, _ = await login_as(client, db, roles=())
     await _authorize(client, outsider_h, page["id"], expect=404)
+
+
+# ── level (re-authorization by person) ──────────────────────────────
+
+
+async def _level(client, node_id, person_id, expect=200, headers=SVC):
+    resp = await client.get("/wiki/internal/collab/level",
+                            params={"node": str(node_id), "person": str(person_id)},
+                            headers=headers)
+    assert resp.status_code == expect, resp.text
+    if expect == 404:
+        # the route's own 404, not a missing route
+        assert resp.json()["detail"]["code"] == "not_found"
+    return resp.json()
+
+
+async def test_level_reports_each_persons_level(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Live", kind="page")
+    await publish_via_db(db, page["id"])
+
+    assert await _level(client, page["id"], s["owner_id"]) == {"level": "manage"}
+    assert await _level(client, page["id"], s["editor_id"]) == {"level": "edit"}
+    assert await _level(client, page["id"], s["viewer_id"]) == {"level": "view"}
+
+
+async def test_level_follows_authorize_for_what_a_person_cant_see(client, db):
+    s = await _setup(client, db)
+    space = s["space"]
+    draft = await _create(client, s["owner"], space, "Draft only", kind="page")
+    folder = await _create(client, s["owner"], space, "Folder")
+    private = await _space(client, s["owner"], default_access="private", name="Private")
+    hidden = await _create(client, s["owner"], private, "Hidden", kind="page")
+    await publish_via_db(db, hidden["id"])
+
+    # view-only on a never-published page, no level, not a page, unknown
+    await _level(client, draft["id"], s["viewer_id"], expect=404)
+    assert (await _level(client, draft["id"], s["editor_id"]))["level"] == "edit"
+    await _level(client, hidden["id"], s["viewer_id"], expect=404)
+    await _level(client, folder["id"], s["owner_id"], expect=404)
+    await _level(client, uuid.uuid4(), s["owner_id"], expect=404)
+    # trashed
+    assert (await client.delete(f"/wiki/nodes/{draft['id']}",
+                                headers=s["owner"])).status_code == 200
+    await _level(client, draft["id"], s["editor_id"], expect=404)
+
+
+async def test_level_refuses_a_person_without_an_active_account(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Live", kind="page")
+    await publish_via_db(db, page["id"])
+
+    # a person record with no user account at all
+    nobody = Person(first_name="No", last_name="Account")
+    db.add(nobody)
+    await db.commit()
+    await _level(client, page["id"], nobody.id, expect=404)
+    await _level(client, page["id"], uuid.uuid4(), expect=404)
+
+    # a disabled account loses its level straight away
+    await db.execute(sa_update(UserAccount)
+                     .where(UserAccount.person_id == s["editor_id"])
+                     .values(disabled_at=datetime.now(UTC)))
+    await db.commit()
+    await _level(client, page["id"], s["editor_id"], expect=404)
+
+    # so does an archived person
+    await db.execute(sa_update(Person)
+                     .where(Person.id == s["viewer_id"])
+                     .values(archived_at=datetime.now(UTC)))
+    await db.commit()
+    await _level(client, page["id"], s["viewer_id"], expect=404)
+    assert (await _level(client, page["id"], s["owner_id"]))["level"] == "manage"
+
+
+async def test_level_needs_wiki_view(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "P", kind="page")
+    await publish_via_db(db, page["id"])
+    resp = await client.put(
+        f"/wiki/spaces/{s['space']['key']}/grants", headers=s["owner"], json={"grants": [
+            {"principal_type": "person", "principal_id": str(s["owner_id"]),
+             "level": "manage"},
+            {"principal_type": "everyone", "level": "view"}]})
+    assert resp.status_code == 200, resp.text
+    _, outsider_id = await login_as(client, db, roles=())
+    await _level(client, page["id"], outsider_id, expect=404)
+
+
+async def test_level_needs_the_service_token(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "P", kind="page")
+    await publish_via_db(db, page["id"])
+
+    body = await _level(client, page["id"], s["owner_id"], expect=401, headers={})
+    assert body["detail"]["code"] == "bad_service_token"
+    body = await _level(client, page["id"], s["owner_id"], expect=401,
+                        headers={"X-Wiki-Service-Token": "nope"})
+    assert body["detail"]["code"] == "bad_service_token"
+    # a user's bearer is no substitute
+    body = await _level(client, page["id"], s["owner_id"], expect=401, headers=s["owner"])
+    assert body["detail"]["code"] == "bad_service_token"
+
+    _set_token("")
+    body = await _level(client, page["id"], s["owner_id"], expect=503)
+    assert body["detail"]["code"] == "internal_disabled"
 
 
 # ── state: load ─────────────────────────────────────────────────────

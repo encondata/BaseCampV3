@@ -5,6 +5,9 @@ gate, since the caller is a service, not a user.
 
 - `GET /internal/collab/authorize?node=` — may this user (their own
   bearer token, passed through) open this page live, and how?
+- `GET /internal/collab/level?node=&person=` — the same answer for a
+  person, without their token: the collab server re-checks open
+  connections with it long after the connecting access token expired.
 - `GET /internal/pages/{id}/state` — the stored Yjs update and draft JSON
   a document loads from.
 - `PUT /internal/pages/{id}/state` — store the document (`pages.store_draft`).
@@ -21,7 +24,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
+from sqlalchemy.orm import joinedload
 
+from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
     DbSession,
     authenticate_token,
@@ -32,15 +37,21 @@ from serversherpa.api.deps import (
 from serversherpa.api.routes.wiki.errors import err, not_found
 from serversherpa.api.routes.wiki.schemas import (
     CollabAuthorizeOut,
+    CollabLevelOut,
     PageStateIn,
     PageStateOut,
     PersonRef,
 )
 from serversherpa.config import get_settings
-from serversherpa.db.models import Person, WikiNode, WikiPage
+from serversherpa.db.models import Person, UserAccount, WikiNode, WikiPage
 from serversherpa.wiki import pages
 from serversherpa.wiki.content import MAX_DOC_BYTES
-from serversherpa.wiki.permissions import AccessIndex, principal_for
+from serversherpa.wiki.permissions import (
+    AccessIndex,
+    Principal,
+    principal_for,
+    principal_from_access,
+)
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -95,8 +106,33 @@ async def authorize(
     enforce_session_scope(request, user)
     enforce_forced_password_change(request, user)
 
-    principal = await principal_for(db, user)
-    row = await db.get(WikiNode, node)
+    level = await _live_level(db, await principal_for(db, user), node)
+    person = user.person
+    return CollabAuthorizeOut(
+        level=level, person=PersonRef(id=person.id, name=person.display_name),
+        color=pages.person_color(person.id))
+
+
+@router.get("/collab/level", response_model=CollabLevelOut)
+async def level(node: uuid.UUID, person: uuid.UUID, db: DbSession) -> CollabLevelOut:
+    """`authorize`'s level for a person, by id: 404 when they have no
+    active account (none, disabled, or the person archived — the same
+    checks sign-in makes) or can't open the page live."""
+    account = await db.scalar(
+        select(UserAccount)
+        .options(joinedload(UserAccount.person))
+        .where(UserAccount.person_id == person))
+    if (account is None or account.disabled_at is not None
+            or account.person.archived_at is not None):
+        raise not_found()
+    principal = await principal_from_access(db, person, await resolve_access(db, person))
+    return CollabLevelOut(level=await _live_level(db, principal, node))
+
+
+async def _live_level(db, principal: Principal, node_id: uuid.UUID) -> str:
+    """The principal's level on a live page they may open, or 404: not a
+    live page, no level, or view-only on a page never published."""
+    row = await db.get(WikiNode, node_id)
     if row is None or row.deleted_at is not None or row.kind != "page":
         raise not_found()
     level = await AccessIndex(db, principal).level_for_node(row)
@@ -107,10 +143,7 @@ async def authorize(
             select(WikiPage.published_version_id).where(WikiPage.node_id == row.id))
         if published_id is None:
             raise not_found()
-    person = user.person
-    return CollabAuthorizeOut(
-        level=level, person=PersonRef(id=person.id, name=person.display_name),
-        color=pages.person_color(person.id))
+    return level
 
 
 # ── state ────────────────────────────────────────────────────────────

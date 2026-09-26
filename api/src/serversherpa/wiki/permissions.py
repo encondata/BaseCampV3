@@ -44,6 +44,7 @@ from serversherpa.db.models import (
 )
 
 if TYPE_CHECKING:
+    from serversherpa.access.resolver import AccessInfo
     from serversherpa.api.deps import AuthContext
 
 LEVELS = ("view", "edit", "manage")
@@ -79,13 +80,20 @@ class Principal:
 async def principal_for(db: AsyncSession, user: AuthContext) -> Principal:
     """Build the caller's Principal: the auth context plus one query for
     their access-group memberships."""
+    return await principal_from_access(db, user.person.id, user.access)
+
+
+async def principal_from_access(db: AsyncSession, person_id: uuid.UUID,
+                                access: AccessInfo) -> Principal:
+    """A person's Principal from their resolved access (`resolve_access`)
+    — for callers acting for someone without their token (the collab
+    server's re-authorization)."""
     group_ids = (await db.scalars(
         select(AccessGroupMember.group_id)
-        .where(AccessGroupMember.person_id == user.person.id)
+        .where(AccessGroupMember.person_id == person_id)
     )).all()
-    access = user.access
     return Principal(
-        person_id=user.person.id,
+        person_id=person_id,
         roles=frozenset(access.role_names),
         group_ids=frozenset(group_ids),
         client_ids=frozenset(access.client_ids),

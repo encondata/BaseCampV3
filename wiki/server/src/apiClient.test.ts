@@ -91,6 +91,36 @@ describe('makeApi.authorize', () => {
   });
 });
 
+describe('makeApi.level', () => {
+  const PERSON = '9e8d7c6b-5a4f-4e3d-8c2b-1a0f9e8d7c6b';
+
+  it('asks by person with the service token alone', async () => {
+    const fetchImpl = vi.fn(async () => reply(200, { level: 'view' }));
+    const api = makeApi(cfg, fetchImpl as typeof fetch);
+    await expect(api.level(NODE, PERSON)).resolves.toBe('view');
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`http://api.test/wiki/internal/collab/level?node=${NODE}&person=${PERSON}`);
+    const headers = new Headers(init.headers);
+    expect(headers.get('x-wiki-service-token')).toBe('svc-secret');
+    expect(headers.get('authorization')).toBeNull();
+  });
+
+  it('answers null when the person may no longer open the page', async () => {
+    const api = makeApi(cfg, (async () => reply(404, { detail: { code: 'not_found' } })) as typeof fetch);
+    await expect(api.level(NODE, PERSON)).resolves.toBeNull();
+  });
+
+  it('answers null for a level it does not know', async () => {
+    const api = makeApi(cfg, (async () => reply(200, { level: 'owner' })) as typeof fetch);
+    await expect(api.level(NODE, PERSON)).resolves.toBeNull();
+  });
+
+  it.each([401, 503])('throws for %s (a server problem, not a verdict on the person)', async (status) => {
+    const api = makeApi(cfg, (async () => reply(status, { detail: { code: 'x' } })) as typeof fetch);
+    await expect(api.level(NODE, PERSON)).rejects.toMatchObject({ status });
+  });
+});
+
 describe('makeApi.loadState', () => {
   it('decodes the stored update', async () => {
     const fetchImpl = vi.fn(async () => reply(200, {
