@@ -557,6 +557,10 @@ async def test_review_detail_is_stale_once_the_page_was_published_after_submit(c
     await _set_draft(client, s["editor"], page["id"], "v3")
     await publish_via_api(client, s["owner"], page["id"])
     assert (await detail())["stale"] is True
+    # once decided it's no longer "stale": approving published it, so the
+    # current version is newer than the submit by design
+    await _decide(client, s["owner"], review["id"], "approve")
+    assert (await detail())["stale"] is False
 
 
 async def test_unpublished_page_review_is_not_stale(client, db):
@@ -584,6 +588,29 @@ async def test_approving_what_is_already_published_adds_no_version(client, db):
     assert count == 1
     decisions = await _inbox(db, s["editor_id"], "wiki_review_decision")
     assert len(decisions) == 1 and "approved" in decisions[0].title
+
+
+async def test_approve_compares_with_the_published_content_as_of_the_lock(client, db):
+    s = await _setup(client, db)
+    page = await _page(client, s, text="same text")
+    review = await _submit(client, s["editor"], page["id"])
+    node_row = await db.get(WikiNode, uuid.UUID(page["id"]))
+    page_row = await db.get(WikiPage, uuid.UUID(page["id"]))
+    assert page_row.published_version_id is None
+    await db.commit()
+    # published by someone else after the page row was read
+    await publish_via_api(client, s["owner"], page["id"])
+
+    review_row = await reviews.lock_review(db, await db.get(WikiReview,
+                                                            uuid.UUID(review["id"])))
+    version, _ = await reviews.approve(db, node_row, page_row, review_row,
+                                       actor_id=s["owner_id"], note=None)
+    await db.commit()
+    assert version is None               # no duplicate of what is already published
+    count = len((await db.scalars(select(WikiPageVersion).where(
+        WikiPageVersion.node_id == uuid.UUID(page["id"]),
+        WikiPageVersion.kind == "published"))).all())
+    assert count == 1
 
 
 async def test_decided_review_lists_are_bounded_in_sql(client, db, monkeypatch):

@@ -131,17 +131,23 @@ async def mark_reviewed(db: AsyncSession, node: WikiNode, *,
     await schedule_from(db, node, now)
 
 
+def review_base(published_at: datetime, last_reviewed_at: datetime | None) -> datetime:
+    """What a re-based review period counts from: the later of the page's
+    last publish and its last review."""
+    return max(d for d in (published_at, last_reviewed_at) if d is not None)
+
+
 async def set_interval(db: AsyncSession, node: WikiNode, page: WikiPage,
                        months: int | None) -> None:
     """Change the page's own interval (None: back to the space's) and
-    re-base `next_review_at` on the latest of its last review and its
-    last publish — nothing is scheduled for a page never published."""
+    re-base `next_review_at` on `review_base` — nothing is scheduled for
+    a page never published."""
     node.review_interval_months = months
     base = None
     if page.published_version_id is not None:
         published_at = await db.scalar(select(WikiPageVersion.created_at)
                                        .where(WikiPageVersion.id == page.published_version_id))
-        base = max(d for d in (published_at, node.last_reviewed_at) if d is not None)
+        base = review_base(published_at, node.last_reviewed_at)
     await schedule_from(db, node, base)
 
 
@@ -283,6 +289,7 @@ async def approve(db: AsyncSession, node: WikiNode, page: WikiPage, review: Wiki
     got a mention for it (see `pages.publish_snapshot`) — or (None, ∅)
     when the snapshot is exactly the published content already: the
     review is approved without publishing a duplicate version."""
+    await db.refresh(page)     # published as of the lock (`lock_review`), not the request start
     snapshot = await db.get(WikiPageVersion, review.version_id)
     content = snapshot.content_json if snapshot.content_json is not None else EMPTY_DOC
     decide(review, "approved", actor_id=actor_id, note=note)
@@ -315,7 +322,8 @@ async def backfill_due_dates(db: AsyncSession) -> tuple[int, int]:
     """Bring `next_review_at` in line with intervals that changed at the
     space level (the space's setting isn't copied onto its pages):
     schedule each live published page that now has an interval but no
-    due date at its current version's publish time + the interval, and
+    due date at its `review_base` (later of publish and last review) +
+    the interval, and
     clear the due date of pages no interval applies to any more. Pages
     another transaction holds are left for the next run. Returns
     (scheduled, cleared); the caller commits."""
@@ -329,7 +337,8 @@ async def backfill_due_dates(db: AsyncSession) -> tuple[int, int]:
         .with_for_update(of=WikiNode, skip_locked=True)
     )).all()
     for node, published_at, interval in rows:
-        node.next_review_at = add_months(published_at, interval)
+        node.next_review_at = add_months(review_base(published_at, node.last_reviewed_at),
+                                         interval)
     no_space_interval = select(WikiSpace.id).where(
         cast(WikiSpace.settings["review_interval_months"].astext, Integer).is_(None))
     cleared = await db.execute(

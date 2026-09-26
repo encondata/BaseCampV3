@@ -614,8 +614,8 @@ class ReviewOut(BaseModel):
 class ReviewDetail(ReviewOut):
     """The review plus both sides of its diff: the submitted snapshot and
     the page's published content now (null if never published). `stale`:
-    the page was published after the review was submitted, so approving
-    replaces content the submitter never saw."""
+    a pending review whose page was published after it was submitted, so
+    approving replaces content the submitter never saw."""
     submitted_version_no: int
     submitted_content: dict
     published_version_id: uuid.UUID | None

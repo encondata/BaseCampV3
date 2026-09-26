@@ -165,7 +165,8 @@ async def get_review(review_id: uuid.UUID, ctx: WikiContext) -> ReviewDetail:
         submitted_content=submitted_content,
         published_version_id=page.published_version_id,
         published_content=published.content_json if published else None,
-        stale=published is not None and published.created_at > review.created_at)
+        stale=(review.status == "pending" and published is not None
+               and published.created_at > review.created_at))
 
 
 # ── decisions ────────────────────────────────────────────────────────

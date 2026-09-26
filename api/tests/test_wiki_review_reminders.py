@@ -249,6 +249,26 @@ async def test_reminders_schedule_published_pages_once_the_space_has_an_interval
     assert [n.title for n in notes] == ["Old is due for review"]
 
 
+async def test_backfill_bases_the_due_date_on_the_later_of_publish_and_review(client, db):
+    s = await _setup(client, db)
+    space_id = uuid.UUID(s["space"]["id"])
+    reviewed = await _due_page(db, space_id, owner_id=s["editor_id"], title="Reviewed")
+    row = await db.get(WikiNode, reviewed.id)
+    row.review_interval_months = None
+    row.next_review_at = None
+    row.last_reviewed_at = datetime(2025, 3, 15, 9, tzinfo=UTC)
+    await db.execute(update(WikiPageVersion).where(WikiPageVersion.node_id == reviewed.id)
+                     .values(created_at=datetime(2025, 1, 10, 9, tzinfo=UTC)))
+    await db.commit()
+    resp = await client.patch(f"/wiki/spaces/{s['space']['key']}", headers=s["owner"],
+                              json={"settings": {"review_interval_months": 6}})
+    assert resp.status_code == 200, resp.text
+
+    await _run(db)
+    fresh = await db.get(WikiNode, reviewed.id, populate_existing=True)
+    assert fresh.next_review_at == datetime(2025, 9, 15, 9, tzinfo=UTC)
+
+
 async def test_reminders_clear_due_dates_once_no_interval_applies(client, db):
     s = await _setup(client, db)
     space_id = uuid.UUID(s["space"]["id"])
