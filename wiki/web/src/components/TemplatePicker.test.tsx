@@ -50,6 +50,18 @@ describe('TemplatePicker', () => {
     expect(listTemplates).toHaveBeenCalledWith('ops');
   });
 
+  it('shows a glyph, never the word, for a builtin still seeded with an icon name', async () => {
+    vi.mocked(listTemplates).mockResolvedValue([
+      { ...RUNBOOK, name: 'How-to guide', icon: 'compass' },
+      { ...SPACE_TEMPLATE, icon: 'star' },
+    ]);
+    renderPicker();
+    await screen.findByRole('radio', { name: /How-to guide/ });
+    expect(screen.getAllByRole('radio').map((o) => o.textContent)).toEqual([
+      'Blank pageStart with nothing', '🧭 How-to guideA standard runbook', 'Move planThis space',
+    ]);
+  });
+
   it('starts with Blank selected and no preview', () => {
     renderPicker();
     const blank = screen.getByRole('radio', { name: /Blank page/ });

@@ -17,6 +17,7 @@ import ReadOnlyDoc from '../editor/ReadOnlyDoc';
 import { EMPTY_DOC } from '../editor/schema';
 import TemplateEditor from '../editor/TemplateEditor';
 import { useWikiShell } from '../layout/shellContext';
+import { templateTitle } from '../lib/templateIcon';
 import type { Level, SpaceOut, TemplateDetail, TemplateOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
 import {
@@ -118,7 +119,7 @@ function ListView({ scope, space, spaces, isAdmin, canCreate, onEdit, onCreated 
             <div className="dir-row" role="listitem" key={t.id}>
               <div className="row-main wiki-template-row" style={GRID}>
                 <div className="cell cell-primary">
-                  <div className="pn"><b title={t.name}>{t.icon ? `${t.icon} ` : ''}{t.name}</b>
+                  <div className="pn"><b title={t.name}>{templateTitle(t)}</b>
                     {t.description && <span className="cell-sub">{t.description}</span>}
                   </div>
                 </div>

@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import ReadOnlyDoc from '../editor/ReadOnlyDoc';
+import { templateTitle } from '../lib/templateIcon';
 import type { TemplateDetail, TemplateOut } from '../lib/types';
 import { getTemplate, listTemplates } from '../lib/wikiApi';
 
@@ -80,7 +81,7 @@ export default function TemplatePicker({ spaceKey, value, onChange }: TemplatePi
             onMouseEnter={() => setPreviewId(t.id)}
             onFocus={() => setPreviewId(t.id)}
           >
-            <b>{t.icon ? `${t.icon} ` : ''}{t.name}</b>
+            <b>{templateTitle(t)}</b>
             <span>{t.description || scopeLabel(t)}</span>
           </button>
         ))}

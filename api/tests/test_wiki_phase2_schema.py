@@ -27,6 +27,7 @@ from serversherpa.db.models import (
     WikiTemplate,
     WikiWatch,
 )
+from tests.wiki_helpers import seed_builtin_templates
 
 API_DIR = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = API_DIR / "migrations" / "versions" / "0075_wiki_collab.py"
@@ -48,9 +49,7 @@ async def _seed_builtin_templates(clean_db, db):
     """Re-run migration 0075's seed() against the (freshly truncated) test
     database before every test in this file, so builtin templates exist
     even though wiki_templates is truncated between tests."""
-    migration = _load_migration_0075()
-    await db.run_sync(lambda session: migration.seed(session.connection()))
-    await db.commit()
+    await seed_builtin_templates(db)
 
 
 async def _space(db, key="phase2-space"):
@@ -115,6 +114,21 @@ async def test_seeding_builtin_templates_twice_is_a_no_op(db):
         select(WikiTemplate).where(WikiTemplate.is_builtin.is_(True))
     )).all()
     assert len(rows) == len(BUILTIN_TEMPLATE_NAMES)
+
+
+async def test_builtin_template_icons_are_glyphs_not_words(db):
+    """0077 rewrites 0075's icon names ('clipboard-list', …) to emoji."""
+    icons = dict((await db.execute(
+        select(WikiTemplate.name, WikiTemplate.icon).where(WikiTemplate.is_builtin.is_(True))
+    )).all())
+    assert icons == {"SOP": "📋", "How-to guide": "🧭",
+                     "Troubleshooting": "🔧", "Meeting notes": "👥"}
+
+
+async def test_phase2_supporting_indexes_exist(db):
+    for name in ("wiki_watches_node_idx", "wiki_watches_space_idx",
+                 "wiki_reviews_version_idx", "wiki_reviews_node_idx"):
+        assert await db.scalar(text(f"SELECT to_regclass('{name}')")) is not None, name
 
 
 async def test_template_name_length_check(db):

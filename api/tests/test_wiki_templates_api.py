@@ -4,13 +4,12 @@
 
 `clean_db` (api/tests/conftest.py) truncates `wiki_templates` before every
 test, dropping migration 0075's four seeded builtins with it. This file
-re-runs the migration's own `seed(conn)` in an autouse fixture instead of
+re-seeds them (`wiki_helpers.seed_builtin_templates`: 0075's seed plus
+0077's icon rewrite) in an autouse fixture instead of
 assuming the builtins are already there — the same convention
 `test_container_zpl_templates.py` uses for migration 0066's rows.
 """
-import importlib.util
 import uuid
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -25,29 +24,17 @@ from tests.wiki_helpers import (
     login_as,
     publish_via_api,
     publish_via_db,
+    seed_builtin_templates,
 )
-
-API_DIR = Path(__file__).resolve().parents[1]
-MIGRATION_PATH = API_DIR / "migrations" / "versions" / "0075_wiki_collab.py"
 
 BUILTIN_NAMES = ["How-to guide", "Meeting notes", "SOP", "Troubleshooting"]
 
 
-def _load_migration_0075():
-    spec = importlib.util.spec_from_file_location("_migration_0075_under_test", MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 @pytest.fixture(autouse=True)
 async def _seed_builtin_templates(clean_db, db):
-    """Re-run migration 0075's seed() against the (freshly truncated) test
-    database before every test in this file."""
-    migration = _load_migration_0075()
-    await db.run_sync(lambda session: migration.seed(session.connection()))
-    await db.commit()
+    """Re-seed the builtins (0075's seed + 0077's icon rewrite) into the
+    freshly truncated test database before every test in this file."""
+    await seed_builtin_templates(db)
 
 
 async def _list(client, headers, space=None, expect=200):
@@ -119,6 +106,15 @@ async def test_list_groups_builtin_global_and_space_templates_name_ordered(clien
     # without ?space, only builtin + global
     no_space = await _list(client, s["viewer"])
     assert [t["name"] for t in no_space] == [*BUILTIN_NAMES, "AAA Global", "ZZZ Global"]
+
+
+async def test_builtin_templates_list_with_glyph_icons(client, db):
+    """What a migrated database serves: each builtin's icon is a glyph the
+    UI can print before the name, never an icon *name* like "compass"."""
+    headers, _ = await login_as(client, db)
+    builtins = {t["name"]: t["icon"] for t in await _list(client, headers) if t["is_builtin"]}
+    assert builtins == {"SOP": "📋", "How-to guide": "🧭",
+                        "Troubleshooting": "🔧", "Meeting notes": "👥"}
 
 
 async def test_list_hides_space_templates_the_caller_cant_see(client, db):
