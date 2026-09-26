@@ -225,18 +225,21 @@ describe('onStoreDocument', () => {
     expect(api.storeState).toHaveBeenCalledTimes(1);
   });
 
-  it('logs and gives up on a refusal that retrying cannot fix', async () => {
+  it('gives up on a refusal that retrying cannot fix, and tells the editors', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     const document = loadedDocument();
-    const editor = { close: vi.fn() };
+    const editor = { close: vi.fn(), readOnly: false, sendStateless: vi.fn() };
     vi.spyOn(document, 'getConnections').mockReturnValue([editor] as never);
     await change(document, { user: { id: 'p1' } });
     api.storeState.mockRejectedValueOnce(new ApiError(413, 'too_large'));
     await expect(store(document)).resolves.toBeUndefined();
     expect(log).toHaveBeenCalled();
     expect(document.getConnectionsCount()).toBe(0);
-    // only a trashed page sends its editors away
+    // only a trashed page sends its editors away...
     expect(editor.close).not.toHaveBeenCalled();
+    // ...but its editors learn nothing more is being saved, and can't type on
+    expect(editor.sendStateless).toHaveBeenCalledWith(JSON.stringify({ type: 'store_refused', code: 'too_large' }));
+    expect(editor.readOnly).toBe(true);
 
     await vi.advanceTimersByTimeAsync(120_000);
     expect(api.storeState).toHaveBeenCalledTimes(1);
@@ -345,6 +348,87 @@ describe('onStoreDocument', () => {
     await Promise.all([first, second]);
     expect(api.storeState).toHaveBeenCalledTimes(2);
     expect(maxInFlight).toBe(1);
+  });
+});
+
+describe('flush, saved and refused announcements', () => {
+  function loadedDocument(): Document {
+    const document = new Document(DOC_NAME);
+    Y.applyUpdate(document, Y.encodeStateAsUpdate(fixtureYdoc()));
+    hp.documents.set(DOC_NAME, document);
+    return document;
+  }
+  /** An editor's change, made under Yjs client id `client`. */
+  function typeAs(document: Document, client: number, text: string): number {
+    const local = new Y.Doc();
+    local.clientID = client;
+    Y.applyUpdate(local, Y.encodeStateAsUpdate(document));
+    local.getXmlFragment(COLLAB_FIELD).insert(0, [new Y.XmlText(text)]);
+    Y.applyUpdate(document, Y.encodeStateAsUpdate(local, Y.encodeStateVector(document)));
+    return Y.getState(local.store, client);
+  }
+  const connection = () => ({ readOnly: false, sendStateless: vi.fn(), close: vi.fn() });
+  const stateless = (document: Document, conn: ReturnType<typeof connection>, payload: unknown) =>
+    hook(hp, 'onStateless')({ documentName: DOC_NAME, document, connection: conn, payload: JSON.stringify(payload) });
+  const replies = (conn: ReturnType<typeof connection>) =>
+    conn.sendStateless.mock.calls.map(([payload]) => JSON.parse(payload as string));
+
+  it('a flush stores right away and answers with how far the store covers the editor', async () => {
+    const document = loadedDocument();
+    const clock = typeAs(document, 77, 'fresh sentence');
+    const conn = connection();
+    await stateless(document, conn, { type: 'flush', id: 'f1', client: 77 });
+    // no debounce: stored before the answer
+    expect(api.storeState).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(api.storeState.mock.calls[0][2])).toContain('fresh sentence');
+    expect(replies(conn)).toEqual([{ type: 'flushed', id: 'f1', ok: true, clock }]);
+  });
+
+  it('a flush that cannot be stored says why', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const document = loadedDocument();
+    const conn = connection();
+    api.storeState.mockRejectedValueOnce(new ApiError(423, 'read_only_mode'));
+    await stateless(document, conn, { type: 'flush', id: 'f2', client: 1 });
+    expect(replies(conn)).toEqual([{ type: 'flushed', id: 'f2', ok: false, code: 'unavailable' }]);
+
+    api.storeState.mockRejectedValueOnce(new ApiError(413, 'too_large'));
+    await stateless(document, conn, { type: 'flush', id: 'f3', client: 1 });
+    expect(replies(conn)[1]).toEqual({ type: 'flushed', id: 'f3', ok: false, code: 'too_large' });
+    // once refused, a flush is answered without trying again
+    await stateless(document, conn, { type: 'flush', id: 'f4', client: 1 });
+    expect(replies(conn).at(-1)).toEqual({ type: 'flushed', id: 'f4', ok: false, code: 'too_large' });
+  });
+
+  it('ignores stateless messages it does not know', async () => {
+    const document = loadedDocument();
+    const conn = connection();
+    await stateless(document, conn, { type: 'something-else' });
+    await hook(hp, 'onStateless')({ documentName: DOC_NAME, document, connection: conn, payload: 'not json' });
+    expect(api.storeState).not.toHaveBeenCalled();
+    expect(conn.sendStateless).not.toHaveBeenCalled();
+  });
+
+  it('tells every connection what a store saved, for the editors connected now', async () => {
+    const document = loadedDocument();
+    const clock = typeAs(document, 77, 'typed');
+    document.awareness.states.set(77, { user: { name: 'A' } });
+    document.awareness.states.set(88, { user: { name: 'B' } });
+    const broadcast = vi.spyOn(document, 'broadcastStateless');
+    await hook(hp, 'onStoreDocument')({ documentName: DOC_NAME, document, context: {} });
+    const saved = broadcast.mock.calls.map(([payload]) => JSON.parse(payload as string));
+    expect(saved).toEqual([{ type: 'saved', clocks: { 77: clock, 88: 0 } }]);
+  });
+
+  it('a connection that arrives after a refusal is read-only and told so', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const document = loadedDocument();
+    api.storeState.mockRejectedValueOnce(new ApiError(422, 'bad_doc'));
+    await hook(hp, 'onStoreDocument')({ documentName: DOC_NAME, document, context: {} });
+    const late = connection();
+    await hook(hp, 'connected')({ documentName: DOC_NAME, connectionInstance: late, context: {} });
+    expect(late.readOnly).toBe(true);
+    expect(replies(late)).toEqual([{ type: 'store_refused', code: 'bad_doc' }]);
   });
 });
 

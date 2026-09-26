@@ -16,7 +16,8 @@ import { useToast } from '@portal/lib/notificationsContext';
 
 import { collabUrl } from '../lib/origins';
 import { currentAccessToken } from '../lib/session';
-import { CollabStatus, useCollabState } from './collabStatus';
+import { CollabStatus, StoreRefusedBanner, useCollabState } from './collabStatus';
+import { flushLive } from './liveFlush';
 import { withNodeViews } from './nodeViews';
 import { insertPageLink, PageLinkMenu, PickerPopover, type PickedNode } from './PagePicker';
 import LinkPopover from './LinkPopover';
@@ -44,6 +45,10 @@ export interface WikiEditorProps {
   onToc: (toc: TocEntry[]) => void;
   /** Once, when the editor first holds the live document (e.g. to restore a version into it). */
   onFirstSync?: (editor: Editor) => void;
+  /** How to store this editor's live document right now (see `flushLive`)
+   *  — handed over once connected, and null again on unmount. Publish
+   *  waits for it, so the published draft includes the last keystroke. */
+  onLiveFlush?: (flush: (() => Promise<void>) | null) => void;
 }
 
 const PLACEHOLDER = 'Type “/” for blocks, “[[” to link a page…';
@@ -105,6 +110,12 @@ function CollabEditor({ pageId, doc, provider, user, onToc, onFirstSync }: {
   useEffect(() => {
     if (editor && !editor.isDestroyed) editor.commands.updateUser({ name: user.name, color: user.color });
   }, [editor, user.name, user.color]);
+
+  // the server refused the page for good: typing on would only lose more,
+  // but the text stays selectable to copy out
+  useEffect(() => {
+    if (editor && !editor.isDestroyed && collabState.refused) editor.setEditable(false);
+  }, [editor, collabState.refused]);
 
   // the table of contents follows the document (local and remote changes)
   useEffect(() => {
@@ -176,7 +187,8 @@ function CollabEditor({ pageId, doc, provider, user, onToc, onFirstSync }: {
           <CollabStatus state={collabState} />
         </div>
       </div>
-      {collabState.showBanner && (
+      {collabState.refused && <StoreRefusedBanner code={collabState.refused} />}
+      {!collabState.refused && collabState.showBanner && (
         <div className="we-banner" role="status">
           <span className="we-banner-spin" aria-hidden="true" />
           Reconnecting… your changes are kept on this device
@@ -212,10 +224,14 @@ function CollabEditor({ pageId, doc, provider, user, onToc, onFirstSync }: {
   );
 }
 
-export default function WikiEditor({ pageId, user, onAccessLost, onToc, onFirstSync }: WikiEditorProps) {
+export default function WikiEditor({
+  pageId, user, onAccessLost, onToc, onFirstSync, onLiveFlush,
+}: WikiEditorProps) {
   const [collab, setCollab] = useState<{ doc: Y.Doc; provider: HocuspocusProvider } | null>(null);
   const lostRef = useRef(onAccessLost);
   lostRef.current = onAccessLost;
+  const flushRef = useRef(onLiveFlush);
+  flushRef.current = onLiveFlush;
 
   useEffect(() => {
     const doc = new Y.Doc();
@@ -233,7 +249,9 @@ export default function WikiEditor({ pageId, user, onAccessLost, onToc, onFirstS
       onAuthenticationFailed: () => lostRef.current('none'),
     });
     setCollab({ doc, provider });
+    flushRef.current?.(() => flushLive(provider));
     return () => {
+      flushRef.current?.(null);
       setCollab(null);
       provider.destroy();
       socket.destroy();

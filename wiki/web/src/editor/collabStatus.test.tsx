@@ -2,14 +2,16 @@
 import type { HocuspocusProvider } from '@hocuspocus/provider';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import * as Y from 'yjs';
 
-import { CollabStatus, useCollabState } from './collabStatus';
+import { CollabStatus, StoreRefusedBanner, useCollabState } from './collabStatus';
 
 /** Just enough of a HocuspocusProvider: its state and events. */
 class FakeProvider {
   status = 'connecting';
   synced = false;
   unsyncedChanges = 0;
+  document = new Y.Doc();
   private handlers = new Map<string, Set<(arg: unknown) => void>>();
   on(event: string, fn: (arg: unknown) => void) {
     if (!this.handlers.has(event)) this.handlers.set(event, new Set());
@@ -20,6 +22,9 @@ class FakeProvider {
   setStatus(status: string) { this.status = status; this.emit('status', { status }); }
   setSynced(state: boolean) { this.synced = state; this.emit('synced', { state }); }
   setUnsynced(n: number) { this.unsyncedChanges = n; this.emit('unsyncedChanges', n); }
+  tell(message: object) { this.emit('stateless', { payload: JSON.stringify(message) }); }
+  type(text: string) { this.document.getText('t').insert(0, text); }
+  get clock() { return Y.getState(this.document.store, this.document.clientID); }
 }
 
 function Harness({ provider }: { provider: FakeProvider }) {
@@ -29,6 +34,7 @@ function Harness({ provider }: { provider: FakeProvider }) {
       <CollabStatus state={state} />
       <span data-testid="dim">{state.dimmed ? 'dimmed' : 'clear'}</span>
       <span data-testid="banner">{state.showBanner ? 'banner' : 'none'}</span>
+      {state.refused && <StoreRefusedBanner code={state.refused} />}
     </div>
   );
 }
@@ -83,5 +89,30 @@ describe('live editing status', () => {
     expect(screen.getByTestId('dim').textContent).toBe('dimmed');
     act(() => { provider.setSynced(true); });
     expect(status()).toBe('Saved');
+  });
+
+  it('says Saved only once a store covers what you typed, not when the server merely has it', () => {
+    render(<Harness provider={provider} />);
+    act(() => { provider.setStatus('connected'); provider.setSynced(true); });
+    expect(status()).toBe('Saved');
+
+    act(() => { provider.type('a sentence'); });
+    // the server has it (nothing unsynced), but it isn't stored yet
+    expect(status()).toBe('Saving…');
+    const mine = String(provider.document.clientID);
+    act(() => { provider.tell({ type: 'saved', clocks: { [mine]: provider.clock - 1 } }); });
+    expect(status()).toBe('Saving…');
+    act(() => { provider.tell({ type: 'saved', clocks: { 999: 50 } }); });
+    expect(status()).toBe('Saving…');
+    act(() => { provider.tell({ type: 'saved', clocks: { [mine]: provider.clock } }); });
+    expect(status()).toBe('Saved');
+  });
+
+  it('says Not saved, with a way out, once the server refuses the page', () => {
+    render(<Harness provider={provider} />);
+    act(() => { provider.setStatus('connected'); provider.setSynced(true); });
+    act(() => { provider.tell({ type: 'store_refused', code: 'too_large' }); });
+    expect(status()).toBe('Not saved');
+    expect(screen.getByRole('alert').textContent).toMatch(/too large to save.*copy/i);
   });
 });

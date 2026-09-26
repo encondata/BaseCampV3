@@ -9,8 +9,13 @@
  *
  *  `?restore=<versionId>` (from History's Restore, edit mode only) loads
  *  that version and, once the editor holds the live document, puts it in
- *  (which syncs to everyone), records the `restored` version and drops the
- *  param. */
+ *  (which syncs to everyone), stores it, records the `restored` version and
+ *  drops the param.
+ *
+ *  Publishing snapshots the STORED draft, which trails the live document
+ *  by up to 10 s, so Publish first stores the live document (`flushDraft`):
+ *  through the open editor in Edit mode, or a short-lived connection from
+ *  View mode (someone else may be editing). */
 import type { Editor } from '@tiptap/core';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
@@ -23,6 +28,7 @@ import { useSystemStatus } from '@portal/lib/systemStatusContext';
 
 import RowMenu, { atLeast } from '../components/RowMenu';
 import { Icon } from '../editor/icons';
+import { flushPage } from '../editor/liveFlush';
 import PublishDialog from '../editor/PublishDialog';
 import ReadOnlyDoc from '../editor/ReadOnlyDoc';
 import { buildToc, type TocEntry } from '../editor/toc';
@@ -148,6 +154,13 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
   // ── restoring a version (History → Restore) ──
   const restoreId = mode === 'edit' ? params.get('restore') : null;
   const [liveEditor, setLiveEditor] = useState<Editor | null>(null);
+  // the open editor's own flush, while there is one
+  const liveFlush = useRef<(() => Promise<void>) | null>(null);
+  const onLiveFlush = useCallback((flush: (() => Promise<void>) | null) => { liveFlush.current = flush; }, []);
+  const flushDraft = useCallback(
+    () => (liveFlush.current ? liveFlush.current() : flushPage(node.id)),
+    [node.id],
+  );
   const [restoreSource, setRestoreSource] = useState<VersionDetail | null>(null);
   const restoredRef = useRef<string | null>(null);
   useEffect(() => { setLiveEditor(null); }, [node.id, mode]);
@@ -190,12 +203,14 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
     restoredRef.current = restoreId;
     const { version_no: versionNo, content_json: content } = restoreSource;
     liveEditor.commands.setContent(content, true);
-    recordRestore(node.id, restoreId)
+    // stored first, so the draft (and a Publish right after) has it
+    flushDraft().catch(() => undefined)
+      .then(() => recordRestore(node.id, restoreId))
       .then(() => toast(`Restored version ${versionNo}. Publish when it's ready for readers.`))
       .catch((err) => toast(errorMessage(err,
         `Version ${versionNo} is back in the editor, but couldn't be recorded in the history.`)))
       .finally(clearRestore);
-  }, [node.id, restoreId, liveEditor, restoreSource, toast, clearRestore]);
+  }, [node.id, restoreId, liveEditor, restoreSource, toast, clearRestore, flushDraft]);
 
   const setMode = (next: 'view' | 'edit') => {
     setParams((cur) => {
@@ -308,7 +323,7 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
         <div className="wiki-page-content">
           {mode === 'edit' ? (
             <WikiEditor pageId={node.id} user={user} onAccessLost={onAccessLost} onToc={setLiveToc}
-                        onFirstSync={setLiveEditor} />
+                        onFirstSync={setLiveEditor} onLiveFlush={onLiveFlush} />
           ) : (
             <>
               {published.status === 'loading' && <p className="page-hint">Loading…</p>}
@@ -322,8 +337,8 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
       </div>
 
       {publishing && (
-        <PublishDialog pageId={node.id} pageTitle={node.title} onClose={() => setPublishing(false)}
-                       onPublished={onPublished} />
+        <PublishDialog pageId={node.id} pageTitle={node.title} flush={flushDraft}
+                       onClose={() => setPublishing(false)} onPublished={onPublished} />
       )}
     </div>
   );

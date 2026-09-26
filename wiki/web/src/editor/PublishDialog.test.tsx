@@ -13,6 +13,7 @@ import { ApiError } from '@portal/lib/api';
 
 import type { VersionOut } from '../lib/types';
 import { publishPage } from '../lib/wikiApi';
+import { FlushError } from './liveFlush';
 import PublishDialog from './PublishDialog';
 
 const VERSION: VersionOut = {
@@ -22,17 +23,20 @@ const VERSION: VersionOut = {
 
 const onClose = vi.fn();
 const onPublished = vi.fn();
+const flush = vi.fn<() => Promise<void>>();
 
 beforeEach(() => {
   toast.mockReset();
   onClose.mockReset();
   onPublished.mockReset();
+  flush.mockReset().mockResolvedValue(undefined);
   vi.mocked(publishPage).mockReset();
 });
 afterEach(cleanup);
 
 function renderDialog() {
-  render(<PublishDialog pageId="p1" pageTitle="Rack power" onClose={onClose} onPublished={onPublished} />);
+  render(<PublishDialog pageId="p1" pageTitle="Rack power" flush={flush} onClose={onClose}
+                        onPublished={onPublished} />);
 }
 
 describe('PublishDialog', () => {
@@ -62,5 +66,33 @@ describe('PublishDialog', () => {
     expect(await screen.findByText('Nothing new to publish')).toBeTruthy();
     expect(onPublished).not.toHaveBeenCalled();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('stores the live document before publishing it', async () => {
+    let stored!: () => void;
+    flush.mockReturnValue(new Promise<void>((resolve) => { stored = resolve; }));
+    vi.mocked(publishPage).mockResolvedValue(VERSION);
+    renderDialog();
+    fireEvent.click(screen.getByRole('button', { name: 'Publish' }));
+    await waitFor(() => expect(flush).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('button', { name: 'Publishing…' })).toBeTruthy();
+    expect(publishPage).not.toHaveBeenCalled();
+    stored();
+    await waitFor(() => expect(publishPage).toHaveBeenCalledWith('p1', undefined));
+  });
+
+  it('does not publish a draft it could not bring up to date', async () => {
+    flush.mockRejectedValue(new FlushError('offline'));
+    renderDialog();
+    fireEvent.click(screen.getByRole('button', { name: 'Publish' }));
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toMatch(/latest changes/i);
+    expect(publishPage).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Publish' })).toBeTruthy();
+
+    flush.mockRejectedValue(new FlushError('too_large'));
+    fireEvent.click(screen.getByRole('button', { name: 'Publish' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/too large/i));
+    expect(publishPage).not.toHaveBeenCalled();
   });
 });

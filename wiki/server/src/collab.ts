@@ -1,16 +1,24 @@
 /** Live editing: one Hocuspocus document per page, named `page:<uuid>`.
  *  The API decides who may connect (and whether read-only), loads the
  *  document and stores it; this module only relays. See the wiki design
- *  spec, "Live editing flow". */
+ *  spec, "Live editing flow".
+ *
+ *  Besides the Yjs sync, editors and this server exchange the stateless
+ *  messages in `collabMessages.ts`: an editor asks for a `flush` (store
+ *  now) before publishing, every store that lands announces what it
+ *  `saved`, and a store the API refuses for good is announced
+ *  (`store_refused`) with every connection made read-only. */
 import {
   Hocuspocus,
   type Connection,
   type Document,
   type afterUnloadDocumentPayload,
   type beforeUnloadDocumentPayload,
+  type connectedPayload,
   type onAuthenticatePayload,
   type onChangePayload,
   type onLoadDocumentPayload,
+  type onStatelessPayload,
   type onStoreDocumentPayload,
 } from '@hocuspocus/server';
 import { TiptapTransformer } from '@hocuspocus/transformer';
@@ -18,6 +26,7 @@ import { getSchema } from '@tiptap/core';
 import { prosemirrorJSONToYXmlFragment } from 'y-prosemirror';
 import * as Y from 'yjs';
 
+import { encodeMessage, parseClientMessage, type ServerMessage } from '../../web/src/editor/collabMessages.js';
 import { wikiExtensions } from '../../web/src/editor/schema.js';
 import { ApiError, isRetryable, type Level, type WikiApi } from './apiClient.js';
 import type { ServerConfig } from './config.js';
@@ -46,8 +55,12 @@ const RETRY_MAX_MS = 60_000;
 /** The client id a seed is written under. Seeding the same draft always
  *  produces the same Yjs items, so a client still holding an earlier
  *  load's seed (it reconnected after the document was unloaded unstored)
- *  merges with the new one instead of doubling the page. The draft can't
- *  change while a page has no stored document — every store writes one. */
+ *  merges with the new one instead of doubling the page. That holds while
+ *  the draft doesn't change between two unstored loads: every store
+ *  writes a document, and the only other writer of an unopened page's
+ *  draft is an import (`PUT /nodes/{id}/draft`, refused once the page has
+ *  a stored document) — re-importing a page someone already opened, but
+ *  whose document was never stored, is the one way to break it. */
 const SEED_CLIENT_ID = 0;
 
 /** A refused connection; Hocuspocus answers the client with permission-denied. */
@@ -64,9 +77,20 @@ interface DocState {
   /** Holding a direct-connection count so Hocuspocus keeps the document
    *  in memory while its store is being retried. */
   pinned: boolean;
+  /** Why the API refused this document for good, once it has: every
+   *  connection is then read-only until the document unloads. */
+  refused: string | null;
 }
 
-type StoreOutcome = 'stored' | 'retry' | 'dropped' | 'trashed';
+type StoreOutcome = 'stored' | 'retry' | 'refused' | 'trashed';
+
+interface StoreResult {
+  outcome: StoreOutcome;
+  /** For anything but `stored`: what to tell an editor waiting on a flush. */
+  code?: string;
+  /** For `stored`: the stored state vector (client id → clock). */
+  clocks?: Map<number, number>;
+}
 
 export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
   const schema = getSchema(wikiExtensions());
@@ -81,6 +105,7 @@ export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
         retryTimer: null,
         retryDelay: RETRY_FIRST_MS,
         pinned: false,
+        refused: null,
       };
       states.set(name, state);
     }
@@ -95,18 +120,20 @@ export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
   }
 
   /** One PUT of the document's current state, queued behind any in flight. */
-  function persist(name: string, nodeId: string, document: Y.Doc): Promise<StoreOutcome> {
+  function persist(name: string, nodeId: string, document: Y.Doc): Promise<StoreResult> {
     const state = stateOf(name);
-    const attempt = state.queue.then(async (): Promise<StoreOutcome> => {
+    const attempt = state.queue.then(async (): Promise<StoreResult> => {
       const editors = [...state.editors];
       let update: Uint8Array;
+      let clocks: Map<number, number>;
       let content: unknown;
       try {
         update = Y.encodeStateAsUpdate(document);
+        clocks = Y.decodeStateVector(Y.encodeStateVector(document));
         content = TiptapTransformer.fromYdoc(document, COLLAB_FIELD);
       } catch (error) {
         log('error', 'could not encode a document to store', { document: name, error: describeError(error) });
-        return 'dropped';
+        return { outcome: 'refused', code: 'unstorable' };
       }
       try {
         await api.storeState(nodeId, update, content, editors);
@@ -114,15 +141,19 @@ export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
         if (error instanceof ApiError && error.status === 409 && error.code === 'deleted') {
           log('error', 'store refused: the page is in the trash; closing its connections',
             { document: name });
-          return 'trashed';
+          return { outcome: 'trashed', code: 'deleted' };
         }
         const retry = isRetryable(error);
         log('error', retry ? 'store failed; will retry' : 'store refused; not retrying',
           { document: name, error: describeError(error) });
-        return retry ? 'retry' : 'dropped';
+        if (retry) return { outcome: 'retry', code: 'unavailable' };
+        return {
+          outcome: 'refused',
+          code: error instanceof ApiError ? error.code ?? `http_${error.status}` : 'refused',
+        };
       }
       editors.forEach((id) => state.editors.delete(id));
-      return 'stored';
+      return { outcome: 'stored', clocks };
     });
     state.queue = attempt;
     return attempt;
@@ -138,20 +169,47 @@ export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
     }, delay);
   }
 
+  function announce(document: Document, message: ServerMessage): void {
+    document.broadcastStateless(encodeMessage(message));
+  }
+
+  /** A store landed: tell each editor connected now how far it covers
+   *  their own changes (their awareness client id is their Yjs one) —
+   *  what their "Saved" means. */
+  function announceSaved(document: Document, clocks: Map<number, number>): void {
+    const covered: Record<string, number> = {};
+    for (const client of document.awareness.getStates().keys()) covered[client] = clocks.get(client) ?? 0;
+    announce(document, { type: 'saved', clocks: covered });
+  }
+
+  /** The API refused the document for good: nothing typed from here on
+   *  can be kept, so every connection goes read-only (Hocuspocus rejects
+   *  their updates) and is told, so the editor can say so while the text
+   *  is still on screen to copy. Connections arriving later get the same
+   *  (`connected`). */
+  function refuse(name: string, document: Document, code: string): void {
+    stateOf(name).refused = code;
+    document.getConnections().forEach((connection) => { connection.readOnly = true; });
+    announce(document, { type: 'store_refused', code });
+  }
+
   /** Store now; on a retryable failure keep the document loaded and try
    *  again (2 s doubling to 60 s) until a store lands or is refused. */
-  async function store(name: string, document: Document, fromRetry: boolean): Promise<void> {
+  async function store(name: string, document: Document, fromRetry: boolean): Promise<StoreResult> {
     const nodeId = pageIdOf(name);
-    if (!nodeId) return;
+    if (!nodeId) return { outcome: 'refused', code: 'not_a_page' };
     const state = stateOf(name);
-    const outcome = await persist(name, nodeId, document);
+    const result = await persist(name, nodeId, document);
+    const { outcome } = result;
+    if (outcome === 'stored') announceSaved(document, result.clocks!);
+    if (outcome === 'refused') refuse(name, document, result.code ?? 'refused');
     if (outcome === 'retry') {
       if (!state.pinned) {
         document.addDirectConnection();
         state.pinned = true;
       }
       if (!state.retryTimer) scheduleRetry(name, document);
-      return;
+      return result;
     }
     // Editors of a trashed page would be typing into a document that can't
     // be stored: send them away (the page view shows the trash state).
@@ -159,7 +217,7 @@ export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
     if (state.retryTimer) clearTimeout(state.retryTimer);
     state.retryTimer = null;
     state.retryDelay = RETRY_FIRST_MS;
-    if (!state.pinned) return;
+    if (!state.pinned) return result;
     document.removeDirectConnection();
     state.pinned = false;
     // Hocuspocus unloads an idle document after its own stores; one our
@@ -169,6 +227,7 @@ export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
         log('error', 'could not unload a document', { document: name, error: describeError(error) });
       });
     }
+    return result;
   }
 
   async function recheck(connection: Connection, name: string, nodeId: string): Promise<void> {
@@ -256,6 +315,34 @@ export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
       await store(documentName, document, false);
     },
 
+    /** A newcomer to a document the API refused joins read-only, and is told. */
+    async connected({ documentName, connectionInstance }: connectedPayload): Promise<void> {
+      const refused = states.get(documentName)?.refused;
+      if (!refused) return;
+      connectionInstance.readOnly = true;
+      connectionInstance.sendStateless(encodeMessage({ type: 'store_refused', code: refused }));
+    },
+
+    /** `flush`: store the document now — Hocuspocus's own store trails the
+     *  last change by up to 10 s, and publishing snapshots the STORED
+     *  draft — and answer how far the store covers the asking editor. */
+    async onStateless({ documentName, document, connection, payload }: onStatelessPayload): Promise<void> {
+      const message = parseClientMessage(payload);
+      if (message?.type !== 'flush') return;
+      const reply = (answer: ServerMessage) => connection.sendStateless(encodeMessage(answer));
+      const refused = states.get(documentName)?.refused;
+      if (refused) {
+        reply({ type: 'flushed', id: message.id, ok: false, code: refused });
+        return;
+      }
+      const result = await store(documentName, document, false);
+      if (result.outcome === 'stored') {
+        reply({ type: 'flushed', id: message.id, ok: true, clock: result.clocks!.get(message.client) ?? 0 });
+      } else {
+        reply({ type: 'flushed', id: message.id, ok: false, code: result.code ?? result.outcome });
+      }
+    },
+
     async afterUnloadDocument({ documentName }: afterUnloadDocumentPayload): Promise<void> {
       const state = states.get(documentName);
       if (state?.retryTimer) clearTimeout(state.retryTimer);
@@ -288,7 +375,7 @@ export function createCollab(cfg: ServerConfig, api: WikiApi): Hocuspocus {
           document.removeDirectConnection();
           state.pinned = false;
         }
-        if (await persist(documentName, nodeId, document) !== 'stored') {
+        if ((await persist(documentName, nodeId, document)).outcome !== 'stored') {
           log('error', 'final store failed; unsaved changes are lost', { document: documentName });
         }
       },

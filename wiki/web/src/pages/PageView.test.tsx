@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '../testing/pmDom';
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -26,25 +26,36 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
 }));
 /** What the stand-in editor hands PageView once it has first synced. */
 const fakeEditor = { isDestroyed: false, commands: { setContent: vi.fn() } };
+/** The stand-in editor's own flush (its live connection's). */
+const editorFlush = vi.fn<() => Promise<void>>();
 // live editing is verified in the browser; here the editor is a stand-in
 vi.mock('../editor/WikiEditor', () => ({
-  default: ({ pageId, onAccessLost, onFirstSync }: {
+  default: ({ pageId, onAccessLost, onFirstSync, onLiveFlush }: {
     pageId: string; onAccessLost: (l: 'view' | 'none') => void; onFirstSync?: (editor: unknown) => void;
+    onLiveFlush?: (flush: (() => Promise<void>) | null) => void;
   }) => (
     <div data-testid="wiki-editor">
       editing {pageId}
       <button type="button" onClick={() => onAccessLost('view')}>server says read-only</button>
       <button type="button" onClick={() => onAccessLost('none')}>server refuses</button>
-      <button type="button" onClick={() => onFirstSync?.(fakeEditor)}>first sync</button>
+      <button type="button" onClick={() => { onLiveFlush?.(editorFlush); onFirstSync?.(fakeEditor); }}>
+        first sync
+      </button>
     </div>
   ),
+}));
+// a page not open in this tab is flushed over a short-lived connection
+vi.mock('../editor/liveFlush', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../editor/liveFlush')>()),
+  flushPage: vi.fn(),
 }));
 
 import { ApiError } from '@portal/lib/api';
 
 import { ShellContext, type ShellValue } from '../layout/shellContext';
 import type { NodeDetailOut, PageContentOut } from '../lib/types';
-import { getMe, getPageContent, getVersion, recordRestore, setFavorite } from '../lib/wikiApi';
+import { flushPage } from '../editor/liveFlush';
+import { getMe, getPageContent, getVersion, publishPage, recordRestore, setFavorite } from '../lib/wikiApi';
 import { makeDetail, makeMe } from '../testing/fixtures';
 import PageView from './PageView';
 
@@ -89,6 +100,8 @@ beforeEach(() => {
   vi.mocked(getMe).mockResolvedValue(makeMe());
   vi.mocked(getPageContent).mockReset().mockResolvedValue(PUBLISHED);
   vi.mocked(setFavorite).mockReset().mockResolvedValue(undefined);
+  vi.mocked(flushPage).mockReset().mockResolvedValue(undefined);
+  editorFlush.mockReset().mockResolvedValue(undefined);
 });
 afterEach(cleanup);
 
@@ -241,6 +254,10 @@ describe('PageView — restoring a version', () => {
     fireEvent.click(screen.getByRole('button', { name: 'first sync' }));
     await waitFor(() => expect(recordRestore).toHaveBeenCalledWith('p1', 'v2'));
     expect(fakeEditor.commands.setContent).toHaveBeenCalledWith(content, true);
+    // the restored content is stored before it's announced as back
+    expect(editorFlush).toHaveBeenCalled();
+    expect(editorFlush.mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(recordRestore).mock.invocationCallOrder[0]);
     await waitFor(() => expect(screen.getByTestId('probe').textContent).toBe('/n/p1?edit=1'));
     expect(toast).toHaveBeenCalledWith('Restored version 2. Publish when it\'s ready for readers.');
   });
@@ -262,5 +279,37 @@ describe('PageView — restoring a version', () => {
     await waitFor(() => expect(toast).toHaveBeenCalledWith('Couldn\'t restore — you can\'t edit this page right now.'));
     await waitFor(() => expect(screen.getByTestId('probe').textContent).toBe('/n/p1?edit=1'));
     expect(screen.queryByTestId('wiki-editor')).toBeNull();
+  });
+});
+
+describe('PageView — publishing the live document', () => {
+  const VERSION = {
+    id: 'v4', version_no: 4, kind: 'published' as const, title: 'Rack power', note: null,
+    created_by: null, created_at: PUBLISHED.created_at!,
+  };
+
+  it('from View, stores whatever is being edited live before publishing', async () => {
+    let stored!: () => void;
+    vi.mocked(flushPage).mockReturnValue(new Promise<void>((resolve) => { stored = resolve; }));
+    vi.mocked(publishPage).mockReset().mockResolvedValue(VERSION);
+    renderPage(makeDetail('p1', { my_level: 'edit', page: { ...published, has_unpublished_changes: true } }));
+    await screen.findByText('Hello from the published page.');
+    fireEvent.click(screen.getByRole('button', { name: 'Publish' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Publish' }));
+    await waitFor(() => expect(flushPage).toHaveBeenCalledWith('p1'));
+    expect(publishPage).not.toHaveBeenCalled();
+    stored();
+    await waitFor(() => expect(publishPage).toHaveBeenCalledWith('p1', undefined));
+  });
+
+  it('from Edit, stores this editor\'s own live document first', async () => {
+    vi.mocked(publishPage).mockReset().mockResolvedValue(VERSION);
+    renderPage(makeDetail('p1', { my_level: 'edit', page: published }), '/n/p1?edit=1');
+    fireEvent.click(await screen.findByRole('button', { name: 'first sync' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Publish' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Publish' }));
+    await waitFor(() => expect(publishPage).toHaveBeenCalledWith('p1', undefined));
+    expect(editorFlush).toHaveBeenCalledTimes(1);
+    expect(flushPage).not.toHaveBeenCalled();
   });
 });

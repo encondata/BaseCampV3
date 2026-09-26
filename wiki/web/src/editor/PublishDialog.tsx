@@ -1,6 +1,8 @@
 /** Publish: snapshots the live draft as the version readers see, with an
- *  optional change note. In the portal's modal header pattern, sized to
- *  its content. */
+ *  optional change note. `flush` brings the stored draft up to date with
+ *  the live document first (see `liveFlush.ts`) — nothing is published
+ *  when that fails. In the portal's modal header pattern, sized to its
+ *  content. */
 import { useEffect, useState, type FormEvent } from 'react';
 
 import { ApiError } from '@portal/lib/api';
@@ -8,17 +10,32 @@ import { useToast } from '@portal/lib/notificationsContext';
 
 import type { VersionOut } from '../lib/types';
 import { errorMessage, publishPage } from '../lib/wikiApi';
+import { FlushError } from './liveFlush';
 
 const NOTE_MAX = 1000;
+
+/** Why the live document couldn't be brought up to date, for the dialog. */
+function flushFailure(err: FlushError): string {
+  switch (err.code) {
+    case 'too_large': return 'This page is too large to save, so it can\'t be published.';
+    case 'bad_doc':
+    case 'unstorable': return 'This page can\'t be saved, so it can\'t be published.';
+    case 'deleted': return 'This page is in the trash.';
+    case 'forbidden': return 'You can\'t edit this page right now.';
+    default: return 'Couldn\'t save the latest changes before publishing. Check your connection and try again.';
+  }
+}
 
 interface Props {
   pageId: string;
   pageTitle: string;
+  /** Store the live document now; resolves once the stored draft is current. */
+  flush: () => Promise<void>;
   onClose: () => void;
   onPublished: (version: VersionOut) => void;
 }
 
-export default function PublishDialog({ pageId, pageTitle, onClose, onPublished }: Props) {
+export default function PublishDialog({ pageId, pageTitle, flush, onClose, onPublished }: Props) {
   const toast = useToast();
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -38,13 +55,16 @@ export default function PublishDialog({ pageId, pageTitle, onClose, onPublished 
     setBusy(true);
     setError('');
     try {
+      await flush();
       const version = await publishPage(pageId, note.trim() || undefined);
       toast('Published');
       onPublished(version);
       onClose();
     } catch (err) {
       setBusy(false);
-      if (err instanceof ApiError && err.status === 409 && err.code === 'nothing_to_publish') {
+      if (err instanceof FlushError) {
+        setError(flushFailure(err));
+      } else if (err instanceof ApiError && err.status === 409 && err.code === 'nothing_to_publish') {
         setError('Nothing new to publish');
       } else {
         setError(errorMessage(err, 'Couldn\'t publish the page. Try again.'));

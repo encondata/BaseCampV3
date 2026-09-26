@@ -247,6 +247,7 @@
 .we-save-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c-green, #3ecf8e); }
 .we-save-pending .we-save-dot { background: var(--amber); animation: we-pulse 1s ease-in-out infinite; }
 .we-save-offline .we-save-dot { background: var(--c-red, #e5484d); }
+.we-save-error .we-save-dot { background: var(--c-red, #e5484d); }
 @keyframes we-pulse { 50% { opacity: 0.35; } }
 
 .we-presence { display: flex; align-items: center; }
@@ -279,6 +280,7 @@
   color: var(--text-dark);
   font-size: 13px;
 }
+.we-banner.is-error { border-color: var(--c-red-bd, rgba(229, 72, 77, 0.3)); background: var(--c-red-bg, rgba(229, 72, 77, 0.1)); }
 .we-banner-spin {
   width: 14px;
   height: 14px;
