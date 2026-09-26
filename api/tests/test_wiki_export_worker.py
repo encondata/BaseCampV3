@@ -18,6 +18,8 @@ import io
 import json
 import os
 import struct
+import sys
+import types
 import uuid
 import zipfile
 import zlib
@@ -111,6 +113,9 @@ class FakeStorage:
         self.deleted.append(key)
         self.objects.pop(key, None)
 
+    async def list_keys(self, prefix):
+        return sorted(k for k in self.objects if k.startswith(prefix))
+
 
 @pytest.fixture
 def store(monkeypatch):
@@ -118,6 +123,7 @@ def store(monkeypatch):
     monkeypatch.setattr(storage, "download_to", fake.download_to)
     monkeypatch.setattr(storage, "upload_from", fake.upload_from)
     monkeypatch.setattr(storage, "delete_object", fake.delete_object)
+    monkeypatch.setattr(storage, "list_keys", fake.list_keys)
     return fake
 
 
@@ -623,6 +629,43 @@ async def test_a_superseded_attempt_does_not_record_its_failure(client, db, stor
     assert await _notes(db, s["viewer_id"]) == []
 
 
+async def test_touch_stops_a_superseded_attempt_before_it_uploads(client, db, store, renderer,
+                                                                   monkeypatch):
+    """Unlike a plain single-page export (no progress heartbeat at all —
+    see `test_a_superseded_attempt_records_nothing`, which leaves an
+    orphan upload the retention sweep has to clean up later), a batched
+    export's `touch()` calls notice the lost ownership itself and stop
+    the attempt before it ever uploads anything."""
+    monkeypatch.setattr(export, "TOUCH_SECONDS", 0)
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Guides")
+    for title in ("One", "Two"):
+        page = await _create(client, s["owner"], s["space"], title, kind="page", parent=folder)
+        await publish_via_db(db, page["id"], {"type": "doc", "content": [p(t(title))]})
+    job_id = await _request(client, s["viewer"], node_id=folder["id"], format="zip",
+                            zip_format="docx")
+    maker = get_sessionmaker()
+
+    async def run(cmd, *, timeout, max_stdout=None):
+        # meanwhile the stale sweep gave the job up and another worker
+        # claimed it — this attempt is about to find out
+        async with maker() as other:
+            row = await other.get(WikiJob, job_id)
+            row.attempts += 1
+            await other.commit()
+        sources = cmd[cmd.index("--outdir") + 2:]
+        for src in sources:
+            Path(src).with_suffix(".docx").write_bytes(b"DOCX")
+        return 0, b"", b""
+    monkeypatch.setattr(convert, "run", run)
+
+    job = await _run(db, job_id)
+
+    assert job.status == "running" and job.attempts == 2 and job.result is None
+    assert store.uploads == []
+    assert await _notes(db, s["viewer_id"]) == []
+
+
 async def test_an_export_over_the_page_limit_fails(client, db, store, renderer, pdfs,
                                                    settings_env):
     settings_env("SS_WIKI_EXPORT_MAX_PAGES", 1)
@@ -682,19 +725,27 @@ async def test_a_page_inlines_images_up_to_its_budget(client, db, store, rendere
 async def test_old_exports_are_purged(db, store):
     now = datetime.now(UTC)
     old = WikiJob(kind="export", status="done", created_at=now - timedelta(days=9),
-                  finished_at=now - timedelta(days=8),
-                  result={"key": "wiki/exports/old/a.pdf", "filename": "a.pdf"})
+                  finished_at=now - timedelta(days=8))
     failed = WikiJob(kind="export", status="failed", created_at=now - timedelta(days=9),
                      finished_at=now - timedelta(days=8), result={"message": "x"})
     recent = WikiJob(kind="export", status="done", created_at=now - timedelta(days=2),
-                     finished_at=now - timedelta(days=2),
-                     result={"key": "wiki/exports/new/b.pdf", "filename": "b.pdf"})
+                     finished_at=now - timedelta(days=2))
     running = WikiJob(kind="export", status="running", created_at=now - timedelta(days=9))
     other = WikiJob(kind="purge", status="done", created_at=now - timedelta(days=9),
                     finished_at=now - timedelta(days=8))
     db.add_all([old, failed, recent, running, other])
     await db.commit()
-    store.objects.update({"wiki/exports/old/a.pdf": b"a", "wiki/exports/new/b.pdf": b"b"})
+    old.result = {"key": f"wiki/exports/{old.id}/a.pdf", "filename": "a.pdf"}
+    recent.result = {"key": f"wiki/exports/{recent.id}/b.pdf", "filename": "b.pdf"}
+    await db.commit()
+    store.objects.update({
+        old.result["key"]: b"a",
+        # a superseded attempt's orphan upload, made under the same job
+        # id but never named by any job's result — only a prefix listing
+        # finds it (see export.purge_old_exports)
+        f"wiki/exports/{old.id}/orphan.pdf": b"orphan",
+        recent.result["key"]: b"b",
+    })
 
     retention = WikiJob(kind="retention", status="running")
     db.add(retention)
@@ -702,7 +753,9 @@ async def test_old_exports_are_purged(db, store):
     await worker.process_job(db, retention)
 
     assert retention.result["exports"] == 2
-    assert store.deleted == ["wiki/exports/old/a.pdf"]
+    assert set(store.deleted) == {old.result["key"], f"wiki/exports/{old.id}/orphan.pdf"}
+    assert old.result["key"] not in store.objects
+    assert recent.result["key"] in store.objects
     left = set((await db.scalars(select(WikiJob.id).execution_options(
         populate_existing=True))).all())
     assert {recent.id, running.id, other.id, retention.id} <= left
@@ -763,6 +816,52 @@ async def test_real_weasyprint_pdf(tmp_path):
     pdf = await export_html.html_to_pdf(document, tmp_path)
     assert pdf.startswith(b"%PDF")
     assert len(pdf) > 1000
+
+
+async def test_html_to_pdf_error_reuses_converts_shared_tail(monkeypatch, tmp_path):
+    """The WeasyPrint subprocess's error message is built from
+    `convert.tail` — the same truncation/decoding soffice and pdftotext
+    errors go through — not a second, inline copy of that logic."""
+    stderr = ("boom: " + "z" * 600).encode()
+
+    async def fake_run(cmd, *, timeout):
+        return 1, b"", stderr
+    monkeypatch.setattr(convert, "run", fake_run)
+
+    with pytest.raises(convert.ConvertError) as exc_info:
+        await export_html.html_to_pdf("<html></html>", tmp_path)
+    assert str(exc_info.value) == f"WeasyPrint exited 1: {convert.tail(stderr)}"
+
+
+def test_render_pdf_uses_the_data_only_fetcher_by_default(monkeypatch):
+    """`render_pdf` called with no explicit `url_fetcher` wires up
+    `_data_only_fetcher()` — never WeasyPrint's own, unrestricted default
+    fetcher, which would happily load a `file://` image straight off the
+    worker's disk. `test_the_pdf_fetcher_loads_data_uris_only` (below)
+    covers what that fetcher itself refuses; this covers that
+    `render_pdf`'s default path is actually wired to it, with a stand-in
+    `weasyprint` module so the test needs no real WeasyPrint install."""
+    calls: list[bool] = []
+
+    def stand_in():
+        calls.append(True)
+
+        def fetch(url, *args, **kwargs):
+            raise AssertionError(f"render_pdf's default path tried to fetch {url}")
+        return fetch
+    monkeypatch.setattr(export_html, "_data_only_fetcher", stand_in)
+
+    class FakeHTML:
+        def __init__(self, *, string, url_fetcher):
+            self.string, self.url_fetcher = string, url_fetcher
+
+        def write_pdf(self):
+            return b"%PDF-fake"
+
+    monkeypatch.setitem(sys.modules, "weasyprint", types.SimpleNamespace(HTML=FakeHTML))
+
+    assert export_html.render_pdf("<html></html>") == b"%PDF-fake"
+    assert calls == [True]
 
 
 def test_the_pdf_fetcher_loads_data_uris_only():

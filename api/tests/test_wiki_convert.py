@@ -97,6 +97,24 @@ async def test_office_to_pdf_passes_a_timeout_through(tmp_path, monkeypatch):
         await convert.office_to_pdf(src, tmp_path)
 
 
+# ── tail ─────────────────────────────────────────────────────────────
+
+
+def test_tail_decodes_and_truncates_to_the_last_500_chars():
+    stderr = ("boom: " + "x" * 600).encode()
+    result = convert.tail(stderr)
+    assert len(result) == 500
+    assert result == stderr.decode()[-500:]
+
+
+def test_tail_replaces_invalid_utf8_and_strips_surrounding_whitespace():
+    stderr = b"  \xff\xfe bad bytes then a real error message  \n"
+    result = convert.tail(stderr)
+    assert "�" in result
+    assert result.endswith("bad bytes then a real error message")
+    assert result == result.strip()
+
+
 # ── pdf_to_text ──────────────────────────────────────────────────────
 
 

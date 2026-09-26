@@ -153,6 +153,26 @@ async def delete_object(key: str) -> None:
     ))
 
 
+async def list_keys(prefix: str) -> list[str]:
+    """Every object key under `prefix` (paginated — a prefix can hold more
+    keys than one List Objects call returns). Used by the wiki export
+    retention sweep, which purges a whole `wiki/exports/<job_id>/`
+    prefix rather than just the one key its job row recorded: a
+    superseded export attempt can leave an orphan upload under the same
+    job id that no job row ever points at (see `wiki.worker._run_export`
+    and `wiki.export.purge_old_exports`)."""
+    s = get_settings()
+
+    def _list() -> list[str]:
+        keys: list[str] = []
+        paginator = _client().get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=s.spaces_bucket, Prefix=prefix):
+            keys.extend(obj["Key"] for obj in page.get("Contents", []))
+        return keys
+
+    return await asyncio.to_thread(_list)
+
+
 async def download_to(key: str, path) -> None:
     """Stream a private object to a local file (boto3's managed transfer:
     chunked, never the whole object in memory) — for the wiki worker,

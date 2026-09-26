@@ -83,6 +83,10 @@ CONTENT_TYPES = {
     "zip": "application/zip",
 }
 EXPORT_KEY = "wiki/exports/{job_id}/{name}"
+# every object an export job could ever have written, its own attempts
+# included — the retention sweep purges the whole prefix, not just the
+# one key the winning attempt's result recorded
+EXPORT_PREFIX = "wiki/exports/{job_id}/"
 # how long an export's file (and its job row) is kept
 EXPORT_RETENTION = timedelta(days=7)
 # queued + running exports one person may have at once
@@ -110,6 +114,17 @@ class ExportError(Exception):
     """The export can't be made, and trying again won't change that (the
     item was deleted, the requester lost access, the page was never
     published). The message is for the requester."""
+
+
+class ExportSuperseded(Exception):
+    """This attempt no longer owns its job — the stale sweep re-queued it,
+    or another worker re-claimed it, while this attempt was still
+    working. Raised by `run`'s progress heartbeat (`touch`) the moment
+    it notices, so the attempt stops before uploading anything or
+    notifying the requester; the worker's ownership check (already
+    needed for the no-touch path, where an attempt can finish and
+    upload before ever noticing) takes it from there and records
+    nothing for this attempt."""
 
 
 # ── names ────────────────────────────────────────────────────────────
@@ -698,9 +713,15 @@ async def run(db: AsyncSession, job: WikiJob) -> dict:
         if time.monotonic() - last < TOUCH_SECONDS:
             return
         last = time.monotonic()
-        await db.execute(update(WikiJob).where(WikiJob.id == job.id)
-                         .values(progress_at=func.now()))
+        result = await db.execute(
+            update(WikiJob)
+            .where(WikiJob.id == job.id, WikiJob.status == "running",
+                   WikiJob.attempts == job.attempts)
+            .values(progress_at=func.now()))
         await db.commit()
+        if result.rowcount == 0:
+            raise ExportSuperseded(
+                f"export {job.id}: attempt {job.attempts} no longer owns this job")
 
     key = EXPORT_KEY.format(job_id=job.id, name=sanitize_filename(plan.filename))
     with tempfile.TemporaryDirectory(prefix="wiki-export-",
@@ -720,18 +741,21 @@ async def run(db: AsyncSession, job: WikiJob) -> dict:
 
 
 async def purge_old_exports(db: AsyncSession, now: datetime) -> int:
-    """Delete finished exports older than EXPORT_RETENTION: their files
-    (idempotent, so a re-run after a failed commit is safe), then their
-    job rows. Returns how many went."""
+    """Delete finished exports older than EXPORT_RETENTION: every object
+    under each job's `wiki/exports/<job_id>/` prefix — not just the one
+    key its result recorded, so a superseded attempt's orphan upload
+    (made under the same job id, but never linked from any row — see
+    `worker._run_export`) is swept up too — then the job rows.
+    Idempotent, so a re-run after a failed commit is safe. Returns how
+    many job rows went."""
     rows = (await db.execute(
-        select(WikiJob.id, WikiJob.result).where(
+        select(WikiJob.id).where(
             WikiJob.kind == "export", WikiJob.status.in_(("done", "failed")),
             func.coalesce(WikiJob.finished_at, WikiJob.created_at) < now - EXPORT_RETENTION))
             ).all()
-    for _, result in rows:
-        key = (result or {}).get("key")
-        if key:
+    for (job_id,) in rows:
+        for key in await storage.list_keys(EXPORT_PREFIX.format(job_id=job_id)):
             await storage.delete_object(key)
     if rows:
-        await db.execute(delete(WikiJob).where(WikiJob.id.in_([r.id for r in rows])))
+        await db.execute(delete(WikiJob).where(WikiJob.id.in_([r[0] for r in rows])))
     return len(rows)

@@ -338,8 +338,7 @@ async def html_to_pdf(document: str, workdir: Path) -> bytes:
             [sys.executable, "-m", "serversherpa.wiki.export_pdf", str(src), str(out)],
             timeout=PDF_TIMEOUT_SECONDS)
         if rc != 0 or not out.exists():
-            tail = err.decode("utf-8", errors="replace").strip()[-500:]
-            raise convert.ConvertError(f"WeasyPrint exited {rc}: {tail}")
+            raise convert.ConvertError(f"WeasyPrint exited {rc}: {convert.tail(err)}")
         return out.read_bytes()
     finally:
         src.unlink(missing_ok=True)

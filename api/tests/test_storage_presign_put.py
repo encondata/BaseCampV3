@@ -124,3 +124,45 @@ async def test_head_object_translates_only_missing_errors(monkeypatch):
                         lambda: _FakeClient(error_code="403"))
     with pytest.raises(ClientError):
         await storage.head_object("wiki/some/key.bin")
+
+
+# ── list_keys ────────────────────────────────────────────────────────
+
+
+class _FakePaginator:
+    def __init__(self, pages):
+        self._pages = pages
+        self.calls: dict | None = None
+
+    def paginate(self, **kwargs):
+        self.calls = kwargs
+        return iter(self._pages)
+
+
+class _FakeListClient:
+    def __init__(self, pages):
+        self.paginator = _FakePaginator(pages)
+
+    def get_paginator(self, name):
+        assert name == "list_objects_v2"
+        return self.paginator
+
+
+async def test_list_keys_returns_every_key_across_pages(monkeypatch):
+    pages = [{"Contents": [{"Key": "wiki/exports/j1/a.pdf"}, {"Key": "wiki/exports/j1/b.pdf"}]},
+             {"Contents": [{"Key": "wiki/exports/j1/c.pdf"}]}]
+    fake = _FakeListClient(pages)
+    monkeypatch.setattr(storage, "_client", lambda: fake)
+
+    keys = await storage.list_keys("wiki/exports/j1/")
+
+    assert keys == ["wiki/exports/j1/a.pdf", "wiki/exports/j1/b.pdf", "wiki/exports/j1/c.pdf"]
+    assert fake.paginator.calls["Prefix"] == "wiki/exports/j1/"
+    assert fake.paginator.calls["Bucket"]
+
+
+async def test_list_keys_returns_empty_for_no_matches(monkeypatch):
+    fake = _FakeListClient([{}])   # a page with no "Contents" at all
+    monkeypatch.setattr(storage, "_client", lambda: fake)
+
+    assert await storage.list_keys("wiki/exports/none/") == []

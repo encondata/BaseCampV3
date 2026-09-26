@@ -119,7 +119,13 @@ async def run(cmd: list[str], *, timeout: float,
     return proc.returncode, out, err
 
 
-def _tail(stderr: bytes) -> str:
+def tail(stderr: bytes) -> str:
+    """The last `_STDERR_TAIL` characters of `stderr`, decoded (invalid
+    bytes replaced) and stripped — how much of a failed tool's stderr an
+    error message carries. Shared by every caller that reports a
+    subprocess's failure (`office_to_pdf`, `html_to_docx`, and
+    `export_html.html_to_pdf`'s WeasyPrint child), so there is exactly
+    one place that decides how much stderr a person sees."""
     return stderr.decode("utf-8", errors="replace").strip()[-_STDERR_TAIL:]
 
 
@@ -143,10 +149,10 @@ async def office_to_pdf(src: Path, outdir: Path) -> Path:
              "--convert-to", "pdf", "--outdir", str(outdir), str(src)],
             timeout=SOFFICE_TIMEOUT)
     if rc != 0:
-        raise ConvertError(f"soffice exited {rc}: {_tail(err)}")
+        raise ConvertError(f"soffice exited {rc}: {tail(err)}")
     pdf = outdir / f"{src.stem}.pdf"
     if not pdf.exists():
-        raise ConvertError(f"soffice wrote no PDF: {_tail(err)}")
+        raise ConvertError(f"soffice wrote no PDF: {tail(err)}")
     return pdf
 
 
@@ -184,7 +190,7 @@ async def html_to_docx(sources: list[Path], *,
                      *(str(f) for f in files)],
                     timeout=DOCX_BASE_TIMEOUT + DOCX_PER_FILE_TIMEOUT * len(files))
             if rc != 0:
-                raise ConvertError(f"soffice exited {rc}: {_tail(err)}")
+                raise ConvertError(f"soffice exited {rc}: {tail(err)}")
         for src in batch:
             docx = src.with_suffix(".docx")
             if not docx.exists():
@@ -207,5 +213,5 @@ async def pdf_to_text(src: Path) -> str:
         [PDFTOTEXT, "-layout", "-enc", "UTF-8", str(src), "-"],
         timeout=PDFTOTEXT_TIMEOUT, max_stdout=cap)
     if len(out) < cap and rc != 0:
-        raise ConvertError(f"pdftotext exited {rc}: {_tail(err)}")
+        raise ConvertError(f"pdftotext exited {rc}: {tail(err)}")
     return _clean_text(out.decode("utf-8", errors="replace"))
