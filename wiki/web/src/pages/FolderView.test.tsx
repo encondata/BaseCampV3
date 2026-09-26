@@ -76,6 +76,23 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('FolderView', () => {
+  it('marks pages whose review is due or overdue', async () => {
+    const review = {
+      interval_months: 6, own_interval_months: null, next_review_at: '2026-10-03T12:00:00Z',
+      last_reviewed_at: null, pending_review_id: null,
+    };
+    vi.mocked(getTree).mockResolvedValue([
+      makeNode('a', { title: 'Cabling', parent_id: 'f1', review: { ...review, state: 'overdue' } }),
+      makeNode('b', { title: 'Badges', parent_id: 'f1', review: { ...review, state: 'due_soon' } }),
+      makeNode('c', { title: 'Lifts', parent_id: 'f1', review: { ...review, state: 'ok' } }),
+    ]);
+    renderFolder();
+    const rows = await within(await screen.findByRole('list', { name: 'Contents of Guides' })).findAllByRole('listitem');
+    expect(within(rows[0]).getByText('Review overdue')).toBeTruthy();
+    expect(within(rows[1]).getByText(/^Review due /)).toBeTruthy();
+    expect(rows[2].querySelector('.wiki-review-chip')).toBeNull();
+  });
+
   it('shows breadcrumbs and lists the folder\'s children with type, author and size', async () => {
     renderFolder();
     const nav = screen.getByRole('navigation', { name: 'Breadcrumb' });

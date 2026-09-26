@@ -1,8 +1,9 @@
 /** Publish: snapshots the live draft as the version readers see, with an
  *  optional change note. `flush` brings the stored draft up to date with
  *  the live document first (see `liveFlush.ts`) — nothing is published
- *  when that fails. In the portal's modal header pattern, sized to its
- *  content. */
+ *  when that fails. Where the space turns out to require approval (409
+ *  `review_required`), `onReviewRequired` takes over. In the portal's modal
+ *  header pattern, sized to its content. */
 import { useEffect, useState, type FormEvent } from 'react';
 
 import { ApiError } from '@portal/lib/api';
@@ -14,15 +15,18 @@ import { FlushError } from './liveFlush';
 
 const NOTE_MAX = 1000;
 
-/** Why the live document couldn't be brought up to date, for the dialog. */
-function flushFailure(err: FlushError): string {
+/** Why the live document couldn't be brought up to date, for the dialog
+ *  (and the submit-for-review dialog, which says "submitted"). */
+export function flushFailure(
+  err: FlushError, { done, doing }: { done: string; doing: string } = { done: 'published', doing: 'publishing' },
+): string {
   switch (err.code) {
-    case 'too_large': return 'This page is too large to save, so it can\'t be published.';
+    case 'too_large': return `This page is too large to save, so it can't be ${done}.`;
     case 'bad_doc':
-    case 'unstorable': return 'This page can\'t be saved, so it can\'t be published.';
+    case 'unstorable': return `This page can't be saved, so it can't be ${done}.`;
     case 'deleted': return 'This page is in the trash.';
-    case 'read_only': return 'The wiki is in read-only mode right now, so nothing can be published.';
-    default: return 'Couldn\'t save the latest changes before publishing. Check your connection and try again.';
+    case 'read_only': return `The wiki is in read-only mode right now, so nothing can be ${done}.`;
+    default: return `Couldn't save the latest changes before ${doing}. Check your connection and try again.`;
   }
 }
 
@@ -33,9 +37,13 @@ interface Props {
   flush: () => Promise<void>;
   onClose: () => void;
   onPublished: (version: VersionOut) => void;
+  /** The space requires approval (409 `review_required`): submit for review instead. */
+  onReviewRequired?: () => void;
 }
 
-export default function PublishDialog({ pageId, pageTitle, flush, onClose, onPublished }: Props) {
+export default function PublishDialog({
+  pageId, pageTitle, flush, onClose, onPublished, onReviewRequired,
+}: Props) {
   const toast = useToast();
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -64,6 +72,8 @@ export default function PublishDialog({ pageId, pageTitle, flush, onClose, onPub
       setBusy(false);
       if (err instanceof FlushError) {
         setError(flushFailure(err));
+      } else if (err instanceof ApiError && err.status === 409 && err.code === 'review_required' && onReviewRequired) {
+        onReviewRequired();
       } else if (err instanceof ApiError && err.status === 409 && err.code === 'nothing_to_publish') {
         setError('Nothing new to publish');
       } else {

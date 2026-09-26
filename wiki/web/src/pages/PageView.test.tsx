@@ -29,6 +29,12 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   postComment: vi.fn(),
   getWatchState: vi.fn(),
   createTemplate: vi.fn(),
+  submitReview: vi.fn(),
+  getReview: vi.fn(),
+  withdrawReview: vi.fn(),
+  markReviewed: vi.fn(),
+  updateNode: vi.fn(),
+  listReviews: vi.fn(),
 }));
 /** What the stand-in editor hands PageView once it has first synced: a
  *  real (unconnected) editor, so comment marks can attach to it, whose
@@ -65,11 +71,15 @@ import type { NodeDetailOut, PageContentOut } from '../lib/types';
 import { flushPage } from '../editor/flushPage';
 import { wikiExtensions } from '../editor/schema';
 import type { CommentThread } from '../lib/types';
+import { longDate } from '@portal/lib/format';
+
+import { resetTreeStore, useTreeRevision } from '../lib/treeStore';
+import type { NodeReviewOut } from '../lib/types';
 import {
-  createTemplate, deleteComment, getMe, getPageContent, getVersion, getWatchState, listComments, postComment,
-  publishPage, recordRestore, setFavorite,
+  createTemplate, deleteComment, getMe, getPageContent, getReview, getVersion, getWatchState, listComments,
+  listReviews, markReviewed, postComment, publishPage, recordRestore, setFavorite, submitReview, withdrawReview,
 } from '../lib/wikiApi';
-import { makeDetail, makeMe, makeSpace } from '../testing/fixtures';
+import { makeDetail, makeMe, makeNode, makeReview, makeReviewDetail, makeSpace } from '../testing/fixtures';
 import PageView, { TARGET_HIGHLIGHT_MS } from './PageView';
 
 const PUBLISHED: PageContentOut = {
@@ -116,6 +126,7 @@ beforeEach(() => {
   vi.mocked(listComments).mockReset().mockResolvedValue([]);
   vi.mocked(getWatchState).mockReset().mockResolvedValue({ watching: false, via: null, watch_id: null });
   vi.mocked(createTemplate).mockReset();
+  vi.mocked(listReviews).mockReset().mockResolvedValue([]);
   vi.mocked(flushPage).mockReset().mockResolvedValue(undefined);
   editorFlush.mockReset().mockResolvedValue(undefined);
 });
@@ -218,7 +229,7 @@ describe('PageView — the ⋯ menu', () => {
 
     open();
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(
-      ['Move…', 'Copy…', 'Copy link', 'Save as template…', 'Permissions…', 'Delete']);
+      ['Move…', 'Copy…', 'Copy link', 'Save as template…', 'Review schedule…', 'Permissions…', 'Delete']);
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move…' }));
     expect(shell.requestMove).toHaveBeenCalledWith(node);
     open();
@@ -552,5 +563,129 @@ describe('PageView — comments', () => {
     const rail = screen.getByRole('region', { name: 'Comments' });
     expect(within(rail).queryByRole('button', { name: 'New comment' })).toBeNull();
     expect(within(rail).queryByRole('button', { name: 'Reply' })).toBeNull();
+  });
+});
+
+describe('PageView — reviews', () => {
+  const strict = makeSpace({ settings: { require_approval: true } });
+  const review = (over: Partial<NodeReviewOut> = {}): NodeReviewOut => ({
+    interval_months: 6, own_interval_months: null, next_review_at: '2026-10-03T12:00:00Z',
+    last_reviewed_at: null, state: 'ok', pending_review_id: null, ...over,
+  });
+  /** Counts tree changes, which make NodePage refetch the node. */
+  function Revision() {
+    return <div data-testid="revision">{useTreeRevision()}</div>;
+  }
+
+  beforeEach(() => {
+    resetTreeStore();
+    vi.mocked(submitReview).mockReset().mockResolvedValue(makeReview());
+    vi.mocked(getReview).mockReset().mockResolvedValue(makeReviewDetail({ created_at: '2026-09-26T10:00:00Z' }));
+    vi.mocked(withdrawReview).mockReset().mockResolvedValue(makeReview({ status: 'withdrawn' }));
+    vi.mocked(markReviewed).mockReset();
+    vi.mocked(publishPage).mockReset();
+  });
+
+  it('has an editor submit for review where the space requires approval, storing the live document first', async () => {
+    let stored!: () => void;
+    vi.mocked(flushPage).mockReturnValue(new Promise<void>((resolve) => { stored = resolve; }));
+    render(
+      <MemoryRouter initialEntries={['/n/p1']}>
+        <PageView node={makeDetail('p1', { title: 'Rack power', my_level: 'edit', page: published, space: strict })} />
+        <Revision />
+      </MemoryRouter>,
+    );
+    await screen.findByText('Hello from the published page.');
+    expect(screen.queryByRole('button', { name: 'Publish' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for review' }));
+    const dialog = screen.getByRole('dialog', { name: 'Submit “Rack power” for review' });
+    fireEvent.change(within(dialog).getByLabelText(/Note for the reviewer/), { target: { value: 'New breakers' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Submit for review' }));
+    await waitFor(() => expect(flushPage).toHaveBeenCalledWith('p1'));
+    expect(submitReview).not.toHaveBeenCalled();
+    stored();
+    await waitFor(() => expect(submitReview).toHaveBeenCalledWith('p1', 'New breakers'));
+    expect(publishPage).not.toHaveBeenCalled();
+    // the node is refetched, so the pending banner shows up
+    await waitFor(() => expect(screen.getByTestId('revision').textContent).not.toBe('0'));
+  });
+
+  it('lets a manager publish directly where the space requires approval', async () => {
+    renderPage(makeDetail('p1', { my_level: 'manage', page: published, space: strict }));
+    await screen.findByText('Hello from the published page.');
+    expect(screen.getByRole('button', { name: 'Publish' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Submit for review' })).toBeNull();
+  });
+
+  it('switches to submitting for review when a publish is refused as needing review', async () => {
+    vi.mocked(publishPage).mockRejectedValue(new ApiError(409, 'review_required'));
+    renderPage(makeDetail('p1', { title: 'Rack power', my_level: 'edit', page: published }));
+    await screen.findByText('Hello from the published page.');
+    fireEvent.click(screen.getByRole('button', { name: 'Publish' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Publish' }));
+    expect(await screen.findByRole('dialog', { name: 'Submit “Rack power” for review' })).toBeTruthy();
+    // the header's button reads that way from now on
+    expect(document.querySelector('.wiki-publish-btn')!.textContent).toBe('Submit for review');
+    expect(toast).toHaveBeenCalledWith('This space needs a manager\'s approval — submit your changes for review.');
+  });
+
+  it('shows my pending request with Withdraw, and no Review now for an editor', async () => {
+    vi.mocked(getReview).mockResolvedValue(makeReviewDetail({
+      created_at: '2026-09-26T10:00:00Z', requested_by: { id: 'p-1', name: 'Jimmy Henderson' },
+    }));
+    renderPage(makeDetail('p1', {
+      my_level: 'edit', page: published, space: strict, review: review({ pending_review_id: 'r1' }),
+    }));
+    const banner = await screen.findByRole('status', { name: 'Pending review' });
+    await waitFor(() => expect(banner.textContent).toMatch(/^Waiting for review since /));
+    expect(getReview).toHaveBeenCalledWith('r1');
+    expect(within(banner).queryByRole('link', { name: 'Review now' })).toBeNull();
+    fireEvent.click(within(banner).getByRole('button', { name: 'Withdraw' }));
+    await waitFor(() => expect(withdrawReview).toHaveBeenCalledWith('r1'));
+    expect(toast).toHaveBeenCalledWith('Review request withdrawn.');
+  });
+
+  it('gives a manager Review now and Withdraw on someone else\'s request', async () => {
+    renderPage(makeDetail('p1', {
+      my_level: 'manage', page: published, space: strict, review: review({ pending_review_id: 'r1' }),
+    }));
+    const banner = await screen.findByRole('status', { name: 'Pending review' });
+    expect(within(banner).getByRole('link', { name: 'Review now' }).getAttribute('href')).toBe('/reviews/r1');
+    await waitFor(() => expect(within(banner).getByText(/Requested by Ada Lovelace/)).toBeTruthy());
+    expect(within(banner).getByRole('button', { name: 'Withdraw' })).toBeTruthy();
+  });
+
+  it('shows another editor\'s request without Withdraw', async () => {
+    renderPage(makeDetail('p1', {
+      my_level: 'edit', page: published, space: strict, review: review({ pending_review_id: 'r1' }),
+    }));
+    const banner = await screen.findByRole('status', { name: 'Pending review' });
+    await waitFor(() => expect(within(banner).getByText(/Requested by Ada Lovelace/)).toBeTruthy());
+    expect(within(banner).queryByRole('button', { name: 'Withdraw' })).toBeNull();
+  });
+
+  it('shows the review-due chip, and lets an editor mark the page reviewed', async () => {
+    vi.mocked(markReviewed).mockResolvedValue(makeNode('p1', { review: review() }));
+    renderPage(makeDetail('p1', { my_level: 'edit', page: published, review: review({ state: 'due_soon' }) }));
+    await screen.findByText('Hello from the published page.');
+    expect(screen.getByText(`Review due ${longDate('2026-10-03T12:00:00Z')}`)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Mark as reviewed' }));
+    await waitFor(() => expect(markReviewed).toHaveBeenCalledWith('p1'));
+    expect(toast).toHaveBeenCalledWith('Marked as reviewed. The next review is in 6 months.');
+  });
+
+  it('shows readers an overdue chip but no Mark as reviewed', async () => {
+    renderPage(makeDetail('p1', { my_level: 'view', page: published, review: review({ state: 'overdue' }) }));
+    await screen.findByText('Hello from the published page.');
+    expect(screen.getByText('Review overdue')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Mark as reviewed' })).toBeNull();
+  });
+
+  it('opens Review schedule… from the ⋯ menu for managers', async () => {
+    renderPage(makeDetail('p1', { title: 'Rack power', my_level: 'manage', page: published, review: review() }));
+    await screen.findByText('Hello from the published page.');
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Rack power' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Review schedule…' }));
+    expect(screen.getByRole('dialog', { name: 'Review schedule for “Rack power”' })).toBeTruthy();
   });
 });

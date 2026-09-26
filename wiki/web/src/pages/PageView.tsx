@@ -19,7 +19,14 @@
  *  Publishing snapshots the STORED draft, which trails the live document
  *  by up to 10 s, so Publish first stores the live document (`flushDraft`):
  *  through the open editor in Edit mode, or a short-lived connection from
- *  View mode (someone else may be editing). */
+ *  View mode (someone else may be editing).
+ *
+ *  Reviews: where the space requires approval, an editor's Publish reads
+ *  "Submit for review" (managers still publish directly) — and so does it
+ *  once the API refuses a publish as `review_required`. A pending request
+ *  shows a banner (Withdraw; Review now for managers). A page whose
+ *  periodic review is due shows a chip, and editors can mark it reviewed;
+ *  managers set its schedule from ⋯ › Review schedule…. */
 import type { Editor } from '@tiptap/core';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
@@ -47,7 +54,13 @@ import { PERSON_COLORS, personColor } from '../lib/personColor';
 import { noteChanged } from '../lib/treeStore';
 import type { NodeDetailOut, PageContentOut, VersionDetail, VersionOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
-import { errorMessage, getPageContent, getVersion, recordRestore, setFavorite } from '../lib/wikiApi';
+import {
+  errorMessage, getPageContent, getVersion, markReviewed, recordRestore, setFavorite,
+} from '../lib/wikiApi';
+import PendingReviewBanner from '../reviews/PendingReviewBanner';
+import ReviewChip, { isReviewDue, submitsForReview } from '../reviews/ReviewChip';
+import ReviewScheduleDialog from '../reviews/ReviewScheduleDialog';
+import SubmitReviewDialog from '../reviews/SubmitReviewDialog';
 import { Breadcrumbs, InlineTitle } from './FolderView';
 
 /** How long a comment a link pointed at stands out. */
@@ -157,15 +170,24 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
   const [reload, setReload] = useState(0);
   const [publishing, setPublishing] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [scheduling, setScheduling] = useState(false);
+  const [markingReviewed, setMarkingReviewed] = useState(false);
+  // the API refused a publish as needing review (the space's setting
+  // changed since this page loaded): submit from now on
+  const [reviewRequired, setReviewRequired] = useState(false);
   const [editBlocked, setEditBlocked] = useState(false);
   const [liveToc, setLiveToc] = useState<TocEntry[]>([]);
   const [favorite, setFavoriteState] = useState(node.is_favorite);
 
-  useEffect(() => { setEditBlocked(false); setLiveToc([]); }, [node.id]);
+  useEffect(() => { setEditBlocked(false); setLiveToc([]); setReviewRequired(false); }, [node.id]);
   useEffect(() => { setFavoriteState(node.is_favorite); }, [node.id, node.is_favorite]);
 
   const page = node.page;
   const canEdit = atLeast(node.my_level, 'edit') && !editBlocked;
+  const canManage = atLeast(node.my_level, 'manage');
+  const viaReview = reviewRequired || submitsForReview(node.my_level, node.space);
+  const pendingReviewId = node.review?.pending_review_id ?? null;
   const published = usePublished(node.id, page?.published_version_id ?? null, reload);
   const editParam = params.get('edit');
   const neverPublished = !page?.published_version_id;
@@ -268,6 +290,27 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
         ...page, published_version_id: version.id, published_at: version.created_at, has_unpublished_changes: false,
       },
     });
+  };
+
+  const onReviewRequired = () => {
+    setPublishing(false);
+    setReviewRequired(true);
+    setSubmitting(true);
+    toast('This space needs a manager\'s approval — submit your changes for review.');
+  };
+
+  const markAsReviewed = async () => {
+    setMarkingReviewed(true);
+    try {
+      const saved = await markReviewed(node.id);
+      const months = saved.review?.interval_months;
+      toast(months ? `Marked as reviewed. The next review is in ${months} months.` : 'Marked as reviewed.');
+      noteChanged(saved);
+    } catch (err) {
+      toast(errorMessage(err, 'Couldn\'t mark the page as reviewed.'));
+    } finally {
+      setMarkingReviewed(false);
+    }
   };
 
   const toggleFavorite = async () => {
@@ -401,6 +444,14 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
             {canEdit && page?.has_unpublished_changes && !neverPublished && (
               <span className="chip c-amber"><span className="dot" />Unpublished changes</span>
             )}
+            <ReviewChip review={node.review} />
+            {canEdit && isReviewDue(node.review) && (
+              <button type="button" className="mini-btn wiki-mark-reviewed" disabled={markingReviewed}
+                      title="Confirm the page is still right; the next review is one interval from now"
+                      onClick={() => void markAsReviewed()}>
+                {markingReviewed ? 'Saving…' : 'Mark as reviewed'}
+              </button>
+            )}
           </div>
         </div>
         <div className="wiki-page-actions">
@@ -413,8 +464,9 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
             </div>
           )}
           {canEdit && (
-            <button type="button" className="btn-solid wiki-publish-btn" onClick={() => setPublishing(true)}>
-              Publish
+            <button type="button" className="btn-solid wiki-publish-btn"
+                    onClick={() => (viaReview ? setSubmitting(true) : setPublishing(true))}>
+              {viaReview ? 'Submit for review' : 'Publish'}
             </button>
           )}
           <Link className="btn-ghost wiki-history-btn" to={`/n/${node.id}/history`}>
@@ -427,9 +479,15 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
                   aria-pressed={favorite} onClick={() => void toggleFavorite()}>
             <Icon name="star" />
           </button>
-          <RowMenu node={node} onSaveAsTemplate={() => setSavingTemplate(true)} />
+          <RowMenu node={node} onSaveAsTemplate={() => setSavingTemplate(true)}
+                   onReviewSchedule={() => setScheduling(true)} />
         </div>
       </header>
+
+      {pendingReviewId && (
+        <PendingReviewBanner reviewId={pendingReviewId} canManage={canManage} meId={meId}
+                             onWithdrawn={() => noteChanged(node)} />
+      )}
 
       <div className={`wiki-page-body${showRail ? ' has-rail' : ''}`}>
         <div className="wiki-page-content" ref={docRef}>
@@ -489,7 +547,16 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
       )}
       {publishing && (
         <PublishDialog pageId={node.id} pageTitle={node.title} flush={flushDraft}
-                       onClose={() => setPublishing(false)} onPublished={onPublished} />
+                       onClose={() => setPublishing(false)} onPublished={onPublished}
+                       onReviewRequired={onReviewRequired} />
+      )}
+      {submitting && (
+        <SubmitReviewDialog pageId={node.id} pageTitle={node.title} flush={flushDraft}
+                            replacesPending={!!pendingReviewId}
+                            onClose={() => setSubmitting(false)} onSubmitted={() => noteChanged(node)} />
+      )}
+      {scheduling && (
+        <ReviewScheduleDialog node={node} onClose={() => setScheduling(false)} onSaved={noteChanged} />
       )}
       {savingTemplate && (
         <SaveAsTemplateDialog node={node} onClose={() => setSavingTemplate(false)} />

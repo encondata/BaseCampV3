@@ -1,7 +1,8 @@
 /** The wiki's top bar: the wiki mark, the space switcher, the search box
- *  (instant results, ⌘K / Ctrl+K focuses it — see SearchBox.tsx), the New
- *  menu (Page, Folder, Upload files, Space), and the avatar menu (Back to
- *  portal, Sign out). */
+ *  (instant results, ⌘K / Ctrl+K focuses it — see SearchBox.tsx), Reviews
+ *  (with a count of the reviews waiting on me — see ReviewsLink.tsx), the
+ *  New menu (Page, Folder, Upload files, Space), and the avatar menu (Back
+ *  to portal, Sign out). */
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode, type RefObject } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -11,6 +12,7 @@ import { avatarGradient, initials } from '@portal/lib/format';
 import { portalOrigin } from '../lib/origins';
 import { clearSessionCaches } from '../lib/sessionCaches';
 import type { MeOut, SpaceOut } from '../lib/types';
+import ReviewsLink from '../reviews/ReviewsLink';
 import SearchBox from '../search/SearchBox';
 import SpaceSwitcher from './SpaceSwitcher';
 
@@ -107,6 +109,7 @@ export default function TopBar({
       <SearchBox />
 
       <div className="tb-actions">
+        <ReviewsLink />
         <div className="pop-wrap" ref={newRef}>
           <button type="button" className="btn-solid wiki-new-btn" aria-haspopup="menu" aria-expanded={newOpen}
                   onClick={() => setNewOpen(!newOpen)}>

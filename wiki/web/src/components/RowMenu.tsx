@@ -1,5 +1,6 @@
 /** The ⋯ menu on a tree row (also opened by right-clicking the row) and in
  *  a page's header: New page/folder here, Rename, Move…, Copy…, Copy link,
+ *  (a page's header only: Save as template…, Review schedule…),
  *  Permissions…, Delete — each shown only at the level it needs. Move,
  *  Copy, Permissions and Delete open the shell's dialogs. The menu is
  *  position:fixed so the sidebar's scroll box never clips it; it closes on
@@ -26,6 +27,8 @@ export interface RowMenuProps {
   onRename?: () => void;
   /** Only offered where the caller passes it — a page's own header. */
   onSaveAsTemplate?: () => void;
+  /** Likewise (a page's header; manage). */
+  onReviewSchedule?: () => void;
 }
 
 export interface RowMenuHandle {
@@ -36,7 +39,7 @@ export interface RowMenuHandle {
 const MENU_WIDTH = 210;
 
 const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
-  { node, onNewChild, onRename, onSaveAsTemplate }, ref,
+  { node, onNewChild, onRename, onSaveAsTemplate, onReviewSchedule }, ref,
 ) {
   const toast = useToast();
   const shell = useWikiShell();
@@ -115,6 +118,12 @@ const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
     items.push({
       label: 'Save as template…', action: onSaveAsTemplate,
       icon: <><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5M10.5 15.5a2 2 0 0 0 2.8 0l1.5-1.5a2 2 0 0 0-2.8-2.8l-.5.5" /></>,
+    });
+  }
+  if (node.kind === 'page' && canManage && onReviewSchedule) {
+    items.push({
+      label: 'Review schedule…', action: onReviewSchedule,
+      icon: <><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M8 3v4M16 3v4M4 10h16M9.5 15l2 2 3.5-3.5" /></>,
     });
   }
   if (canManage) {

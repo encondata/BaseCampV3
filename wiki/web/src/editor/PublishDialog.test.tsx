@@ -31,12 +31,15 @@ beforeEach(() => {
   onPublished.mockReset();
   flush.mockReset().mockResolvedValue(undefined);
   vi.mocked(publishPage).mockReset();
+  onReviewRequired.mockReset();
 });
 afterEach(cleanup);
 
+const onReviewRequired = vi.fn();
+
 function renderDialog() {
   render(<PublishDialog pageId="p1" pageTitle="Rack power" flush={flush} onClose={onClose}
-                        onPublished={onPublished} />);
+                        onPublished={onPublished} onReviewRequired={onReviewRequired} />);
 }
 
 describe('PublishDialog', () => {
@@ -99,5 +102,14 @@ describe('PublishDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Publish' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/too large/i));
     expect(publishPage).not.toHaveBeenCalled();
+  });
+
+  it('hands over to review when the space requires approval after all', async () => {
+    vi.mocked(publishPage).mockRejectedValue(new ApiError(409, 'review_required'));
+    renderDialog();
+    fireEvent.click(screen.getByRole('button', { name: 'Publish' }));
+    await waitFor(() => expect(onReviewRequired).toHaveBeenCalled());
+    expect(onPublished).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

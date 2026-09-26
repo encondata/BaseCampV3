@@ -1,7 +1,8 @@
 /** A folder: breadcrumbs, its title (renamed inline by editors), New page /
  *  New folder / Upload / Import, and its contents in the portal's list
- *  styling (Name, Type, Updated, By, Size). Editors can also drop files and
- *  folders from their computer anywhere on it (the upload tray takes over). */
+ *  styling (Name, Type, Updated, By, Size; pages due for review carry a
+ *  chip). Editors can also drop files and folders from their computer
+ *  anywhere on it (the upload tray takes over). */
 import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -13,6 +14,7 @@ import NodeIcon, { nodeTypeLabel } from '../components/NodeIcon';
 import { atLeast } from '../components/RowMenu';
 import WatchButton from '../components/WatchButton';
 import ImportDialog from '../import/ImportDialog';
+import ReviewChip from '../reviews/ReviewChip';
 import { noteChanged, useChildren } from '../lib/treeStore';
 import type { NodeDetailOut, NodeOut } from '../lib/types';
 import { errorMessage, updateNode } from '../lib/wikiApi';
@@ -119,6 +121,7 @@ function Row({ node }: { node: NodeOut }) {
         <div className="cell cell-primary">
           <NodeIcon node={node} className="wiki-row-icon" />
           <div className="pn"><b title={node.title}>{node.title}</b></div>
+          <ReviewChip review={node.review} />
         </div>
         <div className="cell"><span className="cell-top cell-line">{nodeTypeLabel(node)}</span></div>
         <div className="cell">

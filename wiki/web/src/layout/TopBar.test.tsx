@@ -8,6 +8,10 @@ vi.mock('@portal/auth/AuthContext', () => ({
   useAuth: () => ({ person: { id: 'p-1', display_name: 'Jimmy Henderson', avatar_url: null }, logout }),
 }));
 vi.mock('../lib/sessionCaches', () => ({ clearSessionCaches: vi.fn() }));
+vi.mock('../lib/wikiApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/wikiApi')>()),
+  listReviews: vi.fn(async () => []),
+}));
 
 import { clearSessionCaches } from '../lib/sessionCaches';
 import TopBar from './TopBar';
@@ -87,5 +91,17 @@ describe('TopBar New › From template…', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'New' }));
     expect((screen.getByRole('menuitem', { name: 'From template…' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe('TopBar Reviews', () => {
+  it('links to the reviews queue', async () => {
+    render(
+      <MemoryRouter>
+        <TopBar me={null} spaces={[]} currentSpace={null} sidebarCollapsed={false}
+                onShowSidebar={() => {}} onNew={null} onNewFromTemplate={null} onUpload={null} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole('link', { name: 'Reviews' }).getAttribute('href')).toBe('/reviews');
   });
 });

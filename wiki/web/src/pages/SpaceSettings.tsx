@@ -1,6 +1,7 @@
 /** /s/:spaceKey/settings — for space managers: the space's name,
  *  description, icon and color; its members (the permissions editor,
- *  inline); archiving (unarchiving is for wiki administrators); and a link
+ *  inline); collaboration settings, with a link to the pages due for
+ *  review; archiving (unarchiving is for wiki administrators); and a link
  *  to the space's trash. */
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -86,6 +87,10 @@ function CollaborationSection({ space, onSaved }: { space: SpaceOut; onSaved: (s
           ariaLabel="Review reminders"
           onChange={(v) => void save('review_interval_months', v === '' ? null : Number(v))}
         />
+      </div>
+      <div className="wiki-settings-row">
+        <p className="page-hint">Pages whose review is overdue or due within two weeks.</p>
+        <Link className="btn-ghost" to={`/s/${space.key}/due`}>Pages due for review</Link>
       </div>
     </section>
   );

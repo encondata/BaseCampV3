@@ -28,6 +28,9 @@ import SpaceSettings from '../pages/SpaceSettings';
 import TemplatesPage from '../pages/TemplatesPage';
 import TrashPage from '../pages/TrashPage';
 import WatchingPage from '../pages/WatchingPage';
+import DueReviewsPage from '../reviews/DueReviewsPage';
+import ReviewDetail from '../reviews/ReviewDetail';
+import ReviewsPage from '../reviews/ReviewsPage';
 import SearchPage from '../search/SearchPage';
 import { isFileDrag } from '../uploads/DropZone';
 import { enqueue } from '../uploads/uploadQueue';
@@ -261,11 +264,14 @@ export default function WikiShell() {
               <Route path="/spaces/new" element={<><Home /><NewSpace /></>} />
               <Route path="/s/:spaceKey" element={<SpaceHome />} />
               <Route path="/s/:spaceKey/settings" element={<SpaceSettings />} />
+              <Route path="/s/:spaceKey/due" element={<DueReviewsPage />} />
               <Route path="/trash/:spaceKey" element={<TrashPage />} />
               <Route path="/search" element={<SearchPage />} />
               <Route path="/admin" element={<AdminPage />} />
               <Route path="/templates" element={<TemplatesPage />} />
               <Route path="/watching" element={<WatchingPage />} />
+              <Route path="/reviews" element={<ReviewsPage />} />
+              <Route path="/reviews/:reviewId" element={<ReviewDetail />} />
               <Route path="/n/:nodeId" element={<NodePage />} />
               <Route path="/n/:nodeId/history" element={(
                 <Suspense fallback={<div className="portal-page wiki-page"><p className="page-hint">Loading…</p></div>}>

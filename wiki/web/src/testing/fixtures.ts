@@ -1,5 +1,7 @@
 /** Test-only builders for the wiki API's shapes. */
-import type { Level, MeOut, NodeDetailOut, NodeKind, NodeOut, SearchHit, SpaceOut } from '../lib/types';
+import type {
+  Level, MeOut, NodeDetailOut, NodeKind, NodeOut, ReviewDetail, ReviewOut, SearchHit, SpaceOut,
+} from '../lib/types';
 
 const T = '2026-09-20T12:00:00Z';
 
@@ -81,6 +83,34 @@ export function makeSearchHit(over: Partial<SearchHit> = {}): SearchHit {
     node: { id: 'n1', kind: 'page', title: 'Rack power', space_key: 'ops', space_name: 'Operations' },
     snippet_html: 'How to wire the <mark>rack</mark> power.',
     breadcrumbs: [],
+    ...over,
+  };
+}
+
+export function makeReview(over: Partial<ReviewOut> = {}): ReviewOut {
+  return {
+    id: 'r1',
+    node: { id: 'p1', title: 'Rack power', space_key: 'ops', space_name: 'Operations' },
+    version_id: 'v5',
+    status: 'pending',
+    note: 'Updated the breaker list',
+    requested_by: { id: 'p-2', name: 'Ada Lovelace' },
+    created_at: T,
+    decided_by: null,
+    decided_at: null,
+    decision_note: '',
+    ...over,
+  };
+}
+
+export function makeReviewDetail(over: Partial<ReviewDetail> = {}): ReviewDetail {
+  return {
+    ...makeReview(over),
+    submitted_version_no: 5,
+    submitted_content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'New words' }] }] },
+    published_version_id: 'v3',
+    published_content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Old words' }] }] },
+    stale: false,
     ...over,
   };
 }

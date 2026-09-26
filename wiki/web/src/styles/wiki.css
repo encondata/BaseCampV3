@@ -1275,3 +1275,75 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 /* ── admin page ────────────────────────────────────────────── */
 
 .wiki-admin-actions { display: flex; align-items: center; gap: 8px; }
+
+/* ── reviews ───────────────────────────────────────────────── */
+
+/* the top bar's Reviews link and its count of reviews waiting on me */
+.wiki-reviews-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  text-decoration: none;
+}
+.wiki-reviews-link svg { width: 15px; height: 15px; color: var(--text-mute); }
+.wiki-count-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--c-red, #c03540);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  display: inline-grid;
+  place-items: center;
+}
+
+.wiki-review-chip { white-space: nowrap; flex: none; }
+.wiki-folder-list .cell-primary .wiki-review-chip { margin-left: 8px; }
+.wiki-mark-reviewed { padding: 3px 10px; }
+.wiki-due-link { margin-right: auto; text-decoration: none; }
+
+/* a pending request on the page, and the stale warning on a review */
+.wiki-review-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  flex-wrap: wrap;
+  margin: 0 0 18px;
+  padding: 10px 14px;
+  border: 1px solid var(--c-amber-bd, var(--paper-line));
+  border-radius: 10px;
+  background: var(--c-amber-bg, var(--surface-2, #f5f7fa));
+  font-size: 13px;
+}
+.wiki-review-banner.is-warn { color: var(--c-amber); font-weight: 500; }
+.wiki-review-banner-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wiki-review-banner-text b { font-weight: 600; color: var(--text-dark); }
+.wiki-review-banner-text span { color: var(--text-mute); font-weight: 300; }
+.wiki-review-banner-actions { display: flex; align-items: center; gap: 8px; }
+.wiki-review-banner-actions .btn-solid,
+.wiki-review-banner-actions .btn-ghost { padding: 6px 12px; text-decoration: none; }
+
+.wiki-review-detail { max-width: 1040px; }
+.wiki-review-detail .wiki-title a { color: inherit; text-decoration: none; }
+.wiki-review-detail .wiki-title a:hover { color: var(--amber); }
+.wiki-review-note {
+  margin: 12px 0 0;
+  padding: 4px 0 4px 12px;
+  border-left: 2px solid rgba(var(--accent-rgb), 0.55);
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-dark);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.wiki-review-decision,
+.wiki-review-actions { display: flex; flex-direction: column; gap: 10px; margin: 0 0 22px; max-width: 760px; }
+.wiki-review-decision .page-hint { margin: 0; }
+.wiki-review-buttons { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.segmented.wiki-reviews-tabs { padding: 3px; }
+.segmented.wiki-reviews-tabs button { padding: 6px 14px; }

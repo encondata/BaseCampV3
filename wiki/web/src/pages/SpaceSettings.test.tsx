@@ -161,4 +161,10 @@ describe('SpaceSettings — Collaboration', () => {
     fireEvent.click(within(section).getByLabelText('Require approval to publish'));
     await waitFor(() => expect(toast).toHaveBeenCalledWith('Couldn\'t save this setting. Try again.'));
   });
+
+  it('links to the space\'s pages due for review', async () => {
+    renderSettings(makeSpace({ my_level: 'manage', settings: {} }));
+    const section = await screen.findByRole('region', { name: 'Collaboration' });
+    expect(within(section).getByRole('link', { name: 'Pages due for review' }).getAttribute('href')).toBe('/s/ops/due');
+  });
 });

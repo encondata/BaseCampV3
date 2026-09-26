@@ -10,13 +10,14 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   getTree: vi.fn(),
   listWatches: vi.fn(),
   watch: vi.fn(),
+  listDueReviews: vi.fn(),
 }));
 vi.mock('./NodePage', () => ({ default: ({ nodeId }: { nodeId: string }) => <div>home page {nodeId}</div> }));
 
 import { resetTreeStore } from '../lib/treeStore';
 import type { SpaceOut } from '../lib/types';
-import { getSpace, getTree, listWatches, watch } from '../lib/wikiApi';
-import { makeSpace } from '../testing/fixtures';
+import { getSpace, getTree, listDueReviews, listWatches, watch } from '../lib/wikiApi';
+import { makeNode, makeSpace } from '../testing/fixtures';
 import SpaceHome from './SpaceHome';
 
 function renderSpace(space: SpaceOut) {
@@ -32,6 +33,7 @@ beforeEach(() => {
   resetTreeStore();
   vi.mocked(getTree).mockReset().mockResolvedValue([]);
   vi.mocked(listWatches).mockReset().mockResolvedValue([]);
+  vi.mocked(listDueReviews).mockReset().mockResolvedValue([]);
   vi.mocked(watch).mockReset().mockResolvedValue({
     id: 'w1', node: null, space: { key: 'ops', name: 'Operations' }, created_at: '2026-09-26T00:00:00Z',
   });
@@ -51,5 +53,20 @@ describe('SpaceHome', () => {
     renderSpace(makeSpace({ home_node_id: 'home-1' }));
     await screen.findByText('home page home-1');
     expect(await screen.findByRole('button', { name: 'Watch' })).toBeTruthy();
+  });
+
+  it('links to the pages due for review while any are due', async () => {
+    vi.mocked(listDueReviews).mockResolvedValue([makeNode('p1'), makeNode('p2')]);
+    renderSpace(makeSpace({ home_node_id: 'home-1' }));
+    const link = await screen.findByRole('link', { name: '2 pages due for review' });
+    expect(link.getAttribute('href')).toBe('/s/ops/due');
+    expect(listDueReviews).toHaveBeenCalledWith('ops');
+  });
+
+  it('shows no due link when nothing is due', async () => {
+    renderSpace(makeSpace({ home_node_id: 'home-1' }));
+    await screen.findByText('home page home-1');
+    await waitFor(() => expect(listDueReviews).toHaveBeenCalled());
+    expect(screen.queryByRole('link', { name: /due for review/ })).toBeNull();
   });
 });

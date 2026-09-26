@@ -1,8 +1,9 @@
 /** /s/:spaceKey — the space's home page (a normal page flagged by
  *  `home_node_id`, shown through NodePage) and "What's in this space": the
- *  space's top-level items. */
+ *  space's top-level items, with a link to the pages due for review while
+ *  any are. */
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 
 import { ApiError } from '@portal/lib/api';
 
@@ -10,7 +11,7 @@ import WatchButton from '../components/WatchButton';
 import { useWikiShell } from '../layout/shellContext';
 import { useChildren } from '../lib/treeStore';
 import type { SpaceOut } from '../lib/types';
-import { errorMessage, getSpace } from '../lib/wikiApi';
+import { errorMessage, getSpace, listDueReviews } from '../lib/wikiApi';
 import { ContentsList } from './FolderView';
 import NodePage from './NodePage';
 import NotFound from './NotFound';
@@ -27,6 +28,18 @@ export default function SpaceHome() {
   const shown = state?.key === spaceKey ? state : null;
   const space = shown?.status === 'ready' ? shown.space : null;
   const { nodes, error } = useChildren(space ? space.key : null, null);
+  const [due, setDue] = useState<{ key: string; count: number } | null>(null);
+  const dueKey = space?.key ?? null;
+
+  useEffect(() => {
+    if (!dueKey) return undefined;
+    let live = true;
+    listDueReviews(dueKey)
+      .then((pages) => { if (live) setDue({ key: dueKey, count: pages.length }); })
+      .catch(() => { /* just no link */ });
+    return () => { live = false; };
+  }, [dueKey]);
+  const dueCount = due?.key === spaceKey ? due.count : 0;
 
   useEffect(() => {
     let live = true;
@@ -69,6 +82,11 @@ export default function SpaceHome() {
       <section className="portal-page wiki-page wiki-space-contents" aria-label="What's in this space">
         <div className="wiki-section-label wiki-space-contents-head">
           What's in this space
+          {dueCount > 0 && (
+            <Link className="chip c-amber wiki-due-link" to={`/s/${shown.space.key}/due`}>
+              {dueCount === 1 ? '1 page due for review' : `${dueCount} pages due for review`}
+            </Link>
+          )}
           {shown.space.home_node_id && (
             <WatchButton target={{ kind: 'space', spaceId: shown.space.id, spaceKey: shown.space.key }} />
           )}
