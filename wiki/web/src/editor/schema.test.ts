@@ -5,10 +5,15 @@ import { generateHTML, generateJSON } from '@tiptap/html';
 import { describe, expect, it } from 'vitest';
 import * as Y from 'yjs';
 
+import { prosemirrorJSONToYXmlFragment, yXmlFragmentToProseMirrorRootNode } from 'y-prosemirror';
+
 import {
   FIXTURE_FILE_NODE,
   FIXTURE_IMAGE_ASSET,
   FIXTURE_PAGE_NODE,
+  FIXTURE_PERSON,
+  FIXTURE_THREAD_A,
+  FIXTURE_THREAD_B,
   fixtureDoc,
 } from './fixtures';
 import { EMPTY_DOC, wikiExtensions } from './schema';
@@ -67,6 +72,22 @@ describe('wikiExtensions: custom nodes render to HTML', () => {
     expect(html()).toContain(
       `<a data-page-link="${FIXTURE_PAGE_NODE}" href="/n/${FIXTURE_PAGE_NODE}">Cabling standards</a>`,
     );
+  });
+
+  it('renders a mention as @label with the person id', () => {
+    expect(html()).toContain(
+      `Ask <span data-mention="${FIXTURE_PERSON}" class="wiki-mention">@Pat Doe</span> about`,
+    );
+  });
+
+  it('renders comment threads as classed spans, overlapping ones nested', () => {
+    const a = `<span data-comment-thread="${FIXTURE_THREAD_A}" class="wiki-comment-mark">`;
+    const b = `<span data-comment-thread="${FIXTURE_THREAD_B}" class="wiki-comment-mark">`;
+    const out = html();
+    expect(out).toContain(`${a}spare</span>`);
+    expect(out).toContain(`${b} stock</span>`);
+    // " PDU" carries both threads (and bold)
+    expect(out).toMatch(new RegExp(`<strong>(${a}${b}|${b}${a}) PDU</span></span></strong>`));
   });
 
   // Without a DOM (@tiptap/html on zeed-dom) ProseMirror's `style.cssText`
@@ -135,6 +156,22 @@ describe('wikiExtensions: HTML round trip', () => {
     expect(generateJSON(html(), wikiExtensions())).toEqual(fixtureDoc);
   });
 
+  it('parses a bare mention span, taking the label from its text', () => {
+    const parsed = generateJSON(`<p><span data-mention="${FIXTURE_PERSON}">@Pat Doe</span></p>`,
+      wikiExtensions());
+    expect(parsed.content[0].content).toEqual([
+      { type: 'mention', attrs: { personId: FIXTURE_PERSON, label: 'Pat Doe' } },
+    ]);
+  });
+
+  it('keeps overlapping comment threads through the collaborative document', () => {
+    const schema = getSchema(wikiExtensions());
+    const ydoc = new Y.Doc();
+    const fragment = ydoc.getXmlFragment('default');
+    prosemirrorJSONToYXmlFragment(schema, fixtureDoc, fragment);
+    expect(yXmlFragmentToProseMirrorRootNode(fragment, schema).toJSON()).toEqual(fixtureDoc);
+  });
+
   it('falls back to the info variant for an unknown callout variant', () => {
     const parsed = generateJSON('<div data-callout="shouting"><p>Hi</p></div>', wikiExtensions());
     expect(parsed.content[0]).toMatchObject({ type: 'callout', attrs: { variant: 'info' } });
@@ -200,5 +237,14 @@ describe('wikiExtensions: options', () => {
     expect(schema.nodes.pageLink.isAtom).toBe(true);
     expect(schema.nodes.wikiImage.isAtom).toBe(true);
     expect(schema.nodes.fileEmbed.isAtom).toBe(true);
+    expect(schema.nodes.mention.isInline).toBe(true);
+    expect(schema.nodes.mention.isAtom).toBe(true);
+    expect(schema.nodes.mention.spec.selectable).toBe(true);
+  });
+
+  it('builds a comment-thread mark that does not grow and may overlap itself', () => {
+    const { commentThread } = getSchema(wikiExtensions()).marks;
+    expect(commentThread.spec.inclusive).toBe(false);
+    expect(commentThread.excludes(commentThread)).toBe(false);
   });
 });

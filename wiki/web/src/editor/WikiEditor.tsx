@@ -2,8 +2,8 @@
  *  (`HocuspocusProvider`, document `page:<id>`, the portal access token as
  *  its credential), the shared schema with the editor's node views, and
  *  the chrome around it — toolbar, presence, save state, the reconnecting
- *  banner, the slash menu, the "[[" page picker, the selection bubble and
- *  the image/file/page pickers. Only mounted for people with edit; the
+ *  banner, the slash menu, the "[[" page picker, the "@" mention picker,
+ *  the selection bubble and the image/file/page pickers. Only mounted for people with edit; the
  *  server's answer still decides (a read-only or refused connection calls
  *  `onAccessLost`). */
 import { HocuspocusProvider, HocuspocusProviderWebsocket } from '@hocuspocus/provider';
@@ -21,6 +21,7 @@ import { flushLive } from './liveFlush';
 import { withNodeViews } from './nodeViews';
 import { insertPageLink, PageLinkMenu, PickerPopover, type PickedNode } from './PagePicker';
 import LinkPopover from './LinkPopover';
+import MentionMenu from './MentionMenu';
 import PresenceStack from './PresenceStack';
 import { wikiExtensions } from './schema';
 import SelectionBubble from './SelectionBubble';
@@ -51,7 +52,7 @@ export interface WikiEditorProps {
   onLiveFlush?: (flush: (() => Promise<void>) | null) => void;
 }
 
-const PLACEHOLDER = 'Type “/” for blocks, “[[” to link a page…';
+const PLACEHOLDER = 'Type “/” for blocks, “[[” to link a page, “@” to mention someone…';
 
 type Anchor = { top: number; left: number };
 
@@ -198,6 +199,7 @@ function CollabEditor({ pageId, doc, provider, user, onToc, onFirstSync }: {
 
       <SlashMenu editor={editor} actions={actions} />
       <PageLinkMenu editor={editor} />
+      <MentionMenu editor={editor} pageId={pageId} />
       {editor && <SelectionBubble editor={editor} onLink={setLinkAt} />}
       {editor && linkAt && <LinkPopover editor={editor} anchor={linkAt} onClose={closeLink} />}
       {picker && (

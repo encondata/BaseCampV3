@@ -1,5 +1,5 @@
-/** What the typed-trigger menus (the "/" slash menu, the "[[" page picker)
- *  share: finding the trigger text before the cursor, following it as the
+/** What the typed-trigger menus (the "/" slash menu, the "[[" page picker,
+ *  the "@" mention picker) share: finding the trigger text before the cursor, following it as the
  *  editor changes (with Escape dismissing it for that spot), and taking
  *  the arrow/Enter/Escape keys from the editor while a menu is open. */
 import type { Editor, Range } from '@tiptap/core';
@@ -17,6 +17,10 @@ const LEAF = '￼';
 export const SLASH_PATTERN = /^\/([^\n/￼]{0,32})$/;
 /** "[[" + an optional query ending at the cursor, anywhere in a block. */
 export const PAGE_LINK_PATTERN = /\[\[([^[\]\n￼]{0,80})$/;
+/** "@" at the start of a block or after a space (not inside a word, so an
+ *  email address doesn't open it) + an optional name of up to two words
+ *  ending at the cursor. The lookbehind keeps the space out of the range. */
+export const MENTION_PATTERN = /(?<=^|[\s￼])@((?:[^\s@￼]{1,40}(?: [^\s@￼]{0,40})?)?)$/;
 
 export function findTrigger(
   state: EditorState, pattern: RegExp, opts: { wholeBlock?: boolean } = {},

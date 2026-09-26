@@ -16,6 +16,7 @@ import { ApiError } from '@portal/lib/api';
 
 import { clearAssetUrls } from '../lib/assetUrls';
 import { clearNodeTitles } from '../lib/nodeTitles';
+import { clearPersonNames, rememberPersonNames } from '../lib/personNames';
 import { getAssetUrls, getFileUrl, getNode } from '../lib/wikiApi';
 import { makeDetail } from '../testing/fixtures';
 import ReadOnlyDoc from './ReadOnlyDoc';
@@ -67,6 +68,31 @@ describe('ReadOnlyDoc', () => {
     expect(await screen.findByRole('link', { name: 'Cabling standards' })).toBeTruthy();
     expect(await screen.findByText('Missing page')).toBeTruthy();
     expect(screen.queryByText('Secret page')).toBeNull();
+  });
+
+  it('shows mentions by the current name when known, else the stored label', async () => {
+    clearPersonNames();
+    rememberPersonNames([{ id: 'p-renamed', name: 'Pat Smith' }]);
+    const { container } = render(<MemoryRouter><ReadOnlyDoc content={para(
+      { type: 'mention', attrs: { personId: 'p-renamed', label: 'Pat Doe' } },
+      { type: 'text', text: ' and ' },
+      { type: 'mention', attrs: { personId: 'p-other', label: 'Sam Roe' } },
+    )} /></MemoryRouter>);
+    expect(await screen.findByText('@Pat Smith')).toBeTruthy();
+    expect(screen.getByText('@Sam Roe')).toBeTruthy();
+    expect(screen.queryByText('@Pat Doe')).toBeNull();
+    const chips = container.querySelectorAll('.wiki-mention');
+    expect([...chips].map((c) => c.getAttribute('data-mention'))).toEqual(['p-renamed', 'p-other']);
+  });
+
+  it('marks text a comment thread is anchored to', async () => {
+    const { container } = render(<MemoryRouter><ReadOnlyDoc content={para(
+      { type: 'text', text: 'spare PDU', marks: [{ type: 'commentThread', attrs: { threadId: 't-1' } }] },
+    )} /></MemoryRouter>);
+    await screen.findByText('spare PDU');
+    const mark = container.querySelector('.wiki-comment-mark');
+    expect(mark?.getAttribute('data-comment-thread')).toBe('t-1');
+    expect(mark?.textContent).toBe('spare PDU');
   });
 
   it('keeps a collapsible section closed until toggled', async () => {

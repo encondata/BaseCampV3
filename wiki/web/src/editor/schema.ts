@@ -31,9 +31,11 @@ import { common, createLowlight } from 'lowlight';
 import type { Doc } from 'yjs';
 
 import { Callout } from './extensions/Callout.js';
+import { CommentThread } from './extensions/CommentThread.js';
 import { renderCursor, renderSelection } from './extensions/cursors.js';
 import { Details, DetailsContent, DetailsSummary } from './extensions/Details.js';
 import { FileEmbed } from './extensions/FileEmbed.js';
+import { Mention } from './extensions/Mention.js';
 import { PageLink } from './extensions/PageLink.js';
 import { WikiImage } from './extensions/WikiImage.js';
 
@@ -145,6 +147,8 @@ export function wikiExtensions(opts: WikiExtensionOptions = {}): Extensions {
     WikiImage,
     FileEmbed,
     PageLink,
+    Mention,
+    CommentThread,
   ];
   if (placeholder) extensions.push(Placeholder.configure({ placeholder }));
   if (collab) {

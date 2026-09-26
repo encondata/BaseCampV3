@@ -63,6 +63,23 @@ describe('buildToc', () => {
     expect(headingIdsOf(pm).map((h) => h.id)).toEqual(buildToc(doc).map((t) => t.id));
   });
 
+  it('reads a mention in a heading as @label, same in both walks', () => {
+    const mentioned = {
+      type: 'doc',
+      content: [{
+        type: 'heading',
+        attrs: { level: 2, textAlign: null },
+        content: [
+          { type: 'text', text: 'Owner: ' },
+          { type: 'mention', attrs: { personId: 'p-1', label: 'Pat Doe' } },
+        ],
+      }],
+    };
+    expect(buildToc(mentioned)).toEqual([{ level: 2, text: 'Owner: @Pat Doe', id: 'h-owner-pat-doe' }]);
+    const pm = PMNode.fromJSON(getSchema(wikiExtensions()), mentioned);
+    expect(headingIdsOf(pm).map((h) => h.id)).toEqual(['h-owner-pat-doe']);
+  });
+
   it('never reads a page link\'s stored title (it may be stale or private), same in both walks', () => {
     const linked = {
       type: 'doc',

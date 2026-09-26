@@ -350,6 +350,18 @@
 .we-menu-text { display: flex; flex-direction: column; min-width: 0; }
 .we-menu-text b { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .we-menu-text span { font-size: 11.5px; font-weight: 300; color: var(--text-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.we-mention-avatar {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
 .we-menu-empty { padding: 10px 8px; font-size: 12.5px; font-weight: 300; color: var(--text-mute); }
 .we-menu-foot { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--paper-line); }
 .we-picker-search {
@@ -563,6 +575,23 @@
 .wiki-page-link.missing .wiki-page-link-icon { color: var(--text-mute); }
 .wiki-page-link.loading { background: var(--surface-2, #f1f4f7); color: var(--text-mute); cursor: default; }
 .wiki-page-link.ProseMirror-selectednode a { box-shadow: 0 0 0 2px var(--amber); }
+
+.wiki-mention {
+  padding: 0 4px;
+  border-radius: 6px;
+  background: rgba(var(--accent-rgb), 0.1);
+  color: var(--text-dark);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.ProseMirror-selectednode > .wiki-mention, .wiki-mention.ProseMirror-selectednode { box-shadow: 0 0 0 2px var(--amber); }
+
+/* text a comment thread is anchored to: a light highlight (hover and the
+   active thread come with the comments panel) */
+.wiki-comment-mark {
+  background: rgba(var(--accent-rgb), 0.12);
+  border-bottom: 2px solid rgba(var(--accent-rgb), 0.45);
+}
 
 .wiki-callout {
   --callout: var(--c-blue, #0369a1);

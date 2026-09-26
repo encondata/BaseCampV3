@@ -11,6 +11,9 @@ describe('renderDocHtml', () => {
     const html = renderDocHtml(fixtureDoc);
     expect(html).toBe(generateHTML(fixtureDoc, wikiExtensions()));
     expect(html).toContain('<div data-callout="warning">');
+    // mentions and comment anchors export as the browser renders them
+    expect(html).toContain('class="wiki-mention">@Pat Doe</span>');
+    expect(html).toContain('class="wiki-comment-mark">spare</span>');
   });
 
   it('renders the empty document', () => {

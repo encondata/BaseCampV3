@@ -5,6 +5,7 @@ vi.mock('./useWikiMe', () => ({ clearWikiMe: vi.fn() }));
 
 import { resolveAssetUrl } from './assetUrls';
 import { nodeTitle } from './nodeTitles';
+import { personName, rememberPersonNames } from './personNames';
 import { clearSessionCaches } from './sessionCaches';
 import { clearWikiMe } from './useWikiMe';
 import { getAssetUrls, getNode } from './wikiApi';
@@ -18,7 +19,8 @@ beforeEach(() => {
 });
 
 describe('clearSessionCaches (sign-out)', () => {
-  it('forgets asset URLs, page-link titles and the wiki profile', async () => {
+  it('forgets asset URLs, page-link titles, mention names and the wiki profile', async () => {
+    rememberPersonNames([{ id: 'p1', name: 'Pat Doe' }]);
     await resolveAssetUrl(ASSET);
     await nodeTitle('n1');
     await resolveAssetUrl(ASSET);
@@ -28,6 +30,7 @@ describe('clearSessionCaches (sign-out)', () => {
 
     clearSessionCaches();
     expect(clearWikiMe).toHaveBeenCalled();
+    expect(personName('p1')).toBeUndefined();
     await resolveAssetUrl(ASSET);
     await nodeTitle('n1');
     expect(getAssetUrls).toHaveBeenCalledTimes(2);

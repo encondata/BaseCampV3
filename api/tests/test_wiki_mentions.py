@@ -46,6 +46,25 @@ def test_doc_text_renders_a_mention_as_at_label():
     assert doc_text(doc) == "ask @Pat Doe first"
 
 
+def test_mentions_in_table_cells_and_list_items_are_found_and_read():
+    a, b = uuid.uuid4(), uuid.uuid4()
+
+    def para(*inline):
+        return {"type": "paragraph", "content": list(inline)}
+
+    doc = {"type": "doc", "content": [
+        {"type": "table", "content": [{"type": "tableRow", "content": [
+            {"type": "tableHeader", "content": [para({"type": "text", "text": "Owner"})]},
+            {"type": "tableCell", "content": [para(_mention(a, "Pat Doe"))]},
+        ]}]},
+        {"type": "bulletList", "content": [{"type": "listItem", "content": [
+            para({"type": "text", "text": "ping "}, _mention(b, "Sam Roe"))]}]},
+    ]}
+    assert mention_ids(doc) == {str(a), str(b)}
+    # each cell/item and its paragraph end a line: blank lines between
+    assert doc_text(doc) == "Owner\n\n@Pat Doe\n\nping @Sam Roe"
+
+
 # ── helpers ─────────────────────────────────────────────────────────
 
 

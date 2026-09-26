@@ -50,6 +50,7 @@ const PAGE_LINK_TOKEN = 'page';
 function jsonText(node: JSONContent): string {
   if (node.type === 'text') return node.text ?? '';
   if (node.type === 'pageLink') return PAGE_LINK_TOKEN;
+  if (node.type === 'mention') return `@${String(node.attrs?.label ?? '')}`;
   if (node.type === 'hardBreak') return ' ';
   return (node.content ?? []).map(jsonText).join('');
 }
@@ -74,6 +75,7 @@ function pmText(node: PMNode): string {
   node.descendants((child) => {
     if (child.isText) out += child.text ?? '';
     else if (child.type.name === 'pageLink') out += PAGE_LINK_TOKEN;
+    else if (child.type.name === 'mention') out += `@${String(child.attrs.label ?? '')}`;
     else if (child.type.name === 'hardBreak') out += ' ';
     return true;
   });

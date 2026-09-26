@@ -33,17 +33,19 @@ export interface DiffBlock {
 }
 
 const SPLIT_INTO_ITEMS = new Set(['bulletList', 'orderedList', 'taskList']);
-const INLINE = new Set(['text', 'hardBreak', 'pageLink']);
+const INLINE = new Set(['text', 'hardBreak', 'pageLink', 'mention']);
 
 const normalize = (text: string) => text.replace(/\s+/g, ' ').trim();
 
 /** Readable text of a node. Stored link titles and file names are never
- *  used (they may be stale or name something the reader can't see). */
+ *  used (they may be stale or name something the reader can't see); a
+ *  mention's label is (only people who can view the page are mentioned). */
 function textOf(node: JSONContent): string {
   switch (node.type) {
     case 'text': return node.text ?? '';
     case 'hardBreak': return ' ';
     case 'pageLink': return '[page link]';
+    case 'mention': return `@${String(node.attrs?.label ?? '')}`;
     case 'fileEmbed': return '[file]';
     case 'wikiImage': return String(node.attrs?.caption || node.attrs?.alt || '[image]');
     case 'horizontalRule': return '———';

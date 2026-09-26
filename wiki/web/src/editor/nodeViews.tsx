@@ -5,6 +5,7 @@
  *    - FileEmbed: a card with an inline PDF/image/video preview
  *    - PageLink: the target's current title ("Missing page" when it's gone,
  *      "Couldn't load link" when the lookup failed — retried once)
+ *    - Mention: "@" + the person's current name when known, else the stored label
  *    - Callout: the variant's icon and a variant switcher
  *    - Details: an open/close toggle (open state is per reader, not stored)
  *  `withNodeViews` swaps them into the shared schema's extension list. */
@@ -19,6 +20,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { fileType } from '../components/NodeIcon';
 import { resolveAssetUrl } from '../lib/assetUrls';
 import { nodeTitle } from '../lib/nodeTitles';
+import { personName } from '../lib/personNames';
 import { getFileUrl } from '../lib/wikiApi';
 import { CALLOUT_VARIANTS, type CalloutVariant } from './extensions/Callout';
 import { Icon, type IconName } from './icons';
@@ -271,6 +273,20 @@ function PageLinkView({ node }: NodeViewProps) {
   );
 }
 
+// ── mention ───────────────────────────────────────────────────────────
+
+function MentionView({ node }: NodeViewProps) {
+  // only people who can view the page are mentioned, so the stored label
+  // is safe to show when the current name isn't known
+  const { personId, label } = node.attrs as { personId: string | null; label: string };
+  const name = (personId && personName(personId)) || label;
+  return (
+    <NodeViewWrapper as="span" className="wiki-mention" data-mention={personId ?? ''}>
+      @{name}
+    </NodeViewWrapper>
+  );
+}
+
 // ── callout ───────────────────────────────────────────────────────────
 
 const VARIANT_LABEL: Record<CalloutVariant, string> = {
@@ -338,6 +354,7 @@ const VIEWS: Record<string, (ext: AnyExtension) => AnyExtension> = {
   wikiImage: (ext) => ext.extend({ addNodeView: () => ReactNodeViewRenderer(WikiImageView) }),
   fileEmbed: (ext) => ext.extend({ addNodeView: () => ReactNodeViewRenderer(FileEmbedView) }),
   pageLink: (ext) => ext.extend({ addNodeView: () => ReactNodeViewRenderer(PageLinkView, { as: 'span' }) }),
+  mention: (ext) => ext.extend({ addNodeView: () => ReactNodeViewRenderer(MentionView, { as: 'span' }) }),
   callout: (ext) => ext.extend({ addNodeView: () => ReactNodeViewRenderer(CalloutView) }),
   details: (ext) => ext.extend({ addNodeView: () => ReactNodeViewRenderer(DetailsView) }),
   detailsSummary: (ext) => ext.extend({

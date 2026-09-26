@@ -43,6 +43,13 @@ describe('flattenBlocks', () => {
     expect(a.key).not.toBe(b.key);
   });
 
+  it('reads a mention as @label, inline with the text around it', () => {
+    const [block] = flattenBlocks(doc({ type: 'paragraph', content: [
+      text('Ask '), { type: 'mention', attrs: { personId: 'p-1', label: 'Pat Doe' } }, text(' first'),
+    ] }));
+    expect(block.text).toBe('Ask @Pat Doe first');
+  });
+
   it('is empty for a missing document', () => {
     expect(flattenBlocks(null)).toEqual([]);
   });
