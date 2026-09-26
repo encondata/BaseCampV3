@@ -495,3 +495,35 @@ async def test_stored_and_published_content_never_names_a_links_target(client, d
                             params={"q": "quartermaster"})
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+async def test_read_only_mode_opens_live_editing_read_only(client, db, monkeypatch):
+    """Stores are refused during a freeze, so an editor must not type into
+    a document that can't be saved: authorize and the re-check both say
+    view (developers, whom the freeze exempts, keep their level)."""
+    s = await _setup(client, db)
+    dev_h, dev_id = await login_as(client, db, roles=("staff", "developer"))
+    await _put_grants_for(client, s, dev_id)
+    page = await _create(client, s["owner"], s["space"], "Frozen", kind="page")
+
+    async def _read_only(_db):
+        return {"read_only": True, "read_only_message": "Down for maintenance."}
+    monkeypatch.setattr("serversherpa.system.admin_config.read_admin_config", _read_only)
+
+    # a never-published page stays open (read-only) to its editors
+    assert (await _authorize(client, s["editor"], page["id"]))["level"] == "view"
+    assert (await _authorize(client, s["owner"], page["id"]))["level"] == "view"
+    assert await _level(client, page["id"], s["editor_id"]) == {"level": "view"}
+    # (a developer is a wiki admin too, hence manage)
+    assert (await _authorize(client, dev_h, page["id"]))["level"] == "manage"
+    assert await _level(client, page["id"], dev_id) == {"level": "manage"}
+
+
+async def _put_grants_for(client, s, person_id):
+    resp = await client.put(f"/wiki/spaces/{s['space']['key']}/grants", headers=s["owner"],
+                            json={"grants": [
+        {"principal_type": "person", "principal_id": str(s["owner_id"]), "level": "manage"},
+        {"principal_type": "person", "principal_id": str(s["editor_id"]), "level": "edit"},
+        {"principal_type": "person", "principal_id": str(person_id), "level": "edit"},
+        {"principal_type": "internal", "level": "view"}]})
+    assert resp.status_code == 200, resp.text

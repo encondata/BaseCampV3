@@ -632,6 +632,31 @@ async def test_asset_urls_omits_unknown_and_unviewable_ids(client, db, monkeypat
     assert urls[visible["id"]]
 
 
+async def test_asset_urls_still_resolve_in_read_only_mode(client, db, monkeypatch):
+    """A read made through POST: a maintenance freeze mustn't blank every
+    image on every page."""
+    s = await _setup(client, db)
+    page = await _create(client, s["editor"], s["space"], "Doc", kind="page")
+    await publish_via_db(db, page["id"])
+    resp = await _start(client, s["editor"], target="asset", page_id=page["id"],
+                        filename="rack.png", content_type="image/png", size=10)
+    _mock_head(monkeypatch, size=10, content_type="image/png")
+    asset = await _complete(client, s["editor"], resp.json()["upload_id"])
+
+    async def _read_only(_db):
+        return {"read_only": True, "read_only_message": "Down for maintenance."}
+    monkeypatch.setattr("serversherpa.system.admin_config.read_admin_config", _read_only)
+
+    resp = await client.post("/wiki/assets/urls", headers=s["viewer"],
+                             json={"ids": [asset["id"]]})
+    assert resp.status_code == 200, resp.text
+    assert list(resp.json()["urls"]) == [asset["id"]]
+    # real writes stay frozen
+    resp = await client.post("/wiki/nodes", headers=s["editor"], json={
+        "space_id": s["space"]["id"], "parent_id": None, "kind": "folder", "title": "No"})
+    assert resp.status_code == 423
+
+
 async def test_asset_urls_empty_ids_returns_empty(client, db):
     s = await _setup(client, db)
     resp = await client.post("/wiki/assets/urls", headers=s["editor"], json={"ids": []})

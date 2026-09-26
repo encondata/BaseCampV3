@@ -4,7 +4,8 @@ browser. Every route presents the shared service token
 gate, since the caller is a service, not a user.
 
 - `GET /internal/collab/authorize?node=` — may this user (their own
-  bearer token, passed through) open this page live, and how?
+  bearer token, passed through) open this page live, and how? (Read-only
+  maintenance mode answers `view` to all but developers.)
 - `GET /internal/collab/level?node=&person=` — the same answer for a
   person, without their token: the collab server re-checks open
   connections with it long after the connecting access token expired.
@@ -108,6 +109,7 @@ async def authorize(
     enforce_forced_password_change(request, user)
 
     level = await _live_level(db, await principal_for(db, user), node)
+    level = await _frozen_to_view(db, level, user.roles)
     person = user.person
     return CollabAuthorizeOut(
         level=level, person=PersonRef(id=person.id, name=person.display_name),
@@ -136,8 +138,22 @@ async def level(node: uuid.UUID, person: uuid.UUID, db: DbSession) -> CollabLeve
         .limit(1))
     if live_session is None:
         raise not_found()
-    principal = await principal_from_access(db, person, await resolve_access(db, person))
-    return CollabLevelOut(level=await _live_level(db, principal, node))
+    access = await resolve_access(db, person)
+    principal = await principal_from_access(db, person, access)
+    level = await _live_level(db, principal, node)
+    return CollabLevelOut(level=await _frozen_to_view(db, level, access.role_names))
+
+
+async def _frozen_to_view(db, level: str, roles) -> str:
+    """Read-only maintenance mode refuses every store (except for
+    developers, like any write), so live editing opens read-only rather
+    than letting editors type into a document that can't be saved; the
+    collab server's re-check downgrades connections already open."""
+    if level == "view" or "developer" in roles:
+        return level
+    from serversherpa.system.admin_config import read_admin_config
+
+    return "view" if (await read_admin_config(db))["read_only"] else level
 
 
 async def _live_level(db, principal: Principal, node_id: uuid.UUID) -> str:

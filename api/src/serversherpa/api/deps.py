@@ -126,6 +126,9 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     "/kiosk/printer-events",
     "/auth/totp/verify", "/auth/totp/enroll/start", "/auth/totp/enroll/confirm",
     "/auth/totp/backup-codes/regenerate",
+    # a read made through POST (a batch of asset ids): a freeze mustn't
+    # blank every image on every wiki page
+    "/wiki/assets/urls",
 })
 READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/kiosk/pair")
 
