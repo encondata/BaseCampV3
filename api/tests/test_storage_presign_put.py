@@ -16,7 +16,9 @@ def test_presign_put_url_contains_key_and_signature():
     url = storage.presign_put("wiki/abc-123/def-456/report.pdf", "application/pdf", 10)
     assert "wiki/abc-123/def-456/report.pdf" in url
     assert "X-Amz-Signature" in url
-    assert "X-Amz-Expires=3600" in url
+    # long enough to start any upload, short enough that the URL can't
+    # overwrite the object long after the upload was completed and processed
+    assert "X-Amz-Expires=900" in url
 
 
 def test_presign_put_honors_a_custom_expiry():

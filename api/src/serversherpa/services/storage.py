@@ -75,11 +75,15 @@ def presign_get(key: str | None, *, download_filename: str | None = None,
     )
 
 
-def presign_put(key: str, content_type: str, size: int, expires: int = 3600) -> str:
+def presign_put(key: str, content_type: str, size: int, expires: int = 900) -> str:
     """A short-lived PUT URL for a browser to upload straight to storage.
     The signature covers both `Content-Type` and `Content-Length`, so the
     browser must send exactly `content_type` and exactly `size` bytes —
-    anything else makes storage reject the PUT."""
+    anything else makes storage reject the PUT. 15 minutes by default:
+    storage checks expiry when a PUT starts, so it's enough for any
+    upload, while a URL that outlives its upload could overwrite the
+    object after it was completed, previewed and indexed (and copies
+    share the key)."""
     s = get_settings()
     return _client().generate_presigned_url(
         "put_object",
