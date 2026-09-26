@@ -312,3 +312,44 @@ export interface WatchStateOut {
   via: WatchVia | null;
   watch_id: string | null;
 }
+
+// ── comments ────────────────────────────────────────────────────────
+
+/** A comment body: plain text (1-5000 characters) plus the people it
+ *  @mentions — never HTML. Sent as ids, returned as current names. */
+export interface CommentBodyIn {
+  text: string;
+  mentions: string[];
+}
+
+/** A new thread (no `thread_id`; `anchor` for an inline one), or a reply
+ *  to thread `thread_id`. */
+export interface CommentIn {
+  body: CommentBodyIn;
+  thread_id?: string;
+  anchor?: boolean;
+}
+
+/** A deleted comment keeps its place with `deleted` set and its text
+ *  replaced by "Comment deleted". */
+export interface CommentOut {
+  id: string;
+  thread_id: string;
+  parent_id: string | null;
+  body: { text: string; mentions: PersonRef[] };
+  author: PersonRef | null;
+  created_at: string;
+  edited_at: string | null;
+  deleted: boolean;
+}
+
+/** A comment thread, oldest comment first. `anchor` = inline: a
+ *  `commentThread` mark in the page carries `thread_id` (the mark may
+ *  be gone — an orphaned thread). */
+export interface CommentThread {
+  thread_id: string;
+  anchor: boolean;
+  resolved_at: string | null;
+  resolved_by: PersonRef | null;
+  comments: CommentOut[];
+}

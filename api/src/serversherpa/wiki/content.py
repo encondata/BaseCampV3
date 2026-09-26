@@ -2,7 +2,8 @@
 empty Tiptap document new pages start from, plain-text extraction
 (`doc_text`, for `content_text`/`draft_text` — search and previews), a
 canonical comparison of two documents (`docs_equal`), the stored-size cap
-(`MAX_DOC_BYTES`), the embedded-asset walkers page copy uses, and
+(`MAX_DOC_BYTES`), the embedded-asset walkers page copy uses, the
+people a document @mentions (`mention_ids`), and
 `strip_reference_labels`, which drops what a link or embed recorded about
 ANOTHER node (its title) before a document is stored.
 
@@ -14,6 +15,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import uuid
 from collections.abc import Iterator, Mapping
 from typing import Any
 
@@ -49,9 +51,9 @@ def doc_text(doc: dict | None) -> str:
     previews — not for rendering. Text leaves contribute their text, a
     `hardBreak` a newline, and every block (paragraph, heading, list/task
     item, blockquote, code block, table cell/header, callout, details*)
-    ends with a newline. A `wikiImage` contributes its alt text and
-    caption (a line each), and a `fileEmbed` of the page's own asset its
-    filename (a line). A `pageLink`, or a `fileEmbed` of a file node,
+    ends with a newline. A `mention` contributes `@<label>`. A
+    `wikiImage` contributes its alt text and caption (a line each), and
+    a `fileEmbed` of the page's own asset its filename (a line). A `pageLink`, or a `fileEmbed` of a file node,
     contributes nothing: what it once recorded about its target (the
     target's title) may name something this page's readers can't see
     (see `strip_reference_labels`). Runs of three or more newlines collapse to two,
@@ -78,6 +80,10 @@ def doc_text(doc: dict | None) -> str:
                 parts.append(text)
         elif node_type == "hardBreak":
             parts.append("\n")
+        elif node_type == "mention":
+            label = _attr(node, "label")
+            if label:
+                parts.append(f"@{label}")
         elif node_type == "wikiImage":
             parts.extend(f"{v}\n" for v in (_attr(node, "alt"), _attr(node, "caption")) if v)
         elif node_type == "fileEmbed" and not _attr(node, "nodeId"):
@@ -90,6 +96,37 @@ def doc_text(doc: dict | None) -> str:
         if isinstance(content, list):
             stack.extend(reversed(content))
     return re.sub(r"\n{3,}", "\n\n", "".join(parts)).strip()
+
+
+def _nodes(doc: Any) -> Iterator[dict]:
+    """Every node dict in `doc`, in document order (iteratively)."""
+    stack = [doc]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(reversed(node))
+            continue
+        if not isinstance(node, dict):
+            continue
+        yield node
+        content = node.get("content")
+        if isinstance(content, list):
+            stack.extend(reversed(content))
+
+
+def mention_ids(doc: dict | None) -> set[str]:
+    """The people `doc` @mentions: `attrs.personId` of each `mention`
+    node, as canonical uuid strings. Ids that aren't uuids are ignored."""
+    ids: set[str] = set()
+    for node in _nodes(doc) if doc else ():
+        if node.get("type") != "mention":
+            continue
+        person_id = _attr(node, "personId")
+        try:
+            ids.add(str(uuid.UUID(person_id)))
+        except (TypeError, ValueError):
+            continue
+    return ids
 
 
 def _references_node(node: dict) -> bool:

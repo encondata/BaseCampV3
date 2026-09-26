@@ -10,6 +10,10 @@ import { ApiError, apiFetch, READ_ONLY_MESSAGE, refreshSystemStatus } from '@por
 import type {
   AssetOut,
   AssetUrlsOut,
+  CommentBodyIn,
+  CommentIn,
+  CommentOut,
+  CommentThread,
   ContentVersion,
   FileUrlOut,
   FileUrlParams,
@@ -28,6 +32,7 @@ import type {
   NodePermissionsOut,
   NodePermissionsPutIn,
   PageContentOut,
+  PersonRef,
   PrincipalOut,
   PrincipalType,
   SearchHit,
@@ -248,3 +253,30 @@ export const unwatch = (watchId: string) =>
 
 export const getWatchState = (nodeId: string) =>
   request<WatchStateOut>('GET', `/nodes/${seg(nodeId)}/watch`);
+
+// ── comments & mentions ─────────────────────────────────────────────
+
+/** The page's threads, oldest first (resolved and orphaned ones too). */
+export const listComments = (nodeId: string) =>
+  request<CommentThread[]>('GET', `/nodes/${seg(nodeId)}/comments`);
+
+/** Start a thread, or reply to one (`thread_id`). */
+export const postComment = (nodeId: string, body: CommentIn) =>
+  request<CommentOut>('POST', `/nodes/${seg(nodeId)}/comments`, { body });
+
+/** Edit your own comment. */
+export const editComment = (commentId: string, body: CommentBodyIn) =>
+  request<CommentOut>('PATCH', `/comments/${seg(commentId)}`, { body: { body } });
+
+export const deleteComment = (commentId: string) =>
+  request<void>('DELETE', `/comments/${seg(commentId)}`);
+
+export const resolveThread = (threadId: string) =>
+  request<CommentThread>('POST', `/comments/threads/${seg(threadId)}/resolve`);
+
+export const reopenThread = (threadId: string) =>
+  request<CommentThread>('POST', `/comments/threads/${seg(threadId)}/reopen`);
+
+/** Up to 10 people who can view the page, for the @mention picker. */
+export const listMentionable = (nodeId: string, q: string) =>
+  request<PersonRef[]>('GET', `/nodes/${seg(nodeId)}/mentionable`, { query: { q } });

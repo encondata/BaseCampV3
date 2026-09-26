@@ -424,6 +424,63 @@ class WatchStateOut(BaseModel):
     watch_id: uuid.UUID | None
 
 
+# ── comments ─────────────────────────────────────────────────────────
+
+
+class CommentBodyIn(BaseModel):
+    """Plain text (1-5000 characters once trimmed) and the ids of the
+    people it @mentions."""
+    model_config = ConfigDict(extra="forbid")
+
+    text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
+                                           max_length=5000)]
+    mentions: list[uuid.UUID] = Field(default_factory=list, max_length=50)
+
+
+class CommentIn(BaseModel):
+    """A new thread (no `thread_id`; `anchor` for an inline one), or a
+    reply to thread `thread_id`."""
+    model_config = ConfigDict(extra="forbid")
+
+    body: CommentBodyIn
+    thread_id: uuid.UUID | None = None
+    anchor: bool = False
+
+
+class CommentPatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    body: CommentBodyIn
+
+
+class CommentBodyOut(BaseModel):
+    text: str
+    mentions: list[PersonRef]
+
+
+class CommentOut(BaseModel):
+    """A deleted comment keeps its place in its thread with `deleted`
+    set and its body replaced by "Comment deleted"."""
+    id: uuid.UUID
+    thread_id: uuid.UUID
+    parent_id: uuid.UUID | None
+    body: CommentBodyOut
+    author: PersonRef | None
+    created_at: datetime
+    edited_at: datetime | None
+    deleted: bool
+
+
+class ThreadOut(BaseModel):
+    """A comment thread, its comments oldest first. `anchor` = an inline
+    thread (a `commentThread` mark in the page carries `thread_id`)."""
+    thread_id: uuid.UUID
+    anchor: bool
+    resolved_at: datetime | None
+    resolved_by: PersonRef | None
+    comments: list[CommentOut]
+
+
 # ── internal (collab server) ─────────────────────────────────────────
 
 

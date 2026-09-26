@@ -10,18 +10,25 @@ import { ApiError, apiFetch, READ_ONLY_MESSAGE, refreshSystemStatus } from '@por
 
 import {
   completeUpload,
+  deleteComment,
+  editComment,
   getWatchState,
   getAssetUrls,
   getPageContent,
   getSpaceGrants,
   getTree,
+  listComments,
+  listMentionable,
   listRecent,
   listSpaces,
   listWatches,
   moveNode,
+  postComment,
   publishPage,
   purgeTrash,
   putDraft,
+  reopenThread,
+  resolveThread,
   search,
   searchPrincipals,
   setFavorite,
@@ -155,6 +162,46 @@ describe('wikiApi requests', () => {
     fetchMock.mockResolvedValueOnce(reply(200, state));
     await expect(getWatchState('n1')).resolves.toEqual(state);
     expect(lastCall().path).toBe('/wiki/nodes/n1/watch');
+  });
+
+  it('reads, posts, edits, deletes and resolves comments; finds mentionable people', async () => {
+    fetchMock.mockResolvedValueOnce(reply(200, []));
+    await expect(listComments('n1')).resolves.toEqual([]);
+    expect(lastCall()).toMatchObject({ path: '/wiki/nodes/n1/comments', init: {} });
+
+    const comment = { id: 'c1', thread_id: 'c1', parent_id: null,
+      body: { text: 'hi @Pat', mentions: [{ id: 'p1', name: 'Pat' }] }, author: null,
+      created_at: '2026-09-26T00:00:00Z', edited_at: null, deleted: false };
+    fetchMock.mockResolvedValueOnce(reply(201, comment));
+    await expect(postComment('n1', { body: { text: 'hi @Pat', mentions: ['p1'] },
+      thread_id: 't1' })).resolves.toEqual(comment);
+    expect(lastCall()).toMatchObject({ path: '/wiki/nodes/n1/comments', init: { method: 'POST' } });
+    expect(JSON.parse(String(lastCall().init.body))).toEqual(
+      { body: { text: 'hi @Pat', mentions: ['p1'] }, thread_id: 't1' });
+
+    fetchMock.mockResolvedValueOnce(reply(200, comment));
+    await editComment('c1', { text: 'edited', mentions: [] });
+    expect(lastCall()).toMatchObject({ path: '/wiki/comments/c1', init: { method: 'PATCH' } });
+    expect(JSON.parse(String(lastCall().init.body))).toEqual(
+      { body: { text: 'edited', mentions: [] } });
+
+    fetchMock.mockResolvedValueOnce(reply(204));
+    await expect(deleteComment('c1')).resolves.toBeUndefined();
+    expect(lastCall()).toMatchObject({ path: '/wiki/comments/c1', init: { method: 'DELETE' } });
+
+    const thread = { thread_id: 'c1', anchor: true, resolved_at: null, resolved_by: null,
+      comments: [comment] };
+    fetchMock.mockResolvedValueOnce(reply(200, thread));
+    await expect(resolveThread('c1')).resolves.toEqual(thread);
+    expect(lastCall()).toMatchObject(
+      { path: '/wiki/comments/threads/c1/resolve', init: { method: 'POST' } });
+    fetchMock.mockResolvedValueOnce(reply(200, thread));
+    await reopenThread('c1');
+    expect(lastCall().path).toBe('/wiki/comments/threads/c1/reopen');
+
+    fetchMock.mockResolvedValueOnce(reply(200, [{ id: 'p1', name: 'Pat' }]));
+    await expect(listMentionable('n1', 'pa t')).resolves.toEqual([{ id: 'p1', name: 'Pat' }]);
+    expect(lastCall().path).toBe('/wiki/nodes/n1/mentionable?q=pa+t');
   });
 
   it('unwraps the grants and asset-url envelopes', async () => {

@@ -12,7 +12,8 @@ and the collab server's internal store.
 
 Like `tree`, these helpers only `flush()`; callers commit, and audit
 the user-facing actions (publish, restore) themselves — autosaves are
-too chatty to audit.
+too chatty to audit. `publish` sends its own mention notifications, so
+every caller of it does.
 """
 from __future__ import annotations
 
@@ -30,8 +31,11 @@ from serversherpa.wiki.content import (
     doc_bytes,
     doc_text,
     docs_equal,
+    mention_ids,
     strip_reference_labels,
 )
+from serversherpa.wiki.notify import on_mentions
+
 # re-exported: callers that only need the search refresh can still reach
 # it as `pages.refresh_search` (Task 7 moved the implementation to
 # `wiki.search`, which also owns the query side of search).
@@ -185,7 +189,9 @@ async def publish(db: AsyncSession, node: WikiNode, page: WikiPage, *,
                   actor_id: uuid.UUID | None, note: str | None) -> WikiPageVersion:
     """Publish the current draft (the empty doc when there's none) as a
     `published` version. 409 `nothing_to_publish` when the page is
-    already published and its draft adds nothing to that."""
+    already published and its draft adds nothing to that. People
+    @mentioned in it who weren't in the previous published version get
+    a `wiki_mention` (see `notify.on_mentions`)."""
     await _lock_page(db, node.id)
     await db.refresh(page)     # the draft as of the lock, not the request start
     published = await published_content(db, page)
@@ -203,4 +209,8 @@ async def publish(db: AsyncSession, node: WikiNode, page: WikiPage, *,
     node.updated_by = actor_id
     await db.flush()
     await refresh_search(db, node.id)
+    added = mention_ids(version.content_json) - mention_ids(published)
+    if added:
+        await on_mentions(db, node, sorted(uuid.UUID(pid) for pid in added),
+                          actor_id=actor_id, context="page")
     return version
