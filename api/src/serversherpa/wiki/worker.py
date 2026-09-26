@@ -52,7 +52,7 @@ from serversherpa.wiki.files import (
     normalize_content_type,
     sanitize_filename,
 )
-from serversherpa.wiki.search import refresh_search
+from serversherpa.wiki.search import backfill_search_vectors, refresh_search
 
 logger = logging.getLogger("serversherpa.wiki.worker")
 
@@ -382,6 +382,20 @@ async def _requeue_stale(maker, state: dict) -> None:
         state["failed"] = True
 
 
+async def _backfill_search(maker) -> None:
+    """Start-up: index by title any node from before every node was
+    indexed at creation. Best effort — search just misses them until the
+    next start if this fails."""
+    try:
+        async with maker() as db:
+            count = await backfill_search_vectors(db)
+            await db.commit()
+        if count:
+            logger.info("indexed %s wiki nodes that had no search vector", count)
+    except Exception:
+        logger.warning("could not backfill wiki search vectors", exc_info=True)
+
+
 async def run_forever(poll_seconds: float = 2.0) -> None:
     from serversherpa.db.engine import get_sessionmaker
     from serversherpa.system.admin_config import poll_workers_paused
@@ -397,6 +411,7 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
     heartbeat = start_heartbeat(PROCESS_NAME, "worker", meta_fn=lambda: dict(pause_state))
     maker = get_sessionmaker()
     try:
+        await _backfill_search(maker)
         await _requeue_stale(maker, stale_state)            # startup sweep
         stale_at = time.monotonic()
         expired_at = -EXPIRY_SWEEP_SECONDS                  # first pass = start-up

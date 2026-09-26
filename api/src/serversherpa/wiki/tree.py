@@ -42,6 +42,7 @@ from serversherpa.wiki.content import (
 )
 from serversherpa.wiki.pages import add_version, utcnow
 from serversherpa.wiki.permissions import level_rank
+from serversherpa.wiki.search import refresh_search
 
 # sibling positions step by POSITION_STEP; a sibling set is renumbered
 # in those steps when an insert's two neighbors are closer than MIN_GAP
@@ -190,6 +191,9 @@ async def create_node(
             await add_version(db, node, kind="imported", title=title,
                               content_json=initial_content, actor_id=actor_id)
 
+    # findable by title from the start: a folder is never published, and
+    # an editor finds a never-published page by its title
+    await refresh_search(db, node.id)
     return node
 
 
@@ -206,6 +210,7 @@ async def publish_empty_home(db: AsyncSession, page_node: WikiNode,
     assert page is not None
     page.published_version_id = version.id
     page.has_unpublished_changes = False
+    await refresh_search(db, page_node.id)
     return version
 
 

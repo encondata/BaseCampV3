@@ -2,7 +2,11 @@
 title search, permission filtering, space/kind filters, and safe HTML
 snippets — plus a direct test of `wiki.search.refresh_search`'s file
 body text."""
+import hashlib
 import uuid
+
+from sqlalchemy import select
+from sqlalchemy import update as sa_update
 
 from serversherpa.db.models import (
     Client,
@@ -240,3 +244,142 @@ async def test_empty_query_is_422(client, db):
     resp = await client.get("/wiki/search", headers=s["owner"], params={"q": "  "})
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "bad_query"
+
+
+# ── every node is indexed (final review I3 / T7) ────────────────────
+
+LONG = "Network switch configuration {word} for the Dallas site"
+
+
+async def test_a_new_folder_is_found_by_one_word_of_a_long_title(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], LONG.format(word="runbook"))
+    for kind in (None, "folder"):
+        hits = await _search(client, s["viewer"], "runbook",
+                             **({"kind": kind} if kind else {}))
+        assert [h["node"]["id"] for h in hits] == [folder["id"]]
+
+
+async def test_a_never_published_page_is_found_by_title_for_editors_only(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], LONG.format(word="playbook"),
+                         kind="page")
+    hits = await _search(client, s["editor"], "playbook")
+    assert [h["node"]["id"] for h in hits] == [page["id"]]
+    assert await _search(client, s["viewer"], "playbook") == []
+
+
+async def test_a_new_spaces_home_page_is_found_by_its_title(client, db):
+    s = await _setup(client, db)
+    space = await _space(client, s["owner"],
+                         name="Dallas colocation handbook for field technicians")
+    hits = await _search(client, s["owner"], "colocation")
+    assert [h["node"]["id"] for h in hits] == [space["home_node_id"]]
+
+
+async def test_rename_and_copy_reindex(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], LONG.format(word="checklist"))
+    target = await _create(client, s["owner"], s["space"], "Archive")
+    resp = await client.patch(f"/wiki/nodes/{folder['id']}", headers=s["owner"],
+                              json={"title": LONG.format(word="procedure")})
+    assert resp.status_code == 200, resp.text
+    assert await _search(client, s["owner"], "checklist") == []
+    assert [h["node"]["id"] for h in await _search(client, s["owner"], "procedure")] \
+        == [folder["id"]]
+
+    resp = await client.post(f"/wiki/nodes/{folder['id']}/copy", headers=s["owner"],
+                             json={"parent_id": target["id"]})
+    assert resp.status_code == 201, resp.text
+    ids = {h["node"]["id"] for h in await _search(client, s["owner"], "procedure")}
+    assert ids == {folder["id"], resp.json()["id"]}
+
+
+async def test_an_archived_spaces_content_is_still_found(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], LONG.format(word="inventory"))
+    resp = await client.post(f"/wiki/spaces/{s['space']['key']}/archive", headers=s["owner"])
+    assert resp.status_code == 200, resp.text
+    hits = await _search(client, s["viewer"], "inventory")
+    assert [h["node"]["id"] for h in hits] == [folder["id"]]
+
+
+async def test_every_live_node_has_a_search_vector(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Folder")
+    page = await _create(client, s["owner"], s["space"], "Page", kind="page", parent=folder)
+    await _create(client, s["owner"], s["space"], "Imported", kind="page",
+                  initial_content=_doc("from a file"))
+    await client.post(f"/wiki/nodes/{folder['id']}/copy", headers=s["owner"],
+                      json={"parent_id": None})
+    await publish_via_api(client, s["owner"], page["id"])
+    db.expire_all()
+    missing = (await db.scalars(select(WikiNode.title).where(
+        WikiNode.deleted_at.is_(None), WikiNode.search_tsv.is_(None)))).all()
+    assert missing == []
+
+
+# ── huge texts (final review I4) ────────────────────────────────────
+
+
+def _unique_tokens(n: int) -> str:
+    """~33 bytes per token of text Postgres can't compress into fewer
+    lexemes — about 1 MB for 30,000 tokens, past tsvector's 1 MB cap."""
+    return " ".join(hashlib.md5(str(i).encode()).hexdigest() for i in range(n))
+
+
+async def test_a_file_with_a_huge_extract_stays_indexable(client, db):
+    s = await _setup(client, db)
+    text = "zeppelin " + _unique_tokens(30_000)
+    file = await _create_file_via_db(db, s["space"], "big.log", text_extract=text)
+    await wiki_search.refresh_search(db, uuid.UUID(file["id"]))
+    await db.commit()
+    hits = await _search(client, s["owner"], "zeppelin")
+    assert [h["node"]["id"] for h in hits] == [file["id"]]
+
+
+async def test_a_huge_page_still_publishes(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Huge", kind="page")
+    await _set_draft(db, page["id"], _doc("dirigible " + _unique_tokens(30_000)))
+    await publish_via_api(client, s["owner"], page["id"])
+    hits = await _search(client, s["owner"], "dirigible")
+    assert [h["node"]["id"] for h in hits] == [page["id"]]
+
+
+async def test_stray_control_characters_never_become_marks(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Odd", kind="page")
+    await _set_draft(db, page["id"], _doc("alpha \x02beta\x03 gamma"))
+    await publish_via_api(client, s["owner"], page["id"])
+    hits = await _search(client, s["owner"], "gamma")
+    assert hits[0]["snippet_html"].count("<mark>") == 1
+    assert "<mark>gamma</mark>" in hits[0]["snippet_html"]
+
+
+async def test_an_overflowing_body_falls_back_to_a_shorter_index(client, db, monkeypatch):
+    """Even a capped body can overflow a tsvector (unique single-character
+    tokens cost more than their text): the index is retried shorter,
+    never raised."""
+    monkeypatch.setattr(wiki_search, "SEARCH_BODY_CHARS", 2_000_000)
+    s = await _setup(client, db)
+    file = await _create_file_via_db(db, s["space"], "huge.csv",
+                                     text_extract="airship " + _unique_tokens(30_000))
+    await wiki_search.refresh_search(db, uuid.UUID(file["id"]))
+    await db.commit()
+    hits = await _search(client, s["owner"], "airship")
+    assert [h["node"]["id"] for h in hits] == [file["id"]]
+
+
+async def test_backfill_indexes_nodes_created_before_every_node_was(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], LONG.format(word="manifest"))
+    await db.execute(sa_update(WikiNode).where(WikiNode.id == uuid.UUID(folder["id"]))
+                     .values(search_tsv=None))
+    await db.commit()
+    assert await _search(client, s["owner"], "manifest") == []
+
+    assert await wiki_search.backfill_search_vectors(db) >= 1
+    await db.commit()
+    hits = await _search(client, s["owner"], "manifest")
+    assert [h["node"]["id"] for h in hits] == [folder["id"]]

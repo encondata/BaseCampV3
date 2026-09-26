@@ -16,11 +16,13 @@ would be circular.
 from __future__ import annotations
 
 import html
+import re
 import uuid
 from dataclasses import dataclass
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import (
@@ -44,6 +46,8 @@ _MARK_STOP = "\x03"
 _HEADLINE_OPTIONS = (
     f"StartSel={_MARK_START}, StopSel={_MARK_STOP}, MaxFragments=2, "
     "MaxWords=24, MinWords=8")
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 _TITLE_SIMILARITY_THRESHOLD = 0.3
 # candidates fetched per requested hit, before permission filtering thins
@@ -76,17 +80,31 @@ async def _file_body(db: AsyncSession, node_id: uuid.UUID) -> str:
     return f"{description or ''}\n{text_extract or ''}"
 
 
+# How much of a body is indexed (and searched for snippets). A tsvector
+# holds at most 1 MB of lexemes and positions, and text of unique tokens
+# (a log of ids, a CSV of hashes) costs more than its own size, so the
+# 1,000,000-character extract cap is far too much to index whole. Where
+# even this overflows (e.g. a text of unique single CJK characters),
+# `refresh_search` falls back to the smaller caps, then to the title.
+SEARCH_BODY_CHARS = 200_000
+_FALLBACK_BODY_CHARS = (20_000, 0)
+# Postgres's "program limit exceeded" (string is too long for tsvector)
+_PROGRAM_LIMIT_EXCEEDED = "54000"
+
+
 async def body_text(db: AsyncSession, node_id: uuid.UUID, kind: str) -> str:
     """The text indexed at weight 'B' — and what search snippets are
     drawn from: a page's published text (never its draft, so an edited
     but unpublished page can't be found by its draft wording), a file's
-    description plus its current version's extracted text (already
-    capped at 1 MB when it was extracted), or '' for a folder."""
+    description plus its current version's extracted text, or '' for a
+    folder — the first SEARCH_BODY_CHARS of it."""
     if kind == "page":
-        return await _page_body(db, node_id)
-    if kind == "file":
-        return await _file_body(db, node_id)
-    return ""
+        body = await _page_body(db, node_id)
+    elif kind == "file":
+        body = await _file_body(db, node_id)
+    else:
+        body = ""
+    return body[:SEARCH_BODY_CHARS]
 
 
 _REFRESH_SEARCH_SQL = text("""
@@ -97,19 +115,55 @@ _REFRESH_SEARCH_SQL = text("""
 """)
 
 
+def _too_long_for_tsvector(exc: DBAPIError) -> bool:
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    return code == _PROGRAM_LIMIT_EXCEEDED or "too long for tsvector" in str(exc)
+
+
 async def refresh_search(db: AsyncSession, node_id: uuid.UUID) -> None:
     """Recompute a node's `search_tsv` from its title (weight A) and its
-    indexed body (weight B, see `body_text`). Call this after publish,
-    a title rename, an upload completing (the new node and, on a new
-    version, the file it belongs to), a file's description changing, a
-    file version restore, a copy (each new node), and — Task 8's worker
-    — text extraction finishing. A no-op for a node that's gone (a
-    caller racing a delete, say)."""
+    indexed body (weight B, see `body_text`). Every node gets one when
+    it's created (`tree.create_node`, a space's home page); call this
+    again after publish, a title rename, an upload completing (the new
+    node and, on a new version, the file it belongs to), a file's
+    description changing, a file version restore, a copy (each new
+    node), and — the worker — text extraction finishing. Pending ORM
+    changes (a rename) are flushed first, so the title indexed is the
+    new one. A body too rich for a tsvector is indexed shorter, and at
+    worst the node is indexed by its title alone — never an error. A
+    no-op for a node that's gone (a caller racing a delete, say)."""
+    await db.flush()
     node = await db.get(WikiNode, node_id)
     if node is None:
         return
     body = await body_text(db, node.id, node.kind)
-    await db.execute(_REFRESH_SEARCH_SQL, {"node_id": node_id, "body": body})
+    for cap in (None, *_FALLBACK_BODY_CHARS):
+        try:
+            async with db.begin_nested():
+                await db.execute(_REFRESH_SEARCH_SQL, {
+                    "node_id": node_id, "body": body if cap is None else body[:cap]})
+            return
+        except DBAPIError as exc:
+            if cap == 0 or not _too_long_for_tsvector(exc):
+                raise
+
+
+_BACKFILL_SQL = text("""
+    UPDATE wiki_nodes SET search_tsv = setweight(to_tsvector('english', title), 'A')
+    WHERE search_tsv IS NULL
+""")
+
+
+async def backfill_search_vectors(db: AsyncSession) -> int:
+    """Index, by title, every node that has no `search_tsv` yet — nodes
+    created before every node was indexed at creation (folders, pages
+    never published, space home pages). Their body is empty, so the title
+    is all there is to index; anything with a body got a vector when it
+    gained one. The worker runs this at start-up; returns how many rows
+    it touched (0 once there's nothing left)."""
+    result = await db.execute(_BACKFILL_SQL)
+    return result.rowcount
 
 
 # ── search ───────────────────────────────────────────────────────────
@@ -264,7 +318,9 @@ async def _snippet_for(db: AsyncSession, q: str, candidate: _Candidate) -> str:
     the control characters `_HEADLINE_OPTIONS` asks `ts_headline` to
     wrap matches in (chosen because `html.escape` never produces them,
     so they can't collide with anything the escape step generated)."""
-    body = await body_text(db, candidate.id, candidate.kind)
+    # the mark sentinels (and every other C0 control but tab and
+    # newline) can't be in the text, or a stray one would become a mark
+    body = _CONTROL_CHARS.sub("", await body_text(db, candidate.id, candidate.kind))
     raw = await db.scalar(select(func.ts_headline(
         "english", html.escape(body), func.websearch_to_tsquery("english", q),
         _HEADLINE_OPTIONS))) or ""
