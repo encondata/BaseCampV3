@@ -24,7 +24,6 @@ import { Link, useNavigate } from 'react-router-dom';
 
 import { fileType } from '../components/NodeIcon';
 import { resolveAssetUrl } from '../lib/assetUrls';
-import { openDownload } from '../lib/download';
 import { nodeTitle } from '../lib/nodeTitles';
 import { personName } from '../lib/personNames';
 import { getFileUrl } from '../lib/wikiApi';
@@ -256,7 +255,12 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
                onClick={(e) => {
                  if (!share?.isStale() || !assetId) return;
                  e.preventDefault();
-                 void share.refresh().then((urls) => { const u = urls?.[assetId]; if (u) openDownload(u); });
+                 // a fresh URL may be inline (a PDF opens in the browser): a new
+                 // tab, like the link itself, so the shared page stays put
+                 void share.refresh().then((urls) => {
+                   const u = urls?.[assetId];
+                   if (u) window.open(u, '_blank', 'noopener');
+                 });
                }}>
               <Icon name="download" />Download
             </a>

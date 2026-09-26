@@ -231,8 +231,11 @@ describe('PublicView — expired URLs', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
-  it('re-reads the share before downloading an embedded file whose URL may have expired', async () => {
+  it('re-reads the share before downloading an embedded file whose URL may have expired, in a new tab', async () => {
     const at = clock();
+    // an embed's URL may be inline (a PDF opens in the browser): following
+    // it in this tab would navigate the shared page away
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
     answer(200, PAGE_WITH_PDF);
     answer(200, { ...PAGE_WITH_PDF, asset_urls: { [PDF_ASSET]: 'https://s3/spec-fresh.pdf' } });
     renderAt('tok123');
@@ -241,7 +244,8 @@ describe('PublicView — expired URLs', () => {
     const click = new MouseEvent('click', { bubbles: true, cancelable: true });
     link.dispatchEvent(click);
     expect(click.defaultPrevented).toBe(true);
-    await waitFor(() => expect(openDownload).toHaveBeenCalledWith('https://s3/spec-fresh.pdf'));
+    await waitFor(() => expect(open).toHaveBeenCalledWith('https://s3/spec-fresh.pdf', '_blank', 'noopener'));
+    expect(openDownload).not.toHaveBeenCalled();
   });
 });
 
