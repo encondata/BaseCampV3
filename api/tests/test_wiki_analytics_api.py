@@ -16,7 +16,9 @@ from serversherpa.db.models import (
     WikiNode,
     WikiPageView,
     WikiSearchLog,
+    WikiSpace,
 )
+from serversherpa.wiki import analytics
 from tests.wiki_helpers import _create, _put_grants, _setup, _space, login_as, publish_via_db
 
 
@@ -432,6 +434,22 @@ async def test_stale_pages_and_overdue_reviews(client, db):
         datetime.now(UTC) - timedelta(days=365)
     assert [r["node"]["title"] for r in body["overdue_reviews"]] == ["Overdue"]
     assert body["overdue_reviews"][0]["next_review_at"]
+
+
+async def test_stale_pages_skip_archived_spaces_like_overdue_reviews(client, db):
+    """Nobody can act on a page in an archived space, so it isn't "stale"
+    work — the same rule overdue_reviews already follows."""
+    s = await _setup(client, db)
+    stale = await _page(client, s, db, "Stale")
+    await db.execute(update(WikiNode).where(WikiNode.id == uuid.UUID(stale["id"])).values(
+        updated_at=datetime.now(UTC) - timedelta(days=400)))
+    await db.commit()
+    assert [n for n, _ in await analytics.stale_pages(db, None)] == [uuid.UUID(stale["id"])]
+
+    await db.execute(update(WikiSpace).where(WikiSpace.id == uuid.UUID(s["space"]["id"]))
+                     .values(archived_at=datetime.now(UTC)))
+    await db.commit()
+    assert await analytics.stale_pages(db, None) == []
 
 
 async def test_a_manager_sees_only_nodes_they_can_view(client, db):

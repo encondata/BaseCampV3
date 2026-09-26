@@ -242,13 +242,15 @@ async def failed_searches(db: AsyncSession, window: Window) -> list[FailedSearch
 
 async def stale_pages(db: AsyncSession, space_ids: Sequence[uuid.UUID] | None, *,
                       now: datetime | None = None) -> list[tuple[uuid.UUID, datetime]]:
-    """Published live pages not updated in STALE_MONTHS, the longest
-    untouched first: (node id, updated_at)."""
+    """Published live pages in a live space not updated in STALE_MONTHS,
+    the longest untouched first: (node id, updated_at)."""
     cutoff = reviews.add_months(now or utcnow(), -STALE_MONTHS)
     rows = (await db.execute(
         select(WikiNode.id, WikiNode.updated_at)
         .join(WikiPage, WikiPage.node_id == WikiNode.id)
+        .join(WikiSpace, WikiSpace.id == WikiNode.space_id)
         .where(WikiNode.kind == "page", WikiNode.deleted_at.is_(None), _in_scope(space_ids),
+               WikiSpace.archived_at.is_(None),
                WikiPage.published_version_id.is_not(None), WikiNode.updated_at < cutoff)
         .order_by(WikiNode.updated_at, WikiNode.id)
         .limit(STALE_LIMIT))).all()
