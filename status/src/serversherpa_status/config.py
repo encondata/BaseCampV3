@@ -8,11 +8,15 @@ from pathlib import Path
 
 DEFAULT_STATIC_DIR = str(Path(__file__).parent / "static")
 
-# (key, display name, env var) — order is the display order on the page.
+# (key, display name, env var, required) — order is the display order on the
+# page. The page only ever shows the display name, never the URL. Optional
+# services are left off the page entirely while their env var is unset, so
+# adding one never breaks an existing deployment's .env.
 SERVICES = (
-    ("api", "API", "STATUS_API_URL"),
-    ("portal", "Portal", "STATUS_PORTAL_URL"),
-    ("kiosk", "Kiosk", "STATUS_KIOSK_URL"),
+    ("api", "API", "STATUS_API_URL", True),
+    ("portal", "Portal", "STATUS_PORTAL_URL", True),
+    ("kiosk", "Kiosk", "STATUS_KIOSK_URL", True),
+    ("wiki", "Wiki", "STATUS_WIKI_URL", False),
 )
 
 
@@ -53,8 +57,10 @@ def _number(env: Mapping[str, str], var: str, default: float, minimum: float) ->
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     env = os.environ if env is None else env
     services = []
-    for key, name, var in SERVICES:
+    for key, name, var, required in SERVICES:
         url = env.get(var, "").strip().rstrip("/")
+        if not url and not required:
+            continue
         if not url:
             raise ConfigError(f"{var} is required (e.g. https://{key}.serversherpa.com)")
         if not url.startswith(("http://", "https://")):

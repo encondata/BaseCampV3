@@ -12,7 +12,10 @@ from serversherpa_status.config import Service
 # The API probe reads the database (/system/status), so a dead DB reads red;
 # /healthz would only prove the process is alive. The kiosk's config.js is
 # written by its entrypoint, so a 200 proves Caddy AND the runtime config.
-PROBE_PATHS = {"api": "/system/status", "portal": "/", "kiosk": "/config.js"}
+# The portal and the wiki are both single-page apps: a 200 must carry the
+# app's mount point, not a proxy's placeholder page.
+PROBE_PATHS = {"api": "/system/status", "portal": "/", "kiosk": "/config.js", "wiki": "/"}
+SPA_SERVICES = {"portal", "wiki"}
 
 DETAIL_MAX = 200
 
@@ -30,7 +33,7 @@ def _body_problem(key: str, resp: httpx.Response) -> bool:
             return not isinstance(resp.json(), dict)
         except ValueError:
             return True
-    if key == "portal":
+    if key in SPA_SERVICES:
         return 'id="root"' not in resp.text
     return False
 

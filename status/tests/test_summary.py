@@ -101,3 +101,21 @@ def test_fresh_last_checked_not_stale(ctx):
     later = NOW + timedelta(seconds=100)
     out = build_summary(settings, store, tracker, later)
     assert out["services"][0]["state"] == "up"
+
+
+def test_wiki_shows_title_only(tmp_path):
+    settings = load_settings({
+        "STATUS_API_URL": "http://api.test",
+        "STATUS_PORTAL_URL": "http://portal.test",
+        "STATUS_KIOSK_URL": "http://kiosk.test",
+        "STATUS_WIKI_URL": "https://wiki.dev.serversherpa.com",
+        "STATUS_DB_PATH": str(tmp_path / "s.db"),
+    })
+    store = Store(settings.db_path)
+    tracker = StateTracker([s.key for s in settings.services], 2)
+    try:
+        out = build_summary(settings, store, tracker, NOW)
+    finally:
+        store.close()
+    assert [(s["key"], s["name"]) for s in out["services"]][-1] == ("wiki", "Wiki")
+    assert "serversherpa.com" not in repr(out)

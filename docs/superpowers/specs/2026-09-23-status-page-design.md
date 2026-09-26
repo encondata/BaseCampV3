@@ -55,6 +55,7 @@ inherit the light token set (`--paper`, `--ink`, `--accent`, `--c-green*`, `--c-
 | API | `GET {STATUS_API_URL}/system/status` | HTTP 200 and body parses as a JSON object |
 | Portal | `GET {STATUS_PORTAL_URL}/` | HTTP 200 and body contains `id="root"` |
 | Kiosk | `GET {STATUS_KIOSK_URL}/config.js` | HTTP 200 |
+| Wiki (optional, added 2026-09-26) | `GET {STATUS_WIKI_URL}/` | HTTP 200 and body contains `id="root"` |
 
 `/system/status` is chosen over `/healthz` because it reads the database, so a dead DB
 reads red. Everything else — non-200, bad body, timeout, connection error — is a failed
@@ -71,6 +72,7 @@ fail) is still recorded for uptime math. Before any check has run the state is `
 | `STATUS_API_URL` | required | may be an internal Docker hostname |
 | `STATUS_PORTAL_URL` | required | |
 | `STATUS_KIOSK_URL` | required | |
+| `STATUS_WIKI_URL` | optional | no Wiki card while unset (existing deployments keep working) |
 | `STATUS_INTERVAL_SECONDS` | `60` | min 10 |
 | `STATUS_TIMEOUT_SECONDS` | `10` | |
 | `STATUS_FAILURE_THRESHOLD` | `2` | the 2-strike rule |

@@ -16,3 +16,8 @@ def portal_service() -> Service:
 @pytest.fixture
 def kiosk_service() -> Service:
     return Service("kiosk", "Kiosk", "http://kiosk.test")
+
+
+@pytest.fixture
+def wiki_service() -> Service:
+    return Service("wiki", "Wiki", "http://wiki.test")

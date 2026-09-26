@@ -95,3 +95,16 @@ async def test_connection_error(kiosk_service):
     respx.get("http://kiosk.test/config.js").mock(side_effect=httpx.ConnectError("refused"))
     r = await run(kiosk_service)
     assert not r.ok and r.latency_ms is None and r.detail == "connection error: ConnectError"
+
+
+@respx.mock
+async def test_wiki_green_when_spa_root_present(wiki_service):
+    respx.get("http://wiki.test/").respond(200, text='<div id="root"></div>')
+    assert (await run(wiki_service)).ok
+
+
+@respx.mock
+async def test_wiki_red_without_spa_root(wiki_service):
+    respx.get("http://wiki.test/").respond(200, text="Welcome to nginx!")
+    r = await run(wiki_service)
+    assert not r.ok and r.detail == "unexpected response body"

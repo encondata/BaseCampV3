@@ -35,6 +35,18 @@ describe('App', () => {
     )).toBeTruthy();
   });
 
+  it('shows each service by its title only — a fourth (Wiki) card, no URLs', async () => {
+    const withWiki: Summary = {
+      ...summary,
+      services: [...summary.services, { ...summary.services[0], key: 'wiki', name: 'Wiki' }],
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(withWiki))));
+    const { container } = render(<App />);
+    await screen.findByText('All systems operational');
+    expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual(['API', 'Portal', 'Kiosk', 'Wiki']);
+    expect(container.textContent).not.toMatch(/https?:|serversherpa\.com/);
+  });
+
   it('keeps last data and warns when a refresh fails — never fakes green', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(summary)))

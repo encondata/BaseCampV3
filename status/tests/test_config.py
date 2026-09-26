@@ -68,3 +68,22 @@ def test_bad_numbers_rejected(var, value):
 def test_stale_after_seconds_is_three_intervals_plus_timeout():
     s = load_settings({**BASE, "STATUS_INTERVAL_SECONDS": "20", "STATUS_TIMEOUT_SECONDS": "5"})
     assert stale_after_seconds(s) == 65
+
+
+def test_wiki_is_optional_and_off_by_default():
+    assert [s.key for s in load_settings(BASE).services] == ["api", "portal", "kiosk"]
+    assert [s.key for s in load_settings({**BASE, "STATUS_WIKI_URL": "  "}).services] == [
+        "api", "portal", "kiosk",
+    ]
+
+
+def test_wiki_added_last_when_configured():
+    s = load_settings({**BASE, "STATUS_WIKI_URL": "https://wiki.example.com/"})
+    assert [(x.key, x.name, x.url) for x in s.services][-1] == (
+        "wiki", "Wiki", "https://wiki.example.com",
+    )
+
+
+def test_wiki_url_must_be_http():
+    with pytest.raises(ConfigError, match="STATUS_WIKI_URL"):
+        load_settings({**BASE, "STATUS_WIKI_URL": "wiki.example.com"})

@@ -1,7 +1,8 @@
 # ServerSherpa status page
 
 Public, read-only status page for `status.serversherpa.com`. No login. It checks
-the API, Portal, and Kiosk every minute and shows green/red plus 90-day uptime.
+the API, Portal, Kiosk, and (optionally) the Wiki every minute and shows green/red plus
+90-day uptime. Each service appears by its title only; URLs are never shown or sent.
 
 ## What "up" means
 
@@ -10,6 +11,7 @@ the API, Portal, and Kiosk every minute and shows green/red plus 90-day uptime.
 | API | `GET {STATUS_API_URL}/system/status` | 200 + JSON object (this reads the database) |
 | Portal | `GET {STATUS_PORTAL_URL}/` | 200 + the app's `id="root"` in the page |
 | Kiosk | `GET {STATUS_KIOSK_URL}/config.js` | 200 |
+| Wiki (optional) | `GET {STATUS_WIKI_URL}/` | 200 + the app's `id="root"` in the page |
 
 A service shows **down** after 2 failed checks in a row and **up** again on the first
 success. Every check counts toward uptime. History lives in SQLite at `/data/status.db`
@@ -25,6 +27,7 @@ always matches the configured cadence rather than a hardcoded guess.
 | `STATUS_API_URL` | required | |
 | `STATUS_PORTAL_URL` | required | |
 | `STATUS_KIOSK_URL` | required | |
+| `STATUS_WIKI_URL` | unset | optional; when set, a Wiki card is added |
 | `STATUS_INTERVAL_SECONDS` | 60 | minimum 10 |
 | `STATUS_TIMEOUT_SECONDS` | 10 | |
 | `STATUS_FAILURE_THRESHOLD` | 2 | |
