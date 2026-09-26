@@ -11,7 +11,27 @@ import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode }
 import { NavLink } from 'react-router-dom';
 
 import type { NavMode } from '../lib/settings';
-import type { NavSection } from './navSections';
+import type { NavItem, NavSection } from './navSections';
+
+/** A nav row's link: an external item (`href`) is a plain `<a>` that opens
+ *  in a new tab, since it leaves this app entirely — a NavLink's client-side
+ *  routing has nothing to match it against. */
+function NavRowLink({ item, onNavigate }: { item: NavItem; onNavigate?: () => void }) {
+  if (item.href) {
+    return (
+      <a href={item.href()} target="_blank" rel="noopener" onClick={onNavigate}>
+        {item.icon}
+        {item.label}
+      </a>
+    );
+  }
+  return (
+    <NavLink to={item.to} end={item.end || item.to === '/'} onClick={onNavigate}>
+      {item.icon}
+      {item.label}
+    </NavLink>
+  );
+}
 
 export interface NavPanelProps {
   sections: NavSection[];
@@ -138,10 +158,7 @@ export default function NavPanel({
                     <ul className="nav-list">
                       {section.items.map((item) => (
                         <li className="nav-item" key={item.to}>
-                          <NavLink to={item.to} end={item.end || item.to === '/'} onClick={onNavigate}>
-                            {item.icon}
-                            {item.label}
-                          </NavLink>
+                          <NavRowLink item={item} onNavigate={onNavigate} />
                         </li>
                       ))}
                     </ul>
@@ -158,10 +175,7 @@ export default function NavPanel({
           <ul className="nav-list">
             {openFlyoutSection.items.map((item) => (
               <li className="nav-item" key={item.to}>
-                <NavLink to={item.to} end={item.end || item.to === '/'} onClick={onNavigate}>
-                  {item.icon}
-                  {item.label}
-                </NavLink>
+                <NavRowLink item={item} onNavigate={onNavigate} />
               </li>
             ))}
           </ul>

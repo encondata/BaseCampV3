@@ -15,6 +15,14 @@ describe('NAV_SECTIONS', () => {
   });
 });
 
+it('gives the wiki its own external nav item near Home, opening in a new tab', () => {
+  const dashboards = NAV_SECTIONS.find((s) => s.label === 'Dashboards')!;
+  const item = dashboards.items.find((i) => i.label === 'Wiki');
+  expect(item).toBeTruthy();
+  expect(item!.resource).toBe('wiki');
+  expect(typeof item!.href).toBe('function');
+});
+
 it('every nav item whose path is a prefix of another item matches exactly (no double highlight)', () => {
   const items = NAV_SECTIONS.flatMap((s) => s.items);
   for (const item of items) {

@@ -978,3 +978,81 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 .wiki-import-item.is-done .wiki-import-status { color: var(--c-green); }
 .wiki-import-line a { flex-shrink: 0; font-size: 12.5px; color: var(--amber); text-decoration: none; }
 .wiki-import-item .wiki-field-note { margin: 0; }
+
+/* ── search box (top bar) and search page ─────────────────── */
+
+.wiki-search-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 60;
+  background: var(--surface, #fff);
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  padding: 6px;
+  box-shadow: 0 18px 50px -18px rgba(12, 17, 23, 0.35);
+  max-height: 420px;
+  overflow-y: auto;
+}
+.wiki-search-hit {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.wiki-search-hit:hover, .wiki-search-hit.active { background: var(--surface-2, #f5f7fa); }
+.wiki-search-hit-icon { width: 17px; height: 17px; flex: none; margin-top: 2px; color: var(--text-mute); }
+.wiki-search-hit-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wiki-search-hit-title { font-size: 13.5px; font-weight: 500; color: var(--text-dark); }
+.wiki-search-hit-meta { font-size: 11.5px; color: var(--text-mute); }
+.wiki-search-hit-snippet {
+  font-size: 12px;
+  color: var(--text-mute);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wiki-search-hit-snippet mark, .wiki-search-snippet mark {
+  background: rgba(var(--accent-rgb), 0.28);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+.wiki-search-more {
+  display: block;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-top: 1px solid var(--paper-line);
+  margin-top: 4px;
+  background: transparent;
+  font-size: 12.5px;
+  color: var(--amber);
+  text-align: left;
+  cursor: pointer;
+}
+.wiki-search-more:hover { background: var(--surface-2, #f5f7fa); }
+
+.wiki-search-filters { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+.wiki-search-filters .combo-wrap { width: 240px; }
+.wiki-search-row .pn { min-width: 0; }
+.wiki-search-row .wiki-search-snippet {
+  display: block;
+  font-size: 12.5px;
+  color: var(--text-mute);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── admin page ────────────────────────────────────────────── */
+
+.wiki-admin-actions { display: flex; align-items: center; gap: 8px; }

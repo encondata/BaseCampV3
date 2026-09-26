@@ -18,6 +18,7 @@ import { noteDeleted } from '../lib/treeStore';
 import type { NodeDetailOut, NodeOut, SpaceOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
 import { deleteNode, errorMessage, listSpaces } from '../lib/wikiApi';
+import AdminPage from '../pages/AdminPage';
 import Home from '../pages/Home';
 import NewSpace from '../pages/NewSpace';
 import NodePage from '../pages/NodePage';
@@ -25,6 +26,7 @@ import NotFound from '../pages/NotFound';
 import SpaceHome from '../pages/SpaceHome';
 import SpaceSettings from '../pages/SpaceSettings';
 import TrashPage from '../pages/TrashPage';
+import SearchPage from '../search/SearchPage';
 import { isFileDrag } from '../uploads/DropZone';
 import { enqueue } from '../uploads/uploadQueue';
 import UploadTray from '../uploads/UploadTray';
@@ -253,6 +255,8 @@ export default function WikiShell() {
               <Route path="/s/:spaceKey" element={<SpaceHome />} />
               <Route path="/s/:spaceKey/settings" element={<SpaceSettings />} />
               <Route path="/trash/:spaceKey" element={<TrashPage />} />
+              <Route path="/search" element={<SearchPage />} />
+              <Route path="/admin" element={<AdminPage />} />
               <Route path="/n/:nodeId" element={<NodePage />} />
               <Route path="/n/:nodeId/history" element={(
                 <Suspense fallback={<div className="portal-page wiki-page"><p className="page-hint">Loading…</p></div>}>

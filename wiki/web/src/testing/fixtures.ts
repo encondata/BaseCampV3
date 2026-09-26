@@ -1,5 +1,5 @@
 /** Test-only builders for the wiki API's shapes. */
-import type { Level, MeOut, NodeDetailOut, NodeKind, NodeOut, SpaceOut } from '../lib/types';
+import type { Level, MeOut, NodeDetailOut, NodeKind, NodeOut, SearchHit, SpaceOut } from '../lib/types';
 
 const T = '2026-09-20T12:00:00Z';
 
@@ -66,6 +66,15 @@ export function makeMe(over: Partial<MeOut> = {}): MeOut {
     person: { id: 'p-1', name: 'Jimmy Henderson' },
     is_admin: false,
     can_create_spaces: false,
+    ...over,
+  };
+}
+
+export function makeSearchHit(over: Partial<SearchHit> = {}): SearchHit {
+  return {
+    node: { id: 'n1', kind: 'page', title: 'Rack power', space_key: 'ops', space_name: 'Operations' },
+    snippet_html: 'How to wire the <mark>rack</mark> power.',
+    breadcrumbs: [],
     ...over,
   };
 }

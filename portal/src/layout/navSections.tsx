@@ -12,8 +12,23 @@
 import { type ReactNode } from 'react';
 
 import { ADMIN_RANK } from '../lib/access';
+import { wikiOrigin } from '../lib/wikiOrigin';
 
-export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number; globalOnly?: boolean; end?: boolean }
+export interface NavItem {
+  to: string;
+  label: string;
+  resource: string;
+  icon: ReactNode;
+  godOnly?: boolean;
+  minRank?: number;
+  globalOnly?: boolean;
+  end?: boolean;
+  /** An external destination (its own origin) instead of an in-app route:
+   *  NavPanel renders it as a plain `<a target="_blank">` instead of a
+   *  NavLink. A function, called at render time, so this table stays
+   *  loadable with no `window`/`location` (see the file header). */
+  href?: () => string;
+}
 export interface NavSection { label: string; icon: ReactNode; items: NavItem[] }
 
 export const NAV_SECTIONS: NavSection[] = [
@@ -77,6 +92,19 @@ export const NAV_SECTIONS: NavSection[] = [
                strokeLinecap="round" strokeLinejoin="round">
             <rect x="2" y="7" width="20" height="14" rx="2" />
             <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
+          </svg>
+        ),
+      },
+      {
+        to: '/wiki',
+        label: 'Wiki',
+        resource: 'wiki',
+        href: wikiOrigin,
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" />
           </svg>
         ),
       },

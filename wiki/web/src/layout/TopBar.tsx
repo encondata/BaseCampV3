@@ -1,7 +1,7 @@
 /** The wiki's top bar: the wiki mark, the space switcher, the search box
- *  (⌘K / Ctrl+K focuses it; searching itself arrives with Task 15), the
- *  New menu (Page, Folder, Upload files, Space), and the avatar menu (Back
- *  to portal, Sign out). */
+ *  (instant results, ⌘K / Ctrl+K focuses it — see SearchBox.tsx), the New
+ *  menu (Page, Folder, Upload files, Space), and the avatar menu (Back to
+ *  portal, Sign out). */
 import { useEffect, useRef, useState, type ChangeEvent, type ReactNode, type RefObject } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -11,6 +11,7 @@ import { avatarGradient, initials } from '@portal/lib/format';
 import { portalOrigin } from '../lib/origins';
 import { clearSessionCaches } from '../lib/sessionCaches';
 import type { MeOut, SpaceOut } from '../lib/types';
+import SearchBox from '../search/SearchBox';
 import SpaceSwitcher from './SpaceSwitcher';
 
 interface Props {
@@ -60,23 +61,10 @@ export default function TopBar({
 }: Props) {
   const { person, logout } = useAuth();
   const navigate = useNavigate();
-  const searchRef = useRef<HTMLInputElement>(null);
   const uploadRef = useRef<HTMLInputElement>(null);
   const [newOpen, setNewOpen, newRef] = usePopover();
   const [userOpen, setUserOpen, userRef] = usePopover();
   const name = person?.display_name ?? me?.person.name ?? '';
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        searchRef.current?.focus();
-        searchRef.current?.select();
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, []);
 
   const pick = (kind: 'page' | 'folder') => { setNewOpen(false); onNew?.(kind); };
   const pickFiles = (e: ChangeEvent<HTMLInputElement>) => {
@@ -114,12 +102,7 @@ export default function TopBar({
 
       <SpaceSwitcher spaces={spaces} current={currentSpace} />
 
-      <div className="tb-search">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-             strokeLinecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
-        <input ref={searchRef} type="search" placeholder="Search the wiki…" aria-label="Search the wiki" />
-        <kbd>⌘K</kbd>
-      </div>
+      <SearchBox />
 
       <div className="tb-actions">
         <div className="pop-wrap" ref={newRef}>
