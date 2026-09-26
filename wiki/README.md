@@ -82,12 +82,17 @@ them) from the main API's `.env` into `wiki/.env`. See the comments in
 | `SS_WIKI_MAX_UPLOAD_BYTES` | `1073741824` (1 GiB) | Cap on a single file upload. |
 | `SS_WIKI_TRASH_DAYS` | `30` | Days a soft-deleted node stays restorable before the purge job drops it. |
 
-**On the wiki worker** (`wiki/.env`), exports are also capped:
+**On the wiki worker** (`wiki/.env`), exports are also capped, and the
+worker needs to reach the wiki service itself for `POST /internal/render`
+(a page's JSON -> the HTML a PDF/Word export renders — see Exports below):
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `SS_WIKI_EXPORT_MAX_PAGES` | `1000` | Most pages one export may hold. |
 | `SS_WIKI_EXPORT_MAX_BYTES` | `2147483648` (2 GiB) | Most bytes of files and page images one export may hold. |
+| `SS_WIKI_RENDER_URL` | `http://localhost:5177` | The wiki service's own origin. `wiki/docker-compose.yml` sets this to `http://wiki:8080` (the compose network's service name) for you; only change it if you run the worker outside that compose file. Unreachable (or pointed nowhere real) and every PDF/Word export fails with a retried `RenderError`. |
+| `SS_WIKI_SERVICE_TOKEN` | *(empty)* | The same secret the wiki service checks `/internal/render` requests against (its `WIKI_SERVICE_TOKEN`) — the worker presents this as `X-Wiki-Service-Token`. All three (the API's, the wiki service's `WIKI_SERVICE_TOKEN`, and this one) must be equal. `wiki/docker-compose.yml` sets it from `WIKI_SERVICE_TOKEN` in `wiki/.env` for you. |
+| `WIKI_EXPORT_PDF_MAX_MEMORY_MB` | `2048` | **Not** `SS_`-prefixed — read straight from the environment by the WeasyPrint child process (`serversherpa.wiki.export_pdf`), not through `Settings`, since it's a standalone subprocess entry point. Caps that process's own memory (`RLIMIT_AS`) so one pathological page's conversion is killed rather than left to slowly exhaust the host. Best-effort: there's no `resource` module on Windows, and even on Linux/macOS the platform may not honor it (macOS in particular often doesn't). |
 
 `SS_WIKI_TRASH_DAYS` and `SS_WIKI_MAX_UPLOAD_BYTES` must be the same on the
 API and in `wiki/.env` (the worker): the API shows each trash batch's
@@ -143,6 +148,115 @@ API (`api/src/serversherpa/wiki/`); the `wiki` SPA is just the client.
   requested and decided, but nothing ever reminds an owner that a page's
   review has come due.
 
+## Phase 3 features
+
+Same rule as above: all of it is enforced by the main API
+(`api/src/serversherpa/wiki/`), the `wiki` SPA and server are just the
+client and renderer.
+
+- **Public share links.** Manage on a page or file — and the space's
+  `allow_public_links` setting (`PATCH /wiki/spaces/{key}`, manage level;
+  off by default) — lets anyone create a link that needs no sign-in
+  (`POST /wiki/nodes/{id}/share-links`). Its token (32 random bytes) is
+  returned once, in the URL `{wiki_origin}/p/{token}`; only its sha256
+  hash is ever stored, so it can't be shown again, only revoked. The
+  unauthenticated read (`GET /wiki/public/{token}`,
+  `serversherpa.wiki.share_links` + `api/routes/wiki/public.py`) serves a
+  page's PUBLISHED content only — no comment anchors, no links into the
+  rest of the wiki, no person ids — or a file's current version; it's
+  rate-limited per client address and answers every failure the same way
+  (unknown, revoked or expired token; the space's public links off; the
+  node deleted; a page never published) with a 404 that never says which.
+  Its presigned asset/download URLs live at most 10 minutes. **This is
+  what the Spaces bucket CORS `GET` rule in the Production checklist below
+  is really for**: a public visitor's browser has no portal session, so
+  it fetches those presigned URLs straight from Spaces itself — without
+  `GET` allowed from the wiki origin, a public page's images and a public
+  file's preview/download both fail for exactly the audience share links
+  exist for.
+- **Help links.** The "?" button in the portal's and the kiosk's top bar
+  (`portal/src/components/HelpButton.tsx`, `kiosk/src/components/
+  HelpButton.tsx`, sharing the React-free `portal/src/lib/wikiHelp.ts` so
+  the kiosk can import it) asks `GET /wiki/help?context=` for a guide. A
+  context names a screen as `<app>:<path>` (`portal:/bulk/time`,
+  `kiosk:/enroll`), normalized on both ends the same way
+  (`serversherpa.wiki.help.normalize_context`): lowercased, query/hash
+  dropped, repeated slashes collapsed, and every id-shaped path segment
+  (a UUID or all digits) replaced with `:id` — so `portal:/sites/<uuid>/`
+  and a stored `portal:/sites/:id` are the same context. A lookup matches
+  the *longest* stored context that covers the requested one
+  (`portal:/bulk` covers `portal:/bulk/time` but not `portal:/bulkx`),
+  skipping any guide the caller can't currently view, and 404s when none
+  qualifies. On a 404, the button instead opens
+  `{wiki_origin}/admin/help-links?context=<context>` — the wiki's Help
+  links page, wiki administrators only — with "Link a guide" pre-filled
+  for exactly that context, so fixing a missing guide is one click from
+  wherever it was missing. Links themselves are managed at
+  `GET/POST/PATCH/DELETE /wiki/help-links` (wiki administrators).
+- **Analytics.** `GET /wiki/analytics` (wiki administrators, and space
+  managers scoped to their own spaces) shows total page/file views and a
+  daily breakdown over a chosen window (7/30/90/365 days), the most-viewed
+  pages, "Was this page helpful?" Yes/No rates with recent "No" comments,
+  searches that found nothing, published pages untouched for 12 months,
+  and overdue periodic reviews. None of it is audited (it's telemetry,
+  not a tracked change) and every aggregate only ever names nodes the
+  caller can currently see. **Retention** (the worker's daily `retention`
+  job): page views are kept 365 days, search log rows 90 days
+  (`wiki.analytics.purge_old_views`/`purge_old_searches`) — see Exports
+  below for what else that same daily sweep purges.
+
+## Exports
+
+`POST /wiki/exports` (spec §8) queues a page as PDF, Word (`.docx`) or
+Markdown, or a folder or whole space as a `.zip`, run by the wiki worker
+as the person who asked — only what they can currently view goes in; a
+never-published page an editor can see is named in `_skipped.txt` inside
+the zip rather than included. PDF and Word pages go through the wiki
+service's `POST /internal/render` (the print template, `wiki/export_html.py`)
+and then WeasyPrint, run in a child process of its own
+(`python -m serversherpa.wiki.export_pdf`) so the worker can time one
+pathological page out and kill it instead of hanging; Word (and a zip of
+Word pages) goes through LibreOffice; a Markdown zip's images are written
+into an `assets/` folder. `GET /wiki/exports/{job_id}` reports progress to
+the requester (and only them) with a fresh 10-minute download URL once
+it's done.
+
+- **Limits.** An export over `SS_WIKI_EXPORT_MAX_PAGES` pages, or whose
+  files and page images add up to more than `SS_WIKI_EXPORT_MAX_BYTES`,
+  fails immediately with a message saying which limit and by how much. A
+  person may have at most 3 exports queued or running at once. The
+  WeasyPrint child's own memory is capped separately by
+  `WIKI_EXPORT_PDF_MAX_MEMORY_MB` (see Environment variables above).
+- **Requirements.** The `wiki-worker` image needs:
+  - **WeasyPrint's native libraries** — `Dockerfile.worker` already
+    installs `libpango-1.0-0` and `libpangoft2-1.0-0` (plus
+    `fonts-dejavu`); this was verified by building the image and, inside
+    it, both `python -c "import weasyprint"` and a real
+    `HTML(string=...).write_pdf()` render of text plus an embedded image
+    (WeasyPrint 70 draws its own PDFs and decodes raster images through
+    Pillow, both already installed as Python dependencies — it no longer
+    needs cairo or gdk-pixbuf the way older versions did).
+  - **LibreOffice** (`libreoffice-writer`/`-calc`/`-impress`, already
+    installed) for `.docx` conversion, and **poppler** (`poppler-utils`,
+    already installed) for the file-preview/search-text side of the same
+    image.
+  - **`SS_WIKI_RENDER_URL`** pointing at the wiki service itself — see
+    the environment variable table above; `wiki/docker-compose.yml` wires
+    this (and the matching `SS_WIKI_SERVICE_TOKEN`) up for you.
+  - Fonts: the print template's CSS asks for the portal's own typefaces
+    (Geologica, Fragment Mono) with generic fallbacks (`Helvetica
+    Neue`/Helvetica/Arial/sans-serif and Menlo/Consolas/`Courier
+    New`/monospace). The image installs only `fonts-dejavu`, so an export
+    actually renders in DejaVu Sans/DejaVu Sans Mono today, not the
+    portal's fonts — install the real font files in the image if
+    pixel-exact export typography ever matters.
+- **Retention.** Export output lives at `wiki/exports/<job_id>/<name>` in
+  Spaces. The worker's daily `retention` job deletes every object under a
+  finished export's `wiki/exports/<job_id>/` prefix — not just the one
+  file its result names, so an orphan upload a superseded attempt left
+  behind under the same job id is swept up too — 7 days after the job
+  finished, along with the job row itself.
+
 ## Production checklist
 
 - Add `https://wiki.<domain>` to the main API's `SS_ALLOWED_ORIGINS`.
@@ -152,8 +266,15 @@ API (`api/src/serversherpa/wiki/`); the `wiki` SPA is just the client.
 - Add a Spaces bucket CORS rule from the wiki origin allowing `PUT` with
   the `Content-Type` header (uploads go straight from the browser to
   Spaces via a presigned URL) **and `GET`** (the file view fetches text
-  and Markdown previews from their presigned URL; without it those
-  previews fail in production).
+  and Markdown previews from their presigned URL, and — see Phase 3
+  features above — a public share link's anonymous visitor fetches their
+  page's images and a shared file's preview/download the same way;
+  without it those all fail in production, the share-link case for
+  everyone who was never signed in to begin with).
+- Exports need the `wiki-worker` image's WeasyPrint/LibreOffice
+  dependencies and `SS_WIKI_RENDER_URL` pointing at the `wiki` container —
+  see Exports above; `wiki/docker-compose.yml` already wires this up, so
+  there's nothing extra to do when deploying with it.
 - Run exactly **one** `wiki` container. The collab server holds each
   open page in memory and stores it by overwriting the saved document,
   so two replicas (or two overlapping during a rolling deploy) would

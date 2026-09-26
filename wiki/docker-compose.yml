@@ -37,4 +37,12 @@ services:
       context: ..
       dockerfile: wiki/Dockerfile.worker
     env_file: .env
+    environment:
+      # the wiki service's own origin, for POST /internal/render (export
+      # to PDF/Word) — the compose network's service name, not localhost
+      SS_WIKI_RENDER_URL: http://wiki:8080
+      # the same secret the `wiki` service checks /internal/render
+      # requests against (WIKI_SERVICE_TOKEN above) — one variable in
+      # wiki/.env keeps both sides equal rather than risking drift
+      SS_WIKI_SERVICE_TOKEN: ${WIKI_SERVICE_TOKEN:?set WIKI_SERVICE_TOKEN in wiki/.env}
     restart: unless-stopped
