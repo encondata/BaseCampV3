@@ -1864,7 +1864,8 @@ class WikiJob(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, server_default=text("gen_random_uuid()"))
-    kind: Mapped[str]                      # 'file_preview'|'file_extract'|'purge'|'reminders'
+    # 'file_preview'|'file_extract'|'purge'|'reminders'|'export'|'retention'
+    kind: Mapped[str]
     node_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("wiki_nodes.id", ondelete="SET NULL"))
     file_version_id: Mapped[uuid.UUID | None] = mapped_column(

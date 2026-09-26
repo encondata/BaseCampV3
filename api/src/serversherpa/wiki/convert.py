@@ -1,6 +1,7 @@
 """The external tools the wiki worker shells out to: LibreOffice
-(`soffice --headless --convert-to pdf`) for office previews, and
-poppler's `pdftotext` for search text.
+(`soffice --headless --convert-to pdf`) for office previews and
+(`--convert-to docx`) for Word exports, and poppler's `pdftotext` for
+search text.
 
 Every subprocess goes through `run`, so tests patch that one function
 instead of starting real processes. Each process runs in its own
@@ -146,6 +147,43 @@ async def office_to_pdf(src: Path, outdir: Path) -> Path:
     if not pdf.exists():
         raise ConvertError(f"soffice wrote no PDF: {_tail(err)}")
     return pdf
+
+
+# the Word export filter, and how many HTML files one LibreOffice run
+# converts (each run pays LibreOffice's start-up once)
+DOCX_FILTER = "docx:MS Word 2007 XML"
+DOCX_BATCH = 20
+
+
+async def html_to_docx(sources: list[Path]) -> list[Path]:
+    """Convert HTML files to Word documents, each written beside its
+    source as `<stem>.docx` (same directory, so relative links in the
+    HTML stay relative to the same place), and return those paths in
+    order. Up to DOCX_BATCH files share one LibreOffice run, each run
+    with a throwaway profile like `office_to_pdf`'s."""
+    out: list[Path] = []
+    for i in range(0, len(sources), DOCX_BATCH):
+        batch = sources[i:i + DOCX_BATCH]
+        by_dir: dict[Path, list[Path]] = {}
+        for src in batch:
+            by_dir.setdefault(src.parent, []).append(src)
+        for outdir, files in by_dir.items():
+            with tempfile.TemporaryDirectory(prefix="wiki-lo-",
+                                             ignore_cleanup_errors=True) as profile_dir:
+                profile = Path(profile_dir) / "lo"
+                rc, _, err = await run(
+                    [SOFFICE, "--headless", f"-env:UserInstallation={profile.as_uri()}",
+                     "--convert-to", DOCX_FILTER, "--outdir", str(outdir),
+                     *(str(f) for f in files)],
+                    timeout=SOFFICE_TIMEOUT)
+            if rc != 0:
+                raise ConvertError(f"soffice exited {rc}: {_tail(err)}")
+        for src in batch:
+            docx = src.with_suffix(".docx")
+            if not docx.exists():
+                raise ConvertError(f"soffice wrote no .docx for {src.name}")
+            out.append(docx)
+    return out
 
 
 async def pdf_to_text(src: Path) -> str:

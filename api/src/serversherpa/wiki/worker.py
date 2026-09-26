@@ -19,10 +19,17 @@ any number of workers can run without a broker) and runs them:
   (`review_notified_for`). The loop queues one at start-up and then
   whenever the last was queued more than a day ago — the job rows are
   the record of when it last ran (`ensure_reminders_job`).
-- `retention` — the daily sweep: page views older than a year, search
-  log rows older than 90 days (`wiki.analytics`), finished jobs older
-  than JOB_RETENTION (never the newest `reminders`/`retention` row —
-  the schedule markers), and old exports (`purge_old_exports`).
+- `export` — a page, folder or space exported for the person who asked
+  (`wiki.export`): uploaded to `wiki/exports/<job_id>/`, then that
+  person is sent `wiki_export_ready` linking to `/exports/<job_id>` on
+  the wiki (which hands out a fresh download URL). An export that can't
+  be made (`ExportError`: deleted, no longer viewable, never published)
+  fails at once; any other failure is retried like every job. Either
+  way a failed export sends `wiki_export_failed`.
+- `retention` — the daily sweep: old exports (`purge_old_exports`, 7
+  days), page views older than a year, search log rows older than 90
+  days (`wiki.analytics`), and finished jobs older than JOB_RETENTION
+  (never the newest `reminders`/`retention` row — the schedule markers).
   Scheduled exactly like `reminders` (`ensure_retention_job`).
 
 A failed job is retried with backoff — `attempts` counts claims, and a
@@ -65,7 +72,7 @@ from serversherpa.db.models import (
     WikiSpace,
 )
 from serversherpa.services import storage
-from serversherpa.wiki import analytics, convert, notify, reviews, trash, tree
+from serversherpa.wiki import analytics, convert, export, notify, reviews, trash, tree
 from serversherpa.wiki.files import (
     enqueue,
     is_office,
@@ -150,13 +157,16 @@ async def _mark_version_failed(db: AsyncSession, job: WikiJob) -> None:
 
 async def _retry_or_fail(db: AsyncSession, job: WikiJob, error: str) -> None:
     """A try failed: back to the queue (its backoff runs from now), or —
-    out of attempts — failed for good, with its file version marked."""
+    out of attempts — failed for good, with its file version marked (or,
+    for an export, its requester told)."""
     job.error = error[:ERROR_MAX]
     job.progress_at = _now()
     if job.attempts >= MAX_ATTEMPTS:
         job.status = "failed"
         job.finished_at = _now()
         await _mark_version_failed(db, job)
+        if job.kind == "export":
+            await _notify_export(db, job, ok=False)
     else:
         job.status = "queued"
         job.started_at = None
@@ -286,6 +296,57 @@ async def _run_preview(db: AsyncSession, job: WikiJob) -> None:
     await db.commit()
 
 
+# ── exports ──────────────────────────────────────────────────────────
+
+
+async def _notify_export(db: AsyncSession, job: WikiJob, *, ok: bool) -> None:
+    """Tell the requester their export is ready (`wiki_export_ready`) or
+    failed (`wiki_export_failed`), linking to the wiki's `/exports/<id>`."""
+    payload = job.payload or {}
+    try:
+        requester = uuid.UUID(str(payload.get("requester")))
+    except ValueError:
+        return
+    title = payload.get("title") or "your wiki export"
+    if ok:
+        kind, event = "wiki_export_ready", "export_ready"
+        heading = f"Your export of “{title}” is ready"
+        body = (job.result or {}).get("filename") or ""
+    else:
+        kind, event = "wiki_export_failed", "export_failed"
+        heading = f"Your export of “{title}” failed"
+        body = (job.result or {}).get("message") or export.FAILED_MESSAGE
+    await notify.to_person(db, requester, kind=kind, title=heading,
+                           path=f"/exports/{job.id}", event=event, body=body,
+                           payload={"job_id": str(job.id)})
+
+
+async def _run_export(db: AsyncSession, job: WikiJob) -> None:
+    job_id = job.id
+    try:
+        result = await export.run(db, job)
+    except export.ExportError as exc:
+        await db.rollback()
+        job = await db.get(WikiJob, job_id, populate_existing=True)
+        if job is None:
+            return
+        job.status = "failed"
+        job.error = str(exc)[:ERROR_MAX]
+        job.result = {"message": str(exc)}
+        job.finished_at = _now()
+        await _notify_export(db, job, ok=False)
+        await db.commit()
+        return
+    job = await db.get(WikiJob, job_id, populate_existing=True)
+    if job is None:                      # its row went while it ran: nothing to record
+        await enqueue(db, "purge", payload={"keys": [result["key"]]})
+        await db.commit()
+        return
+    _done(job, result)
+    await _notify_export(db, job, ok=True)
+    await db.commit()
+
+
 # ── purge ────────────────────────────────────────────────────────────
 
 
@@ -394,10 +455,9 @@ async def _run_reminders(db: AsyncSession, job: WikiJob) -> None:
 
 
 async def purge_old_exports(db: AsyncSession, now: datetime) -> int:
-    """Delete export files and their records older than 7 days; returns
-    how many went. Exports arrive in the next task (Phase 3 Task 5), which
-    fills this in — until then there is nothing to delete."""
-    return 0
+    """Delete export files and their job rows older than 7 days
+    (`export.purge_old_exports`); returns how many went."""
+    return await export.purge_old_exports(db, now)
 
 
 async def purge_old_jobs(db: AsyncSession, now: datetime) -> int:
@@ -422,10 +482,12 @@ async def _run_retention(db: AsyncSession, job: WikiJob) -> None:
     behind (see the module docstring). One transaction."""
     now = _now()
     counts = {
+        # exports first: the job sweep would otherwise take an old export's
+        # row and leave its file behind
+        "exports": await purge_old_exports(db, now),
         "views": await analytics.purge_old_views(db, now),
         "searches": await analytics.purge_old_searches(db, now),
         "jobs": await purge_old_jobs(db, now),
-        "exports": await purge_old_exports(db, now),
     }
     _done(job, counts)
     await db.commit()
@@ -433,7 +495,7 @@ async def _run_retention(db: AsyncSession, job: WikiJob) -> None:
 
 _HANDLERS = {"file_extract": _run_extract, "file_preview": _run_preview,
              "purge": _run_purge, "reminders": _run_reminders,
-             "retention": _run_retention}
+             "retention": _run_retention, "export": _run_export}
 
 
 async def process_job(db: AsyncSession, job: WikiJob) -> None:
