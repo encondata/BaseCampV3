@@ -1,6 +1,6 @@
 /** The "@" mention picker: typing "@" at the start of a block or after a
  *  space lists people who can view this page (`listMentionable`, as you
- *  type); Up/Down move, Enter (or a click) inserts a mention, Escape
+ *  type, from the second letter on); Up/Down move, Enter (or a click) inserts a mention, Escape
  *  closes. Every answer feeds the person-name cache the mention node view
  *  reads. */
 import type { Editor } from '@tiptap/core';
@@ -16,16 +16,21 @@ import {
 
 const DEBOUNCE_MS = 150;
 const MAX_PEOPLE = 10;
+/** The shortest query the API searches for (MENTIONABLE_MIN_QUERY). */
+export const MIN_MENTION_QUERY = 2;
+export const SHORT_QUERY_HINT = 'Type 2 or more letters of a name';
 
-export type PeopleState = { status: 'idle' | 'loading' | 'done' | 'error'; people: PersonRef[] };
+export type PeopleState = { status: 'idle' | 'short' | 'loading' | 'done' | 'error'; people: PersonRef[] };
 
 /** Debounced `listMentionable` while the picker is open; the newest query
- *  wins. Also used by the comment composer's picker. */
+ *  wins, and nothing is asked until it has MIN_MENTION_QUERY characters
+ *  (`short`). Also used by the comment composer's picker. */
 export function useMentionable(pageId: string, query: string, open: boolean): PeopleState {
   const [state, setState] = useState<PeopleState>({ status: 'idle', people: [] });
   const q = query.trim();
   useEffect(() => {
     if (!open) { setState({ status: 'idle', people: [] }); return undefined; }
+    if (q.length < MIN_MENTION_QUERY) { setState({ status: 'short', people: [] }); return undefined; }
     let live = true;
     setState((s) => ({ status: 'loading', people: s.people }));
     const timer = setTimeout(() => {
@@ -107,10 +112,9 @@ export default function MentionMenu({ editor, pageId }: { editor: Editor | null;
             <span className="we-menu-text"><b>{person.name}</b></span>
           </div>
         ))}
+        {state.status === 'short' && <div className="we-menu-empty">{SHORT_QUERY_HINT}</div>}
         {state.status === 'done' && !state.people.length && (
-          <div className="we-menu-empty">
-            {query ? `No one who can view this page matches “${query}”` : 'No one else can view this page'}
-          </div>
+          <div className="we-menu-empty">{`No one who can view this page matches “${query}”`}</div>
         )}
         {state.status === 'loading' && !state.people.length && <div className="we-menu-empty">Searching…</div>}
         {state.status === 'error' && <div className="we-menu-empty">People search isn't available right now</div>}

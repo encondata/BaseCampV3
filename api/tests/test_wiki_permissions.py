@@ -557,3 +557,51 @@ async def test_principal_for_builds_from_the_auth_context(db):
     assert p.is_internal is True
     assert p.is_admin is False
     assert p.can_view_wiki is True
+
+
+async def test_principals_for_people_match_principal_for_person(db):
+    from serversherpa.db.models import PersonRole
+    from serversherpa.wiki.permissions import principal_for_person, principals_for_people
+
+    acme = Client(name="Principal Acme")
+    db.add(acme)
+    await db.flush()
+    people = [await _person(db, last=f"P{i}") for i in range(4)]
+    group = AccessGroup(name="Principal group")
+    db.add(group)
+    await db.flush()
+    db.add(PersonRole(person_id=people[0].id, role="staff"))
+    db.add(PersonRole(person_id=people[1].id, role="admin"))
+    db.add(PersonRole(person_id=people[2].id, role="client_viewer", client_id=acme.id))
+    db.add(AccessGroupMember(group_id=group.id, person_id=people[0].id))
+    db.add(AccessGroupMember(group_id=group.id, person_id=people[2].id))
+    await db.commit()
+
+    batch = await principals_for_people(db, [p.id for p in people])
+    for p in people:
+        assert batch[p.id] == await principal_for_person(db, p.id)
+
+
+async def test_access_indexes_can_share_loaded_space_data(db):
+    """Indexes built with the same `spaces` dict load a space's grants
+    once between them (the fan-out builds one index per recipient)."""
+    space = await _space(db)
+    await _grant(db, space, "internal", None, "view")
+    await db.commit()
+    statements: list[str] = []
+
+    def _count(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    engine = get_engine().sync_engine
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        shared: dict = {}
+        first = AccessIndex(db, _staff(uuid.uuid4()), spaces=shared)
+        assert await first.level_for_space(space.id) == "view"
+        loaded = len(statements)
+        second = AccessIndex(db, _staff(uuid.uuid4()), spaces=shared)
+        assert await second.level_for_space(space.id) == "view"
+        assert len(statements) == loaded
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)

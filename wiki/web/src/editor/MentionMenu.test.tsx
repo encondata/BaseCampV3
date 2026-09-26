@@ -63,9 +63,12 @@ describe('MentionMenu (@)', () => {
   it('opens on a bare @ at the start of a block, and takes a first and last name', async () => {
     render(<MentionMenu editor={editor} pageId="page-1" />);
     type('@');
-    await screen.findByRole('option', { name: /Pam Roe/ });
-    expect(listMentionable).toHaveBeenLastCalledWith('page-1', '');
-    type('Pat D');
+    // no search until two letters are typed
+    expect(await screen.findByText('Type 2 or more letters of a name')).toBeTruthy();
+    type('P');
+    await new Promise((r) => { setTimeout(r, 200); });
+    expect(listMentionable).not.toHaveBeenCalled();
+    type('at D');
     await vi.waitFor(() => expect(listMentionable).toHaveBeenLastCalledWith('page-1', 'Pat D'));
   });
 

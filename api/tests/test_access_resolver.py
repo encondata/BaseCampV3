@@ -170,3 +170,41 @@ async def test_effective_cells_override_keeps_sourcing(db):
         "staff": {("access", "view")}})
     assert eff.cells["workers"]["view"] == {"value": True, "source": "override"}
     assert eff.cells["workers"]["add"] == {"value": False, "source": "role"}
+
+
+async def test_resolve_access_many_matches_resolve_access_per_person(db):
+    """The batch resolver (notification fan-out, the @mention picker) must
+    agree with `resolve_access` exactly: roles, anchors, scope sets,
+    overrides, group gates and the rank-60 gate bypass."""
+    from serversherpa.access.resolver import resolve_access_many
+
+    acme = Client(name="Batch Acme")
+    vendor = Partner(name="Batch Vendor")
+    db.add_all([acme, vendor])
+    await db.flush()
+    staff = await make_person(db, "staff")
+    admin = await make_person(db, "admin")
+    client_user = await make_person(db, "client_viewer", client_id=acme.id)
+    vendor_user = await make_person(db, "vendor_viewer", partner_id=vendor.id)
+    two_roles = await make_person(db, "staff")
+    db.add(PersonRole(person_id=two_roles.id, role="client_admin", client_id=acme.id))
+    gated_member = await make_person(db, "staff")
+    no_roles = Person(first_name="T", last_name="none")
+    db.add(no_roles)
+    group = AccessGroup(name="Batch gate")
+    db.add(group)
+    await db.flush()
+    db.add(ResourceGroupGate(resource="clients", group_id=group.id))
+    db.add(AccessGroupMember(group_id=group.id, person_id=gated_member.id))
+    db.add(PermissionOverride(person_id=staff.id, resource="wiki", action="delete",
+                              allow=True))
+    db.add(PermissionOverride(person_id=client_user.id, resource="wiki", action="view",
+                              allow=False))
+    await db.commit()
+
+    people = [staff, admin, client_user, vendor_user, two_roles, gated_member, no_roles]
+    batch = await resolve_access_many(db, [p.id for p in people] + [staff.id])
+    assert set(batch) == {p.id for p in people}
+    for p in people:
+        assert batch[p.id] == await resolve_access(db, p.id), p.last_name
+    assert await resolve_access_many(db, []) == {}

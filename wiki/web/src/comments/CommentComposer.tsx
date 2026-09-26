@@ -5,7 +5,7 @@
  *  or else cancels. */
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
 
-import { initials, useMentionable } from '../editor/MentionMenu';
+import { initials, SHORT_QUERY_HINT, useMentionable } from '../editor/MentionMenu';
 import { cycle, MENTION_PATTERN } from '../editor/suggest';
 import { personColor } from '../lib/personColor';
 import type { CommentBodyIn, PersonRef } from '../lib/types';
@@ -172,11 +172,9 @@ export default function CommentComposer({
                   <span className="we-menu-text"><b>{person.name}</b></span>
                 </div>
               ))}
+              {people.status === 'short' && <div className="we-menu-empty">{SHORT_QUERY_HINT}</div>}
               {people.status === 'done' && !people.people.length && (
-                <div className="we-menu-empty">
-                  {trigger.query.trim() ? `No one who can view this page matches “${trigger.query.trim()}”`
-                    : 'No one else can view this page'}
-                </div>
+                <div className="we-menu-empty">{`No one who can view this page matches “${trigger.query.trim()}”`}</div>
               )}
               {people.status === 'loading' && !people.people.length && <div className="we-menu-empty">Searching…</div>}
               {people.status === 'error' && <div className="we-menu-empty">People search isn't available right now</div>}

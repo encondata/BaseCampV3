@@ -9,9 +9,10 @@ who can see the node right now:
 - never the actor;
 - only people with an active account (not disabled, person not archived);
 - only people whose level on the node — their own `AccessIndex`, built
-  from `principal_for_person` — is at least view, and, for a page they
+  from `principals_for_people` — is at least view, and, for a page they
   only have view on, only once it has been published (the tree's own
-  rule: a reader never sees a never-published page);
+  rule: a reader never sees a never-published page) — all candidates
+  resolved in one batch, with one shared load of the space's grants;
 - each person once per event.
 
 Watches whose owner lost access stay in place (access may come back);
@@ -46,12 +47,12 @@ from serversherpa.db.models import (
     WikiWatch,
 )
 from serversherpa.notifications.inbox import notify
-from serversherpa.wiki.permissions import AccessIndex, level_rank, principal_for_person
+from serversherpa.wiki.permissions import AccessIndex, level_rank, principals_for_people
 
 log = logging.getLogger(__name__)
 
 # the most candidates one event evaluates; watch lists are small in
-# practice, and each candidate costs its own access resolution
+# practice (their access is resolved in one batch)
 MAX_RECIPIENTS = 500
 
 # how much of a comment's text a notification body carries
@@ -103,11 +104,13 @@ async def _viewers(db: AsyncSession, node: WikiNode,
                Person.archived_at.is_(None))
     )).all())
     published = await _is_published(db, node)
+    # one batch for everyone's access, and the space's grants loaded once
+    # for all their indexes: a fixed number of queries per event
+    principals = await principals_for_people(db, [pid for pid in ids if pid in active])
+    spaces: dict = {}
     out: dict[uuid.UUID, AccessIndex] = {}
-    for pid in ids:
-        if pid not in active:
-            continue
-        ix = AccessIndex(db, await principal_for_person(db, pid))
+    for pid, principal in principals.items():
+        ix = AccessIndex(db, principal, spaces=spaces)
         if await _can_see(ix, node, published):
             out[pid] = ix
     return out
@@ -160,8 +163,12 @@ async def _space_key(db: AsyncSession, node: WikiNode) -> str:
 
 async def _deliver(db: AsyncSession, node: WikiNode, person_ids: Iterable[uuid.UUID], *,
                    kind: str, title: str, body: str, event: str,
-                   link_suffix: str = "") -> None:
-    space_key = await _space_key(db, node)
+                   link_suffix: str = "", space_key: str | None = None) -> None:
+    person_ids = list(person_ids)
+    if not person_ids:
+        return
+    if space_key is None:
+        space_key = await _space_key(db, node)
     for pid in person_ids:
         await notify(db, pid, kind, title, body=body,
                      link=node_link(node.id, link_suffix),
@@ -211,13 +218,14 @@ async def on_created(db: AsyncSession, node: WikiNode, *,
     space_name = await db.scalar(select(WikiSpace.name).where(WikiSpace.id == node.space_id))
     parent = await db.get(WikiNode, node.parent_id) if node.parent_id else None
     parent_published = parent is not None and await _is_published(db, parent)
+    space_key = await _space_key(db, node)
     for pid, ix in viewers.items():
         where = space_name
         if parent is not None and await _can_see(ix, parent, parent_published):
             where = parent.title
         await _deliver(db, node, [pid], kind="wiki_update",
                        title=f"{actor} added {node.title} to {where}", body="",
-                       event="created")
+                       event="created", space_key=space_key)
 
 
 async def on_comment(db: AsyncSession, node: WikiNode, comment: WikiComment, *,

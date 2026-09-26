@@ -234,7 +234,7 @@ async def test_mentionable_is_capped_and_needs_view(client, db):
 async def test_mentionable_looks_past_people_who_cannot_view(client, db):
     """Dozens of matches who can't view the page sort ahead of the one
     who can, and they're still found: access is checked for up to
-    MENTIONABLE_SCAN (100) candidates."""
+    MENTIONABLE_SCAN (50) candidates."""
     s = await _setup(client, db)
     page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
     await publish_via_db(db, page["id"])
@@ -268,11 +268,106 @@ async def test_mentionable_leaves_out_the_caller_and_escapes_wildcards(client, d
     assert [p["id"] for p in resp.json()] == [str(s["editor_id"])]
 
     # % and _ are literal characters, not wildcards
-    for q in ("%", "_", "\\"):
+    for q in ("%%", "__", "\\\\", "a%", "e_"):
         resp = await client.get(f"/wiki/nodes/{page['id']}/mentionable",
                                 headers=s["viewer"], params={"q": q})
         assert resp.status_code == 200, resp.text
         assert resp.json() == [], q
+
+
+async def _mentionable(client, headers, page, q, expect=200):
+    resp = await client.get(f"/wiki/nodes/{page['id']}/mentionable",
+                            headers=headers, params={"q": q})
+    assert resp.status_code == expect, resp.text
+    return resp.json()
+
+
+async def test_mentionable_needs_the_right_to_comment(client, db):
+    """Only someone who can write a mention may look people up: a reader
+    in a space where readers can't comment gets a 403."""
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    await publish_via_db(db, page["id"])
+    owner = await db.get(Person, s["owner_id"])
+    assert await _mentionable(client, s["viewer"], page, owner.last_name)
+
+    resp = await client.patch(f"/wiki/spaces/{s['space']['key']}", headers=s["owner"],
+                              json={"settings": {"readers_can_comment": False}})
+    assert resp.status_code == 200, resp.text
+    await _mentionable(client, s["viewer"], page, owner.last_name, expect=403)
+    assert await _mentionable(client, s["editor"], page, owner.last_name)
+
+
+async def test_mentionable_needs_two_characters(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    await publish_via_db(db, page["id"])
+    for q in ("", " ", "W", " W "):
+        assert await _mentionable(client, s["editor"], page, q) == [], q
+    assert await _mentionable(client, s["editor"], page, "Wi")
+
+
+async def test_mentionable_matches_email_only_for_internal_callers(client, db):
+    """A client or vendor user may find people by name, never by email —
+    the picker isn't a way to probe addresses."""
+    s = await _setup(client, db)
+    resp = await client.put(f"/wiki/spaces/{s['space']['key']}/grants", headers=s["owner"],
+                            json={"grants": [
+                                {"principal_type": "person", "principal_id": str(s["owner_id"]),
+                                 "level": "manage"},
+                                {"principal_type": "everyone", "level": "view"}]})
+    assert resp.status_code == 200, resp.text
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    await publish_via_db(db, page["id"])
+    acme = Client(name=f"Acme {uuid.uuid4().hex[:6]}")
+    db.add(acme)
+    await db.flush()
+    outsider_h, _ = await login_as(client, db, roles=("client_viewer",), client_id=acme.id)
+    owner = await db.get(Person, s["owner_id"])
+    domain = owner.email.split("@", 1)[1]
+
+    assert await _mentionable(client, outsider_h, page, owner.email) == []
+    assert await _mentionable(client, outsider_h, page, f"@{domain}") == []
+    assert [p["id"] for p in await _mentionable(client, outsider_h, page, owner.last_name)] \
+        == [str(s["owner_id"])]
+    # staff still find people by email
+    assert [p["id"] for p in await _mentionable(client, s["viewer"], page, owner.email)] \
+        == [str(s["owner_id"])]
+
+
+async def test_mentionable_query_count_does_not_grow_with_candidates(client, db):
+    """Access for every candidate is worked out in one batch: 3 matches
+    and 30 matches cost the same number of queries."""
+    from sqlalchemy import event
+
+    from serversherpa.db.engine import get_engine
+
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    await publish_via_db(db, page["id"])
+    few, many = uuid.uuid4().hex[:8], uuid.uuid4().hex[:8]
+    for tag, n in ((few, 3), (many, 30)):
+        for i in range(n):
+            await login_as(client, db, email=f"cost-{tag}-{i:02}@test.example.com")
+
+    statements: list[str] = []
+
+    def _count(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    engine = get_engine().sync_engine
+    counts = []
+    for tag in (few, many):
+        event.listen(engine, "before_cursor_execute", _count)
+        try:
+            found = await _mentionable(client, s["editor"], page, f"cost-{tag}")
+        finally:
+            event.remove(engine, "before_cursor_execute", _count)
+        assert found
+        counts.append(len(statements))
+        statements.clear()
+    assert counts[0] == counts[1], counts
+    assert counts[1] <= 25, counts
 
 
 async def test_a_newly_mentioned_watcher_gets_only_the_mention_on_publish(client, db):

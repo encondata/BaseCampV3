@@ -50,15 +50,26 @@ describe('CommentComposer', () => {
     expect(box.value).toBe('');
   });
 
+  it('asks for two letters before searching', async () => {
+    const box = setup();
+    typeInto(box, 'Hey @');
+    expect(await screen.findByText('Type 2 or more letters of a name')).toBeTruthy();
+    typeInto(box, 'A');
+    await new Promise((r) => { setTimeout(r, 200); });
+    expect(listMentionable).not.toHaveBeenCalled();
+    typeInto(box, 'd');
+    await waitFor(() => expect(listMentionable).toHaveBeenCalledWith('page-1', 'Ad'));
+  });
+
   it('picks with the keyboard, and Escape closes only the picker', async () => {
     const box = setup();
-    typeInto(box, '@A');
+    typeInto(box, '@Al');
     await screen.findByRole('option', { name: /Ada Lovelace/ });
     fireEvent.keyDown(box, { key: 'ArrowDown' });
     fireEvent.keyDown(box, { key: 'Enter' });
     expect(box.value).toBe('@Alan Turing ');
 
-    typeInto(box, '@A');
+    typeInto(box, '@Al');
     await screen.findByRole('option', { name: /Ada Lovelace/ });
     fireEvent.keyDown(box, { key: 'Escape' });
     expect(screen.queryByRole('listbox')).toBeNull();

@@ -10,7 +10,8 @@
 - `POST /comments/threads/{thread_id}/resolve` and `/reopen` — edit, or
   the thread's author.
 - `GET /nodes/{id}/mentionable?q=` — up to 10 people with an active
-  account who can view the page, by name or email (view).
+  account who can view the page, by name (or email, for internal
+  callers); q of 2+ characters; for those who may comment.
 
 Comments belong to pages. A page the caller can't see — including a
 never-published one, for view-only — is a 404, as are its comments.
@@ -42,9 +43,11 @@ from serversherpa.wiki.permissions import level_rank, require_node_level
 router = APIRouter()
 
 MENTIONABLE_LIMIT = 10
-# the most name/email matches checked for access per lookup — each costs
-# an access resolution, and the picker asks again as the query narrows
-MENTIONABLE_SCAN = 100
+# the most name/email matches checked for access per lookup (in one
+# batch); the picker asks again as the query narrows
+MENTIONABLE_SCAN = 5 * MENTIONABLE_LIMIT
+# the shortest query that searches at all
+MENTIONABLE_MIN_QUERY = 2
 
 
 # ── lookups ─────────────────────────────────────────────────────────
@@ -237,12 +240,20 @@ async def reopen_thread(thread_id: uuid.UUID, ctx: WikiContext) -> ThreadOut:
 @router.get("/nodes/{node_id}/mentionable", response_model=list[PersonRef])
 async def mentionable(node_id: uuid.UUID, ctx: WikiContext, q: str = "") -> list[PersonRef]:
     """People to offer in the @mention picker: an active account, can view
-    the page now, name or email containing `q` — not the caller. Checks
-    the first MENTIONABLE_SCAN matches by name, so a query that matches
-    many people who can't see the page may find fewer than it could."""
-    node, _ = await _page(ctx, node_id)
+    the page now, not the caller, and a name containing `q` — or, for an
+    internal caller, an email containing it. Only for someone who could
+    write a mention there (comment on the page, or edit it); 403
+    otherwise. A query under MENTIONABLE_MIN_QUERY characters finds no
+    one. Checks the first MENTIONABLE_SCAN matches by name, so a query
+    that matches many people who can't see the page may find fewer than
+    it could."""
+    node, level = await _page(ctx, node_id)
+    await _require_can_comment(ctx, node, level)
+    q = q.strip()
+    if len(q) < MENTIONABLE_MIN_QUERY:
+        return []
     # q is literal text: its %, _ and backslashes are not ILIKE wildcards
-    escaped = q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     like = f"%{escaped}%"
 
     def matches(column):
@@ -250,13 +261,16 @@ async def mentionable(node_id: uuid.UUID, ctx: WikiContext, q: str = "") -> list
 
     full_name = func.concat(func.coalesce(Person.preferred_name, Person.first_name),
                             " ", Person.last_name)
+    fields = [matches(full_name), matches(Person.first_name), matches(Person.last_name)]
+    if ctx.principal.is_internal:
+        # staff may look people up by address; client and vendor users only
+        # by name, so the picker can't be used to probe emails
+        fields.append(matches(Person.email))
     people = (await ctx.db.scalars(
         select(Person)
         .join(UserAccount, UserAccount.person_id == Person.id)
         .where(UserAccount.disabled_at.is_(None), Person.archived_at.is_(None),
-               Person.id != ctx.principal.person_id,
-               or_(matches(full_name), matches(Person.first_name),
-                   matches(Person.last_name), matches(Person.email)))
+               Person.id != ctx.principal.person_id, or_(*fields))
         .order_by(Person.last_name, Person.first_name, Person.id)
         .limit(MENTIONABLE_SCAN)
     )).all()

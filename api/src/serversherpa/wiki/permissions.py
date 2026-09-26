@@ -31,7 +31,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.access.resolver import resolve_access
+from serversherpa.access.resolver import resolve_access, resolve_access_many
 from serversherpa.db.models import (
     AccessGroup,
     AccessGroupMember,
@@ -93,6 +93,20 @@ async def principal_from_access(db: AsyncSession, person_id: uuid.UUID,
         select(AccessGroupMember.group_id)
         .where(AccessGroupMember.person_id == person_id)
     )).all()
+    return _principal(person_id, access, group_ids)
+
+
+async def principal_for_person(db: AsyncSession, person_id: uuid.UUID) -> Principal:
+    """A person's Principal by id alone — `resolve_access` then
+    `principal_from_access` — for acting on someone's behalf without
+    their token (the collab server's re-check, notification fan-out).
+    Checks nothing about their account: callers decide whether a
+    disabled or archived person counts."""
+    return await principal_from_access(db, person_id, await resolve_access(db, person_id))
+
+
+def _principal(person_id: uuid.UUID, access: AccessInfo,
+               group_ids: Iterable[uuid.UUID]) -> Principal:
     return Principal(
         person_id=person_id,
         roles=frozenset(access.role_names),
@@ -105,13 +119,22 @@ async def principal_from_access(db: AsyncSession, person_id: uuid.UUID,
     )
 
 
-async def principal_for_person(db: AsyncSession, person_id: uuid.UUID) -> Principal:
-    """A person's Principal by id alone — `resolve_access` then
-    `principal_from_access` — for acting on someone's behalf without
-    their token (the collab server's re-check, notification fan-out).
-    Checks nothing about their account: callers decide whether a
-    disabled or archived person counts."""
-    return await principal_from_access(db, person_id, await resolve_access(db, person_id))
+async def principals_for_people(db: AsyncSession,
+                                person_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, Principal]:
+    """`principal_for_person` for many people in a fixed number of queries
+    (`resolve_access_many` plus one for group memberships) — for fan-outs
+    that check many people against one node. Like `principal_for_person`,
+    checks nothing about their accounts."""
+    ids = list(dict.fromkeys(person_ids))
+    if not ids:
+        return {}
+    access = await resolve_access_many(db, ids)
+    groups: dict[uuid.UUID, set[uuid.UUID]] = {pid: set() for pid in ids}
+    for pid, gid in (await db.execute(
+        select(AccessGroupMember.person_id, AccessGroupMember.group_id)
+        .where(AccessGroupMember.person_id.in_(ids)))).all():
+        groups[pid].add(gid)
+    return {pid: _principal(pid, access[pid], groups[pid]) for pid in ids}
 
 
 def _as_uuid(value: str | uuid.UUID | None) -> uuid.UUID | None:
@@ -180,12 +203,18 @@ class _SpaceData:
 class AccessIndex:
     """Per-request cache. Loads grants + the inheritance-relevant node rows
     for the spaces it is asked about, computes levels in Python with
-    memoization."""
+    memoization.
 
-    def __init__(self, db: AsyncSession, principal: Principal):
+    `spaces` lets several indexes (one per person, in a notification
+    fan-out) share what they load: pass the same dict to each and a
+    space's grants are read once between them. Only share it within one
+    request/transaction — it is a snapshot."""
+
+    def __init__(self, db: AsyncSession, principal: Principal, *,
+                 spaces: dict[uuid.UUID, _SpaceData] | None = None):
         self.db = db
         self.p = principal
-        self._spaces: dict[uuid.UUID, _SpaceData] = {}
+        self._spaces: dict[uuid.UUID, _SpaceData] = spaces if spaces is not None else {}
         self._memo: dict[tuple[uuid.UUID, tuple[uuid.UUID, ...]], str | None] = {}
 
     # ── loading ─────────────────────────────────────────────────────

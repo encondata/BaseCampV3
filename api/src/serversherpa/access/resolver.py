@@ -4,6 +4,7 @@ hard gates (developer_only, anchor visibility) -> override -> group gate
 NEVER past a hard gate."""
 
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from sqlalchemy import select
@@ -58,16 +59,15 @@ class AccessInfo:
         return self.perms.get(resource, {}).get(action, False)
 
 
-async def resolve_access(db: AsyncSession, person_id: uuid.UUID, *,
-                         role_grants_override: RoleGrants | None = None) -> AccessInfo:
-    grants = (await db.execute(
-        select(PersonRole.role, PersonRole.client_id, PersonRole.partner_id,
-               Role.rank, Role.scope_anchor)
-        .join(Role, Role.name == PersonRole.role)
-        .where(PersonRole.person_id == person_id,
-               PersonRole.revoked_at.is_(None))
-    )).all()
-
+def _assemble(grants, granted: dict[str, set[str]],
+              overrides: dict[str, dict[str, bool]],
+              gated_resources: set[str], member_ok: set[str]) -> AccessInfo:
+    """One person's AccessInfo from their loaded rows: `grants` are their
+    (role, client_id, partner_id, rank, scope_anchor) rows, `granted` the
+    union of their roles' grants, `overrides` their permission overrides,
+    `gated_resources` every group-gated resource and `member_ok` the gated
+    resources one of their groups opens. Shared by `resolve_access` and
+    `resolve_access_many`, so the two can't disagree."""
     info = AccessInfo()
     for role, client_id, partner_id, rank, anchor in grants:
         info.role_names.append(role)
@@ -80,27 +80,6 @@ async def resolve_access(db: AsyncSession, person_id: uuid.UUID, *,
     info.role_names = sorted(set(info.role_names))
     info.is_global = "global" in info.anchors
     role_set = set(info.role_names)
-
-    granted = await role_grants(db, role_set, role_grants_override)
-
-    overrides: dict[str, dict[str, bool]] = {}
-    for res, action, allow in (await db.execute(
-        select(PermissionOverride.resource, PermissionOverride.action,
-               PermissionOverride.allow)
-        .where(PermissionOverride.person_id == person_id)
-    )).all():
-        overrides.setdefault(res, {})[action] = allow
-
-    gated_resources: set[str] = set()
-    member_ok: set[str] = set()
-    gates = (await db.execute(select(ResourceGroupGate.resource,
-                                     ResourceGroupGate.group_id))).all()
-    if gates:
-        gated_resources = {res for res, _ in gates}
-        my_groups = set(await db.scalars(
-            select(AccessGroupMember.group_id)
-            .where(AccessGroupMember.person_id == person_id)))
-        member_ok = {res for res, gid in gates if gid in my_groups}
 
     for res_id, res in REGISTRY.items():
         cell = {a: False for a in ACTIONS}
@@ -124,3 +103,91 @@ async def resolve_access(db: AsyncSession, person_id: uuid.UUID, *,
                 cell["view"] = True
         info.perms[res_id] = cell
     return info
+
+
+def _grants_query():
+    return (select(PersonRole.person_id, PersonRole.role, PersonRole.client_id,
+                   PersonRole.partner_id, Role.rank, Role.scope_anchor)
+            .join(Role, Role.name == PersonRole.role)
+            .where(PersonRole.revoked_at.is_(None)))
+
+
+async def resolve_access(db: AsyncSession, person_id: uuid.UUID, *,
+                         role_grants_override: RoleGrants | None = None) -> AccessInfo:
+    grants = [tuple(row[1:]) for row in (await db.execute(
+        _grants_query().where(PersonRole.person_id == person_id))).all()]
+    role_set = {row[0] for row in grants}
+    granted = await role_grants(db, role_set, role_grants_override)
+
+    overrides: dict[str, dict[str, bool]] = {}
+    for res, action, allow in (await db.execute(
+        select(PermissionOverride.resource, PermissionOverride.action,
+               PermissionOverride.allow)
+        .where(PermissionOverride.person_id == person_id)
+    )).all():
+        overrides.setdefault(res, {})[action] = allow
+
+    gated_resources: set[str] = set()
+    member_ok: set[str] = set()
+    gates = (await db.execute(select(ResourceGroupGate.resource,
+                                     ResourceGroupGate.group_id))).all()
+    if gates:
+        gated_resources = {res for res, _ in gates}
+        my_groups = set(await db.scalars(
+            select(AccessGroupMember.group_id)
+            .where(AccessGroupMember.person_id == person_id)))
+        member_ok = {res for res, gid in gates if gid in my_groups}
+
+    return _assemble(grants, granted, overrides, gated_resources, member_ok)
+
+
+async def resolve_access_many(db: AsyncSession,
+                              person_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, AccessInfo]:
+    """`resolve_access` for many people at once — the same result for each,
+    in a fixed number of queries (at most five) however many there are.
+    For fan-outs that check many people's access in one request."""
+    ids = list(dict.fromkeys(person_ids))
+    if not ids:
+        return {}
+    grants: dict[uuid.UUID, list[tuple]] = {pid: [] for pid in ids}
+    for pid, *row in (await db.execute(
+            _grants_query().where(PersonRole.person_id.in_(ids)))).all():
+        grants[pid].append(tuple(row))
+
+    all_roles = {row[0] for rows in grants.values() for row in rows}
+    by_role: dict[str, set[tuple[str, str]]] = {}
+    if all_roles:
+        for role, res, action in (await db.execute(
+            select(RolePermission.role, RolePermission.resource, RolePermission.action)
+            .where(RolePermission.role.in_(all_roles)))).all():
+            by_role.setdefault(role, set()).add((res, action))
+
+    overrides: dict[uuid.UUID, dict[str, dict[str, bool]]] = {pid: {} for pid in ids}
+    for pid, res, action, allow in (await db.execute(
+        select(PermissionOverride.person_id, PermissionOverride.resource,
+               PermissionOverride.action, PermissionOverride.allow)
+        .where(PermissionOverride.person_id.in_(ids))
+    )).all():
+        overrides[pid].setdefault(res, {})[action] = allow
+
+    gated_resources: set[str] = set()
+    groups: dict[uuid.UUID, set[uuid.UUID]] = {pid: set() for pid in ids}
+    gates = (await db.execute(select(ResourceGroupGate.resource,
+                                     ResourceGroupGate.group_id))).all()
+    if gates:
+        gated_resources = {res for res, _ in gates}
+        for pid, gid in (await db.execute(
+            select(AccessGroupMember.person_id, AccessGroupMember.group_id)
+            .where(AccessGroupMember.person_id.in_(ids)))).all():
+            groups[pid].add(gid)
+
+    out: dict[uuid.UUID, AccessInfo] = {}
+    for pid in ids:
+        granted: dict[str, set[str]] = {}
+        for role in {row[0] for row in grants[pid]}:
+            for res, action in by_role.get(role, ()):
+                granted.setdefault(res, set()).add(action)
+        member_ok = {res for res, gid in gates if gid in groups[pid]}
+        out[pid] = _assemble(grants[pid], granted, overrides[pid],
+                             gated_resources, member_ok)
+    return out

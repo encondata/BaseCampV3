@@ -284,7 +284,8 @@ export const resolveThread = (threadId: string) =>
 export const reopenThread = (threadId: string) =>
   request<CommentThread>('POST', `/comments/threads/${seg(threadId)}/reopen`);
 
-/** Up to 10 people who can view the page, for the @mention picker. */
+/** Up to 10 people who can view the page, for the @mention picker (the API
+ *  answers [] for a query under 2 characters, 403 to someone who can't comment). */
 export const listMentionable = (nodeId: string, q: string) =>
   request<PersonRef[]>('GET', `/nodes/${seg(nodeId)}/mentionable`, { query: { q } });
 
