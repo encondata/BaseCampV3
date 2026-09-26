@@ -12,6 +12,11 @@ any number of workers can run without a broker) and runs them:
 - `purge` — deletes the storage keys in its payload that no row
   references any more (copies, restored versions and copied page assets
   share objects, so every key is reference-counted first).
+- `reminders` — `wiki_review_due` to the owner (else the last publisher)
+  of each page whose periodic review has come due, once per due date
+  (`review_notified_for`). The loop queues one at start-up and then
+  whenever the last was queued more than a day ago — the job rows are
+  the record of when it last ran (`ensure_reminders_job`).
 
 A failed job is retried with backoff — `attempts` counts claims, and a
 re-queued job waits RETRY_BASE_SECONDS * 2^(attempts-1) from its last
@@ -42,9 +47,17 @@ from sqlalchemy import func, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.config import get_settings
-from serversherpa.db.models import WikiFileVersion, WikiJob, WikiNode, WikiPageAsset
+from serversherpa.db.models import (
+    WikiFileVersion,
+    WikiJob,
+    WikiNode,
+    WikiPage,
+    WikiPageAsset,
+    WikiPageVersion,
+    WikiSpace,
+)
 from serversherpa.services import storage
-from serversherpa.wiki import convert, trash, tree
+from serversherpa.wiki import convert, notify, reviews, trash, tree
 from serversherpa.wiki.files import (
     enqueue,
     is_office,
@@ -62,6 +75,10 @@ RETRY_BASE_SECONDS = 30
 STALE_MINUTES = 30              # longer than any one job's download + conversion
 STALE_SWEEP_SECONDS = 60
 EXPIRY_SWEEP_SECONDS = 3600
+REMINDERS_CHECK_SECONDS = 600   # how often the loop asks whether reminders are due
+REMINDERS_EVERY = timedelta(hours=24)
+# a transaction-scoped advisory lock: two workers never both queue the day's run
+REMINDERS_LOCK_KEY = 0x5715_0005
 ERROR_MAX = 2000
 PREVIEW_KEY = "wiki/previews/{version_id}.pdf"
 
@@ -280,8 +297,62 @@ async def _run_purge(db: AsyncSession, job: WikiJob) -> None:
     await db.commit()
 
 
+# ── review reminders ─────────────────────────────────────────────────
+
+
+async def ensure_reminders_job(db: AsyncSession, *, now: datetime | None = None,
+                               ) -> WikiJob | None:
+    """Queue a `reminders` job unless one was queued within
+    REMINDERS_EVERY (whatever became of it — a failed run waits for the
+    next day rather than retrying every check). Commits; returns the new
+    job, or None."""
+    now = now or _now()
+    await db.execute(select(func.pg_advisory_xact_lock(REMINDERS_LOCK_KEY)))
+    recent = await db.scalar(select(WikiJob.id).where(
+        WikiJob.kind == "reminders", WikiJob.created_at > now - REMINDERS_EVERY).limit(1))
+    if recent is not None:
+        await db.commit()
+        return None
+    job = WikiJob(kind="reminders", created_at=now)
+    db.add(job)
+    await db.commit()
+    return job
+
+
+async def _run_reminders(db: AsyncSession, job: WikiJob) -> None:
+    """Notify each due page's owner — or, with no owner, whoever published
+    its current version — then record the due date as notified, so the
+    next run skips it until the date moves (`mark-reviewed`, a publish).
+    A recipient who can't view the page any more gets nothing, but the
+    date is still spent. Commits after each page."""
+    ids = (await db.scalars(
+        select(WikiNode.id)
+        .join(WikiSpace, WikiSpace.id == WikiNode.space_id)
+        .where(reviews.due_filter(_now()), reviews.not_yet_notified())
+        .order_by(WikiNode.next_review_at, WikiNode.id))).all()
+    await db.commit()
+    notified = 0
+    for node_id in ids:
+        node = await db.scalar(select(WikiNode).where(WikiNode.id == node_id)
+                               .with_for_update(skip_locked=True)
+                               .execution_options(populate_existing=True))
+        if node is None or node.next_review_at is None \
+                or node.review_notified_for == node.next_review_at:
+            await db.rollback()
+            continue
+        owner_id = node.owner_id or await db.scalar(
+            select(WikiPageVersion.created_by)
+            .join(WikiPage, WikiPage.published_version_id == WikiPageVersion.id)
+            .where(WikiPage.node_id == node.id))
+        notified += len(await notify.on_review_due(db, node, owner_id=owner_id))
+        node.review_notified_for = node.next_review_at
+        await db.commit()
+    _done(job, {"notified": notified, "pages": len(ids)})
+    await db.commit()
+
+
 _HANDLERS = {"file_extract": _run_extract, "file_preview": _run_preview,
-             "purge": _run_purge}
+             "purge": _run_purge, "reminders": _run_reminders}
 
 
 async def process_job(db: AsyncSession, job: WikiJob) -> None:
@@ -382,6 +453,21 @@ async def _requeue_stale(maker, state: dict) -> None:
         state["failed"] = True
 
 
+async def _schedule_reminders(maker, state: dict) -> None:
+    """Queue the day's `reminders` job if it's due. Never stops the loop:
+    a failure is logged (once per outage) and the next check retries."""
+    try:
+        async with maker() as db:
+            job = await ensure_reminders_job(db)
+        if job is not None:
+            logger.info("queued review reminders (job %s)", job.id)
+        state["failed"] = False
+    except Exception:
+        if not state["failed"]:
+            logger.warning("could not queue review reminders — retrying", exc_info=True)
+        state["failed"] = True
+
+
 async def _backfill_search(maker) -> None:
     """Once per start (after any read-only freeze lifts — it writes):
     index by title any node from before every node was indexed at
@@ -409,6 +495,7 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
     claim_state = {"failed": False}
     stale_state = {"failed": False}
     expiry_state = {"failed": False}
+    reminders_state = {"failed": False}
     backfilled = False
     heartbeat = start_heartbeat(PROCESS_NAME, "worker", meta_fn=lambda: dict(pause_state))
     maker = get_sessionmaker()
@@ -416,6 +503,7 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
         await _requeue_stale(maker, stale_state)            # startup sweep
         stale_at = time.monotonic()
         expired_at = -EXPIRY_SWEEP_SECONDS                  # first pass = start-up
+        reminders_at = -REMINDERS_CHECK_SECONDS             # first check = start-up
         logger.info("wiki worker online — watching the queue")
         while True:
             # read-only mode's "also pause background services": idle (still
@@ -438,6 +526,9 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
             if time.monotonic() - expired_at >= EXPIRY_SWEEP_SECONDS:
                 expired_at = time.monotonic()               # even after a failure
                 await _sweep_expired(maker, expiry_state)
+            if time.monotonic() - reminders_at >= REMINDERS_CHECK_SECONDS:
+                reminders_at = time.monotonic()             # even after a failure
+                await _schedule_reminders(maker, reminders_state)
             try:
                 worked = await run_once(maker)
                 claim_state["failed"] = False

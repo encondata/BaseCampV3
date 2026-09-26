@@ -27,6 +27,7 @@ import DiffView from './DiffView';
 
 const KIND_LABEL: Record<VersionKind, string> = {
   published: 'Published', autosave: 'Autosave', restored: 'Restored', imported: 'Imported',
+  submitted: 'Submitted for review',
 };
 const KIND_CHIP: Partial<Record<VersionKind, string>> = {
   published: 'c-green', restored: 'c-amber', imported: 'c-blue',

@@ -27,16 +27,17 @@ from serversherpa.api.routes.wiki.schemas import (
     VersionOut,
 )
 from serversherpa.api.routes.wiki.serialize import person_refs
-from serversherpa.db.models import WikiNode, WikiPage, WikiPageVersion
+from serversherpa.db.models import WikiNode, WikiPage, WikiPageVersion, WikiSpace
 from serversherpa.services.audit import audit
-from serversherpa.wiki import notify, pages
+from serversherpa.wiki import notify, pages, reviews
 from serversherpa.wiki.content import EMPTY_DOC
 from serversherpa.wiki.permissions import level_rank, require_node_level
+from serversherpa.wiki.space_settings import space_setting
 
 router = APIRouter()
 
 
-async def _page_for(ctx: WikiContext, node_id: uuid.UUID, needed: str,
+async def page_for(ctx: WikiContext, node_id: uuid.UUID, needed: str,
                     ) -> tuple[WikiNode, WikiPage, str | None]:
     """(node, page, the caller's level) for a live page they can see: 404
     `not_found` when it isn't a page they can view, 404 `not_published`
@@ -91,7 +92,7 @@ async def get_content(node_id: uuid.UUID, ctx: WikiContext,
                       version: str = "published") -> PageContentOut:
     """`version` is `published` (default), `draft` (edit), or a version
     id (edit, unless it's a published version)."""
-    node, page, level = await _page_for(ctx, node_id, "view")
+    node, page, level = await page_for(ctx, node_id, "view")
 
     if version == "draft":
         if not is_edit(level):
@@ -131,7 +132,7 @@ async def get_content(node_id: uuid.UUID, ctx: WikiContext,
 async def put_draft(node_id: uuid.UUID, body: DraftIn, ctx: WikiContext) -> Response:
     """Seed an imported page's draft — only while it was never opened live
     (409 `already_live` after that). Records an `imported` version."""
-    node, page, _ = await _page_for(ctx, node_id, "edit")
+    node, page, _ = await page_for(ctx, node_id, "edit")
     actor_id = ctx.user.person.id
     version = await pages.import_draft(ctx.db, page, node, content_json=body.content_json,
                                        actor_id=actor_id)
@@ -147,10 +148,18 @@ async def put_draft(node_id: uuid.UUID, body: DraftIn, ctx: WikiContext) -> Resp
 
 @router.post("/pages/{node_id}/publish", response_model=VersionOut, status_code=201)
 async def publish(node_id: uuid.UUID, body: PublishIn, ctx: WikiContext) -> VersionOut:
-    node, page, _ = await _page_for(ctx, node_id, "edit")
+    """409 `review_required` when the space requires approval and the
+    caller isn't a manager of the page (they submit it for review
+    instead). Starts the page's next review period."""
+    node, page, level = await page_for(ctx, node_id, "edit")
+    space = await ctx.db.get(WikiSpace, node.space_id)
+    if space_setting(space, "require_approval") and level != "manage":
+        raise err(409, "review_required",
+                  "This space requires approval: submit the page for review instead.")
     actor_id = ctx.user.person.id
     version, mentioned = await pages.publish(ctx.db, node, page, actor_id=actor_id,
                                              note=body.note or None)
+    await reviews.after_publish(ctx.db, node)
     audit(ctx.db, actor_id=actor_id, entity_type="wiki_node",
           entity_id=str(node.id), action="publish",
           changes={"version_id": str(version.id), "version_no": version.version_no,
@@ -168,7 +177,7 @@ async def publish(node_id: uuid.UUID, body: PublishIn, ctx: WikiContext) -> Vers
 @router.get("/pages/{node_id}/versions", response_model=list[VersionOut])
 async def list_versions(node_id: uuid.UUID, ctx: WikiContext) -> list[VersionOut]:
     """Newest first; view-only callers get the published versions only."""
-    node, _, level = await _page_for(ctx, node_id, "view")
+    node, _, level = await page_for(ctx, node_id, "view")
     q = select(WikiPageVersion).where(WikiPageVersion.node_id == node.id)
     if not is_edit(level):
         q = q.where(WikiPageVersion.kind == "published")
@@ -181,7 +190,7 @@ async def list_versions(node_id: uuid.UUID, ctx: WikiContext) -> list[VersionOut
 @router.get("/pages/{node_id}/versions/{version_id}", response_model=VersionDetail)
 async def get_version(node_id: uuid.UUID, version_id: uuid.UUID,
                       ctx: WikiContext) -> VersionDetail:
-    node, _, level = await _page_for(ctx, node_id, "view")
+    node, _, level = await page_for(ctx, node_id, "view")
     version = await _version_for(ctx, node, level, version_id)
     out = await _one_version_out(ctx, version)
     return VersionDetail(**out.model_dump(), content_json=_content_of(version))
@@ -195,7 +204,7 @@ async def record_restore(node_id: uuid.UUID, body: RestoreIn,
     that version's content into the live document itself (which syncs to
     everyone and reaches the draft through the collab store); this only
     snapshots it as a `restored` version."""
-    node, _, level = await _page_for(ctx, node_id, "edit")
+    node, _, level = await page_for(ctx, node_id, "edit")
     source = await _version_for(ctx, node, level, body.from_version_id)
     actor_id = ctx.user.person.id
     version = await pages.add_version(

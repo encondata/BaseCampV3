@@ -35,6 +35,9 @@ import type {
   PersonRef,
   PrincipalOut,
   PrincipalType,
+  ReviewDetail,
+  ReviewListParams,
+  ReviewOut,
   SearchHit,
   SearchParams,
   SpaceCreateIn,
@@ -305,3 +308,40 @@ export const updateTemplate = (id: string, body: TemplatePatchIn) =>
 /** 422 `builtin` for one of the four seeded templates. */
 export const deleteTemplate = (id: string) =>
   request<void>('DELETE', `/templates/${seg(id)}`);
+
+// ── reviews & periodic review ───────────────────────────────────────
+
+/** Submit the page's stored draft for review — flush the live document
+ *  first, as before a publish. Replaces the page's pending review;
+ *  409 `nothing_to_review` when the draft adds nothing. (Where the space
+ *  requires approval, `publishPage` answers 409 `review_required` to a
+ *  non-manager.) */
+export const submitReview = (pageId: string, note?: string) =>
+  request<ReviewOut>('POST', `/pages/${seg(pageId)}/reviews`, { body: note ? { note } : {} });
+
+/** The reviews queue, newest first. */
+export const listReviews = ({ status, mine }: ReviewListParams = {}) =>
+  request<ReviewOut[]>('GET', '/reviews', { query: { status, mine } });
+
+export const getReview = (id: string) => request<ReviewDetail>('GET', `/reviews/${seg(id)}`);
+
+/** Publishes exactly the submitted snapshot (manage); 409 `not_pending`
+ *  once it's decided or withdrawn. */
+export const approveReview = (id: string, note?: string) =>
+  request<ReviewOut>('POST', `/reviews/${seg(id)}/approve`, { body: note ? { note } : {} });
+
+/** Request changes (manage) — the note is required. */
+export const rejectReview = (id: string, note: string) =>
+  request<ReviewOut>('POST', `/reviews/${seg(id)}/reject`, { body: { note } });
+
+/** The requester, or a manager, takes the request back. */
+export const withdrawReview = (id: string) =>
+  request<ReviewOut>('POST', `/reviews/${seg(id)}/withdraw`);
+
+/** The page is still right: its next review is one interval from now. */
+export const markReviewed = (pageId: string) =>
+  request<NodeOut>('POST', `/pages/${seg(pageId)}/mark-reviewed`);
+
+/** The space's pages due for review within two weeks (or overdue), soonest first. */
+export const listDueReviews = (spaceKey: string) =>
+  request<NodeOut[]>('GET', `/spaces/${seg(spaceKey)}/due-reviews`);

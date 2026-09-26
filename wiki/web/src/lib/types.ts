@@ -7,7 +7,7 @@ export type Level = 'view' | 'edit' | 'manage';
 export type PrincipalType =
   'everyone' | 'internal' | 'role' | 'access_group' | 'person' | 'client' | 'partner';
 export type NodeKind = 'folder' | 'page' | 'file';
-export type VersionKind = 'autosave' | 'published' | 'restored' | 'imported';
+export type VersionKind = 'autosave' | 'published' | 'restored' | 'imported' | 'submitted';
 export type PreviewKind = 'native' | 'pdf' | 'none';
 
 export interface PersonRef {
@@ -119,6 +119,21 @@ export interface NodePageOut {
   has_unpublished_changes: boolean;
 }
 
+/** Where a page stands in its review cycle: `overdue` once
+ *  `next_review_at` has passed, `due_soon` within 14 days, else `ok`. */
+export type ReviewState = 'ok' | 'due_soon' | 'overdue';
+
+/** A page's review cycle. `interval_months` is the page's own interval,
+ *  else its space's; `state` is null when there's no interval or nothing
+ *  is scheduled yet. `pending_review_id` is shown to editors only. */
+export interface NodeReviewOut {
+  interval_months: number | null;
+  next_review_at: string | null;
+  last_reviewed_at: string | null;
+  state: ReviewState | null;
+  pending_review_id: string | null;
+}
+
 export interface NodeFileOut {
   description: string;
   current_version: FileVersionOut | null;
@@ -142,6 +157,8 @@ export interface NodeOut {
   is_favorite: boolean;
   page: NodePageOut | null;
   file: NodeFileOut | null;
+  /** Pages only (null for folders and files). */
+  review: NodeReviewOut | null;
 }
 
 /** An ancestor the caller can't view comes back as `{id: null, title: "…"}`. */
@@ -168,9 +185,12 @@ export interface NodeCreateIn {
   after_id?: string;
 }
 
+/** `review_interval_months` (pages, manage): 1-60, or null to clear the
+ *  page's own interval (back to the space's); omit it to leave it alone. */
 export interface NodePatchIn {
   title?: string;
   owner_id?: string;
+  review_interval_months?: number | null;
 }
 
 /** Give `before_id` or `after_id`, not both. */
@@ -390,4 +410,38 @@ export interface TemplatePatchIn {
   description?: string;
   icon?: string;
   content_json?: JSONContent;
+}
+
+// ── reviews ─────────────────────────────────────────────────────────
+
+export type ReviewStatus = 'pending' | 'approved' | 'rejected' | 'withdrawn';
+
+/** A review request; `version_id` is the submitted snapshot. */
+export interface ReviewOut {
+  id: string;
+  node: { id: string; title: string; space_key: string; space_name: string };
+  version_id: string;
+  status: ReviewStatus;
+  note: string;
+  requested_by: PersonRef | null;
+  created_at: string;
+  decided_by: PersonRef | null;
+  decided_at: string | null;
+  decision_note: string;
+}
+
+/** A review with both sides of its diff: the submitted snapshot and the
+ *  page's published content now (null if never published). */
+export interface ReviewDetail extends ReviewOut {
+  submitted_version_no: number;
+  submitted_content: JSONContent;
+  published_version_id: string | null;
+  published_content: JSONContent | null;
+}
+
+/** `approver`: reviews of pages I manage; `requester`: my own requests;
+ *  neither: reviews of pages I can edit. `status` defaults to pending. */
+export interface ReviewListParams {
+  status?: ReviewStatus;
+  mine?: 'approver' | 'requester';
 }

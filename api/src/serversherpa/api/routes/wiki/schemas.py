@@ -15,7 +15,7 @@ Level = Literal["view", "edit", "manage"]
 PrincipalType = Literal[
     "everyone", "internal", "role", "access_group", "person", "client", "partner"]
 NodeKind = Literal["folder", "page", "file"]
-VersionKind = Literal["autosave", "published", "restored", "imported"]
+VersionKind = Literal["autosave", "published", "restored", "imported", "submitted"]
 PreviewKind = Literal["native", "pdf", "none"]
 
 
@@ -164,6 +164,19 @@ class NodeFileOut(BaseModel):
     current_version: FileVersionOut | None
 
 
+class NodeReviewOut(BaseModel):
+    """A page's review cycle. `interval_months` is the page's own interval,
+    else its space's; `state` is `overdue` once `next_review_at` has
+    passed, `due_soon` within 14 days, else `ok` — null when there's no
+    interval or nothing scheduled yet. `pending_review_id` is the page's
+    pending review (shown to editors only)."""
+    interval_months: int | None
+    next_review_at: datetime | None
+    last_reviewed_at: datetime | None
+    state: Literal["ok", "due_soon", "overdue"] | None
+    pending_review_id: uuid.UUID | None
+
+
 class NodeOut(BaseModel):
     id: uuid.UUID
     space_id: uuid.UUID
@@ -182,6 +195,8 @@ class NodeOut(BaseModel):
     is_favorite: bool
     page: NodePageOut | None
     file: NodeFileOut | None
+    # pages only (null for folders and files)
+    review: NodeReviewOut | None = None
 
 
 class Breadcrumb(BaseModel):
@@ -222,10 +237,14 @@ class NodeCreateIn(BaseModel):
 
 
 class NodePatchIn(BaseModel):
+    """`review_interval_months` (pages, manage): the page's own review
+    interval — an explicit null clears it (back to the space's); leaving
+    the key out changes nothing."""
     model_config = ConfigDict(extra="forbid")
 
     title: Title | None = None
     owner_id: uuid.UUID | None = None
+    review_interval_months: int | None = Field(default=None, ge=1, le=60)
 
 
 class NodeMoveIn(BaseModel):
@@ -306,7 +325,7 @@ class PageContentOut(BaseModel):
     live draft (`kind` "draft", no version id/number)."""
     version_id: uuid.UUID | None
     version_no: int | None
-    kind: Literal["draft", "autosave", "published", "restored", "imported"]
+    kind: Literal["draft", "autosave", "published", "restored", "imported", "submitted"]
     title: str
     content_json: dict
     created_at: datetime | None
@@ -546,6 +565,57 @@ class ThreadOut(BaseModel):
     resolved_at: datetime | None
     resolved_by: PersonRef | None
     comments: list[CommentOut]
+
+
+# ── reviews ──────────────────────────────────────────────────────────
+
+ReviewStatus = Literal["pending", "approved", "rejected", "withdrawn"]
+ReviewNote = Annotated[str, StringConstraints(strip_whitespace=True, max_length=1000)]
+
+
+class ReviewIn(BaseModel):
+    """Submit for review, approve, or withdraw: an optional note."""
+    model_config = ConfigDict(extra="forbid")
+
+    note: ReviewNote | None = None
+
+
+class ReviewRejectIn(BaseModel):
+    """Request changes: the note (what to change) is required."""
+    model_config = ConfigDict(extra="forbid")
+
+    note: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
+                                           max_length=1000)]
+
+
+class ReviewNodeRef(BaseModel):
+    id: uuid.UUID
+    title: str
+    space_key: str
+    space_name: str
+
+
+class ReviewOut(BaseModel):
+    """A review request: `version_id` is the `submitted` snapshot."""
+    id: uuid.UUID
+    node: ReviewNodeRef
+    version_id: uuid.UUID
+    status: ReviewStatus
+    note: str
+    requested_by: PersonRef | None
+    created_at: datetime
+    decided_by: PersonRef | None
+    decided_at: datetime | None
+    decision_note: str
+
+
+class ReviewDetail(ReviewOut):
+    """The review plus both sides of its diff: the submitted snapshot and
+    the page's published content now (null if never published)."""
+    submitted_version_no: int
+    submitted_content: dict
+    published_version_id: uuid.UUID | None
+    published_content: dict | None
 
 
 # ── internal (collab server) ─────────────────────────────────────────

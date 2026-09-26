@@ -1,9 +1,9 @@
 """The /wiki API: spaces, the node tree, node permission overrides,
-pages, files, search, the trash, watches, comments, and templates. Each
-area lives in its own module (`spaces.py`, `nodes.py`, `permissions.py`,
-`pages.py`, `files.py`, `search.py`, `trash.py`, `watches.py`,
-`comments.py`, `templates.py`, and more as later tasks add them) and is
-assembled here under one router/prefix. `internal.py` is the
+pages, files, search, the trash, watches, comments, templates, and
+reviews. Each area lives in its own module (`spaces.py`, `nodes.py`,
+`permissions.py`, `pages.py`, `files.py`, `search.py`, `trash.py`,
+`watches.py`, `comments.py`, `templates.py`, `reviews.py`, and more as
+later tasks add them) and is assembled here under one router/prefix. `internal.py` is the
 live-editing server's API: same prefix, but service-token auth instead
 of the wiki:view gate."""
 from fastapi import APIRouter
@@ -15,6 +15,7 @@ from serversherpa.api.routes.wiki import (
     nodes,
     pages,
     permissions,
+    reviews,
     search,
     spaces,
     templates,
@@ -33,4 +34,5 @@ router.include_router(trash.router)
 router.include_router(watches.router)
 router.include_router(comments.router)
 router.include_router(templates.router)
+router.include_router(reviews.router)
 router.include_router(internal.router)

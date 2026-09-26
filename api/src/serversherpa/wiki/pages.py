@@ -4,16 +4,18 @@ and the collab server's internal store.
 - `store_draft` saves what the live editor holds (the Yjs update plus its
   ProseMirror JSON), keeps `has_unpublished_changes` honest, and takes an
   `autosave` version at most every AUTOSAVE_EVERY while content changes.
-- `publish` snapshots the draft as a `published` version readers see.
+- `publish` snapshots the draft as a `published` version readers see;
+  `publish_snapshot` publishes an approved review's `submitted` version
+  instead (see `wiki.reviews`).
 - `import_draft` seeds the draft of a page that was never opened live
   (an import), recording an `imported` version.
 - `add_version` is the one place a version row is numbered and written
-  (autosave, published, restored, imported).
+  (autosave, published, restored, imported, submitted).
 
 Like `tree`, these helpers only `flush()`; callers commit, and audit
 the user-facing actions (publish, restore) themselves — autosaves are
-too chatty to audit. `publish` sends its own mention notifications, so
-every caller of it does.
+too chatty to audit. `publish` and `publish_snapshot` send their own
+mention notifications, so every caller of them does.
 """
 from __future__ import annotations
 
@@ -79,7 +81,7 @@ def check_doc(content_json: object) -> dict:
     return strip_reference_labels(content_json)
 
 
-async def _lock_page(db: AsyncSession, node_id: uuid.UUID) -> None:
+async def lock_page(db: AsyncSession, node_id: uuid.UUID) -> None:
     """Row-lock the page for the rest of the transaction, so two writers
     can't number versions (or publish) concurrently."""
     await db.execute(select(WikiPage.node_id)
@@ -93,7 +95,7 @@ async def add_version(db: AsyncSession, node: WikiNode, *, kind: str, title: str
     without the target titles its links carry (`strip_reference_labels`),
     whichever path it came from."""
     content_json = strip_reference_labels(content_json)
-    await _lock_page(db, node.id)
+    await lock_page(db, node.id)
     last = await db.scalar(select(func.max(WikiPageVersion.version_no))
                            .where(WikiPageVersion.node_id == node.id))
     version = WikiPageVersion(
@@ -125,7 +127,7 @@ async def store_draft(db: AsyncSession, page: WikiPage, node: WikiNode, *,
     AUTOSAVE_EVERY old (or there's none yet), an `autosave` version is
     taken too. Raises 422 `bad_doc` / 413 `too_large` (see `check_doc`)."""
     content_json = check_doc(content_json)
-    await _lock_page(db, node.id)
+    await lock_page(db, node.id)
     await db.refresh(page)     # the draft as of the lock, not the request start
     now = utcnow()
     editor_id = editor_ids[-1] if editor_ids else None
@@ -164,7 +166,7 @@ async def import_draft(db: AsyncSession, page: WikiPage, node: WikiNode, *,
     409 `already_live`. Raises 422 `bad_doc` / 413 `too_large` (see
     `check_doc`)."""
     content_json = check_doc(content_json)
-    await _lock_page(db, node.id)
+    await lock_page(db, node.id)
     await db.refresh(page)     # the page as of the lock, not the request start
     if page.ydoc is not None:
         raise _err(409, "already_live",
@@ -185,6 +187,33 @@ async def import_draft(db: AsyncSession, page: WikiPage, node: WikiNode, *,
     return version
 
 
+async def _publish_content(db: AsyncSession, node: WikiNode, page: WikiPage,
+                           content_json: dict, *, actor_id: uuid.UUID | None,
+                           note: str | None) -> tuple[WikiPageVersion, set[uuid.UUID]]:
+    """Make `content_json` what readers see: a `published` version of it,
+    `has_unpublished_changes` recomputed against the draft, the search
+    vector refreshed, and a `wiki_mention` for each person it @mentions
+    who wasn't in the previous published version. The page must already
+    be locked (`lock_page`) and refreshed. Returns the version and who
+    got that mention."""
+    previous = await published_content(db, page)
+    version = await add_version(db, node, kind="published", title=node.title,
+                                content_json=content_json, actor_id=actor_id, note=note)
+    page.published_version_id = version.id
+    page.has_unpublished_changes = (page.draft_json is not None
+                                    and not docs_equal(page.draft_json, version.content_json))
+    node.updated_at = utcnow()
+    node.updated_by = actor_id
+    await db.flush()
+    await refresh_search(db, node.id)
+    added = mention_ids(version.content_json) - mention_ids(previous)
+    mentioned: set[uuid.UUID] = set()
+    if added:
+        mentioned = await on_mentions(db, node, sorted(uuid.UUID(pid) for pid in added),
+                                      actor_id=actor_id, context="page")
+    return version, mentioned
+
+
 async def publish(db: AsyncSession, node: WikiNode, page: WikiPage, *,
                   actor_id: uuid.UUID | None, note: str | None,
                   ) -> tuple[WikiPageVersion, set[uuid.UUID]]:
@@ -195,26 +224,32 @@ async def publish(db: AsyncSession, node: WikiNode, page: WikiPage, *,
     a `wiki_mention` (see `notify.on_mentions`). Returns the version and
     who got that mention — the caller passes them as `skip` to the
     publish announcement, so a mentioned watcher hears once."""
-    await _lock_page(db, node.id)
+    await lock_page(db, node.id)
     await db.refresh(page)     # the draft as of the lock, not the request start
-    published = await published_content(db, page)
-    if page.published_version_id is not None and (
-            page.draft_json is None or docs_equal(page.draft_json, published)):
+    if not await has_changes(db, page):
         raise _err(409, "nothing_to_publish", "There are no changes to publish.")
-
-    version = await add_version(
-        db, node, kind="published", title=node.title,
-        content_json=page.draft_json if page.draft_json is not None else EMPTY_DOC,
+    return await _publish_content(
+        db, node, page, page.draft_json if page.draft_json is not None else EMPTY_DOC,
         actor_id=actor_id, note=note)
-    page.published_version_id = version.id
-    page.has_unpublished_changes = False
-    node.updated_at = utcnow()
-    node.updated_by = actor_id
-    await db.flush()
-    await refresh_search(db, node.id)
-    added = mention_ids(version.content_json) - mention_ids(published)
-    mentioned: set[uuid.UUID] = set()
-    if added:
-        mentioned = await on_mentions(db, node, sorted(uuid.UUID(pid) for pid in added),
-                                      actor_id=actor_id, context="page")
-    return version, mentioned
+
+
+async def publish_snapshot(db: AsyncSession, node: WikiNode, page: WikiPage,
+                           snapshot: WikiPageVersion, *, actor_id: uuid.UUID | None,
+                           note: str | None) -> tuple[WikiPageVersion, set[uuid.UUID]]:
+    """Publish exactly `snapshot`'s content (an approved review's
+    `submitted` version) — whatever the draft holds by now, which stays
+    the draft (`has_unpublished_changes` says whether it differs). Same
+    mentions and return value as `publish`."""
+    await lock_page(db, node.id)
+    await db.refresh(page)
+    content = snapshot.content_json if snapshot.content_json is not None else EMPTY_DOC
+    return await _publish_content(db, node, page, content, actor_id=actor_id, note=note)
+
+
+async def has_changes(db: AsyncSession, page: WikiPage) -> bool:
+    """Whether the draft has anything to publish: always for a page never
+    published, else a draft that differs from the published content."""
+    if page.published_version_id is None:
+        return True
+    return page.draft_json is not None and not docs_equal(
+        page.draft_json, await published_content(db, page))

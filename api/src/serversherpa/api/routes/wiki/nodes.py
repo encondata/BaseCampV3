@@ -41,7 +41,7 @@ from serversherpa.api.routes.wiki.serialize import node_out, nodes_out, space_ou
 from serversherpa.api.routes.wiki.templates import template_visible
 from serversherpa.db.models import Person, WikiFavorite, WikiNode, WikiPage, WikiSpace, WikiTemplate
 from serversherpa.services.audit import audit, diff, snapshot
-from serversherpa.wiki import notify, tree
+from serversherpa.wiki import notify, reviews, tree
 from serversherpa.wiki.pages import check_doc
 from serversherpa.wiki.permissions import (
     AccessIndex,
@@ -56,6 +56,7 @@ ELLIPSIS = "…"
 RECENT_KINDS = ("page", "file")
 DRAFTS_LIMIT = 50
 NODE_FIELDS = ["title", "owner_id"]
+REVIEW_FIELDS = ["review_interval_months", "next_review_at"]
 
 
 def _tree_error(exc: tree.TreeError) -> HTTPException:
@@ -170,10 +171,18 @@ async def get_node(node_id: uuid.UUID, ctx: WikiContext) -> NodeDetailOut:
 
 @router.patch("/nodes/{node_id}", response_model=NodeOut)
 async def patch_node(node_id: uuid.UUID, body: NodePatchIn, ctx: WikiContext) -> NodeOut:
+    """Rename or re-own (edit); set a page's review interval (manage)."""
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "edit")
     if body.owner_id is not None and await ctx.db.get(Person, body.owner_id) is None:
         raise err(422, "bad_owner", "That owner doesn't exist.")
+    set_interval = "review_interval_months" in body.model_fields_set
+    if set_interval:
+        if node.kind != "page":
+            raise err(422, "not_a_page", "Only pages have a review interval.")
+        if await ctx.ix.level_for_node(node) != "manage":
+            raise forbidden("manage")
 
+    actor_id = ctx.user.person.id
     before = snapshot(node, NODE_FIELDS)
     if body.title is not None:
         node.title = body.title
@@ -181,13 +190,22 @@ async def patch_node(node_id: uuid.UUID, body: NodePatchIn, ctx: WikiContext) ->
         node.owner_id = body.owner_id
     changes = diff(before, snapshot(node, NODE_FIELDS))
     if changes:
-        actor_id = ctx.user.person.id
         node.updated_by = actor_id
         node.updated_at = datetime.now(UTC)
         audit(ctx.db, actor_id=actor_id, entity_type="wiki_node",
               entity_id=str(node.id), action="update", changes=changes)
         if "title" in changes:
             await refresh_search(ctx.db, node.id)
+    review_changes = {}
+    if set_interval:
+        before = snapshot(node, REVIEW_FIELDS)
+        await reviews.set_interval(ctx.db, node, await ctx.db.get(WikiPage, node.id),
+                                   body.review_interval_months)
+        review_changes = diff(before, snapshot(node, REVIEW_FIELDS))
+        if review_changes:
+            audit(ctx.db, actor_id=actor_id, entity_type="wiki_node",
+                  entity_id=str(node.id), action="review_interval", changes=review_changes)
+    if changes or review_changes:
         await ctx.db.commit()
     return await node_out(ctx, node, await ctx.ix.level_for_node(node))
 

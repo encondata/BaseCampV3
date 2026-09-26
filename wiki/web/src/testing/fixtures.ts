@@ -46,6 +46,9 @@ export function makeNode(
       ? { is_home: false, published_version_id: null, published_at: null, has_unpublished_changes: false }
       : null,
     file: null,
+    review: kind === 'page'
+      ? { interval_months: null, next_review_at: null, last_reviewed_at: null, state: null, pending_review_id: null }
+      : null,
     ...over,
   };
 }

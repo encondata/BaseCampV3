@@ -9,6 +9,7 @@ vi.mock('@portal/lib/api', async (importOriginal) => ({
 import { ApiError, apiFetch, READ_ONLY_MESSAGE, refreshSystemStatus } from '@portal/lib/api';
 
 import {
+  approveReview,
   completeUpload,
   createNode,
   createTemplate,
@@ -16,31 +17,38 @@ import {
   deleteTemplate,
   editComment,
   getTemplate,
+  getReview,
   getWatchState,
   getAssetUrls,
   getPageContent,
   getSpaceGrants,
   getTree,
   listComments,
+  listDueReviews,
   listMentionable,
   listRecent,
+  listReviews,
   listSpaces,
   listTemplates,
   listWatches,
+  markReviewed,
   moveNode,
   postComment,
   publishPage,
   purgeTrash,
+  rejectReview,
   putDraft,
   reopenThread,
   resolveThread,
   search,
   searchPrincipals,
   setFavorite,
+  submitReview,
   unwatch,
   updateSpace,
   updateTemplate,
   watch,
+  withdrawReview,
 } from './wikiApi';
 
 const fetchMock = vi.mocked(apiFetch);
@@ -168,6 +176,60 @@ describe('wikiApi requests', () => {
     fetchMock.mockResolvedValueOnce(reply(200, state));
     await expect(getWatchState('n1')).resolves.toEqual(state);
     expect(lastCall().path).toBe('/wiki/nodes/n1/watch');
+  });
+
+  it('submits, lists, reads and decides reviews; marks pages reviewed; lists due reviews', async () => {
+    const review = { id: 'r1', node: { id: 'p1', title: 'Runbook', space_key: 'ops', space_name: 'Ops' },
+      version_id: 'v1', status: 'pending', note: '', requested_by: null,
+      created_at: '2026-09-26T00:00:00Z', decided_by: null, decided_at: null, decision_note: '' };
+    const body = () => JSON.parse(String(lastCall().init.body));
+
+    fetchMock.mockResolvedValueOnce(reply(201, review));
+    await expect(submitReview('p1', 'Ready')).resolves.toEqual(review);
+    expect(lastCall()).toMatchObject({ path: '/wiki/pages/p1/reviews', init: { method: 'POST' } });
+    expect(body()).toEqual({ note: 'Ready' });
+    fetchMock.mockResolvedValueOnce(reply(201, review));
+    await submitReview('p1');
+    expect(body()).toEqual({});
+
+    fetchMock.mockResolvedValueOnce(reply(200, [review]));
+    await expect(listReviews({ mine: 'approver' })).resolves.toEqual([review]);
+    expect(lastCall().path).toBe('/wiki/reviews?mine=approver');
+    fetchMock.mockResolvedValueOnce(reply(200, []));
+    await listReviews();
+    expect(lastCall().path).toBe('/wiki/reviews');
+    fetchMock.mockResolvedValueOnce(reply(200, []));
+    await listReviews({ status: 'approved', mine: 'requester' });
+    expect(lastCall().path).toBe('/wiki/reviews?status=approved&mine=requester');
+
+    fetchMock.mockResolvedValueOnce(reply(200, { ...review, submitted_version_no: 2 }));
+    await getReview('r1');
+    expect(lastCall().path).toBe('/wiki/reviews/r1');
+
+    fetchMock.mockResolvedValueOnce(reply(200, { ...review, status: 'approved' }));
+    await approveReview('r1', 'Nice');
+    expect(lastCall()).toMatchObject({ path: '/wiki/reviews/r1/approve', init: { method: 'POST' } });
+    expect(body()).toEqual({ note: 'Nice' });
+
+    fetchMock.mockResolvedValueOnce(reply(200, { ...review, status: 'rejected' }));
+    await rejectReview('r1', 'Fix step 3');
+    expect(lastCall().path).toBe('/wiki/reviews/r1/reject');
+    expect(body()).toEqual({ note: 'Fix step 3' });
+
+    fetchMock.mockResolvedValueOnce(reply(200, { ...review, status: 'withdrawn' }));
+    await withdrawReview('r1');
+    expect(lastCall()).toMatchObject({ path: '/wiki/reviews/r1/withdraw', init: { method: 'POST' } });
+
+    fetchMock.mockResolvedValueOnce(reply(409, { detail: { code: 'not_pending', message: 'Already decided.' } }));
+    await expect(approveReview('r1')).rejects.toMatchObject({ status: 409, code: 'not_pending' });
+
+    fetchMock.mockResolvedValueOnce(reply(200, {}));
+    await markReviewed('p1');
+    expect(lastCall()).toMatchObject({ path: '/wiki/pages/p1/mark-reviewed', init: { method: 'POST' } });
+
+    fetchMock.mockResolvedValueOnce(reply(200, []));
+    await expect(listDueReviews('ops')).resolves.toEqual([]);
+    expect(lastCall().path).toBe('/wiki/spaces/ops/due-reviews');
   });
 
   it('reads, posts, edits, deletes and resolves comments; finds mentionable people', async () => {

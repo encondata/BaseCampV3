@@ -297,10 +297,10 @@ async def on_review_decided(db: AsyncSession, node: WikiNode, review: WikiReview
 
 
 async def on_review_due(db: AsyncSession, node: WikiNode, *,
-                        owner_id: uuid.UUID | None) -> None:
+                        owner_id: uuid.UUID | None) -> set[uuid.UUID]:
     """A page's periodic review is due: `wiki_review_due` to its owner
-    (sent by the worker — there is no actor)."""
+    (sent by the worker — there is no actor). Returns who was notified."""
     if owner_id is None:
-        return
-    await _send(db, node, [owner_id], actor_id=None, kind="wiki_review_due",
-                title=f"{node.title} is due for review", event="review_due")
+        return set()
+    return await _send(db, node, [owner_id], actor_id=None, kind="wiki_review_due",
+                       title=f"{node.title} is due for review", event="review_due")
