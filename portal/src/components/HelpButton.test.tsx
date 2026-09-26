@@ -6,7 +6,7 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi, type MockInstance } from 'vitest';
 
 const auth = vi.hoisted(() => ({
   can: (_resource: string, _action?: string) => true as boolean,
@@ -19,7 +19,7 @@ import HelpButton from './HelpButton';
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status });
 
-let open: ReturnType<typeof vi.spyOn>;
+let open: MockInstance<typeof window.open>;
 beforeEach(() => {
   open = vi.spyOn(window, 'open').mockReturnValue(null);
   vi.mocked(apiFetch).mockReset();

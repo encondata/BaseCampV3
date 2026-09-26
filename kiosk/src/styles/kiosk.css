@@ -67,6 +67,9 @@
 .kiosk-user { display: flex; align-items: center; justify-content: flex-end; gap: 12px; min-width: 0; }
 .kiosk-person { font-size: 13px; color: var(--snow); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kiosk-top .mini-btn { color: var(--snow); border-color: var(--ink-line); background: transparent; }
+.kiosk-top .kiosk-help .icon-btn { color: var(--snow); border-color: var(--ink-line); background: transparent; }
+.kiosk-top .kiosk-help .icon-btn:hover { border-color: var(--accent); }
+.kiosk-top .kiosk-help .pop-menu { color: var(--text-dark); z-index: 60; }
 .kiosk-shell .kiosk-main {
   min-width: 0;
   min-height: 0;

@@ -32,6 +32,7 @@ const auth = vi.hoisted(() => ({
   preferences: null,
   sessionExpiresAt: '2026-09-14T19:00:42.000Z' as string | null,
   logout: vi.fn(() => Promise.resolve()),
+  can: (_resource: string, _action: string) => true as boolean,
 }));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 
@@ -49,6 +50,7 @@ afterEach(() => {
   auth.person = { display_name: 'Alex Worker' };
   auth.registration = 'ok';
   auth.sessionExpiresAt = '2026-09-14T19:00:42.000Z';
+  auth.can = () => true;
   syncMock.status = { phase: 'idle' };
   localStorage.clear();
 });
@@ -61,6 +63,24 @@ it('shows the feature title in .kiosk-section at a feature route', () => {
   );
   const section = document.querySelector('.kiosk-section');
   expect(section?.textContent).toBe('Timeclock');
+});
+
+it('puts the help button in the top bar for someone signed in with wiki:view', () => {
+  render(
+    <MemoryRouter initialEntries={['/enroll']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const top = document.querySelector('.kiosk-top') as HTMLElement;
+  expect(top.querySelector('[aria-label="Help for this page"]')).not.toBeNull();
+  cleanup();
+  auth.can = (resource) => resource !== 'wiki';
+  render(
+    <MemoryRouter initialEntries={['/enroll']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  expect(screen.queryByRole('button', { name: 'Help for this page' })).toBeNull();
 });
 
 it('shows no section label at /', () => {
