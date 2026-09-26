@@ -1,6 +1,6 @@
 """Page content, publishing and history: read a page's published content,
-its live draft or any version; publish the draft; list and read versions;
-record a restore.
+its live draft or any version; seed an imported page's draft; publish the
+draft; list and read versions; record a restore.
 
 Readers (view) see published content and `published` versions only;
 editors see everything. A page that was never published doesn't exist
@@ -12,12 +12,13 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 from sqlalchemy import select
 
 from serversherpa.api.routes.wiki.deps import WikiContext
 from serversherpa.api.routes.wiki.errors import err, forbidden, is_edit, not_found
 from serversherpa.api.routes.wiki.schemas import (
+    DraftIn,
     PageContentOut,
     PersonRef,
     PublishIn,
@@ -121,6 +122,24 @@ async def get_content(node_id: uuid.UUID, ctx: WikiContext,
         version_id=row.id, version_no=row.version_no, kind=row.kind,
         title=row.title, content_json=_content_of(row), created_at=row.created_at,
         created_by=people.get(row.created_by) if row.created_by else None)
+
+
+# ── import ───────────────────────────────────────────────────────────
+
+
+@router.put("/nodes/{node_id}/draft", status_code=204)
+async def put_draft(node_id: uuid.UUID, body: DraftIn, ctx: WikiContext) -> Response:
+    """Seed an imported page's draft — only while it was never opened live
+    (409 `already_live` after that). Records an `imported` version."""
+    node, page, _ = await _page_for(ctx, node_id, "edit")
+    actor_id = ctx.user.person.id
+    version = await pages.import_draft(ctx.db, page, node, content_json=body.content_json,
+                                       actor_id=actor_id)
+    audit(ctx.db, actor_id=actor_id, entity_type="wiki_node",
+          entity_id=str(node.id), action="import",
+          changes={"version_id": str(version.id), "version_no": version.version_no})
+    await ctx.db.commit()
+    return Response(status_code=204)
 
 
 # ── publish ──────────────────────────────────────────────────────────

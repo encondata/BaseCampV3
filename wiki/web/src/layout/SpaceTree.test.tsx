@@ -11,6 +11,7 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   moveNode: vi.fn(),
   updateNode: vi.fn(),
 }));
+vi.mock('../uploads/uploadQueue', () => ({ enqueueWalked: vi.fn() }));
 
 import { ApiError } from '@portal/lib/api';
 
@@ -18,6 +19,7 @@ import { resetTreeStore } from '../lib/treeStore';
 import type { NodeOut } from '../lib/types';
 import { getTree, moveNode } from '../lib/wikiApi';
 import { makeNode, makeSpace } from '../testing/fixtures';
+import { enqueueWalked } from '../uploads/uploadQueue';
 import SpaceTree from './SpaceTree';
 
 const getTreeMock = vi.mocked(getTree);
@@ -69,6 +71,16 @@ function drag(type: 'dragstart' | 'dragover' | 'drop' | 'dragend', el: HTMLEleme
   const ev = new MouseEvent(type, { bubbles: true, cancelable: true, clientY });
   Object.defineProperty(ev, 'dataTransfer', {
     value: { setData: () => {}, getData: () => '', types: [], effectAllowed: 'all', dropEffect: 'none' },
+  });
+  act(() => { el.dispatchEvent(ev); });
+  return ev;
+}
+
+/** A drag of files from the operating system (no row is being dragged). */
+function fileDrag(type: 'dragover' | 'drop', el: HTMLElement, files: File[]) {
+  const ev = new MouseEvent(type, { bubbles: true, cancelable: true, clientY: 5 });
+  Object.defineProperty(ev, 'dataTransfer', {
+    value: { types: ['Files'], items: [], files, dropEffect: 'none' },
   });
   act(() => { el.dispatchEvent(ev); });
   return ev;
@@ -183,6 +195,39 @@ describe('SpaceTree', () => {
     await dragOnto('p2', 'p1', 20);
     await vi.waitFor(() => expect(toast).toHaveBeenCalledWith('A file can\'t hold other items.'));
     await vi.waitFor(() => expect(getTreeMock).toHaveBeenCalledWith('ops', null));
+  });
+
+  it('uploads files dropped from the computer onto a folder row', async () => {
+    vi.mocked(enqueueWalked).mockReset().mockResolvedValue(undefined);
+    renderTree();
+    await screen.findByText('Guides');
+    const file = new File(['x'], 'rack.pdf');
+    const over = fileDrag('dragover', row('f1'), [file]);
+    expect(over.defaultPrevented).toBe(true);
+    expect(row('f1').getAttribute('data-drop')).toBe('into');
+    const drop = fileDrag('drop', row('f1'), [file]);
+    expect(drop.defaultPrevented).toBe(true);
+    expect(row('f1').getAttribute('data-drop')).toBeNull();
+    await vi.waitFor(() => expect(enqueueWalked).toHaveBeenCalledWith(
+      [{ path: [], file }], { spaceId: 'space-1', parentId: 'f1', label: 'Guides' }, expect.any(Function)));
+    expect(moveMock).not.toHaveBeenCalled();
+  });
+
+  it('takes no file drop on a page row or a folder the user can\'t edit', async () => {
+    vi.mocked(enqueueWalked).mockReset();
+    getTreeMock.mockImplementation(async () => [
+      makeNode('ro', { kind: 'folder', title: 'Read only', my_level: 'view' }),
+      makeNode('p1', { title: 'Intro' }),
+    ]);
+    renderTree();
+    await screen.findByText('Intro');
+    for (const id of ['ro', 'p1']) {
+      expect(fileDrag('dragover', row(id), [new File(['x'], 'x')]).defaultPrevented).toBe(false);
+      expect(row(id).getAttribute('data-drop')).toBeNull();
+      fileDrag('drop', row(id), [new File(['x'], 'x')]);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    expect(enqueueWalked).not.toHaveBeenCalled();
   });
 
   it('never lets a view-only row be dragged', async () => {

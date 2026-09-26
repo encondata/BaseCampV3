@@ -1,7 +1,8 @@
 /** The signed-in wiki: system banners, the top bar, the collapsible
- *  sidebar (button or Ctrl/⌘+B, remembered in localStorage) and the routed
- *  page. Owns the dialogs pages and the tree ask for through the shell
- *  context: New page/folder, Delete, Move…, Copy… and Permissions…. */
+ *  sidebar (button or Ctrl/⌘+B, remembered in localStorage), the routed
+ *  page and the upload tray. Owns the dialogs pages and the tree ask for
+ *  through the shell context: New page/folder, Delete, Move…, Copy… and
+ *  Permissions…. */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Route, Routes, useNavigate } from 'react-router-dom';
 
@@ -24,6 +25,9 @@ import NotFound from '../pages/NotFound';
 import SpaceHome from '../pages/SpaceHome';
 import SpaceSettings from '../pages/SpaceSettings';
 import TrashPage from '../pages/TrashPage';
+import { isFileDrag } from '../uploads/DropZone';
+import { enqueue } from '../uploads/uploadQueue';
+import UploadTray from '../uploads/UploadTray';
 import { ShellContext, type NewNodeTarget, type ShellValue } from './shellContext';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
@@ -145,6 +149,39 @@ export default function WikiShell() {
     return null;
   }, [activeNode, sidebarSpace]);
 
+  /** Where the top bar's Upload files lands: New's target, where the
+   *  user can edit it (the space's top level needs edit on the space). */
+  const uploadTarget = useMemo((): NewNodeTarget | null => {
+    if (!newTarget) return null;
+    if (activeNode && activeNode.kind !== 'folder') {
+      const canEdit = newTarget.parentId === null
+        ? atLeast(activeNode.space.my_level, 'edit')
+        : atLeast(activeNode.my_level, 'edit');
+      if (!canEdit) return null;
+    }
+    return newTarget;
+  }, [newTarget, activeNode]);
+
+  // a file dropped anywhere that doesn't take it must not replace the wiki
+  // with that file (the browser's default): refuse the drop there. Drop
+  // targets (folder views, tree rows) and the editor handle their own.
+  useEffect(() => {
+    const unhandled = (e: DragEvent) => isFileDrag(e) && !e.defaultPrevented
+      && !(e.target instanceof Element && e.target.closest('[contenteditable="true"]'));
+    const onOver = (e: DragEvent) => {
+      if (!unhandled(e)) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
+    };
+    const onDrop = (e: DragEvent) => { if (unhandled(e)) e.preventDefault(); };
+    window.addEventListener('dragover', onOver);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragover', onOver);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, []);
+
   const requestDelete = useCallback((node: NodeOut) => setDeleting({ node, busy: false, error: '' }), []);
 
   const confirmDelete = async () => {
@@ -191,6 +228,10 @@ export default function WikiShell() {
           sidebarCollapsed={collapsed}
           onShowSidebar={toggleSidebar}
           onNew={newTarget ? (kind) => openNewNode(newTarget, kind) : null}
+          onUpload={uploadTarget ? (files) => enqueue(files, {
+            kind: 'node', spaceId: uploadTarget.spaceId, parentId: uploadTarget.parentId,
+            label: uploadTarget.parentTitle,
+          }) : null}
         />
         <div className="wiki-body">
           {!collapsed && (
@@ -222,6 +263,7 @@ export default function WikiShell() {
             </Routes>
           </main>
         </div>
+        <UploadTray />
       </div>
 
       {creating && (

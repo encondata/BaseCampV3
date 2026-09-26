@@ -823,3 +823,158 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 .wiki-diff-block.is-item { padding-left: 30px; position: relative; }
 .wiki-diff-block.is-item::before { content: '•'; position: absolute; left: 16px; }
 .wiki-diff-block.is-row, .wiki-diff-block.is-code { font-family: var(--font-mono); font-size: 12.5px; }
+
+/* ── uploads: drop zone, tray ─────────────────────────────── */
+
+.wiki-dropzone { position: relative; min-height: 100%; }
+.wiki-dropzone-overlay {
+  position: absolute;
+  inset: 8px;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--amber);
+  border-radius: 16px;
+  background: rgba(var(--accent-rgb), 0.08);
+  pointer-events: none;
+}
+.wiki-dropzone-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-radius: 12px;
+  background: var(--surface, #fff);
+  box-shadow: 0 10px 30px -18px rgba(12, 17, 23, 0.45);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-dark);
+}
+.wiki-dropzone-card svg { width: 18px; height: 18px; color: var(--amber); }
+
+.wiki-tray {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  width: min(380px, calc(100vw - 32px));
+  border: 1px solid var(--paper-line);
+  border-radius: 14px;
+  background: var(--surface, #fff);
+  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+.wiki-tray-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 10px 10px 14px;
+  border-bottom: 1px solid var(--paper-line);
+}
+.wiki-tray-title { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.wiki-tray-title b { font-size: 13.5px; font-weight: 600; color: var(--text-dark); }
+.wiki-tray-title span { font-size: 12px; font-weight: 300; color: var(--text-mute); }
+.wiki-tray-toggle { width: 30px; height: 30px; }
+.wiki-tray-list { list-style: none; margin: 0; padding: 4px 0; max-height: min(320px, 50vh); overflow-y: auto; }
+.wiki-tray-item { padding: 8px 14px; display: flex; flex-direction: column; gap: 4px; }
+.wiki-tray-item + .wiki-tray-item { border-top: 1px solid var(--paper-line); }
+.wiki-tray-line, .wiki-tray-meta { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.wiki-tray-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-dark);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wiki-tray-name a { color: var(--text-dark); text-decoration: none; }
+.wiki-tray-name a:hover { color: var(--amber); }
+.wiki-tray-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.wiki-tray-meta { justify-content: space-between; font-size: 11.5px; font-weight: 300; color: var(--text-mute); }
+.wiki-tray-dest { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wiki-tray-status { flex-shrink: 0; text-align: right; }
+.wiki-tray-status.pf-error { flex-shrink: 1; margin: 0; }
+.wiki-tray-item.is-done .wiki-tray-status { color: var(--c-green); }
+.wiki-tray .wiki-tray-bar { width: 100%; }
+
+/* ── file view ────────────────────────────────────────────── */
+
+.wiki-fileview .wiki-page-meta span { overflow-wrap: anywhere; }
+.wiki-fileview-desc { max-width: 760px; margin: 0 0 18px; font-size: 14px; color: var(--text-dark); white-space: pre-wrap; }
+.wiki-fileview-desc-form { max-width: 760px; margin: 0 0 18px; }
+.wiki-fileview-desc-form textarea { resize: vertical; min-height: 52px; }
+.wiki-fileview-preview {
+  margin: 0 0 28px;
+  border: 1px solid var(--paper-line);
+  border-radius: 14px;
+  background: var(--surface-2, #f6f7f9);
+  overflow: hidden;
+}
+.wiki-fileview-preview > .page-hint { margin: 0; padding: 48px 20px; text-align: center; }
+.wiki-fileview-img { display: block; max-width: 100%; max-height: 75vh; margin: 0 auto; object-fit: contain; }
+.wiki-fileview-media { display: block; width: 100%; max-height: 75vh; background: #000; }
+.wiki-fileview-preview audio { display: block; width: calc(100% - 32px); margin: 24px 16px; }
+.wiki-fileview-frame { display: block; width: 100%; height: 78vh; border: 0; background: var(--surface, #fff); }
+.wiki-fileview-text {
+  margin: 0;
+  padding: 16px 18px;
+  max-height: 75vh;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-dark);
+  background: var(--surface, #fff);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.wiki-fileview-preview.is-markdown { background: var(--surface, #fff); padding: 8px 24px 24px; }
+.wiki-fileview-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 20px;
+  font-size: 13.5px;
+  color: var(--text-mute);
+}
+.wiki-fileview-empty p { margin: 0; }
+.wiki-fileview-empty-icon { width: 40px; height: 40px; color: var(--text-mute); }
+.wiki-fileview-versions { padding-bottom: 60px; }
+.wiki-fileview-versions .pn { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.wiki-fileview-versions .pn b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wiki-fileview-versions .pn .cell-sub { flex-basis: 100%; }
+.wiki-fileview-current { flex-shrink: 0; }
+
+/* ── import dialog ────────────────────────────────────────── */
+
+.modal-card.reports-modal-card.rgm-card.wiki-import-card { width: min(600px, 96vw); }
+.wiki-import-pick { margin-bottom: 12px; }
+.wiki-import-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: min(360px, 50vh);
+  overflow-y: auto;
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+}
+.wiki-import-item { padding: 10px 14px; display: flex; flex-direction: column; gap: 4px; }
+.wiki-import-item + .wiki-import-item { border-top: 1px solid var(--paper-line); }
+.wiki-import-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.wiki-import-line b {
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text-dark);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wiki-import-line .mono { flex-shrink: 0; font-size: 12px; color: var(--text-mute); }
+.wiki-import-line .pf-error { margin: 0; }
+.wiki-import-status { font-size: 12.5px; font-weight: 300; color: var(--text-mute); }
+.wiki-import-item.is-done .wiki-import-status { color: var(--c-green); }
+.wiki-import-line a { flex-shrink: 0; font-size: 12.5px; color: var(--amber); text-decoration: none; }
+.wiki-import-item .wiki-field-note { margin: 0; }

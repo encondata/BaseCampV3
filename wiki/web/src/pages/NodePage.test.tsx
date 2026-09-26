@@ -13,12 +13,14 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   getTree: vi.fn(),
   getPageContent: vi.fn(),
   getMe: vi.fn(),
+  getFileUrl: vi.fn(),
+  listFileVersions: vi.fn(),
 }));
 
 import { ApiError } from '@portal/lib/api';
 
 import { resetTreeStore } from '../lib/treeStore';
-import { getMe, getNode, getPageContent, getTree } from '../lib/wikiApi';
+import { getFileUrl, getMe, getNode, getPageContent, getTree, listFileVersions } from '../lib/wikiApi';
 import { makeDetail, makeMe } from '../testing/fixtures';
 import NodePage from './NodePage';
 
@@ -35,6 +37,8 @@ beforeEach(() => {
   vi.mocked(getTree).mockResolvedValue([]);
   vi.mocked(getMe).mockResolvedValue(makeMe());
   vi.mocked(getPageContent).mockRejectedValue(new ApiError(404, 'not_published'));
+  vi.mocked(getFileUrl).mockResolvedValue({ url: null, content_type: 'application/zip', preview_status: 'skipped' });
+  vi.mocked(listFileVersions).mockResolvedValue([]);
 });
 afterEach(cleanup);
 
@@ -56,6 +60,7 @@ describe('NodePage', () => {
     vi.mocked(getNode).mockResolvedValue(makeDetail('x', { kind: 'file', page: null }));
     renderAt('/n/x');
     expect(await screen.findByTestId('file-view')).toBeTruthy();
+    expect(await screen.findByRole('table', { name: 'Versions' })).toBeTruthy();
   });
 
   it('says so when the node is missing or hidden', async () => {

@@ -19,6 +19,7 @@ import {
   moveNode,
   publishPage,
   purgeTrash,
+  putDraft,
   search,
   searchPrincipals,
   setFavorite,
@@ -118,6 +119,12 @@ describe('wikiApi requests', () => {
     fetchMock.mockResolvedValueOnce(reply(204));
     await setFavorite('n1', false);
     expect(lastCall().init.method).toBe('DELETE');
+
+    const doc = { type: 'doc', content: [{ type: 'paragraph' }] };
+    fetchMock.mockResolvedValueOnce(reply(204));
+    await expect(putDraft('p1', doc)).resolves.toBeUndefined();
+    expect(lastCall()).toMatchObject({ path: '/wiki/nodes/p1/draft', init: { method: 'PUT' } });
+    expect(JSON.parse(String(lastCall().init.body))).toEqual({ content_json: doc });
   });
 
   it('unwraps the grants and asset-url envelopes', async () => {

@@ -1,7 +1,8 @@
 /** The wiki's top bar: the wiki mark, the space switcher, the search box
  *  (⌘K / Ctrl+K focuses it; searching itself arrives with Task 15), the
- *  New menu, and the avatar menu (Back to portal, Sign out). */
-import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+ *  New menu (Page, Folder, Upload files, Space), and the avatar menu (Back
+ *  to portal, Sign out). */
+import { useEffect, useRef, useState, type ChangeEvent, type ReactNode, type RefObject } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -20,6 +21,8 @@ interface Props {
   onShowSidebar: () => void;
   /** null when there's nowhere to create (no space yet, or no edit access). */
   onNew: ((kind: 'page' | 'folder') => void) | null;
+  /** Uploads picked files where New would create; null when there's nowhere to. */
+  onUpload: ((files: File[]) => void) | null;
 }
 
 /** Closes a popover on an outside mousedown or Escape. */
@@ -52,10 +55,13 @@ function MenuItem({ icon, children, onClick, disabled, hint }: {
   );
 }
 
-export default function TopBar({ me, spaces, currentSpace, sidebarCollapsed, onShowSidebar, onNew }: Props) {
+export default function TopBar({
+  me, spaces, currentSpace, sidebarCollapsed, onShowSidebar, onNew, onUpload,
+}: Props) {
   const { person, logout } = useAuth();
   const navigate = useNavigate();
   const searchRef = useRef<HTMLInputElement>(null);
+  const uploadRef = useRef<HTMLInputElement>(null);
   const [newOpen, setNewOpen, newRef] = usePopover();
   const [userOpen, setUserOpen, userRef] = usePopover();
   const name = person?.display_name ?? me?.person.name ?? '';
@@ -73,6 +79,11 @@ export default function TopBar({ me, spaces, currentSpace, sidebarCollapsed, onS
   }, []);
 
   const pick = (kind: 'page' | 'folder') => { setNewOpen(false); onNew?.(kind); };
+  const pickFiles = (e: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (files.length) onUpload?.(files);
+  };
 
   const signOut = async () => {
     setUserOpen(false);
@@ -126,7 +137,9 @@ export default function TopBar({ me, spaces, currentSpace, sidebarCollapsed, onS
               <MenuItem icon={<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />}
                         onClick={() => pick('folder')} disabled={!onNew}
                         hint={onNew ? undefined : 'Open a space you can edit first'}>Folder</MenuItem>
-              <MenuItem icon={<path d="M12 16V4M7 9l5-5 5 5M5 20h14" />} disabled hint="Uploads are coming soon">
+              <MenuItem icon={<path d="M12 16V4M7 9l5-5 5 5M5 20h14" />}
+                        onClick={() => { setNewOpen(false); uploadRef.current?.click(); }} disabled={!onUpload}
+                        hint={onUpload ? undefined : 'Open a space you can edit first'}>
                 Upload files
               </MenuItem>
               {me?.can_create_spaces && (
@@ -137,6 +150,10 @@ export default function TopBar({ me, spaces, currentSpace, sidebarCollapsed, onS
                 </>
               )}
             </div>
+          )}
+          {onUpload && (
+            <input ref={uploadRef} type="file" multiple hidden aria-label="Choose files to upload"
+                   onChange={pickFiles} />
           )}
         </div>
 

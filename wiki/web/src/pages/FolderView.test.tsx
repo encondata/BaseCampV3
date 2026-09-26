@@ -10,11 +10,13 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   createNode: vi.fn(),
   updateNode: vi.fn(),
 }));
+vi.mock('../uploads/uploadQueue', () => ({ enqueue: vi.fn(), enqueueWalked: vi.fn() }));
 
 import { resetTreeStore } from '../lib/treeStore';
 import type { NodeDetailOut } from '../lib/types';
 import { createNode, getTree, updateNode } from '../lib/wikiApi';
 import { makeDetail, makeNode } from '../testing/fixtures';
+import { enqueue, enqueueWalked } from '../uploads/uploadQueue';
 import FolderView from './FolderView';
 
 function Probe() {
@@ -126,14 +128,55 @@ describe('FolderView', () => {
     await vi.waitFor(() => expect(updateNode).toHaveBeenCalledWith('f1', { title: 'How-to guides' }));
   });
 
-  it('keeps the edit controls from a viewer and disables Upload and Import', async () => {
+  it('keeps the edit controls, uploads and drops from a viewer', async () => {
     renderFolder({ ...FOLDER, my_level: 'view' });
     await screen.findByText('Cabling');
     expect(screen.queryByRole('button', { name: 'New page' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Rename Guides' })).toBeNull();
-    cleanup();
+    expect(screen.queryByRole('button', { name: 'Upload' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Import' })).toBeNull();
+    fireEvent.dragEnter(screen.getByRole('list', { name: 'Contents of Guides' }), {
+      dataTransfer: { types: ['Files'], items: [], files: [] },
+    });
+    expect(screen.queryByText('Drop to upload to Guides')).toBeNull();
+  });
+
+  it('uploads picked files into the folder through the tray', async () => {
+    vi.mocked(enqueue).mockReset();
     renderFolder();
-    expect((screen.getByRole('button', { name: 'Upload' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole('button', { name: 'Import' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: 'Upload' })).toBeTruthy();
+    const files = [new File(['a'], 'a.pdf'), new File(['b'], 'b.png')];
+    fireEvent.change(screen.getByLabelText('Upload files to Guides'), { target: { files } });
+    expect(enqueue).toHaveBeenCalledWith(files, { kind: 'node', spaceId: 'space-1', parentId: 'f1', label: 'Guides' });
+  });
+
+  it('opens the import dialog for the folder', async () => {
+    renderFolder();
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
+    const dialog = screen.getByRole('dialog', { name: 'Import pages' });
+    expect(within(dialog).getByText(/into Guides/)).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('takes files and folders dropped from the computer', async () => {
+    vi.mocked(enqueueWalked).mockReset().mockResolvedValue(undefined);
+    renderFolder();
+    const list = await screen.findByRole('list', { name: 'Contents of Guides' });
+    const file = new File(['x'], 'x.txt');
+    const dataTransfer = { types: ['Files'], items: [], files: [file], dropEffect: 'none' };
+    fireEvent.dragEnter(list, { dataTransfer });
+    expect(screen.getByText('Drop to upload to Guides')).toBeTruthy();
+    fireEvent.drop(list, { dataTransfer });
+    expect(screen.queryByText('Drop to upload to Guides')).toBeNull();
+    await vi.waitFor(() => expect(enqueueWalked).toHaveBeenCalledWith(
+      [{ path: [], file }], { spaceId: 'space-1', parentId: 'f1', label: 'Guides' }, expect.any(Function)));
+  });
+
+  it('ignores drags that aren\'t files', async () => {
+    renderFolder();
+    const list = await screen.findByRole('list', { name: 'Contents of Guides' });
+    fireEvent.dragEnter(list, { dataTransfer: { types: ['text/plain'], items: [], files: [] } });
+    expect(screen.queryByText('Drop to upload to Guides')).toBeNull();
   });
 });

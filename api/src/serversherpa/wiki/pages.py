@@ -5,6 +5,8 @@ and the collab server's internal store.
   ProseMirror JSON), keeps `has_unpublished_changes` honest, and takes an
   `autosave` version at most every AUTOSAVE_EVERY while content changes.
 - `publish` snapshots the draft as a `published` version readers see.
+- `import_draft` seeds the draft of a page that was never opened live
+  (an import), recording an `imported` version.
 - `add_version` is the one place a version row is numbered and written
   (autosave, published, restored, imported).
 
@@ -141,6 +143,36 @@ async def store_draft(db: AsyncSession, page: WikiPage, node: WikiNode, *,
                           content_json=content_json, actor_id=editor_id)
         page.last_autosave_version_at = now
     await db.flush()
+
+
+async def import_draft(db: AsyncSession, page: WikiPage, node: WikiNode, *,
+                       content_json: object, actor_id: uuid.UUID | None) -> WikiPageVersion:
+    """Seed the draft of a page nobody has opened live yet (an import) and
+    record it as an `imported` version. The collab server seeds the Y.Doc
+    from `draft_json` on first open, so this never writes `ydoc`; once
+    the page has one, the live document owns the draft and this raises
+    409 `already_live`. Raises 422 `bad_doc` / 413 `too_large` (see
+    `check_doc`)."""
+    content_json = check_doc(content_json)
+    await _lock_page(db, node.id)
+    await db.refresh(page)     # the page as of the lock, not the request start
+    if page.ydoc is not None:
+        raise _err(409, "already_live",
+                   "This page is already open for editing, so it can't be replaced by an import.")
+    now = utcnow()
+    page.draft_json = content_json
+    page.draft_text = doc_text(content_json)
+    page.draft_updated_at = now
+    page.draft_updated_by = actor_id
+    published = await published_content(db, page)
+    page.has_unpublished_changes = (published is None
+                                    or not docs_equal(content_json, published))
+    node.updated_at = now
+    node.updated_by = actor_id
+    version = await add_version(db, node, kind="imported", title=node.title,
+                                content_json=content_json, actor_id=actor_id)
+    await db.flush()
+    return version
 
 
 async def publish(db: AsyncSession, node: WikiNode, page: WikiPage, *,

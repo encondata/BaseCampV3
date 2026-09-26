@@ -3,7 +3,9 @@
  *  right-click RowMenu and inline rename, and rows can be dragged (HTML5
  *  DnD) into a folder or page (middle half of the row) or before/after a
  *  sibling (top/bottom quarter). The keyboard alternative to dragging is
- *  the RowMenu's Move… dialog (the RowMenu opens the shell's dialogs). */
+ *  the RowMenu's Move… dialog (the RowMenu opens the shell's dialogs).
+ *  Files and folders dragged in from the computer drop into a folder row
+ *  the user can edit, and upload there. */
 import {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
   type DragEvent, type KeyboardEvent,
@@ -19,6 +21,7 @@ import {
 } from '../lib/treeStore';
 import type { NodeMoveIn, NodeOut, SpaceOut } from '../lib/types';
 import { errorMessage, moveNode, updateNode } from '../lib/wikiApi';
+import { dropUpload, isFileDrag } from '../uploads/DropZone';
 
 export type DropZone = 'before' | 'after' | 'into';
 
@@ -126,6 +129,10 @@ export default function SpaceTree({ space, activeId, revealIds, ...handlers }: P
     return dropZone(e.clientY - rect.top, rect.height, canNest);
   };
 
+  /** Files from the computer drop into folders the user can edit. */
+  const takesFiles = (e: DragEvent, target: NodeOut) =>
+    !dragged.current && isFileDrag(e) && target.kind === 'folder' && atLeast(target.my_level, 'edit');
+
   const move = async (src: NodeOut, target: NodeOut, zone: DropZone) => {
     const body: NodeMoveIn = zone === 'into'
       ? { parent_id: target.id }
@@ -156,6 +163,12 @@ export default function SpaceTree({ space, activeId, revealIds, ...handlers }: P
     onDragEnd: () => { dragged.current = null; setDrop(null); },
     onDragLeave: (node) => setDrop((cur) => (cur?.id === node.id ? null : cur)),
     onDragOver: (e, node, ancestors) => {
+      if (takesFiles(e, node)) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        setDrop((cur) => (cur?.id === node.id && cur.zone === 'into' ? cur : { id: node.id, zone: 'into' }));
+        return;
+      }
       const zone = zoneFor(e, node, ancestors);
       if (!zone) {
         setDrop((cur) => (cur?.id === node.id ? null : cur));
@@ -166,6 +179,13 @@ export default function SpaceTree({ space, activeId, revealIds, ...handlers }: P
       setDrop((cur) => (cur?.id === node.id && cur.zone === zone ? cur : { id: node.id, zone }));
     },
     onDrop: (e, node, ancestors) => {
+      if (takesFiles(e, node)) {
+        e.preventDefault();
+        setDrop(null);
+        dropUpload(e.dataTransfer, { spaceId: node.space_id, parentId: node.id, label: node.title }, toast);
+        setOpen(node.id, true);
+        return;
+      }
       const zone = zoneFor(e, node, ancestors);
       const src = dragged.current?.node;
       dragged.current = null;

@@ -312,6 +312,13 @@ class RestoreIn(BaseModel):
     from_version_id: uuid.UUID
 
 
+class DraftIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # any JSON: `pages.check_doc` answers a non-document with 422 `bad_doc`
+    content_json: Any
+
+
 # ── uploads / files / page assets ────────────────────────────────────
 
 
