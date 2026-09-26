@@ -562,13 +562,13 @@ def label_worker(
     asyncio.run(_run())
 
 
-def _run_wiki_worker_process(poll_seconds: float) -> None:
+def _run_wiki_worker_process(poll_seconds: float, kinds: frozenset[str] | None = None) -> None:
     """Reload-mode child entry point (see _run_worker_process)."""
 
     async def _run() -> None:
         from serversherpa.wiki import worker
 
-        await worker.run_forever(poll_seconds)
+        await worker.run_forever(poll_seconds, kinds=kinds)
 
     try:
         asyncio.run(_run())
@@ -582,33 +582,45 @@ def wiki_worker(
     once: bool = typer.Option(False, help="Process at most one job, then exit"),
     reload: bool = typer.Option(
         False, help="Dev mode: restart the worker whenever api/src changes"),
+    kinds: str | None = typer.Option(
+        None, help="Handle only these job kinds (comma-separated, e.g. export)"),
+    exclude_kinds: str | None = typer.Option(
+        None, help="Handle every job kind but these (comma-separated, e.g. export)"),
 ) -> None:
     """Run the wiki worker — office-file PDF previews, text extraction for
-    search, storage purges after delete-forever, and the hourly trash
-    expiry sweep. Needs LibreOffice (soffice) and poppler (pdftotext)."""
+    search, storage purges after delete-forever, exports, review
+    reminders, the daily retention sweep and the hourly trash expiry
+    sweep. Needs LibreOffice (soffice), poppler (pdftotext) and
+    WeasyPrint. Production splits exports into their own worker
+    (--kinds export) beside one with --exclude-kinds export."""
+    from serversherpa.wiki import worker
 
     if reload and once:
         typer.secho("--once cannot be combined with --reload", fg="red")
         raise typer.Exit(code=1)
+    try:
+        handles = worker.resolve_kinds(kinds, exclude_kinds)
+    except ValueError as exc:
+        typer.secho(str(exc), fg="red")
+        raise typer.Exit(code=1) from exc
     if reload:
         import watchfiles
 
         src_dir = Path(__file__).resolve().parents[1]
         typer.secho(f"[wiki-worker] dev reload — watching {src_dir}", fg="cyan")
         watchfiles.run_process(src_dir, target=_run_wiki_worker_process,
-                               args=(poll_seconds,))
+                               args=(poll_seconds, handles))
         return
 
     async def _run() -> None:
         from serversherpa.db.engine import get_sessionmaker
-        from serversherpa.wiki import worker
 
         if once:
-            worked = await worker.run_once(get_sessionmaker())
+            worked = await worker.run_once(get_sessionmaker(), kinds=handles)
             typer.secho("processed 1 job" if worked else "queue empty",
                         fg="green" if worked else "yellow")
         else:
-            await worker.run_forever(poll_seconds)
+            await worker.run_forever(poll_seconds, kinds=handles)
         await dispose_engine()
 
     asyncio.run(_run())

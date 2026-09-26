@@ -94,7 +94,7 @@ async def test_the_worker_loop_queues_reminders_at_startup(db, monkeypatch):
 
     monkeypatch.setattr("serversherpa.system.admin_config.poll_workers_paused", not_paused)
 
-    async def no_claim(session):
+    async def no_claim(session, kinds=None):
         return None
 
     monkeypatch.setattr(worker, "claim_next", no_claim)

@@ -185,6 +185,54 @@ async def test_a_retried_job_waits_out_its_backoff(db):
         assert (await worker.claim_next(session)).id == job_id
 
 
+async def test_claim_next_claims_other_kinds_before_exports(db):
+    """A long export must not hold up previews, search text and purges
+    for everyone else: an older export waits behind them."""
+    export = await _job(db, "export", payload={})
+    purge = await _job(db, "purge", payload={"keys": []})
+    async with get_sessionmaker()() as session:
+        assert (await worker.claim_next(session)).id == purge
+        assert (await worker.claim_next(session)).id == export
+
+
+async def test_claim_next_only_claims_the_kinds_asked_for(db):
+    export = await _job(db, "export", payload={})
+    purge = await _job(db, "purge", payload={"keys": []})
+    async with get_sessionmaker()() as session:
+        assert await worker.claim_next(session, kinds=frozenset({"reminders"})) is None
+        assert (await worker.claim_next(session, kinds=frozenset({"export"}))).id == export
+        assert await worker.claim_next(session, kinds=frozenset({"export"})) is None
+        assert (await worker.claim_next(session, kinds=frozenset({"purge"}))).id == purge
+
+
+async def test_run_once_leaves_kinds_it_does_not_handle(db):
+    await _job(db, "export", payload={})
+    assert await worker.run_once(get_sessionmaker(), kinds=frozenset({"purge"})) is False
+    assert await db.scalar(select(WikiJob.status)) == "queued"
+
+
+def test_resolve_kinds():
+    every = worker.JOB_KINDS
+    assert worker.resolve_kinds(None, None) == every
+    assert worker.resolve_kinds("export", None) == frozenset({"export"})
+    assert worker.resolve_kinds(" file_preview , purge ", None) == frozenset(
+        {"file_preview", "purge"})
+    assert worker.resolve_kinds(None, "export") == every - {"export"}
+    for kinds, exclude in (("export", "purge"), ("nope", None), (None, "nope"),
+                           ("", None), (None, ",".join(sorted(every)))):
+        with pytest.raises(ValueError):
+            worker.resolve_kinds(kinds, exclude)
+
+
+def test_process_name_follows_the_kinds():
+    every = worker.JOB_KINDS
+    assert worker.process_name(every) == "wiki-worker"
+    assert worker.process_name(every - {"export"}) == "wiki-worker"
+    assert worker.process_name(frozenset({"export"})) == "wiki-export-worker"
+    assert worker.process_name(frozenset({"purge", "file_preview"})) == (
+        "wiki-worker:file_preview,purge")
+
+
 # ── file_extract ─────────────────────────────────────────────────────
 
 
@@ -468,7 +516,7 @@ async def test_run_forever_idles_while_paused_then_resumes(db, monkeypatch):
     monkeypatch.setattr("serversherpa.system.admin_config.workers_paused", fake_paused)
     calls = {"n": 0}
 
-    async def counting_claim(session):
+    async def counting_claim(session, kinds=None):
         calls["n"] += 1
 
     monkeypatch.setattr(worker, "claim_next", counting_claim)
@@ -506,6 +554,81 @@ async def test_run_forever_idles_while_paused_then_resumes(db, monkeypatch):
         await asyncio.gather(task, return_exceptions=True)
 
 
+@pytest.mark.parametrize(("env", "origin", "warns"), [
+    ("production", "http://localhost:5176", True),
+    ("production", "http://127.0.0.1:5176/", True),
+    ("production", "https://wiki.example.com", False),
+    ("development", "http://localhost:5176", False),
+])
+def test_local_origin_warning(monkeypatch, env, origin, warns):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(worker, "get_settings",
+                        lambda: SimpleNamespace(env=env, wiki_origin=origin))
+    message = worker.local_origin_warning()
+    assert (message is not None) is warns
+    if warns:
+        assert "SS_WIKI_ORIGIN" in message
+
+
+async def _loop_queues(db, monkeypatch, kinds):
+    """Run the loop briefly with `kinds` and no job claims; return the
+    kinds of the jobs it queued itself (the daily schedule)."""
+    from serversherpa.system import registry
+
+    monkeypatch.setattr("serversherpa.system.db_logging.install", lambda name: None)
+    names = []
+    monkeypatch.setattr(registry, "start_heartbeat",
+                        lambda name, kind, meta_fn=None: names.append(name)
+                        or asyncio.create_task(asyncio.sleep(0)))
+
+    async def not_paused(maker, state):
+        return False
+
+    monkeypatch.setattr("serversherpa.system.admin_config.poll_workers_paused", not_paused)
+    claimed = []
+
+    async def no_claim(session, kinds=None):
+        claimed.append(kinds)
+
+    monkeypatch.setattr(worker, "claim_next", no_claim)
+    swept = []
+
+    async def fake_sweep(maker, state):
+        swept.append(True)
+
+    monkeypatch.setattr(worker, "_sweep_expired", fake_sweep)
+    task = asyncio.create_task(worker.run_forever(poll_seconds=0.05, kinds=kinds))
+    try:
+        for _ in range(20):
+            await asyncio.sleep(0.05)
+            if claimed:
+                break
+        await asyncio.sleep(0.1)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert claimed and claimed[0] == kinds
+    queued = sorted((await db.scalars(select(WikiJob.kind)
+                                      .execution_options(populate_existing=True))).all())
+    return queued, names, bool(swept)
+
+
+async def test_an_export_only_worker_leaves_the_daily_jobs_to_the_other(db, monkeypatch):
+    queued, names, swept = await _loop_queues(db, monkeypatch, frozenset({"export"}))
+    assert queued == []
+    assert names == ["wiki-export-worker"]
+    assert swept is False                 # the trash sweep queues purges
+
+
+async def test_the_main_worker_schedules_the_daily_jobs(db, monkeypatch):
+    queued, names, swept = await _loop_queues(
+        db, monkeypatch, worker.JOB_KINDS - {"export"})
+    assert queued == ["reminders", "retention"]
+    assert names == ["wiki-worker"]
+    assert swept is True
+
+
 # ── storage helpers ──────────────────────────────────────────────────
 
 
@@ -539,11 +662,37 @@ runner = CliRunner()
 def test_cli_wiki_worker_flags():
     result = runner.invoke(cli.app, ["wiki-worker", "--help"])
     assert result.exit_code == 0
-    for flag in ("--reload", "--once", "--poll-seconds"):
+    for flag in ("--reload", "--once", "--poll-seconds", "--kinds", "--exclude-kinds"):
         assert flag in result.output
     result = runner.invoke(cli.app, ["wiki-worker", "--reload", "--once"])
     assert result.exit_code == 1
     assert "cannot be combined" in result.output
+
+
+@pytest.mark.parametrize("args", [
+    ["--kinds", "export", "--exclude-kinds", "export"],
+    ["--kinds", "exports"],
+    ["--exclude-kinds", "file_extract,file_preview,purge,reminders,export,retention"],
+])
+def test_cli_wiki_worker_refuses_bad_kinds(args):
+    result = runner.invoke(cli.app, ["wiki-worker", *args])
+    assert result.exit_code == 1, result.output
+
+
+def test_cli_wiki_worker_passes_its_kinds_on(monkeypatch):
+    seen = {}
+
+    async def fake_forever(poll_seconds, kinds=None):
+        seen["kinds"] = kinds
+
+    async def fake_dispose():
+        pass
+
+    monkeypatch.setattr(worker, "run_forever", fake_forever)
+    monkeypatch.setattr(cli, "dispose_engine", fake_dispose)
+    result = runner.invoke(cli.app, ["wiki-worker", "--exclude-kinds", "export"])
+    assert result.exit_code == 0, result.output
+    assert seen["kinds"] == worker.JOB_KINDS - {"export"}
 
 
 def test_cli_wiki_worker_reload_uses_watchfiles(monkeypatch):
@@ -555,8 +704,9 @@ def test_cli_wiki_worker_reload_uses_watchfiles(monkeypatch):
         calls.update(paths=paths, target=target, args=args)
 
     monkeypatch.setattr(watchfiles, "run_process", fake_run_process)
-    result = runner.invoke(cli.app, ["wiki-worker", "--reload", "--poll-seconds", "1.5"])
+    result = runner.invoke(cli.app, ["wiki-worker", "--reload", "--poll-seconds", "1.5",
+                                     "--kinds", "export"])
     assert result.exit_code == 0, result.output
     assert calls["target"] is cli._run_wiki_worker_process
-    assert calls["args"] == (1.5,)
+    assert calls["args"] == (1.5, frozenset({"export"}))
     assert str(calls["paths"][0]).endswith("/src")

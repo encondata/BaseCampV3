@@ -32,6 +32,16 @@ any number of workers can run without a broker) and runs them:
   (never the newest `reminders`/`retention` row — the schedule markers).
   Scheduled exactly like `reminders` (`ensure_retention_job`).
 
+Kinds: a worker handles every kind unless started with `--kinds` or
+`--exclude-kinds` (`resolve_kinds`); `claim_next` claims only those, and
+always claims any other due kind before an `export` — a thousand-page
+export must not leave everyone's previews "pending". Production runs two
+(wiki/docker-compose.yml): `wiki-worker --exclude-kinds export` and
+`wiki-export-worker --kinds export`, the same image. The daily jobs are
+scheduled only by a worker that handles them, and the trash expiry sweep
+(which queues `purge` jobs) only by one that handles `purge`. Each
+registers under its own `process_name`.
+
 A failed job is retried with backoff — `attempts` counts claims, and a
 re-queued job waits RETRY_BASE_SECONDS * 2^(attempts-1) from its last
 try (`progress_at`) — until MAX_ATTEMPTS, then it is `failed` and a
@@ -57,6 +67,7 @@ import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 from sqlalchemy import func, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -85,6 +96,7 @@ from serversherpa.wiki.search import backfill_search_vectors, refresh_search
 logger = logging.getLogger("serversherpa.wiki.worker")
 
 PROCESS_NAME = "wiki-worker"
+EXPORT_PROCESS_NAME = "wiki-export-worker"
 MAX_ATTEMPTS = 3
 RETRY_BASE_SECONDS = 30
 STALE_MINUTES = 30              # longer than any one job's download + conversion
@@ -126,13 +138,17 @@ def _backoff_elapsed():
                WikiJob.progress_at + wait <= func.now())
 
 
-async def claim_next(db: AsyncSession) -> WikiJob | None:
-    """Claim the oldest queued job that is due (SKIP LOCKED), mark it
+async def claim_next(db: AsyncSession,
+                     kinds: frozenset[str] | None = None) -> WikiJob | None:
+    """Claim the oldest queued job that is due (SKIP LOCKED) — of `kinds`
+    only, when given, and any other kind before an export — mark it
     running and count the attempt. Commits the claim."""
+    query = select(WikiJob).where(WikiJob.status == "queued", _backoff_elapsed())
+    if kinds is not None:
+        query = query.where(WikiJob.kind.in_(sorted(kinds)))
     job = await db.scalar(
-        select(WikiJob)
-        .where(WikiJob.status == "queued", _backoff_elapsed())
-        .order_by(WikiJob.created_at, WikiJob.id)
+        query
+        .order_by((WikiJob.kind == "export").asc(), WikiJob.created_at, WikiJob.id)
         .limit(1)
         .with_for_update(skip_locked=True))
     if job is None:
@@ -511,6 +527,46 @@ _HANDLERS = {"file_extract": _run_extract, "file_preview": _run_preview,
              "retention": _run_retention, "export": _run_export}
 
 
+JOB_KINDS = frozenset(_HANDLERS)
+
+
+def resolve_kinds(kinds: str | None, exclude: str | None) -> frozenset[str]:
+    """The job kinds a worker handles, from `--kinds` / `--exclude-kinds`
+    (comma-separated; at most one of them). Every kind when neither is
+    given. ValueError on an unknown kind, both options, or nothing left."""
+    def parse(raw: str) -> frozenset[str]:
+        names = frozenset(part.strip() for part in raw.split(",") if part.strip())
+        unknown = names - JOB_KINDS
+        if unknown:
+            raise ValueError(f"unknown wiki job kind(s): {', '.join(sorted(unknown))} "
+                             f"(known: {', '.join(sorted(JOB_KINDS))})")
+        return names
+
+    if kinds is not None and exclude is not None:
+        raise ValueError("--kinds and --exclude-kinds cannot be combined")
+    if kinds is not None:
+        chosen = parse(kinds)
+    elif exclude is not None:
+        chosen = JOB_KINDS - parse(exclude)
+    else:
+        chosen = JOB_KINDS
+    if not chosen:
+        raise ValueError("that leaves this worker no job kinds to handle")
+    return chosen
+
+
+def process_name(kinds: frozenset[str]) -> str:
+    """The registry/log name for a worker handling `kinds`: the main
+    worker (everything, or everything but exports) is `wiki-worker`, an
+    export-only one `wiki-export-worker`, any other split names its kinds
+    so no two different workers share a registry row."""
+    if kinds >= JOB_KINDS - {"export"}:
+        return PROCESS_NAME
+    if kinds == {"export"}:
+        return EXPORT_PROCESS_NAME
+    return f"{PROCESS_NAME}:{','.join(sorted(kinds))}"
+
+
 async def process_job(db: AsyncSession, job: WikiJob) -> None:
     """Run one claimed (status='running') job to `done`; raises on failure."""
     handler = _HANDLERS.get(job.kind)
@@ -519,15 +575,16 @@ async def process_job(db: AsyncSession, job: WikiJob) -> None:
     await handler(db, job)
 
 
-async def run_once(sessionmaker=None) -> bool:
-    """Claim and process at most one job. False when nothing is due."""
+async def run_once(sessionmaker=None, kinds: frozenset[str] | None = None) -> bool:
+    """Claim and process at most one job (of `kinds`, when given). False
+    when nothing is due."""
     from serversherpa.db.engine import get_sessionmaker
     from serversherpa.system.db_logging import install
-    install(PROCESS_NAME)
+    install(process_name(kinds or JOB_KINDS))
 
     maker = sessionmaker or get_sessionmaker()
     async with maker() as db:
-        job = await claim_next(db)
+        job = await claim_next(db, kinds=kinds)
         if job is None:
             return False
         job_id, kind, attempt = job.id, job.kind, job.attempts
@@ -642,13 +699,28 @@ async def _backfill_search(maker) -> None:
         logger.warning("could not backfill wiki search vectors", exc_info=True)
 
 
-async def run_forever(poll_seconds: float = 2.0) -> None:
+def local_origin_warning() -> str | None:
+    """A production worker whose SS_WIKI_ORIGIN still points at this
+    machine sends notification links nobody can open — say so at start."""
+    s = get_settings()
+    host = urlsplit(s.wiki_origin).hostname or ""
+    if s.env == "production" and host in ("localhost", "127.0.0.1", "::1"):
+        return (f"SS_WIKI_ORIGIN is {s.wiki_origin!r} in production: export and "
+                "review-reminder notifications will link there. Set it to the wiki's "
+                "public origin (the API's SS_WIKI_ORIGIN).")
+    return None
+
+
+async def run_forever(poll_seconds: float = 2.0,
+                      kinds: frozenset[str] | None = None) -> None:
     from serversherpa.db.engine import get_sessionmaker
     from serversherpa.system.admin_config import poll_workers_paused
     from serversherpa.system.db_logging import install
     from serversherpa.system.registry import start_heartbeat
 
-    install(PROCESS_NAME)
+    handles = kinds or JOB_KINDS
+    name = process_name(handles)
+    install(name)
     pause_state = {"paused": False}
     check_state: dict = {}
     claim_state = {"failed": False}
@@ -657,14 +729,17 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
     reminders_state = {"failed": False}
     retention_state = {"failed": False}
     backfilled = False
-    heartbeat = start_heartbeat(PROCESS_NAME, "worker", meta_fn=lambda: dict(pause_state))
+    heartbeat = start_heartbeat(name, "worker", meta_fn=lambda: dict(pause_state))
     maker = get_sessionmaker()
     try:
         await _requeue_stale(maker, stale_state)            # startup sweep
         stale_at = time.monotonic()
         expired_at = -EXPIRY_SWEEP_SECONDS                  # first pass = start-up
         daily_at = -REMINDERS_CHECK_SECONDS                 # first check = start-up
-        logger.info("wiki worker online — watching the queue")
+        logger.info("wiki worker online — watching the queue for %s",
+                    "every kind" if handles == JOB_KINDS else ", ".join(sorted(handles)))
+        if (warning := local_origin_warning()) is not None:
+            logger.warning(warning)
         while True:
             # read-only mode's "also pause background services": idle (still
             # heart-beating as paused) until the flag clears — no work lost
@@ -683,17 +758,20 @@ async def run_forever(poll_seconds: float = 2.0) -> None:
             if time.monotonic() - stale_at >= STALE_SWEEP_SECONDS:
                 stale_at = time.monotonic()
                 await _requeue_stale(maker, stale_state)
-            if time.monotonic() - expired_at >= EXPIRY_SWEEP_SECONDS:
+            # housekeeping belongs to a worker that handles what it queues
+            if "purge" in handles and time.monotonic() - expired_at >= EXPIRY_SWEEP_SECONDS:
                 expired_at = time.monotonic()               # even after a failure
                 await _sweep_expired(maker, expiry_state)
             if time.monotonic() - daily_at >= REMINDERS_CHECK_SECONDS:
                 daily_at = time.monotonic()                 # even after a failure
-                await _schedule_daily(maker, reminders_state, ensure_reminders_job,
-                                      "review reminders")
-                await _schedule_daily(maker, retention_state, ensure_retention_job,
-                                      "the retention sweep")
+                if "reminders" in handles:
+                    await _schedule_daily(maker, reminders_state, ensure_reminders_job,
+                                          "review reminders")
+                if "retention" in handles:
+                    await _schedule_daily(maker, retention_state, ensure_retention_job,
+                                          "the retention sweep")
             try:
-                worked = await run_once(maker)
+                worked = await run_once(maker, kinds)
                 claim_state["failed"] = False
             except Exception:
                 if not claim_state["failed"]:

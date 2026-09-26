@@ -19,7 +19,15 @@ It ships as two Docker images, separate from the main API and portal:
   from the `api` package, with LibreOffice and poppler installed. It talks
   to Postgres and Spaces directly to build office-file PDF previews,
   extract search text, run exports, purge trash, and send review
-  reminders.
+  reminders. `wiki/docker-compose.yml` runs this image twice so a long
+  export never holds up everyone else's previews and search text:
+  `wiki-worker` (`--exclude-kinds export`) and `wiki-export-worker`
+  (`--kinds export`). Without either option one worker handles every
+  kind (development's `Procfile.dev` does), and it still claims any
+  other due job before an export. The daily reminders/retention jobs are
+  scheduled only by a worker that handles them, and the hourly trash
+  sweep only by one that handles `purge`. Replicas of either are safe —
+  jobs are claimed with `FOR UPDATE SKIP LOCKED`.
 
 ```
                     wiki.serversherpa.com                        api.serversherpa.com
@@ -70,7 +78,11 @@ talks to the same Postgres and Spaces directly. In practice that means
 copying the database and object-storage values (and the auth/crypto ones
 the shared settings model requires even though the worker doesn't use
 them) from the main API's `.env` into `wiki/.env`. See the comments in
-`wiki/.env.example` for the full list.
+`wiki/.env.example` for the full list. **`SS_WIKI_ORIGIN` is required
+there too**, set to exactly the API's value: the workers build the links
+in export-ready/failed and review-reminder notifications from it, and
+left at its default they all point at `http://localhost:5176`
+(`wiki/docker-compose.yml` refuses to start without it).
 
 **On the main API**, the wiki adds these `SS_`-prefixed settings
 (`api/src/serversherpa/config.py`):
@@ -88,6 +100,7 @@ worker needs to reach the wiki service itself for `POST /internal/render`
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `SS_WIKI_ORIGIN` | `http://localhost:5176` | **Required** — the wiki's public origin, equal to the API's. Links in the notifications the workers send (export ready/failed, review reminders). |
 | `SS_WIKI_EXPORT_MAX_PAGES` | `1000` | Most pages one export may hold. |
 | `SS_WIKI_EXPORT_MAX_BYTES` | `2147483648` (2 GiB) | Most bytes of files and page images one export may hold. |
 | `SS_WIKI_RENDER_URL` | `http://localhost:5177` | The wiki service's own origin. `wiki/docker-compose.yml` sets this to `http://wiki:8080` (the compose network's service name) for you; only change it if you run the worker outside that compose file. Unreachable (or pointed nowhere real) and every PDF/Word export fails with a retried `RenderError`. |
@@ -265,7 +278,8 @@ it's done.
 ## Production checklist
 
 - Add `https://wiki.<domain>` to the main API's `SS_ALLOWED_ORIGINS`.
-- Set `SS_WIKI_ORIGIN` to that same URL.
+- Set `SS_WIKI_ORIGIN` to that same URL — on the API **and** in
+  `wiki/.env` for the workers (their notification links use it).
 - Set `SS_WIKI_SERVICE_TOKEN` on the API and the matching `WIKI_SERVICE_TOKEN`
   on the `wiki` container to the same secret.
 - Add a Spaces bucket CORS rule from the wiki origin allowing `PUT` with
@@ -280,6 +294,11 @@ it's done.
   dependencies and `SS_WIKI_RENDER_URL` pointing at the `wiki` container —
   see Exports above; `wiki/docker-compose.yml` already wires this up, so
   there's nothing extra to do when deploying with it.
+- Keep both workers running: `wiki-worker` (previews, search text,
+  purges, reminders, retention) and `wiki-export-worker` (exports only).
+  An export can take many minutes and GBs of memory transiently, so size
+  the export worker's container for it; if you run a single worker
+  instead, it handles everything but always takes other jobs first.
 - Run exactly **one** `wiki` container. The collab server holds each
   open page in memory and stores it by overwriting the saved document,
   so two replicas (or two overlapping during a rolling deploy) would
