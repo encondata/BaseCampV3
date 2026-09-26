@@ -20,4 +20,9 @@ describe('resolveInboxLink', () => {
     expect(resolveInboxLink(`${window.location.origin}/reports?run=r1#top`)).toEqual(
       { kind: 'app', to: '/reports?run=r1#top' });
   });
+
+  it('keeps a malformed absolute link in the app', () => {
+    expect(resolveInboxLink('http://')).toEqual({ kind: 'app', to: '/' });
+    expect(resolveInboxLink('https://exa mple.com/n/1')).toEqual({ kind: 'app', to: '/' });
+  });
 });

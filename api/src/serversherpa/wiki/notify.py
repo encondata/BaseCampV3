@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Iterable
+from typing import Literal
 
 from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert
@@ -241,7 +242,7 @@ async def on_comment(db: AsyncSession, node: WikiNode, comment: WikiComment, *,
 
 
 async def on_mentions(db: AsyncSession, node: WikiNode, person_ids: Iterable[uuid.UUID], *,
-                      actor_id: uuid.UUID | None, context: str,
+                      actor_id: uuid.UUID | None, context: Literal["comment", "page"],
                       link_suffix: str = "") -> None:
     """People were @mentioned — `context` is `comment` (in a comment on
     the page) or `page` (in the page content): `wiki_mention` to each
@@ -264,14 +265,21 @@ async def on_review_requested(db: AsyncSession, node: WikiNode, review: WikiRevi
                 event="review_requested")
 
 
+# how a decision reads in a notification title, by review status
+_DECISION_VERBS = {"approved": "approved", "rejected": "requested changes to"}
+
+
 async def on_review_decided(db: AsyncSession, node: WikiNode, review: WikiReview, *,
                             actor_id: uuid.UUID | None) -> None:
     """A review was approved or rejected: `wiki_review_decision` to the
     requester and `wiki_update` to the page's watchers (the requester
     only once); the decision note is the body. An approval's publish is
-    announced by this — callers don't also call `on_published` for it."""
+    announced by this — callers don't also call `on_published` for it.
+    Raises ValueError for a review that isn't approved or rejected."""
+    verb = _DECISION_VERBS.get(review.status)
+    if verb is None:
+        raise ValueError(f"review {review.id} is {review.status!r}, not decided")
     actor = await _actor_name(db, actor_id)
-    verb = "approved" if review.status == "approved" else "requested changes to"
     title = f"{actor} {verb} {node.title}"
     body = review.decision_note or ""
     requester = [review.requested_by] if review.requested_by else []

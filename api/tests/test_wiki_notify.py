@@ -7,6 +7,7 @@ that emit the events (create, copy, upload complete, publish)."""
 import logging
 import uuid
 
+import pytest
 from sqlalchemy import func, select
 
 from serversherpa.config import get_settings
@@ -115,6 +116,20 @@ async def test_publish_notifies_page_watchers_but_not_the_actor(client, db):
     # the owner auto-watched the page they created; the actor gets nothing
     assert [x.kind for x in await _inbox(db, s["owner_id"])] == ["wiki_update"]
     assert await _inbox(db, s["editor_id"]) == []
+
+
+async def test_first_publish_notifies_a_view_only_space_watcher(client, db):
+    s = await _setup(client, db)
+    await _watch(client, s["viewer"], space=s["space"])
+    page = await _create(client, s["editor"], s["space"], "Runbook", kind="page")
+    assert await _inbox(db, s["viewer_id"]) == []     # unpublished: not announced
+
+    await publish_via_api(client, s["editor"], page["id"])
+
+    got = await _inbox(db, s["viewer_id"])
+    assert [(n.kind, n.title, n.link) for n in got] == [
+        ("wiki_update", f"{await _name(db, s['editor_id'])} published Runbook",
+         _link(page["id"]))]
 
 
 async def test_publish_auto_watches_the_publisher(client, db):
@@ -321,7 +336,8 @@ async def test_recipients_who_can_view_filters_and_caps(client, db, monkeypatch,
     monkeypatch.setattr(notify, "MAX_RECIPIENTS", 2)
     with caplog.at_level(logging.WARNING, logger="serversherpa.wiki.notify"):
         got = await notify.recipients_who_can_view(db, node, people)
-    assert len(got) <= 2
+    # only the first two candidates are evaluated
+    assert got == {s["owner_id"], s["viewer_id"]}
     assert "capped" in caplog.text
 
 
@@ -414,3 +430,26 @@ async def test_review_notifications(client, db):
     got = await _inbox(db, s["owner_id"], "wiki_review_due")
     assert [(n.title, n.link) for n in got] == [("Runbook is due for review",
                                                  _link(page["id"]))]
+
+
+async def test_review_decided_names_approvals_and_rejects_other_statuses(client, db):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    await publish_via_db(db, page["id"])
+    node = await _node(db, page["id"])
+    version_id = (await db.get(WikiPage, node.id)).published_version_id
+    review = WikiReview(node_id=node.id, version_id=version_id,
+                        requested_by=s["editor_id"])
+    db.add(review)
+    await db.flush()
+
+    review.status = "approved"
+    await notify.on_review_decided(db, node, review, actor_id=s["owner_id"])
+    got = await _inbox(db, s["editor_id"], "wiki_review_decision")
+    assert [n.title for n in got] == [f"{await _name(db, s['owner_id'])} approved Runbook"]
+
+    for status in ("pending", "withdrawn"):
+        review.status = status
+        with pytest.raises(ValueError):
+            await notify.on_review_decided(db, node, review, actor_id=s["owner_id"])
+    assert len(await _inbox(db, s["editor_id"])) == 1
