@@ -694,6 +694,47 @@ class PublicFileOut(BaseModel):
     url_ttl_seconds: int
 
 
+# ── help links ───────────────────────────────────────────────────────
+
+# a context as sent: `help.normalize_context` and `help.is_valid_context`
+# (422 `bad_context`) decide what is stored; this only caps the raw text
+HelpContextIn = Annotated[str, StringConstraints(max_length=2000)]
+
+
+class HelpOut(BaseModel):
+    """`GET /wiki/help`: the guide for a screen; `context` is the stored
+    context that matched."""
+    node_id: uuid.UUID
+    title: str
+    url: str
+    context: str
+
+
+class HelpLinkIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    context: HelpContextIn
+    node_id: uuid.UUID
+
+
+class HelpLinkPatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    context: HelpContextIn | None = None
+    node_id: uuid.UUID | None = None
+
+
+class HelpLinkOut(BaseModel):
+    """A help link as wiki admins see it. `trashed`: its guide is in the
+    trash, so the link answers 404 to everyone until it's restored."""
+    id: uuid.UUID
+    context: str
+    node: ShareNodeRef
+    trashed: bool
+    created_by: PersonRef | None
+    created_at: datetime
+
+
 # ── internal (collab server) ─────────────────────────────────────────
 
 
