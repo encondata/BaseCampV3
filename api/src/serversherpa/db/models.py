@@ -1682,6 +1682,17 @@ class WikiNode(Base):
     # a subtree soft-deleted together shares one batch id so it restores together
     deleted_batch: Mapped[uuid.UUID | None]
     search_tsv: Mapped[str | None] = mapped_column(TSVECTOR)
+    # review cycle (phase 2): review_interval_months null = no scheduled
+    # review; next_review_at is derived from last_reviewed_at + that
+    # interval (or set directly on first schedule); review_notified_for
+    # is the due date the reminders job last notified for, so it doesn't
+    # re-notify every run while a review stays overdue.
+    review_interval_months: Mapped[int | None]
+    next_review_at: Mapped[datetime | None]
+    last_reviewed_at: Mapped[datetime | None]
+    last_reviewed_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    review_notified_for: Mapped[datetime | None]
 
     __table_args__ = (
         CheckConstraint("kind IN ('folder','page','file')",
@@ -1725,14 +1736,14 @@ class WikiPageVersion(Base):
     title: Mapped[str]
     content_json: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     content_text: Mapped[str | None]
-    kind: Mapped[str]                      # 'autosave' | 'published' | 'restored' | 'imported'
+    kind: Mapped[str]                      # 'autosave'|'published'|'restored'|'imported'|'submitted'
     note: Mapped[str | None]               # publish change note
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
     __table_args__ = (
         CheckConstraint(
-            "kind IN ('autosave','published','restored','imported')",
+            "kind IN ('autosave','published','restored','imported','submitted')",
             name="wiki_page_versions_kind_check"),
     )
 
@@ -1853,7 +1864,7 @@ class WikiJob(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, server_default=text("gen_random_uuid()"))
-    kind: Mapped[str]                      # 'file_preview' | 'file_extract' | 'purge'
+    kind: Mapped[str]                      # 'file_preview'|'file_extract'|'purge'|'reminders'
     node_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("wiki_nodes.id", ondelete="SET NULL"))
     file_version_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -1870,8 +1881,109 @@ class WikiJob(Base):
     finished_at: Mapped[datetime | None]
 
     __table_args__ = (
-        CheckConstraint("kind IN ('file_preview','file_extract','purge')",
+        CheckConstraint("kind IN ('file_preview','file_extract','purge','reminders')",
                         name="wiki_jobs_kind_check"),
         CheckConstraint("status IN ('queued','running','done','failed')",
                         name="wiki_jobs_status_check"),
+    )
+
+
+class WikiComment(Base):
+    """A page comment: page-level, or an inline thread anchored to a
+    `commentThread` mark in the doc (`anchor=True`, mark id = this row's
+    `thread_id`). `thread_id` is the first comment's own id (a reply
+    copies its parent thread's value) — not a foreign key, since the
+    first comment in a thread sets it to its own id on insert."""
+    __tablename__ = "wiki_comments"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"))
+    thread_id: Mapped[uuid.UUID]
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("wiki_comments.id", ondelete="CASCADE"))
+    anchor: Mapped[bool] = mapped_column(server_default=text("false"))
+    body: Mapped[dict] = mapped_column(JSONB)
+    author_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    edited_at: Mapped[datetime | None]
+    deleted_at: Mapped[datetime | None]
+    resolved_at: Mapped[datetime | None]
+    resolved_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+
+
+class WikiTemplate(Base):
+    """A page starting point: the four `is_builtin` rows (SOP, How-to
+    guide, Troubleshooting, Meeting notes) are global (`space_id` null);
+    a space manager may also add space-scoped ones."""
+    __tablename__ = "wiki_templates"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    space_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("wiki_spaces.id", ondelete="CASCADE"))
+    name: Mapped[str]
+    description: Mapped[str] = mapped_column(server_default="")
+    icon: Mapped[str] = mapped_column(server_default="")
+    content_json: Mapped[dict] = mapped_column(JSONB)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    is_builtin: Mapped[bool] = mapped_column(server_default=text("false"))
+
+    __table_args__ = (
+        CheckConstraint("char_length(name) BETWEEN 1 AND 120",
+                        name="wiki_templates_name_length_check"),
+    )
+
+
+class WikiWatch(Base):
+    """A person's subscription to a space or a node (exactly one of the
+    two) — the source of `wiki_update`/`wiki_comment` notification fan-out."""
+    __tablename__ = "wiki_watches"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    person_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("people.id", ondelete="CASCADE"))
+    space_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("wiki_spaces.id", ondelete="CASCADE"))
+    node_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        CheckConstraint("(space_id IS NULL) <> (node_id IS NULL)",
+                        name="wiki_watches_target_check"),
+    )
+
+
+class WikiReview(Base):
+    """A page's review/approval request: `version_id` is the `submitted`
+    snapshot under review. At most one `pending` review per node at a
+    time (partial unique index on `node_id`)."""
+    __tablename__ = "wiki_reviews"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    node_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wiki_nodes.id", ondelete="CASCADE"))
+    version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("wiki_page_versions.id", ondelete="CASCADE"))
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    note: Mapped[str] = mapped_column(server_default="")
+    status: Mapped[str] = mapped_column(server_default="pending")
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    decided_at: Mapped[datetime | None]
+    decision_note: Mapped[str] = mapped_column(server_default="")
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+    __table_args__ = (
+        CheckConstraint("status IN ('pending','approved','rejected','withdrawn')",
+                        name="wiki_reviews_status_check"),
     )

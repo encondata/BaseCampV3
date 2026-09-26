@@ -150,7 +150,7 @@ async def patch_space(key: str, body: SpacePatchIn, ctx: WikiContext) -> SpaceOu
     before = snapshot(space, SPACE_FIELDS)
 
     if body.settings is not None:
-        bad = sorted(k for k in body.settings if k not in space_settings.ALLOWED)
+        bad = sorted(k for k, v in body.settings.items() if not space_settings.validate(k, v))
         if bad:
             raise err(422, "bad_setting", keys=bad)
         space.settings = {**(space.settings or {}), **body.settings}

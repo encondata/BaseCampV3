@@ -2,6 +2,7 @@
 Task 3 of the wiki API: spaces, grants, and principal search."""
 import uuid
 
+import pytest
 from sqlalchemy import select
 
 from serversherpa.db.models import (
@@ -198,16 +199,84 @@ async def test_patch_requires_manage_level(client, db):
     assert manager_resp.json()["name"] == "Renamed"
 
 
-async def test_patch_settings_rejects_unknown_keys_phase1(client, db):
+async def test_patch_settings_rejects_unknown_keys(client, db):
     headers, _ = await login_as(client, db, roles=("staff",))
     assert (await _create_space(
         client, headers, key="settings-space", default_access="private")).status_code == 201
 
+    # allow_public_links is a real future (phase 3) key — still unknown today.
     resp = await client.patch(
         "/wiki/spaces/settings-space", headers=headers,
-        json={"settings": {"readers_can_comment": True}})
+        json={"settings": {"allow_public_links": True}})
     assert resp.status_code == 422
     assert resp.json()["detail"]["code"] == "bad_setting"
+
+
+async def test_patch_settings_accepts_the_three_phase2_keys(client, db):
+    headers, _ = await login_as(client, db, roles=("staff",))
+    assert (await _create_space(
+        client, headers, key="settings-space-2", default_access="private")).status_code == 201
+
+    resp = await client.patch(
+        "/wiki/spaces/settings-space-2", headers=headers,
+        json={"settings": {
+            "readers_can_comment": False, "require_approval": True,
+            "review_interval_months": 6}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["settings"] == {
+        "readers_can_comment": False, "require_approval": True,
+        "review_interval_months": 6}
+
+    # null clears it back to "no scheduled review"
+    resp = await client.patch(
+        "/wiki/spaces/settings-space-2", headers=headers,
+        json={"settings": {"review_interval_months": None}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["settings"]["review_interval_months"] is None
+
+
+@pytest.mark.parametrize("settings", [
+    {"readers_can_comment": "yes"},
+    {"require_approval": 1},
+    {"review_interval_months": "6"},
+    {"review_interval_months": True},
+])
+async def test_patch_settings_rejects_bad_types(client, db, settings):
+    headers, _ = await login_as(client, db, roles=("staff",))
+    assert (await _create_space(
+        client, headers, key="settings-types", default_access="private")).status_code == 201
+
+    resp = await client.patch(
+        "/wiki/spaces/settings-types", headers=headers, json={"settings": settings})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "bad_setting"
+
+
+@pytest.mark.parametrize("months", [0, -1, 61, 120])
+async def test_patch_settings_rejects_out_of_range_review_interval(client, db, months):
+    headers, _ = await login_as(client, db, roles=("staff",))
+    assert (await _create_space(
+        client, headers, key="settings-range", default_access="private")).status_code == 201
+
+    resp = await client.patch(
+        "/wiki/spaces/settings-range", headers=headers,
+        json={"settings": {"review_interval_months": months}})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "bad_setting"
+
+
+@pytest.mark.parametrize("months", [1, 60])
+async def test_patch_settings_accepts_review_interval_boundaries(client, db, months):
+    headers, _ = await login_as(client, db, roles=("staff",))
+    assert (await _create_space(
+        client, headers, key=f"settings-boundary-{months}",
+        default_access="private")).status_code == 201
+
+    resp = await client.patch(
+        f"/wiki/spaces/settings-boundary-{months}", headers=headers,
+        json={"settings": {"review_interval_months": months}})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["settings"]["review_interval_months"] == months
 
 
 # ── grants ───────────────────────────────────────────────────────────
