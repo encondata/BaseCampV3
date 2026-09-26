@@ -10,7 +10,7 @@ from sqlalchemy import select
 from serversherpa.config import get_settings
 from serversherpa.db.models import AuditLog, Client, WikiFile, WikiHelpLink, WikiNode
 from serversherpa.wiki.help import context_prefixes, is_valid_context, normalize_context
-from tests.wiki_helpers import _create, _setup, login_as, publish_via_db
+from tests.wiki_helpers import PASSWORD, _create, _setup, login_as, publish_via_db
 
 SITE_ID = "5f0c2a8e-3b1c-4c7e-9a55-1d2e3f405162"
 
@@ -224,6 +224,28 @@ async def test_help_is_404_for_a_trashed_guide(client, db):
     assert resp.status_code == 200, resp.text
     assert (await _help(client, s["viewer"], "portal:/assets")).status_code == 404
     assert (await _help(client, admin, "portal:/assets")).status_code == 404
+
+
+async def test_help_refuses_a_kiosk_scoped_session(client, db):
+    """Why the kiosk has no ? button yet: a kiosk login skips 2FA, so its
+    session may reach only /kiosk/* and the sign-in lifecycle — never
+    /wiki/*. A `kiosk:` guide stays linkable (and a portal session can
+    look it up), but the kiosk itself can't ask for it."""
+    s = await _setup(client, db)
+    admin = await _admin(client, db)
+    page = await _page(client, s, db)
+    await _link(client, admin, "kiosk:/enroll", page["id"])
+    email = f"wiki-kiosk-{uuid.uuid4().hex[:10]}@test.example.com"
+    portal, _ = await login_as(client, db, roles=("staff",), email=email)
+    assert (await _help(client, portal, "kiosk:/enroll")).status_code == 200
+
+    kiosk = await client.post("/auth/login", json={
+        "email": email, "password": PASSWORD, "client": "kiosk"})
+    assert kiosk.status_code == 200, kiosk.text
+    resp = await _help(client, {"Authorization": f"Bearer {kiosk.json()['access_token']}"},
+                       "kiosk:/enroll")
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["code"] == "kiosk_session"
 
 
 async def test_help_needs_a_context(client, db):

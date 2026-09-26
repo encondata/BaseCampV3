@@ -1,7 +1,6 @@
 /**
  * The signed-in frame: one top bar over a full-width page. No side nav,
- * palette, or notifications — the kiosk is a single-purpose screen — but
- * the same ? help button as the portal's top bar (online only).
+ * palette, or notifications — the kiosk is a single-purpose screen.
  * Wrapped in .portal-shell so the person's theme/accent/density
  * preferences apply exactly as in the portal (applyPreferences sets the
  * data-* attributes on it). Signed out (the Kiosk Setup page), the bar
@@ -15,7 +14,6 @@ import { registrationLabel } from '@portal/lib/devices';
 import { applyPreferences, DEFAULT_PREFERENCES } from '@portal/lib/settings';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
-import HelpButton from '../components/HelpButton';
 import ScanFlash from '../components/ScanFlash';
 import type { RegistrationState } from '../lib/api';
 import { kioskVersion } from '../lib/config';
@@ -111,8 +109,6 @@ export default function KioskShell({ children }: { children: ReactNode }) {
           {identity.name}
         </button>
         <div className="kiosk-user">
-          {/* signed in with wiki:view, and online — it hides itself otherwise */}
-          <HelpButton />
           {authed && registration && (
             <span className={`chip ${REG_CHIP[registration]}`}>
               <span className="dot" />{registrationLabel(registration)}

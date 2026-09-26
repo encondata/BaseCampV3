@@ -1,5 +1,6 @@
-/** The ? help button's lookup, shared by the portal's top bar and the
- *  kiosk's (React-free, so the kiosk may import it). A screen is named
+/** The ? help button's lookup (the portal's top bar). React-free, so a
+ *  kiosk button could share it once kiosk sessions have a way to reach a
+ *  guide — today they're refused on every /wiki/* route. A screen is named
  *  `<app>:<location.pathname>`; the API normalizes it (case, trailing
  *  slash, ids → `:id`) and answers with the longest-matching guide the
  *  person can view, or 404. Each app passes its own authenticated fetch. */

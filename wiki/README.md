@@ -174,10 +174,15 @@ client and renderer.
   `GET` allowed from the wiki origin, a public page's images and a public
   file's preview/download both fail for exactly the audience share links
   exist for.
-- **Help links.** The "?" button in the portal's and the kiosk's top bar
-  (`portal/src/components/HelpButton.tsx`, `kiosk/src/components/
-  HelpButton.tsx`, sharing the React-free `portal/src/lib/wikiHelp.ts` so
-  the kiosk can import it) asks `GET /wiki/help?context=` for a guide. A
+- **Help links.** The "?" button in the portal's top bar
+  (`portal/src/components/HelpButton.tsx`, over the React-free
+  `portal/src/lib/wikiHelp.ts`) asks `GET /wiki/help?context=` for a
+  guide. **The kiosk has no help button yet**: a kiosk sign-in skips 2FA,
+  so its session is route-scoped to `/kiosk/*` and the sign-in lifecycle
+  and is refused (403 `kiosk_session`) on every `/wiki/*` route — it
+  could neither look a guide up nor open one in the wiki. `kiosk:`
+  contexts are still valid, so wiki administrators can link guides for
+  kiosk screens ahead of a kiosk-safe way to show them. A
   context names a screen as `<app>:<path>` (`portal:/bulk/time`,
   `kiosk:/enroll`), normalized on both ends the same way
   (`serversherpa.wiki.help.normalize_context`): lowercased, query/hash

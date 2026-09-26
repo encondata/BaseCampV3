@@ -1,5 +1,5 @@
 /** /admin/help-links — wiki administrators only (everyone else sees
- *  NotFound): which wiki page or file the portal's and kiosk's ? button
+ *  NotFound): which wiki page or file the portal's ? button
  *  opens on each screen. Add, edit, delete. `?context=` opens the add form
  *  with that context (the portal's "Link a guide"); `?node=` opens it with
  *  that guide (a page's "Use as help for…"). */
@@ -110,7 +110,7 @@ export default function HelpLinksPage() {
           <div className="eyebrow"><Link to="/admin">Wiki admin</Link></div>
           <h1 className="page-title">Help links</h1>
           <p className="page-hint">
-            The guide the ? button opens on each portal and kiosk screen. People only see guides they can view.
+            The guide the ? button opens on each portal screen. People only see guides they can view. Kiosk screens can be linked ahead of time; the kiosk has no ? button yet.
           </p>
         </div>
         <button type="button" className="btn-solid"

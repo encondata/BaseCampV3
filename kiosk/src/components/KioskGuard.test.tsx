@@ -25,7 +25,6 @@ const auth = vi.hoisted(() => ({
   person: null,
   registration: null,
   preferences: null,
-  can: () => false,
 }));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 

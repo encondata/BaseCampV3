@@ -65,22 +65,18 @@ it('shows the feature title in .kiosk-section at a feature route', () => {
   expect(section?.textContent).toBe('Timeclock');
 });
 
-it('puts the help button in the top bar for someone signed in with wiki:view', () => {
-  render(
-    <MemoryRouter initialEntries={['/enroll']}>
-      <KioskShell><div /></KioskShell>
-    </MemoryRouter>,
-  );
-  const top = document.querySelector('.kiosk-top') as HTMLElement;
-  expect(top.querySelector('[aria-label="Help for this page"]')).not.toBeNull();
-  cleanup();
-  auth.can = (resource) => resource !== 'wiki';
+it('has no help button, even for someone with wiki:view', () => {
+  // Kiosk sessions are route-scoped (they skip 2FA) and are refused on
+  // every /wiki/* route, so a guide could never be looked up or opened
+  // from here. The portal keeps its ? button; the kiosk gets one once
+  // there's a kiosk-safe way to show a guide.
   render(
     <MemoryRouter initialEntries={['/enroll']}>
       <KioskShell><div /></KioskShell>
     </MemoryRouter>,
   );
   expect(screen.queryByRole('button', { name: 'Help for this page' })).toBeNull();
+  expect(document.querySelector('.kiosk-help')).toBeNull();
 });
 
 it('shows no section label at /', () => {

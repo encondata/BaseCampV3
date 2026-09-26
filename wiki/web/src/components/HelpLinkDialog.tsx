@@ -131,7 +131,7 @@ export default function HelpLinkDialog({ link, initialContext = '', initialGuide
             <div className="eyebrow">Help links</div>
             <h3 id="wiki-help-link-title">{title}</h3>
             <p className="page-hint">
-              The ? button on that portal or kiosk screen opens this guide. A link covers the screens
+              The ? button on that portal screen opens this guide (the kiosk has no ? button yet). A link covers the screens
               under it too, unless one of them has its own.
             </p>
           </div>

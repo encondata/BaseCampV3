@@ -228,7 +228,7 @@ export default function AdminPage() {
         <div className="dir-head wiki-folder-head">
           <div>
             <h2 className="wiki-section-title">Help links</h2>
-            <p className="page-hint">Which guide the ? button opens on each portal and kiosk screen.</p>
+            <p className="page-hint">Which guide the ? button opens on each portal screen.</p>
           </div>
           <Link className="btn-ghost" to="/admin/help-links">Manage help links</Link>
         </div>
