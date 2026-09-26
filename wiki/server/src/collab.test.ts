@@ -8,7 +8,7 @@ import * as Y from 'yjs';
 
 import { fixtureDoc } from '../../web/src/editor/fixtures';
 import { wikiExtensions } from '../../web/src/editor/schema';
-import { ApiError, type Authz, type WikiApi } from './apiClient';
+import { ApiError, type Authz, type Level, type WikiApi } from './apiClient';
 import { COLLAB_FIELD, createCollab } from './collab';
 import type { ServerConfig } from './config';
 
@@ -35,7 +35,7 @@ function fakeApi(): WikiApi & {
 } {
   return {
     authorize: vi.fn(async () => authz('edit')),
-    level: vi.fn(async () => 'edit'),
+    level: vi.fn(async (): Promise<Level | null> => 'edit'),
     loadState: vi.fn(async () => ({ ydoc: null, draftJson: null })),
     storeState: vi.fn(async () => undefined),
   };

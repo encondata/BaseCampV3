@@ -33,6 +33,7 @@ afterAll(() => rmSync(tmpRoot, { recursive: true, force: true }));
 
 const api: WikiApi = {
   authorize: vi.fn(async () => null),
+  level: vi.fn(async () => null),
   loadState: vi.fn(async () => ({ ydoc: null, draftJson: null })),
   storeState: vi.fn(async () => undefined),
 };

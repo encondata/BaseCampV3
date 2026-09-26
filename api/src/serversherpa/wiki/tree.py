@@ -436,6 +436,7 @@ async def copy_subtree(db: AsyncSession, node: WikiNode, *,
         if draft_json is not None and new_asset_ids[source_id]:
             draft_json = rewrite_asset_ids(draft_json, new_asset_ids[source_id])
         db.add(WikiPage(node_id=new_ids[source_id], draft_json=draft_json,
+                        # only NULL before first live load: collab.ts seeds a fixed Yjs client id
                         draft_text=draft_text, ydoc=None,
                         has_unpublished_changes=True))
 

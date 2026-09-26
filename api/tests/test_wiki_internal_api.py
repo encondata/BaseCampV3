@@ -12,7 +12,14 @@ from sqlalchemy import update as sa_update
 
 from serversherpa.api.routes.wiki import internal as internal_routes
 from serversherpa.config import get_settings
-from serversherpa.db.models import Person, UserAccount, WikiNode, WikiPage, WikiPageVersion
+from serversherpa.db.models import (
+    AuthSession,
+    Person,
+    UserAccount,
+    WikiNode,
+    WikiPage,
+    WikiPageVersion,
+)
 from serversherpa.wiki import pages
 from serversherpa.wiki.content import MAX_DOC_BYTES
 from tests.wiki_helpers import _create, _doc, _setup, _space, login_as, publish_via_db
@@ -232,6 +239,32 @@ async def test_level_refuses_a_person_without_an_active_account(client, db):
                      .values(archived_at=datetime.now(UTC)))
     await db.commit()
     await _level(client, page["id"], s["viewer_id"], expect=404)
+    assert (await _level(client, page["id"], s["owner_id"]))["level"] == "manage"
+
+
+async def test_level_refuses_a_person_without_a_live_session(client, db):
+    """"Revoke all sessions" or a password reset cuts live editing off at
+    the collab server's next re-check, like it does every other request."""
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Live", kind="page")
+    await publish_via_db(db, page["id"])
+    assert (await _level(client, page["id"], s["editor_id"]))["level"] == "edit"
+
+    # every session revoked
+    await db.execute(sa_update(AuthSession)
+                     .where(AuthSession.person_id == s["editor_id"])
+                     .values(revoked_at=datetime.now(UTC), revoke_reason="admin"))
+    await db.commit()
+    await _level(client, page["id"], s["editor_id"], expect=404)
+
+    # every session expired
+    await db.execute(sa_update(AuthSession)
+                     .where(AuthSession.person_id == s["viewer_id"])
+                     .values(expires_at=datetime.now(UTC) - timedelta(minutes=1)))
+    await db.commit()
+    await _level(client, page["id"], s["viewer_id"], expect=404)
+
+    # one live session is enough
     assert (await _level(client, page["id"], s["owner_id"]))["level"] == "manage"
 
 

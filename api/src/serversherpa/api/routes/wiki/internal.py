@@ -18,6 +18,7 @@ import base64
 import binascii
 import hmac
 import uuid
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Annotated
 
@@ -43,7 +44,7 @@ from serversherpa.api.routes.wiki.schemas import (
     PersonRef,
 )
 from serversherpa.config import get_settings
-from serversherpa.db.models import Person, UserAccount, WikiNode, WikiPage
+from serversherpa.db.models import AuthSession, Person, UserAccount, WikiNode, WikiPage
 from serversherpa.wiki import pages
 from serversherpa.wiki.content import MAX_DOC_BYTES
 from serversherpa.wiki.permissions import (
@@ -116,14 +117,24 @@ async def authorize(
 @router.get("/collab/level", response_model=CollabLevelOut)
 async def level(node: uuid.UUID, person: uuid.UUID, db: DbSession) -> CollabLevelOut:
     """`authorize`'s level for a person, by id: 404 when they have no
-    active account (none, disabled, or the person archived — the same
-    checks sign-in makes) or can't open the page live."""
+    active account (none, disabled, or the person archived) or no live
+    session (every one revoked or expired — "revoke all sessions" and a
+    password reset end live editing too), the same checks
+    `authenticate_token` makes, or when they can't open the page live."""
     account = await db.scalar(
         select(UserAccount)
         .options(joinedload(UserAccount.person))
         .where(UserAccount.person_id == person))
     if (account is None or account.disabled_at is not None
             or account.person.archived_at is not None):
+        raise not_found()
+    live_session = await db.scalar(
+        select(AuthSession.id)
+        .where(AuthSession.person_id == person,
+               AuthSession.revoked_at.is_(None),
+               AuthSession.expires_at > datetime.now(UTC))
+        .limit(1))
+    if live_session is None:
         raise not_found()
     principal = await principal_from_access(db, person, await resolve_access(db, person))
     return CollabLevelOut(level=await _live_level(db, principal, node))
