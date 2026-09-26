@@ -22,10 +22,11 @@ from sqlalchemy.dialects.postgresql import insert
 from serversherpa.api.routes.wiki.deps import (
     WikiContext,
     destination,
+    lock_and_reread,
     space_by_key,
     visible_nodes,
 )
-from serversherpa.api.routes.wiki.errors import err, forbidden, is_edit, not_found
+from serversherpa.api.routes.wiki.errors import conflict, err, forbidden, is_edit, not_found
 from serversherpa.api.routes.wiki.schemas import (
     Breadcrumb,
     NodeCopyIn,
@@ -57,6 +58,8 @@ NODE_FIELDS = ["title", "owner_id"]
 
 
 def _tree_error(exc: tree.TreeError) -> HTTPException:
+    if exc.code == "conflict":
+        return conflict()
     return err(422, exc.code, exc.message)
 
 
@@ -73,6 +76,8 @@ async def _nodes_out_for(ctx: WikiContext, nodes: Sequence[WikiNode],
 
 @router.post("/nodes", response_model=NodeOut, status_code=201)
 async def create(body: NodeCreateIn, ctx: WikiContext) -> NodeOut:
+    # locked first, so the parent is read (and checked) as committed now
+    await tree.lock_space_trees(ctx.db, body.space_id)
     space, parent, level = await destination(ctx, body.space_id, body.parent_id)
     if not is_edit(level):
         raise forbidden("edit")
@@ -180,6 +185,7 @@ async def patch_node(node_id: uuid.UUID, body: NodePatchIn, ctx: WikiContext) ->
 @router.post("/nodes/{node_id}/move", response_model=NodeOut)
 async def move(node_id: uuid.UUID, body: NodeMoveIn, ctx: WikiContext) -> NodeOut:
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "edit")
+    node = await lock_and_reread(ctx, node, "edit", body.space_id or node.space_id)
     space, parent, dest_level = await destination(
         ctx, body.space_id or node.space_id, body.parent_id)
     if space.id != node.space_id and await ctx.ix.level_for_node(node) != "manage":
@@ -208,6 +214,7 @@ async def move(node_id: uuid.UUID, body: NodeMoveIn, ctx: WikiContext) -> NodeOu
 @router.post("/nodes/{node_id}/copy", response_model=NodeOut, status_code=201)
 async def copy(node_id: uuid.UUID, body: NodeCopyIn, ctx: WikiContext) -> NodeOut:
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "view")
+    node = await lock_and_reread(ctx, node, "view", body.space_id or node.space_id)
     shown, _ = await visible_nodes(ctx, [node])
     if not shown:
         raise not_found()
@@ -245,6 +252,7 @@ async def copy(node_id: uuid.UUID, body: NodeCopyIn, ctx: WikiContext) -> NodeOu
 @router.delete("/nodes/{node_id}", response_model=NodeDeleteOut)
 async def delete_node(node_id: uuid.UUID, ctx: WikiContext) -> NodeDeleteOut:
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "edit")
+    node = await lock_and_reread(ctx, node, "edit")
     home_id = await ctx.db.scalar(
         select(WikiSpace.home_node_id).where(WikiSpace.id == node.space_id))
     if home_id == node.id:

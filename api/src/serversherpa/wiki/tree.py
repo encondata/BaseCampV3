@@ -51,6 +51,25 @@ MIN_GAP = 1e-6
 COPY_LIMIT = 500
 
 
+# one transaction-scoped advisory lock per space, keyed by the space id
+# (namespaced so it can't collide with any other advisory lock user)
+_LOCK_SPACE_SQL = text(
+    "SELECT pg_advisory_xact_lock(hashtextextended('wiki_tree:' || :space_id, 0))")
+
+
+async def lock_space_trees(db: AsyncSession, *space_ids: uuid.UUID) -> None:
+    """Serialize tree mutations per space: wait for, then hold until the
+    transaction ends, each space's tree lock — in a fixed (sorted) order,
+    so two callers locking the same spaces can't deadlock. Every
+    operation that changes the tree's shape (create, a new file, move,
+    copy, delete, restore, delete forever) takes it BEFORE re-reading the
+    nodes it validates, so it checks what the previous writer committed:
+    two opposite moves can't both pass the cycle check, and nothing lands
+    under a folder another transaction just trashed."""
+    for space_id in sorted({str(sid) for sid in space_ids}):
+        await db.execute(_LOCK_SPACE_SQL, {"space_id": space_id})
+
+
 class TreeError(Exception):
     """A tree operation the caller asked for that can't be done — the
     route turns it into a 422 with `code`."""

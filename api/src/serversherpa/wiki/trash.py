@@ -45,16 +45,29 @@ def _is_batch_root():
 
 async def batch_root(db: AsyncSession, batch_id: uuid.UUID) -> WikiNode | None:
     """The batch's root node, locked FOR UPDATE, or None when no such
-    batch exists. The lock serializes restore / delete-forever / the
-    expiry sweep on one batch: whoever waits re-reads the row after the
-    first commits, finds it restored or gone, and gets None."""
-    return await db.scalar(
+    batch exists. Its space's tree lock (`tree.lock_space_trees`) is taken
+    first, like every tree mutation, so restore and delete-forever see
+    the tree as the last writer committed it. The row lock serializes
+    restore / delete-forever / the expiry sweep on one batch: whoever
+    waits re-reads the row after the first commits, finds it restored or
+    gone, and gets None. Raises `TreeError("conflict")` when a
+    cross-space move of a live ancestor carried the batch to another
+    space while we waited for the lock."""
+    space_id = await db.scalar(
+        select(WikiNode.space_id).where(WikiNode.deleted_batch == batch_id).limit(1))
+    if space_id is None:
+        return None
+    await tree.lock_space_trees(db, space_id)
+    root = await db.scalar(
         select(WikiNode)
         .where(WikiNode.deleted_batch == batch_id, _is_batch_root())
         .order_by(func.cardinality(WikiNode.path), WikiNode.id)
         .limit(1)
         .with_for_update(of=WikiNode)
         .execution_options(populate_existing=True))
+    if root is not None and root.space_id != space_id:
+        raise tree.TreeError("conflict", "That batch moved while you were working. Try again.")
+    return root
 
 
 async def list_batches(db: AsyncSession, space_id: uuid.UUID) -> list[TrashedBatch]:
@@ -91,7 +104,8 @@ async def restore_batch(db: AsyncSession, root: WikiNode) -> int:
     from the root's current place (an ancestor may have been moved, or
     deleted forever, while it sat in the trash)."""
     batch_id = root.deleted_batch
-    parent = await db.get(WikiNode, root.parent_id) if root.parent_id else None
+    parent = (await db.get(WikiNode, root.parent_id, populate_existing=True)
+              if root.parent_id else None)
     if parent is not None and (parent.deleted_at is not None
                                or parent.space_id != root.space_id):
         parent = None
@@ -141,19 +155,27 @@ async def delete_batch_forever(db: AsyncSession, root: WikiNode, *,
     copies and restored versions share objects). A trashed descendant
     from an OLDER batch would otherwise be cascade-deleted with its
     parent — and its objects leaked — so it is detached to the space
-    root first and stays in the trash, restorable on its own."""
+    root first (path rewritten, see `repath_subtree`) and stays in the
+    trash, restorable on its own."""
     batch_id = root.deleted_batch
     root_id, title = root.id, root.title
     ids = list((await db.scalars(
         select(WikiNode.id).where(WikiNode.deleted_batch == batch_id))).all())
     keys = await storage_keys(db, ids)
 
-    await db.execute(
-        update(WikiNode)
+    # detached to the space root: parent AND path (and their descendants'
+    # paths) stop naming the ancestors about to go, so permissions never
+    # resolve against a chain that no longer exists
+    detached = (await db.scalars(
+        select(WikiNode)
         .where(WikiNode.parent_id.in_(ids),
                WikiNode.deleted_batch.is_distinct_from(batch_id))
-        .values(parent_id=None)
-        .execution_options(synchronize_session=False))
+        .execution_options(populate_existing=True))).all()
+    for child in detached:
+        await tree.repath_subtree(db, child, [], space_id=child.space_id)
+        child.parent_id = None
+        child.path = []
+    await db.flush()
     if keys:
         await enqueue(db, "purge", payload={"keys": keys})
     await db.execute(delete(WikiNode).where(WikiNode.id.in_(ids))

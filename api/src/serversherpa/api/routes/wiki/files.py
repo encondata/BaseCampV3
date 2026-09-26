@@ -229,6 +229,8 @@ async def complete_upload(body: UploadCompleteIn, ctx: WikiContext) -> NodeOut |
     if target == "node":
         space_id = uuid.UUID(claims["space_id"])
         parent_id = uuid.UUID(claims["parent_id"]) if claims["parent_id"] else None
+        # locked first, so the parent is re-checked as committed now
+        await tree.lock_space_trees(ctx.db, space_id)
         space, parent = await _node_destination(ctx, space_id, parent_id)
         await _verify_object(key, size)
 

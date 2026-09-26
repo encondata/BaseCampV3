@@ -307,3 +307,22 @@ async def test_delete_forever_with_no_objects_queues_nothing(client, db):
     resp = await client.delete(f"/wiki/trash/{batch}", headers=s["owner"])
     assert resp.status_code == 204, resp.text
     assert (await db.scalars(select(WikiJob))).all() == []
+
+
+async def test_delete_forever_repaths_what_it_detaches(client, db):
+    """A descendant from an older batch is detached to the space root when
+    its parent's batch goes forever — its path (and its own descendants')
+    must stop naming the purged ancestors, or permissions would resolve
+    against a chain that no longer exists."""
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Runbooks")
+    sub = await _create(client, s["owner"], s["space"], "Network", parent=folder)
+    page = await _create(client, s["owner"], s["space"], "VLANs", kind="page", parent=sub)
+    await _delete(client, s["owner"], sub)
+    folder_batch = await _delete(client, s["owner"], folder)
+
+    resp = await client.delete(f"/wiki/trash/{folder_batch}", headers=s["owner"])
+    assert resp.status_code == 204, resp.text
+    sub_row = await _node(db, sub["id"])
+    assert (sub_row.parent_id, sub_row.path) == (None, [])
+    assert (await _node(db, page["id"])).path == [uuid.UUID(sub["id"])]

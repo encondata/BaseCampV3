@@ -4,10 +4,12 @@ the caller's `AuthContext`, their wiki `Principal`, and a fresh
 of assembling these four itself — and picks up the `wiki:view` gate for
 free, since building a `Principal` at all requires it.
 
-It also holds the two lookups more than one route module needs:
+It also holds the lookups more than one route module needs:
 `destination` (where a new node — a folder/page, or an uploaded file —
-is going, and the caller's level there) and `visible_nodes` (the live
-nodes a caller may see, dropping never-published pages for view-only).
+is going, and the caller's level there), `lock_and_reread` (a tree
+mutation's lock-then-re-check of the node it acts on) and
+`visible_nodes` (the live nodes a caller may see, dropping
+never-published pages for view-only).
 
 `AccessIndex` never invalidates its cache, so `ctx.ix` is only good for
 levels computed against the grants that existed when it was built. A
@@ -25,12 +27,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import AuthContext, DbSession, require_permission
-from serversherpa.api.routes.wiki.errors import not_found
+from serversherpa.api.routes.wiki.errors import conflict, not_found
 from serversherpa.db.models import WikiNode, WikiPage, WikiSpace
+from serversherpa.wiki import tree
 from serversherpa.wiki.permissions import (
     AccessIndex,
     Principal,
     principal_for,
+    require_node_level,
     require_space_level,
 )
 
@@ -71,11 +75,29 @@ async def destination(ctx: WikiCtx, space_id: uuid.UUID, parent_id: uuid.UUID | 
     if parent_id is None:
         space = await require_space_level(ctx.ix, space, "view")
         return space, None, await ctx.ix.level_for_space(space.id)
-    parent = await ctx.db.get(WikiNode, parent_id)
+    # populate_existing: after a tree lock, the parent as committed now,
+    # not an earlier copy this session may hold
+    parent = await ctx.db.get(WikiNode, parent_id, populate_existing=True)
     level = await ctx.ix.level_for_node(parent) if parent is not None else None
     if level is None or space is None:
         raise not_found()
     return space, parent, level
+
+
+async def lock_and_reread(ctx: WikiCtx, node: WikiNode, needed: str,
+                          *also_lock: uuid.UUID) -> WikiNode:
+    """Take the tree lock of `node`'s space (and of `also_lock`, e.g. a
+    move's destination space), then re-read `node` as committed now and
+    re-check the caller still has `needed` on it (404/403 as usual). 409
+    `conflict` when it left the locked space while we waited — a
+    concurrent cross-space move."""
+    space_id = node.space_id
+    await tree.lock_space_trees(ctx.db, space_id, *also_lock)
+    fresh = await ctx.db.get(WikiNode, node.id, populate_existing=True)
+    fresh = await require_node_level(ctx.ix, fresh, needed)
+    if fresh.space_id != space_id:
+        raise conflict()
+    return fresh
 
 
 async def visible_nodes(ctx: WikiCtx, nodes: Sequence[WikiNode],

@@ -44,7 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.config import get_settings
 from serversherpa.db.models import WikiFileVersion, WikiJob, WikiNode, WikiPageAsset
 from serversherpa.services import storage
-from serversherpa.wiki import convert, trash
+from serversherpa.wiki import convert, trash, tree
 from serversherpa.wiki.files import (
     enqueue,
     is_office,
@@ -340,7 +340,11 @@ async def sweep_expired(db: AsyncSession, *, now: datetime | None = None) -> int
     await db.commit()
     swept = 0
     for batch_id in batch_ids:
-        root = await trash.batch_root(db, batch_id)
+        try:
+            root = await trash.batch_root(db, batch_id)
+        except tree.TreeError:                              # moved meanwhile: next sweep
+            await db.rollback()
+            continue
         if root is None or root.deleted_at >= cutoff:       # restored meanwhile
             await db.rollback()
             continue

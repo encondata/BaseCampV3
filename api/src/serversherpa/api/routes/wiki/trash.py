@@ -18,13 +18,13 @@ from datetime import timedelta
 from fastapi import APIRouter, Response
 
 from serversherpa.api.routes.wiki.deps import WikiContext, space_by_key
-from serversherpa.api.routes.wiki.errors import err, not_found
+from serversherpa.api.routes.wiki.errors import conflict, err, not_found
 from serversherpa.api.routes.wiki.schemas import NodeOut, TrashBatch, TrashRoot
 from serversherpa.api.routes.wiki.serialize import node_out, person_refs
 from serversherpa.config import get_settings
 from serversherpa.db.models import WikiNode, WikiSpace
 from serversherpa.services.audit import audit
-from serversherpa.wiki import trash
+from serversherpa.wiki import trash, tree
 from serversherpa.wiki.permissions import AccessIndex, require_space_level
 
 router = APIRouter()
@@ -54,7 +54,10 @@ async def _managed_batch(ctx: WikiContext, batch_id: uuid.UUID, *,
     """The batch's (locked) root and its space, when the caller manages
     that space; otherwise 404 — or 422 `read_only` for a restore into an
     archived space the caller can see."""
-    root = await trash.batch_root(ctx.db, batch_id)
+    try:
+        root = await trash.batch_root(ctx.db, batch_id)
+    except tree.TreeError:
+        raise conflict() from None
     space = await ctx.db.get(WikiSpace, root.space_id) if root is not None else None
     if space is None:
         raise not_found()

@@ -1,6 +1,6 @@
 """Small pieces every `/wiki` route module reaches for: a uniform
-HTTPException shape (`err`, plus the two everyone raises — `not_found`
-and `forbidden`), and the "does this level allow writing?" check
+HTTPException shape (`err`, plus the ones everyone raises — `not_found`,
+`forbidden` and `conflict`), and the "does this level allow writing?" check
 (`is_edit`) route handlers use to turn a level into a 403."""
 from __future__ import annotations
 
@@ -23,6 +23,11 @@ def err(status: int, code: str, message: str | None = None, **extra: Any) -> HTT
 
 def not_found() -> HTTPException:
     return err(404, "not_found", "Not found.")
+
+
+def conflict() -> HTTPException:
+    """409 for a tree operation that raced another one (spec §9)."""
+    return err(409, "conflict", "That item changed while you were working. Try again.")
 
 
 def forbidden(needed: str) -> HTTPException:
