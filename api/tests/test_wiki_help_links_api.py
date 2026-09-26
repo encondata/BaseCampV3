@@ -177,6 +177,31 @@ async def test_help_is_404_when_the_caller_cannot_view_the_guide(client, db):
     assert (await _help(client, s["viewer"], "portal:/assets")).status_code == 200
 
 
+async def test_help_falls_back_to_the_nearest_viewable_guide(client, db):
+    s = await _setup(client, db)
+    admin = await _admin(client, db)
+    general = await _page(client, s, db, "General Guide")
+    middle = await _page(client, s, db, "Bulk Guide")
+    # the longest match: a draft the viewer (view-only) can't see
+    draft = await _page(client, s, db, "Draft Time Guide", publish=False)
+    await _link(client, admin, "portal:/", general["id"])
+    await _link(client, admin, "portal:/bulk", middle["id"])
+    await _link(client, admin, "portal:/bulk/time", draft["id"])
+
+    resp = await _help(client, s["viewer"], "portal:/bulk/time")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["title"] == "Bulk Guide"
+    assert resp.json()["context"] == "portal:/bulk"
+    # the editor can see the draft, so the longest match still wins for them
+    assert (await _help(client, s["editor"], "portal:/bulk/time")).json()["title"] == "Draft Time Guide"
+
+    # with the middle guide trashed too, the next one down answers
+    assert (await client.delete(f"/wiki/nodes/{middle['id']}",
+                                headers=s["owner"])).status_code == 200
+    resp = await _help(client, s["viewer"], "portal:/bulk/time")
+    assert resp.json()["context"] == "portal:/"
+
+
 async def test_help_hides_a_never_published_page_from_view_only(client, db):
     s = await _setup(client, db)
     admin = await _admin(client, db)

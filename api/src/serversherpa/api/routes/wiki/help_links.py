@@ -114,26 +114,26 @@ async def _link_out(ctx: WikiContext, link_id: uuid.UUID) -> HelpLinkOut:
 
 @router.get("/help", response_model=HelpOut)
 async def get_help(ctx: WikiContext, context: HelpContextIn) -> HelpOut:
-    """The longest stored context the requested one falls under; 404 when
-    there is none, or when the caller can't view its guide (trashed, or a
-    never-published page for view-only)."""
+    """The nearest guide the caller can view: the stored contexts the
+    requested one falls under, longest first, skipping any whose guide
+    they can't view (trashed, not theirs to see, or a never-published page
+    for view-only). 404 when none qualifies."""
     candidates = context_prefixes(normalize_context(context))
     if not candidates:
         raise not_found()
-    row = (await ctx.db.execute(
+    # at most one row per prefix, so this is never more than a handful
+    rows = (await ctx.db.execute(
         select(WikiHelpLink, WikiNode)
         .join(WikiNode, WikiNode.id == WikiHelpLink.node_id)
         .where(WikiHelpLink.context.in_(candidates))
-        .order_by(func.char_length(WikiHelpLink.context).desc())
-        .limit(1))).first()
-    if row is None:
-        raise not_found()
-    link, node = row
-    visible, _ = await visible_nodes(ctx, [node])
-    if not visible:
-        raise not_found()
-    return HelpOut(node_id=node.id, title=node.title, url=guide_url(node.id),
-                   context=link.context)
+        .order_by(func.char_length(WikiHelpLink.context).desc()))).all()
+    visible, _ = await visible_nodes(ctx, [node for _, node in rows])
+    viewable = {node.id for node in visible}
+    for link, node in rows:
+        if node.id in viewable:
+            return HelpOut(node_id=node.id, title=node.title, url=guide_url(node.id),
+                           context=link.context)
+    raise not_found()
 
 
 @router.get("/help-links", response_model=list[HelpLinkOut])
