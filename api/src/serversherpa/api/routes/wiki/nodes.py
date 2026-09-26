@@ -38,7 +38,8 @@ from serversherpa.api.routes.wiki.schemas import (
     NodePatchIn,
 )
 from serversherpa.api.routes.wiki.serialize import node_out, nodes_out, space_out
-from serversherpa.db.models import Person, WikiFavorite, WikiNode, WikiPage, WikiSpace
+from serversherpa.api.routes.wiki.templates import template_visible
+from serversherpa.db.models import Person, WikiFavorite, WikiNode, WikiPage, WikiSpace, WikiTemplate
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.wiki import notify, tree
 from serversherpa.wiki.pages import check_doc
@@ -85,19 +86,29 @@ async def create(body: NodeCreateIn, ctx: WikiContext) -> NodeOut:
         tree.check_parent(parent, space.id)
     except tree.TreeError as exc:
         raise _tree_error(exc) from exc
+
+    title = body.title
     initial_content = (check_doc(body.initial_content)
                        if body.initial_content is not None else None)
+    template: WikiTemplate | None = None
+    if body.template_id is not None:
+        template = await ctx.db.get(WikiTemplate, body.template_id)
+        if template is None or not await template_visible(ctx, template):
+            raise not_found()
+        title = title or template.name
+        initial_content = check_doc(template.content_json)
 
     actor_id = ctx.user.person.id
     node = await tree.create_node(
-        ctx.db, space=space, parent=parent, kind=body.kind, title=body.title,
+        ctx.db, space=space, parent=parent, kind=body.kind, title=title,
         actor_id=actor_id, after_id=body.after_id,
         initial_content=initial_content)
     audit(ctx.db, actor_id=actor_id, entity_type="wiki_node",
           entity_id=str(node.id), action="create",
           changes=diff({}, {"kind": node.kind, "title": node.title,
                             "space_id": str(space.id),
-                            "parent_id": str(parent.id) if parent else None}))
+                            "parent_id": str(parent.id) if parent else None,
+                            "template_id": str(template.id) if template else None}))
     await notify.auto_watch(ctx.db, actor_id, node.id)
     await notify.on_created(ctx.db, node, actor_id=actor_id)
     await ctx.db.commit()

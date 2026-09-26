@@ -156,12 +156,15 @@ export interface NodeDetailOut extends NodeOut {
   space: SpaceOut;
 }
 
+/** `title` is required unless `template_id` is given, in which case an
+ *  omitted or blank title defaults to the template's name. */
 export interface NodeCreateIn {
   space_id: string;
   parent_id: string | null;
   kind: 'folder' | 'page';
-  title: string;
+  title?: string;
   initial_content?: JSONContent;
+  template_id?: string;
   after_id?: string;
 }
 
@@ -352,4 +355,38 @@ export interface CommentThread {
   resolved_at: string | null;
   resolved_by: PersonRef | null;
   comments: CommentOut[];
+}
+
+// ── templates ────────────────────────────────────────────────────────
+
+/** A page starting point: `space_id` null is global (a builtin, or one a
+ *  wiki admin added); otherwise scoped to that space. */
+export interface TemplateOut {
+  id: string;
+  space_id: string | null;
+  space_key: string | null;
+  name: string;
+  description: string;
+  icon: string;
+  is_builtin: boolean;
+  created_by: PersonRef | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TemplateDetail extends TemplateOut {
+  content_json: JSONContent;
+}
+
+/** Give exactly one of `content_json` or `from_node_id` (that page's
+ *  current draft, or its published content for a view-only caller). */
+export type TemplateCreateIn =
+  { space_id?: string | null; name: string; description?: string; icon?: string }
+  & ({ content_json: JSONContent; from_node_id?: never }
+    | { from_node_id: string; content_json?: never });
+
+export interface TemplatePatchIn {
+  name?: string;
+  description?: string;
+  icon?: string;
 }

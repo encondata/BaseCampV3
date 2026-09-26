@@ -10,8 +10,12 @@ import { ApiError, apiFetch, READ_ONLY_MESSAGE, refreshSystemStatus } from '@por
 
 import {
   completeUpload,
+  createNode,
+  createTemplate,
   deleteComment,
+  deleteTemplate,
   editComment,
+  getTemplate,
   getWatchState,
   getAssetUrls,
   getPageContent,
@@ -21,6 +25,7 @@ import {
   listMentionable,
   listRecent,
   listSpaces,
+  listTemplates,
   listWatches,
   moveNode,
   postComment,
@@ -34,6 +39,7 @@ import {
   setFavorite,
   unwatch,
   updateSpace,
+  updateTemplate,
   watch,
 } from './wikiApi';
 
@@ -216,6 +222,51 @@ describe('wikiApi requests', () => {
   it('skips the request when asked for no asset urls', async () => {
     await expect(getAssetUrls([])).resolves.toEqual({});
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('lists, reads, creates, updates and deletes templates', async () => {
+    fetchMock.mockResolvedValueOnce(reply(200, []));
+    await expect(listTemplates()).resolves.toEqual([]);
+    expect(lastCall().path).toBe('/wiki/templates');
+
+    fetchMock.mockResolvedValueOnce(reply(200, []));
+    await listTemplates('ops');
+    expect(lastCall().path).toBe('/wiki/templates?space=ops');
+
+    const detail = { id: 't1', space_id: null, space_key: null, name: 'SOP',
+      description: '', icon: '', is_builtin: true, created_by: null,
+      created_at: '2026-09-26T00:00:00Z', updated_at: '2026-09-26T00:00:00Z',
+      content_json: { type: 'doc', content: [] } };
+    fetchMock.mockResolvedValueOnce(reply(200, detail));
+    await expect(getTemplate('t1')).resolves.toEqual(detail);
+    expect(lastCall().path).toBe('/wiki/templates/t1');
+
+    fetchMock.mockResolvedValueOnce(reply(201, { ...detail, is_builtin: false }));
+    await createTemplate({ space_id: 'ops', name: 'Runbook',
+      content_json: { type: 'doc', content: [] } });
+    expect(lastCall()).toMatchObject({ path: '/wiki/templates', init: { method: 'POST' } });
+    expect(JSON.parse(String(lastCall().init.body))).toEqual(
+      { space_id: 'ops', name: 'Runbook', content_json: { type: 'doc', content: [] } });
+
+    fetchMock.mockResolvedValueOnce(reply(201, { ...detail, is_builtin: false }));
+    await createTemplate({ name: 'From a page', from_node_id: 'n1' });
+    expect(JSON.parse(String(lastCall().init.body))).toEqual(
+      { name: 'From a page', from_node_id: 'n1' });
+
+    fetchMock.mockResolvedValueOnce(reply(200, { ...detail, name: 'Renamed' }));
+    await updateTemplate('t1', { name: 'Renamed' });
+    expect(lastCall()).toMatchObject({ path: '/wiki/templates/t1', init: { method: 'PATCH' } });
+
+    fetchMock.mockResolvedValueOnce(reply(204));
+    await expect(deleteTemplate('t1')).resolves.toBeUndefined();
+    expect(lastCall()).toMatchObject({ path: '/wiki/templates/t1', init: { method: 'DELETE' } });
+  });
+
+  it('creates a node from a template, leaving out an unset title', async () => {
+    fetchMock.mockResolvedValueOnce(reply(201, { id: 'n2' }));
+    await createNode({ space_id: 's1', parent_id: null, kind: 'page', template_id: 'tmpl1' });
+    expect(JSON.parse(String(lastCall().init.body))).toEqual(
+      { space_id: 's1', parent_id: null, kind: 'page', template_id: 'tmpl1' });
   });
 });
 

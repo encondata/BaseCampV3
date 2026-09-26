@@ -40,6 +40,10 @@ import type {
   SpaceCreateIn,
   SpaceOut,
   SpacePatchIn,
+  TemplateCreateIn,
+  TemplateDetail,
+  TemplateOut,
+  TemplatePatchIn,
   TrashBatch,
   UploadStartIn,
   UploadStartOut,
@@ -280,3 +284,24 @@ export const reopenThread = (threadId: string) =>
 /** Up to 10 people who can view the page, for the @mention picker. */
 export const listMentionable = (nodeId: string, q: string) =>
   request<PersonRef[]>('GET', `/nodes/${seg(nodeId)}/mentionable`, { query: { q } });
+
+// ── templates ─────────────────────────────────────────────────────────
+
+/** Builtins, then other global templates, then (with `space`) that
+ *  space's own — each group name-ordered. */
+export const listTemplates = (space?: string) =>
+  request<TemplateOut[]>('GET', '/templates', { query: { space } });
+
+export const getTemplate = (id: string) => request<TemplateDetail>('GET', `/templates/${seg(id)}`);
+
+/** 409 `name_taken` for a duplicate name in the same scope. */
+export const createTemplate = (body: TemplateCreateIn) =>
+  request<TemplateOut>('POST', '/templates', { body });
+
+/** 422 `builtin` for one of the four seeded templates. */
+export const updateTemplate = (id: string, body: TemplatePatchIn) =>
+  request<TemplateOut>('PATCH', `/templates/${seg(id)}`, { body });
+
+/** 422 `builtin` for one of the four seeded templates. */
+export const deleteTemplate = (id: string) =>
+  request<void>('DELETE', `/templates/${seg(id)}`);

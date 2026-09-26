@@ -202,9 +202,23 @@ class NodeCreateIn(BaseModel):
     space_id: uuid.UUID
     parent_id: uuid.UUID | None = None
     kind: Literal["folder", "page"]
-    title: Title
+    # required unless template_id is given, in which case an omitted or
+    # blank title defaults to the template's name (see _validate below)
+    title: Annotated[str, StringConstraints(strip_whitespace=True,
+                                            max_length=200)] | None = None
     initial_content: dict | None = None
+    template_id: uuid.UUID | None = None
     after_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> NodeCreateIn:
+        if self.initial_content is not None and self.template_id is not None:
+            raise ValueError("Give at most one of initial_content or template_id.")
+        if not self.title:
+            self.title = None
+            if self.template_id is None:
+                raise ValueError("title is required unless template_id is given.")
+        return self
 
 
 class NodePatchIn(BaseModel):
@@ -377,6 +391,58 @@ class AssetUrlsIn(BaseModel):
 
 class AssetUrlsOut(BaseModel):
     urls: dict[uuid.UUID, str]
+
+
+# ── templates ────────────────────────────────────────────────────────
+
+# a template's name (wiki_templates.name is CHECKed to 1-120 characters)
+TemplateName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
+                                                max_length=120)]
+
+
+class TemplateOut(BaseModel):
+    id: uuid.UUID
+    space_id: uuid.UUID | None
+    space_key: str | None
+    name: str
+    description: str
+    icon: str
+    is_builtin: bool
+    created_by: PersonRef | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TemplateDetail(TemplateOut):
+    content_json: dict
+
+
+class TemplateCreateIn(BaseModel):
+    """Exactly one of `content_json` (validated like a draft) or
+    `from_node_id` (that page's current draft or published content,
+    depending on the caller's level on it — see `templates.py`)."""
+    model_config = ConfigDict(extra="forbid")
+
+    space_id: uuid.UUID | None = None
+    name: TemplateName
+    description: str = ""
+    icon: str = ""
+    content_json: dict | None = None
+    from_node_id: uuid.UUID | None = None
+
+    @model_validator(mode="after")
+    def _one_content_source(self) -> TemplateCreateIn:
+        if (self.content_json is None) == (self.from_node_id is None):
+            raise ValueError("Give exactly one of content_json or from_node_id.")
+        return self
+
+
+class TemplatePatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: TemplateName | None = None
+    description: str | None = None
+    icon: str | None = None
 
 
 # ── watches ──────────────────────────────────────────────────────────

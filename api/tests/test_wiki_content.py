@@ -1,11 +1,12 @@
 """Unit tests for `serversherpa.wiki.content`: the plain-text flattener
-and the embedded-asset walkers used by page copy."""
+and the embedded-asset walkers used by page copy and templates (Task 4)."""
 from serversherpa.wiki.content import (
     EMPTY_DOC,
     doc_text,
     docs_equal,
     referenced_asset_ids,
     rewrite_asset_ids,
+    strip_asset_nodes,
     strip_reference_labels,
 )
 
@@ -147,3 +148,22 @@ def test_rewrite_asset_ids_returns_a_rewritten_copy():
     assert referenced_asset_ids(out) == {"b1", "a2"}
     assert out["content"][0]["attrs"] == {"assetId": "b1", "alt": "one"}
     assert referenced_asset_ids(ASSET_DOC) == {"a1", "a2"}   # input untouched
+
+
+def test_strip_asset_nodes_drops_page_asset_embeds_but_keeps_file_node_embeds():
+    # ASSET_DOC: a top-level wikiImage(a1); a bulletList > listItem holding
+    # a paragraph("x") and a fileEmbed(a2) of a page asset; a top-level
+    # fileEmbed of a wiki file node (nodeId=n1, no assetId); and a
+    # paragraph whose attrs happen to carry an "assetId" key but isn't a
+    # wikiImage/fileEmbed at all.
+    out = strip_asset_nodes(ASSET_DOC)
+    assert referenced_asset_ids(out) == set()
+    types_left = [n["type"] for n in out["content"]]
+    assert types_left == ["bulletList", "fileEmbed", "paragraph"]
+    assert out["content"][1] == {"type": "fileEmbed", "attrs": {"assetId": None, "nodeId": "n1"}}
+    # the fileEmbed that referenced a page asset is gone from the list item,
+    # but its sibling paragraph survives
+    list_item_content = out["content"][0]["content"][0]["content"]
+    assert [n["type"] for n in list_item_content] == ["paragraph"]
+    # a copy: the input is untouched
+    assert referenced_asset_ids(ASSET_DOC) == {"a1", "a2"}

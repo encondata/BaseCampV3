@@ -231,3 +231,34 @@ def rewrite_asset_ids(doc: dict, mapping: Mapping[str, str]) -> dict:
         if new_id is not None:
             node["attrs"]["assetId"] = new_id
     return out
+
+
+def _is_page_asset_node(node: dict) -> bool:
+    """A wikiImage/fileEmbed node that embeds one of the page's own
+    uploaded assets (`attrs.assetId`) — the same test `_asset_nodes` uses."""
+    attrs = node.get("attrs")
+    return (node.get("type") in ASSET_NODE_TYPES and isinstance(attrs, dict)
+            and isinstance(attrs.get("assetId"), str) and bool(attrs["assetId"]))
+
+
+def _drop_nodes(node: dict, predicate) -> dict:
+    """`node`, mutated in place, with every descendant matching
+    `predicate` removed from its content lists (`node` itself is never
+    dropped — only its content is filtered)."""
+    content = node.get("content")
+    if not isinstance(content, list):
+        return node
+    node["content"] = [_drop_nodes(child, predicate) for child in content
+                       if isinstance(child, dict) and not predicate(child)]
+    return node
+
+
+def strip_asset_nodes(doc: dict) -> dict:
+    """A deep copy of `doc` with every wikiImage/fileEmbed node that
+    embeds a page's own uploaded asset (`attrs.assetId`) removed
+    entirely — used when content becomes a template: templates are
+    page-independent, so those assets won't exist for whoever creates a
+    page from one. A `fileEmbed` of a wiki file node (`attrs.nodeId`,
+    no `assetId`) is kept — that reference is wiki-wide, not tied to the
+    source page."""
+    return _drop_nodes(copy.deepcopy(doc), _is_page_asset_node)
