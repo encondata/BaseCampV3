@@ -188,3 +188,53 @@ describe('ReadOnlyDoc — unverified targets', () => {
     expect(screen.queryByText('Old name.zip')).toBeNull();
   });
 });
+
+describe('ReadOnlyDoc — public mode (a public share link)', () => {
+  const PDF = '2f4d6a2e-3b1c-4c7e-9a55-1d2e3f405162';
+  const publicDoc = {
+    type: 'doc',
+    content: [
+      { type: 'paragraph', content: [
+        { type: 'text', text: 'See ' },
+        { type: 'pageLink', attrs: { nodeId: 'n-live', title: 'Secret page' } },
+        { type: 'text', text: ' and ' },
+        { type: 'mention', attrs: { personId: null, label: 'Pat Doe' } },
+      ] },
+      { type: 'wikiImage', attrs: { assetId: SHOWN, alt: 'Rack front', caption: '', width: null } },
+      { type: 'wikiImage', attrs: { assetId: HIDDEN, alt: 'Hidden', caption: '', width: null } },
+      { type: 'fileEmbed', attrs: { nodeId: null, assetId: PDF, filename: 'spec.pdf', contentType: 'application/pdf' } },
+      { type: 'fileEmbed', attrs: { nodeId: 'f-other', assetId: null, filename: '', contentType: '' } },
+    ],
+  };
+
+  beforeEach(() => {
+    vi.mocked(getAssetUrls).mockClear();
+    vi.mocked(getNode).mockClear();
+    vi.mocked(getFileUrl).mockClear();
+  });
+
+  it('shows images and files from the given URLs and asks the API for nothing', async () => {
+    render(<MemoryRouter><ReadOnlyDoc content={publicDoc}
+      publicAssets={{ [SHOWN]: 'https://s3/public-rack.png', [PDF]: 'https://s3/spec.pdf' }} /></MemoryRouter>);
+    const img = await screen.findByRole('img', { name: 'Rack front' });
+    expect(img.getAttribute('src')).toBe('https://s3/public-rack.png');
+    expect(await screen.findByText('Image unavailable')).toBeTruthy();
+    expect(screen.getByText('spec.pdf')).toBeTruthy();
+    expect(screen.getByRole('link', { name: /Download/ }).getAttribute('href')).toBe('https://s3/spec.pdf');
+    // an embed of another wiki file: unavailable, no Open link into the wiki
+    expect(screen.getByText('File unavailable')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: /Open/ })).toBeNull();
+    expect(screen.getByText('@Pat Doe')).toBeTruthy();
+    expect(getAssetUrls).not.toHaveBeenCalled();
+    expect(getNode).not.toHaveBeenCalled();
+    expect(getFileUrl).not.toHaveBeenCalled();
+  });
+
+  it('renders a page link as plain text, never a link or its stored title', async () => {
+    const { container } = render(<MemoryRouter><ReadOnlyDoc content={publicDoc} publicAssets={{}} /></MemoryRouter>);
+    expect(await screen.findByText('Linked page')).toBeTruthy();
+    expect(container.querySelector('.wiki-page-link a')).toBeNull();
+    expect(screen.queryByText(/Secret page/)).toBeNull();
+    expect(getNode).not.toHaveBeenCalled();
+  });
+});

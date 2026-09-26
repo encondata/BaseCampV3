@@ -450,3 +450,56 @@ export interface ReviewListParams {
   status?: ReviewStatus;
   mine?: 'approver' | 'requester';
 }
+
+// ── public share links ──────────────────────────────────────────────
+
+/** How long a new link lives; null = until it's revoked. */
+export type ShareExpiryDays = 1 | 7 | 30 | 90;
+
+/** The one response that carries the token (inside `url`). */
+export interface ShareLinkCreatedOut {
+  id: string;
+  url: string;
+  expires_at: string | null;
+}
+
+export type ShareLinkStatus = 'active' | 'expired' | 'revoked';
+
+/** A link as managers and wiki admins see it — never its token. */
+export interface ShareLinkOut {
+  id: string;
+  node: { id: string; title: string; kind: NodeKind; space_key: string; space_name: string };
+  status: ShareLinkStatus;
+  created_by: PersonRef | null;
+  created_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+  view_count: number;
+  last_viewed_at: string | null;
+}
+
+/** GET /wiki/public/{token} for a page: the published content, already
+ *  made safe to show anyone (no comment anchors, links into the wiki as
+ *  plain text), and presigned URLs for the images/files it embeds. */
+export interface PublicPageOut {
+  kind: 'page';
+  title: string;
+  content_json: JSONContent;
+  published_at: string;
+  asset_urls: Record<string, string>;
+}
+
+/** …and for a file: `url` renders in the browser when `inline`, else it
+ *  downloads; `download_url` always downloads. */
+export interface PublicFileOut {
+  kind: 'file';
+  title: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  inline: boolean;
+  url: string;
+  download_url: string;
+}
+
+export type PublicShareOut = PublicPageOut | PublicFileOut;

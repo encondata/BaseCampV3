@@ -1,8 +1,9 @@
 /** The ⋯ menu on a tree row (also opened by right-clicking the row) and in
  *  a page's header: New page/folder here, Rename, Move…, Copy…, Copy link,
  *  (a page's header only: Save as template…, Review schedule…),
- *  Permissions…, Delete — each shown only at the level it needs. Move,
- *  Copy, Permissions and Delete open the shell's dialogs. The menu is
+ *  Permissions…, Share… (pages and files), Delete — each shown only at the
+ *  level it needs. Move, Copy, Permissions, Share and Delete open the
+ *  shell's dialogs. The menu is
  *  position:fixed so the sidebar's scroll box never clips it; it closes on
  *  any outside click, scroll, resize or Escape. */
 import {
@@ -128,6 +129,12 @@ const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
   }
   if (canManage) {
     items.push({ label: 'Permissions…', action: () => shell.requestPermissions(node), icon: <><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></> });
+  }
+  if (canManage && (node.kind === 'page' || node.kind === 'file')) {
+    items.push({
+      label: 'Share…', action: () => shell.requestShare(node),
+      icon: <><circle cx="18" cy="5" r="2.5" /><circle cx="6" cy="12" r="2.5" /><circle cx="18" cy="19" r="2.5" /><path d="M8.2 10.8l7.6-4.4M8.2 13.2l7.6 4.4" /></>,
+    });
   }
   if (canEdit && !isHome) {
     items.push({ label: 'Delete', action: () => shell.requestDelete(node), danger: true, icon: <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" /> });

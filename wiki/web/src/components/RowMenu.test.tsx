@@ -20,6 +20,7 @@ function fakeShell(): ShellValue {
     requestMove: vi.fn(),
     requestCopy: vi.fn(),
     requestPermissions: vi.fn(),
+    requestShare: vi.fn(),
   };
 }
 
@@ -79,6 +80,23 @@ describe('RowMenu', () => {
     expect(shell.requestPermissions).toHaveBeenCalledWith(node);
     pick('Delete');
     expect(shell.requestDelete).toHaveBeenCalledWith(node);
+  });
+
+  it('offers Share… on a page or file to a manager, and hands it to the shell', () => {
+    const page = makeNode('n1', { kind: 'page', my_level: 'manage' });
+    const { shell } = open(page);
+    expect(items()).toContain('Share…');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Share…' }));
+    expect(shell.requestShare).toHaveBeenCalledWith(page);
+    cleanup();
+    open(makeNode('f1', { kind: 'file', my_level: 'manage' }));
+    expect(items()).toContain('Share…');
+    cleanup();
+    open(makeNode('d1', { kind: 'folder', my_level: 'manage' }));
+    expect(items()).not.toContain('Share…');
+    cleanup();
+    open(makeNode('n2', { kind: 'page', my_level: 'edit' }));
+    expect(items()).not.toContain('Share…');
   });
 
   it('offers Save as template… only for a page with edit and the handler given', () => {

@@ -1,8 +1,8 @@
 /** The signed-in wiki: system banners, the top bar, the collapsible
  *  sidebar (button or Ctrl/⌘+B, remembered in localStorage), the routed
  *  page and the upload tray. Owns the dialogs pages and the tree ask for
- *  through the shell context: New page/folder, Delete, Move…, Copy… and
- *  Permissions…. */
+ *  through the shell context: New page/folder, Delete, Move…, Copy…,
+ *  Permissions… and Share…. */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Route, Routes, useNavigate } from 'react-router-dom';
 
@@ -14,6 +14,7 @@ import MoveCopyDialog from '../components/MoveCopyDialog';
 import NewNodeDialog from '../components/NewNodeDialog';
 import PermissionsDialog from '../components/PermissionsDialog';
 import { atLeast } from '../components/RowMenu';
+import ShareDialog from '../components/ShareDialog';
 import { noteDeleted } from '../lib/treeStore';
 import type { NodeDetailOut, NodeOut, SpaceOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
@@ -71,6 +72,7 @@ export default function WikiShell() {
   const [deleting, setDeleting] = useState<{ node: NodeOut; busy: boolean; error: string } | null>(null);
   const [moving, setMoving] = useState<{ node: NodeOut; mode: 'move' | 'copy' } | null>(null);
   const [permissionsFor, setPermissionsFor] = useState<NodeOut | null>(null);
+  const [sharing, setSharing] = useState<NodeOut | null>(null);
 
   const reloadSpaces = useCallback(() => {
     listSpaces().then(setSpaces).catch(() => setSpaces((cur) => cur ?? []));
@@ -216,6 +218,8 @@ export default function WikiShell() {
   const requestPermissions = useCallback((node: NodeOut) => setPermissionsFor(node), []);
   const closeMoving = useCallback(() => setMoving(null), []);
   const closePermissions = useCallback(() => setPermissionsFor(null), []);
+  const requestShare = useCallback((node: NodeOut) => setSharing(node), []);
+  const closeShare = useCallback(() => setSharing(null), []);
 
   const shell = useMemo<ShellValue>(() => ({
     setCurrentNode,
@@ -225,7 +229,8 @@ export default function WikiShell() {
     requestMove,
     requestCopy,
     requestPermissions,
-  }), [setCurrentSpace, openNewNode, requestDelete, requestMove, requestCopy, requestPermissions]);
+    requestShare,
+  }), [setCurrentSpace, openNewNode, requestDelete, requestMove, requestCopy, requestPermissions, requestShare]);
 
   return (
     <ShellContext.Provider value={shell}>
@@ -294,6 +299,7 @@ export default function WikiShell() {
       {permissionsFor && (
         <PermissionsDialog target={{ kind: 'node', node: permissionsFor }} onClose={closePermissions} />
       )}
+      {sharing && <ShareDialog node={sharing} onClose={closeShare} />}
       {deleting && (
         <ConfirmDialog
           eyebrow="Delete"

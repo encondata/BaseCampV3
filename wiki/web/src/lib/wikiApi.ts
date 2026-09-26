@@ -40,6 +40,9 @@ import type {
   ReviewOut,
   SearchHit,
   SearchParams,
+  ShareExpiryDays,
+  ShareLinkCreatedOut,
+  ShareLinkOut,
   SpaceCreateIn,
   SpaceOut,
   SpacePatchIn,
@@ -346,3 +349,23 @@ export const markReviewed = (pageId: string) =>
 /** The space's pages due for review within two weeks (or overdue), soonest first. */
 export const listDueReviews = (spaceKey: string) =>
   request<NodeOut[]>('GET', `/spaces/${seg(spaceKey)}/due-reviews`);
+
+// ── public share links ──────────────────────────────────────────────
+
+/** Manage on the node; 422 `bad_kind` for a folder, 422 `links_disabled`
+ *  where the space doesn't allow public links. The URL (with its token) is
+ *  only ever returned here. */
+export const createShareLink = (nodeId: string, expiresInDays: ShareExpiryDays | null) =>
+  request<ShareLinkCreatedOut>('POST', `/nodes/${seg(nodeId)}/share-links`,
+    { body: { expires_in_days: expiresInDays } });
+
+/** The node's links — active, expired and revoked — newest first (manage). */
+export const listShareLinks = (nodeId: string) =>
+  request<ShareLinkOut[]>('GET', `/nodes/${seg(nodeId)}/share-links`);
+
+/** Manage on the link's node, the person who made it, or a wiki admin. */
+export const revokeShareLink = (id: string) =>
+  request<void>('DELETE', `/share-links/${seg(id)}`);
+
+/** Wiki administrators: every link, newest first. */
+export const listAllShareLinks = () => request<ShareLinkOut[]>('GET', '/share-links');

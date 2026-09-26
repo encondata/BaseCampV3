@@ -12,6 +12,7 @@ import {
   approveReview,
   completeUpload,
   createNode,
+  createShareLink,
   createTemplate,
   deleteComment,
   deleteTemplate,
@@ -27,7 +28,9 @@ import {
   listDueReviews,
   listMentionable,
   listRecent,
+  listAllShareLinks,
   listReviews,
+  listShareLinks,
   listSpaces,
   listTemplates,
   listWatches,
@@ -40,6 +43,7 @@ import {
   putDraft,
   reopenThread,
   resolveThread,
+  revokeShareLink,
   search,
   searchPrincipals,
   setFavorite,
@@ -373,5 +377,32 @@ describe('wikiApi errors', () => {
       code: 'read_only_mode', message: READ_ONLY_MESSAGE,
     });
     expect(refreshSystemStatus).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('share links', () => {
+  it('creates a link with an expiry (or none), lists, revokes, and lists every link', async () => {
+    fetchMock.mockResolvedValueOnce(reply(201, { id: 'l1', url: 'https://wiki/p/t', expires_at: null }));
+    await createShareLink('n1', 7);
+    expect(lastCall().path).toBe('/wiki/nodes/n1/share-links');
+    expect(lastCall().init.method).toBe('POST');
+    expect(JSON.parse(lastCall().init.body as string)).toEqual({ expires_in_days: 7 });
+
+    fetchMock.mockResolvedValueOnce(reply(201, { id: 'l2', url: 'https://wiki/p/u', expires_at: null }));
+    await createShareLink('n1', null);
+    expect(JSON.parse(lastCall().init.body as string)).toEqual({ expires_in_days: null });
+
+    fetchMock.mockResolvedValueOnce(reply(200, []));
+    await listShareLinks('n1');
+    expect(lastCall().path).toBe('/wiki/nodes/n1/share-links');
+
+    fetchMock.mockResolvedValueOnce(reply(204));
+    await revokeShareLink('l1');
+    expect(lastCall().path).toBe('/wiki/share-links/l1');
+    expect(lastCall().init.method).toBe('DELETE');
+
+    fetchMock.mockResolvedValueOnce(reply(200, []));
+    await listAllShareLinks();
+    expect(lastCall().path).toBe('/wiki/share-links');
   });
 });

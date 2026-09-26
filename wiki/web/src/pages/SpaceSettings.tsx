@@ -1,8 +1,8 @@
 /** /s/:spaceKey/settings — for space managers: the space's name,
  *  description, icon and color; its members (the permissions editor,
  *  inline); collaboration settings, with a link to the pages due for
- *  review; archiving (unarchiving is for wiki administrators); and a link
- *  to the space's trash. */
+ *  review; sharing (public links); archiving (unarchiving is for wiki
+ *  administrators); and a link to the space's trash. */
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
@@ -31,7 +31,9 @@ const REVIEW_INTERVAL_OPTIONS = [
   { value: '24', label: '24 months' },
 ];
 
-function CollaborationSection({ space, onSaved }: { space: SpaceOut; onSaved: (space: SpaceOut) => void }) {
+/** Saves one setting at a time (merging just that key); `busyKey` is the
+ *  one being saved. */
+function useSettingSaver(space: SpaceOut, onSaved: (space: SpaceOut) => void) {
   const toast = useToast();
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
@@ -45,6 +47,11 @@ function CollaborationSection({ space, onSaved }: { space: SpaceOut; onSaved: (s
       setBusyKey(null);
     }
   };
+  return { busyKey, save };
+}
+
+function CollaborationSection({ space, onSaved }: { space: SpaceOut; onSaved: (space: SpaceOut) => void }) {
+  const { busyKey, save } = useSettingSaver(space, onSaved);
 
   const readersCanComment = spaceSetting(space, 'readers_can_comment');
   const requireApproval = spaceSetting(space, 'require_approval');
@@ -85,6 +92,27 @@ function CollaborationSection({ space, onSaved }: { space: SpaceOut; onSaved: (s
       <div className="wiki-settings-row">
         <p className="page-hint">Pages whose review is overdue or due within two weeks.</p>
         <Link className="btn-ghost" to={`/s/${space.key}/due`}>Pages due for review</Link>
+      </div>
+    </section>
+  );
+}
+
+function SharingSection({ space, onSaved }: { space: SpaceOut; onSaved: (space: SpaceOut) => void }) {
+  const { busyKey, save } = useSettingSaver(space, onSaved);
+  const allowPublicLinks = spaceSetting(space, 'allow_public_links');
+  return (
+    <section className="wiki-settings-section" aria-label="Sharing">
+      <div className="wiki-section-label">Sharing</div>
+      <div className="wiki-settings-row">
+        <div>
+          <span className="wiki-settings-label">Allow public links</span>
+          <p className="page-hint">
+            Managers of a page or file can create a link anyone can open without signing in (a page shares only
+            its published version). Turning this off stops every existing link from working.
+          </p>
+        </div>
+        <Switch checked={allowPublicLinks} disabled={busyKey === 'allow_public_links'}
+                label="Allow public links" onChange={(v) => void save('allow_public_links', v)} />
       </div>
     </section>
   );
@@ -312,6 +340,8 @@ export default function SpaceSettings() {
       </section>
 
       <CollaborationSection space={space} onSaved={replace} />
+
+      <SharingSection space={space} onSaved={replace} />
 
       <section className="wiki-settings-section" aria-label="Trash">
         <div className="wiki-section-label">Trash</div>

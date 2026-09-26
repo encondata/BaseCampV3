@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,10 +11,13 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   getMe: vi.fn(),
   listSpaces: vi.fn(),
   unarchiveSpace: vi.fn(),
+  listAllShareLinks: vi.fn(),
+  revokeShareLink: vi.fn(),
 }));
 
 import { clearWikiMe } from '../lib/useWikiMe';
-import { getMe, listSpaces, unarchiveSpace } from '../lib/wikiApi';
+import type { ShareLinkOut } from '../lib/types';
+import { getMe, listAllShareLinks, listSpaces, revokeShareLink, unarchiveSpace } from '../lib/wikiApi';
 import { makeMe, makeSpace } from '../testing/fixtures';
 import AdminPage from './AdminPage';
 
@@ -28,6 +31,8 @@ beforeEach(() => {
   toast.mockReset();
   vi.mocked(listSpaces).mockReset();
   vi.mocked(unarchiveSpace).mockReset();
+  vi.mocked(listAllShareLinks).mockReset().mockResolvedValue([]);
+  vi.mocked(revokeShareLink).mockReset();
 });
 afterEach(cleanup);
 
@@ -36,6 +41,7 @@ describe('AdminPage', () => {
     renderAdmin(false);
     expect(await screen.findByText('Nothing here')).toBeTruthy();
     expect(listSpaces).not.toHaveBeenCalled();
+    expect(listAllShareLinks).not.toHaveBeenCalled();
   });
 
   it('lists every space including archived ones, with links to settings and trash', async () => {
@@ -64,5 +70,37 @@ describe('AdminPage', () => {
     await waitFor(() => expect(unarchiveSpace).toHaveBeenCalledWith('old'));
     expect(await screen.findByText('Active')).toBeTruthy();
     expect(toast).toHaveBeenCalledWith('“Old Projects” is back in use.');
+  });
+
+  it('lists every public link, and revokes an active one', async () => {
+    const link = (over: Partial<ShareLinkOut>): ShareLinkOut => ({
+      id: 'l1',
+      node: { id: 'n1', title: 'Rack Guide', kind: 'page', space_key: 'ops', space_name: 'Operations' },
+      status: 'active', created_by: { id: 'p-1', name: 'Jimmy Henderson' },
+      created_at: '2026-09-20T12:00:00Z', expires_at: null, revoked_at: null,
+      view_count: 12, last_viewed_at: '2026-09-25T12:00:00Z', ...over,
+    });
+    vi.mocked(listSpaces).mockResolvedValue([]);
+    vi.mocked(listAllShareLinks).mockResolvedValue([
+      link({}),
+      link({ id: 'l2', node: { id: 'f1', title: 'manual.pdf', kind: 'file', space_key: 'ops', space_name: 'Operations' },
+        status: 'revoked', revoked_at: '2026-09-21T00:00:00Z', view_count: 1 }),
+    ]);
+    vi.mocked(revokeShareLink).mockResolvedValue(undefined);
+    renderAdmin();
+
+    const list = await screen.findByRole('list', { name: 'Public links' });
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]).getByRole('link', { name: 'Rack Guide' }).getAttribute('href')).toBe('/n/n1');
+    expect(within(rows[0]).getByText('Active')).toBeTruthy();
+    expect(within(rows[0]).getByText('12')).toBeTruthy();
+    expect(within(rows[1]).getByText('Revoked')).toBeTruthy();
+    expect(within(rows[1]).queryByRole('button', { name: 'Revoke' })).toBeNull();
+
+    fireEvent.click(within(rows[0]).getByRole('button', { name: 'Revoke' }));
+    await waitFor(() => expect(revokeShareLink).toHaveBeenCalledWith('l1'));
+    await waitFor(() => expect(within(rows[0]).getByText('Revoked')).toBeTruthy());
+    expect(toast).toHaveBeenCalledWith('Link revoked. It stops working right away.');
   });
 });

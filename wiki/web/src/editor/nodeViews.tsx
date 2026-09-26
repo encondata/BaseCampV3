@@ -8,8 +8,13 @@
  *    - Mention: "@" + the person's current name when known, else the stored label
  *    - Callout: the variant's icon and a variant switcher
  *    - Details: an open/close toggle (open state is per reader, not stored)
- *  `withNodeViews` swaps them into the shared schema's extension list. */
-import type { AnyExtension, Extensions } from '@tiptap/core';
+ *  `withNodeViews` swaps them into the shared schema's extension list.
+ *
+ *  In public mode (the `PublicShare` extension — a public share link's
+ *  view, signed out) nothing is looked up in the wiki: images and embedded
+ *  files use the URLs that came with the content, a page link is plain
+ *  text, and an embed of another wiki file shows as unavailable. */
+import { Extension, type AnyExtension, type Editor, type Extensions } from '@tiptap/core';
 import { TextSelection } from '@tiptap/pm/state';
 import {
   NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, type NodeViewProps,
@@ -25,20 +30,44 @@ import { getFileUrl } from '../lib/wikiApi';
 import { CALLOUT_VARIANTS, type CalloutVariant } from './extensions/Callout';
 import { Icon, type IconName } from './icons';
 
+// ── public mode ───────────────────────────────────────────────────────
+
+type AssetUrlMap = Record<string, string>;
+
+/** Puts a view in public mode: `assetUrls` (asset id → presigned URL) is
+ *  every asset URL it may show. */
+export const PublicShare = Extension.create<{ assetUrls: AssetUrlMap }>({
+  name: 'publicShare',
+  addOptions() {
+    return { assetUrls: {} };
+  },
+  addStorage() {
+    return { assetUrls: this.options.assetUrls };
+  },
+});
+
+/** The public view's asset URLs, or null when this isn't a public view. */
+function publicAssets(editor: Editor): AssetUrlMap | null {
+  const storage = (editor.storage as Record<string, { assetUrls?: AssetUrlMap } | undefined>).publicShare;
+  return storage?.assetUrls ?? null;
+}
+
 // ── shared lookups ────────────────────────────────────────────────────
 
-/** undefined while loading, null when not viewable. */
-function useAssetUrl(assetId: string | null): string | null | undefined {
+/** undefined while loading, null when not viewable. With `publicUrls`
+ *  (public mode) it only looks the id up there. */
+function useAssetUrl(assetId: string | null, publicUrls: AssetUrlMap | null = null): string | null | undefined {
   const [url, setUrl] = useState<{ id: string | null; url: string | null } | null>(null);
   useEffect(() => {
-    if (!assetId) return undefined;
+    if (!assetId || publicUrls) return undefined;
     let live = true;
     resolveAssetUrl(assetId)
       .then((u) => { if (live) setUrl({ id: assetId, url: u }); })
       .catch(() => { if (live) setUrl({ id: assetId, url: null }); });
     return () => { live = false; };
-  }, [assetId]);
+  }, [assetId, publicUrls]);
   if (!assetId) return null;
+  if (publicUrls) return Object.prototype.hasOwnProperty.call(publicUrls, assetId) ? publicUrls[assetId] : null;
   return url?.id === assetId ? url.url : undefined;
 }
 
@@ -53,7 +82,7 @@ function WikiImageView({ node, updateAttributes, editor, selected }: NodeViewPro
   const { assetId, alt, caption, width } = node.attrs as {
     assetId: string | null; alt: string; caption: string; width: number | null;
   };
-  const url = useAssetUrl(assetId);
+  const url = useAssetUrl(assetId, publicAssets(editor));
   const editable = editor.isEditable;
   const frameRef = useRef<HTMLDivElement>(null);
   const [dragWidth, setDragWidth] = useState<number | null>(null);
@@ -125,6 +154,7 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
   const { nodeId, assetId, filename, contentType } = node.attrs as {
     nodeId: string | null; assetId: string | null; filename: string; contentType: string;
   };
+  const publicUrls = publicAssets(editor);
   const [preview, setPreview] = useState<Preview>(undefined);
   const [open, setOpen] = useState(true);
   // a file node shows its live title; the stored name is the page's own
@@ -132,19 +162,23 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
   const [liveTitle, setLiveTitle] = useState<{ id: string; title: string | null } | null>(null);
 
   useEffect(() => {
-    if (!nodeId) return undefined;
+    if (!nodeId || publicUrls) return undefined;
     let live = true;
     nodeTitle(nodeId)
       .then((title) => { if (live) setLiveTitle({ id: nodeId, title }); })
       .catch(() => { if (live) setLiveTitle({ id: nodeId, title: null }); });
     return () => { live = false; };
-  }, [nodeId]);
+  }, [nodeId, publicUrls]);
 
   useEffect(() => {
     let live = true;
     setPreview(undefined);
     const done = (url: string | null, type: string) => { if (live) setPreview({ url, type }); };
-    if (nodeId) {
+    if (publicUrls) {
+      // another wiki file is never part of a public share
+      const own = !nodeId && assetId && Object.prototype.hasOwnProperty.call(publicUrls, assetId);
+      done(own ? publicUrls[assetId] : null, contentType);
+    } else if (nodeId) {
       getFileUrl(nodeId, { disposition: 'inline' })
         .then((r) => done(r.url, r.content_type || contentType))
         .catch(() => done(null, contentType));
@@ -154,9 +188,9 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
       done(null, contentType);
     }
     return () => { live = false; };
-  }, [nodeId, assetId, contentType]);
+  }, [nodeId, assetId, contentType, publicUrls]);
 
-  const titleLoading = !!nodeId && liveTitle?.id !== nodeId;
+  const titleLoading = !!nodeId && !publicUrls && liveTitle?.id !== nodeId;
   const shownName = nodeId ? (liveTitle?.id === nodeId ? liveTitle.title ?? '' : '') : filename;
   const type = fileType(preview?.type ?? contentType, shownName);
   const previewable = type === 'pdf' || type === 'image' || type === 'video';
@@ -174,7 +208,9 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
         <span className={`wiki-file-icon wiki-file-${type}`}><Icon name="file" /></span>
         <span className="wiki-file-text">
           <b title={loading || missing ? undefined : shownName}>{name}</b>
-          <span>{missing ? 'Removed, or not shared with you' : loading ? '' : label}</span>
+          <span>
+            {missing ? (publicUrls ? 'Not included in this share' : 'Removed, or not shared with you') : loading ? '' : label}
+          </span>
         </span>
         <span className="wiki-file-actions" contentEditable={false}>
           {previewable && preview?.url && (
@@ -213,15 +249,16 @@ type TitleLookup =
   | { id: string; status: 'missing' }
   | { id: string; status: 'error' };
 
-function PageLinkView({ node }: NodeViewProps) {
+function PageLinkView({ node, editor }: NodeViewProps) {
   // the stored title is never shown: it may be stale, or name a page the
   // reader can't see
   const { nodeId } = node.attrs as { nodeId: string | null };
+  const isPublic = publicAssets(editor) !== null;
   const navigate = useNavigate();
   const [lookup, setLookup] = useState<TitleLookup | null>(null);
 
   useEffect(() => {
-    if (!nodeId) return undefined;
+    if (!nodeId || isPublic) return undefined;
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const look = (retry: boolean) => {
@@ -238,8 +275,13 @@ function PageLinkView({ node }: NodeViewProps) {
     };
     look(true);
     return () => { live = false; clearTimeout(timer); };
-  }, [nodeId]);
+  }, [nodeId, isPublic]);
 
+  if (isPublic) {
+    // the API already turns these into text for a public share; this is
+    // only for a link that slipped through
+    return <NodeViewWrapper as="span" className="wiki-page-link public">Linked page</NodeViewWrapper>;
+  }
   const current = lookup?.id === nodeId ? lookup : null;
   if (!nodeId || current?.status === 'missing') {
     return (

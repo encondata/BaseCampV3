@@ -162,6 +162,18 @@ describe('SpaceSettings — Collaboration', () => {
     await waitFor(() => expect(toast).toHaveBeenCalledWith('Couldn\'t save this setting. Try again.'));
   });
 
+  it('turns public links on and off in the Sharing section (off by default)', async () => {
+    const space = makeSpace({ my_level: 'manage', settings: {} });
+    vi.mocked(updateSpace).mockResolvedValue({ ...space, settings: { allow_public_links: true } });
+    renderSettings(space);
+    const section = await screen.findByRole('region', { name: 'Sharing' });
+    const toggle = within(section).getByLabelText('Allow public links');
+    expect(toggle).toHaveProperty('checked', false);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(updateSpace).toHaveBeenCalledWith('ops', { settings: { allow_public_links: true } }));
+    await waitFor(() => expect(within(section).getByLabelText('Allow public links')).toHaveProperty('checked', true));
+  });
+
   it('links to the space\'s pages due for review', async () => {
     renderSettings(makeSpace({ my_level: 'manage', settings: {} }));
     const section = await screen.findByRole('region', { name: 'Collaboration' });

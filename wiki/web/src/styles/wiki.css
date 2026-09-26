@@ -1275,6 +1275,95 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 /* ── admin page ────────────────────────────────────────────── */
 
 .wiki-admin-actions { display: flex; align-items: center; gap: 8px; }
+.wiki-admin-section { margin-top: 40px; }
+.wiki-section-title { margin: 0 0 4px; font-size: 17px; font-weight: 600; color: var(--text-dark); }
+
+/* ── public share links ───────────────────────────────────── */
+
+/* the Share… dialog */
+.modal-card.reports-modal-card.rgm-card.wiki-dialog-card.wiki-share-card { width: min(600px, 96vw); }
+.wiki-share-body { display: flex; flex-direction: column; gap: 12px; }
+.wiki-share-body .modal-section { margin-top: 6px; }
+.wiki-share-create { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.wiki-share-expiry { display: flex; flex-direction: column; gap: 6px; min-width: 200px; flex: 1; }
+.wiki-share-expiry label { font-size: 12px; color: var(--text-mute); }
+.wiki-share-created {
+  padding: 12px;
+  border: 1px solid var(--paper-line);
+  border-radius: 10px;
+  background: var(--surface-2, #f6f7f9);
+}
+.wiki-share-url { display: flex; gap: 8px; }
+.wiki-share-url input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--paper-line);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  color: var(--text-dark);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.wiki-share-created .wiki-field-note { margin: 8px 0 0; }
+.wiki-share-off a { color: var(--amber); }
+.wiki-share-list { display: flex; flex-direction: column; border: 1px solid var(--paper-line); border-radius: 10px; }
+.wiki-share-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+}
+.wiki-share-row + .wiki-share-row { border-top: 1px solid var(--paper-line); }
+.wiki-share-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.wiki-share-row-text b { font-weight: 600; }
+.wiki-share-row-text .cell-sub { font-size: 12.5px; color: var(--text-mute); }
+
+/* /p/:token — signed out, no shell: a slim header over the content,
+   scrolling as an ordinary page */
+.portal-shell.wiki-root.wiki-public {
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow: visible;
+}
+.wiki-public-head {
+  display: flex;
+  align-items: center;
+  height: 48px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--paper-line);
+  background: var(--surface, #fff);
+}
+.wiki-public-brand {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.wiki-public-main { max-width: 880px; margin: 0 auto; padding: 32px 20px 64px; }
+.wiki-public-page > .page-title { margin: 0 0 4px; }
+.wiki-public-page > .page-hint { margin: 0 0 24px; }
+.wiki-public-file-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.wiki-public-file-head .page-title { margin: 0 0 4px; }
+.wiki-public-file-head .page-hint { margin: 0; }
+.wiki-public-preview {
+  border: 1px solid var(--paper-line);
+  border-radius: 14px;
+  background: var(--surface-2, #f6f7f9);
+  overflow: hidden;
+}
+.wiki-public-preview audio { display: block; width: calc(100% - 32px); margin: 24px 16px; }
+.wiki-public-nopreview { margin: 0; padding: 48px 20px; text-align: center; }
+.wiki-public-notice { padding-top: 48px; text-align: center; }
 
 /* ── reviews ───────────────────────────────────────────────── */
 

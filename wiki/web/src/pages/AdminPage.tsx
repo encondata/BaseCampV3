@@ -2,17 +2,21 @@
  *  any page they can't view): every space, including archived ones (which
  *  never show up in the ordinary space list), with a link to each space's
  *  settings and trash, and Unarchive — the one thing only a wiki admin,
- *  not even a space manager, can do. */
+ *  not even a space manager, can do. Below, every public share link in
+ *  the wiki (newest first), with Revoke. */
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import { longDate, relativeTime } from '@portal/lib/format';
 import { useToast } from '@portal/lib/notificationsContext';
 
 import { SpaceBadge } from '../components/NodeIcon';
 import { useWikiShell } from '../layout/shellContext';
-import type { SpaceOut } from '../lib/types';
+import type { ShareLinkOut, ShareLinkStatus, SpaceOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
-import { errorMessage, listSpaces, unarchiveSpace } from '../lib/wikiApi';
+import {
+  errorMessage, listAllShareLinks, listSpaces, revokeShareLink, unarchiveSpace,
+} from '../lib/wikiApi';
 import NotFound from './NotFound';
 
 type State =
@@ -23,6 +27,108 @@ type State =
 const GRID = {
   gridTemplateColumns: 'minmax(220px, 2.6fr) minmax(120px, 1fr) minmax(110px, 0.9fr) 210px',
 };
+
+const LINK_GRID = {
+  gridTemplateColumns: 'minmax(220px, 2.4fr) minmax(96px, 0.8fr) minmax(150px, 1.2fr) minmax(120px, 1fr) 72px 110px',
+};
+
+const STATUS_CHIP: Record<ShareLinkStatus, { label: string; tone: string }> = {
+  active: { label: 'Active', tone: 'c-green' },
+  expired: { label: 'Expired', tone: 'c-amber' },
+  revoked: { label: 'Revoked', tone: 'c-slate' },
+};
+
+type LinksState =
+  | { status: 'loading' }
+  | { status: 'ready'; links: ShareLinkOut[] }
+  | { status: 'error'; message: string };
+
+function PublicLinksSection() {
+  const toast = useToast();
+  const [state, setState] = useState<LinksState>({ status: 'loading' });
+  const [revoking, setRevoking] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    listAllShareLinks()
+      .then((links) => { if (live) setState({ status: 'ready', links }); })
+      .catch((err) => {
+        if (live) setState({ status: 'error', message: errorMessage(err, 'Couldn\'t load the public links.') });
+      });
+    return () => { live = false; };
+  }, []);
+
+  const revoke = async (link: ShareLinkOut) => {
+    setRevoking(link.id);
+    try {
+      await revokeShareLink(link.id);
+      const revokedAt = new Date().toISOString();
+      setState((cur) => (cur.status === 'ready'
+        ? { status: 'ready', links: cur.links.map((l) => (l.id === link.id ? { ...l, status: 'revoked', revoked_at: revokedAt } : l)) }
+        : cur));
+      toast('Link revoked. It stops working right away.');
+    } catch (err) {
+      toast(errorMessage(err, 'Couldn\'t revoke the link.'));
+    } finally {
+      setRevoking(null);
+    }
+  };
+
+  return (
+    <section className="wiki-admin-section" aria-label="Public links">
+      <div className="dir-head wiki-folder-head">
+        <div>
+          <h2 className="wiki-section-title">Public links</h2>
+          <p className="page-hint">Links anyone can open without signing in. A space can turn them off in its settings.</p>
+        </div>
+      </div>
+      {state.status === 'loading' && <p className="page-hint">Loading…</p>}
+      {state.status === 'error' && <p className="pf-error">{state.message}</p>}
+      {state.status === 'ready' && (
+        <div className="dir-list list-scroll wiki-admin-list">
+          <div className="list-head" style={LINK_GRID} aria-hidden="true">
+            <span>Shared item</span><span>Status</span><span>Created</span><span>Expires</span><span>Views</span><span />
+          </div>
+          <div role="list" aria-label="Public links">
+            {state.links.map((l) => {
+              const chip = STATUS_CHIP[l.status];
+              return (
+                <div className="dir-row" role="listitem" key={l.id}>
+                  <div className="row-main" style={LINK_GRID}>
+                    <div className="cell cell-primary">
+                      <div className="pn">
+                        <Link className="wiki-row-link" to={`/n/${l.node.id}`}><b title={l.node.title}>{l.node.title}</b></Link>
+                        <span className="cell-sub cell-line">{l.node.space_name} · {l.node.kind === 'file' ? 'File' : 'Page'}</span>
+                      </div>
+                    </div>
+                    <div className="cell"><span className={`chip ${chip.tone}`}><span className="dot" />{chip.label}</span></div>
+                    <div className="cell">
+                      <div className="pn">
+                        <span className="cell-line">{relativeTime(l.created_at)}</span>
+                        {l.created_by && <span className="cell-sub cell-line">{l.created_by.name}</span>}
+                      </div>
+                    </div>
+                    <div className="cell"><span className="cell-line">{l.expires_at ? longDate(l.expires_at) : 'Never'}</span></div>
+                    <div className="cell"><span className="cell-line">{l.view_count}</span></div>
+                    <div className="cell wiki-admin-actions">
+                      {l.status !== 'revoked' && (
+                        <button type="button" className="btn-ghost wiki-danger" disabled={revoking === l.id}
+                                onClick={() => void revoke(l)}>
+                          {revoking === l.id ? 'Revoking…' : 'Revoke'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {state.links.length === 0 && <div className="dir-empty"><b>No public links yet</b></div>}
+        </div>
+      )}
+    </section>
+  );
+}
 
 export default function AdminPage() {
   const toast = useToast();
@@ -110,6 +216,8 @@ export default function AdminPage() {
           {state.spaces.length === 0 && <div className="dir-empty"><b>No spaces yet</b></div>}
         </div>
       )}
+
+      <PublicLinksSection />
     </div>
   );
 }

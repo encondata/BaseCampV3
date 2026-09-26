@@ -576,6 +576,8 @@
 .wiki-page-link.missing { background: var(--surface-2, #f1f4f7); color: var(--text-mute); font-style: italic; cursor: default; }
 .wiki-page-link.missing .wiki-page-link-icon { color: var(--text-mute); }
 .wiki-page-link.loading { background: var(--surface-2, #f1f4f7); color: var(--text-mute); cursor: default; }
+/* a public share view: a link into the wiki is plain text */
+.wiki-page-link.public { font-style: italic; color: var(--text-mute); }
 .wiki-page-link.ProseMirror-selectednode a { box-shadow: 0 0 0 2px var(--amber); }
 
 .wiki-mention {
