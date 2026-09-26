@@ -15,6 +15,9 @@ ALLOWED: dict[str, type | tuple] = {
     "allow_public_links": bool,
 }
 
+# mirrored by the wiki UI's SPACE_SETTING_DEFAULTS
+# (wiki/web/src/lib/spaceSettings.ts); its test reads this dict and fails
+# when the two differ — add a new setting in both places
 DEFAULTS: dict[str, bool | int | None] = {
     "readers_can_comment": True,
     "require_approval": False,

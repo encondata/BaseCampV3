@@ -17,19 +17,11 @@ import { SpaceBadge } from '../components/NodeIcon';
 import { PermissionsEditor } from '../components/PermissionsDialog';
 import { atLeast } from '../components/RowMenu';
 import { useWikiShell } from '../layout/shellContext';
+import { spaceSetting } from '../lib/spaceSettings';
 import type { SpaceOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
 import { archiveSpace, errorMessage, getSpace, unarchiveSpace, updateSpace } from '../lib/wikiApi';
 import NotFound from './NotFound';
-
-/** Mirrors the API's `space_setting` (serversherpa/wiki/space_settings.py):
- *  the stored value, or `fallback` when the space never overrode it. Each
- *  call site's `fallback` must match that module's `DEFAULTS[key]` — there
- *  is no shared constant here, so keep them in sync by hand. */
-function spaceSetting<T>(space: SpaceOut, key: string, fallback: T): T {
-  const v = space.settings[key];
-  return v === undefined ? fallback : (v as T);
-}
 
 const REVIEW_INTERVAL_OPTIONS = [
   { value: '', label: 'None' },
@@ -54,9 +46,9 @@ function CollaborationSection({ space, onSaved }: { space: SpaceOut; onSaved: (s
     }
   };
 
-  const readersCanComment = spaceSetting(space, 'readers_can_comment', true);
-  const requireApproval = spaceSetting(space, 'require_approval', false);
-  const reviewInterval = spaceSetting<number | null>(space, 'review_interval_months', null);
+  const readersCanComment = spaceSetting(space, 'readers_can_comment');
+  const requireApproval = spaceSetting(space, 'require_approval');
+  const reviewInterval = spaceSetting(space, 'review_interval_months');
 
   return (
     <section className="wiki-settings-section" aria-label="Collaboration">

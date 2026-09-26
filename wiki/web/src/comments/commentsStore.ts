@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { atLeast } from '../components/RowMenu';
+import { spaceSetting } from '../lib/spaceSettings';
 import type { CommentOut, CommentThread, Level, PersonRef, SpaceOut } from '../lib/types';
 import { errorMessage, listComments } from '../lib/wikiApi';
 
@@ -21,7 +22,7 @@ export const QUOTE_CHARS = 200;
  *  `readers_can_comment` is on (the default) and it isn't archived. */
 export function canCommentOn(level: Level | null, space: SpaceOut): boolean {
   if (atLeast(level, 'edit')) return true;
-  return level === 'view' && !space.archived_at && space.settings.readers_can_comment !== false;
+  return level === 'view' && !space.archived_at && spaceSetting(space, 'readers_can_comment') === true;
 }
 
 /** Editors, and whoever started the thread. */

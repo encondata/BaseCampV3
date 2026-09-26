@@ -4,13 +4,14 @@
 import { longDate } from '@portal/lib/format';
 
 import { atLeast } from '../components/RowMenu';
+import { spaceSetting } from '../lib/spaceSettings';
 import type { Level, NodeReviewOut, ReviewStatus, SpaceOut } from '../lib/types';
 
 /** Whether a publish by someone at `level` goes through review instead:
  *  the space requires approval and they don't manage the page (managers
  *  are its approvers, and publish directly). */
 export function submitsForReview(level: Level | null | undefined, space: SpaceOut): boolean {
-  return space.settings.require_approval === true && !atLeast(level, 'manage');
+  return spaceSetting(space, 'require_approval') === true && !atLeast(level, 'manage');
 }
 
 /** The space's default review interval in months; null when it has none. */
