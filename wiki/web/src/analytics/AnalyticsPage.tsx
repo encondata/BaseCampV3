@@ -2,9 +2,9 @@
  *  or any one) and space managers (the spaces they manage; everyone else
  *  sees NotFound). A space picker and a period (7/30/90 days, a year),
  *  both kept in the URL, then the cards: views over time, top pages,
- *  helpfulness, recent "No" comments, searches with no results (admins
- *  only — a search isn't tied to a space), stale pages and overdue
- *  reviews. The numbers come from `GET /wiki/analytics`. */
+ *  searches with no results (admins only — a search isn't tied to a
+ *  space), stale pages and overdue reviews. The numbers come from
+ *  `GET /wiki/analytics`. */
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
@@ -18,7 +18,7 @@ import type { AnalyticsDays, AnalyticsNodeRef, AnalyticsOut, SpaceOut } from '..
 import { useWikiMe } from '../lib/useWikiMe';
 import { errorMessage, getAnalytics, listSpaces } from '../lib/wikiApi';
 import NotFound from '../pages/NotFound';
-import { ShareBar, ViewsBars } from './charts';
+import { ViewsBars } from './charts';
 
 const PERIODS: { days: AnalyticsDays; label: string }[] = [
   { days: 7, label: '7 days' },
@@ -39,7 +39,6 @@ type State =
   | { status: 'error'; message: string };
 
 const TOP_GRID = { gridTemplateColumns: 'minmax(200px, 1fr) 72px 72px' };
-const HELP_GRID = { gridTemplateColumns: 'minmax(180px, 1fr) 52px 52px 60px minmax(80px, 120px)' };
 const SEARCH_GRID = { gridTemplateColumns: 'minmax(180px, 1fr) 84px 110px' };
 const DATE_GRID = { gridTemplateColumns: 'minmax(200px, 1fr) 150px' };
 
@@ -112,41 +111,6 @@ function Report({ data, isAdmin }: { data: AnalyticsOut; isAdmin: boolean }) {
               </div>
             ))}
           </Rows>
-        )}
-      </Card>
-
-      <Card title="Helpfulness" hint="“Was this page helpful?” answers">
-        {data.helpfulness.length === 0 ? <Empty>Nobody has rated a page in this period.</Empty> : (
-          <Rows label="Helpfulness" grid={HELP_GRID} head={['Page', 'Yes', 'No', '% yes', '']}>
-            {data.helpfulness.map((h) => (
-              <div className="dir-row" role="listitem" key={h.node.id}>
-                <div className="row-main" style={HELP_GRID}>
-                  <NodeCell node={h.node} showSpace={showSpace} />
-                  <div className="cell num"><span>{h.yes}</span></div>
-                  <div className="cell num"><span>{h.no}</span></div>
-                  <div className="cell num"><span>{h.pct}%</span></div>
-                  <div className="cell"><ShareBar pct={h.pct} label={`${h.node.title}: ${h.pct}% found it helpful`} /></div>
-                </div>
-              </div>
-            ))}
-          </Rows>
-        )}
-      </Card>
-
-      <Card title="Recent “No” comments" hint="What readers said was missing or wrong">
-        {data.recent_no_comments.length === 0 ? <Empty>No comments in this period.</Empty> : (
-          <ul className="wiki-an-comments">
-            {data.recent_no_comments.map((c) => (
-              <li key={`${c.node.id}-${c.at}`}>
-                <p className="wiki-an-quote">{c.comment}</p>
-                <span className="cell-sub">
-                  <Link className="wiki-row-link" to={`/n/${c.node.id}`}>{c.node.title}</Link>
-                  {' · '}
-                  <span title={new Date(c.at).toLocaleString()}>{relativeTime(c.at)}</span>
-                </span>
-              </li>
-            ))}
-          </ul>
         )}
       </Card>
 
@@ -266,7 +230,7 @@ export default function AnalyticsPage() {
         <div>
           <div className="eyebrow">{isAdmin ? <Link to="/admin">Wiki admin</Link> : 'Wiki'}</div>
           <h1 className="page-title">Analytics</h1>
-          <p className="page-hint">What people read, whether it helped, and what needs attention.</p>
+          <p className="page-hint">What people read and what needs attention.</p>
         </div>
       </div>
 

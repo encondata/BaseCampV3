@@ -1290,34 +1290,6 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 
 /* ── analytics ────────────────────────────────────────────── */
 
-/* the "Was this page helpful?" footer under a published page */
-.wiki-helpful {
-  margin-top: 36px;
-  padding: 14px 16px;
-  border: 1px solid var(--paper-line);
-  border-radius: 12px;
-  background: var(--surface-2, #f6f7f9);
-}
-.wiki-helpful-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.wiki-helpful-q { font-weight: 600; color: var(--text-dark); margin-right: 4px; }
-.wiki-helpful .mini-btn { height: 30px; }
-.wiki-helpful .mini-btn.on { border-color: var(--amber); color: var(--amber); }
-.wiki-helpful-change { margin-left: auto; }
-.wiki-helpful-comment { display: flex; flex-direction: column; gap: 6px; }
-.wiki-helpful-comment .page-hint { margin: 0; }
-.wiki-helpful-comment textarea {
-  width: 100%;
-  min-height: 72px;
-  padding: 8px 10px;
-  border: 1px solid var(--paper-line);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text-dark);
-  font: inherit;
-  resize: vertical;
-}
-.wiki-helpful-actions { display: flex; justify-content: flex-end; gap: 8px; }
-
 /* the /analytics page */
 .wiki-an-filters { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
 .wiki-an-filters .combo-wrap { width: 240px; }
@@ -1336,18 +1308,6 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 .wiki-an-bar:hover { fill: var(--amber); }
 .wiki-an-axis { stroke: var(--paper-line); stroke-width: 1; }
 .wiki-an-tick { fill: var(--text-mute); font-size: 11px; }
-.wiki-an-share {
-  width: 100%;
-  height: 8px;
-  border-radius: 4px;
-  background: var(--paper-line);
-  overflow: hidden;
-}
-.wiki-an-share > span { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
-.wiki-an-comments { list-style: none; margin: 0; padding: 0; }
-.wiki-an-comments li { padding: 12px 18px; border-bottom: 1px solid var(--paper-line); }
-.wiki-an-comments li:last-child { border-bottom: 0; }
-.wiki-an-quote { margin: 0 0 4px; color: var(--text-dark); white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 1080px) {
   .wiki-an-grid { grid-template-columns: 1fr; }
 }

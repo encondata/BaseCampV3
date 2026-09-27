@@ -532,18 +532,6 @@ export interface HelpLinkIn {
 
 // ── analytics ─────────────────────────────────────────────────────────
 
-/** "Was this page helpful?" — `comment` only ever travels with a No. */
-export interface FeedbackIn {
-  helpful: boolean;
-  comment?: string | null;
-}
-
-export interface FeedbackOut {
-  helpful: boolean;
-  comment: string | null;
-  updated_at: string;
-}
-
 /** The windows GET /wiki/analytics offers, in days. */
 export type AnalyticsDays = 7 | 30 | 90 | 365;
 
@@ -568,8 +556,6 @@ export interface AnalyticsOut {
   days: AnalyticsDays;
   top_pages: { node: AnalyticsNodeRef; views: number; viewers: number }[];
   views_by_day: { day: string; views: number }[];
-  helpfulness: { node: AnalyticsNodeRef; yes: number; no: number; pct: number }[];
-  recent_no_comments: { node: AnalyticsNodeRef; comment: string; at: string }[];
   failed_searches: { query: string; count: number; last_at: string }[];
   stale_pages: { node: AnalyticsNodeRef; updated_at: string }[];
   overdue_reviews: { node: AnalyticsNodeRef; next_review_at: string }[];

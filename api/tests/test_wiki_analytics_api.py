@@ -1,9 +1,8 @@
 """Wiki analytics (Phase 3, spec §8): recording page/file views
-(`POST /wiki/nodes/{id}/view`), "Was this page helpful?" feedback
-(`PUT /wiki/pages/{id}/feedback`, `GET .../feedback/mine`), the search
-log written by `GET /wiki/search`, and the aggregated
-`GET /wiki/analytics` (wiki admins: any or every space; space managers:
-one space they manage) — permissions, scoping and every section's math."""
+(`POST /wiki/nodes/{id}/view`), the search log written by
+`GET /wiki/search`, and the aggregated `GET /wiki/analytics` (wiki
+admins: any or every space; space managers: one space they manage) —
+permissions, scoping and every section's math."""
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
@@ -11,7 +10,6 @@ from sqlalchemy import select, update
 
 from serversherpa.db.models import (
     AuditLog,
-    WikiFeedback,
     WikiFile,
     WikiNode,
     WikiPageView,
@@ -129,81 +127,10 @@ async def test_a_view_in_read_only_mode_is_accepted_but_not_recorded(client, db,
     assert await _views(db, page["id"]) == []
 
 
-# ── feedback ─────────────────────────────────────────────────────────
-
-
-async def _feedback(client, headers, page_id, expect=200, **body):
-    resp = await client.put(f"/wiki/pages/{page_id}/feedback", headers=headers, json=body)
-    assert resp.status_code == expect, resp.text
-    return resp.json()
-
-
-async def test_feedback_is_saved_read_back_and_replaced(client, db):
-    s = await _setup(client, db)
-    page = await _page(client, s, db)
-
-    resp = await client.get(f"/wiki/pages/{page['id']}/feedback/mine", headers=s["viewer"])
-    assert resp.status_code == 404
-
-    out = await _feedback(client, s["viewer"], page["id"], helpful=False,
-                          comment="  The steps skip the login.  ")
-    assert out["helpful"] is False and out["comment"] == "The steps skip the login."
-    mine = (await client.get(f"/wiki/pages/{page['id']}/feedback/mine",
-                             headers=s["viewer"])).json()
-    assert mine["helpful"] is False and mine["comment"] == "The steps skip the login."
-
-    # changing the answer replaces the whole response, comment included
-    await _feedback(client, s["viewer"], page["id"], helpful=True)
-    rows = (await db.scalars(select(WikiFeedback).execution_options(
-        populate_existing=True))).all()
-    assert [(r.person_id, r.helpful, r.comment) for r in rows] == [
-        (s["viewer_id"], True, None)]
-
-    # a blank comment is no comment
-    out = await _feedback(client, s["viewer"], page["id"], helpful=False, comment="   ")
-    assert out["comment"] is None
-
-
-async def test_feedback_is_per_person(client, db):
-    s = await _setup(client, db)
-    page = await _page(client, s, db)
-    await _feedback(client, s["viewer"], page["id"], helpful=True)
-    resp = await client.get(f"/wiki/pages/{page['id']}/feedback/mine", headers=s["editor"])
-    assert resp.status_code == 404
-
-
-async def test_feedback_needs_a_published_page(client, db):
-    s = await _setup(client, db)
-    page = await _page(client, s, db, publish=False)
-    resp = await client.put(f"/wiki/pages/{page['id']}/feedback", headers=s["editor"],
-                            json={"helpful": True})
-    assert resp.status_code == 404
-    assert resp.json()["detail"]["code"] == "not_published"
-    folder = await _create(client, s["owner"], s["space"], "Folder")
-    resp = await client.put(f"/wiki/pages/{folder['id']}/feedback", headers=s["viewer"],
-                            json={"helpful": True})
-    assert resp.status_code == 404
-
-
-async def test_feedback_comment_is_validated(client, db):
-    s = await _setup(client, db)
-    page = await _page(client, s, db)
-    resp = await client.put(f"/wiki/pages/{page['id']}/feedback", headers=s["viewer"],
-                            json={"helpful": False, "comment": "x" * 2001})
-    assert resp.status_code == 422
-    resp = await client.put(f"/wiki/pages/{page['id']}/feedback", headers=s["viewer"],
-                            json={"helpful": False, "comment": "bad\x00byte"})
-    assert resp.status_code == 422
-    assert resp.json()["detail"]["code"] == "bad_comment"
-    # tab and newline are fine
-    await _feedback(client, s["viewer"], page["id"], helpful=False, comment="a\tb\nc")
-
-
-async def test_feedback_and_views_are_not_audited(client, db):
+async def test_views_are_not_audited(client, db):
     s = await _setup(client, db)
     page = await _page(client, s, db)
     await client.post(f"/wiki/nodes/{page['id']}/view", headers=s["viewer"])
-    await _feedback(client, s["viewer"], page["id"], helpful=True)
     rows = (await db.scalars(select(AuditLog).where(
         AuditLog.entity_id == page["id"], AuditLog.actor_person_id == s["viewer_id"]))).all()
     assert rows == []
@@ -356,35 +283,6 @@ async def test_analytics_is_scoped_to_the_space_and_skips_the_trash(client, db):
     # all spaces, for an admin
     body = (await _analytics(client, admin)).json()
     assert sorted(t["node"]["title"] for t in body["top_pages"]) == ["Elsewhere page", "Mine"]
-
-
-async def test_helpfulness_and_recent_no_comments(client, db):
-    s = await _setup(client, db)
-    admin = await _admin(client, db)
-    page = await _page(client, s, db, "Mixed")
-    liked = await _page(client, s, db, "Liked")
-    await _feedback(client, s["viewer"], page["id"], helpful=False, comment="Missing a step.")
-    await _feedback(client, s["editor"], page["id"], helpful=True)
-    await _feedback(client, s["owner"], page["id"], helpful=True)
-    await _feedback(client, s["viewer"], liked["id"], helpful=True)
-    # an old "No" falls outside the window
-    await _feedback(client, s["editor"], liked["id"], helpful=False, comment="Old news.")
-    await db.execute(update(WikiFeedback).where(
-        WikiFeedback.node_id == uuid.UUID(liked["id"]),
-        WikiFeedback.person_id == s["editor_id"]).values(
-        updated_at=datetime.now(UTC) - timedelta(days=45)))
-    await db.commit()
-
-    body = (await _analytics(client, admin, space=s["space"]["key"])).json()
-    helpful = {h["node"]["title"]: (h["yes"], h["no"], h["pct"]) for h in body["helpfulness"]}
-    assert helpful == {"Mixed": (2, 1, 67), "Liked": (1, 0, 100)}
-    assert [(c["node"]["title"], c["comment"]) for c in body["recent_no_comments"]] == [
-        ("Mixed", "Missing a step.")]
-    assert body["recent_no_comments"][0]["at"]
-
-    body = (await _analytics(client, admin, space=s["space"]["key"], days=90)).json()
-    helpful = {h["node"]["title"]: (h["yes"], h["no"], h["pct"]) for h in body["helpfulness"]}
-    assert helpful["Liked"] == (1, 1, 50)
 
 
 async def test_failed_searches_are_for_admins_only(client, db):

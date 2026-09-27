@@ -1,7 +1,7 @@
 """Wiki Phase 3 schema (migration 0076) — public share links, help links,
-and analytics tables (page views, feedback, search log) exist with the
-right constraints, and `wiki_jobs.kind` accepts 'export'/'retention'.
-Also covers the new `allow_public_links` space setting."""
+and analytics tables (page views, search log) exist with the right
+constraints, and `wiki_jobs.kind` accepts 'export'/'retention'. Also
+covers the new `allow_public_links` space setting."""
 import uuid
 from datetime import date
 
@@ -11,7 +11,6 @@ from sqlalchemy.exc import IntegrityError
 
 from serversherpa.db.models import (
     Person,
-    WikiFeedback,
     WikiHelpLink,
     WikiJob,
     WikiNode,
@@ -24,7 +23,7 @@ from serversherpa.wiki import space_settings
 
 WIKI_PHASE3_TABLES = (
     "wiki_share_links", "wiki_help_links", "wiki_page_views",
-    "wiki_feedback", "wiki_search_log",
+    "wiki_search_log",
 )
 
 
@@ -198,54 +197,6 @@ async def test_page_view_cascades_with_person(db):
 
     remaining = (await db.scalars(select(WikiPageView))).all()
     assert remaining == []
-
-
-# ── wiki_feedback ────────────────────────────────────────────────────
-
-
-async def test_feedback_composite_primary_key(db):
-    space = await _space(db)
-    node = await _node(db, space)
-    person = await _person(db)
-    node_id, person_id = node.id, person.id
-
-    db.add(WikiFeedback(node_id=node_id, person_id=person_id, helpful=True))
-    await db.commit()
-
-    db.add(WikiFeedback(node_id=node_id, person_id=person_id, helpful=False))
-    with pytest.raises(IntegrityError):
-        await db.commit()
-    await db.rollback()
-
-
-async def test_feedback_comment_length_check(db):
-    space = await _space(db)
-    node = await _node(db, space)
-    person = await _person(db)
-    # captured before any rollback below expires them (Session.rollback()
-    # expires every object in the session, not just the failed insert).
-    node_id, person_id = node.id, person.id
-    await db.commit()
-
-    db.add(WikiFeedback(node_id=node_id, person_id=person_id,
-                        helpful=False, comment="x" * 2001))
-    with pytest.raises(IntegrityError):
-        await db.commit()
-    await db.rollback()
-
-    # comment is optional, and exactly the max length is fine
-    db.add(WikiFeedback(node_id=node_id, person_id=person_id,
-                        helpful=False, comment="x" * 2000))
-    await db.commit()
-
-
-async def test_feedback_comment_may_be_null(db):
-    space = await _space(db)
-    node = await _node(db, space)
-    person = await _person(db)
-
-    db.add(WikiFeedback(node_id=node.id, person_id=person.id, helpful=True))
-    await db.commit()
 
 
 # ── wiki_search_log ──────────────────────────────────────────────────

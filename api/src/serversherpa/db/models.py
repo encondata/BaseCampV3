@@ -2047,26 +2047,6 @@ class WikiPageView(Base):
     count: Mapped[int] = mapped_column(Integer)
 
 
-class WikiFeedback(Base):
-    """A reader's "Was this page helpful?" response — one row per (page,
-    person), replaced on re-submission. No surrogate id, same
-    ON-DELETE-CASCADE reasoning as `WikiPageView`."""
-    __tablename__ = "wiki_feedback"
-
-    node_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("wiki_nodes.id", ondelete="CASCADE"), primary_key=True)
-    person_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("people.id", ondelete="CASCADE"), primary_key=True)
-    helpful: Mapped[bool]
-    comment: Mapped[str | None]
-    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
-
-    __table_args__ = (
-        CheckConstraint("comment IS NULL OR char_length(comment) <= 2000",
-                        name="wiki_feedback_comment_length_check"),
-    )
-
-
 class WikiSearchLog(Base):
     """One row per wiki search, for the "searches with no results"
     analytics view. `person_id` is ON DELETE SET NULL — the log outlives

@@ -24,7 +24,6 @@ import {
   getAnalytics,
   getExport,
   getAssetUrls,
-  getMyFeedback,
   getPageContent,
   getSpaceGrants,
   getTree,
@@ -43,7 +42,6 @@ import {
   postComment,
   publishPage,
   purgeTrash,
-  putFeedback,
   recordView,
   rejectReview,
   putDraft,
@@ -428,21 +426,11 @@ describe('exports', () => {
 });
 
 describe('analytics', () => {
-  it('records a view, saves and reads feedback, and reads the analytics', async () => {
+  it('records a view and reads the analytics', async () => {
     fetchMock.mockResolvedValueOnce(reply(204));
     await recordView('n1');
     expect(lastCall().path).toBe('/wiki/nodes/n1/view');
     expect(lastCall().init.method).toBe('POST');
-
-    fetchMock.mockResolvedValueOnce(reply(200, { helpful: false, comment: 'Old', updated_at: 'x' }));
-    await putFeedback('p1', { helpful: false, comment: 'Old' });
-    expect(lastCall().path).toBe('/wiki/pages/p1/feedback');
-    expect(lastCall().init.method).toBe('PUT');
-    expect(JSON.parse(lastCall().init.body as string)).toEqual({ helpful: false, comment: 'Old' });
-
-    fetchMock.mockResolvedValueOnce(reply(200, { helpful: true, comment: null, updated_at: 'x' }));
-    await getMyFeedback('p1');
-    expect(lastCall().path).toBe('/wiki/pages/p1/feedback/mine');
 
     fetchMock.mockResolvedValueOnce(reply(200, {}));
     await getAnalytics({ space: 'ops', days: 90 });

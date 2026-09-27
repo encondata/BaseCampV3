@@ -35,8 +35,6 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   markReviewed: vi.fn(),
   updateNode: vi.fn(),
   listReviews: vi.fn(),
-  getMyFeedback: vi.fn(),
-  putFeedback: vi.fn(),
 }));
 vi.mock('../analytics/useRecordView', () => ({ useRecordView: vi.fn() }));
 /** What the stand-in editor hands PageView once it has first synced: a
@@ -80,7 +78,7 @@ import { resetTreeStore, useTreeRevision } from '../lib/treeStore';
 import { clearWikiMe } from '../lib/useWikiMe';
 import type { NodeReviewOut } from '../lib/types';
 import {
-  createTemplate, deleteComment, getMe, getMyFeedback, getPageContent, getReview, getVersion, getWatchState, listComments,
+  createTemplate, deleteComment, getMe, getPageContent, getReview, getVersion, getWatchState, listComments,
   listReviews, markReviewed, postComment, publishPage, recordRestore, setFavorite, submitReview, withdrawReview,
 } from '../lib/wikiApi';
 import { makeDetail, makeMe, makeNode, makeReview, makeReviewDetail, makeSpace } from '../testing/fixtures';
@@ -134,7 +132,6 @@ beforeEach(() => {
   vi.mocked(listReviews).mockReset().mockResolvedValue([]);
   vi.mocked(flushPage).mockReset().mockResolvedValue(undefined);
   editorFlush.mockReset().mockResolvedValue(undefined);
-  vi.mocked(getMyFeedback).mockReset().mockRejectedValue(new ApiError(404, 'not_found'));
   vi.mocked(useRecordView).mockReset();
 });
 afterEach(cleanup);
@@ -143,28 +140,24 @@ afterEach(cleanup);
 const countedView = (id: string) => vi.mocked(useRecordView).mock.calls.some(([n, on]) => n === id && on);
 
 describe('PageView — analytics', () => {
-  it('counts a reader\'s view and asks whether the page helped', async () => {
+  it('counts a reader\'s view', async () => {
     renderPage(makeDetail('p1', { my_level: 'view', page: published }));
     await screen.findByText('Hello from the published page.');
     expect(countedView('p1')).toBe(true);
-    expect(await screen.findByText('Was this page helpful?')).toBeTruthy();
-    expect(getMyFeedback).toHaveBeenCalledWith('p1');
   });
 
-  it('counts no view and asks nothing while an editor has the page open in the editor', async () => {
+  it('counts no view while an editor has the page open in the editor', async () => {
     renderPage(makeDetail('p1', { my_level: 'edit', page: published }), '/n/p1?edit=1');
     expect(await screen.findByTestId('wiki-editor')).toBeTruthy();
     expect(useRecordView).toHaveBeenCalled();
     expect(countedView('p1')).toBe(false);
-    expect(screen.queryByText('Was this page helpful?')).toBeNull();
   });
 
-  it('counts no view and asks nothing for a page that was never published', async () => {
+  it('counts no view for a page that was never published', async () => {
     vi.mocked(getPageContent).mockRejectedValue(new ApiError(404, 'not_published'));
     renderPage(makeDetail('p1', { my_level: 'view', page: never }));
     expect(await screen.findByText('This page hasn\'t been published yet')).toBeTruthy();
     expect(countedView('p1')).toBe(false);
-    expect(screen.queryByText('Was this page helpful?')).toBeNull();
   });
 });
 

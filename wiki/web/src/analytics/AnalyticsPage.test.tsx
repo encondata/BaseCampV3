@@ -37,8 +37,6 @@ function analytics(over: Partial<AnalyticsOut> = {}): AnalyticsOut {
       { node: ref('n2', 'floorplan.pdf', 'file'), views: 5, viewers: 2 },
     ],
     views_by_day: days(30, (i) => (i === 29 ? 12 : 1)),
-    helpfulness: [{ node: ref('n1', 'Rack power'), yes: 2, no: 1, pct: 67 }],
-    recent_no_comments: [{ node: ref('n1', 'Rack power'), comment: 'The steps skip the login.', at: '2026-09-25T10:00:00Z' }],
     failed_searches: [{ query: 'pallet jack', count: 4, last_at: '2026-09-25T09:00:00Z' }],
     stale_pages: [{ node: ref('n3', 'Old checklist'), updated_at: '2025-01-02T00:00:00Z' }],
     overdue_reviews: [{ node: ref('n4', 'Truck loading'), next_review_at: '2026-09-01T00:00:00Z' }],
@@ -116,13 +114,6 @@ describe('AnalyticsPage — the numbers', () => {
     expect(within(rows[0]).getByText('42')).toBeTruthy();
     expect(within(rows[0]).getByText('7')).toBeTruthy();
 
-    const helpful = screen.getByRole('region', { name: 'Helpfulness' });
-    expect(within(helpful).getByText('67%')).toBeTruthy();
-    expect(within(helpful).getByRole('meter', { name: 'Rack power: 67% found it helpful' })).toBeTruthy();
-
-    const comments = screen.getByRole('region', { name: 'Recent “No” comments' });
-    expect(within(comments).getByText('The steps skip the login.')).toBeTruthy();
-
     const failed = screen.getByRole('region', { name: 'Searches with no results' });
     expect(within(failed).getByText('pallet jack')).toBeTruthy();
     expect(within(failed).getByText('4')).toBeTruthy();
@@ -163,13 +154,11 @@ describe('AnalyticsPage — the numbers', () => {
 
   it('shows friendly empty states', async () => {
     vi.mocked(getAnalytics).mockResolvedValue(analytics({
-      top_pages: [], views_by_day: days(30), helpfulness: [], recent_no_comments: [],
+      top_pages: [], views_by_day: days(30),
       failed_searches: [], stale_pages: [], overdue_reviews: [],
     }));
     renderPage();
     expect(await screen.findByText('No views in this period.')).toBeTruthy();
-    expect(screen.getByText('Nobody has rated a page in this period.')).toBeTruthy();
-    expect(screen.getByText('No comments in this period.')).toBeTruthy();
     expect(screen.getByText('Every search found something.')).toBeTruthy();
     expect(screen.getByText('Every published page was updated in the last year.')).toBeTruthy();
     expect(screen.getByText('No reviews are overdue.')).toBeTruthy();

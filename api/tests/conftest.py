@@ -141,7 +141,7 @@ async def clean_db():
             "initiative_links, initiative_people, initiatives, import_jobs, "
             "containers, pending_deletes, label_template_sites, "
             "label_templates, label_placeholders, label_vocab, "
-            "wiki_share_links, wiki_help_links, wiki_page_views, wiki_feedback, "
+            "wiki_share_links, wiki_help_links, wiki_page_views, "
             "wiki_search_log, "
             "wiki_reviews, wiki_watches, wiki_templates, wiki_comments, "
             "wiki_jobs, wiki_favorites, wiki_grants, wiki_page_assets, "

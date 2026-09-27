@@ -20,8 +20,6 @@ import type {
   ExportCreatedOut,
   ExportIn,
   ExportOut,
-  FeedbackIn,
-  FeedbackOut,
   FileUrlOut,
   FileUrlParams,
   FileVersionOut,
@@ -403,14 +401,6 @@ export const deleteHelpLink = (id: string) => request<void>('DELETE', `/help-lin
 /** Count a view of a page or file (204; not counted in read-only mode). */
 export const recordView = (nodeId: string) =>
   request<void>('POST', `/nodes/${seg(nodeId)}/view`);
-
-/** "Was this page helpful?" — replaces the caller's earlier answer. */
-export const putFeedback = (pageId: string, body: FeedbackIn) =>
-  request<FeedbackOut>('PUT', `/pages/${seg(pageId)}/feedback`, { body });
-
-/** The caller's answer for a page; 404 `not_found` when they haven't given one. */
-export const getMyFeedback = (pageId: string) =>
-  request<FeedbackOut>('GET', `/pages/${seg(pageId)}/feedback/mine`);
 
 /** Wiki admins (any space, or all of them) and space managers (a space they manage). */
 export const getAnalytics = ({ space, days }: AnalyticsParams) =>

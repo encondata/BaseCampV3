@@ -7,11 +7,10 @@
  *  shown (the published version, or the live draft while editing):
  *  clicking it picks its thread, and hovering a thread lights its text.
  *
- *  View mode shows the published version read-only (ReadOnlyDoc), with
- *  the "Was this page helpful?" footer under it, and counts the view for
- *  analytics (not when the page opened in the editor). Edit
- *  mode (`?edit=1`, editors only — and where editors land on a page that
- *  was never published) mounts the live editor.
+ *  View mode shows the published version read-only (ReadOnlyDoc) and
+ *  counts the view for analytics (not when the page opened in the
+ *  editor). Edit mode (`?edit=1`, editors only — and where editors land
+ *  on a page that was never published) mounts the live editor.
  *
  *  `?restore=<versionId>` (from History's Restore, edit mode only) loads
  *  that version and, once the editor holds the live document, puts it in
@@ -39,7 +38,6 @@ import { relativeTime } from '@portal/lib/format';
 import { useToast } from '@portal/lib/notificationsContext';
 import { useSystemStatus } from '@portal/lib/systemStatusContext';
 
-import HelpfulFooter from '../analytics/HelpfulFooter';
 import { useRecordView } from '../analytics/useRecordView';
 import { captureSelection, revealAnchor, useCommentMarks } from '../comments/commentMarks';
 import CommentsRail, { ReaderCommentBubble, type NewComment } from '../comments/CommentsRail';
@@ -514,7 +512,6 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
               {published.status === 'ready' && canComment && (
                 <ReaderCommentBubble container={docRef} onComment={commentOnQuote} />
               )}
-              {published.status === 'ready' && <HelpfulFooter key={node.id} pageId={node.id} />}
             </>
           )}
         </div>

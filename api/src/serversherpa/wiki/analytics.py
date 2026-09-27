@@ -1,8 +1,7 @@
 """Wiki analytics (spec §8): the telemetry the wiki records — page and
-file views (one `wiki_page_views` row per node, person and UTC day),
-"Was this page helpful?" answers (one `wiki_feedback` row per page and
-person), and the search log — and the aggregates `GET /wiki/analytics`
-shows wiki admins and space managers.
+file views (one `wiki_page_views` row per node, person and UTC day) and
+the search log — and the aggregates `GET /wiki/analytics` shows wiki
+admins and space managers.
 
 None of it is audited: it's telemetry, not a change to anything. The
 aggregates return node ids only; the route turns those into node refs
@@ -17,13 +16,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 
-from fastapi import HTTPException
 from sqlalchemy import distinct, func, select, true
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import (
-    WikiFeedback,
     WikiNode,
     WikiPage,
     WikiPageView,
@@ -31,7 +28,6 @@ from serversherpa.db.models import (
     WikiSpace,
 )
 from serversherpa.wiki import reviews
-from serversherpa.wiki.content import CONTROL_CHARS
 
 # the windows the analytics page offers, in days
 VALID_DAYS = (7, 30, 90, 365)
@@ -44,8 +40,6 @@ STALE_MONTHS = 12
 QUERY_MAX = 200
 
 TOP_PAGES_LIMIT = 20
-HELPFULNESS_LIMIT = 50
-NO_COMMENTS_LIMIT = 20
 FAILED_SEARCHES_LIMIT = 50
 STALE_LIMIT = 100
 OVERDUE_LIMIT = 100
@@ -67,33 +61,6 @@ async def record_view(db: AsyncSession, node_id: uuid.UUID, person_id: uuid.UUID
     await db.execute(stmt.on_conflict_do_update(
         index_elements=[WikiPageView.node_id, WikiPageView.person_id, WikiPageView.viewed_on],
         set_={"count": WikiPageView.count + 1}))
-
-
-def clean_comment(comment: str | None) -> str | None:
-    """A feedback comment as stored: stripped, None when blank; control
-    characters other than tab/newline/carriage return are a 422
-    `bad_comment` (the length cap is the schema's)."""
-    text = (comment or "").strip()
-    if not text:
-        return None
-    if CONTROL_CHARS.search(text):
-        raise HTTPException(status_code=422, detail={
-            "code": "bad_comment",
-            "message": "The comment contains characters that can't be saved."})
-    return text
-
-
-async def save_feedback(db: AsyncSession, node_id: uuid.UUID, person_id: uuid.UUID, *,
-                        helpful: bool, comment: str | None) -> WikiFeedback:
-    """Replace `person_id`'s answer for the page (comment included — a
-    change of answer without a comment clears the old one)."""
-    stmt = pg_insert(WikiFeedback).values(
-        node_id=node_id, person_id=person_id, helpful=helpful, comment=comment,
-        updated_at=func.now())
-    await db.execute(stmt.on_conflict_do_update(
-        index_elements=[WikiFeedback.node_id, WikiFeedback.person_id],
-        set_={"helpful": helpful, "comment": comment, "updated_at": func.now()}))
-    return await db.get(WikiFeedback, (node_id, person_id), populate_existing=True)
 
 
 def log_search(db: AsyncSession, person_id: uuid.UUID, query: str, result_count: int) -> None:
@@ -164,57 +131,6 @@ async def views_by_day(db: AsyncSession, space_ids: Sequence[uuid.UUID] | None,
         .group_by(WikiPageView.viewed_on))).all())
     return [(day, int(rows.get(day, 0)))
             for day in (window.first_day + timedelta(days=i) for i in range(window.days))]
-
-
-@dataclass(frozen=True)
-class Helpfulness:
-    node_id: uuid.UUID
-    yes: int
-    no: int
-
-    @property
-    def pct(self) -> int:
-        """The share of "Yes" answers, to the nearest whole percent."""
-        total = self.yes + self.no
-        return int(self.yes * 100 / total + 0.5) if total else 0
-
-
-async def helpfulness(db: AsyncSession, space_ids: Sequence[uuid.UUID] | None,
-                      window: Window) -> list[Helpfulness]:
-    """Yes/No counts per live page, from answers given (or last changed)
-    in the window — the pages with the most answers first."""
-    yes = func.count().filter(WikiFeedback.helpful.is_(True)).label("yes")
-    no = func.count().filter(WikiFeedback.helpful.is_(False)).label("no")
-    rows = (await db.execute(
-        select(WikiFeedback.node_id, yes, no)
-        .join(WikiNode, WikiNode.id == WikiFeedback.node_id)
-        .where(WikiNode.deleted_at.is_(None), WikiNode.kind == "page", _in_scope(space_ids),
-               WikiFeedback.updated_at >= window.since)
-        .group_by(WikiFeedback.node_id)
-        .order_by(func.count().desc(), no.desc(), WikiFeedback.node_id)
-        .limit(HELPFULNESS_LIMIT))).all()
-    return [Helpfulness(node_id=r.node_id, yes=r.yes, no=r.no) for r in rows]
-
-
-@dataclass(frozen=True)
-class NoComment:
-    node_id: uuid.UUID
-    comment: str
-    at: datetime
-
-
-async def recent_no_comments(db: AsyncSession, space_ids: Sequence[uuid.UUID] | None,
-                             window: Window) -> list[NoComment]:
-    """The newest comments left with a "No" in the window."""
-    rows = (await db.execute(
-        select(WikiFeedback.node_id, WikiFeedback.comment, WikiFeedback.updated_at)
-        .join(WikiNode, WikiNode.id == WikiFeedback.node_id)
-        .where(WikiNode.deleted_at.is_(None), _in_scope(space_ids),
-               WikiFeedback.helpful.is_(False), WikiFeedback.comment.is_not(None),
-               WikiFeedback.updated_at >= window.since)
-        .order_by(WikiFeedback.updated_at.desc(), WikiFeedback.node_id)
-        .limit(NO_COMMENTS_LIMIT))).all()
-    return [NoComment(node_id=r.node_id, comment=r.comment, at=r.updated_at) for r in rows]
 
 
 @dataclass(frozen=True)

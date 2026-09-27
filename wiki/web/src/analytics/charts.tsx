@@ -47,14 +47,3 @@ export function ViewsBars({ days }: { days: { day: string; views: number }[] }) 
     </svg>
   );
 }
-
-/** A horizontal share bar (0-100), announced as a meter. */
-export function ShareBar({ pct, label }: { pct: number; label: string }) {
-  const value = Math.max(0, Math.min(100, Math.round(pct)));
-  return (
-    <div className="wiki-an-share" role="meter" aria-label={label}
-         aria-valuemin={0} aria-valuemax={100} aria-valuenow={value}>
-      <span style={{ width: `${value}%` }} />
-    </div>
-  );
-}

@@ -226,9 +226,8 @@ client and renderer.
 - **Analytics.** `GET /wiki/analytics` (wiki administrators, and library
   managers scoped to their own libraries) shows total page/file views and a
   daily breakdown over a chosen window (7/30/90/365 days), the most-viewed
-  pages, "Was this page helpful?" Yes/No rates with recent "No" comments,
-  searches that found nothing, published pages untouched for 12 months,
-  and overdue periodic reviews. None of it is audited (it's telemetry,
+  pages, searches that found nothing, published pages untouched for 12
+  months, and overdue periodic reviews. None of it is audited (it's telemetry,
   not a tracked change) and every aggregate only ever names nodes the
   caller can currently see. **Retention** (the worker's daily `retention`
   job): page views are kept 365 days, search log rows 90 days
