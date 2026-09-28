@@ -106,6 +106,43 @@ async def test_retryable_backs_off_then_fails(db):
     assert (await _reload(db, SpecLookupJob, job.id)).status == "failed"
 
 
+async def test_retries_exhausted_model_is_not_swept_again(db):
+    from serversherpa.db.models import SystemConfig
+    m, job = await _setup(db)
+    p = FakeProvider(ProviderRetryable("RateLimitError"))
+    job.attempts = worker.MAX_ATTEMPTS - 1
+    await db.commit()
+    await worker.run_once(get_sessionmaker(), provider_factory=lambda: p)
+    job = await _reload(db, SpecLookupJob, job.id)
+    assert job.status == "failed"
+    db.add(SystemConfig(section="ai_lookup", data={"background_enabled": True}))
+    await db.commit()
+    assert await worker.sweep(db, provider_configured=True) == 0
+
+
+async def test_skip_flag_finishes_without_a_call(db):
+    m, job = await _setup(db, spec_lookup_skip=True)
+    p = FakeProvider(OK)
+    await worker.run_once(get_sessionmaker(), provider_factory=lambda: p)
+    assert p.calls == []
+    job = await _reload(db, SpecLookupJob, job.id)
+    assert job.status == "done" and job.error == "skipped"
+
+
+async def test_crash_in_record_result_finishes_failed_with_no_suggestions(db, monkeypatch):
+    m, job = await _setup(db)
+    p = FakeProvider(OK)
+
+    async def _boom(*a, **kw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("serversherpa.spec_lookup.worker.service.record_result", _boom)
+    await worker.run_once(get_sessionmaker(), provider_factory=lambda: p)
+    job = await _reload(db, SpecLookupJob, job.id)
+    assert job.status == "failed" and job.error.startswith("worker_error")
+    assert (await db.scalar(select(SpecSuggestion))) is None
+
+
 async def test_not_configured_and_refusal(db):
     m, job = await _setup(db)
     await worker.run_once(get_sessionmaker(), provider_factory=lambda: None)

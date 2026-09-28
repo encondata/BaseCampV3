@@ -48,6 +48,21 @@ async def test_eligibility_rules(db):
     assert old.id not in ids
 
 
+async def test_eligibility_respects_failed_cooldown(db):
+    now = datetime.now(UTC)
+    recent_fail = await _m(db, model="recent-fail")
+    db.add(SpecLookupJob(model_id=recent_fail.id, status="failed",
+                         finished_at=now - timedelta(hours=1)))
+    old_fail = await _m(db, model="old-fail")
+    db.add(SpecLookupJob(model_id=old_fail.id, status="failed",
+                         finished_at=now - timedelta(days=2)))
+    await db.commit()
+    ids = set(await service.eligible_model_ids(db, CFG, now=now))
+    assert recent_fail.id not in ids and old_fail.id in ids
+    ids = set(await service.eligible_model_ids(db, CFG, respect_retry=False, now=now))
+    assert recent_fail.id in ids
+
+
 async def test_eligibility_follows_field_groups(db):
     m = await _m(db, ru_size=1, weight_lbs=1, weight_kg=0.45, length_in=1, length_cm=2.54,
                  width_in=1, width_cm=2.54, height_in=1, height_cm=2.54)

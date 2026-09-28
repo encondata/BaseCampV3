@@ -22,6 +22,7 @@ PRIORITY_SWEEP = 0
 PRIORITY_BATCH = 10
 PRIORITY_MODEL = 20
 ACTIVE = ("queued", "running")
+FAILED_COOLDOWN = timedelta(days=1)
 
 
 class FieldChanged(Exception):
@@ -51,6 +52,10 @@ async def eligible_model_ids(db: AsyncSession, cfg: dict, *, respect_retry: bool
             q = q.where(or_(never, AssetModel.specs_looked_up_at < now - timedelta(days=days)))
         else:
             q = q.where(never)
+        recently_failed = exists().where(
+            SpecLookupJob.model_id == AssetModel.id, SpecLookupJob.status == "failed",
+            SpecLookupJob.finished_at >= now - FAILED_COOLDOWN)
+        q = q.where(~recently_failed)
     return list(await db.scalars(q))
 
 

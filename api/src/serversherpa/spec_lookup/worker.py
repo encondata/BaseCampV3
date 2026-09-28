@@ -94,13 +94,18 @@ async def run_once(sessionmaker, provider_factory=get_provider) -> bool:
         if job is None:
             return False
         job_id = job.id
-        provider = provider_factory()
+        provider = None
         try:
+            provider = provider_factory()
             status = await process_job(db, job, provider)
             await db.commit()
         except Exception as exc:
             logger.exception("job %s crashed: %s", job_id, exc)
-            await db.rollback()
+            try:
+                await db.rollback()
+            except Exception:
+                logger.warning("could not roll back the spec lookup session for job %s",
+                               job_id, exc_info=True)
             async with sessionmaker() as fin:
                 row = await fin.get(SpecLookupJob, job_id)
                 if row is not None:
