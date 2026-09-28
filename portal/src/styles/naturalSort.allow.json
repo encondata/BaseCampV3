@@ -1,0 +1,5 @@
+[
+  { "file": "portal/src/components/trucks/TrucksMap.tsx", "line": 31, "reason": "ids are sorted only to build a set-identity key for the re-fit effect; the order is never shown" },
+  { "file": "portal/src/pages/TimeManagement.tsx", "line": 437, "reason": "entry ids (UUIDs) sorted for a deterministic request body; the order is never shown" },
+  { "file": "portal/src/pages/TimeManagement.tsx", "line": 472, "reason": "entry ids (UUIDs) sorted for a deterministic request body; the order is never shown" }
+]

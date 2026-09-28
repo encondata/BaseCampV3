@@ -258,14 +258,10 @@ export function afterSiteClientsFailure(createdId: string | null, reason?: strin
   return reason ? `${SITE_CREATED_UNLINKED_MESSAGE} ${reason}` : SITE_CREATED_UNLINKED_MESSAGE;
 }
 
-/** Natural, case-insensitive ordering for list columns: da1 < da2 < da10
- *  (plain string compare puts da10 between da1 and da2). One shared
- *  collator — constructing one per comparison is measurably slow. */
-const COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-
-export function naturalCompare(a: string, b: string): number {
-  return COLLATOR.compare(a, b);
-}
+/** Natural, case-insensitive ordering for list columns (da1 < da2 < da10).
+ *  The comparator lives in lib/naturalSort; re-exported so the list
+ *  pages that imported it from here keep working. */
+export { naturalCompare } from './naturalSort';
 
 /* ── god-edit descriptors ──────────────────────────────────────────
  * Factory, not a static table: the type/status combos come from the

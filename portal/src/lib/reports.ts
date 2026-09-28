@@ -1,4 +1,5 @@
 /** Reports helpers shared by the page and the Generate modal. */
+import { naturalCompare } from './naturalSort';
 import type { InitiativeItem } from './api';
 import { parseApiDay } from './timeline';
 
@@ -33,7 +34,7 @@ export function sortInitiativesForPicker(items: InitiativeItem[]): InitiativeIte
   };
   return items
     .filter((i) => !i.archived_at)
-    .sort((a, b) => rank(a.status) - rank(b.status) || a.name.localeCompare(b.name));
+    .sort((a, b) => rank(a.status) - rank(b.status) || naturalCompare(a.name, b.name));
 }
 
 /**

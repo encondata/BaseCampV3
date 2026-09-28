@@ -26,6 +26,7 @@
 import {
   useCallback, useEffect, useMemo, useRef, useState, type CSSProperties,
 } from 'react';
+import { naturalCompare } from '../lib/naturalSort';
 import { Link } from 'react-router-dom';
 
 import ComboBox from '../components/ComboBox';
@@ -185,7 +186,7 @@ export default function InitiativeTimeline() {
       }
     }
     return [...seen.entries()]
-      .sort((a, b) => a[1].localeCompare(b[1]))
+      .sort((a, b) => naturalCompare(a[1], b[1]))
       .map(([value, label]) => ({ value, label }));
   }, [initiatives]);
 

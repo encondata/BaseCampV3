@@ -1,5 +1,6 @@
 // Pure helpers for the Variables page. Kept out of the component so they can
 // be tested without a live API — same convention as lib/sites.ts.
+import { naturalCompare } from './naturalSort';
 import type { AssetCategoryOut, SiteLookup, StatusValue, WorkerLevel } from './api';
 import type { ColumnDef } from './listTools';
 
@@ -210,7 +211,7 @@ export function recordTypeOptions(
   values: StatusValue[],
 ): { value: string; label: string }[] {
   return [...new Set(values.map((v) => v.record_type))]
-    .sort()
+    .sort(naturalCompare)
     .map((t) => ({ value: t, label: t }));
 }
 

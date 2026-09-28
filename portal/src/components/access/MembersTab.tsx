@@ -4,6 +4,7 @@
  * Overrides button that opens the tri-state OverrideEditor.
  */
 
+import { compareValues } from '../../lib/naturalSort';
 import { useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '../../auth/AuthContext';
@@ -159,7 +160,7 @@ export default function MembersTab({ summary, canEdit, maxRank, onChanged }: Pro
     };
     return rows.sort((a, b) => {
       const va = val(a), vb = val(b);
-      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
+      return compareValues(va, vb) * sortDir;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [members, facets, query, sortKey, sortDir, overrideCounts, summary.roles]);

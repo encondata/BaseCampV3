@@ -3,6 +3,7 @@
  * Clone / Delete per row) and History (report runs; Task 9). Standard
  * directory list scaffolding, same as LabelTemplates.
  */
+import { compareValues } from '../lib/naturalSort';
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
@@ -124,7 +125,7 @@ export default function Reports() {
       .filter((d) => passesColumnFilters(d, filters, cellText) && (!q || haystack(d).includes(q)))
       .sort((a, b) => {
         const va = sortValue(a, sortKey), vb = sortValue(b, sortKey);
-        return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
+        return compareValues(va, vb) * sortDir;
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [defs, filters, query, sortKey, sortDir, haystack]);

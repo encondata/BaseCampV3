@@ -11,6 +11,7 @@
 import {
   useCallback, useEffect, useMemo, useState,
 } from 'react';
+import { naturalCompare } from '../lib/naturalSort';
 import { Link } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -91,7 +92,7 @@ export default function ClientDashboard() {
     listClients()
       .then((all) => {
         if (!alive) return;
-        const live = all.filter((c) => !c.archived_at).sort((a, b) => a.name.localeCompare(b.name));
+        const live = all.filter((c) => !c.archived_at).sort((a, b) => naturalCompare(a.name, b.name));
         setClients(live);
         setSelectedId((prev) => prev ?? live[0]?.id ?? null);
       })

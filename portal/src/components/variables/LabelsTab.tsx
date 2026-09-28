@@ -5,6 +5,7 @@
  * mutations live in edit modals, devtools-gated server-side.
  */
 
+import { naturalCompare } from '../../lib/naturalSort';
 import { useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '../../auth/AuthContext';
@@ -133,7 +134,7 @@ function VocabPane({ kind, rows, onSaved }: {
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     const filtered = rows.filter((v) => (q ? vocabSearchText(v).includes(q) : true));
-    return filtered.sort((a, b) => a.sort_order - b.sort_order || a.key.localeCompare(b.key));
+    return filtered.sort((a, b) => a.sort_order - b.sort_order || naturalCompare(a.key, b.key));
   }, [rows, query]);
 
   useEffect(() => {
@@ -300,7 +301,7 @@ function PlaceholderPane({ rows, typeOptions, onSaved }: {
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
     const filtered = rows.filter((p) => (q ? placeholderSearchText(p).includes(q) : true));
-    return filtered.sort((a, b) => a.sort_order - b.sort_order || a.key.localeCompare(b.key));
+    return filtered.sort((a, b) => a.sort_order - b.sort_order || naturalCompare(a.key, b.key));
   }, [rows, query]);
 
   useEffect(() => {

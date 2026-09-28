@@ -216,7 +216,7 @@ export default function MoveDashboard() {
       .sort((a, b) => {
         if (a.label === 'Unassigned') return 1;
         if (b.label === 'Unassigned') return -1;
-        return a.label.localeCompare(b.label, undefined, { numeric: true });
+        return naturalCompare(a.label, b.label);
       });
   }, [rows]);
   const maxWave = Math.max(...waves.map((w) => w.count), 1);

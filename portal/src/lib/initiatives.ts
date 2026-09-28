@@ -2,6 +2,7 @@
  * Initiatives page logic — pure functions the components delegate to
  * (the lib/containers.ts pattern), unit-testable without jsdom.
  */
+import { naturalCompare } from './naturalSort';
 import type { ComboOption } from '../components/ComboBox';
 import type {
   InitiativeAssetRow, InitiativeItem, OrgRef, SiteItem, StatusValue,
@@ -713,7 +714,7 @@ export function deviceListRows(
   const toRows = (blocks: RackBlock[], group: 'FRONT' | 'REAR') =>
     [...blocks]
       .sort((a, b) => (b.ru + b.height) - (a.ru + a.height)
-        || a.label.localeCompare(b.label))
+        || naturalCompare(a.label, b.label))
       .flatMap((b) => [
         {
           id: b.id, name: b.label,
@@ -749,7 +750,7 @@ export function legendCategories(blocks: RackBlock[]): LegendCategory[] {
     else uncategorized = true;
   }
   const out = [...byLabel].map(([label, color]) => ({ label, color }))
-    .sort((a, b) => a.label.localeCompare(b.label));
+    .sort((a, b) => naturalCompare(a.label, b.label));
   if (uncategorized) out.push({ label: 'Uncategorized', color: UNCATEGORIZED_FILL });
   return out;
 }
