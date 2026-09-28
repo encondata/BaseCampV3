@@ -18,16 +18,8 @@ logger = logging.getLogger("serversherpa.notifications.password_reminders")
 KIND = "password_expiring"
 REMINDER_STAGES = (7, 3, 1)
 
-# A plain ceil() on (due - now) rounds a password expiring in exactly N
-# days up to N+1 the moment any sub-second gap exists between "now" and
-# how "due" was derived — which is the normal case, not an edge case.
-# Shave a minute off first: at day-granularity stages this never changes
-# which stage fires, it just stops real time from nudging the count up.
-_ROUNDING_SLOP = timedelta(seconds=60)
-
-
 def _days_left(due: datetime, now: datetime) -> int:
-    return math.ceil((due - now - _ROUNDING_SLOP) / timedelta(days=1))
+    return math.ceil((due - now) / timedelta(days=1))
 
 
 async def _already_sent(db: AsyncSession, person_id, due_iso: str, stage: int) -> bool:

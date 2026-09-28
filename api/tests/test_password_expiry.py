@@ -369,6 +369,13 @@ async def _reminders(db, person_id):
         .order_by(Notification.created_at)))
 
 
+async def _sweep(db):
+    """Run a reminder sweep with `now` sampled fresh, after whatever
+    fixture arrangement just ran — never a `now` captured earlier, which
+    can land a hair past a whole-day boundary and throw off ceil()."""
+    return await run_password_reminders(db, datetime.now(UTC))
+
+
 async def _with_days_left(db, person_id, days_left: float, *, policy_days=90):
     """Arrange the policy so the seeded user's password expires `days_left`
     days from now (fractional allowed)."""
@@ -380,28 +387,27 @@ async def _with_days_left(db, person_id, days_left: float, *, policy_days=90):
 
 
 async def test_reminders_fire_once_per_stage(db, seeded_user):
-    now = datetime.now(UTC)
     await _set_policy_direct(db, enabled=False, since=None)
-    assert await run_password_reminders(db, now) == 0
+    assert await _sweep(db) == 0
     await _with_days_left(db, seeded_user.id, 10)
-    assert await run_password_reminders(db, now) == 0
+    assert await _sweep(db) == 0
     await _with_days_left(db, seeded_user.id, 6)
-    assert await run_password_reminders(db, now) == 1
-    assert await run_password_reminders(db, now) == 0          # dedup
+    assert await _sweep(db) == 1
+    assert await _sweep(db) == 0          # dedup
     rows = await _reminders(db, seeded_user.id)
     assert rows[0].payload["stage"] == 7 and rows[0].payload["days_left"] == 6
     assert rows[0].title == "Your password expires in 6 days"
     assert rows[0].link == "/me"
     assert "before" in rows[0].body and "My Profile" in rows[0].body
     await _with_days_left(db, seeded_user.id, 2.5)
-    assert await run_password_reminders(db, now) == 1
+    assert await _sweep(db) == 1
     await _with_days_left(db, seeded_user.id, 0.5)
-    assert await run_password_reminders(db, now) == 1
+    assert await _sweep(db) == 1
     rows = await _reminders(db, seeded_user.id)
     assert [r.payload["stage"] for r in rows] == [7, 3, 1]
     assert rows[-1].title == "Your password expires in 1 day"
     await _with_days_left(db, seeded_user.id, -1)
-    assert await run_password_reminders(db, now) == 0          # expired: the gate handles it
+    assert await _sweep(db) == 0          # expired: the gate handles it
 
 
 async def test_reminders_skip_disabled_accounts_and_jump_to_the_urgent_stage(db, seeded_user):
@@ -416,7 +422,7 @@ async def test_reminders_skip_disabled_accounts_and_jump_to_the_urgent_stage(db,
     await db.execute(update(UserAccount).where(UserAccount.person_id == other.id)
                      .values(password_updated_at=datetime.now(UTC) - timedelta(days=200)))
     await db.commit()
-    assert await run_password_reminders(db, now) == 1
+    assert await _sweep(db) == 1
     rows = await _reminders(db, seeded_user.id)
     assert [r.payload["stage"] for r in rows] == [3]
     assert await _reminders(db, other.id) == []
