@@ -42,26 +42,37 @@ const msgFor = (e: unknown) => (e instanceof ApiError ? (ERR[e.code] ?? `Request
 const fieldLabel = (f: string | null) => (f === null ? '—' : (FIELD_LABEL[f] ?? f));
 const QUOTE_MAX = 80;
 
-type SummaryRow = BulkSummaryRow & { model_id: string | null };
+type BulkAction = 'approve' | 'reject';
+type SummaryRow = BulkSummaryRow & { model_id: string | null; outcome: string };
 
-/** One BulkApplySummary row per bulk result, in the order the server returned them. */
-function toSummaryRows(results: SpecBulkResult[], modelOf: Map<string, string>): SummaryRow[] {
-  return results.map((r, i) => ({
-    row: i + 1,
-    name: r.make || r.model
-      ? `${`${r.make ?? ''} ${r.model ?? ''}`.trim()} — ${fieldLabel(r.field)}` : null,
-    action: r.ok ? 'updated' : 'skipped',
-    diff: r.ok && r.field ? { [fieldLabel(r.field)]: { new: r.value } } : null,
-    model_id: modelOf.get(r.id) ?? null,
-  }));
-}
+/** What the bulk call saw of each suggestion before the reload drops it
+ *  from the Pending view. */
+interface PreRow { model_id: string; current_value: string | null }
 
-/** The muted line under the summary counts: why rows were not applied. */
-function failureText(results: SpecBulkResult[]): string | undefined {
-  const failed = results.filter((r) => !r.ok);
-  if (failed.length === 0) return undefined;
-  const reasons = [...new Set(failed.map((r) => (r.error ? (ERR[r.error] ?? r.error) : 'Failed.')))];
-  return `${failed.length} not applied: ${reasons.join(' ')}`;
+/**
+ * One BulkApplySummary row per bulk result, in the order the server returned
+ * them. Only an approve writes the catalog: an ok approve is 'updated' with
+ * old → new; an ok reject is 'unchanged' with no diff; a failure is
+ * 'skipped' and its `outcome` says why.
+ */
+function toSummaryRows(
+  results: SpecBulkResult[], action: BulkAction, before: Map<string, PreRow>,
+): SummaryRow[] {
+  return results.map((r, i) => {
+    const pre = before.get(r.id);
+    const approved = r.ok && action === 'approve';
+    return {
+      row: i + 1,
+      name: r.make || r.model
+        ? `${`${r.make ?? ''} ${r.model ?? ''}`.trim()} — ${fieldLabel(r.field)}` : null,
+      action: !r.ok ? 'skipped' : approved ? 'updated' : 'unchanged',
+      diff: approved && r.field
+        ? { [fieldLabel(r.field)]: { old: pre?.current_value ?? null, new: r.value } } : null,
+      model_id: pre?.model_id ?? null,
+      outcome: r.ok ? (action === 'approve' ? 'Approved' : 'Rejected')
+        : r.error ? (ERR[r.error] ?? r.error) : 'Failed.',
+    };
+  });
 }
 
 export default function SpecLookupPanel({ canChange, status, onChanged }: {
@@ -75,8 +86,7 @@ export default function SpecLookupPanel({ canChange, status, onChanged }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
-  const [summary, setSummary] = useState<SummaryRow[] | null>(null);
-  const [failureNote, setFailureNote] = useState<string | undefined>(undefined);
+  const [summary, setSummary] = useState<{ action: BulkAction; rows: SummaryRow[] } | null>(null);
   const [reload, setReload] = useState(0);
 
   useEffect(() => {
@@ -123,15 +133,14 @@ export default function SpecLookupPanel({ canChange, status, onChanged }: {
     }
   };
 
-  const bulk = async (action: 'approve' | 'reject') => {
+  const bulk = async (action: BulkAction) => {
     setBusy(true); setError(''); setNote('');
     try {
       const { results } = await bulkSpecSuggestions([...selected], action);
-      // model ids come from the rows as they were — after the reload the
-      // decided suggestions drop out of the Pending view.
-      const modelOf = new Map((rows ?? []).map((s) => [s.id, s.model_id]));
-      setSummary(toSummaryRows(results, modelOf));
-      setFailureNote(failureText(results));
+      // model ids and current values come from the rows as they were — after
+      // the reload the decided suggestions drop out of the Pending view.
+      const before = new Map((rows ?? []).map((s) => [s.id, { model_id: s.model_id, current_value: s.current_value }]));
+      setSummary({ action, rows: toSummaryRows(results, action, before) });
       setSelected(new Set());
       refresh();
     } catch (e) {
@@ -255,20 +264,26 @@ export default function SpecLookupPanel({ canChange, status, onChanged }: {
       {summary && (
         <section className="rv-section">
           <BulkApplySummary<SummaryRow>
-            result={{
-              updated: summary.filter((r) => r.action === 'updated').length,
-              skipped: summary.filter((r) => r.action === 'skipped').length,
-              rows: summary,
-            }}
+            result={summary.action === 'approve'
+              ? {
+                updated: summary.rows.filter((r) => r.action === 'updated').length,
+                skipped: summary.rows.filter((r) => r.action === 'skipped').length,
+                rows: summary.rows,
+              }
+              : {
+                unchanged: summary.rows.filter((r) => r.action === 'unchanged').length,
+                skipped: summary.rows.filter((r) => r.action === 'skipped').length,
+                rows: summary.rows,
+              }}
             entityLabel="Suggestion"
             linkFor={(r) => (r.model_id ? `/assets/models?open=${r.model_id}` : null)}
             filename="spec-lookup-bulk-summary"
             openTo="/assets/models"
             openLabel="Open Makes / Models"
-            note={failureNote}
+            extraColumn={{ label: 'Outcome', value: (r) => r.outcome }}
           />
           <div className="bulk-actions">
-            <button className="mini-btn" type="button" onClick={() => { setSummary(null); setFailureNote(undefined); }}>Done</button>
+            <button className="mini-btn" type="button" onClick={() => setSummary(null)}>Done</button>
           </div>
         </section>
       )}

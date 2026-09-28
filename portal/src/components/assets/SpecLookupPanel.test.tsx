@@ -123,8 +123,63 @@ describe('SpecLookupPanel', () => {
     // BulkApplySummary's download button — its real label
     expect(await screen.findByRole('button', { name: /Download summary/ })).toBeTruthy();
     expect(screen.getByText('HPE DL320 Gen11 — Weight')).toBeTruthy();
+    expect(screen.getByText('Weight: — → 13.6')).toBeTruthy();
     expect(onChanged).toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: 'Done' }));
     expect(screen.queryByRole('button', { name: /Download summary/ })).toBeNull();
+  });
+
+  const S2: SpecSuggestion = {
+    ...SUGG, id: 's2', model: 'DL360 Gen10', field: 'ru_size', value: '1', unit: null, current_value: '2',
+  };
+  const selectAndClick = async (label: RegExp, name: string) => {
+    await userEvent.click(within((await screen.findByText(name)).closest('tr')!).getByRole('checkbox'));
+    await userEvent.click(screen.getByRole('button', { name: label }));
+  };
+
+  it('bulk approve shows old → new and names each failed row with its reason', async () => {
+    api.listSpecSuggestions.mockResolvedValue([SUGG, S2]);
+    api.bulkSpecSuggestions.mockResolvedValue({ results: [
+      { id: 's2', ok: true, error: null, make: 'HPE', model: 'DL360 Gen10', field: 'ru_size', value: '1' },
+      { id: 's1', ok: false, error: 'bad_state', make: 'HPE', model: 'DL320 Gen11', field: 'weight', value: '13.6' },
+    ] });
+    renderPanel();
+    await userEvent.click(within((await screen.findByText('DL320 Gen11')).closest('tr')!).getByRole('checkbox'));
+    await selectAndClick(/Approve selected/, 'DL360 Gen10');
+    const table = await screen.findByRole('table', { name: 'Apply summary' });
+    expect(within(table).getByText('Outcome')).toBeTruthy();
+    const okRow = within(table).getByText('HPE DL360 Gen10 — RU size').closest('tr')!;
+    expect(within(okRow).getByText('Approved')).toBeTruthy();
+    expect(within(okRow).getByText('Updated')).toBeTruthy();
+    expect(within(okRow).getByText('RU size: 2 → 1')).toBeTruthy();
+    const badRow = within(table).getByText('HPE DL320 Gen11 — Weight').closest('tr')!;
+    expect(within(badRow).getByText('Already decided.')).toBeTruthy();
+    expect(within(badRow).getByText('Skipped')).toBeTruthy();
+    expect(screen.getByText('Applied: 1 updated · 1 skipped')).toBeTruthy();
+  });
+
+  it('bulk reject never reports the catalog as updated', async () => {
+    api.bulkSpecSuggestions.mockResolvedValue({ results: [
+      { id: 's1', ok: true, error: null, make: 'HPE', model: 'DL320 Gen11', field: 'weight', value: '13.6' }] });
+    renderPanel();
+    await selectAndClick(/Reject selected/, 'DL320 Gen11');
+    await waitFor(() => expect(api.bulkSpecSuggestions).toHaveBeenCalledWith(['s1'], 'reject'));
+    const table = await screen.findByRole('table', { name: 'Apply summary' });
+    expect(within(table).queryByText('Updated')).toBeNull();
+    expect(within(table).queryByText(/→/)).toBeNull();
+    expect(within(table).getByText('Rejected')).toBeTruthy();
+    expect(within(table).getByText('No change')).toBeTruthy();
+    expect(screen.getByText('Applied: 0 skipped · 1 unchanged')).toBeTruthy();
+  });
+
+  it('"Select all pending" selects only the pending rows', async () => {
+    api.listSpecSuggestions.mockResolvedValue([SUGG, S2, { ...SUGG, id: 's3', model: 'Applied One', status: 'applied' }]);
+    api.bulkSpecSuggestions.mockResolvedValue({ results: [] });
+    renderPanel();
+    await screen.findByText('Applied One');
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Select all pending' }));
+    expect(screen.getByRole('button', { name: 'Approve selected (2)' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Approve selected (2)' }));
+    await waitFor(() => expect(api.bulkSpecSuggestions).toHaveBeenCalledWith(['s1', 's2'], 'approve'));
   });
 });
