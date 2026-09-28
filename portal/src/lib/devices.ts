@@ -108,16 +108,21 @@ export function deviceSearchText(d: DeviceItem): string {
   ].filter(Boolean).join(' ');
 }
 
+/** An ISO timestamp as epoch milliseconds for sorting; missing is -1, first. */
+function timeValue(iso: string | null | undefined): number {
+  return iso ? Date.parse(iso) : -1;
+}
+
 export function deviceSortValue(d: DeviceItem, key: string): string | number {
   switch (key) {
     case 'uptime': return d.uptime_seconds ?? -1;
-    case 'last_seen': return d.last_seen_at ?? '';
+    case 'last_seen': return timeValue(d.last_seen_at);
     case 'connected': return d.connected_count;
-    case 'token_expires': return d.token_expires_at ?? '';
+    case 'token_expires': return timeValue(d.token_expires_at);
     case 'tags_24h': return d.tags_read_24h;
     case 'antennas': return d.antennas_connected ?? -1;
     case 'registration': return registrationLabel(tokenExpiryState(d.token_expires_at)).toLowerCase();
-    case 'expires': return d.token_expires_at ?? '';
+    case 'expires': return timeValue(d.token_expires_at);
     case 'current_move': return d.current_initiative_name ?? '';
     case 'signed_in': return d.session_person_name ?? '';
     case 'login_method': return loginMethodLabel(d.session_login_method).toLowerCase();

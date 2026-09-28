@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { compareValues, naturalCompare, sortNatural } from './naturalSort';
+import { compareOrdinal, compareValues, naturalCompare, sortNatural } from './naturalSort';
 
 describe('naturalCompare', () => {
   it('orders numbers by value and ignores case', () => {
@@ -17,6 +17,10 @@ describe('naturalCompare', () => {
   });
   it('is stable for case-only differences', () => {
     expect(naturalCompare('Rack 1', 'rack 1')).toBe(0);
+  });
+  it('keeps accents distinct, like the API collation (ks-level2)', () => {
+    expect(naturalCompare('Café', 'Cafe')).not.toBe(0);
+    expect(naturalCompare('CAFÉ', 'café')).toBe(0);
   });
 });
 
@@ -35,5 +39,27 @@ describe('compareValues', () => {
     expect(compareValues(2, 10)).toBe(-1);
     expect(compareValues(10, 2)).toBe(1);
     expect(compareValues(3, 3)).toBe(0);
+  });
+  it('is a total order over mixed input: missing, then numbers, then text', () => {
+    const mixed: (string | number | null | undefined)[] = ['b', 10, null, 'Rack 2', 2, undefined, 'rack 10'];
+    // sort() moves undefined to the end without calling the comparator,
+    // so the comparator's own rule for it is asserted directly.
+    expect(mixed.filter((v) => v !== undefined).sort(compareValues))
+      .toEqual([null, 2, 10, 'b', 'Rack 2', 'rack 10']);
+    expect(compareValues(undefined, 0)).toBe(-1);
+    expect(compareValues('0', 0)).toBe(1);
+    expect(compareValues(0, '0')).toBe(-1);
+    expect(compareValues(null, undefined)).toBe(0);
+  });
+});
+
+describe('compareOrdinal', () => {
+  it('orders by code unit, with missing values first', () => {
+    expect(['2026-09-28T10:00:00.5Z', '2026-09-28T10:00:00.25Z', null, '2026-01-01T00:00:00Z']
+      .sort(compareOrdinal))
+      .toEqual([null, '2026-01-01T00:00:00Z', '2026-09-28T10:00:00.25Z', '2026-09-28T10:00:00.5Z']);
+    expect(compareOrdinal('B', 'a')).toBe(-1);
+    expect(compareOrdinal('a', 'a')).toBe(0);
+    expect(compareOrdinal(undefined, 'a')).toBe(-1);
   });
 });

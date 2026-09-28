@@ -52,6 +52,7 @@ import {
   applyColumnOrder, ColHead, ColumnsButton, ExportButton, exportCsv, listGridStyle, listScale,
   moveKey, titleFor, useReorderDrag, useSearchHaystacks, visibleColumnsFor, type ColumnDef,
 } from '../lib/listTools';
+import { compareOrdinal } from '../lib/naturalSort';
 import { naturalCompare } from '../lib/sites';
 import { elapsedSince, formatMinutes } from '../lib/timeFormat';
 import {
@@ -434,7 +435,7 @@ export default function TimeManagement() {
     setBulkBusy(true);
     setActionError('');
     try {
-      const res = await bulkApproveTimeEntries({ entry_ids: [...selected].sort() });
+      const res = await bulkApproveTimeEntries({ entry_ids: [...selected].sort(compareOrdinal) });
       await finishBulk(bulkResultText('Approved', res.approved, res.skipped), res.skipped);
     } catch (err) {
       setActionError(mapTimeError(err, 'Could not approve. Try again.'));
@@ -469,7 +470,7 @@ export default function TimeManagement() {
     setDialogError('');
     try {
       if (dialog.mode === 'reject') {
-        const res = await bulkRejectTimeEntries([...selected].sort(), reason);
+        const res = await bulkRejectTimeEntries([...selected].sort(compareOrdinal), reason);
         await finishBulk(bulkResultText('Rejected', res.rejected, res.skipped), res.skipped);
       } else {
         const res = await bulkApproveTimeEntries({ filter: dialog.filter });

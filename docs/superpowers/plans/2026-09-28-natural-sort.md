@@ -12,12 +12,12 @@
 
 ## Global Constraints
 
-- Collation (exact): name `natural`, `provider = icu`, `locale = 'en-u-kn-true-ks-level2'`, `deterministic = false`. Migration file `api/migrations/versions/0082_natural_collation.py`, `revision = "0082"`, `down_revision = "0081"`. Downgrade drops it.
+- Collation (exact): name `natural`, `provider = icu`, `locale = 'en-u-kn-true-ks-level2'`, `deterministic = false`. Migration file `api/migrations/versions/0082_natural_collation.py`, `revision = "0082"`, `down_revision = "0080"` (chain on main: `0073 → 0081 → 0080 → 0082`). Downgrade drops it.
 - The collation is used ONLY in `ORDER BY` (SQLAlchemy `order_by`), never in `WHERE`/`LIKE`/`DISTINCT`/`GROUP BY`/joins/indexes.
 - Helper (exact): `serversherpa.db.ordering.natural(column)` → `column.collate("natural")`.
 - Every `order_by` on a text column in `api/src/serversherpa` uses `natural(...)`; numeric, timestamp, rank, position, sort_order, seq, id and boolean expressions are untouched.
-- Portal comparator (exact): `naturalCompare(a, b)` and `sortNatural(items, key)` in `portal/src/lib/naturalSort.ts`; `Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })` built once. `portal/src/lib/sites.ts` re-exports `naturalCompare` from it.
-- Guardrail (exact rules): no `localeCompare(` and no `new Intl.Collator(` outside `portal/src/lib/naturalSort.ts`; no comparator-less `.sort()` unless allowlisted in `portal/src/styles/naturalSort.allow.json` with a reason. Scans `portal/src` and `kiosk/src`, skipping `*.test.ts`/`*.test.tsx`.
+- Portal comparator (exact): `naturalCompare(a, b)` and `sortNatural(items, key)` in `portal/src/lib/naturalSort.ts`; `Intl.Collator(undefined, { numeric: true, sensitivity: 'accent' })` built once (matches `ks-level2`: case-insensitive, accent-sensitive). `compareOrdinal(a, b)` for ISO timestamps and ids. `portal/src/lib/sites.ts` re-exports `naturalCompare` from it.
+- Guardrail (exact rules): no `localeCompare(` and no `new Intl.Collator(` outside `portal/src/lib/naturalSort.ts`; no comparator-less `.sort()` or `.toSorted()` (no allowlist — use `compareOrdinal` for ids and timestamps); comment lines skipped. Scans `portal/src` and `kiosk/src`, skipping `*.test.ts`/`*.test.tsx`.
 - Expected order (exact, used by tests): `["Rack 10", "Rack 2", "rack 1", "Rack 1a"]` sorts to `["rack 1", "Rack 1a", "Rack 2", "Rack 10"]`.
 - American English. Commit trailer: `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
 

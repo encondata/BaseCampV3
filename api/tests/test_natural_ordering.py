@@ -4,11 +4,21 @@ list endpoints that order text with it."""
 from sqlalchemy import text
 
 from serversherpa.db.models import Container, Person, PersonRole, Site
+from serversherpa.db.ordering import natural_key
 
 from tests.test_status_values_write import _make
 
 NAMES = ["Rack 10", "Rack 2", "rack 1", "Rack 1a"]
 EXPECTED = ["rack 1", "Rack 1a", "Rack 2", "Rack 10"]
+
+
+def test_natural_key_matches_the_collation():
+    assert sorted(NAMES, key=natural_key) == EXPECTED
+
+
+def test_natural_key_sorts_none_first_and_handles_leading_digits():
+    assert sorted(["b", None, "A", ""], key=natural_key) == [None, "", "A", "b"]
+    assert sorted(["10 x", "2 x", "x"], key=natural_key) == ["2 x", "10 x", "x"]
 
 
 async def test_collation_orders_numbers_by_value_and_ignores_case(db):

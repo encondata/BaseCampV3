@@ -21,6 +21,8 @@
  * is what is painted on the door.
  */
 
+import { sortNatural } from '@portal/lib/naturalSort';
+
 export interface TruckRow {
   id: string;
   name: string;
@@ -53,7 +55,12 @@ function key(value: string | null | undefined): string | null {
   return trimmed || null;
 }
 
-export function buildTruckIndex(rows: readonly TruckRow[]): TruckIndex {
+export function buildTruckIndex(unsorted: readonly TruckRow[]): TruckIndex {
+  // IndexedDB `getAll` hands rows back in primary-key (id) order, which
+  // reads as random on the card list. Put them in natural name order
+  // ("Truck 2" before "Truck 10") once, here, so every list built from
+  // the index is in the order a person expects.
+  const rows = sortNatural(unsorted, (r) => r.name);
   const byName = new Map<string, TruckRow>();
   const byLoadNumber = new Map<string, TruckRow>();
   for (const row of rows) {
@@ -66,7 +73,7 @@ export function buildTruckIndex(rows: readonly TruckRow[]): TruckIndex {
     const l = key(row.load_number);
     if (l && !byLoadNumber.has(l)) byLoadNumber.set(l, row);
   }
-  return { byName, byLoadNumber, rows: [...rows] };
+  return { byName, byLoadNumber, rows };
 }
 
 /** An EXACT name or load number, or null. A partial is not a match —
@@ -81,8 +88,8 @@ export function matchTruck(index: TruckIndex, raw: string): TruckMatch | null {
   return null;
 }
 
-/** The trucks whose name or load number contains `raw`, in sync order (by
- *  name, as the server sends them). An empty term is every truck: the
+/** The trucks whose name or load number contains `raw`, in natural name
+ *  order (the order `buildTruckIndex` puts them in). An empty term is every truck: the
  *  filter is a convenience over a short list, not a gate in front of it. */
 export function filterTrucks(index: TruckIndex, raw: string): TruckRow[] {
   const term = key(raw);

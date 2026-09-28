@@ -10,10 +10,13 @@ Every list, column sort and dropdown in the portal and kiosk orders text the way
 
 Fix all three layers (approach A, approved 2026-09-28):
 
-1. **Database ordering.** A Postgres ICU collation named `natural` — numeric (`kn`), case-insensitive (`ks-level2`), `deterministic = false` — created by migration `0082_natural_collation` (`down_revision = "0081"`). Verified on the dev server (Postgres 16.14, ICU available): `rack 1, Rack 1, Rack 1a, Rack 2, RACK 03, rack 3B, Rack 10`. The `wiki` and `spec-lookup` branches both start from 0081 and re-point onto the head when they merge, as with 0081.
+1. **Database ordering.** A Postgres ICU collation named `natural` — numeric (`kn`), case-insensitive (`ks-level2`), `deterministic = false` — created by migration `0082_natural_collation` (`down_revision = "0080"`; the chain on main is `0073 → 0081 → 0080 → 0082`, since spec-lookup's 0080 was re-pointed onto 0081 when it merged). Verified on the dev server (Postgres 16.14, ICU available): `rack 1, Rack 1, Rack 1a, Rack 2, RACK 03, rack 3B, Rack 10`. The `wiki` branch re-points its own migrations onto the head when it merges.
 2. **API.** `serversherpa.db.ordering.natural(column)` returns `column.collate("natural")`. Every `order_by` on a text column (names, labels, make/model, serial, alias, description, role, resource/action, person last/first name) uses it — in routes, services, reports, importers, label generation, the AI tools and the spec lookup. Numeric, timestamp, rank, position and sort-order columns are untouched. The collation is used for ordering only, never in `WHERE`, `LIKE`, `DISTINCT` or joins (a non-deterministic collation can't be used there, and equality semantics must not change).
+   **Python-side sorts** of display text (rack pages and the By Source/Destination tables in the Move Report, the make/model load and rail summaries, label generation's other-site names) use `serversherpa.db.ordering.natural_key` — `sorted(names, key=natural_key)` — the same rule as the collation: digit runs by value, letters case-insensitively (`casefold`). Where rows already come back from the database in natural order, a Python re-sort on another key relies on sort stability instead of re-sorting the text (the access matrix preview sorts by flip count only).
 3. **Portal.** One comparator in `portal/src/lib/naturalSort.ts`:
-   - `naturalCompare(a: string, b: string): number` — one cached `Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })`, `null`/`undefined` treated as `''`.
+   - `naturalCompare(a: string, b: string): number` — one cached `Intl.Collator(undefined, { numeric: true, sensitivity: 'accent' })`, `null`/`undefined` treated as `''`. `'accent'` (not `'base'`) matches the collation's `ks-level2` exactly: case-insensitive but accent-sensitive, so "Café" and "Cafe" are distinct on both sides.
+   - `compareOrdinal(a, b)` — plain code-unit order for machine strings (ISO timestamps, ids) whose order is never read as text.
+   - `compareValues(a, b)` — list-column comparator; a total order over mixed input: `null`/`undefined` first, then numbers by value, then text naturally. Timestamp columns return `Date.parse(...)` numbers, not ISO strings.
    - `sortNatural<T>(items: T[], key: (t: T) => string): T[]` — a copy, sorted.
    - `lib/sites.ts` re-exports `naturalCompare` from the new module (nothing that imports it today breaks); its own collator is removed.
    - Every place that orders strings switches to it: `localeCompare` calls, bare `.sort()` on string arrays, and the list pages' column comparators (`sortValueFor(...)` → comparator). Numeric and date sorts stay as they are. Dropdown option lists (ComboBox/select options built by callers) sort with it too.
@@ -21,8 +24,8 @@ Fix all three layers (approach A, approved 2026-09-28):
 5. **Guardrail.** `portal/src/styles/naturalSort.test.ts` (next to the typography guardrail, same style): scans `portal/src` and `kiosk/src` (excluding tests) and fails on
    - any `localeCompare(` outside `portal/src/lib/naturalSort.ts`;
    - any `new Intl.Collator(` outside that file;
-   - any bare `.sort()` (no comparator) unless the line is listed in `portal/src/styles/naturalSort.allow.json` with a reason (for arrays that are genuinely numeric or already ordered).
-   Violations print the file:line and a ready-to-paste allowlist entry.
+   - any bare `.sort()` or `.toSorted()` (no comparator). There is no allowlist: an id or timestamp array passes `compareOrdinal`, which says the intent in the code.
+   Comment lines (trimmed text starting with `//` or `*`) are skipped. Violations print the file:line.
 
 ## Testing
 

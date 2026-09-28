@@ -58,7 +58,7 @@ it('the first row wins a duplicate key, so a match never depends on sync order',
   expect(matchTruck(dupes, 'TRUCK-1')?.truck.id).toBe('t-a');
 });
 
-it('filterTrucks narrows on a partial name or load number, keeping the sync order', () => {
+it('filterTrucks narrows on a partial name or load number, in name order', () => {
   expect(filterTrucks(index, 'truck').map((t) => t.id)).toEqual(['t-1', 't-2']);
   expect(filterTrucks(index, '104').map((t) => t.id)).toEqual(['t-1', 't-2']);
   expect(filterTrucks(index, '1043').map((t) => t.id)).toEqual(['t-2']);
@@ -69,4 +69,14 @@ it('filterTrucks narrows on a partial name or load number, keeping the sync orde
 it('an empty filter shows every truck', () => {
   expect(filterTrucks(index, '')).toHaveLength(3);
   expect(filterTrucks(index, '   ')).toHaveLength(3);
+});
+
+it('lists trucks in natural name order, not the id order IndexedDB returns', () => {
+  const mixed = buildTruckIndex([
+    truck({ id: 't-x', name: 'Crate 10' }),
+    truck({ id: 't-y', name: 'crate 2' }),
+    truck({ id: 't-z', name: 'Crate 1' }),
+  ]);
+  expect(filterTrucks(mixed, '').map((t) => t.name)).toEqual(['Crate 1', 'crate 2', 'Crate 10']);
+  expect(filterTrucks(mixed, 'crate').map((t) => t.name)).toEqual(['Crate 1', 'crate 2', 'Crate 10']);
 });

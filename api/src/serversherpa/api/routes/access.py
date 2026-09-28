@@ -296,7 +296,9 @@ async def preview_matrix(
                     "avatar_url": presign_get(person.avatar_key),
                     "max_rank": current.access.max_rank,
                     "flips": flips, "masked": masked})
-    out.sort(key=lambda m: (-len(m["flips"]), m["display_name"]))
+    # Most-affected first. Python's sort is stable, so within one flip count
+    # members keep the natural last-name order the query above returned.
+    out.sort(key=lambda m: -len(m["flips"]))
     return {"role": name,
             "granted": sorted(f"{r}:{a}" for r, a in granted_cells),
             "revoked": sorted(f"{r}:{a}" for r, a in revoked_cells),

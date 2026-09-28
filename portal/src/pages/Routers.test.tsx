@@ -268,3 +268,21 @@ it('clicking a row toggles the expansion; clicking Delete does not open it', asy
 
   confirmSpy.mockRestore();
 });
+
+it('sorts the Name column naturally: numbers by value, case ignored, both directions', async () => {
+  const named = (id: string, name: string): DeviceItem => ({ ...DEVICES[0], id, name, serial: id, mac: id });
+  api.listDevices.mockResolvedValue([named('n10', 'Rack 10'), named('n2', 'Rack 2'), named('n1', 'rack 1')]);
+  const user = userEvent.setup();
+  render(<Routers />);
+  await screen.findByText('Rack 10');
+  const order = () => screen.getAllByText(/^(Rack 10|Rack 2|rack 1)$/).map((n) => n.textContent);
+  const nameHeader = () => [...document.querySelectorAll<HTMLButtonElement>('.list-head button.sortable')]
+    .find((b) => b.textContent?.trim().startsWith('Name')) as HTMLButtonElement;
+
+  // Name ascending is the page default.
+  expect(order()).toEqual(['rack 1', 'Rack 2', 'Rack 10']);
+  await user.click(nameHeader());
+  expect(order()).toEqual(['Rack 10', 'Rack 2', 'rack 1']);
+  await user.click(nameHeader());
+  expect(order()).toEqual(['rack 1', 'Rack 2', 'Rack 10']);
+});

@@ -32,7 +32,7 @@
 
 import { useSyncExternalStore } from 'react';
 
-import { naturalCompare } from '@portal/lib/naturalSort';
+import { compareOrdinal } from '@portal/lib/naturalSort';
 import { uuid } from './identity';
 import { deleteRows, getAll, putRows } from './localDb';
 
@@ -196,7 +196,7 @@ export async function listUploadedSounds(): Promise<UploadedSound[]> {
   const rows = await getAll<SoundRow>('sounds');
   return rows
     .map(({ id, name, type, size, created_at }) => ({ id, name, type, size, created_at }))
-    .sort((a, b) => naturalCompare(a.created_at ?? '', b.created_at ?? ''));
+    .sort((a, b) => compareOrdinal(a.created_at, b.created_at));
 }
 
 /** Deletes an upload, revokes its object URL, and resets any choice that
