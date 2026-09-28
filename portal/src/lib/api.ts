@@ -3910,7 +3910,11 @@ export async function updateAdminConfig(patch: Partial<AdminConfig>): Promise<Ad
 export interface AiLookupConfig {
   background_enabled: boolean; auto_apply: boolean; fields_specs: boolean;
   fields_mounting: boolean; fields_knowledge: boolean; retry_after_days: number;
+  /** How hard Claude thinks and how many web searches it may run per model. */
+  effort: AiLookupEffort;
 }
+
+export type AiLookupEffort = 'low' | 'medium' | 'high';
 
 export async function getAiLookupConfig(): Promise<AiLookupConfig> {
   const resp = await apiFetch('/system/ai-lookup');
@@ -3957,7 +3961,7 @@ export interface SpecBulkResult {
 }
 
 export interface SpecLookupDev {
-  model: string; max_searches: number; max_fetches: number;
+  model: string; effort: AiLookupEffort;
   key_set: boolean; key_last4: string | null; worker_status: string; worker_heartbeat_at: string | null;
 }
 

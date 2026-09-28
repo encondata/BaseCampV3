@@ -8,6 +8,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { getSpecLookupDev, testSpecLookup, type SpecLookupDev } from '../../lib/api';
 import { relativeTime } from '../../lib/format';
 
+const EFFORT_LABEL: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High' };
+
 export default function SpecLookupTab() {
   const [dev, setDev] = useState<SpecLookupDev | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -61,8 +63,7 @@ export default function SpecLookupTab() {
         </div>
         <dl className="kv">
           <dt>Model</dt><dd className="mono">{dev.model}</dd>
-          <dt>Max searches per model</dt><dd>{dev.max_searches}</dd>
-          <dt>Max page reads per model</dt><dd>{dev.max_fetches}</dd>
+          <dt>Lookup effort</dt><dd>{EFFORT_LABEL[dev.effort] ?? dev.effort}</dd>
           <dt>API key</dt>
           <dd>{dev.key_set ? `Set (…${dev.key_last4 ?? '????'})` : 'Not set'}</dd>
           <dt>Worker</dt>

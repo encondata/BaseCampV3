@@ -27,7 +27,7 @@ vi.mock('../../lib/api', async (importActual) => ({
 const { default: SpecLookupTab } = await import('./SpecLookupTab');
 
 const DEV: SpecLookupDev = {
-  model: 'claude-sonnet-5', max_searches: 4, max_fetches: 3,
+  model: 'claude-sonnet-5', effort: 'medium',
   key_set: true, key_last4: 'a1b2', worker_status: 'running', worker_heartbeat_at: null,
 };
 
@@ -43,6 +43,10 @@ it('shows config with the key masked', async () => {
   expect(await screen.findByText('claude-sonnet-5')).toBeTruthy();
   expect(screen.getByText('Set (…a1b2)')).toBeTruthy();
   expect(screen.getByText('running')).toBeTruthy();
+  expect(screen.getByText('Lookup effort')).toBeTruthy();
+  expect(screen.getByText('Medium')).toBeTruthy();
+  expect(screen.queryByText('Max searches per model')).toBeNull();
+  expect(screen.queryByText('Max page reads per model')).toBeNull();
 });
 
 it('says not set and still allows a test', async () => {

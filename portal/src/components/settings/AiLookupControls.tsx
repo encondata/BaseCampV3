@@ -1,15 +1,22 @@
 /**
  * AiLookupControls — System settings › AI lookup. Controls the Makes /
  * Models spec lookup (Claude web search): the background sweep, auto-apply
- * of verified values into BLANK fields, which field groups are asked for,
- * and how long before a looked-up model is tried again.
+ * of verified values into BLANK fields, the lookup effort (thinking depth
+ * and searches per model), which field groups are asked for, and how long
+ * before a looked-up model is tried again.
  */
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 
-import { ApiError, getAiLookupConfig, updateAiLookupConfig, type AiLookupConfig } from '../../lib/api';
+import {
+  ApiError, getAiLookupConfig, updateAiLookupConfig, type AiLookupConfig, type AiLookupEffort,
+} from '../../lib/api';
 import { Switch } from '../Switch';
 
-const ROWS: { key: keyof AiLookupConfig; title: string; hint: string }[] = [
+type ToggleKey = 'background_enabled' | 'auto_apply' | 'fields_specs' | 'fields_mounting' | 'fields_knowledge';
+
+const EFFORTS: [AiLookupEffort, string][] = [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']];
+
+const ROWS: { key: ToggleKey; title: string; hint: string }[] = [
   { key: 'background_enabled', title: 'Background search',
     hint: 'Look up models with missing details automatically, one at a time. Models marked Private or Skip are never sent.' },
   { key: 'auto_apply', title: 'Auto-apply confident matches',
@@ -53,11 +60,30 @@ export default function AiLookupControls({ canChange = true }: { canChange?: boo
   return (
     <>
       {ROWS.map((r) => (
-        <div className="set-row" key={r.key}>
-          <div className="set-label"><b>{r.title}</b><span>{r.hint}</span></div>
-          <Switch checked={Boolean(cfg?.[r.key])} disabled={locked}
-                  onChange={(v) => void patch({ [r.key]: v } as Partial<AiLookupConfig>)} />
-        </div>
+        <Fragment key={r.key}>
+          <div className="set-row">
+            <div className="set-label"><b>{r.title}</b><span>{r.hint}</span></div>
+            <Switch checked={Boolean(cfg?.[r.key])} disabled={locked}
+                    onChange={(v) => void patch({ [r.key]: v } as Partial<AiLookupConfig>)} />
+          </div>
+          {r.key === 'auto_apply' && (
+            <div className="set-row">
+              <div className="set-label">
+                <b>Lookup effort</b>
+                <span>How hard Claude thinks and how many web searches it may run per model. Low: 1 search. Medium: 2 searches. High: 4 searches, for hard-to-find models — costs more.</span>
+              </div>
+              <div className="segmented" role="group" aria-label="Lookup effort">
+                {EFFORTS.map(([value, label]) => (
+                  <button key={value} type="button" aria-pressed={cfg?.effort === value}
+                          className={cfg?.effort === value ? 'on' : ''} disabled={locked}
+                          onClick={() => { if (cfg?.effort !== value) void patch({ effort: value }); }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </Fragment>
       ))}
       <div className="set-row">
         <div className="set-label">
