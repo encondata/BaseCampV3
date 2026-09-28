@@ -127,6 +127,8 @@ class SessionOut(BaseModel):
     person: PersonOut
     roles: list[str]
     must_change_password: bool
+    must_change_reason: Literal["temporary", "expired"] | None = None
+    password_expires_at: datetime | None = None
     preferences: UiPreferences
     perms: dict[str, dict[str, bool]]
     max_rank: int
@@ -149,6 +151,8 @@ class MeOut(BaseModel):
     roles: list[str]
     session_expires_at: datetime
     must_change_password: bool
+    must_change_reason: Literal["temporary", "expired"] | None = None
+    password_expires_at: datetime | None = None
     preferences: UiPreferences
     perms: dict[str, dict[str, bool]]
     max_rank: int

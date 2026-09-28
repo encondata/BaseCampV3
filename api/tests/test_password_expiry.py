@@ -254,3 +254,88 @@ async def test_new_accounts_record_history_without_a_check(client, db, seeded_us
     rows = list(await db.scalars(select(PasswordHistory).where(
         PasswordHistory.person_id == contact.id)))
     assert len(rows) == 1
+
+
+# ── the sign-in gate ────────────────────────────────────────────────
+
+from sqlalchemy import update  # noqa: E402
+
+
+async def _backdate(db, person_id, *, days):
+    await db.execute(update(UserAccount).where(UserAccount.person_id == person_id)
+                     .values(password_updated_at=datetime.now(UTC) - timedelta(days=days)))
+    await db.commit()
+
+
+async def _backdate_since(db, *, days):
+    from serversherpa.db.models import SystemConfig
+    row = await db.get(SystemConfig, "security")
+    row.data = {**row.data,
+                "password_expiry_since": (datetime.now(UTC) - timedelta(days=days)).isoformat()}
+    await db.commit()
+
+
+async def test_expired_password_forces_a_change_at_sign_in(client, db, seeded_user):
+    await _enable_policy(client, db, password_expiry_days=30)
+    await _backdate(db, seeded_user.id, days=100)
+    # the switch went on just now: the clock starts today, so alice is fine
+    resp = await client.post("/auth/login", json={"email": "alice@test.example.com",
+                                                  "password": "CorrectHorse9!"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["must_change_password"] is False
+    assert resp.json()["must_change_reason"] is None
+    assert resp.json()["password_expires_at"] is not None
+    # …until the switch itself is older than the window
+    await _backdate_since(db, days=31)
+    resp = await client.post("/auth/login", json={"email": "alice@test.example.com",
+                                                  "password": "CorrectHorse9!"})
+    body = resp.json()
+    assert body["must_change_password"] is True
+    assert body["must_change_reason"] == "expired"
+    hdrs = {"Authorization": f"Bearer {body['access_token']}"}
+    me = (await client.get("/auth/me", headers=hdrs)).json()
+    assert me["must_change_password"] is True and me["must_change_reason"] == "expired"
+    refreshed = await client.post("/auth/refresh")
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["must_change_reason"] == "expired"
+    # changing the password clears it
+    change = await _change(client, hdrs, "CorrectHorse9!", "Fresh-pw-2026")
+    assert change.status_code == 204, change.text
+    me = (await client.get("/auth/me", headers=hdrs)).json()
+    assert me["must_change_password"] is False and me["must_change_reason"] is None
+
+
+async def test_policy_off_means_nothing_expires(client, db, seeded_user):
+    await _backdate(db, seeded_user.id, days=400)
+    resp = await client.post("/auth/login", json={"email": "alice@test.example.com",
+                                                  "password": "CorrectHorse9!"})
+    assert resp.json()["must_change_password"] is False
+    assert resp.json()["password_expires_at"] is None
+
+
+async def test_temporary_wins_over_expired(client, db, seeded_user):
+    await _enable_policy(client, db, password_expiry_days=1)
+    await _backdate_since(db, days=2)
+    await db.execute(update(UserAccount).where(UserAccount.person_id == seeded_user.id)
+                     .values(must_change_password=True))
+    await db.commit()
+    resp = await client.post("/auth/login", json={"email": "alice@test.example.com",
+                                                  "password": "CorrectHorse9!"})
+    assert resp.json()["must_change_reason"] == "temporary"
+
+
+async def test_kiosk_login_reports_expiry_too(client, db, seeded_user):
+    worker = Person(first_name="Kay", last_name="Kiosk", email="kay-pw@test.example.com")
+    db.add(worker)
+    await db.flush()
+    db.add(PersonRole(person_id=worker.id, role="worker"))
+    await db.commit()
+    await make_login(db, client, worker, "kay-pw@test.example.com")
+    await _enable_policy(client, db, password_expiry_days=1)
+    await _backdate_since(db, days=2)
+    await _backdate(db, worker.id, days=5)
+    resp = await client.post("/auth/login", json={
+        "email": "kay-pw@test.example.com", "password": "CorrectHorse9!", "client": "kiosk"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["must_change_password"] is True
+    assert resp.json()["must_change_reason"] == "expired"

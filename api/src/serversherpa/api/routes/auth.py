@@ -2,6 +2,7 @@
 scoped to /auth — JavaScript never sees it, and it is not sent with
 ordinary API requests."""
 
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Cookie, HTTPException, Request, Response
@@ -21,6 +22,9 @@ from serversherpa.services import auth as auth_service
 from serversherpa.services import totp as totp_service
 from serversherpa.services.audit import audit, diff
 from serversherpa.services.auth import AuthError, AuthResult, LoginChallenge
+from serversherpa.services.password_policy import (
+    PasswordPolicy, change_reason, expires_at, load_policy,
+)
 from serversherpa.services.storage import presign_get
 
 
@@ -84,15 +88,19 @@ async def totp_status_out(db: AsyncSession, account: UserAccount) -> TotpStatusO
         backup_codes_remaining=await totp_service.backup_codes_remaining(db, account.person_id))
 
 
-def session_response(result: AuthResult, response: Response, totp: TotpStatusOut) -> SessionOut:
+def session_response(result: AuthResult, response: Response, totp: TotpStatusOut,
+                     policy: PasswordPolicy) -> SessionOut:
     _set_refresh_cookie(response, result)
+    reason = change_reason(policy, result.account, datetime.now(UTC))
     return SessionOut(
         access_token=result.access_token,
         expires_in=get_settings().access_token_ttl_seconds,
         session_expires_at=result.session_expires_at,
         person=person_out(result.person),
         roles=result.roles,
-        must_change_password=result.account.must_change_password,
+        must_change_password=reason is not None,
+        must_change_reason=reason,
+        password_expires_at=expires_at(policy, result.account),
         preferences=UiPreferences.model_validate(result.account.ui_prefs or {}),
         perms=result.access.perms,
         max_rank=result.access.max_rank,
@@ -126,7 +134,8 @@ async def login(
             challenge_token=totp_service.make_challenge_token(
                 result.account.person_id, result.purpose),
             backup_codes_remaining=result.backup_codes_remaining)
-    return session_response(result, response, await totp_status_out(db, result.account))
+    return session_response(result, response, await totp_status_out(db, result.account),
+                            await load_policy(db))
 
 
 @router.post("/refresh", response_model=SessionOut)
@@ -144,7 +153,8 @@ async def refresh(
     except AuthError as exc:
         _clear_refresh_cookie(response)
         raise _auth_http_error(exc) from None
-    return session_response(result, response, await totp_status_out(db, result.account))
+    return session_response(result, response, await totp_status_out(db, result.account),
+                            await load_policy(db))
 
 
 @router.post("/logout", status_code=204)
@@ -159,11 +169,15 @@ async def logout(
 
 @router.get("/me", response_model=MeOut)
 async def me(user: CurrentUser, db: DbSession) -> MeOut:
+    policy = await load_policy(db)
+    reason = change_reason(policy, user.account, datetime.now(UTC))
     return MeOut(
         person=person_out(user.person),
         roles=user.roles,
         session_expires_at=user.session.expires_at,
-        must_change_password=user.account.must_change_password,
+        must_change_password=reason is not None,
+        must_change_reason=reason,
+        password_expires_at=expires_at(policy, user.account),
         preferences=UiPreferences.model_validate(user.account.ui_prefs or {}),
         perms=user.access.perms,
         max_rank=user.access.max_rank,
@@ -203,7 +217,8 @@ async def _finish_challenge(
     if remember:
         _set_trust_cookie(response, await totp_service.issue_trust(
             db, actor.account, user_agent=ua, ip=ip))
-    return session_response(result, response, await totp_status_out(db, actor.account))
+    return session_response(result, response, await totp_status_out(db, actor.account),
+                            await load_policy(db))
 
 
 @router.post("/totp/verify", response_model=SessionOut)
