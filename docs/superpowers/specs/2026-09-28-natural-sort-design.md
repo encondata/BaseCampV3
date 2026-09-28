@@ -16,7 +16,7 @@ Fix all three layers (approach A, approved 2026-09-28):
 3. **Portal.** One comparator in `portal/src/lib/naturalSort.ts`:
    - `naturalCompare(a: string, b: string): number` — one cached `Intl.Collator(undefined, { numeric: true, sensitivity: 'accent' })`, `null`/`undefined` treated as `''`. `'accent'` (not `'base'`) matches the collation's `ks-level2` exactly: case-insensitive but accent-sensitive, so "Café" and "Cafe" are distinct on both sides.
    - `compareOrdinal(a, b)` — plain code-unit order for machine strings (ISO timestamps, ids) whose order is never read as text.
-   - `compareValues(a, b)` — list-column comparator; a total order over mixed input: `null`/`undefined` first, then numbers by value, then text naturally. Timestamp columns return `Date.parse(...)` numbers, not ISO strings.
+   - `compareValues(a, b)` — list-column comparator; a total order over mixed input: `null`/`undefined` first, then numbers by value, then text naturally. Timestamp sort keys should return `Date.parse(...)` numbers rather than ISO strings (done for devices and status rules; other list pages still compare fixed-width ISO strings, which only mis-orders rows within the same second — a follow-up).
    - `sortNatural<T>(items: T[], key: (t: T) => string): T[]` — a copy, sorted.
    - `lib/sites.ts` re-exports `naturalCompare` from the new module (nothing that imports it today breaks); its own collator is removed.
    - Every place that orders strings switches to it: `localeCompare` calls, bare `.sort()` on string arrays, and the list pages' column comparators (`sortValueFor(...)` → comparator). Numeric and date sorts stay as they are. Dropdown option lists (ComboBox/select options built by callers) sort with it too.

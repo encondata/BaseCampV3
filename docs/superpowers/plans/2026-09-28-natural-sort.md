@@ -116,7 +116,7 @@ ONLY in ORDER BY (see serversherpa.db.ordering.natural). Postgres 16 with
 ICU, which the dev and production servers have.
 
 Revision ID: 0082
-Revises: 0081
+Revises: 0080
 Create Date: 2026-09-28
 
 The unmerged `wiki` (0074–0079) and `spec-lookup` (0080) branches also
@@ -127,7 +127,7 @@ from collections.abc import Sequence
 from alembic import op
 
 revision: str = "0082"
-down_revision: str | None = "0081"
+down_revision: str | None = "0080"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -313,7 +313,7 @@ Create `portal/src/lib/naturalSort.ts`:
  */
 
 // one collator — constructing one per comparison is measurably slow
-const COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+const COLLATOR = new Intl.Collator(undefined, { numeric: true, sensitivity: 'accent' });
 
 export function naturalCompare(a: string | null | undefined, b: string | null | undefined): number {
   return COLLATOR.compare(a ?? '', b ?? '');
