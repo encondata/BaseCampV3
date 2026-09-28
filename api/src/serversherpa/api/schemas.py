@@ -2189,16 +2189,25 @@ class AdminConfigOut(BaseModel):
 class SecurityConfigOut(BaseModel):
     two_factor_enabled: bool
     two_factor_required: bool
+    password_expiry_enabled: bool
+    password_expiry_days: int
+    password_history_count: int
+    password_expiry_since: datetime | None
 
 
 class SecurityConfigIn(BaseModel):
     """Partial update — only sent fields change. `two_factor_required`
-    implies `two_factor_enabled`; turning enabled off clears required."""
+    implies `two_factor_enabled`; turning enabled off clears required.
+    `password_expiry_since` is never accepted: the server stamps it when
+    `password_expiry_enabled` flips on and clears it when it flips off."""
 
     model_config = ConfigDict(extra="forbid")
 
     two_factor_enabled: bool | None = None
     two_factor_required: bool | None = None
+    password_expiry_enabled: bool | None = None
+    password_expiry_days: int | None = None
+    password_history_count: int | None = None
 
 
 class RevokeAllSessionsOut(BaseModel):

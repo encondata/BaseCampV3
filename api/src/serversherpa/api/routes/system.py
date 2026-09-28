@@ -144,6 +144,8 @@ async def put_admin_config(
 
 
 SECURITY_SECTION = "security"
+PASSWORD_EXPIRY_DAYS_RANGE = (1, 365)
+PASSWORD_HISTORY_COUNT_RANGE = (0, 24)
 
 
 @router.get("/security", response_model=SecurityConfigOut)
@@ -169,6 +171,18 @@ async def put_security_config(
         data["two_factor_enabled"] = True
     if patch.get("two_factor_enabled") is False:
         data["two_factor_required"] = False
+
+    lo, hi = PASSWORD_EXPIRY_DAYS_RANGE
+    if not lo <= data["password_expiry_days"] <= hi:
+        raise _err(422, "password_expiry_days_out_of_range")
+    lo, hi = PASSWORD_HISTORY_COUNT_RANGE
+    if not lo <= data["password_history_count"] <= hi:
+        raise _err(422, "password_history_count_out_of_range")
+    # the expiry clock starts when the switch goes on, never earlier
+    if data["password_expiry_enabled"] and not stored.get("password_expiry_enabled"):
+        data["password_expiry_since"] = datetime.now(UTC).isoformat()
+    elif not data["password_expiry_enabled"]:
+        data["password_expiry_since"] = None
 
     row = await db.get(SystemConfig, SECURITY_SECTION)
     if row is None:
