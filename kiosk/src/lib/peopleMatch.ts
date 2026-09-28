@@ -31,6 +31,7 @@
  */
 
 import { displayRfid } from '@portal/lib/format';
+import { naturalCompare } from '@portal/lib/naturalSort';
 
 /** What matching needs from a person. The kiosk's synced people rows
  *  (`KioskPersonRow`) satisfy this; so does the timeclock status
@@ -188,7 +189,7 @@ export function searchPeople<P extends MatchPerson>(
     .map((entry) => ({ entry, exact: entry.fullNames.includes(typed) ? 0 : 1 }))
     .sort((a, b) => a.exact - b.exact
       || a.entry.parts.length - b.entry.parts.length
-      || a.entry.sortKey.localeCompare(b.entry.sortKey))
+      || naturalCompare(a.entry.sortKey, b.entry.sortKey))
     .slice(0, limit)
     .map((hit) => hit.entry.person);
 }
