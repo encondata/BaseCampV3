@@ -142,6 +142,30 @@ describe('model form payload', () => {
     f.form_factor = '';
     expect(modelPayload(f, model)).toEqual({ form_factor: null });
   });
+  it('toggling private sends only { private: true }', () => {
+    const f = formFromModel(model);
+    expect(f.private).toBe(false);
+    expect(f.spec_lookup_skip).toBe(false);
+    f.private = true;
+    expect(modelPayload(f, model)).toEqual({ private: true });
+    f.private = false;
+    f.spec_lookup_skip = true;
+    expect(modelPayload(f, model)).toEqual({ spec_lookup_skip: true });
+  });
+  it('unchanged spec-lookup flags send nothing', () => {
+    const on = { ...model, private: true, spec_lookup_skip: true };
+    expect(modelPayload(formFromModel(on), on)).toEqual({});
+    const f = formFromModel(on);
+    f.private = false;
+    expect(modelPayload(f, on)).toEqual({ private: false });
+  });
+  it('create mode sends the flags only when on', () => {
+    const f = formFromModel(null);
+    f.make = 'HPE'; f.model = 'DL380';
+    expect(modelPayload(f, null)).toEqual({ make: 'HPE', model: 'DL380' });
+    f.private = true;
+    expect(modelPayload(f, null)).toEqual({ make: 'HPE', model: 'DL380', private: true });
+  });
   it('modelCellText and formFactorLabel read the form factor', () => {
     expect(modelCellText(model, 'form')).toBe('Chassis');
     expect(modelCellText({ ...model, form_factor: null }, 'form')).toBe('—');
