@@ -61,3 +61,124 @@ async def test_enabling_stamps_since_and_disabling_clears_it(client, db, seeded_
         AuditLog.entity_type == "system", AuditLog.entity_id == "security")))
     assert rows and all(r.action == "security_config_update" for r in rows)
     assert "password_expiry_since" in rows[0].changes
+
+
+# ── expiry math and history ─────────────────────────────────────────
+
+from datetime import timedelta  # noqa: E402
+
+from serversherpa.config import get_settings  # noqa: E402
+from serversherpa.db.models import PasswordHistory, UserAccount  # noqa: E402
+from serversherpa.security.passwords import verify_password  # noqa: E402
+from serversherpa.services.password_policy import (  # noqa: E402
+    HISTORY_KEEP, PasswordPolicy, PasswordReused, apply_password, assert_not_reused,
+    change_reason, expires_at, load_policy,
+)
+
+NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+
+
+def _account(**over) -> UserAccount:
+    base = dict(password_hash="x", must_change_password=False,
+                password_updated_at=NOW - timedelta(days=100))
+    base.update(over)
+    return UserAccount(**base)
+
+
+def test_expiry_math():
+    off = PasswordPolicy(enabled=False, days=90, history_count=3, since=None)
+    assert expires_at(off, _account()) is None
+    since = NOW - timedelta(days=10)
+    on = PasswordPolicy(enabled=True, days=90, history_count=3, since=since)
+    # the switch went on after the last change: the clock starts at the switch
+    assert expires_at(on, _account()) == since + timedelta(days=90)
+    # changed after the switch: the clock starts at the change
+    fresh = _account(password_updated_at=NOW - timedelta(days=1))
+    assert expires_at(on, fresh) == NOW - timedelta(days=1) + timedelta(days=90)
+    # no password at all → nothing to expire
+    assert expires_at(on, _account(password_hash=None)) is None
+    # never-changed password (NULL timestamp) counts from the switch
+    assert expires_at(on, _account(password_updated_at=None)) == since + timedelta(days=90)
+
+
+def test_change_reason_precedence():
+    on = PasswordPolicy(enabled=True, days=30, history_count=3,
+                        since=NOW - timedelta(days=60))
+    assert change_reason(on, _account(), NOW) == "expired"
+    assert change_reason(on, _account(must_change_password=True), NOW) == "temporary"
+    assert change_reason(on, _account(password_updated_at=NOW - timedelta(days=5)), NOW) is None
+    off = PasswordPolicy(enabled=False, days=30, history_count=3, since=None)
+    assert change_reason(off, _account(), NOW) is None
+
+
+async def test_load_policy_reads_the_section(client, db, seeded_user):
+    hdrs = await _admin(db, client)
+    assert (await load_policy(db)).enabled is False
+    await client.put("/system/security", headers=hdrs,
+                     json={"password_expiry_enabled": True, "password_expiry_days": 45})
+    db.expire_all()
+    policy = await load_policy(db)
+    assert policy.enabled is True and policy.days == 45 and policy.history_count == 3
+    assert policy.since is not None and policy.since.tzinfo is not None
+
+
+async def test_apply_password_records_history_and_trims(db, seeded_user):
+    account = await db.get(UserAccount, seeded_user.id)
+    pepper = get_settings().password_pepper.get_secret_value()
+    for i in range(HISTORY_KEEP + 3):
+        await apply_password(db, account, f"Rotation-{i:02d}-pw", must_change=False,
+                             now=NOW + timedelta(minutes=i))
+    await db.commit()
+    rows = list(await db.scalars(
+        select(PasswordHistory).where(PasswordHistory.person_id == seeded_user.id)
+        .order_by(PasswordHistory.created_at.desc())))
+    assert len(rows) == HISTORY_KEEP
+    assert verify_password(rows[0].password_hash, f"Rotation-{HISTORY_KEEP + 2:02d}-pw", pepper=pepper)
+    assert account.password_updated_at == NOW + timedelta(minutes=HISTORY_KEEP + 2)
+    assert account.must_change_password is False
+    assert verify_password(account.password_hash, f"Rotation-{HISTORY_KEEP + 2:02d}-pw", pepper=pepper)
+
+
+async def test_first_change_keeps_the_password_being_replaced(db, seeded_user):
+    account = await db.get(UserAccount, seeded_user.id)
+    pepper = get_settings().password_pepper.get_secret_value()
+    await apply_password(db, account, "Second-pw-22", must_change=False, now=NOW)
+    await db.commit()
+    rows = list(await db.scalars(
+        select(PasswordHistory).where(PasswordHistory.person_id == seeded_user.id)
+        .order_by(PasswordHistory.created_at)))
+    assert len(rows) == 2
+    assert verify_password(rows[0].password_hash, "CorrectHorse9!", pepper=pepper)
+    assert verify_password(rows[1].password_hash, "Second-pw-22", pepper=pepper)
+    # the current password counts even before any history exists
+    fresh = UserAccount(person_id=seeded_user.id, password_hash=account.password_hash)
+    on = PasswordPolicy(enabled=True, days=90, history_count=1, since=NOW)
+    try:
+        await assert_not_reused(db, on, fresh, "Second-pw-22")
+    except PasswordReused:
+        pass
+    else:
+        raise AssertionError("the current password must count as recently used")
+
+
+async def test_assert_not_reused_checks_only_the_last_n(db, seeded_user):
+    account = await db.get(UserAccount, seeded_user.id)
+    for i in range(4):
+        await apply_password(db, account, f"Old-pw-{i}", must_change=False,
+                             now=NOW + timedelta(minutes=i))
+    await db.commit()
+    on = PasswordPolicy(enabled=True, days=90, history_count=3, since=NOW)
+    for recent in ("Old-pw-1", "Old-pw-2", "Old-pw-3"):
+        try:
+            await assert_not_reused(db, on, account, recent)
+        except PasswordReused as exc:
+            assert exc.count == 3
+        else:
+            raise AssertionError(f"{recent} should have been refused")
+    await assert_not_reused(db, on, account, "Old-pw-0")      # older than the window
+    await assert_not_reused(db, on, account, "CorrectHorse9!")  # kept at the first change, older still
+    await assert_not_reused(db, on, account, "Brand-new-pw")
+    off = PasswordPolicy(enabled=False, days=90, history_count=3, since=None)
+    await assert_not_reused(db, off, account, "Old-pw-3")
+    zero = PasswordPolicy(enabled=True, days=90, history_count=0, since=NOW)
+    await assert_not_reused(db, zero, account, "Old-pw-3")
