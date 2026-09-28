@@ -12,6 +12,7 @@ const ERRORS: Record<string, string> = {
   invalid_current_password: 'Current password is incorrect.',
   same_as_current: 'The new password must be different from the current one.',
   password_too_short: 'The new password is too short.',
+  password_recently_used: "That password was used recently. Choose one you haven't used before.",
 };
 
 export default function ChangePasswordForm({ onSuccess }: { onSuccess: () => void }) {

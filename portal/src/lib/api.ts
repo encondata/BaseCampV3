@@ -151,6 +151,8 @@ export interface SessionData {
   person: PersonOut;
   roles: string[];
   must_change_password: boolean;
+  must_change_reason: 'temporary' | 'expired' | null;
+  password_expires_at: string | null;
   preferences: UiPreferences;
   perms: PermMap;
   max_rank: number;
@@ -3857,7 +3859,14 @@ export interface AdminConfig {
   banner_enabled: boolean; banner_message: string;
 }
 
-export interface SecurityConfig { two_factor_enabled: boolean; two_factor_required: boolean; }
+export interface SecurityConfig {
+  two_factor_enabled: boolean;
+  two_factor_required: boolean;
+  password_expiry_enabled: boolean;
+  password_expiry_days: number;
+  password_history_count: number;
+  password_expiry_since: string | null;
+}
 
 export async function getSecurityConfig(): Promise<SecurityConfig> {
   const resp = await apiFetch('/system/security');

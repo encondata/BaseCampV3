@@ -43,3 +43,17 @@ it('a challenge leaves the context anonymous; completeLogin signs in', async () 
   act(() => ctx.applyTotp({ ...SESSION.totp, backup_codes_remaining: 3 }));
   expect(ctx.totp?.backup_codes_remaining).toBe(3);
 });
+
+it('carries the change reason and expiry date, and clearMustChange clears them', async () => {
+  api.loginRequest.mockResolvedValue({ ...SESSION, must_change_password: true, must_change_reason: 'expired',
+    password_expires_at: '2026-09-01T00:00:00Z' });
+  render(<AuthProvider><Probe /></AuthProvider>);
+  await act(async () => {});
+  await act(() => ctx.login('a@b.c', 'pw'));
+  expect(ctx.mustChangePassword).toBe(true);
+  expect(ctx.mustChangeReason).toBe('expired');
+  expect(ctx.passwordExpiresAt).toBe('2026-09-01T00:00:00Z');
+  act(() => ctx.clearMustChange());
+  expect(ctx.mustChangePassword).toBe(false);
+  expect(ctx.mustChangeReason).toBeNull();
+});

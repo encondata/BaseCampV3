@@ -53,7 +53,7 @@ function formStateFrom(p: PersonDetail): Record<EditKey, string> {
 }
 
 export default function Profile() {
-  const { roles, applyProfile, totp, applyTotp, person } = useAuth();
+  const { roles, applyProfile, totp, applyTotp, person, passwordExpiresAt } = useAuth();
   const navigate = useNavigate();
   const pathname = useLocation().pathname;
   const tab: 'profile' | 'preferences' | 'notifications' | 'history' = pathname.startsWith('/me/preferences')
@@ -273,9 +273,10 @@ export default function Profile() {
                   <dt>Password</dt>
                   <dd>{pwChanged
                     ? <span className="chip c-green"><span className="dot" />changed — other sessions signed out</span>
-                    : profile.password_updated_at
-                      ? `Last reset ${longDate(profile.password_updated_at)}`
-                      : 'set'}</dd>
+                    : <>
+                        {profile.password_updated_at ? `Last reset ${longDate(profile.password_updated_at)}` : 'set'}
+                        {passwordExpiresAt && ` · expires ${longDate(passwordExpiresAt)}`}
+                      </>}</dd>
                   <dt>Two-factor auth</dt>
                   <dd className="totp-line">
                     {totp?.enrolled ? (
