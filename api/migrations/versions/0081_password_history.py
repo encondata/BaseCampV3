@@ -4,11 +4,13 @@ One row per password an account has had. Backfilled with each account's
 current hash so the current password counts as the newest of the "last
 N" from day one.
 
-Revision ID: 0080
+Revision ID: 0081
 Revises: 0073
 Create Date: 2026-09-28
 
-Numbered 0080 because 0074–0079 are taken by the unmerged `wiki` branch.
+Numbered 0081: 0074–0079 belong to the unmerged `wiki` branch and 0080 to the
+unmerged `spec-lookup` branch. Whichever of those merges first, re-point
+`down_revision` at merge time.
 """
 from collections.abc import Sequence
 
@@ -16,7 +18,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
-revision: str = "0080"
+revision: str = "0081"
 down_revision: str | None = "0073"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None

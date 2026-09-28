@@ -19,7 +19,7 @@
 - Expiry date = `max(password_updated_at or since, since) + days`. Nothing is written to accounts when they expire.
 - Reuse is checked only when the policy is enabled and `history_count > 0`; it applies to self-service change, admin reset and the CLI `set-password`; brand-new accounts skip the check but record history. History is trimmed to the newest 24 rows per account.
 - Reminder kind (exact): `password_expiring`; stages `(7, 3, 1)`; one notification per stage per expiry date; skip when already expired.
-- Migration file is `api/migrations/versions/0080_password_history.py` with `revision = "0080"`, `down_revision = "0073"`.
+- Migration file is `api/migrations/versions/0081_password_history.py` with `revision = "0081"`, `down_revision = "0073"`.
 - Kiosk: `kiosk/src/**` changes only in Task 7 (KioskAuthContext, KioskGuard and their tests).
 - Portal typography guardrail (`portal/src/styles/listTypography.test.ts`): no new CSS rules setting font properties on selectors matching `/(row|cell|list|table|chip|mono|\bpn\b|\bps\b|head|…)/i`, no inline `style={{ fontSize… }}`. This plan adds no new CSS.
 - Commit messages end with the trailer line `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
@@ -228,7 +228,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 2: Password history table and the policy service
 
 **Files:**
-- Create: `api/migrations/versions/0080_password_history.py`
+- Create: `api/migrations/versions/0081_password_history.py`
 - Modify: `api/src/serversherpa/db/models.py` (add `PasswordHistory` after `UserAccount`)
 - Create: `api/src/serversherpa/services/password_policy.py`
 - Test: `api/tests/test_password_expiry.py` (append)
@@ -378,7 +378,7 @@ Expected: FAIL at import (`ModuleNotFoundError: serversherpa.services.password_p
 
 - [ ] **Step 3: Write the migration**
 
-Create `api/migrations/versions/0080_password_history.py`:
+Create `api/migrations/versions/0081_password_history.py`:
 
 ```python
 """Password history for the reuse rule (To-Do #32).
@@ -387,11 +387,13 @@ One row per password an account has had. Backfilled with each account's
 current hash so the current password counts as the newest of the "last
 N" from day one.
 
-Revision ID: 0080
+Revision ID: 0081
 Revises: 0073
 Create Date: 2026-09-28
 
-Numbered 0080 because 0074–0079 are taken by the unmerged `wiki` branch.
+Numbered 0081: 0074–0079 belong to the unmerged `wiki` branch and 0080 to the
+unmerged `spec-lookup` branch. Whichever of those merges first, re-point
+`down_revision` at merge time.
 """
 from collections.abc import Sequence
 
@@ -399,7 +401,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
-revision: str = "0080"
+revision: str = "0081"
 down_revision: str | None = "0073"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -596,14 +598,14 @@ async def apply_password(db: AsyncSession, account: UserAccount, new_password: s
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `cd api && PYTHONPATH=$PWD/src SS_TEST_DB=serversherpa_test_pwexp .venv/bin/pytest tests/test_password_expiry.py -q`
-Expected: PASS (the conftest upgrades the test DB to 0080 on the first run; if it reports two heads, another worktree's migrations leaked into the DB — use a fresh `SS_TEST_DB` name).
+Expected: PASS (the conftest upgrades the test DB to 0081 on the first run; if it reports two heads, another worktree's migrations leaked into the DB — use a fresh `SS_TEST_DB` name).
 
-Also run the alembic single-head check that other tests use, e.g. `tests/test_container_labels_report.py -q -k head` if such a test exists; otherwise `cd api && PYTHONPATH=$PWD/src .venv/bin/alembic heads` must print exactly one head (`0080`).
+Also run the alembic single-head check that other tests use, e.g. `tests/test_container_labels_report.py -q -k head` if such a test exists; otherwise `cd api && PYTHONPATH=$PWD/src .venv/bin/alembic heads` must print exactly one head (`0081`).
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add api/migrations/versions/0080_password_history.py api/src/serversherpa/db/models.py api/src/serversherpa/services/password_policy.py api/tests/test_password_expiry.py
+git add api/migrations/versions/0081_password_history.py api/src/serversherpa/db/models.py api/src/serversherpa/services/password_policy.py api/tests/test_password_expiry.py
 git commit -m "feat(api): password history table and the password policy service
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
@@ -1646,6 +1648,6 @@ cd ../portal && npx vitest run && npx tsc -b && npm run build
 cd ../kiosk && npx vitest run && npx tsc -b
 ```
 
-- [ ] **Step 2: Live check on the dev stack** — upgrade the dev DB to 0080 (`cd api && PYTHONPATH=$PWD/src .venv/bin/alembic upgrade head` against the dev DB URL in `.env`), serve the worktree API on 8001 and portal on 5178 (temporary `.claude/launch.json` entries in the MAIN checkout; portal `.env.local` `VITE_API_URL=http://localhost:8001`), open Settings › Security, turn the policy on, edit the numbers, confirm the audit row. Run `PYTHONPATH=$PWD/src .venv/bin/python -c "…run_reminders_once…"` against the dev DB after back-dating a test account and confirm the inbox item. The forced-change screen needs a real sign-in: Jimmy's step.
+- [ ] **Step 2: Live check on the dev stack** — upgrade the dev DB to 0081 (`cd api && PYTHONPATH=$PWD/src .venv/bin/alembic upgrade head` against the dev DB URL in `.env`), serve the worktree API on 8001 and portal on 5178 (temporary `.claude/launch.json` entries in the MAIN checkout; portal `.env.local` `VITE_API_URL=http://localhost:8001`), open Settings › Security, turn the policy on, edit the numbers, confirm the audit row. Run `PYTHONPATH=$PWD/src .venv/bin/python -c "…run_reminders_once…"` against the dev DB after back-dating a test account and confirm the inbox item. The forced-change screen needs a real sign-in: Jimmy's step.
 
 - [ ] **Step 3: Remove temporary launch entries and `.env.local`; send Jimmy a screenshot of the Security tab.

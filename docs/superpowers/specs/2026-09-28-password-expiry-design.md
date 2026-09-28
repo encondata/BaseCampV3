@@ -60,7 +60,7 @@ Nothing is written to the account when it expires; turning the policy off makes 
 
 ## Password history and reuse
 
-**Migration `0080_password_history.py`** (`down_revision = "0073"`; 0074–0079 are taken by the unmerged `wiki` branch, so a distinct number avoids a file clash):
+**Migration `0081_password_history.py`** (`down_revision = "0073"`; 0074–0079 belong to the unmerged `wiki` branch and 0080 to the unmerged `spec-lookup` branch, so a distinct number avoids a file clash — whichever of those merges first, re-point `down_revision` at merge time):
 
 - Table `password_history`: `id uuid pk default gen_random_uuid()`, `person_id uuid not null references user_accounts(person_id) on delete cascade`, `password_hash text not null`, `created_at timestamptz not null default now()`. Index `(person_id, created_at desc)`.
 - Backfill: one row per `user_accounts` row with a non-null `password_hash`, `created_at = coalesce(password_updated_at, now())`, so the current password counts as the most recent of the "last N" from day one.
@@ -120,7 +120,7 @@ Email: none now. When outbound email lands, it fans out from `notify()`; nothing
 3. Sign-in: with the policy on, an account whose `password_updated_at` and `since` are both older than `days` gets `must_change_password: true`, `must_change_reason: "expired"` from `/auth/login`, `/auth/refresh` and `/auth/me`; with the policy off the same account signs in clean; a fresh `since` protects an old password (the "clock starts today" rule).
 4. Kiosk login (`client: "kiosk"`) returns the same flags.
 5. Reuse: after changing to A then B with `history_count = 3`, changing back to A → 422 `password_recently_used`; with the policy off it succeeds; with `history_count = 0` it succeeds; admin reset to a recent password → 422; a brand-new account (promote a contact) succeeds and gets a history row; history is trimmed to 24 rows.
-6. History: `apply_password` on an account records a row; the test DB is built by running every migration, so 0080 (table + backfill) is exercised by the suite itself.
+6. History: `apply_password` on an account records a row; the test DB is built by running every migration, so 0081 (table + backfill) is exercised by the suite itself.
 7. Reminders: policy off → 0; 10 days left → 0; 6 days → one stage-7 notification; run again → 0 (dedup); 2 days → stage 3; 1 day (12 hours) → stage 1; expired → 0; a disabled account → 0; payload carries `expires_at`, `stage`, `days_left`; title/body wording.
 8. Worker: `run_forever` smoke test still passes; a unit test that the reminder pass is invoked through `run_reminders_once(maker)` (a small wrapper the loop calls) and swallows an injected exception.
 
