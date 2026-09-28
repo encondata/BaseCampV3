@@ -106,6 +106,14 @@ class Settings(BaseSettings):
     ai_timeout_seconds: float = 60.0
     ai_reasoning_effort: str = ""  # "none" disables thinking on e.g. qwen3
 
+    # ── Spec lookup (Claude API) ───────────────────────────
+    # Makes / Models spec lookup via Claude web search. Empty key = not
+    # configured: the worker idles and the portal says so.
+    anthropic_api_key: SecretStr = SecretStr("")
+    spec_lookup_model: str = "claude-sonnet-5"
+    spec_lookup_max_searches: int = 4
+    spec_lookup_max_fetches: int = 3
+
     # ── Reports ────────────────────────────────────────────
     # Node script that renders rack elevations (portal's RackElevation, SSR).
     # Empty = <repo>/portal/dist-node/render-rack.js.
