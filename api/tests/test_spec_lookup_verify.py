@@ -15,6 +15,10 @@ def test_numbers_in():
     assert numbers_in("2U") == [2.0]
 
 
+def test_numbers_in_skips_unparseable():
+    assert numbers_in("iLO 192.168.1.1, weight 13.6 kg") == [13.6]
+
+
 def test_url_normalization():
     assert normalize_url("https://WWW.hpe.com/a/?x=1#frag") == "https://www.hpe.com/a?x=1"
 
@@ -57,3 +61,7 @@ def test_mount_and_rail_and_knowledge():
 
 def test_empty_quote_rejected():
     assert v("ru_size", "1", None, "   ") is None
+
+
+def test_verify_finding_with_ip_address_in_quote():
+    assert v("weight", "13.6", "kg", "Default gateway 192.168.1.1, weight 13.6 kg") is not None

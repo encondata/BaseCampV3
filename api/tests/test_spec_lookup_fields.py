@@ -49,3 +49,7 @@ def test_column_payload():
     assert column_payload("mount_type", "rails", None) == {"mount_type": "rails"}
     assert column_payload("knowledge", "1U server.", None) == {"knowledge": "1U server."}
     assert column_payload("knowledge", None, None) == {"knowledge": ""}
+
+
+def test_column_payload_ru_size_rounding():
+    assert column_payload("ru_size", "2.9", None) == {"ru_size": 3}

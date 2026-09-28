@@ -42,7 +42,13 @@ def _to_float(token: str) -> float:
 
 
 def numbers_in(text: str) -> list[float]:
-    return [_to_float(t) for t in _NUM.findall(text)]
+    out = []
+    for t in _NUM.findall(text):
+        try:
+            out.append(_to_float(t))
+        except ValueError:
+            pass
+    return out
 
 
 def normalize_url(url: str) -> str:

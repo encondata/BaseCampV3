@@ -64,7 +64,7 @@ def column_payload(field: str, value: str | None, unit: str | None) -> dict:
     if value is None:
         return {col: "" if field == "knowledge" else None}
     if field == "ru_size":
-        return {col: int(float(value))}
+        return {col: int(round(float(value)))}
     if field in NUMERIC:
         return {col: float(value)}
     return {col: value}
