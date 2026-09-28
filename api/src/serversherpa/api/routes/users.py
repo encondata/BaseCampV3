@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from serversherpa.access.apply import apply_global_roles, apply_groups
@@ -589,6 +589,62 @@ async def enable_account(
     account.updated_at = datetime.now(UTC)
     audit(db, actor_id=actor.person.id, entity_type="user_account",
           entity_id=str(person_id), action="account.enable")
+    await db.commit()
+
+
+@router.post("/{person_id}/demote", status_code=204)
+async def demote_to_worker(
+    person_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    actor: AuthContext = require_permission("users", "change"),
+) -> None:
+    """Someone quit: take away the portal login and every kind of portal
+    access in one transaction, but keep the person — badge, RFID, time
+    entries, scans and assignments stay, so they remain a worker and can
+    be given a login again later with POST /{person_id}/account."""
+    _, account, _ = await _load_target(db, actor, person_id)
+    now = datetime.now(UTC)
+    login_email = account.email
+
+    roles = sorted(await db.scalars(
+        select(PersonRole.role).where(PersonRole.person_id == person_id,
+                                      PersonRole.revoked_at.is_(None))))
+    access_groups = sorted(await db.scalars(
+        select(AccessGroup.name)
+        .join(AccessGroupMember, AccessGroupMember.group_id == AccessGroup.id)
+        .where(AccessGroupMember.person_id == person_id)))
+    notification_groups = sorted(await db.scalars(
+        select(NotificationGroup.name)
+        .join(NotificationGroupMember, NotificationGroupMember.group_id == NotificationGroup.id)
+        .where(NotificationGroupMember.person_id == person_id)))
+
+    # "demoted" isn't one of auth_sessions_revoke_reason_check's allowed
+    # values (logout/reuse_detected/admin/password_change/account_disabled);
+    # "admin" is the closest existing bucket, matching the generic
+    # admin-initiated revocation elsewhere in this file.
+    await _revoke_all_sessions(db, person_id, "admin")
+    await totp_service.reset(db, account, actor_id=actor.person.id, ip=client_ip(request))
+    await db.execute(
+        update(PersonRole)
+        .where(PersonRole.person_id == person_id, PersonRole.revoked_at.is_(None))
+        .values(revoked_at=now, revoked_by=actor.person.id, updated_at=now))
+    await db.execute(delete(AccessGroupMember).where(AccessGroupMember.person_id == person_id))
+    await db.execute(delete(NotificationGroupMember)
+                     .where(NotificationGroupMember.person_id == person_id))
+    # auth_sessions.person_id -> user_accounts.person_id has no ON DELETE
+    # CASCADE (unlike password_history/trusted_devices), so the revoked
+    # rows from _revoke_all_sessions above would still block the account
+    # delete below; remove them explicitly first.
+    await db.execute(delete(AuthSession).where(AuthSession.person_id == person_id))
+    await db.delete(account)   # password_history cascades
+
+    audit(db, actor_id=actor.person.id, entity_type="user_account",
+          entity_id=str(person_id), action="account.demote",
+          changes={"login_email": login_email, "roles": roles,
+                   "access_groups": access_groups,
+                   "notification_groups": notification_groups},
+          ip=client_ip(request))
     await db.commit()
 
 

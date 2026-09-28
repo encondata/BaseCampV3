@@ -1,6 +1,6 @@
 """Account management: self-service password change + admin actions."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import Person, PersonRole, UserAccount
@@ -273,3 +273,106 @@ async def test_admin_edit_profile(client, seeded_user, db):
     body = resp.json()
     assert body["job_title"] == "Splice Lead"
     assert body["city"] == "Reno"
+
+
+# ── admin: demote to worker ────────────────────────────────────────
+
+from sqlalchemy import select  # noqa: E402
+
+from serversherpa.db.models import (  # noqa: E402
+    AccessGroup, AccessGroupMember, AuditLog, NotificationGroup, NotificationGroupMember,
+    PasswordHistory, TrustedDevice,
+)
+
+
+async def test_demote_removes_login_and_every_access_but_keeps_the_person(client, seeded_user, db):
+    worker = await _mk_user(db, first="Wan", last="Worker",
+                            email="wan@test.example.com", roles=("worker", "staff"))
+    worker_id = worker.id
+    worker.rfid_tag = "E200ABCDEF"
+    badge = worker.badge_uid
+    account = await db.get(UserAccount, worker.id)
+    account.totp_secret_enc = b"secret"
+    account.totp_confirmed_at = datetime.now(UTC)
+    ag = AccessGroup(name="Dock crew")
+    ng = NotificationGroup(name="On-call")
+    db.add_all([ag, ng])
+    await db.flush()
+    db.add_all([
+        AccessGroupMember(group_id=ag.id, person_id=worker.id),
+        NotificationGroupMember(group_id=ng.id, person_id=worker.id),
+        TrustedDevice(person_id=worker.id, token_hash="t" * 64, user_agent="UA",
+                      last_used_at=datetime.now(UTC),
+                      expires_at=datetime.now(UTC) + timedelta(days=7)),
+    ])
+    await db.commit()
+    worker_session = await _headers(client, "wan@test.example.com")
+    admin = await login_admin(client, db, seeded_user)
+
+    resp = await client.post(f"/users/{worker.id}/demote", headers=admin)
+    assert resp.status_code == 204, resp.text
+
+    # signed out, and there is nothing left to sign in to
+    assert (await client.get("/auth/me", headers=worker_session)).status_code == 401
+    login = await _login(client, "wan@test.example.com")
+    assert login.status_code == 401
+    assert login.json()["detail"]["code"] == "invalid_credentials"
+
+    # ids read above, before expiring, so accessing them below doesn't
+    # itself trigger a synchronous refresh of an expired instance
+    db.expire_all()
+    assert await db.get(UserAccount, worker_id) is None
+    assert list(await db.scalars(select(PasswordHistory).where(
+        PasswordHistory.person_id == worker_id))) == []
+    active_roles = list(await db.scalars(select(PersonRole.role).where(
+        PersonRole.person_id == worker_id, PersonRole.revoked_at.is_(None))))
+    assert active_roles == []
+    revoked = list(await db.scalars(select(PersonRole).where(
+        PersonRole.person_id == worker_id, PersonRole.revoked_at.is_not(None))))
+    assert {r.role for r in revoked} == {"worker", "staff"}
+    assert list(await db.scalars(select(AccessGroupMember).where(
+        AccessGroupMember.person_id == worker_id))) == []
+    assert list(await db.scalars(select(NotificationGroupMember).where(
+        NotificationGroupMember.person_id == worker_id))) == []
+    assert list(await db.scalars(select(TrustedDevice).where(
+        TrustedDevice.person_id == worker_id, TrustedDevice.revoked_at.is_(None)))) == []
+
+    person = await db.get(Person, worker_id)
+    assert person is not None and person.archived_at is None
+    assert person.badge_uid == badge and person.rfid_tag == "E200ABCDEF"
+
+    listed = (await client.get("/users", headers=admin)).json()
+    assert all(u["person_id"] != str(worker_id) for u in listed)
+    assert (await client.get(f"/users/{worker_id}", headers=admin)).status_code == 404
+
+    rows = list(await db.scalars(select(AuditLog).where(
+        AuditLog.entity_type == "user_account", AuditLog.entity_id == str(worker_id),
+        AuditLog.action == "account.demote")))
+    assert len(rows) == 1
+    assert rows[0].changes["login_email"] == "wan@test.example.com"
+    assert sorted(rows[0].changes["roles"]) == ["staff", "worker"]
+    assert rows[0].changes["access_groups"] == ["Dock crew"]
+    assert rows[0].changes["notification_groups"] == ["On-call"]
+
+    # the person can be promoted again
+    again = await client.post(f"/users/{worker_id}/account", headers=admin, json={
+        "login_email": "wan@test.example.com", "temp_password": "Temp-pw-9999",
+        "must_change_password": True})
+    assert again.status_code == 201, again.text
+
+
+async def test_demote_refusals(client, seeded_user, db):
+    staff = await _headers(client, "alice@test.example.com")
+    me = (await client.get("/auth/me", headers=staff)).json()["person"]
+    resp = await client.post(f"/users/{me['id']}/demote", headers=staff)
+    assert resp.status_code == 403 and resp.json()["detail"]["code"] == "cannot_target_self"
+
+    contact = Person(first_name="No", last_name="Login", email="nologin@test.example.com")
+    db.add(contact)
+    await db.commit()
+    assert (await client.post(f"/users/{contact.id}/demote", headers=staff)).status_code == 404
+
+    boss = await _mk_user(db, first="Big", last="Boss", email="boss@test.example.com",
+                          roles=("admin",))
+    resp = await client.post(f"/users/{boss.id}/demote", headers=staff)
+    assert resp.status_code == 403
