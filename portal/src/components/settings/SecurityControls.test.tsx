@@ -68,7 +68,7 @@ it('does nothing when the confirm is declined, and disables everything when chan
 it('shows the password policy rows and saves the switch and the numbers', async () => {
   render(<SecurityControls />);
   await waitFor(() => expect(switches()[2].disabled).toBe(false));
-  expect(screen.getByText('Password expiry')).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Password expiry' })).toBeTruthy();
   fireEvent.click(switches()[2]);
   await waitFor(() => expect(api.updateSecurityConfig).toHaveBeenCalledWith({ password_expiry_enabled: true }));
   const days = screen.getByLabelText('Expires after') as HTMLInputElement;
@@ -105,4 +105,25 @@ it('does not save when the field is cleared and blurred, and reverts to the save
   fireEvent.blur(days);
   await waitFor(() => expect(days.value).toBe('90'));
   expect(api.updateSecurityConfig).not.toHaveBeenCalled();
+});
+
+it('groups the controls into two-factor, password expiry and sessions cards', async () => {
+  const { container } = render(<SecurityControls />);
+  await waitFor(() => expect(switches()[0].disabled).toBe(false));
+  const heads = [...container.querySelectorAll('.set-section .set-head h3')].map((h) => h.textContent);
+  expect(heads).toEqual(['Two-factor authentication', 'Password expiry', 'Sessions']);
+  const cards = [...container.querySelectorAll('.set-section')];
+  expect(cards[0].textContent).toContain('Require two-factor for everyone');
+  expect(cards[1].textContent).toContain('Expires after');
+  expect(cards[2].querySelector('button')?.textContent).toBe('End all sessions');
+});
+
+it('shows a failed save in the card it came from', async () => {
+  api.updateSecurityConfig.mockRejectedValueOnce(Object.assign(new api.ApiError('x'), { code: 'password_history_count_out_of_range' }));
+  render(<SecurityControls />);
+  const count = await screen.findByLabelText('Prevent reuse of the last');
+  fireEvent.change(count, { target: { value: '99' } });
+  fireEvent.blur(count);
+  const err = await screen.findByText(/between 0 and 24/);
+  expect(err.closest('.set-section')?.querySelector('h3')?.textContent).toBe('Password expiry');
 });

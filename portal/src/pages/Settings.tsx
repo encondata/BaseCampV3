@@ -69,15 +69,7 @@ export default function Settings() {
             <AdminControls canChange={canChange} />
           </section>
         )}
-        {tab === 'security' && (
-          <section className="set-section">
-            <div className="set-head">
-              <h3>Security</h3>
-              <p>Two-factor policy and sign-in protection for every account.</p>
-            </div>
-            <SecurityControls canChange={canChange} />
-          </section>
-        )}
+        {tab === 'security' && <SecurityControls canChange={canChange} />}
         {(tab === 'maintenance' || tab === 'about') && (
           <section className="set-section">
             <div className="set-head">

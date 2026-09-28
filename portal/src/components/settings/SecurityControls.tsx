@@ -1,9 +1,10 @@
 /**
- * SecurityControls — System settings › Security. Two-factor POLICY flags,
- * now enforced: enrollment challenges enrolled users at sign-in, and the
- * "require for everyone" flag forces enrollment at next sign-in. Also the
- * "End all sessions" action, which signs everyone out on every device
- * except the admin pressing it.
+ * SecurityControls — System settings › Security, as three cards: the
+ * two-factor POLICY flags (enforced: enrollment challenges enrolled users
+ * at sign-in, "require for everyone" forces enrollment at next sign-in),
+ * the password expiry policy, and the "End all sessions" action that signs
+ * everyone out on every device except the admin pressing it. A failed save
+ * reports in the card it came from.
  */
 
 import { useEffect, useState } from 'react';
@@ -16,27 +17,35 @@ import { Switch } from '../Switch';
 export default function SecurityControls({ canChange = true }: { canChange?: boolean }) {
   const [cfg, setCfg] = useState<SecurityConfig | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  type Card = 'totp' | 'expiry' | 'sessions';
+  const [error, setError] = useState<{ card: Card; text: string } | null>(null);
+  const errorIn = (card: Card) => error?.card === card && (
+    <p className="pf-error" style={{ margin: '0 20px 14px' }}>{error.text}</p>
+  );
   const [revoked, setRevoked] = useState<{ revoked_sessions: number; revoked_people: number } | null>(null);
   const [trustDays, setTrustDays] = useState<number | null>(null);
 
   useEffect(() => {
-    void getSecurityConfig().then(setCfg).catch(() => setError('Could not load security settings.'));
+    void getSecurityConfig().then(setCfg)
+      .catch(() => setError({ card: 'totp', text: 'Could not load security settings.' }));
     void getSystemStatus().then((s) => setTrustDays(s.totp_trust_days)).catch(() => {});
   }, []);
 
-  const patch = async (p: Partial<SecurityConfig>) => {
-    setBusy(true); setError('');
+  const patch = async (p: Partial<SecurityConfig>, card: Card) => {
+    setBusy(true); setError(null);
     try { setCfg(await updateSecurityConfig(p)); return true; }
-    catch (err) { setError(err instanceof ApiError ? (RANGE_ERRORS[err.code] ?? err.message) : 'Could not save.'); return false; }
+    catch (err) {
+      setError({ card, text: err instanceof ApiError ? (RANGE_ERRORS[err.code] ?? err.message) : 'Could not save.' });
+      return false;
+    }
     finally { setBusy(false); }
   };
 
   const endAll = async () => {
     if (!window.confirm('Sign everyone out on every device? You will stay signed in here.')) return;
-    setBusy(true); setError(''); setRevoked(null);
+    setBusy(true); setError(null); setRevoked(null);
     try { setRevoked(await revokeAllSessions()); }
-    catch (err) { setError(err instanceof ApiError ? err.message : 'Could not end sessions.'); }
+    catch (err) { setError({ card: 'sessions', text: err instanceof ApiError ? err.message : 'Could not end sessions.' }); }
     finally { setBusy(false); }
   };
 
@@ -44,13 +53,18 @@ export default function SecurityControls({ canChange = true }: { canChange?: boo
 
   return (
     <>
+      <section className="set-section">
+        <div className="set-head">
+          <h3>Two-factor authentication</h3>
+          <p>Enrollment and the sign-in challenge for every account.</p>
+        </div>
       <div className="set-row">
         <div className="set-label">
           <b>Two-factor authentication</b>
           <span>Lets people enroll an authenticator app and challenges enrolled users at sign-in.</span>
         </div>
         <Switch checked={cfg?.two_factor_enabled ?? false} disabled={locked}
-                onChange={(v) => void patch({ two_factor_enabled: v })} />
+                onChange={(v) => void patch({ two_factor_enabled: v }, 'totp')} />
       </div>
       <div className="set-row">
         <div className="set-label">
@@ -58,7 +72,7 @@ export default function SecurityControls({ canChange = true }: { canChange?: boo
           <span>Every user must enroll at their next sign-in. Turning this on also enables two-factor.</span>
         </div>
         <Switch checked={cfg?.two_factor_required ?? false} disabled={locked}
-                onChange={(v) => void patch({ two_factor_required: v })} />
+                onChange={(v) => void patch({ two_factor_required: v }, 'totp')} />
       </div>
       <div className="set-row">
         <div className="set-label">
@@ -66,20 +80,36 @@ export default function SecurityControls({ canChange = true }: { canChange?: boo
           <span>"Remember this browser" at the code step lets that browser skip the code for {trustDays ?? '…'} days (SS_TOTP_TRUST_DAYS).</span>
         </div>
       </div>
+      {errorIn('totp')}
+      </section>
+
+      <section className="set-section">
+        <div className="set-head">
+          <h3>Password expiry</h3>
+          <p>How long a password stays valid and which old ones can't come back.</p>
+        </div>
       <div className="set-row">
         <div className="set-label">
           <b>Password expiry</b>
           <span>Everyone must choose a new password after a set number of days, and can't reuse recent ones. The clock starts today.</span>
         </div>
         <Switch checked={cfg?.password_expiry_enabled ?? false} disabled={locked}
-                onChange={(v) => void patch({ password_expiry_enabled: v })} />
+                onChange={(v) => void patch({ password_expiry_enabled: v }, 'expiry')} />
       </div>
       <NumberSetting id="sec-expiry-days" label="Expires after" hint="Days a password stays valid." suffix="days"
                      value={cfg?.password_expiry_days ?? 90} min={1} max={365} disabled={locked}
-                     onSave={(v) => patch({ password_expiry_days: v })} />
+                     onSave={(v) => patch({ password_expiry_days: v }, 'expiry')} />
       <NumberSetting id="sec-history-count" label="Prevent reuse of the last" hint="Passwords that can't be chosen again. 0 turns this off." suffix="passwords"
                      value={cfg?.password_history_count ?? 3} min={0} max={24} disabled={locked}
-                     onSave={(v) => patch({ password_history_count: v })} />
+                     onSave={(v) => patch({ password_history_count: v }, 'expiry')} />
+      {errorIn('expiry')}
+      </section>
+
+      <section className="set-section">
+        <div className="set-head">
+          <h3>Sessions</h3>
+          <p>Sign-in sessions across every device.</p>
+        </div>
       <div className="set-row">
         <div className="set-label">
           <b>End all sessions</b>
@@ -94,7 +124,8 @@ export default function SecurityControls({ canChange = true }: { canChange?: boo
           End all sessions
         </button>
       </div>
-      {error && <p className="pf-error" style={{ margin: '0 20px 14px' }}>{error}</p>}
+      {errorIn('sessions')}
+      </section>
     </>
   );
 }
