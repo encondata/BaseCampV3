@@ -21,6 +21,11 @@ MAX_TEXT = {"rail_type": 100, "knowledge": 1000}
 
 _NUM = re.compile(r"\d+(?:[.,]\d+)*")
 
+IN_PER_RU = 1.75
+RU_SLACK_IN = 0.25
+HEAVY_KG_PER_RU = 25
+KG_PER_LB = 0.453592
+
 
 @dataclass(frozen=True)
 class Verified:
@@ -49,6 +54,28 @@ def numbers_in(text: str) -> list[float]:
         except ValueError:
             pass
     return out
+
+
+def height_fits_ru(height: float, unit: str, ru: int) -> bool:
+    """A cross-field plausibility check: does this height make sense for the
+    unit's declared rack size? Guards against a value that survived
+    verify_finding (its quote contains it) but is really some other
+    dimension — e.g. a 1U server's 43.46 cm width mistaken for its height."""
+    height_in = height / 2.54 if unit == "cm" else height
+    lo = (ru - 1) * IN_PER_RU - RU_SLACK_IN
+    hi = ru * IN_PER_RU + RU_SLACK_IN
+    return lo <= height_in <= hi
+
+
+def weight_is_heavy(weight: float, unit: str, ru: int | None) -> bool:
+    """True when the weight-per-RU is implausibly high for typical rack gear,
+    so a heavy-weight suggestion is flagged instead of trusted for
+    auto-apply. Unknown ru means there's nothing to divide by, so it's never
+    flagged."""
+    if ru is None or ru < 1:
+        return False
+    kg = weight * KG_PER_LB if unit == "lbs" else weight
+    return (kg / ru) > HEAVY_KG_PER_RU
 
 
 def normalize_url(url: str) -> str:

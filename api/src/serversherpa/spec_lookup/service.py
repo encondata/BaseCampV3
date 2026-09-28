@@ -15,7 +15,7 @@ from serversherpa.spec_lookup.fields import (
     COLUMNS, blank_conditions, column_payload, current_value, enabled_fields, is_blank,
 )
 from serversherpa.spec_lookup.provider import LookupResult
-from serversherpa.spec_lookup.verify import verify_finding
+from serversherpa.spec_lookup.verify import Verified, height_fits_ru, verify_finding, weight_is_heavy
 
 AI_LOOKUP = "ai_lookup"
 PRIORITY_SWEEP = 0
@@ -103,6 +103,18 @@ async def _apply(db: AsyncSession, m: AssetModel, s: SpecSuggestion,
               action=action, changes=changes)
 
 
+def _known_ru(verified: list[Verified], m: AssetModel) -> int | None:
+    """The ru to cross-check other fields against: the verified ru_size from
+    this same result if present (order-independent of the other findings),
+    else the model's current ru_size."""
+    ru_finding = next((v for v in verified if v.field == "ru_size"), None)
+    if ru_finding is not None:
+        return int(float(ru_finding.value))
+    if m.ru_size is not None:
+        return int(m.ru_size)
+    return None
+
+
 async def record_result(db: AsyncSession, job: SpecLookupJob, m: AssetModel,
                         result: LookupResult, cfg: dict) -> list[SpecSuggestion]:
     now = datetime.now(UTC)
@@ -110,15 +122,29 @@ async def record_result(db: AsyncSession, job: SpecLookupJob, m: AssetModel,
     job.output_tokens += result.output_tokens
     job.search_count += result.search_count
     m.specs_looked_up_at = now
-    out: list[SpecSuggestion] = []
+
+    # 1. Collect every verified finding first (first verified value per field wins).
+    verified: list[Verified] = []
     seen_fields: set[str] = set()
     for f in result.findings:
-        if f.field in seen_fields:          # first verified value per field wins
+        if f.field in seen_fields:
             continue
         v = verify_finding(f.field, f.value, f.unit, f.quote, f.source_url, result.seen_urls)
         if v is None:
             continue
         seen_fields.add(v.field)
+        verified.append(v)
+
+    # 2. Apply the cross-field plausibility check: a height that doesn't fit
+    # the (known) rack size never becomes a suggestion at all.
+    ru = _known_ru(verified, m)
+    if ru is not None and ru >= 1:
+        verified = [v for v in verified
+                   if v.field != "height" or height_fits_ru(float(v.value), v.unit, ru)]
+
+    # 3. Write suggestions.
+    out: list[SpecSuggestion] = []
+    for v in verified:
         await db.execute(
             update(SpecSuggestion)
             .where(SpecSuggestion.model_id == m.id, SpecSuggestion.field == v.field,
@@ -129,7 +155,8 @@ async def record_result(db: AsyncSession, job: SpecLookupJob, m: AssetModel,
                            previous_value=current_value(m, v.field, v.unit),
                            status="pending")
         db.add(s)
-        if cfg.get("auto_apply") and v.field != "knowledge" and is_blank(m, v.field):
+        heavy = v.field == "weight" and weight_is_heavy(float(v.value), v.unit, ru)
+        if cfg.get("auto_apply") and v.field != "knowledge" and is_blank(m, v.field) and not heavy:
             await _apply(db, m, s, None, v.value, "spec_lookup.apply")
             s.status = "applied"
             s.decided_at = now

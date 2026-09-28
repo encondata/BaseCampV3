@@ -21,9 +21,11 @@ SEARCH_COST_USD = 0.01                 # $10 per 1,000 searches
 INPUT_COST_PER_MTOK = 2.0              # claude-sonnet-5
 OUTPUT_COST_PER_MTOK = 10.0
 
-# Lookup effort (System settings › AI lookup) -> output_config.effort and the
-# web_search max_uses. The single source of truth for the mapping.
-EFFORT_SEARCHES = {"low": 1, "medium": 2, "high": 4}
+# Lookup effort (System settings › AI lookup) -> (thinking effort, web_search
+# max_uses). The single source of truth for the mapping. Runs with more
+# thinking found far more values than runs with more searches, so thinking
+# effort climbs faster than the search budget as the level goes up.
+EFFORT_LEVELS = {"low": ("medium", 1), "medium": ("high", 2), "high": ("high", 4)}
 DEFAULT_EFFORT = "medium"
 
 
@@ -175,8 +177,9 @@ class ClaudeProvider:
     async def lookup(self, *, make: str, model: str, aliases: list[str],
                      category: str | None, fields: list[str],
                      effort: str = DEFAULT_EFFORT) -> LookupResult:
-        if effort not in EFFORT_SEARCHES:
+        if effort not in EFFORT_LEVELS:
             effort = DEFAULT_EFFORT
+        thinking_effort, max_searches = EFFORT_LEVELS[effort]
         user = {"role": "user", "content": _prompt(make, model, aliases, category, fields)}
         messages: list[dict] = [user]
         result = LookupResult()
@@ -186,9 +189,9 @@ class ClaudeProvider:
                 model=self._model, max_tokens=MAX_TOKENS, system=SYSTEM,
                 messages=messages,
                 tools=[{"type": "web_search_20250305", "name": "web_search",
-                        "max_uses": EFFORT_SEARCHES[effort]}],
+                        "max_uses": max_searches}],
                 output_config={"format": {"type": "json_schema", "schema": SCHEMA},
-                               "effort": effort},
+                               "effort": thinking_effort},
             )
             d = resp.model_dump()
             usage = d.get("usage") or {}

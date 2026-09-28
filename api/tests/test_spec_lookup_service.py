@@ -126,6 +126,69 @@ async def test_auto_apply_fills_blank_only_with_unit_pair_and_audit(db):
     assert row.actor_person_id is None and "weight_kg" in row.changes
 
 
+async def test_implausible_height_dropped_for_known_ru(db):
+    m = await _m(db, ru_size=1)
+    job = SpecLookupJob(model_id=m.id)
+    db.add(job)
+    await db.flush()
+    rows = await service.record_result(db, job, m, _result(
+        Finding("height", "42.8", "cm", "42.8 cm", URL),           # implausible for 1U
+        Finding("width", "43.46", "cm", "43.46 cm", URL),
+        Finding("length", "70.7", "cm", "70.7 cm", URL),
+    ), CFG)
+    await db.commit()
+    assert [r.field for r in rows] == ["width", "length"]
+    assert m.height_cm is None
+
+
+async def test_implausible_height_uses_ru_from_same_result_when_model_blank(db):
+    m = await _m(db)                                              # ru_size blank
+    job = SpecLookupJob(model_id=m.id)
+    db.add(job)
+    await db.flush()
+    rows = await service.record_result(db, job, m, _result(
+        Finding("ru_size", "1", None, "1U", URL),
+        Finding("height", "42.8", "cm", "42.8 cm", URL),
+    ), CFG)
+    await db.commit()
+    assert [r.field for r in rows] == ["ru_size"]
+
+
+async def test_height_kept_when_ru_unknown(db):
+    m = await _m(db)                                              # ru_size blank, no ru finding
+    job = SpecLookupJob(model_id=m.id)
+    db.add(job)
+    await db.flush()
+    rows = await service.record_result(db, job, m, _result(
+        Finding("height", "42.8", "cm", "42.8 cm", URL)), CFG)
+    await db.commit()
+    assert [r.field for r in rows] == ["height"]
+
+
+async def test_heavy_weight_stays_pending_even_with_auto_apply(db):
+    m = await _m(db, ru_size=1)
+    job = SpecLookupJob(model_id=m.id)
+    db.add(job)
+    await db.flush()
+    rows = await service.record_result(db, job, m, _result(
+        Finding("weight", "29.6", "kg", "29.6 kg", URL)),
+        {**CFG, "auto_apply": True})
+    await db.commit()
+    assert rows[0].status == "pending" and m.weight_kg is None
+
+
+async def test_non_heavy_weight_still_auto_applies(db):
+    m = await _m(db, ru_size=2)
+    job = SpecLookupJob(model_id=m.id)
+    db.add(job)
+    await db.flush()
+    rows = await service.record_result(db, job, m, _result(
+        Finding("weight", "16", "kg", "16 kg", URL)),
+        {**CFG, "auto_apply": True})
+    await db.commit()
+    assert rows[0].status == "applied" and float(m.weight_kg) == 16
+
+
 async def test_knowledge_never_auto_applies(db):
     m = await _m(db)
     job = SpecLookupJob(model_id=m.id)

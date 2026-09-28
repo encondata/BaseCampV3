@@ -1,4 +1,8 @@
-from serversherpa.spec_lookup.verify import numbers_in, normalize_url, verify_finding
+import pytest
+
+from serversherpa.spec_lookup.verify import (
+    height_fits_ru, normalize_url, numbers_in, verify_finding, weight_is_heavy,
+)
 
 SEEN = {normalize_url("https://www.hpe.com/psnow/doc/a50004307enw")}
 URL = "https://www.hpe.com/psnow/doc/a50004307enw/"
@@ -72,3 +76,28 @@ def test_non_string_inputs_rejected():
     assert v("ru_size", "1", None, "1U", url=123) is None
     assert v("ru_size", 1, None, "1U") is None
     assert v("ru_size", "1", None, ["1U"]) is None
+
+
+@pytest.mark.parametrize("height,unit,ru,expected", [
+    (4.28, "cm", 1, True),          # 1.69 in, true height of the 1U DL320
+    (42.8, "cm", 1, False),         # the live-test bug: width mistaken for height
+    (-0.25, "in", 1, True),         # lower bound of 1U window: (1-1)*1.75-0.25
+    (2.0, "in", 1, True),           # upper bound of 1U window: 1*1.75+0.25
+    (2.01, "in", 1, False),         # just past the upper bound
+    (-0.26, "in", 1, False),        # just past the lower bound
+    (3.44, "in", 2, True),
+    (8.75, "cm", 2, True),
+])
+def test_height_fits_ru(height, unit, ru, expected):
+    assert height_fits_ru(height, unit, ru) is expected
+
+
+@pytest.mark.parametrize("weight,unit,ru,expected", [
+    (29.6, "kg", 1, True),
+    (16, "kg", 1, False),
+    (33, "kg", 2, False),
+    (65.3, "lbs", 1, True),         # 29.6 kg
+    (25, "kg", None, False),        # ru unknown -> never flagged heavy
+])
+def test_weight_is_heavy(weight, unit, ru, expected):
+    assert weight_is_heavy(weight, unit, ru) is expected

@@ -64,7 +64,7 @@ async def test_lookup_parses_and_harvests_urls():
     assert call["model"] == "claude-sonnet-5"
     assert call["tools"] == [{"type": "web_search_20250305", "name": "web_search",
                               "max_uses": 2}]                  # default effort: medium
-    assert call["output_config"]["effort"] == "medium"
+    assert call["output_config"]["effort"] == "high"           # medium -> thinking high
     prompt = call["messages"][0]["content"]
     assert "DL320 Gen11" in prompt and "ru_size" in prompt and "weight" in prompt
     assert call["output_config"]["format"]["type"] == "json_schema"
@@ -175,15 +175,16 @@ async def test_request_uses_max_tokens():
     assert c.messages.calls[0]["max_tokens"] == MAX_TOKENS == 16000
 
 
-@pytest.mark.parametrize("effort,searches", [("low", 1), ("medium", 2), ("high", 4)])
-async def test_effort_sets_search_budget_and_thinking(effort, searches):
+@pytest.mark.parametrize("effort,thinking,searches", [
+    ("low", "medium", 1), ("medium", "high", 2), ("high", "high", 4)])
+async def test_effort_sets_search_budget_and_thinking(effort, thinking, searches):
     c = fake_client([Resp([{"type": "text", "text": json.dumps(ANSWER)}])])
     await prov(c).lookup(make="a", model="b", aliases=[], category=None,
                          fields=["ru_size"], effort=effort)
     call = c.messages.calls[0]
     assert call["tools"] == [{"type": "web_search_20250305", "name": "web_search",
                               "max_uses": searches}]
-    assert call["output_config"]["effort"] == effort
+    assert call["output_config"]["effort"] == thinking
     assert call["output_config"]["format"]["type"] == "json_schema"
 
 
@@ -192,7 +193,8 @@ async def test_unknown_effort_falls_back_to_medium():
     await prov(c).lookup(make="a", model="b", aliases=[], category=None,
                          fields=["ru_size"], effort="max")
     call = c.messages.calls[0]
-    assert call["tools"][0]["max_uses"] == 2 and call["output_config"]["effort"] == "medium"
+    # unknown -> medium -> thinking high, 2 searches
+    assert call["tools"][0]["max_uses"] == 2 and call["output_config"]["effort"] == "high"
 
 
 async def test_pause_turn_continuation_keeps_effort():
