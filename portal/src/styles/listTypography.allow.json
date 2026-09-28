@@ -45,6 +45,11 @@
     "reason": "not list content: login page eyebrow (out of scope per spec)"
   },
   {
+    "file": "styles/login-light.css",
+    "selector": ".login-shell.login-light .eyebrow",
+    "reason": "not list content: light login form eyebrow sizing override (false match on 'eyebrow' containing 'row', same as the auth-theme.css .eyebrow entry above)"
+  },
+  {
     "file": "styles/chrome.css",
     "selector": ".modal-head h3",
     "reason": "not list content: modal heading (out of scope per spec)"

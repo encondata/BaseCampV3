@@ -89,3 +89,65 @@
 .login-shell.login-light .lx-status-dot { width: 9px; height: 9px; flex: none; border-radius: 50%; background: var(--lx-ok); box-shadow: 0 0 6px rgba(34, 197, 94, .6) }
 .login-shell.login-light .lx-status b { font-weight: 400; color: #334155 }
 .login-shell.login-light .lx-status-sep { color: var(--lx-line) }
+
+/* ---------- form column (no card; floats over the art) ---------- */
+.login-shell.login-light .lx-form-col { position: absolute; z-index: 3; top: 0; bottom: 0; right: 5.4%;
+  width: min(418px, calc(100% - 32px)); display: flex; align-items: center; padding: clamp(24px, 5vh, 56px) 0 }
+/* soft cream wash so the form reads cleanly wherever the art sits behind it */
+.login-shell.login-light .lx-form-col::before { content: ""; position: absolute; inset: -8% -14%; z-index: -1; pointer-events: none;
+  background: radial-gradient(closest-side, rgba(255, 249, 242, .82), rgba(255, 249, 242, .55) 60%, rgba(255, 249, 242, 0)) }
+.login-shell.login-light .form-wrap { max-width: none }
+.login-shell.login-light .eyebrow { font-size: clamp(11px, .8vw, 13px); letter-spacing: .32em }
+.login-shell.login-light .eyebrow::after { background: var(--lx-orange) }
+.login-shell.login-light .form-title { margin: 12px 0 0; font-size: clamp(34px, 2.9vw, 48px); font-weight: 800; letter-spacing: -.025em }
+.login-shell.login-light .form-hint { margin: 14px 0 0; font-size: clamp(15px, 1vw, 17px); line-height: 1.45 }
+.login-shell.login-light form { margin-top: clamp(24px, 4vh, 40px) }
+.login-shell.login-light .field label { font-size: 12px; letter-spacing: .3em }
+.login-shell.login-light .field button.link { font-size: 14px; color: var(--lx-ink); border-bottom-color: var(--lx-ink) }
+.login-shell.login-light .field button.link:hover { border-bottom-color: var(--lx-orange) }
+.login-shell.login-light .control input { background: #fff; border-radius: 8px; padding: 16px 18px; font-size: 16.5px }
+.login-shell.login-light .control input::placeholder { color: #94A3B8 }
+.login-shell.login-light .control input:focus:not(.invalid) { box-shadow: 0 0 0 3px rgba(255, 106, 0, .14) }
+
+/* primary button: navy with an orange arrow; no sweep, the arrow nudges on hover */
+.login-shell.login-light .btn { border-radius: 8px; padding: 18px 20px; font-size: 18px; color: #fff }
+.login-shell.login-light .btn:before { display: none }
+.login-shell.login-light .btn:hover:not(:disabled) { background: #1E293B }
+.login-shell.login-light .btn:hover span { color: #fff }
+.login-shell.login-light .btn .arrow,
+.login-shell.login-light .btn:hover .arrow { width: 22px; height: 22px; color: var(--lx-orange) }
+.login-shell.login-light .btn:disabled:not(.loading) { background: #94A3B8; opacity: 1 }
+.login-shell.login-light .btn:disabled:not(.loading) .arrow { color: #E2E8F0 }
+
+.login-shell.login-light .divider { margin: 26px 0; font-size: 12px; letter-spacing: .3em; color: var(--lx-slate) }
+.login-shell.login-light .btn-sso { border-width: 1px; border-radius: 8px; padding: 15px; background: rgba(255, 255, 255, .85); font-size: 17px }
+.login-shell.login-light .btn-sso:hover { border-color: var(--lx-ink); background: #fff }
+.login-shell.login-light .btn-sso svg { width: 22px; height: 22px }
+.login-shell.login-light .form-foot { font-size: 15px }
+.login-shell.login-light .form-foot button.link { font-size: 15px; border-bottom-color: var(--lx-ink) }
+
+/* two-factor cards: white on the cream page */
+.login-shell.login-light .form-wrap .otp-card.inline-card { background: #fff; border: 1px solid var(--lx-line) }
+.login-shell.login-light .otp-inputs input,
+.login-shell.login-light .code-input input { background: #fff }
+
+/* ---------- 900–1279px: drop the smaller map details ---------- */
+@media (max-width: 1279px) {
+  .login-shell.login-light .lx-card,
+  .login-shell.login-light .lx-state,
+  .login-shell.login-light .lx-pin-meta,
+  .login-shell.login-light .lx-leader { display: none }
+}
+
+/* ---------- under 900px: logo, form, art and status in one column ---------- */
+@media (max-width: 899px) {
+  .login-shell.login-light { display: flex; flex-direction: column; align-items: center; min-height: 100dvh; padding: 0 16px }
+  .login-shell.login-light .lx-map,
+  .login-shell.login-light .lx-story { display: none }
+  .login-shell.login-light .lx-logo { position: relative; left: auto; top: auto; align-self: flex-start; margin: 20px 0 0 }
+  .login-shell.login-light .lx-form-col { position: relative; top: auto; right: auto; bottom: auto; width: 100%; max-width: 418px; flex: 1; padding: 32px 0 }
+  .login-shell.login-light .lx-mountains { width: 100% }
+  .login-shell.login-light .lx-status { position: relative; left: auto; bottom: auto; align-self: flex-start; margin: 0 0 20px;
+    flex-wrap: wrap; white-space: normal }
+  .login-shell.login-light .lx-status::before { display: none }
+}
