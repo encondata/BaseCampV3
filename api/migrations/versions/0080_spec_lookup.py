@@ -1,7 +1,7 @@
 """Model spec lookup: model flags, the lookup queue, suggestions.
 
 Revision ID: 0080
-Revises: 0073
+Revises: 0081
 Create Date: 2026-09-28
 """
 from collections.abc import Sequence
@@ -11,7 +11,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import UUID
 
 revision: str = "0080"
-down_revision: str | None = "0073"
+down_revision: str | None = "0081"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
