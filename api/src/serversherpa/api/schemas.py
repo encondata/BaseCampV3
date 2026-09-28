@@ -3855,3 +3855,30 @@ class WarehouseInventoryOut(BaseModel):
     containers: list[WarehouseContainerOut] = []
     loose_assets: list[AssetRef] = []
     loose_stock: list[StockLineOut] = []
+
+
+class SpecLookupQueueIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model_ids: list[uuid.UUID] | None = None
+
+
+class SpecSuggestionOut(BaseModel):
+    id: uuid.UUID
+    model_id: uuid.UUID
+    make: str
+    model: str
+    field: str
+    value: str
+    unit: str | None
+    current_value: str | None
+    source_url: str
+    quote: str
+    status: str
+    created_at: datetime
+    decided_at: datetime | None
+
+
+class SpecSuggestionBulkIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=1000)
+    action: Literal["approve", "reject"]
