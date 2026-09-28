@@ -18,6 +18,7 @@ from serversherpa.api.schemas import (
 from serversherpa.db.models import (
     Asset, AssetModel, Container, ContainerAsset, Site, StatusValue, StockLine,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit, diff, snapshot
 
 router = APIRouter(prefix="/warehouse", tags=["warehouse"])
@@ -128,7 +129,7 @@ async def list_warehouse_sites(
 ) -> list[WarehouseSiteOut]:
     sites = list(await db.scalars(
         select(Site).where(Site.site_type == "warehouse", Site.archived_at.is_(None))
-        .order_by(Site.name)))
+        .order_by(natural(Site.name))))
     vocab = await _vocab(db, "site")
     counts = await _site_counts(db, [s.id for s in sites])
     return [_site_out(s, vocab["site"], counts[s.id]) for s in sites]
@@ -147,12 +148,12 @@ async def warehouse_inventory(
     containers = list(await db.scalars(
         select(Container)
         .where(Container.site_id == site.id, Container.archived_at.is_(None))
-        .order_by(Container.name)))
+        .order_by(natural(Container.name))))
     cids = [c.id for c in containers]
 
     assets = list(await db.scalars(
         select(Asset).where(Asset.site_id == site.id, Asset.archived_at.is_(None))
-        .order_by(Asset.name, Asset.serial_number)))
+        .order_by(natural(Asset.name), natural(Asset.serial_number))))
     membership = dict((await db.execute(
         select(ContainerAsset.asset_id, ContainerAsset.container_id)
         .where(ContainerAsset.container_id.in_(cids)))).all()) if cids else {}
@@ -164,7 +165,7 @@ async def warehouse_inventory(
     lines = list(await db.scalars(
         select(StockLine)
         .where(StockLine.site_id == site.id, StockLine.archived_at.is_(None))
-        .order_by(StockLine.description)))
+        .order_by(natural(StockLine.description))))
     lines_out = await _stock_out(db, lines)
 
     by_container_assets: dict[uuid.UUID, list[AssetRef]] = {cid: [] for cid in cids}

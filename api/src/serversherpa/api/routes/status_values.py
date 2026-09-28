@@ -14,6 +14,7 @@ from serversherpa.api.schemas import (
     StatusRecordTypeOut, StatusValueCreateIn, StatusValueOut, StatusValueUpdateIn,
 )
 from serversherpa.db.models import StatusValue
+from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.status.registry import (
     STATUS_RECORD_TYPES, STATUS_REGISTRY, StatusRecordType,
@@ -107,7 +108,7 @@ async def list_status_values(
             select(StatusValue)
             .where(StatusValue.record_type == rt.id,
                    StatusValue.is_active.is_(True))
-            .order_by(StatusValue.sort_order, StatusValue.label))).all()
+            .order_by(StatusValue.sort_order, natural(StatusValue.label)))).all()
         return [StatusValueOut.model_validate(r) for r in rows]
 
     # the unfiltered listing spans every record type — that is the Variables
@@ -117,7 +118,7 @@ async def list_status_values(
     rows = (await db.scalars(
         select(StatusValue).order_by(
             StatusValue.record_type, StatusValue.sort_order,
-            StatusValue.label))).all()
+            natural(StatusValue.label)))).all()
     counts = {rt.id: await _usage_counts(db, rt)
               for rt in STATUS_REGISTRY.values()}
     out = []

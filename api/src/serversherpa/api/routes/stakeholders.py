@@ -45,6 +45,7 @@ from serversherpa.db.models import (
     UserAccount,
     WorkerProfile,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import presign_get
 from serversherpa.status.labels import (
@@ -188,7 +189,7 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
         db: DbSession,
         actor: AuthContext = require_permission(resource, "view"),
     ) -> list[OrgItem]:
-        query = select(model).order_by(model.name)
+        query = select(model).order_by(natural(model.name))
         cond = scope_conditions(resource, actor.access, actor.person.id)
         if cond is not None:
             query = query.where(cond)
@@ -364,7 +365,7 @@ def _make_org_router(  # noqa: C901 — one cohesive factory beats two copies
             .where(col == org_id,
                    PersonRole.role.in_(tier_role_names),
                    PersonRole.revoked_at.is_(None))
-            .order_by(Person.last_name, Person.first_name)
+            .order_by(natural(Person.last_name), natural(Person.first_name))
         )).all()
         return [
             ContactItem(
@@ -646,7 +647,7 @@ async def list_partner_workers(
         .outerjoin(UserAccount, UserAccount.person_id == Person.id)
         .where(WorkerProfile.partner_id == partner_id,
                Person.archived_at.is_(None))
-        .order_by(Person.last_name, Person.first_name)
+        .order_by(natural(Person.last_name), natural(Person.first_name))
     )).all()
 
     person_ids = [p.id for p, *_ in rows]
@@ -695,7 +696,7 @@ async def list_people(
         select(Person, UserAccount.person_id)
         .outerjoin(UserAccount, UserAccount.person_id == Person.id)
         .where(Person.archived_at.is_(None))
-        .order_by(Person.last_name, Person.first_name)
+        .order_by(natural(Person.last_name), natural(Person.first_name))
     )
     cond = scope_conditions("users", actor.access, actor.person.id)
     if cond is not None:
@@ -791,7 +792,7 @@ async def list_external(
         select(Person, UserAccount)
         .outerjoin(UserAccount, UserAccount.person_id == Person.id)
         .where(Person.id.in_(person_ids), Person.archived_at.is_(None))
-        .order_by(Person.last_name, Person.first_name)
+        .order_by(natural(Person.last_name), natural(Person.first_name))
     )).all()
 
     people_out = []

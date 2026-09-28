@@ -31,6 +31,7 @@ from serversherpa.db.models import (
     Asset, AssetCategory, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
     InitiativeLink, InitiativePerson, Partner, Person, Site, StatusValue,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.imports.parsing import (
     MAX_BYTES, build_template_csv, build_template_xlsx,
 )
@@ -815,7 +816,7 @@ async def _initiative_asset_rows(
         .join(Asset, Asset.id == InitiativeAsset.asset_id)
         .where(InitiativeAsset.initiative_id == initiative_id)
         .order_by(InitiativeAsset.priority_wave.nullslast(),
-                  Asset.serial_number))).all()
+                  natural(Asset.serial_number)))).all()
     # one merged vocabulary (0022) labels both the roster row's own
     # status and the embedded asset's status
     statuses = {s.key: (s.label, s.color) for s in await db.scalars(

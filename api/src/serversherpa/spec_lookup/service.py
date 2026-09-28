@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.assets.units import apply_unit_pairs
 from serversherpa.db.models import AssetModel, SpecLookupJob, SpecSuggestion
+from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.spec_lookup.fields import (
     COLUMNS, blank_conditions, column_payload, current_value, enabled_fields, is_blank,
@@ -44,7 +45,7 @@ async def eligible_model_ids(db: AsyncSession, cfg: dict, *, respect_retry: bool
     q = (select(AssetModel.id)
          .where(AssetModel.private.is_(False), AssetModel.spec_lookup_skip.is_(False),
                 or_(*blank_conditions(fields)), ~active)
-         .order_by(AssetModel.make, AssetModel.model))
+         .order_by(natural(AssetModel.make), natural(AssetModel.model)))
     if respect_retry:
         days = int(cfg.get("retry_after_days") or 0)
         never = AssetModel.specs_looked_up_at.is_(None)

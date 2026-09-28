@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.db.models import (
     Container, Initiative, Site, StatusValue, Truck, TruckContainer,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import MAX_BYTES, MAX_ROWS, BulkImportError
 from serversherpa.services.audit import audit, snapshot
@@ -118,9 +119,9 @@ async def reference_lists(db: AsyncSession) -> tuple[list[str], list[str], list[
         select(StatusValue.key).where(StatusValue.record_type == "truck")
         .order_by(StatusValue.sort_order)))
     initiatives = list(await db.scalars(
-        select(Initiative.name).order_by(Initiative.name)))
+        select(Initiative.name).order_by(natural(Initiative.name))))
     sites = list(await db.scalars(
-        select(Site.name).where(Site.archived_at.is_(None)).order_by(Site.name)))
+        select(Site.name).where(Site.archived_at.is_(None)).order_by(natural(Site.name))))
     return statuses, initiatives, sites
 
 
@@ -145,7 +146,7 @@ async def _linked_containers(
 async def export_rows(db: AsyncSession) -> list[dict]:
     """Every live truck in template shape, so an export re-uploads clean."""
     trucks = list(await db.scalars(
-        select(Truck).where(Truck.archived_at.is_(None)).order_by(Truck.name)))
+        select(Truck).where(Truck.archived_at.is_(None)).order_by(natural(Truck.name))))
     initiative_names = dict((await db.execute(
         select(Initiative.id, Initiative.name))).all())
     site_names = dict((await db.execute(select(Site.id, Site.name))).all())

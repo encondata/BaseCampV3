@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import AssetModel, AssetModelAlias
+from serversherpa.db.ordering import natural
 
 _HEIGHT_TOKEN = re.compile(r"\s+\d+u$", re.IGNORECASE)
 
@@ -53,7 +54,7 @@ async def build_model_index(db: AsyncSession) -> ModelIndex:
     hits: dict[str, dict[uuid.UUID, AssetModel]] = {}
     models: dict[uuid.UUID, AssetModel] = {}
     for m in await db.scalars(select(AssetModel).order_by(
-            AssetModel.make, AssetModel.model, AssetModel.id)):
+            natural(AssetModel.make), natural(AssetModel.model), AssetModel.id)):
         models[m.id] = m
         display = display_name(m)
         literal[display.lower()] = m
@@ -61,7 +62,7 @@ async def build_model_index(db: AsyncSession) -> ModelIndex:
     alias_rows = (await db.execute(
         select(AssetModelAlias.alias, AssetModel)
         .join(AssetModel, AssetModel.id == AssetModelAlias.model_id)
-        .order_by(AssetModelAlias.alias, AssetModel.id))).all()
+        .order_by(natural(AssetModelAlias.alias), AssetModel.id))).all()
     for alias, m in alias_rows:
         literal.setdefault(alias.lower(), m)           # exact wins over alias
         hits.setdefault(normalize_model_key(alias), {}).setdefault(m.id, m)

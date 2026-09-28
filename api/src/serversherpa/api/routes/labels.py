@@ -44,6 +44,7 @@ from serversherpa.db.models import (
     LabelFont, LabelGenerationRun, LabelPlaceholder, LabelTemplate, LabelTemplateSite,
     LabelVocab, Person, Site,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.labels import labelary
 from serversherpa.labels.compile import UnsupportedLanguage, compile_design
 from serversherpa.labels.generate import InvalidLabelTypes, InvalidTemplates, RunActive, entity_for_type, enqueue_run
@@ -100,8 +101,8 @@ async def list_vocab(
     db: DbSession, kind: str | None = None,
     _actor: AuthContext = require_permission("labels", "view"),
 ) -> list[LabelVocabOut]:
-    q = select(LabelVocab).order_by(LabelVocab.kind, LabelVocab.sort_order,
-                                    LabelVocab.key)
+    q = select(LabelVocab).order_by(natural(LabelVocab.kind), LabelVocab.sort_order,
+                                    natural(LabelVocab.key))
     if kind is not None:
         q = q.where(LabelVocab.kind == kind)
     rows = (await db.execute(q)).scalars().all()
@@ -193,7 +194,7 @@ async def list_placeholders(
     _actor: AuthContext = require_permission("labels", "view"),
 ) -> list[LabelPlaceholderOut]:
     rows = (await db.execute(select(LabelPlaceholder).order_by(
-        LabelPlaceholder.sort_order, LabelPlaceholder.key))).scalars().all()
+        LabelPlaceholder.sort_order, natural(LabelPlaceholder.key)))).scalars().all()
     usage = await _placeholder_usage(db)
     out = []
     for r in rows:
@@ -341,7 +342,7 @@ async def list_templates(
     active: bool | None = None, site_id: uuid.UUID | None = None,
     _actor: AuthContext = require_permission("labels", "view"),
 ) -> list:
-    q = select(LabelTemplate).order_by(LabelTemplate.name)
+    q = select(LabelTemplate).order_by(natural(LabelTemplate.name))
     for col, val in ((LabelTemplate.label_type, label_type),
                      (LabelTemplate.size_key, size_key),
                      (LabelTemplate.dpi_key, dpi_key),
@@ -805,7 +806,7 @@ async def preview_generation(
     template_site_id = ini.destination_site_id or ini.origin_site_id
     type_rows = (await db.execute(
         select(LabelVocab).where(LabelVocab.kind == "type", LabelVocab.is_active == True)  # noqa: E712
-        .order_by(LabelVocab.sort_order, LabelVocab.key))).scalars().all()
+        .order_by(LabelVocab.sort_order, natural(LabelVocab.key)))).scalars().all()
 
     types: list[LabelGeneratePreviewTypeOut] = []
     for vocab in type_rows:
@@ -993,7 +994,7 @@ async def list_label_fonts(
         select(LabelFont, Person.preferred_name, Person.first_name, Person.last_name)
         .outerjoin(Person, Person.id == LabelFont.uploaded_by)
         .where(LabelFont.deleted_at.is_(None))
-        .order_by(LabelFont.name))).all()
+        .order_by(natural(LabelFont.name)))).all()
     used = await _fonts_used_by(db)
     return [_font_out(f, _person_display(p, fn, ln), used.get(f.name.upper(), []))
             for f, p, fn, ln in rows]

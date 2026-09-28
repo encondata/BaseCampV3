@@ -19,6 +19,7 @@ from serversherpa.db.models import (
     AccessGroup, AccessGroupMember, PermissionOverride, Person, PersonRole,
     ResourceGroupGate, Role, RolePermission,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit
 from serversherpa.services.storage import presign_get
 
@@ -44,13 +45,13 @@ async def summary(
     _actor: AuthContext = require_permission("access", "view"),
 ) -> dict:
     roles = (await db.scalars(select(Role).order_by(
-        Role.rank.desc(), Role.name))).all()
+        Role.rank.desc(), natural(Role.name)))).all()
     matrices = await _role_matrices(db)
     member_counts = dict((await db.execute(
         select(PersonRole.role, func.count(func.distinct(PersonRole.person_id)))
         .where(PersonRole.revoked_at.is_(None)).group_by(PersonRole.role))).all())
 
-    groups = (await db.scalars(select(AccessGroup).order_by(AccessGroup.name))).all()
+    groups = (await db.scalars(select(AccessGroup).order_by(natural(AccessGroup.name)))).all()
     members_by_group: dict = {}
     rows = (await db.execute(
         select(AccessGroupMember.group_id, Person)
@@ -259,9 +260,13 @@ async def preview_matrix(
     changed = granted_cells | revoked_cells
     members = (await db.execute(
         select(Person)
-        .join(PersonRole, PersonRole.person_id == Person.id)
-        .where(PersonRole.role == name, PersonRole.revoked_at.is_(None))
-        .distinct().order_by(Person.last_name, Person.first_name))).scalars().all()
+        # IN (subquery), not JOIN + DISTINCT: SELECT DISTINCT needs every
+        # ORDER BY expression in the select list, and the natural collation
+        # wraps them.
+        .where(Person.id.in_(
+            select(PersonRole.person_id)
+            .where(PersonRole.role == name, PersonRole.revoked_at.is_(None))))
+        .order_by(natural(Person.last_name), natural(Person.first_name)))).scalars().all()
     signatures = await _access_signatures(db, [p.id for p in members])
     cache: dict[tuple, tuple] = {}
     out = []

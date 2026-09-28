@@ -30,6 +30,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import AuditLog, Initiative, Person, Site, TimeEntry
+from serversherpa.db.ordering import natural
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import BulkImportError
 from serversherpa.people import time_parse as tp
@@ -110,12 +111,12 @@ async def _reference(db: AsyncSession) -> dict:
         for key in name_keys(p.first_name, p.last_name, p.preferred_name or ""):
             _index(name, key, p)
     jobs = list(await db.scalars(
-        select(Initiative).where(Initiative.archived_at.is_(None)).order_by(Initiative.name)))
+        select(Initiative).where(Initiative.archived_at.is_(None)).order_by(natural(Initiative.name))))
     job_index: dict[str, list[Initiative]] = {}
     for j in jobs:
         _index(job_index, _squash(j.name), j)
     sites = list(await db.scalars(
-        select(Site).where(Site.archived_at.is_(None)).order_by(Site.name)))
+        select(Site).where(Site.archived_at.is_(None)).order_by(natural(Site.name))))
     site_index: dict[str, list[Site]] = {}
     for s in sites:
         for key in {_squash(s.name), _squash(s.code or "")}:
@@ -522,8 +523,8 @@ def build_template_csv() -> str:
 async def build_template_xlsx(db: AsyncSession) -> bytes:
     workers = [_worker_label(p) for p, _ in (await db.execute(_worker_query())).all()]
     jobs = list(await db.scalars(select(Initiative.name).where(
-        Initiative.archived_at.is_(None)).order_by(Initiative.name)))
+        Initiative.archived_at.is_(None)).order_by(natural(Initiative.name))))
     sites = list(await db.scalars(select(Site.name).where(
-        Site.archived_at.is_(None)).order_by(Site.name)))
+        Site.archived_at.is_(None)).order_by(natural(Site.name))))
     return core.build_rows_xlsx(SAMPLE_ROWS, COLUMNS, SHEET, [
         ("Workers", workers), ("Jobs", jobs), ("Sites", sites)])

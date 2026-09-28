@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import AssetModel, Container, Site, StockLine
+from serversherpa.db.ordering import natural
 
 _DEMO_SITE_NAME = "Demo Warehouse (Ashburn)"
 
@@ -65,7 +66,7 @@ async def seed_demo_warehouse(db: AsyncSession) -> int:
     site = await db.scalar(
         select(Site)
         .where(Site.site_type == "warehouse", Site.archived_at.is_(None))
-        .order_by(Site.name)
+        .order_by(natural(Site.name))
         .limit(1))
     if site is None:
         site = Site(name=_DEMO_SITE_NAME, site_type="warehouse")
@@ -99,7 +100,7 @@ async def seed_demo_warehouse(db: AsyncSession) -> int:
         model_id = await db.scalar(
             select(AssetModel.id)
             .where(AssetModel.category.in_(("pdu", "power")))
-            .order_by(AssetModel.make, AssetModel.model)
+            .order_by(natural(AssetModel.make), natural(AssetModel.model))
             .limit(1))
 
     for spec in DEMO_STOCK:
