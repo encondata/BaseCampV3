@@ -108,7 +108,7 @@ async def authorize(
             raise err(401, "unauthenticated", "Sign in to edit.") from None
         raise
     enforce_session_scope(request, user)
-    enforce_forced_password_change(request, user)
+    await enforce_forced_password_change(db, request, user)
 
     level = await _live_level(db, await principal_for(db, user), node)
     level = await _frozen_to_view(db, level, user.roles)
