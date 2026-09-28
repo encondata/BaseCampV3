@@ -29,8 +29,10 @@ incomplete dimensions, 189 with none of the three.
 - **Private models:** `asset_models.private` — a private model is never sent to Claude, by the
   sweep or the button.
 - **Look up once:** `asset_models.specs_looked_up_at` keeps the sweep from re-searching models.
-- **Env:** new keys in the repo `.env` and `.env.example`; a read-only Developer page panel shows
-  the configuration. The key is never editable from, or shown in full in, the portal.
+- **Env:** new keys in the repo `.env` and `.env.example`. Because they live in `.env`, the
+  existing Developer › System Config › **Environment** tab can already set them (secrets masked,
+  keep-on-empty). A new read-only **Spec lookup** tab beside it shows the configuration, worker
+  health and a Test connection button. The key is never shown in full in the portal.
 
 ## Data (migration 0080)
 
@@ -147,7 +149,7 @@ All routes use `_require_global` (as `/asset-models` does) so client-anchored us
 | `GET /spec-lookup/suggestions?status=&model_id=` | asset_models view |
 | `POST /spec-lookup/suggestions/{id}/approve \| reject \| undo` | asset_models change |
 | `POST /spec-lookup/suggestions/bulk` `{ids, action}` → per-row results | asset_models change |
-| `GET /dev/spec-lookup`, `POST /dev/spec-lookup/test` | devtools |
+| `GET /spec-lookup/dev`, `POST /spec-lookup/dev/test` | devtools view |
 
 `AssetModelOut`/`In` gain `private`, `spec_lookup_skip`, `specs_looked_up_at` (read-only).
 Est. cost uses constants for Sonnet 5 ($2/$10 per MTok) and search ($10 per 1,000).
@@ -158,7 +160,7 @@ Est. cost uses constants for Sonnet 5 ($2/$10 per MTok) and search ($10 per 1,00
   badged with the pending count. The tab has:
   - a status strip (queue, current model, last run, month-to-date spend) with
     **Find missing specs** and a Background on/off shortcut;
-  - a `DataTable` (column floors, ColumnMenu, list typography per the list recipe): Model ·
+  - a `DataTable` (the sanctioned table component; list typography comes with it): Model ·
     Field · Current · Suggested · Source (domain link) · Quote (truncated, full on hover) ·
     Status · Found; segmented filter Pending | Applied | All; row Approve / Reject / Undo;
     multi-select bulk approve/reject ending in `BulkApplySummary` with CSV download.
@@ -167,9 +169,10 @@ Est. cost uses constants for Sonnet 5 ($2/$10 per MTok) and search ($10 per 1,00
 - **Edit model form** — switches **Private** ("Never sent to Claude for spec lookup") and
   **Skip spec lookup**.
 - **Settings › AI lookup** — a new tab with the six settings using `Switch` / `canChange`.
-- **Developer page** — a read-only **Spec lookup** panel: model, max searches/fetches,
-  key "Set (…last 4)" / "Not set", worker heartbeat, **Test connection** (a tiny no-tools call
-  reporting latency or the error).
+- **Developer › System Config** — a new read-only **Spec lookup** tab (next to Logging and
+  Environment): model, max searches/fetches, key "Set (…last 4)" / "Not set", worker heartbeat,
+  **Test connection** (a tiny no-tools call reporting latency or the error). The key itself is
+  set in the Environment tab.
 
 ## Testing
 
