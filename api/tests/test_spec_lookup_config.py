@@ -3,11 +3,11 @@ from serversherpa.config import Settings, get_settings
 
 
 def test_defaults():
-    s = Settings(_env_file=None)
-    assert s.anthropic_api_key.get_secret_value() == ""
-    assert s.spec_lookup_model == "claude-sonnet-5"
-    assert s.spec_lookup_max_searches == 4
-    assert s.spec_lookup_max_fetches == 3
+    f = Settings.model_fields
+    assert f["anthropic_api_key"].default.get_secret_value() == ""
+    assert f["spec_lookup_model"].default == "claude-sonnet-5"
+    assert f["spec_lookup_max_searches"].default == 4
+    assert f["spec_lookup_max_fetches"].default == 3
 
 
 def test_suite_never_has_a_real_key():

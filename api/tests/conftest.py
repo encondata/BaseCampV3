@@ -7,7 +7,6 @@ from pathlib import Path
 
 import psycopg
 import pytest
-from dotenv import load_dotenv
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
@@ -74,10 +73,6 @@ LABEL_PLACEHOLDER_SEEDS = """
 def _prepare_environment() -> None:
     """Point SS_DATABASE_URL at serversherpa_test (creating it if needed) and
     migrate it to head. Runs once, before serversherpa.config is first used."""
-    # Load .env file into os.environ so Settings(_env_file=None) works
-    repo_root = Path(__file__).resolve().parents[2]  # worktree root
-    load_dotenv(repo_root / ".env", override=True)
-
     from serversherpa.config import Settings, get_settings
 
     base_url = make_url(Settings().database_url.get_secret_value())
