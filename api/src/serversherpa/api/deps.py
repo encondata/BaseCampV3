@@ -239,6 +239,19 @@ def require_password_length(password: str) -> None:
             detail={"code": "password_too_short", "min_length": min_length})
 
 
+async def raise_if_reused(db, account, password: str) -> None:
+    """The reuse rule for every password the API accepts on an EXISTING
+    account (self-change, admin reset). New accounts have no history."""
+    from serversherpa.services.password_policy import PasswordReused, assert_not_reused, load_policy
+
+    try:
+        await assert_not_reused(db, await load_policy(db), account, password)
+    except PasswordReused as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "password_recently_used", "count": exc.count}) from None
+
+
 def client_ip(request: Request) -> str | None:
     """Real client IP. Caddy (our only proxy) sets X-Forwarded-For."""
     forwarded = request.headers.get("x-forwarded-for")

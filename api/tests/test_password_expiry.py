@@ -182,3 +182,75 @@ async def test_assert_not_reused_checks_only_the_last_n(db, seeded_user):
     await assert_not_reused(db, off, account, "Old-pw-3")
     zero = PasswordPolicy(enabled=True, days=90, history_count=0, since=NOW)
     await assert_not_reused(db, zero, account, "Old-pw-3")
+
+
+# ── reuse at every intake ───────────────────────────────────────────
+
+from serversherpa.db.models import Person, PersonRole  # noqa: E402
+from tests.test_sites_api import login, make_login  # noqa: E402
+
+
+async def _enable_policy(client, db, **over):
+    hdrs = await _admin(db, client)
+    resp = await client.put("/system/security", headers=hdrs,
+                            json={"password_expiry_enabled": True, **over})
+    assert resp.status_code == 200, resp.text
+    return hdrs
+
+
+async def _change(client, hdrs, current, new):
+    return await client.post("/auth/me/password", headers=hdrs,
+                             json={"current_password": current, "new_password": new})
+
+
+async def test_self_change_refuses_a_recent_password(client, db, seeded_user):
+    await _enable_policy(client, db)
+    hdrs = await login(client)
+    assert (await _change(client, hdrs, "CorrectHorse9!", "Second-pw-22")).status_code == 204
+    hdrs = await login(client, pw="Second-pw-22")
+    assert (await _change(client, hdrs, "Second-pw-22", "Third-pw-333")).status_code == 204
+    hdrs = await login(client, pw="Third-pw-333")
+    back = await _change(client, hdrs, "Third-pw-333", "CorrectHorse9!")
+    assert back.status_code == 422, back.text
+    assert back.json()["detail"] == {"code": "password_recently_used", "count": 3}
+    # the current one still reads as same_as_current, not reuse
+    same = await _change(client, hdrs, "Third-pw-333", "Third-pw-333")
+    assert same.json()["detail"]["code"] == "same_as_current"
+
+
+async def test_reuse_is_not_checked_when_off_or_zero(client, db, seeded_user):
+    hdrs = await login(client)
+    assert (await _change(client, hdrs, "CorrectHorse9!", "Second-pw-22")).status_code == 204
+    hdrs = await login(client, pw="Second-pw-22")
+    assert (await _change(client, hdrs, "Second-pw-22", "CorrectHorse9!")).status_code == 204
+    await _enable_policy(client, db, password_history_count=0)
+    hdrs = await login(client)
+    assert (await _change(client, hdrs, "CorrectHorse9!", "Second-pw-22")).status_code == 204
+
+
+async def test_admin_reset_refuses_a_recent_password(client, db, seeded_user):
+    admin = await _enable_policy(client, db)
+    resp = await client.post(f"/users/{seeded_user.id}/reset-password", headers=admin,
+                             json={"temp_password": "CorrectHorse9!"})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"]["code"] == "password_recently_used"
+    ok = await client.post(f"/users/{seeded_user.id}/reset-password", headers=admin,
+                           json={"temp_password": "Temp-pw-9999"})
+    assert ok.status_code == 204, ok.text
+    rows = list(await db.scalars(select(PasswordHistory).where(
+        PasswordHistory.person_id == seeded_user.id)))
+    assert len(rows) == 2   # the replaced password (kept at the first change) + the reset
+
+
+async def test_new_accounts_record_history_without_a_check(client, db, seeded_user):
+    admin = await _enable_policy(client, db)
+    contact = Person(first_name="New", last_name="Contact", email="newc-pw@test.example.com")
+    db.add(contact)
+    await db.commit()
+    resp = await client.post(f"/users/{contact.id}/account", headers=admin, json={
+        "login_email": "newc-pw@test.example.com", "temp_password": "Temp-pw-9999",
+        "must_change_password": True})
+    assert resp.status_code in (200, 201), resp.text
+    rows = list(await db.scalars(select(PasswordHistory).where(
+        PasswordHistory.person_id == contact.id)))
+    assert len(rows) == 1
