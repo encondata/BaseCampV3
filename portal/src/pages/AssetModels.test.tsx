@@ -25,7 +25,9 @@ const item = (id: string, model: string, over: Record<string, unknown> = {}) => 
   id, make: 'Dell', model, category: null, category_label: null, category_color: null,
   ru_size: null, weight_lbs: null, weight_kg: null, length_in: null, width_in: null, height_in: null,
   length_cm: null, width_cm: null, height_cm: null, mount_type: null, rail_type: null, form_factor: null,
-  knowledge: '', aliases: [], review_dismissed_at: null, created_at: '', updated_at: '',
+  knowledge: '', aliases: [], review_dismissed_at: null,
+  private: false, spec_lookup_skip: false, specs_looked_up_at: null,
+  created_at: '', updated_at: '',
   asset_count: 1, stock_line_count: 0, reason: 'duplicate', group_key: 'dell r740', ...over,
 });
 

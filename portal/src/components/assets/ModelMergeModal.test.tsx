@@ -13,7 +13,8 @@ const model = (over: Record<string, unknown>) => ({
   category_color: null, ru_size: null, weight_lbs: null, weight_kg: null,
   length_in: null, width_in: null, height_in: null, length_cm: null, width_cm: null, height_cm: null,
   mount_type: null, rail_type: null, form_factor: null, knowledge: '', aliases: [],
-  review_dismissed_at: null, created_at: '2026-01-01', updated_at: '2026-01-01', ...over,
+  review_dismissed_at: null, private: false, spec_lookup_skip: false, specs_looked_up_at: null,
+  created_at: '2026-01-01', updated_at: '2026-01-01', ...over,
 }) as never;
 const target = model({ id: 't1' });
 const source = model({ id: 's1', model: 'PowerEdge_R740', ru_size: 2 });
