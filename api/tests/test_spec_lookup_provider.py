@@ -8,8 +8,8 @@ import httpx
 import pytest
 
 from serversherpa.spec_lookup.provider import (
-    ClaudeProvider, ProviderFailed, ProviderNotConfigured, ProviderRetryable,
-    estimate_cost, get_provider,
+    MAX_CONTINUATIONS, ClaudeProvider, ProviderFailed, ProviderNotConfigured,
+    ProviderRetryable, estimate_cost, get_provider,
 )
 
 
@@ -68,6 +68,7 @@ async def test_lookup_parses_and_harvests_urls():
     assert call["model"] == "claude-sonnet-5"
     assert {t["type"] for t in call["tools"]} == {"web_search_20260209", "web_fetch_20260209"}
     assert call["tools"][0]["max_uses"] == 4
+    assert call["tools"][1]["max_uses"] == 3
     prompt = call["messages"][0]["content"]
     assert "DL320 Gen11" in prompt and "ru_size" in prompt and "weight" in prompt
     assert call["output_config"]["format"]["type"] == "json_schema"
@@ -94,6 +95,47 @@ async def test_refusal_and_bad_json_fail():
             make="a", model="b", aliases=[], category=None, fields=["ru_size"])
 
 
+async def test_max_tokens_fails_before_parsing():
+    with pytest.raises(ProviderFailed, match="max_tokens"):
+        await prov(fake_client([Resp([], stop_reason="max_tokens")])).lookup(
+            make="a", model="b", aliases=[], category=None, fields=["ru_size"])
+
+
+async def test_pause_limit_when_every_round_pauses():
+    responses = [Resp([SEARCH], stop_reason="pause_turn")
+                 for _ in range(MAX_CONTINUATIONS + 1)]
+    with pytest.raises(ProviderFailed, match="pause_limit"):
+        await prov(fake_client(responses)).lookup(
+            make="a", model="b", aliases=[], category=None, fields=["ru_size"])
+
+
+async def test_tool_result_errors_add_no_urls():
+    search_error = {"type": "web_search_tool_result", "tool_use_id": "s1",
+                     "content": {"type": "web_search_tool_result_error",
+                                 "error_code": "unavailable"}}
+    fetch_error = {"type": "web_fetch_tool_result", "tool_use_id": "f1",
+                   "content": {"type": "web_fetch_tool_result_error",
+                               "error_code": "url_not_accessible"}}
+    c = fake_client([Resp([search_error, fetch_error,
+                          {"type": "text", "text": json.dumps(ANSWER)}])])
+    r = await prov(c).lookup(make="a", model="b", aliases=[], category=None,
+                             fields=["ru_size"])
+    assert r.seen_urls == set()
+
+
+async def test_finding_for_unrequested_field_is_dropped():
+    answer = {"findings": [
+        {"field": "ru_size", "value": "1", "unit": "none", "quote": "1U",
+         "source_url": "https://www.hpe.com/a"},
+        {"field": "weight", "value": "10", "unit": "lbs", "quote": "10 lbs",
+         "source_url": "https://www.hpe.com/a"},
+    ], "notes": ""}
+    c = fake_client([Resp([{"type": "text", "text": json.dumps(answer)}])])
+    r = await prov(c).lookup(make="a", model="b", aliases=[], category=None,
+                             fields=["ru_size"])
+    assert [f.field for f in r.findings] == ["ru_size"]
+
+
 def _status_error(cls, code):
     req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
     return cls("boom", response=httpx.Response(code, request=req), body=None)
@@ -112,6 +154,10 @@ async def test_error_mapping():
     with pytest.raises(ProviderRetryable):
         await run(anthropic.APIConnectionError(
             request=httpx.Request("POST", "https://api.anthropic.com")))
+    with pytest.raises(ProviderRetryable):
+        await run(_status_error(anthropic.OverloadedError, 529))
+    with pytest.raises(ProviderRetryable):
+        await run(_status_error(anthropic.APIStatusError, 408))
     with pytest.raises(ProviderFailed):
         await run(_status_error(anthropic.BadRequestError, 400))
 

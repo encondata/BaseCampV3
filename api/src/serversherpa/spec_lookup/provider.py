@@ -160,9 +160,12 @@ class ClaudeProvider:
         except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as exc:
             raise ProviderNotConfigured("not_configured") from exc
         except (anthropic.RateLimitError, anthropic.InternalServerError,
+                anthropic.OverloadedError,
                 anthropic.APIConnectionError) as exc:      # APITimeoutError is a subclass
             raise ProviderRetryable(type(exc).__name__) from exc
         except anthropic.APIStatusError as exc:
+            if exc.status_code in (408, 409):
+                raise ProviderRetryable(type(exc).__name__) from exc
             raise ProviderFailed(f"api_error {exc.status_code}: {exc}"[:500]) from exc
 
     async def lookup(self, *, make: str, model: str, aliases: list[str],
@@ -193,6 +196,8 @@ class ClaudeProvider:
             stop = d.get("stop_reason")
             if stop == "refusal":
                 raise ProviderFailed("refusal")
+            if stop == "max_tokens":
+                raise ProviderFailed("max_tokens")
             if stop == "pause_turn":
                 messages = [user, {"role": "assistant", "content": resp.content}]
                 continue
@@ -200,6 +205,8 @@ class ClaudeProvider:
                      if b.get("type") == "text" and b.get("text")]
             text = texts[-1] if texts else None
             break
+        else:
+            raise ProviderFailed("pause_limit")
         if text is None:
             raise ProviderFailed("bad_output: no answer")
         try:
