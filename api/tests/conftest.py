@@ -90,6 +90,8 @@ def _prepare_environment() -> None:
     # Tests never talk to a real model: pin the AI assistant off regardless
     # of the developer's .env (routes under test monkeypatch get_client).
     os.environ["SS_AI_ENABLED"] = "false"
+    # ...and never let a developer's real Anthropic key reach the suite.
+    os.environ["SS_ANTHROPIC_API_KEY"] = ""
     # 2FA tests need a real Fernet key regardless of what .env carries.
     from cryptography.fernet import Fernet
 

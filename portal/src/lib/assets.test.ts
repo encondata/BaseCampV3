@@ -25,7 +25,9 @@ const assetModel = (over: Partial<AssetModelItem> = {}): AssetModelItem => ({
   weight_lbs: 50, weight_kg: 22.68, length_in: 32, width_in: 17,
   height_in: 3.4, length_cm: 81.28, width_cm: 43.18, height_cm: 8.64,
   mount_type: 'rails', rail_type: 'B7', form_factor: null, knowledge: 'Careful with rails.',
-  aliases: ['R740'], review_dismissed_at: null, created_at: '', updated_at: '',
+  aliases: ['R740'], review_dismissed_at: null,
+  private: false, spec_lookup_skip: false, specs_looked_up_at: null,
+  created_at: '', updated_at: '',
   ...over,
 });
 
@@ -100,7 +102,8 @@ describe('model form payload', () => {
     weight_lbs: 50, weight_kg: 22.68, length_in: 32, width_in: 17,
     height_in: 3.4, length_cm: 81.28, width_cm: 43.18, height_cm: 8.64,
     mount_type: 'rails', rail_type: 'B7', form_factor: 'chassis', knowledge: '', aliases: [],
-    review_dismissed_at: null, created_at: '', updated_at: '',
+    review_dismissed_at: null, private: false, spec_lookup_skip: false, specs_looked_up_at: null,
+    created_at: '', updated_at: '',
   };
   it('sends only the CHANGED unit side so the API recomputes the partner', () => {
     const f = formFromModel(model);
@@ -138,6 +141,30 @@ describe('model form payload', () => {
     expect(modelPayload(f, model)).toEqual({ form_factor: 'node' });
     f.form_factor = '';
     expect(modelPayload(f, model)).toEqual({ form_factor: null });
+  });
+  it('toggling private sends only { private: true }', () => {
+    const f = formFromModel(model);
+    expect(f.private).toBe(false);
+    expect(f.spec_lookup_skip).toBe(false);
+    f.private = true;
+    expect(modelPayload(f, model)).toEqual({ private: true });
+    f.private = false;
+    f.spec_lookup_skip = true;
+    expect(modelPayload(f, model)).toEqual({ spec_lookup_skip: true });
+  });
+  it('unchanged spec-lookup flags send nothing', () => {
+    const on = { ...model, private: true, spec_lookup_skip: true };
+    expect(modelPayload(formFromModel(on), on)).toEqual({});
+    const f = formFromModel(on);
+    f.private = false;
+    expect(modelPayload(f, on)).toEqual({ private: false });
+  });
+  it('create mode sends the flags only when on', () => {
+    const f = formFromModel(null);
+    f.make = 'HPE'; f.model = 'DL380';
+    expect(modelPayload(f, null)).toEqual({ make: 'HPE', model: 'DL380' });
+    f.private = true;
+    expect(modelPayload(f, null)).toEqual({ make: 'HPE', model: 'DL380', private: true });
   });
   it('modelCellText and formFactorLabel read the form factor', () => {
     expect(modelCellText(model, 'form')).toBe('Chassis');

@@ -564,6 +564,57 @@ def label_worker(
     asyncio.run(_run())
 
 
+def _run_spec_lookup_worker_process(poll_seconds: float) -> None:
+    """Reload-mode child entry point (see _run_worker_process)."""
+
+    async def _run() -> None:
+        from serversherpa.spec_lookup import worker
+
+        await worker.run_forever(poll_seconds)
+
+    try:
+        asyncio.run(_run())
+    except KeyboardInterrupt:
+        pass
+
+
+@app.command()
+def spec_lookup_worker(
+    poll_seconds: float = typer.Option(2.0, help="Idle sleep between queue polls"),
+    once: bool = typer.Option(False, help="Process at most one job, then exit"),
+    reload: bool = typer.Option(
+        False, help="Dev mode: restart the worker whenever api/src changes"),
+) -> None:
+    """Run the spec lookup worker — asks Claude for missing Makes / Models
+    specs one model at a time and records verified suggestions."""
+
+    if reload and once:
+        typer.secho("--once cannot be combined with --reload", fg="red")
+        raise typer.Exit(code=1)
+    if reload:
+        import watchfiles
+
+        src_dir = Path(__file__).resolve().parents[1]
+        typer.secho(f"[spec-lookup-worker] dev reload — watching {src_dir}", fg="cyan")
+        watchfiles.run_process(src_dir, target=_run_spec_lookup_worker_process,
+                               args=(poll_seconds,))
+        return
+
+    async def _run() -> None:
+        from serversherpa.db.engine import get_sessionmaker
+        from serversherpa.spec_lookup import worker
+
+        if once:
+            worked = await worker.run_once(get_sessionmaker())
+            typer.secho("processed 1 job" if worked else "queue empty",
+                        fg="green" if worked else "yellow")
+        else:
+            await worker.run_forever(poll_seconds)
+        await dispose_engine()
+
+    asyncio.run(_run())
+
+
 def _run_db_testing_worker_process(poll_seconds: float) -> None:
     """Reload-mode child entry point (see _run_worker_process)."""
 

@@ -35,7 +35,7 @@ function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
-        {['/settings', '/settings/security', '/settings/maintenance', '/settings/about'].map((p) => (
+        {['/settings', '/settings/security', '/settings/ai-lookup', '/settings/maintenance', '/settings/about'].map((p) => (
           <Route key={p} path={p} element={<Settings />} />
         ))}
       </Routes>
@@ -81,9 +81,9 @@ it('contains no Appearance, Notifications, or Account content', async () => {
   expect(screen.queryByText('Account')).toBeNull();
 });
 
-it('shows four tabs; placeholder tabs render their placeholder card instead of Administration', async () => {
+it('shows five tabs; placeholder tabs render their placeholder card instead of Administration', async () => {
   renderAt('/settings');
-  expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Administration', 'Security', 'Maintenance', 'About']);
+  expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Administration', 'Security', 'AI lookup', 'Maintenance', 'About']);
   expect(screen.getByRole('tab', { name: 'Administration' }).getAttribute('aria-selected')).toBe('true');
   cleanup();
   renderAt('/settings/maintenance');

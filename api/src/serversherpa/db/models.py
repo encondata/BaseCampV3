@@ -633,6 +633,9 @@ class AssetModel(Base):
     form_factor: Mapped[str | None]      # standalone | chassis | node | null (0068)
     knowledge: Mapped[str] = mapped_column(server_default="")
     review_dismissed_at: Mapped[datetime | None]
+    private: Mapped[bool] = mapped_column(server_default=text("false"))           # 0080: never sent to Claude
+    spec_lookup_skip: Mapped[bool] = mapped_column(server_default=text("false"))  # 0080: junk, don't look up
+    specs_looked_up_at: Mapped[datetime | None]                                   # 0080
     legacy_id: Mapped[int | None] = mapped_column(BigInteger)
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
@@ -646,6 +649,58 @@ class AssetModelAlias(Base):
     model_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("asset_models.id", ondelete="CASCADE"))
     alias: Mapped[str] = mapped_column(CITEXT, unique=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class SpecLookupJob(Base):
+    """spec-lookup-worker's queue (0080). Same claim shape as
+    LabelGenerationRun, plus priority (0 sweep, 10 "Find missing specs",
+    20 per-model button) and next_attempt_at for retry backoff. One
+    queued/running job per model (partial unique index)."""
+    __tablename__ = "spec_lookup_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    model_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("asset_models.id", ondelete="CASCADE"))
+    priority: Mapped[int] = mapped_column(Integer, server_default="0")
+    status: Mapped[str] = mapped_column(server_default="queued")
+    attempts: Mapped[int] = mapped_column(Integer, server_default="0")
+    next_attempt_at: Mapped[datetime | None]
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    error: Mapped[str | None]
+    input_tokens: Mapped[int] = mapped_column(Integer, server_default="0")
+    output_tokens: Mapped[int] = mapped_column(Integer, server_default="0")
+    search_count: Mapped[int] = mapped_column(Integer, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    started_at: Mapped[datetime | None]
+    finished_at: Mapped[datetime | None]
+    heartbeat_at: Mapped[datetime | None]
+    worker_id: Mapped[str | None]
+
+
+class SpecSuggestion(Base):
+    """One value Claude found for one model field (0080). `value` is the
+    normalized text ("2", "38.5", "rails"); `previous_value` is the field's
+    value, in the same unit, when the suggestion was made — approve/undo
+    refuse with field_changed when the model no longer matches."""
+    __tablename__ = "spec_suggestions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    model_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("asset_models.id", ondelete="CASCADE"))
+    job_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("spec_lookup_jobs.id", ondelete="SET NULL"))
+    field: Mapped[str]
+    value: Mapped[str]
+    unit: Mapped[str | None]
+    source_url: Mapped[str]
+    quote: Mapped[str]
+    previous_value: Mapped[str | None]
+    status: Mapped[str] = mapped_column(server_default="pending")
+    decided_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
+    decided_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 

@@ -1924,6 +1924,7 @@ export interface AssetModelItem {
   mount_type: string | null; rail_type: string | null; form_factor: string | null;
   knowledge: string; aliases: string[];
   review_dismissed_at: string | null;
+  private: boolean; spec_lookup_skip: boolean; specs_looked_up_at: string | null;
   created_at: string; updated_at: string;
 }
 
@@ -3900,6 +3901,120 @@ export async function updateAdminConfig(patch: Partial<AdminConfig>): Promise<Ad
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
   });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+// ── system config: AI lookup (Makes/Models spec lookup) ────────────────
+
+export interface AiLookupConfig {
+  background_enabled: boolean; auto_apply: boolean; fields_specs: boolean;
+  fields_mounting: boolean; fields_knowledge: boolean; retry_after_days: number;
+  /** How hard Claude thinks and how many web searches it may run per model. */
+  effort: AiLookupEffort;
+}
+
+export type AiLookupEffort = 'low' | 'medium' | 'high';
+
+export async function getAiLookupConfig(): Promise<AiLookupConfig> {
+  const resp = await apiFetch('/system/ai-lookup');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function updateAiLookupConfig(patch: Partial<AiLookupConfig>): Promise<AiLookupConfig> {
+  const resp = await apiFetch('/system/ai-lookup', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/* ── spec lookup (Makes/Models spec lookup runs + suggestions) ──────── */
+
+export interface SpecLookupStatus {
+  configured: boolean; background_enabled: boolean; queued: number;
+  running_model: { id: string; make: string; model: string } | null;
+  last_finished_at: string | null; pending_count: number;
+  /** failed jobs finished since the start of this month */
+  failed_this_month: number;
+  /** error of the most recent finished job (null when it ended cleanly) */
+  last_error: string | null;
+  /** the most recent job failed because the API refused the configured key */
+  key_rejected: boolean;
+  month: { lookups: number; input_tokens: number; output_tokens: number; searches: number; est_cost_usd: number };
+}
+
+export interface SpecSuggestion {
+  id: string; model_id: string; make: string; model: string; field: string;
+  value: string; unit: string | null; current_value: string | null;
+  source_url: string; quote: string;
+  status: 'pending' | 'applied' | 'approved' | 'rejected' | 'reverted';
+  created_at: string; decided_at: string | null;
+}
+
+export interface SpecBulkResult {
+  id: string; ok: boolean; error: string | null;
+  make: string | null; model: string | null; field: string | null; value: string | null;
+}
+
+export interface SpecLookupDev {
+  model: string; effort: AiLookupEffort;
+  key_set: boolean; key_last4: string | null; worker_status: string; worker_heartbeat_at: string | null;
+}
+
+export async function getSpecLookupStatus(): Promise<SpecLookupStatus> {
+  const resp = await apiFetch('/spec-lookup/status');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function queueSpecLookup(modelIds?: string[]): Promise<{
+  queued: number; skipped: { id: string; reason: string }[]; reason?: 'no_fields_enabled';
+}> {
+  const resp = await apiFetch('/spec-lookup/queue', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(modelIds ? { model_ids: modelIds } : {}),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function listSpecSuggestions(status: 'pending' | 'applied' | 'all', modelId?: string): Promise<SpecSuggestion[]> {
+  const params = new URLSearchParams({ status });
+  if (modelId) params.set('model_id', modelId);
+  const resp = await apiFetch(`/spec-lookup/suggestions?${params.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function actOnSpecSuggestion(id: string, action: 'approve' | 'reject' | 'undo'): Promise<SpecSuggestion> {
+  const resp = await apiFetch(`/spec-lookup/suggestions/${id}/${action}`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function bulkSpecSuggestions(ids: string[], action: 'approve' | 'reject'): Promise<{ results: SpecBulkResult[] }> {
+  const resp = await apiFetch('/spec-lookup/suggestions/bulk', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids, action }),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function getSpecLookupDev(): Promise<SpecLookupDev> {
+  const resp = await apiFetch('/spec-lookup/dev');
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+export async function testSpecLookup(): Promise<{ ok: boolean; latency_ms: number | null; error: string | null }> {
+  const resp = await apiFetch('/spec-lookup/dev/test', { method: 'POST' });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

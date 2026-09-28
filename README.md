@@ -93,6 +93,10 @@ Background workers also reload standalone, uvicorn-style:
 api/.venv/bin/serversherpa import-worker --reload
 ```
 
+`serversherpa spec-lookup-worker` (the `specsvc` line in `Procfile.dev`) asks
+Claude for missing Makes / Models specs; it needs `SS_ANTHROPIC_API_KEY` set
+(without it, queued lookups fail as not configured).
+
 Tests (spin up a dedicated `serversherpa_test` database automatically):
 
 ```bash

@@ -11,23 +11,28 @@ import { useAuth } from '../auth/AuthContext';
 import ModelEditModal from '../components/assets/ModelEditModal';
 import ModelMergeModal from '../components/assets/ModelMergeModal';
 import ModelReviewPanel from '../components/assets/ModelReviewPanel';
+import SpecLookupPanel from '../components/assets/SpecLookupPanel';
 import GodDeleteButton from '../components/GodDeleteButton';
 import {
   ApiError,
   listAssetCategories,
+  getSpecLookupStatus,
   listAssetModels,
+  queueSpecLookup,
   reviewAssetModels,
   updateAssetModel,
   type AssetCategoryOut,
   type AssetModelItem,
   type MergePlanOut,
   type ReviewOut,
+  type SpecLookupStatus,
 } from '../lib/api';
 import {
   MODEL_ERRORS, MODEL_GOD_FIELDS, formatDims, formFactorLabel, modelCellText, modelSearchText,
   titleCase,
 } from '../lib/assets';
 import { initialOpenId } from '../lib/auditFormat';
+import { longDate } from '../lib/format';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState,
@@ -179,7 +184,7 @@ export default function AssetModels() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [view, setView] = useState<'all' | 'review'>('all');
+  const [view, setView] = useState<'all' | 'review' | 'lookup'>('all');
   const [merging, setMerging] = useState<{ source: AssetModelItem; presetTargetId: string | null } | null>(null);
   const [reviewKey, setReviewKey] = useState(0);
   // The review payload lives here, not in ModelReviewPanel: the Review tab's
@@ -187,6 +192,9 @@ export default function AssetModels() {
   const [reviewData, setReviewData] = useState<ReviewOut | null>(null);
   const [reviewError, setReviewError] = useState('');
   const [showDismissed, setShowDismissed] = useState(false);
+  // Spec lookup status lives here too: its pending_count badges the tab.
+  const [lookupStatus, setLookupStatus] = useState<SpecLookupStatus | null>(null);
+  const [lookupKey, setLookupKey] = useState(0);
   const toast = useToast();
 
   const load = async () => {
@@ -218,6 +226,29 @@ export default function AssetModels() {
       });
     return () => { live = false; };
   }, [showDismissed, reviewKey]);
+
+  useEffect(() => {
+    let live = true;
+    // Errors are ignored: the badge simply stays off (a 403 user has no use for it).
+    getSpecLookupStatus()
+      .then((st) => { if (live) setLookupStatus(st); })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [lookupKey]);
+
+  const lookUpModel = async (m: AssetModelItem) => {
+    try {
+      const { queued } = await queueSpecLookup([m.id]);
+      toast(queued > 0
+        ? `Queued a spec lookup for ${m.make} ${m.model}`
+        : `${m.make} ${m.model} was not queued — it is private, skipped, or already queued`);
+    } catch (err) {
+      toast(err instanceof ApiError && err.code === 'not_configured'
+        ? 'No Anthropic API key is configured.'
+        : `Could not queue a spec lookup for ${m.make} ${m.model}`);
+    }
+    setLookupKey((k) => k + 1);
+  };
 
   // What still wants a human decision: every model the review returned, once
   // each (a model can be both import-created and part of a duplicate group).
@@ -412,6 +443,11 @@ export default function AssetModels() {
                 name is "Review3" */}
             Review{reviewCount !== null && <>{' '}<span className="badge-count">{reviewCount}</span></>}
           </button>
+          <button role="tab" aria-selected={view === 'lookup'} className={view === 'lookup' ? 'on' : ''}
+                  onClick={() => setView('lookup')}>
+            {/* same load-bearing space as Review's badge */}
+            Spec lookup{lookupStatus && <>{' '}<span className="badge-count">{lookupStatus.pending_count}</span></>}
+          </button>
         </div>
         <div className="toolbar-right">
           <div className="dir-search" style={{ marginLeft: 0 }}>
@@ -513,6 +549,8 @@ export default function AssetModels() {
                           pending={pd.pendingIds.has(m.id)}
                           onMark={() => pd.mark('asset_model', m.id, `${m.make} ${m.model}`)}
                           onUnmark={() => pd.unmark(m.id)}
+                          lookupConfigured={lookupStatus?.configured ?? false}
+                          onLookup={() => lookUpModel(m)}
                         />
                       )}
                     </div>
@@ -530,6 +568,11 @@ export default function AssetModels() {
                           onChanged={() => setReviewKey((k) => k + 1)}
                           onMerge={(source, presetTargetId) => setMerging({ source, presetTargetId })}
                           onEdit={(id) => setEditingId(id)} />
+      )}
+
+      {!error && view === 'lookup' && (
+        <SpecLookupPanel canChange={canChange} status={lookupStatus}
+                         onChanged={() => { setLookupKey((k) => k + 1); void load(); }} />
       )}
 
       {/* editingModel, never `?? null`: an id the catalog doesn't have would
@@ -572,11 +615,12 @@ export default function AssetModels() {
  * Edit button. ─────────────────────────────────────────────────────── */
 
 function ModelRowDetail({
-  model, canEdit, onEdit, onMerge, godVisible, pending, onMark, onUnmark,
+  model, canEdit, onEdit, onMerge, godVisible, pending, onMark, onUnmark, lookupConfigured, onLookup,
 }: {
   model: AssetModelItem; canEdit: boolean; onEdit: () => void; onMerge: () => void;
   godVisible: boolean; pending: boolean;
   onMark: () => Promise<void>; onUnmark: () => Promise<void>;
+  lookupConfigured: boolean; onLookup: () => Promise<void>;
 }) {
   return (
     <div className="detail-grid">
@@ -595,6 +639,10 @@ function ModelRowDetail({
           <dt>Form factor</dt><dd>{formFactorLabel(model.form_factor)}</dd>
           <dt>Rail type</dt><dd>{model.rail_type ?? '—'}</dd>
         </dl>
+        <p className="page-hint">
+          Last looked up {model.specs_looked_up_at ? longDate(model.specs_looked_up_at) : 'never'}
+          {model.private ? ' · Private' : ''}
+        </p>
       </div>
       <div className="detail-block">
         <p className="eyebrow-sm">Field knowledge</p>
@@ -614,6 +662,12 @@ function ModelRowDetail({
             <>
               <button className="btn-solid" onClick={onEdit}>Edit</button>
               <button className="mini-btn accent" onClick={onMerge}>Merge into…</button>
+              <button className="mini-btn"
+                      disabled={!lookupConfigured || model.private || model.spec_lookup_skip}
+                      title={model.private ? 'Private models are never sent to Claude.'
+                        : model.spec_lookup_skip ? 'Spec lookup is skipped for this model.'
+                        : !lookupConfigured ? 'No Anthropic API key is configured.' : undefined}
+                      onClick={() => void onLookup()}>Look up specs</button>
             </>
           )}
           <GodDeleteButton visible={godVisible} entityType="asset_model" entityId={model.id}

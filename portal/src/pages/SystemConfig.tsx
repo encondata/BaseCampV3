@@ -5,11 +5,13 @@ import { useState } from 'react';
 
 import EnvTab from '../components/system/EnvTab';
 import LoggingTab from '../components/system/LoggingTab';
+import SpecLookupTab from '../components/system/SpecLookupTab';
 import '../styles/system.css';
 
 const TABS = [
   { key: 'logging', label: 'Logging', component: LoggingTab },
   { key: 'env', label: 'Environment', component: EnvTab },
+  { key: 'spec-lookup', label: 'Spec lookup', component: SpecLookupTab },
 ] as const;
 
 export default function SystemConfig() {
