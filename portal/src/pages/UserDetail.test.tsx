@@ -338,6 +338,30 @@ it('Demote to worker confirms, posts, and returns to the Users list', async () =
   expect(screen.getByText('USERS LIST')).toBeTruthy();
 });
 
+it('the Demote modal has the Users eyebrow and the title', async () => {
+  renderAt('/people/users/p1');
+  await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });
+  fireEvent.click(screen.getByRole('button', { name: 'Demote to worker' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Demote to worker' });
+  expect(within(dialog).getByText('Users')).toBeTruthy();
+  expect(within(dialog).getByRole('heading', { name: 'Demote to worker — Wan Worker' })).toBeTruthy();
+  expect(within(dialog).getByText('Removes their portal login and access; keeps them as a worker.')).toBeTruthy();
+});
+
+it('a failed demotion shows the error and keeps the modal open', async () => {
+  const { ApiError } = await import('../lib/api');
+  api.adminDemoteRequest.mockRejectedValueOnce(new ApiError(403, 'rank_too_low'));
+  renderAt('/people/users/p1');
+  await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });
+  fireEvent.click(screen.getByRole('button', { name: 'Demote to worker' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Demote' }));
+  expect(await screen.findByText('Your rank is too low for that change.')).toBeTruthy();
+  const dialog = screen.getByRole('dialog', { name: 'Demote to worker' });
+  expect(dialog.querySelector('.pf-error')?.textContent).toBe('Your rank is too low for that change.');
+  expect(within(dialog).getByRole('button', { name: 'Demote' })).toBeTruthy();
+  expect(screen.getByRole('heading', { level: 1, name: /Wan Worker/ })).toBeTruthy();
+});
+
 it('an outranked person gets no Demote button', async () => {
   auth.maxRank = 10;   // below the fixture's max_rank — see the read-only test above for the mechanism
   renderAt('/people/users/p1');

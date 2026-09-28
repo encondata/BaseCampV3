@@ -280,9 +280,24 @@ async def test_admin_edit_profile(client, seeded_user, db):
 from sqlalchemy import select  # noqa: E402
 
 from serversherpa.db.models import (  # noqa: E402
-    AccessGroup, AccessGroupMember, AuditLog, NotificationGroup, NotificationGroupMember,
-    PasswordHistory, TrustedDevice,
+    AccessGroup, AccessGroupMember, AuditLog, Client, Notification, NotificationGroup,
+    NotificationGroupMember, NotificationMembershipRequest, PasswordHistory,
+    PermissionOverride, TrustedDevice,
 )
+from serversherpa.notifications.requests import create_request  # noqa: E402
+
+
+async def _demote_audit(db, person_id):
+    rows = list(await db.scalars(select(AuditLog).where(
+        AuditLog.entity_type == "user_account", AuditLog.entity_id == str(person_id),
+        AuditLog.action == "account.demote")))
+    assert len(rows) == 1
+    return rows[0].changes
+
+
+async def _active_roles(db, person_id):
+    return sorted(await db.scalars(select(PersonRole.role).where(
+        PersonRole.person_id == person_id, PersonRole.revoked_at.is_(None))))
 
 
 async def test_demote_removes_login_and_every_access_but_keeps_the_person(client, seeded_user, db):
@@ -294,9 +309,13 @@ async def test_demote_removes_login_and_every_access_but_keeps_the_person(client
     account = await db.get(UserAccount, worker.id)
     account.totp_secret_enc = b"secret"
     account.totp_confirmed_at = datetime.now(UTC)
+    # logged in first so the admin is an approver who gets a copy of the
+    # pending request below
+    admin = await login_admin(client, db, seeded_user)
     ag = AccessGroup(name="Dock crew")
     ng = NotificationGroup(name="On-call")
-    db.add_all([ag, ng])
+    night = NotificationGroup(name="Night shift")
+    db.add_all([ag, ng, night])
     await db.flush()
     db.add_all([
         AccessGroupMember(group_id=ag.id, person_id=worker.id),
@@ -304,10 +323,14 @@ async def test_demote_removes_login_and_every_access_but_keeps_the_person(client
         TrustedDevice(person_id=worker.id, token_hash="t" * 64, user_agent="UA",
                       last_used_at=datetime.now(UTC),
                       expires_at=datetime.now(UTC) + timedelta(days=7)),
+        PermissionOverride(person_id=worker.id, resource="assets", action="delete",
+                           allow=True),
     ])
+    await db.flush()
+    pending = await create_request(db, person=worker, group=night, action="join", note="")
+    pending_id = pending.id
     await db.commit()
     worker_session = await _headers(client, "wan@test.example.com")
-    admin = await login_admin(client, db, seeded_user)
 
     resp = await client.post(f"/users/{worker.id}/demote", headers=admin)
     assert resp.status_code == 204, resp.text
@@ -324,12 +347,19 @@ async def test_demote_removes_login_and_every_access_but_keeps_the_person(client
     assert await db.get(UserAccount, worker_id) is None
     assert list(await db.scalars(select(PasswordHistory).where(
         PasswordHistory.person_id == worker_id))) == []
-    active_roles = list(await db.scalars(select(PersonRole.role).where(
-        PersonRole.person_id == worker_id, PersonRole.revoked_at.is_(None))))
-    assert active_roles == []
+    # still a worker: the worker role survives, everything else is revoked
+    assert await _active_roles(db, worker_id) == ["worker"]
     revoked = list(await db.scalars(select(PersonRole).where(
         PersonRole.person_id == worker_id, PersonRole.revoked_at.is_not(None))))
-    assert {r.role for r in revoked} == {"worker", "staff"}
+    assert {r.role for r in revoked} == {"staff"}
+    assert list(await db.scalars(select(PermissionOverride).where(
+        PermissionOverride.person_id == worker_id))) == []
+    req = await db.get(NotificationMembershipRequest, pending_id)
+    assert req.status == "cancelled"
+    copies = [c for c in await db.scalars(select(Notification).where(
+        Notification.kind == "membership_request"))
+        if c.payload["request_id"] == str(pending_id)]
+    assert copies and all(c.payload["state"] == "cancelled" for c in copies)
     assert list(await db.scalars(select(AccessGroupMember).where(
         AccessGroupMember.person_id == worker_id))) == []
     assert list(await db.scalars(select(NotificationGroupMember).where(
@@ -344,21 +374,67 @@ async def test_demote_removes_login_and_every_access_but_keeps_the_person(client
     listed = (await client.get("/users", headers=admin)).json()
     assert all(u["person_id"] != str(worker_id) for u in listed)
     assert (await client.get(f"/users/{worker_id}", headers=admin)).status_code == 404
+    workers = (await client.get("/workers", headers=admin)).json()
+    assert any(w["person_id"] == str(worker_id) for w in workers)
+    assert (await client.get(f"/workers/{worker_id}", headers=admin)).status_code == 200
 
-    rows = list(await db.scalars(select(AuditLog).where(
-        AuditLog.entity_type == "user_account", AuditLog.entity_id == str(worker_id),
-        AuditLog.action == "account.demote")))
-    assert len(rows) == 1
-    assert rows[0].changes["login_email"] == "wan@test.example.com"
-    assert sorted(rows[0].changes["roles"]) == ["staff", "worker"]
-    assert rows[0].changes["access_groups"] == ["Dock crew"]
-    assert rows[0].changes["notification_groups"] == ["On-call"]
+    changes = await _demote_audit(db, worker_id)
+    assert changes["login_email"] == "wan@test.example.com"
+    assert changes["roles"] == ["staff"]
+    assert changes["worker_granted"] is False
+    assert changes["access_groups"] == ["Dock crew"]
+    assert changes["notification_groups"] == ["On-call"]
+    assert changes["overrides"] == [
+        {"resource": "assets", "action": "delete", "allow": True}]
+    assert changes["pending_requests_cancelled"] == 1
 
     # the person can be promoted again
     again = await client.post(f"/users/{worker_id}/account", headers=admin, json={
         "login_email": "wan@test.example.com", "temp_password": "Temp-pw-9999",
         "must_change_password": True})
     assert again.status_code == 201, again.text
+
+
+async def test_demote_grants_worker_when_missing(client, seeded_user, db):
+    user = await _mk_user(db, first="Sam", last="Staff", email="sam@test.example.com",
+                          roles=("staff",))
+    user_id = user.id
+    admin = await login_admin(client, db, seeded_user)
+
+    resp = await client.post(f"/users/{user_id}/demote", headers=admin)
+    assert resp.status_code == 204, resp.text
+
+    db.expire_all()
+    assert await _active_roles(db, user_id) == ["worker"]
+    changes = await _demote_audit(db, user_id)
+    assert changes["roles"] == ["staff"]
+    assert changes["worker_granted"] is True
+    workers = (await client.get("/workers", headers=admin)).json()
+    assert any(w["person_id"] == str(user_id) for w in workers)
+
+
+async def test_demote_keeps_org_contact_roles(client, seeded_user, db):
+    user = await _mk_user(db, first="Cora", last="Contact", email="cora@test.example.com",
+                          roles=("staff",))
+    user_id = user.id
+    org = Client(name="Contact Org")
+    db.add(org)
+    await db.flush()
+    db.add(PersonRole(person_id=user_id, role="client_viewer", client_id=org.id))
+    await db.commit()
+    admin = await login_admin(client, db, seeded_user)
+
+    resp = await client.post(f"/users/{user_id}/demote", headers=admin)
+    assert resp.status_code == 204, resp.text
+
+    db.expire_all()
+    assert await _active_roles(db, user_id) == ["client_viewer", "worker"]
+    revoked = set(await db.scalars(select(PersonRole.role).where(
+        PersonRole.person_id == user_id, PersonRole.revoked_at.is_not(None))))
+    assert revoked == {"staff"}
+    changes = await _demote_audit(db, user_id)
+    assert changes["roles"] == ["staff"]
+    assert changes["worker_granted"] is True
 
 
 async def test_demote_refusals(client, seeded_user, db):

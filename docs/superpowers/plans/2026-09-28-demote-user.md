@@ -4,7 +4,7 @@
 
 **Goal:** One admin action, "Demote to worker," that removes a person's portal login and every kind of portal access in a single transaction while leaving the person, their badge/RFID and their history in place.
 
-**Architecture:** A new `POST /users/{person_id}/demote` endpoint next to `disable_account` reuses `_load_target`, `_revoke_all_sessions` and `totp_service.reset`, revokes roles, deletes group memberships and the account row, and writes one `account.demote` audit row. The portal adds `demoteUser()`, a `DemoteUserModal` in the shared admin-modals file, and a button/row action on the user detail page and Users list.
+**Architecture:** A new `POST /users/{person_id}/demote` endpoint next to `disable_account` reuses `_load_target` and `totp_service.reset`, revokes every role but `worker` and org contact roles, deletes group memberships, overrides, session rows and the account row, and writes one `account.demote` audit row. The portal adds `demoteUser()`, a `DemoteUserModal` in the shared admin-modals file, and a button/row action on the user detail page and Users list.
 
 **Tech Stack:** FastAPI + SQLAlchemy async (real Postgres tests); React 18 + TypeScript + Vitest.
 
@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - American English in all copy, comments and commit messages.
-- Endpoint (exact): `POST /users/{person_id}/demote` → 204; permission `users:change`; uses `_load_target` (global actor, not self, account must exist → 404 `user_not_found`, rank check). Audit action (exact): `account.demote` with `changes = {"login_email", "roles", "access_groups", "notification_groups"}`. Session revoke reason: `"admin"` (the auth_sessions revoke_reason CHECK constraint has no "demoted" value).
+- Endpoint (exact): `POST /users/{person_id}/demote` → 204; permission `users:change`; uses `_load_target` (global actor, not self, account must exist → 404 `user_not_found`, rank check). Roles: revoke every active role except `worker` (kept, or granted if missing — the person stays a worker) and org-anchored roles (`scope_anchor` in `ORG_ANCHORS`, kept as contact roles); also delete permission overrides and cancel pending notification-group requests. Audit action (exact): `account.demote` with `changes = {"login_email", "roles" (revoked only), "worker_granted", "access_groups", "notification_groups", "overrides", "pending_requests_cancelled"}`. Session rows are deleted outright (auth_sessions has no ON DELETE CASCADE to user_accounts); a racing sign-in → `409 retry`.
 - Untouched by demotion: the `people` row (including `badge_uid`, `rfid_tag`, `archived_at`), time entries, scans, assignments, notes, prior audit rows.
 - Portal copy (exact): button/menu label **Demote to worker**; modal title `Demote to worker — {display_name}`; body "Demote {display_name} to a worker? Their portal login, roles, access groups, notification groups, two-factor setup and remembered browsers are removed, and they're signed out everywhere. Their badge, RFID and history stay; they leave this Users list but remain under People, and can be given a login again later."; confirm button **Demote** (danger), **Cancel**.
 - Typography guardrail: no new CSS; reuse `mini-btn danger`, `btn-solid btn-danger`, `set-note`, `pf-error`.

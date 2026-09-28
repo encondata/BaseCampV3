@@ -437,24 +437,43 @@ export function DemoteUserModal({ user, onClose, onDone }: {
       setSaving(false);
     }
   };
+  const close = () => { if (!saving) onClose(); };
+  // Report-generate header (eyebrow / title / description), same structure
+  // as the Sign out everywhere confirm on the user page. The inline width
+  // matches ud-confirm-card, whose stylesheet only loads with that page.
   return (
-    <Modal title={`Demote to worker — ${user.display_name}`} onClose={onClose}>
-      <div className="modal-body">
-        <p className="set-note" style={{ padding: 0, margin: 0 }}>
-          Demote {user.display_name} to a worker? Their portal login, roles, access groups,
-          notification groups, two-factor setup and remembered browsers are removed, and
-          they&apos;re signed out everywhere. Their badge, RFID and history stay; they leave this
-          Users list but remain under People, and can be given a login again later.
-        </p>
+    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
+      <div className="modal-card reports-modal-card rgm-card ud-confirm-card" role="dialog"
+           aria-label="Demote to worker" style={{ width: 'min(520px, 96vw)' }}>
+        <div className="modal-head">
+          <div className="rgm-head-text">
+            <div className="eyebrow">Users</div>
+            <h3>{`Demote to worker — ${user.display_name}`}</h3>
+            <p className="page-hint">Removes their portal login and access; keeps them as a worker.</p>
+          </div>
+          <button type="button" className="modal-close" aria-label="Close" onClick={close}
+                  disabled={saving}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"
+                 strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
+          </button>
+        </div>
+        <div className="modal-body">
+          <p className="set-note" style={{ padding: 0, margin: 0 }}>
+            Demote {user.display_name} to a worker? Their portal login, roles, access groups,
+            notification groups, two-factor setup and remembered browsers are removed, and
+            they&apos;re signed out everywhere. Their badge, RFID and history stay; they leave this
+            Users list but remain under People, and can be given a login again later.
+          </p>
+        </div>
+        <div className="modal-foot">
+          <button className="btn-solid btn-danger" onClick={() => void run()} disabled={saving}>
+            {saving ? 'Working…' : 'Demote'}
+          </button>
+          <button className="mini-btn" onClick={close} disabled={saving}>Cancel</button>
+          {error && <span className="pf-error">{error}</span>}
+        </div>
       </div>
-      <div className="modal-foot">
-        <button className="btn-solid btn-danger" onClick={() => void run()} disabled={saving}>
-          {saving ? 'Working…' : 'Demote'}
-        </button>
-        <button className="mini-btn" onClick={onClose} disabled={saving}>Cancel</button>
-        {error && <span className="pf-error">{error}</span>}
-      </div>
-    </Modal>
+    </div>
   );
 }
 

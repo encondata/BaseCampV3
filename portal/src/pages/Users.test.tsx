@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
 /** The Users list expansion offers a Full details link to the detail page. */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { LIST_FIT } from '../lib/listTools';
 
+const auth = vi.hoisted(() => ({ maxRank: 100 }));
+
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
-    person: { id: 'me-1', display_name: 'Me' }, roles: ['admin'], maxRank: 100, godMode: false,
+    person: { id: 'me-1', display_name: 'Me' }, roles: ['admin'], maxRank: auth.maxRank, godMode: false,
     can: () => true,
     preferences: { list_prefs: {}, list_size: 'default' }, updatePreferences: vi.fn(),
   }),
@@ -21,6 +23,7 @@ const ROW = {
 };
 
 beforeEach(() => {
+  auth.maxRank = 100;
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([ROW]), { status: 200 })));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -84,6 +87,30 @@ it('Demote to worker from the row menu confirms, posts, and reloads the list', a
   await waitFor(() => expect(calls().filter(([url, init]) =>
     String(url).endsWith('/users') && !(init as RequestInit | undefined)?.method,
   ).length).toBe(2));
+});
+
+it('the self row and an outranked row do not list Demote to worker', async () => {
+  auth.maxRank = 60;   // an admin: can't touch another admin (rank 60), can't target self
+  const SELF = { ...ROW, person_id: 'me-1', display_name: 'Me Myself', first_name: 'Me', last_name: 'Myself',
+    login_email: 'me@x.test', max_rank: 60 };
+  const PEER = { ...ROW, person_id: 'p2', display_name: 'Ada Admin', first_name: 'Ada', last_name: 'Admin',
+    login_email: 'ada@x.test', roles: ['admin'], max_rank: 60 };
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([SELF, PEER]), { status: 200 })));
+  render(
+    <MemoryRouter initialEntries={['/people/users']}>
+      <Routes>
+        <Route path="/people/users" element={<Users />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  for (const name of ['Me Myself', 'Ada Admin']) {
+    const row = (await screen.findByText(name)).closest('.dir-row') as HTMLElement;
+    fireEvent.click(within(row).getByRole('button', { name: /actions/i }));
+    expect(await screen.findByRole('menuitem', { name: 'Full details' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: 'Demote to worker' })).toBeNull();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menuitem', { name: 'Full details' })).toBeNull());
+  }
 });
 
 it('clicking the Actions trigger does not expand the row', async () => {
