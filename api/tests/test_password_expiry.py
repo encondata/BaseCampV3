@@ -339,3 +339,99 @@ async def test_kiosk_login_reports_expiry_too(client, db, seeded_user):
     assert resp.status_code == 200, resp.text
     assert resp.json()["must_change_password"] is True
     assert resp.json()["must_change_reason"] == "expired"
+
+
+# ── reminders ───────────────────────────────────────────────────────
+
+from serversherpa.db.models import Notification  # noqa: E402
+from serversherpa.notifications.password_reminders import (  # noqa: E402
+    KIND, run_password_reminders, run_reminders_once,
+)
+
+
+async def _set_policy_direct(db, *, enabled=True, days=90, since):
+    from serversherpa.db.models import SystemConfig
+    row = await db.get(SystemConfig, "security")
+    data = dict(row.data) if row else {}
+    data.update({"password_expiry_enabled": enabled, "password_expiry_days": days,
+                 "password_history_count": 3,
+                 "password_expiry_since": since.isoformat() if since else None})
+    if row is None:
+        db.add(SystemConfig(section="security", data=data))
+    else:
+        row.data = data
+    await db.commit()
+
+
+async def _reminders(db, person_id):
+    return list(await db.scalars(select(Notification).where(
+        Notification.person_id == person_id, Notification.kind == KIND)
+        .order_by(Notification.created_at)))
+
+
+async def _with_days_left(db, person_id, days_left: float, *, policy_days=90):
+    """Arrange the policy so the seeded user's password expires `days_left`
+    days from now (fractional allowed)."""
+    since = datetime.now(UTC) - timedelta(days=policy_days) + timedelta(days=days_left)
+    await _set_policy_direct(db, days=policy_days, since=since)
+    await db.execute(update(UserAccount).where(UserAccount.person_id == person_id)
+                     .values(password_updated_at=since - timedelta(days=1)))
+    await db.commit()
+
+
+async def test_reminders_fire_once_per_stage(db, seeded_user):
+    now = datetime.now(UTC)
+    await _set_policy_direct(db, enabled=False, since=None)
+    assert await run_password_reminders(db, now) == 0
+    await _with_days_left(db, seeded_user.id, 10)
+    assert await run_password_reminders(db, now) == 0
+    await _with_days_left(db, seeded_user.id, 6)
+    assert await run_password_reminders(db, now) == 1
+    assert await run_password_reminders(db, now) == 0          # dedup
+    rows = await _reminders(db, seeded_user.id)
+    assert rows[0].payload["stage"] == 7 and rows[0].payload["days_left"] == 6
+    assert rows[0].title == "Your password expires in 6 days"
+    assert rows[0].link == "/me"
+    assert "before" in rows[0].body and "My Profile" in rows[0].body
+    await _with_days_left(db, seeded_user.id, 2.5)
+    assert await run_password_reminders(db, now) == 1
+    await _with_days_left(db, seeded_user.id, 0.5)
+    assert await run_password_reminders(db, now) == 1
+    rows = await _reminders(db, seeded_user.id)
+    assert [r.payload["stage"] for r in rows] == [7, 3, 1]
+    assert rows[-1].title == "Your password expires in 1 day"
+    await _with_days_left(db, seeded_user.id, -1)
+    assert await run_password_reminders(db, now) == 0          # expired: the gate handles it
+
+
+async def test_reminders_skip_disabled_accounts_and_jump_to_the_urgent_stage(db, seeded_user):
+    now = datetime.now(UTC)
+    other = Person(first_name="Dee", last_name="Disabled", email="dee-pw@test.example.com")
+    db.add(other)
+    await db.flush()
+    db.add(UserAccount(person_id=other.id, email="dee-pw@test.example.com",
+                       password_hash="x", disabled_at=now))
+    await db.commit()
+    await _with_days_left(db, seeded_user.id, 2)     # inside the 7- and 3-day windows at once
+    await db.execute(update(UserAccount).where(UserAccount.person_id == other.id)
+                     .values(password_updated_at=datetime.now(UTC) - timedelta(days=200)))
+    await db.commit()
+    assert await run_password_reminders(db, now) == 1
+    rows = await _reminders(db, seeded_user.id)
+    assert [r.payload["stage"] for r in rows] == [3]
+    assert await _reminders(db, other.id) == []
+
+
+async def test_run_reminders_once_swallows_errors(db, seeded_user, caplog, monkeypatch):
+    import logging
+
+    from serversherpa.db.engine import get_sessionmaker
+    from serversherpa.notifications import password_reminders
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("db is on fire")
+
+    monkeypatch.setattr(password_reminders, "run_password_reminders", boom)
+    caplog.set_level(logging.ERROR, logger="serversherpa.notifications.password_reminders")
+    assert await run_reminders_once(get_sessionmaker()) == 0
+    assert "db is on fire" in caplog.text
