@@ -2,17 +2,6 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "portal",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "--prefix",
-        "portal",
-        "run",
-        "dev"
-      ],
-      "port": 5173
-    },
-    {
       "name": "api",
       "runtimeExecutable": "api/.venv/bin/python",
       "runtimeArgs": [
@@ -31,9 +20,25 @@
       "port": 8000
     },
     {
+      "name": "portal",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "--prefix",
+        "portal",
+        "run",
+        "dev"
+      ],
+      "port": 5173
+    },
+    {
       "name": "kiosk",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "kiosk", "run", "dev"],
+      "runtimeArgs": [
+        "--prefix",
+        "kiosk",
+        "run",
+        "dev"
+      ],
       "port": 5174
     }
   ]
