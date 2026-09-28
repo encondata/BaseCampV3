@@ -1197,6 +1197,9 @@ class AssetModelItem(BaseModel):
     form_factor: str | None = None
     knowledge: str
     review_dismissed_at: datetime | None = None
+    private: bool = False
+    spec_lookup_skip: bool = False
+    specs_looked_up_at: datetime | None = None
     aliases: list[str] = []
     created_at: datetime
     updated_at: datetime
@@ -1219,6 +1222,8 @@ class AssetModelCreateIn(BaseModel):
     rail_type: str | None = None
     form_factor: str | None = None
     knowledge: str = ""
+    private: bool = False
+    spec_lookup_skip: bool = False
     model_config = ConfigDict(extra="forbid")
 
 
@@ -1239,6 +1244,8 @@ class AssetModelUpdateIn(BaseModel):
     rail_type: str | None = None
     form_factor: str | None = None
     knowledge: str | None = None
+    private: bool | None = None
+    spec_lookup_skip: bool | None = None
     model_config = ConfigDict(extra="forbid")
 
 

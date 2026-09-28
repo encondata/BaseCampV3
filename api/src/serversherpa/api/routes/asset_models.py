@@ -35,7 +35,7 @@ MODEL_FIELDS = [
     "make", "model", "category", "ru_size",
     "weight_lbs", "weight_kg", "length_in", "width_in", "height_in",
     "length_cm", "width_cm", "height_cm", "mount_type", "rail_type",
-    "form_factor", "knowledge",
+    "form_factor", "knowledge", "private", "spec_lookup_skip",
 ]
 NON_NULLABLE_MODEL_FIELDS = ("make", "model")
 
@@ -83,6 +83,8 @@ def _item(m: AssetModel, cats: dict, aliases: dict) -> dict:
         "mount_type": m.mount_type, "rail_type": m.rail_type,
         "form_factor": m.form_factor,
         "knowledge": m.knowledge, "review_dismissed_at": m.review_dismissed_at,
+        "private": m.private, "spec_lookup_skip": m.spec_lookup_skip,
+        "specs_looked_up_at": m.specs_looked_up_at,
         "aliases": aliases.get(m.id, []),
         "created_at": m.created_at, "updated_at": m.updated_at,
     }
@@ -243,6 +245,9 @@ async def update_asset_model(
             raise _err(422, f"{field}_required")
     if "knowledge" in data and data["knowledge"] is None:
         raise _err(422, "knowledge_required")
+    for flag in ("private", "spec_lookup_skip"):
+        if flag in data and data[flag] is None:
+            raise _err(422, f"{flag}_required")
     await _validate(db, data)
     await _check_duplicate(db, data.get("make", m.make),
                            data.get("model", m.model), exclude=m.id)
