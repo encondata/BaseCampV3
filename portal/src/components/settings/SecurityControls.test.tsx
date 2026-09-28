@@ -86,12 +86,23 @@ it('shows the password policy rows and saves the switch and the numbers', async 
 it('shows a range error from the API and keeps the inputs locked without change rights', async () => {
   api.updateSecurityConfig.mockRejectedValueOnce(Object.assign(new api.ApiError('x'), { code: 'password_expiry_days_out_of_range' }));
   render(<SecurityControls />);
-  const days = await screen.findByLabelText('Expires after');
+  const days = await screen.findByLabelText('Expires after') as HTMLInputElement;
   fireEvent.change(days, { target: { value: '500' } });
   fireEvent.blur(days);
   expect(await screen.findByText(/between 1 and 365/)).toBeTruthy();
+  await waitFor(() => expect(days.value).toBe('90'));
   cleanup();
   render(<SecurityControls canChange={false} />);
   const locked = await screen.findByLabelText('Expires after') as HTMLInputElement;
   expect(locked.disabled).toBe(true);
+});
+
+it('does not save when the field is cleared and blurred, and reverts to the saved value', async () => {
+  render(<SecurityControls />);
+  const days = await screen.findByLabelText('Expires after') as HTMLInputElement;
+  expect(days.value).toBe('90');
+  fireEvent.change(days, { target: { value: '' } });
+  fireEvent.blur(days);
+  await waitFor(() => expect(days.value).toBe('90'));
+  expect(api.updateSecurityConfig).not.toHaveBeenCalled();
 });

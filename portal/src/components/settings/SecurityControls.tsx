@@ -27,8 +27,8 @@ export default function SecurityControls({ canChange = true }: { canChange?: boo
 
   const patch = async (p: Partial<SecurityConfig>) => {
     setBusy(true); setError('');
-    try { setCfg(await updateSecurityConfig(p)); }
-    catch (err) { setError(err instanceof ApiError ? (RANGE_ERRORS[err.code] ?? err.message) : 'Could not save.'); }
+    try { setCfg(await updateSecurityConfig(p)); return true; }
+    catch (err) { setError(err instanceof ApiError ? (RANGE_ERRORS[err.code] ?? err.message) : 'Could not save.'); return false; }
     finally { setBusy(false); }
   };
 
@@ -76,10 +76,10 @@ export default function SecurityControls({ canChange = true }: { canChange?: boo
       </div>
       <NumberSetting id="sec-expiry-days" label="Expires after" hint="Days a password stays valid." suffix="days"
                      value={cfg?.password_expiry_days ?? 90} min={1} max={365} disabled={locked}
-                     onSave={(v) => void patch({ password_expiry_days: v })} />
+                     onSave={(v) => patch({ password_expiry_days: v })} />
       <NumberSetting id="sec-history-count" label="Prevent reuse of the last" hint="Passwords that can't be chosen again. 0 turns this off." suffix="passwords"
                      value={cfg?.password_history_count ?? 3} min={0} max={24} disabled={locked}
-                     onSave={(v) => void patch({ password_history_count: v })} />
+                     onSave={(v) => patch({ password_history_count: v })} />
       <div className="set-row">
         <div className="set-label">
           <b>End all sessions</b>
@@ -113,14 +113,15 @@ const RANGE_ERRORS: Record<string, string> = {
  *  this compact right-hand pattern from fighting that one. */
 function NumberSetting({ id, label, hint, suffix, value, min, max, disabled, onSave }: {
   id: string; label: string; hint: string; suffix: string; value: number;
-  min: number; max: number; disabled: boolean; onSave: (v: number) => void;
+  min: number; max: number; disabled: boolean; onSave: (v: number) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState(String(value));
   useEffect(() => { setDraft(String(value)); }, [value]);
   const commit = () => {
-    const n = Number(draft);
-    if (!Number.isInteger(n) || n === value) { setDraft(String(value)); return; }
-    onSave(n);
+    const trimmed = draft.trim();
+    const n = Number(trimmed);
+    if (trimmed === '' || !Number.isInteger(n) || n === value) { setDraft(String(value)); return; }
+    void onSave(n).then((ok) => { if (!ok) setDraft(String(value)); });
   };
   return (
     <div className="set-row">
