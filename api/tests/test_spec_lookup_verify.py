@@ -1,0 +1,59 @@
+from serversherpa.spec_lookup.verify import numbers_in, normalize_url, verify_finding
+
+SEEN = {normalize_url("https://www.hpe.com/psnow/doc/a50004307enw")}
+URL = "https://www.hpe.com/psnow/doc/a50004307enw/"
+
+
+def v(field, value, unit, quote, url=URL):
+    return verify_finding(field, value, unit, quote, url, SEEN)
+
+
+def test_numbers_in():
+    assert numbers_in("Weight: 1,234.5 lb") == [1234.5]
+    assert numbers_in("43.46 x 70.7 x 4.29 cm") == [43.46, 70.7, 4.29]
+    assert numbers_in("17,5 kg") == [17.5]
+    assert numbers_in("2U") == [2.0]
+
+
+def test_url_normalization():
+    assert normalize_url("https://WWW.hpe.com/a/?x=1#frag") == "https://www.hpe.com/a?x=1"
+
+
+def test_accepts_value_present_in_quote():
+    got = v("weight", "13.6", "kg", "Maximum weight 13.6 kg (30 lb)")
+    assert got is not None and got.value == "13.6" and got.unit == "kg"
+    assert v("ru_size", "1", None, "1U rack height").value == "1"
+
+
+def test_rejects_value_missing_from_quote():
+    assert v("weight", "14", "kg", "Maximum weight 13.6 kg") is None
+
+
+def test_rejects_unseen_url():
+    assert v("ru_size", "1", None, "1U", url="https://example.com/made-up") is None
+
+
+def test_bounds():
+    assert v("ru_size", "0", None, "0U") is None
+    assert v("ru_size", "61", None, "61U") is None
+    assert v("weight", "4000", "lbs", "4000 lbs") is None
+    assert v("height", "200", "in", "200 in") is None
+    assert v("height", "4.29", "cm", "4.29 cm") is not None
+
+
+def test_units_must_fit_the_field():
+    assert v("weight", "13.6", "cm", "13.6 cm") is None
+    assert v("ru_size", "1", "in", "1U") is None
+
+
+def test_mount_and_rail_and_knowledge():
+    assert v("mount_type", "rails", None, "ships with sliding rails").value == "rails"
+    assert v("mount_type", "magnets", None, "magnets") is None
+    assert v("rail_type", "Easy install sliding rails", None, "Easy install sliding rails") is not None
+    assert v("rail_type", "x" * 101, None, "x") is None
+    assert v("knowledge", "1U, 2-socket server.", None, "The DL320 is a 1U server") is not None
+    assert v("knowledge", "y" * 1001, None, "y") is None
+
+
+def test_empty_quote_rejected():
+    assert v("ru_size", "1", None, "   ") is None
