@@ -270,3 +270,16 @@ it('a matchMedia match at <=900px forces hidden mode even when the preference is
   expect(screen.getByRole('button', { name: 'Open navigation' })).toBeDefined();
   expect(screen.queryByText('Move Dashboard')).toBeNull();
 });
+
+it('the Apps section links to the kiosk and wiki in a new tab; Kiosk needs kiosk access', () => {
+  auth.navMode = 'expanded';
+  auth.can = (resource: string) => resource !== 'kiosk';
+  renderShell();
+  const nav = within(document.querySelector('.portal-nav.docked')!);
+  const wiki = nav.getByText('Wiki').closest('a') as HTMLAnchorElement;
+  expect(wiki.getAttribute('target')).toBe('_blank');
+  expect(wiki.getAttribute('rel')).toContain('noopener');
+  expect(wiki.getAttribute('href')).toMatch(/^http:\/\/localhost:5176$/);
+  expect(nav.queryByText('Kiosk')).toBeNull();
+  auth.can = () => true;
+});
