@@ -170,7 +170,11 @@ copy, restyled to the same light palette (inputs, buttons, links).
 - **Tab order stays as today:** email → password → Sign in → Continue with
   SSO → Contact support. "Forgot password?" and the eye toggle stay out of
   the Tab order (`tabIndex={-1}`), as today.
-- Text and focus rings meet WCAG AA contrast on `--lx-canvas`.
+- Body text, labels and buttons meet WCAG AA contrast on `--lx-canvas`. The
+  brand orange (`--lx-orange`) is used as in the mockup for the eyebrow,
+  headline accent and focus border; at roughly 2.75:1 against `--lx-canvas`
+  it is below AA for small text — a known trade-off kept for mockup
+  fidelity, not a contrast target that was met.
 - American English in all copy and comments.
 
 ## Testing

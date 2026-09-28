@@ -54,3 +54,8 @@ it('hides the decorative layers from screen readers and uses the light art', () 
   expect(container.querySelector('.lx-mountains')?.getAttribute('src'))
     .toBe('/images/login-mountains-light.webp');
 });
+
+it('hides the status separator from screen readers', () => {
+  const { container } = render(<LoginScene />);
+  expect(container.querySelector('.lx-status-sep')?.getAttribute('aria-hidden')).toBe('true');
+});

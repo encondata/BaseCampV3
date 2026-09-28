@@ -132,7 +132,7 @@ export default function LoginScene() {
       <footer className="lx-status">
         <span className="lx-status-dot" />
         <b>ALL SYSTEMS OPERATIONAL</b>
-        <span className="lx-status-sep">|</span>
+        <span className="lx-status-sep" aria-hidden="true">|</span>
         <span>STATUS.SERVERSHERPA.COM</span>
       </footer>
     </>
