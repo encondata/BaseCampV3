@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /** The Users list expansion offers a Full details link to the detail page. */
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { LIST_FIT } from '../lib/listTools';
@@ -58,6 +58,32 @@ it('a manage-able row lists Full details, Edit profile, Reset password, Manage r
   expect(screen.getByRole('menuitem', { name: 'Reset password' })).toBeTruthy();
   expect(screen.getByRole('menuitem', { name: 'Manage roles' })).toBeTruthy();
   expect(screen.getByRole('menuitem', { name: 'Disable account' })).toBeTruthy();
+  expect(screen.getByRole('menuitem', { name: 'Demote to worker' })).toBeTruthy();
+});
+
+it('Demote to worker from the row menu confirms, posts, and reloads the list', async () => {
+  render(
+    <MemoryRouter initialEntries={['/people/users']}>
+      <Routes>
+        <Route path="/people/users" element={<Users />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  await screen.findByText('Wan Worker');
+  fireEvent.click(screen.getAllByRole('button', { name: /actions/i })[0]);
+  fireEvent.click(await screen.findByRole('menuitem', { name: 'Demote to worker' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Demote' }));
+  // This file mocks the global `fetch` rather than `lib/api.ts` (no
+  // hoisted `api` object here), so "posts, and reloads the list" is
+  // verified against that fetch mock's calls: a POST to the demote
+  // endpoint, then a second GET of the list.
+  const calls = () => vi.mocked(fetch).mock.calls;
+  await waitFor(() => expect(calls().some(([url, init]) =>
+    String(url).endsWith('/p1/demote') && (init as RequestInit | undefined)?.method === 'POST',
+  )).toBe(true));
+  await waitFor(() => expect(calls().filter(([url, init]) =>
+    String(url).endsWith('/users') && !(init as RequestInit | undefined)?.method,
+  ).length).toBe(2));
 });
 
 it('clicking the Actions trigger does not expand the row', async () => {

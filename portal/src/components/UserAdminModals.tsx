@@ -10,6 +10,7 @@ import { useAuth } from '../auth/AuthContext';
 import { canTouchRank } from '../lib/access';
 import {
   adminAccountStateRequest,
+  adminDemoteRequest,
   adminResetPasswordRequest,
   adminResetTotp,
   adminSetRolesRequest,
@@ -409,6 +410,46 @@ export function AccountStateModal({ user, action, onClose, onDone }: {
         <button className={action === 'disable' ? 'btn-solid btn-danger' : 'btn-solid'}
                 onClick={() => void run()} disabled={saving}>
           {saving ? 'Working…' : copy.confirm}
+        </button>
+        <button className="mini-btn" onClick={onClose} disabled={saving}>Cancel</button>
+        {error && <span className="pf-error">{error}</span>}
+      </div>
+    </Modal>
+  );
+}
+
+/* ── demote to worker ───────────────────────────────────────────── */
+
+export function DemoteUserModal({ user, onClose, onDone }: {
+  user: ManagedUser;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const run = async () => {
+    setSaving(true); setError('');
+    try {
+      await adminDemoteRequest(user.person_id);
+      onDone();
+    } catch (err) {
+      setError(errText(err));
+      setSaving(false);
+    }
+  };
+  return (
+    <Modal title={`Demote to worker — ${user.display_name}`} onClose={onClose}>
+      <div className="modal-body">
+        <p className="set-note" style={{ padding: 0, margin: 0 }}>
+          Demote {user.display_name} to a worker? Their portal login, roles, access groups,
+          notification groups, two-factor setup and remembered browsers are removed, and
+          they&apos;re signed out everywhere. Their badge, RFID and history stay; they leave this
+          Users list but remain under People, and can be given a login again later.
+        </p>
+      </div>
+      <div className="modal-foot">
+        <button className="btn-solid btn-danger" onClick={() => void run()} disabled={saving}>
+          {saving ? 'Working…' : 'Demote'}
         </button>
         <button className="mini-btn" onClick={onClose} disabled={saving}>Cancel</button>
         {error && <span className="pf-error">{error}</span>}

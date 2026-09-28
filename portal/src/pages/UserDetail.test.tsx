@@ -40,6 +40,7 @@ const api = vi.hoisted(() => ({
   })),
   setUserAccessGroups: vi.fn(async (_id: string, ids: string[]) => ids),
   revokeAllUserSessions: vi.fn(async () => {}),
+  adminDemoteRequest: vi.fn(() => Promise.resolve()),
   getOverrides: vi.fn(async () => ({ overrides: {} })),
   putOverrides: vi.fn(async () => {}),
   adminResetTotp: vi.fn(async () => {}),
@@ -106,6 +107,7 @@ export function renderAt(path: string) {
         <Route path="/people/users/:personId" element={<UserDetail />} />
         <Route path="/people/users/:personId/access" element={<UserDetail />} />
         <Route path="/people/users/:personId/history" element={<UserDetail />} />
+        <Route path="/people/users" element={<div>USERS LIST</div>} />
         <Route path="/me" element={<div>ME PAGE</div>} />
       </Routes>
     </MemoryRouter>,
@@ -323,6 +325,24 @@ it('History tab refetches when personId changes while the tab is open', async ()
 it('rankLabel only names the global admin tiers', () => {
   expect(rankLabel(10)).toBeNull();   // a worker's role rank also happens to be 10
   expect(rankLabel(60)).toBe('Admin');
+});
+
+it('Demote to worker confirms, posts, and returns to the Users list', async () => {
+  renderAt('/people/users/p1');
+  await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });
+  fireEvent.click(screen.getByRole('button', { name: 'Demote to worker' }));
+  expect(await screen.findByText(/Their badge, RFID and history stay/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Demote' }));
+  await waitFor(() => expect(api.adminDemoteRequest).toHaveBeenCalledWith('p1'));
+  await waitFor(() => expect(screen.queryByRole('heading', { level: 1, name: /Wan Worker/ })).toBeNull());
+  expect(screen.getByText('USERS LIST')).toBeTruthy();
+});
+
+it('an outranked person gets no Demote button', async () => {
+  auth.maxRank = 10;   // below the fixture's max_rank — see the read-only test above for the mechanism
+  renderAt('/people/users/p1');
+  await screen.findByRole('heading', { level: 1, name: /Wan Worker/ });
+  expect(screen.queryByRole('button', { name: 'Demote to worker' })).toBeNull();
 });
 
 it('refetches history after a mutation once the History tab has been opened', async () => {

@@ -564,6 +564,12 @@ export async function adminAccountStateRequest(
   if (!resp.ok) throw await errorFrom(resp);
 }
 
+/** Someone quit: drop their login and every portal access, keep the person. */
+export async function adminDemoteRequest(personId: string): Promise<void> {
+  const resp = await apiFetch(`/users/${personId}/demote`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+}
+
 export async function adminSetRolesRequest(
   personId: string, roles: string[],
 ): Promise<string[]> {
