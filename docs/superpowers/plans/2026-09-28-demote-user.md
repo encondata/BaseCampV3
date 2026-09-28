@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - American English in all copy, comments and commit messages.
-- Endpoint (exact): `POST /users/{person_id}/demote` → 204; permission `users:change`; uses `_load_target` (global actor, not self, account must exist → 404 `user_not_found`, rank check). Audit action (exact): `account.demote` with `changes = {"login_email", "roles", "access_groups", "notification_groups"}`. Session revoke reason (exact): `"demoted"`.
+- Endpoint (exact): `POST /users/{person_id}/demote` → 204; permission `users:change`; uses `_load_target` (global actor, not self, account must exist → 404 `user_not_found`, rank check). Audit action (exact): `account.demote` with `changes = {"login_email", "roles", "access_groups", "notification_groups"}`. Session revoke reason: `"admin"` (the auth_sessions revoke_reason CHECK constraint has no "demoted" value).
 - Untouched by demotion: the `people` row (including `badge_uid`, `rfid_tag`, `archived_at`), time entries, scans, assignments, notes, prior audit rows.
 - Portal copy (exact): button/menu label **Demote to worker**; modal title `Demote to worker — {display_name}`; body "Demote {display_name} to a worker? Their portal login, roles, access groups, notification groups, two-factor setup and remembered browsers are removed, and they're signed out everywhere. Their badge, RFID and history stay; they leave this Users list but remain under People, and can be given a login again later."; confirm button **Demote** (danger), **Cancel**.
 - Typography guardrail: no new CSS; reuse `mini-btn danger`, `btn-solid btn-danger`, `set-note`, `pf-error`.
