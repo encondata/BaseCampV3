@@ -168,3 +168,15 @@ def test_get_provider_none_without_key():
 
 def test_estimate_cost():
     assert estimate_cost(1_000_000, 100_000, 10) == pytest.approx(2.0 + 1.0 + 0.10)
+
+
+def test_max_tokens_leaves_room_for_adaptive_thinking():
+    from serversherpa.spec_lookup.provider import MAX_TOKENS
+    assert MAX_TOKENS == 16000
+
+
+async def test_request_uses_max_tokens():
+    from serversherpa.spec_lookup.provider import MAX_TOKENS
+    c = fake_client([Resp([SEARCH, {"type": "text", "text": json.dumps(ANSWER)}])])
+    await prov(c).lookup(make="a", model="b", aliases=[], category=None, fields=["ru_size"])
+    assert c.messages.calls[0]["max_tokens"] == MAX_TOKENS == 16000

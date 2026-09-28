@@ -13,7 +13,7 @@ from sqlalchemy import select
 from serversherpa.db.models import AssetModel, AssetModelAlias, SpecLookupJob
 from serversherpa.spec_lookup import service
 from serversherpa.spec_lookup.fields import wanted_fields
-from serversherpa.spec_lookup.jobs import claim_next, requeue_stale
+from serversherpa.spec_lookup.jobs import MAX_ATTEMPTS, claim_next, requeue_stale
 from serversherpa.spec_lookup.provider import (
     ProviderFailed, ProviderNotConfigured, ProviderRetryable, get_provider, is_configured,
 )
@@ -23,7 +23,6 @@ logger = logging.getLogger("serversherpa.spec_lookup.worker")
 
 PROCESS_NAME = "spec-lookup-worker"
 BACKOFF = (60, 300, 1800)
-MAX_ATTEMPTS = 3
 STALE_SWEEP_SECONDS = 60
 SWEEP_SECONDS = 60
 ERROR_MAX = 2000
@@ -54,6 +53,7 @@ async def process_job(db, job: SpecLookupJob, provider) -> str:
     aliases = list(await db.scalars(
         select(AssetModelAlias.alias).where(AssetModelAlias.model_id == m.id)))
     job.attempts += 1
+    await db.commit()          # a worker killed mid-call must not loop forever at attempts=0
     try:
         result = await provider.lookup(make=m.make, model=m.model, aliases=aliases,
                                        category=m.category, fields=fields)
@@ -69,8 +69,21 @@ async def process_job(db, job: SpecLookupJob, provider) -> str:
         job.error = str(exc)[:ERROR_MAX]
         return "queued"
     except ProviderFailed as exc:
-        m.specs_looked_up_at = datetime.now(UTC)
+        # max_tokens is our budget, not the model's answer: leave the model
+        # unstamped (FAILED_COOLDOWN still keeps the sweep off it for a day)
+        if str(exc) != "max_tokens":
+            m.specs_looked_up_at = datetime.now(UTC)
         return _finish(job, "failed", str(exc))
+    # The call can take minutes; a user may have filled a field or made the
+    # model private meanwhile. Re-read before deciding what is blank.
+    m = await db.get(AssetModel, job.model_id, populate_existing=True)
+    if m is None:
+        return _finish(job, "done", "model_gone")
+    if m.private or m.spec_lookup_skip:
+        job.input_tokens += result.input_tokens
+        job.output_tokens += result.output_tokens
+        job.search_count += result.search_count
+        return _finish(job, "done", "private" if m.private else "skipped")
     await service.record_result(db, job, m, result, cfg)
     return _finish(job, "done")
 
@@ -78,6 +91,9 @@ async def process_job(db, job: SpecLookupJob, provider) -> str:
 async def sweep(db, provider_configured: bool) -> int:
     cfg = await read_section(db, service.AI_LOOKUP)
     if not cfg.get("background_enabled") or not provider_configured:
+        return 0
+    if await service.key_rejected(db):
+        # the API refused the key: stop spending sweeps until a manual lookup succeeds
         return 0
     ids = await service.eligible_model_ids(db, cfg)
     n = await service.enqueue(db, ids, service.PRIORITY_SWEEP, None)

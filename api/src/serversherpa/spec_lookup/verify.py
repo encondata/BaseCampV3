@@ -59,6 +59,8 @@ def normalize_url(url: str) -> str:
 
 def verify_finding(field: str, value: str, unit: str | None, quote: str,
                    source_url: str, seen_urls: set[str]) -> Verified | None:
+    if not all(isinstance(x, str) for x in (value, quote, source_url)):
+        return None
     quote = (quote or "").strip()
     value = (value or "").strip()
     if field not in UNITS or unit not in UNITS[field] or not quote or not value:

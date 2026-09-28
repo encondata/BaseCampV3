@@ -13,7 +13,7 @@ from serversherpa.spec_lookup.fields import ALL_FIELDS
 from serversherpa.spec_lookup.verify import normalize_url
 
 MAX_CONTINUATIONS = 3
-MAX_TOKENS = 4000
+MAX_TOKENS = 16000                     # adaptive thinking counts toward this
 SEARCH_COST_USD = 0.01                 # $10 per 1,000 searches
 INPUT_COST_PER_MTOK = 2.0              # claude-sonnet-5
 OUTPUT_COST_PER_MTOK = 10.0

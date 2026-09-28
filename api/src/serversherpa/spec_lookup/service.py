@@ -12,7 +12,7 @@ from serversherpa.assets.units import apply_unit_pairs
 from serversherpa.db.models import AssetModel, SpecLookupJob, SpecSuggestion
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.spec_lookup.fields import (
-    blank_conditions, column_payload, current_value, enabled_fields, is_blank,
+    COLUMNS, blank_conditions, column_payload, current_value, enabled_fields, is_blank,
 )
 from serversherpa.spec_lookup.provider import LookupResult
 from serversherpa.spec_lookup.verify import verify_finding
@@ -57,6 +57,19 @@ async def eligible_model_ids(db: AsyncSession, cfg: dict, *, respect_retry: bool
             SpecLookupJob.finished_at >= now - FAILED_COOLDOWN)
         q = q.where(~recently_failed)
     return list(await db.scalars(q))
+
+
+async def last_finished_job(db: AsyncSession) -> SpecLookupJob | None:
+    return await db.scalar(
+        select(SpecLookupJob).where(SpecLookupJob.finished_at.is_not(None))
+        .order_by(SpecLookupJob.finished_at.desc()).limit(1))
+
+
+async def key_rejected(db: AsyncSession) -> bool:
+    """True when the most recent finished lookup failed because the API
+    refused the key (callers check that a key is actually set)."""
+    last = await last_finished_job(db)
+    return last is not None and last.status == "failed" and last.error == "not_configured"
 
 
 async def enqueue(db: AsyncSession, model_ids: list[uuid.UUID], priority: int,
@@ -132,12 +145,23 @@ async def _model(db: AsyncSession, s: SpecSuggestion) -> AssetModel:
     return m
 
 
+def _filled_partner(m: AssetModel, field: str) -> str | None:
+    """The first non-empty column of a unit pair, with its unit ("13.6 kg")."""
+    for unit in COLUMNS[field]:
+        v = current_value(m, field, unit)
+        if v is not None:
+            return f"{v} {unit}" if unit else v
+    return None
+
+
 async def approve(db: AsyncSession, s: SpecSuggestion, actor_id: uuid.UUID) -> None:
     if s.status != "pending":
         raise BadState(s.status)
     m = await _model(db, s)
     if current_value(m, s.field, s.unit) != s.previous_value:
         raise FieldChanged(current_value(m, s.field, s.unit))
+    if s.previous_value is None and not is_blank(m, s.field):
+        raise FieldChanged(_filled_partner(m, s.field))
     await _apply(db, m, s, actor_id, s.value, "spec_lookup.apply")
     s.status = "approved"
     s.decided_by = actor_id

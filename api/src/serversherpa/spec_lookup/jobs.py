@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.db.models import SpecLookupJob
 
 STALE_MINUTES = 15
+MAX_ATTEMPTS = 3
 
 
 def _worker_id() -> str:
@@ -43,6 +44,11 @@ async def requeue_stale(db: AsyncSession) -> int:
         select(SpecLookupJob).where(SpecLookupJob.status == "running", liveness < cutoff)
         .with_for_update(skip_locked=True))).all()
     for job in rows:
+        if job.attempts >= MAX_ATTEMPTS:
+            job.status = "failed"
+            job.error = "stale_retries_exhausted"
+            job.finished_at = datetime.now(UTC)
+            continue
         job.status = "queued"
         job.started_at = None
         job.heartbeat_at = None

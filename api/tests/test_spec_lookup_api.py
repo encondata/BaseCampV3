@@ -124,6 +124,11 @@ async def test_bulk(client, db, seeded_user):
     res = {r["id"]: r for r in resp.json()["results"]}
     assert res[str(a.id)]["ok"] is True
     assert res[str(b.id)]["ok"] is False and res[str(b.id)]["error"] == "bad_state"
+    a = await db.scalar(select(SpecSuggestion).where(SpecSuggestion.id == a.id)
+                        .execution_options(populate_existing=True))
+    m = await db.scalar(select(AssetModel).where(AssetModel.id == m.id)
+                        .execution_options(populate_existing=True))
+    assert a.status == "approved" and m.ru_size == 1
 
 
 async def test_dev_endpoints_gated_and_masked(client, db, seeded_user, monkeypatch):
@@ -136,3 +141,92 @@ async def test_dev_endpoints_gated_and_masked(client, db, seeded_user, monkeypat
     _configured(monkeypatch, ok=False)
     body = (await client.post("/spec-lookup/dev/test", headers=dev)).json()
     assert body["ok"] is False and body["error"] == "not_configured"
+
+
+async def test_bulk_unexpected_error_fails_only_that_row(client, db, seeded_user, monkeypatch):
+    from serversherpa.spec_lookup import service
+    hdrs = await login(client)
+    m1 = await _m(db, model="one")
+    m2 = await _m(db, model="two")
+    good = await _sugg(db, m1)
+    bad = await _sugg(db, m2)
+    real = service.approve
+
+    async def flaky(db_, s, actor_id):
+        if s.id == bad.id:
+            raise RuntimeError("boom")
+        return await real(db_, s, actor_id)
+
+    monkeypatch.setattr(service, "approve", flaky)
+    resp = await client.post("/spec-lookup/suggestions/bulk", headers=hdrs,
+                             json={"ids": [str(bad.id), str(good.id)], "action": "approve"})
+    assert resp.status_code == 200, resp.text
+    res = {r["id"]: r for r in resp.json()["results"]}
+    assert res[str(bad.id)]["ok"] is False and res[str(bad.id)]["error"] == "failed"
+    assert res[str(good.id)]["ok"] is True
+    good = await db.scalar(select(SpecSuggestion).where(SpecSuggestion.id == good.id)
+                           .execution_options(populate_existing=True))
+    assert good.status == "approved"
+
+
+async def test_status_reports_failures_and_rejected_key(client, db, seeded_user, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    hdrs = await login(client)
+    m = await _m(db)
+    now = datetime.now(UTC)
+    db.add(SpecLookupJob(model_id=m.id, status="failed", error="refusal",
+                         finished_at=now - timedelta(minutes=10)))
+    db.add(SpecLookupJob(model_id=m.id, status="failed", error="not_configured",
+                         finished_at=now - timedelta(minutes=1)))
+    await db.commit()
+    body = (await client.get("/spec-lookup/status", headers=hdrs)).json()
+    assert body["failed_this_month"] == 2
+    assert body["last_error"] == "not_configured"
+    assert body["key_rejected"] is False               # no key set: nothing to reject
+    monkeypatch.setattr(provider_mod, "is_configured", lambda: True)
+    body = (await client.get("/spec-lookup/status", headers=hdrs)).json()
+    assert body["key_rejected"] is True
+    db.add(SpecLookupJob(model_id=m.id, status="done", finished_at=now))
+    await db.commit()
+    body = (await client.get("/spec-lookup/status", headers=hdrs)).json()
+    assert body["key_rejected"] is False and body["last_error"] is None
+
+
+async def test_status_defaults_without_jobs(client, db, seeded_user):
+    hdrs = await login(client)
+    body = (await client.get("/spec-lookup/status", headers=hdrs)).json()
+    assert body["failed_this_month"] == 0 and body["last_error"] is None
+    assert body["key_rejected"] is False
+
+
+async def test_queue_all_with_no_field_groups(client, db, seeded_user, monkeypatch):
+    from serversherpa.db.models import SystemConfig
+    _configured(monkeypatch)
+    hdrs = await login(client)
+    await _m(db)
+    db.add(SystemConfig(section="ai_lookup", data={"fields_specs": False}))
+    await db.commit()
+    resp = await client.post("/spec-lookup/queue", headers=hdrs, json={})
+    assert resp.json() == {"queued": 0, "skipped": [], "reason": "no_fields_enabled"}
+
+
+async def test_dev_routes_refuse_client_users(client, db, seeded_user, monkeypatch):
+    from serversherpa.api.routes import spec_lookup as routes
+    calls = []
+    monkeypatch.setattr(routes, "_require_global", lambda actor: calls.append(actor))
+    dev = await _developer_headers(db, client)
+    _configured(monkeypatch)
+    await client.get("/spec-lookup/dev", headers=dev)
+    await client.post("/spec-lookup/dev/test", headers=dev)
+    assert len(calls) == 2
+
+
+async def test_dev_test_requires_devtools_change(client, db, seeded_user, monkeypatch):
+    from sqlalchemy import text
+    _configured(monkeypatch)
+    await db.execute(text("DELETE FROM role_permissions WHERE role = 'developer' "
+                          "AND resource = 'devtools' AND action = 'change'"))
+    await db.commit()
+    dev = await _developer_headers(db, client)
+    assert (await client.get("/spec-lookup/dev", headers=dev)).status_code == 200
+    assert (await client.post("/spec-lookup/dev/test", headers=dev)).status_code == 403

@@ -65,3 +65,10 @@ def test_empty_quote_rejected():
 
 def test_verify_finding_with_ip_address_in_quote():
     assert v("weight", "13.6", "kg", "Default gateway 192.168.1.1, weight 13.6 kg") is not None
+
+
+def test_non_string_inputs_rejected():
+    assert v("ru_size", "1", None, "1U", url=None) is None
+    assert v("ru_size", "1", None, "1U", url=123) is None
+    assert v("ru_size", 1, None, "1U") is None
+    assert v("ru_size", "1", None, ["1U"]) is None

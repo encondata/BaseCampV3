@@ -175,3 +175,19 @@ async def test_undo_refuses_when_field_edited_after_apply(db, seeded_user):
     await db.commit()
     with pytest.raises(service.FieldChanged):
         await service.undo(db, s, seeded_user.id)
+
+
+async def test_approve_refuses_over_half_filled_unit_pair(db, seeded_user):
+    m = await _m(db, weight_kg=13.6)
+    s = SpecSuggestion(model_id=m.id, field="weight", value="30", unit="lbs",
+                       quote="30 lbs", source_url=URL, previous_value=None)
+    db.add(s)
+    await db.commit()
+    with pytest.raises(service.FieldChanged) as exc:
+        await service.approve(db, s, seeded_user.id)
+    assert exc.value.args[0] == "13.6 kg"
+    await db.rollback()
+    m = await db.scalar(select(AssetModel).where(AssetModel.id == m.id)
+                        .execution_options(populate_existing=True))
+    assert m.weight_lbs is None and float(m.weight_kg) == 13.6
+    assert (await db.get(SpecSuggestion, s.id)).status == "pending"

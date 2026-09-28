@@ -177,3 +177,127 @@ async def test_sweep_respects_toggle_and_configuration(db):
     await db.commit()
     assert await worker.sweep(db, provider_configured=False) == 0
     assert await worker.sweep(db, provider_configured=True) == 1
+
+
+class EditingProvider(FakeProvider):
+    """Simulates a user editing the model in the portal while the provider
+    call is in flight: a separate session changes the row and commits."""
+
+    def __init__(self, outcome, model_id, **changes):
+        super().__init__(outcome)
+        self.model_id = model_id
+        self.changes = changes
+        self.attempts_seen = None
+
+    async def lookup(self, **kw):
+        async with get_sessionmaker()() as other:
+            row = await other.get(AssetModel, self.model_id)
+            for k, v in self.changes.items():
+                setattr(row, k, v)
+            await other.commit()
+        return await super().lookup(**kw)
+
+
+async def _auto_apply_on(db):
+    from serversherpa.db.models import SystemConfig
+    db.add(SystemConfig(section="ai_lookup", data={"auto_apply": True}))
+    await db.commit()
+
+
+async def test_user_edit_during_call_is_kept(db):
+    m, job = await _setup(db)
+    await _auto_apply_on(db)
+    p = EditingProvider(OK, m.id, ru_size=4)
+    await worker.run_once(get_sessionmaker(), provider_factory=lambda: p)
+    assert (await _reload(db, AssetModel, m.id)).ru_size == 4
+    s = await db.scalar(select(SpecSuggestion))
+    assert s.status == "pending" and s.previous_value == "4"
+    assert (await _reload(db, SpecLookupJob, job.id)).status == "done"
+
+
+async def test_model_made_private_during_call_stores_nothing(db):
+    m, job = await _setup(db)
+    await _auto_apply_on(db)
+    p = EditingProvider(OK, m.id, private=True)
+    await worker.run_once(get_sessionmaker(), provider_factory=lambda: p)
+    job = await _reload(db, SpecLookupJob, job.id)
+    assert job.status == "done" and job.error == "private"
+    assert (await db.scalar(select(SpecSuggestion))) is None
+    assert (await _reload(db, AssetModel, m.id)).ru_size is None
+
+
+async def test_model_skipped_during_call_stores_nothing(db):
+    m, job = await _setup(db)
+    p = EditingProvider(OK, m.id, spec_lookup_skip=True)
+    await worker.run_once(get_sessionmaker(), provider_factory=lambda: p)
+    job = await _reload(db, SpecLookupJob, job.id)
+    assert job.status == "done" and job.error == "skipped"
+    assert (await db.scalar(select(SpecSuggestion))) is None
+
+
+async def test_max_tokens_does_not_stamp_looked_up(db):
+    m, job = await _setup(db)
+    await worker.run_once(get_sessionmaker(),
+                          provider_factory=lambda: FakeProvider(ProviderFailed("max_tokens")))
+    job = await _reload(db, SpecLookupJob, job.id)
+    assert job.status == "failed" and job.error == "max_tokens"
+    assert (await _reload(db, AssetModel, m.id)).specs_looked_up_at is None
+
+
+async def test_other_provider_failure_stamps_looked_up(db):
+    m, job = await _setup(db)
+    await worker.run_once(get_sessionmaker(),
+                          provider_factory=lambda: FakeProvider(ProviderFailed("bad_output: x")))
+    job = await _reload(db, SpecLookupJob, job.id)
+    assert job.status == "failed"
+    assert (await _reload(db, AssetModel, m.id)).specs_looked_up_at is not None
+
+
+async def test_attempt_is_committed_before_the_call(db):
+    m, job = await _setup(db)
+    seen = {}
+
+    class Peek(FakeProvider):
+        async def lookup(self, **kw):
+            async with get_sessionmaker()() as other:
+                seen["attempts"] = (await other.get(SpecLookupJob, job.id)).attempts
+            return await super().lookup(**kw)
+
+    await worker.run_once(get_sessionmaker(), provider_factory=lambda: Peek(OK))
+    assert seen["attempts"] == 1
+
+
+async def test_requeue_stale_fails_exhausted_jobs(db):
+    old = datetime.now(UTC) - timedelta(hours=1)
+    a = AssetModel(make="A", model="a")
+    b = AssetModel(make="B", model="b")
+    db.add_all([a, b])
+    await db.flush()
+    spent = SpecLookupJob(model_id=a.id, status="running", started_at=old, heartbeat_at=old,
+                          attempts=worker.MAX_ATTEMPTS)
+    fresh = SpecLookupJob(model_id=b.id, status="running", started_at=old, heartbeat_at=old,
+                          attempts=1)
+    db.add_all([spent, fresh])
+    await db.commit()
+    await jobs.requeue_stale(db)
+    spent = await _reload(db, SpecLookupJob, spent.id)
+    fresh = await _reload(db, SpecLookupJob, fresh.id)
+    assert spent.status == "failed" and spent.error == "stale_retries_exhausted"
+    assert spent.finished_at is not None
+    assert fresh.status == "queued"
+
+
+async def test_sweep_stops_after_key_rejected(db):
+    from serversherpa.db.models import SystemConfig
+    m = AssetModel(make="HPE", model="DL320")
+    other = AssetModel(make="X", model="y", specs_looked_up_at=datetime.now(UTC))
+    db.add_all([m, other, SystemConfig(section="ai_lookup", data={"background_enabled": True})])
+    await db.flush()
+    db.add(SpecLookupJob(model_id=other.id, status="failed", error="not_configured",
+                         finished_at=datetime.now(UTC) - timedelta(days=3)))
+    await db.commit()
+    assert await worker.sweep(db, provider_configured=True) == 0
+    db.add(SpecLookupJob(model_id=other.id, status="done",
+                         finished_at=datetime.now(UTC) - timedelta(days=2)))
+    await db.commit()
+    assert await worker.sweep(db, provider_configured=True) == 1

@@ -2,6 +2,7 @@
 Developer › System Config panel. Global (internal) users only — the same
 rule as /asset-models."""
 
+import logging
 import time
 import uuid
 from datetime import UTC, datetime
@@ -18,10 +19,12 @@ from serversherpa.config import get_settings
 from serversherpa.db.models import AssetModel, SpecLookupJob, SpecSuggestion, SystemProcess
 from serversherpa.spec_lookup import provider as provider_mod
 from serversherpa.spec_lookup import service
-from serversherpa.spec_lookup.fields import current_value
+from serversherpa.spec_lookup.fields import current_value, enabled_fields
 from serversherpa.spec_lookup.worker import PROCESS_NAME
 from serversherpa.system.config_store import read_section
 from serversherpa.system.registry import derive_status
+
+logger = logging.getLogger("serversherpa.spec_lookup.routes")
 
 router = APIRouter(prefix="/spec-lookup", tags=["assets"])
 
@@ -55,8 +58,16 @@ async def status(db: DbSession,
                func.coalesce(func.sum(SpecLookupJob.search_count), 0))
         .where(SpecLookupJob.finished_at >= month_start,
                SpecLookupJob.input_tokens > 0))).one()
+    failed = await db.scalar(select(func.count()).select_from(SpecLookupJob)
+                             .where(SpecLookupJob.status == "failed",
+                                    SpecLookupJob.finished_at >= month_start))
+    configured = provider_mod.is_configured()
+    last_job = await service.last_finished_job(db)
     return {
-        "configured": provider_mod.is_configured(),
+        "configured": configured,
+        "failed_this_month": failed,
+        "last_error": last_job.error if last_job else None,
+        "key_rejected": configured and await service.key_rejected(db),
         "background_enabled": bool(cfg.get("background_enabled")),
         "queued": queued, "last_finished_at": last, "pending_count": pending,
         "running_model": ({"id": running.id, "make": running.make, "model": running.model}
@@ -76,6 +87,8 @@ async def queue(body: SpecLookupQueueIn, db: DbSession,
     skipped: list[dict] = []
     if body.model_ids is None:
         cfg = await read_section(db, service.AI_LOOKUP)
+        if not enabled_fields(cfg):
+            return {"queued": 0, "skipped": [], "reason": "no_fields_enabled"}
         ids = await service.eligible_model_ids(db, cfg)
         priority = service.PRIORITY_BATCH
     else:
@@ -163,6 +176,9 @@ async def bulk(body: SpecSuggestionBulkIn, db: DbSession,
             results.append({**row, "ok": False, "error": "field_changed"})
         except service.BadState:
             results.append({**row, "ok": False, "error": "bad_state"})
+        except Exception:
+            logger.exception("bulk %s failed for suggestion %s", body.action, sid)
+            results.append({**row, "ok": False, "error": "failed"})
     await db.commit()
     return {"results": results}
 
@@ -170,6 +186,7 @@ async def bulk(body: SpecSuggestionBulkIn, db: DbSession,
 @router.get("/dev")
 async def dev_info(db: DbSession,
                    actor: AuthContext = require_permission("devtools", "view")) -> dict:
+    _require_global(actor)
     s = get_settings()
     key = s.anthropic_api_key.get_secret_value()
     proc = await db.get(SystemProcess, PROCESS_NAME)
@@ -184,7 +201,8 @@ async def dev_info(db: DbSession,
 
 
 @router.post("/dev/test")
-async def dev_test(actor: AuthContext = require_permission("devtools", "view")) -> dict:
+async def dev_test(actor: AuthContext = require_permission("devtools", "change")) -> dict:
+    _require_global(actor)             # a real (billed) API call
     p = provider_mod.get_provider()
     if p is None:
         return {"ok": False, "latency_ms": None, "error": "not_configured"}
