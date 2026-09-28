@@ -321,8 +321,9 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
 
     Close codes: 4400 bad filter; 4401 unauthenticated (token missing,
     malformed, invalid, or the session ends mid-stream); 4403 forbidden
-    (no devtools:change, a temp password that must be changed first, or a
-    kiosk-scoped session); 4404 no such tailable process.
+    (no devtools:change, a password change owed — a temp password, or one
+    that had already expired at sign-in — or a kiosk-scoped session); 4404
+    no such tailable process.
 
     Read-only maintenance mode is deliberately NOT applied here: a tail is
     a read, and enforce_read_only only gates mutating HTTP methods."""

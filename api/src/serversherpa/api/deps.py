@@ -17,7 +17,9 @@ from serversherpa.config import get_settings
 from serversherpa.db.engine import get_db
 from serversherpa.db.models import AuthSession, Person, UserAccount
 from serversherpa.security.tokens import TokenError, decode_access_token
-from serversherpa.services.password_policy import expires_at, load_policy
+from serversherpa.services.password_policy import (
+    PasswordReused, assert_not_reused, expires_at, load_policy,
+)
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -283,8 +285,6 @@ def require_password_length(password: str) -> None:
 async def raise_if_reused(db, account, password: str) -> None:
     """The reuse rule for every password the API accepts on an EXISTING
     account (self-change, admin reset). New accounts have no history."""
-    from serversherpa.services.password_policy import PasswordReused, assert_not_reused, load_policy
-
     try:
         await assert_not_reused(db, await load_policy(db), account, password)
     except PasswordReused as exc:
