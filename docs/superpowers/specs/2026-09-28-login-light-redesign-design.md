@@ -137,11 +137,16 @@ copy, restyled to the same light palette (inputs, buttons, links).
 
 ## Art
 
-- **`portal/public/images/login-mountains-light.webp`:** cropped from the
-  mockup's lower right (mountain range + cloud band together, at the
-  mockup's scale). Not truly transparent; its background already matches
-  `--lx-canvas`. A CSS `mask-image` gradient fades its top and left edges so
-  there is no visible seam. Anchored bottom-right, `object-fit: cover`.
+- **`portal/public/images/login-mountains-light.webp`** (1022×611, committed
+  with the plan): cropped from the mockup at x 650–1672, y 330–941. The
+  mockup's form was drawn over the clouds, so its fields, buttons and text
+  (and the ARIZONA label) were inpainted out (OpenCV Telea plus a feathered
+  blur), leaving a soft mist where the form sits. Not truly transparent;
+  its background already matches `--lx-canvas`. A CSS `mask-image`
+  gradient fades its top and left edges so there is no visible seam.
+  Anchored bottom-right at 61.1% of the page width, keeping its aspect
+  ratio. A soft cream wash behind the form keeps text readable where the
+  art and the form drift apart at other screen shapes.
 - Resolution is limited by the 1672 px mockup, so it looks slightly soft on
   large or high-DPI screens. Replacing the file with an original is a
   one-file swap; nothing else depends on its exact size.
