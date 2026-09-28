@@ -192,3 +192,21 @@ Est. cost uses constants for Sonnet 5 ($2/$10 per MTok) and search ($10 per 1,00
 
 A local (Ollama/SearXNG) provider; overwriting existing values automatically; power/PSU fields;
 looking up new models the moment an import creates them (the sweep picks them up).
+
+## Addendum — live testing changes (2026-09-28)
+
+Live tests against the real API changed three things. These supersede the sections above where they differ.
+
+- **Search only.** Letting Claude fetch pages (web_fetch, and the 20260209 "dynamic filtering" tool variants) cost about
+  1.86M input tokens (~$3.80) for one model, or timed out at 10 minutes, because every tool step re-reads every fetched
+  PDF. The lookup now sends only the plain `web_search_20250305` tool and answers from search-result excerpts.
+  `SS_SPEC_LOOKUP_MAX_SEARCHES` / `SS_SPEC_LOOKUP_MAX_FETCHES` were removed.
+- **Lookup effort setting** (System settings › AI lookup, default **Medium**): Low = thinking "medium", 1 search;
+  Medium = thinking "high", 2 searches; High = thinking "high", 4 searches.
+  Measured on 5 catalog models: Low $0.09/model, 5/25 values; Medium $0.12/model, 9/25; High $0.25/model, 9/25.
+  Medium is the default (Jimmy, 2026-09-28).
+- **Cross-field plausibility.** A height that doesn't fit the rack units (1U ≈ 1.75 in ± 0.25) is dropped — a live
+  High run returned 42.8 cm for a 1U server. A weight over 25 kg per U is stored for review but never auto-applied.
+- **Known gap.** Server weight and dimensions live deep in vendor PDF spec sheets and rarely appear in search excerpts,
+  so lookups mostly fill RU for servers; storage and network gear fill much better. A possible later "deep" mode: the
+  worker downloads the single best vendor PDF itself, trims it to the relevant lines, and Claude reads only those.
