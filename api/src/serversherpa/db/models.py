@@ -89,6 +89,21 @@ class UserAccount(Base):
         back_populates="account", foreign_keys=[person_id])
 
 
+class PasswordHistory(Base):
+    """Every password an account has had, newest first by created_at.
+    Written only by services.password_policy.apply_password, which also
+    trims it to HISTORY_KEEP rows. Read by the reuse rule."""
+    __tablename__ = "password_history"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    person_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("user_accounts.person_id", ondelete="CASCADE"))
+    password_hash: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True), server_default=text("now()"))
+
+
 class OrgColumns:
     """Shared shape for stakeholder organizations (clients, partners)."""
 

@@ -23,11 +23,16 @@ DEFAULTS: dict[str, dict] = {
         "banner_enabled": False,
         "banner_message": "",
     },
-    # 2FA POLICY flags only — enrolment/verification arrives with the 2FA
-    # feature; until then these are stored, audited and reported, not enforced.
+    # 2FA policy flags plus the password expiry policy (To-Do #32).
+    # password_expiry_since is server-set: the moment the switch was last
+    # turned on; the expiry clock never reaches back before it.
     "security": {
         "two_factor_enabled": False,
         "two_factor_required": False,
+        "password_expiry_enabled": False,
+        "password_expiry_days": 90,
+        "password_history_count": 3,
+        "password_expiry_since": None,
     },
     # Makes / Models spec lookup (Claude). Field groups decide what the
     # worker asks for; auto_apply fills BLANK fields only (never knowledge).

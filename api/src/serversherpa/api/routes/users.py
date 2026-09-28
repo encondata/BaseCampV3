@@ -15,7 +15,8 @@ from serversherpa.access.resolver import can_touch_rank
 from serversherpa.access.resources import REGISTRY
 from serversherpa.access.scope import scope_conditions
 from serversherpa.api.deps import (
-    AuthContext, DbSession, client_ip, require_password_length, require_permission,
+    AuthContext, DbSession, client_ip, raise_if_reused, require_password_length,
+    require_permission,
 )
 from serversherpa.api.routes.notifications import effective_settings
 from serversherpa.api.schemas import (
@@ -44,16 +45,15 @@ from serversherpa.api.schemas import (
     UserSessionRow,
     UserWorkerCard,
 )
-from serversherpa.config import get_settings
 from serversherpa.db.models import (
     AccessGroup, AccessGroupMember, AuthSession, Client, NotificationGroup,
     NotificationGroupMember, Partner, PermissionOverride, Person, PersonRole,
     ResourceGroupGate, Role, UserAccount, WorkerLevel, WorkerProfile,
 )
-from serversherpa.security.passwords import hash_password
 from serversherpa.services import totp as totp_service
 from serversherpa.services.activity import person_activity
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.password_policy import apply_password
 from serversherpa.services.sessions import live_session_rows
 from serversherpa.services.storage import presign_get
 from serversherpa.status.labels import level_colors, level_fields, status_fields, status_labels
@@ -367,14 +367,17 @@ async def create_user(
         account = UserAccount(
             person_id=person.id,
             email=body.login_email,
-            password_hash=hash_password(
-                body.temp_password,
-                pepper=get_settings().password_pepper.get_secret_value()),
-            must_change_password=body.must_change_password,
-            password_updated_at=now,
             created_by=actor.person.id,
         )
         db.add(account)
+        try:
+            # the account row must exist before password_history FKs to it
+            await db.flush()
+        except IntegrityError:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail={"code": "email_in_use"}) from None
+        await apply_password(db, account, body.temp_password,
+                             must_change=body.must_change_password, now=now)
 
     for role in dict.fromkeys(body.roles):  # dedupe, keep order
         db.add(PersonRole(person_id=person.id, role=role, granted_by=actor.person.id))
@@ -498,16 +501,20 @@ async def create_account(
         raise _err(409, "account_exists")
     await _actor_can_touch(db, actor, person_id)
 
-    db.add(UserAccount(
+    account = UserAccount(
         person_id=person.id,
         email=body.login_email,
-        password_hash=hash_password(
-            body.temp_password,
-            pepper=get_settings().password_pepper.get_secret_value()),
-        must_change_password=body.must_change_password,
-        password_updated_at=datetime.now(UTC),
         created_by=actor.person.id,
-    ))
+    )
+    db.add(account)
+    try:
+        # the account row must exist before password_history FKs to it
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise _err(409, "email_in_use") from None
+    await apply_password(db, account, body.temp_password,
+                         must_change=body.must_change_password, now=datetime.now(UTC))
     audit(db, actor_id=actor.person.id, entity_type="user_account",
           entity_id=str(person_id), action="account.create",
           changes={"login_email": {"from": None, "to": body.login_email},
@@ -530,15 +537,21 @@ async def reset_password(
 ) -> None:
     require_password_length(body.temp_password)
     _, account, _ = await _load_target(db, actor, person_id)
+    try:
+        await raise_if_reused(db, account, body.temp_password)
+    except HTTPException:
+        # the refusal tells the admin the guess was one of the user's
+        # recent passwords, so it leaves a record like the reset would
+        audit(db, actor_id=actor.person.id, entity_type="user_account",
+              entity_id=str(person_id), action="password.reset_refused",
+              changes={"reason": "password_recently_used"})
+        await db.commit()
+        raise
     now = datetime.now(UTC)
-    account.password_hash = hash_password(
-        body.temp_password,
-        pepper=get_settings().password_pepper.get_secret_value())
-    account.password_updated_at = now
-    account.must_change_password = body.must_change_password
+    await apply_password(db, account, body.temp_password,
+                         must_change=body.must_change_password, now=now)
     account.failed_login_count = 0
     account.locked_until = None
-    account.updated_at = now
     await _revoke_all_sessions(db, person_id, "password_change")
     audit(db, actor_id=actor.person.id, entity_type="user_account",
           entity_id=str(person_id), action="password.reset",

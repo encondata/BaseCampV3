@@ -21,6 +21,7 @@ beforeEach(() => {
 const auth = vi.hoisted(() => ({
   status: 'loading' as 'loading' | 'authed' | 'anon',
   mustChangePassword: false,
+  mustChangeReason: null as 'temporary' | 'expired' | null,
   logout: vi.fn(() => Promise.resolve()),
   person: null,
   registration: null,
@@ -65,4 +66,14 @@ it('shows the password-change notice with a sign-out button instead of the page'
   // The always-signed-in KioskShell header renders its own Sign out button
   // too, so scope to the notice itself rather than getByRole (two matches).
   expect(notice!.querySelector('button.btn-solid')?.textContent).toBe('Sign out');
+});
+
+it('tells an expired-password account to pick a new one in the portal', () => {
+  auth.status = 'authed';
+  auth.mustChangePassword = true;
+  auth.mustChangeReason = 'expired';
+  renderGuarded();
+  expect(screen.getByText('Your password has expired')).toBeTruthy();
+  expect(screen.getByText(/choose a new one, then sign in here again/)).toBeTruthy();
+  expect(screen.queryByText('Protected page')).toBeNull();
 });

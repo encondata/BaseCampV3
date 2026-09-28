@@ -27,6 +27,7 @@ interface State {
   perms: PermMap | null;
   preferences: UiPreferences | null;
   mustChangePassword: boolean;
+  mustChangeReason: 'temporary' | 'expired' | null;
   sessionExpiresAt: string | null;
   roles: string[];
   maxRank: number;
@@ -45,15 +46,15 @@ export interface KioskAuthValue extends State {
 
 const ANON: State = {
   status: 'anon', person: null, perms: null, preferences: null,
-  mustChangePassword: false, sessionExpiresAt: null, roles: [], maxRank: 0,
+  mustChangePassword: false, mustChangeReason: null, sessionExpiresAt: null, roles: [], maxRank: 0,
 };
 const LOADING: State = { ...ANON, status: 'loading' };
 
 function stateFrom(s: SessionData): State {
   return {
     status: 'authed', person: s.person, perms: s.perms, preferences: s.preferences,
-    mustChangePassword: s.must_change_password, sessionExpiresAt: s.session_expires_at,
-    roles: s.roles, maxRank: s.max_rank,
+    mustChangePassword: s.must_change_password, mustChangeReason: s.must_change_reason ?? null,
+    sessionExpiresAt: s.session_expires_at, roles: s.roles, maxRank: s.max_rank,
   };
 }
 

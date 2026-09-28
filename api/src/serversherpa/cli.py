@@ -15,10 +15,14 @@ from pathlib import Path
 import typer
 from sqlalchemy import select
 
-from serversherpa.config import get_settings
 from serversherpa.db.engine import dispose_engine, get_sessionmaker
 from serversherpa.db.models import Person, PersonRole, UserAccount
-from serversherpa.security.passwords import hash_password
+from serversherpa.services.password_policy import (
+    PasswordReused,
+    apply_password,
+    assert_not_reused,
+    load_policy,
+)
 
 app = typer.Typer(no_args_is_help=True, help="ServerSherpa operations CLI")
 
@@ -39,7 +43,6 @@ def bootstrap_admin(
     """Create the first admin: person + account + admin role grant."""
 
     async def _run() -> None:
-        settings = get_settings()
         async with get_sessionmaker()() as db:
             existing = await db.scalar(
                 select(UserAccount).where(UserAccount.email == email))
@@ -53,14 +56,10 @@ def bootstrap_admin(
             db.add(person)
             await db.flush()  # person.id
 
-            db.add(UserAccount(
-                person_id=person.id,
-                email=email,
-                password_hash=hash_password(
-                    password,
-                    pepper=settings.password_pepper.get_secret_value()),
-                password_updated_at=now,
-            ))
+            account = UserAccount(person_id=person.id, email=email)
+            db.add(account)
+            await db.flush()  # the account row must exist before password_history FKs to it
+            await apply_password(db, account, password, must_change=False, now=now)
             db.add(PersonRole(person_id=person.id, role="admin"))  # granted_by NULL = bootstrap
             await db.commit()
             typer.secho(
@@ -312,7 +311,6 @@ def set_password(
     """Reset an existing account's password."""
 
     async def _run() -> None:
-        settings = get_settings()
         async with get_sessionmaker()() as db:
             account = await db.scalar(
                 select(UserAccount).where(UserAccount.email == email))
@@ -320,10 +318,14 @@ def set_password(
                 typer.secho(f"No account found for {email}.", fg="red")
                 raise typer.Exit(code=1)
 
-            account.password_hash = hash_password(
-                password, pepper=settings.password_pepper.get_secret_value())
-            account.password_updated_at = datetime.now(UTC)
-            account.must_change_password = False
+            try:
+                await assert_not_reused(db, await load_policy(db), account, password)
+            except PasswordReused as exc:
+                typer.secho(f"That password was one of the last {exc.count} used for "
+                            f"{email}. Choose a different one.", fg="red")
+                raise typer.Exit(code=1) from None
+            await apply_password(db, account, password, must_change=False,
+                                 now=datetime.now(UTC))
             await db.commit()
             typer.secho(f"Password updated for {email}.", fg="green")
         await dispose_engine()

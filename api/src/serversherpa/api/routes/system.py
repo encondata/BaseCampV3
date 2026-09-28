@@ -16,7 +16,7 @@ from fastapi import (
 from sqlalchemy import update, delete, func, select
 
 from serversherpa.api.deps import (
-    AuthContext, DbSession, authenticate_token, require_permission,
+    AuthContext, DbSession, authenticate_token, password_change_owed, require_permission,
 )
 from serversherpa.api.schemas import (
     RevokeAllSessionsOut, SecurityConfigIn, SecurityConfigOut,
@@ -145,6 +145,8 @@ async def put_admin_config(
 
 
 SECURITY_SECTION = "security"
+PASSWORD_EXPIRY_DAYS_RANGE = (1, 365)
+PASSWORD_HISTORY_COUNT_RANGE = (0, 24)
 
 
 @router.get("/security", response_model=SecurityConfigOut)
@@ -170,6 +172,18 @@ async def put_security_config(
         data["two_factor_enabled"] = True
     if patch.get("two_factor_enabled") is False:
         data["two_factor_required"] = False
+
+    lo, hi = PASSWORD_EXPIRY_DAYS_RANGE
+    if not lo <= data["password_expiry_days"] <= hi:
+        raise _err(422, "password_expiry_days_out_of_range")
+    lo, hi = PASSWORD_HISTORY_COUNT_RANGE
+    if not lo <= data["password_history_count"] <= hi:
+        raise _err(422, "password_history_count_out_of_range")
+    # the expiry clock starts when the switch goes on, never earlier
+    if data["password_expiry_enabled"] and not stored.get("password_expiry_enabled"):
+        data["password_expiry_since"] = datetime.now(UTC).isoformat()
+    elif not data["password_expiry_enabled"]:
+        data["password_expiry_since"] = None
 
     row = await db.get(SystemConfig, SECURITY_SECTION)
     if row is None:
@@ -346,8 +360,9 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
 
     Close codes: 4400 bad filter; 4401 unauthenticated (token missing,
     malformed, invalid, or the session ends mid-stream); 4403 forbidden
-    (no devtools:change, a temp password that must be changed first, or a
-    kiosk-scoped session); 4404 no such tailable process.
+    (no devtools:change, a password change owed — a temp password, or one
+    that had already expired at sign-in — or a kiosk-scoped session); 4404
+    no such tailable process.
 
     Read-only maintenance mode is deliberately NOT applied here: a tail is
     a read, and enforce_read_only only gates mutating HTTP methods."""
@@ -374,9 +389,10 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
             await ws.close(code=4403)
             return
         # Mirror of get_current_user's forced-password-change guard (403
-        # password_change_required on HTTP): a temp-password session may
-        # only finish the auth lifecycle, so it may not open a tail either.
-        if actor.account.must_change_password:
+        # password_change_required on HTTP): a temp-password session, or
+        # one that signed in with an already-expired password, may only
+        # finish the auth lifecycle, so it may not open a tail either.
+        if await password_change_owed(db, actor):
             await ws.close(code=4403)
             return
         if not actor.access.can("devtools", "change"):

@@ -14,11 +14,18 @@ async def _admin(db, client):
     return await _make(db, client, "super_admin", "sec-admin@test.example.com")
 
 
+def _cfg(**over):
+    base = {"two_factor_enabled": False, "two_factor_required": False,
+            "password_expiry_enabled": False, "password_expiry_days": 90,
+            "password_history_count": 3, "password_expiry_since": None}
+    return {**base, **over}
+
+
 async def test_security_defaults_and_view_gate(client, db, seeded_user):
     hdrs = await _admin(db, client)
     resp = await client.get("/system/security", headers=hdrs)
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"two_factor_enabled": False, "two_factor_required": False}
+    assert resp.json() == _cfg()
     worker = await _make(db, client, "worker", "sec-worker@test.example.com")
     assert (await client.get("/system/security", headers=worker)).status_code == 403
 
@@ -27,9 +34,9 @@ async def test_required_implies_enabled_and_disable_clears_required(client, db, 
     hdrs = await _admin(db, client)
     resp = await client.put("/system/security", headers=hdrs, json={"two_factor_required": True})
     assert resp.status_code == 200, resp.text
-    assert resp.json() == {"two_factor_enabled": True, "two_factor_required": True}
+    assert resp.json() == _cfg(two_factor_enabled=True, two_factor_required=True)
     resp = await client.put("/system/security", headers=hdrs, json={"two_factor_enabled": False})
-    assert resp.json() == {"two_factor_enabled": False, "two_factor_required": False}
+    assert resp.json() == _cfg()
     assert (await client.put("/system/security", headers=hdrs, json={"bogus": 1})).status_code == 422
     rows = list(await db.scalars(select(AuditLog).where(
         AuditLog.entity_type == "system", AuditLog.entity_id == "security")))

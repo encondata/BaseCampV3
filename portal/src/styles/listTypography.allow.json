@@ -360,6 +360,11 @@
     "reason": "not list content: settings inline form input"
   },
   {
+    "file": "styles/settings.css",
+    "selector": ".set-num-inline",
+    "reason": "not list content: settings password-policy number-field suffix wrapper; list-ish only by family prefix — .set-row makes `set` a family (out of scope per spec)"
+  },
+  {
     "file": "styles/system.css",
     "selector": ".sysconf-tab",
     "reason": "not list content: system-config tab button"

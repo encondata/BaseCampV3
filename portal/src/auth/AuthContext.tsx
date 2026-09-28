@@ -32,6 +32,8 @@ interface AuthState {
   person: PersonOut | null;
   roles: string[];
   mustChangePassword: boolean;
+  mustChangeReason: 'temporary' | 'expired' | null;
+  passwordExpiresAt: string | null;
   sessionExpiresAt: string | null;
   preferences: UiPreferences;
   perms: PermMap | null;
@@ -57,7 +59,7 @@ interface AuthContextValue extends AuthState {
   updatePreferences: (prefs: UiPreferences) => Promise<boolean>;
   /** Sync the in-context person after a profile edit (name in the nav chip). */
   applyProfile: (detail: PersonDetail) => void;
-  /** Called after a successful password change (forced-change gate). */
+  /** Called after a successful password change (forced-change gate, temporary or expired). */
   clearMustChange: () => void;
   /** God mode is a VISIBILITY toggle only — the server still enforces the
    *  `devtools` permission on every request regardless of this flag. */
@@ -72,6 +74,8 @@ const ANON: AuthState = {
   person: null,
   roles: [],
   mustChangePassword: false,
+  mustChangeReason: null,
+  passwordExpiresAt: null,
   sessionExpiresAt: null,
   preferences: DEFAULT_PREFERENCES,
   perms: null,
@@ -89,6 +93,8 @@ function stateFrom(data: SessionData): AuthState {
     person: data.person,
     roles: data.roles,
     mustChangePassword: data.must_change_password,
+    mustChangeReason: data.must_change_reason ?? null,
+    passwordExpiresAt: data.password_expires_at ?? null,
     sessionExpiresAt: data.session_expires_at,
     preferences: data.preferences,
     perms: data.perms,
@@ -192,7 +198,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const clearMustChange = useCallback(() => {
-    setState((prev) => ({ ...prev, mustChangePassword: false }));
+    // the old expiry date no longer applies once the password changed;
+    // the next /auth/me or refresh reports the new one
+    setState((prev) => ({
+      ...prev, mustChangePassword: false, mustChangeReason: null, passwordExpiresAt: null,
+    }));
   }, []);
 
   return (
