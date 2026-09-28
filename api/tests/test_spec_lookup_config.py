@@ -6,8 +6,7 @@ def test_defaults():
     f = Settings.model_fields
     assert f["anthropic_api_key"].default.get_secret_value() == ""
     assert f["spec_lookup_model"].default == "claude-sonnet-5"
-    assert f["spec_lookup_max_searches"].default == 4
-    assert f["spec_lookup_max_fetches"].default == 3
+    assert "spec_lookup_max_searches" not in f and "spec_lookup_max_fetches" not in f
 
 
 def test_suite_never_has_a_real_key():

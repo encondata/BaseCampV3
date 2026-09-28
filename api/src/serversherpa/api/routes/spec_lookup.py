@@ -193,8 +193,9 @@ async def dev_info(db: DbSession,
     worker_status = ("missing" if proc is None else
                      derive_status(proc.heartbeat_at, proc.stopped_at, datetime.now(UTC),
                                    proc.meta))
-    return {"model": s.spec_lookup_model, "max_searches": s.spec_lookup_max_searches,
-            "max_fetches": s.spec_lookup_max_fetches, "key_set": bool(key),
+    cfg = await read_section(db, service.AI_LOOKUP)
+    return {"model": s.spec_lookup_model, "effort": cfg.get("effort", "medium"),
+            "key_set": bool(key),
             "key_last4": key[-4:] if len(key) >= 8 else None,
             "worker_status": worker_status,
             "worker_heartbeat_at": proc.heartbeat_at if proc else None}

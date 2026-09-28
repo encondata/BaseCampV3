@@ -6,7 +6,8 @@ from tests.test_assets_api import login
 from tests.test_system_api import _super_admin_headers
 
 DEFAULTS = {"background_enabled": False, "auto_apply": False, "fields_specs": True,
-            "fields_mounting": False, "fields_knowledge": False, "retry_after_days": 90}
+            "fields_mounting": False, "fields_knowledge": False, "retry_after_days": 90,
+            "effort": "medium"}
 
 
 async def test_defaults(client, db, seeded_user):
@@ -39,3 +40,15 @@ async def test_rejects_bad_values(client, db, seeded_user):
                              json={"retry_after_days": -1})).status_code == 422
     assert (await client.put("/system/ai-lookup", headers=hdrs,
                              json={"nope": True})).status_code == 422
+
+
+async def test_effort_persists_audits_and_validates(client, db, seeded_user):
+    hdrs = await _super_admin_headers(db, client)
+    resp = await client.put("/system/ai-lookup", headers=hdrs, json={"effort": "high"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["effort"] == "high"
+    assert (await client.get("/system/ai-lookup", headers=hdrs)).json()["effort"] == "high"
+    row = await db.scalar(select(AuditLog).where(AuditLog.action == "ai_lookup_config_update"))
+    assert row.changes["effort"] == {"from": "medium", "to": "high"}
+    assert (await client.put("/system/ai-lookup", headers=hdrs,
+                             json={"effort": "max"})).status_code == 422

@@ -138,6 +138,8 @@ async def test_dev_endpoints_gated_and_masked(client, db, seeded_user, monkeypat
     body = (await client.get("/spec-lookup/dev", headers=dev)).json()
     assert body["key_set"] is False and body["key_last4"] is None
     assert body["model"] == "claude-sonnet-5" and body["worker_status"] in ("failed", "stopped", "missing")
+    assert body["effort"] == "medium"
+    assert "max_searches" not in body and "max_fetches" not in body
     _configured(monkeypatch, ok=False)
     body = (await client.post("/spec-lookup/dev/test", headers=dev)).json()
     assert body["ok"] is False and body["error"] == "not_configured"

@@ -75,6 +75,23 @@ async def test_success_records_suggestions(db):
     assert (await db.scalar(select(SpecSuggestion))).value == "1"
 
 
+async def test_effort_setting_reaches_the_provider(db):
+    from serversherpa.db.models import SystemConfig
+    m, job = await _setup(db)
+    db.add(SystemConfig(section="ai_lookup", data={"effort": "high"}))
+    await db.commit()
+    p = FakeProvider(OK)
+    assert await worker.run_once(get_sessionmaker(), provider_factory=lambda: p) is True
+    assert p.calls[0]["effort"] == "high"
+
+
+async def test_effort_defaults_to_medium(db):
+    await _setup(db)
+    p = FakeProvider(OK)
+    await worker.run_once(get_sessionmaker(), provider_factory=lambda: p)
+    assert p.calls[0]["effort"] == "medium"
+
+
 async def test_private_is_never_sent(db):
     m, job = await _setup(db, private=True)
     p = FakeProvider(OK)

@@ -56,7 +56,8 @@ async def process_job(db, job: SpecLookupJob, provider) -> str:
     await db.commit()          # a worker killed mid-call must not loop forever at attempts=0
     try:
         result = await provider.lookup(make=m.make, model=m.model, aliases=aliases,
-                                       category=m.category, fields=fields)
+                                       category=m.category, fields=fields,
+                                       effort=cfg.get("effort", "medium"))
     except ProviderNotConfigured:
         return _finish(job, "failed", "not_configured")
     except ProviderRetryable as exc:

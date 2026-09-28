@@ -111,8 +111,8 @@ class Settings(BaseSettings):
     # configured: the worker idles and the portal says so.
     anthropic_api_key: SecretStr = SecretStr("")
     spec_lookup_model: str = "claude-sonnet-5"
-    spec_lookup_max_searches: int = 4
-    spec_lookup_max_fetches: int = 3
+    # Searches per model and thinking depth come from the "Lookup effort"
+    # setting (System settings › AI lookup), not from the environment.
 
     # ── Reports ────────────────────────────────────────────
     # Node script that renders rack elevations (portal's RackElevation, SSR).

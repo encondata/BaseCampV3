@@ -43,6 +43,7 @@ DEFAULTS: dict[str, dict] = {
         "fields_mounting": False,
         "fields_knowledge": False,
         "retry_after_days": 90,
+        "effort": "medium",            # low | medium | high (spec_lookup.provider)
     },
 }
 

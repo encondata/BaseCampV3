@@ -44,31 +44,27 @@ def fake_client(responses):
 SEARCH = {"type": "web_search_tool_result", "tool_use_id": "s1",
           "content": [{"type": "web_search_result", "url": "https://www.hpe.com/a/",
                        "title": "DL320"}]}
-FETCH = {"type": "web_fetch_tool_result", "tool_use_id": "f1",
-         "content": {"type": "web_fetch_result", "url": "https://www.hpe.com/spec.pdf",
-                     "content": {}}}
 ANSWER = {"findings": [{"field": "ru_size", "value": "1", "unit": "none",
                         "quote": "1U", "source_url": "https://www.hpe.com/a"}], "notes": ""}
 
 
 def prov(client):
-    return ClaudeProvider(api_key="k", model="claude-sonnet-5", max_searches=4,
-                          max_fetches=3, client=client)
+    return ClaudeProvider(api_key="k", model="claude-sonnet-5", client=client)
 
 
 async def test_lookup_parses_and_harvests_urls():
-    c = fake_client([Resp([SEARCH, FETCH, {"type": "text", "text": json.dumps(ANSWER)}],
+    c = fake_client([Resp([SEARCH, {"type": "text", "text": json.dumps(ANSWER)}],
                           searches=2)])
     r = await prov(c).lookup(make="HPE", model="DL320 Gen11", aliases=["DL320"],
                              category="server", fields=["ru_size", "weight"])
     assert [(f.field, f.value, f.unit) for f in r.findings] == [("ru_size", "1", None)]
-    assert r.seen_urls == {"https://www.hpe.com/a", "https://www.hpe.com/spec.pdf"}
+    assert r.seen_urls == {"https://www.hpe.com/a"}
     assert (r.input_tokens, r.output_tokens, r.search_count) == (100, 20, 2)
     call = c.messages.calls[0]
     assert call["model"] == "claude-sonnet-5"
-    assert {t["type"] for t in call["tools"]} == {"web_search_20260209", "web_fetch_20260209"}
-    assert call["tools"][0]["max_uses"] == 4
-    assert call["tools"][1]["max_uses"] == 3
+    assert call["tools"] == [{"type": "web_search_20250305", "name": "web_search",
+                              "max_uses": 2}]                  # default effort: medium
+    assert call["output_config"]["effort"] == "medium"
     prompt = call["messages"][0]["content"]
     assert "DL320 Gen11" in prompt and "ru_size" in prompt and "weight" in prompt
     assert call["output_config"]["format"]["type"] == "json_schema"
@@ -113,10 +109,7 @@ async def test_tool_result_errors_add_no_urls():
     search_error = {"type": "web_search_tool_result", "tool_use_id": "s1",
                      "content": {"type": "web_search_tool_result_error",
                                  "error_code": "unavailable"}}
-    fetch_error = {"type": "web_fetch_tool_result", "tool_use_id": "f1",
-                   "content": {"type": "web_fetch_tool_result_error",
-                               "error_code": "url_not_accessible"}}
-    c = fake_client([Resp([search_error, fetch_error,
+    c = fake_client([Resp([search_error,
                           {"type": "text", "text": json.dumps(ANSWER)}])])
     r = await prov(c).lookup(make="a", model="b", aliases=[], category=None,
                              fields=["ru_size"])
@@ -180,3 +173,39 @@ async def test_request_uses_max_tokens():
     c = fake_client([Resp([SEARCH, {"type": "text", "text": json.dumps(ANSWER)}])])
     await prov(c).lookup(make="a", model="b", aliases=[], category=None, fields=["ru_size"])
     assert c.messages.calls[0]["max_tokens"] == MAX_TOKENS == 16000
+
+
+@pytest.mark.parametrize("effort,searches", [("low", 1), ("medium", 2), ("high", 4)])
+async def test_effort_sets_search_budget_and_thinking(effort, searches):
+    c = fake_client([Resp([{"type": "text", "text": json.dumps(ANSWER)}])])
+    await prov(c).lookup(make="a", model="b", aliases=[], category=None,
+                         fields=["ru_size"], effort=effort)
+    call = c.messages.calls[0]
+    assert call["tools"] == [{"type": "web_search_20250305", "name": "web_search",
+                              "max_uses": searches}]
+    assert call["output_config"]["effort"] == effort
+    assert call["output_config"]["format"]["type"] == "json_schema"
+
+
+async def test_unknown_effort_falls_back_to_medium():
+    c = fake_client([Resp([{"type": "text", "text": json.dumps(ANSWER)}])])
+    await prov(c).lookup(make="a", model="b", aliases=[], category=None,
+                         fields=["ru_size"], effort="max")
+    call = c.messages.calls[0]
+    assert call["tools"][0]["max_uses"] == 2 and call["output_config"]["effort"] == "medium"
+
+
+async def test_pause_turn_continuation_keeps_effort():
+    first = Resp([SEARCH], stop_reason="pause_turn", searches=1)
+    second = Resp([{"type": "text", "text": json.dumps(ANSWER)}], searches=1)
+    c = fake_client([first, second])
+    await prov(c).lookup(make="a", model="b", aliases=[], category=None,
+                         fields=["ru_size"], effort="high")
+    assert [k["output_config"]["effort"] for k in c.messages.calls] == ["high", "high"]
+    assert [k["tools"][0]["max_uses"] for k in c.messages.calls] == [4, 4]
+
+
+def test_system_prompt_is_search_only():
+    from serversherpa.spec_lookup.provider import SYSTEM
+    assert "fetch" not in SYSTEM.lower()
+    assert "search" in SYSTEM.lower()

@@ -2228,6 +2228,7 @@ class AiLookupConfigOut(BaseModel):
     fields_mounting: bool
     fields_knowledge: bool
     retry_after_days: int
+    effort: Literal["low", "medium", "high"]
 
 
 class AiLookupConfigIn(BaseModel):
@@ -2242,6 +2243,7 @@ class AiLookupConfigIn(BaseModel):
     fields_mounting: bool | None = None
     fields_knowledge: bool | None = None
     retry_after_days: int | None = Field(default=None, ge=0, le=3650)
+    effort: Literal["low", "medium", "high"] | None = None
 
 
 class RevokeAllSessionsOut(BaseModel):

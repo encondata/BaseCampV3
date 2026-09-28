@@ -1,5 +1,8 @@
 """The only code that talks to Claude. One Messages call per model with the
-server-side web_search + web_fetch tools and a JSON-schema answer; the caller
+server-side web_search tool (search only, never page fetches: a fetched spec
+sheet is re-read on every step and costs dollars per model) and a JSON-schema
+answer; the "Lookup effort" setting picks how hard Claude thinks and how many
+searches it may run. The caller
 (worker) verifies every value before anything is stored. Only make, model,
 aliases, category and the wanted field names are sent."""
 
@@ -17,6 +20,11 @@ MAX_TOKENS = 16000                     # adaptive thinking counts toward this
 SEARCH_COST_USD = 0.01                 # $10 per 1,000 searches
 INPUT_COST_PER_MTOK = 2.0              # claude-sonnet-5
 OUTPUT_COST_PER_MTOK = 10.0
+
+# Lookup effort (System settings › AI lookup) -> output_config.effort and the
+# web_search max_uses. The single source of truth for the mapping.
+EFFORT_SEARCHES = {"low": 1, "medium": 2, "high": 4}
+DEFAULT_EFFORT = "medium"
 
 
 def estimate_cost(input_tokens: int, output_tokens: int, searches: int) -> float:
@@ -61,7 +69,8 @@ class LookupResult:
 
 class LookupProvider(Protocol):
     async def lookup(self, *, make: str, model: str, aliases: list[str],
-                     category: str | None, fields: list[str]) -> LookupResult: ...
+                     category: str | None, fields: list[str],
+                     effort: str = DEFAULT_EFFORT) -> LookupResult: ...
     async def ping(self) -> None: ...
     async def aclose(self) -> None: ...
 
@@ -103,11 +112,12 @@ SCHEMA = {
 
 SYSTEM = (
     "You look up physical specifications of datacenter hardware for an asset "
-    "catalog. Use web search and web fetch; prefer the manufacturer's own spec "
-    "sheets and product pages, then reputable resellers. Never answer from "
-    "memory: every value must come from a page you searched or fetched in this "
-    "conversation, and `quote` must be the exact text from that page that "
-    "states it (copied, not paraphrased), with `source_url` the page's URL. "
+    "catalog. Use web search and work from the search results (their excerpts); "
+    "prefer the manufacturer's own spec sheets and product pages, then "
+    "reputable resellers. Never answer from memory: every value must come from "
+    "a search result in this conversation, and `quote` must be the exact text "
+    "from that result that states it (copied, not paraphrased), with "
+    "`source_url` the result's URL. "
     "Match the exact model and variant; if a page covers a different variant, "
     "leave the value out. Omit any field you could not find — an empty "
     "findings list is a fine answer."
@@ -134,18 +144,12 @@ def _harvest(d: dict, seen: set[str]) -> None:
             for r in content:
                 if r.get("url"):
                     seen.add(normalize_url(r["url"]))
-        elif kind == "web_fetch_tool_result" and isinstance(content, dict):
-            if content.get("url"):
-                seen.add(normalize_url(content["url"]))
 
 
 class ClaudeProvider:
-    def __init__(self, *, api_key: str, model: str, max_searches: int,
-                 max_fetches: int, client=None) -> None:
+    def __init__(self, *, api_key: str, model: str, client=None) -> None:
         self._client = client or anthropic.AsyncAnthropic(api_key=api_key, max_retries=0)
         self._model = model
-        self._max_searches = max_searches
-        self._max_fetches = max_fetches
 
     async def aclose(self) -> None:
         close = getattr(self._client, "close", None)
@@ -169,7 +173,10 @@ class ClaudeProvider:
             raise ProviderFailed(f"api_error {exc.status_code}: {exc}"[:500]) from exc
 
     async def lookup(self, *, make: str, model: str, aliases: list[str],
-                     category: str | None, fields: list[str]) -> LookupResult:
+                     category: str | None, fields: list[str],
+                     effort: str = DEFAULT_EFFORT) -> LookupResult:
+        if effort not in EFFORT_SEARCHES:
+            effort = DEFAULT_EFFORT
         user = {"role": "user", "content": _prompt(make, model, aliases, category, fields)}
         messages: list[dict] = [user]
         result = LookupResult()
@@ -178,13 +185,10 @@ class ClaudeProvider:
             resp = await self._create(
                 model=self._model, max_tokens=MAX_TOKENS, system=SYSTEM,
                 messages=messages,
-                tools=[
-                    {"type": "web_search_20260209", "name": "web_search",
-                     "max_uses": self._max_searches},
-                    {"type": "web_fetch_20260209", "name": "web_fetch",
-                     "max_uses": self._max_fetches},
-                ],
-                output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
+                tools=[{"type": "web_search_20250305", "name": "web_search",
+                        "max_uses": EFFORT_SEARCHES[effort]}],
+                output_config={"format": {"type": "json_schema", "schema": SCHEMA},
+                               "effort": effort},
             )
             d = resp.model_dump()
             usage = d.get("usage") or {}
@@ -233,9 +237,7 @@ def get_provider() -> LookupProvider | None:
     key = s.anthropic_api_key.get_secret_value()
     if not key:
         return None
-    return ClaudeProvider(api_key=key, model=s.spec_lookup_model,
-                          max_searches=s.spec_lookup_max_searches,
-                          max_fetches=s.spec_lookup_max_fetches)
+    return ClaudeProvider(api_key=key, model=s.spec_lookup_model)
 
 
 def is_configured() -> bool:
