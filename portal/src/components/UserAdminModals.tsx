@@ -40,6 +40,8 @@ const GUARD_ERRORS: Record<string, string> = {
   rank_too_low: 'Your rank is too low for that change.',
   role_requires_org: 'That role needs a client or partner to scope to — grant it from the org contacts instead.',
   email_in_use: 'That contact email is already in use.',
+  password_recently_used: "That password was one of this person's recent ones. Choose a different one.",
+  password_too_short: 'That password is too short.',
 };
 
 function errText(err: unknown): string {

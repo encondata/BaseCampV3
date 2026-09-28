@@ -13,11 +13,18 @@ vi.mock('../../lib/systemStatus', () => ({ getSystemStatus: async () => ({ totp_
 
 const { default: SecurityControls } = await import('./SecurityControls');
 
+const CFG = {
+  two_factor_enabled: false, two_factor_required: false,
+  password_expiry_enabled: false, password_expiry_days: 90, password_history_count: 3,
+  password_expiry_since: null as string | null,
+};
 beforeEach(() => {
-  api.getSecurityConfig.mockResolvedValue({ two_factor_enabled: false, two_factor_required: false });
-  api.updateSecurityConfig.mockImplementation(async (p: Record<string, boolean>) => ({
+  api.getSecurityConfig.mockResolvedValue({ ...CFG });
+  api.updateSecurityConfig.mockImplementation(async (p: Record<string, boolean | number>) => ({
+    ...CFG,
     two_factor_enabled: !!(p.two_factor_enabled || p.two_factor_required),
     two_factor_required: !!p.two_factor_required,
+    ...p,
   }));
   api.revokeAllSessions.mockResolvedValue({ revoked_sessions: 4, revoked_people: 3 });
 });
@@ -56,4 +63,46 @@ it('does nothing when the confirm is declined, and disables everything when chan
   const btn = screen.getByRole('button', { name: 'End all sessions' }) as HTMLButtonElement;
   expect(btn.disabled).toBe(true);
   expect(api.revokeAllSessions).not.toHaveBeenCalled();
+});
+
+it('shows the password policy rows and saves the switch and the numbers', async () => {
+  render(<SecurityControls />);
+  await waitFor(() => expect(switches()[2].disabled).toBe(false));
+  expect(screen.getByText('Password expiry')).toBeTruthy();
+  fireEvent.click(switches()[2]);
+  await waitFor(() => expect(api.updateSecurityConfig).toHaveBeenCalledWith({ password_expiry_enabled: true }));
+  const days = screen.getByLabelText('Expires after') as HTMLInputElement;
+  expect(days.value).toBe('90');
+  fireEvent.change(days, { target: { value: '60' } });
+  fireEvent.blur(days);
+  await waitFor(() => expect(api.updateSecurityConfig).toHaveBeenCalledWith({ password_expiry_days: 60 }));
+  const count = screen.getByLabelText('Prevent reuse of the last') as HTMLInputElement;
+  expect(count.value).toBe('3');
+  fireEvent.change(count, { target: { value: '5' } });
+  fireEvent.keyDown(count, { key: 'Enter' });
+  await waitFor(() => expect(api.updateSecurityConfig).toHaveBeenCalledWith({ password_history_count: 5 }));
+});
+
+it('shows a range error from the API and keeps the inputs locked without change rights', async () => {
+  api.updateSecurityConfig.mockRejectedValueOnce(Object.assign(new api.ApiError('x'), { code: 'password_expiry_days_out_of_range' }));
+  render(<SecurityControls />);
+  const days = await screen.findByLabelText('Expires after') as HTMLInputElement;
+  fireEvent.change(days, { target: { value: '500' } });
+  fireEvent.blur(days);
+  expect(await screen.findByText(/between 1 and 365/)).toBeTruthy();
+  await waitFor(() => expect(days.value).toBe('90'));
+  cleanup();
+  render(<SecurityControls canChange={false} />);
+  const locked = await screen.findByLabelText('Expires after') as HTMLInputElement;
+  expect(locked.disabled).toBe(true);
+});
+
+it('does not save when the field is cleared and blurred, and reverts to the saved value', async () => {
+  render(<SecurityControls />);
+  const days = await screen.findByLabelText('Expires after') as HTMLInputElement;
+  expect(days.value).toBe('90');
+  fireEvent.change(days, { target: { value: '' } });
+  fireEvent.blur(days);
+  await waitFor(() => expect(days.value).toBe('90'));
+  expect(api.updateSecurityConfig).not.toHaveBeenCalled();
 });

@@ -14,14 +14,14 @@ vi.mock('react-router-dom', () => ({
   useNavigate: () => vi.fn(),
 }));
 
-vi.mock('../auth/AuthContext', () => ({
-  useAuth: () => ({
-    person: { display_name: 'Bobby Henderson' },
-    logout: vi.fn(),
-    clearMustChange: vi.fn(),
-    passwordMinLength: 8,
-  }),
+const auth = vi.hoisted(() => ({
+  person: { display_name: 'Bobby Henderson' },
+  logout: vi.fn(),
+  clearMustChange: vi.fn(),
+  passwordMinLength: 8,
+  mustChangeReason: 'temporary' as 'temporary' | 'expired' | null,
 }));
+vi.mock('../auth/AuthContext', () => ({ useAuth: () => auth }));
 
 import ForceChangePassword from './ForceChangePassword';
 
@@ -33,4 +33,15 @@ it('defines the theme accent locally so the submit renders as a real button', ()
   expect(wrapper.style.getPropertyValue('--accent')).toBe('#ffa12e');
   const submit = screen.getByRole('button', { name: /change password/i });
   expect(submit.className).toContain('btn-solid');
+});
+
+it('explains an expired password differently from a temporary one', () => {
+  auth.mustChangeReason = 'expired';
+  render(<ForceChangePassword />);
+  expect(screen.getByRole('heading', { name: 'Your password has expired' })).toBeTruthy();
+  expect(screen.getByText(/used recently/)).toBeTruthy();
+  cleanup();
+  auth.mustChangeReason = 'temporary';
+  render(<ForceChangePassword />);
+  expect(screen.getByRole('heading', { name: 'Set your password' })).toBeTruthy();
 });

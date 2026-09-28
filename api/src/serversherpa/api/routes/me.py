@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
-from serversherpa.api.deps import CurrentUser, DbSession, require_password_length
+from serversherpa.api.deps import CurrentUser, DbSession, raise_if_reused, require_password_length
 from serversherpa.api.routes.notifications import (
     _get_group, _member_count, _request_out, apply_member_overrides,
     effective_settings,
@@ -32,10 +32,11 @@ from serversherpa.db.models import (
 )
 from serversherpa.config import get_settings
 from serversherpa.notifications.requests import RequestError, cancel_request, create_request
-from serversherpa.security.passwords import hash_password, verify_password
+from serversherpa.security.passwords import verify_password
 from serversherpa.services.activity import ABOUT_ENTITY_TYPES, person_activity
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.auth import revoke_family
+from serversherpa.services.password_policy import apply_password
 from serversherpa.services.sessions import live_session_rows
 from serversherpa.services.storage import presign_get
 
@@ -144,11 +145,10 @@ async def change_password(
     if verify_password(account.password_hash, body.new_password, pepper=pepper):
         raise HTTPException(status_code=422, detail={"code": "same_as_current"})
 
+    await raise_if_reused(db, account, body.new_password)
+
     now = datetime.now(UTC)
-    account.password_hash = hash_password(body.new_password, pepper=pepper)
-    account.password_updated_at = now
-    account.must_change_password = False
-    account.updated_at = now
+    await apply_password(db, account, body.new_password, must_change=False, now=now)
 
     await db.execute(
         update(AuthSession)

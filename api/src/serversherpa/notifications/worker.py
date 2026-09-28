@@ -1,10 +1,9 @@
 """The notification-worker loop — a separate process from the API
-(`serversherpa notification-worker`). PLACEHOLDER ONLY: heartbeat +
-periodic status logs. It does not read or mutate any notification
-delivery state; the only DB touches are the heartbeat upsert, log
-writes, and read-only count queries for the status line. The
-actual delivery pipeline (channel dispatch, quiet hours, DND) is a
-later task."""
+(`serversherpa notification-worker`). Today it runs the password-expiry
+reminder sweep once an hour (notifications/password_reminders.py) and
+logs a status line; the delivery pipeline (email, quiet hours, DND) is a
+later task. Other DB touches are the heartbeat upsert, log writes and
+read-only count queries."""
 
 import asyncio
 import logging
@@ -14,9 +13,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import NotificationGroup, NotificationGroupMember
+from serversherpa.notifications.password_reminders import run_reminders_once
 
 logger = logging.getLogger("serversherpa.notifications.worker")
 IDLE_LOG_SECONDS = 900   # one INFO status line every 15 min
+REMINDER_INTERVAL_SECONDS = 3600
 
 
 async def status_counts(db: AsyncSession) -> tuple[int, int]:
@@ -54,14 +55,15 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
     heartbeat = start_heartbeat("notification-worker", "worker",
                                 meta_fn=lambda: dict(pause_state))
 
-    logger.info("notification worker online — placeholder: "
-                "status/logs only, no delivery yet")
+    logger.info("notification worker online — hourly password expiry "
+                "reminders; no delivery pipeline yet")
 
     maker = get_sessionmaker()
     try:
         # monotonic()'s reference point is undefined — seed one full
         # interval in the past so the first loop iteration always logs.
         last_log = time.monotonic() - IDLE_LOG_SECONDS
+        last_reminders = time.monotonic() - REMINDER_INTERVAL_SECONDS
         while True:
             # read-only mode's "also pause background services": idle (still
             # heart-beating as paused) until the flag clears — no work lost
@@ -75,6 +77,11 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
                 logger.info("resumed")
             pause_state["paused"] = False
             now = time.monotonic()
+            if now - last_reminders >= REMINDER_INTERVAL_SECONDS:
+                sent = await run_reminders_once(maker)
+                if sent:
+                    logger.info("sent %d password expiry reminder(s)", sent)
+                last_reminders = now
             if now - last_log >= IDLE_LOG_SECONDS:
                 await run_once(maker)
                 last_log = now

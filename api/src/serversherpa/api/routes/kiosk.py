@@ -48,6 +48,7 @@ from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_pairing as pairing
 from serversherpa.services import timeclock
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.password_policy import load_policy
 from serversherpa.services.storage import presign_get
 
 router = APIRouter(prefix="/kiosk", tags=["kiosk"])
@@ -120,7 +121,7 @@ async def poll_pair(
         user_agent=request.headers.get("user-agent"),
         audit_action="login_pair", access=access, client="kiosk")
     return PairPollOut(status="approved", session=session_response(
-        result, response, await totp_status_out(db, account)))
+        result, response, await totp_status_out(db, account), await load_policy(db)))
 
 
 # ── pairing: phone side (kiosk:view) ────────────────────────────────
