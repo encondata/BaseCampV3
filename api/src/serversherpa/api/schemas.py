@@ -2208,6 +2208,29 @@ class SecurityConfigIn(BaseModel):
     two_factor_required: bool | None = None
 
 
+class AiLookupConfigOut(BaseModel):
+    background_enabled: bool
+    auto_apply: bool
+    fields_specs: bool
+    fields_mounting: bool
+    fields_knowledge: bool
+    retry_after_days: int
+
+
+class AiLookupConfigIn(BaseModel):
+    """Partial update — only sent fields change. retry_after_days 0 = never
+    retry a looked-up model automatically."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    background_enabled: bool | None = None
+    auto_apply: bool | None = None
+    fields_specs: bool | None = None
+    fields_mounting: bool | None = None
+    fields_knowledge: bool | None = None
+    retry_after_days: int | None = Field(default=None, ge=0, le=3650)
+
+
 class RevokeAllSessionsOut(BaseModel):
     revoked_sessions: int
     revoked_people: int

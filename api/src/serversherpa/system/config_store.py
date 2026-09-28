@@ -29,6 +29,16 @@ DEFAULTS: dict[str, dict] = {
         "two_factor_enabled": False,
         "two_factor_required": False,
     },
+    # Makes / Models spec lookup (Claude). Field groups decide what the
+    # worker asks for; auto_apply fills BLANK fields only (never knowledge).
+    "ai_lookup": {
+        "background_enabled": False,
+        "auto_apply": False,
+        "fields_specs": True,
+        "fields_mounting": False,
+        "fields_knowledge": False,
+        "retry_after_days": 90,
+    },
 }
 
 
