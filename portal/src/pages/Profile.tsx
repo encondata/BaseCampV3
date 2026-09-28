@@ -53,7 +53,9 @@ function formStateFrom(p: PersonDetail): Record<EditKey, string> {
 }
 
 export default function Profile() {
-  const { roles, applyProfile, totp, applyTotp, person, passwordExpiresAt } = useAuth();
+  const {
+    roles, applyProfile, totp, applyTotp, person, passwordExpiresAt, clearMustChange,
+  } = useAuth();
   const navigate = useNavigate();
   const pathname = useLocation().pathname;
   const tab: 'profile' | 'preferences' | 'notifications' | 'history' = pathname.startsWith('/me/preferences')
@@ -259,6 +261,9 @@ export default function Profile() {
                   <ChangePasswordForm onSuccess={() => {
                     setChangingPw(false);
                     setPwChanged(true);
+                    // drops the stale expiry date (and any forced-change
+                    // flag — harmless when there wasn't one)
+                    clearMustChange();
                     // other sessions were revoked server-side — refresh the panel
                     void getSessionsRequest().then(setSessions).catch(() => {});
                   }} />

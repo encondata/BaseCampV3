@@ -16,7 +16,7 @@ from fastapi import (
 from sqlalchemy import update, delete, func, select
 
 from serversherpa.api.deps import (
-    AuthContext, DbSession, authenticate_token, require_permission,
+    AuthContext, DbSession, authenticate_token, password_change_owed, require_permission,
 )
 from serversherpa.api.schemas import (
     RevokeAllSessionsOut, SecurityConfigIn, SecurityConfigOut,
@@ -349,9 +349,10 @@ async def stream_process_logs(ws: WebSocket, name: str) -> None:
             await ws.close(code=4403)
             return
         # Mirror of get_current_user's forced-password-change guard (403
-        # password_change_required on HTTP): a temp-password session may
-        # only finish the auth lifecycle, so it may not open a tail either.
-        if actor.account.must_change_password:
+        # password_change_required on HTTP): a temp-password session, or
+        # one that signed in with an already-expired password, may only
+        # finish the auth lifecycle, so it may not open a tail either.
+        if await password_change_owed(db, actor):
             await ws.close(code=4403)
             return
         if not actor.access.can("devtools", "change"):

@@ -43,6 +43,15 @@ async def test_policy_ranges_are_enforced(client, db, seeded_user):
     assert ok.json()["password_history_count"] == 0
 
 
+async def test_since_cannot_be_set_through_the_api(client, db, seeded_user):
+    hdrs = await _admin(db, client)
+    resp = await client.put("/system/security", headers=hdrs,
+                            json={"password_expiry_since": "2020-01-01T00:00:00+00:00"})
+    assert resp.status_code == 422, resp.text     # extra fields are forbidden
+    body = (await client.get("/system/security", headers=hdrs)).json()
+    assert body["password_expiry_since"] is None
+
+
 async def test_enabling_stamps_since_and_disabling_clears_it(client, db, seeded_user):
     hdrs = await _admin(db, client)
     before = datetime.now(UTC)
@@ -234,6 +243,11 @@ async def test_admin_reset_refuses_a_recent_password(client, db, seeded_user):
                              json={"temp_password": "CorrectHorse9!"})
     assert resp.status_code == 422, resp.text
     assert resp.json()["detail"]["code"] == "password_recently_used"
+    refused = list(await db.scalars(select(AuditLog).where(
+        AuditLog.entity_type == "user_account", AuditLog.entity_id == str(seeded_user.id),
+        AuditLog.action == "password.reset_refused")))
+    assert len(refused) == 1
+    assert refused[0].changes == {"reason": "password_recently_used"}
     ok = await client.post(f"/users/{seeded_user.id}/reset-password", headers=admin,
                            json={"temp_password": "Temp-pw-9999"})
     assert ok.status_code == 204, ok.text
@@ -254,6 +268,22 @@ async def test_new_accounts_record_history_without_a_check(client, db, seeded_us
     rows = list(await db.scalars(select(PasswordHistory).where(
         PasswordHistory.person_id == contact.id)))
     assert len(rows) == 1
+
+
+async def test_new_user_with_account_records_one_history_row(client, db, seeded_user):
+    admin = await _enable_policy(client, db)
+    resp = await client.post("/users", headers=admin, json={
+        "first_name": "Hank", "last_name": "History", "roles": ["worker"],
+        "create_account": True, "login_email": "hank-pw@test.example.com",
+        "temp_password": "Temp-pw-9999", "must_change_password": True})
+    assert resp.status_code == 201, resp.text
+    account = await db.scalar(select(UserAccount).where(
+        UserAccount.email == "hank-pw@test.example.com"))
+    assert account is not None
+    rows = list(await db.scalars(select(PasswordHistory).where(
+        PasswordHistory.person_id == account.person_id)))
+    assert len(rows) == 1
+    assert rows[0].password_hash == account.password_hash
 
 
 # ── the sign-in gate ────────────────────────────────────────────────
@@ -341,6 +371,164 @@ async def test_kiosk_login_reports_expiry_too(client, db, seeded_user):
     assert resp.json()["must_change_reason"] == "expired"
 
 
+async def test_kiosk_pairing_session_reports_expiry_too(client, db, seeded_user):
+    from tests.test_kiosk_pairing_api import _create, _poll
+
+    await _enable_policy(client, db, password_expiry_days=1)
+    await _backdate_since(db, days=2)
+    await _backdate(db, seeded_user.id, days=5)
+    d = await _create(client)
+    hdrs = await login(client)            # alice, expired — approving is exempt
+    approve = await client.post(f"/kiosk/pair/{d['code']}/approve", headers=hdrs)
+    assert approve.status_code == 204, approve.text
+    resp = await _poll(client, d)
+    assert resp.status_code == 200, resp.text
+    session = resp.json()["session"]
+    assert session["must_change_password"] is True
+    assert session["must_change_reason"] == "expired"
+
+
+# ── the API gate ────────────────────────────────────────────────────
+# The sign-in response only reports expiry; these prove the API itself
+# holds a session that signed in with an expired password to the
+# change-password routes, anchored to the session's sign-in time.
+
+from serversherpa.db.models import AuthSession  # noqa: E402
+
+
+async def _backdate_since_by(db, delta: timedelta):
+    from serversherpa.db.models import SystemConfig
+    row = await db.get(SystemConfig, "security")
+    row.data = {**row.data,
+                "password_expiry_since": (datetime.now(UTC) - delta).isoformat()}
+    await db.commit()
+
+
+async def _signed_in_ago(db, person_id, delta: timedelta):
+    """Move this person's sessions so they read as signed in `delta` ago.
+    The gate recovers the sign-in time as expires_at - session_ttl, so
+    shifting the absolute deadline shifts the sign-in time with it (and
+    the session stays live as long as delta < session_ttl)."""
+    ttl = timedelta(seconds=get_settings().session_ttl_seconds)
+    assert delta < ttl
+    await db.execute(update(AuthSession).where(AuthSession.person_id == person_id)
+                     .values(expires_at=datetime.now(UTC) - delta + ttl))
+    await db.commit()
+
+
+def _bearer(body):
+    return {"Authorization": f"Bearer {body['access_token']}"}
+
+
+async def test_expired_session_is_refused_by_the_api(client, db, seeded_user):
+    await _enable_policy(client, db, password_expiry_days=1)
+    await _backdate_since(db, days=2)
+    await _backdate(db, seeded_user.id, days=5)
+    resp = await client.post("/auth/login", json={"email": "alice@test.example.com",
+                                                  "password": "CorrectHorse9!"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["must_change_reason"] == "expired"
+    hdrs = _bearer(body)
+    # non-exempt routes are refused
+    for path in ("/auth/me/activity", "/auth/me/profile"):
+        blocked = await client.get(path, headers=hdrs)
+        assert blocked.status_code == 403, (path, blocked.text)
+        assert blocked.json()["detail"] == {"code": "password_change_required"}
+    # a refreshed token inherits the sign-in time, so it is refused too
+    refreshed = await client.post("/auth/refresh")
+    assert refreshed.status_code == 200, refreshed.text
+    hdrs = _bearer(refreshed.json())
+    assert (await client.get("/auth/me/activity", headers=hdrs)).status_code == 403
+    # the exempt routes still work
+    assert (await client.get("/auth/me", headers=hdrs)).status_code == 200
+    assert (await client.get("/auth/me/sessions", headers=hdrs)).status_code == 200
+    change = await _change(client, hdrs, "CorrectHorse9!", "Fresh-pw-2026")
+    assert change.status_code == 204, change.text
+    # the change lifts the block at once, inside the same session
+    assert (await client.get("/auth/me/activity", headers=hdrs)).status_code == 200
+
+
+async def test_session_that_started_before_expiry_keeps_working(client, db, seeded_user):
+    ttl_hours = get_settings().session_ttl_seconds / 3600
+    assert ttl_hours > 13                       # the numbers below need a 13 h+ session
+    hdrs = await login(client)                  # policy off: nothing owed
+    await _enable_policy(client, db, password_expiry_days=1)
+    await _backdate(db, seeded_user.id, days=5)  # expiry now runs from `since`
+    # alice's session signed in 12 h ago
+    await _signed_in_ago(db, seeded_user.id, timedelta(hours=12))
+    # since = now - 1 d 11 h → password expires at since + 1 d = now - 11 h:
+    # expired now, but AFTER this session signed in (now - 12 h) → allowed
+    await _backdate_since_by(db, timedelta(days=1, hours=11))
+    ok = await client.get("/auth/me/activity", headers=hdrs)
+    assert ok.status_code == 200, ok.text
+    # since = now - 1 d 13 h → expires at now - 13 h, before the sign-in
+    # at now - 12 h → this session signed in with an expired password
+    await _backdate_since_by(db, timedelta(days=1, hours=13))
+    refused = await client.get("/auth/me/activity", headers=hdrs)
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["detail"] == {"code": "password_change_required"}
+    # and turning the policy off lifts it (written directly: the back-dated
+    # `since` has expired the admin's own password too)
+    await _set_policy_direct(db, enabled=False, since=None)
+    assert (await client.get("/auth/me/activity", headers=hdrs)).status_code == 200
+
+
+async def test_websocket_log_tail_refuses_expired_session(client, db, seeded_user):
+    """The log-tail WS authenticates outside get_current_user, so it
+    applies the same rule: a session that signed in with an expired
+    password closes 4403, while the same person's session that signed in
+    before the password expired still streams."""
+    dev = Person(first_name="Dev", last_name="Expired")
+    db.add(dev)
+    await db.flush()
+    db.add(PersonRole(person_id=dev.id, role="developer"))
+    await db.commit()
+    early = await make_login(db, client, dev, "dev-pw@test.example.com")
+    early_token = early["Authorization"].removeprefix("Bearer ")
+    await _enable_policy(client, db, password_expiry_days=1)
+    await _backdate(db, dev.id, days=5)
+    await _signed_in_ago(db, dev.id, timedelta(hours=12))     # the early session
+    await _backdate_since_by(db, timedelta(days=1, hours=11))  # expired at now - 11 h
+    late = await client.post("/auth/login", json={"email": "dev-pw@test.example.com",
+                                                  "password": "CorrectHorse9!"})
+    assert late.json()["must_change_reason"] == "expired"
+    late_token = late.json()["access_token"]
+
+    from serversherpa.db.engine import dispose_engine
+    await db.close()
+    await dispose_engine()
+
+    import pytest
+    from sqlalchemy import create_engine
+    from sqlalchemy import text as sql_text
+    from starlette.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    from serversherpa.api.app import create_app
+
+    sync = create_engine(get_settings().sync_database_url)
+    with TestClient(create_app()) as tc:
+        with (pytest.raises(WebSocketDisconnect) as exc,
+              tc.websocket_connect("/system/processes/api/logs/stream",
+                                   subprotocols=["ss-bearer", late_token]) as ws):
+            ws.receive_json()
+        assert exc.value.code == 4403
+        # control: the session that signed in before expiry still streams
+        with tc.websocket_connect(
+                "/system/processes/api/logs/stream",
+                subprotocols=["ss-bearer", early_token]) as ws:
+            with sync.begin() as conn:
+                conn.execute(sql_text(
+                    "INSERT INTO log_entries (process, level, levelno, logger, message) "
+                    "VALUES ('api', 'INFO', 20, 't', 'still streaming')"))
+            msg = ws.receive_json()
+            while "entries" not in msg:
+                msg = ws.receive_json()
+            assert [e["message"] for e in msg["entries"]] == ["still streaming"]
+    sync.dispose()
+
+
 # ── reminders ───────────────────────────────────────────────────────
 
 from serversherpa.db.models import Notification  # noqa: E402
@@ -426,6 +614,20 @@ async def test_reminders_skip_disabled_accounts_and_jump_to_the_urgent_stage(db,
     rows = await _reminders(db, seeded_user.id)
     assert [r.payload["stage"] for r in rows] == [3]
     assert await _reminders(db, other.id) == []
+
+
+async def test_reminders_skip_accounts_on_a_temporary_password(db, seeded_user):
+    await _with_days_left(db, seeded_user.id, 2)
+    await db.execute(update(UserAccount).where(UserAccount.person_id == seeded_user.id)
+                     .values(must_change_password=True))
+    await db.commit()
+    assert await _sweep(db) == 0
+    assert await _reminders(db, seeded_user.id) == []
+    # control: the same account without the temporary flag is reminded
+    await db.execute(update(UserAccount).where(UserAccount.person_id == seeded_user.id)
+                     .values(must_change_password=False))
+    await db.commit()
+    assert await _sweep(db) == 1
 
 
 async def test_run_reminders_once_swallows_errors(db, seeded_user, caplog, monkeypatch):

@@ -3,7 +3,7 @@
 import ipaddress
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, Request
@@ -17,6 +17,7 @@ from serversherpa.config import get_settings
 from serversherpa.db.engine import get_db
 from serversherpa.db.models import AuthSession, Person, UserAccount
 from serversherpa.security.tokens import TokenError, decode_access_token
+from serversherpa.services.password_policy import expires_at, load_policy
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -152,7 +153,8 @@ async def enforce_read_only(db: AsyncSession, request: Request,
                     "message": cfg["read_only_message"]})
 
 
-# A temp-password session must be able to finish the auth lifecycle and
+# A session that owes a password change (a temp password, or a password
+# already expired at sign-in) must be able to finish the auth lifecycle and
 # change its own password, and nothing else — same auth-lifecycle set
 # read-only mode exempts, plus GET /auth/me (so the portal can render the
 # "you must change your password" screen) and GET /auth/me/sessions (self-
@@ -167,10 +169,10 @@ async def enforce_read_only(db: AsyncSession, request: Request,
 # routes: they're in READ_ONLY_EXEMPT_PATHS for the sign-in lifecycle during
 # a maintenance freeze, but a temp-password session must still change its
 # password before it can enroll in 2FA or regenerate backup codes from My
-# Profile. This subtraction only bites a signed-in session (must_change_
-# password=True); the enroll/verify challenge path is unaffected either
-# way because a challenge holder has no session at all — totp_actor never
-# calls enforce_forced_password_change for it.
+# Profile. This subtraction only bites a signed-in session that owes a
+# change (password_change_owed); the enroll/verify challenge path is
+# unaffected either way because a challenge holder has no session at all —
+# totp_actor never calls enforce_forced_password_change for it.
 FORCED_CHANGE_EXEMPT_PATHS = (
     (READ_ONLY_EXEMPT_PATHS - {
         "/system/admin", "/kiosk/printer-events",
@@ -187,17 +189,56 @@ def _forced_change_exempt(path: str) -> bool:
             or path.startswith(FORCED_CHANGE_EXEMPT_PREFIXES))
 
 
-def enforce_forced_password_change(request: Request, user: AuthContext) -> None:
-    """Server-side mirror of the portal's forced-change screen: a temp
-    password (must_change_password=True) can reach only the auth-lifecycle
-    routes and the self password-change route — every other route 403s
-    until the password is changed. Previously this was enforced only in
-    the portal UI, so a temp-password session could drive the API directly
-    and never be forced to change it."""
-    if not user.account.must_change_password or _forced_change_exempt(request.url.path):
+def session_started_at(session: AuthSession) -> datetime:
+    """When this session's family signed in. Every session gets an
+    absolute deadline of sign-in + session_ttl_seconds, and refresh
+    rotation copies that deadline to the new row without extending it
+    (services/auth.py), so the deadline minus the TTL recovers the
+    sign-in time with no extra query — unlike created_at, which is
+    stamped fresh on every rotated row."""
+    deadline = session.expires_at
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=UTC)
+    return deadline - timedelta(seconds=get_settings().session_ttl_seconds)
+
+
+async def password_change_owed(db: AsyncSession, user: AuthContext) -> bool:
+    """True when this session may do nothing but change its password: a
+    temporary password (must_change_password=True), or a password that
+    had ALREADY expired when this session signed in. Anchoring expiry to
+    the sign-in time keeps the policy's promise that nobody is cut off
+    mid-session — a session that began before the password expired keeps
+    working until it ends — while a session that signed in with an
+    expired password is held to the change screen server-side, not only
+    in the portal and kiosk UIs. Changing the password moves
+    password_updated_at to now, which lifts the block at once in the same
+    session."""
+    if user.account.must_change_password:
+        return True
+    policy = await load_policy(db)
+    if not policy.enabled:
+        return False
+    due = expires_at(policy, user.account)
+    return due is not None and due <= session_started_at(user.session)
+
+
+async def enforce_forced_password_change(db: AsyncSession, request: Request,
+                                         user: AuthContext) -> None:
+    """Server-side mirror of the portal's forced-change screen: a session
+    that owes a password change (a temp password, or a password that was
+    already expired when the session signed in — see
+    password_change_owed) can reach only the auth-lifecycle routes and
+    the self password-change route; every other route 403s until the
+    password is changed. Previously this was enforced only in the portal
+    UI, so such a session could drive the API directly and never be
+    forced to change it. Exempt paths return before any lookup; the
+    policy costs one system_config read per non-exempt request (the same
+    precedent as enforce_read_only)."""
+    if _forced_change_exempt(request.url.path):
         return
-    raise HTTPException(status_code=403,
-                        detail={"code": "password_change_required"})
+    if await password_change_owed(db, user):
+        raise HTTPException(status_code=403,
+                            detail={"code": "password_change_required"})
 
 
 async def get_current_user(
@@ -209,7 +250,7 @@ async def get_current_user(
         raise _unauthorized("missing_token")
     user = await authenticate_token(db, credentials.credentials)
     enforce_session_scope(request, user)
-    enforce_forced_password_change(request, user)
+    await enforce_forced_password_change(db, request, user)
     await enforce_read_only(db, request, user)
     return user
 
@@ -327,7 +368,7 @@ async def totp_actor(
     # totp_actor authenticates outside get_current_user, so it applies the
     # same scope gate: no /auth/totp/* route is in the kiosk allowlist.
     enforce_session_scope(request, user)
-    enforce_forced_password_change(request, user)
+    await enforce_forced_password_change(db, request, user)
     await enforce_read_only(db, request, user)
     return TotpActor(account=user.account, purpose=None, user=user)
 

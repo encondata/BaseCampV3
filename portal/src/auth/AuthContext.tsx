@@ -198,7 +198,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const clearMustChange = useCallback(() => {
-    setState((prev) => ({ ...prev, mustChangePassword: false, mustChangeReason: null }));
+    // the old expiry date no longer applies once the password changed;
+    // the next /auth/me or refresh reports the new one
+    setState((prev) => ({
+      ...prev, mustChangePassword: false, mustChangeReason: null, passwordExpiresAt: null,
+    }));
   }, []);
 
   return (

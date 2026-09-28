@@ -56,4 +56,5 @@ it('carries the change reason and expiry date, and clearMustChange clears them',
   act(() => ctx.clearMustChange());
   expect(ctx.mustChangePassword).toBe(false);
   expect(ctx.mustChangeReason).toBeNull();
+  expect(ctx.passwordExpiresAt).toBeNull();
 });

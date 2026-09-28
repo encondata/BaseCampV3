@@ -16,6 +16,7 @@ const auth = vi.hoisted(() => ({
   updatePreferences: vi.fn(async () => true),
   applyProfile: vi.fn(),
   applyTotp: vi.fn(),
+  clearMustChange: vi.fn(),
   totp: { enrolled: false, enrolled_at: null, required: false, backup_codes_remaining: 0 } as TotpStatus,
   person: { email: 'ada@test.example.com' },
 }));
@@ -59,6 +60,7 @@ vi.mock('../auth/AuthContext', () => ({
     roles: ['developer'],
     applyProfile: auth.applyProfile,
     applyTotp: auth.applyTotp,
+    clearMustChange: auth.clearMustChange,
     totp: auth.totp,
     person: auth.person,
     preferences: {

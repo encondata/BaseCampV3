@@ -7,6 +7,7 @@ apply_password() is the ONE way a password gets set — it also records
 the hash in password_history for the reuse rule.
 """
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Literal
@@ -57,6 +58,10 @@ async def load_policy(db: AsyncSession) -> PasswordPolicy:
 def expires_at(policy: PasswordPolicy, account: UserAccount) -> datetime | None:
     """When this account's password stops working, or None when the
     policy is off (or the switch has no stamp yet) or there is no password."""
+    # `since is None` with the switch on can't come from the API: the
+    # switch is only ever stored on through PUT /system/security, which
+    # stamps `since`. A hand-edited row with `enabled: true` and no
+    # `since` expires nothing (and reminds no one) until it is saved again.
     if not policy.enabled or policy.since is None or account.password_hash is None:
         return None
     changed = account.password_updated_at
@@ -99,9 +104,15 @@ async def assert_not_reused(db: AsyncSession, policy: PasswordPolicy,
     for old_hash in rows:
         if old_hash not in candidates:
             candidates.append(old_hash)
-    for old_hash in candidates[:policy.history_count]:
-        if verify_password(old_hash, new_password, pepper=pepper):
-            raise PasswordReused(policy.history_count)
+    checks = candidates[:policy.history_count]
+
+    def _any_match() -> bool:
+        return any(verify_password(old_hash, new_password, pepper=pepper)
+                   for old_hash in checks)
+
+    # up to 24 Argon2id verifications: run them off the event loop
+    if await asyncio.to_thread(_any_match):
+        raise PasswordReused(policy.history_count)
 
 
 async def apply_password(db: AsyncSession, account: UserAccount, new_password: str, *,

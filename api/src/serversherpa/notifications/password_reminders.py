@@ -39,6 +39,9 @@ async def run_password_reminders(db: AsyncSession, now: datetime) -> int:
         select(UserAccount).join(Person, Person.id == UserAccount.person_id)
         .where(UserAccount.password_hash.is_not(None),
                UserAccount.disabled_at.is_(None),
+               # a temporary password is already forced to change at the
+               # next sign-in; a countdown on top of that is noise
+               UserAccount.must_change_password.is_(False),
                Person.archived_at.is_(None)))
     sent = 0
     for account in accounts:

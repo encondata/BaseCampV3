@@ -537,7 +537,16 @@ async def reset_password(
 ) -> None:
     require_password_length(body.temp_password)
     _, account, _ = await _load_target(db, actor, person_id)
-    await raise_if_reused(db, account, body.temp_password)
+    try:
+        await raise_if_reused(db, account, body.temp_password)
+    except HTTPException:
+        # the refusal tells the admin the guess was one of the user's
+        # recent passwords, so it leaves a record like the reset would
+        audit(db, actor_id=actor.person.id, entity_type="user_account",
+              entity_id=str(person_id), action="password.reset_refused",
+              changes={"reason": "password_recently_used"})
+        await db.commit()
+        raise
     now = datetime.now(UTC)
     await apply_password(db, account, body.temp_password,
                          must_change=body.must_change_password, now=now)
