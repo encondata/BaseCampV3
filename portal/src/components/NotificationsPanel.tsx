@@ -167,6 +167,14 @@ function KindIcon({ kind }: { kind: string }) {
       </svg>
     );
   }
+  if (kind === 'password_expiring') {
+    return (
+      <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="8" cy="15" r="4" /><path d="m10.8 12.2 8.7-8.7M16 6.5l2.5 2.5M13.5 9l2.5 2.5" />
+      </svg>
+    );
+  }
   return (
     <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
          strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

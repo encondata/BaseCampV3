@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-/** Keyboard path through the sign-in form: email → Tab → password → Tab →
- *  Sign in. The Forgot?/show-password controls sit between them in the DOM
- *  and must not interrupt that path. */
+/** The portal sign-in page: keyboard path (email → Tab → password → Tab →
+ *  Sign in; "Forgot password?" and the eye toggle sit between them in the
+ *  DOM and must not interrupt it), the light-mockup wording, SSO hint,
+ *  support card, and both two-factor steps. */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -22,10 +23,9 @@ const api = vi.hoisted(() => ({
 vi.mock('../lib/api', async (importActual) => ({ ...(await importActual<typeof import('../lib/api')>()), ...api }));
 vi.mock('../lib/systemStatus', () => ({ getSystemStatus: async () => ({ totp_trust_days: 7 }) }));
 vi.mock('../lib/qr', () => ({ qrDataUrl: () => 'data:qr' }));
-vi.mock('../lib/brandScene', () => ({ buildBrandScene: () => () => {} }));
 vi.mock('../components/SystemBanners', () => ({ default: () => null }));
 
-// jsdom has no matchMedia; the page asks it about reduced motion
+// jsdom has no matchMedia; the error shake asks it about reduced motion
 window.matchMedia = ((query: string) => ({
   matches: false, media: query, onchange: null,
   addListener: () => {}, removeListener: () => {},
@@ -156,4 +156,44 @@ it('account_locked drops the code card back to the password form with the locked
 
   await waitFor(() => expect(screen.queryByLabelText('Digit 1')).toBeNull());
   expect(screen.getByText(/temporarily locked/i)).toBeTruthy();
+});
+
+it('uses the mockup wording and the light scene with the real logo', () => {
+  const { container } = render(<MemoryRouter><Login /></MemoryRouter>);
+  expect(container.querySelector('.login-shell.login-light')).not.toBeNull();
+  expect(screen.getByRole('heading', { level: 2, name: 'Sign in' })).toBeTruthy();
+  expect(screen.getByText('Use the account credentials provided by your migration coordination team.')).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Continue with SSO' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Forgot password?' })).toBeTruthy();
+  expect(screen.getByAltText('ServerSherpa logo').getAttribute('src')).toBe('/images/serversherpa-logo.png');
+  // the entrance animation is gone, so nothing is tagged for it
+  expect(container.querySelector('[data-reveal]')).toBeNull();
+});
+
+it('Continue with SSO explains that SSO is not enabled yet', async () => {
+  const user = userEvent.setup();
+  renderLogin();
+  await user.click(screen.getByRole('button', { name: 'Continue with SSO' }));
+  expect(screen.getByText("Company SSO isn't enabled yet — sign in with your email and password.")).toBeTruthy();
+});
+
+it('Forgot password? and Contact support both open the support card', async () => {
+  const user = userEvent.setup();
+  renderLogin();
+  await user.click(screen.getByRole('button', { name: 'Forgot password?' }));
+  expect(screen.getByRole('dialog')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Got it' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Contact support' }));
+  expect(screen.getByRole('dialog')).toBeTruthy();
+});
+
+it('the eye toggle shows and hides the password', async () => {
+  const user = userEvent.setup();
+  const { password } = renderLogin();
+  expect(password.getAttribute('type')).toBe('password');
+  await user.click(screen.getByRole('button', { name: 'Show password' }));
+  expect(password.getAttribute('type')).toBe('text');
+  await user.click(screen.getByRole('button', { name: 'Hide password' }));
+  expect(password.getAttribute('type')).toBe('password');
 });

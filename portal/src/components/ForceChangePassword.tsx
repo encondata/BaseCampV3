@@ -1,7 +1,7 @@
 /**
  * Forced password change — shown INSTEAD of the portal when the account
- * carries must_change_password (temp password from an admin). There is
- * no way around it except signing out.
+ * must set a new password (temporary password from an admin, or an
+ * expired one). There is no way around it except signing out.
  */
 
 import { type CSSProperties } from 'react';
@@ -13,7 +13,7 @@ import '../styles/profile.css';
 import '../styles/settings.css';
 
 export default function ForceChangePassword() {
-  const { person, logout, clearMustChange } = useAuth();
+  const { person, logout, clearMustChange, mustChangeReason } = useAuth();
   const navigate = useNavigate();
 
   const handleLogout = async () => {
@@ -45,12 +45,12 @@ export default function ForceChangePassword() {
           ServerSherpa Portal
         </p>
         <h1 style={{ margin: '10px 0 6px', fontSize: 24, color: '#1b2129' }}>
-          Set your password
+          {mustChangeReason === 'expired' ? 'Your password has expired' : 'Set your password'}
         </h1>
         <p style={{ margin: '0 0 22px', fontSize: 14, color: '#667085', fontWeight: 300 }}>
-          {person?.display_name}, your password was set by an administrator.
-          Choose your own before continuing — the temporary one stops working
-          the moment you do.
+          {mustChangeReason === 'expired'
+            ? <>{person?.display_name}, passwords expire every so often here. Choose a new one to continue. It can&apos;t be one you&apos;ve used recently.</>
+            : <>{person?.display_name}, your password was set by an administrator. Choose your own before continuing — the temporary one stops working the moment you do.</>}
         </p>
         <ChangePasswordForm onSuccess={clearMustChange} />
         <p style={{ margin: '18px 0 0', fontSize: 13, color: '#667085' }}>

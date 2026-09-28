@@ -91,3 +91,22 @@ async def test_run_forever_heartbeats_and_marks_stop(db, caplog):
 
     await db.refresh(row)
     assert row.stopped_at is not None
+
+
+async def test_run_forever_runs_the_reminder_sweep(db, caplog, monkeypatch):
+    from serversherpa.notifications import worker as worker_mod
+
+    calls = []
+
+    async def fake_once(maker):
+        calls.append(maker)
+        return 0
+
+    monkeypatch.setattr(worker_mod, "run_reminders_once", fake_once)
+    task = asyncio.create_task(run_forever(poll_seconds=0.05))
+    try:
+        await asyncio.sleep(0.3)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert len(calls) == 1   # once on the first loop; the next is an hour away

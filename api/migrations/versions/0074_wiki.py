@@ -17,7 +17,7 @@ exists.
 Comment/template/watch/review tables are later phases, not here.
 
 Revision ID: 0074
-Revises: 0073
+Revises: 0081 (re-pointed from 0073 when main's 0081_password_history merged in)
 Create Date: 2026-09-25
 """
 from collections.abc import Sequence
@@ -27,7 +27,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import ARRAY, CITEXT, JSONB, TSVECTOR, UUID
 
 revision: str = "0074"
-down_revision: str | None = "0073"
+down_revision: str | None = "0081"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

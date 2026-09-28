@@ -50,6 +50,10 @@
   max-width: 46ch;
 }
 
+.set-num-inline { display: inline-flex; align-items: center; gap: 8px; color: var(--text-mute); font-size: 12.5px; }
+.set-number { width: 76px; padding: 6px 8px; border: 1px solid var(--paper-line); border-radius: 8px; background: #fff; color: var(--text-dark); }
+.set-number:disabled { opacity: .6; }
+
 /* ── switch ───────────────────────────────────────────────── */
 
 .switch { position: relative; display: inline-block; flex: none; }

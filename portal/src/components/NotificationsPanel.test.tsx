@@ -52,21 +52,23 @@ beforeEach(() => { ctx.items = []; ctx.unreadCount = 0; });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 it('renders rows with kind icon, unread dot, body and relative time; header shows the unread chip', () => {
-  ctx.items = [item('a'), item('b', { kind: 'report_failed', read_at: new Date().toISOString(), title: 'Move Report failed' })];
+  ctx.items = [item('a'), item('b', { kind: 'report_failed', read_at: new Date().toISOString(), title: 'Move Report failed' }),
+    item('c', { kind: 'password_expiring', title: 'Your password expires in 3 days', link: '/me' })];
   ctx.unreadCount = 1;
   renderPanel();
   expect(screen.getByText('Notifications')).toBeTruthy();
   expect(screen.getByText('1 unread')).toBeTruthy();
   const rows = screen.getAllByRole('listitem');
-  expect(rows).toHaveLength(2);
+  expect(rows).toHaveLength(3);
   expect(rows[0].className).toContain('unread');
   expect(rows[1].className).not.toContain('unread');
   expect(rows[0].querySelector('.notif-dot')).toBeTruthy();
   expect(rows[1].querySelector('.notif-dot')).toBeNull();
   expect(rows[0].querySelector('.notif-icon-report_ready')).toBeTruthy();
   expect(rows[1].querySelector('.notif-icon-report_failed')).toBeTruthy();
-  // both fixtures are 90 s old, so both rows render the same relative time
-  expect(screen.getAllByText('1m ago')).toHaveLength(2);
+  expect(rows[2].querySelector('.notif-icon-password_expiring')).toBeTruthy();
+  // all three fixtures are 90 s old, so all rows render the same relative time
+  expect(screen.getAllByText('1m ago')).toHaveLength(3);
 });
 
 it('row click marks read, closes, and navigates; action buttons do not navigate', async () => {

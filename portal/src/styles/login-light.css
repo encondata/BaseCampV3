@@ -1,0 +1,178 @@
+/* ============================================================
+   login-light.css — the portal sign-in page (light mockup, 2026-09-28).
+   Every rule is scoped to .login-shell.login-light: it outranks the
+   shared auth-theme.css (also used by the kiosk login, which must not
+   change) whatever order the two sheets load in. The auth-theme color
+   tokens are re-pointed here so its form and 2FA rules come out light;
+   only sizes and a few details are overridden below.
+   ============================================================ */
+.login-shell.login-light {
+  --lx-ink: #0F172A; --lx-orange: #FF6A00; --lx-canvas: #FFF9F2; --lx-slate: #64748B;
+  --lx-line: #CBD5E1; --lx-field: #F8FAFC; --lx-ok: #22C55E;
+  --ink: #0F172A; --amber: #FF6A00; --amber-soft: #FF8A3D; --paper: #FFF9F2; --paper-2: #FFF9F2;
+  --paper-line: #CBD5E1; --text-dark: #0F172A; --text-mute: #64748B; --snow: #F8FAFC; --ok: #22C55E;
+  display: block; position: relative; height: auto; min-height: max(100dvh, 700px);
+  overflow-x: clip; overflow-y: visible;
+  background: var(--lx-canvas); color: var(--lx-ink);
+}
+
+/* ---------- background layers ---------- */
+.login-shell.login-light .lx-topo { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none;
+  fill: none; stroke: var(--lx-orange); stroke-width: 1; opacity: .14 }
+.login-shell.login-light .lx-topo path { vector-effect: non-scaling-stroke }
+/* cropped from the mockup (the mockup's form was inpainted out, leaving mist
+   where our form sits); top and left edges fade into the canvas */
+.login-shell.login-light .lx-mountains { position: absolute; right: 0; bottom: 0; width: 61.1%; height: auto;
+  pointer-events: none; user-select: none;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 26%), linear-gradient(to right, transparent 0, #000 16%);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 26%), linear-gradient(to right, transparent 0, #000 16%);
+  mask-composite: intersect }
+
+/* ---------- logo ---------- */
+.login-shell.login-light .lx-logo { position: absolute; z-index: 2; left: clamp(16px, 2.1vw, 40px); top: clamp(16px, 4.2vh, 44px);
+  display: flex; align-items: center; gap: 18px }
+.login-shell.login-light .lx-logo-mark { width: clamp(52px, 4.4vw, 74px); height: auto; flex: none; object-fit: contain }
+.login-shell.login-light .lx-logo-name { font-weight: 800; font-size: clamp(22px, 1.9vw, 32px); letter-spacing: -.01em; line-height: 1; color: var(--lx-ink) }
+.login-shell.login-light .lx-logo-name em { font-style: normal; color: var(--lx-orange) }
+.login-shell.login-light .lx-logo-tag { margin-top: 10px; font-family: var(--font-mono); font-size: clamp(10px, .8vw, 13px);
+  letter-spacing: .3em; text-transform: uppercase; color: var(--lx-slate) }
+
+/* ---------- route map ----------
+   A 1040×560 box (the mockup's map area) that scales as one piece: never
+   wider than 62.2% of the page, than fits above the headline, or than
+   leaves clear of the form column. Text sizes use container units. */
+.login-shell.login-light .lx-map { position: absolute; z-index: 1; left: 0; top: 0; pointer-events: none;
+  container-type: inline-size; aspect-ratio: 1040 / 560;
+  width: min(62.2%, 1040px, calc((100dvh - 380px) * 1.857), calc((100% - 418px - 5.4% - 48px) * 1.03)) }
+.login-shell.login-light .lx-map-art { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible }
+.login-shell.login-light .lx-route { fill: none; stroke: var(--lx-orange); stroke-width: 2.6; stroke-dasharray: 8 7; stroke-linecap: round }
+.login-shell.login-light .lx-leader { fill: none; stroke: var(--lx-orange); stroke-width: 1.2; opacity: .7 }
+.login-shell.login-light .lx-pin { filter: drop-shadow(0 0 6px rgba(255, 106, 0, .45)) }
+.login-shell.login-light .lx-pin-ring { fill: #fff; stroke: var(--lx-orange); stroke-width: 3.5 }
+.login-shell.login-light .lx-pin-core { fill: var(--lx-orange) }
+.login-shell.login-light .lx-glow-halo { fill: rgba(255, 106, 0, .18) }
+.login-shell.login-light .lx-glow-dot { fill: var(--lx-orange); stroke: #fff; stroke-width: 2.5; filter: drop-shadow(0 0 7px rgba(255, 106, 0, .9)) }
+.login-shell.login-light .lx-state,
+.login-shell.login-light .lx-pin-label,
+.login-shell.login-light .lx-card { position: absolute; font-family: var(--font-mono); white-space: nowrap }
+.login-shell.login-light .lx-state { transform: translate(-50%, -50%); font-size: clamp(9px, 1.3cqi, 14px); letter-spacing: .3em; color: var(--lx-slate) }
+.login-shell.login-light .lx-pin-label { display: flex; flex-direction: column; gap: .35em; font-size: clamp(9px, 1.25cqi, 13.5px); color: #334155 }
+.login-shell.login-light .lx-pin-title { font-size: 1.15em; letter-spacing: .08em; color: var(--lx-orange) }
+.login-shell.login-light .lx-pin-meta { font-size: max(8.5px, .85em); letter-spacing: .04em; color: var(--lx-slate) }
+.login-shell.login-light .lx-card { width: 18.5%; padding: 1.1cqi 1.3cqi; display: flex; flex-direction: column;
+  background: #fff; border: 1px solid var(--lx-orange); border-radius: 4px; box-shadow: 0 6px 18px -10px rgba(15, 23, 42, .25);
+  font-size: clamp(9px, 1.2cqi, 13px); line-height: 1.55; color: #334155 }
+.login-shell.login-light .lx-card b { margin-bottom: .3em; font-size: 1.2em; font-weight: 400; letter-spacing: .08em; color: var(--lx-orange) }
+
+/* ---------- headline, description, features ---------- */
+.login-shell.login-light .lx-story { position: absolute; z-index: 2; left: clamp(16px, 2.3vw, 44px); bottom: clamp(84px, 11.5vh, 112px);
+  max-width: min(740px, calc(100% - 418px - 5.4% - 96px)) }
+.login-shell.login-light .lx-hero { margin: 0; display: flex; flex-direction: column; font-size: clamp(28px, 2.8vw, 48px);
+  font-weight: 800; line-height: 1.08; letter-spacing: -.02em; color: var(--lx-ink) }
+.login-shell.login-light .lx-hero .accent { color: var(--lx-orange) }
+.login-shell.login-light .lx-sub { margin: 16px 0 0; max-width: 31em; font-size: clamp(14px, 1.05vw, 17.5px); font-weight: 300;
+  line-height: 1.45; color: var(--lx-slate) }
+.login-shell.login-light .lx-features { list-style: none; margin: clamp(22px, 3.4vh, 40px) 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 14px 0 }
+.login-shell.login-light .lx-features li { display: flex; align-items: center; gap: 14px; padding: 0 18px; border-left: 1px solid var(--lx-line);
+  font-family: var(--font-mono); font-size: clamp(11px, .8vw, 13px); letter-spacing: .12em; line-height: 1.35; text-transform: uppercase; color: var(--lx-ink) }
+.login-shell.login-light .lx-features li:first-child { padding-left: 0; border-left: 0 }
+/* two-line labels like the mockup: "Complete on time" breaks after "Complete" */
+.login-shell.login-light .lx-features li span { max-width: 7em }
+.login-shell.login-light .lx-features svg { width: clamp(26px, 2vw, 34px); height: clamp(26px, 2vw, 34px); flex: none; color: var(--lx-orange) }
+
+/* ---------- status line ---------- */
+.login-shell.login-light .lx-status { position: absolute; z-index: 2; left: clamp(16px, 2.3vw, 44px); bottom: clamp(20px, 4vh, 44px);
+  display: flex; align-items: center; gap: 14px; font-family: var(--font-mono); font-size: clamp(10.5px, .78vw, 12.5px);
+  letter-spacing: .1em; color: var(--lx-slate); white-space: nowrap }
+.login-shell.login-light .lx-status::before { content: ""; position: absolute; left: 0; right: 0; top: -22px; height: 1px; background: var(--lx-line) }
+.login-shell.login-light .lx-status-dot { width: 9px; height: 9px; flex: none; border-radius: 50%; background: var(--lx-ok); box-shadow: 0 0 6px rgba(34, 197, 94, .6) }
+.login-shell.login-light .lx-status b { font-weight: 400; color: #334155 }
+.login-shell.login-light .lx-status-sep { color: var(--lx-line) }
+
+/* ---------- form column (no card; floats over the art) ---------- */
+.login-shell.login-light .lx-form-col { position: absolute; z-index: 3; top: 0; bottom: 0; right: 5.4%;
+  width: min(418px, calc(100% - 32px)); display: flex; align-items: safe center; padding: clamp(24px, 5vh, 56px) 0 }
+/* soft cream wash so the form reads cleanly wherever the art sits behind it;
+   no vertical overhang so a normal-height form never forces page scroll */
+.login-shell.login-light .lx-form-col::before { content: ""; position: absolute; inset: 0 -14%; z-index: -1; pointer-events: none;
+  background: radial-gradient(closest-side, rgba(255, 249, 242, .82), rgba(255, 249, 242, .55) 60%, rgba(255, 249, 242, 0)) }
+.login-shell.login-light .form-wrap { max-width: none }
+.login-shell.login-light .eyebrow { font-size: clamp(11px, .8vw, 13px); letter-spacing: .32em }
+.login-shell.login-light .eyebrow::after { background: var(--lx-orange) }
+.login-shell.login-light .form-title { margin: 12px 0 0; font-size: clamp(34px, 2.9vw, 48px); font-weight: 800; letter-spacing: -.025em }
+.login-shell.login-light .form-hint { margin: 14px 0 0; font-size: clamp(15px, 1vw, 17px); line-height: 1.45 }
+.login-shell.login-light form { margin-top: clamp(24px, 4vh, 40px) }
+.login-shell.login-light .field label { font-size: 12px; letter-spacing: .3em }
+.login-shell.login-light .field button.link { font-size: 14px; color: var(--lx-ink); border-bottom-color: var(--lx-ink) }
+.login-shell.login-light .field button.link:hover { border-bottom-color: var(--lx-orange) }
+.login-shell.login-light .control input { background: #fff; border-radius: 8px; padding: 16px 18px; font-size: 16.5px }
+.login-shell.login-light .control input::placeholder { color: #94A3B8 }
+.login-shell.login-light .control input:focus:not(.invalid) { box-shadow: 0 0 0 3px rgba(255, 106, 0, .14) }
+
+/* primary button: navy with an orange arrow; no sweep, the arrow nudges on hover */
+.login-shell.login-light .btn { border-radius: 8px; padding: 18px 20px; font-size: 18px; color: #fff }
+.login-shell.login-light .btn:before { display: none }
+.login-shell.login-light .btn:hover:not(:disabled) { background: #1E293B }
+.login-shell.login-light .btn:hover span { color: #fff }
+.login-shell.login-light .btn .arrow,
+.login-shell.login-light .btn:hover .arrow { width: 22px; height: 22px; color: var(--lx-orange) }
+.login-shell.login-light .btn:disabled:not(.loading) { background: #94A3B8; opacity: 1 }
+.login-shell.login-light .btn:disabled:not(.loading) .arrow { color: #E2E8F0 }
+
+.login-shell.login-light .divider { margin: 26px 0; font-size: 12px; letter-spacing: .3em; color: var(--lx-slate) }
+.login-shell.login-light .btn-sso { border-width: 1px; border-radius: 8px; padding: 15px; background: rgba(255, 255, 255, .85); font-size: 17px }
+.login-shell.login-light .btn-sso:hover { border-color: var(--lx-ink); background: #fff }
+.login-shell.login-light .btn-sso svg { width: 22px; height: 22px }
+.login-shell.login-light .form-foot { font-size: 15px }
+.login-shell.login-light .form-foot button.link { font-size: 15px; border-bottom-color: var(--lx-ink) }
+
+/* Contact support dialog: auth-theme.css re-declares tokens on .auth-scrim
+   (old amber/paper), so re-point them here too or it mixes with --lx-*. */
+.login-shell.login-light .auth-scrim {
+  --ink: #0F172A; --amber: #FF6A00; --amber-soft: #FF8A3D; --paper: #FFF9F2; --paper-2: #FFF9F2;
+  --paper-line: #CBD5E1; --text-dark: #0F172A; --text-mute: #64748B; --snow: #F8FAFC; --ok: #22C55E;
+}
+
+/* two-factor cards: white on the cream page; soften auth-theme.css's heavy
+   dark shadow (meant for the dark hero) to suit the cream page */
+.login-shell.login-light .form-wrap .otp-card.inline-card { background: #fff; border: 1px solid var(--lx-line);
+  box-shadow: 0 18px 40px -24px rgba(15, 23, 42, .25) }
+.login-shell.login-light .otp-inputs input,
+.login-shell.login-light .code-input input { background: #fff }
+
+/* ---------- short windows: the map shrinks toward its top-left, where the
+   logo sits, and the state name/Route 07 card/midpoint dot can collide with
+   it ---------- */
+@media (max-height: 780px) {
+  .login-shell.login-light .lx-state { display: none }
+}
+
+/* ---------- 900–1279px: drop the smaller map details ---------- */
+@media (max-width: 1279px) {
+  .login-shell.login-light .lx-card,
+  .login-shell.login-light .lx-state,
+  .login-shell.login-light .lx-pin-meta,
+  .login-shell.login-light .lx-leader { display: none }
+  /* the row no longer fits on one line: a tidy 2×2 grid instead of a wrap
+     that strands "Complete on time" behind a divider */
+  .login-shell.login-light .lx-features { display: grid; grid-template-columns: repeat(2, max-content); gap: 14px 28px }
+  .login-shell.login-light .lx-features li { padding: 0; border-left: 0 }
+}
+
+/* ---------- under 900px: logo, form, art and status in one column ---------- */
+@media (max-width: 899px) {
+  .login-shell.login-light { display: flex; flex-direction: column; align-items: center; min-height: 100dvh; padding: 0 16px }
+  .login-shell.login-light .lx-map,
+  .login-shell.login-light .lx-story { display: none }
+  .login-shell.login-light .lx-logo { position: relative; left: auto; top: auto; align-self: flex-start; margin: 20px 0 0 }
+  .login-shell.login-light .lx-form-col { position: relative; top: auto; right: auto; bottom: auto; width: 100%; max-width: 418px; flex: 1; padding: 32px 0 }
+  /* the peaks sit behind the form's last lines and the status line here */
+  .login-shell.login-light .lx-mountains { width: 100%; opacity: .45 }
+  /* LoginScene renders the status line before the form; order puts it last */
+  .login-shell.login-light .lx-status { order: 1; position: relative; left: auto; bottom: auto; align-self: flex-start; margin: 0 0 20px;
+    flex-wrap: wrap; white-space: normal }
+  .login-shell.login-light .lx-status::before,
+  .login-shell.login-light .lx-status-sep { display: none }
+  .login-shell.login-light .lx-status { row-gap: 6px }
+}
