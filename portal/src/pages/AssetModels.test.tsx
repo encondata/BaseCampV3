@@ -13,6 +13,7 @@ vi.mock('../auth/AuthContext', () => ({
 const LOOKUP_STATUS = vi.hoisted(() => ({
   configured: true, background_enabled: false, queued: 0, running_model: null,
   last_finished_at: null, pending_count: 2,
+  failed_this_month: 0, last_error: null, key_rejected: false,
   month: { lookups: 0, input_tokens: 0, output_tokens: 0, searches: 0, est_cost_usd: 0 },
 }));
 const api = vi.hoisted(() => ({

@@ -1,6 +1,7 @@
 /**
  * SpecLookupPanel — the Makes / Models "Spec lookup" view: a status strip
- * (queue, current model, month-to-date cost, Find missing specs) and the
+ * (queue, current model, month-to-date cost, failures, last run, the
+ * Background search switch, Find missing specs) and the
  * suggestions Claude found, each with its source and quoted text. Approve /
  * Reject pending rows, Undo applied ones; bulk approve/reject ends in the
  * shared per-row summary. The PAGE owns `status` (its pending_count badges
@@ -10,10 +11,11 @@ import { useEffect, useState } from 'react';
 
 import {
   ApiError, actOnSpecSuggestion, bulkSpecSuggestions, listSpecSuggestions, queueSpecLookup,
-  type SpecBulkResult, type SpecLookupStatus, type SpecSuggestion,
+  updateAiLookupConfig, type SpecBulkResult, type SpecLookupStatus, type SpecSuggestion,
 } from '../../lib/api';
-import { longDate } from '../../lib/format';
+import { longDate, relativeTime } from '../../lib/format';
 import DataTable from '../DataTable';
+import { Switch } from '../Switch';
 import BulkApplySummary, { type BulkSummaryRow } from '../bulk/BulkApplySummary';
 import '../../styles/bulk.css';
 
@@ -111,8 +113,22 @@ export default function SpecLookupPanel({ canChange, status, onChanged }: {
   const findMissing = async () => {
     setBusy(true); setError(''); setNote('');
     try {
-      const { queued } = await queueSpecLookup(undefined);
-      setNote(`Queued ${queued} model${queued === 1 ? '' : 's'}.`);
+      const { queued, reason } = await queueSpecLookup(undefined);
+      setNote(reason === 'no_fields_enabled'
+        ? 'No field groups are turned on in System settings › AI lookup.'
+        : `Queued ${queued} model${queued === 1 ? '' : 's'}.`);
+      onChanged();
+    } catch (e) {
+      setError(msgFor(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setBackground = async (on: boolean) => {
+    setBusy(true); setError(''); setNote('');
+    try {
+      await updateAiLookupConfig({ background_enabled: on });
       onChanged();
     } catch (e) {
       setError(msgFor(e));
@@ -231,12 +247,18 @@ export default function SpecLookupPanel({ canChange, status, onChanged }: {
                 {status.queued} queued · {running ? `looking up ${running.make} ${running.model}` : 'idle'}
                 {' · '}this month {status.month.lookups} lookup{status.month.lookups === 1 ? '' : 's'},
                 {' '}about ${status.month.est_cost_usd.toFixed(2)}
+                {status.failed_this_month > 0 && ` · ${status.failed_this_month} failed this month`}
+                {status.last_finished_at && ` · last run ${relativeTime(status.last_finished_at)}`}
               </span>
             )
             : <span className="rv-meta">Loading status…</span>}
           {note && <span className="set-note">{note}</span>}
         </div>
         <div className="rv-actions">
+          <span className="rv-meta">Background search</span>
+          <Switch label="Background search" checked={!!status?.background_enabled}
+                  disabled={!canChange || !status || busy}
+                  onChange={(v) => void setBackground(v)} />
           <button className="mini-btn accent" type="button"
                   disabled={!canChange || !status?.configured || busy}
                   onClick={() => void findMissing()}>Find missing specs</button>
@@ -247,6 +269,14 @@ export default function SpecLookupPanel({ canChange, status, onChanged }: {
         <div className="dir-empty">
           <b>No Anthropic API key is configured.</b>
           Set SS_ANTHROPIC_API_KEY in Developer › System Config › Environment.
+        </div>
+      )}
+
+      {status?.key_rejected && (
+        <div className="dir-empty">
+          <b>The Anthropic API rejected the configured key.</b>
+          Check SS_ANTHROPIC_API_KEY in Developer › System Config › Environment, then use
+          {' '}Test connection there. Background search is paused until a lookup succeeds.
         </div>
       )}
 

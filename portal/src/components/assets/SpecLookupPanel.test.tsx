@@ -11,6 +11,7 @@ const api = vi.hoisted(() => ({
   actOnSpecSuggestion: vi.fn(),
   bulkSpecSuggestions: vi.fn(),
   queueSpecLookup: vi.fn(),
+  updateAiLookupConfig: vi.fn(),
 }));
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()), ...api,
@@ -21,6 +22,7 @@ const { default: SpecLookupPanel } = await import('./SpecLookupPanel');
 const STATUS: SpecLookupStatus = {
   configured: true, background_enabled: false, queued: 3, running_model: null,
   last_finished_at: null, pending_count: 1,
+  failed_this_month: 0, last_error: null, key_rejected: false,
   month: { lookups: 4, input_tokens: 40000, output_tokens: 4000, searches: 9, est_cost_usd: 0.21 },
 };
 const SUGG: SpecSuggestion = {
@@ -181,5 +183,53 @@ describe('SpecLookupPanel', () => {
     expect(screen.getByRole('button', { name: 'Approve selected (2)' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Approve selected (2)' }));
     await waitFor(() => expect(api.bulkSpecSuggestions).toHaveBeenCalledWith(['s1', 's2'], 'approve'));
+  });
+
+  it('counts failed lookups this month in the strip', async () => {
+    renderPanel({ ...STATUS, failed_this_month: 2 });
+    expect(await screen.findByText(/2 failed this month/)).toBeTruthy();
+    cleanup();
+    renderPanel();
+    await screen.findByText('DL320 Gen11');
+    expect(screen.queryByText(/failed this month/)).toBeNull();
+  });
+
+  it('explains a rejected API key', async () => {
+    renderPanel({ ...STATUS, key_rejected: true, last_error: 'not_configured' });
+    expect(await screen.findByText('The Anthropic API rejected the configured key.')).toBeTruthy();
+    expect(screen.getByText(/SS_ANTHROPIC_API_KEY/)).toBeTruthy();
+    expect(screen.getByText(/Test connection/)).toBeTruthy();
+  });
+
+  it('says so when no field groups are turned on', async () => {
+    api.queueSpecLookup.mockResolvedValue({ queued: 0, skipped: [], reason: 'no_fields_enabled' });
+    renderPanel();
+    await userEvent.click(await screen.findByRole('button', { name: 'Find missing specs' }));
+    expect(await screen.findByText('No field groups are turned on in System settings › AI lookup.')).toBeTruthy();
+    expect(screen.queryByText(/Queued 0 models/)).toBeNull();
+  });
+
+  it('shows when the last lookup finished', async () => {
+    const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+    renderPanel({ ...STATUS, last_finished_at: fiveMinAgo });
+    expect(await screen.findByText(/last run 5m ago/)).toBeTruthy();
+  });
+
+  it('toggles Background search from the strip', async () => {
+    const onChanged = vi.fn();
+    api.updateAiLookupConfig.mockResolvedValue({});
+    renderPanel(STATUS, onChanged);
+    const sw = await screen.findByRole('checkbox', { name: 'Background search' }) as HTMLInputElement;
+    expect(sw.checked).toBe(false);
+    await userEvent.click(sw);
+    await waitFor(() => expect(api.updateAiLookupConfig).toHaveBeenCalledWith({ background_enabled: true }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  });
+
+  it('disables the Background search switch without change permission', async () => {
+    renderPanel({ ...STATUS, background_enabled: true }, vi.fn(), false);
+    const sw = await screen.findByRole('checkbox', { name: 'Background search' }) as HTMLInputElement;
+    expect(sw.checked).toBe(true);
+    expect(sw.disabled).toBe(true);
   });
 });

@@ -3925,6 +3925,12 @@ export interface SpecLookupStatus {
   configured: boolean; background_enabled: boolean; queued: number;
   running_model: { id: string; make: string; model: string } | null;
   last_finished_at: string | null; pending_count: number;
+  /** failed jobs finished since the start of this month */
+  failed_this_month: number;
+  /** error of the most recent finished job (null when it ended cleanly) */
+  last_error: string | null;
+  /** the most recent job failed because the API refused the configured key */
+  key_rejected: boolean;
   month: { lookups: number; input_tokens: number; output_tokens: number; searches: number; est_cost_usd: number };
 }
 
@@ -3952,7 +3958,9 @@ export async function getSpecLookupStatus(): Promise<SpecLookupStatus> {
   return resp.json();
 }
 
-export async function queueSpecLookup(modelIds?: string[]): Promise<{ queued: number; skipped: { id: string; reason: string }[] }> {
+export async function queueSpecLookup(modelIds?: string[]): Promise<{
+  queued: number; skipped: { id: string; reason: string }[]; reason?: 'no_fields_enabled';
+}> {
   const resp = await apiFetch('/spec-lookup/queue', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

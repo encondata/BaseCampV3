@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { getSpecLookupDev, testSpecLookup, type SpecLookupDev } from '../../lib/api';
+import { relativeTime } from '../../lib/format';
 
 export default function SpecLookupTab() {
   const [dev, setDev] = useState<SpecLookupDev | null>(null);
@@ -67,7 +68,7 @@ export default function SpecLookupTab() {
           <dt>Worker</dt>
           <dd>
             {dev.worker_status}
-            {dev.worker_heartbeat_at && ` (last heartbeat ${dev.worker_heartbeat_at})`}
+            {dev.worker_heartbeat_at && ` (last heartbeat ${relativeTime(dev.worker_heartbeat_at)})`}
           </dd>
         </dl>
       </div>

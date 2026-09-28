@@ -62,3 +62,10 @@ it('reports a successful test with latency', async () => {
   await user.click(await screen.findByRole('button', { name: 'Test connection' }));
   await waitFor(() => expect(screen.getByText(/Connected in 812 ms/)).toBeTruthy());
 });
+
+it('shows the worker heartbeat as a relative time', async () => {
+  const twoMinAgo = new Date(Date.now() - 2 * 60_000).toISOString();
+  api.getSpecLookupDev.mockResolvedValue({ ...DEV, worker_heartbeat_at: twoMinAgo });
+  render(<SpecLookupTab />);
+  expect(await screen.findByText(/last heartbeat 2m ago/)).toBeTruthy();
+});

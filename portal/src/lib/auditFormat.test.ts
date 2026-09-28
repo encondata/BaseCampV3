@@ -31,6 +31,12 @@ describe('labels', () => {
     expect(actionLabel({ ...row('device', 'd-1'), action: 'kiosk_printer_factory_reset' }))
       .toBe('Printer factory reset');
   });
+  it('names spec lookup apply and undo', () => {
+    expect(actionLabel({ ...row('asset_model', 'am-1'), action: 'spec_lookup.apply' }))
+      .toBe('Spec lookup applied');
+    expect(actionLabel({ ...row('asset_model', 'am-1'), action: 'spec_lookup.undo' }))
+      .toBe('Spec lookup undone');
+  });
   it('falls back to a readable action for anything unmapped', () => {
     expect(actionLabel({ ...row('device', 'd-1'), action: 'kiosk_printer_head_clean' }))
       .toBe('kiosk printer head clean');
