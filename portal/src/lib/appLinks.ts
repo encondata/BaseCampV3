@@ -28,10 +28,16 @@ export function appOrigin(label: string, devPort: number, loc: LocationLike & { 
   return `${loc.protocol}//${loc.hostname}:${devPort}`;
 }
 
-export function kioskUrl(loc: LocationLike = window.location): string {
+/** The page's location, or a localhost stand-in where there is no window
+ *  (node-environment tests import the nav data at module load). */
+function pageLocation(): LocationLike {
+  return typeof window === 'undefined' ? { hostname: 'localhost', protocol: 'http:' } : window.location;
+}
+
+export function kioskUrl(loc: LocationLike = pageLocation()): string {
   return appOrigin('kiosk', KIOSK_DEV_PORT, loc, import.meta.env.VITE_KIOSK_URL as string | undefined);
 }
 
-export function wikiUrl(loc: LocationLike = window.location): string {
+export function wikiUrl(loc: LocationLike = pageLocation()): string {
   return appOrigin('wiki', WIKI_DEV_PORT, loc, import.meta.env.VITE_WIKI_URL as string | undefined);
 }
