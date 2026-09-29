@@ -214,12 +214,31 @@ async def test_password_race_is_a_422_not_a_500(client, db, seeded_user, monkeyp
     init = await _move(db)
 
     async def racing(*args, **kwargs):
-        raise IntegrityError("stmt", {}, Exception("dup"))
+        raise IntegrityError("stmt", {}, Exception(
+            'duplicate key value violates unique constraint "ux_initiatives_kiosk_password_fp"'))
     monkeypatch.setattr(svc, "set_password", racing)
     r = await _set(client, admin, init)
     assert r.status_code == 422 and r.json()["detail"]["code"] == "kiosk_password_in_use"
     await db.refresh(init)
     assert init.kiosk_password_fp is None
+
+
+async def test_unrelated_integrity_error_is_not_a_password_clash(client, db, seeded_user, monkeypatch):
+    from sqlalchemy.exc import IntegrityError
+
+    from serversherpa.services import move_password as svc
+    admin = await _admin(db, client)
+    init = await _move(db)
+
+    async def failing(*args, **kwargs):
+        raise IntegrityError("stmt", {}, Exception(
+            'insert or update violates foreign key constraint "initiatives_site_id_fkey"'))
+    monkeypatch.setattr(svc, "set_password", failing)
+    try:
+        r = await _set(client, admin, init)
+    except IntegrityError:
+        return                              # the ASGI client re-raises server errors
+    assert r.status_code != 422 or r.json()["detail"]["code"] != "kiosk_password_in_use"
 
 
 async def test_rotating_the_password_signs_old_kiosks_out(client, db, seeded_user):
@@ -263,6 +282,7 @@ def test_move_login_buckets():
     assert a == move_login_bucket("2001:db8:1:2:bbbb:cccc:dddd:eeee") == "2001:db8:1:2::/64"
     assert a != move_login_bucket("2001:db8:1:3::1")
     assert move_login_bucket("unknown") == "unknown"
+    assert move_login_bucket("::ffff:203.0.113.9") == "203.0.113.9"
 
 
 async def test_move_login_rate_limit_shares_an_ipv6_64_and_has_a_global_cap(

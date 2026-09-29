@@ -57,6 +57,15 @@ def _err(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
+KIOSK_PASSWORD_INDEX = "ux_initiatives_kiosk_password_fp"
+
+
+def _is_password_clash(exc: IntegrityError) -> bool:
+    """True only when the failure is the unique kiosk-password fingerprint
+    index; any other integrity error (a vanished foreign key, say) is not."""
+    return KIOSK_PASSWORD_INDEX in str(getattr(exc, "orig", "")) or KIOSK_PASSWORD_INDEX in str(exc)
+
+
 async def _require_parent_in_scope(db: DbSession, initiative_id: uuid.UUID,
                                    actor: AuthContext, code: str) -> None:
     """A child row (assignment, link, roster row, import job) is reachable
@@ -413,9 +422,11 @@ async def update_initiative(
                     db, initiative, actor_id=actor.person.id)
         except move_password_service.MovePasswordError as exc:
             raise _err(422, exc.code) from None
-        except IntegrityError:
+        except IntegrityError as exc:
             # the flush inside the service can hit the unique fingerprint
             # index when two admins race for the same password
+            if not (new_password and _is_password_clash(exc)):
+                raise
             await db.rollback()
             raise _err(422, "kiosk_password_in_use") from None
     if "name" in changes:
@@ -425,8 +436,11 @@ async def update_initiative(
         await move_password_service.revoke_move_sessions(db, initiative.id)
     try:
         await db.commit()
-    except IntegrityError:
-        # a racing admin took the same password between our check and commit
+    except IntegrityError as exc:
+        # a racing admin took the same password between our check and commit;
+        # any other integrity failure is not a password clash
+        if not (wants_password and new_password and _is_password_clash(exc)):
+            raise
         await db.rollback()
         raise _err(422, "kiosk_password_in_use") from None
     return await _detail(db, initiative, actor)

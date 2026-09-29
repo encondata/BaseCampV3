@@ -153,13 +153,15 @@ def _inet_or_none(ip: str) -> str | None:
 
 def move_login_bucket(raw: str) -> str:
     """The rate-limit bucket for a caller: an IPv4 address by itself, an
-    IPv6 address by its /64 (one subscriber holds the whole /64, so
+    IPv6 address by its /64 (an IPv4-mapped one as the IPv4 address; one subscriber holds the whole /64, so
     rotating addresses inside it must not reset the count), anything
     unparseable (the shared 'unknown' bucket) as-is."""
     try:
         addr = ipaddress.ip_address(raw)
     except ValueError:
         return raw
+    if addr.version == 6 and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped        # ::ffff:1.2.3.4 is the IPv4 caller 1.2.3.4
     if addr.version == 6:
         return str(ipaddress.ip_network(f"{addr}/64", strict=False))
     return str(addr)
