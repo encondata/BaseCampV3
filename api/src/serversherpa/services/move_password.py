@@ -146,9 +146,11 @@ async def clear_password(db: AsyncSession, initiative: Initiative, *, actor_id: 
 
 async def find_initiative_by_password(db: AsyncSession, password: str) -> Initiative | None:
     """The move this password signs in to. Only a move matches: a password
-    left on an initiative that is no longer a move signs nothing in."""
+    left on an initiative that is no longer a move signs nothing in. The
+    stored value was trimmed when set, so a stray space typed at the
+    kiosk is trimmed here too."""
     return await db.scalar(select(Initiative).where(
-        Initiative.kiosk_password_fp == fingerprint(password),
+        Initiative.kiosk_password_fp == fingerprint(password.strip()),
         Initiative.initiative_type == "move"))
 
 

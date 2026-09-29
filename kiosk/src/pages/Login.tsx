@@ -137,7 +137,7 @@ export default function Login() {
   const handleMove = async (e: FormEvent) => {
     e.preventDefault();
     setMoveError('');
-    if (!movePassword) {
+    if (!movePassword.trim()) {
       setMoveError('Enter the move password.');
       shakeForm();
       return;
