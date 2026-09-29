@@ -450,10 +450,12 @@ async def update_initiative(
 async def get_kiosk_password(
     initiative_id: uuid.UUID,
     db: DbSession,
+    response: Response,
     actor: AuthContext = require_permission("initiatives", "view"),
 ) -> KioskPasswordOut:
     """Show the move's kiosk password to an admin (audited): it is shared
-    with crews out loud, so it has to be readable back."""
+    with crews out loud, so it has to be readable back. Never cached."""
+    response.headers["Cache-Control"] = "no-store"
     initiative = await _get_initiative(db, initiative_id, actor)
     _require_global(actor)
     if actor.access.max_rank < GATE_BYPASS_RANK:

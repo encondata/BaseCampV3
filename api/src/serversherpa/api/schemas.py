@@ -2927,7 +2927,7 @@ class KioskScanBatchIn(BaseModel):
 
 class KioskScanRejected(BaseModel):
     client_scan_id: uuid.UUID
-    code: Literal["bad_site", "bad_initiative", "bad_status", "bad_scan_type"]
+    code: Literal["bad_site", "bad_initiative", "bad_status", "bad_scan_type", "move_locked"]
 
 
 class KioskScanBatchOut(BaseModel):

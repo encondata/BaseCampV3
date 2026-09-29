@@ -10,7 +10,8 @@ import {
   getInitiativeKioskPassword, getNextInitiativeColor, type InitiativeItem, type OrgRef, type SiteItem, type StatusValue,
 } from '../../lib/api';
 import {
-  partnerOptionsForRole, sectionsForType, siteOptionsForClient, type InitiativeFormState,
+  generateKioskPassword, partnerOptionsForRole, sectionsForType, siteOptionsForClient,
+  type InitiativeFormState,
 } from '../../lib/initiatives';
 import ColorWheel from '../ColorWheel';
 import ComboBox from '../ComboBox';
@@ -168,7 +169,7 @@ export default function InitiativeFields({
         <div style={{ gridColumn: '1 / -1' }}><label>Description</label>
           <input value={form.description} disabled={locked}
                  onChange={(e) => setField('description', e.target.value)} /></div>
-        {kioskPassword && (
+        {kioskPassword && form.initiative_type === 'move' && (
           <div style={{ gridColumn: '1 / -1' }}><label>Kiosk password</label>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <input
@@ -184,6 +185,14 @@ export default function InitiativeFields({
                       onClick={() => setShowPw((v) => !v)}>
                 {showPw ? 'Hide' : 'Show'}
               </button>
+              <button type="button" className="mini-btn"
+                      disabled={locked || !!form.clear_kiosk_password}
+                      onClick={() => {
+                        setForm((s) => ({ ...s, kiosk_password: generateKioskPassword() }));
+                        setShowPw(true);
+                      }}>
+                Generate
+              </button>
               {initiative?.kiosk_password_set && (
                 <button type="button" className="mini-btn" onClick={reveal}>
                   Reveal current
@@ -191,7 +200,8 @@ export default function InitiativeFields({
               )}
             </div>
             <span className="page-hint">
-              At least 8 characters, unique across moves. Crews sign in to the kiosk with it.
+              {"At least 8 characters, unique across moves, and not the move's name. "
+                + 'Crews sign in to the kiosk with it.'}
             </span>
             {revealed !== undefined && (
               <span className="set-note">

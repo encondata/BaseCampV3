@@ -88,7 +88,32 @@ export const INITIATIVE_ERRORS: Record<string, string> = {
   kiosk_password_too_short: 'Kiosk password must be at least 8 characters.',
   kiosk_password_in_use: 'That kiosk password is already used by another move.',
   kiosk_password_forbidden: 'Only admins can change the kiosk password.',
+  kiosk_password_contains_name: "The kiosk password can't contain the move's name.",
+  kiosk_password_moves_only: 'Only moves have a kiosk password.',
 };
+
+/** Letters and digits a crew can read out loud and type without
+ *  confusion: no 0/O, 1/l/I. */
+export const KIOSK_PASSWORD_ALPHABET =
+  'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+
+/** A fresh 12-character kiosk password from KIOSK_PASSWORD_ALPHABET,
+ *  drawn with crypto.getRandomValues (rejection sampling, so every
+ *  character is equally likely). */
+export function generateKioskPassword(length = 12): string {
+  const n = KIOSK_PASSWORD_ALPHABET.length;
+  const limit = 256 - (256 % n);
+  const out: string[] = [];
+  const buf = new Uint8Array(length * 2);
+  while (out.length < length) {
+    crypto.getRandomValues(buf);
+    for (const b of buf) {
+      if (b < limit) out.push(KIOSK_PASSWORD_ALPHABET[b % n]);
+      if (out.length === length) break;
+    }
+  }
+  return out.join('');
+}
 
 /** Site options for the edit modal's site pickers. With a client selected,
  *  that client's assigned sites list first (tagged "Client site") — but every

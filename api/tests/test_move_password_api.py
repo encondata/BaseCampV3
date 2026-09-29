@@ -180,17 +180,17 @@ async def test_inactive_moves_refuse_login_and_lose_sessions(client, db, seeded_
     assert r.status_code == 401 and r.json()["detail"]["code"] == "move_not_active"
     # archived blocks too
     init2 = await _move(db, "Second")
-    await _set(client, admin, init2, "Second-pw-1")
-    ok2 = await _move_login(client, "Second-pw-1")
+    await _set(client, admin, init2, "Move-two-pw1")
+    ok2 = await _move_login(client, "Move-two-pw1")
     hdrs2 = {"Authorization": f"Bearer {ok2.json()['access_token']}"}
     assert (await client.post(f"/initiatives/{init2.id}/archive", headers=admin)).status_code == 204
     assert (await client.get("/auth/me", headers=hdrs2)).status_code == 401
-    r = await _move_login(client, "Second-pw-1")
+    r = await _move_login(client, "Move-two-pw1")
     assert r.json()["detail"]["code"] == "move_not_active"
     # clearing the password revokes sessions as well
     init3 = await _move(db, "Third")
-    await _set(client, admin, init3, "Third-pw-11")
-    ok = await _move_login(client, "Third-pw-11")
+    await _set(client, admin, init3, "Move-three-11")
+    ok = await _move_login(client, "Move-three-11")
     hdrs3 = {"Authorization": f"Bearer {ok.json()['access_token']}"}
     await client.patch(f"/initiatives/{init3.id}", headers=admin, json={"kiosk_password": None})
     assert (await client.get("/auth/me", headers=hdrs3)).status_code == 401
@@ -352,3 +352,78 @@ async def test_non_admin_cannot_smuggle_a_password_beside_other_edits(client, db
     assert r.status_code == 403 and r.json()["detail"]["code"] == "kiosk_password_forbidden"
     await db.refresh(init)
     assert init.description is None and init.kiosk_password_fp is None
+
+
+async def test_password_is_trimmed_and_may_not_contain_the_move_name(client, db, seeded_user):
+    admin = await _admin(db, client)
+    init = await _move(db, "Vegas")
+    r = await _set(client, admin, init, "  short7  ")
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "kiosk_password_too_short"
+    r = await _set(client, admin, init, "go-VEGAS-2026")
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "kiosk_password_contains_name"
+    r = await _set(client, admin, init, f"  {PW}  ")
+    assert r.status_code == 200, r.text
+    shown = await client.get(f"/initiatives/{init.id}/kiosk-password", headers=admin)
+    assert shown.json()["password"] == PW                  # stored trimmed
+    assert (await _move_login(client)).status_code == 200
+
+
+async def test_moves_only(client, db, seeded_user):
+    admin = await _admin(db, client)
+    project = Initiative(name="Not a move", initiative_type="project", status="planned")
+    db.add(project)
+    await db.commit()
+    r = await _set(client, admin, project)
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "kiosk_password_moves_only"
+    await db.refresh(project)
+    assert project.kiosk_password_fp is None
+    # a password left on an initiative that stopped being a move signs nothing in
+    init = await _move(db)
+    assert (await _set(client, admin, init)).status_code == 200
+    init.initiative_type = "project"
+    await db.commit()
+    r = await _move_login(client)
+    assert r.status_code == 401 and r.json()["detail"]["code"] == "invalid_move_password"
+
+
+async def test_resaving_the_same_password_is_not_a_rotation(client, db, seeded_user):
+    admin = await _admin(db, client)
+    init = await _move(db)
+    await _set(client, admin, init)
+    kiosk = {"Authorization": f"Bearer {(await _move_login(client)).json()['access_token']}"}
+    r = await _set(client, admin, init)                    # the same value again
+    assert r.status_code == 200 and r.json()["kiosk_password_set"] is True
+    assert (await client.get("/auth/me", headers=kiosk)).status_code == 200
+    rows = list(await db.scalars(select(AuditLog).where(
+        AuditLog.entity_id == str(init.id), AuditLog.action == "update")))
+    assert [r.changes for r in rows] == [{"kiosk_password": {"from": None, "to": "set"}}]
+
+
+async def test_reveal_is_never_cached(client, db, seeded_user):
+    admin = await _admin(db, client)
+    init = await _move(db)
+    await _set(client, admin, init)
+    shown = await client.get(f"/initiatives/{init.id}/kiosk-password", headers=admin)
+    assert shown.status_code == 200
+    assert shown.headers["cache-control"] == "no-store"
+
+
+async def test_clash_at_commit_is_a_422(client, db, seeded_user, monkeypatch):
+    """The clash surfaces at the route's commit (the real unique index), not
+    inside the service: set_password is replaced by one that only assigns
+    the other move's fingerprint, without flushing."""
+    from serversherpa.services import move_password as svc
+    admin = await _admin(db, client)
+    a = await _move(db, "Clash A")
+    b = await _move(db, "Clash B")
+    assert (await _set(client, admin, a)).status_code == 200
+    await db.refresh(a)
+    taken = a.kiosk_password_fp
+
+    async def no_flush(_db, initiative, _password, *, actor_id):
+        initiative.kiosk_password_fp = taken
+    monkeypatch.setattr(svc, "set_password", no_flush)
+    r = await _set(client, admin, b, "Anything-else-1")
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "kiosk_password_in_use"
+    await db.refresh(b)
+    assert b.kiosk_password_fp is None

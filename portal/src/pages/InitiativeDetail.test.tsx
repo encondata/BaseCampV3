@@ -448,6 +448,15 @@ it('admins see the kiosk password as Not set / Set', async () => {
   expect(dt2.nextElementSibling?.textContent).toBe('Set');
 });
 
+it('a project has no kiosk password line, even for admins', async () => {
+  auth.maxRank = ADMIN_RANK;
+  api.getInitiative.mockResolvedValue({
+    ...INITIATIVE, initiative_type: 'project', type_label: 'Project' });
+  renderPage();
+  await screen.findAllByText('Project');
+  expect(screen.queryByText('Kiosk password')).toBeNull();
+});
+
 it('non-admins do not see the kiosk password line', async () => {
   renderPage();
   await screen.findByText('switch-01');

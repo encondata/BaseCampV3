@@ -32,6 +32,14 @@ const ERROR_MESSAGES: Record<string, string> = {
   network: "Can't reach the server. Check the kiosk's network connection.",
 };
 
+/** The move form's own wording where a code means something else there:
+ *  kiosk_not_allowed on a move sign-in is the move's kiosk identity, not
+ *  the person's account. */
+const MOVE_ERROR_MESSAGES: Record<string, string> = {
+  ...ERROR_MESSAGES,
+  kiosk_not_allowed: "That move can't sign in to kiosks right now. Ask a coordinator.",
+};
+
 /** jsdom-safe: matchMedia is absent in some test environments. */
 function prefersReducedMotion(): boolean {
   return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
@@ -141,7 +149,7 @@ export default function Login() {
       navigate(from, { replace: true });
     } catch (err) {
       const code = err instanceof ApiError ? err.code : 'network';
-      setMoveError(ERROR_MESSAGES[code] ?? 'Login failed. Please try again.');
+      setMoveError(MOVE_ERROR_MESSAGES[code] ?? 'Login failed. Please try again.');
       setMovePassword('');
       shakeForm();
     } finally {

@@ -18,6 +18,8 @@ import {
 } from '../lib/api';
 import { HEARTBEAT_MS, startHeartbeat, type HeartbeatHandle } from '../lib/heartbeat';
 import { getIdentity } from '../lib/identity';
+import { clearKioskSetup, readKioskSetup } from '../lib/kioskSetup';
+import { writeSetupState } from '../lib/setupState';
 
 export type KioskAuthStatus = 'loading' | 'authed' | 'anon';
 
@@ -84,6 +86,21 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => onSessionEnded(() => setState(ANON)), []);
+
+  // A move-password session works only on its own move. A setup saved for
+  // another move (an earlier sign-in) would otherwise keep driving the
+  // screens and the footer, and every call naming it would be refused
+  // (move_locked) — so drop it and send the crew back to Kiosk Setup.
+  // Keyed on the move, so it runs once per sign-in (and on a cookie restore).
+  const lockedMove = state.kioskMove?.initiative_id ?? null;
+  useEffect(() => {
+    if (lockedMove === null) return;
+    const saved = readKioskSetup();
+    if (saved !== null && saved.initiativeId !== lockedMove) {
+      clearKioskSetup();
+      writeSetupState('incomplete');
+    }
+  }, [lockedMove]);
   useEffect(() => installVisibilityRefresh(), []);
 
   // Heartbeat only while a usable session exists.

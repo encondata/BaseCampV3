@@ -30,6 +30,17 @@ async def test_fingerprint_is_stable_and_keyed():
     assert len(fingerprint("x")) == 64
 
 
+async def test_fingerprint_is_domain_separated():
+    import hashlib
+    import hmac
+
+    from serversherpa.config import get_settings
+    pepper = get_settings().password_pepper.get_secret_value().encode()
+    plain = hmac.new(pepper, b"Crew-2026!", hashlib.sha256).hexdigest()
+    tagged = hmac.new(pepper, b"move-password\0Crew-2026!", hashlib.sha256).hexdigest()
+    assert fingerprint("Crew-2026!") == tagged != plain
+
+
 async def test_set_reveal_and_clear(db, seeded_user):
     init = await _move(db)
     await set_password(db, init, "Crew-2026!", actor_id=seeded_user.id)
@@ -67,6 +78,42 @@ async def test_rules_length_and_uniqueness(db, seeded_user):
     assert exc.value.code == "kiosk_password_in_use"
     # re-setting the same password on the same move is fine
     await set_password(db, a, "Crew-2026!", actor_id=seeded_user.id)
+
+
+async def test_rules_trim_name_and_moves_only(db, seeded_user):
+    init = await _move(db, "Reno")
+    for bad, code in (("   seven7   ", "kiosk_password_too_short"),
+                      ("our-reno-move", "kiosk_password_contains_name"),
+                      ("x-RENO-2026-x", "kiosk_password_contains_name")):
+        with pytest.raises(MovePasswordError) as exc:
+            await set_password(db, init, bad, actor_id=seeded_user.id)
+        assert exc.value.code == code
+    await set_password(db, init, "  Crew-2026!\t", actor_id=seeded_user.id)
+    assert reveal(init) == "Crew-2026!" and init.kiosk_password_fp == fingerprint("Crew-2026!")
+    project = Initiative(name="A project", initiative_type="project", status="planned")
+    db.add(project)
+    await db.flush()
+    with pytest.raises(MovePasswordError) as exc:
+        await set_password(db, project, "Project-pw-1", actor_id=seeded_user.id)
+    assert exc.value.code == "kiosk_password_moves_only"
+
+
+async def test_same_password_again_keeps_sessions(db, seeded_user):
+    init = await _move(db)
+    await set_password(db, init, "Crew-2026!", actor_id=seeded_user.id)
+    account = await ensure_kiosk_identity(db, init)
+    await db.commit()
+    result = await auth_service.start_session(
+        db, account, ip=None, user_agent=None, client="kiosk",
+        audit_action="login_move", initiative_id=init.id)
+    await db.commit()
+    await set_password(db, init, " Crew-2026! ", actor_id=seeded_user.id)
+    await db.commit()
+    db.expire_all()
+    assert (await db.get(AuthSession, result.session_id)).revoked_at is None
+    rows = list(await db.scalars(select(AuditLog).where(
+        AuditLog.entity_type == "initiative", AuditLog.action == "update")))
+    assert len(rows) == 1
 
 
 async def test_lookup_and_activity(db, seeded_user):

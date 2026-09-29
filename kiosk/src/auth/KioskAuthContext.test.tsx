@@ -17,6 +17,8 @@ vi.mock('../lib/heartbeat', () => hb);
 const identity = vi.hoisted(() => ({ getIdentity: vi.fn(() => ({ serial: 'kiosk-web-test', name: 'Kiosk Test' })) }));
 vi.mock('../lib/identity', () => identity);
 
+import { readKioskSetup, writeKioskSetup } from '../lib/kioskSetup';
+import { readSetupState, writeSetupState } from '../lib/setupState';
 import { KioskAuthProvider, useKioskAuth } from './KioskAuthContext';
 
 const SESSION = {
@@ -58,7 +60,7 @@ beforeEach(() => {
     return { stop: vi.fn(), now: vi.fn(() => Promise.resolve()) };
   });
 });
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); localStorage.clear(); });
 
 it('restores a session from the cookie on mount and starts the heartbeat', async () => {
   api.refreshSession.mockResolvedValue(SESSION);
@@ -170,4 +172,41 @@ it('a normal sign-in has no kiosk move', async () => {
   await act(async () => {});
   await act(async () => { screen.getByText('login').click(); });
   expect(screen.getByTestId('kiosk-move').textContent).toBe('none');
+});
+
+const SAVED_SETUP = {
+  initiativeId: 'x-move', initiativeName: 'Other move', siteId: 's1', siteName: 'Dock',
+  siteRole: 'source' as const, scanStatus: 'loaded', scanLabel: 'Loaded',
+};
+
+it('a move sign-in drops a setup saved for another move and marks setup incomplete', async () => {
+  writeKioskSetup(SAVED_SETUP);
+  writeSetupState('complete');
+  api.moveLoginRequest.mockResolvedValue({ ...SESSION, kiosk_move: { initiative_id: 'y-move', name: 'Y' } });
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  await act(async () => { screen.getByText('move login').click(); });
+  expect(readKioskSetup()).toBeNull();
+  expect(readSetupState()).toBe('incomplete');
+});
+
+it('a move sign-in keeps a setup saved for the same move', async () => {
+  writeKioskSetup({ ...SAVED_SETUP, initiativeId: 'y-move' });
+  writeSetupState('complete');
+  api.moveLoginRequest.mockResolvedValue({ ...SESSION, kiosk_move: { initiative_id: 'y-move', name: 'Y' } });
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  await act(async () => { screen.getByText('move login').click(); });
+  expect(readKioskSetup()?.initiativeId).toBe('y-move');
+  expect(readSetupState()).toBe('complete');
+});
+
+it('a person sign-in leaves any saved setup alone', async () => {
+  writeKioskSetup(SAVED_SETUP);
+  writeSetupState('complete');
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  await act(async () => { screen.getByText('login').click(); });
+  expect(readKioskSetup()?.initiativeId).toBe('x-move');
+  expect(readSetupState()).toBe('complete');
 });

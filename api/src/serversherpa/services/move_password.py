@@ -11,7 +11,7 @@ import hmac
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
@@ -31,9 +31,19 @@ class MovePasswordError(Exception):
         self.code = code
 
 
+# Domain separation: the same pepper keys other HMACs, so a move-password
+# fingerprint is never comparable with anything else computed from it.
+FINGERPRINT_DOMAIN = b"move-password\0"
+
+
 def fingerprint(password: str) -> str:
     pepper = get_settings().password_pepper.get_secret_value()
-    return hmac.new(pepper.encode(), password.encode(), hashlib.sha256).hexdigest()
+    return hmac.new(pepper.encode(), FINGERPRINT_DOMAIN + password.encode(),
+                    hashlib.sha256).hexdigest()
+
+
+def is_move(initiative: Initiative) -> bool:
+    return initiative.initiative_type == "move"
 
 
 def is_move_active(initiative: Initiative) -> bool:
@@ -91,9 +101,22 @@ async def rename_kiosk_identity(db: AsyncSession, initiative: Initiative) -> Non
 
 async def set_password(db: AsyncSession, initiative: Initiative, password: str, *,
                        actor_id: uuid.UUID) -> None:
+    """Set (or rotate) the move's kiosk password. Surrounding whitespace is
+    trimmed first — it is read out loud and typed on a kiosk — and the rest
+    of the rules apply to the trimmed value: moves only, at least
+    MIN_LENGTH characters, never the move's own name, unique across moves.
+    Re-saving the current password changes nothing (no rotation, no audit)."""
+    if not is_move(initiative):
+        raise MovePasswordError("kiosk_password_moves_only")
+    password = password.strip()
     if len(password) < MIN_LENGTH:
         raise MovePasswordError("kiosk_password_too_short")
+    name = (initiative.name or "").strip().casefold()
+    if name and name in password.casefold():
+        raise MovePasswordError("kiosk_password_contains_name")
     fp = fingerprint(password)
+    if fp == initiative.kiosk_password_fp:
+        return   # the same password again: not a rotation, kiosks stay signed in
     other = await db.scalar(select(Initiative.id).where(
         Initiative.kiosk_password_fp == fp, Initiative.id != initiative.id))
     if other is not None:
@@ -122,12 +145,25 @@ async def clear_password(db: AsyncSession, initiative: Initiative, *, actor_id: 
 
 
 async def find_initiative_by_password(db: AsyncSession, password: str) -> Initiative | None:
-    return await db.scalar(select(Initiative).where(Initiative.kiosk_password_fp == fingerprint(password)))
+    """The move this password signs in to. Only a move matches: a password
+    left on an initiative that is no longer a move signs nothing in."""
+    return await db.scalar(select(Initiative).where(
+        Initiative.kiosk_password_fp == fingerprint(password),
+        Initiative.initiative_type == "move"))
 
 
 async def revoke_move_sessions(db: AsyncSession, initiative_id: uuid.UUID) -> int:
+    """Sign out every session locked to this move — and, belt and braces,
+    every live session of the move's kiosk identity, locked or not (no
+    unlocked one should exist, but if one ever did it would see every move
+    and outlive the password)."""
+    kiosk_person_id = await db.scalar(
+        select(Initiative.kiosk_person_id).where(Initiative.id == initiative_id))
+    who = AuthSession.initiative_id == initiative_id
+    if kiosk_person_id is not None:
+        who = or_(who, AuthSession.person_id == kiosk_person_id)
     result = await db.execute(
         update(AuthSession)
-        .where(AuthSession.initiative_id == initiative_id, AuthSession.revoked_at.is_(None))
+        .where(who, AuthSession.revoked_at.is_(None))
         .values(revoked_at=datetime.now(UTC), revoke_reason="admin"))
     return result.rowcount or 0

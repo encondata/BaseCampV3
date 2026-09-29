@@ -28,6 +28,9 @@ def upgrade() -> None:
                     ["kiosk_password_fp"], unique=True)
     op.add_column("auth_sessions", sa.Column(
         "initiative_id", UUID(as_uuid=True), sa.ForeignKey("initiatives.id"), nullable=True))
+    # revoke_move_sessions finds a move's sessions by it; almost every row is NULL
+    op.create_index("ix_auth_sessions_initiative", "auth_sessions", ["initiative_id"],
+                    postgresql_where=sa.text("initiative_id IS NOT NULL"))
     # a move's hidden kiosk identity is a person with source 'kiosk_move'
     op.drop_constraint("people_source_check", "people", type_="check")
     op.create_check_constraint(
@@ -45,6 +48,7 @@ def downgrade() -> None:
     op.drop_constraint("people_source_check", "people", type_="check")
     op.create_check_constraint(
         "people_source_check", "people", "source IN ('manual', 'import', 'api')")
+    op.drop_index("ix_auth_sessions_initiative", table_name="auth_sessions")
     op.drop_column("auth_sessions", "initiative_id")
     op.drop_index("ux_initiatives_kiosk_password_fp", table_name="initiatives")
     op.drop_column("initiatives", "kiosk_person_id")

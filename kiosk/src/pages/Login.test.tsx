@@ -133,6 +133,25 @@ it('a wrong or inactive move password shows the matching message', async () => {
   expect(await screen.findByText('Too many tries. Wait a few minutes.')).toBeTruthy();
 });
 
+it('a move whose kiosk identity may not use kiosks gets the move wording', async () => {
+  auth.loginWithMovePassword.mockRejectedValue(new ApiError(403, 'kiosk_not_allowed'));
+  renderLogin();
+  await openMoveForm();
+  await userEvent.type(screen.getByLabelText('Move password'), 'Crew-2026!');
+  await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+  expect(await screen.findByText(
+    "That move can't sign in to kiosks right now. Ask a coordinator.")).toBeTruthy();
+  expect(screen.queryByText(/This account isn't allowed/)).toBeNull();
+});
+
+it('an empty move password asks for one and never calls the API', async () => {
+  renderLogin();
+  await openMoveForm();
+  await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+  expect(await screen.findByText('Enter the move password.')).toBeTruthy();
+  expect(auth.loginWithMovePassword).not.toHaveBeenCalled();
+});
+
 it('shows system banners and the settings gear', async () => {
   api.getSystemStatus.mockResolvedValue({ read_only: true, read_only_message: 'Cutover', workers_paused: false, banner: 'Hello all' });
   renderLogin();
