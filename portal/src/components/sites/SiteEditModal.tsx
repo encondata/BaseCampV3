@@ -35,6 +35,7 @@ import {
   SITE_CREATED_UNLINKED_MESSAGE,
   SITE_ERRORS,
   sitePayload,
+  siteTimezoneOptions,
   surveySaveOps,
   type SiteFormState,
 } from '../../lib/sites';
@@ -270,8 +271,14 @@ export default function SiteEditModal({
                 </p>
               </div>
               <div><label>Timezone</label>
-                <input value={form.timezone} disabled={locked}
-                       onChange={(e) => setField('timezone', e.target.value)} /></div>
+                <ComboBox
+                  placeholder="Type to search timezones…"
+                  value={form.timezone}
+                  clearable
+                  disabled={locked}
+                  onChange={(v) => setField('timezone', v)}
+                  options={siteTimezoneOptions(form.timezone)}
+                /></div>
               <div><label>DC provider</label>
                 <input value={form.dc_provider} disabled={locked}
                        onChange={(e) => setField('dc_provider', e.target.value)} /></div>

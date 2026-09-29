@@ -5,7 +5,8 @@
  * Every field — booleans included — renders as the same label-above-control
  * block so the columns keep their rhythm; booleans are tri-state selects
  * (— / Yes / No), so an explicit "No" is a real answer, distinct from
- * unanswered. Values stay loose (Record<string, unknown>); the parent
+ * unanswered. Whole-number fields are plain boxes with a numeric keypad
+ * and no spinner arrows. Values stay loose (Record<string, unknown>); the parent
  * normalizes at save time via `surveyPayload`.
  */
 
@@ -76,12 +77,19 @@ function SurveyField({ field, value, disabled, onChange }: {
         />
       )}
       {field.kind === 'int' && (
+        // A plain box with a numeric keypad instead of type="number": no
+        // spinner arrows, and the scroll wheel can't nudge the value. Only
+        // a whole number (optionally negative) gets through as you type.
         <input
           id={inputId}
-          type="number"
+          inputMode="numeric"
           value={value === undefined || value === null ? '' : String(value)}
           disabled={disabled}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => {
+            const next = e.target.value.replace(/\s/g, '');
+            if (/^-?\d*$/.test(next)) onChange(next);
+            else onChange(next.replace(/(?!^-)\D/g, ''));
+          }}
         />
       )}
       {field.kind === 'select' && (

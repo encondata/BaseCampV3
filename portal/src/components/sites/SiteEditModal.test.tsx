@@ -140,6 +140,22 @@ it('does not re-create the site when a retry follows a failed client link', asyn
   expect(api.updateSite).toHaveBeenCalledWith('site-99', expect.anything());
 });
 
+it('picks the timezone from a searchable list of every zone', async () => {
+  const user = userEvent.setup();
+  const { onSaved } = renderEditModal();
+
+  const tz = await screen.findByPlaceholderText('Type to search timezones…');
+  await user.click(tz);
+  await user.type(tz, 'zurich');
+  await user.click(await screen.findByText('Europe/Zurich'));
+
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateSite).toHaveBeenCalledTimes(1));
+  expect(api.updateSite).toHaveBeenCalledWith(
+    'site-1', expect.objectContaining({ timezone: 'Europe/Zurich' }));
+  await waitFor(() => expect(onSaved).toHaveBeenCalled());
+});
+
 /**
  * Survey save loop (SiteEditModal ~submit): per-field PUT/DELETE against the
  * loaded baseline, diffed on CLEANED values via lib/sites.ts's

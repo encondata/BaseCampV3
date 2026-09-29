@@ -7,6 +7,7 @@ import {
   type SiteFormState,
 } from './sites';
 import type { SiteItem, SurveySchema } from './api';
+import { siteTimezoneOptions } from './sites';
 
 const site: SiteItem = {
   id: 's1', name: 'Acme DC1', code: 'ADC1',
@@ -316,5 +317,26 @@ describe('naturalCompare', () => {
   });
   it('handles empty strings without throwing', () => {
     expect(['b', '', 'a'].sort(naturalCompare)).toEqual(['', 'a', 'b']);
+  });
+});
+
+describe('siteTimezoneOptions', () => {
+  it('offers every standard zone with its UTC offset', () => {
+    const opts = siteTimezoneOptions('');
+    const zurich = opts.find((o) => o.value === 'Europe/Zurich');
+    expect(zurich?.label).toBe('Europe/Zurich');
+    expect(zurich?.sub).toMatch(/^UTC[+−]\d\d:\d\d$/);
+    expect(opts.some((o) => o.value === 'America/New_York')).toBe(true);
+  });
+
+  it('does not duplicate a standard zone the site already has', () => {
+    const opts = siteTimezoneOptions('America/Chicago');
+    expect(opts.filter((o) => o.value === 'America/Chicago')).toHaveLength(1);
+  });
+
+  it('keeps a non-standard saved value visible as its own option, first', () => {
+    const opts = siteTimezoneOptions('Eastern');
+    expect(opts[0]).toEqual({ value: 'Eastern', label: 'Eastern', sub: 'Not a standard time zone' });
+    expect(opts.filter((o) => o.value === 'Eastern')).toHaveLength(1);
   });
 });

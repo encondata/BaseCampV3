@@ -5,6 +5,7 @@ import type { ComboOption } from '../components/ComboBox';
 import type { SiteItem, SurveySchema } from './api';
 import { numberToPatch, type GodField } from './godEdit';
 import type { ColumnDef } from './listTools';
+import { timezoneOptions } from './notifications';
 
 // The always-shown name+code cell — a fixed leading track outside the
 // column registry (same shape as the page's header markup), so it needs
@@ -312,4 +313,16 @@ export function SITE_GOD_FIELDS(lookups: SiteGodLookups): GodField<SiteItem>[] {
     { column: 'longitude', field: 'longitude', kind: 'number',
       fromRow: (s) => numStr(s.longitude), toPatch: numberToPatch },
   ];
+}
+
+/** Options for the site editor's timezone picker: every standard zone with
+ *  its UTC offset (the notification pickers' list). A site's timezone is
+ *  free text on the server, so a saved value that isn't a standard zone
+ *  (an import like "Eastern") is kept as its own first option — otherwise
+ *  the picker would show it as blank and the value would look lost. */
+export function siteTimezoneOptions(current: string): ComboOption[] {
+  const zones = timezoneOptions();
+  const value = current.trim();
+  if (!value || zones.some((z) => z.value === value)) return zones;
+  return [{ value, label: value, sub: 'Not a standard time zone' }, ...zones];
 }
