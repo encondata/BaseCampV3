@@ -12,8 +12,12 @@
 import { type ReactNode } from 'react';
 
 import { ADMIN_RANK } from '../lib/access';
+import { kioskUrl, wikiUrl } from '../lib/appLinks';
 
-export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number; globalOnly?: boolean; end?: boolean }
+/** `href` marks a link to another app (the kiosk, the wiki): it opens in a
+ *  new tab instead of routing; `to` then only serves as the item key. An
+ *  empty `resource` means every signed-in user sees the item. */
+export interface NavItem { to: string; label: string; resource: string; icon: ReactNode; godOnly?: boolean; minRank?: number; globalOnly?: boolean; end?: boolean; href?: string }
 export interface NavSection { label: string; icon: ReactNode; items: NavItem[] }
 
 export const NAV_SECTIONS: NavSection[] = [
@@ -691,6 +695,44 @@ export const NAV_SECTIONS: NavSection[] = [
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
                strokeLinecap="round" strokeLinejoin="round">
             <path d="M4 6h16M4 12h16M4 18h10" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
+    label: 'Apps',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" />
+        <rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" />
+      </svg>
+    ),
+    items: [
+      {
+        to: 'app:kiosk',
+        href: kioskUrl(),
+        label: 'Kiosk',
+        resource: 'kiosk',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <rect x="4" y="4" width="16" height="12" rx="2" />
+            <path d="M12 16v4m-4 0h8" />
+          </svg>
+        ),
+      },
+      {
+        to: 'app:wiki',
+        href: wikiUrl(),
+        label: 'Wiki',
+        resource: '',
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+               strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5z" />
+            <path d="M4 18.5A2.5 2.5 0 0 1 6.5 16H20" />
           </svg>
         ),
       },

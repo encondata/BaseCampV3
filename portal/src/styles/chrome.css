@@ -477,6 +477,7 @@ kbd {
 }
 .portal-nav .nav-sec.open .nav-sec-head { color: var(--amber-soft); }
 .portal-nav .nav-sec.open .nav-sec-head svg { transform: rotate(90deg); }
+.portal-nav .nav-ext { margin-left: auto; width: 13px; height: 13px; opacity: .55; flex: none; }
 .portal-nav .nav-sec-body {
   display: grid;
   grid-template-rows: 0fr;
