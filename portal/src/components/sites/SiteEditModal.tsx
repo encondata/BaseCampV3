@@ -246,7 +246,7 @@ export default function SiteEditModal({
               <div><label>City</label>
                 <input value={form.city} disabled={locked}
                        onChange={(e) => setField('city', e.target.value)} /></div>
-              <div><label>Region</label>
+              <div><label>Region / State</label>
                 <input value={form.region} disabled={locked}
                        onChange={(e) => setField('region', e.target.value)} /></div>
               <div><label>Postal code</label>

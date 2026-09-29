@@ -34,7 +34,7 @@ export const SITE_COLUMNS: ColumnDef[] = [
     key: 'address_line2', label: 'Address line 2', short: 'Address 2',
     width: '1.4fr', default: false, godOnly: true,
   },
-  { key: 'region', label: 'Region', width: '1fr', default: false, godOnly: true },
+  { key: 'region', label: 'Region / State', short: 'Region', width: '1fr', default: false, godOnly: true },
   { key: 'postal_code', label: 'Postal code', width: '1fr', default: false, godOnly: true },
   { key: 'timezone', label: 'Timezone', width: '1.2fr', default: false, godOnly: true },
   { key: 'notes', label: 'Notes', width: '1.6fr', default: false, godOnly: true },

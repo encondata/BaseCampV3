@@ -108,7 +108,7 @@ const CSV_COLUMNS: [string, (s: SiteItem) => string][] = [
   ['Address line 1', (s) => s.address_line1 ?? ''],
   ['Address line 2', (s) => s.address_line2 ?? ''],
   ['City', (s) => s.city ?? ''],
-  ['Region', (s) => s.region ?? ''],
+  ['Region / State', (s) => s.region ?? ''],
   ['Postal code', (s) => s.postal_code ?? ''],
   ['Country', (s) => s.country],
   ['Coordinates', (s) => formatCoords(s.latitude, s.longitude)],
