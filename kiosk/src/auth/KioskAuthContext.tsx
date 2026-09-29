@@ -12,7 +12,7 @@ import {
 import { ADMIN_RANK, computeCan, type Action, type PermMap } from '@portal/lib/access';
 
 import {
-  installVisibilityRefresh, loginRequest, logoutRequest, onSessionEnded, refreshSession,
+  installVisibilityRefresh, loginRequest, logoutRequest, moveLoginRequest, onSessionEnded, refreshSession,
   signOutRequest,
   type PersonOut, type RegistrationState, type SessionData, type UiPreferences,
 } from '../lib/api';
@@ -31,6 +31,8 @@ interface State {
   sessionExpiresAt: string | null;
   roles: string[];
   maxRank: number;
+  /** The move a move-password session is locked to; null for a person sign-in. */
+  kioskMove: { initiative_id: string; name: string } | null;
 }
 
 export interface KioskAuthValue extends State {
@@ -38,6 +40,7 @@ export interface KioskAuthValue extends State {
   isAdmin: boolean;
   isDeveloper: boolean;
   login: (email: string, password: string) => Promise<SessionData>;
+  loginWithMovePassword: (password: string) => Promise<SessionData>;
   completePair: (session: SessionData) => void;
   logout: () => Promise<void>;
   can: (resource: string, action: Action) => boolean;
@@ -47,6 +50,7 @@ export interface KioskAuthValue extends State {
 const ANON: State = {
   status: 'anon', person: null, perms: null, preferences: null,
   mustChangePassword: false, mustChangeReason: null, sessionExpiresAt: null, roles: [], maxRank: 0,
+  kioskMove: null,
 };
 const LOADING: State = { ...ANON, status: 'loading' };
 
@@ -55,6 +59,7 @@ function stateFrom(s: SessionData): State {
     status: 'authed', person: s.person, perms: s.perms, preferences: s.preferences,
     mustChangePassword: s.must_change_password, mustChangeReason: s.must_change_reason ?? null,
     sessionExpiresAt: s.session_expires_at, roles: s.roles, maxRank: s.max_rank,
+    kioskMove: s.kiosk_move ?? null,
   };
 }
 
@@ -104,6 +109,15 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
     return data;
   }, []);
 
+  const loginWithMovePassword = useCallback(async (password: string) => {
+    const data = await moveLoginRequest(password);
+    // The heartbeat's login_method only knows password | link; a move-password
+    // sign-in is a password sign-in as far as device registration goes.
+    signInRef.current = { method: 'password' };
+    setState(stateFrom(data));
+    return data;
+  }, []);
+
   const completePair = useCallback((data: SessionData) => {
     signInRef.current = { method: 'link' };
     setState(stateFrom(data));
@@ -127,8 +141,8 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
   const isDeveloper = state.roles.includes('developer');
 
   const value = useMemo<KioskAuthValue>(
-    () => ({ ...state, registration, isAdmin, isDeveloper, login, completePair, logout, can, heartbeatNow }),
-    [state, registration, isAdmin, isDeveloper, login, completePair, logout, can, heartbeatNow],
+    () => ({ ...state, registration, isAdmin, isDeveloper, login, loginWithMovePassword, completePair, logout, can, heartbeatNow }),
+    [state, registration, isAdmin, isDeveloper, login, loginWithMovePassword, completePair, logout, can, heartbeatNow],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

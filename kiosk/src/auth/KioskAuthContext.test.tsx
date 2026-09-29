@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const api = vi.hoisted(() => ({
   refreshSession: vi.fn(),
   loginRequest: vi.fn(),
+  moveLoginRequest: vi.fn(),
   logoutRequest: vi.fn(),
   signOutRequest: vi.fn(),
   onSessionEnded: vi.fn(() => () => {}),
@@ -34,9 +35,11 @@ function Probe() {
       <span data-testid="status">{a.status}</span>
       <span data-testid="reg">{a.registration ?? 'null'}</span>
       <span data-testid="can">{String(a.can('kiosk', 'view'))}</span>
+      <span data-testid="kiosk-move">{a.kioskMove?.name ?? 'none'}</span>
       <span data-testid="is-admin">{String(a.isAdmin)}</span>
       <span data-testid="is-developer">{String(a.isDeveloper)}</span>
       <button onClick={() => void a.login('a@x', 'pw')}>login</button>
+      <button onClick={() => void a.loginWithMovePassword('Crew-2026!')}>move login</button>
       <button onClick={() => a.completePair(SESSION as unknown as Parameters<typeof a.completePair>[0])}>
         pair
       </button>
@@ -148,4 +151,23 @@ it('derives isAdmin/isDeveloper as both false for a plain worker', async () => {
   await act(async () => { screen.getByText('login').click(); });
   expect(screen.getByTestId('is-admin').textContent).toBe('false');
   expect(screen.getByTestId('is-developer').textContent).toBe('false');
+});
+
+it('loginWithMovePassword calls the move endpoint and keeps the move from the session', async () => {
+  api.moveLoginRequest.mockResolvedValue({ ...SESSION, kiosk_move: { initiative_id: 'i1', name: 'Las Vegas 3' } });
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  expect(screen.getByTestId('kiosk-move').textContent).toBe('none');
+  await act(async () => { screen.getByText('move login').click(); });
+  expect(api.moveLoginRequest).toHaveBeenCalledWith('Crew-2026!');
+  expect(screen.getByTestId('status').textContent).toBe('authed');
+  expect(screen.getByTestId('kiosk-move').textContent).toBe('Las Vegas 3');
+  expect(hb.startHeartbeat.mock.calls[0][2]).toEqual({ method: 'password' });
+});
+
+it('a normal sign-in has no kiosk move', async () => {
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  await act(async () => { screen.getByText('login').click(); });
+  expect(screen.getByTestId('kiosk-move').textContent).toBe('none');
 });

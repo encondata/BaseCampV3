@@ -159,6 +159,8 @@ export interface SessionData {
   scope: ScopeInfo;
   password_min_length: number;
   totp: TotpStatus;
+  /** Set when the session came from a move password: the move it is locked to. */
+  kiosk_move: { initiative_id: string; name: string } | null;
 }
 
 /** Password accepted; a code (or enrollment) is owed. No session exists yet. */

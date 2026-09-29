@@ -2,14 +2,14 @@
 /** Kiosk login: email & password is the default, normal form; below it a
  *  divider and an "Other ways to sign in" button expand to Link with
  *  phone / Move password. Password sign-in carries the kiosk-specific
- *  error copy; move password is a placeholder that never calls the API.
+ *  error copy; move password signs in through the move endpoint.
  *  The terrain scene and PairPanel are mocked. */
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-const auth = vi.hoisted(() => ({ login: vi.fn(), completePair: vi.fn() }));
+const auth = vi.hoisted(() => ({ login: vi.fn(), loginWithMovePassword: vi.fn(), completePair: vi.fn() }));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 vi.mock('@portal/lib/brandScene', () => ({ buildBrandScene: () => () => {} }));
 // Records the `onApproved` prop identity on every render, so a test can
@@ -48,6 +48,7 @@ beforeEach(() => {
   seenOnApproved.length = 0;
   api.getSystemStatus.mockResolvedValue({ read_only: false, read_only_message: '', workers_paused: false, banner: null });
   auth.login.mockResolvedValue({});
+  auth.loginWithMovePassword.mockResolvedValue({});
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
@@ -97,15 +98,39 @@ it('shows the kiosk-specific error copy', async () => {
   expect(await screen.findByText(/Can't reach the server/)).toBeTruthy();
 });
 
-it('move password is a placeholder that never calls the API', async () => {
-  renderLogin();
+async function openMoveForm() {
   await userEvent.click(screen.getByRole('button', { name: 'Other ways to sign in' }));
   await userEvent.click(screen.getByRole('button', { name: 'Move password' }));
-  await userEvent.type(screen.getByLabelText('Move password'), 'secret');
+}
+
+it('move password signs in through the move endpoint and navigates', async () => {
+  renderLogin();
+  await openMoveForm();
+  await userEvent.type(screen.getByLabelText('Move password'), 'Crew-2026!');
   await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
-  expect(screen.getByText(/Move passwords aren't available yet/)).toBeTruthy();
+  expect(auth.loginWithMovePassword).toHaveBeenCalledWith('Crew-2026!');
   expect(auth.login).not.toHaveBeenCalled();
+  expect(await screen.findByText('HOME')).toBeTruthy();
+});
+
+it('a wrong or inactive move password shows the matching message', async () => {
+  auth.loginWithMovePassword.mockRejectedValue(new ApiError(401, 'invalid_move_password'));
+  renderLogin();
+  await openMoveForm();
+  await userEvent.type(screen.getByLabelText('Move password'), 'nope');
+  await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+  expect(await screen.findByText("That move password isn't right.")).toBeTruthy();
   expect((screen.getByLabelText('Move password') as HTMLInputElement).value).toBe('');
+
+  auth.loginWithMovePassword.mockRejectedValue(new ApiError(401, 'move_not_active'));
+  await userEvent.type(screen.getByLabelText('Move password'), 'old');
+  await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+  expect(await screen.findByText("That move password isn't active.")).toBeTruthy();
+
+  auth.loginWithMovePassword.mockRejectedValue(new ApiError(429, 'move_login_rate_limited'));
+  await userEvent.type(screen.getByLabelText('Move password'), 'again');
+  await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+  expect(await screen.findByText('Too many tries. Wait a few minutes.')).toBeTruthy();
 });
 
 it('shows system banners and the settings gear', async () => {
