@@ -31,6 +31,7 @@ from serversherpa.api.schemas import (
     TimeSummaryPerson,
 )
 from serversherpa.db.models import Initiative, Person, Site, StatusValue, TimeEntry
+from serversherpa.db.ordering import natural
 from serversherpa.services import timeclock
 from serversherpa.services.audit import audit, diff, snapshot
 
@@ -339,9 +340,9 @@ async def punch_options(db: DbSession, user: CurrentUser) -> TimePunchOptionsOut
         select(Initiative).where(
             Initiative.archived_at.is_(None),
             Initiative.status.in_(OPEN_INITIATIVE_STATUSES))
-        .order_by(Initiative.name)))
+        .order_by(natural(Initiative.name))))
     sites = list(await db.scalars(
-        select(Site).where(Site.archived_at.is_(None)).order_by(Site.name)))
+        select(Site).where(Site.archived_at.is_(None)).order_by(natural(Site.name))))
     return TimePunchOptionsOut(
         initiatives=[PunchOption(id=i.id, name=i.name) for i in initiatives],
         sites=[PunchOption(id=s.id, name=s.name) for s in sites])

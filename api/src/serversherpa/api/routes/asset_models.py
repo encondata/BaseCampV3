@@ -23,6 +23,7 @@ from serversherpa.assets.units import apply_unit_pairs
 from serversherpa.db.models import (
     Asset, AssetCategory, AssetModel, AssetModelAlias, StockLine,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit, diff, snapshot
 
 router = APIRouter(prefix="/asset-models", tags=["assets"])
@@ -60,7 +61,7 @@ async def _aliases_by_model(db: DbSession, model_ids: list[uuid.UUID]) -> dict:
     rows = (await db.execute(
         select(AssetModelAlias.model_id, AssetModelAlias.alias)
         .where(AssetModelAlias.model_id.in_(model_ids))
-        .order_by(AssetModelAlias.alias))).all()
+        .order_by(natural(AssetModelAlias.alias)))).all()
     out: dict = {}
     for model_id, alias in rows:
         out.setdefault(model_id, []).append(alias)
@@ -140,7 +141,7 @@ async def list_asset_models(
     _actor: AuthContext = require_permission("asset_models", "view"),
 ) -> list[AssetModelItem]:
     models = (await db.scalars(
-        select(AssetModel).order_by(AssetModel.make, AssetModel.model))).all()
+        select(AssetModel).order_by(natural(AssetModel.make), natural(AssetModel.model)))).all()
     cats = await _cats(db)
     aliases = await _aliases_by_model(db, [m.id for m in models])
     return [AssetModelItem(**_item(m, cats, aliases)) for m in models]
@@ -153,7 +154,7 @@ async def review_asset_models(
     _actor: AuthContext = require_permission("asset_models", "view"),
 ) -> ReviewOut:
     all_models = (await db.scalars(
-        select(AssetModel).order_by(AssetModel.make, AssetModel.model))).all()
+        select(AssetModel).order_by(natural(AssetModel.make), natural(AssetModel.model)))).all()
     dismissed_count = sum(1 for m in all_models if m.review_dismissed_at is not None)
     models = [m for m in all_models
               if include_dismissed or m.review_dismissed_at is None]
@@ -390,7 +391,7 @@ async def list_asset_categories(
 ) -> list[AssetCategoryOut]:
     cats = (await db.scalars(
         select(AssetCategory).order_by(AssetCategory.sort_order,
-                                       AssetCategory.label))).all()
+                                       natural(AssetCategory.label)))).all()
     return [AssetCategoryOut.model_validate(c) for c in cats]
 
 

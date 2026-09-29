@@ -8,6 +8,7 @@
  * modal.
  */
 
+import { naturalCompare } from '../lib/naturalSort';
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
@@ -183,9 +184,9 @@ function StatusesTab() {
       return statusSearchText(v).includes(q);
     });
     return rows.sort((a, b) => {
-      if (a.record_type !== b.record_type) return a.record_type < b.record_type ? -1 : 1;
+      if (a.record_type !== b.record_type) return naturalCompare(a.record_type, b.record_type);
       if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
-      return a.label.localeCompare(b.label);
+      return naturalCompare(a.label, b.label);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [values, facets, query]);
@@ -382,7 +383,7 @@ function SiteTypesTab() {
       if (!q) return true;
       return [t.key, t.label, t.description].join(' ').toLowerCase().includes(q);
     });
-    return rows.sort((a, b) => a.sort_order - b.sort_order || a.label.localeCompare(b.label));
+    return rows.sort((a, b) => a.sort_order - b.sort_order || naturalCompare(a.label, b.label));
   }, [types, query]);
 
   useEffect(() => {
@@ -782,7 +783,7 @@ function AssetCategoriesTab() {
       if (!q) return true;
       return [c.key, c.label, c.description].join(' ').toLowerCase().includes(q);
     });
-    return rows.sort((a, b) => a.sort_order - b.sort_order || a.label.localeCompare(b.label));
+    return rows.sort((a, b) => a.sort_order - b.sort_order || naturalCompare(a.label, b.label));
   }, [categories, query]);
 
   useEffect(() => {

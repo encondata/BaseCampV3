@@ -10,6 +10,7 @@
  *  here yet, hence the disabled "Register router" affordance. Row action
  *  is Delete only, gated on can('scanning_hardware', 'delete'). */
 
+import { compareValues, naturalCompare } from '../lib/naturalSort';
 import { useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
@@ -121,10 +122,10 @@ export default function Routers() {
       vpns.add(vpnLabel(d.vpn_status));
     }
     return [
-      { key: 'site', title: 'Site', options: Array.from(sites).sort().map((v) => (
+      { key: 'site', title: 'Site', options: Array.from(sites).sort(naturalCompare).map((v) => (
         { value: v, label: v }
       )) },
-      { key: 'vpn', title: 'VPN', options: Array.from(vpns).sort().map((v) => (
+      { key: 'vpn', title: 'VPN', options: Array.from(vpns).sort(naturalCompare).map((v) => (
         { value: v, label: v }
       )) },
     ];
@@ -147,7 +148,7 @@ export default function Routers() {
     });
     return rows.sort((a, b) => {
       const va = deviceSortValue(a, sortKey), vb = deviceSortValue(b, sortKey);
-      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
+      return compareValues(va, vb) * sortDir;
     });
   }, [devices, facets, filters, query, sortKey, sortDir, haystack]);
 

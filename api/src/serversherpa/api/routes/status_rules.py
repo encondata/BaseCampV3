@@ -21,6 +21,7 @@ from serversherpa.db.models import (
     ProcessedScan, Site, StatusRule, StatusRuleAction, StatusRuleCondition,
     StatusRuleExecution, StatusValue,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit
 from serversherpa.status_rules.catalog import (
     ACTIONS, CONDITION_FIELDS, OPERATORS, validate_action, validate_condition,
@@ -147,7 +148,7 @@ async def rule_schema(
             {"value": v.key, "label": v.label, "color": v.color})
     sites = [{"value": str(sid), "label": name}
              for sid, name in (await db.execute(
-                 select(Site.id, Site.name).order_by(Site.name))).all()]
+                 select(Site.id, Site.name).order_by(natural(Site.name)))).all()]
 
     def options_for(source: str | None):
         if source is None:

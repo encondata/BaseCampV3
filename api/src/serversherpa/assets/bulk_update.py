@@ -38,6 +38,7 @@ from serversherpa.db.models import (
     Site,
     StatusValue,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import BulkImportError
 from serversherpa.racks.recheck import recheck_placement
@@ -211,11 +212,11 @@ async def load_reference(db: AsyncSession, numbered: list[tuple[int, dict]]) -> 
             new_serial_holders[(a.serial_number or "").lower()] = a
 
     models = await build_model_index(db)
-    all_clients = list(await db.scalars(select(Client).order_by(Client.name)))
-    all_sites = list(await db.scalars(select(Site).order_by(Site.name)))
+    all_clients = list(await db.scalars(select(Client).order_by(natural(Client.name))))
+    all_sites = list(await db.scalars(select(Site).order_by(natural(Site.name))))
     all_statuses = list(await db.scalars(
         select(StatusValue).where(StatusValue.record_type == RECORD_TYPE)
-        .order_by(StatusValue.sort_order, StatusValue.key)))
+        .order_by(StatusValue.sort_order, natural(StatusValue.key))))
     clients = [c for c in all_clients if c.archived_at is None]
     sites = [s for s in all_sites if s.archived_at is None]
     statuses = [s for s in all_statuses if s.is_active]
@@ -701,12 +702,12 @@ async def _reference_lists(db: AsyncSession) -> list[tuple[str, list[str]]]:
     statuses = (await db.execute(
         select(StatusValue.key, StatusValue.label)
         .where(StatusValue.record_type == RECORD_TYPE, StatusValue.is_active.is_(True))
-        .order_by(StatusValue.sort_order, StatusValue.key))).all()
-    models = await db.scalars(select(AssetModel).order_by(AssetModel.make, AssetModel.model))
+        .order_by(StatusValue.sort_order, natural(StatusValue.key)))).all()
+    models = await db.scalars(select(AssetModel).order_by(natural(AssetModel.make), natural(AssetModel.model)))
     clients = await db.scalars(
-        select(Client.name).where(Client.archived_at.is_(None)).order_by(Client.name))
+        select(Client.name).where(Client.archived_at.is_(None)).order_by(natural(Client.name)))
     sites = await db.scalars(
-        select(Site.name).where(Site.archived_at.is_(None)).order_by(Site.name))
+        select(Site.name).where(Site.archived_at.is_(None)).order_by(natural(Site.name)))
     return [("Statuses", [f"{k} — {label}" for k, label in statuses]),
             ("Makes and models", [display_name(m) for m in models]),
             ("Clients", list(clients)), ("Sites", list(sites))]

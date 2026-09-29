@@ -23,6 +23,7 @@ from serversherpa.db.models import (
     StatusValue,
     UserAccount,
 )
+from serversherpa.db.ordering import natural
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -56,7 +57,7 @@ async def global_search(
         if cond is not None:
             query = query.where(cond)
         rows = (await db.execute(
-            query.order_by(Person.last_name, Person.first_name).limit(LIMIT_PER_KIND)
+            query.order_by(natural(Person.last_name), natural(Person.first_name)).limit(LIMIT_PER_KIND)
         )).all()
         results.extend(
             SearchResult(
@@ -82,7 +83,7 @@ async def global_search(
         if cond is not None:
             query = query.where(cond)
         orgs = (await db.scalars(
-            query.order_by(model.name).limit(LIMIT_PER_KIND)
+            query.order_by(natural(model.name)).limit(LIMIT_PER_KIND)
         )).all()
         results.extend(
             SearchResult(kind=kind, id=o.id, label=o.name,
@@ -101,7 +102,7 @@ async def global_search(
         if cond is not None:
             query = query.where(cond)
         assets = (await db.scalars(
-            query.order_by(Asset.serial_number, Asset.name)
+            query.order_by(natural(Asset.serial_number), natural(Asset.name))
             .limit(LIMIT_PER_KIND))).all()
         results.extend(
             SearchResult(kind="asset", id=a.id,
@@ -120,7 +121,7 @@ async def global_search(
             AssetModel.id.in_(alias_owner),
         ))
         models = (await db.scalars(
-            query.order_by(AssetModel.make, AssetModel.model)
+            query.order_by(natural(AssetModel.make), natural(AssetModel.model))
             .limit(LIMIT_PER_KIND))).all()
         results.extend(
             SearchResult(kind="asset_model", id=m.id,
@@ -135,7 +136,7 @@ async def global_search(
             Container.rfid_tag.ilike(needle),
         ))
         containers = (await db.scalars(
-            query.order_by(Container.name).limit(LIMIT_PER_KIND))).all()
+            query.order_by(natural(Container.name)).limit(LIMIT_PER_KIND))).all()
         results.extend(
             SearchResult(kind="container", id=c.id, label=c.name,
                          sub=c.rfid_tag or "Container")
@@ -161,7 +162,7 @@ async def global_search(
         if cond is not None:
             query = query.where(cond)
         initiatives = (await db.scalars(
-            query.order_by(Initiative.name).limit(LIMIT_PER_KIND))).all()
+            query.order_by(natural(Initiative.name)).limit(LIMIT_PER_KIND))).all()
         type_labels = {s.key: s.label for s in await db.scalars(
             select(StatusValue).where(
                 StatusValue.record_type == "initiative_type"))}

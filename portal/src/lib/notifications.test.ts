@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canForChannel, formatDays, formatQuietHours,
 } from './notifications';
+import { naturalCompare } from './naturalSort';
 
 describe('formatQuietHours', () => {
   it('formats a normal (non-overnight) window with the tz abbreviation', () => {
@@ -66,7 +67,7 @@ describe('timezone helpers', () => {
     expect(zones).toContain('Pacific/Auckland');
     expect(zones).toContain('Europe/London');
     expect(zones).toContain('UTC');
-    expect([...zones].sort()).toEqual(zones); // alphabetical
+    expect([...zones].sort(naturalCompare)).toEqual(zones); // natural, case-insensitive order
   });
 
   it('DEFAULT_TIMEZONE is New York', async () => {

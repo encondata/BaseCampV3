@@ -51,6 +51,7 @@ from serversherpa.db.models import (
     PermissionOverride, Person, PersonRole,
     ResourceGroupGate, Role, UserAccount, WorkerLevel, WorkerProfile,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.notifications.requests import resolve_copies
 from serversherpa.services import totp as totp_service
 from serversherpa.services.activity import person_activity
@@ -82,7 +83,7 @@ async def list_users(
     query = (
         select(Person, UserAccount)
         .join(UserAccount, UserAccount.person_id == Person.id)
-        .order_by(Person.last_name, Person.first_name)
+        .order_by(natural(Person.last_name), natural(Person.first_name))
     )
     cond = scope_conditions("users", actor.access, actor.person.id)
     if cond is not None:
@@ -95,7 +96,7 @@ async def list_users(
         .join(Role, Role.name == PersonRole.role)
         .where(PersonRole.person_id.in_(person_ids or [None]),
                PersonRole.revoked_at.is_(None))
-        .order_by(PersonRole.role)
+        .order_by(natural(PersonRole.role))
     )).all()
     roles_by_person: dict = {}
     rank_by_person: dict = {}
@@ -179,7 +180,7 @@ async def get_user_detail(
         select(PersonRole, Role)
         .join(Role, Role.name == PersonRole.role)
         .where(PersonRole.person_id == person_id, PersonRole.revoked_at.is_(None))
-        .order_by(Role.rank.desc(), Role.name))).all()
+        .order_by(Role.rank.desc(), natural(Role.name)))).all()
     orgs = await _org_refs(
         db, {g.client_id for g, _ in grant_rows if g.client_id},
         {g.partner_id for g, _ in grant_rows if g.partner_id})
@@ -205,7 +206,7 @@ async def get_user_detail(
               NotificationGroupMember.group_id == NotificationGroup.id)
         .where(NotificationGroupMember.person_id == person_id,
                NotificationGroup.enabled.is_(True))
-        .order_by(NotificationGroup.name))).all()
+        .order_by(natural(NotificationGroup.name)))).all()
     notification_groups = [
         UserNotificationGroup(id=g.id, name=g.name,
                               channels=effective_settings(g, m)["channels"],
@@ -224,7 +225,7 @@ async def get_user_detail(
             select(AccessGroup, AccessGroupMember)
             .join(AccessGroupMember, AccessGroupMember.group_id == AccessGroup.id)
             .where(AccessGroupMember.person_id == person_id)
-            .order_by(AccessGroup.name))).all()
+            .order_by(natural(AccessGroup.name)))).all()
         gates_by_group: dict = {}
         if group_member_rows:
             gids = [g.id for g, _ in group_member_rows]
@@ -235,7 +236,7 @@ async def get_user_detail(
         override_rows = list(await db.scalars(
             select(PermissionOverride)
             .where(PermissionOverride.person_id == person_id)
-            .order_by(PermissionOverride.resource, PermissionOverride.action)))
+            .order_by(natural(PermissionOverride.resource), natural(PermissionOverride.action))))
         scope_orgs_map = await _org_refs(db, set(eff.access.client_ids),
                                          set(eff.access.partner_ids))
 

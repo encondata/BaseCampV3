@@ -12,6 +12,7 @@
  *  Routers there is no row expansion — the trailing track is a single
  *  90px Delete cell, no chevron. */
 
+import { compareValues, naturalCompare } from '../lib/naturalSort';
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
@@ -123,13 +124,13 @@ export default function FixedReaders() {
       scanStatuses.add(d.scan_status_label ?? (d.scan_status ?? '—'));
     }
     return [
-      { key: 'site', title: 'Site', options: Array.from(sites).sort().map((v) => (
+      { key: 'site', title: 'Site', options: Array.from(sites).sort(naturalCompare).map((v) => (
         { value: v, label: v }
       )) },
-      { key: 'connection', title: 'Connection', options: Array.from(connections).sort().map((v) => (
+      { key: 'connection', title: 'Connection', options: Array.from(connections).sort(naturalCompare).map((v) => (
         { value: v, label: v }
       )) },
-      { key: 'scan_status', title: 'Scan Type', options: Array.from(scanStatuses).sort().map((v) => (
+      { key: 'scan_status', title: 'Scan Type', options: Array.from(scanStatuses).sort(naturalCompare).map((v) => (
         { value: v, label: v }
       )) },
     ];
@@ -153,7 +154,7 @@ export default function FixedReaders() {
     });
     return rows.sort((a, b) => {
       const va = deviceSortValue(a, sortKey), vb = deviceSortValue(b, sortKey);
-      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
+      return compareValues(va, vb) * sortDir;
     });
   }, [devices, facets, filters, query, sortKey, sortDir, haystack]);
 

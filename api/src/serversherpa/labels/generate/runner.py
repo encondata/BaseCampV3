@@ -48,6 +48,7 @@ from serversherpa.db.models import (
     Asset, AssetModel, Container, GeneratedLabel, Initiative, InitiativeAsset,
     LabelGenerationRun, LabelPlaceholder, LabelTemplate, LabelVocab, Site,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.labels.generate import entity_for_type
 from serversherpa.labels.generate.engine import render_label
 from serversherpa.labels.generate.select import select_template
@@ -107,7 +108,7 @@ async def _load_container_roster(db: AsyncSession,
         select(Container)
         .where(Container.initiative_id == initiative_id,
                Container.archived_at.is_(None))
-        .order_by(Container.name))).scalars().all()
+        .order_by(natural(Container.name)))).scalars().all()
     return [ContainerRow(container_uuid=c.id, legacy_id=c.legacy_id,
                          name=c.name, label_tag=c.label_tag)
             for c in rows]

@@ -20,6 +20,7 @@ from serversherpa.db.models import (
     Device, DeviceDhcpLease, Initiative, Person, ProcessedScan, RawScan, Site,
     StatusValue,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit, diff, snapshot
 
 router = APIRouter(prefix="/devices", tags=["devices"])
@@ -198,7 +199,7 @@ async def clear_offline_kiosks(
     if body.dry_run:
         matches = (await db.execute(
             select(Device).where(_offline_kiosk_clause(now))
-            .order_by(Device.name))).scalars().all()
+            .order_by(natural(Device.name)))).scalars().all()
         return ClearOfflineKiosksOut(
             dry_run=True, kiosks=[_clear_item(d, now) for d in matches],
             skipped=[], not_found=0)
@@ -209,7 +210,7 @@ async def clear_offline_kiosks(
 
     named = (await db.execute(
         select(Device).where(Device.id.in_(ids), Device.device_type == "kiosk")
-        .order_by(Device.name))).scalars().all()
+        .order_by(natural(Device.name)))).scalars().all()
     still_matching = {d.id for d in (await db.execute(
         select(Device).where(Device.id.in_(ids), _offline_kiosk_clause(now)))).scalars()}
 
@@ -241,7 +242,7 @@ async def list_device_leases(
         select(DeviceDhcpLease)
         .where(DeviceDhcpLease.device_id == device_id)
         .order_by(DeviceDhcpLease.up.desc(),
-                  DeviceDhcpLease.hostname.nulls_last(),
+                  natural(DeviceDhcpLease.hostname).nulls_last(),
                   DeviceDhcpLease.mac))).all()
 
 

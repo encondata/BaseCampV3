@@ -15,6 +15,7 @@ import {
   useCallback, useEffect, useMemo, useState, type CSSProperties,
 } from 'react';
 
+import { compareValues } from '../../lib/naturalSort';
 import { useAuth } from '../../auth/AuthContext';
 import { RowActionsMenu, type RowAction } from '../hardware/RowActionsMenu';
 import {
@@ -161,7 +162,7 @@ export default function RulesTab({ onCount }: {
     });
     return rows.sort((a, b) => {
       const va = ruleSortValue(a, sortKey, ctx), vb = ruleSortValue(b, sortKey, ctx);
-      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
+      return compareValues(va, vb) * sortDir;
     });
   }, [rules, schema, facets, filters, query, sortKey, sortDir, haystack, cellText, ctx]);
 

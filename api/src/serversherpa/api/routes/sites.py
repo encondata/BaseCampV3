@@ -23,6 +23,7 @@ from serversherpa.db.models import (
     Client, Partner, Person, RawSurveyEntry, Site, SiteClient,
     SiteSurveyEntry, SiteType, StatusValue,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.sites import bulk_import as bulk
 from serversherpa.sites.survey import (
@@ -69,7 +70,7 @@ async def _clients_by_site(db: DbSession, site_ids: list[uuid.UUID]) -> dict:
         select(SiteClient.site_id, Client.id, Client.name)
         .join(Client, Client.id == SiteClient.client_id)
         .where(SiteClient.site_id.in_(site_ids))
-        .order_by(Client.name)
+        .order_by(natural(Client.name))
     )).all()
     out: dict = {}
     for site_id, client_id, name in rows:
@@ -107,7 +108,7 @@ async def list_sites(
     db: DbSession,
     actor: AuthContext = require_permission("sites", "view"),
 ) -> list[SiteItem]:
-    query = select(Site).order_by(Site.name)
+    query = select(Site).order_by(natural(Site.name))
     cond = scope_conditions("sites", actor.access, actor.person.id)
     if cond is not None:
         query = query.where(cond)
@@ -264,7 +265,7 @@ async def list_site_types(
     _actor: AuthContext = require_permission("sites", "view"),
 ) -> list[SiteLookupOut]:
     rows = (await db.scalars(
-        select(SiteType).order_by(SiteType.sort_order, SiteType.label))).all()
+        select(SiteType).order_by(SiteType.sort_order, natural(SiteType.label)))).all()
     return [SiteLookupOut.model_validate(r) for r in rows]
 
 

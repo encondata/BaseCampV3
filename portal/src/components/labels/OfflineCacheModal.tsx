@@ -4,6 +4,7 @@
  * on the page, and Clear all. Presentational: the page performs the cache
  * and API calls and passes the results back in.
  */
+import { naturalCompare } from '../../lib/naturalSort';
 import { useEffect, useRef, useState } from 'react';
 
 import { relativeTime } from '../../lib/format';
@@ -51,7 +52,7 @@ export default function OfflineCacheModal({
   const typeLabel = (key: string) => labelTypes.find((t) => t.key === key)?.label ?? key;
 
   const rows = [...bundles]
-    .sort((a, b) => a.initiative_name.localeCompare(b.initiative_name) || a.label_type.localeCompare(b.label_type))
+    .sort((a, b) => naturalCompare(a.initiative_name, b.initiative_name) || naturalCompare(a.label_type, b.label_type))
     .map((b) => ({
       key: `${b.initiative_id}:${b.label_type}`,
       cells: [

@@ -8,6 +8,7 @@
 import {
   useCallback, useEffect, useMemo, useRef, useState, type CSSProperties,
 } from 'react';
+import { compareValues } from '../lib/naturalSort';
 import { Link, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -220,7 +221,7 @@ export default function Workers() {
     });
     return rows.sort((a, b) => {
       const va = sortValueFor(a, sortKey), vb = sortValueFor(b, sortKey);
-      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
+      return compareValues(va, vb) * sortDir;
     });
   }, [workers, filters, cellText, levels, query, sortKey, sortDir, haystack]);
 

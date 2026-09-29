@@ -18,6 +18,7 @@ from serversherpa.db.models import (
     Container, ContainerAsset, Initiative, Site, StatusValue, Truck,
     TruckContainer, TruckUpdate,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.trucks import bulk_import as bulk
 from serversherpa.trucks.bulk_create import TRUCK_FIELDS
@@ -124,7 +125,7 @@ async def _truck_containers(db: DbSession, truck_id: uuid.UUID,
         select(Container).join(
             TruckContainer, TruckContainer.container_id == Container.id)
         .where(TruckContainer.truck_id == truck_id)
-        .order_by(Container.name))))
+        .order_by(natural(Container.name)))))
     ids = [c.id for c in rows]
     asset_counts = dict((await db.execute(
         select(ContainerAsset.container_id, func.count())
@@ -181,7 +182,7 @@ async def trucks_map(
         .join(latest, latest.c.truck_id == Truck.id)
         .where(Truck.archived_at.is_(None), Truck.status != "historical",
                latest.c.lat.isnot(None), latest.c.lng.isnot(None))
-        .order_by(Truck.name))).all()
+        .order_by(natural(Truck.name)))).all()
     statuses = await _truck_statuses(db)
     out = []
     for t, at, lat, lng, addr in rows:

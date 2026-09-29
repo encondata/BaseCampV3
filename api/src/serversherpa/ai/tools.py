@@ -17,6 +17,7 @@ from serversherpa.db.models import (
     Asset, AssetModel, Client, Initiative, InitiativeAsset, Partner, Person,
     PersonRole, ProcessedScan, Site,
 )
+from serversherpa.db.ordering import natural
 
 LIMIT = 10
 
@@ -129,7 +130,7 @@ async def _find_moves(db: AsyncSession, args: dict) -> dict:
         q = q.where(Initiative.status == status)
     if args.get("query"):
         q = q.where(Initiative.name.ilike(f"%{args['query']}%"))
-    rows = (await db.scalars(q.order_by(Initiative.name).limit(LIMIT))).all()
+    rows = (await db.scalars(q.order_by(natural(Initiative.name)).limit(LIMIT))).all()
     return {"moves": [{"id": str(m.id), "name": m.name, "status": m.status}
                       for m in rows]}
 
@@ -168,7 +169,7 @@ async def _find_people(db: AsyncSession, args: dict) -> dict:
              func.concat(Person.first_name, " ", Person.last_name)
              .ilike(needle),
              Person.preferred_name.ilike(needle)))
-         .order_by(Person.last_name, Person.first_name).limit(LIMIT))
+         .order_by(natural(Person.last_name), natural(Person.first_name)).limit(LIMIT))
     rows = (await db.scalars(q)).all()
     return {"people": [{
         "id": str(p.id),
@@ -180,7 +181,7 @@ async def _find_sites(db: AsyncSession, args: dict) -> dict:
     needle = f"%{args.get('query', '')}%"
     q = (select(Site)
          .where(or_(Site.name.ilike(needle), Site.city.ilike(needle)))
-         .order_by(Site.name).limit(LIMIT))
+         .order_by(natural(Site.name)).limit(LIMIT))
     rows = (await db.scalars(q)).all()
     return {"sites": [{"id": str(s.id), "name": s.name, "city": s.city}
                       for s in rows]}
@@ -191,12 +192,12 @@ async def _find_stakeholders(db: AsyncSession, args: dict) -> dict:
     out: list[dict] = []
     clients = (await db.scalars(
         select(Client).where(Client.name.ilike(needle))
-        .order_by(Client.name).limit(LIMIT))).all()
+        .order_by(natural(Client.name)).limit(LIMIT))).all()
     out += [{"id": str(c.id), "name": c.name, "kind": "client"}
             for c in clients]
     partners = (await db.scalars(
         select(Partner).where(Partner.name.ilike(needle))
-        .order_by(Partner.name).limit(LIMIT))).all()
+        .order_by(natural(Partner.name)).limit(LIMIT))).all()
     out += [{"id": str(p.id), "name": p.name, "kind": "partner"}
             for p in partners]
     return {"stakeholders": out[:LIMIT]}
@@ -262,7 +263,7 @@ async def _move_summary(db: AsyncSession, args: dict) -> dict:
         select(Initiative)
         .where(Initiative.initiative_type == "move")
         .where(Initiative.name.ilike(needle))
-        .order_by(Initiative.name).limit(LIMIT))).all()
+        .order_by(natural(Initiative.name)).limit(LIMIT))).all()
     if len(moves) != 1:
         return {"moves": [{"id": str(m.id), "name": m.name,
                            "status": m.status} for m in moves]}

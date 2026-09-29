@@ -98,7 +98,7 @@ export function ruleSortValue(
     case 'conditions': return rule.conditions.length;
     case 'actions': return rule.actions.length;
     case 'runs': return stat?.run_count ?? 0;
-    case 'updated': return rule.updated_at;
+    case 'updated': return Date.parse(rule.updated_at);
     case 'enabled': return rule.enabled ? 1 : 0;
     default: return ruleCellText(rule, key, ctx).toLowerCase();
   }

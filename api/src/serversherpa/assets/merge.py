@@ -13,6 +13,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Asset, AssetModel, AssetModelAlias, StockLine
+from serversherpa.db.ordering import natural
 
 SINGLE_FIELDS = ("category", "ru_size", "mount_type", "rail_type", "form_factor")
 UNIT_GROUPS = (("weight_lbs", "weight_kg"),
@@ -59,9 +60,9 @@ async def build_plan(db: AsyncSession, target: AssetModel, source: AssetModel,
         select(func.count()).select_from(StockLine).where(StockLine.model_id == source.id)) or 0
 
     target_aliases = list(await db.scalars(select(AssetModelAlias.alias).where(
-        AssetModelAlias.model_id == target.id).order_by(AssetModelAlias.alias)))
+        AssetModelAlias.model_id == target.id).order_by(natural(AssetModelAlias.alias))))
     source_aliases = list(await db.scalars(select(AssetModelAlias.alias).where(
-        AssetModelAlias.model_id == source.id).order_by(AssetModelAlias.alias)))
+        AssetModelAlias.model_id == source.id).order_by(natural(AssetModelAlias.alias))))
     # Aliases the target already "owns", so a source alias equal to one of
     # them is dropped rather than moved. The target-alias half is defensive
     # only: asset_model_aliases.alias carries a global CITEXT unique index,

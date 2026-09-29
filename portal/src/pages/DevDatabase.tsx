@@ -23,6 +23,7 @@
  * Tab bar follows the .sysconf-tabbar pattern from pages/SystemConfig.tsx.
  */
 
+import { naturalCompare } from '../lib/naturalSort';
 import { useEffect, useMemo, useState } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
@@ -120,7 +121,7 @@ function ReconcileTab() {
       list.push(item);
       byType.set(item.entity_type, list);
     }
-    return [...byType.entries()].sort(([a], [b]) => a.localeCompare(b));
+    return [...byType.entries()].sort(([a], [b]) => naturalCompare(a, b));
   }, [items]);
 
   const total = items?.length ?? 0;

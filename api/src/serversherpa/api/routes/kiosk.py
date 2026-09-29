@@ -41,6 +41,7 @@ from serversherpa.db.models import (
     RawScan, Site, StatusValue, TimeEntry, Truck, TruckContainer, UserAccount,
     WorkerProfile,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.labels.generate.values import (
     CONTAINER_KEYS, AssetRow, Sites, make_model_text, placeholder_values,
 )
@@ -326,14 +327,14 @@ async def _allowed_initiatives_with_sites(
                Initiative.archived_at.is_(None),
                Initiative.status.not_in(HISTORICAL_INITIATIVE_STATUSES))
         .order_by(in_progress_first, Initiative.scheduled_start.is_(None),
-                  Initiative.scheduled_start, Initiative.name))).all())
+                  Initiative.scheduled_start, natural(Initiative.name)))).all())
 
 
 async def _active_scan_types(db: AsyncSession) -> list[StatusValue]:
     return list((await db.scalars(
         select(StatusValue)
         .where(StatusValue.record_type == "asset", StatusValue.is_active.is_(True))
-        .order_by(StatusValue.sort_order, StatusValue.label))).all())
+        .order_by(StatusValue.sort_order, natural(StatusValue.label)))).all())
 
 
 @router.get("/setup-options", response_model=SetupOptionsOut)
@@ -435,7 +436,7 @@ async def _label_catalog_keys(db: AsyncSession) -> list[str]:
     keys = list((await db.scalars(
         select(LabelPlaceholder.key)
         .where(LabelPlaceholder.is_active.is_(True))
-        .order_by(LabelPlaceholder.sort_order, LabelPlaceholder.key))).all())
+        .order_by(LabelPlaceholder.sort_order, natural(LabelPlaceholder.key)))).all())
     return [k for k in keys if k not in CONTAINER_KEYS]
 
 
@@ -546,7 +547,7 @@ async def sync_people(
         .where(Person.archived_at.is_(None),
                (WorkerProfile.person_id.isnot(None))
                | (UserAccount.person_id.isnot(None)))
-        .order_by(Person.last_name, Person.first_name))).all()
+        .order_by(natural(Person.last_name), natural(Person.first_name)))).all()
     return KioskPeopleSyncOut(
         generated_at=datetime.now(UTC),
         people=[KioskPersonOut(id=p.id, display_name=p.display_name,
@@ -595,7 +596,7 @@ async def sync_containers(
                    & (StatusValue.key == Container.status))
         .where(Container.initiative_id == initiative.id,
                Container.archived_at.is_(None))
-        .order_by(Container.name))).all()
+        .order_by(natural(Container.name)))).all()
 
     ids = [c.id for c, _, _ in rows]
     counts = dict((await db.execute(
@@ -1031,7 +1032,7 @@ async def sync_trucks(
                    & (StatusValue.key == Truck.status))
         .where(Truck.initiative_id == initiative.id,
                Truck.archived_at.is_(None))
-        .order_by(Truck.name))).all()
+        .order_by(natural(Truck.name)))).all()
 
     ids = [t.id for t, _, _, _ in rows]
     counts = dict((await db.execute(
@@ -1430,8 +1431,8 @@ async def list_label_vocab(
     here is writable from the kiosk — vocab edits stay devtools-gated in
     the portal.
     """
-    q = select(LabelVocab).order_by(LabelVocab.kind, LabelVocab.sort_order,
-                                    LabelVocab.key)
+    q = select(LabelVocab).order_by(natural(LabelVocab.kind), LabelVocab.sort_order,
+                                    natural(LabelVocab.key))
     if kind is not None:
         q = q.where(LabelVocab.kind == kind)
     rows = (await db.execute(q)).scalars().all()

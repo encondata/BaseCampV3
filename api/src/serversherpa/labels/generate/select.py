@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import LabelTemplate, LabelTemplateSite, Site
+from serversherpa.db.ordering import natural_key
 
 
 async def select_template(
@@ -93,7 +94,7 @@ async def candidate_templates(
             site_group.append(template)
         else:
             other_group.append(template)
-            other_site_names[template.id] = sorted(name for _, name in links)
+            other_site_names[template.id] = sorted((name for _, name in links), key=natural_key)
 
     ordered: list[Candidate] = []
     seen: set[uuid.UUID] = set()
