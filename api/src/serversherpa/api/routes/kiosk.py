@@ -4,6 +4,7 @@ phone side) and, in Task 4, the signed-in heartbeat that upserts the
 kiosk's Device row. Design:
 docs/superpowers/specs/2026-09-13-kiosk-web-design.md"""
 
+import ipaddress
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -23,7 +24,7 @@ from serversherpa.api.schemas import (
     HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut, KioskClockInIn,
     KioskClockOutIn, KioskContainerAssetIn, KioskContainerAssetOut,
     KioskContainerAssetRow, KioskContainerOut, KioskContainerRef,
-    KioskContainersSyncOut, KioskContainerStateOut,
+    KioskContainersSyncOut, KioskContainerStateOut, KioskMoveOut,
     KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
     KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn,
     KioskScanBatchOut, KioskScanRejected, KioskSetupIn, KioskSetupOut,
@@ -31,12 +32,12 @@ from serversherpa.api.schemas import (
     KioskTimeclockPerson, KioskTimeclockStatusOut, KioskTruckContainerIn,
     KioskTruckContainerOut, KioskTruckContainerRow, KioskTruckOut,
     KioskTruckRef, KioskTrucksSyncOut, KioskTruckStateOut, LabelVocabOut,
-    PairCreateIn, PairCreateOut,
-    PairInfoOut, PairPollIn, PairPollOut, SetupOptionInitiative,
+    MoveLoginIn, PairCreateIn, PairCreateOut,
+    PairInfoOut, PairPollIn, PairPollOut, SessionOut, SetupOptionInitiative,
     SetupOptionScanType, SetupOptionSite, SetupOptionsOut,
 )
 from serversherpa.db.models import (
-    Asset, AssetModel, Client, Container, ContainerAsset, Device, Initiative,
+    Asset, AssetModel, AuditLog, Client, Container, ContainerAsset, Device, Initiative,
     InitiativeAsset, KioskPairRequest, LabelPlaceholder, LabelVocab, Person,
     RawScan, Site, StatusValue, TimeEntry, Truck, TruckContainer, UserAccount,
     WorkerProfile,
@@ -47,6 +48,7 @@ from serversherpa.labels.generate.values import (
 )
 from serversherpa.services import auth as auth_service
 from serversherpa.services import kiosk_pairing as pairing
+from serversherpa.services import move_password as move_password_service
 from serversherpa.services import timeclock
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.password_policy import load_policy
@@ -123,6 +125,71 @@ async def poll_pair(
         audit_action="login_pair", access=access, client="kiosk")
     return PairPollOut(status="approved", session=session_response(
         result, response, await totp_status_out(db, account), await load_policy(db)))
+
+
+# ── move password: kiosk side (no auth) ─────────────────────────────
+
+# Per-IP cap on FAILED move-password sign-ins, the /kiosk/pair numbers
+# (/auth/login has only its per-account lockout, and a move password has
+# no account to lock). Counted from the login_failed audit rows below,
+# which all key on entity_id MOVE_LOGIN_AUDIT_ID so the count rides the
+# (entity_type, entity_id, at) audit index.
+MOVE_LOGIN_IP_LIMIT = pairing.PAIR_IP_LIMIT
+MOVE_LOGIN_IP_WINDOW_SECONDS = pairing.PAIR_IP_WINDOW_SECONDS
+MOVE_LOGIN_AUDIT_ID = "move-login"
+
+
+def _inet_or_none(ip: str) -> str | None:
+    """audit_log.ip is INET; rate_limit_ip's shared 'unknown' bucket is not
+    an address, so it is stored (and counted) as NULL."""
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    return ip
+
+
+async def _move_login_failures(db: AsyncSession, ip: str | None) -> int:
+    since = datetime.now(UTC) - timedelta(seconds=MOVE_LOGIN_IP_WINDOW_SECONDS)
+    return await db.scalar(
+        select(func.count()).select_from(AuditLog).where(
+            AuditLog.entity_type == "auth", AuditLog.entity_id == MOVE_LOGIN_AUDIT_ID,
+            AuditLog.action == "login_failed", AuditLog.at >= since,
+            AuditLog.ip == ip if ip is not None else AuditLog.ip.is_(None))) or 0
+
+
+async def _move_login_failed(db: AsyncSession, ip: str | None, reason: str, **extra) -> HTTPException:
+    audit(db, actor_id=None, entity_type="auth", entity_id=MOVE_LOGIN_AUDIT_ID,
+          action="login_failed", changes={"reason": reason, **extra}, ip=ip)
+    await db.commit()
+    return _err(401, reason)
+
+
+@router.post("/move-login", response_model=SessionOut)
+async def move_login(
+    body: MoveLoginIn, request: Request, response: Response, db: DbSession,
+) -> SessionOut:
+    """Sign a kiosk in with a move's password. The session belongs to the
+    move's hidden kiosk identity and is locked to that move (see
+    kiosk_setup/setup_options and services/move_password.py)."""
+    ip = _inet_or_none(rate_limit_ip(request))
+    if await _move_login_failures(db, ip) >= MOVE_LOGIN_IP_LIMIT:
+        raise _err(429, "move_login_rate_limited")
+    initiative = await move_password_service.find_initiative_by_password(db, body.password)
+    if initiative is None:
+        raise await _move_login_failed(db, ip, "invalid_move_password")
+    if not move_password_service.is_move_active(initiative):
+        raise await _move_login_failed(db, ip, "move_not_active",
+                                       initiative_id=str(initiative.id))
+    account = await move_password_service.ensure_kiosk_identity(db, initiative)
+    access = await resolve_access(db, account.person_id)
+    kiosk_move = KioskMoveOut(initiative_id=initiative.id, name=initiative.name)
+    result = await auth_service.start_session(
+        db, account, ip=client_ip(request), user_agent=request.headers.get("user-agent"),
+        audit_action="login_move", access=access, client="kiosk",
+        initiative_id=initiative.id)
+    return session_response(result, response, await totp_status_out(db, account),
+                            await load_policy(db), kiosk_move=kiosk_move)
 
 
 # ── pairing: phone side (kiosk:view) ────────────────────────────────
@@ -361,6 +428,10 @@ async def setup_options(
     would still let a worker set up a kiosk. See the spec's security notes
     for the accepted-risk writeup."""
     rows = await _allowed_initiatives_with_sites(db)
+    if actor.session.initiative_id is not None:
+        # a move-password session sees only its own move (none once that
+        # move has gone inactive — the filters above still apply)
+        rows = [r for r in rows if r[0].id == actor.session.initiative_id]
     scan_types = await _active_scan_types(db)
     status_labels = await _initiative_status_labels(db)
     return SetupOptionsOut(
@@ -387,7 +458,11 @@ async def kiosk_setup(
 ) -> KioskSetupOut:
     """Stamps this kiosk's Device row (found by serial) with the move, the
     move's source or destination site, and the scan type chosen in the
-    Kiosk Setup wizard. Not read-only exempt — this is a write."""
+    Kiosk Setup wizard. Not read-only exempt — this is a write. A
+    move-password session may set up only its own move."""
+    if (actor.session.initiative_id is not None
+            and body.initiative_id != actor.session.initiative_id):
+        raise _err(403, "move_locked")
     device = await db.scalar(select(Device).where(Device.serial == body.serial))
     if device is None or device.device_type != "kiosk":
         raise _err(404, "device_not_found")
@@ -545,6 +620,7 @@ async def sync_people(
         .outerjoin(WorkerProfile, WorkerProfile.person_id == Person.id)
         .outerjoin(UserAccount, UserAccount.person_id == Person.id)
         .where(Person.archived_at.is_(None),
+               Person.source != move_password_service.KIOSK_MOVE_SOURCE,
                (WorkerProfile.person_id.isnot(None))
                | (UserAccount.person_id.isnot(None)))
         .order_by(natural(Person.last_name), natural(Person.first_name)))).all()

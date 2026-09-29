@@ -24,6 +24,7 @@ from serversherpa.db.models import (
     UserAccount,
 )
 from serversherpa.db.ordering import natural
+from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 
 router = APIRouter(prefix="/search", tags=["search"])
 
@@ -44,6 +45,7 @@ async def global_search(
         query = (
             select(Person, UserAccount)
             .join(UserAccount, UserAccount.person_id == Person.id)
+            .where(Person.source != KIOSK_MOVE_SOURCE)   # a move's hidden kiosk identity
             .where(or_(
                 func.concat(Person.first_name, " ", Person.last_name).ilike(needle),
                 Person.preferred_name.ilike(needle),

@@ -118,6 +118,17 @@ class TotpStatusOut(BaseModel):
     backup_codes_remaining: int
 
 
+class KioskMoveOut(BaseModel):
+    """The move a kiosk session is locked to (a move-password sign-in)."""
+
+    initiative_id: uuid.UUID
+    name: str
+
+
+class MoveLoginIn(BaseModel):
+    password: str = Field(min_length=1, max_length=200)
+
+
 class SessionOut(BaseModel):
     status: Literal["ok"] = "ok"
     access_token: str
@@ -135,6 +146,7 @@ class SessionOut(BaseModel):
     scope: ScopeOut
     password_min_length: int = 8
     totp: TotpStatusOut
+    kiosk_move: KioskMoveOut | None = None
 
 
 class LoginChallengeOut(BaseModel):
@@ -159,6 +171,7 @@ class MeOut(BaseModel):
     scope: ScopeOut
     password_min_length: int = 8
     totp: TotpStatusOut
+    kiosk_move: KioskMoveOut | None = None
 
 
 class TotpVerifyIn(BaseModel):
@@ -1908,6 +1921,13 @@ class InitiativeDetailOut(InitiativeItem):
     people: list[InitiativePersonRow] = []
     links_children: list[InitiativeLinkRow] = []
     links_parents: list[InitiativeLinkRow] = []
+    kiosk_password_set: bool = False
+
+
+class KioskPasswordOut(BaseModel):
+    """GET /initiatives/{id}/kiosk-password — admin reveal."""
+
+    password: str | None
 
 
 class InitiativeNextColorOut(BaseModel):
@@ -1966,6 +1986,9 @@ class InitiativeUpdateIn(InitiativeCreateIn):
 
     name: str | None = None
     initiative_type: str | None = None
+    # the move's kiosk password (admin rank): absent = unchanged, null or
+    # "" = clear. The route reads model_fields_set to tell absent from null.
+    kiosk_password: str | None = Field(default=None, max_length=200)
     model_config = ConfigDict(extra="forbid")
 
 
