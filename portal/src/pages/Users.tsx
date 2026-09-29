@@ -13,6 +13,7 @@ import { RowActionsMenu, type RowAction } from '../components/hardware/RowAction
 import {
   AccountStateModal,
   AdminEditProfileModal,
+  DemoteUserModal,
   ManageRolesModal,
   ResetPasswordModal,
 } from '../components/UserAdminModals';
@@ -134,7 +135,8 @@ function exportCsv(rows: UserItem[]): void {
 
 type ManageAction =
   | { kind: 'edit' | 'reset' | 'roles'; user: UserItem }
-  | { kind: 'state'; action: 'disable' | 'enable' | 'unlock'; user: UserItem };
+  | { kind: 'state'; action: 'disable' | 'enable' | 'unlock'; user: UserItem }
+  | { kind: 'demote'; user: UserItem };
 
 export default function Users() {
   const { person: mePerson, can, maxRank, godMode, preferences } = useAuth();
@@ -395,6 +397,10 @@ export default function Users() {
       } : {
         key: 'disable', label: 'Disable account', destructive: true,
         onSelect: () => setManage({ kind: 'state', action: 'disable', user: u }),
+      }] : []),
+      ...(canManageUsers ? [{
+        key: 'demote', label: 'Demote to worker', destructive: true,
+        onSelect: () => setManage({ kind: 'demote', user: u }),
       }] : []),
     ];
   };
@@ -661,6 +667,11 @@ export default function Users() {
       )}
       {manage?.kind === 'state' && (
         <AccountStateModal user={manage.user} action={manage.action}
+          onClose={() => setManage(null)}
+          onDone={() => { setManage(null); void load(); }} />
+      )}
+      {manage?.kind === 'demote' && (
+        <DemoteUserModal user={manage.user}
           onClose={() => setManage(null)}
           onDone={() => { setManage(null); void load(); }} />
       )}

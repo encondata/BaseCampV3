@@ -12,7 +12,7 @@ import ActivityHistory from '../components/ActivityHistory';
 import AvatarUpload from '../components/AvatarUpload';
 import GodDeleteButton from '../components/GodDeleteButton';
 import {
-  AccountStateModal, AdminEditProfileModal, ResetPasswordModal, ResetTotpModal,
+  AccountStateModal, AdminEditProfileModal, DemoteUserModal, ResetPasswordModal, ResetTotpModal,
 } from '../components/UserAdminModals';
 import UserAccessTab from '../components/users/UserAccessTab';
 import UserProfileTab from '../components/users/UserProfileTab';
@@ -35,7 +35,8 @@ type Tab = 'profile' | 'access' | 'history';
 type Action =
   | { kind: 'edit' | 'reset' | 'signout' }
   | { kind: 'state'; action: 'disable' | 'enable' | 'unlock' }
-  | { kind: 'totp-reset' };
+  | { kind: 'totp-reset' }
+  | { kind: 'demote' };
 
 /** Tier label for the hero chip — shown only for the global admin tiers
  *  (Staff and above, rank >= 40). Below that, RANK_LABELS entries describe
@@ -246,6 +247,7 @@ export default function UserDetail() {
                 ) : (
                   <button className="mini-btn danger" onClick={() => setAction({ kind: 'state', action: 'disable' })}>Disable account</button>
                 )}
+                <button className="mini-btn danger" onClick={() => setAction({ kind: 'demote' })}>Demote to worker</button>
               </>
             )}
             {mode === 'manage' && (
@@ -311,6 +313,11 @@ export default function UserDetail() {
         <AccountStateModal user={managed} action={action.action}
           onClose={() => setAction(null)}
           onDone={() => { setAction(null); void load(); }} />
+      )}
+      {action?.kind === 'demote' && (
+        <DemoteUserModal user={managed}
+          onClose={() => setAction(null)}
+          onDone={() => { setAction(null); navigate('/people/users'); }} />
       )}
       {action?.kind === 'totp-reset' && managed && (
         <ResetTotpModal user={managed}
