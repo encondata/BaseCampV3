@@ -2937,7 +2937,7 @@ export async function getTimeSummary(initiativeId: string): Promise<TimeSummaryO
 
 export interface InitiativeItem {
   id: string; name: string; description: string | null;
-  /** Only the detail endpoint sends this; list rows leave it undefined. */
+  /** Sent on list rows and the detail alike, so the edit modal can offer Reveal from either page. */
   kiosk_password_set?: boolean;
   initiative_type: string; type_label: string; type_color: string;
   sub_type: string | null; sub_type_label: string | null;
