@@ -1,7 +1,8 @@
 /** React node views for the wiki's custom nodes, used by both the live
  *  editor and the read-only view (controls that change the document only
  *  show while the editor is editable):
- *    - WikiImage: resolves its asset URL, caption and alt text, a resize handle
+ *    - WikiImage: resolves its asset URL, caption and alt text, a resize handle;
+ *      read-only, a click opens it full size in the ImageLightbox viewer
  *    - FileEmbed: a card with an inline PDF/image/video preview
  *    - PageLink: the target's current title ("Missing page" when it's gone,
  *      "Couldn't load link" when the lookup failed — retried once)
@@ -22,6 +23,7 @@ import {
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
+import ImageLightbox from '../components/ImageLightbox';
 import { fileType } from '../components/NodeIcon';
 import { resolveAssetUrl } from '../lib/assetUrls';
 import { nodeTitle } from '../lib/nodeTitles';
@@ -111,6 +113,7 @@ function WikiImageView({ node, updateAttributes, editor, selected }: NodeViewPro
   const frameRef = useRef<HTMLDivElement>(null);
   const [dragWidth, setDragWidth] = useState<number | null>(null);
   const [editingAlt, setEditingAlt] = useState(false);
+  const [viewing, setViewing] = useState(false);
 
   const startResize = (e: ReactPointerEvent<HTMLSpanElement>) => {
     e.preventDefault();
@@ -144,7 +147,14 @@ function WikiImageView({ node, updateAttributes, editor, selected }: NodeViewPro
         {url === null && (
           <div className="wiki-image-missing"><Icon name="image" /><span>Image unavailable</span></div>
         )}
-        {url && <img src={url} alt={alt} draggable={false} onError={publicOnError(editor)} />}
+        {url && (editable
+          ? <img src={url} alt={alt} draggable={false} onError={publicOnError(editor)} />
+          : (
+            <button type="button" className="wiki-image-open" onClick={() => setViewing(true)}
+                    aria-label={alt ? `View full size: ${alt}` : 'View full size'}>
+              <img src={url} alt={alt} draggable={false} onError={publicOnError(editor)} />
+            </button>
+          ))}
         {editable && url && (
           <span className="wiki-image-resize" role="presentation" title="Drag to resize"
                 onPointerDown={startResize} />
@@ -166,6 +176,9 @@ function WikiImageView({ node, updateAttributes, editor, selected }: NodeViewPro
           ))}
         </div>
       ) : (caption && <figcaption>{caption}</figcaption>)}
+      {viewing && url && (
+        <ImageLightbox src={url} alt={alt} caption={caption} onClose={() => setViewing(false)} />
+      )}
     </NodeViewWrapper>
   );
 }

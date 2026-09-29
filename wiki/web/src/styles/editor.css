@@ -447,6 +447,60 @@
 .wiki-image.is-selected .wiki-image-frame,
 .wiki-image.ProseMirror-selectednode .wiki-image-frame { outline-color: var(--amber); }
 .wiki-image img { width: 100%; height: auto; border-radius: 10px; display: block; }
+/* read-only: the image opens full size in the viewer */
+.wiki-image-open {
+  display: block; width: 100%; padding: 0; border: 0; background: none;
+  border-radius: 10px; cursor: zoom-in;
+}
+.wiki-image-open:focus-visible { outline: 2px solid var(--amber); outline-offset: 3px; }
+
+/* ── image viewer (ImageLightbox, portaled to <body>: no portal tokens here) ── */
+.wiki-lightbox {
+  position: fixed; inset: 0; z-index: 1000;
+  display: flex; flex-direction: column;
+  background: rgba(8, 11, 16, 0.985);
+  color: #e8edf3;
+  font-family: 'Geologica', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+.wiki-lightbox-bar {
+  display: flex; align-items: center; gap: 16px;
+  padding: 10px 14px 10px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.wiki-lightbox-title {
+  flex: 1; min-width: 0; font-size: 14px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wiki-lightbox-tools { display: flex; align-items: center; gap: 4px; }
+.wiki-lightbox-tools button, .wiki-lightbox-tools a {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; padding: 0; border: 0; border-radius: 8px;
+  background: none; color: inherit; cursor: pointer;
+}
+.wiki-lightbox-tools button:hover:not(:disabled), .wiki-lightbox-tools a:hover { background: rgba(255, 255, 255, 0.1); }
+.wiki-lightbox-tools button:disabled { opacity: 0.35; cursor: default; }
+.wiki-lightbox-tools button:focus-visible, .wiki-lightbox-tools a:focus-visible { outline: 2px solid #f0a53a; }
+.wiki-lightbox-tools svg { width: 18px; height: 18px; }
+.wiki-lightbox-pct {
+  min-width: 48px; text-align: center;
+  font-family: 'Fragment Mono', monospace; font-size: 12px; color: #a9b4c2;
+}
+.wiki-lightbox-stage {
+  position: relative; flex: 1; min-height: 0; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px; touch-action: none; cursor: zoom-out;
+}
+.wiki-lightbox-stage img {
+  max-width: 100%; max-height: 100%; object-fit: contain;
+  border-radius: 6px; user-select: none; cursor: zoom-in;
+  transform-origin: center center;
+}
+.wiki-lightbox-stage.is-zoomed img { cursor: grab; }
+.wiki-lightbox-stage.is-zoomed img:active { cursor: grabbing; }
+@media (max-width: 760px) {
+  .wiki-lightbox-bar { padding: 8px 8px 8px 14px; gap: 8px; }
+  .wiki-lightbox-stage { padding: 8px; }
+}
 .wiki-image-skeleton {
   width: min(480px, 100%);
   aspect-ratio: 16 / 9;

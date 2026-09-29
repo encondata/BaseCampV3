@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '../testing/pmDom';
 
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -61,6 +61,15 @@ describe('ReadOnlyDoc', () => {
     expect(screen.getByText('Rack 12')).toBeTruthy();
     expect(await screen.findByText('Image unavailable')).toBeTruthy();
     expect(getAssetUrls).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens an image full size in the viewer when clicked, and closes it', async () => {
+    render(<MemoryRouter><ReadOnlyDoc content={doc} /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: 'View full size: Rack front' }));
+    const dialog = screen.getByRole('dialog', { name: 'Rack 12' });
+    expect(within(dialog).getByRole('img', { name: 'Rack front' }).getAttribute('src')).toBe('https://s3/rack.png');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('shows page links by their current title, or "Missing page"', async () => {
