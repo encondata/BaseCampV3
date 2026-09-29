@@ -22,6 +22,7 @@ const api = vi.hoisted(() => ({
   createInitiative: vi.fn(),
   updateInitiative: vi.fn(),
   archiveInitiative: vi.fn(),
+  getInitiativeKioskPassword: vi.fn(),
 }));
 
 vi.mock('../../lib/api', async (importActual) => ({
@@ -76,14 +77,14 @@ const TYPES = [vocab('project', 'Project', '#1668a7')];
 const SITES: SiteItem[] = [];
 const ORGS: OrgRef[] = [];
 
-function renderModal(row: InitiativeItem | null) {
+function renderModal(row: InitiativeItem | null, isAdmin = true) {
   const onClose = vi.fn();
   const onSaved = vi.fn();
   render(<InitiativeEditModal
     initiative={row}
     statuses={STATUSES} types={TYPES} subTypes={[]} shippingTypes={[]}
     sites={SITES} clients={ORGS} partners={ORGS}
-    isAdmin canChange onClose={onClose} onSaved={onSaved} />);
+    isAdmin={isAdmin} canChange onClose={onClose} onSaved={onSaved} />);
   return { onClose, onSaved };
 }
 
@@ -163,4 +164,106 @@ it('a save failure still surfaces the mapped error message', async () => {
   await user.click(screen.getByRole('button', { name: 'Save' }));
 
   expect(await screen.findByText('Name is required.')).toBeTruthy();
+});
+
+/* ── kiosk password ──────────────────────────────────────────────── */
+
+const pwField = () => screen.getByLabelText('Kiosk password') as HTMLInputElement;
+
+it('admin edit mode shows the kiosk password field, masked, with Show and Clear', () => {
+  renderModal(initiative());
+
+  expect(pwField().type).toBe('password');
+  expect(screen.getByRole('button', { name: 'Show' })).toBeTruthy();
+  expect(screen.getByLabelText('Clear kiosk password')).toBeTruthy();
+  expect(screen.getByText(
+    'At least 8 characters, unique across moves. Crews sign in to the kiosk with it.'))
+    .toBeTruthy();
+});
+
+it('Show unmasks the kiosk password field', async () => {
+  const user = userEvent.setup();
+  renderModal(initiative());
+
+  await user.click(screen.getByRole('button', { name: 'Show' }));
+  expect(pwField().type).toBe('text');
+  expect(screen.getByRole('button', { name: 'Hide' })).toBeTruthy();
+});
+
+it('non-admins and create mode see no kiosk password controls', () => {
+  renderModal(initiative(), false);
+  expect(screen.queryByLabelText('Kiosk password')).toBeNull();
+  expect(screen.queryByLabelText('Clear kiosk password')).toBeNull();
+  cleanup();
+  renderModal(null);
+  expect(screen.queryByLabelText('Kiosk password')).toBeNull();
+  expect(screen.queryByLabelText('Clear kiosk password')).toBeNull();
+});
+
+it('Reveal current appears only when a password is set, and shows the value', async () => {
+  const user = userEvent.setup();
+  renderModal(initiative({ kiosk_password_set: false }));
+  expect(screen.queryByRole('button', { name: 'Reveal current' })).toBeNull();
+  cleanup();
+
+  api.getInitiativeKioskPassword.mockResolvedValue({ password: 'Crew-2026!' });
+  renderModal(initiative({ kiosk_password_set: true }));
+  await user.click(screen.getByRole('button', { name: 'Reveal current' }));
+
+  await waitFor(() => expect(screen.getByText('Current: Crew-2026!')).toBeTruthy());
+  expect(api.getInitiativeKioskPassword).toHaveBeenCalledWith('i1');
+});
+
+it('a typed kiosk password reaches the update payload', async () => {
+  const user = userEvent.setup();
+  api.updateInitiative.mockResolvedValue(initiative());
+  renderModal(initiative());
+
+  await user.type(pwField(), 'Crew-2026!');
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(api.updateInitiative).toHaveBeenCalledTimes(1));
+  expect(api.updateInitiative).toHaveBeenCalledWith(
+    'i1', expect.objectContaining({ kiosk_password: 'Crew-2026!' }));
+});
+
+it('saving without touching the kiosk password sends no kiosk_password key', async () => {
+  const user = userEvent.setup();
+  api.updateInitiative.mockResolvedValue(initiative());
+  renderModal(initiative({ kiosk_password_set: true }));
+
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(api.updateInitiative).toHaveBeenCalledTimes(1));
+  const body = api.updateInitiative.mock.calls[0][1] as Record<string, unknown>;
+  expect('kiosk_password' in body).toBe(false);
+});
+
+it('ticking Clear sends an empty kiosk_password and disables the input', async () => {
+  const user = userEvent.setup();
+  api.updateInitiative.mockResolvedValue(initiative());
+  renderModal(initiative({ kiosk_password_set: true }));
+
+  await user.click(screen.getByLabelText('Clear kiosk password'));
+  expect(pwField().disabled).toBe(true);
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(api.updateInitiative).toHaveBeenCalledTimes(1));
+  expect(api.updateInitiative).toHaveBeenCalledWith(
+    'i1', expect.objectContaining({ kiosk_password: '' }));
+});
+
+it.each([
+  ['kiosk_password_in_use', 'That kiosk password is already used by another move.'],
+  ['kiosk_password_too_short', 'Kiosk password must be at least 8 characters.'],
+  ['kiosk_password_forbidden', 'Only admins can change the kiosk password.'],
+])('a %s error shows its message', async (code, message) => {
+  const user = userEvent.setup();
+  api.updateInitiative.mockRejectedValue(new ApiError(422, code));
+  renderModal(initiative());
+
+  await user.type(pwField(), 'Crew-2026!');
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+
+  await waitFor(() => expect(screen.getByText(message)).toBeTruthy());
 });

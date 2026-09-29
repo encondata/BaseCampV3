@@ -85,6 +85,9 @@ export const INITIATIVE_ERRORS: Record<string, string> = {
   circular_link: 'That link would create a loop.',
   link_not_found: 'That link no longer exists.',
   forbidden: 'You do not have permission to change initiatives.',
+  kiosk_password_too_short: 'Kiosk password must be at least 8 characters.',
+  kiosk_password_in_use: 'That kiosk password is already used by another move.',
+  kiosk_password_forbidden: 'Only admins can change the kiosk password.',
 };
 
 /** Site options for the edit modal's site pickers. With a client selected,
@@ -157,6 +160,10 @@ export interface InitiativeFormState {
   destination_tech_partner_id: string; destination_cable_partner_id: string;
   destination_logistics_partner_id: string;
   origin_vendor_involved: boolean; destination_vendor_involved: boolean;
+  /** Admin-only move password: undefined = untouched (nothing is sent). */
+  kiosk_password?: string;
+  /** Ticked = clear the move password (sent as ''). */
+  clear_kiosk_password?: boolean;
 }
 
 const toDay = (iso: string | null | undefined) => (iso ? iso.slice(0, 10) : '');
@@ -239,6 +246,9 @@ export function initiativePayload(
       form.destination_logistics_partner_id);
   out.origin_vendor_involved = form.origin_vendor_involved;
   out.destination_vendor_involved = form.destination_vendor_involved;
+  // only when the admin typed one or ticked Clear — absent means unchanged
+  if (form.clear_kiosk_password) out.kiosk_password = '';
+  else if (form.kiosk_password) out.kiosk_password = form.kiosk_password;
   return out;
 }
 
