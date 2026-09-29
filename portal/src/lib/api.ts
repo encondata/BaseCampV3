@@ -159,6 +159,8 @@ export interface SessionData {
   scope: ScopeInfo;
   password_min_length: number;
   totp: TotpStatus;
+  /** Set when the session came from a move password: the move it is locked to. */
+  kiosk_move: { initiative_id: string; name: string } | null;
 }
 
 /** Password accepted; a code (or enrollment) is owed. No session exists yet. */
@@ -2935,6 +2937,8 @@ export async function getTimeSummary(initiativeId: string): Promise<TimeSummaryO
 
 export interface InitiativeItem {
   id: string; name: string; description: string | null;
+  /** Sent on list rows and the detail alike, so the edit modal can offer Reveal from either page. */
+  kiosk_password_set?: boolean;
   initiative_type: string; type_label: string; type_color: string;
   sub_type: string | null; sub_type_label: string | null;
   sub_type_color: string | null;
@@ -3022,6 +3026,8 @@ export interface InitiativeDetail extends InitiativeItem {
   people: InitiativePersonRow[];
   links_children: InitiativeLinkRow[];
   links_parents: InitiativeLinkRow[];
+  /** A move password (the crews' kiosk sign-in) is set. */
+  kiosk_password_set: boolean;
 }
 
 export async function listInitiatives(): Promise<InitiativeItem[]> {
@@ -3066,6 +3072,16 @@ export async function updateInitiative(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** GET /initiatives/{id}/kiosk-password — admin-only reveal of the move's
+ *  kiosk password (audited server-side). `null` when none is set. */
+export async function getInitiativeKioskPassword(
+  id: string,
+): Promise<{ password: string | null }> {
+  const resp = await apiFetch(`/initiatives/${id}/kiosk-password`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

@@ -235,6 +235,8 @@ class AuthSession(Base):
     # which app minted the login: "portal" | "kiosk". A kiosk login skips
     # the 2FA challenge, so its session is held to the kiosk routes.
     client: Mapped[str] = mapped_column(server_default="portal")
+    # The move a move-password kiosk session is locked to (NULL otherwise).
+    initiative_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("initiatives.id"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
@@ -1132,6 +1134,11 @@ class Initiative(Base):
     status_record_type: Mapped[str] = mapped_column(
         server_default=text("'initiative'"))  # GENERATED; never written
     client_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("clients.id"))
+    # Move password for kiosk sign-in: encrypted (admins reveal it), keyed
+    # fingerprint (unique; the lookup), and the move's hidden kiosk identity.
+    kiosk_password_enc: Mapped[str | None]
+    kiosk_password_fp: Mapped[str | None]
+    kiosk_person_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("people.id"))
     site_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("sites.id"))
     location: Mapped[str | None]
     scheduled_start: Mapped[datetime | None]

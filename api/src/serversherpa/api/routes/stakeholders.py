@@ -47,6 +47,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.storage import presign_get
 from serversherpa.status.labels import (
     level_colors, level_fields, status_fields, status_labels,
@@ -695,7 +696,8 @@ async def list_people(
     query = (
         select(Person, UserAccount.person_id)
         .outerjoin(UserAccount, UserAccount.person_id == Person.id)
-        .where(Person.archived_at.is_(None))
+        .where(Person.archived_at.is_(None),
+               Person.source != KIOSK_MOVE_SOURCE)   # a move's hidden kiosk identity
         .order_by(natural(Person.last_name), natural(Person.first_name))
     )
     cond = scope_conditions("users", actor.access, actor.person.id)

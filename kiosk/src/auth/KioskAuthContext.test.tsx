@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const api = vi.hoisted(() => ({
   refreshSession: vi.fn(),
   loginRequest: vi.fn(),
+  moveLoginRequest: vi.fn(),
   logoutRequest: vi.fn(),
   signOutRequest: vi.fn(),
   onSessionEnded: vi.fn(() => () => {}),
@@ -16,6 +17,8 @@ vi.mock('../lib/heartbeat', () => hb);
 const identity = vi.hoisted(() => ({ getIdentity: vi.fn(() => ({ serial: 'kiosk-web-test', name: 'Kiosk Test' })) }));
 vi.mock('../lib/identity', () => identity);
 
+import { readKioskSetup, writeKioskSetup } from '../lib/kioskSetup';
+import { readSetupState, writeSetupState } from '../lib/setupState';
 import { KioskAuthProvider, useKioskAuth } from './KioskAuthContext';
 
 const SESSION = {
@@ -34,9 +37,11 @@ function Probe() {
       <span data-testid="status">{a.status}</span>
       <span data-testid="reg">{a.registration ?? 'null'}</span>
       <span data-testid="can">{String(a.can('kiosk', 'view'))}</span>
+      <span data-testid="kiosk-move">{a.kioskMove?.name ?? 'none'}</span>
       <span data-testid="is-admin">{String(a.isAdmin)}</span>
       <span data-testid="is-developer">{String(a.isDeveloper)}</span>
       <button onClick={() => void a.login('a@x', 'pw')}>login</button>
+      <button onClick={() => void a.loginWithMovePassword('Crew-2026!')}>move login</button>
       <button onClick={() => a.completePair(SESSION as unknown as Parameters<typeof a.completePair>[0])}>
         pair
       </button>
@@ -55,7 +60,7 @@ beforeEach(() => {
     return { stop: vi.fn(), now: vi.fn(() => Promise.resolve()) };
   });
 });
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); localStorage.clear(); });
 
 it('restores a session from the cookie on mount and starts the heartbeat', async () => {
   api.refreshSession.mockResolvedValue(SESSION);
@@ -148,4 +153,60 @@ it('derives isAdmin/isDeveloper as both false for a plain worker', async () => {
   await act(async () => { screen.getByText('login').click(); });
   expect(screen.getByTestId('is-admin').textContent).toBe('false');
   expect(screen.getByTestId('is-developer').textContent).toBe('false');
+});
+
+it('loginWithMovePassword calls the move endpoint and keeps the move from the session', async () => {
+  api.moveLoginRequest.mockResolvedValue({ ...SESSION, kiosk_move: { initiative_id: 'i1', name: 'Las Vegas 3' } });
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  expect(screen.getByTestId('kiosk-move').textContent).toBe('none');
+  await act(async () => { screen.getByText('move login').click(); });
+  expect(api.moveLoginRequest).toHaveBeenCalledWith('Crew-2026!');
+  expect(screen.getByTestId('status').textContent).toBe('authed');
+  expect(screen.getByTestId('kiosk-move').textContent).toBe('Las Vegas 3');
+  expect(hb.startHeartbeat.mock.calls[0][2]).toEqual({ method: 'password' });
+});
+
+it('a normal sign-in has no kiosk move', async () => {
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  await act(async () => { screen.getByText('login').click(); });
+  expect(screen.getByTestId('kiosk-move').textContent).toBe('none');
+});
+
+const SAVED_SETUP = {
+  initiativeId: 'x-move', initiativeName: 'Other move', siteId: 's1', siteName: 'Dock',
+  siteRole: 'source' as const, scanStatus: 'loaded', scanLabel: 'Loaded',
+};
+
+it('a move sign-in drops a setup saved for another move and marks setup incomplete', async () => {
+  writeKioskSetup(SAVED_SETUP);
+  writeSetupState('complete');
+  api.moveLoginRequest.mockResolvedValue({ ...SESSION, kiosk_move: { initiative_id: 'y-move', name: 'Y' } });
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  await act(async () => { screen.getByText('move login').click(); });
+  expect(readKioskSetup()).toBeNull();
+  expect(readSetupState()).toBe('incomplete');
+});
+
+it('a move sign-in keeps a setup saved for the same move', async () => {
+  writeKioskSetup({ ...SAVED_SETUP, initiativeId: 'y-move' });
+  writeSetupState('complete');
+  api.moveLoginRequest.mockResolvedValue({ ...SESSION, kiosk_move: { initiative_id: 'y-move', name: 'Y' } });
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  await act(async () => { screen.getByText('move login').click(); });
+  expect(readKioskSetup()?.initiativeId).toBe('y-move');
+  expect(readSetupState()).toBe('complete');
+});
+
+it('a person sign-in leaves any saved setup alone', async () => {
+  writeKioskSetup(SAVED_SETUP);
+  writeSetupState('complete');
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  await act(async () => { screen.getByText('login').click(); });
+  expect(readKioskSetup()?.initiativeId).toBe('x-move');
+  expect(readSetupState()).toBe('complete');
 });

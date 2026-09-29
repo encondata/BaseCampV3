@@ -139,6 +139,7 @@ const INITIATIVE: InitiativeDetailOut = {
   archived_at: null, created_at: '2026-09-01T10:00:00Z',
   people: [PERSON],
   links_children: [], links_parents: [],
+  kiosk_password_set: false,
 };
 
 beforeEach(() => {
@@ -430,4 +431,34 @@ it('without initiatives:change there is no Actions trigger on either list', asyn
   expect(within(arow).queryByRole('button', { name: /Actions/ })).toBeNull();
   const prow = await personRow();
   expect(within(prow).queryByRole('button', { name: /Actions/ })).toBeNull();
+});
+
+/* ── kiosk password line ─────────────────────────────────────────── */
+
+it('admins see the kiosk password as Not set / Set', async () => {
+  auth.maxRank = ADMIN_RANK;
+  renderPage();
+  const dt = await screen.findByText('Kiosk password');
+  expect(dt.nextElementSibling?.textContent).toBe('Not set');
+  cleanup();
+
+  api.getInitiative.mockResolvedValue({ ...INITIATIVE, kiosk_password_set: true });
+  renderPage();
+  const dt2 = await screen.findByText('Kiosk password');
+  expect(dt2.nextElementSibling?.textContent).toBe('Set');
+});
+
+it('a project has no kiosk password line, even for admins', async () => {
+  auth.maxRank = ADMIN_RANK;
+  api.getInitiative.mockResolvedValue({
+    ...INITIATIVE, initiative_type: 'project', type_label: 'Project' });
+  renderPage();
+  await screen.findAllByText('Project');
+  expect(screen.queryByText('Kiosk password')).toBeNull();
+});
+
+it('non-admins do not see the kiosk password line', async () => {
+  renderPage();
+  await screen.findByText('switch-01');
+  expect(screen.queryByText('Kiosk password')).toBeNull();
 });

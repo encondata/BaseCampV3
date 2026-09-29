@@ -56,6 +56,7 @@ from serversherpa.notifications.requests import resolve_copies
 from serversherpa.services import totp as totp_service
 from serversherpa.services.activity import person_activity
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.password_policy import apply_password
 from serversherpa.services.sessions import live_session_rows
 from serversherpa.services.storage import presign_get
@@ -83,6 +84,8 @@ async def list_users(
     query = (
         select(Person, UserAccount)
         .join(UserAccount, UserAccount.person_id == Person.id)
+        # a move's hidden kiosk identity is not a user anyone manages
+        .where(Person.source != KIOSK_MOVE_SOURCE)
         .order_by(natural(Person.last_name), natural(Person.first_name))
     )
     cond = scope_conditions("users", actor.access, actor.person.id)

@@ -25,7 +25,7 @@ from serversherpa.api.schemas import (
     InitiativeDetailOut, InitiativeItem, InitiativeLinkAddIn,
     InitiativeLinkRow, InitiativeLinksOut, InitiativeLinkUpdateIn,
     InitiativeNextColorOut, InitiativePersonAddIn, InitiativePersonRow,
-    InitiativePersonUpdateIn, InitiativeUpdateIn, PlacementRecheckOut,
+    InitiativePersonUpdateIn, InitiativeUpdateIn, KioskPasswordOut, PlacementRecheckOut,
 )
 from serversherpa.db.models import (
     Asset, AssetCategory, AssetModel, Client, ImportJob, Initiative, InitiativeAsset,
@@ -38,6 +38,7 @@ from serversherpa.imports.parsing import (
 from serversherpa.people import team_bulk
 from serversherpa.racks.recheck import recheck_placement
 from serversherpa.scans.manual import record_status_edit, stamp_rule_failure
+from serversherpa.services import move_password as move_password_service
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.initiatives import (
     SITE_FIELDS, create_initiative_row, next_color, ref_problem,
@@ -54,6 +55,15 @@ NON_NULLABLE_FIELDS = ("name", "initiative_type", "status")
 
 def _err(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
+
+
+KIOSK_PASSWORD_INDEX = "ux_initiatives_kiosk_password_fp"
+
+
+def _is_password_clash(exc: IntegrityError) -> bool:
+    """True only when the failure is the unique kiosk-password fingerprint
+    index; any other integrity error (a vanished foreign key, say) is not."""
+    return KIOSK_PASSWORD_INDEX in str(getattr(exc, "orig", "")) or KIOSK_PASSWORD_INDEX in str(exc)
 
 
 async def _require_parent_in_scope(db: DbSession, initiative_id: uuid.UUID,
@@ -218,6 +228,7 @@ def _item(i: Initiative, vocab: dict, sites: dict, clients: dict,
         "parent_id": parent_of.get(i.id, (None, None))[0],
         "parent_role": parent_of.get(i.id, (None, None))[1],
         "archived_at": i.archived_at, "created_at": i.created_at,
+        "kiosk_password_set": i.kiosk_password_fp is not None,
     }
 
 
@@ -374,7 +385,15 @@ async def update_initiative(
 ) -> InitiativeDetailOut:
     initiative = await _get_initiative(db, initiative_id, actor)
     _require_global(actor)
+    # absent = unchanged; null or "" = clear (hence model_fields_set, not
+    # the value). Handled by the move_password service, which audits it
+    # as "set"/null — never the value — so it stays out of the field loop.
+    wants_password = "kiosk_password" in body.model_fields_set
+    new_password = body.kiosk_password
     data = body.model_dump(exclude_unset=True)
+    data.pop("kiosk_password", None)
+    if wants_password and actor.access.max_rank < GATE_BYPASS_RANK:
+        raise _err(403, "kiosk_password_forbidden")
     for field in NON_NULLABLE_FIELDS:
         if field in data and not data[field]:
             raise _err(422, f"{field}_required")
@@ -393,8 +412,58 @@ async def update_initiative(
         initiative.updated_at = datetime.now(UTC)
         audit(db, actor_id=actor.person.id, entity_type="initiative",
               entity_id=str(initiative_id), action="update", changes=changes)
-    await db.commit()
+    if wants_password:
+        try:
+            if new_password:
+                await move_password_service.set_password(
+                    db, initiative, new_password, actor_id=actor.person.id)
+            else:
+                await move_password_service.clear_password(
+                    db, initiative, actor_id=actor.person.id)
+        except move_password_service.MovePasswordError as exc:
+            raise _err(422, exc.code) from None
+        except IntegrityError as exc:
+            # the flush inside the service can hit the unique fingerprint
+            # index when two admins race for the same password
+            if not (new_password and _is_password_clash(exc)):
+                raise
+            await db.rollback()
+            raise _err(422, "kiosk_password_in_use") from None
+    if "name" in changes:
+        await move_password_service.rename_kiosk_identity(db, initiative)
+    if "status" in changes \
+            and initiative.status in move_password_service.MOVE_LOGIN_BLOCKED_STATUSES:
+        await move_password_service.revoke_move_sessions(db, initiative.id)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # a racing admin took the same password between our check and commit;
+        # any other integrity failure is not a password clash
+        if not (wants_password and new_password and _is_password_clash(exc)):
+            raise
+        await db.rollback()
+        raise _err(422, "kiosk_password_in_use") from None
     return await _detail(db, initiative, actor)
+
+
+@router.get("/{initiative_id}/kiosk-password", response_model=KioskPasswordOut)
+async def get_kiosk_password(
+    initiative_id: uuid.UUID,
+    db: DbSession,
+    response: Response,
+    actor: AuthContext = require_permission("initiatives", "view"),
+) -> KioskPasswordOut:
+    """Show the move's kiosk password to an admin (audited): it is shared
+    with crews out loud, so it has to be readable back. Never cached."""
+    response.headers["Cache-Control"] = "no-store"
+    initiative = await _get_initiative(db, initiative_id, actor)
+    _require_global(actor)
+    if actor.access.max_rank < GATE_BYPASS_RANK:
+        raise _err(403, "kiosk_password_forbidden")
+    audit(db, actor_id=actor.person.id, entity_type="initiative",
+          entity_id=str(initiative_id), action="kiosk_password.reveal")
+    await db.commit()
+    return KioskPasswordOut(password=move_password_service.reveal(initiative))
 
 
 @router.post("/{initiative_id}/archive", status_code=204)
@@ -409,6 +478,8 @@ async def archive_initiative(
     initiative.updated_at = initiative.archived_at
     audit(db, actor_id=actor.person.id, entity_type="initiative",
           entity_id=str(initiative_id), action="archive")
+    # an archived move can't sign a kiosk in, and its kiosks sign out now
+    await move_password_service.revoke_move_sessions(db, initiative_id)
     await db.commit()
 
 

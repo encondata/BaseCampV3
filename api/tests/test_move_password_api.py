@@ -1,0 +1,429 @@
+"""Move passwords end to end: admin set/clear/reveal on PATCH /initiatives,
+kiosk sign-in with the password, the session locked to the move, and the
+hidden kiosk identity staying out of the people lists."""
+
+import pytest
+from sqlalchemy import select
+
+from serversherpa.db.models import AuditLog, Device, Initiative, Person, Site, StatusValue
+from serversherpa.services import auth as auth_service
+from serversherpa.services.auth import AuthError
+from tests.test_sites_api import login
+from tests.test_status_values_write import _make
+
+PW = "Crew-2026!"
+
+
+async def _admin(db, client):
+    return await _make(db, client, "admin", "mp-admin@test.example.com")
+
+
+async def _move(db, name="Las Vegas 3", status="planned"):
+    init = Initiative(name=name, initiative_type="move", status=status)
+    db.add(init)
+    await db.commit()
+    return init
+
+
+async def _set(client, hdrs, init, password=PW):
+    return await client.patch(f"/initiatives/{init.id}", headers=hdrs, json={"kiosk_password": password})
+
+
+async def _move_login(client, password=PW):
+    return await client.post("/kiosk/move-login", json={"password": password})
+
+
+async def test_admin_sets_reveals_and_clears(client, db, seeded_user):
+    admin = await _admin(db, client)
+    init = await _move(db)
+    resp = await _set(client, admin, init)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["kiosk_password_set"] is True
+    shown = await client.get(f"/initiatives/{init.id}/kiosk-password", headers=admin)
+    assert shown.status_code == 200 and shown.json()["password"] == PW
+    reveal_rows = list(await db.scalars(select(AuditLog).where(
+        AuditLog.entity_id == str(init.id), AuditLog.action == "kiosk_password.reveal")))
+    assert len(reveal_rows) == 1
+    # the set is audited as "set", never the value
+    set_rows = list(await db.scalars(select(AuditLog).where(
+        AuditLog.entity_id == str(init.id), AuditLog.action == "update")))
+    assert [r.changes for r in set_rows] == [{"kiosk_password": {"from": None, "to": "set"}}]
+    cleared = await client.patch(f"/initiatives/{init.id}", headers=admin, json={"kiosk_password": None})
+    assert cleared.json()["kiosk_password_set"] is False
+    assert (await client.get(f"/initiatives/{init.id}/kiosk-password", headers=admin)).json()["password"] is None
+
+
+async def test_empty_string_clears_and_absent_leaves_it(client, db, seeded_user):
+    admin = await _admin(db, client)
+    init = await _move(db)
+    await _set(client, admin, init)
+    # a PATCH without the field leaves the password alone
+    r = await client.patch(f"/initiatives/{init.id}", headers=admin, json={"description": "x"})
+    assert r.status_code == 200 and r.json()["kiosk_password_set"] is True
+    r = await client.patch(f"/initiatives/{init.id}", headers=admin, json={"kiosk_password": ""})
+    assert r.status_code == 200 and r.json()["kiosk_password_set"] is False
+
+
+async def test_rules_and_rank(client, db, seeded_user):
+    admin = await _admin(db, client)
+    staff = await login(client)                      # alice, staff (rank 40)
+    a = await _move(db, "A")
+    b = await _move(db, "B")
+    r = await _set(client, admin, a, "short7!")
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "kiosk_password_too_short"
+    assert (await _set(client, admin, a)).status_code == 200
+    r = await _set(client, admin, b)
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "kiosk_password_in_use"
+    r = await _set(client, staff, b, "Another-pw1")
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "kiosk_password_forbidden"
+    assert (await client.get(f"/initiatives/{a.id}/kiosk-password", headers=staff)).status_code == 403
+    # a staff PATCH without the field still works
+    assert (await client.patch(f"/initiatives/{a.id}", headers=staff, json={"description": "x"})).status_code == 200
+
+
+async def test_hidden_identity(client, db, seeded_user):
+    admin = await _admin(db, client)
+    init = await _move(db)
+    await _set(client, admin, init)
+    await db.refresh(init)
+    person = await db.get(Person, init.kiosk_person_id)
+    users = (await client.get("/users", headers=admin)).json()
+    assert all(u["person_id"] != str(person.id) for u in users)
+    workers = (await client.get("/workers", headers=admin)).json()
+    rows = workers["items"] if isinstance(workers, dict) else workers
+    assert all(w["person_id"] != str(person.id) for w in rows)   # WorkerItem's id is person_id
+    # kiosk people sync and search leave it out too
+    kiosk = {"Authorization": f"Bearer {(await _move_login(client)).json()['access_token']}"}
+    synced = (await client.get("/kiosk/sync/people", headers=kiosk)).json()["people"]
+    assert synced and all(p["id"] != str(person.id) for p in synced)
+    found = (await client.get("/search?q=Kiosk", headers=admin)).json()["results"]
+    assert all(r["id"] != str(person.id) for r in found)
+    # the identity has no password, so email sign-in is refused. The route
+    # never gets that far: a .local address is not a valid EmailStr (422).
+    email = f"kiosk+{init.id}@kiosk.serversherpa.local"
+    r = await client.post("/auth/login", json={"email": email, "password": PW, "client": "kiosk"})
+    assert r.status_code in (401, 422)
+    # and the service itself refuses the password-less account
+    with pytest.raises(AuthError) as exc:
+        await auth_service.login(db, email=email, password=PW, client="kiosk")
+    assert exc.value.code == "invalid_credentials"
+
+
+async def test_move_login_and_locked_setup(client, db, seeded_user):
+    admin = await _admin(db, client)
+    init = await _move(db)
+    other = await _move(db, "Other move")
+    await _set(client, admin, init)
+    bad = await _move_login(client, "wrong-wrong")
+    assert bad.status_code == 401 and bad.json()["detail"]["code"] == "invalid_move_password"
+    ok = await _move_login(client)
+    assert ok.status_code == 200, ok.text
+    body = ok.json()
+    assert body["kiosk_move"] == {"initiative_id": str(init.id), "name": "Las Vegas 3"}
+    assert body["person"]["display_name"].startswith("Kiosk")
+    audited = list(await db.scalars(select(AuditLog).where(AuditLog.action == "login_move")))
+    assert len(audited) == 1
+    hdrs = {"Authorization": f"Bearer {body['access_token']}"}
+    me = (await client.get("/auth/me", headers=hdrs)).json()
+    assert me["kiosk_move"]["initiative_id"] == str(init.id)
+    options = (await client.get("/kiosk/setup-options", headers=hdrs)).json()
+    assert [i["id"] for i in options["initiatives"]] == [str(init.id)]
+    # setting up for another move is refused, even with an otherwise valid body
+    origin, dest = Site(name="MP Origin"), Site(name="MP Dest")
+    db.add_all([origin, dest])
+    await db.flush()
+    other.origin_site_id, other.destination_site_id = origin.id, dest.id
+    init.origin_site_id, init.destination_site_id = origin.id, dest.id
+    db.add(Device(device_type="kiosk", name="Move kiosk", serial="mp-kiosk-1"))
+    db.add(StatusValue(record_type="asset", key="mp_scan", label="MP Scan", color="#123456",
+                       sort_order=1, is_active=True))
+    await db.commit()
+    setup = {"serial": "mp-kiosk-1", "site_id": str(dest.id), "scan_status": "mp_scan"}
+    r = await client.post("/kiosk/setup", headers=hdrs, json={**setup, "initiative_id": str(other.id)})
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "move_locked"
+    # ...while its own move sets up fine
+    r = await client.post("/kiosk/setup", headers=hdrs, json={**setup, "initiative_id": str(init.id)})
+    assert r.status_code == 200, r.text
+    # refresh keeps the move on the rotated session
+    refreshed = await client.post("/auth/refresh")
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["kiosk_move"]["initiative_id"] == str(init.id)
+    # an ordinary portal session carries no move
+    assert (await client.get("/auth/me", headers=admin)).json()["kiosk_move"] is None
+    # a portal route is still refused for a kiosk session
+    assert (await client.get("/initiatives", headers=hdrs)).status_code == 403
+
+
+async def test_move_login_is_rate_limited_per_ip(client, db, seeded_user):
+    admin = await _admin(db, client)
+    init = await _move(db)
+    await _set(client, admin, init)
+    from serversherpa.api.routes.kiosk import MOVE_LOGIN_IP_LIMIT
+    for _ in range(MOVE_LOGIN_IP_LIMIT):
+        assert (await _move_login(client, "wrong-wrong")).status_code == 401
+    r = await _move_login(client)       # even the right password waits out the window
+    assert r.status_code == 429 and r.json()["detail"]["code"] == "move_login_rate_limited"
+
+
+async def test_inactive_moves_refuse_login_and_lose_sessions(client, db, seeded_user):
+    admin = await _admin(db, client)
+    init = await _move(db)
+    await _set(client, admin, init)
+    ok = await _move_login(client)
+    hdrs = {"Authorization": f"Bearer {ok.json()['access_token']}"}
+    assert (await client.get("/auth/me", headers=hdrs)).status_code == 200
+    # completing the move revokes its kiosk sessions and blocks new sign-ins
+    r = await client.patch(f"/initiatives/{init.id}", headers=admin, json={"status": "completed"})
+    assert r.status_code == 200, r.text
+    assert (await client.get("/auth/me", headers=hdrs)).status_code == 401
+    r = await _move_login(client)
+    assert r.status_code == 401 and r.json()["detail"]["code"] == "move_not_active"
+    # archived blocks too
+    init2 = await _move(db, "Second")
+    await _set(client, admin, init2, "Move-two-pw1")
+    ok2 = await _move_login(client, "Move-two-pw1")
+    hdrs2 = {"Authorization": f"Bearer {ok2.json()['access_token']}"}
+    assert (await client.post(f"/initiatives/{init2.id}/archive", headers=admin)).status_code == 204
+    assert (await client.get("/auth/me", headers=hdrs2)).status_code == 401
+    r = await _move_login(client, "Move-two-pw1")
+    assert r.json()["detail"]["code"] == "move_not_active"
+    # clearing the password revokes sessions as well
+    init3 = await _move(db, "Third")
+    await _set(client, admin, init3, "Move-three-11")
+    ok = await _move_login(client, "Move-three-11")
+    hdrs3 = {"Authorization": f"Bearer {ok.json()['access_token']}"}
+    await client.patch(f"/initiatives/{init3.id}", headers=admin, json={"kiosk_password": None})
+    assert (await client.get("/auth/me", headers=hdrs3)).status_code == 401
+
+
+async def test_rename_follows(client, db, seeded_user):
+    admin = await _admin(db, client)
+    init = await _move(db)
+    await _set(client, admin, init)
+    await client.patch(f"/initiatives/{init.id}", headers=admin, json={"name": "Renamed move"})
+    await db.refresh(init)
+    person = await db.get(Person, init.kiosk_person_id)
+    assert person.last_name == "Renamed move"
+
+
+async def test_password_race_is_a_422_not_a_500(client, db, seeded_user, monkeypatch):
+    from sqlalchemy.exc import IntegrityError
+
+    from serversherpa.services import move_password as svc
+    admin = await _admin(db, client)
+    init = await _move(db)
+
+    async def racing(*args, **kwargs):
+        raise IntegrityError("stmt", {}, Exception(
+            'duplicate key value violates unique constraint "ux_initiatives_kiosk_password_fp"'))
+    monkeypatch.setattr(svc, "set_password", racing)
+    r = await _set(client, admin, init)
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "kiosk_password_in_use"
+    await db.refresh(init)
+    assert init.kiosk_password_fp is None
+
+
+async def test_unrelated_integrity_error_is_not_a_password_clash(client, db, seeded_user, monkeypatch):
+    from sqlalchemy.exc import IntegrityError
+
+    from serversherpa.services import move_password as svc
+    admin = await _admin(db, client)
+    init = await _move(db)
+
+    async def failing(*args, **kwargs):
+        raise IntegrityError("stmt", {}, Exception(
+            'insert or update violates foreign key constraint "initiatives_site_id_fkey"'))
+    monkeypatch.setattr(svc, "set_password", failing)
+    try:
+        r = await _set(client, admin, init)
+    except IntegrityError:
+        return                              # the ASGI client re-raises server errors
+    assert r.status_code != 422 or r.json()["detail"]["code"] != "kiosk_password_in_use"
+
+
+async def test_rotating_the_password_signs_old_kiosks_out(client, db, seeded_user):
+    admin = await _admin(db, client)
+    init = await _move(db)
+    await _set(client, admin, init)
+    old = {"Authorization": f"Bearer {(await _move_login(client)).json()['access_token']}"}
+    assert (await client.get("/auth/me", headers=old)).status_code == 200
+    r = await _set(client, admin, init, "Rotated-pw-2")
+    assert r.status_code == 200, r.text
+    assert (await client.get("/auth/me", headers=old)).status_code == 401
+    assert (await _move_login(client)).status_code == 401          # the old password is gone
+    fresh = await _move_login(client, "Rotated-pw-2")
+    assert fresh.status_code == 200, fresh.text
+    hdrs = {"Authorization": f"Bearer {fresh.json()['access_token']}"}
+    assert (await client.get("/auth/me", headers=hdrs)).status_code == 200
+
+
+async def test_move_login_needs_kiosk_view(client, db, seeded_user):
+    from datetime import UTC, datetime
+
+    from serversherpa.db.models import PersonRole
+    admin = await _admin(db, client)
+    init = await _move(db)
+    await _set(client, admin, init)
+    await db.refresh(init)
+    for role in await db.scalars(select(PersonRole).where(PersonRole.person_id == init.kiosk_person_id)):
+        role.revoked_at = datetime.now(UTC)
+    await db.commit()
+    r = await _move_login(client)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "kiosk_not_allowed"
+    row = await db.scalar(select(AuditLog).where(
+        AuditLog.action == "login_failed", AuditLog.entity_id == "move-login"))
+    assert row.changes["reason"] == "kiosk_not_allowed"
+
+
+def test_move_login_buckets():
+    from serversherpa.api.routes.kiosk import move_login_bucket
+    assert move_login_bucket("203.0.113.9") == "203.0.113.9"
+    a = move_login_bucket("2001:db8:1:2:aaaa::1")
+    assert a == move_login_bucket("2001:db8:1:2:bbbb:cccc:dddd:eeee") == "2001:db8:1:2::/64"
+    assert a != move_login_bucket("2001:db8:1:3::1")
+    assert move_login_bucket("unknown") == "unknown"
+    assert move_login_bucket("::ffff:203.0.113.9") == "203.0.113.9"
+
+
+async def test_move_login_rate_limit_shares_an_ipv6_64_and_has_a_global_cap(
+        client, db, seeded_user, monkeypatch):
+    from serversherpa.api.routes import kiosk as kiosk_routes
+    admin = await _admin(db, client)
+    init = await _move(db)
+    await _set(client, admin, init)
+    limit = kiosk_routes.MOVE_LOGIN_IP_LIMIT
+
+    def xff(addr):
+        return {"X-Forwarded-For": addr}
+    # one subscriber rotating addresses inside a /64 keeps one budget
+    for n in range(limit):
+        r = await client.post("/kiosk/move-login", json={"password": "wrong-wrong"},
+                              headers=xff(f"2001:db8:9:9:{n + 1:x}::1"))
+        assert r.status_code == 401
+    r = await client.post("/kiosk/move-login", json={"password": PW},
+                          headers=xff("2001:db8:9:9:ffff::7"))
+    assert r.status_code == 429
+    # another /64 is unaffected
+    r = await client.post("/kiosk/move-login", json={"password": PW}, headers=xff("2001:db8:9:8::1"))
+    assert r.status_code == 200, r.text
+    # the global cap trips for everyone once the window holds too many failures
+    monkeypatch.setattr(kiosk_routes, "MOVE_LOGIN_GLOBAL_LIMIT", limit)
+    r = await client.post("/kiosk/move-login", json={"password": PW}, headers=xff("198.51.100.4"))
+    assert r.status_code == 429 and r.json()["detail"]["code"] == "move_login_rate_limited"
+
+
+async def test_identity_is_hidden_from_the_people_pickers(client, db, seeded_user):
+    admin = await _admin(db, client)
+    init = await _move(db)
+    await _set(client, admin, init)
+    await db.refresh(init)
+    pid = str(init.kiosk_person_id)
+    people = await client.get("/people", headers=admin)
+    assert people.status_code == 200 and people.json()
+    assert all(p["person_id"] != pid for p in people.json())
+    recipients = await client.get("/notifications/recipients", headers=admin)
+    assert recipients.status_code == 200 and recipients.json()
+    assert all(p["person_id"] != pid for p in recipients.json())
+    # the role-members preview (worker role) leaves it out too; the identity
+    # holds an active worker role, so it would be listed if not filtered
+    from tests.test_access_roles_api import full_matrix
+    prev = await client.post("/access/roles/worker/matrix/preview", headers=admin,
+                             json={"matrix": full_matrix()})
+    assert prev.status_code == 200, prev.text
+    assert all(m["person_id"] != pid for m in prev.json()["members"])
+
+
+async def test_list_rows_carry_kiosk_password_set(client, db, seeded_user):
+    admin = await _admin(db, client)
+    with_pw = await _move(db, "Has password")
+    without = await _move(db, "No password")
+    await _set(client, admin, with_pw)
+    rows = {r["id"]: r for r in (await client.get("/initiatives", headers=admin)).json()}
+    assert rows[str(with_pw.id)]["kiosk_password_set"] is True
+    assert rows[str(without.id)]["kiosk_password_set"] is False
+
+
+async def test_non_admin_cannot_smuggle_a_password_beside_other_edits(client, db, seeded_user):
+    await _admin(db, client)
+    staff = await login(client)
+    init = await _move(db)
+    r = await client.patch(f"/initiatives/{init.id}", headers=staff,
+                           json={"description": "sneaky", "kiosk_password": PW})
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "kiosk_password_forbidden"
+    await db.refresh(init)
+    assert init.description is None and init.kiosk_password_fp is None
+
+
+async def test_password_is_trimmed_and_may_not_contain_the_move_name(client, db, seeded_user):
+    admin = await _admin(db, client)
+    init = await _move(db, "Vegas")
+    r = await _set(client, admin, init, "  short7  ")
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "kiosk_password_too_short"
+    r = await _set(client, admin, init, "go-VEGAS-2026")
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "kiosk_password_contains_name"
+    r = await _set(client, admin, init, f"  {PW}  ")
+    assert r.status_code == 200, r.text
+    shown = await client.get(f"/initiatives/{init.id}/kiosk-password", headers=admin)
+    assert shown.json()["password"] == PW                  # stored trimmed
+    assert (await _move_login(client)).status_code == 200
+
+
+async def test_moves_only(client, db, seeded_user):
+    admin = await _admin(db, client)
+    project = Initiative(name="Not a move", initiative_type="project", status="planned")
+    db.add(project)
+    await db.commit()
+    r = await _set(client, admin, project)
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "kiosk_password_moves_only"
+    await db.refresh(project)
+    assert project.kiosk_password_fp is None
+    # a password left on an initiative that stopped being a move signs nothing in
+    init = await _move(db)
+    assert (await _set(client, admin, init)).status_code == 200
+    init.initiative_type = "project"
+    await db.commit()
+    r = await _move_login(client)
+    assert r.status_code == 401 and r.json()["detail"]["code"] == "invalid_move_password"
+
+
+async def test_resaving_the_same_password_is_not_a_rotation(client, db, seeded_user):
+    admin = await _admin(db, client)
+    init = await _move(db)
+    await _set(client, admin, init)
+    kiosk = {"Authorization": f"Bearer {(await _move_login(client)).json()['access_token']}"}
+    r = await _set(client, admin, init)                    # the same value again
+    assert r.status_code == 200 and r.json()["kiosk_password_set"] is True
+    assert (await client.get("/auth/me", headers=kiosk)).status_code == 200
+    rows = list(await db.scalars(select(AuditLog).where(
+        AuditLog.entity_id == str(init.id), AuditLog.action == "update")))
+    assert [r.changes for r in rows] == [{"kiosk_password": {"from": None, "to": "set"}}]
+
+
+async def test_reveal_is_never_cached(client, db, seeded_user):
+    admin = await _admin(db, client)
+    init = await _move(db)
+    await _set(client, admin, init)
+    shown = await client.get(f"/initiatives/{init.id}/kiosk-password", headers=admin)
+    assert shown.status_code == 200
+    assert shown.headers["cache-control"] == "no-store"
+
+
+async def test_clash_at_commit_is_a_422(client, db, seeded_user, monkeypatch):
+    """The clash surfaces at the route's commit (the real unique index), not
+    inside the service: set_password is replaced by one that only assigns
+    the other move's fingerprint, without flushing."""
+    from serversherpa.services import move_password as svc
+    admin = await _admin(db, client)
+    a = await _move(db, "Clash A")
+    b = await _move(db, "Clash B")
+    assert (await _set(client, admin, a)).status_code == 200
+    await db.refresh(a)
+    taken = a.kiosk_password_fp
+
+    async def no_flush(_db, initiative, _password, *, actor_id):
+        initiative.kiosk_password_fp = taken
+    monkeypatch.setattr(svc, "set_password", no_flush)
+    r = await _set(client, admin, b, "Anything-else-1")
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "kiosk_password_in_use"
+    await db.refresh(b)
+    assert b.kiosk_password_fp is None

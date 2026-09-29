@@ -18,7 +18,7 @@ from typing import Literal
 
 import jwt
 import pyotp
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import InvalidToken
 from sqlalchemy import delete, func, inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -36,6 +36,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.notifications.inbox import notify
 from serversherpa.security.passwords import hash_password, verify_password
+from serversherpa.security.secretbox import fernet
 from serversherpa.security.tokens import ISSUER as JWT_ISSUER
 from serversherpa.security.tokens import TokenError
 from serversherpa.services.audit import audit
@@ -61,21 +62,13 @@ class TotpPolicy:
 
 # ── secrets at rest ─────────────────────────────────────────────────
 
-def _fernet() -> Fernet:
-    key = get_settings().totp_encryption_key.get_secret_value()
-    try:
-        return Fernet(key.encode())
-    except (ValueError, TypeError) as exc:
-        raise RuntimeError("SS_TOTP_ENCRYPTION_KEY is not a valid Fernet key") from exc
-
-
 def encrypt_secret(secret: str) -> bytes:
-    return _fernet().encrypt(secret.encode())
+    return fernet().encrypt(secret.encode())
 
 
 def decrypt_secret(blob: bytes) -> str:
     try:
-        return _fernet().decrypt(bytes(blob)).decode()
+        return fernet().decrypt(bytes(blob)).decode()
     except InvalidToken as exc:
         raise RuntimeError("stored TOTP seed does not decrypt with SS_TOTP_ENCRYPTION_KEY") from exc
 
