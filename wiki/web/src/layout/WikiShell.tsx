@@ -4,13 +4,14 @@
  *  through the shell context: New page/folder, Delete, Move…, Copy…,
  *  Permissions…, Share… and Export…. */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Route, Routes, useMatch, useNavigate } from 'react-router-dom';
+import { Route, Routes, useLocation, useMatch, useNavigate } from 'react-router-dom';
 
 import SystemBanners from '@portal/components/SystemBanners';
 import { useToast } from '@portal/lib/notificationsContext';
 
 import AnalyticsPage from '../analytics/AnalyticsPage';
 import ConfirmDialog from '../components/ConfirmDialog';
+import ErrorBoundary from '../components/ErrorBoundary';
 import ExportDialog from '../components/ExportDialog';
 import MoveCopyDialog from '../components/MoveCopyDialog';
 import NewNodeDialog from '../components/NewNodeDialog';
@@ -68,6 +69,7 @@ export default function WikiShell() {
   const me = useWikiMe();
   const toast = useToast();
   const navigate = useNavigate();
+  const location = useLocation();
   const [spaces, setSpaces] = useState<SpaceOut[] | null>(null);
   const [currentSpace, setCurrentSpaceState] = useState<SpaceOut | null>(null);
   const [currentNode, setCurrentNode] = useState<NodeDetailOut | null>(null);
@@ -278,32 +280,34 @@ export default function WikiShell() {
             />
           )}
           <main className="wiki-main">
-            <Routes>
-              <Route path="/" element={<Home />} />
-              {/* a "library" on screen is a space in the code (see lib/paths) */}
-              <Route path={NEW_LIBRARY_PATH} element={<><Home /><NewSpace /></>} />
-              <Route path="/library/:spaceKey" element={<SpaceHome />} />
-              <Route path="/library/:spaceKey/settings" element={<SpaceSettings />} />
-              <Route path="/library/:spaceKey/due" element={<DueReviewsPage />} />
-              <Route path="/library/:spaceKey/trash" element={<TrashPage />} />
-              {legacyLibraryRoutes()}
-              <Route path="/search" element={<SearchPage />} />
-              <Route path="/admin" element={<AdminPage />} />
-              <Route path="/admin/help-links" element={<HelpLinksPage />} />
-              <Route path="/analytics" element={<AnalyticsPage />} />
-              <Route path="/templates" element={<TemplatesPage />} />
-              <Route path="/watching" element={<WatchingPage />} />
-              <Route path="/reviews" element={<ReviewsPage />} />
-              <Route path="/reviews/:reviewId" element={<ReviewDetail />} />
-              <Route path="/exports/:jobId" element={<ExportPage />} />
-              <Route path="/n/:nodeId" element={<NodePage />} />
-              <Route path="/n/:nodeId/history" element={(
-                <Suspense fallback={<div className="portal-page wiki-page"><p className="page-hint">Loading…</p></div>}>
-                  <HistoryPage />
-                </Suspense>
-              )} />
-              <Route path="*" element={<NotFound />} />
-            </Routes>
+            <ErrorBoundary scope="page" resetKey={location.pathname}>
+              <Routes>
+                <Route path="/" element={<Home />} />
+                {/* a "library" on screen is a space in the code (see lib/paths) */}
+                <Route path={NEW_LIBRARY_PATH} element={<><Home /><NewSpace /></>} />
+                <Route path="/library/:spaceKey" element={<SpaceHome />} />
+                <Route path="/library/:spaceKey/settings" element={<SpaceSettings />} />
+                <Route path="/library/:spaceKey/due" element={<DueReviewsPage />} />
+                <Route path="/library/:spaceKey/trash" element={<TrashPage />} />
+                {legacyLibraryRoutes()}
+                <Route path="/search" element={<SearchPage />} />
+                <Route path="/admin" element={<AdminPage />} />
+                <Route path="/admin/help-links" element={<HelpLinksPage />} />
+                <Route path="/analytics" element={<AnalyticsPage />} />
+                <Route path="/templates" element={<TemplatesPage />} />
+                <Route path="/watching" element={<WatchingPage />} />
+                <Route path="/reviews" element={<ReviewsPage />} />
+                <Route path="/reviews/:reviewId" element={<ReviewDetail />} />
+                <Route path="/exports/:jobId" element={<ExportPage />} />
+                <Route path="/n/:nodeId" element={<NodePage />} />
+                <Route path="/n/:nodeId/history" element={(
+                  <Suspense fallback={<div className="portal-page wiki-page"><p className="page-hint">Loading…</p></div>}>
+                    <HistoryPage />
+                  </Suspense>
+                )} />
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </ErrorBoundary>
           </main>
         </div>
         <UploadTray />

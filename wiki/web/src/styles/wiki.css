@@ -22,6 +22,20 @@
   color: var(--text-dark);
 }
 .wiki-notice a { color: var(--amber); }
+/* the error boundary's message: selectable, wraps, never widens the page */
+.wiki-error-detail {
+  margin: 12px 0 16px;
+  padding: 10px 12px;
+  max-width: 720px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono, 'Fragment Mono', monospace);
+  font-size: 12.5px;
+  background: var(--paper-2);
+  border: 1px solid var(--paper-line);
+  border-radius: 6px;
+  color: var(--text-dark);
+}
 
 /* ── shell: banners + top bar over sidebar | page ─────────── */
 
