@@ -13,6 +13,7 @@ from serversherpa.db.models import (
     Asset, AssetCategory, AssetModel, Client, Initiative, InitiativeAsset, Site,
     StatusValue,
 )
+from serversherpa.db.ordering import natural
 
 
 class InitiativeUnavailable(Exception):
@@ -133,7 +134,7 @@ async def gather(db: AsyncSession, initiative_id: uuid.UUID) -> MoveData:
         .outerjoin(AssetModel, AssetModel.id == Asset.model_id)
         .outerjoin(AssetCategory, AssetCategory.key == AssetModel.category)
         .where(InitiativeAsset.initiative_id == initiative_id)
-        .order_by(Asset.name.nullslast(), Asset.serial_number))).all()
+        .order_by(natural(Asset.name).nullslast(), natural(Asset.serial_number)))).all()
     assets = [MoveAsset(
         row_id=str(ia.id), asset_id=str(a.id), name=a.name, serial=a.serial_number,
         make=m.make if m else None, model=m.model if m else None,

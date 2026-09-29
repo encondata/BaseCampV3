@@ -3,6 +3,7 @@
  * Generation rules panel — no React/DOM dependencies, so they're
  * trivially unit-testable and reusable from both places.
  */
+import { naturalCompare } from './naturalSort';
 import type {
   InitiativeItem, LabelGeneratePreviewType, LabelGenerationRules, LabelRun, LabelTemplateCandidate,
 } from './api';
@@ -114,7 +115,7 @@ export function templatesPayloadFor(
 /** Error-type summary rows, busiest first (ties broken alphabetically so
  *  repeated renders are stable). */
 export function sortedErrorSummary(summary: Record<string, number>): [string, number][] {
-  return Object.entries(summary).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  return Object.entries(summary).sort((a, b) => b[1] - a[1] || naturalCompare(a[0], b[0]));
 }
 
 /** True once the run carries more errors than the (server-capped, first

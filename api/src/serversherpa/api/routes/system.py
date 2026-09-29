@@ -20,6 +20,7 @@ from serversherpa.api.deps import (
 )
 from serversherpa.api.schemas import (
     RevokeAllSessionsOut, SecurityConfigIn, SecurityConfigOut,
+    AiLookupConfigIn, AiLookupConfigOut,
     AdminConfigIn, AdminConfigOut, LogEntryOut, LogPageOut, SystemProcessOut,
     SystemStatusOut,
 )
@@ -199,6 +200,44 @@ async def put_security_config(
               changes=changes)
     await db.commit()
     return SecurityConfigOut(**data)
+
+
+AI_LOOKUP_SECTION = "ai_lookup"
+
+
+@router.get("/ai-lookup", response_model=AiLookupConfigOut)
+async def get_ai_lookup_config(
+    db: DbSession,
+    actor: AuthContext = require_permission("settings", "view"),
+) -> AiLookupConfigOut:
+    return AiLookupConfigOut(**await read_section(db, AI_LOOKUP_SECTION))
+
+
+@router.put("/ai-lookup", response_model=AiLookupConfigOut)
+async def put_ai_lookup_config(
+    body: AiLookupConfigIn,
+    db: DbSession,
+    actor: AuthContext = require_permission("settings", "change"),
+) -> AiLookupConfigOut:
+    stored = await read_section(db, AI_LOOKUP_SECTION)
+    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items()
+             if v is not None}
+    data = {**stored, **patch}
+    row = await db.get(SystemConfig, AI_LOOKUP_SECTION)
+    if row is None:
+        row = SystemConfig(section=AI_LOOKUP_SECTION)
+        db.add(row)
+    row.data = data
+    row.updated_at = datetime.now(UTC)
+    row.updated_by = actor.person.id
+    changes = {key: {"from": stored.get(key), "to": data[key]}
+               for key in data if stored.get(key) != data[key]}
+    if changes:
+        audit(db, actor_id=actor.person.id, entity_type="system",
+              entity_id=AI_LOOKUP_SECTION, action="ai_lookup_config_update",
+              changes=changes)
+    await db.commit()
+    return AiLookupConfigOut(**data)
 
 
 @router.post("/sessions/revoke-all", response_model=RevokeAllSessionsOut)

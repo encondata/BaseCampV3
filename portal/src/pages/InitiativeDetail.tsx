@@ -697,6 +697,7 @@ export default function InitiativeDetail() {
             {kv('Type', initiative.type_label)}
             {kv('Sub-type', initiative.sub_type_label)}
             {kv('Status', initiative.status_label)}
+            {isAdmin && isMove && kv('Kiosk password', initiative.kiosk_password_set ? 'Set' : 'Not set')}
             {kv('Client', initiative.client_name)}
             {!isMove && kv('Site', initiative.site_name)}
             {kv('Location', initiative.location)}

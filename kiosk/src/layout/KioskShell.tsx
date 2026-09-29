@@ -56,7 +56,7 @@ function sessionTitle(expiresAt: string | null): string | undefined {
 }
 
 export default function KioskShell({ children }: { children: ReactNode }) {
-  const { status, person, registration, preferences, sessionExpiresAt, logout } = useKioskAuth();
+  const { status, person, registration, preferences, sessionExpiresAt, kioskMove, logout } = useKioskAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const authed = status === 'authed';
@@ -82,9 +82,10 @@ export default function KioskShell({ children }: { children: ReactNode }) {
     { label: 'Mode', value: modeLabel },
     { label: 'Version', value: kioskVersion() },
   ];
+  const moveName = kioskSetup?.initiativeName ?? kioskMove?.name;
+  if (moveName) footItems.push({ label: 'Move', value: moveName });
   if (kioskSetup) {
     footItems.push(
-      { label: 'Move', value: kioskSetup.initiativeName },
       { label: 'Site', value: kioskSetup.siteName },
       { label: 'Scan', value: kioskSetup.scanLabel },
     );

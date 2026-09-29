@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Initiative, InitiativePerson, Person, Site, StatusValue
+from serversherpa.db.ordering import natural
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import BulkImportError
 from serversherpa.people.bulk_import import _worker_query, name_keys
@@ -81,7 +82,7 @@ async def _reference(db: AsyncSession, initiative_id: uuid.UUID) -> dict:
         for key in name_keys(p.first_name, p.last_name, p.preferred_name or ""):
             worker_index.setdefault(key, []).append(p)
     sites = list(await db.scalars(
-        select(Site).where(Site.archived_at.is_(None)).order_by(Site.name)))
+        select(Site).where(Site.archived_at.is_(None)).order_by(natural(Site.name))))
     site_index: dict[str, list[Site]] = {}
     for s in sites:
         site_index.setdefault(_squash(s.name), []).append(s)
@@ -328,7 +329,7 @@ def build_template_csv() -> str:
 async def _reference_lists(db: AsyncSession) -> tuple[list[str], list[str], list[str]]:
     workers = [_worker_label(p) for p, _ in (await db.execute(_worker_query())).all()]
     sites = list(await db.scalars(
-        select(Site.name).where(Site.archived_at.is_(None)).order_by(Site.name)))
+        select(Site.name).where(Site.archived_at.is_(None)).order_by(natural(Site.name))))
     roles = list(await db.scalars(
         select(StatusValue.label).where(StatusValue.record_type == WORK_TYPE,
                                         StatusValue.is_active.is_(True))
@@ -355,7 +356,7 @@ async def export_rows(db: AsyncSession, initiative_id: uuid.UUID) -> list[dict]:
         select(InitiativePerson, Person)
         .join(Person, Person.id == InitiativePerson.person_id)
         .where(InitiativePerson.initiative_id == initiative_id)
-        .order_by(Person.last_name, Person.first_name))).all()
+        .order_by(natural(Person.last_name), natural(Person.first_name)))).all()
     return [{"worker": _worker_label(p),
              "site": site_names.get(tp.site_worked_id, "") if tp.site_worked_id else "",
              "role": role_labels.get(tp.work_type, "") if tp.work_type else ""}

@@ -5,6 +5,8 @@
  * (Task 4/5) detail page can share them.
  */
 
+import { naturalCompare } from './naturalSort';
+
 export const CHANNELS = ['email', 'text', 'push', 'web'] as const;
 export type Channel = typeof CHANNELS[number];
 
@@ -122,7 +124,7 @@ export function allTimezones(): string[] {
       const set = new Set(zones);
       set.add(DEFAULT_TIMEZONE);
       set.add('UTC');
-      return [...set].sort();
+      return [...set].sort(naturalCompare);
     }
   } catch {
     /* fall through to the curated list */

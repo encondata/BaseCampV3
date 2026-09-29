@@ -31,6 +31,7 @@ const auth = vi.hoisted(() => ({
   registration: 'ok' as 'ok' | 'soon' | 'expired' | 'none' | null,
   preferences: null,
   sessionExpiresAt: '2026-09-14T19:00:42.000Z' as string | null,
+  kioskMove: null as { initiative_id: string; name: string } | null,
   logout: vi.fn(() => Promise.resolve()),
   can: (_resource: string, _action: string) => true as boolean,
 }));
@@ -51,6 +52,7 @@ afterEach(() => {
   auth.registration = 'ok';
   auth.sessionExpiresAt = '2026-09-14T19:00:42.000Z';
   auth.can = () => true;
+  auth.kioskMove = null;
   syncMock.status = { phase: 'idle' };
   localStorage.clear();
 });
@@ -258,6 +260,33 @@ it('footer omits Move + Scan items when no selection is saved', () => {
   expect(footer.textContent ?? '').not.toContain('NAP11 Hall Migration (demo)');
 });
 
+it('footer shows the move a move-password session is locked to, before any setup', () => {
+  auth.kioskMove = { initiative_id: 'i1', name: 'Las Vegas 3' };
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const items = [...document.querySelectorAll('.kiosk-foot-item')].map((el) => el.textContent ?? '');
+  expect(items.some((t) => t.includes('Move') && t.includes('Las Vegas 3'))).toBe(true);
+});
+
+it('the saved setup names the move once it exists, with no duplicate', () => {
+  auth.kioskMove = { initiative_id: 'i1', name: 'Las Vegas 3' };
+  writeKioskSetup({
+    initiativeId: 'i1', initiativeName: 'Las Vegas 3 (setup)',
+    siteId: 's-1', siteName: 'NAP11 Hall', siteRole: 'source',
+    scanStatus: 'x', scanLabel: 'X',
+  });
+  render(
+    <MemoryRouter initialEntries={['/']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  const text = screen.getByRole('contentinfo').textContent ?? '';
+  expect(text).toContain('Las Vegas 3 (setup)');
+  expect(text.match(/Move/g)).toHaveLength(1);
+});
 
 it('Data Sync is one green word after a sync, with the counts on hover', () => {
   syncMock.status = { phase: 'done', assets: 15, people: 4, containers: 6, syncedAt: '2026-09-13T18:14:00Z' };

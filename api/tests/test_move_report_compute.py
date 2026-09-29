@@ -122,3 +122,16 @@ def test_collisions_report_form_factor_mismatch_orphans():
     rep = collisions([ch, bad])
     assert rep.items == []
     assert [(o.asset.name, o.reason) for o in rep.orphans] == [("b", "form_factor_mismatch")]
+
+
+def test_rack_and_model_text_sort_naturally():
+    from serversherpa.reports.move_report.racks import racks_on
+
+    racks = ["Rack 10", "Rack 2", "rack 1"]
+    assets = [_asset(row_id=str(i), source_rack=r, source_ru=Decimal(1))
+              for i, r in enumerate(racks)]
+    assert [a.source_rack for a in sorted_by_side(assets, "source")] == ["rack 1", "Rack 2", "Rack 10"]
+    assert list(racks_on(assets, "source")) == ["rack 1", "Rack 2", "Rack 10"]
+    models = [_asset(row_id=str(i), model=m) for i, m in enumerate(["R6415", "r640", "R64"])]
+    assert [m.model for m in load_summary(models).models] == ["R64", "r640", "R6415"]
+    assert [m.model for m in rail_summary(models).models] == ["R64", "r640", "R6415"]

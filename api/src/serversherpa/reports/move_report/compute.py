@@ -5,6 +5,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from serversherpa.db.ordering import natural_key
 from serversherpa.racks.placement import Placed, evaluate, place
 from serversherpa.reports.move_report.gather import MoveAsset
 
@@ -34,6 +35,11 @@ def _model_key(a: MoveAsset) -> tuple[str, str]:
     return (a.make or "", a.model or "")
 
 
+def _model_order(key: tuple[str, str]) -> tuple[list[int | str], list[int | str]]:
+    """Make, then model, in natural order ("R640" before "R6415")."""
+    return (natural_key(key[0]), natural_key(key[1]))
+
+
 @dataclass(frozen=True)
 class ModelLoad:
     make: str | None
@@ -61,7 +67,7 @@ def load_summary(assets: list[MoveAsset]) -> LoadSummary:
     for a in assets:
         groups[_model_key(a)].append(a)
     models = []
-    for key in sorted(groups):
+    for key in sorted(groups, key=_model_order):
         rows = groups[key]
         first = rows[0]
         lbs = sum(_weight_lbs(r) for r in rows)
@@ -107,7 +113,7 @@ def rail_summary(assets: list[MoveAsset]) -> RailSummary:
         groups[_model_key(a)].append(a)
     counts: dict[str, int] = defaultdict(int)
     models = []
-    for key in sorted(groups):
+    for key in sorted(groups, key=_model_order):
         rows = groups[key]
         rail = rows[0].rail_type or "N/A"
         counts[rail] += len(rows)
@@ -193,5 +199,5 @@ def sorted_by_side(assets: list[MoveAsset], side: str) -> list[MoveAsset]:
     then RU, with unracked rows last (then by label)."""
     rack = (lambda a: a.source_rack) if side == "source" else (lambda a: a.destination_rack)
     ru = (lambda a: a.source_ru) if side == "source" else (lambda a: a.destination_ru)
-    return sorted(assets, key=lambda a: (rack(a) is None, rack(a) or "",
-                                         ru(a) is None, ru(a) or 0.0, a.label))
+    return sorted(assets, key=lambda a: (rack(a) is None, natural_key(rack(a)),
+                                         ru(a) is None, ru(a) or 0.0, natural_key(a.label)))

@@ -27,8 +27,10 @@ from serversherpa.db.models import (
     Notification, NotificationGroup, NotificationGroupMember,
     NotificationMembershipRequest, Person, UserAccount,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.notifications.requests import RequestError, decide_request
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.storage import presign_get
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
@@ -201,7 +203,7 @@ async def list_groups(
         .outerjoin(NotificationGroupMember,
                    NotificationGroupMember.group_id == NotificationGroup.id)
         .group_by(NotificationGroup.id)
-        .order_by(NotificationGroup.name))).all()
+        .order_by(natural(NotificationGroup.name)))).all()
     return [_out(group, count) for group, count in rows]
 
 
@@ -298,7 +300,7 @@ async def get_group(
         .join(Person, Person.id == NotificationGroupMember.person_id)
         .outerjoin(UserAccount, UserAccount.person_id == Person.id)
         .where(NotificationGroupMember.group_id == group_id)
-        .order_by(Person.last_name, Person.first_name))).all()
+        .order_by(natural(Person.last_name), natural(Person.first_name)))).all()
     members = [_member_out(group, member, person, account_id is not None)
                for member, person, account_id in rows]
     return NotificationGroupDetailOut(
@@ -493,8 +495,9 @@ async def list_recipients(
     rows = (await db.execute(
         select(Person, UserAccount.person_id)
         .outerjoin(UserAccount, UserAccount.person_id == Person.id)
-        .where(Person.archived_at.is_(None))
-        .order_by(Person.last_name, Person.first_name))).all()
+        .where(Person.archived_at.is_(None),
+               Person.source != KIOSK_MOVE_SOURCE)   # a move's hidden kiosk identity
+        .order_by(natural(Person.last_name), natural(Person.first_name)))).all()
     out = []
     for person, account_id in rows:
         has_account = account_id is not None

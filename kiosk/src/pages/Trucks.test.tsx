@@ -139,7 +139,13 @@ it('opens on the truck picker with one card per synced truck and the filter focu
   const el = await filterInput();
   await waitFor(() => expect(document.activeElement).toBe(el));
   expect(truckCards()).toHaveLength(3);
-  const first = truckCards()[0];
+  // Natural name order, not the order the rows were synced in.
+  expect(truckCards().map((c) => c.textContent)).toEqual([
+    expect.stringContaining('Spare Trailer'),
+    expect.stringContaining('TRUCK-1'),
+    expect.stringContaining('TRUCK-2'),
+  ]);
+  const first = truckCards()[1];
   expect(first.textContent).toContain('TRUCK-1');
   expect(first.textContent).toContain('L-1042');
   expect(first.textContent).toContain('In Transit');

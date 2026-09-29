@@ -25,6 +25,7 @@
  */
 
 import { displayRfid } from '@portal/lib/format';
+import { sortNatural } from '@portal/lib/naturalSort';
 
 export interface ContainerRow {
   id: string;
@@ -66,7 +67,12 @@ function rfidKey(value: string | null | undefined): string | null {
   return key(displayRfid(value.trim()));
 }
 
-export function buildContainerIndex(rows: readonly ContainerRow[]): ContainerIndex {
+export function buildContainerIndex(unsorted: readonly ContainerRow[]): ContainerIndex {
+  // IndexedDB `getAll` hands rows back in primary-key (id) order, so
+  // without this the first `limit` matches `searchContainers` returns
+  // would be arbitrary. Natural name order ("Crate 2" before "Crate 10")
+  // makes the short list the one a person expects.
+  const rows = sortNatural(unsorted, (r) => r.name);
   const byRfid = new Map<string, ContainerRow>();
   const byLabelTag = new Map<string, ContainerRow>();
   const byName = new Map<string, ContainerRow>();
@@ -84,7 +90,7 @@ export function buildContainerIndex(rows: readonly ContainerRow[]): ContainerInd
     const n = key(row.name);
     if (n && !byName.has(n)) byName.set(n, row);
   }
-  return { byRfid, byLabelTag, byName, rows: [...rows] };
+  return { byRfid, byLabelTag, byName, rows };
 }
 
 export function matchContainer(index: ContainerIndex, raw: string): ContainerMatch | null {
@@ -100,8 +106,8 @@ export function matchContainer(index: ContainerIndex, raw: string): ContainerMat
   return null;
 }
 
-/** Containers whose name contains `raw`, for the tappable list the
- *  screen shows when a typed partial is ambiguous. Name only: a partial
+/** Containers whose name contains `raw`, in natural name order, for the
+ *  tappable list the screen shows when a typed partial is ambiguous. Name only: a partial
  *  RFID read is a misread, not a search term. */
 export function searchContainers(
   index: ContainerIndex, raw: string, limit: number,

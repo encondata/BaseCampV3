@@ -27,9 +27,11 @@ import {
 import {
   FORM_FACTORS, MODEL_ERRORS,
   formFromModel, formatDims, IN_TO_CM, LB_TO_KG, modelPayload, needsModelCreate, parseDims,
-  partnerFor, type ModelFormState,
+  partnerFor, type ModelFormState, type ModelTextKey,
 } from '../../lib/assets';
 import ComboBox from '../ComboBox';
+import { Switch } from '../Switch';
+import '../../styles/settings.css';
 
 interface Props {
   model: AssetModelItem | null;   // null = create mode
@@ -100,7 +102,9 @@ export default function ModelEditModal({
 
   const locked = saving || (!needsCreate && !canChange);
 
-  const setField = (key: keyof ModelFormState, value: string) =>
+  const setField = (key: ModelTextKey, value: string) =>
+    setForm((f) => ({ ...f, [key]: value }));
+  const setFlag = (key: 'private' | 'spec_lookup_skip', value: boolean) =>
     setForm((f) => ({ ...f, [key]: value }));
 
   const onWeightLbChange = (v: string) => {
@@ -339,6 +343,24 @@ export default function ModelEditModal({
                 <textarea rows={5} value={form.knowledge} disabled={locked}
                           onChange={(e) => setField('knowledge', e.target.value)} />
               </div>
+            </div>
+
+            <div className="modal-section">Spec lookup</div>
+            <div className="set-row">
+              <div className="set-label">
+                <b>Private</b>
+                <span>Never sent to Claude for spec lookup.</span>
+              </div>
+              <Switch label="Private" checked={form.private} disabled={locked}
+                      onChange={(v) => setFlag('private', v)} />
+            </div>
+            <div className="set-row">
+              <div className="set-label">
+                <b>Skip spec lookup</b>
+                <span>Background search ignores this model (for placeholders and junk entries).</span>
+              </div>
+              <Switch label="Skip spec lookup" checked={form.spec_lookup_skip} disabled={locked}
+                      onChange={(v) => setFlag('spec_lookup_skip', v)} />
             </div>
 
             <div className="modal-section">Aliases</div>

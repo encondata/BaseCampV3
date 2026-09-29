@@ -30,6 +30,7 @@ from serversherpa.db.models import (
     AuthSession, NotificationGroup, NotificationGroupMember,
     NotificationMembershipRequest,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.config import get_settings
 from serversherpa.notifications.requests import RequestError, cancel_request, create_request
 from serversherpa.security.passwords import verify_password
@@ -214,7 +215,7 @@ async def list_my_groups(
                    NotificationGroupMember.group_id == NotificationGroup.id)
         .where(*conditions)
         .group_by(NotificationGroup.id)
-        .order_by(NotificationGroup.name))).all()
+        .order_by(natural(NotificationGroup.name)))).all()
 
     # one query for the caller's memberships, one for their pending
     # requests — no per-group lookup.

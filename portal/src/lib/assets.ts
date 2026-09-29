@@ -297,7 +297,14 @@ export interface ModelFormState {
   length_in: string; width_in: string; height_in: string;
   length_cm: string; width_cm: string; height_cm: string;
   mount_type: string; rail_type: string; form_factor: string; knowledge: string;
+  /** Never sent to Claude for spec lookup. */
+  private: boolean;
+  /** Background spec lookup ignores this model. */
+  spec_lookup_skip: boolean;
 }
+
+/** The form's text fields — every key except the two spec-lookup switches. */
+export type ModelTextKey = Exclude<keyof ModelFormState, 'private' | 'spec_lookup_skip'>;
 
 const numStr = (v: number | null): string => (v === null ? '' : String(v));
 
@@ -315,10 +322,11 @@ export function formFromModel(
     mount_type: m?.mount_type ?? '', rail_type: m?.rail_type ?? '',
     form_factor: m?.form_factor ?? '',
     knowledge: m?.knowledge ?? '',
+    private: m?.private ?? false, spec_lookup_skip: m?.spec_lookup_skip ?? false,
   };
 }
 
-const UNIT_FIELDS: [keyof ModelFormState, keyof ModelFormState][] = [
+const UNIT_FIELDS: [ModelTextKey, ModelTextKey][] = [
   ['weight_lbs', 'weight_kg'],
   ['length_in', 'length_cm'],
   ['width_in', 'width_cm'],
@@ -338,7 +346,7 @@ export function modelPayload(
     if (original === null) return null;
     return (original as unknown as Record<string, unknown>)[key];
   };
-  const changedStr = (key: keyof ModelFormState, origVal: unknown) => {
+  const changedStr = (key: ModelTextKey, origVal: unknown) => {
     const v = form[key].trim();
     const before = (origVal ?? '') as string;
     if (v !== before) out[key] = v || null;
@@ -357,6 +365,9 @@ export function modelPayload(
   if (ru !== numStr((orig('ru_size') as number | null) ?? null)) {
     out.ru_size = ru === '' ? null : Number(ru);
   }
+  // create: orig() is null, so only a switched-on flag is sent
+  if (form.private !== Boolean(orig('private'))) out.private = form.private;
+  if (form.spec_lookup_skip !== Boolean(orig('spec_lookup_skip'))) out.spec_lookup_skip = form.spec_lookup_skip;
 
   for (const [imp, met] of UNIT_FIELDS) {
     const impStr = form[imp].trim();

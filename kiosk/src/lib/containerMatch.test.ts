@@ -84,3 +84,15 @@ it('a container with no tag never matches an empty or dash-shaped value', () => 
   expect(matchContainer(bare, '')).toBeNull();
   expect(matchContainer(bare, 'Bare')?.kind).toBe('name');
 });
+
+it('lists matches in natural name order, not the id order IndexedDB returns', () => {
+  const mixed = buildContainerIndex([
+    crate({ id: 'c-x', name: 'Crate 10' }),
+    crate({ id: 'c-y', name: 'crate 2' }),
+    crate({ id: 'c-z', name: 'Crate 1' }),
+  ]);
+  expect(searchContainers(mixed, 'crate', 8).map((c) => c.name))
+    .toEqual(['Crate 1', 'crate 2', 'Crate 10']);
+  // The cap takes the first names in that order, not the first rows synced.
+  expect(searchContainers(mixed, 'crate', 2).map((c) => c.name)).toEqual(['Crate 1', 'crate 2']);
+});

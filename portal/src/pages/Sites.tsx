@@ -250,7 +250,7 @@ export default function Sites({ initialView = 'list' }: { initialView?: 'list' |
     }
     return [...byKey.entries()]
       .map(([value, label]) => ({ value, label }))
-      .sort((a, b) => a.label.localeCompare(b.label));
+      .sort((a, b) => naturalCompare(a.label, b.label));
   }, [sites]);
 
   const isRetired = (s: SiteItem) =>

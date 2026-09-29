@@ -12,12 +12,13 @@ from serversherpa.api.deps import (
     CurrentUser, DbSession, TotpActor, TotpChallengeOrUser, client_ip,
 )
 from serversherpa.api.schemas import (
-    BackupCodesOut, LoginChallengeOut, LoginIn, MeOut, PersonOut, ScopeOut, SessionOut,
+    BackupCodesOut, KioskMoveOut, LoginChallengeOut, LoginIn, MeOut, PersonOut, ScopeOut,
+    SessionOut,
     TotpEnrollConfirmIn, TotpEnrollConfirmOut, TotpEnrollStartOut, TotpRegenerateIn,
     TotpStatusOut, TotpVerifyIn, UiPreferences,
 )
 from serversherpa.config import get_settings
-from serversherpa.db.models import UserAccount
+from serversherpa.db.models import AuthSession, Initiative, UserAccount
 from serversherpa.services import auth as auth_service
 from serversherpa.services import totp as totp_service
 from serversherpa.services.audit import audit, diff
@@ -88,8 +89,23 @@ async def totp_status_out(db: AsyncSession, account: UserAccount) -> TotpStatusO
         backup_codes_remaining=await totp_service.backup_codes_remaining(db, account.person_id))
 
 
+async def kiosk_move_out(db: AsyncSession, session: AuthSession | None) -> KioskMoveOut | None:
+    """The move a session is locked to (a move-password kiosk sign-in), or
+    None for every other session."""
+    if session is None or session.initiative_id is None:
+        return None
+    initiative = await db.get(Initiative, session.initiative_id)
+    return KioskMoveOut(initiative_id=initiative.id, name=initiative.name) if initiative else None
+
+
+async def _kiosk_move_for(db: AsyncSession, result: AuthResult) -> KioskMoveOut | None:
+    if result.session_id is None:
+        return None
+    return await kiosk_move_out(db, await db.get(AuthSession, result.session_id))
+
+
 def session_response(result: AuthResult, response: Response, totp: TotpStatusOut,
-                     policy: PasswordPolicy) -> SessionOut:
+                     policy: PasswordPolicy, kiosk_move: KioskMoveOut | None = None) -> SessionOut:
     _set_refresh_cookie(response, result)
     reason = change_reason(policy, result.account, datetime.now(UTC))
     return SessionOut(
@@ -107,6 +123,7 @@ def session_response(result: AuthResult, response: Response, totp: TotpStatusOut
         scope=_scope_out(result.access),
         password_min_length=get_settings().password_min_length,
         totp=totp,
+        kiosk_move=kiosk_move,
     )
 
 
@@ -154,7 +171,7 @@ async def refresh(
         _clear_refresh_cookie(response)
         raise _auth_http_error(exc) from None
     return session_response(result, response, await totp_status_out(db, result.account),
-                            await load_policy(db))
+                            await load_policy(db), await _kiosk_move_for(db, result))
 
 
 @router.post("/logout", status_code=204)
@@ -184,6 +201,7 @@ async def me(user: CurrentUser, db: DbSession) -> MeOut:
         scope=_scope_out(user.access),
         password_min_length=get_settings().password_min_length,
         totp=await totp_status_out(db, user.account),
+        kiosk_move=await kiosk_move_out(db, user.session),
     )
 
 

@@ -12,12 +12,14 @@ import {
 import { ADMIN_RANK, computeCan, type Action, type PermMap } from '@portal/lib/access';
 
 import {
-  installVisibilityRefresh, loginRequest, logoutRequest, onSessionEnded, refreshSession,
+  installVisibilityRefresh, loginRequest, logoutRequest, moveLoginRequest, onSessionEnded, refreshSession,
   signOutRequest,
   type PersonOut, type RegistrationState, type SessionData, type UiPreferences,
 } from '../lib/api';
 import { HEARTBEAT_MS, startHeartbeat, type HeartbeatHandle } from '../lib/heartbeat';
 import { getIdentity } from '../lib/identity';
+import { clearKioskSetup, readKioskSetup } from '../lib/kioskSetup';
+import { writeSetupState } from '../lib/setupState';
 
 export type KioskAuthStatus = 'loading' | 'authed' | 'anon';
 
@@ -31,6 +33,8 @@ interface State {
   sessionExpiresAt: string | null;
   roles: string[];
   maxRank: number;
+  /** The move a move-password session is locked to; null for a person sign-in. */
+  kioskMove: { initiative_id: string; name: string } | null;
 }
 
 export interface KioskAuthValue extends State {
@@ -38,6 +42,7 @@ export interface KioskAuthValue extends State {
   isAdmin: boolean;
   isDeveloper: boolean;
   login: (email: string, password: string) => Promise<SessionData>;
+  loginWithMovePassword: (password: string) => Promise<SessionData>;
   completePair: (session: SessionData) => void;
   logout: () => Promise<void>;
   can: (resource: string, action: Action) => boolean;
@@ -47,6 +52,7 @@ export interface KioskAuthValue extends State {
 const ANON: State = {
   status: 'anon', person: null, perms: null, preferences: null,
   mustChangePassword: false, mustChangeReason: null, sessionExpiresAt: null, roles: [], maxRank: 0,
+  kioskMove: null,
 };
 const LOADING: State = { ...ANON, status: 'loading' };
 
@@ -55,6 +61,7 @@ function stateFrom(s: SessionData): State {
     status: 'authed', person: s.person, perms: s.perms, preferences: s.preferences,
     mustChangePassword: s.must_change_password, mustChangeReason: s.must_change_reason ?? null,
     sessionExpiresAt: s.session_expires_at, roles: s.roles, maxRank: s.max_rank,
+    kioskMove: s.kiosk_move ?? null,
   };
 }
 
@@ -79,6 +86,21 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => onSessionEnded(() => setState(ANON)), []);
+
+  // A move-password session works only on its own move. A setup saved for
+  // another move (an earlier sign-in) would otherwise keep driving the
+  // screens and the footer, and every call naming it would be refused
+  // (move_locked) — so drop it and send the crew back to Kiosk Setup.
+  // Keyed on the move, so it runs once per sign-in (and on a cookie restore).
+  const lockedMove = state.kioskMove?.initiative_id ?? null;
+  useEffect(() => {
+    if (lockedMove === null) return;
+    const saved = readKioskSetup();
+    if (saved !== null && saved.initiativeId !== lockedMove) {
+      clearKioskSetup();
+      writeSetupState('incomplete');
+    }
+  }, [lockedMove]);
   useEffect(() => installVisibilityRefresh(), []);
 
   // Heartbeat only while a usable session exists.
@@ -99,6 +121,15 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const data = await loginRequest(email, password);
+    signInRef.current = { method: 'password' };
+    setState(stateFrom(data));
+    return data;
+  }, []);
+
+  const loginWithMovePassword = useCallback(async (password: string) => {
+    const data = await moveLoginRequest(password);
+    // The heartbeat's login_method only knows password | link; a move-password
+    // sign-in is a password sign-in as far as device registration goes.
     signInRef.current = { method: 'password' };
     setState(stateFrom(data));
     return data;
@@ -127,8 +158,8 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
   const isDeveloper = state.roles.includes('developer');
 
   const value = useMemo<KioskAuthValue>(
-    () => ({ ...state, registration, isAdmin, isDeveloper, login, completePair, logout, can, heartbeatNow }),
-    [state, registration, isAdmin, isDeveloper, login, completePair, logout, can, heartbeatNow],
+    () => ({ ...state, registration, isAdmin, isDeveloper, login, loginWithMovePassword, completePair, logout, can, heartbeatNow }),
+    [state, registration, isAdmin, isDeveloper, login, loginWithMovePassword, completePair, logout, can, heartbeatNow],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

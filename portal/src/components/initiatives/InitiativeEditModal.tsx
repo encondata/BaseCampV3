@@ -128,6 +128,7 @@ export default function InitiativeEditModal({
               statuses={statuses} types={types} subTypes={subTypes}
               shippingTypes={shippingTypes} sites={sites} clients={clients} partners={partners}
               locked={locked} typeLocked={typeLocked} wheelColor={wheelColor}
+              kioskPassword={!isCreateMode && isAdmin}
               typeHint={!isCreateMode && !isAdmin ? 'Only admins can change the type.' : undefined}
               colorHint={isCreateMode
                 ? 'Assigned automatically — spin the wheel to choose your own.' : undefined}

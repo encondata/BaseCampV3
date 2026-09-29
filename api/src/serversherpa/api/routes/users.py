@@ -5,10 +5,10 @@ from datetime import UTC, datetime
 import uuid
 
 from fastapi import APIRouter, HTTPException, Request
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
-from serversherpa.access.apply import apply_global_roles, apply_groups
+from serversherpa.access.apply import ORG_ANCHORS, apply_global_roles, apply_groups
 from serversherpa.access.defaults import GATE_BYPASS_RANK
 from serversherpa.access.effective import effective_cells
 from serversherpa.access.resolver import can_touch_rank
@@ -47,12 +47,16 @@ from serversherpa.api.schemas import (
 )
 from serversherpa.db.models import (
     AccessGroup, AccessGroupMember, AuthSession, Client, NotificationGroup,
-    NotificationGroupMember, Partner, PermissionOverride, Person, PersonRole,
+    NotificationGroupMember, NotificationMembershipRequest, Partner,
+    PermissionOverride, Person, PersonRole,
     ResourceGroupGate, Role, UserAccount, WorkerLevel, WorkerProfile,
 )
+from serversherpa.db.ordering import natural
+from serversherpa.notifications.requests import resolve_copies
 from serversherpa.services import totp as totp_service
 from serversherpa.services.activity import person_activity
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.password_policy import apply_password
 from serversherpa.services.sessions import live_session_rows
 from serversherpa.services.storage import presign_get
@@ -80,7 +84,9 @@ async def list_users(
     query = (
         select(Person, UserAccount)
         .join(UserAccount, UserAccount.person_id == Person.id)
-        .order_by(Person.last_name, Person.first_name)
+        # a move's hidden kiosk identity is not a user anyone manages
+        .where(Person.source != KIOSK_MOVE_SOURCE)
+        .order_by(natural(Person.last_name), natural(Person.first_name))
     )
     cond = scope_conditions("users", actor.access, actor.person.id)
     if cond is not None:
@@ -93,7 +99,7 @@ async def list_users(
         .join(Role, Role.name == PersonRole.role)
         .where(PersonRole.person_id.in_(person_ids or [None]),
                PersonRole.revoked_at.is_(None))
-        .order_by(PersonRole.role)
+        .order_by(natural(PersonRole.role))
     )).all()
     roles_by_person: dict = {}
     rank_by_person: dict = {}
@@ -177,7 +183,7 @@ async def get_user_detail(
         select(PersonRole, Role)
         .join(Role, Role.name == PersonRole.role)
         .where(PersonRole.person_id == person_id, PersonRole.revoked_at.is_(None))
-        .order_by(Role.rank.desc(), Role.name))).all()
+        .order_by(Role.rank.desc(), natural(Role.name)))).all()
     orgs = await _org_refs(
         db, {g.client_id for g, _ in grant_rows if g.client_id},
         {g.partner_id for g, _ in grant_rows if g.partner_id})
@@ -203,7 +209,7 @@ async def get_user_detail(
               NotificationGroupMember.group_id == NotificationGroup.id)
         .where(NotificationGroupMember.person_id == person_id,
                NotificationGroup.enabled.is_(True))
-        .order_by(NotificationGroup.name))).all()
+        .order_by(natural(NotificationGroup.name)))).all()
     notification_groups = [
         UserNotificationGroup(id=g.id, name=g.name,
                               channels=effective_settings(g, m)["channels"],
@@ -222,7 +228,7 @@ async def get_user_detail(
             select(AccessGroup, AccessGroupMember)
             .join(AccessGroupMember, AccessGroupMember.group_id == AccessGroup.id)
             .where(AccessGroupMember.person_id == person_id)
-            .order_by(AccessGroup.name))).all()
+            .order_by(natural(AccessGroup.name)))).all()
         gates_by_group: dict = {}
         if group_member_rows:
             gids = [g.id for g, _ in group_member_rows]
@@ -233,7 +239,7 @@ async def get_user_detail(
         override_rows = list(await db.scalars(
             select(PermissionOverride)
             .where(PermissionOverride.person_id == person_id)
-            .order_by(PermissionOverride.resource, PermissionOverride.action)))
+            .order_by(natural(PermissionOverride.resource), natural(PermissionOverride.action))))
         scope_orgs_map = await _org_refs(db, set(eff.access.client_ids),
                                          set(eff.access.partner_ids))
 
@@ -590,6 +596,108 @@ async def enable_account(
     audit(db, actor_id=actor.person.id, entity_type="user_account",
           entity_id=str(person_id), action="account.enable")
     await db.commit()
+
+
+@router.post("/{person_id}/demote", status_code=204)
+async def demote_to_worker(
+    person_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    actor: AuthContext = require_permission("users", "change"),
+) -> None:
+    """Someone quit: take away the portal login and every kind of portal
+    access in one transaction, but keep the person — badge, RFID, time
+    entries, scans and assignments stay, so they remain a worker and can
+    be given a login again later with POST /{person_id}/account.
+
+    Two kinds of role survive. The `worker` role is kept (and granted if
+    they never had it) because /workers and the worker endpoints key on
+    it — without it the person would vanish from the worker lists. Org-
+    anchored roles (client/partner contact roles) are kept because they
+    grant nothing without a login and they keep the person listed as that
+    organization's contact; the contact flows own them. Everything else
+    that grants portal access goes: other roles, access groups, per-person
+    permission overrides, notification groups (and pending join/leave
+    requests), two-factor, trusted browsers, sessions and the account."""
+    _, account, _ = await _load_target(db, actor, person_id)
+    try:
+        now = datetime.now(UTC)
+        login_email = account.email
+
+        active_roles = set(await db.scalars(
+            select(PersonRole.role).where(PersonRole.person_id == person_id,
+                                          PersonRole.revoked_at.is_(None))))
+        role_rows = {r.name: r for r in await db.scalars(
+            select(Role).where(Role.name.in_(active_roles)))}
+        revoke = sorted(
+            name for name in active_roles
+            if name != "worker"
+            and (role_rows.get(name) is None
+                 or role_rows[name].scope_anchor not in ORG_ANCHORS))
+        worker_granted = "worker" not in active_roles
+        access_groups = sorted(await db.scalars(
+            select(AccessGroup.name)
+            .join(AccessGroupMember, AccessGroupMember.group_id == AccessGroup.id)
+            .where(AccessGroupMember.person_id == person_id)))
+        notification_groups = sorted(await db.scalars(
+            select(NotificationGroup.name)
+            .join(NotificationGroupMember,
+                  NotificationGroupMember.group_id == NotificationGroup.id)
+            .where(NotificationGroupMember.person_id == person_id)))
+        # Overrides are applied by resolve_access ahead of roles, so an
+        # allow=True row left behind would quietly come back if the person
+        # were given a login again.
+        overrides = [
+            {"resource": o.resource, "action": o.action, "allow": o.allow}
+            for o in await db.scalars(
+                select(PermissionOverride)
+                .where(PermissionOverride.person_id == person_id)
+                .order_by(PermissionOverride.resource, PermissionOverride.action))]
+        pending_requests = list(await db.scalars(
+            select(NotificationMembershipRequest)
+            .where(NotificationMembershipRequest.person_id == person_id,
+                   NotificationMembershipRequest.status == "pending")))
+
+        await totp_service.reset(db, account, actor_id=actor.person.id, ip=client_ip(request))
+        if revoke:
+            await db.execute(
+                update(PersonRole)
+                .where(PersonRole.person_id == person_id, PersonRole.role.in_(revoke),
+                       PersonRole.revoked_at.is_(None))
+                .values(revoked_at=now, revoked_by=actor.person.id, updated_at=now))
+        if worker_granted:
+            db.add(PersonRole(person_id=person_id, role="worker",
+                              granted_by=actor.person.id))
+        await db.execute(delete(AccessGroupMember).where(AccessGroupMember.person_id == person_id))
+        await db.execute(delete(PermissionOverride)
+                         .where(PermissionOverride.person_id == person_id))
+        await db.execute(delete(NotificationGroupMember)
+                         .where(NotificationGroupMember.person_id == person_id))
+        for req in pending_requests:
+            req.status = "cancelled"
+            await resolve_copies(db, req.id, "cancelled", None)
+        # auth_sessions.person_id -> user_accounts.person_id has no ON DELETE
+        # CASCADE (unlike password_history/trusted_devices), so the session
+        # rows would block the account delete below; delete them outright
+        # (which also signs the person out everywhere).
+        await db.execute(delete(AuthSession).where(AuthSession.person_id == person_id))
+        await db.delete(account)   # password_history cascades
+
+        audit(db, actor_id=actor.person.id, entity_type="user_account",
+              entity_id=str(person_id), action="account.demote",
+              changes={"login_email": login_email, "roles": revoke,
+                       "worker_granted": worker_granted,
+                       "access_groups": access_groups,
+                       "notification_groups": notification_groups,
+                       "overrides": overrides,
+                       "pending_requests_cancelled": len(pending_requests)},
+              ip=client_ip(request))
+        await db.commit()
+    except IntegrityError:
+        # A sign-in racing the session delete can insert a new auth_sessions
+        # row that then blocks the account delete; ask the caller to retry.
+        await db.rollback()
+        raise _err(409, "retry") from None
 
 
 @router.post("/{person_id}/unlock", status_code=204)

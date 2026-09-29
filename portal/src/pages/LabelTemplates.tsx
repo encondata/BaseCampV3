@@ -14,6 +14,7 @@
  *  updateLabelTemplate — both re-load(). No row expansion, like
  *  FixedReaders. */
 
+import { compareValues } from '../lib/naturalSort';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
@@ -223,7 +224,7 @@ export default function LabelTemplates() {
     });
     return rows.sort((a, b) => {
       const va = sortValue(a, sortKey), vb = sortValue(b, sortKey);
-      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
+      return compareValues(va, vb) * sortDir;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [templates, vocab, sites, facets, filters, query, sortKey, sortDir, haystack]);

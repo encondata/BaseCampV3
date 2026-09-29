@@ -4,6 +4,7 @@
  * arithmetic, and per-asset label status. No React, no fetching.
  * Behavior contract: docs/superpowers/specs/2026-09-12-print-labels-design.md.
  */
+import { naturalCompare } from './naturalSort';
 import type { ContainerItem, GeneratedLabelBundle, GeneratedLabelBundleItem, InitiativeAssetRow, LabelVocab } from './api';
 
 export interface PrintSettings {
@@ -162,7 +163,7 @@ export function printOrder(selectedIds: string[], displayedRows: InitiativeAsset
   const ordered = displayedRows.filter((r) => selected.has(r.asset_id));
   if (!s.printByRack) return ordered.map((r) => r.asset_id);
   return [...ordered].sort((a, b) => {
-    const rackCmp = rackOf(a).localeCompare(rackOf(b), undefined, { numeric: true });
+    const rackCmp = naturalCompare(rackOf(a), rackOf(b));
     if (rackCmp !== 0) return rackCmp;
     return (b.source_ru ?? 0) - (a.source_ru ?? 0);
   }).map((r) => r.asset_id);

@@ -22,6 +22,7 @@
  *  notice is built from the confirm response — never from the preview. The
  *  button is gated on rank, not on a permission, and hidden below it. */
 
+import { compareValues, naturalCompare } from '../lib/naturalSort';
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
@@ -205,15 +206,15 @@ export default function KioskDevices() {
       loginMethods.add(loginMethodLabel(d.session_login_method));
     }
     return [
-      { key: 'sub_type', title: 'Type', options: Array.from(subTypes).sort().map((v) => (
+      { key: 'sub_type', title: 'Type', options: Array.from(subTypes).sort(naturalCompare).map((v) => (
         { value: v, label: v }
       )) },
-      { key: 'registration', title: 'Registration', options: Array.from(registrations).sort()
+      { key: 'registration', title: 'Registration', options: Array.from(registrations).sort(naturalCompare)
         .map((v) => ({ value: v, label: v })) },
-      { key: 'site', title: 'Site', options: Array.from(sites).sort().map((v) => (
+      { key: 'site', title: 'Site', options: Array.from(sites).sort(naturalCompare).map((v) => (
         { value: v, label: v }
       )) },
-      { key: 'login_method', title: 'Login', options: Array.from(loginMethods).sort()
+      { key: 'login_method', title: 'Login', options: Array.from(loginMethods).sort(naturalCompare)
         .map((v) => ({ value: v, label: v })) },
     ];
   }, [devices]);
@@ -237,7 +238,7 @@ export default function KioskDevices() {
     });
     return rows.sort((a, b) => {
       const va = deviceSortValue(a, sortKey), vb = deviceSortValue(b, sortKey);
-      return (va < vb ? -1 : va > vb ? 1 : 0) * sortDir;
+      return compareValues(va, vb) * sortDir;
     });
   }, [devices, facets, filters, query, sortKey, sortDir, haystack]);
 

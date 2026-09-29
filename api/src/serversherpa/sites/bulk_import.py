@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from serversherpa.db.models import (
     Client, Partner, Site, SiteClient, SiteType, StatusValue,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import (      # re-exported for the container
     MAX_BYTES, MAX_ROWS, BulkImportError,    # importer and the route tests
@@ -95,13 +96,13 @@ def _coord_text(value) -> str:
 async def export_rows(db: AsyncSession) -> list[dict]:
     """Every live site in template shape, so an export re-uploads clean."""
     sites = list(await db.scalars(
-        select(Site).where(Site.archived_at.is_(None)).order_by(Site.name)))
+        select(Site).where(Site.archived_at.is_(None)).order_by(natural(Site.name))))
     partner_names = dict((await db.execute(select(Partner.id, Partner.name))).all())
     clients: dict[uuid.UUID, list[str]] = {}
     for site_id, cname in (await db.execute(
         select(SiteClient.site_id, Client.name)
         .join(Client, Client.id == SiteClient.client_id)
-        .order_by(Client.name))).all():
+        .order_by(natural(Client.name)))).all():
         clients.setdefault(site_id, []).append(cname)
     out = []
     for s in sites:

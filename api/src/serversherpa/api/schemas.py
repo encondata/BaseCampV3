@@ -118,6 +118,17 @@ class TotpStatusOut(BaseModel):
     backup_codes_remaining: int
 
 
+class KioskMoveOut(BaseModel):
+    """The move a kiosk session is locked to (a move-password sign-in)."""
+
+    initiative_id: uuid.UUID
+    name: str
+
+
+class MoveLoginIn(BaseModel):
+    password: str = Field(min_length=1, max_length=200)
+
+
 class SessionOut(BaseModel):
     status: Literal["ok"] = "ok"
     access_token: str
@@ -135,6 +146,7 @@ class SessionOut(BaseModel):
     scope: ScopeOut
     password_min_length: int = 8
     totp: TotpStatusOut
+    kiosk_move: KioskMoveOut | None = None
 
 
 class LoginChallengeOut(BaseModel):
@@ -159,6 +171,7 @@ class MeOut(BaseModel):
     scope: ScopeOut
     password_min_length: int = 8
     totp: TotpStatusOut
+    kiosk_move: KioskMoveOut | None = None
 
 
 class TotpVerifyIn(BaseModel):
@@ -1201,6 +1214,9 @@ class AssetModelItem(BaseModel):
     form_factor: str | None = None
     knowledge: str
     review_dismissed_at: datetime | None = None
+    private: bool = False
+    spec_lookup_skip: bool = False
+    specs_looked_up_at: datetime | None = None
     aliases: list[str] = []
     created_at: datetime
     updated_at: datetime
@@ -1223,6 +1239,8 @@ class AssetModelCreateIn(BaseModel):
     rail_type: str | None = None
     form_factor: str | None = None
     knowledge: str = ""
+    private: bool = False
+    spec_lookup_skip: bool = False
     model_config = ConfigDict(extra="forbid")
 
 
@@ -1243,6 +1261,8 @@ class AssetModelUpdateIn(BaseModel):
     rail_type: str | None = None
     form_factor: str | None = None
     knowledge: str | None = None
+    private: bool | None = None
+    spec_lookup_skip: bool | None = None
     model_config = ConfigDict(extra="forbid")
 
 
@@ -1863,6 +1883,7 @@ class InitiativeItem(BaseModel):
     parent_role: str | None = None
     archived_at: datetime | None = None
     created_at: datetime
+    kiosk_password_set: bool = False
 
 
 class InitiativePersonRow(BaseModel):
@@ -1901,6 +1922,12 @@ class InitiativeDetailOut(InitiativeItem):
     people: list[InitiativePersonRow] = []
     links_children: list[InitiativeLinkRow] = []
     links_parents: list[InitiativeLinkRow] = []
+
+
+class KioskPasswordOut(BaseModel):
+    """GET /initiatives/{id}/kiosk-password — admin reveal."""
+
+    password: str | None
 
 
 class InitiativeNextColorOut(BaseModel):
@@ -1959,6 +1986,9 @@ class InitiativeUpdateIn(InitiativeCreateIn):
 
     name: str | None = None
     initiative_type: str | None = None
+    # the move's kiosk password (admin rank): absent = unchanged, null or
+    # "" = clear. The route reads model_fields_set to tell absent from null.
+    kiosk_password: str | None = Field(default=None, max_length=200)
     model_config = ConfigDict(extra="forbid")
 
 
@@ -2212,6 +2242,31 @@ class SecurityConfigIn(BaseModel):
     password_expiry_enabled: bool | None = None
     password_expiry_days: int | None = None
     password_history_count: int | None = None
+
+
+class AiLookupConfigOut(BaseModel):
+    background_enabled: bool
+    auto_apply: bool
+    fields_specs: bool
+    fields_mounting: bool
+    fields_knowledge: bool
+    retry_after_days: int
+    effort: Literal["low", "medium", "high"]
+
+
+class AiLookupConfigIn(BaseModel):
+    """Partial update — only sent fields change. retry_after_days 0 = never
+    retry a looked-up model automatically."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    background_enabled: bool | None = None
+    auto_apply: bool | None = None
+    fields_specs: bool | None = None
+    fields_mounting: bool | None = None
+    fields_knowledge: bool | None = None
+    retry_after_days: int | None = Field(default=None, ge=0, le=3650)
+    effort: Literal["low", "medium", "high"] | None = None
 
 
 class RevokeAllSessionsOut(BaseModel):
@@ -2872,7 +2927,7 @@ class KioskScanBatchIn(BaseModel):
 
 class KioskScanRejected(BaseModel):
     client_scan_id: uuid.UUID
-    code: Literal["bad_site", "bad_initiative", "bad_status", "bad_scan_type"]
+    code: Literal["bad_site", "bad_initiative", "bad_status", "bad_scan_type", "move_locked"]
 
 
 class KioskScanBatchOut(BaseModel):
@@ -3838,3 +3893,30 @@ class WarehouseInventoryOut(BaseModel):
     containers: list[WarehouseContainerOut] = []
     loose_assets: list[AssetRef] = []
     loose_stock: list[StockLineOut] = []
+
+
+class SpecLookupQueueIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model_ids: list[uuid.UUID] | None = None
+
+
+class SpecSuggestionOut(BaseModel):
+    id: uuid.UUID
+    model_id: uuid.UUID
+    make: str
+    model: str
+    field: str
+    value: str
+    unit: str | None
+    current_value: str | None
+    source_url: str
+    quote: str
+    status: str
+    created_at: datetime
+    decided_at: datetime | None
+
+
+class SpecSuggestionBulkIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=1000)
+    action: Literal["approve", "reject"]

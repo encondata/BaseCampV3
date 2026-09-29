@@ -90,8 +90,8 @@ describe('new cell accessors', () => {
   });
   it('sortValue numeric for connected, iso for token', () => {
     expect(deviceSortValue(r2, 'connected')).toBe(4);
-    expect(deviceSortValue(r2, 'token_expires')).toBe('2026-11-29T00:00:00Z');
-    expect(deviceSortValue({ ...r2, token_expires_at: null }, 'token_expires')).toBe('');
+    expect(deviceSortValue(r2, 'token_expires')).toBe(Date.parse('2026-11-29T00:00:00Z'));
+    expect(deviceSortValue({ ...r2, token_expires_at: null }, 'token_expires')).toBe(-1);
   });
 });
 
@@ -165,8 +165,8 @@ describe('kiosk accessors', () => {
   });
   it('sortValue', () => {
     expect(deviceSortValue(k, 'registration')).toBe('registered');
-    expect(deviceSortValue(k, 'expires')).toBe('2076-11-29T00:00:00Z');
-    expect(deviceSortValue({ ...k, token_expires_at: null }, 'expires')).toBe('');
+    expect(deviceSortValue(k, 'expires')).toBe(Date.parse('2076-11-29T00:00:00Z'));
+    expect(deviceSortValue({ ...k, token_expires_at: null }, 'expires')).toBe(-1);
     expect(deviceSortValue(k, 'current_move')).toBe('NAP11 Hall Migration (demo)');
     expect(deviceSortValue({ ...k, current_initiative_name: null }, 'current_move')).toBe('');
     expect(deviceSortValue(k, 'sub_type')).toBe('pi');

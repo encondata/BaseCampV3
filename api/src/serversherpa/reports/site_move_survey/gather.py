@@ -22,6 +22,7 @@ from serversherpa.db.models import (
     Asset, AssetModel, Attachment, Initiative, InitiativeAsset, Partner, Person,
     ReportRun, Site, SiteSurveyEntry,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.reports.site_move_survey.assets import AssetRowInput
 from serversherpa.services.storage import get_object
 
@@ -226,7 +227,7 @@ async def gather(db: AsyncSession, run: ReportRun) -> SurveyData:
             .join(Asset, Asset.id == InitiativeAsset.asset_id)
             .outerjoin(AssetModel, AssetModel.id == Asset.model_id)
             .where(InitiativeAsset.initiative_id == initiative.id)
-            .order_by(Asset.name.nullslast(), Asset.serial_number))).all()
+            .order_by(natural(Asset.name).nullslast(), natural(Asset.serial_number)))).all()
         assets = [
             AssetRowInput(
                 make=model.make if model else None,

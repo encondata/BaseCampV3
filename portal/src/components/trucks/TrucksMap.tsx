@@ -14,6 +14,7 @@ import 'leaflet/dist/leaflet.css';
 
 import type { TruckMapPoint } from '../../lib/api';
 import { MAP_TILE_ATTRIBUTION, MAP_TILE_URL } from '../../lib/mapTiles';
+import { compareOrdinal } from '../../lib/naturalSort';
 import { updateAge } from '../../lib/trucks';
 
 function FitBounds({ points, trails }: { points: TruckMapPoint[]; trails: boolean }) {
@@ -28,7 +29,7 @@ function FitBounds({ points, trails }: { points: TruckMapPoint[]; trails: boolea
   // Re-fit whenever the *set of ids* (or the trails toggle) changes — a
   // plain re-fetch that returns the same trucks at slightly nudged
   // coordinates shouldn't reset the user's pan/zoom.
-  const key = `${trails ? 'T' : 'M'}:${points.map((p) => p.id).sort().join(',')}`;
+  const key = `${trails ? 'T' : 'M'}:${points.map((p) => p.id).sort(compareOrdinal).join(',')}`;
   useEffect(() => {
     if (!centers.length) return undefined;
     // Defer one frame: the panel (and the fullscreen modal) mount the map

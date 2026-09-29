@@ -777,7 +777,7 @@ function SuppliedWorkersPanel({ partnerId, navigate }: {
       else b.set(w.status, {
         key: w.status, label: w.status_label, color: w.status_color, n: 1 });
     }
-    return [...b.values()].sort((x, y) => x.label.localeCompare(y.label));
+    return [...b.values()].sort((x, y) => naturalCompare(x.label, y.label));
   }, [workers]);
 
   return (

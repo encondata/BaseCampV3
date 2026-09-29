@@ -11,25 +11,28 @@ import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import AdminControls from '../components/settings/AdminControls';
+import AiLookupControls from '../components/settings/AiLookupControls';
 import SecurityControls from '../components/settings/SecurityControls';
 import '../styles/settings.css';
 
-type Tab = 'administration' | 'security' | 'maintenance' | 'about';
+type Tab = 'administration' | 'security' | 'ai-lookup' | 'maintenance' | 'about';
 
 const TABS: { key: Tab; label: string; to: string }[] = [
   { key: 'administration', label: 'Administration', to: '/settings' },
   { key: 'security', label: 'Security', to: '/settings/security' },
+  { key: 'ai-lookup', label: 'AI lookup', to: '/settings/ai-lookup' },
   { key: 'maintenance', label: 'Maintenance', to: '/settings/maintenance' },
   { key: 'about', label: 'About', to: '/settings/about' },
 ];
 
-const PLACEHOLDERS: Record<Exclude<Tab, 'administration' | 'security'>, { title: string; hint: string }> = {
+const PLACEHOLDERS: Record<Exclude<Tab, 'administration' | 'security' | 'ai-lookup'>, { title: string; hint: string }> = {
   maintenance: { title: 'Maintenance', hint: 'Backups, housekeeping, and scheduled maintenance windows.' },
   about: { title: 'About', hint: 'Version, build, environment, and licence details.' },
 };
 
 export function settingsTabFor(pathname: string): Tab {
   if (pathname.startsWith('/settings/security')) return 'security';
+  if (pathname.startsWith('/settings/ai-lookup')) return 'ai-lookup';
   if (pathname.startsWith('/settings/maintenance')) return 'maintenance';
   if (pathname.startsWith('/settings/about')) return 'about';
   return 'administration';
@@ -69,13 +72,14 @@ export default function Settings() {
             <AdminControls canChange={canChange} />
           </section>
         )}
-        {tab === 'security' && (
+        {tab === 'security' && <SecurityControls canChange={canChange} />}
+        {tab === 'ai-lookup' && (
           <section className="set-section">
             <div className="set-head">
-              <h3>Security</h3>
-              <p>Two-factor policy and sign-in protection for every account.</p>
+              <h3>AI lookup</h3>
+              <p>Fill missing Makes / Models details from the web through Claude. Only make and model names are sent.</p>
             </div>
-            <SecurityControls canChange={canChange} />
+            <AiLookupControls canChange={canChange} />
           </section>
         )}
         {(tab === 'maintenance' || tab === 'about') && (

@@ -4,13 +4,14 @@
  * modal-section headings and pf-form grids only (no modal chrome, no
  * buttons); the caller owns the form state and the save.
  */
-import { useEffect, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
 
 import {
-  getNextInitiativeColor, type InitiativeItem, type OrgRef, type SiteItem, type StatusValue,
+  getInitiativeKioskPassword, getNextInitiativeColor, type InitiativeItem, type OrgRef, type SiteItem, type StatusValue,
 } from '../../lib/api';
 import {
-  partnerOptionsForRole, sectionsForType, siteOptionsForClient, type InitiativeFormState,
+  generateKioskPassword, partnerOptionsForRole, sectionsForType, siteOptionsForClient,
+  type InitiativeFormState,
 } from '../../lib/initiatives';
 import ColorWheel from '../ColorWheel';
 import ComboBox from '../ComboBox';
@@ -54,13 +55,25 @@ export interface InitiativeFieldsProps {
   /** One line under the color wheel. */
   colorHint?: string;
   wheelColor: string;
+  /** Edit mode by an admin: show the move's kiosk password controls. */
+  kioskPassword?: boolean;
 }
 
 export default function InitiativeFields({
   form, setForm, initiative, statuses, types, subTypes, shippingTypes, sites, clients,
-  partners, locked, typeLocked, typeHint, colorHint, wheelColor,
+  partners, locked, typeLocked, typeHint, colorHint, wheelColor, kioskPassword,
 }: InitiativeFieldsProps) {
   const sections = sectionsForType(form.initiative_type);
+  const [showPw, setShowPw] = useState(false);
+  const [revealed, setRevealed] = useState<string | null | undefined>(undefined);
+  const [revealErr, setRevealErr] = useState('');
+  const reveal = () => {
+    if (!initiative) return;
+    setRevealErr('');
+    void getInitiativeKioskPassword(initiative.id)
+      .then((r) => setRevealed(r.password))
+      .catch(() => setRevealErr('Could not reveal the kiosk password.'));
+  };
 
   const setField = (key: keyof InitiativeFormState, value: string) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -156,6 +169,54 @@ export default function InitiativeFields({
         <div style={{ gridColumn: '1 / -1' }}><label>Description</label>
           <input value={form.description} disabled={locked}
                  onChange={(e) => setField('description', e.target.value)} /></div>
+        {kioskPassword && form.initiative_type === 'move' && (
+          <div style={{ gridColumn: '1 / -1' }}><label>Kiosk password</label>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input
+                aria-label="Kiosk password"
+                type={showPw ? 'text' : 'password'}
+                autoComplete="new-password"
+                style={{ flex: 1 }}
+                value={form.kiosk_password ?? ''}
+                disabled={locked || !!form.clear_kiosk_password}
+                onChange={(e) => setForm((s) => ({
+                  ...s, kiosk_password: e.target.value }))} />
+              <button type="button" className="mini-btn"
+                      onClick={() => setShowPw((v) => !v)}>
+                {showPw ? 'Hide' : 'Show'}
+              </button>
+              <button type="button" className="mini-btn"
+                      disabled={locked || !!form.clear_kiosk_password}
+                      onClick={() => {
+                        setForm((s) => ({ ...s, kiosk_password: generateKioskPassword() }));
+                        setShowPw(true);
+                      }}>
+                Generate
+              </button>
+              {initiative?.kiosk_password_set && (
+                <button type="button" className="mini-btn" onClick={reveal}>
+                  Reveal current
+                </button>
+              )}
+            </div>
+            <span className="page-hint">
+              {"At least 8 characters, unique across moves, and not the move's name. "
+                + 'Crews sign in to the kiosk with it.'}
+            </span>
+            {revealed !== undefined && (
+              <span className="set-note">
+                {revealed === null ? 'No kiosk password is set.' : `Current: ${revealed}`}
+              </span>
+            )}
+            {revealErr && <span className="pf-error">{revealErr}</span>}
+            <label className="init-check">
+              <input type="checkbox" checked={!!form.clear_kiosk_password}
+                     disabled={locked}
+                     onChange={(e) => setFlag('clear_kiosk_password', e.target.checked)} />
+              Clear kiosk password
+            </label>
+          </div>
+        )}
       </div>
 
       <div className="modal-section">Where &amp; when</div>

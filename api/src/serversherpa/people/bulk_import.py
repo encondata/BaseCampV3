@@ -26,6 +26,7 @@ from serversherpa.db.models import (
     AuthSession, Partner, Person, PersonRole, Role, StatusValue, UserAccount,
     WorkerLevel, WorkerProfile,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.imports import bulk as core
 from serversherpa.imports.bulk import MAX_BYTES, MAX_ROWS, BulkImportError
 from serversherpa.services.audit import audit
@@ -138,7 +139,7 @@ async def reference_lists(db: AsyncSession) -> tuple[list[str], list[str], list[
         .order_by(StatusValue.sort_order)))
     partners = list(await db.scalars(
         select(Partner.name).where(Partner.archived_at.is_(None))
-        .order_by(Partner.name)))
+        .order_by(natural(Partner.name))))
     return levels, statuses, partners
 
 
@@ -152,7 +153,7 @@ def _worker_query():
               & (PersonRole.revoked_at.is_(None)))
         .outerjoin(WorkerProfile, WorkerProfile.person_id == Person.id)
         .where(Person.archived_at.is_(None))
-        .order_by(Person.last_name, Person.first_name)
+        .order_by(natural(Person.last_name), natural(Person.first_name))
     )
 
 

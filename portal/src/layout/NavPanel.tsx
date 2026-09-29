@@ -13,26 +13,6 @@ import { NavLink } from 'react-router-dom';
 import type { NavMode } from '../lib/settings';
 import type { NavItem, NavSection } from './navSections';
 
-/** A nav row's link: an external item (`href`) is a plain `<a>` that opens
- *  in a new tab, since it leaves this app entirely — a NavLink's client-side
- *  routing has nothing to match it against. */
-function NavRowLink({ item, onNavigate }: { item: NavItem; onNavigate?: () => void }) {
-  if (item.href) {
-    return (
-      <a href={item.href()} target="_blank" rel="noopener" onClick={onNavigate}>
-        {item.icon}
-        {item.label}
-      </a>
-    );
-  }
-  return (
-    <NavLink to={item.to} end={item.end || item.to === '/'} onClick={onNavigate}>
-      {item.icon}
-      {item.label}
-    </NavLink>
-  );
-}
-
 export interface NavPanelProps {
   sections: NavSection[];
   openSection: string;
@@ -43,6 +23,30 @@ export interface NavPanelProps {
   className?: string;
   godMode?: boolean;
   godNavColor?: string | null;
+}
+
+
+/** A routed link, or — for an `href` item — a link to another app that
+ *  opens in a new tab (which the browser then brings to the front). */
+function NavItemLink({ item, onNavigate }: { item: NavItem; onNavigate?: () => void }) {
+  if (item.href) {
+    return (
+      <a href={item.href} target="_blank" rel="noopener noreferrer" onClick={onNavigate}>
+        {item.icon}
+        {item.label}
+        <svg className="nav-ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+             strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M14 5h5v5M19 5l-8 8M9 6H6a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-3" />
+        </svg>
+      </a>
+    );
+  }
+  return (
+    <NavLink to={item.to} end={item.end || item.to === '/'} onClick={onNavigate}>
+      {item.icon}
+      {item.label}
+    </NavLink>
+  );
 }
 
 export default function NavPanel({
@@ -158,7 +162,7 @@ export default function NavPanel({
                     <ul className="nav-list">
                       {section.items.map((item) => (
                         <li className="nav-item" key={item.to}>
-                          <NavRowLink item={item} onNavigate={onNavigate} />
+                          <NavItemLink item={item} onNavigate={onNavigate} />
                         </li>
                       ))}
                     </ul>
@@ -175,7 +179,7 @@ export default function NavPanel({
           <ul className="nav-list">
             {openFlyoutSection.items.map((item) => (
               <li className="nav-item" key={item.to}>
-                <NavRowLink item={item} onNavigate={onNavigate} />
+                <NavItemLink item={item} onNavigate={onNavigate} />
               </li>
             ))}
           </ul>

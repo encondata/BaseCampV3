@@ -19,6 +19,7 @@ from serversherpa.api.schemas import (
 from serversherpa.db.models import (
     Initiative, Partner, Person, ReportDefinition, ReportRun,
 )
+from serversherpa.db.ordering import natural
 from serversherpa.reports.move_scan_history.gather import gather as gather_scan_history
 from serversherpa.reports.registry import OptionsError, get_module
 from serversherpa.services.audit import audit, diff, snapshot
@@ -70,7 +71,7 @@ async def list_definitions(
 ) -> list[ReportDefinitionOut]:
     rows = await db.scalars(select(ReportDefinition)
                             .where(ReportDefinition.archived_at.is_(None))
-                            .order_by(ReportDefinition.is_system.desc(), ReportDefinition.name))
+                            .order_by(ReportDefinition.is_system.desc(), natural(ReportDefinition.name)))
     return list(rows)
 
 
@@ -264,7 +265,7 @@ async def list_survey_partners(
     rows = (await db.execute(
         select(Partner.id, Partner.name)
         .where(Partner.archived_at.is_(None), Partner.partner_types.any("logistics"))
-        .order_by(Partner.name))).all()
+        .order_by(natural(Partner.name)))).all()
     return [SurveyPartnerOut(id=pid, name=name) for pid, name in rows]
 
 

@@ -4,6 +4,7 @@ from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from serversherpa.db.ordering import natural_key
 from serversherpa.reports import rack_renderer
 from serversherpa.reports.move_report.gather import MoveAsset
 
@@ -24,7 +25,9 @@ def racks_on(assets: list[MoveAsset], side: str) -> dict[str, list[MoveAsset]]:
     for a in assets:
         if rack(a) and ru(a) is not None:
             groups[rack(a)].append(a)
-    return {name: sorted(rows, key=lambda a: -(ru(a) or 0)) for name, rows in sorted(groups.items())}
+    # Rack pages in natural order: "Rack 2" before "Rack 10".
+    return {name: sorted(rows, key=lambda a: -(ru(a) or 0))
+            for name, rows in sorted(groups.items(), key=lambda kv: natural_key(kv[0]))}
 
 
 async def rack_svgs(assets: list[MoveAsset], side: str,

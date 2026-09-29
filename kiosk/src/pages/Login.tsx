@@ -26,7 +26,18 @@ const ERROR_MESSAGES: Record<string, string> = {
   account_disabled: 'This account is disabled. Contact your coordinator.',
   totp_required: 'This account requires a verification code. 2FA sign-in is coming soon — contact support.',
   kiosk_not_allowed: "This account isn't allowed to use kiosks. Ask your coordinator to grant kiosk access.",
+  invalid_move_password: "That move password isn't right.",
+  move_not_active: "That move password isn't active.",
+  move_login_rate_limited: 'Too many tries. Wait a few minutes.',
   network: "Can't reach the server. Check the kiosk's network connection.",
+};
+
+/** The move form's own wording where a code means something else there:
+ *  kiosk_not_allowed on a move sign-in is the move's kiosk identity, not
+ *  the person's account. */
+const MOVE_ERROR_MESSAGES: Record<string, string> = {
+  ...ERROR_MESSAGES,
+  kiosk_not_allowed: "That move can't sign in to kiosks right now. Ask a coordinator.",
 };
 
 /** jsdom-safe: matchMedia is absent in some test environments. */
@@ -64,7 +75,7 @@ function KeyIcon() {
 export default function Login() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { login, completePair } = useKioskAuth();
+  const { login, loginWithMovePassword, completePair } = useKioskAuth();
   const fromState = (location.state as { from?: { pathname?: string } } | null)?.from;
   const from = fromState?.pathname && !fromState.pathname.startsWith('/login') ? fromState.pathname : '/';
 
@@ -79,7 +90,8 @@ export default function Login() {
 
   const [movePassword, setMovePassword] = useState('');
   const [showMove, setShowMove] = useState(false);
-  const [moveNotice, setMoveNotice] = useState(false);
+  const [moveError, setMoveError] = useState('');
+  const [moveLoading, setMoveLoading] = useState(false);
 
   const brandRef = useRef<HTMLElement>(null);
   const terrainSvgRef = useRef<SVGSVGElement>(null);
@@ -122,10 +134,27 @@ export default function Login() {
     }
   };
 
-  const handleMove = (e: FormEvent) => {
+  const handleMove = async (e: FormEvent) => {
     e.preventDefault();
-    setMovePassword('');
-    setMoveNotice(true);
+    setMoveError('');
+    if (!movePassword.trim()) {
+      setMoveError('Enter the move password.');
+      shakeForm();
+      return;
+    }
+    setMoveLoading(true);
+    try {
+      await loginWithMovePassword(movePassword);
+      setMovePassword('');
+      navigate(from, { replace: true });
+    } catch (err) {
+      const code = err instanceof ApiError ? err.code : 'network';
+      setMoveError(MOVE_ERROR_MESSAGES[code] ?? 'Login failed. Please try again.');
+      setMovePassword('');
+      shakeForm();
+    } finally {
+      setMoveLoading(false);
+    }
   };
 
   const onApproved = useCallback((session: SessionData) => {
@@ -258,18 +287,14 @@ export default function Login() {
                   <div className="control">
                     <input id="login-move" name="move-password" type={showMove ? 'text' : 'password'}
                            placeholder="••••••••" autoComplete="off" value={movePassword}
-                           onChange={(e) => { setMovePassword(e.target.value); setMoveNotice(false); }} />
+                           onChange={(e) => { setMovePassword(e.target.value); setMoveError(''); }} />
                     <button type="button" className={`peek ${showMove ? 'on' : ''}`}
                             aria-label={showMove ? 'Hide password' : 'Show password'}
                             onClick={() => setShowMove(!showMove)}><EyeIcon /></button>
                   </div>
                 </div>
-                {moveNotice && (
-                  <p className="form-notice" role="status">
-                    Move passwords aren&apos;t available yet. Use email &amp; password or link with your phone.
-                  </p>
-                )}
-                <button type="submit" className="btn">Sign in</button>
+                <p className={`error-msg ${moveError ? 'show' : ''}`} role={moveError ? 'alert' : undefined}>{moveError}</p>
+                <button type="submit" className="btn" disabled={moveLoading}>{moveLoading ? 'Signing in…' : 'Sign in'}</button>
               </form>
               <p className="form-foot">
                 <button type="button" className="link" onClick={() => setView('password')}>Back to email &amp; password</button>

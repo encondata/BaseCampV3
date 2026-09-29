@@ -15,12 +15,13 @@ describe('NAV_SECTIONS', () => {
   });
 });
 
-it('gives the wiki its own external nav item near Home, opening in a new tab', () => {
-  const dashboards = NAV_SECTIONS.find((s) => s.label === 'Dashboards')!;
-  const item = dashboards.items.find((i) => i.label === 'Wiki');
-  expect(item).toBeTruthy();
-  expect(item!.resource).toBe('wiki');
-  expect(typeof item!.href).toBe('function');
+it('shows the Apps › Wiki link only to people with wiki access, and nowhere else', () => {
+  const wikis = NAV_SECTIONS.flatMap((s) => s.items.map((i) => ({ section: s.label, ...i })))
+    .filter((i) => i.label === 'Wiki');
+  expect(wikis).toHaveLength(1);
+  expect(wikis[0].section).toBe('Apps');
+  expect(wikis[0].resource).toBe('wiki');
+  expect(wikis[0].href).toBeTruthy();
 });
 
 it('every nav item whose path is a prefix of another item matches exactly (no double highlight)', () => {

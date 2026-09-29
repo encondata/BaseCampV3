@@ -18,6 +18,6 @@ export function isNavItemVisible(
 ): boolean {
   if (item.globalOnly && !isGlobal) return false;
   if (item.minRank !== undefined && maxRank < item.minRank) return false;
-  if (!can(item.resource, 'view')) return false;
+  if (item.resource && !can(item.resource, 'view')) return false;
   return !item.godOnly || godMode;
 }

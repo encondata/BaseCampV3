@@ -25,6 +25,7 @@ from serversherpa.db.models import (
     TrustedDevice,
     UserAccount,
 )
+from serversherpa.security import secretbox
 from serversherpa.security.tokens import TokenError
 from serversherpa.services import totp
 from serversherpa.services.auth import AuthError
@@ -107,7 +108,7 @@ def test_decode_challenge_token_rejects_expired(monkeypatch):
 
 def test_encrypt_secret_rejects_invalid_fernet_key(monkeypatch):
     bad = get_settings().model_copy(update={"totp_encryption_key": SecretStr("not-a-key")})
-    monkeypatch.setattr(totp, "get_settings", lambda: bad)
+    monkeypatch.setattr(secretbox, "get_settings", lambda: bad)  # the key is read there now
     with pytest.raises(RuntimeError) as exc:
         totp.encrypt_secret("JBSWY3DPEHPK3PXP")
     assert str(exc.value) == "SS_TOTP_ENCRYPTION_KEY is not a valid Fernet key"
@@ -119,7 +120,7 @@ def test_decrypt_secret_rejects_blob_from_a_different_key(monkeypatch):
     blob = totp.encrypt_secret("JBSWY3DPEHPK3PXP")
     other = get_settings().model_copy(
         update={"totp_encryption_key": SecretStr(Fernet.generate_key().decode())})
-    monkeypatch.setattr(totp, "get_settings", lambda: other)
+    monkeypatch.setattr(secretbox, "get_settings", lambda: other)  # the key is read there now
     with pytest.raises(RuntimeError):
         totp.decrypt_secret(blob)
 

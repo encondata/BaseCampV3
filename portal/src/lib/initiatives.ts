@@ -2,6 +2,7 @@
  * Initiatives page logic — pure functions the components delegate to
  * (the lib/containers.ts pattern), unit-testable without jsdom.
  */
+import { naturalCompare } from './naturalSort';
 import type { ComboOption } from '../components/ComboBox';
 import type {
   InitiativeAssetRow, InitiativeItem, OrgRef, SiteItem, StatusValue,
@@ -84,7 +85,35 @@ export const INITIATIVE_ERRORS: Record<string, string> = {
   circular_link: 'That link would create a loop.',
   link_not_found: 'That link no longer exists.',
   forbidden: 'You do not have permission to change initiatives.',
+  kiosk_password_too_short: 'Kiosk password must be at least 8 characters.',
+  kiosk_password_in_use: 'That kiosk password is already used by another move.',
+  kiosk_password_forbidden: 'Only admins can change the kiosk password.',
+  kiosk_password_contains_name: "The kiosk password can't contain the move's name.",
+  kiosk_password_moves_only: 'Only moves have a kiosk password.',
 };
+
+/** Letters and digits a crew can read out loud and type without
+ *  confusion: no 0/O, 1/l/I. */
+export const KIOSK_PASSWORD_ALPHABET =
+  'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+
+/** A fresh 12-character kiosk password from KIOSK_PASSWORD_ALPHABET,
+ *  drawn with crypto.getRandomValues (rejection sampling, so every
+ *  character is equally likely). */
+export function generateKioskPassword(length = 12): string {
+  const n = KIOSK_PASSWORD_ALPHABET.length;
+  const limit = 256 - (256 % n);
+  const out: string[] = [];
+  const buf = new Uint8Array(length * 2);
+  while (out.length < length) {
+    crypto.getRandomValues(buf);
+    for (const b of buf) {
+      if (b < limit) out.push(KIOSK_PASSWORD_ALPHABET[b % n]);
+      if (out.length === length) break;
+    }
+  }
+  return out.join('');
+}
 
 /** Site options for the edit modal's site pickers. With a client selected,
  *  that client's assigned sites list first (tagged "Client site") — but every
@@ -156,6 +185,10 @@ export interface InitiativeFormState {
   destination_tech_partner_id: string; destination_cable_partner_id: string;
   destination_logistics_partner_id: string;
   origin_vendor_involved: boolean; destination_vendor_involved: boolean;
+  /** Admin-only move password: undefined = untouched (nothing is sent). */
+  kiosk_password?: string;
+  /** Ticked = clear the move password (sent as ''). */
+  clear_kiosk_password?: boolean;
 }
 
 const toDay = (iso: string | null | undefined) => (iso ? iso.slice(0, 10) : '');
@@ -238,6 +271,9 @@ export function initiativePayload(
       form.destination_logistics_partner_id);
   out.origin_vendor_involved = form.origin_vendor_involved;
   out.destination_vendor_involved = form.destination_vendor_involved;
+  // only when the admin typed one or ticked Clear — absent means unchanged
+  if (form.clear_kiosk_password) out.kiosk_password = '';
+  else if (form.kiosk_password) out.kiosk_password = form.kiosk_password;
   return out;
 }
 
@@ -713,7 +749,7 @@ export function deviceListRows(
   const toRows = (blocks: RackBlock[], group: 'FRONT' | 'REAR') =>
     [...blocks]
       .sort((a, b) => (b.ru + b.height) - (a.ru + a.height)
-        || a.label.localeCompare(b.label))
+        || naturalCompare(a.label, b.label))
       .flatMap((b) => [
         {
           id: b.id, name: b.label,
@@ -749,7 +785,7 @@ export function legendCategories(blocks: RackBlock[]): LegendCategory[] {
     else uncategorized = true;
   }
   const out = [...byLabel].map(([label, color]) => ({ label, color }))
-    .sort((a, b) => a.label.localeCompare(b.label));
+    .sort((a, b) => naturalCompare(a.label, b.label));
   if (uncategorized) out.push({ label: 'Uncategorized', color: UNCATEGORIZED_FILL });
   return out;
 }

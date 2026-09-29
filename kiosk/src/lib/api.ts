@@ -161,6 +161,19 @@ export async function loginRequest(email: string, password: string): Promise<Ses
   return data;
 }
 
+/** Sign in with a move's kiosk password (no person account involved). */
+export async function moveLoginRequest(password: string): Promise<SessionData> {
+  const resp = await request(`${apiUrl()}/kiosk/move-login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify({ password }),
+  });
+  const data = await jsonFrom<SessionData>(resp);
+  storeSession(data);
+  return data;
+}
+
 export async function logoutRequest(): Promise<void> {
   try {
     await fetch(`${apiUrl()}/auth/logout`, { method: 'POST', credentials: 'include' });

@@ -34,6 +34,17 @@ DEFAULTS: dict[str, dict] = {
         "password_history_count": 3,
         "password_expiry_since": None,
     },
+    # Makes / Models spec lookup (Claude). Field groups decide what the
+    # worker asks for; auto_apply fills BLANK fields only (never knowledge).
+    "ai_lookup": {
+        "background_enabled": False,
+        "auto_apply": False,
+        "fields_specs": True,
+        "fields_mounting": False,
+        "fields_knowledge": False,
+        "retry_after_days": 90,
+        "effort": "medium",            # low | medium | high (spec_lookup.provider)
+    },
 }
 
 

@@ -245,7 +245,6 @@
 .login-shell .btn-alt:active { transform: scale(.985); }
 .login-shell .btn-alt svg { width: 17px; height: 17px; color: var(--amber); flex: none; }
 .login-shell .alt-methods { display: grid; gap: 10px; }
-.login-shell .form-notice { color: var(--text-mute); font-size: 13px; margin: 0 0 14px; }
 .login-shell .form-error { font-size: 13px; margin: 0; }
 
 /* ── footer ────────────────────────────────────────────────────── */

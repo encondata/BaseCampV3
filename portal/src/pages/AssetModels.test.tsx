@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 import { LIST_FIT } from '../lib/listTools';
@@ -10,10 +10,19 @@ vi.mock('../auth/AuthContext', () => ({
     can: () => true, preferences: { list_prefs: {} }, updatePreferences: vi.fn(),
   }),
 }));
+const LOOKUP_STATUS = vi.hoisted(() => ({
+  configured: true, background_enabled: false, queued: 0, running_model: null,
+  last_finished_at: null, pending_count: 2,
+  failed_this_month: 0, last_error: null, key_rejected: false,
+  month: { lookups: 0, input_tokens: 0, output_tokens: 0, searches: 0, est_cost_usd: 0 },
+}));
 const api = vi.hoisted(() => ({
   listAssetModels: vi.fn(async () => []),
   listAssetCategories: vi.fn(async () => []),
   reviewAssetModels: vi.fn(async () => ({ imported: [], duplicates: [], dismissed_count: 0 })),
+  getSpecLookupStatus: vi.fn(async () => LOOKUP_STATUS),
+  queueSpecLookup: vi.fn(async () => ({ queued: 1, skipped: [] })),
+  listSpecSuggestions: vi.fn(async () => []),
 }));
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()), ...api,
@@ -25,7 +34,9 @@ const item = (id: string, model: string, over: Record<string, unknown> = {}) => 
   id, make: 'Dell', model, category: null, category_label: null, category_color: null,
   ru_size: null, weight_lbs: null, weight_kg: null, length_in: null, width_in: null, height_in: null,
   length_cm: null, width_cm: null, height_cm: null, mount_type: null, rail_type: null, form_factor: null,
-  knowledge: '', aliases: [], review_dismissed_at: null, created_at: '', updated_at: '',
+  knowledge: '', aliases: [], review_dismissed_at: null,
+  private: false, spec_lookup_skip: false, specs_looked_up_at: null,
+  created_at: '', updated_at: '',
   asset_count: 1, stock_line_count: 0, reason: 'duplicate', group_key: 'dell r740', ...over,
 });
 
@@ -68,4 +79,32 @@ it('AssetModels list: column floors, shared template + minimum, sideways-scroll 
   expect(main.style.gridTemplateColumns).toBe(head.style.gridTemplateColumns);
   expect(row.style.minWidth).toBe(head.style.minWidth);
   expect(parseInt(head.style.minWidth, 10)).toBeLessThanOrEqual(LIST_FIT.page);
+});
+
+it('the Spec lookup tab carries the pending count and opens the panel', async () => {
+  render(<MemoryRouter><AssetModels /></MemoryRouter>);
+  fireEvent.click(await screen.findByRole('tab', { name: 'Spec lookup 2' }));
+  expect(await screen.findByRole('button', { name: 'Find missing specs' })).toBeTruthy();
+  expect(await screen.findByText('No suggestions in this view.')).toBeTruthy();
+});
+
+it('the expanded row queues a lookup for that model and shows when it last ran', async () => {
+  api.listAssetModels.mockResolvedValueOnce([item('m1', 'PowerEdge R740')] as never);
+  render(<MemoryRouter><AssetModels /></MemoryRouter>);
+  fireEvent.click(await screen.findByText('PowerEdge R740'));
+  expect(await screen.findByText(/Last looked up never/)).toBeTruthy();
+  const statusCalls = api.getSpecLookupStatus.mock.calls.length;
+  fireEvent.click(screen.getByRole('button', { name: 'Look up specs' }));
+  await waitFor(() => expect(api.queueSpecLookup).toHaveBeenCalledWith(['m1']));
+  await waitFor(() => expect(api.getSpecLookupStatus.mock.calls.length).toBeGreaterThan(statusCalls));
+});
+
+it('Look up specs is disabled for a private model', async () => {
+  api.listAssetModels.mockResolvedValueOnce([item('m1', 'PowerEdge R740', { private: true })] as never);
+  render(<MemoryRouter><AssetModels /></MemoryRouter>);
+  fireEvent.click(await screen.findByText('PowerEdge R740'));
+  const btn = await screen.findByRole('button', { name: 'Look up specs' }) as HTMLButtonElement;
+  expect(btn.disabled).toBe(true);
+  expect(btn.getAttribute('title')).toBe('Private models are never sent to Claude.');
+  expect(screen.getByText(/Last looked up never · Private/)).toBeTruthy();
 });

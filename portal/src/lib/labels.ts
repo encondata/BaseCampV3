@@ -3,6 +3,7 @@
  * safe defaults, search haystacks. No fetching, no React.
  */
 
+import { naturalCompare } from './naturalSort';
 import type { LabelPlaceholder, LabelTemplate, LabelVocab } from './api';
 
 export type VocabKind = 'type' | 'size' | 'dpi' | 'language';
@@ -18,7 +19,7 @@ export function vocabOfKind(
   const activeOnly = opts.activeOnly ?? true;
   return rows
     .filter((v) => v.kind === kind && (!activeOnly || v.is_active))
-    .sort((a, b) => a.sort_order - b.sort_order || a.key.localeCompare(b.key));
+    .sort((a, b) => a.sort_order - b.sort_order || naturalCompare(a.key, b.key));
 }
 
 export function vocabLabel(rows: LabelVocab[], kind: VocabKind, key: string): string {
@@ -76,7 +77,7 @@ export function placeholdersFor(
 ): LabelPlaceholder[] {
   return rows
     .filter((p) => p.is_active && p.applies_to.includes(labelType))
-    .sort((a, b) => a.sort_order - b.sort_order || a.key.localeCompare(b.key));
+    .sort((a, b) => a.sort_order - b.sort_order || naturalCompare(a.key, b.key));
 }
 
 export function vocabSearchText(v: LabelVocab): string {

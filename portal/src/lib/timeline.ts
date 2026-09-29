@@ -7,6 +7,8 @@
  * have without worrying about time-of-day skew.
  */
 
+import { naturalCompare } from './naturalSort';
+
 export type TimelineScale = 'month' | '45d' | 'quarter' | 'year';
 
 /** End-exclusive: `end` is the first instant NOT in the range. */
@@ -217,7 +219,7 @@ export function sortForTimeline<T extends TimelineItem>(items: T[]): T[] {
     if (aHas && bHas && a.scheduled_start !== b.scheduled_start) {
       return (a.scheduled_start as string) < (b.scheduled_start as string) ? -1 : 1;
     }
-    return a.name.localeCompare(b.name);
+    return naturalCompare(a.name, b.name);
   });
 }
 
@@ -299,7 +301,7 @@ export function calendarWeeks<T extends TimelineItem>(
       const aLen = a.end.getTime() - a.start.getTime();
       const bLen = b.end.getTime() - b.start.getTime();
       if (aLen !== bLen) return bLen - aLen;
-      return a.item.name.localeCompare(b.item.name);
+      return naturalCompare(a.item.name, b.item.name);
     });
 
   const weeks: CalendarWeek<T>[] = [];
