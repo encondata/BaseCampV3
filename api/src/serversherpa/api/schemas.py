@@ -1883,6 +1883,7 @@ class InitiativeItem(BaseModel):
     parent_role: str | None = None
     archived_at: datetime | None = None
     created_at: datetime
+    kiosk_password_set: bool = False
 
 
 class InitiativePersonRow(BaseModel):
@@ -1921,7 +1922,6 @@ class InitiativeDetailOut(InitiativeItem):
     people: list[InitiativePersonRow] = []
     links_children: list[InitiativeLinkRow] = []
     links_parents: list[InitiativeLinkRow] = []
-    kiosk_password_set: bool = False
 
 
 class KioskPasswordOut(BaseModel):

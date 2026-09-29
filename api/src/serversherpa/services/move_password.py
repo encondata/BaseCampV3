@@ -103,6 +103,9 @@ async def set_password(db: AsyncSession, initiative: Initiative, password: str, 
     initiative.kiosk_password_fp = fp
     initiative.updated_at = datetime.now(UTC)
     await ensure_kiosk_identity(db, initiative)
+    if was_set:
+        # rotating a (possibly leaked) password signs the old kiosks out
+        await revoke_move_sessions(db, initiative.id)
     audit(db, actor_id=actor_id, entity_type="initiative", entity_id=str(initiative.id),
           action="update", changes={"kiosk_password": {"from": "set" if was_set else None, "to": "set"}})
 

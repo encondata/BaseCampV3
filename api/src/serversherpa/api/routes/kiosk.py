@@ -137,6 +137,8 @@ async def poll_pair(
 MOVE_LOGIN_IP_LIMIT = pairing.PAIR_IP_LIMIT
 MOVE_LOGIN_IP_WINDOW_SECONDS = pairing.PAIR_IP_WINDOW_SECONDS
 MOVE_LOGIN_AUDIT_ID = "move-login"
+# Across every caller: a botnet spread over many addresses still meets a ceiling.
+MOVE_LOGIN_GLOBAL_LIMIT = 300
 
 
 def _inet_or_none(ip: str) -> str | None:
@@ -149,20 +151,43 @@ def _inet_or_none(ip: str) -> str | None:
     return ip
 
 
-async def _move_login_failures(db: AsyncSession, ip: str | None) -> int:
+def move_login_bucket(raw: str) -> str:
+    """The rate-limit bucket for a caller: an IPv4 address by itself, an
+    IPv6 address by its /64 (one subscriber holds the whole /64, so
+    rotating addresses inside it must not reset the count), anything
+    unparseable (the shared 'unknown' bucket) as-is."""
+    try:
+        addr = ipaddress.ip_address(raw)
+    except ValueError:
+        return raw
+    if addr.version == 6:
+        return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+    return str(addr)
+
+
+def _move_login_window():
     since = datetime.now(UTC) - timedelta(seconds=MOVE_LOGIN_IP_WINDOW_SECONDS)
+    return (AuditLog.entity_type == "auth", AuditLog.entity_id == MOVE_LOGIN_AUDIT_ID,
+            AuditLog.action == "login_failed", AuditLog.at >= since)
+
+
+async def _move_login_failures(db: AsyncSession, bucket: str) -> int:
     return await db.scalar(
         select(func.count()).select_from(AuditLog).where(
-            AuditLog.entity_type == "auth", AuditLog.entity_id == MOVE_LOGIN_AUDIT_ID,
-            AuditLog.action == "login_failed", AuditLog.at >= since,
-            AuditLog.ip == ip if ip is not None else AuditLog.ip.is_(None))) or 0
+            *_move_login_window(), AuditLog.changes["bucket"].astext == bucket)) or 0
 
 
-async def _move_login_failed(db: AsyncSession, ip: str | None, reason: str, **extra) -> HTTPException:
+async def _move_login_failures_total(db: AsyncSession) -> int:
+    return await db.scalar(
+        select(func.count()).select_from(AuditLog).where(*_move_login_window())) or 0
+
+
+async def _move_login_failed(db: AsyncSession, ip: str | None, bucket: str, reason: str,
+                             status: int = 401, **extra) -> HTTPException:
     audit(db, actor_id=None, entity_type="auth", entity_id=MOVE_LOGIN_AUDIT_ID,
-          action="login_failed", changes={"reason": reason, **extra}, ip=ip)
+          action="login_failed", changes={"reason": reason, "bucket": bucket, **extra}, ip=ip)
     await db.commit()
-    return _err(401, reason)
+    return _err(status, reason)
 
 
 @router.post("/move-login", response_model=SessionOut)
@@ -172,17 +197,24 @@ async def move_login(
     """Sign a kiosk in with a move's password. The session belongs to the
     move's hidden kiosk identity and is locked to that move (see
     kiosk_setup/setup_options and services/move_password.py)."""
-    ip = _inet_or_none(rate_limit_ip(request))
-    if await _move_login_failures(db, ip) >= MOVE_LOGIN_IP_LIMIT:
+    raw_ip = rate_limit_ip(request)
+    ip = _inet_or_none(raw_ip)
+    bucket = move_login_bucket(raw_ip)
+    if await _move_login_failures(db, bucket) >= MOVE_LOGIN_IP_LIMIT \
+            or await _move_login_failures_total(db) >= MOVE_LOGIN_GLOBAL_LIMIT:
         raise _err(429, "move_login_rate_limited")
     initiative = await move_password_service.find_initiative_by_password(db, body.password)
     if initiative is None:
-        raise await _move_login_failed(db, ip, "invalid_move_password")
+        raise await _move_login_failed(db, ip, bucket, "invalid_move_password")
     if not move_password_service.is_move_active(initiative):
-        raise await _move_login_failed(db, ip, "move_not_active",
+        raise await _move_login_failed(db, ip, bucket, "move_not_active",
                                        initiative_id=str(initiative.id))
     account = await move_password_service.ensure_kiosk_identity(db, initiative)
     access = await resolve_access(db, account.person_id)
+    if not access.can("kiosk", "view"):
+        # right password, but the identity may not use a kiosk (worker role revoked)
+        raise await _move_login_failed(db, ip, bucket, "kiosk_not_allowed", status=403,
+                                       initiative_id=str(initiative.id))
     kiosk_move = KioskMoveOut(initiative_id=initiative.id, name=initiative.name)
     result = await auth_service.start_session(
         db, account, ip=client_ip(request), user_agent=request.headers.get("user-agent"),

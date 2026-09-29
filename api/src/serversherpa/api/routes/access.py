@@ -21,6 +21,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit
+from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.storage import presign_get
 
 router = APIRouter(prefix="/access", tags=["access"])
@@ -266,6 +267,7 @@ async def preview_matrix(
         .where(Person.id.in_(
             select(PersonRole.person_id)
             .where(PersonRole.role == name, PersonRole.revoked_at.is_(None))))
+        .where(Person.source != KIOSK_MOVE_SOURCE)   # a move's hidden kiosk identity
         .order_by(natural(Person.last_name), natural(Person.first_name)))).scalars().all()
     signatures = await _access_signatures(db, [p.id for p in members])
     cache: dict[tuple, tuple] = {}

@@ -219,6 +219,7 @@ def _item(i: Initiative, vocab: dict, sites: dict, clients: dict,
         "parent_id": parent_of.get(i.id, (None, None))[0],
         "parent_role": parent_of.get(i.id, (None, None))[1],
         "archived_at": i.archived_at, "created_at": i.created_at,
+        "kiosk_password_set": i.kiosk_password_fp is not None,
     }
 
 
@@ -301,8 +302,7 @@ async def _detail(db: DbSession, initiative: Initiative,
     return InitiativeDetailOut(
         **_item(initiative, *ctx),
         people=await _people_rows(db, initiative.id, actor),
-        links_children=children, links_parents=parents,
-        kiosk_password_set=initiative.kiosk_password_fp is not None)
+        links_children=children, links_parents=parents)
 
 
 @router.get("", response_model=list[InitiativeItem])
@@ -413,12 +413,22 @@ async def update_initiative(
                     db, initiative, actor_id=actor.person.id)
         except move_password_service.MovePasswordError as exc:
             raise _err(422, exc.code) from None
+        except IntegrityError:
+            # the flush inside the service can hit the unique fingerprint
+            # index when two admins race for the same password
+            await db.rollback()
+            raise _err(422, "kiosk_password_in_use") from None
     if "name" in changes:
         await move_password_service.rename_kiosk_identity(db, initiative)
     if "status" in changes \
             and initiative.status in move_password_service.MOVE_LOGIN_BLOCKED_STATUSES:
         await move_password_service.revoke_move_sessions(db, initiative.id)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # a racing admin took the same password between our check and commit
+        await db.rollback()
+        raise _err(422, "kiosk_password_in_use") from None
     return await _detail(db, initiative, actor)
 
 
