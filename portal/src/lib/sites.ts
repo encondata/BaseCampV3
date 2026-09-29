@@ -134,11 +134,21 @@ const TEXT_FIELDS: (keyof SiteFormState)[] = [
   'partner_id', 'notes',
 ];
 
-export function sitePayload(form: SiteFormState): Record<string, unknown> {
+/** Fields the server requires — never sent as null (a blank one is left
+ *  out and the form's own validation catches it). */
+const REQUIRED_FIELDS: ReadonlySet<keyof SiteFormState> = new Set(['name', 'status', 'country']);
+
+/** Create leaves blank fields out. Update sends a blank optional field as an
+ *  explicit null: the PATCH only touches the fields it names, so leaving a
+ *  cleared field out would keep the old value (clearing Notes did nothing). */
+export function sitePayload(
+  form: SiteFormState, mode: 'create' | 'update' = 'create',
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const key of TEXT_FIELDS) {
     const value = form[key].trim();
     if (value) out[key] = value;
+    else if (mode === 'update' && !REQUIRED_FIELDS.has(key)) out[key] = null;
   }
   // Coordinates travel together: both set, or both explicitly cleared.
   const lat = form.latitude.trim();

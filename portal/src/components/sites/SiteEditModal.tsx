@@ -138,7 +138,7 @@ export default function SiteEditModal({
       }
 
       const id = editingId as string;
-      await updateSite(id, sitePayload(form));
+      await updateSite(id, sitePayload(form, 'update'));
 
       try {
         if (!sameClientSet(clientBaseline, clientIds)) {

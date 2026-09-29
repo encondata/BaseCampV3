@@ -156,6 +156,23 @@ it('picks the timezone from a searchable list of every zone', async () => {
   await waitFor(() => expect(onSaved).toHaveBeenCalled());
 });
 
+it('clearing the notes and saving clears them on the server', async () => {
+  const user = userEvent.setup();
+  const onSaved = vi.fn().mockResolvedValue(undefined);
+  render(
+    <SiteEditModal
+      site={{ ...SITE, notes: 'Gate code 1234', timezone: 'America/Chicago' }}
+      types={TYPES} statuses={STATUSES} clients={CLIENTS} partners={[]}
+      canChange onClose={vi.fn()} onSaved={onSaved}
+    />,
+  );
+  await user.clear(await screen.findByDisplayValue('Gate code 1234'));
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateSite).toHaveBeenCalledTimes(1));
+  expect(api.updateSite).toHaveBeenCalledWith(
+    'site-1', expect.objectContaining({ notes: null, timezone: 'America/Chicago' }));
+});
+
 /**
  * Survey save loop (SiteEditModal ~submit): per-field PUT/DELETE against the
  * loaded baseline, diffed on CLEANED values via lib/sites.ts's

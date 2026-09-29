@@ -116,6 +116,25 @@ describe('sitePayload', () => {
   });
 });
 
+describe('sitePayload on update', () => {
+  it('sends an explicit null for every optional field the user cleared', () => {
+    const out = sitePayload({
+      ...formFromSite({ ...site, notes: 'Gate code 1234', partner_id: 'p1' }),
+      notes: '  ', timezone: '', dc_provider: '', partner_id: '', code: '', city: '',
+    }, 'update');
+    expect(out).toMatchObject({
+      notes: null, timezone: null, dc_provider: null, partner_id: null, code: null, city: null,
+    });
+    expect(out.name).toBe('Acme DC1');
+  });
+  it('never sends null for the required fields', () => {
+    const out = sitePayload({ ...formFromSite(site), name: '', status: '', country: '' }, 'update');
+    expect('name' in out).toBe(false);
+    expect('status' in out).toBe(false);
+    expect('country' in out).toBe(false);
+  });
+});
+
 describe('surveyPayload', () => {
   const schema: SurveySchema = { groups: [{ key: 'dock', label: 'Dock', fields: [
     { key: 'dock_available', label: 'Dock available', kind: 'bool', options: [] },
