@@ -40,6 +40,7 @@ class AuthResult:
     account: UserAccount
     roles: list[str]
     access: AccessInfo
+    session_id: uuid.UUID | None = None
 
 
 @dataclass
@@ -151,6 +152,7 @@ async def start_session(
     ip: str | None, user_agent: str | None,
     audit_action: str = "login", access: AccessInfo | None = None,
     client: str = "portal",
+    initiative_id: uuid.UUID | None = None,
 ) -> AuthResult:
     """Mint a session for an account whose holder has just proven who they
     are — a password login, or a kiosk pairing they approved on their
@@ -159,7 +161,8 @@ async def start_session(
     loaded (see _load_account).
 
     `client` ("portal" | "kiosk") is recorded on the session row and
-    every token rotated from it. A kiosk login is exempt from the 2FA
+    every token rotated from it. `initiative_id` locks the session to one
+    move (a move-password kiosk sign-in) and is carried through rotation. A kiosk login is exempt from the 2FA
     challenge, so its session is held to the kiosk routes — see
     enforce_session_scope in api/deps.py."""
     settings = get_settings()
@@ -181,6 +184,7 @@ async def start_session(
         ip_address=ip,
         user_agent=user_agent,
         client=client,
+        initiative_id=initiative_id,
     )
     db.add(session)
     audit(db, actor_id=account.person_id, entity_type="auth",
@@ -202,6 +206,7 @@ async def start_session(
         account=account,
         roles=access.role_names,
         access=access,
+        session_id=session_id,
     )
 
 
@@ -266,6 +271,7 @@ async def refresh(
         ip_address=ip,
         user_agent=user_agent,
         client=session.client,          # a kiosk session stays kiosk-scoped forever
+        initiative_id=session.initiative_id,   # and a move session stays on its move
     ))
     # successor row must hit the DB before the old row can point at it
     await db.flush()
@@ -287,6 +293,7 @@ async def refresh(
         account=account,
         roles=access.role_names,
         access=access,
+        session_id=new_id,
     )
 
 
