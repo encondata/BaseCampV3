@@ -8,6 +8,11 @@
  * positioning, so a ComboBox inside a sideways-scrolling container (a
  * DataTable cell) is not clipped by it. A portaled menu is placed once per
  * open and closes on any scroll or resize rather than tracking its trigger.
+ *
+ * `onSearch` (opt-in) hands the typed text to the caller, who searches the
+ * server and passes the matches back as `options`; the list then shows
+ * them as given instead of filtering them again (a match on a field the
+ * label doesn't show — an email — would otherwise disappear).
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -54,11 +59,12 @@ interface Props {
   inputId?: string;
   ariaLabel?: string;
   portal?: boolean;                    // menu under document.body — escapes overflow clipping
+  onSearch?: (text: string) => void;   // the caller filters `options` (server search)
 }
 
 export default function ComboBox({
   options, value, onChange, placeholder = 'Select…',
-  onOpen, clearable = false, disabled = false, inputId, ariaLabel, portal = false,
+  onOpen, clearable = false, disabled = false, inputId, ariaLabel, portal = false, onSearch,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
@@ -71,14 +77,25 @@ export default function ComboBox({
 
   const selected = options.find((o) => o.value === value);
 
+  const searched = !!onSearch;
   const visible = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    if (!q) return options;
+    if (!q || searched) return options;
     return options.filter((o) =>
       `${o.label} ${o.sub ?? ''}`.toLowerCase().includes(q));
-  }, [options, filter]);
+  }, [options, filter, searched]);
 
   useEffect(() => { setActive(0); }, [filter, open]);
+
+  // every change of the typed text (including the reset on close) reaches onSearch
+  const onSearchRef = useRef(onSearch);
+  onSearchRef.current = onSearch;
+  const lastSearch = useRef(filter);
+  useEffect(() => {
+    if (filter === lastSearch.current) return;
+    lastSearch.current = filter;
+    onSearchRef.current?.(filter);
+  }, [filter]);
 
   // Decide drop direction on open, and re-check whenever the filter changes
   // while open (fewer/more matches can change the menu's natural height).

@@ -147,3 +147,30 @@ describe('portal', () => {
     expect(screen.queryByText('Alpha')).toBeNull();
   });
 });
+
+describe('onSearch (the caller searches the server)', () => {
+  afterEach(cleanup);
+
+  it('reports the typed text and shows the options as given, without filtering them again', () => {
+    const onSearch = vi.fn();
+    // the server matched "ada" by email — the label doesn't contain it
+    const OPTIONS = [{ value: 'p1', label: 'Augusta King' }];
+    render(<ComboBox value="" onChange={() => {}} options={OPTIONS} onSearch={onSearch} ariaLabel="Person" />);
+    const input = screen.getByLabelText('Person');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'ada' } });
+    expect(onSearch).toHaveBeenLastCalledWith('ada');
+    expect(screen.getByText('Augusta King')).toBeTruthy();
+  });
+
+  it('reports an empty search when the list closes', () => {
+    const onSearch = vi.fn();
+    render(<ComboBox value="" onChange={() => {}} options={[{ value: 'a', label: 'Alpha' }]}
+                     onSearch={onSearch} ariaLabel="Person" />);
+    const input = screen.getByLabelText('Person');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'al' } });
+    fireEvent.mouseDown(screen.getByText('Alpha'));
+    expect(onSearch).toHaveBeenLastCalledWith('');
+  });
+});

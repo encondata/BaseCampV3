@@ -1,6 +1,7 @@
 """FastAPI dependencies: DB session, current user, permission guards."""
 
 import ipaddress
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -129,12 +130,20 @@ READ_ONLY_EXEMPT_PATHS = frozenset({
     "/kiosk/printer-events",
     "/auth/totp/verify", "/auth/totp/enroll/start", "/auth/totp/enroll/confirm",
     "/auth/totp/backup-codes/regenerate",
+    # a read made through POST (a batch of asset ids): a freeze mustn't
+    # blank every image on every wiki page
+    "/wiki/assets/urls",
 })
 READ_ONLY_EXEMPT_PREFIXES = ("/auth/me/sessions/", "/kiosk/pair")
+# Paths with an id in them. `POST /wiki/nodes/{id}/view` is telemetry, not
+# a state change: the route answers 204 during a freeze and simply doesn't
+# count the view, so a reader opening a page never sees a read-only error.
+READ_ONLY_EXEMPT_PATTERNS = (re.compile(r"/wiki/nodes/[^/]+/view"),)
 
 
 def _read_only_exempt(path: str) -> bool:
-    return path in READ_ONLY_EXEMPT_PATHS or path.startswith(READ_ONLY_EXEMPT_PREFIXES)
+    return (path in READ_ONLY_EXEMPT_PATHS or path.startswith(READ_ONLY_EXEMPT_PREFIXES)
+            or any(p.fullmatch(path) for p in READ_ONLY_EXEMPT_PATTERNS))
 
 
 async def enforce_read_only(db: AsyncSession, request: Request,
@@ -174,12 +183,15 @@ async def enforce_read_only(db: AsyncSession, request: Request,
 # Profile. This subtraction only bites a signed-in session that owes a
 # change (password_change_owed); the enroll/verify challenge path is
 # unaffected either way because a challenge holder has no session at all —
-# totp_actor never calls enforce_forced_password_change for it.
+# totp_actor never calls enforce_forced_password_change for it. Nor is
+# `/wiki/assets/urls`: read-only exempts that read-through-POST so a freeze
+# doesn't blank every wiki image, which is not part of signing in either.
 FORCED_CHANGE_EXEMPT_PATHS = (
     (READ_ONLY_EXEMPT_PATHS - {
         "/system/admin", "/kiosk/printer-events",
         "/auth/totp/verify", "/auth/totp/enroll/start",
         "/auth/totp/enroll/confirm", "/auth/totp/backup-codes/regenerate",
+        "/wiki/assets/urls",
     })
     | {"/auth/me", "/auth/me/sessions"}
 )

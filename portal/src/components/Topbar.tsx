@@ -1,7 +1,7 @@
 /**
  * Topbar — crumbs, GLOBAL search (as-you-type dropdown over pages +
- * records, click-through to the record), AI assistant, notifications,
- * and the ⌘K commands button. Hotkeys per fibertrace search-and-hotkeys.md.
+ * records, click-through to the record), the wiki help button, AI
+ * assistant, notifications, and the ⌘K commands button. Hotkeys per fibertrace search-and-hotkeys.md.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -13,6 +13,7 @@ import { avatarGradient, initials } from '../lib/format';
 import { useNotifications } from '../lib/notificationsContext';
 import { useTopbar } from '../lib/topbar';
 import AiAssistant from './AiAssistant';
+import HelpButton from './HelpButton';
 import NotificationsPanel from './NotificationsPanel';
 import '../styles/toast.css';
 
@@ -322,6 +323,9 @@ export default function Topbar() {
       </div>
 
       <div className="tb-actions" ref={popRef}>
+        {/* one popover at a time: asking for help closes the AI/bell ones */}
+        <HelpButton onOpen={() => setPop(null)} />
+
         {can('ai') && (
           <div className="pop-wrap">
             <button className="icon-btn ai-glow" data-tip="AI assistant" aria-label="AI assistant"

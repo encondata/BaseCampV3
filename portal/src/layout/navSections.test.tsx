@@ -15,6 +15,15 @@ describe('NAV_SECTIONS', () => {
   });
 });
 
+it('shows the Apps › Wiki link only to people with wiki access, and nowhere else', () => {
+  const wikis = NAV_SECTIONS.flatMap((s) => s.items.map((i) => ({ section: s.label, ...i })))
+    .filter((i) => i.label === 'Wiki');
+  expect(wikis).toHaveLength(1);
+  expect(wikis[0].section).toBe('Apps');
+  expect(wikis[0].resource).toBe('wiki');
+  expect(wikis[0].href).toBeTruthy();
+});
+
 it('every nav item whose path is a prefix of another item matches exactly (no double highlight)', () => {
   const items = NAV_SECTIONS.flatMap((s) => s.items);
   for (const item of items) {

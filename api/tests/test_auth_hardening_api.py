@@ -211,3 +211,16 @@ async def test_forced_change_allows_listing_own_sessions(client, db, seeded_user
     resp = await client.get("/auth/me/sessions", headers=headers)
     assert resp.status_code == 200, resp.text
     assert isinstance(resp.json(), list) and len(resp.json()) >= 1
+
+
+async def test_forced_change_blocks_wiki_asset_urls(client, db, seeded_user):
+    """`POST /wiki/assets/urls` is a read made through POST, exempt from
+    READ-ONLY mode so a freeze doesn't blank every wiki image — which says
+    nothing about a session that hasn't finished signing in."""
+    await db.execute(sa_update(UserAccount).values(must_change_password=True))
+    await db.commit()
+
+    headers = await _headers_from(await _login(client, "alice@test.example.com"))
+    resp = await client.post("/wiki/assets/urls", headers=headers, json={"ids": []})
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["code"] == "password_change_required"

@@ -1,0 +1,21 @@
+// Typechecks the wiki server's tests (tsconfig.server.json compiles the
+// server and leaves them out; web tests are covered by tsconfig.json).
+// Tests import without `.js` like the web side, so resolve as a bundler.
+{
+  "extends": "./tsconfig.server.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true
+  },
+  // the shared (DOM-free) schema and its tests; the rest of web/src/editor
+  // is browser code that tsconfig.json checks
+  "include": [
+    "server/src/**/*.ts",
+    "web/src/editor/schema.ts",
+    "web/src/editor/schema.test.ts",
+    "web/src/editor/fixtures.ts",
+    "web/src/editor/extensions/**/*.ts"
+  ],
+  "exclude": []
+}

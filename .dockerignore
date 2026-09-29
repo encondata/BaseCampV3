@@ -3,9 +3,11 @@
 **/node_modules
 **/dist
 **/dist-node
+**/dist-server
 api/.venv
 api/backups
 **/.env
 docs
 *.md
 !kiosk/README.md
+!wiki/README.md

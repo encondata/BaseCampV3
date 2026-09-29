@@ -142,7 +142,13 @@ async def clean_db():
             "report_runs, report_definitions, notifications, "
             "initiative_links, initiative_people, initiatives, import_jobs, "
             "containers, pending_deletes, label_template_sites, "
-            "label_templates, label_placeholders, label_vocab CASCADE"))
+            "label_templates, label_placeholders, label_vocab, "
+            "wiki_share_links, wiki_help_links, wiki_page_views, "
+            "wiki_search_log, "
+            "wiki_reviews, wiki_watches, wiki_templates, wiki_comments, "
+            "wiki_jobs, wiki_favorites, wiki_grants, wiki_page_assets, "
+            "wiki_file_versions, wiki_files, wiki_page_versions, wiki_pages, "
+            "wiki_nodes, wiki_spaces CASCADE"))
         # role matrix is editable seed data — restore defaults & drop customs
         await session.execute(text("DELETE FROM roles WHERE is_system = false"))
         # 2FA policy flag on the seeded roles is test-mutable — never leaks

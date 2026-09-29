@@ -16,5 +16,6 @@ reportsvc: api/.venv/bin/serversherpa report-worker --reload
 labelsvc: api/.venv/bin/serversherpa label-worker --reload
 specsvc: api/.venv/bin/serversherpa spec-lookup-worker --reload
 dbtestsvc: api/.venv/bin/serversherpa db-testing-worker --reload
+wikisvc: api/.venv/bin/serversherpa wiki-worker --reload
 portal: npm --prefix portal run dev
 kiosk: npm --prefix kiosk run dev

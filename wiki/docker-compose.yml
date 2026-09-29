@@ -1,0 +1,66 @@
+# ServerSherpa wiki — three containers behind the reverse proxy
+# (wiki.serversherpa.com -> the `wiki` service; the two workers have no
+# exposed port). Context is the repo root for all: `wiki` needs
+# portal/src + portal/public (the @portal alias, kiosk/status precedent),
+# the workers need the api/ package.
+#
+#   cp wiki/.env.example wiki/.env   # then edit it — see the comments there
+#   docker compose -f wiki/docker-compose.yml --env-file wiki/.env up -d --build
+#
+# The workers talk to Postgres and Spaces directly (previews, search
+# text, exports), so their env_file carries the full set of API SS_*
+# settings, not just the wiki-specific ones — see wiki/.env.example.
+#
+# Two workers from one image, so a big export (minutes of PDF/Word
+# rendering) never holds up everyone's file previews, search text, purges
+# and reminders: `wiki-worker` runs every job kind but exports,
+# `wiki-export-worker` runs only exports. Add replicas of either freely —
+# jobs are claimed with SKIP LOCKED.
+name: serversherpa-wiki
+
+x-wiki-worker: &wiki-worker
+  build:
+    context: ..
+    dockerfile: wiki/Dockerfile.worker
+  env_file: .env
+  environment:
+    # the wiki's public origin — the links in export-ready/failed and
+    # review-reminder notifications are built from it; unset, they point
+    # at http://localhost:5176. Must equal the main API's SS_WIKI_ORIGIN.
+    SS_WIKI_ORIGIN: ${SS_WIKI_ORIGIN:?set SS_WIKI_ORIGIN in wiki/.env (the same value as the API's)}
+    # the wiki service's own origin, for POST /internal/render (export
+    # to PDF/Word) — the compose network's service name, not localhost
+    SS_WIKI_RENDER_URL: http://wiki:8080
+    # the same secret the `wiki` service checks /internal/render
+    # requests against (its WIKI_SERVICE_TOKEN below) — one variable in
+    # wiki/.env keeps both sides equal rather than risking drift
+    SS_WIKI_SERVICE_TOKEN: ${WIKI_SERVICE_TOKEN:?set WIKI_SERVICE_TOKEN in wiki/.env}
+  restart: unless-stopped
+
+services:
+  # exactly ONE replica: the collab server keeps open pages in memory and
+  # overwrites the stored document on save — two would clobber each other
+  wiki:
+    build:
+      context: ..
+      dockerfile: wiki/Dockerfile
+    ports:
+      - "${WIKI_PORT:-8096}:8080"
+    environment:
+      WIKI_API_URL: ${WIKI_API_URL:?set WIKI_API_URL in wiki/.env}
+      WIKI_SERVICE_TOKEN: ${WIKI_SERVICE_TOKEN:?set WIKI_SERVICE_TOKEN in wiki/.env}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  wiki-worker:
+    <<: *wiki-worker
+    command: ["serversherpa", "wiki-worker", "--exclude-kinds", "export"]
+
+  wiki-export-worker:
+    <<: *wiki-worker
+    command: ["serversherpa", "wiki-worker", "--kinds", "export"]

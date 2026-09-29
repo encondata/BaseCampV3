@@ -123,6 +123,24 @@ class Settings(BaseSettings):
     report_container_label_renderer: str = ""
     report_node_bin: str = "node"
 
+    # ── Wiki ───────────────────────────────────────────────
+    # Origin the portal iframes/links the wiki SPA at (Vite dev server in
+    # development; the built wiki app's own origin in production).
+    wiki_origin: str = "http://localhost:5176"
+    # Shared secret the wiki server presents to /wiki/internal/* routes —
+    # those routes skip require_permission and trust this token instead.
+    wiki_service_token: SecretStr = SecretStr("")
+    wiki_max_upload_bytes: int = 1_073_741_824
+    # days a soft-deleted node stays restorable before the purge job drops it
+    wiki_trash_days: int = 30
+    # the wiki server's own origin, used by the worker for POST
+    # /internal/render (export-to-PDF/docx) with X-Wiki-Service-Token.
+    wiki_render_url: str = "http://localhost:5177"
+    # the most one export (worker) may hold: pages, and the summed size of
+    # the files and page images it includes
+    wiki_export_max_pages: int = 1000
+    wiki_export_max_bytes: int = 2 * 1024 ** 3
+
     @property
     def sync_database_url(self) -> str:
         """Database URL for synchronous drivers (Alembic uses psycopg)."""

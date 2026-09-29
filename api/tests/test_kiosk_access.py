@@ -29,9 +29,11 @@ def test_kiosk_default_grants_are_view_only():
         assert DEFAULT_GRANTS[role]["kiosk"] == ("view",), role
     for role in NO_KIOSK_ROLES:
         assert "kiosk" not in DEFAULT_GRANTS[role], role
-    # worker gains exactly one thing
+    # worker gains exactly one thing beyond its pre-kiosk baseline (wiki
+    # is a separate, later grant — see test_wiki_schema.py)
     assert DEFAULT_GRANTS["worker"] == {
-        "dashboard": ("view",), "workers": ("view",), "kiosk": ("view",)}
+        "dashboard": ("view",), "workers": ("view",), "kiosk": ("view",),
+        "wiki": ("view",)}
 
 
 async def test_session_payload_carries_kiosk_perm(client, db, seeded_user):
