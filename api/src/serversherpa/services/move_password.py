@@ -51,20 +51,30 @@ def _kiosk_email(initiative: Initiative) -> str:
 async def ensure_kiosk_identity(db: AsyncSession, initiative: Initiative) -> UserAccount:
     """The move's hidden worker: created once, kept for history. The returned
     account has `.person` loaded, ready for auth_service.start_session."""
+    person: Person | None = None
     if initiative.kiosk_person_id is not None:
         account = await db.get(UserAccount, initiative.kiosk_person_id,
                                options=[joinedload(UserAccount.person)])
         if account is not None:
             return account
-    person = Person(first_name="Kiosk", last_name=initiative.name, source=KIOSK_MOVE_SOURCE,
-                    source_ref=str(initiative.id))
-    db.add(person)
-    await db.flush()
+        # Repair path: the person exists but its account row went missing.
+        # Recreate only the account (and the worker role if absent); never
+        # mint a second person for the same move.
+        person = await db.get(Person, initiative.kiosk_person_id)
+    if person is None:
+        person = Person(first_name="Kiosk", last_name=initiative.name, source=KIOSK_MOVE_SOURCE,
+                        source_ref=str(initiative.id))
+        db.add(person)
+        await db.flush()
     # person= keeps account.person loaded: start_session reads it
     account = UserAccount(person_id=person.id, person=person,
                           email=_kiosk_email(initiative), password_hash=None)
     db.add(account)
-    db.add(PersonRole(person_id=person.id, role="worker"))
+    has_role = await db.scalar(select(PersonRole.person_id).where(
+        PersonRole.person_id == person.id, PersonRole.role == "worker",
+        PersonRole.revoked_at.is_(None)))
+    if has_role is None:
+        db.add(PersonRole(person_id=person.id, role="worker"))
     initiative.kiosk_person_id = person.id
     await db.flush()
     return account

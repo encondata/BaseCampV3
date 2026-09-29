@@ -36,6 +36,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    remaining = op.get_bind().execute(
+        sa.text("SELECT count(*) FROM people WHERE source = 'kiosk_move'")).scalar()
+    if remaining:
+        raise RuntimeError(
+            "cannot downgrade 0083: kiosk_move people exist "
+            "(delete the moves' kiosk identities first)")
     op.drop_constraint("people_source_check", "people", type_="check")
     op.create_check_constraint(
         "people_source_check", "people", "source IN ('manual', 'import', 'api')")

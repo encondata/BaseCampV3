@@ -162,9 +162,9 @@ async def start_session(
 
     `client` ("portal" | "kiosk") is recorded on the session row and
     every token rotated from it. `initiative_id` locks the session to one
-    move (a move-password kiosk sign-in) and is carried through rotation. A kiosk login is exempt from the 2FA
-    challenge, so its session is held to the kiosk routes — see
-    enforce_session_scope in api/deps.py."""
+    move (a move-password kiosk sign-in) and is carried through rotation.
+    A kiosk login is exempt from the 2FA challenge, so its session is held
+    to the kiosk routes — see enforce_session_scope in api/deps.py."""
     settings = get_settings()
     now = datetime.now(UTC)
     account.failed_login_count = 0

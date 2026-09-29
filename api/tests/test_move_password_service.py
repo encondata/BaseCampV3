@@ -4,7 +4,7 @@ identity, uniqueness and length rules, activity rule, session revocation."""
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from serversherpa.db.models import (
     AuditLog, AuthSession, Initiative, Person, PersonRole, UserAccount,
@@ -93,7 +93,7 @@ async def test_revoke_move_sessions_and_rename(db, seeded_user):
         db, account, ip=None, user_agent=None, client="kiosk",
         audit_action="login_move", initiative_id=init.id)
     await db.commit()
-    session_id = result_session_id(result)
+    session_id = result.session_id
     row = await db.get(AuthSession, session_id)
     assert row.initiative_id == init.id
     assert await revoke_move_sessions(db, init.id) == 1
@@ -109,7 +109,43 @@ async def test_revoke_move_sessions_and_rename(db, seeded_user):
     assert person.last_name == "Las Vegas 3 Cluster Move"
 
 
-def result_session_id(result):
-    """AuthResult doesn't expose the row id directly; find it through the
-    refresh token hash the way services/auth.py stores it."""
-    return result.session_id
+
+async def test_kiosk_identity_is_idempotent(db, seeded_user):
+    init = await _move(db)
+    await set_password(db, init, "Crew-2026!", actor_id=seeded_user.id)
+    first = await ensure_kiosk_identity(db, init)
+    second = await ensure_kiosk_identity(db, init)
+    await set_password(db, init, "Crew-2027!", actor_id=seeded_user.id)
+    await db.commit()
+    person_id = first.person_id
+    assert second.person_id == person_id and init.kiosk_person_id == person_id
+    accounts = list(await db.scalars(select(UserAccount).where(UserAccount.person_id == person_id)))
+    assert len(accounts) == 1
+    roles = list(await db.scalars(select(PersonRole).where(
+        PersonRole.person_id == person_id, PersonRole.role == "worker",
+        PersonRole.revoked_at.is_(None))))
+    assert len(roles) == 1
+    people = list(await db.scalars(select(Person).where(
+        Person.source == "kiosk_move", Person.source_ref == str(init.id))))
+    assert [p.id for p in people] == [person_id]
+
+
+async def test_kiosk_identity_repairs_missing_account(db, seeded_user):
+    init = await _move(db)
+    await set_password(db, init, "Crew-2026!", actor_id=seeded_user.id)
+    await db.commit()
+    init_id, person_id = init.id, init.kiosk_person_id
+    await db.delete(await db.get(UserAccount, person_id))
+    await db.commit()
+    db.expire_all()
+    init = await db.get(Initiative, init_id)
+    account = await ensure_kiosk_identity(db, init)
+    email = account.email
+    await db.commit()
+    assert account.person_id == person_id and init.kiosk_person_id == person_id
+    assert email == f"kiosk+{init_id}@kiosk.serversherpa.local"
+    assert await db.scalar(select(func.count()).select_from(Person).where(
+        Person.source == "kiosk_move", Person.source_ref == str(init_id))) == 1
+    assert await db.scalar(select(func.count()).select_from(PersonRole).where(
+        PersonRole.person_id == person_id, PersonRole.role == "worker",
+        PersonRole.revoked_at.is_(None))) == 1
