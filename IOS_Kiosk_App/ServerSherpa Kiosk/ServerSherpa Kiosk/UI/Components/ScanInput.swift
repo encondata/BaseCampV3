@@ -57,18 +57,28 @@ struct ScanInput<Trailing: View>: View {
             try? await Task.sleep(for: .milliseconds(50))
             focused = true
         }
-        .onChange(of: focused) { _, isFocused in
-            guard !isFocused, wantsFocus else { return }
-            Task {
-                // Let the tap that moved focus land first; reclaim only when nothing holds it.
-                try? await Task.sleep(for: .milliseconds(150))
-                if wantsFocus, !focused, !FirstResponder.exists() { focused = true }
+        .task(id: "\(wantsFocus)-\(focused)") {
+            // While the box wants focus and lacks it, re-check twice a second (the first check comes
+            // after the tap that moved focus lands); cancelled when focus returns or the view goes away.
+            guard wantsFocus, !focused else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(500))
+                if Task.isCancelled { return }
+                if shouldReclaimFocus(wantsFocus: wantsFocus, isFocused: focused, somethingElseHasFocus: FirstResponder.exists()) {
+                    focused = true
+                    return
+                }
             }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active, wantsFocus { focused = true }
         }
     }
+}
+
+/// Reclaim focus only when the box wants it, lacks it, and no other field or control holds it.
+func shouldReclaimFocus(wantsFocus: Bool, isFocused: Bool, somethingElseHasFocus: Bool) -> Bool {
+    wantsFocus && !isFocused && !somethingElseHasFocus
 }
 
 extension ScanInput where Trailing == EmptyView {

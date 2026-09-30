@@ -44,6 +44,9 @@ func personLabel(_ session: SessionData) -> String {
     session.kioskMove.map { "Kiosk · \($0.name)" } ?? session.person.displayName
 }
 
+/// The shell's "‹ Home" control shows only on a pushed screen.
+func showsBackButton(pathCount: Int) -> Bool { pathCount > 0 }
+
 func modeChipText(isPad: Bool) -> String { isPad ? "KIOSK · IPAD" : "KIOSK · IPHONE" }
 
 func signOutMessage(waiting: Int) -> String {
@@ -119,12 +122,13 @@ struct KioskShell<Content: View>: View {
         Group {
             if sizeClass == .compact {
                 VStack(alignment: .leading, spacing: 8) {
-                    brand
+                    HStack(spacing: 10) { brand; backButton }
                     HStack(spacing: 10) { kioskName; Spacer(minLength: 0); userItems }
                 }
             } else {
                 HStack(spacing: 12) {
                     brand
+                    backButton
                     Spacer(minLength: 8)
                     kioskName
                     userItems
@@ -158,8 +162,28 @@ struct KioskShell<Content: View>: View {
         }
     }
 
+    @ViewBuilder private var backButton: some View {
+        if showsBackButton(pathCount: path.count) {
+            Button { path.removeAll() } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.left").font(.system(size: 14, weight: .semibold))
+                    Text("Home").font(KioskType.sans(15, .medium))
+                }
+                .foregroundStyle(palette.snow)
+                .padding(.horizontal, 6)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Home")
+        }
+    }
+
     private var kioskName: some View {
-        Button { path.append(.settings(.thisKiosk)) } label: {
+        Button {
+            if case .settings = path.last { return }
+            path.append(.settings(.thisKiosk))
+        } label: {
             Text(identity.current.name)
                 .font(KioskType.mono(13))
                 .foregroundStyle(palette.snow)

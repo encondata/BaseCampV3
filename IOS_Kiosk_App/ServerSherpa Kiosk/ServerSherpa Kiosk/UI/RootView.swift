@@ -22,7 +22,7 @@ struct RootView: View {
                             .toolbar(.hidden, for: .navigationBar)
                             .navigationDestination(for: Route.self) { route in
                                 SetupGate(route: route, path: $path) { destination(route) }
-                                    .toolbarBackground(.hidden, for: .navigationBar)
+                                    .toolbar(.hidden, for: .navigationBar)
                             }
                     }
                 }
@@ -37,7 +37,13 @@ struct RootView: View {
             container.authChanged()
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
-            if phase == .active { container.onActive() } else { container.onBackground() }
+            // Only .background stops things and only .active starts them; .inactive (Control Center,
+            // the app switcher, a permission prompt) changes nothing.
+            switch phase {
+            case .active: container.onActive()
+            case .background: container.onBackground()
+            default: break
+            }
         }
     }
 

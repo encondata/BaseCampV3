@@ -117,7 +117,13 @@ final class SoundPlayer {
         }
         guard let engine, let player else { return nil }
         if !engine.isRunning {
-            do { try engine.start() } catch { return nil }
+            do {
+                try engine.start()
+            } catch {
+                // The session may have been deactivated (an interruption); re-activate and retry once.
+                try? AVAudioSession.sharedInstance().setActive(true)
+                do { try engine.start() } catch { return nil }
+            }
         }
         return player
     }

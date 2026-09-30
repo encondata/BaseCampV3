@@ -126,6 +126,7 @@ final class AppContainer {
 }
 
 private struct AppContainerKey: EnvironmentKey {
+    // Exists for SwiftUI previews only; the app injects the real container.
     static let defaultValue: AppContainer = MainActor.assumeIsolated { AppContainer.preview() }
 }
 
