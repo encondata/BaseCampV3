@@ -20,12 +20,12 @@ private final class VirtualTime: @unchecked Sendable {
         let id = lock.withLock { nextId += 1; return nextId }
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
-                let cancelled = lock.withLock { () -> Bool in
+                let canceled = lock.withLock { () -> Bool in
                     if Task.isCancelled { return true }
                     sleepers.append(Sleeper(id: id, due: _now + ms, resume: c))
                     return false
                 }
-                if cancelled { c.resume(throwing: CancellationError()) }
+                if canceled { c.resume(throwing: CancellationError()) }
             }
         } onCancel: {
             let c = lock.withLock { () -> CheckedContinuation<Void, Error>? in

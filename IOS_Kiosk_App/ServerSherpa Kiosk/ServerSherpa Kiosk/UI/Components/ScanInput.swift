@@ -75,7 +75,7 @@ struct ScanInput<Trailing: View>: View {
         }
         .task(id: "\(wantsFocus)-\(focused)") {
             // While the box wants focus and lacks it, re-check twice a second (the first check comes
-            // after the tap that moved focus lands); cancelled when focus returns or the view goes away.
+            // after the tap that moved focus lands); canceled when focus returns or the view goes away.
             guard wantsFocus, !focused else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(500))
