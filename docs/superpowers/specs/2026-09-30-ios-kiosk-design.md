@@ -270,3 +270,23 @@ No server changes. Endpoints used (all on `main`): the Android list (`/auth/logi
 ## Out of scope (deliberately)
 
 Containers, Trucks, Label Printing and printer tools, sound uploads, 2FA sign-in (the `totp_required` message stands, as on the web kiosk and Android), real SSO, delta or periodic sync, background sending beyond finishing an in-flight batch, tile permission gating, any RFID reader hardware (Zebra or otherwise), NFC, density and text-size preferences, a SwiftData migration plan (v1 only), App Store / TestFlight packaging, MDM configuration, Swift 6 language mode.
+
+## Implementation notes (2026-09-30)
+
+Deviations from this spec, all decided during review:
+
+- The `Sync` type lives in `Data/Sync/SyncCoordinator.swift` (file-name clash with synchronized folders).
+- The refresh cookie survives 5xx and network refresh failures; it is deleted only on a 401/403 refresh, on logout, or when the server clears it with Set-Cookie (Android parity).
+- A `RedirectGuard` strips `Cookie` and `Authorization` on cross-origin redirects.
+- One shell top bar with a "‹ Home" back control; the system navigation bar is hidden.
+- The `.inactive` scene phase is not treated as background.
+- Enroll and Timeclock drop scans that arrive mid-request (Android parity).
+- Timeclock keeps a typed name and its matches on Enter; stale punch results do not touch a new selection.
+- The login uses the portal's cropped mountain art (Jimmy's original art file would fill the lower-left).
+- Pairing survives rotation; kiosk links work under SSO; the web's empty-field rule applies to the login form.
+- Scan box reclaims focus whenever nothing holds it; scanning uses cached time formatters and ignores canceled roster loads.
+- Camera sheet stops cleanly, turns the torch off on flip, shows an upright preview, and reports start failures.
+- Identity caches its serial; the URL setting requires a host.
+- The UI tests add a signed-out screenshot pass (`testSignedOutScreenshots`: Settings, Pair with phone, move password) driven by `-uiTestSignedOut` (Debug only).
+
+Verification status: unit tests, phone build, UI tests and the Release build pass. The signed-out screens were checked on the iPad Air 11-inch (M3) and iPhone 16 (iOS 18.5) simulators. Camera behavior is unverified on hardware. The signed-in live run (sign-in, Kiosk Setup, sync, scanning, RFID Enroll, Timeclock, portal Kiosk Devices check) is pending and will be done with Jimmy.

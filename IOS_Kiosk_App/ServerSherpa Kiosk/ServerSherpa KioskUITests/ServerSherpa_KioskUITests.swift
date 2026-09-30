@@ -43,4 +43,40 @@ final class ServerSherpa_KioskUITests: XCTestCase {
             try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("login-\(name).png"))
         }
     }
+
+    /// Signed-out visual check of the screens reachable without an account: the Settings sheet
+    /// (This Kiosk), Pair with phone, and Use a move password, in both orientations. Writes
+    /// signedout-<screen>-<orientation>.png to SCREENSHOT_DIR; types nothing.
+    @MainActor
+    func testSignedOutScreenshots() throws {
+        guard let dir = ProcessInfo.processInfo.environment["SCREENSHOT_DIR"], !dir.isEmpty else { return }
+        let orientations: [(UIDeviceOrientation, String)] = [(.landscapeLeft, "landscape"), (.portrait, "portrait")]
+        func shot(_ screen: String, _ orientation: String) throws {
+            sleep(2)
+            let png = XCUIScreen.main.screenshot().pngRepresentation
+            try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("signedout-\(screen)-\(orientation).png"))
+        }
+        for (orientation, name) in orientations {
+            let settings = launchSignedOut()
+            XCUIDevice.shared.orientation = orientation
+            XCTAssertTrue(settings.buttons["Kiosk settings"].firstMatch.waitForExistence(timeout: 10))
+            settings.buttons["Kiosk settings"].firstMatch.tap()
+            try shot("settings", name)
+            settings.terminate()
+
+            let pair = launchSignedOut()
+            XCUIDevice.shared.orientation = orientation
+            XCTAssertTrue(pair.buttons["Pair with phone"].firstMatch.waitForExistence(timeout: 10))
+            pair.buttons["Pair with phone"].firstMatch.tap()
+            try shot("pair", name)
+            pair.terminate()
+
+            let move = launchSignedOut()
+            XCUIDevice.shared.orientation = orientation
+            XCTAssertTrue(move.buttons["Use a move password"].firstMatch.waitForExistence(timeout: 10))
+            move.buttons["Use a move password"].firstMatch.tap()
+            try shot("move", name)
+            move.terminate()
+        }
+    }
 }
