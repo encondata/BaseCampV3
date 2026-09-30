@@ -42,13 +42,13 @@ struct TimeclockViewModelTests {
         store = KioskStore(modelContainer: try KioskSchema.container(inMemory: true))
     }
 
-    private func build(nowMs: @escaping @Sendable () -> Int64 = { 0 }, zone: TimeZone = TimeZone(identifier: "UTC")!) async throws -> TimeclockViewModel {
+    private func build(nowMs: @escaping @Sendable () -> Int64 = { 0 }, zone: TimeZone = TimeZone(identifier: "UTC")!, extraPeople: [KioskPersonRow] = []) async throws -> TimeclockViewModel {
         let people = [
             KioskPersonRow(id: "p1", displayName: "Jimmy Henderson", firstName: "James", lastName: "Henderson", preferredName: "Jimmy", rfidTag: "000000000000000000100348", isWorker: true, hasAccount: true),
             KioskPersonRow(id: "p2", displayName: "Tina Timeclock", firstName: "Tina", lastName: "Timeclock", preferredName: nil, rfidTag: "1003", isWorker: true, hasAccount: false),
-        ]
+        ] + extraPeople
         try await store.replaceRoster(assets: [], people: people, containers: [], trucks: [],
-                                      meta: SyncMeta(initiativeId: "i1", initiativeName: "Move", assets: 0, people: 2, containers: 0, trucks: 0, syncedAt: "now"))
+                                      meta: SyncMeta(initiativeId: "i1", initiativeName: "Move", assets: 0, people: people.count, containers: 0, trucks: 0, syncedAt: "now"))
         prefs.setupSelection = KioskSetupSelection(initiativeId: "i1", initiativeName: "Move", siteId: "s1", siteName: "Site", siteRole: "source", scanStatus: "pre_stage", scanLabel: "Pre-stage")
         api.statusResult = { id in KioskTimeclockStatus(person: KioskTimeclockPerson(id: id, displayName: "Tina T"), clockedIn: false) }
         api.clockInResult = { _ in KioskTimeclockStatus(person: KioskTimeclockPerson(id: "p1", displayName: "Tina T"), clockedIn: true) }
@@ -78,6 +78,43 @@ struct TimeclockViewModelTests {
         #expect(vm.selected?.id == "p1")
         vm.cancel(); vm.onSubmit("nobody")
         #expect(vm.error == "No worker found for \"nobody\".")
+    }
+
+    @Test func enterWithSeveralMatchesKeepsTheQueryAndResultsAndSelectsNothing() async throws {
+        let tim = KioskPersonRow(id: "p3", displayName: "Tim Henderson", firstName: "Tim", lastName: "Henderson", preferredName: nil, rfidTag: nil, isWorker: true, hasAccount: false)
+        let vm = try await build(extraPeople: [tim])
+        vm.onQueryChange("hen")
+        #expect(vm.results.count == 2)
+        vm.onSubmit("hen")
+        #expect(vm.query == "hen")
+        #expect(vm.results.count == 2)
+        #expect(vm.selected == nil)
+    }
+
+    @Test func enterWithExactlyOneResultSelectsIt() async throws {
+        let vm = try await build()
+        vm.onQueryChange("tina")
+        #expect(vm.results.map(\.id) == ["p2"])
+        vm.onSubmit("tina"); await vm.settle()
+        #expect(vm.selected?.id == "p2")
+    }
+
+    @Test func aPunchHeldAcrossAnIdleResetNeverTouchesTheNewSelection() async throws {
+        let vm = try await build()
+        let gate = Gate()
+        api.clockInGate = { await gate.wait() }
+        vm.scan("100348"); await vm.settle()
+        #expect(vm.selected?.id == "p1")
+        vm.punch()
+        #expect(vm.busy)
+        await waitForSleepers(20)
+        await sleeper.fire(.seconds(20))
+        await waitUntil { vm.selected == nil }
+        vm.onQueryChange("tina"); vm.onSubmit("tina")
+        #expect(vm.selected?.id == "p2")
+        await gate.open(); await vm.settle()
+        #expect(vm.selected?.id == "p2")
+        #expect(vm.busy == false)
     }
 
     @Test func punchClocksInWithSetupThenReturnsToEntryAndIdleResets() async throws {
@@ -129,7 +166,7 @@ struct TimeclockViewModelTests {
         #expect(vm.toast == "Clocked out — Jimmy H · 3h 12m")
     }
 
-    @Test func statusFailureShowsErrorAndDisablesNothingElse() async throws {
+    @Test func statusFailureShowsErrorAndMarksStatusUnavailable() async throws {
         let vm = try await build()
         api.statusResult = { _ in throw ApiError(status: 0, code: "network") }
         vm.onQueryChange("100348"); await vm.settle()

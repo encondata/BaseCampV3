@@ -10,6 +10,10 @@ struct ScanInput<Trailing: View>: View {
     let placeholder: String
     var enabled: Bool = true
     var keepFocus: Bool = true
+    /// `false` leaves the typed text in the box after Enter (Timeclock keeps a name and its matches on screen).
+    var clearOnSubmit: Bool = true
+    /// A screen that keeps the text bumps this to empty the box itself.
+    var resetToken: Int = 0
     let onSubmit: (String) -> Void
     /// Reports every change of the box's text (RFID Enroll previews the padded tag from it).
     var onTextChange: ((String) -> Void)?
@@ -20,11 +24,13 @@ struct ScanInput<Trailing: View>: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.kioskPalette) private var palette
 
-    init(placeholder: String, enabled: Bool = true, keepFocus: Bool = true, onSubmit: @escaping (String) -> Void,
-         @ViewBuilder trailing: @escaping () -> Trailing) {
+    init(placeholder: String, enabled: Bool = true, keepFocus: Bool = true, clearOnSubmit: Bool = true, resetToken: Int = 0,
+         onSubmit: @escaping (String) -> Void, @ViewBuilder trailing: @escaping () -> Trailing) {
         self.placeholder = placeholder
         self.enabled = enabled
         self.keepFocus = keepFocus
+        self.clearOnSubmit = clearOnSubmit
+        self.resetToken = resetToken
         self.onSubmit = onSubmit
         self.trailing = trailing
     }
@@ -48,9 +54,10 @@ struct ScanInput<Trailing: View>: View {
                 .submitLabel(.done)
                 .disabled(!enabled)
                 .onChange(of: text) { _, new in onTextChange?(new) }
+                .onChange(of: resetToken) { _, _ in text = "" }
                 .onSubmit {
                     let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    text = ""
+                    if clearOnSubmit { text = "" }
                     if !value.isEmpty { onSubmit(value) }
                     if wantsFocus { focused = true }
                 }
@@ -91,8 +98,10 @@ func shouldReclaimFocus(wantsFocus: Bool, isFocused: Bool, somethingElseHasFocus
 }
 
 extension ScanInput where Trailing == EmptyView {
-    init(placeholder: String, enabled: Bool = true, keepFocus: Bool = true, onSubmit: @escaping (String) -> Void) {
-        self.init(placeholder: placeholder, enabled: enabled, keepFocus: keepFocus, onSubmit: onSubmit) { EmptyView() }
+    init(placeholder: String, enabled: Bool = true, keepFocus: Bool = true, clearOnSubmit: Bool = true, resetToken: Int = 0,
+         onSubmit: @escaping (String) -> Void) {
+        self.init(placeholder: placeholder, enabled: enabled, keepFocus: keepFocus, clearOnSubmit: clearOnSubmit,
+                  resetToken: resetToken, onSubmit: onSubmit) { EmptyView() }
     }
 }
 

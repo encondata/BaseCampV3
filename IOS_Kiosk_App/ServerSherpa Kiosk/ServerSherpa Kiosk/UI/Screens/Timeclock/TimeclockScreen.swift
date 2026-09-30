@@ -14,6 +14,7 @@ private struct TimeclockBody: View {
     let container: AppContainer
     @State private var vm: TimeclockViewModel
     @State private var camera = false
+    @State private var resetToken = 0
     @Environment(\.kioskPalette) private var palette
 
     init(container: AppContainer) {
@@ -75,10 +76,13 @@ private struct TimeclockBody: View {
     // MARK: entry
 
     @ViewBuilder private var entryBody: some View {
-        ScanInput(placeholder: "Scan a badge or type a name", enabled: !disabled, keepFocus: !camera, onSubmit: publish) {
+        ScanInput(placeholder: "Scan a badge or type a name", enabled: !disabled, keepFocus: !camera,
+                  clearOnSubmit: false, resetToken: resetToken, onSubmit: publish) {
             cameraButton.opacity(disabled ? 0.45 : 1).disabled(disabled)
         }
         .onTextChange { vm.onQueryChange($0) }
+        // Enter keeps the typed name (several matches wait); the box empties only when the model says so (not found, no data).
+        .onChange(of: vm.query) { _, new in if new.isEmpty { resetToken += 1 } }
         KioskToast(text: vm.error, error: true)
         ForEach(vm.results, id: \.id) { person in
             Button { vm.select(person) } label: {

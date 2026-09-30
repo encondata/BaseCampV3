@@ -92,6 +92,7 @@ final class TimeclockViewModel {
     @ObservationIgnored private var statusTask: Task<Void, Never>?
     @ObservationIgnored private var avatarTask: Task<Void, Never>?
     @ObservationIgnored private var punchTask: Task<Void, Never>?
+    @ObservationIgnored private var punchId = 0
 
     init(store: KioskStore, api: KioskApi, prefs: KioskPrefs, identity: Identity, flash: FlashController, sound: SoundPlayer?,
          clock: @escaping @Sendable () -> Int64 = { ServerSherpa_Kiosk.nowMs() },
@@ -185,6 +186,9 @@ final class TimeclockViewModel {
         statusPhase = .loading
         avatar = nil
         busy = false
+        // A punch still in flight keeps running (the portal may record it) but no longer owns the screen.
+        punchId += 1
+        punchTask = nil
         query = ""
         results = []
         error = nil
@@ -321,9 +325,11 @@ final class TimeclockViewModel {
         errorTask?.cancel()
         busy = true
         error = nil
+        punchId += 1
+        let mine = punchId
         punchTask = Task { [weak self] in
             await self?.runPunch(person, clockingOut: clockingOut)
-            self?.punchTask = nil
+            if self?.punchId == mine { self?.punchTask = nil }
         }
     }
 
@@ -340,8 +346,10 @@ final class TimeclockViewModel {
             showToast(clockingOut
                       ? "Clocked out — \(name)" + (minutes.map { " · \(formatMinutes($0))" } ?? "")
                       : "Clocked in — \(name)")
-            toEntry()
+            // Only the person this punch was for goes back to entry; a newer selection is left alone.
+            if selected?.id == person.id { toEntry() }
         } catch {
+            guard selected?.id == person.id else { return }
             if Task.isCancelled { busy = false; return }
             flashBad()
             busy = false
