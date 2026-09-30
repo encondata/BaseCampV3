@@ -57,19 +57,57 @@ struct SettingsModelTests {
         #expect(SettingsModel.selectedTab(requested: .thisKiosk, tabs: staff) == .thisKiosk)
     }
 
-    @Test func urlSaveStoresBothNormalized() {
-        let config = KioskConfig(prefs: prefs)
-        #expect(SettingsModel.saveUrls(api: " https://api.example.com/ ", portal: "http://portal.example.com", config: config) == nil)
-        #expect(config.apiUrl == "https://api.example.com")
-        #expect(config.portalUrl == "http://portal.example.com")
+    private func signedOut() -> (FakeRefresher, KioskAuth) {
+        let refresher = FakeRefresher()
+        let auth = KioskAuth(api: FakeKioskApi(), refresher: refresher, identity: Identity(prefs: prefs, secrets: MemorySecretStore()), prefs: prefs)
+        auth.endSession()
+        return (refresher, auth)
     }
 
-    @Test func urlValidationMessageAndNothingStoredWhenEitherIsBad() {
+    @Test func urlSaveStoresBothNormalized() async {
         let config = KioskConfig(prefs: prefs)
+        let (refresher, auth) = signedOut()
+        #expect(await SettingsModel.saveUrls(api: " https://api.example.com/ ", portal: "http://portal.example.com", config: config, session: refresher, auth: auth) == nil)
+        #expect(config.apiUrl == "https://api.example.com")
+        #expect(config.portalUrl == "http://portal.example.com")
+        #expect(refresher.cleared == 0)                  // signed out: nothing to sign out of
+    }
+
+    @Test func urlValidationMessageAndNothingStoredWhenEitherIsBad() async {
+        let config = KioskConfig(prefs: prefs)
+        let (refresher, auth) = signedOut()
         let api = config.apiUrl, portal = config.portalUrl
-        #expect(SettingsModel.saveUrls(api: "ftp://x", portal: "https://p.example.com", config: config) == "Enter an http:// or https:// address.")
-        #expect(SettingsModel.saveUrls(api: "https://a.example.com", portal: "nope", config: config) == "Enter an http:// or https:// address.")
+        #expect(await SettingsModel.saveUrls(api: "ftp://x", portal: "https://p.example.com", config: config, session: refresher, auth: auth) == "Enter an http:// or https:// address.")
+        #expect(await SettingsModel.saveUrls(api: "https://a.example.com", portal: "nope", config: config, session: refresher, auth: auth) == "Enter an http:// or https:// address.")
         #expect(config.apiUrl == api && config.portalUrl == portal)
+    }
+
+    /// The live token must never go to a new API host: saving a new API origin
+    /// while signed in clears the session and returns to the login screen.
+    @Test func aNewApiOriginWhileSignedInSignsOut() async {
+        let config = KioskConfig(prefs: prefs)
+        _ = config.setApiUrl("https://api.old.example.com")
+        let refresher = FakeRefresher()
+        let auth = KioskAuth(api: FakeKioskApi(), refresher: refresher, identity: Identity(prefs: prefs, secrets: MemorySecretStore()), prefs: prefs)
+        await auth.completePair(fakeSession())
+        #expect(await SettingsModel.saveUrls(api: "https://api.new.example.com", portal: config.portalUrl, config: config, session: refresher, auth: auth) == nil)
+        #expect(refresher.cleared == 1)
+        #expect(refresher.stored == nil)
+        #expect(auth.state == .anon)
+        #expect(config.apiUrl == "https://api.new.example.com")
+    }
+
+    /// The same origin (default port spelled out, a trailing slash) keeps the session.
+    @Test func theSameApiOriginWhileSignedInKeepsTheSession() async {
+        let config = KioskConfig(prefs: prefs)
+        _ = config.setApiUrl("https://api.example.com")
+        let refresher = FakeRefresher()
+        let auth = KioskAuth(api: FakeKioskApi(), refresher: refresher, identity: Identity(prefs: prefs, secrets: MemorySecretStore()), prefs: prefs)
+        await auth.completePair(fakeSession())
+        #expect(await SettingsModel.saveUrls(api: "https://API.example.com:443/", portal: "https://portal.example.com", config: config, session: refresher, auth: auth) == nil)
+        #expect(refresher.cleared == 0)
+        if case .authed = auth.state {} else { Issue.record("expected still signed in") }
+        #expect(config.portalUrl == "https://portal.example.com")
     }
 
     @Test func localDataLineSaysNothingDownloadedUntilDone() {

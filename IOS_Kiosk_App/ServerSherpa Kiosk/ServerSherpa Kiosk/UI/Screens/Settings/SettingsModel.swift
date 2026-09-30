@@ -21,8 +21,15 @@ enum SettingsModel {
     }
 
     /// Both URLs are checked before either is stored. nil when saved.
-    @MainActor static func saveUrls(api: String, portal: String, config: KioskConfig) -> String? {
-        guard KioskConfig.normalizeUrl(api) != nil, KioskConfig.normalizeUrl(portal) != nil else { return urlError }
+    /// A new API origin while a session exists signs the kiosk out first: the
+    /// session is cleared (the live token never goes to the new host) and auth
+    /// returns to the login screen. The old host's refresh cookie stays keyed to it.
+    @MainActor static func saveUrls(api: String, portal: String, config: KioskConfig, session: SessionRefresher, auth: KioskAuth) async -> String? {
+        guard let newApi = KioskConfig.normalizeUrl(api), KioskConfig.normalizeUrl(portal) != nil else { return urlError }
+        if auth.state != .anon, !RedirectGuard.sameOrigin(URL(string: config.apiUrl), URL(string: newApi)) {
+            await session.clear()
+            auth.endSession()
+        }
         _ = config.setApiUrl(api)
         _ = config.setPortalUrl(portal)
         return nil

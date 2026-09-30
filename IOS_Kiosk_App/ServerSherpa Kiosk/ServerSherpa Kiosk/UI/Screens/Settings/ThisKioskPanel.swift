@@ -7,6 +7,7 @@ struct ThisKioskPanel: View {
     @Environment(Identity.self) private var identity
     @Environment(Heartbeat.self) private var heartbeat
     @Environment(KioskAuth.self) private var auth
+    @Environment(\.container) private var container
     @Environment(\.kioskPalette) private var palette
     @State private var name = ""
     @State private var api = ""
@@ -60,7 +61,7 @@ struct ThisKioskPanel: View {
             }
             SettingsRow(title: "Mode") { Text("iOS").font(KioskType.mono(13)).foregroundStyle(palette.text) }
             SettingsRow(title: "Device model") { Text(DeviceInfo.rawInfo()["model"] ?? "—").font(KioskType.mono(13)).foregroundStyle(palette.text) }
-            SettingsRow(title: "API URL", detail: "Where this kiosk talks to the portal. Must start with http:// or https://.") {
+            SettingsRow(title: "API URL", detail: "Where this kiosk talks to the portal. Must start with http:// or https://. Saving a new API address signs this kiosk out.") {
                 field("https://api.serversherpa.com", $api, url: true).accessibilityIdentifier("api-url")
                     .onChange(of: api) { urlError = nil }
                 Text("Portal URL").font(KioskType.bodySmall).foregroundStyle(palette.textMute).padding(.top, 8)
@@ -68,13 +69,16 @@ struct ThisKioskPanel: View {
                     .onChange(of: portal) { urlError = nil }
                 KioskToast(text: urlError, error: true)
                 SecondaryButton("Save URLs") {
-                    if let error = SettingsModel.saveUrls(api: api, portal: portal, config: config) {
-                        urlError = error
-                    } else {
-                        urlError = nil
-                        api = config.apiUrl
-                        portal = config.portalUrl
-                        saved = "URLs saved. Sign in again if the API changed."
+                    Task {
+                        if let error = await SettingsModel.saveUrls(api: api, portal: portal, config: config,
+                                                                    session: container.sessionStore, auth: auth) {
+                            urlError = error
+                        } else {
+                            urlError = nil
+                            api = config.apiUrl
+                            portal = config.portalUrl
+                            saved = "URLs saved."
+                        }
                     }
                 }
                 .padding(.top, 8)
