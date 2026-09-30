@@ -9,6 +9,8 @@ const summary: Summary = {
   overall: 'operational',
   interval_seconds: 60,
   failure_threshold: 2,
+  maintenance: null,
+  announcement: null,
   services: ['API', 'Portal', 'Kiosk'].map((name) => ({
     key: name.toLowerCase(), name, state: 'up', last_checked_at: '2026-09-23T12:00:00Z',
     latency_ms: 10, uptime_90d: 100,
@@ -45,6 +47,18 @@ describe('App', () => {
     await screen.findByText('All systems operational');
     expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual(['API', 'Portal', 'Kiosk', 'Wiki']);
     expect(container.textContent).not.toMatch(/https?:|serversherpa\.com/);
+  });
+
+  it('shows an announcement note only when one is set', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ...summary, announcement: 'Hello all' }))));
+    const first = render(<App />);
+    await screen.findByText('All systems operational');
+    expect(first.container.querySelector('.ss-announcement')?.textContent).toContain('Hello all');
+    first.unmount();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(summary))));
+    const second = render(<App />);
+    await screen.findByText('All systems operational');
+    expect(second.container.querySelector('.ss-announcement')).toBeNull();
   });
 
   it('keeps last data and warns when a refresh fails — never fakes green', async () => {

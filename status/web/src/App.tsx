@@ -50,6 +50,8 @@ export default function App() {
           {loadedAt && <div className="ss-updated">Updated {formatClock(loadedAt)}</div>}
         </header>
 
+        {data?.announcement && <div className="ss-announcement" role="note">{data.announcement}</div>}
+
         {failed && data && loadedAt && (
           <div className="ss-stale" role="alert">
             Status data may be stale — last updated {formatClock(loadedAt)}. Retrying…
@@ -58,7 +60,7 @@ export default function App() {
 
         {data ? (
           <>
-            <StatusBanner overall={data.overall} services={data.services} />
+            <StatusBanner overall={data.overall} services={data.services} maintenance={data.maintenance} />
             <div className="ss-cards">
               {data.services.map((s) => <ServiceCard key={s.key} service={s} />)}
             </div>

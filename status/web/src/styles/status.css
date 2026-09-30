@@ -39,6 +39,7 @@ html, body, #root { height: auto; min-height: 100%; }
 .ss-dot-up { background: var(--c-green); animation: ss-pulse 2s infinite; }
 .ss-dot-down { background: var(--c-red); }
 .ss-dot-unknown { background: var(--c-slate); }
+.ss-dot-maintenance, .ss-dot-paused { background: var(--c-amber); }
 @keyframes ss-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(23, 138, 76, 0.4); }
   50% { box-shadow: 0 0 0 5px rgba(23, 138, 76, 0); }
@@ -58,6 +59,8 @@ html, body, #root { height: auto; min-height: 100%; }
 }
 .ss-banner-up { background: var(--c-green-bg); border-color: var(--c-green-bd); color: var(--c-green); }
 .ss-banner-down { background: var(--c-red-bg); border-color: var(--c-red-bd); color: var(--c-red); }
+.ss-banner-maintenance { background: var(--c-amber-bg); border-color: var(--c-amber-bd); color: var(--c-amber); flex-wrap: wrap; }
+.ss-banner-detail { flex-basis: 100%; margin-left: 22px; font-weight: 400; font-size: 14px; color: var(--text-dark); }
 .ss-banner-unknown { background: var(--c-slate-bg); border-color: var(--c-slate-bd); color: var(--c-slate); }
 
 .ss-stale, .ss-loading {
@@ -85,6 +88,8 @@ html, body, #root { height: auto; min-height: 100%; }
 }
 .ss-chip-up { color: var(--c-green); background: var(--c-green-bg); border-color: var(--c-green-bd); }
 .ss-chip-down { color: var(--c-red); background: var(--c-red-bg); border-color: var(--c-red-bd); }
+.ss-chip-paused { color: var(--c-amber); background: var(--c-amber-bg); border-color: var(--c-amber-bd); }
+.ss-announcement { margin-bottom: 16px; padding: 12px 16px; border-radius: 10px; border: 1px solid var(--c-blue-bd); background: var(--c-blue-bg); color: var(--text-dark); font-size: 14px; white-space: pre-line; }
 .ss-chip-unknown { color: var(--c-slate); background: var(--c-slate-bg); border-color: var(--c-slate-bd); }
 
 .ss-stats {

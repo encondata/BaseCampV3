@@ -32,6 +32,25 @@ describe('StatusBanner', () => {
     render(<StatusBanner overall="degraded" services={[down, down]} />);
     expect(screen.getByRole('status').textContent).toContain('2 services down');
   });
+  it('maintenance shows the message', () => {
+    const { container } = render(
+      <StatusBanner overall="maintenance" services={[up]} maintenance={{ active: true, message: 'Cutover until 14:00' }} />,
+    );
+    const text = screen.getByRole('status').textContent;
+    expect(text).toContain('Scheduled maintenance');
+    expect(text).toContain('Cutover until 14:00');
+    expect(container.querySelector('.ss-banner-maintenance')).toBeTruthy();
+  });
+  it('maintenance without a message', () => {
+    render(<StatusBanner overall="maintenance" services={[up]} maintenance={{ active: true, message: null }} />);
+    expect(screen.getByRole('status').textContent).toBe('Scheduled maintenance');
+  });
+  it('degraded wins over maintenance — the banner follows overall', () => {
+    render(
+      <StatusBanner overall="degraded" services={[{ ...up, state: 'down' }]} maintenance={{ active: true, message: 'x' }} />,
+    );
+    expect(screen.getByRole('status').textContent).toContain('1 service down');
+  });
   it('unknown', () => {
     render(<StatusBanner overall="unknown" services={[]} />);
     expect(screen.getByRole('status').textContent).toContain('Checking');
@@ -50,6 +69,29 @@ describe('ServiceCard', () => {
     render(<ServiceCard service={{ ...up, state: 'down', latency_ms: null }} />);
     expect(screen.getByText('Down')).toBeTruthy();
     expect(screen.getByText('—')).toBeTruthy();
+  });
+});
+
+describe('ServiceCard background', () => {
+  const bg: ServiceSummary = {
+    ...up, key: 'background', name: 'Background processing', state: 'paused',
+    latency_ms: null, workers: { running: 9, total: 9 },
+  };
+  it('shows Paused chip and workers stat', () => {
+    const { container } = render(<ServiceCard service={bg} />);
+    expect(screen.getByText('Paused').className).toContain('ss-chip-paused');
+    expect(container.textContent).toContain('Workers');
+    expect(container.textContent).toContain('9 of 9 running');
+    expect(container.textContent).not.toContain('Response time');
+  });
+  it('null workers shows a dash', () => {
+    render(<ServiceCard service={{ ...bg, workers: null }} />);
+    expect(screen.getByText('Workers').nextElementSibling?.textContent).toBe('—');
+  });
+  it('regular services keep Response time, no Workers', () => {
+    const { container } = render(<ServiceCard service={up} />);
+    expect(container.textContent).toContain('Response time');
+    expect(container.textContent).not.toContain('Workers');
   });
 });
 

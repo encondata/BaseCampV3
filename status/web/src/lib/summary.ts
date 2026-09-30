@@ -1,5 +1,5 @@
-export type ServiceState = 'up' | 'down' | 'unknown';
-export type Overall = 'operational' | 'degraded' | 'unknown';
+export type ServiceState = 'up' | 'down' | 'unknown' | 'paused';
+export type Overall = 'operational' | 'degraded' | 'maintenance' | 'unknown';
 
 export interface DayBar { day: string; ok: number | null; total: number | null }
 
@@ -11,6 +11,7 @@ export interface ServiceSummary {
   latency_ms: number | null;
   uptime_90d: number | null;
   days: DayBar[];
+  workers?: { running: number; total: number } | null;
 }
 
 export interface Summary {
@@ -19,6 +20,8 @@ export interface Summary {
   interval_seconds: number;
   failure_threshold: number;
   services: ServiceSummary[];
+  maintenance: { active: boolean; message: string | null } | null;
+  announcement: string | null;
 }
 
 export const POLL_MS = 30_000;
