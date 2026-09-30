@@ -101,7 +101,10 @@ async def _managed_batch(ctx: WikiContext, batch_id: uuid.UUID, *,
 @router.post("/trash/{batch_id}/restore", response_model=NodeOut)
 async def restore(batch_id: uuid.UUID, ctx: WikiContext) -> NodeOut:
     root, _ = await _managed_batch(ctx, batch_id, restoring=True)
-    count = await trash.restore_batch(ctx.db, root)
+    try:
+        count = await trash.restore_batch(ctx.db, root)
+    except tree.TreeError as exc:
+        raise err(409, exc.code, exc.message) from exc
     audit(ctx.db, actor_id=ctx.user.person.id, entity_type="wiki_node",
           entity_id=str(root.id), action="restore",
           changes={"batch_id": str(batch_id), "count": count,

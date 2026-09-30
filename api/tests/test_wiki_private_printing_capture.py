@@ -315,6 +315,104 @@ async def test_a_move_out_to_a_printable_place_pins_printing_off(client, db):
     assert resp.json()["can_print"] is False
 
 
+# ── C2: out of the trash to the library root ────────────────────────
+
+
+async def _batch_of(db, node_id):
+    return (await _row(db, node_id)).deleted_batch
+
+
+async def test_restoring_to_the_root_keeps_a_page_private(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Private folder")
+    page = await _page(client, s["owner"], s, "Inside", parent=folder, db=db)
+    await _private(client, s["owner"], folder["id"])
+    page_batch = await _delete(client, s["owner"], page["id"])
+    await _delete(client, s["owner"], folder["id"])
+
+    # its folder is in the trash, so it comes back at the root
+    resp = await client.post(f"/wiki/trash/{page_batch}/restore", headers=s["owner"])
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (body["parent_id"], body["is_private"]) == (None, True)
+    await _get(client, s["editor"], page["id"], expect=404)
+
+
+async def test_restoring_to_the_root_keeps_printing_off(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Folder")
+    page = await _page(client, s["owner"], s, "Inside", parent=folder, db=db)
+    await _printing(client, s["owner"], folder["id"], False)
+    page_batch = await _delete(client, s["owner"], page["id"])
+    await _delete(client, s["owner"], folder["id"])
+
+    resp = await client.post(f"/wiki/trash/{page_batch}/restore", headers=s["owner"])
+    assert resp.status_code == 200, resp.text
+    assert (resp.json()["allow_printing"], resp.json()["can_print"]) == (False, False)
+
+
+async def test_restoring_someone_elses_item_out_of_a_private_folder_is_refused(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Folder")
+    theirs = await _page(client, s["editor"], s, "Editor's", parent=folder, db=db)
+    dev = await _developer(client, db)
+    await _private(client, dev, folder["id"])
+    theirs_batch = await _delete(client, s["owner"], theirs["id"])
+    await _delete(client, s["owner"], folder["id"])
+
+    resp = await client.post(f"/wiki/trash/{theirs_batch}/restore", headers=s["owner"])
+    assert resp.status_code == 409, resp.text
+    assert _code(resp) == "others_items"
+    row = await _row(db, theirs["id"])
+    assert row.deleted_at is not None and row.is_private is False
+
+
+async def test_deleting_the_folder_forever_keeps_an_older_trashed_page_private(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Private folder")
+    page = await _page(client, s["owner"], s, "Inside", parent=folder, db=db)
+    await _private(client, s["owner"], folder["id"])
+    await _delete(client, s["owner"], page["id"])
+    folder_batch = await _delete(client, s["owner"], folder["id"])
+
+    resp = await client.delete(f"/wiki/trash/{folder_batch}", headers=s["owner"])
+    assert resp.status_code == 204, resp.text
+    row = await _row(db, page["id"])
+    assert (row.path, row.parent_id, row.is_private) == ([], None, True)
+    assert row.deleted_at is not None                   # still in the trash
+
+
+async def test_deleting_the_folder_forever_keeps_an_older_trashed_page_unprintable(
+        client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Folder")
+    page = await _page(client, s["owner"], s, "Inside", parent=folder, db=db)
+    await _printing(client, s["owner"], folder["id"], False)
+    await _delete(client, s["owner"], page["id"])
+    folder_batch = await _delete(client, s["owner"], folder["id"])
+
+    resp = await client.delete(f"/wiki/trash/{folder_batch}", headers=s["owner"])
+    assert resp.status_code == 204, resp.text
+    row = await _row(db, page["id"])
+    assert (row.path, row.allow_printing) == ([], False)
+
+
+async def test_deleting_the_folder_forever_purges_someone_elses_page_it_hid(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Folder")
+    theirs = await _page(client, s["editor"], s, "Editor's", parent=folder, db=db)
+    sub = await _page(client, s["editor"], s, "Below it", parent=theirs, db=db)
+    dev = await _developer(client, db)
+    await _private(client, dev, folder["id"])
+    await _delete(client, s["owner"], theirs["id"])
+    folder_batch = await _delete(client, s["owner"], folder["id"])
+
+    resp = await client.delete(f"/wiki/trash/{folder_batch}", headers=s["owner"])
+    assert resp.status_code == 204, resp.text
+    assert await _row(db, theirs["id"]) is None
+    assert await _row(db, sub["id"]) is None
+
+
 # ── I1: a copy keeps privacy ────────────────────────────────────────
 
 

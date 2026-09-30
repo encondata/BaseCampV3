@@ -676,7 +676,16 @@ async def test_a_copied_folder_keeps_each_items_own_printing_value(client, db):
         WikiNode.parent_id == uuid.UUID(copy["id"])).execution_options(
             populate_existing=True))).all()
     assert {r.title: r.allow_printing for r in rows} == {"On": True, "Off": False, "Plain": None}
-    assert plain["id"] not in {str(r.id) for r in rows}
+    # and what each can do follows: the copy of Plain inherits "allowed"
+    # from the copied folder, as Plain does from its own
+    effective = {}
+    for r in rows:
+        resp = await client.get(f"/wiki/nodes/{r.id}", headers=s["owner"])
+        assert resp.status_code == 200, resp.text
+        effective[r.title] = resp.json()["can_print"]
+    assert effective == {"On": True, "Off": False, "Plain": True}
+    resp = await client.get(f"/wiki/nodes/{plain['id']}", headers=s["owner"])
+    assert resp.json()["can_print"] is True
 
 
 async def test_moving_a_page_out_of_a_printing_off_folder_leaves_printing_off(client, db):
