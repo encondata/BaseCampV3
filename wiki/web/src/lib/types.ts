@@ -164,6 +164,10 @@ export interface NodeOut {
   /** Only its author and developers can see a private item (and only they
    *  can change this: `can_set_private`). */
   is_private: boolean;
+  /** The item or a folder above it is private — what the lock, the chip and
+   *  the hidden Share/template/help items go by (`is_private` is only the
+   *  item's own switch). */
+  in_private: boolean;
   /** The node's own printing setting; null = it inherits. `can_print` is
    *  what applies to the caller; `printing_from` says where an inherited
    *  value comes from (`node_id` null = the library's setting, or a source

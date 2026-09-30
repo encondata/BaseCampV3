@@ -396,3 +396,9 @@ writes `wiki/.env` from the example on its first run (and stops there for
 you to fill it in), and on every later run pulls the latest code and runs
 the `docker compose up -d --build` above. Set `WIKI_BRANCH` to deploy a
 different branch than `main`.
+
+**Private items and live editing.** Someone already editing an item
+live when it becomes private isn't disconnected at once: the wiki server
+re-checks every open editing session against the API every few minutes
+(`WIKI_REAUTH_MS`, five minutes by default) and closes the ones that
+lost access.

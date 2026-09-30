@@ -480,6 +480,9 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
                   <span className="wiki-field-note">
                     No one else can open it, including library managers and wiki administrators. A private {noun} can't have public links, help links or templates.
                   </span>
+                  {node.in_private && !node.is_private && (
+                    <span className="wiki-field-note">Private because a folder above it is private.</span>
+                  )}
                 </div>
               </div>
             )}

@@ -181,6 +181,24 @@ describe('RowMenu', () => {
     expect(items()).not.toContain('Use as help for…');
   });
 
+  it('drops Share…, Save as template… and Use as help for… on a private item or inside a private folder', () => {
+    const handlers = { onSaveAsTemplate: vi.fn(), onUseAsHelp: vi.fn() };
+    for (const over of [{ is_private: true }, { is_private: false, in_private: true }]) {
+      open(makeNode('n1', { kind: 'page', my_level: 'manage', ...over }), handlers);
+      expect(items()).not.toContain('Share…');
+      expect(items()).not.toContain('Save as template…');
+      expect(items()).not.toContain('Use as help for…');
+      expect(items()).toContain('Permissions…');
+      cleanup();
+      open(makeNode('f1', { kind: 'file', my_level: 'manage', page: null, ...over }), handlers);
+      expect(items()).not.toContain('Share…');
+      expect(items()).not.toContain('Use as help for…');
+      cleanup();
+    }
+    open(makeNode('n2', { kind: 'page', my_level: 'manage' }), handlers);
+    expect(items()).toEqual(expect.arrayContaining(['Share…', 'Save as template…', 'Use as help for…']));
+  });
+
   it('offers Export… on a folder, and on a page once published or with subpages — never a file', () => {
     const published = { is_home: false, published_version_id: 'v1', published_at: null, has_unpublished_changes: false };
     const folder = makeNode('f', { kind: 'folder', my_level: 'view' });

@@ -255,6 +255,24 @@ describe('PermissionsDialog — Private', () => {
     await waitFor(() => expect(setNodePrivacy).toHaveBeenLastCalledWith('n1', false));
   });
 
+  it('keeps the switch to the item\'s own setting, and says when a folder above makes it private', async () => {
+    const NOTE = 'Private because a folder above it is private.';
+    const inside = { ...NODE, can_set_private: true, is_private: false, in_private: true };
+    const { unmount } = render(<PermissionsDialog target={{ kind: 'node', node: inside }} onClose={() => {}} />);
+    expect(await screen.findByRole('checkbox', { name: PRIVATE_LABEL })).toHaveProperty('checked', false);
+    expect(screen.getByText(NOTE)).toBeTruthy();
+    unmount();
+
+    // its own switch on, or nothing private above: no note
+    for (const node of [{ ...NODE, can_set_private: true, is_private: true, in_private: true },
+      { ...NODE, can_set_private: true }]) {
+      const view = render(<PermissionsDialog target={{ kind: 'node', node }} onClose={() => {}} />);
+      await screen.findByRole('checkbox', { name: PRIVATE_LABEL });
+      expect(screen.queryByText(NOTE)).toBeNull();
+      view.unmount();
+    }
+  });
+
   it('shows a refusal in the dialog\'s error spot', async () => {
     vi.mocked(setNodePrivacy).mockRejectedValue(
       new ApiError(403, 'forbidden', undefined, 'Only the author or a developer can change this.'));

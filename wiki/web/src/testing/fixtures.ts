@@ -55,6 +55,8 @@ export function makeNode(
       }
       : null,
     is_private: false,
+    // the API's rule: a private item is always in a private chain
+    in_private: !!over.is_private,
     allow_printing: null,
     can_print: true,
     printing_from: { node_id: null, title: 'Library' },

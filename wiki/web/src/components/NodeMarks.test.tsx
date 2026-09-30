@@ -14,6 +14,11 @@ describe('PrivateMark', () => {
     rerender(<PrivateMark node={makeNode('n1')} />);
     expect(screen.queryByRole('img', { name: 'Private' })).toBeNull();
   });
+
+  it('is on an item inside a private folder too', () => {
+    render(<PrivateMark node={makeNode('n1', { is_private: false, in_private: true })} />);
+    expect(screen.getByRole('img', { name: 'Private' })).toBeTruthy();
+  });
 });
 
 describe('NodeChips', () => {
@@ -36,5 +41,10 @@ describe('NodeChips', () => {
     expect(screen.getByText('Private')).toBeTruthy();
     expect(screen.getByText('Printing off').closest('.chip')?.getAttribute('title'))
       .toBe('Printing is turned off for this folder.');
+  });
+
+  it('shows Private on an item inside a private folder', () => {
+    render(<NodeChips node={makeNode('n1', { is_private: false, in_private: true })} />);
+    expect(screen.getByText('Private')).toBeTruthy();
   });
 });
