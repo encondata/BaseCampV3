@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { StrictMode } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -85,6 +86,17 @@ describe('PermissionsDialog — a page', () => {
     expect(within(rowFor('Grace Hopper')).getByRole('button', { name: 'Remove Grace Hopper' })).toBeTruthy();
     expect(within(rowFor('Staff')).queryByRole('button', { name: /Remove/ })).toBeNull();
     expect(screen.getByRole('checkbox', { name: 'Inherit permissions from parent' })).toHaveProperty('checked', true);
+  });
+
+  it('finishes saving under StrictMode, which mounts the dialog twice in development', async () => {
+    const onClose = vi.fn();
+    render(<StrictMode><PermissionsDialog target={{ kind: 'node', node: NODE }} onClose={onClose} /></StrictMode>);
+    await screen.findByText('Grace Hopper', { selector: '.wiki-perm-who b' });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Inherit permissions from parent' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() => expect(putNodePermissions).toHaveBeenCalled());
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(toast).toHaveBeenCalledWith('Permissions saved.');
   });
 
   it('adds a person and saves the page\'s own grants', async () => {
