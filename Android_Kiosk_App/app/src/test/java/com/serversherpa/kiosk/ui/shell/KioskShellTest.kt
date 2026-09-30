@@ -1,6 +1,5 @@
 package com.serversherpa.kiosk.ui.shell
 
-import com.serversherpa.kiosk.core.model.KioskMove
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.assertIsDisplayed
@@ -11,6 +10,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.navigation.compose.rememberNavController
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.core.model.KioskMove
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.fakeSession

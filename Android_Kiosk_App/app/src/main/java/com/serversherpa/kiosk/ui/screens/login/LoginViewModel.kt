@@ -60,6 +60,7 @@ class LoginViewModel(
 
     fun submitPassword(onDone: () -> Unit) {
         val s = _state.value
+        if (s.loading) return
         if (s.email.isBlank() || s.password.isBlank()) {
             _state.update { it.copy(error = "Please enter both email and password", invalidEmail = s.email.isBlank(), invalidPassword = s.password.isBlank()) }
             return

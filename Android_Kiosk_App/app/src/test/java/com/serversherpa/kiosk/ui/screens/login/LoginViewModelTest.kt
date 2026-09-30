@@ -130,6 +130,15 @@ class LoginViewModelTest {
         assertEquals(listOf("pw-123456"), api.moveLoginPasswords)
     }
 
+    @Test fun aSecondPasswordSubmitWhileSigningInIsIgnored() = runTest {
+        val api = FakeKioskApi().apply { loginResult = { fakeSession() } }
+        val vm = vm(api)
+        vm.setEmail("a@b.c"); vm.setPassword("pw")
+        vm.submitPassword {}; vm.submitPassword {}   // Enter on the field while the request is in flight
+        runCurrent()
+        assertEquals(1, api.calls.count { it == "login" })
+    }
+
     @Test fun aNetworkFailureThatIsNotAnApiErrorShowsTheNetworkCopy() = runTest {
         val api = FakeKioskApi().apply { moveLoginResult = { throw java.io.IOException("offline") } }
         val vm = vm(api)

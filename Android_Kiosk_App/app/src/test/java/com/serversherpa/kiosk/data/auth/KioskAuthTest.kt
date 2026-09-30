@@ -1,7 +1,7 @@
 package com.serversherpa.kiosk.data.auth
 
-import com.serversherpa.kiosk.core.model.KioskMove
 import com.serversherpa.kiosk.core.ApiError
+import com.serversherpa.kiosk.core.model.KioskMove
 import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.FakeRefresher
 import com.serversherpa.kiosk.data.fakeSession
