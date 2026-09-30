@@ -45,6 +45,9 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
     val setupState: Flow<SetupState> = store.data.map { SetupState.fromWire(it[Keys.setupState]) }
     suspend fun setSetupState(state: SetupState) { store.edit { it[Keys.setupState] = state.wire } }
 
+    /** Drops the saved setup and marks setup incomplete in one write, so a crash between can't leave a half-cleared setup. */
+    suspend fun clearSetup() { store.edit { it.remove(Keys.setupSelection); it[Keys.setupState] = SetupState.INCOMPLETE.wire } }
+
     val setupSelection: Flow<KioskSetupSelection?> = store.data.map { p ->
         p[Keys.setupSelection]?.let { raw -> try { json.decodeFromString<KioskSetupSelection>(raw) } catch (e: Exception) { null } }
     }

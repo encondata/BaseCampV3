@@ -146,8 +146,8 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
             // What move this kiosk is set to, and nothing else. Mode, version and the
             // sync light said nothing an operator acts on; the version lives in
             // Settings and Kiosk Setup owns the sync state.
-            setup?.let { FootItem("Move", it.initiativeName); FootItem("Site", it.siteName); FootItem("Scan", it.scanLabel) }
             // A move-password session names its move before Kiosk Setup has run (as on the web).
+            setup?.let { FootItem("Move", it.initiativeName); FootItem("Site", it.siteName); FootItem("Scan", it.scanLabel) }
                 ?: authed?.kioskMove?.let { FootItem("Move", it.name) }
             if (devMode) FootItem("Dev mode", "On", valueColor = c.accent)
         }

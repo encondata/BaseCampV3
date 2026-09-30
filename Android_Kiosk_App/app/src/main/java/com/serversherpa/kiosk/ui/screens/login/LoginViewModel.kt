@@ -6,6 +6,7 @@ import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.SystemStatus
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.auth.KioskAuth
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -52,7 +53,7 @@ class LoginViewModel(
     fun setEmail(v: String) = _state.update { it.copy(email = v, invalidEmail = false, error = null) }
     fun setPassword(v: String) = _state.update { it.copy(password = v, invalidPassword = false, error = null) }
     fun togglePassword() = _state.update { it.copy(showPassword = !it.showPassword) }
-    fun setView(v: LoginView) = _state.update { it.copy(view = v, error = null, moveError = null) }
+    fun setView(v: LoginView) = _state.update { it.copy(view = v, error = null, moveError = null, movePassword = "") }
     fun setMovePassword(v: String) = _state.update { it.copy(movePassword = v, moveError = null) }
 
     fun loadBanners() { scope.launch { try { _state.update { it.copy(status = api.systemStatus()) } } catch (e: Exception) { /* best effort */ } } }
@@ -67,12 +68,16 @@ class LoginViewModel(
         scope.launch {
             try {
                 auth.login(s.email.trim(), s.password)
-                _state.update { it.copy(loading = false) }
-                onDone()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 val code = (e as? ApiError)?.code ?: "network"
                 _state.update { it.copy(loading = false, error = ERROR_MESSAGES[code] ?: "Login failed. Please try again.", invalidEmail = true, invalidPassword = true, password = "") }
+                return@launch
             }
+            // After the try: a navigation throw is not a failed sign-in.
+            _state.update { it.copy(loading = false) }
+            onDone()
         }
     }
 
@@ -85,12 +90,15 @@ class LoginViewModel(
         scope.launch {
             try {
                 auth.loginWithMovePassword(s.movePassword)
-                _state.update { it.copy(moveLoading = false, movePassword = "") }
-                onDone()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 val code = (e as? ApiError)?.code ?: "network"
                 _state.update { it.copy(moveLoading = false, movePassword = "", moveError = MOVE_ERROR_MESSAGES[code] ?: "Login failed. Please try again.") }
+                return@launch
             }
+            _state.update { it.copy(moveLoading = false, movePassword = "") }
+            onDone()
         }
     }
 

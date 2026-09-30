@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk.ui.shell
 
+import com.serversherpa.kiosk.core.model.KioskMove
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.assertIsDisplayed
@@ -81,7 +82,7 @@ class KioskShellTest {
 
     @Test fun aMoveSessionWithNoSetupYetShowsItsMoveInTheFooter() {
         val c = testContainer()
-        c.auth.completePair(fakeSession(kioskMove = com.serversherpa.kiosk.core.model.KioskMove("m1", "Dallas Move")))
+        c.auth.completePair(fakeSession(kioskMove = KioskMove("m1", "Dallas Move")))
         compose.setContent {
             CompositionLocalProvider(LocalAppContainer provides c) {
                 KioskTheme { KioskShell(rememberNavController()) { Text("page body") } }

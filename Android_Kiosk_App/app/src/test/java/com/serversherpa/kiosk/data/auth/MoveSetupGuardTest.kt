@@ -42,6 +42,15 @@ class MoveSetupGuardTest {
         assertEquals(SetupState.INCOMPLETE, prefs.setupState.first())
     }
 
+    @Test fun aRestoredMoveSessionDropsASetupSavedForAnotherMove() = runTest {
+        val prefs = prefsWith(setupA)
+        val auth = MutableStateFlow<AuthState>(AuthState.Authed(fakeSession(kioskMove = KioskMove("mB", "Move B"))))
+        MoveSetupGuard(auth, prefs, backgroundScope).start()
+        repeat(5) { runCurrent() }
+        assertNull(prefs.setupSelection.first())
+        assertEquals(SetupState.INCOMPLETE, prefs.setupState.first())
+    }
+
     @Test fun aMoveSessionKeepsItsOwnMovesSetup() = runTest {
         val prefs = prefsWith(setupA)
         val auth = MutableStateFlow<AuthState>(AuthState.Authed(fakeSession(kioskMove = KioskMove("mA", "Move A"))))

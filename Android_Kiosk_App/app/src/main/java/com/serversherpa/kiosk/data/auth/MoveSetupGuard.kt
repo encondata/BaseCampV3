@@ -1,6 +1,5 @@
 package com.serversherpa.kiosk.data.auth
 
-import com.serversherpa.kiosk.core.setup.SetupState
 import com.serversherpa.kiosk.data.prefs.KioskPrefs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
@@ -28,8 +27,7 @@ class MoveSetupGuard(
             auth.map { (it as? AuthState.Authed)?.kioskMove?.initiative_id }.distinctUntilChanged().filterNotNull().collect { locked ->
                 val saved = prefs.setupSelection.first()
                 if (saved != null && saved.initiativeId != locked) {
-                    prefs.setSetupSelection(null)
-                    prefs.setSetupState(SetupState.INCOMPLETE)
+                    prefs.clearSetup()
                 }
             }
         }

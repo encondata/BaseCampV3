@@ -18,6 +18,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performImeAction
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.unit.dp
@@ -169,6 +170,27 @@ class LoginScreenTest {
     @Test fun thePasswordIsMaskedUntilShown() {
         show(LoginUi(password = "hunter2"))
         compose.onNodeWithTag("login-password").assertTextContains("•", substring = true)
+    }
+
+    @Test fun theMovePasswordIsMasked() {
+        show(LoginUi(view = LoginView.MOVE, movePassword = "orange-kayak-42"))
+        compose.onNodeWithTag("login-move").assertTextContains("•", substring = true)
+    }
+
+    // Enter submits, as on the web form. (Compose has no semantics hook for keyboardType, so the
+    // Password keyboard itself isn't asserted here.)
+    @Test fun thePasswordFieldSubmitsOnTheImeAction() {
+        val calls = Calls(LoginUi(email = "a@b.co", password = "pw"))
+        show(calls = calls)
+        compose.onNodeWithTag("login-password").performImeAction()
+        assertTrue("submit" in calls.log)
+    }
+
+    @Test fun theMoveFieldSubmitsOnTheImeAction() {
+        val calls = Calls(LoginUi(view = LoginView.MOVE, movePassword = "orange-kayak-42"))
+        show(calls = calls)
+        compose.onNodeWithTag("login-move").performImeAction()
+        assertTrue("submitMove" in calls.log)
     }
 
     @Test fun forgotPasswordRevealsThePortalNote() {

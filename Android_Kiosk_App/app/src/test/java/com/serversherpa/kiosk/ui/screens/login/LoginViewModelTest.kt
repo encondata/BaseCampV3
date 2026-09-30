@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.ui.screens.login
 
 import com.serversherpa.kiosk.core.ApiError
+import com.serversherpa.kiosk.core.model.KioskMove
 import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.FakeRefresher
 import com.serversherpa.kiosk.data.auth.KioskAuth
@@ -66,7 +67,7 @@ class LoginViewModelTest {
     }
 
     @Test fun aMovePasswordSignsIn() = runTest {
-        val api = FakeKioskApi().apply { moveLoginResult = { fakeSession(kioskMove = com.serversherpa.kiosk.core.model.KioskMove("m1", "Dallas Move")) } }
+        val api = FakeKioskApi().apply { moveLoginResult = { fakeSession(kioskMove = KioskMove("m1", "Dallas Move")) } }
         val vm = vm(api)
         vm.setView(LoginView.MOVE); vm.setMovePassword("orange-kayak-42")
         var done = false
@@ -124,7 +125,24 @@ class LoginViewModelTest {
         val vm = vm(api)
         vm.setView(LoginView.MOVE); vm.setMovePassword("pw-123456")
         vm.submitMove {}; vm.submitScannedMove("other") {}
+        assertEquals("pw-123456", vm.state.value.movePassword)   // the scanned value didn't overwrite the in-flight field
         runCurrent()
         assertEquals(listOf("pw-123456"), api.moveLoginPasswords)
+    }
+
+    @Test fun aNetworkFailureThatIsNotAnApiErrorShowsTheNetworkCopy() = runTest {
+        val api = FakeKioskApi().apply { moveLoginResult = { throw java.io.IOException("offline") } }
+        val vm = vm(api)
+        vm.setView(LoginView.MOVE); vm.setMovePassword("pw-123456")
+        vm.submitMove {}; runCurrent()
+        assertEquals("Can't reach the server. Check the kiosk's network connection.", vm.state.value.moveError)
+        assertEquals(false, vm.state.value.moveLoading)
+    }
+
+    @Test fun leavingTheMoveViewClearsAHalfTypedPassword() = runTest {
+        val vm = vm(FakeKioskApi())
+        vm.setView(LoginView.MOVE); vm.setMovePassword("half-typed")
+        vm.setView(LoginView.PASSWORD)
+        assertEquals("", vm.state.value.movePassword)
     }
 }

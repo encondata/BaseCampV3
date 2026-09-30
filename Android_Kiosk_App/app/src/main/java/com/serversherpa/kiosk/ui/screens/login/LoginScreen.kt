@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -27,6 +28,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.min
@@ -73,7 +76,11 @@ fun LoginScreen(nav: NavHostController) {
         pairPanel = { PairPanel(pairVm, portalUrl) { session: SessionData -> container.auth.completePair(session); goHome() } },
     )
     // The kiosk's own camera, QR only: the first code read is the move password and is submitted at once.
-    if (scanning) CameraScanSheet(
+    // Only over the Move password view: `scanning` is saved across process death but the view isn't, and a
+    // scan's error lands in moveError, which no other view shows.
+    // It also resets when the view leaves MOVE, so coming back never reopens the camera.
+    LaunchedEffect(ui.view) { if (ui.view != LoginView.MOVE) scanning = false }
+    if (scanning && ui.view == LoginView.MOVE) CameraScanSheet(
         onScan = { vm.submitScannedMove(it.value, goHome) },
         onDismiss = { scanning = false },
         qrOnly = true,
@@ -152,8 +159,8 @@ internal fun LoginContent(ui: LoginUi, kioskName: String, actions: LoginActions,
                     }
                     LoginView.MOVE -> {
                         LoginField(
-                            "Move password", ui.movePassword, actions.setMovePassword, tag = "login-move", masked = true,
-                            invalid = ui.moveError != null,
+                            "Move password", ui.movePassword, actions.setMovePassword, tag = "login-move", masked = true, password = true,
+                            invalid = ui.moveError != null, onDone = actions.submitMove,
                             trailing = if (canScan) ({ MoveScanButton(enabled = !ui.moveLoading, onClick = actions.scanMove) }) else null,
                         )
                         ui.moveError?.let { Text(it, color = LoginPalette.ErrorText, fontFamily = Geologica, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
@@ -174,10 +181,12 @@ internal fun LoginContent(ui: LoginUi, kioskName: String, actions: LoginActions,
 @Composable
 private fun ColumnScope.PasswordForm(ui: LoginUi, actions: LoginActions) {
     var forgotOpen by rememberSaveable { mutableStateOf(false) }
-    LoginField("Email", ui.email, actions.setEmail, tag = "login-email", placeholder = "you@company.com", invalid = ui.invalidEmail)
+    LoginField("Email", ui.email, actions.setEmail, tag = "login-email", placeholder = "you@company.com", invalid = ui.invalidEmail,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email, autoCorrectEnabled = false, imeAction = ImeAction.Next),
+    )
     LoginField(
         "Password", ui.password, actions.setPassword, tag = "login-password", invalid = ui.invalidPassword,
-        masked = !ui.showPassword, modifier = Modifier.padding(top = 16.dp),
+        masked = !ui.showPassword, password = true, onDone = actions.submitPassword, modifier = Modifier.padding(top = 16.dp),
         trailing = { PasswordEye(ui.showPassword, actions.togglePassword) },
     )
     LoginLink("Forgot password?", Modifier.align(Alignment.End).testTag("login-forgot")) { forgotOpen = !forgotOpen }

@@ -1,5 +1,6 @@
 package com.serversherpa.kiosk.data.auth
 
+import com.serversherpa.kiosk.core.model.KioskMove
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.data.FakeKioskApi
 import com.serversherpa.kiosk.data.FakeRefresher
@@ -72,7 +73,7 @@ class KioskAuthTest {
     }
 
     @Test fun moveLoginSignsInLockedToTheMoveAsAPasswordSignIn() = runTest {
-        val move = com.serversherpa.kiosk.core.model.KioskMove("m1", "Dallas Move")
+        val move = KioskMove("m1", "Dallas Move")
         val api = FakeKioskApi().apply { moveLoginResult = { fakeSession(kioskMove = move) } }
         val auth = KioskAuth(api, FakeRefresher(), testIdentity(tmp.root, backgroundScope), backgroundScope)
         auth.loginWithMovePassword("orange-kayak-42")

@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -34,6 +36,8 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
@@ -126,6 +130,11 @@ internal fun LoginField(
     placeholder: String? = null,
     invalid: Boolean = false,
     masked: Boolean = false,
+    /** A password the IME must not learn or suggest back (the shared move password); separate from [masked], which the eye toggles. */
+    password: Boolean = false,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    /** Enter on the keyboard, as on the web form. */
+    onDone: (() -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
 ) {
     Column(modifier.fillMaxWidth()) {
@@ -136,6 +145,8 @@ internal fun LoginField(
             textStyle = TextStyle(fontFamily = Geologica, fontWeight = FontWeight.Normal, fontSize = 16.sp, color = LoginPalette.Ink),
             placeholder = placeholder?.let { { Text(it, color = LoginPalette.Placeholder, fontFamily = Geologica) } },
             visualTransformation = if (masked) PasswordVisualTransformation() else VisualTransformation.None,
+            keyboardOptions = if (password) KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false, imeAction = ImeAction.Done) else keyboardOptions,
+            keyboardActions = KeyboardActions(onDone = { onDone?.invoke() }),
             trailingIcon = trailing,
             colors = OutlinedTextFieldDefaults.colors(
                 focusedContainerColor = LoginPalette.Field, unfocusedContainerColor = LoginPalette.Field,
