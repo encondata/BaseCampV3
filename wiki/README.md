@@ -304,12 +304,17 @@ Two per-item controls, both enforced by the main API
     Private, from the Permissions dialog. An author who doesn't have
     manage on the item sees a Private-only version of that dialog. A
     library's home page can't be made private. In an archived library,
-    only wiki administrators can change privacy.
+    only wiki administrators can change privacy. A folder can be made
+    private only when everything inside it was created by the same person,
+    and only your own items can be moved into a private folder
+    (developers are exempt), so no one can take over other people's pages
+    by making a shared folder private.
   - **Knock-on rules.** A private item can't get a public share link, be
     the target of a help link, or be saved as a template, and existing
-    public links to it stop working. Moving a private item keeps it
-    private, and only someone who can see a private folder can move
-    something into it.
+    public links to it stop working. Moving or copying a private item keeps
+    it private, including an item that was private only because of the
+    folder it was in, and only someone who can see a private folder can
+    move something into it.
 - **Allow printing.** Each library has an Allow printing setting (on by
   default, under Library settings, Sharing). Any page, file, or folder can
   override it, from the Permissions dialog, with Inherit, Allowed, or Not
@@ -341,6 +346,12 @@ Two per-item controls, both enforced by the main API
 - **Deploying.** Previews of PDFs with printing off are read straight from
   Spaces, so the bucket's CORS rule must allow `GET` from the wiki origin;
   see the Production checklist below.
+
+**Private items and live editing.** Someone already editing an item
+live when it becomes private isn't disconnected at once: the wiki server
+re-checks every open editing session against the API every few minutes
+(`WIKI_REAUTH_MS`, five minutes by default) and closes the ones that
+lost access.
 
 ## Production checklist
 
@@ -396,9 +407,3 @@ writes `wiki/.env` from the example on its first run (and stops there for
 you to fill it in), and on every later run pulls the latest code and runs
 the `docker compose up -d --build` above. Set `WIKI_BRANCH` to deploy a
 different branch than `main`.
-
-**Private items and live editing.** Someone already editing an item
-live when it becomes private isn't disconnected at once: the wiki server
-re-checks every open editing session against the API every few minutes
-(`WIKI_REAUTH_MS`, five minutes by default) and closes the ones that
-lost access.
