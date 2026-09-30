@@ -34,6 +34,9 @@ router = APIRouter()
 async def list_trash(key: str, ctx: WikiContext) -> list[TrashBatch]:
     space = await require_space_level(ctx.ix, await space_by_key(ctx.db, key), "manage")
     batches = await trash.list_batches(ctx.db, space.id)
+    # a private item stays private in the trash
+    levels = await ctx.ix.levels_for_nodes([b.root for b in batches])
+    batches = [b for b in batches if levels[b.root.id]]
     people = await person_refs(ctx.db, [b.deleted_by for b in batches])
     keep_for = timedelta(days=get_settings().wiki_trash_days)
     return [
@@ -62,7 +65,7 @@ async def _managed_batch(ctx: WikiContext, batch_id: uuid.UUID, *,
     if space is None:
         raise not_found()
     level = await ctx.ix.level_for_space(space.id)
-    if level is None:
+    if level is None or await ctx.ix.level_for_node(root) is None:
         raise not_found()
     if restoring and space.archived_at is not None:
         raise err(422, "read_only", "This library is archived, so nothing can be restored into it.")

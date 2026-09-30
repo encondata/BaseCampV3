@@ -55,10 +55,12 @@ def _context(raw: str) -> str:
 
 async def _guide(ctx: WikiContext, node_id: uuid.UUID) -> WikiNode:
     """A live page or file the admin can see (404 otherwise; 422
-    `bad_kind` for a folder)."""
+    `bad_kind` for a folder, 422 `private` for a private item)."""
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "view")
     if node.kind not in GUIDE_KINDS:
         raise err(422, "bad_kind", "A help link points to a page or a file.")
+    if await ctx.ix.is_private(node):
+        raise err(422, "private", "A private item can't be a help guide.")
     return node
 
 

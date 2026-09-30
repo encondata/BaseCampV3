@@ -10,6 +10,9 @@ and only to them — with a fresh download URL once it's done.
   (the tree's visibility rule; 422 `bad_format`
   otherwise); a single page must have been published (422
   `not_published`).
+- Printing turned off for the node: 403 `printing_disabled`, for anyone.
+  A zip of a folder or library leaves out what can't be printed and lists
+  it in `_skipped.txt` (`wiki/export.py`).
 - A space (view on it) exports as a .zip.
 - Each person may have MAX_ACTIVE_EXPORTS exports queued or running at
   once (429 `too_many_exports`), counted under a per-person lock so two
@@ -51,6 +54,8 @@ async def _node_target(ctx: WikiContext, body: ExportIn) -> tuple[WikiNode, dict
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, body.node_id), "view")
     if node.kind == "file":
         raise err(422, "use_download", "Files aren't exported — download the file instead.")
+    if not await ctx.ix.can_print(node):
+        raise err(403, "printing_disabled", "Printing is turned off for this item.")
     published = False
     if node.kind == "page":
         page = await ctx.db.get(WikiPage, node.id)

@@ -80,6 +80,11 @@ async def create_share_link(node_id: uuid.UUID, body: ShareLinkCreateIn,
     space = await ctx.db.get(WikiSpace, node.space_id)
     if not space_setting(space, "allow_public_links"):
         raise err(422, "links_disabled", "Public links are turned off for this library.")
+    if await ctx.ix.is_private(node):
+        raise err(422, "private", "A private item can't have a public link.")
+    if not await ctx.ix.can_print(node):
+        raise err(422, "printing_disabled",
+                  "Printing is turned off for this item, so it can't have a public link.")
 
     token = new_token()
     now = utcnow()

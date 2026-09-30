@@ -37,8 +37,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
-from sqlalchemy import or_, select
+from sqlalchemy import any_, exists, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from serversherpa.access.resolver import resolve_access, resolve_access_many
 from serversherpa.db.models import (
@@ -92,6 +93,16 @@ class Principal:
 def is_developer(p: Principal) -> bool:
     """Developers see (and manage) every private item."""
     return "developer" in p.roles
+
+
+# Nobody in particular: for asking what is true of a node whoever asks
+# (`AccessIndex.is_private`, `can_print`) where there is no caller — a
+# public share link's read — or where the answer is about the node, not a
+# person (a review's approvers).
+ANONYMOUS = Principal(
+    person_id=uuid.UUID(int=0), roles=frozenset(), group_ids=frozenset(),
+    client_ids=frozenset(), partner_ids=frozenset(), is_internal=False,
+    is_admin=False, can_view_wiki=False)
 
 
 def can_set_private(p: Principal, node: WikiNode) -> bool:
@@ -371,6 +382,17 @@ class AccessIndex:
     async def level_for_space(self, space_id: uuid.UUID) -> str | None:
         return await self._level(space_id, [])
 
+    async def is_private(self, node: WikiNode) -> bool:
+        """Whether `node` or any of its ancestors is private — the same
+        answer for every caller (`level_for_node` is the one that says
+        who may see it). The node's own flag is read from `node` itself,
+        like `printing_source` reads its value."""
+        if node.is_private:
+            return True
+        await self._load_spaces([node.space_id])
+        data = self._spaces[node.space_id]
+        return any(nid in data.private for nid in (node.path or []))
+
     async def levels_for_spaces(
             self, space_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str | None]:
         """The caller's level on each space, loading every not-yet-cached
@@ -474,6 +496,22 @@ async def viewable_nodes(db: AsyncSession, ix: AccessIndex, nodes: Sequence[Wiki
                 WikiPage.published_version_id.is_(None))
         )).all())
     return [n for n in live if levels[n.id] and n.id not in unpublished], levels
+
+
+def private_filter(p: Principal):
+    """WHERE clause over `WikiNode` for a query that filters in SQL rather
+    than through `AccessIndex`: no node on the row's chain (its ancestors
+    and itself) is private unless `p` may see it — its author, or a
+    developer. The same private rule as `AccessIndex.level_for_node`;
+    every other rule (grants, archiving) is still the caller's. Correlates
+    to `WikiNode` in the enclosing query."""
+    if is_developer(p):
+        return true()
+    on_chain = aliased(WikiNode)
+    return ~exists().where(
+        on_chain.is_private.is_(True),
+        on_chain.created_by.is_distinct_from(p.person_id),
+        or_(on_chain.id == WikiNode.id, on_chain.id == any_(WikiNode.path)))
 
 
 # ── guards ──────────────────────────────────────────────────────────

@@ -5,7 +5,8 @@ admins and space managers.
 
 None of it is audited: it's telemetry, not a change to anything. The
 aggregates return node ids only; the route turns those into node refs
-and drops any node the caller can't see. Nothing here commits — callers
+and drops any node the caller can't see. Pass `viewer` and the counts
+themselves leave out private items that person can't see. Nothing here commits — callers
 do. The worker's daily `retention` job deletes views after
 VIEW_RETENTION_DAYS and search log rows after SEARCH_RETENTION_DAYS.
 """
@@ -28,6 +29,7 @@ from serversherpa.db.models import (
     WikiSpace,
 )
 from serversherpa.wiki import reviews
+from serversherpa.wiki.permissions import Principal, private_filter
 
 # the windows the analytics page offers, in days
 VALID_DAYS = (7, 30, 90, 365)
@@ -95,6 +97,13 @@ def _in_scope(space_ids: Sequence[uuid.UUID] | None):
     return WikiNode.space_id.in_(space_ids) if space_ids is not None else true()
 
 
+def _visible_to(viewer: Principal | None):
+    """WHERE clause over WikiNode: nothing private `viewer` may not see —
+    so an aggregate never counts an item its reader can't open (a wiki
+    administrator included). No viewer, no filter."""
+    return private_filter(viewer) if viewer is not None else true()
+
+
 @dataclass(frozen=True)
 class TopPage:
     node_id: uuid.UUID
@@ -103,7 +112,7 @@ class TopPage:
 
 
 async def top_pages(db: AsyncSession, space_ids: Sequence[uuid.UUID] | None,
-                    window: Window) -> list[TopPage]:
+                    window: Window, *, viewer: Principal | None = None) -> list[TopPage]:
     """The most viewed live pages and files in the window: total views and
     distinct viewers, most viewed first."""
     views = func.sum(WikiPageView.count).label("views")
@@ -111,7 +120,7 @@ async def top_pages(db: AsyncSession, space_ids: Sequence[uuid.UUID] | None,
         select(WikiPageView.node_id, views,
                func.count(distinct(WikiPageView.person_id)).label("viewers"))
         .join(WikiNode, WikiNode.id == WikiPageView.node_id)
-        .where(WikiNode.deleted_at.is_(None), _in_scope(space_ids),
+        .where(WikiNode.deleted_at.is_(None), _in_scope(space_ids), _visible_to(viewer),
                WikiPageView.viewed_on >= window.first_day)
         .group_by(WikiPageView.node_id)
         .order_by(views.desc(), WikiPageView.node_id)
@@ -120,13 +129,14 @@ async def top_pages(db: AsyncSession, space_ids: Sequence[uuid.UUID] | None,
 
 
 async def views_by_day(db: AsyncSession, space_ids: Sequence[uuid.UUID] | None,
-                       window: Window) -> list[tuple[date, int]]:
+                       window: Window, *, viewer: Principal | None = None,
+                       ) -> list[tuple[date, int]]:
     """Views of live nodes on each day of the window, oldest first, days
     without any as 0."""
     rows = dict((await db.execute(
         select(WikiPageView.viewed_on, func.sum(WikiPageView.count))
         .join(WikiNode, WikiNode.id == WikiPageView.node_id)
-        .where(WikiNode.deleted_at.is_(None), _in_scope(space_ids),
+        .where(WikiNode.deleted_at.is_(None), _in_scope(space_ids), _visible_to(viewer),
                WikiPageView.viewed_on >= window.first_day)
         .group_by(WikiPageView.viewed_on))).all())
     return [(day, int(rows.get(day, 0)))
@@ -157,7 +167,7 @@ async def failed_searches(db: AsyncSession, window: Window) -> list[FailedSearch
 
 
 async def stale_pages(db: AsyncSession, space_ids: Sequence[uuid.UUID] | None, *,
-                      now: datetime | None = None) -> list[tuple[uuid.UUID, datetime]]:
+                      now: datetime | None = None, viewer: Principal | None = None) -> list[tuple[uuid.UUID, datetime]]:
     """Published live pages in a live space not updated in STALE_MONTHS,
     the longest untouched first: (node id, updated_at)."""
     cutoff = reviews.add_months(now or utcnow(), -STALE_MONTHS)
@@ -166,7 +176,7 @@ async def stale_pages(db: AsyncSession, space_ids: Sequence[uuid.UUID] | None, *
         .join(WikiPage, WikiPage.node_id == WikiNode.id)
         .join(WikiSpace, WikiSpace.id == WikiNode.space_id)
         .where(WikiNode.kind == "page", WikiNode.deleted_at.is_(None), _in_scope(space_ids),
-               WikiSpace.archived_at.is_(None),
+               _visible_to(viewer), WikiSpace.archived_at.is_(None),
                WikiPage.published_version_id.is_not(None), WikiNode.updated_at < cutoff)
         .order_by(WikiNode.updated_at, WikiNode.id)
         .limit(STALE_LIMIT))).all()
@@ -174,14 +184,15 @@ async def stale_pages(db: AsyncSession, space_ids: Sequence[uuid.UUID] | None, *
 
 
 async def overdue_reviews(db: AsyncSession, space_ids: Sequence[uuid.UUID] | None, *,
-                          now: datetime | None = None) -> list[tuple[uuid.UUID, datetime]]:
+                          now: datetime | None = None, viewer: Principal | None = None) -> list[tuple[uuid.UUID, datetime]]:
     """Pages whose periodic review is overdue (Phase 2's review state:
     due by now, in a live space), the longest overdue first: (node id,
     next_review_at)."""
     rows = (await db.execute(
         select(WikiNode.id, WikiNode.next_review_at)
         .join(WikiSpace, WikiSpace.id == WikiNode.space_id)
-        .where(reviews.due_filter(now or reviews.utcnow()), _in_scope(space_ids))
+        .where(reviews.due_filter(now or reviews.utcnow()), _in_scope(space_ids),
+               _visible_to(viewer))
         .order_by(WikiNode.next_review_at, WikiNode.id)
         .limit(OVERDUE_LIMIT))).all()
     return [(r.id, r.next_review_at) for r in rows]

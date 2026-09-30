@@ -42,7 +42,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.wiki import pages
 from serversherpa.wiki.content import EMPTY_DOC, docs_equal
-from serversherpa.wiki.permissions import AccessIndex, Principal
+from serversherpa.wiki.permissions import ANONYMOUS, AccessIndex
 from serversherpa.wiki.space_settings import space_setting
 
 log = logging.getLogger(__name__)
@@ -197,12 +197,6 @@ async def rebase_space_due_dates(db: AsyncSession, space: WikiSpace) -> int:
 
 # ── approvers ────────────────────────────────────────────────────────
 
-# a Principal that matches nothing: `effective_grants` lists the grants,
-# not anyone's access, so whose index it is doesn't matter
-_NOBODY = Principal(person_id=uuid.UUID(int=0), roles=frozenset(), group_ids=frozenset(),
-                    client_ids=frozenset(), partner_ids=frozenset(), is_internal=False,
-                    is_admin=False, can_view_wiki=False)
-
 
 async def approver_ids(db: AsyncSession, node: WikiNode, *,
                        exclude: uuid.UUID | None = None) -> list[uuid.UUID]:
@@ -214,7 +208,7 @@ async def approver_ids(db: AsyncSession, node: WikiNode, *,
     requester) is left out, and at most MAX_APPROVERS come back (logged
     when capped). Whether each can still view the page is the notifier's
     check (`notify.on_review_requested`)."""
-    grants = [g for g in await AccessIndex(db, _NOBODY).effective_grants(node, node.space_id)
+    grants = [g for g in await AccessIndex(db, ANONYMOUS).effective_grants(node, node.space_id)
               if g.level == "manage"]
     ids: list[uuid.UUID] = []
     by_type: dict[str, set[str]] = {}

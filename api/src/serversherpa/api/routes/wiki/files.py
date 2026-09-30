@@ -14,6 +14,9 @@ file (target `version`), or a page-asset row (target `asset`).
 for the object itself or its converted preview — inline only for what
 `wiki.files.inline_content_type` allows, as an octet-stream attachment
 otherwise, so nothing stored can run script from the bucket's origin.
+A file's attachment URLs (a download, or an inline read that can only be
+an attachment) are refused with 403 `printing_disabled` while its
+printing is off; inline previews still work.
 Nothing here does the conversion or text extraction —
 `wiki.files.enqueue` only queues the `file_preview`/`file_extract` jobs
 Task 8's worker will pick up.
@@ -330,6 +333,13 @@ def presign_view(key: str, filename: str, content_type: str, *,
                                content_type=inline_type, max_ttl_seconds=max_ttl_seconds)
 
 
+async def _require_printing(ctx: WikiContext, node: WikiNode) -> None:
+    """Refuse a download of a file whose printing is turned off (403
+    `printing_disabled`) — for anyone; in-browser previews stay open."""
+    if not await ctx.ix.can_print(node):
+        raise err(403, "printing_disabled", "Printing is turned off for this file.")
+
+
 @router.get("/files/{node_id}/url", response_model=FileUrlOut)
 async def file_url(node_id: uuid.UUID, ctx: WikiContext,
                    version_id: uuid.UUID | None = None,
@@ -359,7 +369,13 @@ async def file_url(node_id: uuid.UUID, ctx: WikiContext,
     if disposition == "inline":
         url = presign_view(version.storage_key, version.filename, version.content_type,
                               preview_kind=version.preview_kind)
+        # what can't be shown inline comes back as an attachment: a download
+        # under another name
+        if inline_content_type(version.filename, version.content_type,
+                               version.preview_kind) is None:
+            await _require_printing(ctx, node)
     else:
+        await _require_printing(ctx, node)
         url = storage.presign_get(version.storage_key, download_filename=version.filename)
     return FileUrlOut(url=url, content_type=version.content_type,
                       preview_status=version.preview_status)

@@ -103,10 +103,13 @@ async def _content_from_node(ctx: WikiContext, node_id: uuid.UUID) -> dict:
     """The content a new template starts from when created `from_node_id`:
     an editor's current draft (falling back to the published content, or
     the empty doc if there's neither yet); a viewer's published content,
-    or 404 `not_published` if the page was never published."""
+    or 404 `not_published` if the page was never published. 422 `private`
+    for a private page — a template is visible to more people than it."""
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "view")
     if node.kind != "page":
         raise err(422, "not_a_page", "Only a page can become a template.")
+    if await ctx.ix.is_private(node):
+        raise err(422, "private", "A private page can't be saved as a template.")
     page = await ctx.db.get(WikiPage, node.id)
     level = await ctx.ix.level_for_node(node)
     published = await pages.published_content(ctx.db, page)
