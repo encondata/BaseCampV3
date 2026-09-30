@@ -19,7 +19,7 @@ import { makeNode, makeSpace } from '../testing/fixtures';
 import ExportDialog from './ExportDialog';
 import { EXPORT_POLL_MAX_MS, EXPORT_POLL_MS } from './ExportProgress';
 
-const PUBLISHED = { is_home: false, published_version_id: 'v1', published_at: '2026-09-20T12:00:00Z', has_unpublished_changes: false };
+const PUBLISHED = { is_home: false, published_version_id: 'v1', published_at: '2026-09-20T12:00:00Z', has_unpublished_changes: false, doc_type: null };
 const PAGE = makeNode('n1', { title: 'Rack Guide', my_level: 'view', page: PUBLISHED });
 
 function job(over: Partial<ExportOut> = {}): ExportOut {

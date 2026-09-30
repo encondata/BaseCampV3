@@ -151,6 +151,7 @@ class NodePageOut(BaseModel):
     published_version_id: uuid.UUID | None
     published_at: datetime | None
     has_unpublished_changes: bool
+    doc_type: str | None
 
 
 class FileVersionOut(BaseModel):
@@ -286,6 +287,13 @@ class PrintingIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     allow_printing: StrictBool | None
+
+
+class DocTypeIn(BaseModel):
+    """`doc_type` null clears the page's document type."""
+    model_config = ConfigDict(extra="forbid")
+
+    doc_type: StrictStr | None
 
 
 class NodeMoveIn(BaseModel):

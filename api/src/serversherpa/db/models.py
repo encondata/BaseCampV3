@@ -1804,6 +1804,8 @@ class WikiPage(Base):
         ForeignKey("wiki_page_versions.id", ondelete="SET NULL"))
     has_unpublished_changes: Mapped[bool] = mapped_column(server_default=text("false"))
     last_autosave_version_at: Mapped[datetime | None]
+    # one of wiki.doc_types.DOC_TYPES, or null; shown on an exported PDF's cover
+    doc_type: Mapped[str | None]
 
 
 class WikiPageVersion(Base):

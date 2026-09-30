@@ -102,8 +102,8 @@ const PUBLISHED: PageContentOut = {
 };
 
 const published = { is_home: false, published_version_id: 'v3', published_at: PUBLISHED.created_at,
-  has_unpublished_changes: false };
-const never = { is_home: false, published_version_id: null, published_at: null, has_unpublished_changes: true };
+  has_unpublished_changes: false, doc_type: null };
+const never = { is_home: false, published_version_id: null, published_at: null, has_unpublished_changes: true, doc_type: null };
 
 function Probe() {
   const loc = useLocation();

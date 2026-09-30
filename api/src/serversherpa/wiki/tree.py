@@ -480,7 +480,8 @@ async def copy_subtree(db: AsyncSession, node: WikiNode, *,
                         draft_text=draft_text, ydoc=None,
                         # the copier's draft: it shows in their "My drafts"
                         draft_updated_by=actor_id, draft_updated_at=utcnow(),
-                        has_unpublished_changes=True))
+                        has_unpublished_changes=True,
+                        doc_type=(pages[source_id].doc_type if source_id in pages else None)))
 
     file_ids = [n.id for n in included if n.kind == "file"]
     new_files: list[tuple[WikiFile, WikiFileVersion]] = []

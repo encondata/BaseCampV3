@@ -117,6 +117,8 @@ export interface NodePageOut {
   published_version_id: string | null;
   published_at: string | null;
   has_unpublished_changes: boolean;
+  /** One of the five document types (shown on an exported PDF's cover), or null. */
+  doc_type: string | null;
 }
 
 /** Where a page stands in its review cycle: `overdue` once

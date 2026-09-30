@@ -108,10 +108,11 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
     pages: dict[uuid.UUID, tuple] = {}
     page_ids = [n.id for n in nodes if n.kind == "page"]
     if page_ids:
-        for node_id, published_id, unpublished, published_at, pending_id in (await db.execute(
+        for (node_id, published_id, unpublished, published_at, pending_id,
+             doc_type) in (await db.execute(
             select(WikiPage.node_id, WikiPage.published_version_id,
                    WikiPage.has_unpublished_changes, WikiPageVersion.created_at,
-                   WikiReview.id)
+                   WikiReview.id, WikiPage.doc_type)
             .outerjoin(WikiPageVersion,
                        WikiPageVersion.id == WikiPage.published_version_id)
             # at most one pending review per page (a partial unique index)
@@ -119,7 +120,7 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
                                         WikiReview.status == "pending"))
             .where(WikiPage.node_id.in_(page_ids))
         )).all():
-            pages[node_id] = (published_id, unpublished, published_at, pending_id)
+            pages[node_id] = (published_id, unpublished, published_at, pending_id, doc_type)
 
     files: dict[uuid.UUID, tuple[WikiFile, WikiFileVersion | None]] = {}
     file_ids = [n.id for n in nodes if n.kind == "file"]
@@ -196,11 +197,11 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
 
         page = review = None
         if n.kind == "page" and n.id in pages:
-            published_id, unpublished, published_at, pending_id = pages[n.id]
+            published_id, unpublished, published_at, pending_id, doc_type = pages[n.id]
             page = NodePageOut(
                 is_home=(home_id == n.id), published_version_id=published_id,
                 published_at=published_at if published_id else None,
-                has_unpublished_changes=unpublished)
+                has_unpublished_changes=unpublished, doc_type=doc_type)
             interval = reviews.interval_for(n, space_row)
             review = NodeReviewOut(
                 interval_months=interval, own_interval_months=n.review_interval_months,
