@@ -27,6 +27,10 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     var rfidResult: @Sendable (String, KioskRfidEnrollIn) throws -> KioskRfidEnroll = { id, b in KioskRfidEnroll(assetId: id, rfidTag: b.rfidTag) }
     /// When set, `postRfidEnroll` awaits this before answering (holds a POST in flight).
     var rfidGate: (@Sendable () async -> Void)?
+    /// When set, these await before answering (hold a status read / clock-in / image fetch in flight).
+    var statusGate: (@Sendable (String) async -> Void)?
+    var clockInGate: (@Sendable () async -> Void)?
+    var imageGate: (@Sendable (String) async -> Void)?
     var statusResult: @Sendable (String) throws -> KioskTimeclockStatus = { _ in throw unset }
     var clockInResult: @Sendable (ClockInIn) throws -> KioskTimeclockStatus = { _ in throw unset }
     var clockOutResult: @Sendable (ClockOutIn) throws -> KioskTimeclockStatus = { _ in throw unset }
@@ -61,10 +65,10 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
         return try await postScansResult(body)
     }
     func postRfidEnroll(assetId: String, _ body: KioskRfidEnrollIn) async throws -> KioskRfidEnroll { record("rfid"); await rfidGate?(); return try rfidResult(assetId, body) }
-    func timeclockStatus(personId: String) async throws -> KioskTimeclockStatus { record("timeclockStatus"); return try statusResult(personId) }
-    func clockIn(_ body: ClockInIn) async throws -> KioskTimeclockStatus { record("clockIn"); return try clockInResult(body) }
+    func timeclockStatus(personId: String) async throws -> KioskTimeclockStatus { record("timeclockStatus"); await statusGate?(personId); return try statusResult(personId) }
+    func clockIn(_ body: ClockInIn) async throws -> KioskTimeclockStatus { record("clockIn"); await clockInGate?(); return try clockInResult(body) }
     func clockOut(_ body: ClockOutIn) async throws -> KioskTimeclockStatus { record("clockOut"); return try clockOutResult(body) }
-    func fetchImage(url: String) async throws -> Data { record("image"); return try imageResult(url) }
+    func fetchImage(url: String) async throws -> Data { record("image"); await imageGate?(url); return try imageResult(url) }
 }
 
 /// A SessionRefresher whose answers are set per test (Android `FakeRefresher`).
