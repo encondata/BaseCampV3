@@ -10,24 +10,37 @@ import XCTest
 final class ServerSherpa_KioskUITests: XCTestCase {
 
     override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
         continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
     }
 
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
+    /// `-uiTestSignedOut` (honored by Debug builds only) skips the session restore.
+    @MainActor
+    private func launchSignedOut() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments += ["-uiTestSignedOut"]
+        app.launch()
+        return app
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
-        let app = XCUIApplication()
-        app.launch()
+    func testLaunchShowsSignIn() throws {
+        let app = launchSignedOut()
+        XCTAssertTrue(app.staticTexts["Sign in"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.textFields["you@company.com"].exists)
+    }
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
+    /// The visual check: writes login-landscape.png and login-portrait.png to
+    /// SCREENSHOT_DIR (set it with TEST_RUNNER_SCREENSHOT_DIR). Without it the test passes untouched.
+    @MainActor
+    func testLoginScreenshots() throws {
+        guard let dir = ProcessInfo.processInfo.environment["SCREENSHOT_DIR"], !dir.isEmpty else { return }
+        let app = launchSignedOut()
+        XCTAssertTrue(app.staticTexts["Sign in"].waitForExistence(timeout: 10))
+        for (orientation, name) in [(UIDeviceOrientation.landscapeLeft, "landscape"), (.portrait, "portrait")] {
+            XCUIDevice.shared.orientation = orientation
+            sleep(1)
+            let png = XCUIScreen.main.screenshot().pngRepresentation
+            try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("login-\(name).png"))
+        }
     }
 }

@@ -30,7 +30,7 @@ func tokenExpiryState(_ iso: String?, nowMs: Int64) -> RegistrationState {
 }
 
 /// ISO-8601 instants with or without fractional seconds (Kotlin `Instant.parse` accepts both).
-private func parseInstant(_ s: String) -> Date? {
+func parseInstant(_ s: String) -> Date? {
     let plain = ISO8601DateFormatter()
     plain.formatOptions = [.withInternetDateTime]
     if let d = plain.date(from: s) { return d }

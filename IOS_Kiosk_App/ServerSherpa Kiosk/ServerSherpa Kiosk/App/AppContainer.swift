@@ -93,11 +93,19 @@ final class AppContainer {
         guard !launched else { return }
         launched = true
         coordinator.start()
-        async let restored: Void = auth.restore()
+        async let restored: Void = restoreSession()
         async let hydrated: Void = sync.hydrate()
         async let loaded: Void = outbox.load()
         _ = await (restored, hydrated, loaded)
         authChanged()
+    }
+
+    private func restoreSession() async {
+        #if DEBUG
+        // UI tests pass this to see the login screen whatever session the simulator kept.
+        if ProcessInfo.processInfo.arguments.contains("-uiTestSignedOut") { auth.endSession(); return }
+        #endif
+        await auth.restore()
     }
 
     func onActive() {
