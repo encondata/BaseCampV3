@@ -52,6 +52,7 @@ struct RootView: View {
         switch route {
         case .setup: KioskSetupScreen(path: $path)
         case .scan: ScanScreen()
+        case .enroll: EnrollScreen()
         default: FeaturePlaceholderScreen(feature: feature(route.featureId), path: $path)
         }
     }

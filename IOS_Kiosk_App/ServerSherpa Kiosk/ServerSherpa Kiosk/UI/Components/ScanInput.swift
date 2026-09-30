@@ -11,6 +11,8 @@ struct ScanInput<Trailing: View>: View {
     var enabled: Bool = true
     var keepFocus: Bool = true
     let onSubmit: (String) -> Void
+    /// Reports every change of the box's text (RFID Enroll previews the padded tag from it).
+    var onTextChange: ((String) -> Void)?
     @ViewBuilder let trailing: () -> Trailing
 
     @State private var text = ""
@@ -29,6 +31,12 @@ struct ScanInput<Trailing: View>: View {
 
     private var wantsFocus: Bool { enabled && keepFocus }
 
+    func onTextChange(_ handler: @escaping (String) -> Void) -> Self {
+        var copy = self
+        copy.onTextChange = handler
+        return copy
+    }
+
     var body: some View {
         HStack(spacing: 4) {
             TextField(placeholder, text: $text)
@@ -39,6 +47,7 @@ struct ScanInput<Trailing: View>: View {
                 .keyboardType(.asciiCapable)
                 .submitLabel(.done)
                 .disabled(!enabled)
+                .onChange(of: text) { _, new in onTextChange?(new) }
                 .onSubmit {
                     let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     text = ""
