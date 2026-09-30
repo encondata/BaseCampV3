@@ -125,3 +125,78 @@ left out as today. A page's comments go with the page.
 - **Settings**:
   - The admin statement save and read, gated to wiki administrators.
   - The library override save, gated to library managers.
+
+---
+
+## Revision 2 — cover redesign, revision history, footers, document type (approved 2026-09-30)
+
+These rules replace the earlier cover layout and page-number footer. Contents, body and comments
+are unchanged apart from the new page order.
+
+### Page order
+
+1. Cover.
+2. Revision history (it may run over several pages).
+3. Contents, only when there are 2 or more headings.
+4. Body. The breadcrumbs stay in its header.
+5. Comments, only when there are comments.
+
+### Cover
+
+The cover is centered, with generous white space. From top to bottom:
+
+- The ServerSherpa logo, 1.4 in wide.
+- "ServerSherpa", in 20pt bold.
+- "A Cumulus Solutions Group product", in 9.5pt muted.
+- A gap.
+- The **document type**, in small caps and letter-spaced, e.g. "OPERATING PROCEDURE". It's
+  omitted when the page has none.
+- A thin teal rule (0.75pt, `#0f766e`, 60% width), the **title** (26pt bold), and another thin
+  teal rule.
+- A compact metadata block, one line each:
+  - "Revision N".
+  - "Author <creator name>". The creator is the page node's `created_by`. The line is omitted
+    when that's unknown.
+  - "Published <Month D, YYYY> by <Name>". "by <Name>" is omitted when unknown.
+- The breadcrumb is **not** on the cover.
+- The bottom of the cover shows "Exported <Month D, YYYY> by <Name>" in 8.5pt muted, with the full
+  confidentiality notice below it. The notice is omitted when empty.
+- The cover has no running footer.
+
+### Revision history
+
+- Titled "Revision history".
+- A table with the columns **Rev · Date · Updated by · Description of changes**.
+- One row per `published` version, newest first:
+  - Rev: the version's ordinal among the page's published versions (1 = the first publish).
+  - Date: the version's `created_at`, in the company time zone, as "Month D, YYYY".
+  - Updated by: the name of the version's `created_by`, or "Unknown".
+  - Description of changes: the version's `note`, trimmed. It's "—" when empty.
+- A long table continues onto the following pages, repeating its header row.
+
+### Running footer (every page except the cover)
+
+- Left: "CONFIDENTIAL". It's shown only when the effective confidentiality statement isn't empty.
+- Center: the document title, truncated with an ellipsis past about 70 characters.
+- Right: "Page n of N".
+- This replaces the old "n / N" counter.
+
+### Document type (new per-page field)
+
+- **Storage:** `wiki_pages.doc_type` (text, null = none), migration **0085**
+  (`down_revision = "0084"`).
+- **Allowed values:** "Operating Procedure", "Work Instruction", "Guide", "Policy", "Reference".
+  Anything else gets 422 `bad_doc_type`.
+- **Editing:** `PATCH /wiki/nodes/{id}/doc-type` with `{doc_type: str | null}`.
+  - It needs **edit** on the page. It's 404 when the caller can't see the node, and 422 `not_a_page`
+    for a folder or file.
+  - A real change writes an audit row with action "doc_type".
+- **Payload:** `NodeOut.page.doc_type`.
+- **Defaults and copies:**
+  - A page created from the built-in **SOP** template starts as "Operating Procedure".
+  - A copy of a page keeps its doc_type.
+- **SPA:** on pages, for editors, the ⋯ menu gains "Document type…". It opens a small dialog in the
+  modal header pattern, with the eyebrow "Export", the title "Document type" and the description
+  "Shown on the cover of an exported PDF.". The choices are the five types plus "None". Saving calls
+  the endpoint.
+- **Where it shows:** nothing on screen changes. The page view doesn't show the type.
