@@ -78,7 +78,7 @@ import { resetTreeStore, useTreeRevision } from '../lib/treeStore';
 import { clearWikiMe } from '../lib/useWikiMe';
 import type { NodeReviewOut } from '../lib/types';
 import {
-  createTemplate, deleteComment, getMe, getPageContent, getReview, getVersion, getWatchState, listComments,
+  createTemplate, deleteComment, getAssetUrls, getMe, getPageContent, getReview, getVersion, getWatchState, listComments,
   listReviews, markReviewed, postComment, publishPage, recordRestore, setFavorite, submitReview, withdrawReview,
 } from '../lib/wikiApi';
 import { makeDetail, makeMe, makeNode, makeReview, makeReviewDetail, makeSpace } from '../testing/fixtures';
@@ -138,6 +138,59 @@ afterEach(cleanup);
 
 /** Whether PageView ever asked for this page's view to be counted. */
 const countedView = (id: string) => vi.mocked(useRecordView).mock.calls.some(([n, on]) => n === id && on);
+
+describe('PageView — private and printing', () => {
+  it('shows Private and Printing off chips in the header', async () => {
+    renderPage(makeDetail('p1', { my_level: 'view', page: published, is_private: true, can_print: false }));
+    await screen.findByText('Hello from the published page.');
+    const head = document.querySelector('.wiki-page-head') as HTMLElement;
+    expect(within(head).getByText('Private')).toBeTruthy();
+    expect(within(head).getByText('Printing off')).toBeTruthy();
+  });
+
+  it('drops Export… and Share…, guards printing and locks the page\'s images while printing is off', async () => {
+    const IMG = '0f4d6a2e-3b1c-4c7e-9a55-1d2e3f405162';
+    vi.mocked(getAssetUrls).mockResolvedValue({ [IMG]: 'https://s3/rack.png' });
+    vi.mocked(getPageContent).mockResolvedValue({
+      ...PUBLISHED,
+      content_json: { type: 'doc', content: [
+        { type: 'wikiImage', attrs: { assetId: IMG, alt: 'Rack front', caption: '', width: null } },
+      ] },
+    });
+    const node = makeDetail('p1', { title: 'Rack power', my_level: 'manage', page: published, can_print: false });
+    renderPage(node);
+    const img = await screen.findByRole('img', { name: 'Rack front' });
+    expect(fireEvent.contextMenu(img)).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Rack power' }));
+    expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(
+      ['Move…', 'Copy…', 'Copy link', 'Review schedule…', 'Permissions…', 'Delete']);
+    expect(document.body.dataset.noPrint).toBe('1');
+    const e = new KeyboardEvent('keydown', { key: 'p', metaKey: true, bubbles: true, cancelable: true });
+    window.dispatchEvent(e);
+    expect(e.defaultPrevented).toBe(true);
+    expect(toast).toHaveBeenCalledWith('Printing is turned off for this page.');
+    cleanup();
+    expect(document.body.dataset.noPrint).toBeUndefined();
+  });
+
+  it('prints as usual when printing is on', async () => {
+    renderPage(makeDetail('p1', { my_level: 'manage', page: published }));
+    await screen.findByText('Hello from the published page.');
+    expect(document.body.dataset.noPrint).toBeUndefined();
+    expect(document.querySelector('.wiki-print-blocked')).toBeNull();
+    const e = new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, bubbles: true, cancelable: true });
+    window.dispatchEvent(e);
+    expect(e.defaultPrevented).toBe(false);
+  });
+
+  it('shows no chips for an ordinary page', async () => {
+    renderPage(makeDetail('p1', { my_level: 'view', page: published }));
+    await screen.findByText('Hello from the published page.');
+    const head = document.querySelector('.wiki-page-head') as HTMLElement;
+    expect(within(head).queryByText('Private')).toBeNull();
+    expect(within(head).queryByText('Printing off')).toBeNull();
+  });
+});
 
 describe('PageView — analytics', () => {
   it('counts a reader\'s view', async () => {

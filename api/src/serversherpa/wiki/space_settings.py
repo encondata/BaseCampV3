@@ -1,8 +1,9 @@
 """The whitelist of keys `PATCH /wiki/spaces/{key}` may write into a
 space's `settings` JSONB, their defaults, and the one place that reads a
 setting back out. Keeping the validation table here means Phase 2's
-knobs — and Phase 3's `allow_public_links` — get added here and nowhere
-else.
+knobs — Phase 3's `allow_public_links`, and `allow_printing` (the
+library-wide printing default that nodes inherit unless they, or an
+ancestor, set their own) — get added here and nowhere else.
 
 `ALLOWED[key]` is either a plain type (checked with `isinstance`) or a
 tuple of types where `None` stands for "null is also legal" — see
@@ -13,6 +14,7 @@ ALLOWED: dict[str, type | tuple] = {
     "require_approval": bool,
     "review_interval_months": (int, None),
     "allow_public_links": bool,
+    "allow_printing": bool,
 }
 
 # mirrored by the wiki UI's SPACE_SETTING_DEFAULTS
@@ -23,6 +25,7 @@ DEFAULTS: dict[str, bool | int | None] = {
     "require_approval": False,
     "review_interval_months": None,
     "allow_public_links": False,
+    "allow_printing": True,
 }
 
 REVIEW_INTERVAL_MONTHS_MIN = 1

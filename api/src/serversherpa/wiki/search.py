@@ -185,7 +185,8 @@ class SearchHit:
 class _Candidate:
     """A ranked row straight from the candidate query — enough to stand
     in for a `WikiNode` when asking `AccessIndex` for its level (it only
-    ever reads `.id`/`.space_id`/`.path`), and to build the eventual hit."""
+    ever reads `.id`/`.space_id`/`.path`/`.is_private`/`.created_by`), and
+    to build the eventual hit."""
     id: uuid.UUID
     kind: str
     title: str
@@ -193,6 +194,8 @@ class _Candidate:
     path: list[uuid.UUID]
     space_key: str
     space_name: str
+    is_private: bool
+    created_by: uuid.UUID | None
 
 
 async def _node_grant_space_ids(db: AsyncSession, ix: AccessIndex) -> set[uuid.UUID]:
@@ -206,7 +209,7 @@ async def _node_grant_space_ids(db: AsyncSession, ix: AccessIndex) -> set[uuid.U
     which spaces are worth running the candidate query against."""
     if not ix.p.can_view_wiki or ix.p.is_admin:
         # an admin already gets every space back from `levels_for_spaces`
-        # (AccessIndex short-circuits admins to "manage" everywhere), so
+        # (AccessIndex short-circuits admins to "manage" at the space level), so
         # there's nothing this widens for them.
         return set()
     rows = (await db.execute(
@@ -251,7 +254,8 @@ async def _candidates(db: AsyncSession, q: str, *, space_ids: list[uuid.UUID],
     rank = func.ts_rank_cd(WikiNode.search_tsv, tsquery)
     stmt = (
         select(WikiNode.id, WikiNode.kind, WikiNode.title, WikiNode.space_id,
-              WikiNode.path, WikiSpace.key, WikiSpace.name)
+              WikiNode.path, WikiSpace.key, WikiSpace.name,
+              WikiNode.is_private, WikiNode.created_by)
         .join(WikiSpace, WikiSpace.id == WikiNode.space_id)
         .where(WikiNode.deleted_at.is_(None),
               WikiNode.space_id.in_(space_ids),
@@ -263,7 +267,8 @@ async def _candidates(db: AsyncSession, q: str, *, space_ids: list[uuid.UUID],
            .limit(fetch_limit))
     rows = (await db.execute(stmt)).all()
     return [_Candidate(id=r.id, kind=r.kind, title=r.title, space_id=r.space_id,
-                       path=list(r.path or []), space_key=str(r.key), space_name=r.name)
+                       path=list(r.path or []), space_key=str(r.key), space_name=r.name,
+                       is_private=r.is_private, created_by=r.created_by)
            for r in rows]
 
 

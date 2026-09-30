@@ -93,9 +93,13 @@ async def lock_and_reread(ctx: WikiCtx, node: WikiNode, needed: str,
     move's destination space), then re-read `node` as committed now and
     re-check the caller still has `needed` on it (404/403 as usual). 409
     `conflict` when it left the locked space while we waited — a
-    concurrent cross-space move."""
+    concurrent cross-space move. The access index is rebuilt once the lock
+    is held: one warmed before it may miss a folder made private (or a
+    grant changed) while we waited, and the checks after the lock — a move
+    into a private folder, say — must see what's committed now."""
     space_id = node.space_id
     await tree.lock_space_trees(ctx.db, space_id, *also_lock)
+    ctx.ix = AccessIndex(ctx.db, ctx.principal)
     fresh = await ctx.db.get(WikiNode, node.id, populate_existing=True)
     fresh = await require_node_level(ctx.ix, fresh, needed)
     if fresh.space_id != space_id:

@@ -9,7 +9,14 @@ import uuid
 from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StringConstraints,
+    model_validator,
+)
 
 Level = Literal["view", "edit", "manage"]
 PrincipalType = Literal[
@@ -179,6 +186,14 @@ class NodeReviewOut(BaseModel):
     pending_review_id: uuid.UUID | None
 
 
+class PrintingSourceOut(BaseModel):
+    """Where a node's effective printing value comes from: an ancestor (or
+    the node) that sets it, or — `node_id` null, title "Library" — the
+    library's setting."""
+    node_id: uuid.UUID | None
+    title: str
+
+
 class NodeOut(BaseModel):
     id: uuid.UUID
     space_id: uuid.UUID
@@ -199,6 +214,16 @@ class NodeOut(BaseModel):
     file: NodeFileOut | None
     # pages only (null for folders and files)
     review: NodeReviewOut | None = None
+    # Private items and printing (spec 2026-09-30): `allow_printing` is the
+    # node's own explicit value (null = inherit); `can_print` is the effective
+    # value; `printing_from` says who set it, only while the node inherits.
+    # `in_private`: the node or a folder above it is private.
+    is_private: bool
+    in_private: bool
+    allow_printing: bool | None
+    can_print: bool
+    printing_from: PrintingSourceOut | None
+    can_set_private: bool
 
 
 class Breadcrumb(BaseModel):
@@ -247,6 +272,19 @@ class NodePatchIn(BaseModel):
     title: Title | None = None
     owner_id: uuid.UUID | None = None
     review_interval_months: int | None = Field(default=None, ge=1, le=60)
+
+
+class PrivacyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    is_private: StrictBool
+
+
+class PrintingIn(BaseModel):
+    """`allow_printing` null clears the node's own value (it inherits)."""
+    model_config = ConfigDict(extra="forbid")
+
+    allow_printing: StrictBool | None
 
 
 class NodeMoveIn(BaseModel):

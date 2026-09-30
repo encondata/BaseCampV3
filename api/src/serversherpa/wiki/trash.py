@@ -25,6 +25,7 @@ from serversherpa.db.models import WikiFileVersion, WikiNode, WikiPageAsset
 from serversherpa.services.audit import audit
 from serversherpa.wiki import tree
 from serversherpa.wiki.files import enqueue
+from serversherpa.wiki.permissions import ANONYMOUS, AccessIndex
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,11 @@ async def restore_batch(db: AsyncSession, root: WikiNode) -> int:
     batch sat in the trash, so keeping the old value risks two siblings
     sharing one position. Either way the subtree's paths are rewritten
     from the root's current place (an ancestor may have been moved, or
-    deleted forever, while it sat in the trash)."""
+    deleted forever, while it sat in the trash). Landing at the space
+    root pins what it inherited from the folders it left
+    (`pin_detached`); raises `TreeError("others_items")` when that can't
+    keep it private — the private folder above it has another author, so
+    that folder has to be restored first."""
     batch_id = root.deleted_batch
     parent = (await db.get(WikiNode, root.parent_id, populate_existing=True)
               if root.parent_id else None)
@@ -111,6 +116,12 @@ async def restore_batch(db: AsyncSession, root: WikiNode) -> int:
         parent = None
     new_parent_id = parent.id if parent is not None else None
     new_prefix = [*(parent.path or []), parent.id] if parent is not None else []
+
+    # to the space root, leaving the folders above it: keep what they made it
+    if root.path and not new_prefix and not await pin_detached(db, root):
+        raise tree.TreeError(
+            "others_items", "This was private because of a folder that's in the trash. "
+                            "Restore that folder first.")
 
     root.position = await tree.next_position(db, root.space_id, new_parent_id)
     if list(root.path or []) != new_prefix:
@@ -125,6 +136,30 @@ async def restore_batch(db: AsyncSession, root: WikiNode) -> int:
         .execution_options(synchronize_session=False))
     await db.refresh(root)
     return result.rowcount
+
+
+async def pin_detached(db: AsyncSession, node: WikiNode,
+                       ix: AccessIndex | None = None) -> bool:
+    """Before `node` (still on its old path) is moved to the space root,
+    pin what it inherited from the ancestors it is leaving, so landing
+    there neither publishes nor makes printable what wasn't: private
+    (when a folder above it was) and printing off (when it inherited
+    off, and the space root isn't). Returns False, pinning nothing, when
+    it can't stay private that way — pinning makes it its own author's,
+    and a private folder above it has a different author, who alone
+    (with developers) could see it.
+    Private and printing are the same for every caller, so `ix` (made
+    here when not given) is ANONYMOUS's."""
+    ix = ix or AccessIndex(db, ANONYMOUS)
+    authors = await ix.private_ancestors(node)
+    if authors and any(a != node.created_by for a in authors.values()):
+        return False
+    if authors:
+        node.is_private = True
+    if (node.allow_printing is None and not await ix.can_print(node)
+            and await ix.can_print_under(node.space_id, None)):
+        node.allow_printing = False
+    return True
 
 
 async def storage_keys(db: AsyncSession, node_ids: list[uuid.UUID]) -> list[str]:
@@ -156,12 +191,15 @@ async def delete_batch_forever(db: AsyncSession, root: WikiNode, *,
     from an OLDER batch would otherwise be cascade-deleted with its
     parent — and its objects leaked — so it is detached to the space
     root first (path rewritten, see `repath_subtree`) and stays in the
-    trash, restorable on its own."""
+    trash, restorable on its own — pinned private and printing-off as
+    its old place made it (`pin_detached`). One that was private through
+    a folder of this batch but isn't that folder's author's goes with
+    the batch instead (its whole subtree): at the root it would be its
+    own author's to see."""
     batch_id = root.deleted_batch
     root_id, title = root.id, root.title
     ids = list((await db.scalars(
         select(WikiNode.id).where(WikiNode.deleted_batch == batch_id))).all())
-    keys = await storage_keys(db, ids)
 
     # detached to the space root: parent AND path (and their descendants'
     # paths) stop naming the ancestors about to go, so permissions never
@@ -171,11 +209,17 @@ async def delete_batch_forever(db: AsyncSession, root: WikiNode, *,
         .where(WikiNode.parent_id.in_(ids),
                WikiNode.deleted_batch.is_distinct_from(batch_id))
         .execution_options(populate_existing=True))).all()
+    ix = AccessIndex(db, ANONYMOUS)
     for child in detached:
+        if not await pin_detached(db, child, ix):
+            ids.extend(await tree.subtree_ids(db, child))
+            db.expunge(child)
+            continue
         await tree.repath_subtree(db, child, [], space_id=child.space_id)
         child.parent_id = None
         child.path = []
     await db.flush()
+    keys = await storage_keys(db, ids)
     if keys:
         await enqueue(db, "purge", payload={"keys": keys})
     await db.execute(delete(WikiNode).where(WikiNode.id.in_(ids))

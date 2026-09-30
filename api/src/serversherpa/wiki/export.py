@@ -8,6 +8,10 @@ the wiki worker runs it through `run`, as the person who asked:
   only what they can view goes in. A node they can't view leaves out
   its whole subtree (its folder name would name it); so does a
   never-published page they only have view on (they can't see it at all).
+- What they can see but can't print (printing turned off, for everyone
+  alike) is left out too, and named in `_skipped.txt` — its subpages
+  still go in unless they turn printing off themselves. A single page
+  whose printing is off fails the job.
 - Pages export their PUBLISHED content only, without comment anchors. A
   never-published page an editor can see is left out and named in
   `_skipped.txt` at the top of the zip; its subpages still go in, under
@@ -205,6 +209,7 @@ class _Node:
     content: dict | None = None            # a page's published content
     published_at: datetime | None = None
     published: bool = False
+    printable: bool = True                 # printing isn't turned off for it
     file: _File | None = None
     assets: dict[str, _Asset] = field(default_factory=dict)   # by the id the doc spells
     crumbs: list[str] = field(default_factory=list)
@@ -230,6 +235,7 @@ class _Plan:
     files: list[_Node] = field(default_factory=list)
     folders: list[_Node] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)      # zip paths of unpublished pages
+    unprintable: list[str] = field(default_factory=list)  # zip paths of printing-off items
     targets: dict[str, _Target] = field(default_factory=dict)   # by lowercase node id
 
     @property
@@ -349,6 +355,8 @@ async def _gather(db: AsyncSession, payload: dict) -> _Plan:
         if node.id in published:
             node.published = True
             node.content, node.published_at = published[node.id]
+    for row in shown:
+        nodes[row.id].printable = await ix.can_print(row)
 
     def visible(node: _Node) -> bool:
         return node.id in shown_ids
@@ -377,6 +385,8 @@ async def _gather(db: AsyncSession, payload: dict) -> _Plan:
         page = roots[0]
         if page.kind != "page":
             raise ExportError(f"“{page.title}” can only be exported as a .zip.")
+        if not page.printable:
+            raise ExportError(f"Printing is turned off for “{page.title}”.")
         if not page.published:
             raise ExportError(f"“{page.title}” has never been published — only "
                               "published pages can be exported.")
@@ -499,8 +509,10 @@ def _file_parts(title: str, filename: str) -> tuple[str, str]:
 def _collect(plan: _Plan, roots: list[_Node]) -> None:
     """Give every node in the tree its path in the zip (unique per
     directory, depth-first in tree order) and sort them into pages,
-    files, folders and skipped pages. A page with subpages also gets a
-    directory of the same name for them. Iterative, however deep."""
+    files, folders, and what is left out: pages never published, and pages
+    and files with printing off (`plan.unprintable`). A page with subpages
+    also gets a directory of the same name for them. Iterative, however
+    deep."""
     ext = EXTENSIONS[plan.page_format]
     reserved = (SKIPPED_FILE, *((ASSETS_DIR,) if plan.page_format == "md" else ()))
     dirs = {"": _Dir(reserved)}
@@ -514,19 +526,26 @@ def _collect(plan: _Plan, roots: list[_Node]) -> None:
                                                                      ("",)))
             plan.folders.append(node)
         elif node.kind == "page":
-            suffixes = ((ext,) if node.published else ()) + (("",) if node.children else ())
+            exported = node.published and node.printable
+            suffixes = ((ext,) if exported else ()) + (("",) if node.children else ())
             base = directory.claim(safe_name(node.title), suffixes or ("",))
-            if node.published:
+            if exported:
                 node.zip_path = _join(parent, base + ext)
                 plan.pages.append(node)
+            elif not node.printable:
+                plan.unprintable.append(_join(parent, base))
             else:
                 plan.skipped.append(_join(parent, base))
             if node.children:
                 node.dir_path = child_dir = _join(parent, base)
         elif node.file is not None:
             stem, fext = _file_parts(node.title, node.file.filename)
-            node.zip_path = _join(parent, directory.claim(stem, (fext,)) + fext)
-            plan.files.append(node)
+            path = _join(parent, directory.claim(stem, (fext,)) + fext)
+            if node.printable:
+                node.zip_path = path
+                plan.files.append(node)
+            else:
+                plan.unprintable.append(path)
         if child_dir is not None:
             dirs[child_dir] = _Dir()
             work.extend((c, child_dir) for c in reversed(node.children))
@@ -553,7 +572,8 @@ class _Refs(MarkdownRefs):
         if target is None or target.title is None:
             return hidden, None
         path = target.node.zip_path if target.node is not None else None
-        if target.node is not None and target.node.kind == "page" and not target.node.published:
+        if (target.node is not None and target.node.kind == "page"
+                and not (target.node.published and target.node.printable)):
             path = target.node.dir_path
         return target.title, self._rel(path)
 
@@ -650,9 +670,15 @@ async def _single(client, plan: _Plan, workdir: Path, touch: Touch) -> Path:
     return out
 
 
-def _skipped_text(paths: list[str]) -> str:
-    lines = ["These pages were left out because they have never been published:", ""]
-    return "\n".join(lines + paths) + "\n"
+def _skipped_text(unpublished: list[str], unprintable: list[str]) -> str:
+    blocks = []
+    if unpublished:
+        blocks.append(["These pages were left out because they have never been published:",
+                       "", *unpublished])
+    if unprintable:
+        blocks.append(["These items were left out because printing is turned off for them:",
+                       "", *unprintable])
+    return "\n\n".join("\n".join(lines) for lines in blocks) + "\n"
 
 
 async def _zip(client, plan: _Plan, workdir: Path, touch: Touch) -> Path:
@@ -694,8 +720,9 @@ async def _zip(client, plan: _Plan, workdir: Path, touch: Touch) -> Path:
             await asyncio.to_thread(zf.write, scratch, node.zip_path)
             scratch.unlink(missing_ok=True)
             await touch()
-        if plan.skipped:
-            zf.writestr(SKIPPED_FILE, _skipped_text(plan.skipped).encode("utf-8"))
+        if plan.skipped or plan.unprintable:
+            zf.writestr(SKIPPED_FILE,
+                        _skipped_text(plan.skipped, plan.unprintable).encode("utf-8"))
     return out
 
 
@@ -734,7 +761,8 @@ async def run(db: AsyncSession, job: WikiJob) -> dict:
                 path = await _single(client, plan, workdir, touch)
         await storage.upload_from(path, key, CONTENT_TYPES[plan.format])
     return {"key": key, "filename": plan.filename, "pages": len(plan.pages),
-            "files": len(plan.files), "skipped": len(plan.skipped)}
+            "files": len(plan.files), "skipped": len(plan.skipped),
+            "unprintable": len(plan.unprintable)}
 
 
 # ── retention ────────────────────────────────────────────────────────

@@ -4,7 +4,9 @@
  *  (a page's header only: Save as template…, Review schedule…),
  *  Permissions…, Share… (pages and files), Use as help for… (a page's or
  *  file's header, wiki admins), Delete — each shown only at the
- *  level it needs. Move, Copy, Permissions, Share, Export and Delete open
+ *  level it needs (Export… and Share… also need printing on; Share…, Save
+ *  as template… and Use as help for… are gone inside a private folder or on
+ *  a private item). Move, Copy, Permissions, Share, Export and Delete open
  *  the shell's dialogs. The menu is
  *  position:fixed so the sidebar's scroll box never clips it; it closes on
  *  any outside click, scroll, resize or Escape. */
@@ -120,15 +122,18 @@ const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
   }
   items.push({ label: 'Copy…', action: () => shell.requestCopy(node), icon: <><rect x="8" y="8" width="12" height="12" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></> });
   items.push({ label: 'Copy link', action: copyLink, icon: <path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1" /> });
-  const exportable = node.kind === 'folder'
-    || (node.kind === 'page' && (!!node.page?.published_version_id || node.has_children));
+  // Export and Share are gone while printing is off (the API refuses both too)
+  const exportable = node.can_print && (node.kind === 'folder'
+    || (node.kind === 'page' && (!!node.page?.published_version_id || node.has_children)));
   if (exportable) {
     items.push({
       label: 'Export…', action: () => shell.requestExport({ kind: 'node', node }),
       icon: <path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14" />,
     });
   }
-  if (node.kind === 'page' && canEdit && onSaveAsTemplate) {
+  // a template would carry a printing-off page's whole content into a printable
+  // one, or a private page's to everyone (the API refuses both)
+  if (node.kind === 'page' && canEdit && node.can_print && !node.in_private && onSaveAsTemplate) {
     items.push({
       label: 'Save as template…', action: onSaveAsTemplate,
       icon: <><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5M10.5 15.5a2 2 0 0 0 2.8 0l1.5-1.5a2 2 0 0 0-2.8-2.8l-.5.5" /></>,
@@ -140,16 +145,20 @@ const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
       icon: <><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M8 3v4M16 3v4M4 10h16M9.5 15l2 2 3.5-3.5" /></>,
     });
   }
-  if (canManage) {
+  // an author who can't manage still reaches the dialog for the Private switch,
+  // which a library's home page never has (the dialog would be empty)
+  if (canManage || (node.can_set_private && !isHome)) {
     items.push({ label: 'Permissions…', action: () => shell.requestPermissions(node), icon: <><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></> });
   }
-  if (canManage && (node.kind === 'page' || node.kind === 'file')) {
+  // a private item gets no public links
+  if (canManage && node.can_print && !node.in_private && (node.kind === 'page' || node.kind === 'file')) {
     items.push({
       label: 'Share…', action: () => shell.requestShare(node),
       icon: <><circle cx="18" cy="5" r="2.5" /><circle cx="6" cy="12" r="2.5" /><circle cx="18" cy="19" r="2.5" /><path d="M8.2 10.8l7.6-4.4M8.2 13.2l7.6 4.4" /></>,
     });
   }
-  if (onUseAsHelp && (node.kind === 'page' || node.kind === 'file')) {
+  // nor becomes a help guide
+  if (onUseAsHelp && !node.in_private && (node.kind === 'page' || node.kind === 'file')) {
     items.push({
       label: 'Use as help for…', action: onUseAsHelp,
       icon: <><circle cx="12" cy="12" r="9" /><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6M12 17h.01" /></>,

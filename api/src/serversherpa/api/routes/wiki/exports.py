@@ -10,6 +10,9 @@ and only to them — with a fresh download URL once it's done.
   (the tree's visibility rule; 422 `bad_format`
   otherwise); a single page must have been published (422
   `not_published`).
+- Printing turned off for the node: 403 `printing_disabled`, for anyone.
+  A zip of a folder or library leaves out what can't be printed and lists
+  it in `_skipped.txt` (`wiki/export.py`).
 - A space (view on it) exports as a .zip.
 - Each person may have MAX_ACTIVE_EXPORTS exports queued or running at
   once (429 `too_many_exports`), counted under a per-person lock so two
@@ -57,6 +60,9 @@ async def _node_target(ctx: WikiContext, body: ExportIn) -> tuple[WikiNode, dict
         published = page is not None and page.published_version_id is not None
         if not published and await ctx.ix.level_for_node(node) == "view":
             raise not_found()
+    # after every "can't see it" refusal: a hidden item never answers 403
+    if not await ctx.ix.can_print(node):
+        raise err(403, "printing_disabled", "Printing is turned off for this item.")
     if body.format == "zip":
         if node.kind == "page" and not await _has_viewable_children(ctx, node):
             raise err(422, "bad_format",
@@ -111,12 +117,21 @@ async def create_export(body: ExportIn, ctx: WikiContext) -> ExportCreatedOut:
 
 @router.get("/exports/{job_id}", response_model=ExportOut)
 async def get_export(job_id: uuid.UUID, ctx: WikiContext) -> ExportOut:
-    """The requester's own export (anyone else: 404)."""
+    """The requester's own export (anyone else: 404 — as is one of an item
+    the requester can no longer see)."""
     job = await ctx.db.get(WikiJob, job_id)
     if job is None or job.kind != "export" or job.created_by != ctx.user.person.id:
         raise not_found()
     payload = job.payload or {}
     result = job.result or {}
+    node = await ctx.db.get(WikiNode, job.node_id) if job.node_id is not None else None
+    # an item the requester can no longer see (made private by someone
+    # else since) is missing, like its export
+    if node is not None and await ctx.ix.level_for_node(node) is None:
+        raise not_found()
+    # a finished file isn't handed out once printing was turned off since
+    if job.status == "done" and node is not None and not await ctx.ix.can_print(node):
+        raise err(403, "printing_disabled", "Printing is turned off for this item.")
     filename = result.get("filename") or payload.get("filename") or "export"
     url = None
     if job.status == "done" and result.get("key"):

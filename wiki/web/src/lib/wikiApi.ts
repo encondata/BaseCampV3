@@ -181,6 +181,15 @@ export const getNodePermissions = (id: string) =>
 export const putNodePermissions = (id: string, body: NodePermissionsPutIn) =>
   request<NodePermissionsOut>('PUT', `/nodes/${seg(id)}/permissions`, { body });
 
+/** 403 `forbidden` unless the caller is the author or a developer; 422
+ *  `home_page` for a library's home page. */
+export const setNodePrivacy = (id: string, isPrivate: boolean) =>
+  request<NodeOut>('PATCH', `/nodes/${seg(id)}/privacy`, { body: { is_private: isPrivate } });
+
+/** `null` goes back to inheriting. Manage. */
+export const setNodePrinting = (id: string, allow: boolean | null) =>
+  request<NodeOut>('PATCH', `/nodes/${seg(id)}/printing`, { body: { allow_printing: allow } });
+
 export const setFavorite = (id: string, favorite: boolean) =>
   request<void>(favorite ? 'PUT' : 'DELETE', `/nodes/${seg(id)}/favorite`);
 

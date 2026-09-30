@@ -32,7 +32,7 @@ from serversherpa.wiki.help import (
     is_valid_context,
     normalize_context,
 )
-from serversherpa.wiki.permissions import require_node_level
+from serversherpa.wiki.permissions import private_filter, require_node_level
 
 router = APIRouter()
 
@@ -55,10 +55,12 @@ def _context(raw: str) -> str:
 
 async def _guide(ctx: WikiContext, node_id: uuid.UUID) -> WikiNode:
     """A live page or file the admin can see (404 otherwise; 422
-    `bad_kind` for a folder)."""
+    `bad_kind` for a folder, 422 `private` for a private item)."""
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "view")
     if node.kind not in GUIDE_KINDS:
         raise err(422, "bad_kind", "A help link points to a page or a file.")
+    if await ctx.ix.is_private(node):
+        raise err(422, "private", "A private item can't be a help guide.")
     return node
 
 
@@ -138,9 +140,12 @@ async def get_help(ctx: WikiContext, context: HelpContextIn) -> HelpOut:
 
 @router.get("/help-links", response_model=list[HelpLinkOut])
 async def list_help_links(ctx: WikiContext) -> list[HelpLinkOut]:
-    """Wiki administrators: every help link, by context."""
+    """Wiki administrators: every help link, by context — except those
+    to a private item the caller couldn't open."""
     _require_admin(ctx)
-    rows = (await ctx.db.execute(_links_query().order_by(WikiHelpLink.context))).all()
+    rows = (await ctx.db.execute(
+        _links_query().where(private_filter(ctx.principal))
+        .order_by(WikiHelpLink.context))).all()
     return await _links_out(ctx, rows)
 
 
@@ -167,7 +172,10 @@ async def update_help_link(link_id: uuid.UUID, body: HelpLinkPatchIn,
                            ctx: WikiContext) -> HelpLinkOut:
     _require_admin(ctx)
     link = await ctx.db.get(WikiHelpLink, link_id)
-    if link is None:
+    # a link to a private item the caller couldn't open is missing, as in
+    # the list — its answer would name that item
+    if link is None or await ctx.db.scalar(select(WikiNode.id).where(
+            WikiNode.id == link.node_id, private_filter(ctx.principal))) is None:
         raise not_found()
 
     context = _context(body.context) if body.context is not None else link.context
