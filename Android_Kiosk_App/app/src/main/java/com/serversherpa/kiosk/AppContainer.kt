@@ -17,6 +17,7 @@ import com.serversherpa.kiosk.data.api.RefreshCookieJar
 import com.serversherpa.kiosk.data.api.SecretStore
 import com.serversherpa.kiosk.data.api.SessionStore
 import com.serversherpa.kiosk.data.auth.KioskAuth
+import com.serversherpa.kiosk.data.auth.MoveSetupGuard
 import com.serversherpa.kiosk.data.auth.SessionCoordinator
 import com.serversherpa.kiosk.data.config.KioskConfig
 import com.serversherpa.kiosk.data.db.KioskDatabase
@@ -103,6 +104,7 @@ class AppContainer(
         scope.launch { sync.hydrate() }
         scope.launch { session.sessionEnded.collect { cookieJar.clearRefreshCookie() } }
         SessionCoordinator(auth, heartbeat, foreground, scope).start()
+        MoveSetupGuard(auth.state, prefs, scope).start()
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 foreground.value = true

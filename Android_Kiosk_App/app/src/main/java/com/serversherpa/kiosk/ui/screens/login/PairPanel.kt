@@ -26,9 +26,6 @@ import com.serversherpa.kiosk.core.model.PairStatus
 import com.serversherpa.kiosk.core.model.SessionData
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.identity.Identity
-import com.serversherpa.kiosk.ui.components.KioskToast
-import com.serversherpa.kiosk.ui.components.LinkButton
-import com.serversherpa.kiosk.ui.components.SolidButton
 import com.serversherpa.kiosk.ui.theme.FragmentMono
 import java.time.Instant
 import kotlinx.coroutines.CoroutineScope
@@ -129,21 +126,22 @@ fun PairPanel(vm: PairViewModel, portalUrl: String, onApproved: (SessionData) ->
     LaunchedEffect(ui.phase, ui.pair?.code) { if (ui.phase == PairPhase.SHOWING) vm.startPolling(onApproved) }
     DisposableEffect(Unit) { onDispose { vm.stopPolling() } }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        val body = MaterialTheme.typography.bodyMedium
         when (ui.phase) {
-            PairPhase.REQUESTING -> Text("Getting a code…", style = MaterialTheme.typography.bodyMedium)
-            PairPhase.ERROR -> { KioskToast("Couldn't get a code (${ui.error}). Try again.", error = true); SolidButton("Try again", { vm.request() }) }
-            PairPhase.DENIED -> { KioskToast("Sign-in was declined on the phone.", error = true); SolidButton("Get a new code", { vm.request() }) }
-            PairPhase.EXPIRED -> { KioskToast("This code expired.", error = true); SolidButton("Get a new code", { vm.request() }) }
+            PairPhase.REQUESTING -> Text("Getting a code…", style = body, color = LoginPalette.Slate)
+            PairPhase.ERROR -> { LoginNotice("Couldn't get a code (${ui.error}). Try again.", error = true); LoginPrimaryButton("Try again", { vm.request() }, arrow = false) }
+            PairPhase.DENIED -> { LoginNotice("Sign-in was declined on the phone.", error = true); LoginPrimaryButton("Get a new code", { vm.request() }, arrow = false) }
+            PairPhase.EXPIRED -> { LoginNotice("This code expired.", error = true); LoginPrimaryButton("Get a new code", { vm.request() }, arrow = false) }
             PairPhase.SHOWING -> {
                 val pair = ui.pair!!
                 val bmp by produceState<ImageBitmap?>(initialValue = null, pair.code) {
                     value = withContext(Dispatchers.Default) { runCatching { qrBitmap(pair.link_url, 440).asImageBitmap() }.getOrNull() }
                 }
                 if (bmp != null) Image(bmp!!, contentDescription = "QR code to link this kiosk", modifier = Modifier.size(220.dp))
-                Text(formatCode(pair.code), fontFamily = FragmentMono, style = MaterialTheme.typography.displaySmall, modifier = Modifier.padding(top = 12.dp))
-                Text("Scan the code, or open ${portalHost(portalUrl)}/link on your phone and enter it.", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
-                Text("Expires in ${ui.remainingSec / 60}:${(ui.remainingSec % 60).toString().padStart(2, '0')}", fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 6.dp))
-                LinkButton("Get a new code") { vm.request() }
+                Text(formatCode(pair.code), fontFamily = FragmentMono, style = MaterialTheme.typography.displaySmall, color = LoginPalette.Ink, modifier = Modifier.padding(top = 12.dp))
+                Text("Scan the code, or open ${portalHost(portalUrl)}/link on your phone and enter it.", style = body, color = LoginPalette.Slate, modifier = Modifier.padding(top = 8.dp))
+                Text("Expires in ${ui.remainingSec / 60}:${(ui.remainingSec % 60).toString().padStart(2, '0')}", fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = LoginPalette.Ink, modifier = Modifier.padding(top = 6.dp))
+                LoginLink("Get a new code") { vm.request() }
             }
         }
     }

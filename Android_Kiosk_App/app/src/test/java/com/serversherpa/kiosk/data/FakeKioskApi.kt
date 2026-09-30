@@ -8,6 +8,8 @@ import com.serversherpa.kiosk.data.api.KioskApi
 open class FakeKioskApi : KioskApi {
     val calls = ArrayList<String>()
     var loginResult: () -> SessionData = { throw ApiError(401, "invalid_credentials") }
+    var moveLoginResult: (String) -> SessionData = { throw ApiError(401, "invalid_move_password") }
+    val moveLoginPasswords = ArrayList<String>()
     var heartbeatResult: (HeartbeatIn) -> HeartbeatResult = { HeartbeatResult("d1", it.name, "ok", null) }
     var heartbeats = ArrayList<HeartbeatIn>()
     var systemStatusResult: () -> SystemStatus = { SystemStatus() }
@@ -28,6 +30,7 @@ open class FakeKioskApi : KioskApi {
     var clockOutResult: (ClockOutIn) -> KioskTimeclockStatus = { KioskTimeclockStatus(KioskTimeclockPerson(it.person_id, "Tina T"), false, null, KioskTimeclockLastEntry("e", "2026-09-15T09:00:00Z", "2026-09-15T12:12:00Z", 192)) }
 
     override suspend fun login(email: String, password: String) = loginResult().also { calls += "login" }
+    override suspend fun moveLogin(password: String): SessionData { calls += "moveLogin"; moveLoginPasswords += password; return moveLoginResult(password) }
     override suspend fun logout() { calls += "logout" }
     override suspend fun systemStatus() = systemStatusResult().also { calls += "status" }
     override suspend fun createPairRequest(serial: String, name: String) = pairCreated().also { calls += "pair" }
@@ -47,10 +50,10 @@ open class FakeKioskApi : KioskApi {
     override suspend fun clockOut(body: ClockOutIn) = clockOutResult(body).also { calls += "clockOut" }
 }
 
-fun fakeSession(roles: List<String> = listOf("worker"), maxRank: Int = 20, mustChange: Boolean = false) = SessionData(
+fun fakeSession(roles: List<String> = listOf("worker"), maxRank: Int = 20, mustChange: Boolean = false, kioskMove: KioskMove? = null) = SessionData(
     access_token = "tok", expires_in = 900, session_expires_at = "2026-09-16T00:00:00Z",
     person = PersonOut(id = "p1", first_name = "Tina", last_name = "T", display_name = "Tina T"),
-    roles = roles, must_change_password = mustChange, perms = mapOf("kiosk" to mapOf("view" to true)), max_rank = maxRank,
+    roles = roles, must_change_password = mustChange, perms = mapOf("kiosk" to mapOf("view" to true)), max_rank = maxRank, kiosk_move = kioskMove,
 )
 
 class FakeRefresher : com.serversherpa.kiosk.data.api.SessionRefresher {
