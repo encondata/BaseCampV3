@@ -159,7 +159,7 @@ struct EnrollViewModelTests {
     }
 
     /// The re-check inside the send: a roster rebuilt after step two began hands the tag to another asset.
-    @Test func aRosterRebuiltMidEnrollIsCheckedAgainBeforeThePost() async throws {
+    @Test func aTagTakenByAnAssetAddedToTheRosterMidEnrollIsRefusedBeforeThePost() async throws {
         let vm = try await build()
         await vm.onScan("A-1")
         try await store.replaceRoster(assets: [rack, KioskAssetRow(id: "a3", assetId: "A-3", name: "Late", rfid: "000000000000000000100360", serialNumber: "SN3", makeModel: "X")],
@@ -169,6 +169,54 @@ struct EnrollViewModelTests {
         await vm.submitTag("100360")
         #expect(vm.error == "That tag is on Late. Scan a different tag.")
         #expect(api.calls.filter { $0 == "rfid" }.isEmpty)
+    }
+
+    /// Holds the fake's POST open until `release()`.
+    private final class Gate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cont: CheckedContinuation<Void, Never>?
+        private var released = false
+        func wait() async {
+            await withCheckedContinuation { c in
+                lock.lock()
+                if released { lock.unlock(); c.resume() } else { cont = c; lock.unlock() }
+            }
+        }
+        func release() { lock.lock(); released = true; let c = cont; cont = nil; lock.unlock(); c?.resume() }
+    }
+
+    /// A scan that arrives while the save is in flight is dropped (Android's saving guard), not queued behind it.
+    @Test func aScanArrivingMidSaveIsDropped() async throws {
+        let gate = Gate()
+        api.rfidGate = { await gate.wait() }
+        let vm = try await build()
+        await vm.onScan("A-1")
+        vm.scan("100349")
+        for _ in 0..<100 where api.calls.filter({ $0 == "rfid" }).isEmpty { await Task.yield() }
+        #expect(vm.saving)
+        vm.scan("100349")                                          // the double-read
+        vm.scan("A-1")
+        gate.release()
+        await vm.onScan("")                                        // wait for the send to finish
+        for _ in 0..<100 where vm.saving { await Task.yield() }
+        #expect(api.calls.filter { $0 == "rfid" }.count == 1)
+        #expect(vm.error == nil)
+        #expect(vm.enrollments.count == 1)
+    }
+
+    /// Once the save completes the screen is at step one, ready for the next asset.
+    @Test func afterTheSaveTheScreenIsReadyForTheNextAsset() async throws {
+        let gate = Gate()
+        api.rfidGate = { await gate.wait() }
+        let vm = try await build()
+        await vm.onScan("A-1")
+        vm.scan("100349")
+        for _ in 0..<100 where api.calls.filter({ $0 == "rfid" }).isEmpty { await Task.yield() }
+        gate.release()
+        for _ in 0..<200 where vm.saving || vm.asset != nil { await Task.yield() }
+        #expect(vm.asset == nil); #expect(!vm.saving)
+        await vm.onScan("SN2")
+        #expect(vm.asset?.id == "a2")
     }
 
     @Test func cancelReturnsToStepOne() async throws {

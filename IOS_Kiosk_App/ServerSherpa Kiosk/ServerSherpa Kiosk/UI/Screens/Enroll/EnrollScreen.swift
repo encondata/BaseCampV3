@@ -60,8 +60,9 @@ private struct EnrollBody: View {
             .padding(16)
         }
         .background(palette.paper2)
-        .task { for await event in container.scanBus.events() { await vm.onScan(event.value) } }
+        .task { for await event in container.scanBus.events() { vm.scan(event.value) } }
         .task(id: container.sync.rosterVersion) { await vm.loadRoster() }
+        .onDisappear { vm.stop() }
         .fullScreenCover(isPresented: $camera) {
             CameraScanSheet(bus: container.scanBus, prefs: container.prefs) { camera = false }
         }

@@ -63,6 +63,7 @@ final class EnrollViewModel {
     @ObservationIgnored private var index: ScanIndex<KioskAssetRow>?
     @ObservationIgnored private var errorTask: Task<Void, Never>?
     @ObservationIgnored private var toastTask: Task<Void, Never>?
+    @ObservationIgnored private var sendTask: Task<Void, Never>?
 
     init(store: KioskStore, api: KioskApi, prefs: KioskPrefs, identity: Identity, flash: FlashController, sound: SoundPlayer?,
          clock: @escaping () -> Int64 = nowMs, idGen: @escaping () -> String = { UUID().uuidString.lowercased() }) {
@@ -125,8 +126,34 @@ final class EnrollViewModel {
         sound?.play(.good)
     }
 
-    /// Routes to whichever step is current; the screen calls this from its scan-bus task.
+    /// The screen's entry point from the scan bus: returns at once so the bus loop keeps draining.
+    /// A scan that arrives while a save is in flight is dropped (Android's `saving` guard), so a
+    /// double-read of the tag never lands on step one after the save.
+    func scan(_ value: String) {
+        if asset != nil, !awaitingUpdate {
+            guard !saving, sendTask == nil else { return }
+            sendTask = Task { [weak self] in
+                await self?.submitTag(value)
+                self?.sendTask = nil
+            }
+            return
+        }
+        routeScan(value)
+    }
+
+    /// Same routing as `scan`, but waits for the save to finish (tests).
     func onScan(_ value: String) async {
+        scan(value)
+        await sendTask?.value
+    }
+
+    /// Stops an in-flight save's wait (screen disappeared); the portal may still complete it.
+    func stop() {
+        sendTask?.cancel()
+        sendTask = nil
+    }
+
+    private func routeScan(_ value: String) {
         if asset == nil {
             submitAsset(value)
         } else if awaitingUpdate {
@@ -134,8 +161,6 @@ final class EnrollViewModel {
             // confirmation is exactly the accidental retag this screen refuses.
             flashBad()
             showError(updateGateText())
-        } else {
-            await submitTag(value)
         }
     }
 

@@ -25,6 +25,8 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     var trucks: @Sendable () async throws -> KioskTrucksSync = { throw unset }
     var postScansResult: @Sendable (KioskScanBatchIn) async throws -> KioskScanBatchOut = { KioskScanBatchOut(accepted: $0.scans.map(\.clientScanId)) }
     var rfidResult: @Sendable (String, KioskRfidEnrollIn) throws -> KioskRfidEnroll = { id, b in KioskRfidEnroll(assetId: id, rfidTag: b.rfidTag) }
+    /// When set, `postRfidEnroll` awaits this before answering (holds a POST in flight).
+    var rfidGate: (@Sendable () async -> Void)?
     var statusResult: @Sendable (String) throws -> KioskTimeclockStatus = { _ in throw unset }
     var clockInResult: @Sendable (ClockInIn) throws -> KioskTimeclockStatus = { _ in throw unset }
     var clockOutResult: @Sendable (ClockOutIn) throws -> KioskTimeclockStatus = { _ in throw unset }
@@ -58,7 +60,7 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
         lock.lock(); _calls.append("postScans"); _scanBatches.append(body); lock.unlock()
         return try await postScansResult(body)
     }
-    func postRfidEnroll(assetId: String, _ body: KioskRfidEnrollIn) async throws -> KioskRfidEnroll { record("rfid"); return try rfidResult(assetId, body) }
+    func postRfidEnroll(assetId: String, _ body: KioskRfidEnrollIn) async throws -> KioskRfidEnroll { record("rfid"); await rfidGate?(); return try rfidResult(assetId, body) }
     func timeclockStatus(personId: String) async throws -> KioskTimeclockStatus { record("timeclockStatus"); return try statusResult(personId) }
     func clockIn(_ body: ClockInIn) async throws -> KioskTimeclockStatus { record("clockIn"); return try clockInResult(body) }
     func clockOut(_ body: ClockOutIn) async throws -> KioskTimeclockStatus { record("clockOut"); return try clockOutResult(body) }
