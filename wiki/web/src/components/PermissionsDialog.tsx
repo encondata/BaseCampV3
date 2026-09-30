@@ -223,7 +223,12 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
   const targetRef = useRef(target);
   targetRef.current = target;
   const liveRef = useRef(true);
-  useEffect(() => () => { liveRef.current = false; }, []);
+  // set on every mount, not just the first: StrictMode (dev) mounts,
+  // unmounts and remounts, and a flag left false would drop every reply
+  useEffect(() => {
+    liveRef.current = true;
+    return () => { liveRef.current = false; };
+  }, []);
   useEffect(() => { onBusyChange?.(busy || settingBusy); }, [busy, settingBusy, onBusyChange]);
 
   const applyNode = useCallback((out: NodePermissionsOut, nodeId: string) => {
