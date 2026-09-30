@@ -440,8 +440,9 @@ async def restore_file_version(node_id: uuid.UUID, version_id: uuid.UUID,
 async def asset_urls(body: AssetUrlsIn, ctx: WikiContext) -> AssetUrlsOut:
     """Presigned URLs for embedded page assets (inline where
     `inline_content_type` allows, an attachment otherwise). Unknown ids,
-    and ids on a page the caller can't see — including a never-published
-    page when they only have view, as in the tree — are simply omitted."""
+    ids on a page the caller can't see — including a never-published
+    page when they only have view, as in the tree — and attachments on a
+    page with printing off are simply omitted."""
     if not body.ids:
         return AssetUrlsOut(urls={})
     assets = (await ctx.db.scalars(
@@ -454,10 +455,15 @@ async def asset_urls(body: AssetUrlsIn, ctx: WikiContext) -> AssetUrlsOut:
         select(WikiNode).where(WikiNode.id.in_({a.node_id for a in assets})))).all()
     shown, _ = await visible_nodes(ctx, pages)
     shown_ids = {n.id for n in shown}
+    # an attachment is a download: left out where the page's printing is off
+    printable = {n.id: await ctx.ix.can_print(n) for n in shown}
 
     urls: dict[uuid.UUID, str] = {}
     for asset in assets:
         if asset.node_id not in shown_ids:
+            continue
+        if not printable[asset.node_id] and inline_content_type(
+                asset.filename, asset.content_type, None) is None:
             continue
         url = presign_view(asset.storage_key, asset.filename, asset.content_type)
         if url is not None:

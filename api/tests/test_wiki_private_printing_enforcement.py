@@ -22,6 +22,7 @@ from serversherpa.db.models import (
     WikiFile,
     WikiFileVersion,
     WikiNode,
+    WikiPageAsset,
     WikiPageView,
 )
 from serversherpa.wiki import share_links
@@ -206,6 +207,46 @@ async def test_a_shared_file_with_printing_off_is_404_and_its_urls_are_not_serve
     assert "download_url" not in resp.text
 
 
+async def _admin_link_titles(client, headers):
+    resp = await client.get("/wiki/share-links", headers=headers)
+    assert resp.status_code == 200, resp.text
+    return {row["node"]["title"] for row in resp.json()}
+
+
+async def test_the_admin_link_list_leaves_out_a_private_page_s_link(client, db):
+    s = await _setup(client, db)
+    await _allow_links(client, s)
+    page = await _page(client, s, db, "Secret guide")
+    folder = await _create(client, s["owner"], s["space"], "Folder")
+    inside = await _page(client, s, db, "Inside guide", parent=folder)
+    for node in (page, inside):
+        assert (await _share(client, s["owner"], node["id"])).status_code == 201
+    admin, _ = await login_as(client, db, roles=("admin",))
+    assert await _admin_link_titles(client, admin) == {"Secret guide", "Inside guide"}
+
+    await _private(client, s["owner"], page["id"])
+    await _private(client, s["owner"], folder["id"])         # the ancestor counts too
+    assert await _admin_link_titles(client, admin) == set()
+    # a developer can see the pages, so their links are listed
+    both = await _developer(client, db, roles=("admin", "developer"))
+    assert await _admin_link_titles(client, both) == {"Secret guide", "Inside guide"}
+
+
+async def test_the_admin_link_list_still_shows_an_admin_author_their_own_private_link(
+        client, db):
+    s = await _setup(client, db)
+    await _allow_links(client, s)
+    admin, _ = await login_as(client, db, roles=("admin",))
+    page = await _create(client, admin, s["space"], "Admin's page", kind="page")
+    await publish_via_db(db, page["id"])
+    assert (await _share(client, admin, page["id"])).status_code == 201
+    await _private(client, admin, page["id"])
+    other_admin, _ = await login_as(client, db, roles=("admin",))
+
+    assert await _admin_link_titles(client, admin) == {"Admin's page"}
+    assert await _admin_link_titles(client, other_admin) == set()
+
+
 # ── help links ──────────────────────────────────────────────────────
 
 
@@ -235,6 +276,43 @@ async def test_help_for_a_page_that_became_private_is_404_for_who_cant_see_it(cl
     assert (await client.get("/wiki/help", headers=admin, params=ask)).status_code == 404
     # the author still finds it
     assert (await client.get("/wiki/help", headers=s["owner"], params=ask)).status_code == 200
+
+
+async def test_the_admin_help_link_list_leaves_out_a_private_guide(client, db):
+    s = await _setup(client, db)
+    page = await _page(client, s, db, "Secret guide")
+    admin, _ = await login_as(client, db, roles=("admin",))
+    resp = await client.post("/wiki/help-links", headers=admin, json={
+        "context": "portal:/bulk/time", "node_id": page["id"]})
+    assert resp.status_code == 201, resp.text
+
+    async def titles(headers):
+        resp = await client.get("/wiki/help-links", headers=headers)
+        assert resp.status_code == 200, resp.text
+        return {row["node"]["title"] for row in resp.json()}
+
+    assert await titles(admin) == {"Secret guide"}
+    await _private(client, s["owner"], page["id"])
+    assert await titles(admin) == set()
+    both = await _developer(client, db, roles=("admin", "developer"))
+    assert await titles(both) == {"Secret guide"}
+
+
+async def test_the_admin_help_link_list_still_shows_an_admin_author_their_own_guide(
+        client, db):
+    s = await _setup(client, db)
+    admin, _ = await login_as(client, db, roles=("admin",))
+    page = await _create(client, admin, s["space"], "Admin's guide", kind="page")
+    await publish_via_db(db, page["id"])
+    resp = await client.post("/wiki/help-links", headers=admin, json={
+        "context": "portal:/bulk/time", "node_id": page["id"]})
+    assert resp.status_code == 201, resp.text
+    await _private(client, admin, page["id"])
+
+    resp = await client.get("/wiki/help-links", headers=admin)
+    assert [row["node"]["title"] for row in resp.json()] == ["Admin's guide"]
+    other_admin, _ = await login_as(client, db, roles=("admin",))
+    assert (await client.get("/wiki/help-links", headers=other_admin)).json() == []
 
 
 # ── templates ───────────────────────────────────────────────────────
@@ -277,6 +355,20 @@ async def test_no_one_is_exempt_from_the_export_refusal(client, db):
                                  json={"node_id": page["id"], "format": "md"})
         assert resp.status_code == 403, resp.text
         assert _code(resp) == "printing_disabled"
+
+
+async def test_a_hidden_never_published_page_is_404_not_printing_disabled(client, db):
+    s = await _setup(client, db)
+    page = await _page(client, s, db, publish=False)
+    await _printing(client, s["owner"], page["id"], False)
+    body = {"node_id": page["id"], "format": "pdf"}
+    # view-only: the page doesn't exist for them, so printing isn't mentioned
+    resp = await client.post("/wiki/exports", headers=s["viewer"], json=body)
+    assert resp.status_code == 404, resp.text
+    # anyone who can see it is told why
+    resp = await client.post("/wiki/exports", headers=s["editor"], json=body)
+    assert resp.status_code == 403
+    assert _code(resp) == "printing_disabled"
 
 
 async def test_exporting_a_folder_with_printing_off_is_refused(client, db):
@@ -392,6 +484,25 @@ async def test_a_page_export_fails_when_printing_was_turned_off_after_the_reques
     assert not store.uploads
 
 
+async def test_a_finished_export_is_refused_once_printing_is_turned_off(
+        client, db, store, renderer):
+    s = await _setup(client, db)
+    page = await _page(client, s, db)
+    job_id = await worker_tests._request(client, s["owner"], node_id=page["id"], format="md")
+    job = await worker_tests._run(db, job_id)
+    assert job.status == "done", job.error
+    resp = await client.get(f"/wiki/exports/{job_id}", headers=s["owner"])
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["url"]
+
+    await _printing(client, s["owner"], page["id"], False)
+    resp = await client.get(f"/wiki/exports/{job_id}", headers=s["owner"])
+    assert resp.status_code == 403
+    assert _code(resp) == "printing_disabled"
+    await _printing(client, s["owner"], page["id"], None)
+    assert (await client.get(f"/wiki/exports/{job_id}", headers=s["owner"])).status_code == 200
+
+
 # ── downloads ───────────────────────────────────────────────────────
 
 
@@ -451,6 +562,120 @@ async def test_a_file_under_a_folder_with_printing_off_cannot_be_downloaded(clie
     resp = await _url(client, s["viewer"], file_id, disposition="attachment")
     assert resp.status_code == 403
     assert _code(resp) == "printing_disabled"
+
+
+async def _asset(db, page, filename, content_type):
+    asset = WikiPageAsset(node_id=uuid.UUID(page["id"]), storage_key=f"wiki/x/{filename}",
+                          filename=filename, content_type=content_type, size_bytes=10)
+    db.add(asset)
+    await db.commit()
+    return str(asset.id)
+
+
+async def test_page_assets_with_printing_off_get_no_attachment_urls(client, db):
+    s = await _setup(client, db)
+    page = await _page(client, s, db)
+    ids = {
+        "zip": await _asset(db, page, "bundle.zip", "application/zip"),
+        "docx": await _asset(db, page, "plan.docx", "application/vnd.openxmlformats-"
+                             "officedocument.wordprocessingml.document"),
+        "png": await _asset(db, page, "pic.png", "image/png"),
+        "pdf": await _asset(db, page, "manual.pdf", "application/pdf"),
+    }
+
+    async def urls():
+        resp = await client.post("/wiki/assets/urls", headers=s["viewer"],
+                                 json={"ids": list(ids.values())})
+        assert resp.status_code == 200, resp.text
+        return {name for name, asset_id in ids.items() if asset_id in resp.json()["urls"]}
+
+    assert await urls() == {"zip", "docx", "png", "pdf"}
+    await _printing(client, s["owner"], page["id"], False)
+    # the inline-previewable ones stay; the downloads don't
+    assert await urls() == {"png", "pdf"}
+    await _printing(client, s["owner"], page["id"], None)
+    assert await urls() == {"zip", "docx", "png", "pdf"}
+
+
+# ── copy and move never turn printing on ────────────────────────────
+
+
+async def _copy(client, headers, node_id, parent_id=None):
+    resp = await client.post(f"/wiki/nodes/{node_id}/copy", headers=headers,
+                             json={"parent_id": parent_id})
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+async def _export_code(client, headers, node_id):
+    resp = await client.post("/wiki/exports", headers=headers,
+                             json={"node_id": node_id, "format": "md"})
+    return resp.status_code, (_code(resp) if resp.status_code != 202 else None)
+
+
+async def test_a_copy_of_a_printing_off_page_cannot_be_exported(client, db):
+    s = await _setup(client, db)
+    page = await _page(client, s, db)
+    await _printing(client, s["owner"], page["id"], False)
+    copy = await _copy(client, s["owner"], page["id"])
+    await publish_via_db(db, copy["id"])
+    assert copy["allow_printing"] is False
+    assert await _export_code(client, s["owner"], copy["id"]) == (403, "printing_disabled")
+
+
+async def test_a_copy_of_a_page_in_a_printing_off_folder_cannot_be_exported(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Folder")
+    page = await _page(client, s, db, parent=folder)
+    await _printing(client, s["owner"], folder["id"], False)
+    # copied out to the library root, where nothing turns printing off
+    copy = await _copy(client, s["editor"], page["id"])
+    await publish_via_db(db, copy["id"])
+    assert copy["allow_printing"] is False
+    assert await _export_code(client, s["owner"], copy["id"]) == (403, "printing_disabled")
+
+
+async def test_a_copied_folder_keeps_each_items_own_printing_value(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Folder")
+    on = await _page(client, s, db, "On", parent=folder)
+    off = await _page(client, s, db, "Off", parent=folder)
+    plain = await _page(client, s, db, "Plain", parent=folder)
+    await _printing(client, s["owner"], off["id"], False)
+    await _printing(client, s["owner"], on["id"], True)
+    copy = await _copy(client, s["owner"], folder["id"])
+    assert copy["allow_printing"] is None                     # the source's own value
+
+    rows = (await db.scalars(select(WikiNode).where(
+        WikiNode.parent_id == uuid.UUID(copy["id"])).execution_options(
+            populate_existing=True))).all()
+    assert {r.title: r.allow_printing for r in rows} == {"On": True, "Off": False, "Plain": None}
+    assert plain["id"] not in {str(r.id) for r in rows}
+
+
+async def test_moving_a_page_out_of_a_printing_off_folder_leaves_printing_off(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Folder")
+    page = await _page(client, s, db, parent=folder)
+    await _printing(client, s["owner"], folder["id"], False)
+    assert await _export_code(client, s["owner"], page["id"]) == (403, "printing_disabled")
+
+    resp = await client.post(f"/wiki/nodes/{page['id']}/move", headers=s["editor"],
+                             json={"parent_id": None})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["allow_printing"] is False
+    assert await _export_code(client, s["owner"], page["id"]) == (403, "printing_disabled")
+
+
+async def test_moving_a_page_with_printing_on_changes_nothing_about_printing(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Folder")
+    page = await _page(client, s, db, parent=folder)
+    resp = await client.post(f"/wiki/nodes/{page['id']}/move", headers=s["editor"],
+                             json={"parent_id": None})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["allow_printing"] is None
+    assert (await _export_code(client, s["owner"], page["id"]))[0] == 202
 
 
 # ── listings: a private item is invisible to a non-author ───────────
@@ -635,6 +860,33 @@ async def test_the_library_trash_leaves_out_a_private_item(client, db):
     assert resp.status_code == 404
     resp = await client.post(f"/wiki/trash/{batch_id}/restore", headers=s["owner"])
     assert resp.status_code == 200, resp.text
+
+
+async def test_a_trash_batch_counts_and_purges_only_what_the_caller_can_see(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Folder")
+    await _page(client, s, db, "Open", parent=folder)
+    secret = await _page(client, s, db, "Secret", parent=folder)
+    await _private(client, s["owner"], secret["id"])
+    resp = await client.delete(f"/wiki/nodes/{folder['id']}", headers=s["owner"])
+    assert resp.status_code == 200, resp.text
+    admin, _ = await login_as(client, db, roles=("admin",))
+
+    async def batches(headers):
+        resp = await client.get(f"/wiki/spaces/{s['space']['key']}/trash", headers=headers)
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    [mine] = await batches(s["owner"])
+    [theirs] = await batches(admin)
+    assert (mine["count"], theirs["count"]) == (3, 2)        # the folder, Open, Secret
+
+    # forever-deleting it would destroy what the admin can't see — as live delete refuses
+    resp = await client.delete(f"/wiki/trash/{theirs['batch_id']}", headers=admin)
+    assert resp.status_code == 409, resp.text
+    assert _code(resp) == "hidden_items"
+    resp = await client.delete(f"/wiki/trash/{mine['batch_id']}", headers=s["owner"])
+    assert resp.status_code == 204, resp.text
 
 
 async def test_due_for_review_leaves_out_a_private_page(client, db):

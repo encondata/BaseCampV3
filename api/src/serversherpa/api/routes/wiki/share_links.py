@@ -26,7 +26,7 @@ from serversherpa.api.routes.wiki.serialize import person_refs
 from serversherpa.db.models import WikiNode, WikiShareLink, WikiSpace
 from serversherpa.services.audit import audit
 from serversherpa.wiki.pages import utcnow
-from serversherpa.wiki.permissions import require_node_level
+from serversherpa.wiki.permissions import private_filter, require_node_level
 from serversherpa.wiki.share_links import (
     expires_at_for,
     hash_token,
@@ -115,12 +115,13 @@ async def list_all_share_links(ctx: WikiContext) -> list[ShareLinkOut]:
     """Wiki administrators: every link in the wiki — the live ones first
     (this is the only wiki-wide place to revoke one, so the cap must never
     push a live link out for newer revoked or expired ones), each group
-    newest first."""
+    newest first. A private item's links are left out, for anyone who
+    couldn't open the item."""
     if not ctx.principal.is_admin:
         raise err(403, "forbidden", "Only wiki administrators can see every public link.")
     live = and_(WikiShareLink.revoked_at.is_(None),
                 or_(WikiShareLink.expires_at.is_(None), WikiShareLink.expires_at > func.now()))
-    query = _links_query().order_by(None).order_by(
+    query = _links_query().where(private_filter(ctx.principal)).order_by(None).order_by(
         live.desc(), WikiShareLink.created_at.desc(), WikiShareLink.id)
     rows = (await ctx.db.execute(query.limit(ADMIN_LIST_LIMIT))).all()
     return await _links_out(ctx, rows)

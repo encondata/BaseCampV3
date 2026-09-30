@@ -32,7 +32,7 @@ from serversherpa.wiki.help import (
     is_valid_context,
     normalize_context,
 )
-from serversherpa.wiki.permissions import require_node_level
+from serversherpa.wiki.permissions import private_filter, require_node_level
 
 router = APIRouter()
 
@@ -140,9 +140,12 @@ async def get_help(ctx: WikiContext, context: HelpContextIn) -> HelpOut:
 
 @router.get("/help-links", response_model=list[HelpLinkOut])
 async def list_help_links(ctx: WikiContext) -> list[HelpLinkOut]:
-    """Wiki administrators: every help link, by context."""
+    """Wiki administrators: every help link, by context — except those
+    to a private item the caller couldn't open."""
     _require_admin(ctx)
-    rows = (await ctx.db.execute(_links_query().order_by(WikiHelpLink.context))).all()
+    rows = (await ctx.db.execute(
+        _links_query().where(private_filter(ctx.principal))
+        .order_by(WikiHelpLink.context))).all()
     return await _links_out(ctx, rows)
 
 

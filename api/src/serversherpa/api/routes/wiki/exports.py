@@ -54,14 +54,15 @@ async def _node_target(ctx: WikiContext, body: ExportIn) -> tuple[WikiNode, dict
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, body.node_id), "view")
     if node.kind == "file":
         raise err(422, "use_download", "Files aren't exported — download the file instead.")
-    if not await ctx.ix.can_print(node):
-        raise err(403, "printing_disabled", "Printing is turned off for this item.")
     published = False
     if node.kind == "page":
         page = await ctx.db.get(WikiPage, node.id)
         published = page is not None and page.published_version_id is not None
         if not published and await ctx.ix.level_for_node(node) == "view":
             raise not_found()
+    # after every "can't see it" refusal: a hidden item never answers 403
+    if not await ctx.ix.can_print(node):
+        raise err(403, "printing_disabled", "Printing is turned off for this item.")
     if body.format == "zip":
         if node.kind == "page" and not await _has_viewable_children(ctx, node):
             raise err(422, "bad_format",
@@ -122,6 +123,11 @@ async def get_export(job_id: uuid.UUID, ctx: WikiContext) -> ExportOut:
         raise not_found()
     payload = job.payload or {}
     result = job.result or {}
+    # a finished file isn't handed out once printing was turned off since
+    if job.status == "done" and job.node_id is not None:
+        node = await ctx.db.get(WikiNode, job.node_id)
+        if node is not None and not await ctx.ix.can_print(node):
+            raise err(403, "printing_disabled", "Printing is turned off for this item.")
     filename = result.get("filename") or payload.get("filename") or "export"
     url = None
     if job.status == "done" and result.get("key"):

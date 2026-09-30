@@ -273,8 +273,8 @@ async def _refuse_hidden_descendants(ctx: WikiContext, node: WikiNode) -> None:
     never-published page they only have view on (`visible_nodes`, the
     tree's own rule): a delete or cross-space move would act on content
     its owner never shared with them — and a cross-space move would hand
-    it to the destination space's managers. Wiki administrators see
-    everything, so never hit this."""
+    it to the destination space's managers. Private items are hidden
+    from wiki administrators too, so they hit this like anyone."""
     subtree = (await ctx.db.scalars(
         select(WikiNode).where(WikiNode.path.contains([node.id]),
                                WikiNode.deleted_at.is_(None))
@@ -301,13 +301,17 @@ async def move(node_id: uuid.UUID, body: NodeMoveIn, ctx: WikiContext) -> NodeOu
         # out, the destination's managers would gain it
         await _refuse_hidden_descendants(ctx, node)
 
-    fields = ["space_id", "parent_id", "position"]
+    fields = ["space_id", "parent_id", "position", "allow_printing"]
     before = snapshot(node, fields)
+    # inheriting "off" from where it is: moving out must never turn printing on
+    pin_printing_off = node.allow_printing is None and not await ctx.ix.can_print(node)
     try:
         await tree.move_node(ctx.db, node, new_parent=parent, new_space=space,
                              before_id=body.before_id, after_id=body.after_id)
     except tree.TreeError as exc:
         raise _tree_error(exc) from exc
+    if pin_printing_off:
+        node.allow_printing = False
     audit(ctx.db, actor_id=ctx.user.person.id, entity_type="wiki_node",
           entity_id=str(node.id), action="move",
           changes=diff(before, snapshot(node, fields)))
@@ -341,7 +345,8 @@ async def copy(node_id: uuid.UUID, body: NodeCopyIn, ctx: WikiContext) -> NodeOu
     try:
         new_root = await tree.copy_subtree(ctx.db, node, dest_parent=parent,
                                            dest_space=space, actor_id=actor_id,
-                                           levels=levels)
+                                           levels=levels,
+                                           printing_off=not await ctx.ix.can_print(node))
     except tree.TreeError as exc:
         raise _tree_error(exc) from exc
     new_ids = await tree.subtree_ids(ctx.db, new_root)
