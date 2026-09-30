@@ -36,6 +36,8 @@ from serversherpa.api.routes.wiki.schemas import (
     NodeMoveIn,
     NodeOut,
     NodePatchIn,
+    PrintingIn,
+    PrivacyIn,
 )
 from serversherpa.api.routes.wiki.serialize import node_out, nodes_out, space_out
 from serversherpa.api.routes.wiki.templates import template_visible
@@ -46,6 +48,7 @@ from serversherpa.wiki.content import strip_comment_marks
 from serversherpa.wiki.pages import check_doc
 from serversherpa.wiki.permissions import (
     AccessIndex,
+    can_set_private,
     require_node_level,
     require_space_level,
 )
@@ -58,6 +61,8 @@ RECENT_KINDS = ("page", "file")
 DRAFTS_LIMIT = 50
 NODE_FIELDS = ["title", "owner_id"]
 REVIEW_FIELDS = ["review_interval_months", "next_review_at"]
+PRIVACY_FIELDS = ["is_private"]
+PRINTING_FIELDS = ["allow_printing"]
 
 
 def _tree_error(exc: tree.TreeError) -> HTTPException:
@@ -208,6 +213,49 @@ async def patch_node(node_id: uuid.UUID, body: NodePatchIn, ctx: WikiContext) ->
             audit(ctx.db, actor_id=actor_id, entity_type="wiki_node",
                   entity_id=str(node.id), action="review_interval", changes=review_changes)
     if changes or review_changes:
+        await ctx.db.commit()
+    return await node_out(ctx, node, await ctx.ix.level_for_node(node))
+
+
+# ── privacy / printing ───────────────────────────────────────────────
+
+
+@router.patch("/nodes/{node_id}/privacy", response_model=NodeOut)
+async def set_privacy(node_id: uuid.UUID, body: PrivacyIn, ctx: WikiContext) -> NodeOut:
+    """Mark an item private, or clear it. Only its author or a developer
+    may — not a manager, not a wiki administrator — and never the library's
+    home page (which everyone who can see the library opens)."""
+    node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "view")
+    if not can_set_private(ctx.principal, node):
+        raise forbidden("author")
+    space = await ctx.db.get(WikiSpace, node.space_id)
+    if space.home_node_id == node.id:
+        raise err(422, "home_page", "The library's home page can't be private.")
+
+    if node.is_private != body.is_private:
+        before = snapshot(node, PRIVACY_FIELDS)
+        node.is_private = body.is_private
+        audit(ctx.db, actor_id=ctx.user.person.id, entity_type="wiki_node",
+              entity_id=str(node.id), action="privacy",
+              changes=diff(before, snapshot(node, PRIVACY_FIELDS)))
+        await ctx.db.commit()
+    # the collab server's re-check (it goes through `level_for_node`)
+    # disconnects anyone who lost access to a live page
+    return await node_out(ctx, node, await ctx.ix.level_for_node(node))
+
+
+@router.patch("/nodes/{node_id}/printing", response_model=NodeOut)
+async def set_printing(node_id: uuid.UUID, body: PrintingIn, ctx: WikiContext) -> NodeOut:
+    """Set whether an item (and, unless they set their own, everything
+    under it) can be printed; null goes back to inheriting. Manage."""
+    node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "manage")
+
+    if node.allow_printing != body.allow_printing:
+        before = snapshot(node, PRINTING_FIELDS)
+        node.allow_printing = body.allow_printing
+        audit(ctx.db, actor_id=ctx.user.person.id, entity_type="wiki_node",
+              entity_id=str(node.id), action="printing",
+              changes=diff(before, snapshot(node, PRINTING_FIELDS)))
         await ctx.db.commit()
     return await node_out(ctx, node, await ctx.ix.level_for_node(node))
 

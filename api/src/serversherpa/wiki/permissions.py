@@ -244,7 +244,7 @@ class AccessIndex:
         self.db = db
         self.p = principal
         self._spaces: dict[uuid.UUID, _SpaceData] = spaces if spaces is not None else {}
-        self._memo: dict[tuple[uuid.UUID, tuple[uuid.UUID, ...]], str | None] = {}
+        self._memo: dict[tuple, str | None] = {}
 
     # ── loading ─────────────────────────────────────────────────────
 
@@ -265,8 +265,9 @@ class AccessIndex:
         for sid, name, archived_at, settings in rows:
             spaces[sid].name = name
             spaces[sid].archived = archived_at is not None
-            spaces[sid].allow_printing = (settings or {}).get(
-                "allow_printing", SPACE_SETTING_DEFAULTS["allow_printing"]) is not False
+            # validate() only lets bools in; a missing key means the default
+            spaces[sid].allow_printing = bool((settings or {}).get(
+                "allow_printing", SPACE_SETTING_DEFAULTS["allow_printing"]))
 
         for sid, node_id, ptype, pid, level in (await self.db.execute(
             select(WikiGrant.space_id, WikiGrant.node_id, WikiGrant.principal_type,
@@ -317,26 +318,36 @@ class AccessIndex:
                 current = current + list(own)
         return current
 
-    async def _level(self, space_id: uuid.UUID, chain: Sequence[uuid.UUID]) -> str | None:
+    async def _level(self, space_id: uuid.UUID, chain: Sequence[uuid.UUID],
+                     own: tuple[bool, uuid.UUID | None] | None = None) -> str | None:
+        """`own` is the chain's last node's (is_private, created_by) as read
+        from the node object itself, when the caller has it: the loaded
+        snapshot can be stale for a node changed earlier in the request.
+        It is part of the memo key, so a change never serves a stale level."""
         p = self.p
         if not p.can_view_wiki:
             return None
-        key = (space_id, tuple(chain))
+        key = (space_id, tuple(chain), own)
         if key in self._memo:
             return self._memo[key]
-        level = await self._compute_level(space_id, chain)
+        level = await self._compute_level(space_id, chain, own)
         self._memo[key] = level
         return level
 
-    async def _compute_level(self, space_id: uuid.UUID,
-                             chain: Sequence[uuid.UUID]) -> str | None:
+    async def _compute_level(self, space_id: uuid.UUID, chain: Sequence[uuid.UUID],
+                             own: tuple[bool, uuid.UUID | None] | None) -> str | None:
         p = self.p
         if chain:
             # the private rule comes before the administrator shortcut —
             # a wiki administrator doesn't see someone else's private item
             await self._load_spaces([space_id])
             data = self._spaces[space_id]
-            authors = [data.private[nid] for nid in chain if nid in data.private]
+            # ancestors come from the snapshot; the node itself (the last
+            # element) from `own` when given
+            ancestors = chain[:-1] if own is not None else chain
+            authors = [data.private[nid] for nid in ancestors if nid in data.private]
+            if own is not None and own[0]:
+                authors.append(own[1])
             if authors:
                 if not (is_developer(p) or all(a == p.person_id for a in authors)):
                     return None
@@ -370,7 +381,8 @@ class AccessIndex:
         return {sid: await self.level_for_space(sid) for sid in ids}
 
     async def level_for_node(self, node: WikiNode) -> str | None:
-        return await self._level(node.space_id, self._chain(node))
+        return await self._level(node.space_id, self._chain(node),
+                                 (node.is_private, node.created_by))
 
     async def levels_for_nodes(self, nodes: Sequence[WikiNode]) -> dict[uuid.UUID, str | None]:
         """Does NOT filter deleted nodes — a caller listing a mix of live

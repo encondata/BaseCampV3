@@ -24,6 +24,7 @@ from serversherpa.api.routes.wiki.schemas import (
     NodePageOut,
     NodeReviewOut,
     PersonRef,
+    PrintingSourceOut,
     SpaceOut,
 )
 from serversherpa.db.models import (
@@ -38,7 +39,7 @@ from serversherpa.db.models import (
     WikiSpace,
 )
 from serversherpa.wiki import reviews
-from serversherpa.wiki.permissions import level_rank
+from serversherpa.wiki.permissions import can_set_private, level_rank
 
 
 async def person_ref(db, person_id: uuid.UUID | None) -> PersonRef | None:
@@ -152,6 +153,17 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
             .group_by(child.c.parent_id)
         )).all()}
 
+    # where each inheriting node's printing value comes from — the space's
+    # data is already loaded by the index, so only the titles of source
+    # nodes outside this batch cost a query
+    printing = {n.id: await ctx.ix.printing_source(n) for n in nodes}
+    source_titles = {n.id: n.title for n in nodes}
+    outside = {src for _, src in printing.values() if src is not None} - source_titles.keys()
+    if outside:
+        source_titles.update((await db.execute(
+            select(WikiNode.id, WikiNode.title).where(WikiNode.id.in_(outside))
+        )).all())
+
     now = reviews.utcnow()
     out: list[NodeOut] = []
     for n in nodes:
@@ -186,6 +198,13 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
                 description=file_row.description,
                 current_version=file_version_out(version, people) if version else None)
 
+        can_print, source_id = printing[n.id]
+        printing_from = None
+        if n.allow_printing is None:
+            printing_from = PrintingSourceOut(
+                node_id=source_id,
+                title="Library" if source_id is None else source_titles.get(source_id, ""))
+
         out.append(NodeOut(
             id=n.id, space_id=n.space_id, space_key=space_key,
             parent_id=n.parent_id, kind=n.kind, title=n.title,
@@ -195,6 +214,9 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
             updated_by=people.get(n.updated_by) if n.updated_by else None,
             my_level=level, has_children=has_children,
             is_favorite=n.id in favorites, page=page, file=file, review=review,
+            is_private=n.is_private, allow_printing=n.allow_printing,
+            can_print=can_print, printing_from=printing_from,
+            can_set_private=can_set_private(ctx.principal, n),
         ))
     return out
 

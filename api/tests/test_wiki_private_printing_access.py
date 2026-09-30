@@ -300,6 +300,28 @@ async def test_printing_uses_the_nodes_own_current_value(db):
     assert await ix.printing_source(page) == (False, page.id)
 
 
+async def test_toggling_privacy_is_seen_by_the_same_index(db):
+    """A privacy change made earlier in the request (the privacy endpoint)
+    counts: the node's own flag is read from the node, and the memo can't
+    hand back the level from before the change."""
+    author = await _person(db, "Ava", "Author")
+    space = await _library(db)
+    page = await _item(db, space, author=author)
+    reader = _staff()
+    ix = AccessIndex(db, reader)
+    assert await ix.level_for_node(page) == "view"
+    page.is_private = True
+    assert await ix.level_for_node(page) is None
+    page.is_private = False
+    assert await ix.level_for_node(page) == "view"
+    # the other way: loaded as private, then cleared
+    private = await _item(db, space, author=author, private=True)
+    ix2 = AccessIndex(db, reader)
+    assert await ix2.level_for_node(private) is None
+    private.is_private = False
+    assert await ix2.level_for_node(private) == "view"
+
+
 # ── space setting ───────────────────────────────────────────────────
 
 
