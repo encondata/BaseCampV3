@@ -10,7 +10,13 @@
  *  documents through the worker's PDF, polling every PREVIEW_POLL_MS while
  *  it's being prepared. The API serves inline only what's safe to show
  *  (anything else comes back as an attachment), so only those kinds are
- *  ever put in an iframe or element. */
+ *  ever put in an iframe or element.
+ *
+ *  With printing off (`can_print` false): no Download (current or any
+ *  version), PrintGuard stops printing, a PDF (or an office document's PDF)
+ *  is drawn on canvases (PdfCanvasViewer) instead of the browser's viewer,
+ *  and video, audio and images lose their download, playback-rate and
+ *  picture-in-picture controls and their context menu. */
 import type { JSONContent } from '@tiptap/core';
 import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 
@@ -20,10 +26,13 @@ import { useToast } from '@portal/lib/notificationsContext';
 import { useRecordView } from '../analytics/useRecordView';
 import NodeIcon, { nodeTypeLabel } from '../components/NodeIcon';
 import { NodeChips } from '../components/NodeMarks';
+import PdfCanvasViewer from '../components/PdfCanvasViewer';
+import PrintGuard from '../components/PrintGuard';
 import RowMenu, { atLeast } from '../components/RowMenu';
 import ReadOnlyDoc from '../editor/ReadOnlyDoc';
 import { markdownToDoc } from '../import/importers';
 import { openDownload } from '../lib/download';
+import { CanPrintContext, IMAGE_LOCKED, MEDIA_LOCKED } from '../lib/printPolicy';
 import { noteChanged } from '../lib/treeStore';
 import type { FileVersionOut, NodeDetailOut } from '../lib/types';
 import { useHelpLinkAction } from '../lib/useHelpLinkAction';
@@ -35,6 +44,7 @@ export const MAX_TEXT_PREVIEW = 2 * 1024 * 1024;
 export const PREVIEW_POLL_MS = 3000;
 
 const NO_PREVIEW = 'No preview — download to open';
+const NO_PREVIEW_PRINT_OFF = 'No preview available.';
 
 type PreviewMode = 'image' | 'pdf' | 'video' | 'audio' | 'text' | 'markdown' | 'office' | 'none';
 
@@ -66,16 +76,19 @@ function useLoadedPreview(node: NodeDetailOut, version: FileVersionOut | null, m
   const [loaded, setLoaded] = useState<Loaded>({ status: 'loading' });
   const versionId = version?.id;
   const size = version?.size_bytes ?? 0;
+  const canPrint = node.can_print;
 
   useEffect(() => {
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const set = (next: Loaded) => { if (live) setLoaded(next); };
-    const failed = () => set({ status: 'none', message: NO_PREVIEW });
+    // with printing off there's nothing to download instead
+    const noPreview = canPrint ? NO_PREVIEW : NO_PREVIEW_PRINT_OFF;
+    const failed = () => set({ status: 'none', message: noPreview });
     setLoaded({ status: 'loading' });
 
     if (mode === 'none') {
-      set({ status: 'none', message: NO_PREVIEW });
+      set({ status: 'none', message: noPreview });
     } else if (mode === 'office') {
       const poll = () => {
         getFileUrl(node.id, { preview: true })
@@ -91,7 +104,7 @@ function useLoadedPreview(node: NodeDetailOut, version: FileVersionOut | null, m
       };
       poll();
     } else if ((mode === 'text' || mode === 'markdown') && size > MAX_TEXT_PREVIEW) {
-      set({ status: 'none', message: 'This file is too large to preview — download to open.' });
+      set({ status: 'none', message: canPrint ? 'This file is too large to preview — download to open.' : 'This file is too large to preview.' });
     } else {
       getFileUrl(node.id, { disposition: 'inline' })
         .then(async (r) => {
@@ -109,12 +122,13 @@ function useLoadedPreview(node: NodeDetailOut, version: FileVersionOut | null, m
       live = false;
       if (timer) clearTimeout(timer);
     };
-  }, [node.id, versionId, mode, size]);
+  }, [node.id, versionId, mode, size, canPrint]);
 
   return loaded;
 }
 
 function Preview({ node, version }: { node: NodeDetailOut; version: FileVersionOut | null }) {
+  const canPrint = node.can_print;
   const mode = previewMode(version);
   const loaded = useLoadedPreview(node, version, mode);
   const name = version?.filename ?? node.title;
@@ -131,22 +145,32 @@ function Preview({ node, version }: { node: NodeDetailOut; version: FileVersionO
     );
   } else if (loaded.status === 'text') body = <pre className="wiki-fileview-text">{loaded.text}</pre>;
   else if (loaded.status === 'doc') body = <ReadOnlyDoc content={loaded.doc} className="wiki-doc wiki-fileview-md" />;
-  else if (mode === 'image') body = <img className="wiki-fileview-img" src={loaded.url} alt={name} />;
-  else if (mode === 'video') body = <video className="wiki-fileview-media" src={loaded.url} controls preload="metadata" />;
-  else if (mode === 'audio') body = <audio src={loaded.url} controls preload="metadata" />;
+  else if (!canPrint && (mode === 'pdf' || mode === 'office')) body = <PdfCanvasViewer url={loaded.url} title={name} />;
+  else if (mode === 'image') {
+    body = <img className="wiki-fileview-img" src={loaded.url} alt={name}
+                {...(canPrint ? {} : IMAGE_LOCKED)} />;
+  } else if (mode === 'video') {
+    body = <video className="wiki-fileview-media" src={loaded.url} controls preload="metadata"
+                  {...(canPrint ? {} : MEDIA_LOCKED)} />;
+  } else if (mode === 'audio') body = <audio src={loaded.url} controls preload="metadata" {...(canPrint ? {} : MEDIA_LOCKED)} />;
   else body = <iframe className="wiki-fileview-frame" src={loaded.url} title={`Preview of ${name}`} />;
 
   return <section className={`wiki-fileview-preview is-${mode}`} aria-label="Preview">{body}</section>;
 }
 
-const VERSION_GRID = {
-  gridTemplateColumns:
-    'minmax(56px, 0.4fr) minmax(200px, 2.4fr) minmax(80px, 0.8fr) minmax(140px, 1.3fr) minmax(110px, 1fr) minmax(96px, 0.8fr) minmax(88px, 0.8fr)',
-};
+const VERSION_COLUMNS = [
+  'minmax(56px, 0.4fr)', 'minmax(200px, 2.4fr)', 'minmax(80px, 0.8fr)', 'minmax(140px, 1.3fr)', 'minmax(110px, 1fr)',
+];
+const DOWNLOAD_COLUMN = 'minmax(96px, 0.8fr)';
+const RESTORE_COLUMN = 'minmax(88px, 0.8fr)';
 
 function Versions({ node, canEdit }: { node: NodeDetailOut; canEdit: boolean }) {
   const toast = useToast();
   const currentId = node.file?.current_version?.id ?? null;
+  const canPrint = node.can_print;
+  const grid = {
+    gridTemplateColumns: [...VERSION_COLUMNS, ...(canPrint ? [DOWNLOAD_COLUMN] : []), RESTORE_COLUMN].join(' '),
+  };
   const [versions, setVersions] = useState<FileVersionOut[] | null>(null);
   const [error, setError] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -187,16 +211,16 @@ function Versions({ node, canEdit }: { node: NodeDetailOut; canEdit: boolean }) 
     <section className="wiki-fileview-versions" aria-label="Version history">
       <div className="wiki-section-label">Versions</div>
       <div className="dir-list list-scroll" role="table" aria-label="Versions">
-        <div className="list-head" style={VERSION_GRID} role="row">
+        <div className="list-head" style={grid} role="row">
           {['No.', 'File name', 'Size', 'Uploaded by', 'When'].map((h) => (
             <span key={h} role="columnheader">{h}</span>
           ))}
-          <span role="columnheader"><span className="sr-only">Download</span></span>
+          {canPrint && <span role="columnheader"><span className="sr-only">Download</span></span>}
           <span role="columnheader"><span className="sr-only">Restore</span></span>
         </div>
         {versions?.map((v) => (
           <div key={v.id} className="dir-row" role="row">
-            <div className="row-main" style={VERSION_GRID}>
+            <div className="row-main" style={grid}>
               <div className="cell" role="cell">
                 <span className="mono cell-line">{v.version_no}</span>
               </div>
@@ -214,10 +238,12 @@ function Versions({ node, canEdit }: { node: NodeDetailOut; canEdit: boolean }) 
                   {relativeTime(v.created_at)}
                 </span>
               </div>
-              <div className="cell" role="cell">
-                <button type="button" className="mini-btn" aria-label={`Download version ${v.version_no}`}
-                        onClick={() => void download(v)}>Download</button>
-              </div>
+              {canPrint && (
+                <div className="cell" role="cell">
+                  <button type="button" className="mini-btn" aria-label={`Download version ${v.version_no}`}
+                          onClick={() => void download(v)}>Download</button>
+                </div>
+              )}
               <div className="cell" role="cell">
                 {canEdit && v.id !== currentId && (
                   <button type="button" className="mini-btn" aria-label={`Restore version ${v.version_no}`}
@@ -302,36 +328,41 @@ export default function FileView({ node }: { node: NodeDetailOut }) {
   ].filter(Boolean).join(' · ');
 
   return (
-    <div className="portal-page wiki-page wiki-page-view wiki-fileview" data-testid="file-view">
-      <Breadcrumbs node={node} />
-      <header className="wiki-page-head">
-        <div className="wiki-page-head-main">
-          <InlineTitle node={node} label="File title" />
-          <div className="wiki-page-meta"><span>{meta}</span><NodeChips node={node} /></div>
-        </div>
-        <div className="wiki-page-actions">
-          <button type="button" className="btn-ghost" onClick={() => void downloadCurrent()}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
-                 strokeLinejoin="round" aria-hidden="true"><path d="M12 4v12M7 11l5 5 5-5M5 20h14" /></svg>
-            Download
-          </button>
-          {canEdit && (
-            <>
-              <button type="button" className="btn-ghost" onClick={() => inputRef.current?.click()}>
+    <CanPrintContext.Provider value={node.can_print}>
+      <div className="portal-page wiki-page wiki-page-view wiki-fileview" data-testid="file-view">
+        <PrintGuard active={!node.can_print} />
+        <Breadcrumbs node={node} />
+        <header className="wiki-page-head">
+          <div className="wiki-page-head-main">
+            <InlineTitle node={node} label="File title" />
+            <div className="wiki-page-meta"><span>{meta}</span><NodeChips node={node} /></div>
+          </div>
+          <div className="wiki-page-actions">
+            {node.can_print && (
+              <button type="button" className="btn-ghost" onClick={() => void downloadCurrent()}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
-                     strokeLinejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M5 20h14" /></svg>
-                Upload new version
+                     strokeLinejoin="round" aria-hidden="true"><path d="M12 4v12M7 11l5 5 5-5M5 20h14" /></svg>
+                Download
               </button>
-              <input ref={inputRef} type="file" hidden aria-label="Upload new version" onChange={onPick} />
-            </>
-          )}
-          <RowMenu node={node} onUseAsHelp={useAsHelp} />
-        </div>
-      </header>
+            )}
+            {canEdit && (
+              <>
+                <button type="button" className="btn-ghost" onClick={() => inputRef.current?.click()}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
+                       strokeLinejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M5 20h14" /></svg>
+                  Upload new version
+                </button>
+                <input ref={inputRef} type="file" hidden aria-label="Upload new version" onChange={onPick} />
+              </>
+            )}
+            <RowMenu node={node} onUseAsHelp={useAsHelp} />
+          </div>
+        </header>
 
-      <Description node={node} canEdit={canEdit} />
-      <Preview node={node} version={current} />
-      <Versions node={node} canEdit={canEdit} />
-    </div>
+        <Description node={node} canEdit={canEdit} />
+        <Preview node={node} version={current} />
+        <Versions node={node} canEdit={canEdit} />
+      </div>
+    </CanPrintContext.Provider>
   );
 }

@@ -47,8 +47,8 @@ function Probe() {
   return <div data-testid="probe">{loc.pathname}{loc.search}</div>;
 }
 
-function renderHistory(level: Level) {
-  vi.mocked(getNode).mockResolvedValue(makeDetail('p1', { title: 'Rack power', my_level: level }));
+function renderHistory(level: Level, canPrint = true) {
+  vi.mocked(getNode).mockResolvedValue(makeDetail('p1', { title: 'Rack power', my_level: level, can_print: canPrint }));
   vi.mocked(listVersions).mockResolvedValue(level === 'view' ? PUBLISHED_ONLY : V);
   return render(
     <MemoryRouter initialEntries={['/n/p1/history']}>
@@ -90,6 +90,17 @@ describe('HistoryPage', () => {
     expect(await screen.findByText('Turn off the rack power first.')).toBeTruthy();
     expect(getVersion).toHaveBeenCalledWith('p1', 'v3');
     expect(document.querySelector('[contenteditable="true"]')).toBeNull();
+  });
+
+  it('stops Ctrl+P while the page\'s printing is off', async () => {
+    renderHistory('edit', false);
+    await screen.findByRole('button', { name: /Version 3/ });
+    expect(document.body.dataset.noPrint).toBe('1');
+    const e = new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, bubbles: true, cancelable: true });
+    window.dispatchEvent(e);
+    expect(e.defaultPrevented).toBe(true);
+    cleanup();
+    expect(document.body.dataset.noPrint).toBeUndefined();
   });
 
   it('compares two versions with a word diff', async () => {

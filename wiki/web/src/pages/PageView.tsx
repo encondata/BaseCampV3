@@ -27,7 +27,11 @@
  *  once the API refuses a publish as `review_required`. A pending request
  *  shows a banner (Withdraw; Review now for managers). A page whose
  *  periodic review is due shows a chip, and editors can mark it reviewed;
- *  managers set its schedule from ⋯ › Review schedule…. */
+ *  managers set its schedule from ⋯ › Review schedule….
+ *
+ *  With printing off (`can_print` false): PrintGuard stops printing, the ⋯
+ *  menu drops Export and Share, and the content's node views lose their
+ *  download links and context menus (CanPrintContext). */
 import type { Editor } from '@tiptap/core';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
@@ -44,6 +48,7 @@ import CommentsRail, { ReaderCommentBubble, type NewComment } from '../comments/
 import { canCommentOn, commentLinkTarget, useCommentThreads } from '../comments/commentsStore';
 import ConfirmDialog from '../components/ConfirmDialog';
 import { NodeChips } from '../components/NodeMarks';
+import PrintGuard from '../components/PrintGuard';
 import RowMenu, { atLeast } from '../components/RowMenu';
 import SaveAsTemplateDialog from '../components/SaveAsTemplateDialog';
 import WatchButton from '../components/WatchButton';
@@ -54,6 +59,7 @@ import ReadOnlyDoc from '../editor/ReadOnlyDoc';
 import { buildToc, type TocEntry } from '../editor/toc';
 import WikiEditor, { type EditorUser } from '../editor/WikiEditor';
 import { PERSON_COLORS, personColor } from '../lib/personColor';
+import { CanPrintContext } from '../lib/printPolicy';
 import { noteChanged } from '../lib/treeStore';
 import type { NodeDetailOut, PageContentOut, VersionDetail, VersionOut } from '../lib/types';
 import { useHelpLinkAction } from '../lib/useHelpLinkAction';
@@ -439,6 +445,7 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
 
   return (
     <div className="portal-page wiki-page wiki-page-view" data-testid="page-view" data-mode={mode}>
+      <PrintGuard active={!node.can_print} />
       <Breadcrumbs node={node} />
       <header className="wiki-page-head">
         <div className="wiki-page-head-main">
@@ -499,23 +506,25 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
 
       <div className={`wiki-page-body${showRail ? ' has-rail' : ''}`}>
         <div className="wiki-page-content" ref={docRef}>
-          {mode === 'edit' ? (
-            <WikiEditor pageId={node.id} user={user} onAccessLost={onAccessLost} onToc={setLiveToc}
-                        onFirstSync={setLiveEditor} onLiveFlush={onLiveFlush}
-                        onComment={canComment ? commentOnSelection : undefined} />
-          ) : (
-            <>
-              {published.status === 'loading' && <p className="page-hint">Loading…</p>}
-              {published.status === 'error' && <p className="pf-error">{published.message}</p>}
-              {published.status === 'unpublished' && <NotPublished canEdit={canEdit} />}
-              {published.status === 'ready' && (
-                <ReadOnlyDoc content={published.content.content_json} onEditor={setViewEditor} />
-              )}
-              {published.status === 'ready' && canComment && (
-                <ReaderCommentBubble container={docRef} onComment={commentOnQuote} />
-              )}
-            </>
-          )}
+          <CanPrintContext.Provider value={node.can_print}>
+            {mode === 'edit' ? (
+              <WikiEditor pageId={node.id} user={user} onAccessLost={onAccessLost} onToc={setLiveToc}
+                          onFirstSync={setLiveEditor} onLiveFlush={onLiveFlush}
+                          onComment={canComment ? commentOnSelection : undefined} />
+            ) : (
+              <>
+                {published.status === 'loading' && <p className="page-hint">Loading…</p>}
+                {published.status === 'error' && <p className="pf-error">{published.message}</p>}
+                {published.status === 'unpublished' && <NotPublished canEdit={canEdit} />}
+                {published.status === 'ready' && (
+                  <ReadOnlyDoc content={published.content.content_json} onEditor={setViewEditor} />
+                )}
+                {published.status === 'ready' && canComment && (
+                  <ReaderCommentBubble container={docRef} onComment={commentOnQuote} />
+                )}
+              </>
+            )}
+          </CanPrintContext.Provider>
         </div>
         {showRail && (
           <aside className="wiki-page-rail">

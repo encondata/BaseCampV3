@@ -1,13 +1,15 @@
 /** A full-screen viewer for an image on a page: opens fitted to the screen,
  *  zooms with the wheel (toward the cursor), a pinch, double-click, the
  *  toolbar or + / − / 0, and pans by dragging once zoomed. Esc, Close or a
- *  click beside the image closes it. Portaled to <body>, above the page. */
+ *  click beside the image closes it (no "Open original" or context menu
+ *  when printing is off: CanPrintContext). Portaled to <body>, above the page. */
 import {
   useCallback, useEffect, useRef, useState,
   type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
 
+import { useCanPrint } from '../lib/printPolicy';
 import { clampView, FIT, zoomAt, type Point, type ZoomView } from '../lib/zoomView';
 
 const STEP = 1.5;
@@ -23,6 +25,7 @@ function Svg({ d }: { d: string }) {
 }
 
 export default function ImageLightbox({ src, alt, caption, onClose }: Props) {
+  const canPrint = useCanPrint();
   const stageRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -148,9 +151,11 @@ export default function ImageLightbox({ src, alt, caption, onClose }: Props) {
                   onClick={() => setView(FIT)}>
             <Svg d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
           </button>
-          <a href={src} target="_blank" rel="noopener noreferrer" aria-label="Open original" title="Open original">
-            <Svg d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
-          </a>
+          {canPrint && (
+            <a href={src} target="_blank" rel="noopener noreferrer" aria-label="Open original" title="Open original">
+              <Svg d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+            </a>
+          )}
           <button ref={closeRef} type="button" aria-label="Close" title="Close (Esc)" onClick={onClose}>
             <Svg d="M6 6l12 12M18 6L6 18" />
           </button>
@@ -163,7 +168,7 @@ export default function ImageLightbox({ src, alt, caption, onClose }: Props) {
         <img ref={imgRef} src={src} alt={alt} draggable={false}
              style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
              onLoad={(e) => setNatural(e.currentTarget.naturalWidth)}
-             onDoubleClick={onDoubleClick} />
+             onDoubleClick={onDoubleClick} {...(canPrint ? {} : { onContextMenu: (e) => e.preventDefault() })} />
       </div>
     </div>,
     document.body,

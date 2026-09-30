@@ -1,5 +1,5 @@
 /** A folder: breadcrumbs, its title (renamed inline by editors), Watch and
- *  Export…, New page / New folder / Upload / Import, and its contents in the portal's list
+ *  Export… (while printing is on), New page / New folder / Upload / Import, and its contents in the portal's list
  *  styling (Name, Type, Updated, By, Size; pages due for review carry a
  *  chip). Editors can also drop files and folders from their computer
  *  anywhere on it (the upload tray takes over). */
@@ -188,11 +188,13 @@ export default function FolderView({ node }: { node: NodeDetailOut }) {
 
           <div className="dir-toolbar">
             <WatchButton target={{ kind: 'node', nodeId: node.id }} />
-            <button type="button" className="btn-ghost" onClick={() => requestExport({ kind: 'node', node })}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
-                   strokeLinejoin="round" aria-hidden="true"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14" /></svg>
-              Export…
-            </button>
+            {node.can_print && (
+              <button type="button" className="btn-ghost" onClick={() => requestExport({ kind: 'node', node })}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
+                     strokeLinejoin="round" aria-hidden="true"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14" /></svg>
+                Export…
+              </button>
+            )}
             {canEdit && (
               <div className="toolbar-right wiki-toolbar">
                 <button type="button" className="btn-ghost" onClick={() => setCreating('page')}>

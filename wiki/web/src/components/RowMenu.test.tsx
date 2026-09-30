@@ -50,6 +50,22 @@ describe('RowMenu', () => {
     ]);
   });
 
+  it('drops Export… and Share… while printing is off', () => {
+    open(makeNode('n1', { kind: 'folder', my_level: 'manage', can_print: false }));
+    expect(items()).not.toContain('Export…');
+    cleanup();
+    open(makeNode('n2', { kind: 'page', my_level: 'manage', can_print: false, has_children: true }));
+    expect(items()).not.toContain('Export…');
+    expect(items()).not.toContain('Share…');
+    expect(items()).toContain('Permissions…');
+    cleanup();
+    open(makeNode('n3', { kind: 'file', my_level: 'manage', can_print: false, page: null }));
+    expect(items()).not.toContain('Share…');
+    cleanup();
+    open(makeNode('n4', { kind: 'file', my_level: 'manage', page: null }));
+    expect(items()).toContain('Share…');
+  });
+
   it('adds Permissions at manage level', () => {
     open(makeNode('n1', { kind: 'folder', my_level: 'manage' }));
     expect(items()).toContain('Permissions…');

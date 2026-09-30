@@ -202,6 +202,13 @@ describe('FolderView', () => {
     expect(requestExport).toHaveBeenCalledWith({ kind: 'node', node });
   });
 
+  it('has no Export… while printing is off', async () => {
+    renderFolder({ ...FOLDER, can_print: false });
+    await screen.findByText('Cabling');
+    expect(screen.queryByRole('button', { name: 'Export…' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'New page' })).toBeTruthy();
+  });
+
   it('keeps the edit controls, uploads and drops from a viewer', async () => {
     renderFolder({ ...FOLDER, my_level: 'view' });
     await screen.findByText('Cabling');

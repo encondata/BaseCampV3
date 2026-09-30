@@ -12,10 +12,27 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   getFileUrl: vi.fn(),
 }));
 
+// pdf.js draws in a real browser; here it's a stand-in with one page
+vi.mock('pdfjs-dist', () => ({
+  GlobalWorkerOptions: {},
+  getDocument: () => ({
+    promise: Promise.resolve({
+      numPages: 1,
+      getPage: async () => ({
+        getViewport: ({ scale }: { scale: number }) => ({ width: 600 * scale, height: 800 * scale }),
+        render: () => ({ promise: Promise.resolve() }),
+      }),
+    }),
+    destroy: () => Promise.resolve(),
+  }),
+}));
+vi.mock('pdfjs-dist/build/pdf.worker.min.mjs?url', () => ({ default: '/worker.js' }));
+
 import { ApiError } from '@portal/lib/api';
 
 import { clearAssetUrls } from '../lib/assetUrls';
 import { clearNodeTitles } from '../lib/nodeTitles';
+import { CanPrintContext } from '../lib/printPolicy';
 import { clearPersonNames, rememberPersonNames } from '../lib/personNames';
 import { getAssetUrls, getFileUrl, getNode } from '../lib/wikiApi';
 import { makeDetail } from '../testing/fixtures';
@@ -245,5 +262,85 @@ describe('ReadOnlyDoc — public mode (a public share link)', () => {
     expect(container.querySelector('.wiki-page-link a')).toBeNull();
     expect(screen.queryByText(/Secret page/)).toBeNull();
     expect(getNode).not.toHaveBeenCalled();
+  });
+});
+
+describe('ReadOnlyDoc — printing off', () => {
+  const ASSET_PDF = '3f4d6a2e-3b1c-4c7e-9a55-1d2e3f405162';
+  const ASSET_ZIP = '4f4d6a2e-3b1c-4c7e-9a55-1d2e3f405162';
+  const embed = (attrs: Record<string, unknown>) => ({ type: 'doc', content: [{ type: 'fileEmbed', attrs }] });
+  const offDoc = (content: unknown) => render(
+    <MemoryRouter>
+      <CanPrintContext.Provider value={false}><ReadOnlyDoc content={content as never} /></CanPrintContext.Provider>
+    </MemoryRouter>,
+  );
+
+  beforeEach(() => {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({} as CanvasRenderingContext2D);
+  });
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it('draws a PDF embed on canvases and offers no download link', async () => {
+    vi.mocked(getAssetUrls).mockResolvedValue({ [ASSET_PDF]: 'https://s3/spec.pdf' });
+    const { container } = offDoc(embed({ nodeId: null, assetId: ASSET_PDF, filename: 'spec.pdf', contentType: 'application/pdf' }));
+    await screen.findByText('spec.pdf');
+    await vi.waitFor(() => expect(container.querySelector('.wiki-pdf-viewer canvas')).not.toBeNull());
+    expect(container.querySelector('iframe')).toBeNull();
+    expect(screen.queryByRole('link', { name: /Download/ })).toBeNull();
+  });
+
+  it('shows just the name and icon for a file the API left out, with no link', async () => {
+    vi.mocked(getAssetUrls).mockResolvedValue({});
+    const { container } = offDoc(embed({
+      nodeId: null, assetId: ASSET_ZIP, filename: 'drawings.zip', contentType: 'application/zip',
+    }));
+    expect(await screen.findByText('drawings.zip')).toBeTruthy();
+    expect(screen.getByText('Not available while printing is off')).toBeTruthy();
+    expect(container.querySelector('.wiki-file-icon')).not.toBeNull();
+    expect(container.querySelector('a')).toBeNull();
+    expect(screen.queryByText('File unavailable')).toBeNull();
+  });
+
+  it('locks an embedded video and image, and the viewer\'s Open original link', async () => {
+    vi.mocked(getAssetUrls).mockResolvedValue({ [SHOWN]: 'https://s3/rack.png', [ASSET_PDF]: 'https://s3/clip.mp4' });
+    const { container } = offDoc({ type: 'doc', content: [
+      { type: 'wikiImage', attrs: { assetId: SHOWN, alt: 'Rack front', caption: 'Rack 12', width: null } },
+      { type: 'fileEmbed', attrs: { nodeId: null, assetId: ASSET_PDF, filename: 'clip.mp4', contentType: 'video/mp4' } },
+    ] });
+    const img = await screen.findByRole('img', { name: 'Rack front' });
+    expect(fireEvent.contextMenu(img)).toBe(false);
+    const video = await vi.waitFor(() => {
+      const el = container.querySelector('video');
+      if (!el) throw new Error('no video yet');
+      return el;
+    });
+    expect(video.getAttribute('controlslist')).toBe('nodownload noplaybackrate');
+    expect(video.hasAttribute('disablepictureinpicture')).toBe(true);
+    expect(fireEvent.contextMenu(video)).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'View full size: Rack front' }));
+    const dialog = screen.getByRole('dialog', { name: 'Rack 12' });
+    expect(within(dialog).queryByRole('link', { name: 'Open original' })).toBeNull();
+    expect(fireEvent.contextMenu(within(dialog).getByRole('img', { name: 'Rack front' }))).toBe(false);
+  });
+
+  it('draws another file\'s PDF on canvases when that file can\'t be printed, though the page can', async () => {
+    vi.mocked(getFileUrl).mockResolvedValue({ url: 'https://s3/f.pdf', content_type: 'application/pdf', preview_status: 'ready' });
+    vi.mocked(getNode).mockResolvedValue(makeDetail('f-live', { title: 'Plan.pdf', kind: 'file', can_print: false }));
+    const { container } = render(<MemoryRouter><ReadOnlyDoc content={embed({
+      nodeId: 'f-live', assetId: null, filename: '', contentType: '',
+    }) as never} /></MemoryRouter>);
+    await screen.findByText('Plan.pdf');
+    await vi.waitFor(() => expect(container.querySelector('.wiki-pdf-viewer canvas')).not.toBeNull());
+    expect(container.querySelector('iframe')).toBeNull();
+  });
+
+  it('keeps the browser\'s viewer and the Download link when printing is on', async () => {
+    vi.mocked(getAssetUrls).mockResolvedValue({ [ASSET_PDF]: 'https://s3/spec.pdf' });
+    const { container } = render(<MemoryRouter><ReadOnlyDoc content={embed({
+      nodeId: null, assetId: ASSET_PDF, filename: 'spec.pdf', contentType: 'application/pdf',
+    }) as never} /></MemoryRouter>);
+    await screen.findByText('spec.pdf');
+    expect(container.querySelector('iframe')?.getAttribute('src')).toBe('https://s3/spec.pdf');
+    expect(screen.getByRole('link', { name: /Download/ }).getAttribute('href')).toBe('https://s3/spec.pdf');
   });
 });

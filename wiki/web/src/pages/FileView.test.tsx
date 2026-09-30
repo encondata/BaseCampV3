@@ -24,6 +24,21 @@ vi.mock('../lib/treeStore', async (importOriginal) => ({
 }));
 vi.mock('../uploads/uploadQueue', () => ({ enqueue: vi.fn() }));
 vi.mock('../analytics/useRecordView', () => ({ useRecordView: vi.fn() }));
+// pdf.js draws in a real browser; here it's a stand-in with one page
+vi.mock('pdfjs-dist', () => ({
+  GlobalWorkerOptions: {},
+  getDocument: () => ({
+    promise: Promise.resolve({
+      numPages: 1,
+      getPage: async () => ({
+        getViewport: ({ scale }: { scale: number }) => ({ width: 600 * scale, height: 800 * scale }),
+        render: () => ({ promise: Promise.resolve() }),
+      }),
+    }),
+    destroy: () => Promise.resolve(),
+  }),
+}));
+vi.mock('pdfjs-dist/build/pdf.worker.min.mjs?url', () => ({ default: '/worker.js' }));
 
 import { openDownload } from '../lib/download';
 import { noteChanged } from '../lib/treeStore';
@@ -59,6 +74,7 @@ function renderFile(node: NodeDetailOut) {
 }
 
 beforeEach(() => {
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({} as CanvasRenderingContext2D);
   toast.mockReset();
   clearWikiMe();
   vi.mocked(getMe).mockReset().mockResolvedValue(makeMe());
@@ -74,6 +90,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -94,7 +111,7 @@ describe('FileView previews', () => {
 
   it('marks a private or no-print file with chips in the header', async () => {
     renderFile(fileNode(version(2), { is_private: true, can_print: false }));
-    await screen.findByTitle('Preview of floorplan.pdf');
+    await screen.findByLabelText('Preview of floorplan.pdf');
     const head = document.querySelector('.wiki-page-head') as HTMLElement;
     expect(within(head).getByText('Private')).toBeTruthy();
     expect(within(head).getByText('Printing off')).toBeTruthy();
@@ -178,6 +195,93 @@ describe('FileView previews', () => {
     expect(await screen.findByText('This file is too large to preview — download to open.')).toBeTruthy();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(MAX_TEXT_PREVIEW).toBe(2 * 1024 * 1024);
+  });
+});
+
+describe('FileView — printing off', () => {
+  const off = (current: FileVersionOut, over: Partial<NodeDetailOut> = {}) =>
+    fileNode(current, { can_print: false, ...over });
+
+  afterEach(() => { delete document.body.dataset.noPrint; });
+
+  it('has no Download, no version Download column and no Share…, and guards printing', async () => {
+    renderFile(off(version(2), { my_level: 'manage' }));
+    const table = await screen.findByRole('table', { name: 'Versions' });
+    await within(table).findByText('old-plan.pdf');
+    expect(screen.queryByRole('button', { name: 'Download' })).toBeNull();
+    expect(within(table).queryByRole('button', { name: /Download version/ })).toBeNull();
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent))
+      .toEqual(['No.', 'File name', 'Size', 'Uploaded by', 'When', 'Restore']);
+    // Upload new version and Restore are not downloads
+    expect(screen.getByRole('button', { name: 'Upload new version' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for floorplan.pdf' }));
+    expect(screen.getByRole('menuitem', { name: 'Permissions…' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: 'Share…' })).toBeNull();
+    expect(document.body.dataset.noPrint).toBe('1');
+    expect(document.querySelector('.wiki-print-blocked')?.textContent).toBe('Printing is turned off for this page.');
+    fireEvent.keyDown(window, { key: 'p', ctrlKey: true });
+    expect(toast).toHaveBeenCalledWith('Printing is turned off for this page.');
+  });
+
+  it('draws a PDF on canvases instead of the browser\'s viewer', async () => {
+    renderFile(off(version(2)));
+    const viewer = await screen.findByLabelText('Preview of floorplan.pdf');
+    expect(viewer.classList.contains('wiki-pdf-viewer')).toBe(true);
+    await vi.waitFor(() => expect(viewer.querySelector('canvas')).not.toBeNull());
+    expect(document.querySelector('iframe, object, embed')).toBeNull();
+  });
+
+  it('draws an office document\'s PDF on canvases too', async () => {
+    vi.mocked(getFileUrl).mockResolvedValue({ url: 'https://s3/preview.pdf', content_type: 'application/pdf', preview_status: 'ready' });
+    renderFile(off(version(1, {
+      filename: 'plan.docx', content_type: 'application/msword', preview_kind: 'pdf', preview_status: 'ready',
+    })));
+    await screen.findByLabelText('Preview of plan.docx');
+    expect(document.querySelector('iframe')).toBeNull();
+  });
+
+  it('takes the download, rate and picture-in-picture controls off video and audio', async () => {
+    vi.mocked(getFileUrl).mockResolvedValue({ url: 'https://s3/clip', content_type: 'video/mp4', preview_status: 'ready' });
+    renderFile(off(version(1, { filename: 'walkthrough.mp4', content_type: 'video/mp4' })));
+    const video = await vi.waitFor(() => {
+      const el = document.querySelector('video');
+      if (!el) throw new Error('no video yet');
+      return el;
+    });
+    expect(video.getAttribute('controlslist')).toBe('nodownload noplaybackrate');
+    expect(video.hasAttribute('disablepictureinpicture')).toBe(true);
+    expect(fireEvent.contextMenu(video)).toBe(false);
+    cleanup();
+    renderFile(off(version(1, { filename: 'note.mp3', content_type: 'audio/mpeg' })));
+    const audio = await vi.waitFor(() => {
+      const el = document.querySelector('audio');
+      if (!el) throw new Error('no audio yet');
+      return el;
+    });
+    expect(audio.getAttribute('controlslist')).toBe('nodownload noplaybackrate');
+    expect(fireEvent.contextMenu(audio)).toBe(false);
+  });
+
+  it('turns the context menu off on an image', async () => {
+    vi.mocked(getFileUrl).mockResolvedValue({ url: 'https://s3/rack', content_type: 'image/png', preview_status: 'ready' });
+    renderFile(off(version(1, { filename: 'rack.png', content_type: 'image/png' })));
+    const img = await screen.findByRole('img', { name: 'rack.png' });
+    expect(fireEvent.contextMenu(img)).toBe(false);
+  });
+
+  it('doesn\'t send a reader to a download when there is no preview', async () => {
+    renderFile(off(version(1, { filename: 'bundle.zip', content_type: 'application/zip', preview_kind: 'none', preview_status: 'skipped' })));
+    expect(await screen.findByText('No preview available.')).toBeTruthy();
+    expect(screen.queryByText(/download to open/)).toBeNull();
+  });
+
+  it('leaves everything as it was when printing is on', async () => {
+    renderFile(fileNode(version(2)));
+    const frame = await screen.findByTitle('Preview of floorplan.pdf');
+    expect(frame.tagName).toBe('IFRAME');
+    expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy();
+    expect(document.body.dataset.noPrint).toBeUndefined();
+    expect(document.querySelector('.wiki-pdf-viewer')).toBeNull();
   });
 });
 

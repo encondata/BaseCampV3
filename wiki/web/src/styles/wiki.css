@@ -1546,3 +1546,15 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 @keyframes wiki-export-spin { to { transform: rotate(360deg); } }
 [data-motion='off'] .wiki-export-spinner { animation: none; }
 .wiki-export-page { max-width: 560px; }
+
+/* ── printing off (PrintGuard, PdfCanvasViewer) ── */
+.wiki-print-blocked { display: none; }
+@media print {
+  body[data-no-print] > * { display: none !important; }
+  body[data-no-print] .wiki-print-blocked { display: block !important; padding: 48px 24px; font-size: 16px; }
+}
+.wiki-pdf-viewer { user-select: none; -webkit-user-select: none; }
+.wiki-pdf-pages { display: flex; flex-direction: column; gap: 10px; padding: 10px; background: var(--surface-2, #f1f4f7); }
+.wiki-pdf-canvas { display: block; width: 100%; height: auto; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18); }
+.wiki-fileview-preview .wiki-pdf-viewer { max-height: 78vh; overflow: auto; }
+.wiki-file-preview .wiki-pdf-viewer { max-height: 540px; overflow: auto; line-height: normal; }

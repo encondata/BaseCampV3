@@ -60,6 +60,13 @@ describe('SpaceHome', () => {
     expect(requestExport).toHaveBeenCalledWith({ kind: 'space', space });
   });
 
+  it('has no Export library… while the library\'s printing is off', async () => {
+    renderSpace(makeSpace({ home_node_id: null, settings: { allow_printing: false } }));
+    await screen.findByText('Operations');
+    await screen.findByRole('list', { name: 'What\'s in this library' });
+    expect(screen.queryByRole('button', { name: 'Export library…' })).toBeNull();
+  });
+
   it('shows a plain header with a space Watch button when there is no home page', async () => {
     renderSpace(makeSpace({ home_node_id: null }));
     await screen.findByText('Operations');
