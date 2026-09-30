@@ -277,7 +277,7 @@ Deviations from this spec, all decided during review:
 
 - The `Sync` type lives in `Data/Sync/SyncCoordinator.swift` (file-name clash with synchronized folders).
 - The refresh cookie survives 5xx and network refresh failures; it is deleted only on a 401/403 refresh, on logout, or when the server clears it with Set-Cookie (Android parity).
-- A `RedirectGuard` strips `Cookie` and `Authorization` on cross-origin redirects.
+- A `RedirectGuard` strips `Cookie` and `Authorization` on cross-origin redirects (tightened below: credentialed or non-GET ones are not followed at all).
 - One shell top bar with a "‹ Home" back control; the system navigation bar is hidden.
 - The `.inactive` scene phase is not treated as background.
 - Enroll and Timeclock drop scans that arrive mid-request (Android parity).
@@ -288,5 +288,6 @@ Deviations from this spec, all decided during review:
 - Camera sheet stops cleanly, turns the torch off on flip, shows an upright preview, and reports start failures.
 - Identity caches its serial; the URL setting requires a host.
 - The UI tests add a signed-out screenshot pass (`testSignedOutScreenshots`: Settings, Pair with phone, move password) driven by `-uiTestSignedOut` (Debug only).
+- Final review fixes: a refresh whose answer lands after a sign-in or sign-out is dropped (a SessionStore generation counter; nothing is stored, captured or cleared), and the outbox flushes only while the app is active and signed in; saving a new API origin while signed in clears the session and returns to the login screen (the old host keeps its cookie); a cross-origin redirect of a credentialed, bodied or non-GET request is not followed (its 3xx comes back as an error; credential-less GETs still follow, stripped); the outbox waits out the first back-off step (2 s) when its store can't save, instead of retrying at once; an approved pair poll keeps its session and cookie only when `KioskAuth.completePair` accepts it; sign-out flips to signed out at once and tells the portal in the background with the token and cookie captured beforehand.
 
 Verification status: unit tests, phone build, UI tests and the Release build pass. The signed-out screens were checked on the iPad Air 11-inch (M3) and iPhone 16 (iOS 18.5) simulators. Camera behavior is unverified on hardware. The signed-in live run (sign-in, Kiosk Setup, sync, scanning, RFID Enroll, Timeclock, portal Kiosk Devices check) is pending and will be done with Jimmy.
