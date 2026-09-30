@@ -27,6 +27,7 @@ sealed interface AuthState {
         val maxRank get() = session.max_rank
         val isAdmin get() = maxRank >= ADMIN_RANK
         val isDeveloper get() = "developer" in roles
+        val kioskMove get() = session.kiosk_move
     }
 }
 
@@ -40,7 +41,7 @@ class KioskAuth(
     private val _state = MutableStateFlow<AuthState>(AuthState.Loading)
     val state: StateFlow<AuthState> = _state
 
-    // Set only by login()/completePair(), never by a cookie restore, so the
+    // Set only by login()/loginWithMovePassword()/completePair(), never by a cookie restore, so the
     // API can auto-register the kiosk and record how the person signed in.
     @Volatile private var pendingSignIn: LoginMethod? = null
 
@@ -58,6 +59,15 @@ class KioskAuth(
 
     suspend fun login(email: String, password: String): SessionData {
         val data = api.login(email, password)
+        pendingSignIn = LoginMethod.PASSWORD
+        _state.value = AuthState.Authed(data)
+        return data
+    }
+
+    /** A move-password sign-in. The heartbeat's login_method only knows password | link,
+     *  and a move password is a password as far as device registration goes (as on the web). */
+    suspend fun loginWithMovePassword(password: String): SessionData {
+        val data = api.moveLogin(password)
         pendingSignIn = LoginMethod.PASSWORD
         _state.value = AuthState.Authed(data)
         return data

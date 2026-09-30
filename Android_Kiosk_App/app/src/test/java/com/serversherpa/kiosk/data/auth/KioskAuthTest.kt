@@ -70,4 +70,24 @@ class KioskAuthTest {
         runCurrent()
         assertEquals(AuthState.Anon, auth.state.value)
     }
+
+    @Test fun moveLoginSignsInLockedToTheMoveAsAPasswordSignIn() = runTest {
+        val move = com.serversherpa.kiosk.core.model.KioskMove("m1", "Dallas Move")
+        val api = FakeKioskApi().apply { moveLoginResult = { fakeSession(kioskMove = move) } }
+        val auth = KioskAuth(api, FakeRefresher(), testIdentity(tmp.root, backgroundScope), backgroundScope)
+        auth.loginWithMovePassword("orange-kayak-42")
+        assertEquals(listOf("orange-kayak-42"), api.moveLoginPasswords)
+        val authed = auth.state.value as AuthState.Authed
+        assertEquals(move, authed.kioskMove)
+        // The heartbeat only knows password | link; a move sign-in counts as password (as on the web).
+        assertEquals(LoginMethod.PASSWORD, auth.takePendingSignIn())
+    }
+
+    @Test fun aFailedMoveLoginLeavesTheStateAlone() = runTest {
+        val auth = KioskAuth(FakeKioskApi(), FakeRefresher(), testIdentity(tmp.root, backgroundScope), backgroundScope)
+        auth.restore()   // FakeRefresher returns null: Anon
+        try { auth.loginWithMovePassword("nope"); fail("expected ApiError") } catch (e: ApiError) { assertEquals("invalid_move_password", e.code) }
+        assertEquals(AuthState.Anon, auth.state.value)
+        assertNull(auth.takePendingSignIn())
+    }
 }
