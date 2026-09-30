@@ -117,17 +117,21 @@ async def create_export(body: ExportIn, ctx: WikiContext) -> ExportCreatedOut:
 
 @router.get("/exports/{job_id}", response_model=ExportOut)
 async def get_export(job_id: uuid.UUID, ctx: WikiContext) -> ExportOut:
-    """The requester's own export (anyone else: 404)."""
+    """The requester's own export (anyone else: 404 — as is one of an item
+    the requester can no longer see)."""
     job = await ctx.db.get(WikiJob, job_id)
     if job is None or job.kind != "export" or job.created_by != ctx.user.person.id:
         raise not_found()
     payload = job.payload or {}
     result = job.result or {}
+    node = await ctx.db.get(WikiNode, job.node_id) if job.node_id is not None else None
+    # an item the requester can no longer see (made private by someone
+    # else since) is missing, like its export
+    if node is not None and await ctx.ix.level_for_node(node) is None:
+        raise not_found()
     # a finished file isn't handed out once printing was turned off since
-    if job.status == "done" and job.node_id is not None:
-        node = await ctx.db.get(WikiNode, job.node_id)
-        if node is not None and not await ctx.ix.can_print(node):
-            raise err(403, "printing_disabled", "Printing is turned off for this item.")
+    if job.status == "done" and node is not None and not await ctx.ix.can_print(node):
+        raise err(403, "printing_disabled", "Printing is turned off for this item.")
     filename = result.get("filename") or payload.get("filename") or "export"
     url = None
     if job.status == "done" and result.get("key"):

@@ -172,7 +172,10 @@ async def update_help_link(link_id: uuid.UUID, body: HelpLinkPatchIn,
                            ctx: WikiContext) -> HelpLinkOut:
     _require_admin(ctx)
     link = await ctx.db.get(WikiHelpLink, link_id)
-    if link is None:
+    # a link to a private item the caller couldn't open is missing, as in
+    # the list — its answer would name that item
+    if link is None or await ctx.db.scalar(select(WikiNode.id).where(
+            WikiNode.id == link.node_id, private_filter(ctx.principal))) is None:
         raise not_found()
 
     context = _context(body.context) if body.context is not None else link.context

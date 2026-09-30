@@ -217,7 +217,9 @@ class NodeOut(BaseModel):
     # Private items and printing (spec 2026-09-30): `allow_printing` is the
     # node's own explicit value (null = inherit); `can_print` is the effective
     # value; `printing_from` says who set it, only while the node inherits.
+    # `in_private`: the node or a folder above it is private.
     is_private: bool
+    in_private: bool
     allow_printing: bool | None
     can_print: bool
     printing_from: PrintingSourceOut | None

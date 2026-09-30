@@ -335,6 +335,7 @@ async def copy_subtree(db: AsyncSession, node: WikiNode, *,
                        actor_id: uuid.UUID | None,
                        levels: Mapping[uuid.UUID, str | None] | None = None,
                        printing_off: bool = False,
+                       private: bool = False,
                        ) -> WikiNode:
     """Copy `node` and its live descendants under `dest_parent` (None =
     root of `dest_space`); returns the new root.
@@ -342,7 +343,10 @@ async def copy_subtree(db: AsyncSession, node: WikiNode, *,
     Copies inherit (no grants copied) and are owned by `actor_id`. Each
     copy keeps its source's own `allow_printing` value, and the root is
     pinned to off when `printing_off` (the source root's effective
-    printing): a copy never turns printing on. A page
+    printing): a copy never turns printing on. Likewise each copy keeps
+    its source's `is_private`, and the root is pinned private when
+    `private` (the source root is private itself or through a folder
+    above it) — a copy is private to `actor_id`, who authors it. A page
     copy is a new unpublished page — no versions — whose draft is the
     source's current draft (`ydoc` left NULL so the collab server seeds
     from `draft_json`); the asset rows that content embeds are copied
@@ -417,6 +421,7 @@ async def copy_subtree(db: AsyncSession, node: WikiNode, *,
             kind=n.kind, title=_copy_title(n.title) if is_root and same_place else n.title,
             position=root_position if is_root else n.position,
             inherit_permissions=True,
+            is_private=True if is_root and private else n.is_private,
             allow_printing=False if is_root and printing_off else n.allow_printing,
             owner_id=actor_id, created_by=actor_id, updated_by=actor_id))
     db.add_all(new_nodes)

@@ -39,7 +39,7 @@ from serversherpa.db.models import (
     WikiSpace,
 )
 from serversherpa.wiki import reviews
-from serversherpa.wiki.permissions import can_set_private, level_rank
+from serversherpa.wiki.permissions import can_set_private, level_rank, private_filter
 
 ELLIPSIS = "…"
 
@@ -91,16 +91,17 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
                     levels: Mapping[uuid.UUID, Level | str | None]) -> list[NodeOut]:
     """Serialize `nodes` (in order) with `my_level` from `levels`.
 
-    `has_children` counts live children; for a caller who only has view
-    on the node, unpublished child pages (which they can't see) don't
-    count."""
+    `has_children` counts live children, but never someone else's
+    private one; for a caller who only has view on the node, unpublished
+    child pages (which they can't see) don't count either."""
     if not nodes:
         return []
     db = ctx.db
     ids = [n.id for n in nodes]
 
     spaces = {row.id: row for row in (await db.execute(
-        select(WikiSpace.id, WikiSpace.key, WikiSpace.home_node_id, WikiSpace.settings)
+        select(WikiSpace.id, WikiSpace.key, WikiSpace.home_node_id, WikiSpace.settings,
+               WikiSpace.archived_at)
         .where(WikiSpace.id.in_({n.space_id for n in nodes}))
     )).all()}
 
@@ -141,26 +142,28 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
                WikiFavorite.node_id.in_(ids))
     )).all())
 
-    child = WikiNode.__table__.alias("child")
+    # someone else's private child isn't there for the caller at all
     children: dict[uuid.UUID, tuple[int, int]] = {
         parent_id: (total, readable)
         for parent_id, total, readable in (await db.execute(
-            select(child.c.parent_id, func.count(),
+            select(WikiNode.parent_id, func.count(),
                    func.count().filter(or_(
-                       child.c.kind != "page",
+                       WikiNode.kind != "page",
                        WikiPage.published_version_id.is_not(None))))
-            .select_from(child)
-            .outerjoin(WikiPage, WikiPage.node_id == child.c.id)
-            .where(child.c.parent_id.in_(ids), child.c.deleted_at.is_(None))
-            .group_by(child.c.parent_id)
+            .select_from(WikiNode)
+            .outerjoin(WikiPage, WikiPage.node_id == WikiNode.id)
+            .where(WikiNode.parent_id.in_(ids), WikiNode.deleted_at.is_(None),
+                   private_filter(ctx.principal))
+            .group_by(WikiNode.parent_id)
         )).all()}
 
     # where each inheriting node's printing value comes from — warm the
     # index once for every space so a multi-space listing batches its loads;
     # only source nodes outside this batch cost a query (for their title
     # and the caller's level on them)
-    await ctx.ix._load_spaces({n.space_id for n in nodes})
+    await ctx.ix.warm({n.space_id for n in nodes})
     printing = {n.id: await ctx.ix.printing_source(n) for n in nodes}
+    in_private = {n.id: await ctx.ix.is_private(n) for n in nodes}
     in_batch = {n.id: n for n in nodes}
     outside = {src for _, src in printing.values()
                if src is not None} - in_batch.keys()
@@ -184,6 +187,9 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
         space_row = spaces.get(n.space_id)
         space_key = str(space_row.key) if space_row else ""
         home_id = space_row.home_node_id if space_row else None
+        # an archived library is read-only but for wiki administrators
+        # (set_privacy refuses the rest), so the switch isn't offered
+        archived = space_row is not None and space_row.archived_at is not None
         total, readable = children.get(n.id, (0, 0))
         has_children = (total if level_rank(level) >= level_rank("edit")
                         else readable) > 0
@@ -231,9 +237,11 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
             updated_by=people.get(n.updated_by) if n.updated_by else None,
             my_level=level, has_children=has_children,
             is_favorite=n.id in favorites, page=page, file=file, review=review,
-            is_private=n.is_private, allow_printing=n.allow_printing,
+            is_private=n.is_private, in_private=in_private[n.id],
+            allow_printing=n.allow_printing,
             can_print=can_print, printing_from=printing_from,
-            can_set_private=can_set_private(ctx.principal, n),
+            can_set_private=(can_set_private(ctx.principal, n)
+                             and (not archived or ctx.principal.is_admin)),
         ))
     return out
 

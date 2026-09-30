@@ -314,6 +314,11 @@ class AccessIndex:
 
         self._spaces.update(spaces)
 
+    async def warm(self, space_ids: Iterable[uuid.UUID]) -> None:
+        """Load every not-yet-cached space among `space_ids` in one batch,
+        so a listing spanning several spaces doesn't load them one by one."""
+        await self._load_spaces(space_ids)
+
     # ── resolution ──────────────────────────────────────────────────
 
     def _final_set(self, data: _SpaceData, chain: Sequence[uuid.UUID]) -> list[_Grant]:
@@ -393,6 +398,24 @@ class AccessIndex:
         data = self._spaces[node.space_id]
         return any(nid in data.private for nid in (node.path or []))
 
+    async def private_ancestors(self, node: WikiNode) -> dict[uuid.UUID, uuid.UUID | None]:
+        """The private nodes among `node`'s ancestors, each with its author
+        (`created_by`) — trashed ones included, like `is_private`."""
+        await self._load_spaces([node.space_id])
+        data = self._spaces[node.space_id]
+        return {nid: data.private[nid] for nid in (node.path or []) if nid in data.private}
+
+    async def private_chain(self, node: WikiNode | None) -> dict[uuid.UUID, uuid.UUID | None]:
+        """`private_ancestors` plus `node` itself when it is private (its
+        own flag read from `node`) — the private nodes an item placed
+        under `node` would sit beneath. None (a library's root) has none."""
+        if node is None:
+            return {}
+        chain = await self.private_ancestors(node)
+        if node.is_private:
+            chain[node.id] = node.created_by
+        return chain
+
     async def levels_for_spaces(
             self, space_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str | None]:
         """The caller's level on each space, loading every not-yet-cached
@@ -436,6 +459,15 @@ class AccessIndex:
     async def can_print(self, node: WikiNode) -> bool:
         """The effective printing value for `node` (see `printing_source`)."""
         return (await self.printing_source(node))[0]
+
+    async def can_print_under(self, space_id: uuid.UUID, parent: WikiNode | None) -> bool:
+        """Whether an item that inherits printing could be printed placed
+        under `parent` (None = the root of `space_id`): the parent's own
+        effective value, or the library setting at the root."""
+        if parent is not None:
+            return await self.can_print(parent)
+        await self._load_spaces([space_id])
+        return self._spaces[space_id].allow_printing
 
     async def effective_grants(self, node: WikiNode | None,
                                space_id: uuid.UUID) -> list[EffectiveGrantRow]:
