@@ -21,7 +21,7 @@ from serversherpa.api.deps import (
 from serversherpa.api.schemas import (
     RevokeAllSessionsOut, SecurityConfigIn, SecurityConfigOut,
     AiLookupConfigIn, AiLookupConfigOut,
-    AdminConfigIn, AdminConfigOut, LogEntryOut, LogPageOut, SystemProcessOut,
+    AdminConfigIn, AdminConfigOut, BackgroundStatusOut, LogEntryOut, LogPageOut, SystemProcessOut,
     SystemStatusOut,
 )
 from serversherpa.config import get_settings
@@ -87,20 +87,41 @@ async def list_processes(
 
 # ── admin controls (read-only mode / worker pause / broadcast banner) ──
 
-def _status_from(cfg: dict) -> SystemStatusOut:
+def _status_from(cfg: dict, background: BackgroundStatusOut | None = None) -> SystemStatusOut:
     banner = cfg["banner_message"].strip() if cfg["banner_enabled"] else ""
     return SystemStatusOut(
         read_only=cfg["read_only"],
         read_only_message=cfg["read_only_message"] if cfg["read_only"] else "",
         workers_paused=bool(cfg["read_only"] and cfg["pause_workers"]),
         banner=banner or None,
-        totp_trust_days=get_settings().totp_trust_days)
+        totp_trust_days=get_settings().totp_trust_days,
+        background=background)
+
+
+async def _background(db) -> BackgroundStatusOut | None:
+    now = datetime.now(UTC)
+    rows = (await db.scalars(
+        select(SystemProcess).where(SystemProcess.kind == "worker"))).all()
+    statuses = [derive_status(p.heartbeat_at, p.stopped_at, now, meta=p.meta) for p in rows]
+    # a clean stop (deploy, deliberate shutdown) is not an outage
+    statuses = [s for s in statuses if s != "stopped"]
+    if not statuses:
+        return None
+    if "failed" in statuses:
+        state = "down"
+    elif "paused" in statuses:
+        state = "paused"
+    else:
+        state = "running"
+    alive = sum(1 for s in statuses if s in ("running", "paused"))
+    return BackgroundStatusOut(state=state, running=alive, total=len(statuses))
 
 
 @router.get("/status", response_model=SystemStatusOut)
 async def system_status(db: DbSession) -> SystemStatusOut:
-    """Public: the login page shows banners before anyone signs in."""
-    return _status_from(await read_admin_config(db))
+    """Public: the login page shows banners before anyone signs in; the
+    status page reads worker health (counts only)."""
+    return _status_from(await read_admin_config(db), await _background(db))
 
 
 @router.get("/admin", response_model=AdminConfigOut)
