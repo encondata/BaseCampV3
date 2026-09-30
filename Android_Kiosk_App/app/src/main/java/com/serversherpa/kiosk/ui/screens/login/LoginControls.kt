@@ -86,6 +86,14 @@ internal val LockIcon: ImageVector = lineIcon(
     "lock",
     listOf("M7 11V8a5 5 0 0 1 10 0v3", "M6 11h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1z"),
 )
+// A QR code: three finder squares and a scatter of modules, drawn as outlines like the other login glyphs.
+internal val QrCodeIcon: ImageVector = lineIcon(
+    "qr-code",
+    listOf(
+        "M4 4h6v6H4z", "M14 4h6v6h-6z", "M4 14h6v6H4z",
+        "M14 14h2v2h-2z", "M18 14h2", "M14 18h2", "M18 18h2v2h-2z",
+    ),
+)
 // The kiosk web's pane-gear glyph (kiosk/src/pages/Login.tsx).
 internal val GearIcon: ImageVector = lineIcon(
     "gear",
@@ -152,6 +160,14 @@ internal fun PasswordEye(showing: Boolean, onClick: () -> Unit) {
             tint = if (showing) LoginPalette.Orange else LoginPalette.Slate,
             modifier = Modifier.size(22.dp),
         )
+    }
+}
+
+/** The QR button inside the Move password field: 48 dp target, opens the camera to read the move's QR code. */
+@Composable
+internal fun MoveScanButton(enabled: Boolean, onClick: () -> Unit) {
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(48.dp).testTag("login-move-scan")) {
+        Icon(QrCodeIcon, contentDescription = "Scan the move password's QR code", tint = if (enabled) LoginPalette.Orange else LoginPalette.Slate)
     }
 }
 

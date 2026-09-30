@@ -36,6 +36,7 @@ import androidx.navigation.NavHostController
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.model.SessionData
 import com.serversherpa.kiosk.data.identity.KioskIdentity
+import com.serversherpa.kiosk.input.camera.CameraScanSheet
 import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.components.kioskViewModel
 import com.serversherpa.kiosk.ui.theme.Geologica
@@ -56,6 +57,7 @@ fun LoginScreen(nav: NavHostController) {
     val portalUrl by container.config.portalUrl.collectAsStateWithLifecycle(initialValue = "")
     LaunchedEffect(Unit) { vm.loadBanners() }
     val goHome = { nav.navigate(Routes.HOME) { popUpTo(0) } }
+    var scanning by rememberSaveable { mutableStateOf(false) }
 
     LoginContent(
         ui = ui,
@@ -65,8 +67,16 @@ fun LoginScreen(nav: NavHostController) {
             submitPassword = { vm.submitPassword(goHome) },
             setView = vm::setView, setMovePassword = vm::setMovePassword, submitMove = { vm.submitMove(goHome) },
             openSettings = { nav.navigate(Routes.settings("this-kiosk")) },
+            scanMove = { scanning = true },
         ),
+        canScan = container.hasCamera,
         pairPanel = { PairPanel(pairVm, portalUrl) { session: SessionData -> container.auth.completePair(session); goHome() } },
+    )
+    // The kiosk's own camera, QR only: the first code read is the move password and is submitted at once.
+    if (scanning) CameraScanSheet(
+        onScan = { vm.submitScannedMove(it.value, goHome) },
+        onDismiss = { scanning = false },
+        qrOnly = true,
     )
 }
 
@@ -80,6 +90,7 @@ internal class LoginActions(
     val setMovePassword: (String) -> Unit,
     val submitMove: () -> Unit,
     val openSettings: () -> Unit,
+    val scanMove: () -> Unit,
 )
 
 /** The artwork's band takes up to this share of the screen's height (a 480x800 Zebra MC2200 is ~533 dp tall). */
@@ -98,7 +109,7 @@ internal fun loginArtHeight(maxWidth: Dp, maxHeight: Dp): Dp = min(maxWidth / MO
 internal fun loginArtWidth(maxWidth: Dp, artHeight: Dp): Dp = min(maxWidth, artHeight * MOUNTAINS_ASPECT)
 
 @Composable
-internal fun LoginContent(ui: LoginUi, kioskName: String, actions: LoginActions, pairPanel: @Composable () -> Unit) {
+internal fun LoginContent(ui: LoginUi, kioskName: String, actions: LoginActions, canScan: Boolean = false, pairPanel: @Composable () -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize().background(LoginPalette.Canvas)) {
         // Anchored at the bottom right; on a phone it spans the screen and crops to the peaks.
         val artHeight = loginArtHeight(maxWidth, maxHeight)
@@ -140,9 +151,16 @@ internal fun LoginContent(ui: LoginUi, kioskName: String, actions: LoginActions,
                         LoginLink("Back to email & password", Modifier.align(Alignment.Start)) { actions.setView(LoginView.PASSWORD) }
                     }
                     LoginView.MOVE -> {
-                        LoginField("Move password", ui.movePassword, actions.setMovePassword, tag = "login-move", masked = true)
+                        LoginField(
+                            "Move password", ui.movePassword, actions.setMovePassword, tag = "login-move", masked = true,
+                            invalid = ui.moveError != null,
+                            trailing = if (canScan) ({ MoveScanButton(enabled = !ui.moveLoading, onClick = actions.scanMove) }) else null,
+                        )
                         ui.moveError?.let { Text(it, color = LoginPalette.ErrorText, fontFamily = Geologica, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
-                        LoginPrimaryButton("Sign in", actions.submitMove, Modifier.padding(top = 16.dp).testTag("login-submit-move"))
+                        LoginPrimaryButton(
+                            if (ui.moveLoading) "Signing in…" else "Sign in", actions.submitMove,
+                            Modifier.padding(top = 16.dp).testTag("login-submit-move"), loading = ui.moveLoading, enabled = !ui.moveLoading,
+                        )
                         LoginLink("Back to email & password", Modifier.align(Alignment.Start)) { actions.setView(LoginView.PASSWORD) }
                     }
                 }

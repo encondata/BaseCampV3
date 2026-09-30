@@ -51,14 +51,15 @@ class LoginScreenTest {
             setView = { log += "view:$it"; ui = ui.copy(view = it) },
             setMovePassword = { log += "move:$it"; ui = ui.copy(movePassword = it) },
             submitMove = { log += "submitMove" }, openSettings = { log += "settings" },
+            scanMove = { log += "scanMove" },
         )
     }
 
-    private fun show(ui: LoginUi = LoginUi(), kioskName: String = "Dock 4", calls: Calls = Calls(ui), width: Int? = null, height: Int? = null, pair: String = "pair") {
+    private fun show(ui: LoginUi = LoginUi(), kioskName: String = "Dock 4", calls: Calls = Calls(ui), width: Int? = null, height: Int? = null, pair: String = "pair", canScan: Boolean = false) {
         compose.setContent {
             KioskTheme {
                 val sized = if (width != null && height != null) Modifier.size(width.dp, height.dp) else Modifier
-                Box(sized) { LoginContent(calls.ui, kioskName, calls.actions) { androidx.compose.material3.Text(pair) } }
+                Box(sized) { LoginContent(calls.ui, kioskName, calls.actions, canScan = canScan) { androidx.compose.material3.Text(pair) } }
             }
         }
     }
@@ -81,6 +82,30 @@ class LoginScreenTest {
         compose.onNodeWithText("Link this kiosk with your phone.").assertIsDisplayed()
         compose.onNodeWithText("Back to email & password").performScrollTo().performClick()
         compose.onNodeWithText("EMAIL").assertIsDisplayed()
+    }
+
+    @Test fun theMoveFieldHasAQrButtonThatOpensTheCamera() {
+        val calls = Calls(LoginUi(view = LoginView.MOVE))
+        show(calls = calls, canScan = true)
+        compose.onNodeWithContentDescription("Scan the move password's QR code").assertIsDisplayed().assertHeightIsAtLeast(48.dp).performClick()
+        assertTrue("scanMove" in calls.log)
+    }
+
+    @Test fun noCameraMeansNoQrButton() {
+        show(calls = Calls(LoginUi(view = LoginView.MOVE)), canScan = false)
+        compose.onNodeWithContentDescription("Scan the move password's QR code").assertDoesNotExist()
+    }
+
+    @Test fun signingInWithAMovePasswordShowsProgressAndLocksTheButtons() {
+        show(calls = Calls(LoginUi(view = LoginView.MOVE, movePassword = "x", moveLoading = true)), canScan = true)
+        compose.onNodeWithText("Signing in…").assertIsDisplayed()
+        compose.onNodeWithTag("login-submit-move").assertIsNotEnabled()
+        compose.onNodeWithContentDescription("Scan the move password's QR code").assertIsNotEnabled()
+    }
+
+    @Test fun aMoveErrorIsShownUnderTheField() {
+        show(calls = Calls(LoginUi(view = LoginView.MOVE, moveError = "That move password isn't right.")))
+        compose.onNodeWithText("That move password isn't right.").assertIsDisplayed()
     }
 
     @Test fun moveFlowAsksForAPasswordAndGoesBack() {
