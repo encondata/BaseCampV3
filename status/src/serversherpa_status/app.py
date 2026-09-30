@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from serversherpa_status.api_status import BACKGROUND_KEY, LatestApiStatus
 from serversherpa_status.checker import Checker, seed_tracker, utcnow
 from serversherpa_status.config import Settings, load_settings, stale_after_seconds
 from serversherpa_status.state import StateTracker
@@ -37,17 +38,21 @@ def create_app(settings: Settings | None = None, *, start_checker: bool = True) 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         store = Store(settings.db_path)
-        tracker = StateTracker([s.key for s in settings.services], settings.failure_threshold)
+        tracker = StateTracker(
+            [s.key for s in settings.services] + [BACKGROUND_KEY], settings.failure_threshold
+        )
         seed_tracker(tracker, store, settings)
         app.state.store = store
         app.state.tracker = tracker
+        latest = LatestApiStatus()
+        app.state.latest_api_status = latest
         app.state.checker = None
         app.state.started_at = utcnow()
         app.state.summary_cache = None  # (monotonic_built_at, cycle_marker, body)
         client = httpx.AsyncClient(headers={"User-Agent": USER_AGENT})
         task = None
         if start_checker:
-            checker = Checker(settings, store, tracker, client)
+            checker = Checker(settings, store, tracker, client, latest=latest)
             app.state.checker = checker
             task = asyncio.create_task(checker.run_forever())
         try:
@@ -79,7 +84,9 @@ def create_app(settings: Settings | None = None, *, start_checker: bool = True) 
             built_at, cached_marker, body = cached
             if now_mono - built_at < SUMMARY_TTL_SECONDS and cached_marker == cycle_marker:
                 return JSONResponse(body, headers={"Cache-Control": "no-store"})
-        body = build_summary(settings, state.store, state.tracker, utcnow())
+        body = build_summary(
+            settings, state.store, state.tracker, utcnow(), latest=state.latest_api_status
+        )
         state.summary_cache = (now_mono, cycle_marker, body)
         return JSONResponse(body, headers={"Cache-Control": "no-store"})
 

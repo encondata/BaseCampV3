@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from serversherpa_status.api_status import BACKGROUND_KEY, ApiStatus, Background, LatestApiStatus
 from serversherpa_status.config import load_settings
 from serversherpa_status.state import StateTracker
 from serversherpa_status.store import Store
@@ -19,7 +20,7 @@ def ctx(tmp_path):
         "STATUS_DB_PATH": str(tmp_path / "s.db"),
     })
     store = Store(settings.db_path)
-    tracker = StateTracker([s.key for s in settings.services], 2)
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
     yield settings, store, tracker
     store.close()
 
@@ -112,10 +113,99 @@ def test_wiki_shows_title_only(tmp_path):
         "STATUS_DB_PATH": str(tmp_path / "s.db"),
     })
     store = Store(settings.db_path)
-    tracker = StateTracker([s.key for s in settings.services], 2)
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
     try:
         out = build_summary(settings, store, tracker, NOW)
     finally:
         store.close()
     assert [(s["key"], s["name"]) for s in out["services"]][-1] == ("wiki", "Wiki")
     assert "serversherpa.com" not in repr(out)
+
+
+def latest_with(status, at=NOW):
+    latest = LatestApiStatus()
+    latest.set(status, at)
+    return latest
+
+
+def all_up(settings, store, tracker):
+    for s in settings.services:
+        store.record(s.key, NOW, True, 30, "")
+        tracker.record(s.key, True, 30, NOW)
+
+
+def test_background_entry_only_once_checked(ctx):
+    settings, store, tracker = ctx
+    assert "background" not in [s["key"] for s in build_summary(settings, store, tracker, NOW)["services"]]
+    tracker.record("background", True, None, NOW)
+    store.record("background", NOW, True, None, "")
+    latest = latest_with(ApiStatus(False, None, None, Background("running", 7, 9)))
+    out = build_summary(settings, store, tracker, NOW, latest)
+    last = out["services"][-1]
+    assert last["key"] == "background"
+    assert last["name"] == "Background processing"
+    assert last["latency_ms"] is None
+    assert last["state"] == "up"
+    assert last["workers"] == {"running": 7, "total": 9}
+    assert last["uptime_90d"] == 100.0
+    assert all("workers" not in s for s in out["services"][:-1])
+
+
+def test_background_workers_none_without_fresh_report(ctx):
+    settings, store, tracker = ctx
+    tracker.record("background", True, None, NOW)
+    out = build_summary(settings, store, tracker, NOW)
+    assert out["services"][-1]["workers"] is None
+
+
+def test_background_paused_overrides_up_and_stays_operational(ctx):
+    settings, store, tracker = ctx
+    all_up(settings, store, tracker)
+    tracker.record("background", True, None, NOW)
+    latest = latest_with(ApiStatus(False, None, None, Background("paused", 3, 3)))
+    out = build_summary(settings, store, tracker, NOW, latest)
+    assert out["services"][-1]["state"] == "paused"
+    assert out["overall"] == "operational"
+
+
+def test_background_down_degrades(ctx):
+    settings, store, tracker = ctx
+    all_up(settings, store, tracker)
+    for n in (0, 1):
+        tracker.record("background", False, None, NOW)
+    out = build_summary(settings, store, tracker, NOW)
+    assert out["services"][-1]["state"] == "down"
+    assert out["overall"] == "degraded"
+
+
+def test_maintenance_overall_and_precedence(ctx):
+    settings, store, tracker = ctx
+    all_up(settings, store, tracker)
+    latest = latest_with(ApiStatus(True, "Cutover", None, None))
+    out = build_summary(settings, store, tracker, NOW, latest)
+    assert out["maintenance"] == {"active": True, "message": "Cutover"}
+    assert out["overall"] == "maintenance"
+    for n in (1, 2):
+        tracker.record("kiosk", False, None, NOW + timedelta(seconds=n))
+    out = build_summary(settings, store, tracker, NOW + timedelta(seconds=2), latest_with(ApiStatus(True, "Cutover", None, None), NOW + timedelta(seconds=2)))
+    assert out["overall"] == "degraded"
+
+
+def test_no_or_stale_latest_means_no_maintenance(ctx):
+    settings, store, tracker = ctx
+    out = build_summary(settings, store, tracker, NOW)
+    assert out["maintenance"] is None and out["announcement"] is None
+    stale = latest_with(ApiStatus(True, "M", "A", None), NOW - timedelta(seconds=500))
+    out = build_summary(settings, store, tracker, NOW, stale)
+    assert out["maintenance"] is None and out["announcement"] is None
+
+
+def test_announcement_passes_through_without_leaking(ctx):
+    settings, store, tracker = ctx
+    tracker.record("api", True, 5, NOW)
+    latest = latest_with(ApiStatus(False, None, "Planned upgrade Friday", None))
+    out = build_summary(settings, store, tracker, NOW, latest)
+    assert out["announcement"] == "Planned upgrade Friday"
+    assert out["maintenance"] == {"active": False, "message": None}
+    blob = repr(out)
+    assert "secret-api" not in blob and "internal" not in blob and "http" not in blob

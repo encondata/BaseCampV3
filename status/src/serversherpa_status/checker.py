@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
+from serversherpa_status.api_status import BACKGROUND_KEY, LatestApiStatus, parse_api_status
 from serversherpa_status.config import Settings
 from serversherpa_status.probes import probe
 from serversherpa_status.state import StateTracker
@@ -24,9 +25,9 @@ def utcnow() -> datetime:
 
 
 def seed_tracker(tracker: StateTracker, store: Store, settings: Settings) -> None:
-    for service in settings.services:
-        for row in store.recent(service.key, settings.failure_threshold):
-            tracker.record(service.key, row.ok, row.latency_ms, row.at)
+    for key in [s.key for s in settings.services] + [BACKGROUND_KEY]:
+        for row in store.recent(key, settings.failure_threshold):
+            tracker.record(key, row.ok, row.latency_ms, row.at)
 
 
 class Checker:
@@ -37,7 +38,9 @@ class Checker:
         tracker: StateTracker,
         client: httpx.AsyncClient,
         clock: Callable[[], datetime] = utcnow,
+        latest: LatestApiStatus | None = None,
     ) -> None:
+        self._latest = latest
         self._settings = settings
         self._store = store
         self._tracker = tracker
@@ -65,6 +68,22 @@ class Checker:
             except Exception:
                 store_ok = False
                 log.exception("failed to record %s check", service.key)
+        api_result = next((r for s, r in zip(services, results) if s.key == "api"), None)
+        status = (
+            parse_api_status(api_result.payload)
+            if api_result and api_result.ok and api_result.payload
+            else None
+        )
+        if self._latest is not None:
+            self._latest.set(status, now)
+        if status is not None and status.background is not None:
+            ok = status.background.state != "down"
+            self._tracker.record(BACKGROUND_KEY, ok, None, now)
+            try:
+                self._store.record(BACKGROUND_KEY, now, ok, None, "" if ok else "workers down")
+            except Exception:
+                store_ok = False
+                log.exception("failed to record background check")
         if self._last_prune is None or now - self._last_prune >= PRUNE_EVERY:
             try:
                 self._store.prune(now)

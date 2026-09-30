@@ -25,6 +25,7 @@ class ProbeResult:
     ok: bool
     latency_ms: int | None
     detail: str
+    payload: dict | None = None
 
 
 def _body_problem(key: str, resp: httpx.Response) -> bool:
@@ -59,4 +60,6 @@ async def probe(client: httpx.AsyncClient, service: Service, timeout: float) -> 
         return ProbeResult(False, latency, f"HTTP {resp.status_code}")
     if _body_problem(service.key, resp):
         return ProbeResult(False, latency, "unexpected response body")
+    if service.key == "api":
+        return ProbeResult(True, latency, "", resp.json())  # _body_problem proved it a dict
     return ProbeResult(True, latency, "")

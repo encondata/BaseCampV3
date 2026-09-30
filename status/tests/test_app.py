@@ -2,6 +2,7 @@ import pytest
 from datetime import UTC, datetime, timedelta
 from fastapi.testclient import TestClient
 
+from serversherpa_status.api_status import ApiStatus
 from serversherpa_status.app import create_app
 from serversherpa_status.config import load_settings
 
@@ -33,6 +34,24 @@ def test_summary(client):
     body = resp.json()
     assert body["services"][0]["state"] == "up"
     assert body["services"][0]["days"][-1]["total"] == 1
+
+
+def test_summary_has_maintenance_and_announcement_keys(client):
+    body = client.get("/api/summary").json()
+    assert body["maintenance"] is None
+    assert body["announcement"] is None
+
+
+def test_summary_reports_maintenance(client):
+    now = datetime.now(UTC)
+    client.app.state.store.record("api", now, True, 20, "")
+    client.app.state.tracker.record("api", True, 20, now)
+    client.app.state.tracker.record("portal", True, 20, now)
+    client.app.state.tracker.record("kiosk", True, 20, now)
+    client.app.state.latest_api_status.set(ApiStatus(True, "M", None, None), now)
+    body = client.get("/api/summary").json()
+    assert body["overall"] == "maintenance"
+    assert body["maintenance"] == {"active": True, "message": "M"}
 
 
 def test_healthz(client):

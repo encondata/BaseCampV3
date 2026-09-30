@@ -108,3 +108,25 @@ async def test_wiki_red_without_spa_root(wiki_service):
     respx.get("http://wiki.test/").respond(200, text="Welcome to nginx!")
     r = await run(wiki_service)
     assert not r.ok and r.detail == "unexpected response body"
+
+
+@respx.mock
+async def test_api_success_carries_the_payload(api_service):
+    respx.get("http://api.test/system/status").respond(200, json={"read_only": False})
+    r = await run(api_service)
+    assert r.payload == {"read_only": False}
+
+
+@respx.mock
+async def test_other_services_carry_no_payload(portal_service, kiosk_service, wiki_service):
+    respx.get("http://portal.test/").respond(200, text='<div id="root">')
+    respx.get("http://kiosk.test/config.js").respond(200, text="x")
+    respx.get("http://wiki.test/").respond(200, text='<div id="root">')
+    for svc in (portal_service, kiosk_service, wiki_service):
+        assert (await run(svc)).payload is None
+
+
+@respx.mock
+async def test_failed_api_probe_carries_no_payload(api_service):
+    respx.get("http://api.test/system/status").respond(500, json={"detail": "x"})
+    assert (await run(api_service)).payload is None

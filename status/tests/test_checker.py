@@ -6,6 +6,7 @@ import httpx
 import pytest
 import respx
 
+from serversherpa_status.api_status import BACKGROUND_KEY, LatestApiStatus
 from serversherpa_status.checker import Checker, seed_tracker
 from serversherpa_status.config import load_settings
 from serversherpa_status.state import StateTracker
@@ -32,8 +33,10 @@ def store(settings):
     s.close()
 
 
-def routes(api_ok=True, portal_ok=True, kiosk_ok=True):
-    respx.get("http://api.test/system/status").respond(200 if api_ok else 503, json={})
+def routes(api_ok=True, portal_ok=True, kiosk_ok=True, api_json=None):
+    respx.get("http://api.test/system/status").respond(
+        200 if api_ok else 503, json={} if api_json is None else api_json
+    )
     respx.get("http://portal.test/").respond(200 if portal_ok else 502, text='<div id="root">')
     respx.get("http://kiosk.test/config.js").respond(200 if kiosk_ok else 502, text="x")
 
@@ -49,7 +52,7 @@ class Clock:
 @respx.mock
 async def test_cycle_records_every_service(settings, store):
     routes(kiosk_ok=False)
-    tracker = StateTracker([s.key for s in settings.services], 2)
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
     async with httpx.AsyncClient() as client:
         await Checker(settings, store, tracker, client, clock=Clock()).run_cycle()
     assert [r.ok for r in store.recent("api", 5)] == [True]
@@ -61,7 +64,7 @@ async def test_cycle_records_every_service(settings, store):
 @respx.mock
 async def test_two_failed_cycles_flip_down(settings, store):
     routes(api_ok=False)
-    tracker = StateTracker([s.key for s in settings.services], 2)
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
     clock = Clock()
     async with httpx.AsyncClient() as client:
         c = Checker(settings, store, tracker, client, clock=clock)
@@ -77,7 +80,7 @@ async def test_prunes_on_first_cycle_then_hourly(settings, store, monkeypatch):
     routes()
     calls = []
     monkeypatch.setattr(store, "prune", lambda now: calls.append(now))
-    tracker = StateTracker([s.key for s in settings.services], 2)
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
     clock = Clock()
     async with httpx.AsyncClient() as client:
         c = Checker(settings, store, tracker, client, clock=clock)
@@ -90,7 +93,7 @@ async def test_prunes_on_first_cycle_then_hourly(settings, store, monkeypatch):
 
 
 async def test_run_forever_survives_a_crashing_cycle(settings, store, monkeypatch):
-    tracker = StateTracker([s.key for s in settings.services], 2)
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
     async with httpx.AsyncClient() as client:
         c = Checker(settings, store, tracker, client)
         calls = 0
@@ -119,7 +122,7 @@ async def test_tracker_updates_even_when_store_write_fails(settings, store, monk
         raise sqlite3.OperationalError("disk full")
 
     monkeypatch.setattr(store, "record", boom)
-    tracker = StateTracker([s.key for s in settings.services], 2)
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
     async with httpx.AsyncClient() as client:
         c = Checker(settings, store, tracker, client, clock=Clock())
         await c.run_cycle()
@@ -130,7 +133,7 @@ async def test_tracker_updates_even_when_store_write_fails(settings, store, monk
 @respx.mock
 async def test_store_ok_true_after_a_clean_cycle(settings, store):
     routes()
-    tracker = StateTracker([s.key for s in settings.services], 2)
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
     async with httpx.AsyncClient() as client:
         c = Checker(settings, store, tracker, client, clock=Clock())
         await c.run_cycle()
@@ -140,7 +143,7 @@ async def test_store_ok_true_after_a_clean_cycle(settings, store):
 @respx.mock
 async def test_last_cycle_at_set_after_run_cycle(settings, store):
     routes()
-    tracker = StateTracker([s.key for s in settings.services], 2)
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
     clock = Clock()
     async with httpx.AsyncClient() as client:
         c = Checker(settings, store, tracker, client, clock=clock)
@@ -157,7 +160,7 @@ async def test_prune_failure_does_not_stop_state_updates(settings, store, monkey
         raise sqlite3.OperationalError("disk full")
 
     monkeypatch.setattr(store, "prune", boom)
-    tracker = StateTracker([s.key for s in settings.services], 2)
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
     async with httpx.AsyncClient() as client:
         c = Checker(settings, store, tracker, client, clock=Clock())
         await c.run_cycle()
@@ -169,9 +172,85 @@ def test_seed_tracker_replays_recent_checks(settings, store):
     for n, ok in enumerate([True, False, False]):
         store.record("api", T0 + timedelta(minutes=n), ok, None, "")
     store.record("kiosk", T0, True, 12, "")
-    tracker = StateTracker([s.key for s in settings.services], 2)
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
     seed_tracker(tracker, store, settings)
     assert tracker.snapshot("api").state == "down"
     assert tracker.snapshot("kiosk").state == "up"
     assert tracker.snapshot("kiosk").latency_ms == 12
     assert tracker.snapshot("portal").state == "unknown"
+
+
+def bg(state, running=2, total=3):
+    return {"background": {"state": state, "running": running, "total": total}}
+
+
+@respx.mock
+async def test_background_running_is_recorded_up(settings, store):
+    routes(api_json=bg("running"))
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
+    latest = LatestApiStatus()
+    clock = Clock()
+    async with httpx.AsyncClient() as client:
+        await Checker(settings, store, tracker, client, clock=clock, latest=latest).run_cycle()
+    assert tracker.snapshot("background").state == "up"
+    assert [r.ok for r in store.recent("background", 5)] == [True]
+    got = latest.get(clock.now, 60)
+    assert got.background.running == 2 and got.background.total == 3
+
+
+@respx.mock
+async def test_background_down_for_two_cycles_reads_down(settings, store):
+    routes(api_json=bg("down", 0))
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
+    clock = Clock()
+    async with httpx.AsyncClient() as client:
+        c = Checker(settings, store, tracker, client, clock=clock)
+        await c.run_cycle()
+        clock.now += timedelta(minutes=1)
+        await c.run_cycle()
+    assert tracker.snapshot("background").state == "down"
+    assert [r.ok for r in store.recent("background", 5)] == [False, False]
+
+
+@respx.mock
+async def test_background_paused_is_recorded_ok(settings, store):
+    routes(api_json=bg("paused"))
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
+    async with httpx.AsyncClient() as client:
+        await Checker(settings, store, tracker, client, clock=Clock()).run_cycle()
+    assert [r.ok for r in store.recent("background", 5)] == [True]
+
+
+@respx.mock
+async def test_api_without_background_records_nothing(settings, store):
+    routes()
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
+    async with httpx.AsyncClient() as client:
+        await Checker(settings, store, tracker, client, clock=Clock()).run_cycle()
+    assert store.recent("background", 5) == []
+
+
+@respx.mock
+async def test_failed_api_probe_clears_latest_and_skips_background(settings, store):
+    routes(api_ok=False, api_json=bg("running"))
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
+    latest = LatestApiStatus()
+    clock = Clock()
+    latest.set(parse_ok(), clock.now)
+    async with httpx.AsyncClient() as client:
+        await Checker(settings, store, tracker, client, clock=clock, latest=latest).run_cycle()
+    assert latest.get(clock.now, 60) is None
+    assert store.recent("background", 5) == []
+
+
+def parse_ok():
+    from serversherpa_status.api_status import ApiStatus
+
+    return ApiStatus(False, None, None, None)
+
+
+def test_seed_tracker_seeds_background(settings, store):
+    store.record("background", T0, True, None, "")
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
+    seed_tracker(tracker, store, settings)
+    assert tracker.snapshot("background").state == "up"
