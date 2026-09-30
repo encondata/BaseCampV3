@@ -18,10 +18,10 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     var pollResult: @Sendable () throws -> PairPoll = { PairPoll(status: .pending, session: nil) }
     var setupOptionsResult: @Sendable () throws -> SetupOptions = { SetupOptions() }
     var submitSetupResult: @Sendable (KioskSetupIn) throws -> KioskSetupResult = { _ in throw unset }
-    var assets: @Sendable () throws -> KioskAssetsSync = { throw unset }
-    var people: @Sendable () throws -> KioskPeopleSync = { throw unset }
-    var containers: @Sendable () throws -> KioskContainersSync = { throw unset }
-    var trucks: @Sendable () throws -> KioskTrucksSync = { throw unset }
+    var assets: @Sendable () async throws -> KioskAssetsSync = { throw unset }
+    var people: @Sendable () async throws -> KioskPeopleSync = { throw unset }
+    var containers: @Sendable () async throws -> KioskContainersSync = { throw unset }
+    var trucks: @Sendable () async throws -> KioskTrucksSync = { throw unset }
     var postScansResult: @Sendable (KioskScanBatchIn) async throws -> KioskScanBatchOut = { KioskScanBatchOut(accepted: $0.scans.map(\.clientScanId)) }
     var rfidResult: @Sendable (String, KioskRfidEnrollIn) throws -> KioskRfidEnroll = { id, b in KioskRfidEnroll(assetId: id, rfidTag: b.rfidTag) }
     var statusResult: @Sendable (String) throws -> KioskTimeclockStatus = { _ in throw unset }
@@ -47,10 +47,10 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     func signOut(serial: String) async { record("signOut") }
     func setupOptions() async throws -> SetupOptions { record("setupOptions"); return try setupOptionsResult() }
     func submitSetup(_ body: KioskSetupIn) async throws -> KioskSetupResult { record("submitSetup"); return try submitSetupResult(body) }
-    func syncAssets(initiativeId: String) async throws -> KioskAssetsSync { record("syncAssets"); return try assets() }
-    func syncPeople() async throws -> KioskPeopleSync { record("syncPeople"); return try people() }
-    func syncContainers(initiativeId: String) async throws -> KioskContainersSync { record("syncContainers"); return try containers() }
-    func syncTrucks(initiativeId: String) async throws -> KioskTrucksSync { record("syncTrucks"); return try trucks() }
+    func syncAssets(initiativeId: String) async throws -> KioskAssetsSync { record("syncAssets"); return try await assets() }
+    func syncPeople() async throws -> KioskPeopleSync { record("syncPeople"); return try await people() }
+    func syncContainers(initiativeId: String) async throws -> KioskContainersSync { record("syncContainers"); return try await containers() }
+    func syncTrucks(initiativeId: String) async throws -> KioskTrucksSync { record("syncTrucks"); return try await trucks() }
     func postScans(_ body: KioskScanBatchIn) async throws -> KioskScanBatchOut { record("postScans"); return try await postScansResult(body) }
     func postRfidEnroll(assetId: String, _ body: KioskRfidEnrollIn) async throws -> KioskRfidEnroll { record("rfid"); return try rfidResult(assetId, body) }
     func timeclockStatus(personId: String) async throws -> KioskTimeclockStatus { record("timeclockStatus"); return try statusResult(personId) }
