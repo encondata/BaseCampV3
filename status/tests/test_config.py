@@ -123,3 +123,19 @@ def test_ntfy_bad_server_and_public_url():
         load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_NTFY_SERVER": "ntfy.sh"})
     with pytest.raises(ConfigError, match="STATUS_PUBLIC_URL"):
         load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_PUBLIC_URL": "status.test"})
+
+
+def test_warns_about_token_over_cleartext_server(caplog):
+    env = {**NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_NTFY_SERVER": "http://ntfy.internal",
+           "STATUS_NTFY_TOKEN": "tk_secret"}
+    with caplog.at_level("WARNING"):
+        load_settings(env)
+    assert any("cleartext" in r.getMessage() for r in caplog.records)
+    assert "tk_secret" not in caplog.text
+
+
+def test_no_cleartext_warning_for_https_or_no_token(caplog):
+    with caplog.at_level("WARNING"):
+        load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_NTFY_TOKEN": "tk"})
+        load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_NTFY_SERVER": "http://ntfy.internal"})
+    assert caplog.records == []

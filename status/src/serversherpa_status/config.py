@@ -1,11 +1,14 @@
 """Environment → Settings. Fails loudly: a status page pointed at nothing
 would render a permanent 'Checking…', which is worse than not starting."""
 
+import logging
 import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+log = logging.getLogger("serversherpa_status.config")
 
 DEFAULT_STATIC_DIR = str(Path(__file__).parent / "static")
 
@@ -82,10 +85,17 @@ def _load_ntfy(env: Mapping[str, str]) -> NtfyConfig | None:
         raise ConfigError(
             "STATUS_NTFY_TOPIC may only use letters, digits, - and _ (max 64 characters)"
         )
+    server = _http_url(env, "STATUS_NTFY_SERVER", "https://ntfy.sh")
+    token = env.get("STATUS_NTFY_TOKEN", "").strip() or None
+    if token and server.startswith("http://"):
+        log.warning(
+            "STATUS_NTFY_TOKEN is set but STATUS_NTFY_SERVER is cleartext http://; "
+            "the token is sent unencrypted. Use an https:// server."
+        )
     return NtfyConfig(
-        server=_http_url(env, "STATUS_NTFY_SERVER", "https://ntfy.sh"),
+        server=server,
         topic=topic,
-        token=env.get("STATUS_NTFY_TOKEN", "").strip() or None,
+        token=token,
         click_url=_http_url(env, "STATUS_PUBLIC_URL") or None,
     )
 
