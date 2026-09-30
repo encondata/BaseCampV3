@@ -83,12 +83,12 @@ class LoginScreenTest {
         compose.onNodeWithText("EMAIL").assertIsDisplayed()
     }
 
-    @Test fun moveFlowShowsItsNoticeAndGoesBack() {
+    @Test fun moveFlowAsksForAPasswordAndGoesBack() {
         compose.setContent { CompositionLocalProvider(LocalAppContainer provides testContainer()) { KioskTheme { LoginScreen(rememberNavController()) } } }
         compose.onNodeWithText("Move password").performScrollTo().performClick()
         compose.onNodeWithText("Sign in with a move password.").assertIsDisplayed()
         compose.onNodeWithTag("login-submit-move").performScrollTo().performClick()
-        compose.onNodeWithText("Move passwords aren't available yet. Use email & password or link with your phone.").assertIsDisplayed()
+        compose.onNodeWithText("Enter the move password.").assertIsDisplayed()
         compose.onNodeWithText("Back to email & password").performScrollTo().performClick()
         compose.onNodeWithText("EMAIL").assertIsDisplayed()
     }

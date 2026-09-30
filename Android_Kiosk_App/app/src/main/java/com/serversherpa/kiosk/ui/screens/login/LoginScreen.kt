@@ -63,7 +63,7 @@ fun LoginScreen(nav: NavHostController) {
         actions = LoginActions(
             setEmail = vm::setEmail, setPassword = vm::setPassword, togglePassword = vm::togglePassword,
             submitPassword = { vm.submitPassword(goHome) },
-            setView = vm::setView, setMovePassword = vm::setMovePassword, submitMove = vm::submitMove,
+            setView = vm::setView, setMovePassword = vm::setMovePassword, submitMove = { vm.submitMove(goHome) },
             openSettings = { nav.navigate(Routes.settings("this-kiosk")) },
         ),
         pairPanel = { PairPanel(pairVm, portalUrl) { session: SessionData -> container.auth.completePair(session); goHome() } },
@@ -141,7 +141,7 @@ internal fun LoginContent(ui: LoginUi, kioskName: String, actions: LoginActions,
                     }
                     LoginView.MOVE -> {
                         LoginField("Move password", ui.movePassword, actions.setMovePassword, tag = "login-move", masked = true)
-                        if (ui.moveNotice) LoginNotice("Move passwords aren't available yet. Use email & password or link with your phone.", modifier = Modifier.padding(top = 8.dp))
+                        ui.moveError?.let { Text(it, color = LoginPalette.ErrorText, fontFamily = Geologica, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
                         LoginPrimaryButton("Sign in", actions.submitMove, Modifier.padding(top = 16.dp).testTag("login-submit-move"))
                         LoginLink("Back to email & password", Modifier.align(Alignment.Start)) { actions.setView(LoginView.PASSWORD) }
                     }

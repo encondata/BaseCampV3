@@ -54,9 +54,77 @@ class LoginViewModelTest {
         assertTrue(done)
     }
 
-    @Test fun movePasswordIsAPlaceholder() = runTest {
+    @Test fun aBlankMovePasswordIsRejectedLocally() = runTest {
+        val api = FakeKioskApi()
+        val vm = vm(api)
+        vm.setView(LoginView.MOVE); vm.setMovePassword("   ")
+        var done = false
+        vm.submitMove { done = true }; runCurrent()
+        assertEquals("Enter the move password.", vm.state.value.moveError)
+        assertTrue(api.moveLoginPasswords.isEmpty())
+        assertEquals(false, done)
+    }
+
+    @Test fun aMovePasswordSignsIn() = runTest {
+        val api = FakeKioskApi().apply { moveLoginResult = { fakeSession(kioskMove = com.serversherpa.kiosk.core.model.KioskMove("m1", "Dallas Move")) } }
+        val vm = vm(api)
+        vm.setView(LoginView.MOVE); vm.setMovePassword("orange-kayak-42")
+        var done = false
+        vm.submitMove { done = true }
+        assertTrue(vm.state.value.moveLoading)
+        runCurrent()
+        assertEquals(listOf("orange-kayak-42"), api.moveLoginPasswords)
+        assertTrue(done)
+        assertEquals("", vm.state.value.movePassword)
+        assertEquals(false, vm.state.value.moveLoading)
+        assertEquals(null, vm.state.value.moveError)
+    }
+
+    @Test fun moveErrorCodesMapToTheMoveFormsCopy() = runTest {
+        val api = FakeKioskApi()
+        val vm = vm(api)
+        vm.setView(LoginView.MOVE)
+        val cases = listOf(
+            ApiError(401, "invalid_move_password") to "That move password isn't right.",
+            ApiError(401, "move_not_active") to "That move password isn't active.",
+            ApiError(429, "move_login_rate_limited") to "Too many tries. Wait a few minutes.",
+            ApiError(403, "kiosk_not_allowed") to "That move can't sign in to kiosks right now. Ask a coordinator.",
+            ApiError(0, "network") to "Can't reach the server. Check the kiosk's network connection.",
+            ApiError(500, "unknown_error") to "Login failed. Please try again.",
+        )
+        for ((err, copy) in cases) {
+            api.moveLoginResult = { throw err }
+            vm.setMovePassword("pw-123456"); vm.submitMove {}; runCurrent()
+            assertEquals(copy, vm.state.value.moveError)
+            assertEquals("", vm.state.value.movePassword)   // cleared after a failure, as on the web
+            assertEquals(false, vm.state.value.moveLoading)
+        }
+    }
+
+    @Test fun aScannedCodeIsSubmittedAsTheMovePassword() = runTest {
+        val api = FakeKioskApi().apply { moveLoginResult = { fakeSession() } }
+        val vm = vm(api)
+        vm.setView(LoginView.MOVE)
+        var done = false
+        vm.submitScannedMove("QR-VALUE-9") { done = true }; runCurrent()
+        assertEquals(listOf("QR-VALUE-9"), api.moveLoginPasswords)
+        assertTrue(done)
+    }
+
+    @Test fun typingClearsTheMoveError() = runTest {
         val vm = vm(FakeKioskApi())
-        vm.setView(LoginView.MOVE); vm.setMovePassword("x"); vm.submitMove()
-        assertTrue(vm.state.value.moveNotice)
+        vm.setView(LoginView.MOVE); vm.submitMove {}; runCurrent()
+        assertEquals("Enter the move password.", vm.state.value.moveError)
+        vm.setMovePassword("a")
+        assertEquals(null, vm.state.value.moveError)
+    }
+
+    @Test fun aSecondSubmitWhileSigningInIsIgnored() = runTest {
+        val api = FakeKioskApi().apply { moveLoginResult = { fakeSession() } }
+        val vm = vm(api)
+        vm.setView(LoginView.MOVE); vm.setMovePassword("pw-123456")
+        vm.submitMove {}; vm.submitScannedMove("other") {}
+        runCurrent()
+        assertEquals(listOf("pw-123456"), api.moveLoginPasswords)
     }
 }
