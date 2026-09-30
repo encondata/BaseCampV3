@@ -49,6 +49,9 @@ struct RootView: View {
 
     /// Screens not built yet show the placeholder until their task replaces the destination.
     @ViewBuilder private func destination(_ route: Route) -> some View {
-        FeaturePlaceholderScreen(feature: feature(route.featureId), path: $path)
+        switch route {
+        case .setup: KioskSetupScreen(path: $path)
+        default: FeaturePlaceholderScreen(feature: feature(route.featureId), path: $path)
+        }
     }
 }
