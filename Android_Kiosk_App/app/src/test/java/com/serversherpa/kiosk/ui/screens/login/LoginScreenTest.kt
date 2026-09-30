@@ -234,12 +234,16 @@ class LoginScreenTest {
         compose.onNodeWithContentDescription("Kiosk settings").assertIsDisplayed()
     }
 
-    @Test fun theArtworkIsCappedByHeightOnAShortScreen() {
-        // Natural height at 320 dp wide is ~191 dp; on a 533 dp screen the cap (30%) is ~160 dp.
-        assertEquals(159.9f, loginArtHeight(320.dp, 533.dp).value, 0.1f)
-        // A tall phone gets the artwork at its own aspect.
-        assertEquals(360f * 611f / 1022f, loginArtHeight(360.dp, 800.dp).value, 0.1f)
-        // Never more than 30% of the height, whatever the width.
-        assertTrue(loginArtHeight(1000.dp, 400.dp).value <= 120.01f)
+    @Test fun theArtworkBandIsSizedToTheScreen() {
+        // A phone: 40% of the height, drawn wider than the screen so the crop keeps the peaks.
+        assertEquals(320f, loginArtHeight(360.dp, 800.dp).value, 0.1f)
+        assertEquals(360f, loginArtWidth(360.dp, 320.dp).value, 0.1f)
+        // A Zebra MC2200 (320x533 dp): still 40% of a short screen, ~213 dp.
+        assertEquals(213.2f, loginArtHeight(320.dp, 533.dp).value, 0.1f)
+        // A very narrow screen can't zoom past 1.6x the art's own aspect.
+        assertEquals(200f / MOUNTAINS_ASPECT * 1.6f, loginArtHeight(200.dp, 800.dp).value, 0.1f)
+        // A wide, short screen: the whole art at 40% of the height, sitting bottom-right.
+        assertEquals(160f, loginArtHeight(1000.dp, 400.dp).value, 0.1f)
+        assertEquals(160f * MOUNTAINS_ASPECT, loginArtWidth(1000.dp, 160.dp).value, 0.1f)
     }
 }

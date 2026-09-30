@@ -200,7 +200,9 @@ internal fun LoginSecondaryButton(text: String, icon: ImageVector, onClick: () -
 /** `.link`: ink text with an underline, at least 48 dp tall. */
 @Composable
 internal fun LoginLink(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    TextButton(onClick = onClick, modifier = modifier.heightIn(min = 48.dp)) {
+    // No side padding: TextButton's default 12 dp pushed these links in from
+    // the margin every field and button shares. The 48 dp height stays.
+    TextButton(onClick = onClick, modifier = modifier.heightIn(min = 48.dp), contentPadding = PaddingValues(horizontal = 0.dp)) {
         Text(text, color = LoginPalette.Ink, fontFamily = Geologica, fontSize = 14.sp, textDecoration = TextDecoration.Underline)
     }
 }

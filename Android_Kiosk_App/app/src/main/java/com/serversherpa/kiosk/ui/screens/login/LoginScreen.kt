@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -81,22 +82,32 @@ internal class LoginActions(
     val openSettings: () -> Unit,
 )
 
-/** The artwork never takes more than this share of the screen's height (a 480x800 Zebra MC2200 is ~533 dp tall). */
-private const val MAX_ART_SHARE = 0.30f
+/** The artwork's band takes up to this share of the screen's height (a 480x800 Zebra MC2200 is ~533 dp tall). */
+private const val MAX_ART_SHARE = 0.40f
 
-/** Full width at the artwork's own aspect, but never more than [MAX_ART_SHARE] of the height. */
-internal fun loginArtHeight(maxWidth: Dp, maxHeight: Dp): Dp = min(maxWidth / MOUNTAINS_ASPECT, maxHeight * MAX_ART_SHARE)
+/** On a narrow screen the art may be drawn up to this much taller than its width allows, cropping the misty right side. */
+private const val ART_ZOOM = 1.6f
+
+/** The peaks start ~36% down the art; the form only has to clear what is below that. */
+private const val ART_CLEAR_SHARE = 0.40f
+
+/** The band's height: [MAX_ART_SHARE] of the screen, unless the screen is too narrow to fill it even zoomed in. */
+internal fun loginArtHeight(maxWidth: Dp, maxHeight: Dp): Dp = min(maxWidth / MOUNTAINS_ASPECT * ART_ZOOM, maxHeight * MAX_ART_SHARE)
+
+/** The band's width: the whole screen, or the art's natural width at [loginArtHeight] when the screen is wider (it then sits bottom-right). */
+internal fun loginArtWidth(maxWidth: Dp, artHeight: Dp): Dp = min(maxWidth, artHeight * MOUNTAINS_ASPECT)
 
 @Composable
 internal fun LoginContent(ui: LoginUi, kioskName: String, actions: LoginActions, pairPanel: @Composable () -> Unit) {
     BoxWithConstraints(Modifier.fillMaxSize().background(LoginPalette.Canvas)) {
-        // Anchored at the bottom, at the screen's width but capped by height so it can't crowd a short screen.
+        // Anchored at the bottom right; on a phone it spans the screen and crops to the peaks.
         val artHeight = loginArtHeight(maxWidth, maxHeight)
+        val artWidth = loginArtWidth(maxWidth, artHeight)
         LoginTopo(Modifier.matchParentSize())
-        LoginMountains(Modifier.align(Alignment.BottomEnd).fillMaxWidth().height(artHeight))
+        LoginMountains(Modifier.align(Alignment.BottomEnd).width(artWidth).height(artHeight), fadeLeft = artWidth < maxWidth)
 
-        // The form scrolls over the art. The trailing spacer is the art's height, so at the
-        // end of the scroll (or on a tall screen) the last button sits clear of the peaks.
+        // The form scrolls over the art. The trailing spacer covers the art below its faded
+        // sky, so at the end of the scroll (or on a tall screen) the last button sits above the peaks.
         Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
             Column(Modifier.widthIn(max = 440.dp).fillMaxWidth().padding(horizontal = 20.dp).padding(top = 16.dp)) {
                 LoginBrand(kioskName)
@@ -135,7 +146,7 @@ internal fun LoginContent(ui: LoginUi, kioskName: String, actions: LoginActions,
                         LoginLink("Back to email & password", Modifier.align(Alignment.Start)) { actions.setView(LoginView.PASSWORD) }
                     }
                 }
-                Spacer(Modifier.height(24.dp + artHeight))
+                Spacer(Modifier.height(24.dp + artHeight * (1f - ART_CLEAR_SHARE)))
             }
         }
         LoginGear(actions.openSettings, Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(top = 8.dp, end = 8.dp))
@@ -147,7 +158,7 @@ private fun ColumnScope.PasswordForm(ui: LoginUi, actions: LoginActions) {
     var forgotOpen by rememberSaveable { mutableStateOf(false) }
     LoginField("Email", ui.email, actions.setEmail, tag = "login-email", placeholder = "you@company.com", invalid = ui.invalidEmail)
     LoginField(
-        "Password", ui.password, actions.setPassword, tag = "login-password", placeholder = "••••••••••••", invalid = ui.invalidPassword,
+        "Password", ui.password, actions.setPassword, tag = "login-password", invalid = ui.invalidPassword,
         masked = !ui.showPassword, modifier = Modifier.padding(top = 16.dp),
         trailing = { PasswordEye(ui.showPassword, actions.togglePassword) },
     )

@@ -18,15 +18,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -41,13 +43,20 @@ import kotlin.math.max
 import kotlin.math.sin
 
 /** login-mountains-light.webp is 1022x611. */
-internal const val MOUNTAINS_ASPECT = 1022f / 611f
+internal const val MOUNTAINS_W = 1022f
+internal const val MOUNTAINS_H = 611f
+internal const val MOUNTAINS_ASPECT = MOUNTAINS_W / MOUNTAINS_H
 
 /**
- * The mountains at the web's phone-width opacity (login-light.css, under 900px:
- * `.lx-mountains { width: 100%; opacity: .45 }`), because the form scrolls over them here too.
+ * The route over the peaks, in the artwork's own pixels: from the lower ridge up to the
+ * sunlit summit (the portal's `lx-route` / `lx-pin`, moved onto this art's peaks).
  */
-internal const val MOUNTAINS_ALPHA = 0.45f
+private val RoutePath = Path().apply {
+    moveTo(474f, 458f)
+    cubicTo(436f, 396f, 318f, 372f, 262f, 318f)
+    cubicTo(228f, 286f, 214f, 258f, 197f, 234f)
+}
+private val RoutePins = listOf(Offset(474f, 458f), Offset(197f, 234f))
 
 private const val TOPO_W = 1672f
 private const val TOPO_H = 941f
@@ -83,20 +92,46 @@ internal fun LoginTopo(modifier: Modifier = Modifier) {
     }
 }
 
-/** The artwork, with the web's mask: the top 26% and the left 16% fade into the canvas. */
+/**
+ * The artwork at full strength, like the portal's desktop scene. The image is anchored at its
+ * bottom-left, so when the band is narrower than the art (every phone) the crop keeps the
+ * sunlit peaks and drops the mist on the right. The top 26% fades into the canvas; the left
+ * edge fades only when the art sits inside a wider screen ([fadeLeft]), as on the web.
+ */
 @Composable
-internal fun LoginMountains(modifier: Modifier = Modifier) {
-    Image(
-        painterResource(R.drawable.login_mountains_light), contentDescription = null,
-        contentScale = ContentScale.Crop, alignment = Alignment.BottomEnd, alpha = MOUNTAINS_ALPHA,
-        modifier = modifier
+internal fun LoginMountains(modifier: Modifier = Modifier, fadeLeft: Boolean = false) {
+    val painter = painterResource(R.drawable.login_mountains_light)
+    Canvas(
+        modifier
             .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
             .drawWithContent {
                 drawContent()
                 drawRect(Brush.verticalGradient(0f to Color.Transparent, .26f to Color.Black, 1f to Color.Black), blendMode = BlendMode.DstIn)
-                drawRect(Brush.horizontalGradient(0f to Color.Transparent, .16f to Color.Black, 1f to Color.Black), blendMode = BlendMode.DstIn)
+                if (fadeLeft) drawRect(Brush.horizontalGradient(0f to Color.Transparent, .16f to Color.Black, 1f to Color.Black), blendMode = BlendMode.DstIn)
+                // The route and pins go on after the masks, so they never fade.
+                val s = max(size.width / MOUNTAINS_W, size.height / MOUNTAINS_H)
+                withTransform({ translate(0f, size.height - MOUNTAINS_H * s); scale(s, s, Offset.Zero) }) {
+                    val dash = 6.dp.toPx() / s
+                    drawPath(
+                        RoutePath, LoginPalette.Orange,
+                        style = Stroke(width = 2.dp.toPx() / s, cap = StrokeCap.Round, pathEffect = PathEffect.dashPathEffect(floatArrayOf(dash, dash * .85f))),
+                    )
+                }
+                for (p in RoutePins) {
+                    val c = Offset(p.x * s, size.height - (MOUNTAINS_H - p.y) * s)
+                    drawCircle(LoginPalette.Orange.copy(alpha = .22f), radius = 16.dp.toPx(), center = c)
+                    drawCircle(Color.White, radius = 9.dp.toPx(), center = c)
+                    drawCircle(LoginPalette.Orange, radius = 9.dp.toPx(), center = c, style = Stroke(2.5.dp.toPx()))
+                    drawCircle(LoginPalette.Orange, radius = 5.dp.toPx(), center = c, style = Stroke(2.dp.toPx()))
+                    drawCircle(LoginPalette.Orange, radius = 2.5.dp.toPx(), center = c)
+                }
             },
-    )
+    ) {
+        val s = max(size.width / MOUNTAINS_W, size.height / MOUNTAINS_H)
+        withTransform({ translate(0f, size.height - MOUNTAINS_H * s) }) {
+            with(painter) { draw(Size(MOUNTAINS_W * s, MOUNTAINS_H * s)) }
+        }
+    }
 }
 
 /** The logo mark, the wordmark, the tagline and (kept from the old band) which kiosk this is. */
