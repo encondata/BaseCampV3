@@ -8,6 +8,8 @@ struct StubResponse: Sendable {
     var body: Data = Data()
     var delay: TimeInterval = 0
     var failure: URLError.Code?
+    /// Answers 302 with this `Location` (the redirect is delivered to the session delegate).
+    var redirectTo: String?
 
     static func json(_ status: Int, _ body: String) -> StubResponse {
         StubResponse(status: status, body: Data(body.utf8))
@@ -15,6 +17,10 @@ struct StubResponse: Sendable {
 
     static func text(_ status: Int, _ body: String) -> StubResponse {
         StubResponse(status: status, headers: [:], body: Data(body.utf8))
+    }
+
+    static func redirect(to location: String, status: Int = 302) -> StubResponse {
+        StubResponse(status: status, headers: [:], redirectTo: location)
     }
 
     static func fail(_ code: URLError.Code = .cannotConnectToHost) -> StubResponse {
@@ -118,6 +124,15 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         DispatchQueue.global().asyncAfter(deadline: .now() + answer.delay) { [self] in
             if let failure = answer.failure {
                 client?.urlProtocol(self, didFailWithError: URLError(failure))
+                return
+            }
+            if let location = answer.redirectTo, let target = URL(string: location) {
+                // Like the loading system: the new request carries the old one's headers.
+                var next = URLRequest(url: target)
+                next.httpMethod = request.httpMethod
+                next.allHTTPHeaderFields = request.allHTTPHeaderFields
+                let redirect = HTTPURLResponse(url: url, statusCode: answer.status, httpVersion: "HTTP/1.1", headerFields: ["Location": location])!
+                client?.urlProtocol(self, wasRedirectedTo: next, redirectResponse: redirect)
                 return
             }
             let response = HTTPURLResponse(url: url, statusCode: answer.status, httpVersion: "HTTP/1.1", headerFields: answer.headers)!

@@ -1,5 +1,28 @@
 import Foundation
 
+/// Strips credentials from a redirect that leaves the original origin.
+final class RedirectGuard: NSObject, URLSessionTaskDelegate, Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(Self.sanitized(request, from: task.originalRequest?.url ?? task.currentRequest?.url))
+    }
+
+    static func sanitized(_ request: URLRequest, from original: URL?) -> URLRequest {
+        guard let target = request.url, !sameOrigin(original, target) else { return request }
+        var copy = request
+        copy.setValue(nil, forHTTPHeaderField: "Cookie")
+        copy.setValue(nil, forHTTPHeaderField: "Authorization")
+        return copy
+    }
+
+    private static func sameOrigin(_ a: URL?, _ b: URL) -> Bool {
+        guard let a else { return false }
+        func port(_ u: URL) -> Int? { u.port ?? (u.scheme?.lowercased() == "https" ? 443 : u.scheme?.lowercased() == "http" ? 80 : nil) }
+        return a.scheme?.lowercased() == b.scheme?.lowercased()
+            && a.host?.lowercased() == b.host?.lowercased()
+            && port(a) == port(b)
+    }
+}
+
 final class URLSessionKioskApi: KioskApi {
     private let apiUrl: @Sendable () async -> String
     private let session: URLSession
@@ -15,6 +38,8 @@ final class URLSessionKioskApi: KioskApi {
 
     /// Ephemeral, with URLSession's cookie handling off: the refresh cookie is
     /// the only cookie the kiosk keeps, and `RefreshCookie` keeps it.
+    /// A redirect to another origin never carries the hand-set `Cookie` or
+    /// `Authorization` headers (URLSession would forward custom headers).
     static func makeSession(protocolClasses: [AnyClass]? = nil) -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil
@@ -22,7 +47,7 @@ final class URLSessionKioskApi: KioskApi {
         config.httpCookieAcceptPolicy = .never
         config.timeoutIntervalForRequest = 20
         if let protocolClasses { config.protocolClasses = protocolClasses }
-        return URLSession(configuration: config)
+        return URLSession(configuration: config, delegate: RedirectGuard(), delegateQueue: nil)
     }
 
     // MARK: plumbing
@@ -40,10 +65,14 @@ final class URLSessionKioskApi: KioskApi {
         return r
     }
 
-    private static func request<T: Encodable>(_ url: URL, post body: T) -> URLRequest {
+    private static func request<T: Encodable>(_ url: URL, post body: T) throws -> URLRequest {
         var r = request(url, "POST")
         r.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
-        r.httpBody = try? KioskJSON.encoder.encode(body)
+        do {
+            r.httpBody = try KioskJSON.encoder.encode(body)
+        } catch {
+            throw ApiError(status: 0, code: "encode_failed")
+        }
         return r
     }
 
@@ -97,9 +126,16 @@ final class URLSessionKioskApi: KioskApi {
         }
         var response = try await go()
         if response.http.statusCode == 401 {
-            let refreshed = await sessionStore.refresh()
-            if refreshed != nil { response = try await go() }
-            if refreshed == nil || response.http.statusCode == 401 { await sessionStore.notifySessionEnded() }
+            let outcome = await sessionStore.refreshOutcome()
+            switch outcome {
+            case .ok:
+                response = try await go()
+                if response.http.statusCode == 401 { await sessionStore.notifySessionEnded(cookieRejected: true) }
+            case .rejected:
+                await sessionStore.notifySessionEnded(cookieRejected: true)
+            case .transient:
+                await sessionStore.notifySessionEnded(cookieRejected: false)
+            }
         }
         return response
     }

@@ -190,4 +190,96 @@ struct URLSessionKioskApiAuthTests {
         #expect(pair.bodyString == #"{"name":"Kiosk 0001","serial":"kiosk-ios-1"}"#)
         #expect(pair.header("Authorization") == nil)
     }
+
+    @Test func authed401ThenNetworkFailedRefreshEndsTheSessionButKeepsTheCookie() async throws {
+        let h = ApiHarness()
+        h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
+        var events = h.session.sessionEnded.makeAsyncIterator()
+        h.server.enqueue(.json(401, #"{"detail":{"code":"token_expired"}}"#))
+        h.server.enqueue(.fail())                               // the refresh never arrives
+        _ = await expectApiError { _ = try await h.api.heartbeat(HeartbeatIn(serial: "s", name: "Kiosk")) }
+        let ended: Void? = await events.next()
+        #expect(ended != nil)
+        #expect(h.cookies.value(forHost: h.server.host) == "r1")
+    }
+
+    @Test func authed401ThenServerErrorRefreshKeepsTheCookie() async throws {
+        let h = ApiHarness()
+        h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
+        var events = h.session.sessionEnded.makeAsyncIterator()
+        h.server.enqueue(.json(401, #"{"detail":{"code":"token_expired"}}"#))
+        h.server.enqueue(.json(503, #"{"detail":{"code":"unavailable"}}"#))
+        _ = await expectApiError { _ = try await h.api.heartbeat(HeartbeatIn(serial: "s", name: "Kiosk")) }
+        let ended: Void? = await events.next()
+        #expect(ended != nil)
+        #expect(h.cookies.value(forHost: h.server.host) == "r1")
+    }
+
+    @Test func authed401ThenRejectedRefreshDeletesTheCookie() async throws {
+        let h = ApiHarness()
+        h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
+        h.server.enqueue(.json(401, #"{"detail":{"code":"token_expired"}}"#))
+        h.server.enqueue(.json(401, #"{"detail":{"code":"invalid_token"}}"#))
+        _ = await expectApiError { _ = try await h.api.heartbeat(HeartbeatIn(serial: "s", name: "Kiosk")) }
+        #expect(h.cookies.value(forHost: h.server.host) == nil)
+    }
+
+    @Test func secondUnauthorizedAfterSuccessfulRefreshDeletesTheCookie() async throws {
+        let h = ApiHarness()
+        h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
+        h.server.enqueue(.json(401, #"{"detail":{"code":"token_expired"}}"#))
+        h.server.enqueue(sessionResponse(cookie: "ss_refresh=r2; Path=/auth; HttpOnly", token: "tok2"))
+        h.server.enqueue(.json(401, #"{"detail":{"code":"invalid_token"}}"#))
+        _ = await expectApiError { _ = try await h.api.heartbeat(HeartbeatIn(serial: "s", name: "Kiosk")) }
+        #expect(h.cookies.value(forHost: h.server.host) == nil)
+    }
+
+    // MARK: redirects never carry credentials to another host
+
+    @Test func refreshRedirectedToAnotherHostLeaksNoCookie() async throws {
+        let h = ApiHarness()
+        h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
+        let other = StubServer()
+        other.enqueue(sessionResponse(cookie: nil, token: "tok2"))
+        h.server.enqueue(.redirect(to: "\(other.baseURL)/auth/refresh"))
+        _ = await h.session.refresh()
+        let seen = try #require(other.takeRequest())
+        #expect(seen.header("Cookie") == nil)
+        #expect(seen.header("Authorization") == nil)
+    }
+
+    @Test func logoutRedirectedToAnotherHostLeaksNoCookie() async throws {
+        let h = ApiHarness()
+        h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
+        let other = StubServer()
+        other.enqueue(.json(200, "{}"))
+        h.server.enqueue(.redirect(to: "\(other.baseURL)/auth/logout"))
+        await h.api.logout()
+        #expect(other.takeRequest()?.header("Cookie") == nil)
+    }
+
+    @Test func authedCallRedirectedToAnotherHostLeaksNoBearer() async throws {
+        let h = ApiHarness()
+        h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
+        let other = StubServer()
+        other.enqueue(.json(200, #"{"device_id":"d1","name":"Kiosk","registration":"ok","token_expires_at":null}"#))
+        h.server.enqueue(.redirect(to: "\(other.baseURL)/kiosk/heartbeat"))
+        _ = try await h.api.heartbeat(HeartbeatIn(serial: "s", name: "Kiosk"))
+        let seen = try #require(other.takeRequest())
+        #expect(seen.header("Authorization") == nil)
+        #expect(seen.header("Cookie") == nil)
+    }
+
+    @Test func sameHostRedirectKeepsTheBearer() async throws {
+        let h = ApiHarness()
+        h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
+        h.server.enqueue(.redirect(to: "\(h.server.baseURL)/kiosk/heartbeat2"))
+        h.server.enqueue(.json(200, #"{"device_id":"d1","name":"Kiosk","registration":"ok","token_expires_at":null}"#))
+        _ = try await h.api.heartbeat(HeartbeatIn(serial: "s", name: "Kiosk"))
+        _ = h.server.takeRequest()
+        _ = h.server.takeRequest()
+        let followed = try #require(h.server.takeRequest())
+        #expect(followed.path == "/kiosk/heartbeat2")
+        #expect(followed.header("Authorization") == "Bearer tok1")
+    }
 }

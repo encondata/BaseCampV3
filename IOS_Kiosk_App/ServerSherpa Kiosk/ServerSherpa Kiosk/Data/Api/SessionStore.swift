@@ -10,10 +10,26 @@ protocol SessionRefresher: Sendable {
     var sessionEnded: AsyncStream<Void> { get }
 }
 
+/// Why (or whether) a refresh produced a session.
+enum RefreshOutcome: Sendable {
+    case ok(SessionData)
+    /// The server answered 401/403: the refresh cookie is dead.
+    case rejected
+    /// A network error, another non-2xx (502/503 during a deploy) or an
+    /// unreadable answer: the cookie may still be good.
+    case transient
+
+    var session: SessionData? {
+        if case .ok(let data) = self { return data }
+        return nil
+    }
+}
+
 /// The portal's session rules, restated (see kiosk/src/lib/api.ts):
 /// access token in memory only; the refresh token is the `ss_refresh` cookie
-/// `RefreshCookie` holds; refresh is single-flight; a non-OK refresh clears
-/// local state, a network failure keeps it.
+/// `RefreshCookie` holds; refresh is single-flight; a 401/403 refresh clears
+/// local state and the cookie, any other non-OK clears local state only, a
+/// network failure keeps everything (as Android's SessionStore).
 actor SessionStore: SessionRefresher {
     private let apiUrl: @Sendable () async -> String
     private let cookies: RefreshCookie
@@ -23,7 +39,7 @@ actor SessionStore: SessionRefresher {
     private var token: String?
     private var tokenExpiresAt: Int64 = 0
     private var sessionExpiry: String?
-    private var inFlight: Task<SessionData?, Never>?
+    private var inFlight: Task<RefreshOutcome, Never>?
 
     nonisolated let sessionEnded: AsyncStream<Void>
     private nonisolated let endedContinuation: AsyncStream<Void>.Continuation
@@ -52,15 +68,18 @@ actor SessionStore: SessionRefresher {
         sessionExpiry = nil
     }
 
-    /// Clears the session and the refresh cookie, then tells the coordinator.
-    func notifySessionEnded() async {
+    /// Clears the session, then tells the coordinator. The refresh cookie goes
+    /// only when the server rejected it (`cookieRejected`); a transient failure keeps it.
+    func notifySessionEnded(cookieRejected: Bool) async {
         clear()
-        if let host = URL(string: await apiUrl())?.host { cookies.clear(host: host) }
+        if cookieRejected, let host = URL(string: await apiUrl())?.host { cookies.clear(host: host) }
         endedContinuation.yield()
     }
 
+    func refresh() async -> SessionData? { await refreshOutcome().session }
+
     /// Single-flight: concurrent callers all await the one request in flight.
-    func refresh() async -> SessionData? {
+    func refreshOutcome() async -> RefreshOutcome {
         if let inFlight { return await inFlight.value }
         let task = Task { await self.performRefresh() }
         inFlight = task
@@ -69,8 +88,8 @@ actor SessionStore: SessionRefresher {
         return result
     }
 
-    private func performRefresh() async -> SessionData? {
-        guard let url = URL(string: "\(await apiUrl())/auth/refresh"), let host = url.host else { return nil }
+    private func performRefresh() async -> RefreshOutcome {
+        guard let url = URL(string: "\(await apiUrl())/auth/refresh"), let host = url.host else { return .transient }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         if let value = cookies.value(forHost: host) {
@@ -80,21 +99,24 @@ actor SessionStore: SessionRefresher {
         let http: HTTPURLResponse
         do {
             let (body, response) = try await session.data(for: request)
-            guard let r = response as? HTTPURLResponse else { return nil }
+            guard let r = response as? HTTPURLResponse else { return .transient }
             (data, http) = (body, r)
         } catch {
-            return nil   // network hiccup: keep local state
+            return .transient   // network hiccup: keep local state
         }
         guard (200..<300).contains(http.statusCode) else {
             clear()
-            cookies.clear(host: host)
-            return nil
+            if http.statusCode == 401 || http.statusCode == 403 {
+                cookies.clear(host: host)
+                return .rejected
+            }
+            return .transient   // 5xx and the like: the cookie may still be good
         }
         cookies.capture(from: http, url: url)
         guard let session = try? KioskJSON.decoder.decode(SessionData.self, from: data) else {
-            return nil   // an unreadable answer: keep local state
+            return .transient   // an unreadable answer: keep local state
         }
         store(session)
-        return session
+        return .ok(session)
     }
 }

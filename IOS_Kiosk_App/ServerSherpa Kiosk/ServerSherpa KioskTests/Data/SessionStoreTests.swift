@@ -30,19 +30,38 @@ struct SessionStoreTests {
         #expect(await h.session.tokenIsStale() == true)
     }
 
-    @Test func failedRefreshClearsButNetworkErrorKeepsState() async throws {
+    @Test func rejectedRefreshClearsSessionAndDeletesTheCookie() async throws {
+        for status in [401, 403] {
+            let h = ApiHarness()
+            h.server.enqueue(sessionResponse())
+            _ = try await h.api.login(email: "a@b.c", password: "pw")
+            h.server.enqueue(.json(status, #"{"detail":{"code":"invalid_token"}}"#))
+            #expect(await h.session.refresh() == nil)
+            #expect(await h.session.accessToken() == nil)
+            #expect(h.cookies.value(forHost: h.server.host) == nil)
+        }
+    }
+
+    @Test func serverErrorRefreshClearsSessionButKeepsTheCookie() async throws {
+        for status in [500, 502, 503] {
+            let h = ApiHarness()
+            h.server.enqueue(sessionResponse())
+            _ = try await h.api.login(email: "a@b.c", password: "pw")
+            h.server.enqueue(.json(status, #"{"detail":{"code":"unavailable"}}"#))
+            #expect(await h.session.refresh() == nil)
+            #expect(await h.session.accessToken() == nil)
+            #expect(h.cookies.value(forHost: h.server.host) == "r1")
+        }
+    }
+
+    @Test func networkErrorRefreshKeepsTheSessionAndTheCookie() async throws {
         let h = ApiHarness()
         h.server.enqueue(sessionResponse())
         _ = try await h.api.login(email: "a@b.c", password: "pw")
-        h.server.enqueue(.json(401, #"{"detail":{"code":"invalid_token"}}"#))
-        #expect(await h.session.refresh() == nil)
-        #expect(await h.session.accessToken() == nil)
-        #expect(h.cookies.value(forHost: h.server.host) == nil)      // a non-OK refresh drops the cookie too
-        h.server.enqueue(sessionResponse(cookie: nil, token: "tok3"))
-        _ = await h.session.refresh()
         h.server.shutdown()
         #expect(await h.session.refresh() == nil)
-        #expect(await h.session.accessToken() == "tok3")            // kept on a network hiccup
+        #expect(await h.session.accessToken() == "tok1")
+        #expect(h.cookies.value(forHost: h.server.host) == "r1")
     }
 
     @Test func malformedRefreshBodyKeepsStateAndReturnsNull() async throws {
@@ -82,10 +101,22 @@ struct SessionStoreTests {
         h.server.enqueue(sessionResponse())
         _ = try await h.api.login(email: "a@b.c", password: "pw")
         var events = h.session.sessionEnded.makeAsyncIterator()
-        await h.session.notifySessionEnded()
+        await h.session.notifySessionEnded(cookieRejected: true)
         let ended: Void? = await events.next()
         #expect(ended != nil)
         #expect(await h.session.accessToken() == nil)
         #expect(h.cookies.value(forHost: h.server.host) == nil)
+    }
+
+    @Test func sessionEndedWithoutRejectionKeepsTheCookie() async throws {
+        let h = ApiHarness()
+        h.server.enqueue(sessionResponse())
+        _ = try await h.api.login(email: "a@b.c", password: "pw")
+        var events = h.session.sessionEnded.makeAsyncIterator()
+        await h.session.notifySessionEnded(cookieRejected: false)
+        let ended: Void? = await events.next()
+        #expect(ended != nil)
+        #expect(await h.session.accessToken() == nil)
+        #expect(h.cookies.value(forHost: h.server.host) == "r1")
     }
 }
