@@ -77,7 +77,7 @@ private struct LoginScreenBody: View {
                 if new == .pair { Task { await pair.begin() } } else if old == .pair { pair.stop() }
             }
             .onDisappear { pair.stop() }
-            .sheet(isPresented: $kioskSheet) { LoginKioskSheet() }
+            .sheet(isPresented: $kioskSheet) { SettingsScreen(initialTab: .thisKiosk, onDone: { kioskSheet = false }) }
     }
 
     private func form(_ metrics: LoginMetrics) -> some View {
