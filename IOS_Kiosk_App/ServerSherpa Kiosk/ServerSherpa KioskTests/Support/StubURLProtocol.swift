@@ -143,6 +143,11 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
                 next.allHTTPHeaderFields = request.allHTTPHeaderFields
                 let redirect = HTTPURLResponse(url: url, statusCode: answer.status, httpVersion: "HTTP/1.1", headerFields: ["Location": location])!
                 client?.urlProtocol(self, wasRedirectedTo: next, redirectResponse: redirect)
+                // A delegate that refuses the redirect gets the 3xx itself as the answer
+                // (as the real loading system does); when it follows, these are ignored.
+                client?.urlProtocol(self, didReceive: redirect, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: Data())
+                client?.urlProtocolDidFinishLoading(self)
                 return
             }
             let response = HTTPURLResponse(url: url, statusCode: answer.status, httpVersion: "HTTP/1.1", headerFields: answer.headers)!

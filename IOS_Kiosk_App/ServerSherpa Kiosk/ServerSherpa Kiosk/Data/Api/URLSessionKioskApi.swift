@@ -1,21 +1,33 @@
 import Foundation
 
-/// Strips credentials from a redirect that leaves the original origin.
+/// Redirects that leave the original origin (scheme, host, port; default ports
+/// normalized): a credentialed request (Authorization or Cookie), a request with a
+/// body or anything but a GET is not followed, so its 3xx comes back as the answer
+/// (a non-2xx `ApiError`). A credential-less GET (a presigned image) still follows,
+/// with any Cookie/Authorization stripped. Same-origin redirects are untouched.
 final class RedirectGuard: NSObject, URLSessionTaskDelegate, Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(Self.sanitized(request, from: task.originalRequest?.url ?? task.currentRequest?.url))
+        completionHandler(Self.decide(request, original: task.originalRequest ?? task.currentRequest))
     }
 
-    static func sanitized(_ request: URLRequest, from original: URL?) -> URLRequest {
-        guard let target = request.url, !sameOrigin(original, target) else { return request }
+    /// The request to follow, or nil to stop at the redirect.
+    static func decide(_ request: URLRequest, original: URLRequest?) -> URLRequest? {
+        guard let target = request.url else { return nil }
+        if sameOrigin(original?.url, target) { return request }
+        let method = (original?.httpMethod ?? "GET").uppercased()
+        let hasBody = original?.httpBody != nil || original?.httpBodyStream != nil
+        let credentialed = original?.value(forHTTPHeaderField: "Authorization") != nil
+            || original?.value(forHTTPHeaderField: "Cookie") != nil
+        if method != "GET" || hasBody || credentialed { return nil }
         var copy = request
         copy.setValue(nil, forHTTPHeaderField: "Cookie")
         copy.setValue(nil, forHTTPHeaderField: "Authorization")
         return copy
     }
 
-    private static func sameOrigin(_ a: URL?, _ b: URL) -> Bool {
-        guard let a else { return false }
+    /// Same scheme, host and port (an absent port is the scheme's default).
+    static func sameOrigin(_ a: URL?, _ b: URL?) -> Bool {
+        guard let a, let b else { return false }
         func port(_ u: URL) -> Int? { u.port ?? (u.scheme?.lowercased() == "https" ? 443 : u.scheme?.lowercased() == "http" ? 80 : nil) }
         return a.scheme?.lowercased() == b.scheme?.lowercased()
             && a.host?.lowercased() == b.host?.lowercased()
@@ -38,8 +50,8 @@ final class URLSessionKioskApi: KioskApi {
 
     /// Ephemeral, with URLSession's cookie handling off: the refresh cookie is
     /// the only cookie the kiosk keeps, and `RefreshCookie` keeps it.
-    /// A redirect to another origin never carries the hand-set `Cookie` or
-    /// `Authorization` headers (URLSession would forward custom headers).
+    /// `RedirectGuard` keeps credentials and bodies from following a redirect
+    /// to another origin (URLSession would forward custom headers).
     static func makeSession(protocolClasses: [AnyClass]? = nil) -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil

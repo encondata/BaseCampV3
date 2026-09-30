@@ -234,38 +234,59 @@ struct URLSessionKioskApiAuthTests {
         #expect(h.cookies.value(forHost: h.server.host) == nil)
     }
 
-    // MARK: redirects never carry credentials to another host
+    // MARK: a credentialed or non-GET request is never redirected to another origin
 
-    @Test func refreshRedirectedToAnotherHostLeaksNoCookie() async throws {
+    @Test func refreshRedirectedToAnotherHostIsNotFollowed() async throws {
         let h = ApiHarness()
         h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
         let other = StubServer()
-        other.enqueue(sessionResponse(cookie: nil, token: "tok2"))
+        other.enqueue(sessionResponse(cookie: "ss_refresh=evil; Path=/auth", token: "tok2"))
         h.server.enqueue(.redirect(to: "\(other.baseURL)/auth/refresh"))
-        _ = await h.session.refresh()
-        let seen = try #require(other.takeRequest())
-        #expect(seen.header("Cookie") == nil)
-        #expect(seen.header("Authorization") == nil)
+        #expect(await h.session.refresh() == nil)                 // the 302 is a non-2xx answer
+        #expect(other.requestCount == 0)
+        #expect(h.cookies.value(forHost: h.server.host) == "r1")
     }
 
-    @Test func logoutRedirectedToAnotherHostLeaksNoCookie() async throws {
+    @Test func logoutRedirectedToAnotherHostIsNotFollowed() async throws {
         let h = ApiHarness()
         h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
         let other = StubServer()
         other.enqueue(.json(200, "{}"))
         h.server.enqueue(.redirect(to: "\(other.baseURL)/auth/logout"))
         await h.api.logout()
-        #expect(other.takeRequest()?.header("Cookie") == nil)
+        #expect(other.requestCount == 0)
     }
 
-    @Test func authedCallRedirectedToAnotherHostLeaksNoBearer() async throws {
+    @Test func authedCallRedirectedToAnotherHostFailsAndSendsNothing() async throws {
         let h = ApiHarness()
         h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
         let other = StubServer()
         other.enqueue(.json(200, #"{"device_id":"d1","name":"Kiosk","registration":"ok","token_expires_at":null}"#))
         h.server.enqueue(.redirect(to: "\(other.baseURL)/kiosk/heartbeat"))
-        _ = try await h.api.heartbeat(HeartbeatIn(serial: "s", name: "Kiosk"))
+        let error = await expectApiError { _ = try await h.api.heartbeat(HeartbeatIn(serial: "s", name: "Kiosk")) }
+        #expect(error?.status == 302)
+        #expect(other.requestCount == 0)
+    }
+
+    @Test func loginRedirected307ToAnotherHostIsNotRePosted() async throws {
+        let h = ApiHarness()
+        let other = StubServer()
+        other.enqueue(sessionResponse())
+        h.server.enqueue(.redirect(to: "\(other.baseURL)/auth/login", status: 307))
+        let error = await expectApiError { _ = try await h.api.login(email: "a@b.c", password: "pw") }
+        #expect(error?.status == 307)
+        #expect(other.requestCount == 0)                          // the password never left for the other host
+    }
+
+    @Test func aCredentialLessGetStillFollowsACrossOriginRedirect() async throws {
+        let h = ApiHarness()
+        let other = StubServer()
+        other.enqueue(StubResponse(status: 200, headers: ["Content-Type": "image/png"], body: Data([7, 8])))
+        h.server.enqueue(.redirect(to: "\(other.baseURL)/bucket/p.png?X-Amz-Signature=abc"))
+        let data = try await h.api.fetchImage(url: "\(h.server.baseURL)/avatars/p.png")
+        #expect(data == Data([7, 8]))
         let seen = try #require(other.takeRequest())
+        #expect(seen.path == "/bucket/p.png?X-Amz-Signature=abc")
         #expect(seen.header("Authorization") == nil)
         #expect(seen.header("Cookie") == nil)
     }
