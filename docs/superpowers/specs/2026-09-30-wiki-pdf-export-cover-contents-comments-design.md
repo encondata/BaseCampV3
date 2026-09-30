@@ -26,8 +26,9 @@ on screen changes. Word export is removed.
    - The ServerSherpa logo (the bundled `serversherpa-logo.png`, copied into the API package so
      the worker needs nothing from the portal).
    - The page title, with its location underneath: library › folders.
-   - **Revision N**, where N is the number of the page's versions with kind `published` or
-     `restored` (a restore publishes an older version). Next to it: "Published <Month D, YYYY>
+   - **Revision N**, where N is the number of the page's versions with kind `published`. Every
+     publish, including publishing a restored or approved version, adds exactly one; a
+     `restored` version is only a draft snapshot and doesn't count. Next to it: "Published <Month D, YYYY>
      by <Name>" from the version currently published. If the publisher is unknown, it reads just
      "Published <date>".
    - "Exported <Month D, YYYY> by <Name>": the person who asked for the export.
@@ -108,8 +109,8 @@ left out as today. A page's comments go with the page.
   - Contents appear only with at least two headings, with the right indentation and links.
   - Comments ordering, replies, the Resolved label, the quote found or omitted, and deleted
     comments left out.
-- **Revision count**: published plus restored versions only (autosaves and submitted versions
-  don't count).
+- **Revision count**: `published` versions only (autosave, restored, imported and submitted
+  versions don't count).
 - **Statement resolution**: standard, library override, and an empty override falling back.
 - **A real PDF rendered in the test**:
   - Page 1 contains the title and the statement.
