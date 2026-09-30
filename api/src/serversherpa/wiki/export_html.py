@@ -16,8 +16,9 @@
 4. `page_document` wraps it in the print template: title, breadcrumbs,
    published date, and CSS with the portal's type and colors (the
    renderer drops `style` attributes — alignment arrives as
-   `data-text-align`); an export also passes the cover, contents and
-   comments pages (`export_sections`).
+   `data-text-align`); an export also passes the cover, revision
+   history, contents and comments pages and the running footer's CSS
+   (`export_sections`).
 
 `html_to_pdf` is WeasyPrint, run in a process of its own with a timeout
 (`export_pdf`), so one pathological page can't hold the worker."""
@@ -219,9 +220,12 @@ def finish_fragment(fragment: str, *, hrefs: dict[str, str],
 PRINT_CSS = """
 @page {
   size: Letter; margin: 18mm 16mm 20mm;
-  @bottom-right { content: counter(page) " / " counter(pages);
-                  font: 8pt 'Geologica', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-                  color: #667085; }
+  @bottom-left { font: 7.5pt 'Geologica', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                 color: #667085; width: 38mm; vertical-align: middle; }
+  @bottom-center { font: 7.5pt 'Geologica', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                   color: #667085; vertical-align: middle; }
+  @bottom-right { font: 7.5pt 'Geologica', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                  color: #667085; width: 38mm; vertical-align: middle; }
 }
 body { font: 10.5pt/1.5 'Geologica', 'Helvetica Neue', Helvetica, Arial, sans-serif;
        color: #1b2129; margin: 0; }
@@ -273,18 +277,41 @@ li[data-type="taskItem"] > div > p { margin: 0; }
 details { border: 1px solid #e4e8ee; border-radius: 4px; padding: 2mm 3mm; margin: 3mm 0; }
 summary { font-weight: 600; }
 .wiki-mention { color: #b45f06; font-weight: 500; }
-@page cover { @bottom-right { content: none; } }
-.ss-cover { page: cover; page-break-after: always; height: 240mm; position: relative; }
-.ss-cover-logo { height: 18mm; }
-.ss-cover-main { margin-top: 60mm; }
-.ss-cover-title { font-size: 28pt; line-height: 1.2; font-weight: 700; bookmark-level: none; }
-.ss-cover-location { font-size: 11pt; color: #667085; margin-top: 3mm; }
-.ss-cover-revision { font-size: 11pt; margin-top: 10mm; }
-.ss-cover-exported { font-size: 9.5pt; color: #667085; margin-top: 1.5mm; }
-.ss-cover-statement { position: absolute; bottom: 0; left: 0; right: 0; font-size: 8.5pt;
-                      color: #475467; border-top: 1px solid #e4e8ee; padding-top: 3mm;
-                      max-height: 70mm; overflow: hidden; }
+@page cover { @bottom-left { content: none; } @bottom-center { content: none; }
+              @bottom-right { content: none; }
+              @footnote { margin: 0; padding: 0; border: 0; } }
+.ss-cover { page: cover; page-break-after: always; text-align: center; }
+.ss-cover-brand { padding-top: 14mm; }
+.ss-cover-compact .ss-cover-brand { padding-top: 0; }
+.ss-cover-logo { width: 1.4in; }
+.ss-cover-name { font-size: 20pt; font-weight: 700; line-height: 1.2; margin-top: 3mm; }
+.ss-cover-product { font-size: 9.5pt; color: #667085; margin-top: 1mm; }
+.ss-cover-main { margin-top: 30mm; }
+.ss-cover-compact .ss-cover-main { margin-top: 6mm; }
+.ss-cover-compact .ss-cover-title { margin: 4mm 8mm; }
+.ss-cover-compact .ss-cover-meta { margin-top: 4mm; }
+.ss-cover-compact .ss-cover-foot { padding-top: 4mm; }
+.ss-cover-type { font-size: 10.5pt; font-weight: 600; letter-spacing: 0.18em;
+                 text-transform: uppercase; color: #0f766e; margin-bottom: 5mm; }
+.ss-cover-rule { width: 60%; margin: 0 auto; border: 0; border-top: 0.75pt solid #0f766e; }
+.ss-cover-title { font-size: 26pt; line-height: 1.2; font-weight: 700; margin: 6mm 8mm;
+                  bookmark-level: none; }
+.ss-cover-meta { font-size: 10pt; line-height: 1.7; color: #344054; margin-top: 7mm; }
+/* font-size 0: no line for the (empty) footnote marker */
+.ss-cover-foot { float: footnote; text-align: center; padding-top: 8mm;
+                 font-size: 0; line-height: 0; }
+.ss-cover-foot::footnote-call, .ss-cover-foot::footnote-marker { content: none; }
+.ss-cover-exported { font-size: 8.5pt; line-height: 1.5; color: #667085; margin-bottom: 3mm; }
+.ss-cover-statement { font-size: 8.5pt; line-height: 1.5; color: #475467;
+                      border-top: 1px solid #e4e8ee;
+                      padding-top: 3mm; max-height: 70mm; overflow: hidden; }
 .ss-section-title { font-size: 16pt; font-weight: 700; margin-bottom: 4mm; }
+.ss-history { page-break-after: always; }
+.ss-revisions { font-size: 9pt; }
+.ss-revisions thead { display: table-header-group; }
+.ss-rev-n { width: 12mm; }
+.ss-rev-at { width: 36mm; }
+.ss-rev-by { width: 40mm; }
 .ss-contents { page-break-after: always; }
 .ss-toc { list-style: none; padding: 0; margin: 0; }
 .ss-toc li { margin: 0 0 1.5mm; }
@@ -312,17 +339,22 @@ def _published_label(published_at: datetime | None) -> str:
 
 
 def page_document(*, title: str, breadcrumbs: list[str], published_at: datetime | None,
-                  body: str, cover: str = "", contents: str = "", comments: str = "") -> str:
-    """The full printable HTML page around a finished fragment. `cover`
-    and `contents` (HTML, `export_sections`) come first — ahead of the
-    header, which starts the body's page — and `comments` last."""
+                  body: str, cover: str = "", revisions: str = "", contents: str = "",
+                  comments: str = "", footer_css: str = "") -> str:
+    """The full printable HTML page around a finished fragment. `cover`,
+    `revisions` and `contents` (HTML, `export_sections`) come first, in
+    that order — ahead of the header, which starts the body's page — and
+    `comments` last. `footer_css` (`export_sections.footer_css`) is the
+    running footer; without it the pages have none."""
     esc = html.escape
     crumbs = " › ".join(esc(c) for c in breadcrumbs)
     published = _published_label(published_at)
     return (
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
-        f"<title>{esc(title)}</title>\n<style>{PRINT_CSS}</style>\n</head>\n<body>\n"
-        + "".join(f"{part}\n" for part in (cover, contents) if part)
+        f"<title>{esc(title)}</title>\n<style>{PRINT_CSS}</style>\n"
+        + (f"<style>{footer_css}</style>\n" if footer_css else "")
+        + "</head>\n<body>\n"
+        + "".join(f"{part}\n" for part in (cover, revisions, contents) if part)
         + "<header class=\"ss-head\">\n"
         + (f"<div class=\"ss-crumbs\">{crumbs}</div>\n" if crumbs else "")
         + f"<h1 class=\"ss-title\">{esc(title)}</h1>\n"

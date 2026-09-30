@@ -213,6 +213,7 @@ class _Node:
     parent_id: uuid.UUID | None
     path: list[uuid.UUID]
     position: float
+    created_by: uuid.UUID | None = None    # the node's creator (a PDF cover's author)
     children: list[_Node] = field(default_factory=list)
     content: dict | None = None            # a page's published content
     published_at: datetime | None = None
@@ -223,9 +224,12 @@ class _Node:
     crumbs: list[str] = field(default_factory=list)
     zip_path: str | None = None            # page/file: its entry; folder: its directory
     dir_path: str | None = None            # a page's subpages directory
-    # a PDF's cover and comments page (`_pdf_sections`)
+    # a PDF's cover, revision history and comments page (`_pdf_sections`)
     revision: int = 0                      # how many times it has been published
     published_by: str | None = None        # who published the current version
+    doc_type: str | None = None
+    author: str | None = None              # the creator's name
+    revisions: list[export_sections.RevisionRow] = field(default_factory=list)
     threads: list[export_sections.CommentThreadOut] = field(default_factory=list)
 
 
@@ -378,30 +382,49 @@ def _threads(rows: list[WikiComment], quotes: dict[str, str], names: dict[uuid.U
 async def _pdf_sections(db: AsyncSession, plan: _Plan, space: WikiSpace | None,
                         requester_id: uuid.UUID,
                         publishers: dict[uuid.UUID, uuid.UUID | None]) -> None:
-    """What every PDF's cover and comments page need: the requester's
-    name, the export time and the statement (once per export — it's one
-    library), then per page its revision (published versions counted),
-    publisher and comment threads. One query each, names batched."""
+    """What every PDF's cover, revision history and comments page need:
+    the requester's name, the export time and the statement (once per
+    export — it's one library), then per page its document type, author
+    (the node's creator), published versions (the history; their count is
+    the revision), publisher and comment threads. One query each across
+    all the pages, names batched."""
     tz = report_timezone()
     page_ids = [page.id for page in plan.pages]
-    revisions = dict((await db.execute(
-        select(WikiPageVersion.node_id, func.count())
+    doc_types = dict((await db.execute(
+        select(WikiPage.node_id, WikiPage.doc_type)
+        .where(WikiPage.node_id.in_(page_ids)))).all())
+    versions = (await db.execute(
+        select(WikiPageVersion.node_id, WikiPageVersion.created_at,
+               WikiPageVersion.created_by, WikiPageVersion.note)
         .where(WikiPageVersion.node_id.in_(page_ids), WikiPageVersion.kind == "published")
-        .group_by(WikiPageVersion.node_id))).all())
+        .order_by(WikiPageVersion.created_at, WikiPageVersion.version_no,
+                  WikiPageVersion.id))).all()
     comments = (await db.scalars(select(WikiComment).where(
         WikiComment.node_id.in_(page_ids)))).all()
     names = await _names(db, [requester_id, *publishers.values(),
+                              *(page.created_by for page in plan.pages),
+                              *(v.created_by for v in versions),
                               *(c.author_id for c in comments),
                               *(c.resolved_by for c in comments)])
     plan.exported_by = names.get(requester_id, "")
     plan.exported_at = datetime.now(tz)
     plan.statement = effective_statement(await standard_statement(db),
                                          space.settings if space else None)
+    history: dict[uuid.UUID, list[export_sections.RevisionRow]] = {}
+    for node_id, at, by, note in versions:
+        rows = history.setdefault(node_id, [])
+        rows.append(export_sections.RevisionRow(
+            rev=len(rows) + 1, at=at.astimezone(tz),
+            by=names.get(by) or UNKNOWN_PERSON,
+            note=(note or "").strip()))
     by_page: dict[uuid.UUID, list[WikiComment]] = {}
     for comment in comments:
         by_page.setdefault(comment.node_id, []).append(comment)
     for page in plan.pages:
-        page.revision = revisions.get(page.id, 0)
+        page.revisions = history.get(page.id, [])
+        page.revision = len(page.revisions)
+        page.doc_type = doc_types.get(page.id)
+        page.author = names.get(page.created_by) if page.created_by else None
         publisher = publishers.get(page.id)
         page.published_by = names.get(publisher) if publisher else None
         # the quotes come from the content with its comment marks still in
@@ -453,7 +476,8 @@ async def _gather(db: AsyncSession, payload: dict) -> _Plan:
     shown_ids = {n.id for n in shown}
     published = await _published(db, [n.id for n in rows if n.kind == "page"])
     nodes = {n.id: _Node(id=n.id, kind=n.kind, title=n.title, parent_id=n.parent_id,
-                         path=list(n.path or []), position=n.position) for n in rows}
+                         path=list(n.path or []), position=n.position,
+                         created_by=n.created_by) for n in rows}
     for node in nodes.values():
         if node.id in published:
             node.published = True
@@ -734,8 +758,9 @@ async def _image_data(page: _Node, workdir: Path) -> dict[str, str]:
 
 
 async def _page_html(client, plan: _Plan, page: _Node, workdir: Path) -> str:
-    """A page's printable document for its PDF: cover, contents (with ids
-    on the body's headings to link to), header and body, comments."""
+    """A page's printable document for its PDF: cover, revision history,
+    contents (with ids on the body's headings to link to), header and
+    body, comments — and the running footer on every page but the cover."""
     refs = _Refs(plan, page)
     doc, hrefs = export_html.prepare_doc(
         strip_comment_marks(page.content or EMPTY_DOC),
@@ -747,14 +772,17 @@ async def _page_html(client, plan: _Plan, page: _Node, workdir: Path) -> str:
     tz = report_timezone()
     published_at = page.published_at.astimezone(tz) if page.published_at else None
     cover = export_sections.cover_html(export_sections.CoverInfo(
-        title=page.title, location=page.crumbs, revision=page.revision,
-        published_at=published_at, published_by=page.published_by,
+        title=page.title, doc_type=page.doc_type, author=page.author,
+        revision=page.revision, published_at=published_at, published_by=page.published_by,
         exported_at=plan.exported_at or datetime.now(tz), exported_by=plan.exported_by,
         statement=plan.statement))
     return export_html.page_document(
         title=page.title, breadcrumbs=page.crumbs, published_at=published_at, body=body,
-        cover=cover, contents=export_sections.contents_html(headings),
-        comments=export_sections.comments_html(page.threads))
+        cover=cover, revisions=export_sections.revision_history_html(page.revisions),
+        contents=export_sections.contents_html(headings),
+        comments=export_sections.comments_html(page.threads),
+        footer_css=export_sections.footer_css(page.title,
+                                              confidential=bool(plan.statement.strip())))
 
 
 async def _pdf(client, plan: _Plan, page: _Node, workdir: Path) -> bytes:

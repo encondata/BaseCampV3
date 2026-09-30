@@ -365,11 +365,11 @@ def comment_mark(thread_id):
 
 
 async def _publish_again(db, node_id, content, *, version_no, created_by=None,
-                         kind="published"):
+                         kind="published", note=None):
     """Another version of the page; a `published` one becomes current."""
     version = WikiPageVersion(node_id=uuid.UUID(str(node_id)), version_no=version_no,
                               title="Again", content_json=content, kind=kind,
-                              created_by=created_by)
+                              created_by=created_by, note=note)
     db.add(version)
     await db.flush()
     if kind == "published":
@@ -448,21 +448,38 @@ async def test_a_pdf_has_a_cover_contents_and_comments(client, db, store, render
                              await _name(db, s["viewer_id"]))
     tz = report_timezone()
 
-    # the cover, then the contents, then the page's own header and body,
-    # then the comments
+    # the cover, then the revision history, then the contents, then the
+    # page's own header and body, then the comments
     cover = document.index('class="ss-cover"')
+    history = document.index('class="ss-revisions"')
     contents = document.index('class="ss-contents"')
     head = document.index('class="ss-head"')
     comments = document.index('class="ss-comments"')
-    assert cover < contents < head < document.index("</main>") < comments
+    assert cover < history < contents < head < document.index("</main>") < comments
 
-    # the cover: two published versions (the restored one doesn't count)
-    assert '<div class="ss-cover-title">Rack Guide</div>' in document
-    assert "Tree Space</div>" in document
-    assert (f"Revision 2 · Published {day(version.created_at.astimezone(tz))} "
-            f"by {owner}</div>") in document
-    assert f"Exported {day(datetime.now(tz))} by {viewer}</div>" in document
-    assert DEFAULT_CONFIDENTIALITY_STATEMENT in document
+    # the cover: two published versions (the restored one doesn't count),
+    # the page's creator, and no breadcrumb
+    cover_html = document[cover:history]
+    assert '<div class="ss-cover-title">Rack Guide</div>' in cover_html
+    assert "Tree Space" not in cover_html
+    assert "<div>Revision 2</div>" in cover_html
+    assert f"<div>Author {owner}</div>" in cover_html
+    assert (f"<div>Published {day(version.created_at.astimezone(tz))} "
+            f"by {owner}</div>") in cover_html
+    assert "ss-cover-type" not in cover_html                 # no document type set
+    assert f"Exported {day(datetime.now(tz))} by {viewer}</div>" in cover_html
+    assert DEFAULT_CONFIDENTIALITY_STATEMENT in cover_html
+    # the breadcrumb stays in the body's header
+    assert "Tree Space</div>" in document[head:]
+    # the running footer: confidential, the title, page n of N
+    assert '@bottom-left { content: "CONFIDENTIAL"' in document
+    assert '@bottom-center { content: "Rack Guide"' in document
+
+    # the history: the two published versions, newest first
+    rows = document[history:contents]
+    assert rows.index("<td>2</td>") < rows.index("<td>1</td>")
+    assert f"<td>{owner}</td>" in rows and "<td>Unknown</td>" in rows
+    assert rows.count("<td>—</td>") == 2                     # neither has a note
 
     # the contents link to the numbered headings
     assert '<a href="#ss-h-1">Power</a>' in document
@@ -513,10 +530,65 @@ async def test_a_pdf_with_one_heading_and_no_comments(client, db, store, rendere
     assert "Internal use only.<br>Do not share." in document
     assert DEFAULT_CONFIDENTIALITY_STATEMENT not in document
     published = day(datetime.now(report_timezone()))
-    assert f"Revision 1 · Published {published}</div>" in document
+    assert "<div>Revision 1</div>" in document
+    assert f"<div>Published {published}</div>" in document
     body = document.split("</style>", 1)[1]                  # past the print CSS
     assert "ss-contents" not in body and "ss-comments" not in body
     assert "Deleted thread" not in document
+
+
+async def test_a_pdf_revision_history_and_document_type(client, db, store, renderer, pdfs):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Rack Guide", kind="page")
+    content = {"type": "doc", "content": [p(t("Text."))]}
+    first = await _publish_again(db, page["id"], content, version_no=1,
+                                 created_by=s["editor_id"], note="First <cut>")
+    await _publish_again(db, page["id"], content, version_no=2, kind="autosave",
+                         created_by=s["viewer_id"], note="not a publish")
+    second = await _publish_again(db, page["id"], content, version_no=3,
+                                  created_by=s["owner_id"], note="  Added the cabling step\n")
+    (await db.get(WikiPage, uuid.UUID(page["id"]))).doc_type = "Work Instruction"
+    await db.commit()
+
+    job = await _run(db, await _request(client, s["viewer"], node_id=page["id"],
+                                        format="pdf"))
+
+    assert job.status == "done", job.error
+    [document] = pdfs
+    owner, editor, viewer = (await _name(db, s["owner_id"]), await _name(db, s["editor_id"]),
+                             await _name(db, s["viewer_id"]))
+    tz = report_timezone()
+    assert '<div class="ss-cover-type">Work Instruction</div>' in document
+    assert "<div>Revision 2</div>" in document
+    history = document[document.index('class="ss-revisions"'):document.index("</table>")]
+    newer, older = history.index("<td>2</td>"), history.index("<td>1</td>")
+    assert newer < older
+    assert history.index(f"<td>{owner}</td>") < older < history.index(f"<td>{editor}</td>")
+    assert f"<td>{day(second.created_at.astimezone(tz))}</td>" in history
+    assert f"<td>{day(first.created_at.astimezone(tz))}</td>" in history
+    assert "<td>Added the cabling step</td>" in history
+    assert "<td>First &lt;cut&gt;</td>" in history
+    assert "not a publish" not in history and viewer not in history
+    assert "<td>—</td>" not in history
+
+
+async def test_an_empty_statement_drops_confidential_from_the_footer(
+        client, db, store, renderer, pdfs, monkeypatch):
+    async def nothing(_db):
+        return ""
+    monkeypatch.setattr(export, "standard_statement", nothing)
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Rack Guide", kind="page")
+    await publish_via_db(db, page["id"])
+
+    job = await _run(db, await _request(client, s["viewer"], node_id=page["id"],
+                                        format="pdf"))
+
+    assert job.status == "done", job.error
+    [document] = pdfs
+    assert "CONFIDENTIAL" not in document
+    assert "ss-cover-statement" not in document.split("</style>")[-1]
+    assert '@bottom-center { content: "Rack Guide"' in document
 
 
 async def test_a_markdown_export_has_no_cover_or_comments(client, db, store, renderer):

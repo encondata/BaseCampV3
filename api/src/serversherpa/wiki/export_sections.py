@@ -1,6 +1,7 @@
 """The parts of an exported PDF around the page body (spec 2026-09-30
-export cover): the cover page, the contents page and the comments page,
-as HTML for the print template (`export_html.page_document`). Pure: plain
+export cover, Revision 2): the cover page, the revision history, the
+contents page and the comments page, as HTML for the print template
+(`export_html.page_document`), and the running footer as CSS. Pure: plain
 data in, HTML out — the export gathers the data, WeasyPrint lays it out
 (page numbers through `target-counter`, the outline from `bookmark-level`)."""
 from __future__ import annotations
@@ -46,7 +47,8 @@ def _lines(text: str) -> str:
 @dataclass(frozen=True)
 class CoverInfo:
     title: str
-    location: list[str]            # the library, then each folder ("…" when hidden)
+    doc_type: str | None           # "Operating Procedure", …, or None for none
+    author: str | None             # the page's creator, None when unknown
     revision: int
     published_at: datetime | None
     published_by: str | None
@@ -55,29 +57,136 @@ class CoverInfo:
     statement: str
 
 
+# A title this long (three or more lines at 26pt), or a statement of more
+# than this many lines (at about STATEMENT_LINE_CHARS a line), tightens
+# the cover's spacing so it still fits on one page. The estimate only
+# picks the spacing: the layout can't overlap either way (see cover_html).
+COVER_COMPACT_TITLE_CHARS = 90
+COVER_COMPACT_STATEMENT_LINES = 7
+STATEMENT_LINE_CHARS = 140
+
+
+def _statement_lines(statement: str) -> int:
+    return sum(max(1, -(-len(line) // STATEMENT_LINE_CHARS))
+               for line in statement.splitlines())
+
+
+def _compact_cover(title: str, statement: str) -> bool:
+    return (len(title) > COVER_COMPACT_TITLE_CHARS
+            or _statement_lines(statement) > COVER_COMPACT_STATEMENT_LINES)
+
+
 def cover_html(info: CoverInfo) -> str:
+    """The cover (spec Revision 2): the branding block, the document type,
+    the title between two rules, the revision / author / published lines,
+    and — pinned to the bottom — the exported line and the statement. No
+    breadcrumb, and no running footer (`@page cover`).
+
+    The bottom block is a footnote (`float: footnote`): WeasyPrint pins it
+    to the foot of the page and shrinks the room above it, so a long
+    title and a long statement can never overlap — past a page, the rest
+    of the cover moves on to the next one. It comes first in the markup:
+    a footnote lands on the page of its call, and one called at the end
+    of a full page would be pushed on to the next section's. (A page-high table, flex or
+    grid column doesn't lay out on one page in WeasyPrint.)"""
     esc = html.escape
     published = ""
     if info.published_at is not None:
-        published = f" · Published {day(info.published_at)}"
+        published = f"Published {day(info.published_at)}"
         if info.published_by:
             published += f" by {esc(info.published_by)}"
-    location = " › ".join(esc(part) for part in info.location if part)
+    statement = info.statement.strip()
+    compact = _compact_cover(info.title, statement)
     parts = [
-        '<section class="ss-cover">',
-        f'<img class="ss-cover-logo" src="{logo_data_uri()}" alt="ServerSherpa">',
-        '<div class="ss-cover-main">',
-        f'<div class="ss-cover-title">{esc(info.title)}</div>',
-        f'<div class="ss-cover-location">{location}</div>' if location else "",
-        f'<div class="ss-cover-revision">Revision {info.revision}{published}</div>',
+        f'<section class="ss-cover{" ss-cover-compact" if compact else ""}">',
+        # first, so the footnote claims the cover's own page before the rest;
+        # in one piece (whitespace between its blocks would add blank lines)
+        '<div class="ss-cover-foot">'
         f'<div class="ss-cover-exported">Exported {day(info.exported_at)} by '
-        f'{esc(info.exported_by)}</div>',
+        f'{esc(info.exported_by)}</div>'
+        + (f'<div class="ss-cover-statement">{_lines(statement)}</div>' if statement else "")
+        + "</div>",
+        '<div class="ss-cover-brand">',
+        f'<img class="ss-cover-logo" src="{logo_data_uri()}" alt="">',
+        '<div class="ss-cover-name">ServerSherpa</div>',
+        '<div class="ss-cover-product">A Cumulus Solutions Group product</div>',
         "</div>",
-        f'<div class="ss-cover-statement">{_lines(info.statement)}</div>'
-        if info.statement.strip() else "",
+        '<div class="ss-cover-main">',
+        f'<div class="ss-cover-type">{esc(info.doc_type)}</div>' if info.doc_type else "",
+        '<hr class="ss-cover-rule">',
+        f'<div class="ss-cover-title">{esc(info.title)}</div>',
+        '<hr class="ss-cover-rule">',
+        '<div class="ss-cover-meta">',
+        f"<div>Revision {info.revision}</div>",
+        f"<div>Author {esc(info.author)}</div>" if info.author else "",
+        f"<div>{published}</div>" if published else "",
+        "</div>",
+        "</div>",
         "</section>",
     ]
     return "\n".join(p for p in parts if p)
+
+
+@dataclass(frozen=True)
+class RevisionRow:
+    rev: int                       # the ordinal among the page's published versions
+    at: datetime                   # in report_timezone()
+    by: str                        # the publisher's name, or "Unknown"
+    note: str                      # the publish note ("" for none)
+
+
+def revision_history_html(rows: list[RevisionRow]) -> str:
+    """The revision history page: one row per published version, newest
+    first. The header row repeats on each page a long table runs onto
+    (`thead` is a table-header-group). "" when there are no rows."""
+    if not rows:
+        return ""
+    esc = html.escape
+    body = "\n".join(
+        f"<tr><td>{r.rev}</td><td>{day(r.at)}</td><td>{esc(r.by)}</td>"
+        f"<td>{_lines(r.note.strip()) or '—'}</td></tr>"
+        for r in sorted(rows, key=lambda r: r.rev, reverse=True))
+    return ('<section class="ss-history"><div class="ss-section-title">Revision history</div>\n'
+            '<table class="ss-revisions">\n<colgroup><col class="ss-rev-n"><col class="ss-rev-at">'
+            '<col class="ss-rev-by"><col></colgroup>\n'
+            "<thead><tr><th>Rev</th><th>Date</th><th>Updated by</th>"
+            "<th>Description of changes</th></tr></thead>\n"
+            f"<tbody>\n{body}\n</tbody>\n</table></section>")
+
+
+FOOTER_TITLE_MAX = 70
+_CSS_ESCAPE = {"\\": "\\\\", '"': '\\"'}
+
+
+def _css_string(text: str) -> str:
+    """`text` as the inside of a double-quoted CSS string: backslash and
+    quote escaped, and control characters, `<`, `>` and `&` as hex escapes
+    (so nothing in it can end the string, the rule or the <style>)."""
+    out = []
+    for ch in text:
+        if ch in _CSS_ESCAPE:
+            out.append(_CSS_ESCAPE[ch])
+        elif ch in "<>&" or ord(ch) < 0x20 or ord(ch) == 0x7F:
+            out.append(f"\\{ord(ch):x} ")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def footer_css(title: str, confidential: bool) -> str:
+    """The running footer of every page but the cover, as `@page` margin
+    boxes: "CONFIDENTIAL" on the left (only when `confidential` — the
+    effective statement isn't empty), the title in the middle (cut to
+    FOOTER_TITLE_MAX characters plus "…"), "Page n of N" on the right."""
+    if len(title) > FOOTER_TITLE_MAX:
+        title = title[:FOOTER_TITLE_MAX].rstrip() + "…"
+    left = ('  @bottom-left { content: "CONFIDENTIAL"; font-weight: 700; '
+            "color: #475467; }\n") if confidential else ""
+    return ("\n@page {\n"
+            + left
+            + f'  @bottom-center {{ content: "{_css_string(title)}"; }}\n'
+            '  @bottom-right { content: "Page " counter(page) " of " counter(pages); }\n'
+            "}\n")
 
 
 @dataclass(frozen=True)
