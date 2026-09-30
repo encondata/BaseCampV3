@@ -9,7 +9,7 @@ ancestor, set their own) — get added here and nowhere else.
 tuple of types where `None` stands for "null is also legal" — see
 `review_interval_months`, which is `int | None` in range 1-60."""
 
-from serversherpa.wiki.statement import MAX_STATEMENT_LENGTH
+from serversherpa.wiki.statement import statement_ok
 
 ALLOWED: dict[str, type | tuple] = {
     "readers_can_comment": bool,
@@ -63,7 +63,7 @@ def validate(key: str, value: object) -> bool:
     if key == "review_interval_months" and value is not None:
         return REVIEW_INTERVAL_MONTHS_MIN <= value <= REVIEW_INTERVAL_MONTHS_MAX
     if key == "confidentiality_statement":
-        return len(value.strip()) <= MAX_STATEMENT_LENGTH
+        return statement_ok(value)
     return True
 
 

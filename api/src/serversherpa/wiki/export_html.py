@@ -282,7 +282,8 @@ summary { font-weight: 600; }
 .ss-cover-revision { font-size: 11pt; margin-top: 10mm; }
 .ss-cover-exported { font-size: 9.5pt; color: #667085; margin-top: 1.5mm; }
 .ss-cover-statement { position: absolute; bottom: 0; left: 0; right: 0; font-size: 8.5pt;
-                      color: #475467; border-top: 1px solid #e4e8ee; padding-top: 3mm; }
+                      color: #475467; border-top: 1px solid #e4e8ee; padding-top: 3mm;
+                      max-height: 70mm; overflow: hidden; }
 .ss-section-title { font-size: 16pt; font-weight: 700; margin-bottom: 4mm; }
 .ss-contents { page-break-after: always; }
 .ss-toc { list-style: none; padding: 0; margin: 0; }

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -86,6 +86,14 @@ describe('ExportDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Export' }));
     await waitFor(() => expect(createExport).toHaveBeenCalledWith(
       { node_id: 'n1', format: 'zip', zip_format: 'md' }));
+  });
+
+  it('says a PDF has a cover, contents and comments, and Markdown has no comments', () => {
+    renderDialog({ kind: 'node', node: PAGE });
+    expect(screen.getByText('The published version of the page, with a cover page, contents and its comments.')).toBeTruthy();
+    const group = screen.getByRole('group', { name: 'Format' });
+    fireEvent.click(within(group).getByRole('button', { name: 'Markdown' }));
+    expect(screen.getByText('The published version of the page, without comments.')).toBeTruthy();
   });
 
   it('offers exactly PDF and Markdown as formats (no Word)', () => {

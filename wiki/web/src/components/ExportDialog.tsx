@@ -57,7 +57,9 @@ export default function ExportDialog({ target, onClose }: { target: ExportTarget
   const what = !node ? 'library' : node.kind === 'folder' ? 'folder' : 'page';
   const hint = zip
     ? `A .zip of the ${what === 'page' ? 'page and its subpages' : what} — every page and file in it you can see, in the same folders. Pages that were never published are left out.`
-    : 'The published version of the page, without comments.';
+    : format === 'pdf'
+      ? 'The published version of the page, with a cover page, contents and its comments.'
+      : 'The published version of the page, without comments.';
 
   return (
     <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>

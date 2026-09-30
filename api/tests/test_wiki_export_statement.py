@@ -85,6 +85,18 @@ async def test_put_allows_an_empty_statement(client, db):
     assert await standard_statement(db) == ""
 
 
+async def test_put_rejects_control_characters_but_keeps_line_breaks(client, db):
+    admin = await _admin(client, db)
+    bad = await client.put(URL, headers=admin,
+                           json={"confidentiality_statement": "Secret\u0000 stuff"})
+    assert bad.status_code == 422
+    assert bad.json()["detail"]["code"] == "bad_setting"
+    ok = await client.put(URL, headers=admin,
+                          json={"confidentiality_statement": "Line one\nLine two\tend"})
+    assert ok.status_code == 200
+    assert ok.json()["confidentiality_statement"] == "Line one\nLine two\tend"
+
+
 async def test_put_rejects_a_statement_over_1000_characters(client, db):
     admin = await _admin(client, db)
     resp = await client.put(URL, headers=admin,
@@ -148,7 +160,7 @@ async def test_patch_clears_the_library_statement_with_an_empty_one(client, db):
     assert resp.json()["settings"]["confidentiality_statement"] == ""
 
 
-@pytest.mark.parametrize("value", ["x" * 1001, 5, None, True, ["x"]])
+@pytest.mark.parametrize("value", ["x" * 1001, "a\u0000b", "bell\u0007", 5, None, True, ["x"]])
 async def test_patch_rejects_a_bad_library_statement(client, db, value):
     headers = await _library(client, db, "stmt-bad")
     resp = await client.patch("/wiki/spaces/stmt-bad", headers=headers,

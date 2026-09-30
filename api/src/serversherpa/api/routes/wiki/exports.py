@@ -45,7 +45,12 @@ from serversherpa.wiki.export import (
     export_filename,
 )
 from serversherpa.wiki.permissions import require_node_level, require_space_level
-from serversherpa.wiki.statement import MAX_STATEMENT_LENGTH, SECTION, standard_statement
+from serversherpa.wiki.statement import (
+    MAX_STATEMENT_LENGTH,
+    SECTION,
+    standard_statement,
+    statement_ok,
+)
 
 router = APIRouter()
 
@@ -166,9 +171,10 @@ async def get_export_settings(ctx: WikiContext) -> ExportSettingsOut:
 async def put_export_settings(body: ExportSettingsIn, ctx: WikiContext) -> ExportSettingsOut:
     _require_admin(ctx)
     statement = body.confidentiality_statement.strip()
-    if len(statement) > MAX_STATEMENT_LENGTH:
+    if not statement_ok(statement):
         raise err(422, "bad_setting",
-                  f"The statement can be up to {MAX_STATEMENT_LENGTH} characters.",
+                  f"The statement can be up to {MAX_STATEMENT_LENGTH} characters, "
+                  "with no control characters.",
                   keys=["confidentiality_statement"])
     stored = await read_section(ctx.db, SECTION)
     before = str(stored.get("confidentiality_statement") or "")
