@@ -286,6 +286,62 @@ it's done.
   behind under the same job id is swept up too — 7 days after the job
   finished, along with the job row itself.
 
+## Private items and printing
+
+Two per-item controls, both enforced by the main API
+(`api/src/serversherpa/wiki/`); the wiki SPA only shows them.
+
+- **Private.** A page, file, or folder marked Private can be seen only by
+  its author and by developers. Everything inside a private folder is
+  private too. Wiki administrators and library managers can't see someone
+  else's private items, and neither can anyone holding a grant on them:
+  to everyone else a private item behaves as if it doesn't exist (404 from
+  the API, "Nothing here" in the wiki), and it's left out of the tree,
+  lists, search, analytics, trash, @mention suggestions, notifications,
+  and folder or library exports someone else asks for. The author and
+  developers get manage on it and on everything inside it.
+  - **Who can change it.** Only the author or a developer can set or clear
+    Private, from the Permissions dialog. An author who doesn't have
+    manage on the item sees a Private-only version of that dialog. A
+    library's home page can't be made private. In an archived library,
+    only wiki administrators can change privacy.
+  - **Knock-on rules.** A private item can't get a public share link, be
+    the target of a help link, or be saved as a template, and existing
+    public links to it stop working. Moving a private item keeps it
+    private, and only someone who can see a private folder can move
+    something into it.
+- **Allow printing.** Each library has an Allow printing setting (on by
+  default, under Library settings, Sharing). Any page, file, or folder can
+  override it, from the Permissions dialog, with Inherit, Allowed, or Not
+  allowed; the nearest setting going up the tree wins, and only someone
+  with manage on the item can change it. When printing is off, that
+  applies to everyone, including developers and wiki administrators; a
+  manager has to turn it back on first. The item shows a "Printing off"
+  chip, and these are blocked:
+  - **Printing.** Ctrl+P or ⌘P is blocked with a message, and the
+    browser's print menu prints only a notice that printing is turned off.
+  - **Getting a copy out.** Export, Download, Share, and "Save as
+    template" are hidden, and the API refuses them. Folder and library
+    exports leave those items out and list them in a skipped-items file in
+    the zip. An attachment embedded on such a page that can't be previewed
+    inline isn't offered at all.
+  - **Previews.** A PDF shows as images drawn on the page, with no
+    toolbar, save, or print. Video and audio have no download or
+    picture-in-picture, and images have no right-click menu.
+  - **Mixed pages.** An embedded file with printing off, on a page that
+    allows printing, is left out of that page's printout.
+  - **Public links.** Existing public links stop working until printing is
+    turned back on, and new ones can't be created.
+  - **Copying and moving.** Copying an item that has printing off keeps it
+    off. Moving an item that inherits "off" from its old location pins it
+    to off, so the move can't quietly turn printing back on.
+- **The honest limit.** This is a deterrent, not copy protection.
+  Screenshots, and a determined person with their browser's developer
+  tools, can still copy what's on screen, and the Printing control says so.
+- **Deploying.** Previews of PDFs with printing off are read straight from
+  Spaces, so the bucket's CORS rule must allow `GET` from the wiki origin;
+  see the Production checklist below.
+
 ## Production checklist
 
 - Add `https://wiki.<domain>` to the main API's `SS_ALLOWED_ORIGINS`.
