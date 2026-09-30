@@ -135,6 +135,8 @@ final class URLSessionKioskApi: KioskApi {
                 await sessionStore.notifySessionEnded(cookieRejected: true)
             case .transient:
                 await sessionStore.notifySessionEnded(cookieRejected: false)
+            case .superseded:
+                break   // a sign-in/out happened meanwhile: the 401 belongs to the old session
             }
         }
         return response

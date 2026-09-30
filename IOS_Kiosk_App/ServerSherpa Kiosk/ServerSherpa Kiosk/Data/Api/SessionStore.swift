@@ -18,6 +18,9 @@ enum RefreshOutcome: Sendable {
     /// A network error, another non-2xx (502/503 during a deploy) or an
     /// unreadable answer: the cookie may still be good.
     case transient
+    /// The session was stored or cleared (a sign-in or sign-out) while the
+    /// refresh was in flight: its answer was dropped and nothing was touched.
+    case superseded
 
     var session: SessionData? {
         if case .ok(let data) = self { return data }
@@ -40,6 +43,9 @@ actor SessionStore: SessionRefresher {
     private var tokenExpiresAt: Int64 = 0
     private var sessionExpiry: String?
     private var inFlight: Task<RefreshOutcome, Never>?
+    /// Bumped by every store() and clear(): a refresh answer that lands after
+    /// the session changed underneath it is dropped.
+    private var generation = 0
 
     nonisolated let sessionEnded: AsyncStream<Void>
     private nonisolated let endedContinuation: AsyncStream<Void>.Continuation
@@ -57,12 +63,14 @@ actor SessionStore: SessionRefresher {
     func tokenIsStale() -> Bool { token == nil || clock() > tokenExpiresAt - 30_000 }
 
     func store(_ data: SessionData) {
+        generation += 1
         token = data.accessToken
         tokenExpiresAt = clock() + Int64(data.expiresIn) * 1000
         sessionExpiry = data.sessionExpiresAt
     }
 
     func clear() {
+        generation += 1
         token = nil
         tokenExpiresAt = 0
         sessionExpiry = nil
@@ -89,6 +97,7 @@ actor SessionStore: SessionRefresher {
     }
 
     private func performRefresh() async -> RefreshOutcome {
+        let started = generation
         guard let url = URL(string: "\(await apiUrl())/auth/refresh"), let host = url.host else { return .transient }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -104,6 +113,9 @@ actor SessionStore: SessionRefresher {
         } catch {
             return .transient   // network hiccup: keep local state
         }
+        // Signed in or out meanwhile: this answer belongs to a session that is gone,
+        // so neither its token nor its cookie (nor its rejection) may touch the new state.
+        guard generation == started else { return .superseded }
         guard (200..<300).contains(http.statusCode) else {
             clear()
             if http.statusCode == 401 || http.statusCode == 403 {

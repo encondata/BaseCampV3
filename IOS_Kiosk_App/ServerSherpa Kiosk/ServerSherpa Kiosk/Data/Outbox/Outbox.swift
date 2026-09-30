@@ -87,7 +87,8 @@ struct OutboxSnapshot: Equatable {
     @ObservationIgnored private var loaded = false
     @ObservationIgnored private var loading: Task<Void, Never>?
 
-    @ObservationIgnored private var running = false
+    /// Started and not stopped (the container runs it while active and signed in).
+    @ObservationIgnored private(set) var isRunning = false
     @ObservationIgnored private var isFlushing = false
     /// A flush was asked for while one was running: run another pass after it.
     @ObservationIgnored private var flushAgain = false
@@ -156,12 +157,12 @@ struct OutboxSnapshot: Equatable {
     }
 
     func start() {
-        if running { return }
-        running = true
+        if isRunning { return }
+        isRunning = true
         startTask = Task { [weak self] in
             guard let self else { return }
             await self.load()
-            guard self.running, !Task.isCancelled else { return }
+            guard self.isRunning, !Task.isCancelled else { return }
             await self.recoverStranded()
             await self.sweep()
             await self.flushOnce()
@@ -182,7 +183,7 @@ struct OutboxSnapshot: Equatable {
     /// Stops the scheduled work. A batch already POSTed is still written back
     /// (under a background task), so its rows never strand as `sending`.
     func stop() {
-        running = false
+        isRunning = false
         startTask?.cancel(); startTask = nil
         sweepTask?.cancel(); sweepTask = nil
         pendingFlush?.cancel(); pendingFlush = nil; pendingDue = nil
@@ -190,7 +191,7 @@ struct OutboxSnapshot: Equatable {
 
     /// Schedules a flush `delayMs` from now, never later than one already pending.
     private func scheduleFlush(after delayMs: Int64) {
-        guard running else { return }
+        guard isRunning else { return }
         let due = clock() + delayMs
         if pendingFlush != nil, let pendingDue, pendingDue <= due { return }
         pendingFlush?.cancel()
@@ -226,7 +227,7 @@ struct OutboxSnapshot: Equatable {
         isFlushing = true
         await sendDueBatch()
         isFlushing = false
-        guard running else { return }
+        guard isRunning else { return }
         if flushAgain || !OutboxMachine.dueRows(Array(all.values), nowMs: clock()).isEmpty {
             flushAgain = false
             scheduleFlush(after: 0)

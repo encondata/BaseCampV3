@@ -110,13 +110,11 @@ final class AppContainer {
 
     func onActive() {
         active = true
-        outbox.start()
         refreshRunState()
     }
 
     func onBackground() {
         active = false
-        outbox.stop()
         refreshRunState()
     }
 
@@ -124,11 +122,13 @@ final class AppContainer {
     func authChanged() { refreshRunState() }
 
     /// Heartbeat while active and signed in (not must-change-password); the
-    /// screen stays awake only while active and signed in.
+    /// outbox flushes and the screen stays awake only while active and signed in
+    /// (a signed-out kiosk has no token to send scans with).
     private func refreshRunState() {
         coordinator.evaluate(foreground: active)
         var authed = false
         if case .authed = auth.state { authed = true }
+        if active && authed { outbox.start() } else { outbox.stop() }
         UIApplication.shared.isIdleTimerDisabled = active && authed
     }
 }

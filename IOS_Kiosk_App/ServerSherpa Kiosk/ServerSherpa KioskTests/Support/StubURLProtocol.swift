@@ -10,6 +10,8 @@ struct StubResponse: Sendable {
     var failure: URLError.Code?
     /// Answers 302 with this `Location` (the redirect is delivered to the session delegate).
     var redirectTo: String?
+    /// When set, the answer waits until the test calls `release()` (a request held in flight).
+    var hold: StubHold?
 
     static func json(_ status: Int, _ body: String) -> StubResponse {
         StubResponse(status: status, body: Data(body.utf8))
@@ -26,6 +28,13 @@ struct StubResponse: Sendable {
     static func fail(_ code: URLError.Code = .cannotConnectToHost) -> StubResponse {
         StubResponse(failure: code)
     }
+}
+
+/// Holds a stub answer in flight until the test releases it.
+final class StubHold: Sendable {
+    private let semaphore = DispatchSemaphore(value: 0)
+    func release() { semaphore.signal() }
+    fileprivate func wait() { semaphore.wait() }
 }
 
 /// One request the stub saw.
@@ -122,6 +131,7 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         }
         let answer = server.answer(Self.record(request, url: url))
         DispatchQueue.global().asyncAfter(deadline: .now() + answer.delay) { [self] in
+            answer.hold?.wait()
             if let failure = answer.failure {
                 client?.urlProtocol(self, didFailWithError: URLError(failure))
                 return

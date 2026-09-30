@@ -119,4 +119,45 @@ struct SessionStoreTests {
         #expect(await h.session.accessToken() == nil)
         #expect(h.cookies.value(forHost: h.server.host) == "r1")
     }
+
+    // MARK: a refresh answer that lands after the session changed is dropped
+
+    @Test func aRefreshAnsweringAfterSignOutStoresNothing() async throws {
+        let h = ApiHarness()
+        h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
+        let hold = StubHold()
+        var rotated = sessionResponse(cookie: "ss_refresh=r2; Path=/auth; HttpOnly", token: "tok2")
+        rotated.hold = hold
+        h.server.enqueue(rotated)
+        let refresh = Task { await h.session.refreshOutcome() }
+        await waitUntil { h.server.requestCount == 2 }            // the refresh is in flight
+        await h.session.clear()                                   // sign-out: local session and cookie go
+        h.cookies.clear(host: h.server.host)
+        hold.release()
+        let outcome = await refresh.value
+        #expect(outcome.session == nil)
+        #expect(await h.session.accessToken() == nil)
+        #expect(h.secrets.get("refresh.\(h.server.host)") == nil)  // the rotated cookie was not kept
+    }
+
+    @Test func aRejectedRefreshAnsweringAfterSignInKeepsTheNewSession() async throws {
+        let h = ApiHarness()
+        h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
+        let hold = StubHold()
+        h.server.enqueue(.json(401, #"{"detail":{"code":"token_expired"}}"#))    // the heartbeat
+        var rejected = StubResponse.json(401, #"{"detail":{"code":"invalid_token"}}"#)
+        rejected.hold = hold
+        h.server.enqueue(rejected)                                                // its refresh, held
+        let call = Task { try await h.api.heartbeat(HeartbeatIn(serial: "s", name: "Kiosk")) }
+        await waitUntil { h.server.requestCount == 3 }            // login, heartbeat, refresh in flight
+        h.secrets.set("refresh.\(h.server.host)", "r9")           // someone signs in meanwhile
+        var fresh = try KioskJSON.decoder.decode(SessionData.self, from: Data(sessionJSON.utf8))
+        fresh.accessToken = "tok9"
+        await h.session.store(fresh)
+        hold.release()
+        _ = try? await call.value
+        // notifySessionEnded (the only thing that yields sessionEnded) would have cleared the token.
+        #expect(await h.session.accessToken() == "tok9")
+        #expect(h.cookies.value(forHost: h.server.host) == "r9")
+    }
 }
