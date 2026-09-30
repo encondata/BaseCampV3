@@ -41,6 +41,8 @@ from serversherpa.db.models import (
 from serversherpa.wiki import reviews
 from serversherpa.wiki.permissions import can_set_private, level_rank
 
+ELLIPSIS = "…"
+
 
 async def person_ref(db, person_id: uuid.UUID | None) -> PersonRef | None:
     if person_id is None:
@@ -153,16 +155,27 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
             .group_by(child.c.parent_id)
         )).all()}
 
-    # where each inheriting node's printing value comes from — the space's
-    # data is already loaded by the index, so only the titles of source
-    # nodes outside this batch cost a query
+    # where each inheriting node's printing value comes from — warm the
+    # index once for every space so a multi-space listing batches its loads;
+    # only source nodes outside this batch cost a query (for their title
+    # and the caller's level on them)
+    await ctx.ix._load_spaces({n.space_id for n in nodes})
     printing = {n.id: await ctx.ix.printing_source(n) for n in nodes}
-    source_titles = {n.id: n.title for n in nodes}
-    outside = {src for _, src in printing.values() if src is not None} - source_titles.keys()
+    in_batch = {n.id: n for n in nodes}
+    outside = {src for _, src in printing.values()
+               if src is not None} - in_batch.keys()
+    source_nodes = dict(in_batch)
     if outside:
-        source_titles.update((await db.execute(
-            select(WikiNode.id, WikiNode.title).where(WikiNode.id.in_(outside))
-        )).all())
+        source_nodes.update({row.id: row for row in (await db.scalars(
+            select(WikiNode).where(WikiNode.id.in_(outside)))).all()})
+    # a source the caller can't view (an ancestor behind broken inheritance
+    # or a private folder) is named "…" with no id — as get_node masks a
+    # hidden breadcrumb — so its title and id don't leak
+    source_visible: dict[uuid.UUID, bool] = {}
+    for src_id, src in source_nodes.items():
+        source_visible[src_id] = (
+            levels.get(src_id) is not None if src_id in in_batch
+            else await ctx.ix.level_for_node(src) is not None)
 
     now = reviews.utcnow()
     out: list[NodeOut] = []
@@ -201,9 +214,13 @@ async def nodes_out(ctx: WikiCtx, nodes: Sequence[WikiNode],
         can_print, source_id = printing[n.id]
         printing_from = None
         if n.allow_printing is None:
-            printing_from = PrintingSourceOut(
-                node_id=source_id,
-                title="Library" if source_id is None else source_titles.get(source_id, ""))
+            if source_id is None:
+                printing_from = PrintingSourceOut(node_id=None, title="Library")
+            elif source_visible.get(source_id):
+                printing_from = PrintingSourceOut(
+                    node_id=source_id, title=source_nodes[source_id].title)
+            else:
+                printing_from = PrintingSourceOut(node_id=None, title=ELLIPSIS)
 
         out.append(NodeOut(
             id=n.id, space_id=n.space_id, space_key=space_key,

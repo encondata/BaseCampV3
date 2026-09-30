@@ -224,11 +224,15 @@ async def patch_node(node_id: uuid.UUID, body: NodePatchIn, ctx: WikiContext) ->
 async def set_privacy(node_id: uuid.UUID, body: PrivacyIn, ctx: WikiContext) -> NodeOut:
     """Mark an item private, or clear it. Only its author or a developer
     may — not a manager, not a wiki administrator — and never the library's
-    home page (which everyone who can see the library opens)."""
+    home page (which everyone who can see the library opens). An archived
+    library is read-only, so only a wiki administrator may change it there."""
     node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "view")
     if not can_set_private(ctx.principal, node):
-        raise forbidden("author")
+        raise err(403, "forbidden", "Only the author or a developer can change this.")
     space = await ctx.db.get(WikiSpace, node.space_id)
+    # an archived library is read-only for everyone but a wiki administrator
+    if space.archived_at is not None and not ctx.principal.is_admin:
+        raise forbidden("edit")
     if space.home_node_id == node.id:
         raise err(422, "home_page", "The library's home page can't be private.")
 

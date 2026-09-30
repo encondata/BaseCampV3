@@ -4,10 +4,11 @@ can_set_private fields, `PATCH /wiki/nodes/{id}/privacy` and
 `PATCH /wiki/nodes/{id}/printing`, and the library `allow_printing` setting
 going through the existing settings validation."""
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
-from serversherpa.db.models import AuditLog, WikiFile, WikiNode, WikiSpace
+from serversherpa.db.models import AuditLog, WikiFile, WikiGrant, WikiNode, WikiSpace
 from serversherpa.wiki import tree
 from tests.wiki_helpers import _create, _setup, login_as, publish_via_db
 
@@ -113,6 +114,60 @@ async def test_developer_sets_private_on_someone_elses_page(client, db):
     # the author still manages it; other editors no longer see it
     assert (await _get(client, ctx["owner"], page["id"]))["my_level"] == "manage"
     await _get(client, ctx["editor"], page["id"], expect=404)
+
+
+async def test_developer_clears_private_on_someone_elses_page(client, db):
+    ctx = await _setup(client, db)
+    page = await _create(client, ctx["owner"], ctx["space"], "Theirs", kind="page")
+    await _privacy(client, ctx["owner"], page["id"], True)
+    await _get(client, ctx["editor"], page["id"], expect=404)
+    dev_h, _ = await login_as(client, db, roles=("staff", "developer"))
+    body = await _privacy(client, dev_h, page["id"], False)
+    assert body["is_private"] is False
+    assert body["can_set_private"] is True
+    # everyone with library access sees it again
+    await _get(client, ctx["editor"], page["id"])
+
+
+async def test_forbidden_privacy_message_names_the_rule(client, db):
+    ctx = await _setup(client, db)
+    page = await _create(client, ctx["owner"], ctx["space"], "Page", kind="page")
+    resp = await client.patch(f"/wiki/nodes/{page['id']}/privacy",
+                              headers=ctx["editor"], json={"is_private": True})
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == {
+        "code": "forbidden",
+        "message": "Only the author or a developer can change this."}
+
+
+async def _archive(client, ctx):
+    resp = await client.post(f"/wiki/spaces/{ctx['space']['key']}/archive",
+                             headers=ctx["owner"])
+    assert resp.status_code == 200, resp.text
+
+
+async def test_privacy_is_refused_in_an_archived_library_for_a_non_admin_author(client, db):
+    ctx = await _setup(client, db)
+    page = await _create(client, ctx["editor"], ctx["space"], "Mine", kind="page")
+    await _archive(client, ctx)
+    resp = await client.patch(f"/wiki/nodes/{page['id']}/privacy",
+                              headers=ctx["editor"], json={"is_private": True})
+    assert resp.status_code == 403
+    assert _code(resp.json()) == "forbidden"
+    row = await db.get(WikiNode, uuid.UUID(page["id"]))
+    await db.refresh(row)
+    assert row.is_private is False
+
+
+async def test_a_wiki_admin_author_can_change_privacy_in_an_archived_library(client, db):
+    ctx = await _setup(client, db)
+    admin_h, _ = await login_as(client, db, roles=("admin",))
+    page = await _create(client, admin_h, ctx["space"], "Admin's", kind="page")
+    await _archive(client, ctx)
+    body = await _privacy(client, admin_h, page["id"], True)
+    assert body["is_private"] is True
+    body = await _privacy(client, admin_h, page["id"], False)
+    assert body["is_private"] is False
 
 
 async def test_editor_who_is_not_the_author_gets_403(client, db):
@@ -250,6 +305,35 @@ async def test_children_inherit_printing_and_report_where_it_came_from(client, d
     await _printing(client, h, folder["id"], None)
     body = await _get(client, h, page["id"])
     assert body["allow_printing"] is True
+
+
+async def test_printing_source_the_caller_cannot_view_is_masked(client, db):
+    ctx = await _setup(client, db)
+    h, space = ctx["owner"], ctx["space"]
+    folder = await _create(client, h, space, "Secret folder")
+    page = await _create(client, h, space, "Leaf", kind="page", parent=folder)
+    await publish_via_db(db, page["id"])
+    await _printing(client, h, folder["id"], False)
+    # the folder breaks inheritance for the owner alone; the viewer gets a
+    # grant on the leaf only, so they can open it but not its folder
+    row = await db.get(WikiNode, uuid.UUID(folder["id"]))
+    row.inherit_permissions = False
+    db.add(WikiGrant(space_id=row.space_id, node_id=row.id, principal_type="person",
+                     principal_id=str(ctx["owner_id"]), level="manage"))
+    db.add(WikiGrant(space_id=row.space_id, node_id=uuid.UUID(page["id"]),
+                     principal_type="person", principal_id=str(ctx["viewer_id"]),
+                     level="view"))
+    await db.commit()
+    await _get(client, ctx["viewer"], folder["id"], expect=404)
+
+    body = await _get(client, ctx["viewer"], page["id"])
+    assert body["my_level"] == "view"
+    assert body["can_print"] is False
+    assert body["printing_from"] == {"node_id": None, "title": "…"}
+    assert "Secret folder" not in str(body)
+    # a caller who can see the folder still gets its name
+    body = await _get(client, h, page["id"])
+    assert body["printing_from"] == {"node_id": folder["id"], "title": "Secret folder"}
 
 
 async def test_library_setting_drives_can_print_and_is_validated(client, db):
