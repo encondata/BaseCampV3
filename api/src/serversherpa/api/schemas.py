@@ -2202,6 +2202,15 @@ class SystemProcessOut(BaseModel):
     meta: dict
 
 
+class BackgroundStatusOut(BaseModel):
+    """Aggregate worker health for the public status page — counts only,
+    never process names."""
+
+    state: Literal["running", "down", "paused"]
+    running: int
+    total: int
+
+
 class SystemStatusOut(BaseModel):
     """Public (unauthenticated) portal status — banners + read-only state."""
 
@@ -2210,6 +2219,7 @@ class SystemStatusOut(BaseModel):
     workers_paused: bool
     banner: str | None
     totp_trust_days: int
+    background: BackgroundStatusOut | None = None
 
 
 class AdminConfigOut(BaseModel):
