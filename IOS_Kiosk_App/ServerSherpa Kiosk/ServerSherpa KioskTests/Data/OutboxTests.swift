@@ -74,15 +74,15 @@ private actor FlakyOutboxStore: OutboxStore {
     private(set) var upsertAttempts = 0
     func setFailUpserts(_ n: Int) { failUpserts = n }
     func setFailDeletes(_ n: Int) { failDeletes = n }
-    func all() async throws -> [OutboxRow] { try await inner.all() }
+    func all() async throws -> [OutboxRow] { await inner.all() }
     func upsert(_ rows: [OutboxRow]) async throws {
         upsertAttempts += 1
         if failUpserts > 0 { failUpserts -= 1; throw CocoaError(.fileWriteUnknown) }
-        try await inner.upsert(rows)
+        await inner.upsert(rows)
     }
     func delete(_ ids: [String]) async throws {
         if failDeletes > 0 { failDeletes -= 1; throw CocoaError(.fileWriteUnknown) }
-        try await inner.delete(ids)
+        await inner.delete(ids)
     }
 }
 
@@ -200,7 +200,7 @@ struct OutboxTests {
         let store = MemoryOutboxStore()
         var stranded = OutboxMachine.newRow(input(), clientScanId: "old", seq: 7, nowMs: 0)
         stranded.status = .sending
-        try await store.upsert([stranded])
+        await store.upsert([stranded])
         let api = FakeKioskApi()
         let ob = await started(outbox(api, store))
         await waitUntil { api.scanBatches.count == 1 }
