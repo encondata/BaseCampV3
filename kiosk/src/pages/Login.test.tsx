@@ -67,6 +67,16 @@ it('renders the shared light sign-in scene around its own form', () => {
   expect(screen.getByText('ServerSherpa Kiosk')).toBeTruthy();
 });
 
+it('keeps the kiosk headline in the shared scene', () => {
+  const { container } = renderLogin();
+  // the single accent word the retired brand panel carried, not the
+  // portal's two-line "Migration Control." hero
+  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Kiosk');
+  expect(container.querySelector('.lx-hero .accent')?.textContent).toBe('Kiosk');
+  expect(container.querySelector('.lx-sub')?.textContent)
+    .toBe('Sign in to start scanning. Link this kiosk with your phone or use your ServerSherpa credentials.');
+});
+
 it('keeps the old brand panel out — nothing renders the retired terrain', () => {
   const { container } = renderLogin();
   expect(container.querySelector('.brand')).toBeNull();

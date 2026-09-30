@@ -33,6 +33,12 @@ import { getIdentity } from '../lib/identity';
 
 type View = 'password' | 'chooser' | 'link' | 'move';
 
+/** The kiosk's own line under its headline. It is repeated as the form's
+ *  hint for narrow screens, where login-light.css hides the whole story
+ *  block — kiosk.css hides the hint again once the story is visible. */
+const KIOSK_SUB = 'Sign in to start scanning. Link this kiosk with your phone'
+  + ' or use your ServerSherpa credentials.';
+
 const ERROR_MESSAGES: Record<string, string> = {
   invalid_credentials: 'Invalid email or password.',
   account_locked: 'Too many failed attempts — this account is temporarily locked. Try again in about 15 minutes.',
@@ -172,7 +178,14 @@ export default function Login() {
 
   return (
     <div className="login-shell login-light">
-      <LoginScene />
+      {/* The scene is shared; only the headline names the app. The kiosk's
+          is the single accent word it has always been, over the same line
+          the retired brand panel carried. */}
+      <LoginScene
+        lead={null}
+        accent="Kiosk"
+        sub={KIOSK_SUB}
+      />
 
       <main className="lx-form-col">
         <button type="button" className="kiosk-login-gear" aria-label="Kiosk settings"
@@ -192,12 +205,9 @@ export default function Login() {
 
           {(view === 'password' || view === 'chooser') && (
             <div>
-              {/* the guidance the old brand panel carried. Only here: the
-                  link and move views state their own method instead. */}
-              <p className="form-hint">
-                Sign in to start scanning. Link this kiosk with your phone or use your
-                ServerSherpa credentials.
-              </p>
+              {/* the same line the scene shows, repeated for the narrow
+                  layout where the scene's story block is hidden */}
+              <p className="form-hint kiosk-login-sub">{KIOSK_SUB}</p>
               <form onSubmit={handlePassword} noValidate>
                 <div className="field">
                   <label htmlFor="login-email">Email</label>

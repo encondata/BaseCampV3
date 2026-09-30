@@ -226,6 +226,13 @@
 }
 .login-shell.login-light .kiosk-login-gear svg { width: 18px; height: 18px }
 
+/* The scene's story block carries this line already; it is repeated in
+   the form only for the narrow layout, where login-light.css hides the
+   story (the same 899px breakpoint it uses). */
+@media (min-width: 900px) {
+  .login-shell.login-light .kiosk-login-sub { display: none }
+}
+
 /* which kiosk this is, beside the eyebrow */
 .login-shell.login-light .eyebrow-row {
   display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
