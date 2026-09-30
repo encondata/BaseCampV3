@@ -7,21 +7,46 @@ private enum CameraMode: String, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
-/// Hosts the scanner's preview layer; the layer is the view's own, so it resizes with the view.
+/// Hosts the camera preview; the layer is the view's own, so it resizes with the view.
+/// Keeps the preview upright through a RotationCoordinator for the current camera.
 private struct CameraPreview: UIViewRepresentable {
     let scanner: CameraScanner
 
     final class PreviewView: UIView {
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
+        private var coordinator: AVCaptureDevice.RotationCoordinator?
+        private var observation: NSKeyValueObservation?
+
+        var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+
+        /// Recreated on every camera change (flip).
+        func attach(_ device: AVCaptureDevice) {
+            let coordinator = AVCaptureDevice.RotationCoordinator(device: device, previewLayer: previewLayer)
+            self.coordinator = coordinator
+            observation = coordinator.observe(\.videoRotationAngleForHorizonLevelPreview, options: [.initial, .new]) { [weak self] _, _ in
+                DispatchQueue.main.async { self?.applyRotation() }
+            }
+        }
+
+        func applyRotation() {
+            guard let coordinator, let connection = previewLayer.connection else { return }
+            let angle = coordinator.videoRotationAngleForHorizonLevelPreview
+            if connection.isVideoRotationAngleSupported(angle) { connection.videoRotationAngle = angle }
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            applyRotation()
+        }
     }
 
     func makeUIView(context: Context) -> PreviewView {
         let view = PreviewView()
         view.backgroundColor = .black
-        // The scanner's session drives this view's layer.
-        let layer = view.layer as! AVCaptureVideoPreviewLayer
-        layer.session = scanner.previewLayer.session
-        layer.videoGravity = .resizeAspectFill
+        view.previewLayer.session = scanner.session
+        view.previewLayer.videoGravity = .resizeAspectFill
+        scanner.onDevice = { [weak view] device in view?.attach(device) }
+        if let device = scanner.activeDevice { view.attach(device) }
         return view
     }
 
@@ -44,6 +69,9 @@ struct CameraScanSheet: View {
     @State private var count = 0
     @State private var recent: [String] = []
     @State private var finished = false
+    @State private var isActive = false
+    @State private var failure: String?
+    @Environment(\.scenePhase) private var scenePhase
 
     init(bus: ScanBus, prefs: KioskPrefs, onClose: @escaping () -> Void) {
         self.bus = bus
@@ -67,6 +95,9 @@ struct CameraScanSheet: View {
                         .position(x: geo.size.width / 2, y: geo.size.height / 2)
                 }
                 .allowsHitTesting(false)
+                if let failure {
+                    Text(failure).foregroundStyle(.white).padding(24)
+                }
             } else {
                 permissionMessage
             }
@@ -79,10 +110,22 @@ struct CameraScanSheet: View {
         .task { await prepare() }
         .onChange(of: prefs.cameraPosition) { _, position in
             torch = false
-            scanner.start(position: position)
+            if CameraStartGate.canStart(status: status, isActive: isActive) { scanner.start(position: position) }
         }
         .onChange(of: torch) { _, on in scanner.setTorch(on) }
-        .onDisappear { scanner.stop() }
+        .onChange(of: scenePhase) { _, phase in
+            // Granting in Settings should work without reopening the sheet.
+            guard phase == .active, isActive, status != .authorized else { return }
+            status = AVCaptureDevice.authorizationStatus(for: .video)
+            startIfAllowed()
+        }
+        .onDisappear {
+            isActive = false
+            scanner.onCode = nil
+            scanner.onError = nil
+            scanner.onDevice = nil
+            scanner.stop()
+        }
     }
 
     @ViewBuilder private var permissionMessage: some View {
@@ -162,12 +205,20 @@ struct CameraScanSheet: View {
     }
 
     private func prepare() async {
+        isActive = true
         if status == .notDetermined {
             let ok = await AVCaptureDevice.requestAccess(for: .video)
+            // The sheet may have closed while the system prompt was up.
+            if Task.isCancelled || !isActive { return }
             status = ok ? .authorized : .denied
         }
-        guard status == .authorized else { return }
+        startIfAllowed()
+    }
+
+    private func startIfAllowed() {
+        guard CameraStartGate.canStart(status: status, isActive: isActive) else { return }
         scanner.onCode = { value, symbology in handle(value, symbology) }
+        scanner.onError = { message in failure = message }
         scanner.start(position: prefs.cameraPosition)
     }
 

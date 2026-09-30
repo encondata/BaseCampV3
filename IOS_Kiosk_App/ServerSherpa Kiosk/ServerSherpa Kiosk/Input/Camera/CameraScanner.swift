@@ -12,25 +12,32 @@ enum CameraSupport {
     static var hasTorch: Bool { device(.back)?.hasTorch ?? false }
 }
 
+/// When the camera may be started: permission granted and the sheet still on screen.
+enum CameraStartGate {
+    static func canStart(status: AVAuthorizationStatus, isActive: Bool) -> Bool {
+        status == .authorized && isActive
+    }
+}
+
 /// Owns the `AVCaptureSession`. Invariant: the session (and the device lock)
 /// is touched only on `queue`; metadata is delivered on the main queue, where
 /// `onCode` runs. Frames are never stored.
 final class CameraScanner: NSObject, AVCaptureMetadataOutputObjectsDelegate, @unchecked Sendable {
+    static let startFailureMessage = "Couldn't start the camera on this device."
+
     private let queue = DispatchQueue(label: "com.serversherpa.kiosk.camera")
-    private let session = AVCaptureSession()
+    let session = AVCaptureSession()
     private var device: AVCaptureDevice?
     private var configured: AVCaptureDevice.Position?
 
     /// (value, symbology). Called on the main actor.
     var onCode: (@MainActor (String, String) -> Void)?
-
-    let previewLayer: AVCaptureVideoPreviewLayer
-
-    override init() {
-        previewLayer = AVCaptureVideoPreviewLayer(session: session)
-        previewLayer.videoGravity = .resizeAspectFill
-        super.init()
-    }
+    /// Called on the main actor when the camera can't be set up.
+    var onError: (@MainActor (String) -> Void)?
+    /// Called on the main actor each time a camera becomes the session's input.
+    var onDevice: (@MainActor (AVCaptureDevice) -> Void)?
+    /// The current input camera. Main actor only.
+    private(set) var activeDevice: AVCaptureDevice?
 
     private static let symbologies: [AVMetadataObject.ObjectType] = [
         .qr, .code128, .code39, .code39Mod43, .code93, .ean8, .ean13, .upce,
@@ -48,10 +55,7 @@ final class CameraScanner: NSObject, AVCaptureMetadataOutputObjectsDelegate, @un
     func stop() {
         queue.async { [self] in
             if session.isRunning { session.stopRunning() }
-            if let device, device.torchMode != .off, (try? device.lockForConfiguration()) != nil {
-                device.torchMode = .off
-                device.unlockForConfiguration()
-            }
+            Self.torchOff(device)
         }
     }
 
@@ -64,17 +68,38 @@ final class CameraScanner: NSObject, AVCaptureMetadataOutputObjectsDelegate, @un
         }
     }
 
-    /// Runs on `queue`.
+    private static func torchOff(_ device: AVCaptureDevice?) {
+        guard let device, device.hasTorch, device.torchMode != .off,
+              (try? device.lockForConfiguration()) != nil else { return }
+        device.torchMode = .off
+        device.unlockForConfiguration()
+    }
+
+    private func fail() {
+        DispatchQueue.main.async { [self] in
+            MainActor.assumeIsolated { onError?(Self.startFailureMessage) }
+        }
+    }
+
+    /// Runs on `queue`. All or nothing: on failure the previous inputs and
+    /// outputs are restored and `configured` is left as it was.
     private func configure(_ position: AVCaptureDevice.Position) {
         guard let cam = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
-              let input = try? AVCaptureDeviceInput(device: cam) else { return }
+              let input = try? AVCaptureDeviceInput(device: cam) else { fail(); return }
+        Self.torchOff(device)
+        let oldInputs = session.inputs, oldOutputs = session.outputs
         session.beginConfiguration()
-        session.inputs.forEach { session.removeInput($0) }
-        session.outputs.forEach { session.removeOutput($0) }
-        guard session.canAddInput(input) else { session.commitConfiguration(); return }
-        session.addInput(input)
+        oldInputs.forEach { session.removeInput($0) }
+        oldOutputs.forEach { session.removeOutput($0) }
         let output = AVCaptureMetadataOutput()
-        guard session.canAddOutput(output) else { session.commitConfiguration(); return }
+        guard session.canAddInput(input), session.canAddOutput(output) else {
+            oldInputs.filter(session.canAddInput).forEach { session.addInput($0) }
+            oldOutputs.filter(session.canAddOutput).forEach { session.addOutput($0) }
+            session.commitConfiguration()
+            fail()
+            return
+        }
+        session.addInput(input)
         session.addOutput(output)
         // Only types the output offers: setting an unavailable one throws an ObjC exception.
         let available = Set(output.availableMetadataObjectTypes)
@@ -83,6 +108,12 @@ final class CameraScanner: NSObject, AVCaptureMetadataOutputObjectsDelegate, @un
         session.commitConfiguration()
         device = cam
         configured = position
+        DispatchQueue.main.async { [self] in
+            MainActor.assumeIsolated {
+                activeDevice = cam
+                onDevice?(cam)
+            }
+        }
     }
 
     func metadataOutput(_ output: AVCaptureMetadataOutput, didOutput metadataObjects: [AVMetadataObject], from connection: AVCaptureConnection) {
