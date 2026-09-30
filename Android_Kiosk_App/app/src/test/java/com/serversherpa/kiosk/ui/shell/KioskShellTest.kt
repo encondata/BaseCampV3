@@ -78,4 +78,15 @@ class KioskShellTest {
         }
         compose.onNodeWithText("Sign out").assertIsDisplayed()
     }
+
+    @Test fun aMoveSessionWithNoSetupYetShowsItsMoveInTheFooter() {
+        val c = testContainer()
+        c.auth.completePair(fakeSession(kioskMove = com.serversherpa.kiosk.core.model.KioskMove("m1", "Dallas Move")))
+        compose.setContent {
+            CompositionLocalProvider(LocalAppContainer provides c) {
+                KioskTheme { KioskShell(rememberNavController()) { Text("page body") } }
+            }
+        }
+        compose.onNodeWithText("Dallas Move", substring = true).assertIsDisplayed()
+    }
 }
