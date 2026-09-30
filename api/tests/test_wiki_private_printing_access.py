@@ -331,3 +331,29 @@ def test_allow_printing_space_setting_validates_and_defaults_true():
     assert space_settings.validate("allow_printing", "yes") is False
     assert space_settings.validate("allow_printing", 1) is False
     assert space_settings.DEFAULTS["allow_printing"] is True
+
+
+# ── the tree lock re-reads access ───────────────────────────────────
+
+async def test_lock_and_reread_rebuilds_the_access_index(db):
+    """A move takes the tree lock after its first access check; a folder
+    made private while it waited must be visible to the checks after the
+    lock, so `lock_and_reread` starts from a fresh index."""
+    from serversherpa.api.routes.wiki.deps import WikiCtx, lock_and_reread
+
+    author = await _person(db, "Ava", "Author")
+    space = await _library(db)
+    folder = await _item(db, space, kind="folder", author=author)
+    page = await _item(db, space, folder, author=author)
+    who = _staff(author.id)
+    ctx = WikiCtx(db=db, user=None, principal=who, ix=AccessIndex(db, who))
+    assert not await ctx.ix.is_private(page)  # warmed before the change
+
+    folder.is_private = True  # committed by someone else meanwhile
+    await db.flush()
+    stale = ctx.ix
+    assert not await stale.is_private(page)
+
+    await lock_and_reread(ctx, page, "view")
+    assert ctx.ix is not stale
+    assert await ctx.ix.is_private(page)
