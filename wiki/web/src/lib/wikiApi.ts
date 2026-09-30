@@ -190,6 +190,10 @@ export const setNodePrivacy = (id: string, isPrivate: boolean) =>
 export const setNodePrinting = (id: string, allow: boolean | null) =>
   request<NodeOut>('PATCH', `/nodes/${seg(id)}/printing`, { body: { allow_printing: allow } });
 
+/** The export cover's document type; `null` clears it. Edit. */
+export const setNodeDocType = (nodeId: string, docType: string | null) =>
+  request<NodeOut>('PATCH', `/nodes/${seg(nodeId)}/doc-type`, { body: { doc_type: docType } });
+
 export const setFavorite = (id: string, favorite: boolean) =>
   request<void>(favorite ? 'PUT' : 'DELETE', `/nodes/${seg(id)}/favorite`);
 

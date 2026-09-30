@@ -20,6 +20,7 @@ function fakeShell(): ShellValue {
     requestMove: vi.fn(),
     requestCopy: vi.fn(),
     requestPermissions: vi.fn(),
+    requestDocType: vi.fn(),
     requestShare: vi.fn(),
     requestExport: vi.fn(),
   };
@@ -127,6 +128,25 @@ describe('RowMenu', () => {
     expect(shell.requestPermissions).toHaveBeenCalledWith(node);
     pick('Delete');
     expect(shell.requestDelete).toHaveBeenCalledWith(node);
+  });
+
+  it('offers Document type… on a page to an editor, and hands it to the shell', () => {
+    const page = makeNode('n1', { kind: 'page', my_level: 'edit' });
+    const { shell } = open(page);
+    expect(items()).toContain('Document type…');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Document type…' }));
+    expect(shell.requestDocType).toHaveBeenCalledWith(page);
+  });
+
+  it('keeps Document type… from viewers, folders and files', () => {
+    open(makeNode('n1', { kind: 'page', my_level: 'view' }));
+    expect(items()).not.toContain('Document type…');
+    cleanup();
+    open(makeNode('n2', { kind: 'folder', my_level: 'manage' }));
+    expect(items()).not.toContain('Document type…');
+    cleanup();
+    open(makeNode('n3', { kind: 'file', my_level: 'manage' }));
+    expect(items()).not.toContain('Document type…');
   });
 
   it('offers Share… on a page or file to a manager, and hands it to the shell', () => {

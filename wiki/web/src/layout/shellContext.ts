@@ -1,7 +1,7 @@
 /** What pages tell the shell (which space and node are showing) and the
  *  shell-owned actions they can ask for — the one way the tree, the page
  *  header's ⋯ menu and any other caller open the Delete, Move, Copy,
- *  Permissions, Share and Export dialogs. Outside a WikiShell (tests) every member is a
+ *  Permissions, Document type, Share and Export dialogs. Outside a WikiShell (tests) every member is a
  *  harmless no-op. */
 import { createContext, useContext } from 'react';
 
@@ -29,6 +29,8 @@ export interface ShellValue {
   requestMove: (node: NodeOut) => void;
   requestCopy: (node: NodeOut) => void;
   requestPermissions: (node: NodeOut) => void;
+  /** A page's document type, for the export cover (edit). */
+  requestDocType: (node: NodeOut) => void;
   /** Public share links for a page or file (manage). */
   requestShare: (node: NodeOut) => void;
   /** Export a page, a folder or a space (view). */
@@ -45,6 +47,7 @@ export const ShellContext = createContext<ShellValue>({
   requestMove: noop,
   requestCopy: noop,
   requestPermissions: noop,
+  requestDocType: noop,
   requestShare: noop,
   requestExport: noop,
 });
