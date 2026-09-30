@@ -1552,9 +1552,12 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 @media print {
   body[data-no-print] > * { display: none !important; }
   body[data-no-print] .wiki-print-blocked { display: block !important; padding: 48px 24px; font-size: 16px; }
+  /* a file embedded in a printable page, but whose own printing is off */
+  [data-print-off] { display: none !important; }
 }
 .wiki-pdf-viewer { user-select: none; -webkit-user-select: none; }
 .wiki-pdf-pages { display: flex; flex-direction: column; gap: 10px; padding: 10px; background: var(--surface-2, #f1f4f7); }
-.wiki-pdf-canvas { display: block; width: 100%; height: auto; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18); }
+.wiki-pdf-page { position: relative; width: 100%; background: #fff; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18); }
+.wiki-pdf-canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
 .wiki-fileview-preview .wiki-pdf-viewer { max-height: 78vh; overflow: auto; }
 .wiki-file-preview .wiki-pdf-viewer { max-height: 540px; overflow: auto; line-height: normal; }

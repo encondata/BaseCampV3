@@ -302,7 +302,8 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
         </span>
       </div>
       {open && !titleLoading && preview?.url && previewable && (
-        <div className="wiki-file-preview" contentEditable={false}>
+        // data-print-off: a printable page must not print an embedded file whose printing is off
+        <div className="wiki-file-preview" contentEditable={false} {...(printOff ? { 'data-print-off': '' } : {})}>
           {type === 'image' && (
             <img src={preview.url} alt={shownName} draggable={false} onError={publicOnError(editor)}
                  {...(printOff ? IMAGE_LOCKED : {})} />

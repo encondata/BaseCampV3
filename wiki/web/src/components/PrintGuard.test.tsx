@@ -24,6 +24,14 @@ describe('PrintGuard', () => {
     expect(toast).toHaveBeenCalledWith('Printing is turned off for this page.');
   });
 
+  it('also stops P by its key code, for other layouts and ⌥⌘P', () => {
+    render(<PrintGuard active />);
+    expect(press({ key: 'з', code: 'KeyP', ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(press({ key: 'π', code: 'KeyP', metaKey: true, altKey: true }).defaultPrevented).toBe(true);
+    expect(toast).toHaveBeenCalledTimes(2);
+    expect(press({ key: 'з', code: 'KeyP' }).defaultPrevented).toBe(false);
+  });
+
   it('leaves other keys alone', () => {
     render(<PrintGuard active />);
     expect(press({ key: 'p' }).defaultPrevented).toBe(false);
@@ -56,5 +64,20 @@ describe('PrintGuard', () => {
     const notice = document.querySelector('.wiki-print-blocked') as HTMLElement;
     expect(notice.parentElement).toBe(document.body);
     expect(notice.textContent).toBe('Printing is turned off for this page.');
+  });
+
+  it('shares the flag and the one notice between overlapping guards', () => {
+    const one = render(<PrintGuard active />);
+    const two = render(<PrintGuard active />);
+    expect(document.querySelectorAll('.wiki-print-blocked')).toHaveLength(1);
+    // one key press: one toast, however many guards
+    expect(press({ key: 'p', ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(toast).toHaveBeenCalledTimes(1);
+    one.unmount();
+    expect(document.body.dataset.noPrint).toBe('1');
+    expect(document.querySelectorAll('.wiki-print-blocked')).toHaveLength(1);
+    two.unmount();
+    expect(document.body.dataset.noPrint).toBeUndefined();
+    expect(document.querySelector('.wiki-print-blocked')).toBeNull();
   });
 });

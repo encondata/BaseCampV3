@@ -185,6 +185,28 @@ describe('PermissionsDialog — Private', () => {
     expect(screen.getByText(PRIVATE_LABEL, { selector: 'b' })).toBeTruthy();
   });
 
+  it('shows a non-manager author only the Private switch', async () => {
+    const author = { ...NODE, my_level: 'edit' as const, can_set_private: true };
+    vi.mocked(setNodePrivacy).mockResolvedValue({ ...author, is_private: true, my_level: 'manage' });
+    render(<PermissionsDialog target={{ kind: 'node', node: author }} onClose={() => {}} />);
+    const toggle = await screen.findByRole('checkbox', { name: PRIVATE_LABEL });
+    // no grants to load or edit, no inheritance, no Printing, no Save
+    expect(getNodePermissions).not.toHaveBeenCalled();
+    expect(screen.queryByRole('checkbox', { name: 'Inherit permissions from parent' })).toBeNull();
+    expect(screen.queryByText('Add access')).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'Printing' })).toBeNull();
+    expect(screen.queryByText('Printing')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Save changes' })).toBeNull();
+    expect(screen.getByText(/can't have public links, help links or templates/)).toBeTruthy();
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(setNodePrivacy).toHaveBeenCalledWith('n1', true));
+    // turning it on makes them a manager of the node, but the dialog keeps its layout
+    await waitFor(() => expect(toggle).toHaveProperty('checked', true));
+    expect(screen.queryByText('Add access')).toBeNull();
+    expect(screen.queryByText('Printing')).toBeNull();
+  });
+
   it('is not offered on a library\'s home page', async () => {
     const home = { ...NODE, can_set_private: true, page: { ...NODE.page!, is_home: true } };
     render(<PermissionsDialog target={{ kind: 'node', node: home }} onClose={() => {}} />);
@@ -223,8 +245,9 @@ describe('PermissionsDialog — Printing', () => {
   const HELP = 'This stops printing, exporting, downloading and public links. It can\'t stop screenshots.';
 
   it('is for managers only', async () => {
-    render(<PermissionsDialog target={{ kind: 'node', node: { ...NODE, my_level: 'edit' } }} onClose={() => {}} />);
-    await screen.findByText('Grace Hopper', { selector: '.wiki-perm-who b' });
+    render(<PermissionsDialog target={{ kind: 'node', node: { ...NODE, my_level: 'edit', can_set_private: true } }}
+                              onClose={() => {}} />);
+    await screen.findByRole('checkbox', { name: PRIVATE_LABEL });
     expect(screen.queryByRole('combobox', { name: 'Printing' })).toBeNull();
     expect(screen.queryByText(HELP)).toBeNull();
   });

@@ -71,6 +71,26 @@ describe('RowMenu', () => {
     expect(items()).toContain('Permissions…');
   });
 
+  it('offers Permissions… to an author who can set Private but not manage', () => {
+    open(makeNode('n1', { kind: 'page', my_level: 'edit', can_set_private: true }));
+    expect(items()).toContain('Permissions…');
+    cleanup();
+    open(makeNode('n2', { kind: 'file', my_level: 'view', can_set_private: true, page: null }));
+    expect(items()).toContain('Permissions…');
+    cleanup();
+    open(makeNode('n3', { kind: 'page', my_level: 'edit', can_set_private: false }));
+    expect(items()).not.toContain('Permissions…');
+  });
+
+  it('drops Save as template… while printing is off', () => {
+    const onSaveAsTemplate = vi.fn();
+    open(makeNode('n1', { kind: 'page', my_level: 'manage', can_print: false }), { onSaveAsTemplate });
+    expect(items()).not.toContain('Save as template…');
+    cleanup();
+    open(makeNode('n2', { kind: 'page', my_level: 'manage', can_print: true }), { onSaveAsTemplate });
+    expect(items()).toContain('Save as template…');
+  });
+
   it('never offers New … here on a file, nor Delete on the space home', () => {
     open(makeNode('f', { kind: 'file', my_level: 'manage' }));
     expect(items()).not.toContain('New page here');

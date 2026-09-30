@@ -104,6 +104,13 @@ describe('SpaceSettings', () => {
     expect(requestExport).toHaveBeenCalledWith({ kind: 'space', space });
   });
 
+  it('has no Export library… while the library\'s printing is off', async () => {
+    renderSettings(makeSpace({ my_level: 'manage', settings: { allow_printing: false } }));
+    const section = await screen.findByRole('region', { name: 'Export' });
+    expect(within(section).queryByRole('button', { name: 'Export library…' })).toBeNull();
+    expect(within(section).getByText('Printing is turned off for this library, so it can\'t be exported.')).toBeTruthy();
+  });
+
   it('archives after a confirmation', async () => {
     const space = makeSpace({ my_level: 'manage' });
     vi.mocked(archiveSpace).mockResolvedValue({ ...space, archived_at: '2026-09-25T00:00:00Z', my_level: 'view' });

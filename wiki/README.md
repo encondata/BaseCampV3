@@ -296,9 +296,11 @@ it's done.
 - Add a Spaces bucket CORS rule from the wiki origin allowing `PUT` with
   the `Content-Type` header (uploads go straight from the browser to
   Spaces via a presigned URL) **and `GET`** (the file view `fetch()`es
-  text and Markdown previews from their presigned URL; without it those
-  previews fail. Images, PDF previews, downloads and public share-link
-  pages are not CORS reads and work either way).
+  text and Markdown previews from their presigned URL, and pdf.js reads a
+  PDF with printing turned off the same way, with a plain `GET`; without
+  it those previews fail. Images, PDF previews of files that can be
+  printed, downloads and public share-link pages are not CORS reads and
+  work either way).
 - Exports need the `wiki-worker` image's WeasyPrint/LibreOffice
   dependencies and `SS_WIKI_RENDER_URL` pointing at the `wiki` container —
   see Exports above; `wiki/docker-compose.yml` already wires this up, so

@@ -15,7 +15,7 @@ const infos = new Map<string, { at: number; info: Promise<NodeInfo | null> }>();
 export function nodeInfo(id: string): Promise<NodeInfo | null> {
   const hit = infos.get(id);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.info;
-  const info = getNode(id).then((n) => ({ title: n.title, canPrint: n.can_print !== false })).catch((err: unknown) => {
+  const info = getNode(id).then((n) => ({ title: n.title, canPrint: n.can_print === true })).catch((err: unknown) => {
     if (err instanceof ApiError && (err.status === 404 || err.status === 403)) return null;
     infos.delete(id);
     throw err;

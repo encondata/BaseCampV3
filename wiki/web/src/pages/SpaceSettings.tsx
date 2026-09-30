@@ -367,10 +367,16 @@ export default function SpaceSettings() {
       <section className="wiki-settings-section" aria-label="Export">
         <div className="wiki-section-label">Export</div>
         <div className="wiki-settings-row">
-          <p className="page-hint">Download the whole library as a .zip — every page and file you can see, in its folders.</p>
-          <button type="button" className="btn-ghost" onClick={() => requestExport({ kind: 'space', space })}>
-            Export library…
-          </button>
+          {spaceSetting(space, 'allow_printing') ? (
+            <>
+              <p className="page-hint">Download the whole library as a .zip — every page and file you can see, in its folders.</p>
+              <button type="button" className="btn-ghost" onClick={() => requestExport({ kind: 'space', space })}>
+                Export library…
+              </button>
+            </>
+          ) : (
+            <p className="page-hint">Printing is turned off for this library, so it can't be exported.</p>
+          )}
         </div>
       </section>
 

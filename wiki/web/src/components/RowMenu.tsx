@@ -129,7 +129,8 @@ const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
       icon: <path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14" />,
     });
   }
-  if (node.kind === 'page' && canEdit && onSaveAsTemplate) {
+  // a template would carry a printing-off page's whole content into a printable one
+  if (node.kind === 'page' && canEdit && node.can_print && onSaveAsTemplate) {
     items.push({
       label: 'Save as template…', action: onSaveAsTemplate,
       icon: <><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5M10.5 15.5a2 2 0 0 0 2.8 0l1.5-1.5a2 2 0 0 0-2.8-2.8l-.5.5" /></>,
@@ -141,7 +142,8 @@ const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
       icon: <><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M8 3v4M16 3v4M4 10h16M9.5 15l2 2 3.5-3.5" /></>,
     });
   }
-  if (canManage) {
+  // an author who can't manage still reaches the dialog for the Private switch
+  if (canManage || node.can_set_private) {
     items.push({ label: 'Permissions…', action: () => shell.requestPermissions(node), icon: <><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></> });
   }
   if (canManage && node.can_print && (node.kind === 'page' || node.kind === 'file')) {

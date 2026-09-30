@@ -25,20 +25,21 @@ vi.mock('../lib/treeStore', async (importOriginal) => ({
 vi.mock('../uploads/uploadQueue', () => ({ enqueue: vi.fn() }));
 vi.mock('../analytics/useRecordView', () => ({ useRecordView: vi.fn() }));
 // pdf.js draws in a real browser; here it's a stand-in with one page
-vi.mock('pdfjs-dist', () => ({
+vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
   GlobalWorkerOptions: {},
   getDocument: () => ({
     promise: Promise.resolve({
       numPages: 1,
       getPage: async () => ({
         getViewport: ({ scale }: { scale: number }) => ({ width: 600 * scale, height: 800 * scale }),
-        render: () => ({ promise: Promise.resolve() }),
+        render: () => ({ promise: Promise.resolve(), cancel: () => {} }),
+        cleanup: () => {},
       }),
     }),
     destroy: () => Promise.resolve(),
   }),
 }));
-vi.mock('pdfjs-dist/build/pdf.worker.min.mjs?url', () => ({ default: '/worker.js' }));
+vi.mock('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url', () => ({ default: '/worker.js' }));
 
 import { openDownload } from '../lib/download';
 import { noteChanged } from '../lib/treeStore';

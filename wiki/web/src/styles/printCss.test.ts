@@ -17,3 +17,8 @@ it('hides the page when printing with body[data-no-print], except the notice', (
 it('keeps the notice off the screen', () => {
   expect(css).toMatch(/\.wiki-print-blocked\s*\{\s*display:\s*none;\s*\}/);
 });
+
+it('drops an embedded file whose own printing is off, from a page that prints', () => {
+  const print = css.slice(css.indexOf('@media print'));
+  expect(print).toMatch(/\[data-print-off\]\s*\{[^}]*display:\s*none\s*!important/);
+});

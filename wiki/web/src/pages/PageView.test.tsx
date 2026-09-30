@@ -163,7 +163,7 @@ describe('PageView — private and printing', () => {
     expect(fireEvent.contextMenu(img)).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: 'Actions for Rack power' }));
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(
-      ['Move…', 'Copy…', 'Copy link', 'Save as template…', 'Review schedule…', 'Permissions…', 'Delete']);
+      ['Move…', 'Copy…', 'Copy link', 'Review schedule…', 'Permissions…', 'Delete']);
     expect(document.body.dataset.noPrint).toBe('1');
     const e = new KeyboardEvent('keydown', { key: 'p', metaKey: true, bubbles: true, cancelable: true });
     window.dispatchEvent(e);

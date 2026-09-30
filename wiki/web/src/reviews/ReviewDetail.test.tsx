@@ -34,9 +34,9 @@ function Probe() {
   return <div data-testid="probe">{loc.pathname}{loc.search}</div>;
 }
 
-function renderDetail(review: ReviewDetailOut, level: Level | null = 'manage', from?: string) {
+function renderDetail(review: ReviewDetailOut, level: Level | null = 'manage', from?: string, canPrint = true) {
   vi.mocked(getReview).mockResolvedValue(review);
-  vi.mocked(getNode).mockResolvedValue(makeDetail('p1', { title: 'Rack power', my_level: level }));
+  vi.mocked(getNode).mockResolvedValue(makeDetail('p1', { title: 'Rack power', my_level: level, can_print: canPrint }));
   const entries = from ? [from, `/reviews/${review.id}`] : [`/reviews/${review.id}`];
   return render(
     <MemoryRouter initialEntries={entries} initialIndex={entries.length - 1}>
@@ -71,6 +71,26 @@ describe('ReviewDetail', () => {
     expect(diff.querySelector('.wiki-diff-block.change')!.textContent).toContain('New');
     expect(diff.querySelector('.wiki-diff-block.change del')!.textContent).toContain('Old');
     expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('stops Ctrl+P and prints a notice while the page\'s printing is off', async () => {
+    renderDetail(makeReviewDetail(), 'manage', undefined, false);
+    await screen.findByTestId('diff-view');
+    expect(document.body.dataset.noPrint).toBe('1');
+    expect(document.body.querySelector(':scope > .wiki-print-blocked')?.textContent)
+      .toBe('Printing is turned off for this page.');
+    const e = new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, bubbles: true, cancelable: true });
+    window.dispatchEvent(e);
+    expect(e.defaultPrevented).toBe(true);
+    cleanup();
+    expect(document.body.dataset.noPrint).toBeUndefined();
+  });
+
+  it('prints as usual while the page\'s printing is on', async () => {
+    renderDetail(makeReviewDetail());
+    await screen.findByTestId('diff-view');
+    expect(document.body.dataset.noPrint).toBeUndefined();
+    expect(document.querySelector('.wiki-print-blocked')).toBeNull();
   });
 
   it('diffs against nothing for a page never published', async () => {

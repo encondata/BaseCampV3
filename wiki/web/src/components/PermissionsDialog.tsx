@@ -210,7 +210,11 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
   const node = target.kind === 'node' ? (fresh?.id === target.node.id ? fresh : target.node) : null;
   // the library's home page is opened by everyone who can see the library
   const canSetPrivate = !!node && node.can_set_private && !node.page?.is_home;
-  const canSetPrinting = node?.my_level === 'manage';
+  // someone who can't manage (an author with edit, say) sees only the
+  // Private switch: no grants, no inheritance, no Printing. Decided from
+  // the node as opened, so turning Private on doesn't change the layout.
+  const manages = !isNode || target.node.my_level === 'manage';
+  const canSetPrinting = isNode && manages;
 
   const [addType, setAddType] = useState<PrincipalType | ''>('');
   const [addWho, setAddWho] = useState<PrincipalOut | null>(null);
@@ -245,8 +249,12 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
 
   useEffect(() => {
     let live = true;
-    setLoaded({ status: 'loading' });
     const t = targetRef.current;
+    if (t.kind === 'node' && t.node.my_level !== 'manage') {
+      setLoaded({ status: 'ready' });
+      return undefined;
+    }
+    setLoaded({ status: 'loading' });
     const load = t.kind === 'node'
       ? getNodePermissions(t.node.id).then((out) => { if (live) applyNode(out, t.node.id); })
       : getSpaceGrants(t.space.key).then((grants) => { if (live) applySpace(grants); });
@@ -360,103 +368,107 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
   } else {
     body = (
       <>
-        {isNode && (
-          <div className="wiki-perm-inherit">
-            <label className="switch">
-              <input type="checkbox" checked={inherit} disabled={busy} aria-label="Inherit permissions from parent"
-                     onChange={(e) => toggleInherit(e.target.checked)} />
-              <span className="track" />
-            </label>
-            <div>
-              <b>Inherit permissions from parent</b>
-              <span className="wiki-field-note">
-                {inherit
-                  ? `Everyone with access above this ${noun} has it here too; entries added here add to that.`
-                  : `Only the entries below have access to this ${noun} and what's inside it. Library managers always keep access.`}
-              </span>
-              {!inherit && copyPending && (
-                <p className="wiki-perm-note">Current access will be copied here so nothing changes until you edit it.</p>
-              )}
-              {inherit && !base.inherit && (
-                <p className="wiki-perm-note">Access from the parent shows here once you save.</p>
+        {manages && (
+          <>
+            {isNode && (
+              <div className="wiki-perm-inherit">
+                <label className="switch">
+                  <input type="checkbox" checked={inherit} disabled={busy} aria-label="Inherit permissions from parent"
+                         onChange={(e) => toggleInherit(e.target.checked)} />
+                  <span className="track" />
+                </label>
+                <div>
+                  <b>Inherit permissions from parent</b>
+                  <span className="wiki-field-note">
+                    {inherit
+                      ? `Everyone with access above this ${noun} has it here too; entries added here add to that.`
+                      : `Only the entries below have access to this ${noun} and what's inside it. Library managers always keep access.`}
+                  </span>
+                  {!inherit && copyPending && (
+                    <p className="wiki-perm-note">Current access will be copied here so nothing changes until you edit it.</p>
+                  )}
+                  {inherit && !base.inherit && (
+                    <p className="wiki-perm-note">Access from the parent shows here once you save.</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="dir-list list-scroll wiki-perm-list">
+              <div className="list-head" style={grid} aria-hidden="true">
+                <span>Who</span><span>Access</span>{isNode && <span>From</span>}<span />
+              </div>
+              <div role="list" aria-label="Current access">
+                {showInherited && base.inherited.map((e, i) => (
+                  <div className="dir-row" role="listitem" key={`in-${i}`}>
+                    <div className="row-main" style={grid}>
+                      <div className="cell cell-primary wiki-perm-who">
+                        <div className="pn"><b title={e.principal_label}>{e.principal_label}</b>
+                          {needsWho(e.principal_type) && <span className="cell-sub">{TYPE_LABEL[e.principal_type]}</span>}
+                        </div>
+                      </div>
+                      <div className="cell"><span className="chip">{LEVEL_LABEL[e.level]}</span></div>
+                      <div className="cell"><span className="cell-top cell-line">{sourceOf(e)}</span></div>
+                      <div className="cell" />
+                    </div>
+                  </div>
+                ))}
+                {own.map((e) => (
+                  <div className="dir-row" role="listitem" key={`${e.principal_type}:${e.principal_id ?? ''}`}>
+                    <div className="row-main" style={grid}>
+                      <div className="cell cell-primary wiki-perm-who">
+                        <div className="pn"><b title={e.label}>{e.label}</b>
+                          {needsWho(e.principal_type) && <span className="cell-sub">{TYPE_LABEL[e.principal_type]}</span>}
+                        </div>
+                      </div>
+                      <div className="cell">
+                        <LevelControl value={e.level} label={`Level for ${e.label}`} disabled={busy}
+                                      onChange={(level) => edit(own.map((o) => (sameWho(o, e) ? { ...o, level } : o)))} />
+                      </div>
+                      {isNode && <div className="cell"><span className="cell-top cell-line">{ownSource}</span></div>}
+                      <div className="cell">
+                        <button type="button" className="wiki-icon-btn wiki-perm-remove" aria-label={`Remove ${e.label}`}
+                                title="Remove" disabled={busy} onClick={() => edit(own.filter((o) => !sameWho(o, e)))}>
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                               strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {own.length === 0 && !(showInherited && base.inherited.length) && (
+                <div className="dir-empty"><b>No one has access yet</b>Add people or groups below.</div>
               )}
             </div>
-          </div>
+
+            <div className="modal-section">Add access</div>
+            <div className="wiki-perm-add">
+              <div className="wiki-perm-add-type">
+                <ComboBox
+                  options={PRINCIPAL_TYPES}
+                  value={addType}
+                  ariaLabel="Principal type"
+                  placeholder="Who gets access…"
+                  disabled={busy}
+                  portal
+                  onChange={(v) => { setAddType(v as PrincipalType | ''); setAddWho(null); }}
+                />
+              </div>
+              {addType && needsWho(addType) && (
+                <div className="wiki-perm-add-who">
+                  <WhoPicker key={addType} type={addType} value={addWho} onChange={setAddWho} disabled={busy} />
+                </div>
+              )}
+              <LevelControl value={addLevel} onChange={setAddLevel} label="Level to add" disabled={busy} />
+              <button type="button" className="btn-ghost" disabled={!canAdd} onClick={add}>Add</button>
+            </div>
+          </>
         )}
-
-        <div className="dir-list list-scroll wiki-perm-list">
-          <div className="list-head" style={grid} aria-hidden="true">
-            <span>Who</span><span>Access</span>{isNode && <span>From</span>}<span />
-          </div>
-          <div role="list" aria-label="Current access">
-            {showInherited && base.inherited.map((e, i) => (
-              <div className="dir-row" role="listitem" key={`in-${i}`}>
-                <div className="row-main" style={grid}>
-                  <div className="cell cell-primary wiki-perm-who">
-                    <div className="pn"><b title={e.principal_label}>{e.principal_label}</b>
-                      {needsWho(e.principal_type) && <span className="cell-sub">{TYPE_LABEL[e.principal_type]}</span>}
-                    </div>
-                  </div>
-                  <div className="cell"><span className="chip">{LEVEL_LABEL[e.level]}</span></div>
-                  <div className="cell"><span className="cell-top cell-line">{sourceOf(e)}</span></div>
-                  <div className="cell" />
-                </div>
-              </div>
-            ))}
-            {own.map((e) => (
-              <div className="dir-row" role="listitem" key={`${e.principal_type}:${e.principal_id ?? ''}`}>
-                <div className="row-main" style={grid}>
-                  <div className="cell cell-primary wiki-perm-who">
-                    <div className="pn"><b title={e.label}>{e.label}</b>
-                      {needsWho(e.principal_type) && <span className="cell-sub">{TYPE_LABEL[e.principal_type]}</span>}
-                    </div>
-                  </div>
-                  <div className="cell">
-                    <LevelControl value={e.level} label={`Level for ${e.label}`} disabled={busy}
-                                  onChange={(level) => edit(own.map((o) => (sameWho(o, e) ? { ...o, level } : o)))} />
-                  </div>
-                  {isNode && <div className="cell"><span className="cell-top cell-line">{ownSource}</span></div>}
-                  <div className="cell">
-                    <button type="button" className="wiki-icon-btn wiki-perm-remove" aria-label={`Remove ${e.label}`}
-                            title="Remove" disabled={busy} onClick={() => edit(own.filter((o) => !sameWho(o, e)))}>
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                           strokeLinecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-          {own.length === 0 && !(showInherited && base.inherited.length) && (
-            <div className="dir-empty"><b>No one has access yet</b>Add people or groups below.</div>
-          )}
-        </div>
-
-        <div className="modal-section">Add access</div>
-        <div className="wiki-perm-add">
-          <div className="wiki-perm-add-type">
-            <ComboBox
-              options={PRINCIPAL_TYPES}
-              value={addType}
-              ariaLabel="Principal type"
-              placeholder="Who gets access…"
-              disabled={busy}
-              portal
-              onChange={(v) => { setAddType(v as PrincipalType | ''); setAddWho(null); }}
-            />
-          </div>
-          {addType && needsWho(addType) && (
-            <div className="wiki-perm-add-who">
-              <WhoPicker key={addType} type={addType} value={addWho} onChange={setAddWho} disabled={busy} />
-            </div>
-          )}
-          <LevelControl value={addLevel} onChange={setAddLevel} label="Level to add" disabled={busy} />
-          <button type="button" className="btn-ghost" disabled={!canAdd} onClick={add}>Add</button>
-        </div>
 
         {node && (canSetPrivate || canSetPrinting) && (
           <>
-            <div className="modal-section">Privacy and printing</div>
+            <div className="modal-section">{manages ? 'Privacy and printing' : 'Privacy'}</div>
             {canSetPrivate && (
               <div className="wiki-perm-inherit">
                 <Switch checked={node.is_private} disabled={busy || settingBusy}
@@ -466,7 +478,7 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
                 <div>
                   <b>Private — only you and developers can see this</b>
                   <span className="wiki-field-note">
-                    No one else can open it, including library managers and wiki administrators. A private {noun} can't have public links or help links.
+                    No one else can open it, including library managers and wiki administrators. A private {noun} can't have public links, help links or templates.
                   </span>
                 </div>
               </div>
@@ -508,8 +520,10 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
       <>
         <div className="modal-body wiki-perm-body">{body}</div>
         <div className="modal-foot">
-          {saveButton}
-          <button type="button" className="mini-btn" onClick={onCancel} disabled={busy}>Cancel</button>
+          {manages && saveButton}
+          <button type="button" className="mini-btn" onClick={onCancel} disabled={busy || settingBusy}>
+            {manages ? 'Cancel' : 'Done'}
+          </button>
         </div>
       </>
     );
@@ -517,7 +531,7 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
   return (
     <div className="wiki-perm-inline">
       {body}
-      <div className="wiki-perm-actions">{saveButton}</div>
+      {manages && <div className="wiki-perm-actions">{saveButton}</div>}
     </div>
   );
 }
@@ -534,7 +548,9 @@ export default function PermissionsDialog({ target, onClose }: { target: Permiss
 
   const title = target.kind === 'node' ? target.node.title : target.space.name;
   const description = target.kind === 'node'
-    ? `Access comes from the library and the folders above unless this ${nodeNoun(target.node)} stops inheriting.`
+    ? (target.node.my_level === 'manage'
+      ? `Who can open this ${nodeNoun(target.node)}, whether it's private, and whether it can be printed. Access comes from the library and the folders above unless this ${nodeNoun(target.node)} stops inheriting.`
+      : `Whether this ${nodeNoun(target.node)} is private.`)
     : 'Who can read, edit and manage everything in this library.';
 
   return (

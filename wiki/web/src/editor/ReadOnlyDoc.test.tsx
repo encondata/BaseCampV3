@@ -13,20 +13,21 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
 }));
 
 // pdf.js draws in a real browser; here it's a stand-in with one page
-vi.mock('pdfjs-dist', () => ({
+vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({
   GlobalWorkerOptions: {},
   getDocument: () => ({
     promise: Promise.resolve({
       numPages: 1,
       getPage: async () => ({
         getViewport: ({ scale }: { scale: number }) => ({ width: 600 * scale, height: 800 * scale }),
-        render: () => ({ promise: Promise.resolve() }),
+        render: () => ({ promise: Promise.resolve(), cancel: () => {} }),
+        cleanup: () => {},
       }),
     }),
     destroy: () => Promise.resolve(),
   }),
 }));
-vi.mock('pdfjs-dist/build/pdf.worker.min.mjs?url', () => ({ default: '/worker.js' }));
+vi.mock('pdfjs-dist/legacy/build/pdf.worker.min.mjs?url', () => ({ default: '/worker.js' }));
 
 import { ApiError } from '@portal/lib/api';
 
@@ -332,6 +333,27 @@ describe('ReadOnlyDoc — printing off', () => {
     await screen.findByText('Plan.pdf');
     await vi.waitFor(() => expect(container.querySelector('.wiki-pdf-viewer canvas')).not.toBeNull());
     expect(container.querySelector('iframe')).toBeNull();
+  });
+
+  it('marks the preview of an embedded file that can\'t be printed, so a printable page drops it', async () => {
+    vi.mocked(getFileUrl).mockResolvedValue({ url: 'https://s3/f.pdf', content_type: 'application/pdf', preview_status: 'ready' });
+    vi.mocked(getNode).mockResolvedValue(makeDetail('f-live', { title: 'Plan.pdf', kind: 'file', can_print: false }));
+    const { container } = render(<MemoryRouter><ReadOnlyDoc content={embed({
+      nodeId: 'f-live', assetId: null, filename: '', contentType: '',
+    }) as never} /></MemoryRouter>);
+    await screen.findByText('Plan.pdf');
+    await vi.waitFor(() => expect(container.querySelector('.wiki-file-preview[data-print-off]')).not.toBeNull());
+  });
+
+  it('leaves the preview unmarked when the embedded file can be printed', async () => {
+    vi.mocked(getFileUrl).mockResolvedValue({ url: 'https://s3/f.pdf', content_type: 'application/pdf', preview_status: 'ready' });
+    vi.mocked(getNode).mockResolvedValue(makeDetail('f-live', { title: 'Plan.pdf', kind: 'file', can_print: true }));
+    const { container } = render(<MemoryRouter><ReadOnlyDoc content={embed({
+      nodeId: 'f-live', assetId: null, filename: '', contentType: '',
+    }) as never} /></MemoryRouter>);
+    await screen.findByText('Plan.pdf');
+    await vi.waitFor(() => expect(container.querySelector('.wiki-file-preview iframe')).not.toBeNull());
+    expect(container.querySelector('[data-print-off]')).toBeNull();
   });
 
   it('keeps the browser\'s viewer and the Download link when printing is on', async () => {
