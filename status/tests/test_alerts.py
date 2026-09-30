@@ -102,3 +102,43 @@ async def test_publish_failures_return_false():
         assert await publish(client, cfg, ALERT) is False
         respx.post("https://ntfy.test/").mock(side_effect=httpx.ConnectError("x"))
         assert await publish(client, cfg, ALERT) is False
+
+
+@respx.mock
+async def test_publish_swallows_unexpected_exceptions():
+    cfg = NtfyConfig("https://ntfy.test", "topic", None, None)
+    respx.post("https://ntfy.test/").mock(side_effect=RuntimeError("boom"))
+    async with httpx.AsyncClient() as client:
+        assert await publish(client, cfg, ALERT) is False
+
+
+def test_primed_watcher_from_seeded_down_tracker_sends_no_alert(tmp_path):
+    from serversherpa_status.alerts import build_watcher
+    from serversherpa_status.api_status import BACKGROUND_KEY
+    from serversherpa_status.checker import seed_tracker
+    from serversherpa_status.config import load_settings
+    from serversherpa_status.state import StateTracker
+    from serversherpa_status.store import Store
+
+    settings = load_settings({
+        "STATUS_API_URL": "http://api.test",
+        "STATUS_PORTAL_URL": "http://portal.test",
+        "STATUS_KIOSK_URL": "http://kiosk.test",
+        "STATUS_DB_PATH": str(tmp_path / "s.db"),
+        "STATUS_NTFY_TOPIC": "topic",
+    })
+    store = Store(settings.db_path)
+    try:
+        at = datetime(2026, 9, 23, 12, 0, tzinfo=UTC)
+        for n in (0, 1):
+            store.record("kiosk", at + timedelta(minutes=n), False, None, "")
+        tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
+        seed_tracker(tracker, store, settings)
+        states = {k: tracker.snapshot(k).state for k in [s.key for s in settings.services] + [BACKGROUND_KEY]}
+        assert states["kiosk"] == "down"
+        watcher = build_watcher(settings, tracker)
+        assert watcher is not None
+        assert watcher.evaluate(states, None, None, at + timedelta(minutes=2)) == []
+        assert build_watcher(settings.__class__(**{**settings.__dict__, "ntfy": None}), tracker) is None
+    finally:
+        store.close()

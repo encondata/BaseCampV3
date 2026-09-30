@@ -7,7 +7,9 @@ from datetime import datetime
 
 import httpx
 
-from serversherpa_status.config import NtfyConfig
+from serversherpa_status.api_status import BACKGROUND_KEY, BACKGROUND_NAME
+from serversherpa_status.config import NtfyConfig, Settings
+from serversherpa_status.state import StateTracker
 
 log = logging.getLogger("serversherpa_status.alerts")
 PUBLISH_TIMEOUT = 10.0
@@ -100,7 +102,23 @@ async def publish(client: httpx.AsyncClient, cfg: NtfyConfig, alert: Alert) -> b
     except httpx.HTTPError as exc:
         log.warning("ntfy publish failed: %s", type(exc).__name__)
         return False
+    except Exception as exc:  # never let a publish problem escape
+        log.warning("ntfy publish failed: %s", type(exc).__name__)
+        return False
     if resp.status_code >= 300:
         log.warning("ntfy publish failed: HTTP %s", resp.status_code)
         return False
     return True
+
+
+def build_watcher(settings: Settings, tracker: StateTracker) -> AlertWatcher | None:
+    """A watcher primed with the states loaded from history, so a restart never
+    re-announces something that was already down. None when ntfy is off."""
+    if settings.ntfy is None:
+        return None
+    keys = [s.key for s in settings.services] + [BACKGROUND_KEY]
+    watcher = AlertWatcher(
+        {s.key: s.name for s in settings.services} | {BACKGROUND_KEY: BACKGROUND_NAME}
+    )
+    watcher.prime({k: tracker.snapshot(k).state for k in keys})
+    return watcher

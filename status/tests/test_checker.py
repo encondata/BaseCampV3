@@ -231,16 +231,29 @@ async def test_api_without_background_records_nothing(settings, store):
 
 
 @respx.mock
-async def test_failed_api_probe_clears_latest_and_skips_background(settings, store):
+async def test_failed_api_probe_keeps_last_known_status_and_skips_background(settings, store):
     routes(api_ok=False, api_json=bg("running"))
     tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
     latest = LatestApiStatus()
     clock = Clock()
-    latest.set(parse_ok(), clock.now)
+    known = parse_ok()
+    latest.set(known, clock.now)
     async with httpx.AsyncClient() as client:
         await Checker(settings, store, tracker, client, clock=clock, latest=latest).run_cycle()
-    assert latest.get(clock.now, 60) is None
+    assert latest.get(clock.now, 60) == known
     assert store.recent("background", 5) == []
+
+
+@respx.mock
+async def test_empty_payload_is_a_successful_report(settings, store):
+    routes(api_json={})
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
+    latest = LatestApiStatus()
+    clock = Clock()
+    async with httpx.AsyncClient() as client:
+        await Checker(settings, store, tracker, client, clock=clock, latest=latest).run_cycle()
+    got = latest.get(clock.now, 60)
+    assert got is not None and got.background is None and got.maintenance is False
 
 
 def parse_ok():
@@ -281,6 +294,7 @@ async def _two_kiosk_failures(settings, watcher, status=200):
             await c.run_cycle()
             clock.now += timedelta(minutes=1)
             await c.run_cycle()
+            await c.drain_alerts()
         return tracker
     finally:
         st.close()
@@ -317,3 +331,57 @@ async def test_ntfy_failure_does_not_stop_the_cycle(tmp_path):
     respx.post("http://ntfy.test/").respond(500)
     tracker = await _two_kiosk_failures(settings, _watcher(settings))
     assert tracker.snapshot("kiosk").state == "down"
+
+
+@respx.mock
+async def test_run_cycle_does_not_wait_for_ntfy(tmp_path):
+    import json
+    import time
+
+    settings = _ntfy_settings(tmp_path)
+
+    async def slow(request):
+        await asyncio.sleep(1)
+        return httpx.Response(200)
+
+    ntfy = respx.post("http://ntfy.test/").mock(side_effect=slow)
+    routes(kiosk_ok=False)
+    st = Store(settings.db_path)
+    try:
+        tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
+        clock = Clock()
+        async with httpx.AsyncClient() as client:
+            c = Checker(settings, st, tracker, client, clock=clock, watcher=_watcher(settings))
+            await c.run_cycle()
+            clock.now += timedelta(minutes=1)
+            started = time.monotonic()
+            await c.run_cycle()
+            assert time.monotonic() - started < 0.5
+            await c.drain_alerts()
+        assert ntfy.call_count == 1
+        assert json.loads(ntfy.calls[0].request.content)["title"] == "Kiosk is down"
+    finally:
+        st.close()
+
+
+@respx.mock
+async def test_maintenance_started_and_ended_are_published(tmp_path):
+    import json
+
+    settings = _ntfy_settings(tmp_path)
+    ntfy = respx.post("http://ntfy.test/").respond(200)
+    st = Store(settings.db_path)
+    try:
+        tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
+        clock = Clock()
+        async with httpx.AsyncClient() as client:
+            c = Checker(settings, st, tracker, client, clock=clock, watcher=_watcher(settings))
+            for read_only in (False, True, False):
+                routes(api_json={"read_only": read_only})
+                await c.run_cycle()
+                await c.drain_alerts()
+                clock.now += timedelta(minutes=1)
+        titles = [json.loads(call.request.content)["title"] for call in ntfy.calls]
+        assert titles == ["Maintenance started", "Maintenance ended"]
+    finally:
+        st.close()

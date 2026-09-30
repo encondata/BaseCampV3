@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
-from serversherpa_status.alerts import AlertWatcher, publish
+from serversherpa_status.alerts import Alert, AlertWatcher, publish
 from serversherpa_status.api_status import BACKGROUND_KEY, LatestApiStatus, parse_api_status
 from serversherpa_status.config import Settings
 from serversherpa_status.probes import probe
@@ -50,8 +50,27 @@ class Checker:
         self._client = client
         self._clock = clock
         self._last_prune: datetime | None = None
+        self._alert_tasks: set[asyncio.Task] = set()
         self.last_cycle_at: datetime | None = None
         self.store_ok: bool = True
+
+    def _spawn_alerts(self, alerts: list[Alert]) -> None:
+        """Publish off the cycle's critical path: a slow ntfy must not delay
+        the next check or the page's freshness."""
+        ntfy = self._settings.ntfy
+        client = self._client
+
+        async def send() -> None:
+            await asyncio.gather(*(publish(client, ntfy, a) for a in alerts))
+
+        task = asyncio.create_task(send())
+        self._alert_tasks.add(task)
+        task.add_done_callback(self._alert_tasks.discard)
+
+    async def drain_alerts(self) -> None:
+        """Wait for in-flight alert publishes (tests, shutdown)."""
+        while self._alert_tasks:
+            await asyncio.gather(*list(self._alert_tasks), return_exceptions=True)
 
     async def run_cycle(self) -> None:
         services = self._settings.services
@@ -72,12 +91,15 @@ class Checker:
                 store_ok = False
                 log.exception("failed to record %s check", service.key)
         api_result = next((r for s, r in zip(services, results) if s.key == "api"), None)
+        api_ok = api_result is not None and api_result.ok
         status = (
             parse_api_status(api_result.payload)
-            if api_result and api_result.ok and api_result.payload
+            if api_ok and api_result.payload is not None
             else None
         )
-        if self._latest is not None:
+        # A failed probe leaves the last known status to age out via the stale
+        # window, so one blip doesn't flicker the banner or the Background card.
+        if self._latest is not None and api_ok:
             self._latest.set(status, now)
         if status is not None and status.background is not None:
             ok = status.background.state != "down"
@@ -96,8 +118,8 @@ class Checker:
                 status.maintenance_message if status else None,
                 now,
             )
-            for alert in alerts:
-                await publish(self._client, self._settings.ntfy, alert)
+            if alerts:
+                self._spawn_alerts(alerts)
         if self._last_prune is None or now - self._last_prune >= PRUNE_EVERY:
             try:
                 self._store.prune(now)
