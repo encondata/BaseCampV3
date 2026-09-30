@@ -1,16 +1,29 @@
 /**
- * Kiosk login — the portal's split-screen login (brand panel with the
- * shared terrain scene + form pane). Email & password is the normal,
- * default form (same API, tagged client=kiosk); alternate methods (link
- * with phone via PairPanel, move password) sit behind an "Other ways to
- * sign in" button below it. Uses auth-theme.css verbatim.
+ * Kiosk login — the SAME sign-in page the portal and the wiki show
+ * (light mockup, 2026-09-28): the shared `LoginScene` (topo lines, logo,
+ * Dallas → Las Vegas map, headline, features, mountain art) with the form
+ * floating on the right. One page across the three apps was the point, so
+ * the scene is imported from the portal rather than copied, and
+ * `login-light.css` styles it exactly as it styles the portal's.
+ *
+ * What stays the kiosk's own is the form column: which kiosk this is,
+ * the settings gear, the kiosk banners, and the three ways in. Email &
+ * password is the normal, default form (same API, tagged client=kiosk);
+ * the alternates (link with phone via PairPanel, move password) sit
+ * behind an "Other ways to sign in" button below it.
+ *
+ * The old split-screen brand panel and its animated terrain
+ * (`buildBrandScene`) are gone — the portal dropped them on 2026-09-28
+ * and this was the last caller.
  */
 
 import { gsap } from 'gsap';
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useRef, useState, type FormEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
-import { buildBrandScene } from '@portal/lib/brandScene';
+import LoginScene from '@portal/components/login/LoginScene';
+import { IconArrow } from '@portal/components/login/loginIcons';
+import '@portal/styles/login-light.css';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
 import KioskBanners from '../components/KioskBanners';
@@ -93,16 +106,9 @@ export default function Login() {
   const [moveError, setMoveError] = useState('');
   const [moveLoading, setMoveLoading] = useState(false);
 
-  const brandRef = useRef<HTMLElement>(null);
-  const terrainSvgRef = useRef<SVGSVGElement>(null);
   const formWrapRef = useRef<HTMLDivElement>(null);
   const emailRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!brandRef.current || !terrainSvgRef.current) return;
-    return buildBrandScene(brandRef.current, terrainSvgRef.current, prefersReducedMotion());
-  }, []);
 
   const shakeForm = () => {
     if (prefersReducedMotion()) return;
@@ -165,44 +171,11 @@ export default function Login() {
   const identity = getIdentity();
 
   return (
-    <div className="login-shell">
-      <section className="brand" ref={brandRef}>
-        <div className="terrain" aria-hidden="true">
-          <svg ref={terrainSvgRef} preserveAspectRatio="xMidYMax slice"></svg>
-        </div>
-        <header className="brand-top">
-          <div className="logo">
-            <img className="logo-mark" src="/images/serversherpa-logo.png" alt="ServerSherpa logo"
-                 onError={(e) => { e.currentTarget.style.display = 'none'; }} />
-            <div>
-              <div className="logo-name">Server<em>Sherpa</em></div>
-              <div className="logo-tag">Datacenter Relocation Tools</div>
-            </div>
-          </div>
-          <div className="coords">
-            LAS VEGAS <b>HQ</b><br />
-            36.06° N / 115.19° W<br />
-            ELEV <b className="elev">313M</b> · UTC−8
-          </div>
-        </header>
-        <div className="brand-mid">
-          <h1 className="headline">
-            <span className="line"><span></span></span>
-            <span className="line"><span><span className="accent">Kiosk</span></span></span>
-          </h1>
-          <p className="sub">
-            Sign in to start scanning. Link this kiosk with your phone or use your
-            ServerSherpa credentials.
-          </p>
-        </div>
-        <footer className="brand-bottom">
-          <span className="live-dot"></span>
-          <span className="ticker"><b>ALL SYSTEMS OPERATIONAL</b> · STATUS.SERVERSHERPA.COM</span>
-        </footer>
-      </section>
+    <div className="login-shell login-light">
+      <LoginScene />
 
-      <section className="pane">
-        <button type="button" className="pane-gear" aria-label="Kiosk settings"
+      <main className="lx-form-col">
+        <button type="button" className="kiosk-login-gear" aria-label="Kiosk settings"
                 onClick={() => navigate('/settings?tab=this-kiosk')}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="3" />
@@ -210,15 +183,21 @@ export default function Login() {
           </svg>
         </button>
         <div className="form-wrap" ref={formWrapRef}>
-          <div className="eyebrow-row" data-reveal="">
+          <div className="eyebrow-row">
             <div className="eyebrow">ServerSherpa Kiosk</div>
             <div className="eyebrow-kiosk">{identity.name}</div>
           </div>
           <div className="login-banners"><KioskBanners /></div>
-          <h2 className="form-title" data-reveal="">Sign in</h2>
+          <h2 className="form-title">Sign in</h2>
 
           {(view === 'password' || view === 'chooser') && (
-            <div data-reveal="">
+            <div>
+              {/* the guidance the old brand panel carried. Only here: the
+                  link and move views state their own method instead. */}
+              <p className="form-hint">
+                Sign in to start scanning. Link this kiosk with your phone or use your
+                ServerSherpa credentials.
+              </p>
               <form onSubmit={handlePassword} noValidate>
                 <div className="field">
                   <label htmlFor="login-email">Email</label>
@@ -243,7 +222,11 @@ export default function Login() {
                   </div>
                 </div>
                 <p className={`error-msg ${error ? 'show' : ''}`} role={error ? 'alert' : undefined}>{error}</p>
-                <button type="submit" className="btn" disabled={loading}>{loading ? 'Signing in…' : 'Sign in'}</button>
+                <button type="submit" className={`btn ${loading ? 'loading' : ''}`} disabled={loading}>
+                  <span>{loading ? 'Signing in…' : 'Sign in'}</span>
+                  <IconArrow className="arrow" />
+                  <span className="spinner" />
+                </button>
                 <p className="form-foot">Forgot your password? Reset it in the portal.</p>
               </form>
 
@@ -269,7 +252,7 @@ export default function Login() {
           )}
 
           {view === 'link' && (
-            <div data-reveal="">
+            <div>
               <p className="form-hint">Link this kiosk with your phone.</p>
               <PairPanel onApproved={onApproved} />
               <p className="form-foot">
@@ -279,7 +262,7 @@ export default function Login() {
           )}
 
           {view === 'move' && (
-            <div data-reveal="">
+            <div>
               <p className="form-hint">Sign in with a move password.</p>
               <form onSubmit={handleMove} noValidate>
                 <div className="field">
@@ -294,7 +277,11 @@ export default function Login() {
                   </div>
                 </div>
                 <p className={`error-msg ${moveError ? 'show' : ''}`} role={moveError ? 'alert' : undefined}>{moveError}</p>
-                <button type="submit" className="btn" disabled={moveLoading}>{moveLoading ? 'Signing in…' : 'Sign in'}</button>
+                <button type="submit" className={`btn ${moveLoading ? 'loading' : ''}`} disabled={moveLoading}>
+                  <span>{moveLoading ? 'Signing in…' : 'Sign in'}</span>
+                  <IconArrow className="arrow" />
+                  <span className="spinner" />
+                </button>
               </form>
               <p className="form-foot">
                 <button type="button" className="link" onClick={() => setView('password')}>Back to email &amp; password</button>
@@ -302,7 +289,7 @@ export default function Login() {
             </div>
           )}
         </div>
-      </section>
+      </main>
     </div>
   );
 }
