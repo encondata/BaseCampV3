@@ -332,6 +332,32 @@ async def test_a_private_page_cannot_be_saved_as_a_template(client, db):
     assert _code(resp) == "private"
 
 
+async def test_a_page_with_printing_off_cannot_be_saved_as_a_template(client, db):
+    s = await _setup(client, db)
+    page = await _page(client, s, db)
+    body = {"space_id": s["space"]["id"], "name": "From page", "from_node_id": page["id"]}
+    await _printing(client, s["owner"], page["id"], False)
+    resp = await client.post("/wiki/templates", headers=s["owner"], json=body)
+    assert resp.status_code == 422
+    assert _code(resp) == "printing_disabled"
+
+    # turned back on (inherit), it can be
+    await _printing(client, s["owner"], page["id"], None)
+    resp = await client.post("/wiki/templates", headers=s["owner"], json=body)
+    assert resp.status_code == 201, resp.text
+
+
+async def test_a_page_under_a_printing_off_folder_cannot_be_saved_as_a_template(client, db):
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Folder")
+    page = await _page(client, s, db, parent=folder)
+    await _printing(client, s["owner"], folder["id"], False)
+    resp = await client.post("/wiki/templates", headers=s["owner"], json={
+        "space_id": s["space"]["id"], "name": "From page", "from_node_id": page["id"]})
+    assert resp.status_code == 422
+    assert _code(resp) == "printing_disabled"
+
+
 # ── exports: the request ────────────────────────────────────────────
 
 
