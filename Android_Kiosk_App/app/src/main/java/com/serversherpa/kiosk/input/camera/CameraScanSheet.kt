@@ -213,8 +213,8 @@ fun CameraScanSheet(initialMode: CameraMode = CameraMode.SINGLE, onScan: (ScanEv
                     if (!qrOnly) {
                         ModeButton("Single", mode == CameraMode.SINGLE, accent) { mode = CameraMode.SINGLE }
                         ModeButton("Multi", mode == CameraMode.MULTI, accent) { mode = CameraMode.MULTI }
-                    } else Text("Point the camera at the move password's QR code.", color = SNOW, fontSize = 14.sp)
-                    Spacer(Modifier.weight(1f))
+                        Spacer(Modifier.weight(1f))
+                    } else Text("Point the camera at the move password's QR code.", color = SNOW, fontSize = 14.sp, modifier = Modifier.weight(1f))
                     TextButton(onClick = { torch = !torch }) {
                         Text(if (torch) "Torch on" else "Torch off", color = if (torch) accent else SNOW)
                     }
