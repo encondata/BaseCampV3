@@ -9,6 +9,7 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     private let lock = NSLock()
     private var _calls: [String] = []
     private var _heartbeats: [HeartbeatIn] = []
+    private var _scanBatches: [KioskScanBatchIn] = []
 
     var loginResult: @Sendable () throws -> SessionData = { throw ApiError(status: 401, code: "invalid_credentials") }
     var moveLoginResult: @Sendable (String) throws -> SessionData = { _ in throw ApiError(status: 401, code: "invalid_credentials") }
@@ -31,6 +32,8 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
 
     var calls: [String] { lock.lock(); defer { lock.unlock() }; return _calls }
     var heartbeats: [HeartbeatIn] { lock.lock(); defer { lock.unlock() }; return _heartbeats }
+    /// Every body `postScans` was called with, in order.
+    var scanBatches: [KioskScanBatchIn] { lock.lock(); defer { lock.unlock() }; return _scanBatches }
 
     private func record(_ name: String) { lock.lock(); _calls.append(name); lock.unlock() }
 
@@ -51,7 +54,10 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     func syncPeople() async throws -> KioskPeopleSync { record("syncPeople"); return try await people() }
     func syncContainers(initiativeId: String) async throws -> KioskContainersSync { record("syncContainers"); return try await containers() }
     func syncTrucks(initiativeId: String) async throws -> KioskTrucksSync { record("syncTrucks"); return try await trucks() }
-    func postScans(_ body: KioskScanBatchIn) async throws -> KioskScanBatchOut { record("postScans"); return try await postScansResult(body) }
+    func postScans(_ body: KioskScanBatchIn) async throws -> KioskScanBatchOut {
+        lock.lock(); _calls.append("postScans"); _scanBatches.append(body); lock.unlock()
+        return try await postScansResult(body)
+    }
     func postRfidEnroll(assetId: String, _ body: KioskRfidEnrollIn) async throws -> KioskRfidEnroll { record("rfid"); return try rfidResult(assetId, body) }
     func timeclockStatus(personId: String) async throws -> KioskTimeclockStatus { record("timeclockStatus"); return try statusResult(personId) }
     func clockIn(_ body: ClockInIn) async throws -> KioskTimeclockStatus { record("clockIn"); return try clockInResult(body) }
