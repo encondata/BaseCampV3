@@ -1,4 +1,4 @@
-"""Exports (spec §8): a page as a PDF, Word document or Markdown file, or
+"""Exports (spec §8): a page as a PDF or Markdown file, or
 a folder, a page with its subpages, or a whole space as a .zip.
 
 `POST /wiki/exports` (routes/wiki/exports.py) queues an `export` job;
@@ -21,7 +21,7 @@ the wiki worker runs it through `run`, as the person who asked:
   (and to files) in the same zip become relative links; anything else
   becomes its title — or "(linked page)" / "(linked file)" for what the
   requester can't view.
-- PDF and Word pages go through the wiki server's renderer and the
+- PDF pages go through the wiki server's renderer and the
   print template (`export_html`), with images inlined as data URIs;
   Markdown goes through `markdown.to_markdown`, with images written into
   `assets/` in a zip (a single Markdown page gets a placeholder for each).
@@ -65,7 +65,7 @@ from serversherpa.db.models import (
     WikiSpace,
 )
 from serversherpa.services import storage
-from serversherpa.wiki import convert, export_html
+from serversherpa.wiki import export_html
 from serversherpa.wiki.content import (
     EMPTY_DOC,
     PUBLIC_FILE_TEXT,
@@ -77,12 +77,11 @@ from serversherpa.wiki.files import normalize_content_type, sanitize_filename
 from serversherpa.wiki.markdown import MarkdownRefs, to_markdown
 from serversherpa.wiki.permissions import AccessIndex, principal_for_person, viewable_nodes
 
-PAGE_FORMATS = ("pdf", "docx", "md")
+PAGE_FORMATS = ("pdf", "md")
 FORMATS = (*PAGE_FORMATS, "zip")
-EXTENSIONS = {"pdf": ".pdf", "docx": ".docx", "md": ".md", "zip": ".zip"}
+EXTENSIONS = {"pdf": ".pdf", "md": ".md", "zip": ".zip"}
 CONTENT_TYPES = {
     "pdf": "application/pdf",
-    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "md": "text/markdown; charset=utf-8",
     "zip": "application/zip",
 }
@@ -101,10 +100,10 @@ DOWNLOAD_URL_TTL_SECONDS = 600
 SKIPPED_FILE = "_skipped.txt"
 ASSETS_DIR = "assets"
 HIDDEN_CRUMB = "…"
-# images a PDF/Word page inlines (never SVG: it's active markup)
+# images a PDF page inlines (never SVG: it's active markup)
 INLINE_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 MAX_INLINE_IMAGE_BYTES = 20 * 1024 * 1024
-# the most image data one PDF/Word page inlines; past it, alt text only
+# the most image data one PDF page inlines; past it, alt text only
 MAX_INLINE_PAGE_IMAGE_BYTES = 50 * 1024 * 1024
 # how often a running export bumps its job's progress_at
 TOUCH_SECONDS = 60
@@ -227,7 +226,7 @@ class _Target:
 
 @dataclass
 class _Plan:
-    format: str                            # pdf | docx | md | zip
+    format: str                            # pdf | md | zip
     page_format: str                       # the pages' format (zip_format for a zip)
     filename: str
     roots: list[_Node]
@@ -643,26 +642,11 @@ async def _pdf(client, plan: _Plan, page: _Node, workdir: Path) -> bytes:
     return await export_html.html_to_pdf(document, workdir)
 
 
-async def _docx_all(client, plan: _Plan, workdir: Path, touch: Touch) -> list[Path]:
-    """Every page as a .docx, in plan order (one LibreOffice run per batch)."""
-    html_dir = workdir / "html"
-    html_dir.mkdir()
-    sources = []
-    for i, page in enumerate(plan.pages, 1):
-        src = html_dir / f"p{i:05d}.html"
-        src.write_text(await _page_html(client, plan, page, workdir), encoding="utf-8")
-        sources.append(src)
-        await touch()
-    return await convert.html_to_docx(sources, touch=touch)
-
-
 async def _single(client, plan: _Plan, workdir: Path, touch: Touch) -> Path:
     page = plan.pages[0]
     out = workdir / f"export{EXTENSIONS[plan.format]}"
     if plan.format == "pdf":
         out.write_bytes(await _pdf(client, plan, page, workdir))
-    elif plan.format == "docx":
-        out = (await _docx_all(client, plan, workdir, touch))[0]
     else:
         text = to_markdown(strip_comment_marks(page.content or EMPTY_DOC),
                            refs=_Refs(plan, page), title=page.title)
@@ -691,10 +675,6 @@ async def _zip(client, plan: _Plan, workdir: Path, touch: Touch) -> Path:
             for page in plan.pages:
                 zf.writestr(page.zip_path, await _pdf(client, plan, page, workdir))
                 await touch()
-        elif plan.page_format == "docx":
-            docs = await _docx_all(client, plan, workdir, touch)
-            for page, docx in zip(plan.pages, docs, strict=True):
-                await asyncio.to_thread(zf.write, docx, page.zip_path)
         else:
             assets_dir = _Dir()
             written: dict[str, str] = {}               # asset storage key → zip path

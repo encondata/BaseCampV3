@@ -102,14 +102,14 @@ left at its default they all point at `http://localhost:5176`
 
 **On the wiki worker** (`wiki/.env`), exports are also capped, and the
 worker needs to reach the wiki service itself for `POST /internal/render`
-(a page's JSON -> the HTML a PDF/Word export renders — see Exports below):
+(a page's JSON -> the HTML a PDF export renders — see Exports below):
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `SS_WIKI_ORIGIN` | `http://localhost:5176` | **Required** — the wiki's public origin, equal to the API's. Links in the notifications the workers send (export ready/failed, review reminders). |
 | `SS_WIKI_EXPORT_MAX_PAGES` | `1000` | Most pages one export may hold. |
 | `SS_WIKI_EXPORT_MAX_BYTES` | `2147483648` (2 GiB) | Most bytes of files and page images one export may hold. |
-| `SS_WIKI_RENDER_URL` | `http://localhost:5177` | The wiki service's own origin. `wiki/docker-compose.yml` sets this to `http://wiki:8080` (the compose network's service name) for you; only change it if you run the worker outside that compose file. Unreachable (or pointed nowhere real) and every PDF/Word export fails with a retried `RenderError`. |
+| `SS_WIKI_RENDER_URL` | `http://localhost:5177` | The wiki service's own origin. `wiki/docker-compose.yml` sets this to `http://wiki:8080` (the compose network's service name) for you; only change it if you run the worker outside that compose file. Unreachable (or pointed nowhere real) and every PDF export fails with a retried `RenderError`. |
 | `SS_WIKI_SERVICE_TOKEN` | *(empty)* | The same secret the wiki service checks `/internal/render` requests against (its `WIKI_SERVICE_TOKEN`) — the worker presents this as `X-Wiki-Service-Token`. All three (the API's, the wiki service's `WIKI_SERVICE_TOKEN`, and this one) must be equal. `wiki/docker-compose.yml` sets it from `WIKI_SERVICE_TOKEN` in `wiki/.env` for you. |
 | `WIKI_EXPORT_PDF_MAX_MEMORY_MB` | `2048` | **Not** `SS_`-prefixed — read straight from the environment by the WeasyPrint child process (`serversherpa.wiki.export_pdf`), not through `Settings`, since it's a standalone subprocess entry point. Caps that process's own memory (`RLIMIT_AS`) so one pathological page's conversion is killed rather than left to slowly exhaust the host. Best-effort: there's no `resource` module on Windows, and even on Linux/macOS the platform may not honor it (macOS in particular often doesn't). |
 
@@ -236,16 +236,14 @@ client and renderer.
 
 ## Exports
 
-`POST /wiki/exports` (spec §8) queues a page as PDF, Word (`.docx`) or
-Markdown, or a folder or whole library as a `.zip`, run by the wiki worker
+`POST /wiki/exports` (spec §8) queues a page as PDF or Markdown, or a folder or whole library as a `.zip`, run by the wiki worker
 as the person who asked — only what they can currently view goes in; a
 never-published page an editor can see is named in `_skipped.txt` inside
-the zip rather than included. PDF and Word pages go through the wiki
+the zip rather than included. PDF pages go through the wiki
 service's `POST /internal/render` (the print template, `wiki/export_html.py`)
 and then WeasyPrint, run in a child process of its own
 (`python -m serversherpa.wiki.export_pdf`) so the worker can time one
-pathological page out and kill it instead of hanging; Word (and a zip of
-Word pages) goes through LibreOffice; a Markdown zip's images are written
+pathological page out and kill it instead of hanging; a Markdown zip's images are written
 into an `assets/` folder. `GET /wiki/exports/{job_id}` reports progress to
 the requester (and only them) with a fresh 10-minute download URL once
 it's done.
@@ -266,7 +264,7 @@ it's done.
     Pillow, both already installed as Python dependencies — it no longer
     needs cairo or gdk-pixbuf the way older versions did).
   - **LibreOffice** (`libreoffice-writer`/`-calc`/`-impress`, already
-    installed) for `.docx` conversion, and **poppler** (`poppler-utils`,
+    installed) for the file previews (Word, Excel and PowerPoint to PDF), and **poppler** (`poppler-utils`,
     already installed) for the file-preview/search-text side of the same
     image.
   - **`SS_WIKI_RENDER_URL`** pointing at the wiki service itself — see

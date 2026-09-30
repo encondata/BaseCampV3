@@ -1,7 +1,6 @@
 """The external tools the wiki worker shells out to: LibreOffice
-(`soffice --headless --convert-to pdf`) for office previews and
-(`--convert-to docx`) for Word exports, and poppler's `pdftotext` for
-search text.
+(`soffice --headless --convert-to pdf`) for office previews, and
+poppler's `pdftotext` for search text.
 
 Every subprocess goes through `run`, so tests patch that one function
 instead of starting real processes. Each process runs in its own
@@ -14,7 +13,6 @@ import asyncio
 import os
 import signal
 import tempfile
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 SOFFICE = "soffice"
@@ -123,7 +121,7 @@ def tail(stderr: bytes) -> str:
     """The last `_STDERR_TAIL` characters of `stderr`, decoded (invalid
     bytes replaced) and stripped — how much of a failed tool's stderr an
     error message carries. Shared by every caller that reports a
-    subprocess's failure (`office_to_pdf`, `html_to_docx`, and
+    subprocess's failure (`office_to_pdf` and
     `export_html.html_to_pdf`'s WeasyPrint child), so there is exactly
     one place that decides how much stderr a person sees."""
     return stderr.decode("utf-8", errors="replace").strip()[-_STDERR_TAIL:]
@@ -154,51 +152,6 @@ async def office_to_pdf(src: Path, outdir: Path) -> Path:
     if not pdf.exists():
         raise ConvertError(f"soffice wrote no PDF: {tail(err)}")
     return pdf
-
-
-# the Word export filter; how many HTML files one LibreOffice run converts
-# (each run pays LibreOffice's start-up once); and a run's timeout — a
-# base plus so much per file, so a batch scales with its size
-DOCX_FILTER = "docx:MS Word 2007 XML"
-DOCX_BATCH = 5
-DOCX_BASE_TIMEOUT = 60
-DOCX_PER_FILE_TIMEOUT = 20
-
-
-async def html_to_docx(sources: list[Path], *,
-                       touch: Callable[[], Awaitable[None]] | None = None) -> list[Path]:
-    """Convert HTML files to Word documents, each written beside its
-    source as `<stem>.docx` (same directory, so relative links in the
-    HTML stay relative to the same place), and return those paths in
-    order. Up to DOCX_BATCH files share one LibreOffice run (each with a
-    throwaway profile like `office_to_pdf`'s, and a timeout of
-    DOCX_BASE_TIMEOUT + DOCX_PER_FILE_TIMEOUT per file); `touch`, when
-    given, is awaited after each run — the caller's progress heartbeat."""
-    out: list[Path] = []
-    for i in range(0, len(sources), DOCX_BATCH):
-        batch = sources[i:i + DOCX_BATCH]
-        by_dir: dict[Path, list[Path]] = {}
-        for src in batch:
-            by_dir.setdefault(src.parent, []).append(src)
-        for outdir, files in by_dir.items():
-            with tempfile.TemporaryDirectory(prefix="wiki-lo-",
-                                             ignore_cleanup_errors=True) as profile_dir:
-                profile = Path(profile_dir) / "lo"
-                rc, _, err = await run(
-                    [SOFFICE, "--headless", f"-env:UserInstallation={profile.as_uri()}",
-                     "--convert-to", DOCX_FILTER, "--outdir", str(outdir),
-                     *(str(f) for f in files)],
-                    timeout=DOCX_BASE_TIMEOUT + DOCX_PER_FILE_TIMEOUT * len(files))
-            if rc != 0:
-                raise ConvertError(f"soffice exited {rc}: {tail(err)}")
-        for src in batch:
-            docx = src.with_suffix(".docx")
-            if not docx.exists():
-                raise ConvertError(f"soffice wrote no .docx for {src.name}")
-            out.append(docx)
-        if touch is not None:
-            await touch()
-    return out
 
 
 async def pdf_to_text(src: Path) -> str:

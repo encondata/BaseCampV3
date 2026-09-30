@@ -82,10 +82,17 @@ describe('ExportDialog', () => {
     renderDialog({ kind: 'node', node: { ...PAGE, has_children: true } });
     expect(pressed('This page')).toBe('true');
     fireEvent.click(screen.getByRole('button', { name: 'With subpages (.zip)' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Word' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Markdown' }));
     fireEvent.click(screen.getByRole('button', { name: 'Export' }));
     await waitFor(() => expect(createExport).toHaveBeenCalledWith(
-      { node_id: 'n1', format: 'zip', zip_format: 'docx' }));
+      { node_id: 'n1', format: 'zip', zip_format: 'md' }));
+  });
+
+  it('offers exactly PDF and Markdown as formats (no Word)', () => {
+    renderDialog({ kind: 'node', node: PAGE });
+    const group = screen.getByRole('group', { name: 'Format' });
+    expect(Array.from(group.querySelectorAll('button')).map((b) => b.textContent)).toEqual(['PDF', 'Markdown']);
+    expect(screen.queryByRole('button', { name: 'Word' })).toBeNull();
   });
 
   it('forces a .zip for a never-published page with subpages', async () => {

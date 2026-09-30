@@ -833,7 +833,7 @@ class AnalyticsOut(BaseModel):
 
 class ExportIn(BaseModel):
     """Export a node (`node_id`) or a whole space (`space_key`) — exactly
-    one. A page exports as `pdf`, `docx` or `md`; a folder, a page with
+    one. A page exports as `pdf` or `md`; a folder, a page with
     subpages, or a space as a `zip` whose pages are `zip_format` (pdf when
     left out)."""
     model_config = ConfigDict(extra="forbid")
@@ -841,8 +841,8 @@ class ExportIn(BaseModel):
     node_id: uuid.UUID | None = None
     space_key: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
                                                 max_length=40)] | None = None
-    format: Literal["pdf", "docx", "md", "zip"]
-    zip_format: Literal["pdf", "docx", "md"] | None = None
+    format: Literal["pdf", "md", "zip"]
+    zip_format: Literal["pdf", "md"] | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> ExportIn:

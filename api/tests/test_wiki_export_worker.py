@@ -1,17 +1,16 @@
-"""The wiki worker's `export` job (Phase 3, spec §8): a page as PDF, Word
-or Markdown, and folders/spaces as a .zip — published content only, only
+"""The wiki worker's `export` job (Phase 3, spec §8): a page as PDF or
+Markdown, and folders/spaces as a .zip — published content only, only
 what the requester can view (rebuilt from their access when the job
 runs), never-published pages named in `_skipped.txt`, links between
-exported pages made relative, images inlined (PDF/Word) or written into
+exported pages made relative, images inlined (PDF) or written into
 `assets/` (Markdown), files at their current version. Then the upload,
 the requester's notification, failures (at once for what can't be
 exported, retried otherwise) and the 7-day retention sweep.
 
 The wiki server's renderer is an httpx MockTransport with a tiny
 renderer of its own, WeasyPrint is replaced by a stand-in that records
-the HTML it was given, LibreOffice by a stand-in `convert.run`, and
-storage by a dict — except in the one test that runs WeasyPrint for
-real (skipped where it can't be imported)."""
+the HTML it was given, and storage by a dict — except in the one test
+that runs WeasyPrint for real (skipped where it can't be imported)."""
 import base64
 import html
 import io
@@ -190,26 +189,6 @@ def pdfs(monkeypatch):
     return documents
 
 
-class FakeSoffice:
-    def __init__(self):
-        self.calls: list[list[str]] = []
-
-    async def run(self, cmd, *, timeout, max_stdout=None):
-        self.calls.append(list(cmd))
-        outdir = Path(cmd[cmd.index("--outdir") + 1])
-        for src in cmd[cmd.index("--outdir") + 2:]:
-            (outdir / f"{Path(src).stem}.docx").write_bytes(
-                b"DOCX from " + Path(src).read_bytes()[:4000])
-        return 0, b"", b""
-
-
-@pytest.fixture
-def soffice(monkeypatch):
-    fake = FakeSoffice()
-    monkeypatch.setattr(convert, "run", fake.run)
-    return fake
-
-
 # ── fixtures ─────────────────────────────────────────────────────────
 
 
@@ -367,23 +346,6 @@ async def test_a_page_as_markdown(client, db, store, renderer):
     assert renderer.requests == []
 
 
-async def test_a_page_as_word(client, db, store, renderer, soffice):
-    s = await _setup(client, db)
-    page = await _create(client, s["owner"], s["space"], "Rack Guide", kind="page")
-    await publish_via_db(db, page["id"], {"type": "doc", "content": [p(t("Body"))]})
-
-    job = await _run(db, await _request(client, s["viewer"], node_id=page["id"], format="docx"))
-
-    assert job.status == "done", job.error
-    [cmd] = soffice.calls
-    assert cmd[0] == "soffice" and "docx:MS Word 2007 XML" in cmd
-    assert cmd[-1].endswith(".html")
-    [(key, content_type, data)] = store.uploads
-    assert key.endswith("/Rack Guide.docx")
-    assert content_type == export.CONTENT_TYPES["docx"]
-    assert data.startswith(b"DOCX from <!doctype html>")
-
-
 # ── zips and permissions ─────────────────────────────────────────────
 
 
@@ -473,25 +435,25 @@ async def test_a_space_zip_as_pdf(client, db, store, renderer, pdfs):
     assert 'href="Same.pdf"' in by_title["same"]
 
 
-async def test_a_word_zip_converts_every_page_in_one_run(client, db, store, renderer, soffice):
-    s = await _setup(client, db)
-    folder = await _create(client, s["owner"], s["space"], "Guides")
-    for title in ("One", "Two"):
-        page = await _create(client, s["owner"], s["space"], title, kind="page", parent=folder)
-        await publish_via_db(db, page["id"], {"type": "doc", "content": [p(t(title))]})
-
-    job = await _run(db, await _request(client, s["viewer"], node_id=folder["id"],
-                                        format="zip", zip_format="docx"))
-
-    assert job.status == "done", job.error
-    [cmd] = soffice.calls
-    assert len([c for c in cmd if c.endswith(".html")]) == 2
-    zf = _zip(store)
-    assert sorted(zf.namelist()) == ["Guides/", "Guides/One.docx", "Guides/Two.docx"]
-    assert b"<title>Two</title>" in zf.read("Guides/Two.docx")
-
-
 # ── failures ─────────────────────────────────────────────────────────
+
+
+async def test_a_word_export_request_fails_at_once(client, db, store, renderer, pdfs):
+    """Word export is gone: the API refuses `docx`, and a stale queued job
+    that still carries it fails rather than converting anything."""
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Rack Guide", kind="page")
+    await publish_via_db(db, page["id"])
+    job_id = await _request(client, s["viewer"], node_id=page["id"], format="pdf")
+    row = await db.get(WikiJob, job_id)
+    row.payload = {**row.payload, "format": "docx"}
+    await db.commit()
+
+    job = await _run(db, job_id)
+
+    assert job.status == "failed" and job.attempts == 1
+    assert job.result["message"] == "This export request is incomplete."
+    assert store.uploads == [] and pdfs == []
 
 
 async def test_a_deleted_page_fails_at_once(client, db, store, renderer, pdfs):
@@ -553,36 +515,31 @@ async def test_a_render_failure_is_retried_then_fails(client, db, store, rendere
 # ── progress, attempts and limits ────────────────────────────────────
 
 
-async def test_word_export_progress_advances_between_batches(client, db, store, renderer,
-                                                             monkeypatch):
+async def test_a_zip_export_reports_progress_between_pages(client, db, store, renderer,
+                                                          monkeypatch):
     monkeypatch.setattr(export, "TOUCH_SECONDS", 0)
     s = await _setup(client, db)
     folder = await _create(client, s["owner"], s["space"], "Guides")
-    for i in range(7):
+    for i in range(3):
         page = await _create(client, s["owner"], s["space"], f"P{i}", kind="page", parent=folder)
         await publish_via_db(db, page["id"], {"type": "doc", "content": [p(t(f"P{i}"))]})
-    job_id = await _request(client, s["viewer"], node_id=folder["id"], format="zip",
-                            zip_format="docx")
+    job_id = await _request(client, s["viewer"], node_id=folder["id"], format="zip")
     maker = get_sessionmaker()
-    seen: list[tuple[datetime, float, int]] = []
+    seen: list[datetime] = []
 
-    async def run(cmd, *, timeout, max_stdout=None):
+    async def fake_pdf(document, workdir):
         async with maker() as other:
-            at = await other.scalar(select(WikiJob.progress_at).where(WikiJob.id == job_id))
-        sources = cmd[cmd.index("--outdir") + 2:]
-        seen.append((at, timeout, len(sources)))
-        for src in sources:
-            Path(src).with_suffix(".docx").write_bytes(b"DOCX")
-        return 0, b"", b""
-    monkeypatch.setattr(convert, "run", run)
+            seen.append(await other.scalar(select(WikiJob.progress_at)
+                                           .where(WikiJob.id == job_id)))
+        return b"%PDF-fake"
+    monkeypatch.setattr(export_html, "html_to_pdf", fake_pdf)
 
     job = await _run(db, job_id)
 
     assert job.status == "done", job.error
-    # batches of five, each with its own timeout, and progress between them
-    assert [(timeout, n) for _, timeout, n in seen] == [(160, 5), (100, 2)]
-    assert seen[1][0] > seen[0][0]
-    assert job.progress_at > seen[1][0]
+    # progress moves forward after every page
+    assert len(seen) == 3 and seen[0] < seen[1] < seen[2]
+    assert job.progress_at > seen[2]
 
 
 async def test_a_superseded_attempt_records_nothing(client, db, store, renderer, monkeypatch):
@@ -633,7 +590,7 @@ async def test_touch_stops_a_superseded_attempt_before_it_uploads(client, db, st
                                                                    monkeypatch):
     """Unlike a plain single-page export (no progress heartbeat at all —
     see `test_a_superseded_attempt_records_nothing`, which leaves an
-    orphan upload the retention sweep has to clean up later), a batched
+    orphan upload the retention sweep has to clean up later), a zip
     export's `touch()` calls notice the lost ownership itself and stop
     the attempt before it ever uploads anything."""
     monkeypatch.setattr(export, "TOUCH_SECONDS", 0)
@@ -642,22 +599,18 @@ async def test_touch_stops_a_superseded_attempt_before_it_uploads(client, db, st
     for title in ("One", "Two"):
         page = await _create(client, s["owner"], s["space"], title, kind="page", parent=folder)
         await publish_via_db(db, page["id"], {"type": "doc", "content": [p(t(title))]})
-    job_id = await _request(client, s["viewer"], node_id=folder["id"], format="zip",
-                            zip_format="docx")
+    job_id = await _request(client, s["viewer"], node_id=folder["id"], format="zip")
     maker = get_sessionmaker()
 
-    async def run(cmd, *, timeout, max_stdout=None):
+    async def fake_pdf(document, workdir):
         # meanwhile the stale sweep gave the job up and another worker
         # claimed it — this attempt is about to find out
         async with maker() as other:
             row = await other.get(WikiJob, job_id)
             row.attempts += 1
             await other.commit()
-        sources = cmd[cmd.index("--outdir") + 2:]
-        for src in sources:
-            Path(src).with_suffix(".docx").write_bytes(b"DOCX")
-        return 0, b"", b""
-    monkeypatch.setattr(convert, "run", run)
+        return b"%PDF-fake"
+    monkeypatch.setattr(export_html, "html_to_pdf", fake_pdf)
 
     job = await _run(db, job_id)
 

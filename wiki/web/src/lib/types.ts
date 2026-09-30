@@ -584,10 +584,10 @@ export interface AnalyticsOut {
 // ── exports ─────────────────────────────────────────────────────────
 
 /** What a page exports as — and, in a .zip, what its pages are. */
-export type ExportPageFormat = 'pdf' | 'docx' | 'md';
+export type ExportPageFormat = 'pdf' | 'md';
 
 /** POST /wiki/exports: a node (`node_id`) or a whole space (`space_key`).
- *  A page is pdf/docx/md, or a zip when it has subpages; a folder or a
+ *  A page is pdf/md, or a zip when it has subpages; a folder or a
  *  space is a zip whose pages are `zip_format` (pdf by default). */
 export interface ExportIn {
   node_id?: string;

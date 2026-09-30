@@ -6,7 +6,7 @@ and only to them — with a fresh download URL once it's done.
 - A node needs view (404 when the caller can't see it — including a
   never-published page they only have view on). A file is downloaded,
   not exported (422 `use_download`); a folder is a .zip only, a page
-  a .pdf/.docx/.md, or a .zip when it has subpages the caller can see
+  a .pdf/.md, or a .zip when it has subpages the caller can see
   (the tree's visibility rule; 422 `bad_format`
   otherwise); a single page must have been published (422
   `not_published`).
