@@ -248,6 +248,34 @@ into an `assets/` folder. `GET /wiki/exports/{job_id}` reports progress to
 the requester (and only them) with a fresh 10-minute download URL once
 it's done.
 
+- **What a PDF holds.** Every exported PDF — a single page, or each page
+  in a PDF zip — reads like a controlled document, in this order:
+  - **A cover page** with no page number: the ServerSherpa logo, the page
+    title, where it lives (the library, then its folders, with "…" for a
+    folder the requester can't see), "Revision N · Published <date> by
+    <name>" (N counts every time the page has been published; "by <name>"
+    is dropped when the publisher is unknown), "Exported <date> by
+    <name>" for the person who asked, and the confidentiality statement
+    at the bottom (left off when it's empty).
+  - **A contents page**, only when the page has at least two headings of
+    levels 1–3: one line per heading, indented by level, with the PDF
+    page it's on and a link to it. The same headings make up the PDF's
+    bookmarks.
+  - **The page itself**, starting on a new page under its usual header
+    (location, title, published date).
+  - **A comments page** at the end, only when the page has comments that
+    weren't deleted. Threads anchored to text in the published page come
+    first, in the order they appear there, each under a quote of that
+    text; page-level comments (and threads whose text is gone) follow,
+    oldest first. Each comment shows its author, date and time, and text,
+    with replies indented; a resolved thread is labeled Resolved, with
+    who resolved it and when.
+
+  Dates and times are in the company time zone. The confidentiality
+  statement is set by wiki administrators on the wiki's Admin page, under
+  Exports; a library manager can give their library its own statement in
+  Library settings, and leaving it empty uses the standard one. Markdown
+  exports have none of this: they're the page's text as before.
 - **Limits.** An export over `SS_WIKI_EXPORT_MAX_PAGES` pages, or whose
   files and page images add up to more than `SS_WIKI_EXPORT_MAX_BYTES`,
   fails immediately with a message saying which limit and by how much. A

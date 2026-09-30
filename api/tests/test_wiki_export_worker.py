@@ -33,16 +33,23 @@ from serversherpa.config import get_settings
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     Notification,
+    Person,
+    WikiComment,
     WikiFile,
     WikiFileVersion,
     WikiJob,
     WikiNode,
+    WikiPage,
     WikiPageAsset,
+    WikiPageVersion,
     WikiSpace,
 )
 from serversherpa.services import storage
+from serversherpa.services.timezone import report_timezone
 from serversherpa.wiki import convert, export, export_html, tree, worker
 from serversherpa.wiki.content import PUBLIC_PAGE_TEXT
+from serversherpa.wiki.export_sections import day
+from serversherpa.wiki.statement import DEFAULT_CONFIDENTIALITY_STATEMENT
 from tests.wiki_helpers import _create, _setup, publish_via_db
 
 TOKEN = "export-service-token-for-tests"
@@ -346,6 +353,191 @@ async def test_a_page_as_markdown(client, db, store, renderer):
     assert renderer.requests == []
 
 
+# ── the PDF's cover, contents and comments ───────────────────────────
+
+
+def heading(text, level=2):
+    return {"type": "heading", "attrs": {"level": level}, "content": [t(text)]}
+
+
+def comment_mark(thread_id):
+    return {"type": "commentThread", "attrs": {"threadId": str(thread_id)}}
+
+
+async def _publish_again(db, node_id, content, *, version_no, created_by=None,
+                         kind="published"):
+    """Another version of the page; a `published` one becomes current."""
+    version = WikiPageVersion(node_id=uuid.UUID(str(node_id)), version_no=version_no,
+                              title="Again", content_json=content, kind=kind,
+                              created_by=created_by)
+    db.add(version)
+    await db.flush()
+    if kind == "published":
+        (await db.get(WikiPage, uuid.UUID(str(node_id)))).published_version_id = version.id
+    await db.commit()
+    await db.refresh(version)
+    return version
+
+
+async def _comment(db, page, text, *, at, author=None, thread=None, anchor=False,
+                   comment_id=None, deleted=False, resolved_at=None, resolved_by=None):
+    """A comment row: a thread's first comment, or a reply to `thread`."""
+    cid = comment_id or uuid.uuid4()
+    row = WikiComment(id=cid, node_id=uuid.UUID(page["id"]),
+                      thread_id=thread.id if thread else cid,
+                      parent_id=thread.id if thread else None, anchor=anchor,
+                      body={"text": "" if deleted else text, "mentions": []},
+                      author_id=author, created_at=at,
+                      deleted_at=at if deleted else None,
+                      resolved_at=resolved_at, resolved_by=resolved_by)
+    db.add(row)
+    await db.commit()
+    return row
+
+
+async def _name(db, person_id):
+    return (await db.get(Person, person_id)).display_name
+
+
+async def test_a_pdf_has_a_cover_contents_and_comments(client, db, store, renderer, pdfs):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Rack Guide", kind="page")
+    anchored, orphaned = uuid.uuid4(), uuid.uuid4()
+    content = {"type": "doc", "content": [
+        heading("Power"),
+        # the mark spells the id in upper case; the comment row's is lower
+        p(t("Check "), t("the breaker", comment_mark(str(anchored).upper())), t(" first.")),
+        heading("Cabling"),
+        p(t("Label both ends.")),
+    ]}
+    await publish_via_db(db, page["id"], content)
+    await _publish_again(db, page["id"], content, version_no=2, kind="restored")
+    version = await _publish_again(db, page["id"], content, version_no=3,
+                                   created_by=s["owner_id"])
+
+    base = datetime(2026, 9, 29, 14, 5, tzinfo=UTC)          # 10:05 AM in New York
+    hour = timedelta(hours=1)
+    # page-level, the oldest non-anchored thread but one
+    note = await _comment(db, page, "Page-level note", at=base, author=s["editor_id"])
+    await _comment(db, page, "Gone reply", at=base + hour, author=s["owner_id"],
+                   thread=note, deleted=True)
+    # anchored in the page, resolved, with a reply — listed first
+    first = await _comment(db, page, "Is this the right breaker?\nLine two", at=base + hour,
+                           author=s["owner_id"], anchor=True, comment_id=anchored,
+                           resolved_at=base + 3 * hour, resolved_by=s["editor_id"])
+    await _comment(db, page, "Yes, @Wiki Tester", at=base + 2 * hour,
+                   author=s["viewer_id"], thread=first)
+    # anchored, but its mark is gone from the page: the oldest of the rest
+    orphan = await _comment(db, page, "Orphan note", at=base - hour, author=s["owner_id"],
+                            anchor=True, comment_id=orphaned)
+    await _comment(db, page, "Anonymous reply", at=base, thread=orphan)
+    # its first comment deleted (but still resolving the thread); the reply stays
+    removed = await _comment(db, page, "Removed first", at=base + hour / 2,
+                             author=s["owner_id"], deleted=True, resolved_at=base + hour)
+    await _comment(db, page, "Reply survives", at=base + 2 * hour, author=s["editor_id"],
+                   thread=removed)
+    # nothing left in it
+    await _comment(db, page, "Deleted thread", at=base, author=s["owner_id"], deleted=True)
+
+    job = await _run(db, await _request(client, s["viewer"], node_id=page["id"],
+                                        format="pdf"))
+
+    assert job.status == "done", job.error
+    [document] = pdfs
+    owner, editor, viewer = (await _name(db, s["owner_id"]), await _name(db, s["editor_id"]),
+                             await _name(db, s["viewer_id"]))
+    tz = report_timezone()
+
+    # the cover, then the contents, then the page's own header and body,
+    # then the comments
+    cover = document.index('class="ss-cover"')
+    contents = document.index('class="ss-contents"')
+    head = document.index('class="ss-head"')
+    comments = document.index('class="ss-comments"')
+    assert cover < contents < head < document.index("</main>") < comments
+
+    # the cover: two published versions (the restored one doesn't count)
+    assert '<div class="ss-cover-title">Rack Guide</div>' in document
+    assert "Tree Space</div>" in document
+    assert (f"Revision 2 · Published {day(version.created_at.astimezone(tz))} "
+            f"by {owner}</div>") in document
+    assert f"Exported {day(datetime.now(tz))} by {viewer}</div>" in document
+    assert DEFAULT_CONFIDENTIALITY_STATEMENT in document
+
+    # the contents link to the numbered headings
+    assert '<a href="#ss-h-1">Power</a>' in document
+    assert '<a href="#ss-h-2">Cabling</a>' in document
+    assert '<h2 id="ss-h-1">Power</h2>' in document
+
+    # the comments: the anchored thread, then the rest oldest first
+    order = [document.index(text, comments) for text in (
+        "Is this the right breaker?", "Orphan note", "Page-level note", "Reply survives")]
+    assert order == sorted(order)
+    assert '<blockquote class="ss-quote">the breaker</blockquote>' in document
+    assert document.count("ss-quote") == 2                   # the rule, and one quote
+    assert "Is this the right breaker?<br>Line two" in document
+    assert "Yes, @Wiki Tester" in document
+    assert f"<b>{owner}</b> · September 29, 2026 at 11:05 AM" in document
+    assert f"<b>{editor}</b> · September 29, 2026 at 10:05 AM" in document
+    assert f"Resolved by {editor} on September 29, 2026</div>" in document
+    assert '<div class="ss-resolved">Resolved on September 29, 2026</div>' in document
+    assert "<b>Unknown</b>" in document
+    assert '<div class="ss-comment ss-reply">' in document
+    for gone in ("Gone reply", "Removed first", "Deleted thread"):
+        assert gone not in document
+    # the body itself still carries no comment anchors
+    assert "wiki-comment-mark" not in document
+
+
+async def test_a_pdf_with_one_heading_and_no_comments(client, db, store, renderer, pdfs):
+    s = await _setup(client, db)
+    space = await db.get(WikiSpace, uuid.UUID(s["space"]["id"]))
+    space.settings = {**(space.settings or {}),
+                      "confidentiality_statement": "Internal use only.\nDo not share."}
+    await db.commit()
+    page = await _create(client, s["owner"], s["space"], "Rack Guide", kind="page")
+    await publish_via_db(db, page["id"], {"type": "doc", "content": [
+        heading("Only"), p(t("Text."))]})
+    await _publish_again(db, page["id"], {"type": "doc", "content": []}, version_no=2,
+                         kind="autosave")
+    # a deleted comment is no comment at all
+    await _comment(db, page, "Deleted thread", at=datetime.now(UTC), deleted=True)
+
+    job = await _run(db, await _request(client, s["viewer"], node_id=page["id"],
+                                        format="pdf"))
+
+    assert job.status == "done", job.error
+    [document] = pdfs
+    assert 'class="ss-cover"' in document
+    # the library's own statement, and no publisher to name
+    assert "Internal use only.<br>Do not share." in document
+    assert DEFAULT_CONFIDENTIALITY_STATEMENT not in document
+    published = day(datetime.now(report_timezone()))
+    assert f"Revision 1 · Published {published}</div>" in document
+    body = document.split("</style>", 1)[1]                  # past the print CSS
+    assert "ss-contents" not in body and "ss-comments" not in body
+    assert "Deleted thread" not in document
+
+
+async def test_a_markdown_export_has_no_cover_or_comments(client, db, store, renderer):
+    s = await _setup(client, db)
+    page = await _create(client, s["owner"], s["space"], "Rack Guide", kind="page")
+    thread = uuid.uuid4()
+    await publish_via_db(db, page["id"], {"type": "doc", "content": [
+        heading("Power"), p(t("Check "), t("the breaker", comment_mark(thread))),
+        heading("Cabling"), p(t("Label both ends."))]})
+    await _comment(db, page, "A note", at=datetime.now(UTC), author=s["owner_id"],
+                   anchor=True, comment_id=thread)
+
+    job = await _run(db, await _request(client, s["viewer"], node_id=page["id"], format="md"))
+
+    assert job.status == "done", job.error
+    [(_, _, data)] = store.uploads
+    # byte for byte what a Markdown export was before the PDF got its sections
+    assert data.decode() == ("# Rack Guide\n\n## Power\n\nCheck the breaker\n\n"
+                             "## Cabling\n\nLabel both ends.\n")
+
+
 # ── zips and permissions ─────────────────────────────────────────────
 
 
@@ -430,6 +622,8 @@ async def test_a_space_zip_as_pdf(client, db, store, renderer, pdfs):
     assert names == ["Empty/", "Guides/", "Guides/Same.pdf", "Guides/same (2).pdf",
                      "Tree Space.pdf"]
     assert job.result["filename"] == "Tree Space.zip"
+    # every page PDF in a zip gets its own cover
+    assert len(pdfs) == 3 and all('class="ss-cover"' in d for d in pdfs)
     by_title = {d.split("<title>")[1].split("</title>")[0]: d for d in pdfs}
     assert 'href="same%20%282%29.pdf"' in by_title["Same"]
     assert 'href="Same.pdf"' in by_title["same"]
@@ -452,7 +646,28 @@ async def test_a_word_export_request_fails_at_once(client, db, store, renderer, 
     job = await _run(db, job_id)
 
     assert job.status == "failed" and job.attempts == 1
-    assert job.result["message"] == "This export request is incomplete."
+    assert job.result["message"] == export.WORD_GONE_MESSAGE
+    assert job.result["message"] == ("Word export is no longer available. Export as PDF or "
+                                     "Markdown instead.")
+    assert store.uploads == [] and pdfs == []
+
+
+async def test_a_word_zip_request_fails_at_once(client, db, store, renderer, pdfs):
+    """The same for a stale queued zip whose pages were to be Word files."""
+    s = await _setup(client, db)
+    folder = await _create(client, s["owner"], s["space"], "Guides")
+    page = await _create(client, s["owner"], s["space"], "Rack", kind="page", parent=folder)
+    await publish_via_db(db, page["id"])
+    job_id = await _request(client, s["viewer"], node_id=folder["id"], format="zip",
+                            zip_format="md")
+    row = await db.get(WikiJob, job_id)
+    row.payload = {**row.payload, "zip_format": "docx"}
+    await db.commit()
+
+    job = await _run(db, job_id)
+
+    assert job.status == "failed" and job.attempts == 1
+    assert job.result["message"] == export.WORD_GONE_MESSAGE
     assert store.uploads == [] and pdfs == []
 
 
@@ -668,7 +883,8 @@ async def test_a_page_inlines_images_up_to_its_budget(client, db, store, rendere
 
     assert job.status == "done", job.error
     [document] = pdfs
-    assert document.count("data:image/png;base64,") == 1
+    body = document.split("<main>", 1)[1]                    # past the cover's logo
+    assert body.count("data:image/png;base64,") == 1
     assert 'alt="Rear"' in document                      # past the budget: alt text only
 
 

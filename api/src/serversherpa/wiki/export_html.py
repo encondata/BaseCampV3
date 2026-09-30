@@ -1,4 +1,4 @@
-"""A page as a printable HTML document, for PDF and Word exports (spec §8).
+"""A page as a printable HTML document, for PDF exports (spec §8).
 
 1. `prepare_doc` rewrites what a page says about the rest of the wiki
    before rendering: a page link becomes its target's title (linked, when
@@ -16,7 +16,8 @@
 4. `page_document` wraps it in the print template: title, breadcrumbs,
    published date, and CSS with the portal's type and colors (the
    renderer drops `style` attributes — alignment arrives as
-   `data-text-align`).
+   `data-text-align`); an export also passes the cover, contents and
+   comments pages (`export_sections`).
 
 `html_to_pdf` is WeasyPrint, run in a process of its own with a timeout
 (`export_pdf`), so one pathological page can't hold the worker."""
@@ -310,19 +311,24 @@ def _published_label(published_at: datetime | None) -> str:
 
 
 def page_document(*, title: str, breadcrumbs: list[str], published_at: datetime | None,
-                  body: str) -> str:
-    """The full printable HTML page around a finished fragment."""
+                  body: str, cover: str = "", contents: str = "", comments: str = "") -> str:
+    """The full printable HTML page around a finished fragment. `cover`
+    and `contents` (HTML, `export_sections`) come first — ahead of the
+    header, which starts the body's page — and `comments` last."""
     esc = html.escape
     crumbs = " › ".join(esc(c) for c in breadcrumbs)
     published = _published_label(published_at)
     return (
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
         f"<title>{esc(title)}</title>\n<style>{PRINT_CSS}</style>\n</head>\n<body>\n"
-        "<header class=\"ss-head\">\n"
+        + "".join(f"{part}\n" for part in (cover, contents) if part)
+        + "<header class=\"ss-head\">\n"
         + (f"<div class=\"ss-crumbs\">{crumbs}</div>\n" if crumbs else "")
         + f"<h1 class=\"ss-title\">{esc(title)}</h1>\n"
         + (f"<div class=\"ss-meta\">{esc(published)}</div>\n" if published else "")
-        + "</header>\n<main>\n" + body + "\n</main>\n</body>\n</html>\n")
+        + "</header>\n<main>\n" + body + "\n</main>\n"
+        + (f"{comments}\n" if comments else "")
+        + "</body>\n</html>\n")
 
 
 def _data_only_fetcher():

@@ -22,7 +22,8 @@ the wiki worker runs it through `run`, as the person who asked:
   becomes its title — or "(linked page)" / "(linked file)" for what the
   requester can't view.
 - PDF pages go through the wiki server's renderer and the
-  print template (`export_html`), with images inlined as data URIs;
+  print template (`export_html`), with images inlined as data URIs, and
+  get a cover, a contents page and a comments page (`export_sections`);
   Markdown goes through `markdown.to_markdown`, with images written into
   `assets/` in a zip (a single Markdown page gets a placeholder for each).
 
@@ -42,9 +43,9 @@ import time
 import unicodedata
 import uuid
 import zipfile
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,7 @@ from serversherpa.config import get_settings
 from serversherpa.db.models import (
     Person,
     UserAccount,
+    WikiComment,
     WikiFile,
     WikiFileVersion,
     WikiJob,
@@ -65,7 +67,8 @@ from serversherpa.db.models import (
     WikiSpace,
 )
 from serversherpa.services import storage
-from serversherpa.wiki import export_html
+from serversherpa.services.timezone import report_timezone
+from serversherpa.wiki import export_html, export_sections
 from serversherpa.wiki.content import (
     EMPTY_DOC,
     PUBLIC_FILE_TEXT,
@@ -76,6 +79,7 @@ from serversherpa.wiki.content import (
 from serversherpa.wiki.files import normalize_content_type, sanitize_filename
 from serversherpa.wiki.markdown import MarkdownRefs, to_markdown
 from serversherpa.wiki.permissions import AccessIndex, principal_for_person, viewable_nodes
+from serversherpa.wiki.statement import effective_statement, standard_statement
 
 PAGE_FORMATS = ("pdf", "md")
 FORMATS = (*PAGE_FORMATS, "zip")
@@ -111,6 +115,11 @@ TOUCH_SECONDS = 60
 # what the requester reads when a job failed for a reason they can't act on
 FAILED_MESSAGE = ("The export couldn't be finished. Try again, or ask a wiki "
                   "administrator if it keeps failing.")
+# a job queued before Word export was removed
+WORD_GONE_MESSAGE = ("Word export is no longer available. Export as PDF or Markdown "
+                     "instead.")
+# a comment's author, or a thread's resolver, whose person row is gone
+UNKNOWN_PERSON = "Unknown"
 
 
 class ExportError(Exception):
@@ -214,6 +223,10 @@ class _Node:
     crumbs: list[str] = field(default_factory=list)
     zip_path: str | None = None            # page/file: its entry; folder: its directory
     dir_path: str | None = None            # a page's subpages directory
+    # a PDF's cover and comments page (`_pdf_sections`)
+    revision: int = 0                      # how many times it has been published
+    published_by: str | None = None        # who published the current version
+    threads: list[export_sections.CommentThreadOut] = field(default_factory=list)
 
 
 @dataclass
@@ -236,6 +249,10 @@ class _Plan:
     skipped: list[str] = field(default_factory=list)      # zip paths of unpublished pages
     unprintable: list[str] = field(default_factory=list)  # zip paths of printing-off items
     targets: dict[str, _Target] = field(default_factory=dict)   # by lowercase node id
+    # every PDF's cover (`_pdf_sections`)
+    exported_by: str = ""
+    exported_at: datetime | None = None    # in report_timezone()
+    statement: str = ""
 
     @property
     def is_zip(self) -> bool:
@@ -297,14 +314,99 @@ async def _is_active(db: AsyncSession, person_id: uuid.UUID) -> bool:
 
 
 async def _published(db: AsyncSession, page_ids: list[uuid.UUID],
-                     ) -> dict[uuid.UUID, tuple[dict | None, datetime]]:
+                     ) -> dict[uuid.UUID, tuple[dict | None, datetime, uuid.UUID | None]]:
+    """Each page's published version: (content, when, by whom)."""
     if not page_ids:
         return {}
     rows = (await db.execute(
-        select(WikiPage.node_id, WikiPageVersion.content_json, WikiPageVersion.created_at)
+        select(WikiPage.node_id, WikiPageVersion.content_json, WikiPageVersion.created_at,
+               WikiPageVersion.created_by)
         .join(WikiPageVersion, WikiPageVersion.id == WikiPage.published_version_id)
         .where(WikiPage.node_id.in_(page_ids)))).all()
-    return {node_id: (content, at) for node_id, content, at in rows}
+    return {node_id: (content, at, by) for node_id, content, at, by in rows}
+
+
+async def _names(db: AsyncSession, ids: Iterable[uuid.UUID | None]) -> dict[uuid.UUID, str]:
+    """Display names for every (non-None) id, in one query; ids with no
+    person row are absent."""
+    wanted = {i for i in ids if i is not None}
+    if not wanted:
+        return {}
+    people = (await db.scalars(select(Person).where(Person.id.in_(wanted)))).all()
+    return {p.id: p.display_name for p in people}
+
+
+def _threads(rows: list[WikiComment], quotes: dict[str, str], names: dict[uuid.UUID, str],
+             tz: tzinfo) -> list[export_sections.CommentThreadOut]:
+    """A page's comment threads (`rows`, deleted ones included) for its
+    comments page: those anchored in the published content first, in
+    document order (`quotes`, from `anchor_quotes`); then the rest —
+    page-level, or anchored to text that's gone — oldest first. Deleted
+    comments are left out, and a thread with none left; whether a thread
+    is resolved lives on its first comment, deleted or not."""
+    grouped: dict[uuid.UUID, list[WikiComment]] = {}
+    for row in sorted(rows, key=lambda c: (c.created_at, str(c.id))):
+        grouped.setdefault(row.thread_id, []).append(row)
+    anchored: dict[str, export_sections.CommentThreadOut] = {}
+    rest: list[tuple[datetime, str, export_sections.CommentThreadOut]] = []
+    for thread_id, items in grouped.items():
+        first = next((c for c in items if c.id == thread_id), items[0])
+        lines = [export_sections.CommentLine(
+                     author=names.get(c.author_id) or UNKNOWN_PERSON,
+                     at=c.created_at.astimezone(tz),
+                     text=str((c.body or {}).get("text") or ""))
+                 for c in [first, *(c for c in items if c is not first)]
+                 if c.deleted_at is None]
+        if not lines:
+            continue
+        key = str(thread_id).lower()
+        found = first.anchor and key in quotes
+        thread = export_sections.CommentThreadOut(
+            quote=(quotes[key] or None) if found else None,
+            resolved=first.resolved_at is not None,
+            resolved_by=names.get(first.resolved_by) if first.resolved_by else None,
+            resolved_at=first.resolved_at.astimezone(tz) if first.resolved_at else None,
+            comments=lines)
+        if found:
+            anchored[key] = thread
+        else:
+            rest.append((first.created_at, str(first.id), thread))
+    return ([anchored[k] for k in quotes if k in anchored]
+            + [thread for *_, thread in sorted(rest, key=lambda r: (r[0], r[1]))])
+
+
+async def _pdf_sections(db: AsyncSession, plan: _Plan, space: WikiSpace | None,
+                        requester_id: uuid.UUID,
+                        publishers: dict[uuid.UUID, uuid.UUID | None]) -> None:
+    """What every PDF's cover and comments page need: the requester's
+    name, the export time and the statement (once per export — it's one
+    library), then per page its revision (published versions counted),
+    publisher and comment threads. One query each, names batched."""
+    tz = report_timezone()
+    page_ids = [page.id for page in plan.pages]
+    revisions = dict((await db.execute(
+        select(WikiPageVersion.node_id, func.count())
+        .where(WikiPageVersion.node_id.in_(page_ids), WikiPageVersion.kind == "published")
+        .group_by(WikiPageVersion.node_id))).all())
+    comments = (await db.scalars(select(WikiComment).where(
+        WikiComment.node_id.in_(page_ids)))).all()
+    names = await _names(db, [requester_id, *publishers.values(),
+                              *(c.author_id for c in comments),
+                              *(c.resolved_by for c in comments)])
+    plan.exported_by = names.get(requester_id, "")
+    plan.exported_at = datetime.now(tz)
+    plan.statement = effective_statement(await standard_statement(db),
+                                         space.settings if space else None)
+    by_page: dict[uuid.UUID, list[WikiComment]] = {}
+    for comment in comments:
+        by_page.setdefault(comment.node_id, []).append(comment)
+    for page in plan.pages:
+        page.revision = revisions.get(page.id, 0)
+        publisher = publishers.get(page.id)
+        page.published_by = names.get(publisher) if publisher else None
+        # the quotes come from the content with its comment marks still in
+        page.threads = _threads(by_page.get(page.id, []),
+                                export_sections.anchor_quotes(page.content), names, tz)
 
 
 async def _visible_titles(db: AsyncSession, ix: AccessIndex,
@@ -323,6 +425,8 @@ async def _gather(db: AsyncSession, payload: dict) -> _Plan:
     requester_id = _as_uuid(payload.get("requester"))
     fmt = payload.get("format")
     title = payload.get("title") or "this item"
+    if fmt == "docx" or (fmt == "zip" and payload.get("zip_format") == "docx"):
+        raise ExportError(WORD_GONE_MESSAGE)
     if requester_id is None or fmt not in FORMATS:
         raise ExportError("This export request is incomplete.")
     if not await _is_active(db, requester_id):
@@ -353,7 +457,7 @@ async def _gather(db: AsyncSession, payload: dict) -> _Plan:
     for node in nodes.values():
         if node.id in published:
             node.published = True
-            node.content, node.published_at = published[node.id]
+            node.content, node.published_at, _ = published[node.id]
     for row in shown:
         nodes[row.id].printable = await ix.can_print(row)
 
@@ -448,6 +552,10 @@ async def _gather(db: AsyncSession, payload: dict) -> _Plan:
     for page in plan.pages:
         page.crumbs = [space.name if space else "",
                        *(known.get(a, HIDDEN_CRUMB) for a in page.path)]
+
+    if plan.page_format == "pdf" and plan.pages:
+        await _pdf_sections(db, plan, space, requester_id,
+                            {page.id: published[page.id][2] for page in plan.pages})
     return plan
 
 
@@ -626,6 +734,8 @@ async def _image_data(page: _Node, workdir: Path) -> dict[str, str]:
 
 
 async def _page_html(client, plan: _Plan, page: _Node, workdir: Path) -> str:
+    """A page's printable document for its PDF: cover, contents (with ids
+    on the body's headings to link to), header and body, comments."""
     refs = _Refs(plan, page)
     doc, hrefs = export_html.prepare_doc(
         strip_comment_marks(page.content or EMPTY_DOC),
@@ -633,8 +743,18 @@ async def _page_html(client, plan: _Plan, page: _Node, workdir: Path) -> str:
     fragment = await export_html.render_fragment(client, doc)
     body = export_html.finish_fragment(fragment, hrefs=hrefs,
                                        images=await _image_data(page, workdir))
-    return export_html.page_document(title=page.title, breadcrumbs=page.crumbs,
-                                     published_at=page.published_at, body=body)
+    body, headings = export_sections.number_headings(body)
+    tz = report_timezone()
+    published_at = page.published_at.astimezone(tz) if page.published_at else None
+    cover = export_sections.cover_html(export_sections.CoverInfo(
+        title=page.title, location=page.crumbs, revision=page.revision,
+        published_at=published_at, published_by=page.published_by,
+        exported_at=plan.exported_at or datetime.now(tz), exported_by=plan.exported_by,
+        statement=plan.statement))
+    return export_html.page_document(
+        title=page.title, breadcrumbs=page.crumbs, published_at=published_at, body=body,
+        cover=cover, contents=export_sections.contents_html(headings),
+        comments=export_sections.comments_html(page.threads))
 
 
 async def _pdf(client, plan: _Plan, page: _Node, workdir: Path) -> bytes:
