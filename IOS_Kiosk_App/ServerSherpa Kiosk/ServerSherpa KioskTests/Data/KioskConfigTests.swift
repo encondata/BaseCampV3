@@ -26,6 +26,16 @@ struct KioskConfigTests {
         #expect(KioskConfig.normalizeUrl("https://") == nil)
     }
 
+    @Test func normalizeRejectsEmptyHost() {
+        // URLs with empty host must be rejected
+        #expect(KioskConfig.normalizeUrl("https://?x") == nil)
+        #expect(KioskConfig.normalizeUrl("https://:80") == nil)
+        #expect(KioskConfig.normalizeUrl("http://") == nil)
+        // Valid URLs with non-empty hosts are accepted
+        #expect(KioskConfig.normalizeUrl("https://api.example.com/") == "https://api.example.com")
+        #expect(KioskConfig.normalizeUrl("http://10.0.0.5:8000") == "http://10.0.0.5:8000")
+    }
+
     @Test func setUrlStoresNormalizedOrRejects() {
         let (prefs, config) = make()
         #expect(config.setApiUrl(" http://h:8000/ "))

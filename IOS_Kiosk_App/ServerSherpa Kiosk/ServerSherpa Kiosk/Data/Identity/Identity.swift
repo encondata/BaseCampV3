@@ -17,19 +17,27 @@ func defaultName(_ serial: String) -> String { "Kiosk \(serial.suffix(4).upperca
 final class Identity {
     @ObservationIgnored private let prefs: KioskPrefs
     @ObservationIgnored private let secrets: SecretStore
+    @ObservationIgnored private var cachedSerial: String?
 
     init(prefs: KioskPrefs, secrets: SecretStore) {
         self.prefs = prefs
         self.secrets = secrets
+        self.cachedSerial = nil
     }
 
     /// Generates and stores the serial the first time it is asked for.
+    /// Caches the serial in memory so that even if the store write fails,
+    /// this Identity instance always returns the same serial.
     var current: KioskIdentity {
         let serial: String
-        if let stored = secrets.get("kiosk.serial") {
+        if let cached = cachedSerial {
+            serial = cached
+        } else if let stored = secrets.get("kiosk.serial") {
             serial = stored
+            cachedSerial = serial
         } else {
             serial = newSerial()
+            cachedSerial = serial
             secrets.set("kiosk.serial", serial)
         }
         let stored = prefs.kioskName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
