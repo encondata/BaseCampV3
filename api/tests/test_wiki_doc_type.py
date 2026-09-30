@@ -1,7 +1,6 @@
 """HTTP tests for a page's document type (spec 2026-09-30, revision 2):
 `PATCH /wiki/nodes/{id}/doc-type`, `NodeOut.page.doc_type`, the built-in SOP
 template's default, copies keeping the type, and migration 0085."""
-import subprocess
 import uuid
 from pathlib import Path
 
@@ -184,10 +183,12 @@ async def test_a_copied_page_keeps_its_type(client, db):
     assert plain["page"]["doc_type"] is None
 
 
-def test_alembic_has_a_single_head_and_it_is_0085():
-    heads = subprocess.run(
-        [str(API_DIR / ".venv/bin/alembic"), "heads"], cwd=API_DIR,
-        capture_output=True, text=True, check=True).stdout.splitlines()
-    heads = [line for line in heads if line.strip()]
-    assert len(heads) == 1, heads
-    assert heads[0].startswith("0085"), heads
+def test_0085_is_in_the_single_migration_chain():
+    """One head, and 0085 on the chain (not pinned as the head: a later
+    migration would break a pinned test)."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(Config(str(API_DIR / "alembic.ini")))
+    assert len(script.get_heads()) == 1
+    assert script.get_revision("0085").down_revision == "0084"
