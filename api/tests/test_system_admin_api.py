@@ -312,6 +312,12 @@ async def test_background_null_without_workers(client, db):
     assert (await client.get("/system/status")).json()["background"] is None
 
 
+async def test_background_null_when_all_workers_stopped(client, db):
+    await _proc(db, "report-worker", beat_age=600, stopped=True)
+    await _proc(db, "import-worker", beat_age=600, stopped=True)
+    assert (await client.get("/system/status")).json()["background"] is None
+
+
 async def test_background_running(client, db):
     await _proc(db, "scan-matching-worker")
     await _proc(db, "import-worker")
