@@ -48,6 +48,10 @@ loaded at startup. Check delivery with:
 
     docker compose -f status/docker-compose.yml --env-file status/.env exec status python -m serversherpa_status test-alert
 
+Alerts are best-effort: if ntfy is unreachable when something goes down, that alert is not
+retried, so you may only see the "back up" one. Use `STATUS_NTFY_TOKEN` only with an
+`https://` server; over plain `http://` the token travels unencrypted (a warning is logged).
+
 Public ntfy topics are readable by anyone who knows the name, so use a long random one.
 The status box cannot alert about itself: if this container or its host is down, no alert
 is sent.

@@ -33,7 +33,7 @@ status page URL (`STATUS_PUBLIC_URL`) as the tap target.
 "background": {"state": "running" | "down" | "paused", "running": 7, "total": 9}
 ```
 
-or `"background": null` when no worker has ever registered.
+or `"background": null` when no worker rows remain after excluding cleanly stopped ones (no workers registered, or all stopped cleanly).
 
 - Rows: `processes` where `kind == "worker"` (services and probes ignored).
 - Each row's status comes from the existing `derive_status(...)`.
@@ -57,7 +57,7 @@ parses that body (tolerantly — missing or malformed fields mean "not known"):
 - `background` → section 3.
 
 Messages are trimmed, empty → none, capped at 500 characters, and rendered as plain text.
-If the API check fails or its data is older than the stale window, maintenance and
+If the API's data is older than the stale window (no successful API check within it), maintenance and
 announcement are "not known" and nothing is shown.
 
 `/api/summary` gains:
