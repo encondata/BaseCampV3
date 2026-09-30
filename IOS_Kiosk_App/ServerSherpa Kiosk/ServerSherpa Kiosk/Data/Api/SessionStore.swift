@@ -50,7 +50,7 @@ actor SessionStore: SessionRefresher {
     private var inFlight: Task<RefreshOutcome, Never>?
     /// Bumped by every store() and clear(): a refresh answer that lands after
     /// the session changed underneath it is dropped.
-    private var generation = 0
+    private var epoch = 0
 
     nonisolated let sessionEnded: AsyncStream<Void>
     private nonisolated let endedContinuation: AsyncStream<Void>.Continuation
@@ -68,7 +68,7 @@ actor SessionStore: SessionRefresher {
     func tokenIsStale() -> Bool { token == nil || clock() > tokenExpiresAt - 30_000 }
 
     func store(_ data: SessionData) {
-        generation += 1
+        epoch += 1
         token = data.accessToken
         tokenExpiresAt = clock() + Int64(data.expiresIn) * 1000
         sessionExpiry = data.sessionExpiresAt
@@ -79,8 +79,17 @@ actor SessionStore: SessionRefresher {
         store(data)
     }
 
+    /// The session's identity: changes whenever a session is stored or cleared.
+    func generation() -> Int { epoch }
+
     func clear() {
-        generation += 1
+        epoch += 1
+        wipe()
+    }
+
+    /// Drops the local session without changing its identity: a failed refresh
+    /// is this session's own end, not a replacement.
+    private func wipe() {
         token = nil
         tokenExpiresAt = 0
         sessionExpiry = nil
@@ -97,7 +106,10 @@ actor SessionStore: SessionRefresher {
 
     /// Clears the session, then tells the coordinator. The refresh cookie goes
     /// only when the server rejected it (`cookieRejected`); a transient failure keeps it.
-    func notifySessionEnded(cookieRejected: Bool) async {
+    /// Ignored (nothing cleared, nothing yielded) when the session changed since
+    /// the caller saw `generation`: the failure belongs to a session that is gone.
+    func notifySessionEnded(cookieRejected: Bool, ifGeneration expected: Int) async {
+        guard epoch == expected else { return }
         clear()
         if cookieRejected, let host = URL(string: await apiUrl())?.host { cookies.clear(host: host) }
         endedContinuation.yield()
@@ -116,8 +128,10 @@ actor SessionStore: SessionRefresher {
     }
 
     private func performRefresh() async -> RefreshOutcome {
-        let started = generation
-        guard let url = URL(string: "\(await apiUrl())/auth/refresh"), let host = url.host else { return .transient }
+        let started = epoch
+        guard let url = URL(string: "\(await apiUrl())/auth/refresh"), let host = url.host else {
+            return epoch == started ? .transient : .superseded
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         if let value = cookies.value(forHost: host) {
@@ -130,13 +144,14 @@ actor SessionStore: SessionRefresher {
             guard let r = response as? HTTPURLResponse else { return .transient }
             (data, http) = (body, r)
         } catch {
-            return .transient   // network hiccup: keep local state
+            // Network hiccup: keep local state (unless the session changed meanwhile).
+            return epoch == started ? .transient : .superseded
         }
         // Signed in or out meanwhile: this answer belongs to a session that is gone,
         // so neither its token nor its cookie (nor its rejection) may touch the new state.
-        guard generation == started else { return .superseded }
+        guard epoch == started else { return .superseded }
         guard (200..<300).contains(http.statusCode) else {
-            clear()
+            wipe()
             if http.statusCode == 401 || http.statusCode == 403 {
                 cookies.clear(host: host)
                 return .rejected

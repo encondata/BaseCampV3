@@ -101,7 +101,7 @@ struct SessionStoreTests {
         h.server.enqueue(sessionResponse())
         _ = try await h.api.login(email: "a@b.c", password: "pw")
         var events = h.session.sessionEnded.makeAsyncIterator()
-        await h.session.notifySessionEnded(cookieRejected: true)
+        await h.session.notifySessionEnded(cookieRejected: true, ifGeneration: await h.session.generation())
         let ended: Void? = await events.next()
         #expect(ended != nil)
         #expect(await h.session.accessToken() == nil)
@@ -113,7 +113,7 @@ struct SessionStoreTests {
         h.server.enqueue(sessionResponse())
         _ = try await h.api.login(email: "a@b.c", password: "pw")
         var events = h.session.sessionEnded.makeAsyncIterator()
-        await h.session.notifySessionEnded(cookieRejected: false)
+        await h.session.notifySessionEnded(cookieRejected: false, ifGeneration: await h.session.generation())
         let ended: Void? = await events.next()
         #expect(ended != nil)
         #expect(await h.session.accessToken() == nil)
@@ -159,5 +159,75 @@ struct SessionStoreTests {
         // notifySessionEnded (the only thing that yields sessionEnded) would have cleared the token.
         #expect(await h.session.accessToken() == "tok9")
         #expect(h.cookies.value(forHost: h.server.host) == "r9")
+    }
+
+    // MARK: a stale failure never ends a newer session
+
+    private func heldHeartbeat(_ h: ApiHarness, refresh: StubResponse) async throws -> (call: Task<HeartbeatResult, Error>, hold: StubHold) {
+        h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
+        h.server.enqueue(.json(401, #"{"detail":{"code":"token_expired"}}"#))    // the heartbeat
+        let hold = StubHold()
+        var held = refresh
+        held.hold = hold
+        h.server.enqueue(held)                                                    // its refresh, held
+        let call = Task { try await h.api.heartbeat(HeartbeatIn(serial: "s", name: "Kiosk")) }
+        await waitUntil { h.server.requestCount == 3 }            // login, heartbeat, refresh in flight
+        return (call, hold)
+    }
+
+    private func signInMeanwhile(_ h: ApiHarness) async throws {
+        h.secrets.set("refresh.\(h.server.host)", "r9")
+        var fresh = try KioskJSON.decoder.decode(SessionData.self, from: Data(sessionJSON.utf8))
+        fresh.accessToken = "tok9"
+        await h.session.store(fresh)
+    }
+
+    @Test func aNetworkFailedRefreshAfterSignInDoesNotEndTheNewSession() async throws {
+        let h = ApiHarness()
+        let (call, hold) = try await heldHeartbeat(h, refresh: .fail())
+        try await signInMeanwhile(h)
+        hold.release()
+        _ = try? await call.value
+        #expect(await h.session.accessToken() == "tok9")
+        #expect(h.cookies.value(forHost: h.server.host) == "r9")
+        let yielded = Task { var events = h.session.sessionEnded.makeAsyncIterator(); return await events.next() }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        yielded.cancel()
+        #expect(await yielded.value == nil)                       // sessionEnded never yielded
+    }
+
+    @Test func aRejectedRefreshAfterSignInDoesNotEndTheNewSession() async throws {
+        let h = ApiHarness()
+        let (call, hold) = try await heldHeartbeat(h, refresh: .json(401, #"{"detail":{"code":"invalid_token"}}"#))
+        try await signInMeanwhile(h)
+        hold.release()
+        _ = try? await call.value
+        #expect(await h.session.accessToken() == "tok9")
+        #expect(h.cookies.value(forHost: h.server.host) == "r9")
+        let yielded = Task { var events = h.session.sessionEnded.makeAsyncIterator(); return await events.next() }
+        try await Task.sleep(nanoseconds: 200_000_000)
+        yielded.cancel()
+        #expect(await yielded.value == nil)
+    }
+
+    @Test func aNetworkFailedRefreshOnAnUnchangedSessionStillEndsIt() async throws {
+        let h = ApiHarness()
+        let (call, hold) = try await heldHeartbeat(h, refresh: .fail())
+        var events = h.session.sessionEnded.makeAsyncIterator()
+        hold.release()
+        _ = try? await call.value
+        let ended: Void? = await events.next()
+        #expect(ended != nil)
+        #expect(await h.session.accessToken() == nil)
+        #expect(h.cookies.value(forHost: h.server.host) == "r1")
+    }
+
+    @Test func notifySessionEndedIgnoresAStaleGeneration() async throws {
+        let h = ApiHarness()
+        h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
+        let old = await h.session.generation()
+        await h.session.clear()
+        await h.session.notifySessionEnded(cookieRejected: true, ifGeneration: old)
+        #expect(h.cookies.value(forHost: h.server.host) == "r1")  // not touched
     }
 }

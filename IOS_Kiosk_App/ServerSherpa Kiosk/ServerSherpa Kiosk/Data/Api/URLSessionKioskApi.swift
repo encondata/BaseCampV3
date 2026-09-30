@@ -133,6 +133,7 @@ final class URLSessionKioskApi: KioskApi {
     /// retry on 401; a failed refresh or a second 401 ends the session.
     private func authed(_ build: (String) throws -> URLRequest) async throws -> Response {
         if await sessionStore.tokenIsStale() { _ = await sessionStore.refresh() }
+        var started = await sessionStore.generation()
         func go() async throws -> Response {
             var request = try build(await apiUrl())
             if let token = await sessionStore.accessToken() {
@@ -145,12 +146,13 @@ final class URLSessionKioskApi: KioskApi {
             let outcome = await sessionStore.refreshOutcome()
             switch outcome {
             case .ok:
+                started = await sessionStore.generation()   // the refresh itself stored a new session
                 response = try await go()
-                if response.http.statusCode == 401 { await sessionStore.notifySessionEnded(cookieRejected: true) }
+                if response.http.statusCode == 401 { await sessionStore.notifySessionEnded(cookieRejected: true, ifGeneration: started) }
             case .rejected:
-                await sessionStore.notifySessionEnded(cookieRejected: true)
+                await sessionStore.notifySessionEnded(cookieRejected: true, ifGeneration: started)
             case .transient:
-                await sessionStore.notifySessionEnded(cookieRejected: false)
+                await sessionStore.notifySessionEnded(cookieRejected: false, ifGeneration: started)
             case .superseded:
                 break   // a sign-in/out happened meanwhile: the 401 belongs to the old session
             }
