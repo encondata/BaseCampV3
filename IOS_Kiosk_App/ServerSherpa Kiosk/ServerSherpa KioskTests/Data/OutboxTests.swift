@@ -13,6 +13,7 @@ private final class VirtualTime: @unchecked Sendable {
     private var nextId = 0
 
     var now: Int64 { lock.withLock { _now } }
+    var sleeperCount: Int { lock.withLock { sleepers.count } }
 
     func sleep(_ ms: Int64) async throws {
         if ms <= 0 { await Task.yield(); try Task.checkCancellation(); return }
@@ -37,7 +38,7 @@ private final class VirtualTime: @unchecked Sendable {
 
     /// Moves the clock forward by `ms`, waking each sleeper at its own due time, in order.
     @MainActor func advance(by ms: Int64) async {
-        await settle()
+        await drain()
         let target = now + ms
         while true {
             let next = lock.withLock { () -> CheckedContinuation<Void, Error>? in
@@ -49,14 +50,16 @@ private final class VirtualTime: @unchecked Sendable {
             }
             guard let c = next else { break }
             c.resume()
-            await settle()
+            await drain()
         }
-        await settle()
+        await drain()
     }
 }
 
-/// Lets main-actor tasks and store-actor hops that are ready to run finish.
-@MainActor private func settle() async {
+/// The virtual scheduler's "run until idle" between wake-ups inside `advance`:
+/// lets the main-actor work a wake-up started, and its store-actor hops, run to
+/// their next park. Test bodies never call it; they wait on an observable condition.
+@MainActor private func drain() async {
     for _ in 0..<10 {
         await Task.yield()
         try? await Task.sleep(for: .milliseconds(2))
@@ -117,14 +120,22 @@ struct OutboxTests {
                       idGen: { n += 1; return "c\(n)" }, sleep: { try await time.sleep($0) }, backgroundTask: bg)
     }
 
+    /// Starts the sender and waits for its start pass to finish and the sweep loop to park.
+    private func started(_ ob: Outbox) async -> Outbox {
+        ob.start()
+        await ob.startPass()
+        let time = self.time
+        await waitUntil { time.sleeperCount >= 1 }
+        return ob
+    }
+
     private func accepting(_ body: KioskScanBatchIn) -> KioskScanBatchOut { KioskScanBatchOut(accepted: body.scans.map(\.clientScanId)) }
 
     @Test func matchedScansBatchAfter500msAndAreAccepted() async {
         let api = FakeKioskApi()
-        let ob = outbox(api); ob.start(); await settle()
+        let ob = await started(outbox(api))
         _ = await ob.enqueue(input()); await time.advance(by: 100); _ = await ob.enqueue(input("A-1"))
-        await settle()
-        #expect(api.scanBatches.count == 0)
+        #expect(api.scanBatches.count == 0)                  // virtual time is at 100 ms: the batch window is still open
         await time.advance(by: 500)
         #expect(api.scanBatches.count == 1)
         #expect(api.scanBatches.first?.scans.map(\.clientScanId) == ["c1", "c2"])
@@ -138,7 +149,7 @@ struct OutboxTests {
 
     @Test func unmatchedNeverLeavesAndExpiresAfterTtl() async {
         let api = FakeKioskApi()
-        let ob = outbox(api); ob.start(); await settle()
+        let ob = await started(outbox(api))
         _ = await ob.enqueue(input("zzz", matched: false))
         await time.advance(by: 5_000)
         #expect(api.scanBatches.count == 0)
@@ -150,7 +161,7 @@ struct OutboxTests {
     @Test func failureBacksOffThenSucceeds() async {
         let api = FakeKioskApi()
         api.postScansResult = { _ in throw ApiError(status: 0, code: "network") }
-        let ob = outbox(api); ob.start(); await settle()
+        let ob = await started(outbox(api))
         _ = await ob.enqueue(input()); await time.advance(by: 600)
         #expect(api.scanBatches.count == 1)
         let row = ob.snapshot.rows.first
@@ -164,7 +175,7 @@ struct OutboxTests {
     @Test func aThrownNonApiErrorIsATimeout() async {
         let api = FakeKioskApi()
         api.postScansResult = { _ in throw URLError(.notConnectedToInternet) }
-        let ob = outbox(api); ob.start(); await settle()
+        let ob = await started(outbox(api))
         _ = await ob.enqueue(input()); await time.advance(by: 600)
         #expect(ob.snapshot.rows.first?.status == .retrying)
         #expect(ob.snapshot.rows.first?.lastError == "timeout")
@@ -173,12 +184,13 @@ struct OutboxTests {
     @Test func rejectionFailsImmediatelyAndRetryFailedRequeues() async {
         let api = FakeKioskApi()
         api.postScansResult = { KioskScanBatchOut(rejected: $0.scans.map { KioskScanRejected(clientScanId: $0.clientScanId, code: "bad_site") }) }
-        let ob = outbox(api); ob.start(); await settle()
+        let ob = await started(outbox(api))
         _ = await ob.enqueue(input()); await time.advance(by: 600)
         #expect(ob.snapshot.rows.first?.status == .failed)
         #expect(ob.snapshot.rows.first?.lastError == "bad_site")
         api.postScansResult = { KioskScanBatchOut(accepted: $0.scans.map(\.clientScanId)) }
-        await ob.retryFailed(); await settle()
+        await ob.retryFailed()
+        await waitUntil { ob.snapshot.rows.first?.status == .accepted }
         #expect(ob.snapshot.rows.first?.status == .accepted)
     }
 
@@ -188,9 +200,10 @@ struct OutboxTests {
         stranded.status = .sending
         try await store.upsert([stranded])
         let api = FakeKioskApi()
-        let ob = outbox(api, store); ob.start(); await settle()
+        let ob = await started(outbox(api, store))
+        await waitUntil { api.scanBatches.count == 1 }
         #expect(api.scanBatches.count == 1)          // resent
-        let fresh = await ob.enqueue(input()); await settle()
+        let fresh = await ob.enqueue(input())
         #expect(fresh?.seq == 8)
     }
 
@@ -204,18 +217,19 @@ struct OutboxTests {
             await gate.wait()
             return KioskScanBatchOut(accepted: body.scans.map(\.clientScanId))
         }
-        let ob = outbox(api); ob.start(); await settle()
+        let ob = await started(outbox(api))
         _ = await ob.enqueue(input())
         await time.advance(by: 600)
         #expect(api.scanBatches.count == 1)
         #expect(ob.snapshot.rows.map(\.status) == [.sending])
 
-        ob.stop(); await settle()
-        ob.start(); await settle()
+        ob.stop()
+        ob.start(); await ob.startPass()
         #expect(api.scanBatches.count == 1)                   // not resent while in flight
         #expect(ob.snapshot.rows.map(\.status) == [.sending])
 
-        await gate.release(); await settle()
+        await gate.release()
+        await waitUntil { ob.snapshot.rows.map(\.status) == [.accepted] }
         #expect(api.scanBatches.count == 1)
         #expect(ob.snapshot.rows.map(\.status) == [.accepted])
     }
@@ -230,14 +244,15 @@ struct OutboxTests {
             return KioskScanBatchOut(accepted: body.scans.map(\.clientScanId))
         }
         let store = MemoryOutboxStore()
-        let ob = outbox(api, store); ob.start(); await settle()
+        let ob = await started(outbox(api, store))
         _ = await ob.enqueue(input())
         await time.advance(by: 600)
         #expect(api.scanBatches.count == 1)
         #expect(bg.begun == 1); #expect(bg.ended.isEmpty)
 
-        ob.stop(); await settle()
-        await gate.release(); await settle()
+        ob.stop()
+        await gate.release()
+        await waitUntil { bg.ended == [1] }
 
         #expect(try await store.all().map(\.status) == [.accepted])
         #expect(ob.snapshot.rows.map(\.status) == [.accepted])
@@ -250,7 +265,7 @@ struct OutboxTests {
             KioskScanBatchOut(accepted: body.scans.filter { $0.scannedValue == "A-1" }.map(\.clientScanId),
                               rejected: body.scans.filter { $0.scannedValue == "B-2" }.map { KioskScanRejected(clientScanId: $0.clientScanId, code: "bad_status") })
         }
-        let ob = outbox(api); ob.start(); await settle()
+        let ob = await started(outbox(api))
         _ = await ob.enqueue(input("A-1")); _ = await ob.enqueue(input("B-2")); _ = await ob.enqueue(input("nomatch", matched: false))
         await time.advance(by: 600)
         #expect(ob.snapshot.counts.total == 3)
@@ -263,7 +278,7 @@ struct OutboxTests {
     @Test func storageFailureWhileMarkingSendingDoesNotKillTheSender() async {
         let api = FakeKioskApi()
         let store = FlakyOutboxStore()
-        let ob = outbox(api, store); ob.start(); await settle()
+        let ob = await started(outbox(api, store))
         _ = await ob.enqueue(input())                    // the enqueue itself persists
         await store.setFailUpserts(1)                    // fail the mark-sending save the 500 ms flush is about to trigger
         await time.advance(by: 600)
@@ -282,7 +297,7 @@ struct OutboxTests {
     @Test func storageFailureInSweepDoesNotKillTheSweeper() async {
         let api = FakeKioskApi()
         let store = FlakyOutboxStore()
-        let ob = outbox(api, store); ob.start(); await settle()
+        let ob = await started(outbox(api, store))
         _ = await ob.enqueue(input("zzz", matched: false))
         await store.setFailDeletes(1)
         await time.advance(by: OutboxMachine.NOMATCH_TTL_MS + OutboxMachine.NOMATCH_SWEEP_MS)
@@ -294,7 +309,7 @@ struct OutboxTests {
     @Test func enqueueStorageFailureSetsStorageErrorAndSuccessClearsIt() async {
         let api = FakeKioskApi()
         let store = FlakyOutboxStore()
-        let ob = outbox(api, store); ob.start(); await settle()
+        let ob = await started(outbox(api, store))
         await store.setFailUpserts(1)
         let failed = await ob.enqueue(input())
         #expect(failed == nil)

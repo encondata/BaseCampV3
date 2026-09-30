@@ -3,7 +3,7 @@ import Foundation
 @testable import ServerSherpa_Kiosk
 
 /// Android PairViewModelTest.kt. Time is hand-cranked: each `TickGate.tick()`
-/// releases one 1 s sleep and moves the injected clock forward by it.
+/// waits for the loop's next 1 s sleep, releases it and moves the injected clock forward by it.
 @MainActor
 struct PairViewModelTests {
     /// The clock the view model reads; the sleep advances it.
@@ -38,7 +38,7 @@ struct PairViewModelTests {
                                clock: { clock.now })
         }
 
-        func tick(_ n: Int) async { for _ in 0..<n { await gate.tick(); await Task.yield() } }
+        func tick(_ n: Int) async { for _ in 0..<n { #expect(await gate.tick()) } }
     }
 
     private func isAuthed(_ auth: KioskAuth) -> Bool {
@@ -85,10 +85,8 @@ struct PairViewModelTests {
         await h.vm.request()
         h.vm.startPolling()
         h.vm.stop()
-        let pollsAtStop = polls.n
-        await h.tick(10)
-        try? await Task.sleep(for: .milliseconds(50))
-        #expect(polls.n == pollsAtStop)
+        #expect(h.gate.waiterCount == 0)      // the canceled loop left its sleep and never parks again
+        #expect(polls.n == 0)
         #expect(!isAuthed(h.auth))
     }
 
@@ -110,11 +108,10 @@ struct PairViewModelTests {
         #expect(polls.n == 2)
         #expect(created.n == 1)
         #expect(h.vm.pair?.code == code)
+        await h.gate.waitForSleepers(1)
         h.vm.stop()
-        let atStop = polls.n
-        await h.tick(6)
-        try? await Task.sleep(for: .milliseconds(50))
-        #expect(polls.n == atStop)
+        #expect(h.gate.waiterCount == 0)      // stopped: no sleeper left to wake
+        #expect(polls.n == 2)
     }
 
     @Test func theCountdownRunsOutToExpired() async {

@@ -176,6 +176,9 @@ struct OutboxSnapshot: Equatable {
         }
     }
 
+    /// Waits for the current start pass (load, recover, sweep, first flush) to finish.
+    func startPass() async { await startTask?.value }
+
     /// Stops the scheduled work. A batch already POSTed is still written back
     /// (under a background task), so its rows never strand as `sending`.
     func stop() {

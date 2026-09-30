@@ -2,31 +2,45 @@ import Testing
 import Foundation
 @testable import ServerSherpa_Kiosk
 
-/// A sleeper the test cranks by hand: `sleep(d)` suspends until `fire(d)`; cancellation resumes it by throwing.
-actor ManualSleeper {
+/// A sleeper the test cranks by hand: `sleep(d)` parks until `fire(d)`. A canceled
+/// sleeper removes only its own entry, synchronously, so `pending` is exact the
+/// moment `cancel()` returns.
+final class ManualSleeper: @unchecked Sendable {
+    private let lock = NSLock()
     private var waiters: [(id: Int, duration: Duration, cont: CheckedContinuation<Void, Error>)] = []
+    private var canceled: Set<Int> = []
     private var next = 0
 
     func sleep(_ d: Duration) async throws {
-        let id = next
-        next += 1
+        let id = lock.withLock { next += 1; return next }
         try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { waiters.append((id, d, $0)) }
-        } onCancel: { Task { await self.cancel(id) } }
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                let already = lock.withLock { () -> Bool in
+                    if canceled.remove(id) != nil { return true }
+                    waiters.append((id, d, c))
+                    return false
+                }
+                if already { c.resume(throwing: CancellationError()) }
+            }
+        } onCancel: {
+            let c = lock.withLock { () -> CheckedContinuation<Void, Error>? in
+                guard let i = waiters.firstIndex(where: { $0.id == id }) else { canceled.insert(id); return nil }
+                return waiters.remove(at: i).cont
+            }
+            c?.resume(throwing: CancellationError())
+        }
     }
 
-    func pending(_ d: Duration) -> Int { waiters.filter { $0.duration == d }.count }
+    func pending(_ d: Duration) -> Int { lock.withLock { waiters.filter { $0.duration == d }.count } }
 
     /// Wakes every sleeper that asked for `d`.
     func fire(_ d: Duration) {
-        let hit = waiters.filter { $0.duration == d }
-        waiters.removeAll { $0.duration == d }
-        for w in hit { w.cont.resume() }
-    }
-
-    private func cancel(_ id: Int) {
-        guard let i = waiters.firstIndex(where: { $0.id == id }) else { return }
-        waiters.remove(at: i).cont.resume(throwing: CancellationError())
+        let hit = lock.withLock { () -> [CheckedContinuation<Void, Error>] in
+            let hit = waiters.filter { $0.duration == d }.map(\.cont)
+            waiters.removeAll { $0.duration == d }
+            return hit
+        }
+        for c in hit { c.resume() }
     }
 }
 
@@ -108,7 +122,7 @@ struct TimeclockViewModelTests {
         vm.punch()
         #expect(vm.busy)
         await waitForSleepers(20)
-        await sleeper.fire(.seconds(20))
+        sleeper.fire(.seconds(20))
         await waitUntil { vm.selected == nil }
         vm.onQueryChange("tina"); vm.onSubmit("tina")
         #expect(vm.selected?.id == "p2")
@@ -127,7 +141,7 @@ struct TimeclockViewModelTests {
         vm.onQueryChange("100348"); await vm.settle()
         #expect(vm.selected?.id == "p1")
         await waitForSleepers(20)
-        await sleeper.fire(.seconds(20))
+        sleeper.fire(.seconds(20))
         await waitUntil { vm.selected == nil }
         #expect(vm.selected == nil)
     }
@@ -207,8 +221,9 @@ struct TimeclockViewModelTests {
         vm.select(KioskPersonRow(id: "p1", displayName: "Jimmy Henderson"))   // status held
         vm.select(KioskPersonRow(id: "p2", displayName: "Tina Timeclock"))
         await waitUntil { vm.status?.person.id == "p2" }
-        await gate.open(); await vm.settle()
-        try? await Task.sleep(for: .milliseconds(100))
+        await gate.open()
+        await waitUntil { api.finished.contains("timeclockStatus:p1") }   // the stale answer came back
+        await drainMainActor(vm)
         #expect(vm.status?.person.id == "p2")
     }
 
@@ -226,8 +241,9 @@ struct TimeclockViewModelTests {
         vm.cancel()
         vm.select(KioskPersonRow(id: "p2", displayName: "Two"))   // its image fails: initials
         await vm.settle()
-        await gate.open(); await vm.settle()
-        try? await Task.sleep(for: .milliseconds(150))
+        await gate.open()
+        await waitUntil { api.finished.contains("image:https://img/p1") }  // the stale image came back
+        await drainMainActor(vm)
         #expect(vm.avatar == nil)
         vm.cancel()
         api.imageResult = { _ in png }
@@ -242,12 +258,11 @@ struct TimeclockViewModelTests {
         #expect(vm.nowMs == 0)
         now.value = 30_000
         await waitForSleepers(30)
-        await sleeper.fire(.seconds(30))
+        sleeper.fire(.seconds(30))
         await waitUntil { vm.nowMs == 30_000 }
         #expect(vm.nowMs == 30_000)
         vm.cancel()
-        await waitUntil(timeoutMs: 500) { false }
-        #expect(await sleeper.pending(.seconds(30)) == 0)        // the tick stopped with the selection
+        #expect(sleeper.pending(.seconds(30)) == 0)        // the tick stopped with the selection
     }
 
     @Test func formats() {
@@ -276,18 +291,16 @@ struct TimeclockViewModelTests {
     }
 
     private func waitForSleepers(_ seconds: Int) async {
-        for _ in 0..<300 {
-            if await sleeper.pending(.seconds(seconds)) > 0 { return }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
+        let sleeper = self.sleeper
+        await waitUntil { sleeper.pending(.seconds(seconds)) > 0 }
     }
 }
 
-@MainActor private func waitUntil(timeoutMs: Int = 3000, _ condition: @MainActor () -> Bool) async {
-    for _ in 0..<(timeoutMs / 10) {
-        if condition() { return }
-        try? await Task.sleep(for: .milliseconds(10))
-    }
+/// Lets main-actor work that is already queued (a stale answer's continuation) run:
+/// the view model's own tasks settle, then the main actor is yielded a few times.
+@MainActor private func drainMainActor(_ vm: TimeclockViewModel) async {
+    await vm.settle()
+    for _ in 0..<10 { await Task.yield() }
 }
 
 private final class BodyBox: @unchecked Sendable {

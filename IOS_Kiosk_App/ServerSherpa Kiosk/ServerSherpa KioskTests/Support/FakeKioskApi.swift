@@ -10,6 +10,7 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     private var _calls: [String] = []
     private var _heartbeats: [HeartbeatIn] = []
     private var _scanBatches: [KioskScanBatchIn] = []
+    private var _finished: [String] = []
 
     var loginResult: @Sendable () throws -> SessionData = { throw ApiError(status: 401, code: "invalid_credentials") }
     var moveLoginResult: @Sendable (String) throws -> SessionData = { _ in throw ApiError(status: 401, code: "invalid_credentials") }
@@ -41,7 +42,11 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     /// Every body `postScans` was called with, in order.
     var scanBatches: [KioskScanBatchIn] { lock.lock(); defer { lock.unlock() }; return _scanBatches }
 
+    /// The status reads and image fetches that have returned (answered or thrown), in order.
+    var finished: [String] { lock.lock(); defer { lock.unlock() }; return _finished }
+
     private func record(_ name: String) { lock.lock(); _calls.append(name); lock.unlock() }
+    private func finish(_ name: String) { lock.lock(); _finished.append(name); lock.unlock() }
 
     func login(email: String, password: String) async throws -> SessionData { record("login"); return try loginResult() }
     func moveLogin(password: String) async throws -> SessionData { record("moveLogin"); return try moveLoginResult(password) }
@@ -65,10 +70,18 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
         return try await postScansResult(body)
     }
     func postRfidEnroll(assetId: String, _ body: KioskRfidEnrollIn) async throws -> KioskRfidEnroll { record("rfid"); await rfidGate?(); return try rfidResult(assetId, body) }
-    func timeclockStatus(personId: String) async throws -> KioskTimeclockStatus { record("timeclockStatus"); await statusGate?(personId); return try statusResult(personId) }
+    func timeclockStatus(personId: String) async throws -> KioskTimeclockStatus {
+        record("timeclockStatus"); await statusGate?(personId)
+        defer { finish("timeclockStatus:\(personId)") }
+        return try statusResult(personId)
+    }
     func clockIn(_ body: ClockInIn) async throws -> KioskTimeclockStatus { record("clockIn"); await clockInGate?(); return try clockInResult(body) }
     func clockOut(_ body: ClockOutIn) async throws -> KioskTimeclockStatus { record("clockOut"); return try clockOutResult(body) }
-    func fetchImage(url: String) async throws -> Data { record("image"); await imageGate?(url); return try imageResult(url) }
+    func fetchImage(url: String) async throws -> Data {
+        record("image"); await imageGate?(url)
+        defer { finish("image:\(url)") }
+        return try imageResult(url)
+    }
 }
 
 /// A SessionRefresher whose answers are set per test (Android `FakeRefresher`).
@@ -104,26 +117,80 @@ func testSelection(initiativeId: String) -> KioskSetupSelection {
     KioskSetupSelection(initiativeId: initiativeId, initiativeName: "Move", siteId: "s1", siteName: "HQ", siteRole: "source", scanStatus: "pre_stage", scanLabel: "Pre-stage")
 }
 
-/// Polls `condition` on the main actor until it holds (or a 3 s timeout).
-@MainActor func waitUntil(_ condition: @MainActor () -> Bool) async {
-    for _ in 0..<300 {
-        if condition() { return }
-        try? await Task.sleep(for: .milliseconds(10))
+/// Polls `condition` on the main actor until it holds, checking after every
+/// yield (about 1 ms apart), for at most `timeout`. Returns whether it held.
+/// For positive waits only: a check that something did NOT happen asserts a
+/// waiter/pending count instead of waiting for nothing.
+@MainActor @discardableResult
+func waitUntil(timeout: Duration = .seconds(3), _ condition: @MainActor () -> Bool) async -> Bool {
+    let clock = ContinuousClock()
+    let deadline = clock.now + timeout
+    while clock.now < deadline {
+        if condition() { return true }
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(1))
     }
+    return condition()
 }
 
-/// A hand-cranked sleeper: each `sleep` suspends until the test calls `tick()` (an early tick is banked).
-actor TickGate {
-    private var waiters: [CheckedContinuation<Void, Error>] = []
-    private var credits = 0
+/// `waitUntil` for a condition that has to be awaited (an actor's state).
+@discardableResult
+func waitUntilAsync(timeout: Duration = .seconds(3), _ condition: () async -> Bool) async -> Bool {
+    let clock = ContinuousClock()
+    let deadline = clock.now + timeout
+    while clock.now < deadline {
+        if await condition() { return true }
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(1))
+    }
+    return await condition()
+}
+
+/// A hand-cranked sleeper: each `sleep` parks until the test's `tick()` resumes it.
+/// Nothing is banked: `tick()` waits for a sleeper to be registered, then resumes
+/// the oldest one. A canceled sleeper removes only its own entry, synchronously,
+/// so `waiterCount` is exact the moment `cancel()` returns.
+final class TickGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiters: [(id: Int, cont: CheckedContinuation<Void, Error>)] = []
+    private var canceled: Set<Int> = []
+    private var nextId = 0
+
+    var waiterCount: Int { lock.withLock { waiters.count } }
 
     func sleep(_ d: Duration) async throws {
-        if credits > 0 { credits -= 1; return }
+        let id = lock.withLock { nextId += 1; return nextId }
         try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { waiters.append($0) }
-        } onCancel: { Task { await self.cancelAll() } }
+            try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
+                let already = lock.withLock { () -> Bool in
+                    if canceled.remove(id) != nil { return true }
+                    waiters.append((id, c))
+                    return false
+                }
+                if already { c.resume(throwing: CancellationError()) }
+            }
+        } onCancel: {
+            let c = lock.withLock { () -> CheckedContinuation<Void, Error>? in
+                guard let i = waiters.firstIndex(where: { $0.id == id }) else { canceled.insert(id); return nil }
+                return waiters.remove(at: i).cont
+            }
+            c?.resume(throwing: CancellationError())
+        }
     }
 
-    func tick() { if waiters.isEmpty { credits += 1 } else { waiters.removeFirst().resume() } }
-    private func cancelAll() { let w = waiters; waiters = []; for c in w { c.resume(throwing: CancellationError()) } }
+    /// Waits (bounded) until at least `n` sleepers are parked.
+    @discardableResult
+    func waitForSleepers(_ n: Int = 1) async -> Bool {
+        await waitUntilAsync { self.waiterCount >= n }
+    }
+
+    /// Resumes the oldest parked sleeper, waiting (bounded) for one to park first.
+    /// Returns false when none did: a tick is never saved for a later sleeper.
+    @discardableResult
+    func tick() async -> Bool {
+        guard await waitForSleepers(1) else { return false }
+        let c = lock.withLock { waiters.isEmpty ? nil : waiters.removeFirst().cont }
+        c?.resume()
+        return c != nil
+    }
 }
