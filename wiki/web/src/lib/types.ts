@@ -161,6 +161,22 @@ export interface NodeOut {
   file: NodeFileOut | null;
   /** Pages only (null for folders and files). */
   review: NodeReviewOut | null;
+  /** Only its author and developers can see a private item (and only they
+   *  can change this: `can_set_private`). */
+  is_private: boolean;
+  /** The node's own printing setting; null = it inherits. `can_print` is
+   *  what applies to the caller; `printing_from` says where an inherited
+   *  value comes from (`node_id` null = the library's setting, or a source
+   *  the caller can't see). */
+  allow_printing: boolean | null;
+  can_print: boolean;
+  printing_from: PrintingSource | null;
+  can_set_private: boolean;
+}
+
+export interface PrintingSource {
+  node_id: string | null;
+  title: string;
 }
 
 /** An ancestor the caller can't view comes back as `{id: null, title: "…"}`. */

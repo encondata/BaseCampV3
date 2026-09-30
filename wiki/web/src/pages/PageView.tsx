@@ -43,6 +43,7 @@ import { captureSelection, revealAnchor, useCommentMarks } from '../comments/com
 import CommentsRail, { ReaderCommentBubble, type NewComment } from '../comments/CommentsRail';
 import { canCommentOn, commentLinkTarget, useCommentThreads } from '../comments/commentsStore';
 import ConfirmDialog from '../components/ConfirmDialog';
+import { NodeChips } from '../components/NodeMarks';
 import RowMenu, { atLeast } from '../components/RowMenu';
 import SaveAsTemplateDialog from '../components/SaveAsTemplateDialog';
 import WatchButton from '../components/WatchButton';
@@ -450,6 +451,7 @@ export default function PageView({ node }: { node: NodeDetailOut }) {
             {canEdit && page?.has_unpublished_changes && !neverPublished && (
               <span className="chip c-amber"><span className="dot" />Unpublished changes</span>
             )}
+            <NodeChips node={node} />
             <ReviewChip review={node.review} />
             {canEdit && isReviewDue(node.review) && (
               <button type="button" className="mini-btn wiki-mark-reviewed" disabled={markingReviewed}

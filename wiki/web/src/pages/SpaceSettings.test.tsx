@@ -193,6 +193,18 @@ describe('SpaceSettings — Collaboration', () => {
     await waitFor(() => expect(within(section).getByLabelText('Allow public links')).toHaveProperty('checked', true));
   });
 
+  it('turns printing on and off in the Sharing section (on by default)', async () => {
+    const space = makeSpace({ my_level: 'manage', settings: {} });
+    vi.mocked(updateSpace).mockResolvedValue({ ...space, settings: { allow_printing: false } });
+    renderSettings(space);
+    const section = await screen.findByRole('region', { name: 'Sharing' });
+    const toggle = within(section).getByLabelText('Allow printing');
+    expect(toggle).toHaveProperty('checked', true);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(updateSpace).toHaveBeenCalledWith('ops', { settings: { allow_printing: false } }));
+    await waitFor(() => expect(within(section).getByLabelText('Allow printing')).toHaveProperty('checked', false));
+  });
+
   it('tells everyone that an archived space\'s public links keep working', async () => {
     renderSettings(makeSpace({
       my_level: 'view', archived_at: '2026-09-25T00:00:00Z', settings: { allow_public_links: true } }));

@@ -59,6 +59,7 @@ const PATHS = {
   check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
   history: <path d="M3.5 12a8.5 8.5 0 1 0 2.5-6M3.5 4.5V9H8M12 8v4.5l3 2" />,
   more: <><circle cx="5.5" cy="12" r="1.3" /><circle cx="12" cy="12" r="1.3" /><circle cx="18.5" cy="12" r="1.3" /></>,
+  lock: <><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></>,
   text: <path d="M5 7V5h14v2M12 5v14M9 19h6" />,
 } satisfies Record<string, ReactNode>;
 

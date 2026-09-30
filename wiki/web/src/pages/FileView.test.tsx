@@ -92,6 +92,14 @@ describe('FileView previews', () => {
     expect(screen.getByRole('heading', { name: 'rack.png' })).toBeTruthy();
   });
 
+  it('marks a private or no-print file with chips in the header', async () => {
+    renderFile(fileNode(version(2), { is_private: true, can_print: false }));
+    await screen.findByTitle('Preview of floorplan.pdf');
+    const head = document.querySelector('.wiki-page-head') as HTMLElement;
+    expect(within(head).getByText('Private')).toBeTruthy();
+    expect(within(head).getByText('Printing off')).toBeTruthy();
+  });
+
   it('shows a PDF in the browser\'s own viewer', async () => {
     renderFile(fileNode(version(2)));
     const frame = await screen.findByTitle('Preview of floorplan.pdf');

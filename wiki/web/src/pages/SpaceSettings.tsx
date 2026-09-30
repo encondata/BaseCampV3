@@ -1,7 +1,7 @@
 /** /library/:spaceKey/settings — for space managers: the space's name,
  *  description, icon and color; its members (the permissions editor,
  *  inline); collaboration settings, with a link to the pages due for
- *  review; sharing (public links); archiving (unarchiving is for wiki
+ *  review; sharing (public links, printing); archiving (unarchiving is for wiki
  *  administrators); and a link to the space's trash. */
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -101,6 +101,7 @@ function CollaborationSection({ space, onSaved }: { space: SpaceOut; onSaved: (s
 function SharingSection({ space, onSaved }: { space: SpaceOut; onSaved: (space: SpaceOut) => void }) {
   const { busyKey, save } = useSettingSaver(space, onSaved);
   const allowPublicLinks = spaceSetting(space, 'allow_public_links');
+  const allowPrinting = spaceSetting(space, 'allow_printing');
   return (
     <section className="wiki-settings-section" aria-label="Sharing">
       <div className="wiki-section-label">Sharing</div>
@@ -114,6 +115,17 @@ function SharingSection({ space, onSaved }: { space: SpaceOut; onSaved: (space: 
         </div>
         <Switch checked={allowPublicLinks} disabled={busyKey === 'allow_public_links'}
                 label="Allow public links" onChange={(v) => void save('allow_public_links', v)} />
+      </div>
+      <div className="wiki-settings-row">
+        <div>
+          <span className="wiki-settings-label">Allow printing</span>
+          <p className="page-hint">
+            Off stops printing, exporting, downloading and public links for everything in the library, for everyone,
+            except items that turn it back on themselves. It can't stop screenshots.
+          </p>
+        </div>
+        <Switch checked={allowPrinting} disabled={busyKey === 'allow_printing'}
+                label="Allow printing" onChange={(v) => void save('allow_printing', v)} />
       </div>
     </section>
   );

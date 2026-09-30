@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -117,6 +117,17 @@ describe('SpaceTree', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Collapse Guides' }));
     expect(screen.queryByText('Racks')).toBeNull();
     expect(JSON.parse(localStorage.getItem('ss.wiki.expanded.ops')!)).toEqual([]);
+  });
+
+  it('puts a lock, named Private, on private rows only', async () => {
+    getTreeMock.mockResolvedValue([
+      makeNode('f1', { kind: 'folder', title: 'Guides', position: 1, is_private: true }),
+      makeNode('p1', { title: 'Intro', position: 2 }),
+    ]);
+    renderTree();
+    await screen.findByText('Guides');
+    expect(within(row('f1')).getByRole('img', { name: 'Private' })).toBeTruthy();
+    expect(within(row('p1')).queryByRole('img', { name: 'Private' })).toBeNull();
   });
 
   it('survives unreadable storage', async () => {

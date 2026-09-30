@@ -6,11 +6,15 @@
  *  search, and a level) and Save. A node also has the "Inherit permissions
  *  from parent" switch: turned off, the current access is copied onto the
  *  node so nothing changes until it's edited (the server makes the copy).
+ *  A node also has "Privacy and printing": the Private switch (its author
+ *  and developers only) and the Printing choice (managers) save at once,
+ *  apart from Save.
  *  `PermissionsDialog` wraps the body in the modal header pattern; the
  *  library settings page shows the body inline. */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import ComboBox from '@portal/components/ComboBox';
+import { Switch } from '@portal/components/Switch';
 import { ApiError } from '@portal/lib/api';
 import { useToast } from '@portal/lib/notificationsContext';
 
@@ -21,6 +25,7 @@ import type {
 } from '../lib/types';
 import {
   errorMessage, getNodePermissions, getSpaceGrants, putNodePermissions, putSpaceGrants, searchPrincipals,
+  setNodePrinting, setNodePrivacy,
 } from '../lib/wikiApi';
 
 export type PermissionsTarget = { kind: 'node'; node: NodeOut } | { kind: 'space'; space: SpaceOut };
@@ -52,6 +57,11 @@ const RANK: Record<Level, number> = { view: 1, edit: 2, manage: 3 };
 
 const SEARCH_DEBOUNCE_MS = 200;
 
+/** The Printing choice: a node's own setting, or inheriting it. */
+type PrintingChoice = 'inherit' | 'allow' | 'deny';
+const CHOICE_VALUE: Record<PrintingChoice, boolean | null> = { inherit: null, allow: true, deny: false };
+const PRINTING_HELP = 'This stops printing, exporting, downloading and public links. It can\'t stop screenshots.';
+
 interface Entry {
   principal_type: PrincipalType;
   principal_id: string | null;
@@ -77,6 +87,19 @@ function dedupeHighest(rows: Entry[]): Entry[] {
     else if (RANK[r.level] > RANK[out[i].level]) out[i] = { ...out[i], level: r.level };
   }
   return out;
+}
+
+/** The Printing options; "Inherit" names what it would give and where from
+ *  (the server says where only while the node inherits). */
+function printingOptions(node: NodeOut): { value: PrintingChoice; label: string }[] {
+  const inherit = node.printing_from
+    ? `Inherit (${node.can_print ? 'Allowed' : 'Not allowed'}, from ${node.printing_from.title})`
+    : 'Inherit';
+  return [
+    { value: 'inherit', label: inherit },
+    { value: 'allow', label: 'Allowed' },
+    { value: 'deny', label: 'Not allowed' },
+  ];
 }
 
 function nodeNoun(node: NodeOut): string {
@@ -180,6 +203,14 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  /** The node as the last privacy or printing change left it (the prop is
+   *  from before); `settingBusy` while one is in flight. */
+  const [fresh, setFresh] = useState<NodeOut | null>(null);
+  const [settingBusy, setSettingBusy] = useState(false);
+  const node = target.kind === 'node' ? (fresh?.id === target.node.id ? fresh : target.node) : null;
+  // the library's home page is opened by everyone who can see the library
+  const canSetPrivate = !!node && node.can_set_private && !node.page?.is_home;
+  const canSetPrinting = node?.my_level === 'manage';
 
   const [addType, setAddType] = useState<PrincipalType | ''>('');
   const [addWho, setAddWho] = useState<PrincipalOut | null>(null);
@@ -189,7 +220,7 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
   targetRef.current = target;
   const liveRef = useRef(true);
   useEffect(() => () => { liveRef.current = false; }, []);
-  useEffect(() => { onBusyChange?.(busy); }, [busy, onBusyChange]);
+  useEffect(() => { onBusyChange?.(busy || settingBusy); }, [busy, settingBusy, onBusyChange]);
 
   const applyNode = useCallback((out: NodePermissionsOut, nodeId: string) => {
     const next: Baseline = {
@@ -292,6 +323,23 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
         setError(errorMessage(err, 'Couldn\'t save the permissions. Try again.'));
       }
     }
+  };
+
+  /** One privacy or printing change, then the node and the tree refresh
+   *  (a change reaches everything under the node). */
+  const change = async (run: () => Promise<NodeOut>, fallback: string) => {
+    setSettingBusy(true);
+    setError('');
+    try {
+      const out = await run();
+      if (!liveRef.current) return;
+      setFresh(out);
+      noteAccessChanged(out.space_key);
+    } catch (err) {
+      if (!liveRef.current) return;
+      setError(errorMessage(err, fallback));
+    }
+    setSettingBusy(false);
   };
 
   // inherited entries show while this node follows its parent (as loaded)
@@ -405,6 +453,43 @@ export function PermissionsEditor({ target, layout = 'inline', onSaved, onCancel
           <LevelControl value={addLevel} onChange={setAddLevel} label="Level to add" disabled={busy} />
           <button type="button" className="btn-ghost" disabled={!canAdd} onClick={add}>Add</button>
         </div>
+
+        {node && (canSetPrivate || canSetPrinting) && (
+          <>
+            <div className="modal-section">Privacy and printing</div>
+            {canSetPrivate && (
+              <div className="wiki-perm-inherit">
+                <Switch checked={node.is_private} disabled={busy || settingBusy}
+                        label="Private — only you and developers can see this"
+                        onChange={(on) => void change(() => setNodePrivacy(node.id, on),
+                          'Couldn\'t change whether this is private. Try again.')} />
+                <div>
+                  <b>Private — only you and developers can see this</b>
+                  <span className="wiki-field-note">
+                    No one else can open it, including library managers and wiki administrators. A private {noun} can't have public links or help links.
+                  </span>
+                </div>
+              </div>
+            )}
+            {canSetPrinting && (
+              <div className="wiki-perm-printing">
+                <div>
+                  <b>Printing</b>
+                  <span className="wiki-field-note">{PRINTING_HELP}</span>
+                </div>
+                <ComboBox
+                  options={printingOptions(node)}
+                  value={node.allow_printing === null ? 'inherit' : node.allow_printing ? 'allow' : 'deny'}
+                  ariaLabel="Printing"
+                  disabled={busy || settingBusy}
+                  portal
+                  onChange={(v) => void change(() => setNodePrinting(node.id, CHOICE_VALUE[v as PrintingChoice]),
+                    'Couldn\'t change printing. Try again.')}
+                />
+              </div>
+            )}
+          </>
+        )}
 
         {error && <p className="pf-error wiki-perm-error">{error}</p>}
       </>

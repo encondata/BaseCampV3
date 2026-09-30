@@ -54,6 +54,11 @@ export function makeNode(
         last_reviewed_at: null, state: null, pending_review_id: null,
       }
       : null,
+    is_private: false,
+    allow_printing: null,
+    can_print: true,
+    printing_from: { node_id: null, title: 'Library' },
+    can_set_private: false,
     ...over,
   };
 }

@@ -459,6 +459,12 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 .wiki-toolbar .btn-ghost:disabled { opacity: 0.45; cursor: default; border-color: var(--paper-line); }
 .wiki-row-link { color: var(--text-dark); text-decoration: none; }
 .wiki-row-icon { width: 18px; height: 18px; }
+/* private items: a lock in rows, chips in headers */
+.wiki-private-mark { display: inline-grid; place-items: center; flex: none; margin-left: 6px; color: var(--text-mute); }
+.wiki-private-mark .wiki-private-icon { width: 14px; height: 14px; }
+.wiki-private-chip, .wiki-printing-chip { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; flex: none; }
+.wiki-private-chip .wiki-private-icon { width: 12px; height: 12px; }
+.wiki-head-marks { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; min-width: 0; }
 .wiki-folder-list { margin-top: 4px; }
 .wiki-space-contents { padding-top: 0; }
 
@@ -893,6 +899,22 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
   color: var(--text-dark);
   font-size: 12.5px;
 }
+.wiki-perm-printing {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px 24px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border: 1px solid var(--paper-line);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+.wiki-perm-printing > div:first-child { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 280px; }
+.wiki-perm-printing b { font-size: 13.5px; font-weight: 600; }
+.wiki-perm-printing .wiki-field-note { margin: 0; }
+.wiki-perm-printing .combo-wrap { flex: 0 1 320px; min-width: 240px; }
 .wiki-perm-list .row-main { align-items: center; }
 .wiki-perm-who .pn { display: flex; flex-direction: column; min-width: 0; }
 .segmented.wiki-level { padding: 3px; }

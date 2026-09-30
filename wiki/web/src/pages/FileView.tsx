@@ -19,6 +19,7 @@ import { useToast } from '@portal/lib/notificationsContext';
 
 import { useRecordView } from '../analytics/useRecordView';
 import NodeIcon, { nodeTypeLabel } from '../components/NodeIcon';
+import { NodeChips } from '../components/NodeMarks';
 import RowMenu, { atLeast } from '../components/RowMenu';
 import ReadOnlyDoc from '../editor/ReadOnlyDoc';
 import { markdownToDoc } from '../import/importers';
@@ -306,7 +307,7 @@ export default function FileView({ node }: { node: NodeDetailOut }) {
       <header className="wiki-page-head">
         <div className="wiki-page-head-main">
           <InlineTitle node={node} label="File title" />
-          <div className="wiki-page-meta"><span>{meta}</span></div>
+          <div className="wiki-page-meta"><span>{meta}</span><NodeChips node={node} /></div>
         </div>
         <div className="wiki-page-actions">
           <button type="button" className="btn-ghost" onClick={() => void downloadCurrent()}>

@@ -11,6 +11,7 @@ import { useToast } from '@portal/lib/notificationsContext';
 
 import NewNodeDialog from '../components/NewNodeDialog';
 import NodeIcon, { nodeTypeLabel } from '../components/NodeIcon';
+import { NodeChips, PrivateMark } from '../components/NodeMarks';
 import { atLeast } from '../components/RowMenu';
 import WatchButton from '../components/WatchButton';
 import ImportDialog from '../import/ImportDialog';
@@ -123,6 +124,7 @@ function Row({ node }: { node: NodeOut }) {
         <div className="cell cell-primary">
           <NodeIcon node={node} className="wiki-row-icon" />
           <div className="pn"><b title={node.title}>{node.title}</b></div>
+          <PrivateMark node={node} />
           <ReviewChip review={node.review} />
         </div>
         <div className="cell"><span className="cell-top cell-line">{nodeTypeLabel(node)}</span></div>
@@ -178,7 +180,10 @@ export default function FolderView({ node }: { node: NodeDetailOut }) {
         <div className="portal-page wiki-page">
           <Breadcrumbs node={node} />
           <div className="dir-head wiki-folder-head">
-            <InlineTitle node={node} />
+            <div className="wiki-head-marks">
+              <InlineTitle node={node} />
+              <NodeChips node={node} />
+            </div>
           </div>
 
           <div className="dir-toolbar">

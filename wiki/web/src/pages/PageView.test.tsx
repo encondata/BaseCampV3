@@ -139,6 +139,24 @@ afterEach(cleanup);
 /** Whether PageView ever asked for this page's view to be counted. */
 const countedView = (id: string) => vi.mocked(useRecordView).mock.calls.some(([n, on]) => n === id && on);
 
+describe('PageView — private and printing', () => {
+  it('shows Private and Printing off chips in the header', async () => {
+    renderPage(makeDetail('p1', { my_level: 'view', page: published, is_private: true, can_print: false }));
+    await screen.findByText('Hello from the published page.');
+    const head = document.querySelector('.wiki-page-head') as HTMLElement;
+    expect(within(head).getByText('Private')).toBeTruthy();
+    expect(within(head).getByText('Printing off')).toBeTruthy();
+  });
+
+  it('shows no chips for an ordinary page', async () => {
+    renderPage(makeDetail('p1', { my_level: 'view', page: published }));
+    await screen.findByText('Hello from the published page.');
+    const head = document.querySelector('.wiki-page-head') as HTMLElement;
+    expect(within(head).queryByText('Private')).toBeNull();
+    expect(within(head).queryByText('Printing off')).toBeNull();
+  });
+});
+
 describe('PageView — analytics', () => {
   it('counts a reader\'s view', async () => {
     renderPage(makeDetail('p1', { my_level: 'view', page: published }));
