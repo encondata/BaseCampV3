@@ -13,7 +13,9 @@ private struct ScanBody: View {
     let container: AppContainer
     @State private var vm: ScanViewModel
     @State private var camera = false
-    @State private var width: CGFloat = 0
+    /// Content width inside the padding; nil until measured.
+    @State private var contentWidth: CGFloat?
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.kioskPalette) private var palette
 
     /// The table needs room for five columns; narrower content stacks.
@@ -24,6 +26,9 @@ private struct ScanBody: View {
         _vm = State(initialValue: ScanViewModel(store: container.store, sync: container.sync, outbox: container.outbox,
                                                 prefs: container.prefs, flash: container.flash, sound: container.sound))
     }
+
+    /// Until the first measurement, regular-width devices (iPad) start on the table so there is no stacked first frame.
+    private var wide: Bool { contentWidth.map { $0 >= Self.wideWidth } ?? (sizeClass == .regular) }
 
     private var setup: KioskSetupSelection? { container.prefs.setupSelection }
     private var empty: Bool { vm.loadStatus == .ready && vm.rosterSize == 0 }
@@ -57,12 +62,12 @@ private struct ScanBody: View {
                           onClear: { Task { await vm.clearSent() } },
                           onDiscard: { vm.askDiscard() })
                 Divider().overlay(palette.paperLine)
-                if width >= Self.wideWidth { ScanTable(rows: snapshot.rows) } else { ScanRows(rows: snapshot.rows) }
+                if wide { ScanTable(rows: snapshot.rows) } else { ScanRows(rows: snapshot.rows) }
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { contentWidth = $0 }
             .padding(16)
         }
         .background(palette.paper2)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .task { for await event in container.scanBus.events() { await vm.onScan(event.value) } }
         .task(id: container.sync.rosterVersion) { await vm.loadRoster() }
         .fullScreenCover(isPresented: $camera) {

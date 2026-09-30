@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SwiftUI
 @testable import ServerSherpa_Kiosk
 
 @MainActor
@@ -39,9 +40,12 @@ struct ScanViewModelTests {
         await vm.onScan("100348")
         let row = outbox.snapshot.rows[0]
         #expect(row.status == .queued); #expect(row.scanType == "rfid"); #expect(row.asset?.id == "a1"); #expect(row.siteId == "s1")
-        #expect(flash.state != nil)
+        #expect(flash.state?.color == Color(hsl: prefs.appearance.goodScan))
         await vm.onScan("zzz")
-        #expect(outbox.snapshot.rows[0].status == .nomatch)
+        let miss = outbox.snapshot.rows[0]
+        #expect(miss.status == .nomatch); #expect(miss.asset == nil); #expect(miss.scanType == "barcode")
+        #expect(flash.state?.color == Color(hsl: prefs.appearance.notFoundScan))
+        #expect(Color(hsl: prefs.appearance.goodScan) != Color(hsl: prefs.appearance.notFoundScan))
         #expect(outbox.snapshot.counts.total == 2)
     }
 
@@ -112,5 +116,68 @@ struct ScanViewModelTests {
         #expect(scanTime("2026-09-30T18:05:09.123Z", in: ny) == "14:05:09")
         #expect(scanTime("2026-09-30T18:05:09Z", in: ny) == "14:05:09")
         #expect(scanTime("not a date", in: ny) == "not a date")
+    }
+
+    @Test func aRosterWithoutASetupSelectionSaysSoAndQueuesNothing() async throws {
+        try await seed([dell])
+        prefs.setupSelection = nil
+        let outbox = makeOutbox()
+        let flash = FlashController()
+        let vm = makeVM(outbox, flash: flash)
+        await vm.loadRoster()
+        #expect(vm.rosterSize == 1)
+        await vm.onScan("A-1")
+        #expect(vm.error == ScanViewModel.NO_MOVE_DATA)
+        #expect(outbox.snapshot.counts.total == 0)
+        #expect(flash.state?.color == Color(hsl: prefs.appearance.notFoundScan))
+    }
+
+    private func outboxWith(_ statuses: [OutboxStatus]) async -> Outbox {
+        let memory = MemoryOutboxStore()
+        for (i, status) in statuses.enumerated() {
+            var r = OutboxMachine.newRow(EnqueueInput(scannedValue: "V\(i)", scanType: "barcode", asset: nil, siteId: "s1", initiativeId: "i1", scanStatus: "pre_stage"), clientScanId: "c\(i)", seq: Int64(i + 1), nowMs: 0)
+            r.status = status
+            await memory.upsert([r])
+        }
+        let outbox = makeOutbox(memory)
+        await outbox.load()
+        return outbox
+    }
+
+    @Test func discardFailedRemovesFailedRowsAndClosesTheConfirm() async {
+        let outbox = await outboxWith([.failed, .failed, .accepted])
+        let vm = makeVM(outbox)
+        vm.askDiscard()
+        await vm.discardFailed()
+        #expect(!vm.confirmDiscard)
+        #expect(outbox.snapshot.counts.failed == 0)
+        #expect(outbox.snapshot.counts.total == 1)
+    }
+
+    @Test func retryFailedRequeuesFailedRows() async {
+        let outbox = await outboxWith([.failed, .accepted])
+        #expect(outbox.snapshot.counts.failed == 1)
+        await makeVM(outbox).retryFailed()
+        #expect(outbox.snapshot.counts.failed == 0)
+        #expect(outbox.snapshot.counts.total == 2)
+    }
+
+    @Test func clearSentRemovesAcceptedAndNoMatchRows() async {
+        let outbox = await outboxWith([.accepted, .nomatch, .failed])
+        await makeVM(outbox).clearSent()
+        #expect(outbox.snapshot.counts.total == 1)
+        #expect(outbox.snapshot.counts.failed == 1)
+    }
+
+    @Test func aCanceledRosterLoadIsNotAnError() async throws {
+        try await seed([dell])
+        let vm = makeVM(makeOutbox())
+        let task = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            await vm.loadRoster()
+        }
+        await task.value
+        #expect(vm.loadStatus == .loading)
+        #expect(vm.rosterSize == 0)
     }
 }

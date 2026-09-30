@@ -14,16 +14,36 @@ func statusLabel(_ row: OutboxRow) -> String {
     }
 }
 
-/// HH:mm:ss in the device's time zone from a row's ISO `scannedAt`; the raw text when it isn't a date.
+private enum ScanTimeFormats {
+    static let withFraction: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    static let plain: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+    static let clock: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+    /// Receipt rows render on the main actor; the lock keeps the shared output formatter's zone change safe anyway.
+    static let lock = NSLock()
+}
+
+/// HH:mm:ss in the given time zone (default: the device's) from a row's ISO `scannedAt`; the raw text when it isn't a date.
 func scanTime(_ iso: String, in zone: TimeZone = .current) -> String {
-    let f = ISO8601DateFormatter()
-    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    guard let date = f.date(from: iso) ?? { f.formatOptions = [.withInternetDateTime]; return f.date(from: iso) }() else { return iso }
-    let out = DateFormatter()
-    out.locale = Locale(identifier: "en_US_POSIX")
-    out.timeZone = zone
-    out.dateFormat = "HH:mm:ss"
-    return out.string(from: date)
+    var parsed = ScanTimeFormats.withFraction.date(from: iso)
+    if parsed == nil { parsed = ScanTimeFormats.plain.date(from: iso) }
+    guard let date = parsed else { return iso }
+    ScanTimeFormats.lock.lock()
+    defer { ScanTimeFormats.lock.unlock() }
+    ScanTimeFormats.clock.timeZone = zone
+    return ScanTimeFormats.clock.string(from: date)
 }
 
 extension OutboxRow {
@@ -73,9 +93,12 @@ final class ScanViewModel {
     func loadRoster() async {
         do {
             let assets = try await store.assets()
+            try Task.checkCancellation()
             index = buildScanIndex(assets)
             rosterSize = assets.count
             loadStatus = .ready
+        } catch is CancellationError {
+            // A newer roster version superseded this load; it will report its own result.
         } catch {
             loadStatus = .error
         }
