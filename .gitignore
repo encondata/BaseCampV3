@@ -49,3 +49,4 @@ api/backups/
 xcuserdata/
 *.xcuserstate
 IOS_Kiosk_App/**/DerivedData/
+IOS_Kiosk_App/.derived/
