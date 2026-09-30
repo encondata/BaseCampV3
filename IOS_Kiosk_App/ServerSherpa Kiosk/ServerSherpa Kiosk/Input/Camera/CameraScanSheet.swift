@@ -107,6 +107,7 @@ struct CameraScanSheet: View {
                 Spacer()
                 bottomPanel
             }
+            ScanFlash()   // the window-level flash can't draw over a full-screen cover
         }
         .task { await prepare() }
         .onChange(of: prefs.cameraPosition) { _, position in

@@ -51,6 +51,7 @@ struct RootView: View {
     @ViewBuilder private func destination(_ route: Route) -> some View {
         switch route {
         case .setup: KioskSetupScreen(path: $path)
+        case .scan: ScanScreen()
         default: FeaturePlaceholderScreen(feature: feature(route.featureId), path: $path)
         }
     }
