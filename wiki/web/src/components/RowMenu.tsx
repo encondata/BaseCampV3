@@ -142,8 +142,9 @@ const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
       icon: <><rect x="4" y="5" width="16" height="15" rx="2" /><path d="M8 3v4M16 3v4M4 10h16M9.5 15l2 2 3.5-3.5" /></>,
     });
   }
-  // an author who can't manage still reaches the dialog for the Private switch
-  if (canManage || node.can_set_private) {
+  // an author who can't manage still reaches the dialog for the Private switch,
+  // which a library's home page never has (the dialog would be empty)
+  if (canManage || (node.can_set_private && !isHome)) {
     items.push({ label: 'Permissions…', action: () => shell.requestPermissions(node), icon: <><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></> });
   }
   if (canManage && node.can_print && (node.kind === 'page' || node.kind === 'file')) {

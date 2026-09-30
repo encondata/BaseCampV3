@@ -38,8 +38,11 @@ export default function PrintGuard({ active }: { active: boolean }) {
   useEffect(() => {
     if (!active) return undefined;
     const onKey = (e: KeyboardEvent) => {
-      // the code covers layouts where the key isn't a Latin "p" (and ⌥⌘P)
-      const isP = e.key === 'p' || e.key === 'P' || e.code === 'KeyP';
+      // the code covers layouts where the key isn't a Latin letter (and ⌥⌘P,
+      // which types "π"); a letter means the layout says what this key is
+      // (Ctrl+L on Dvorak is the physical P key), so the code is ignored
+      const isP = e.key === 'p' || e.key === 'P'
+        || (!/^[A-Za-z]$/.test(e.key) && e.code === 'KeyP');
       // an overlapping guard has already handled it
       if (isP && (e.metaKey || e.ctrlKey) && !e.defaultPrevented) {
         e.preventDefault();

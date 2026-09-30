@@ -82,6 +82,16 @@ describe('RowMenu', () => {
     expect(items()).not.toContain('Permissions…');
   });
 
+  it('does not offer Permissions… to an author on a library home page, where the dialog would be empty', () => {
+    const home = { is_home: true, published_version_id: null, published_at: null, has_unpublished_changes: false };
+    open(makeNode('home', { kind: 'page', my_level: 'edit', can_set_private: true, page: home }));
+    expect(items()).not.toContain('Permissions…');
+    cleanup();
+    // a manager still reaches the grants there
+    open(makeNode('home2', { kind: 'page', my_level: 'manage', can_set_private: true, page: home }));
+    expect(items()).toContain('Permissions…');
+  });
+
   it('drops Save as template… while printing is off', () => {
     const onSaveAsTemplate = vi.fn();
     open(makeNode('n1', { kind: 'page', my_level: 'manage', can_print: false }), { onSaveAsTemplate });

@@ -547,11 +547,20 @@ export default function PermissionsDialog({ target, onClose }: { target: Permiss
   }, [busy, onClose]);
 
   const title = target.kind === 'node' ? target.node.title : target.space.name;
-  const description = target.kind === 'node'
-    ? (target.node.my_level === 'manage'
-      ? `Who can open this ${nodeNoun(target.node)}, whether it's private, and whether it can be printed. Access comes from the library and the folders above unless this ${nodeNoun(target.node)} stops inheriting.`
-      : `Whether this ${nodeNoun(target.node)} is private.`)
-    : 'Who can read, edit and manage everything in this library.';
+  // a non-manager sees only the Private switch, so the header is about privacy
+  const privacyOnly = target.kind === 'node' && target.node.my_level !== 'manage';
+  let description = 'Who can read, edit and manage everything in this library.';
+  if (target.kind === 'node') {
+    const noun = nodeNoun(target.node);
+    const { node } = target;
+    const privacy = node.can_set_private && !node.page?.is_home;
+    if (privacyOnly) description = `Whether this ${noun} is private.`;
+    else if (privacy) {
+      description = `Who can open this ${noun}, whether it's private, and whether it can be printed. Access comes from the library and the folders above unless this ${noun} stops inheriting.`;
+    } else {
+      description = `Who can open this ${noun} and whether it can be printed. Access comes from the library and the folders above unless this ${noun} stops inheriting.`;
+    }
+  }
 
   return (
     <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
@@ -559,8 +568,8 @@ export default function PermissionsDialog({ target, onClose }: { target: Permiss
            aria-modal="true" aria-labelledby="wiki-perm-title">
         <div className="modal-head">
           <div className="rgm-head-text">
-            <div className="eyebrow">Permissions</div>
-            <h3 id="wiki-perm-title">Who can access “{title}”</h3>
+            <div className="eyebrow">{privacyOnly ? 'Privacy' : 'Permissions'}</div>
+            <h3 id="wiki-perm-title">{privacyOnly ? 'Privacy for' : 'Who can access'} “{title}”</h3>
             <p className="page-hint">{description}</p>
           </div>
           <button type="button" className="modal-close" aria-label="Close" onClick={onClose} disabled={busy}>

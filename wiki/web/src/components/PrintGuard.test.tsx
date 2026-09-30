@@ -32,6 +32,15 @@ describe('PrintGuard', () => {
     expect(press({ key: 'з', code: 'KeyP' }).defaultPrevented).toBe(false);
   });
 
+  it('does not mistake another layout\'s letter for P (Ctrl+L on Dvorak is the physical P key)', () => {
+    render(<PrintGuard active />);
+    expect(press({ key: 'l', code: 'KeyP', ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(press({ key: 'L', code: 'KeyP', metaKey: true }).defaultPrevented).toBe(false);
+    expect(toast).not.toHaveBeenCalled();
+    expect(press({ key: 'з', code: 'KeyP', ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(toast).toHaveBeenCalledTimes(1);
+  });
+
   it('leaves other keys alone', () => {
     render(<PrintGuard active />);
     expect(press({ key: 'p' }).defaultPrevented).toBe(false);

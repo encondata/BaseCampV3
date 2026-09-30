@@ -1,9 +1,10 @@
 /** A PDF drawn onto <canvas> elements with pdf.js, for a file whose
  *  printing is off: unlike the browser's own viewer there's no toolbar, no
  *  print or download button, no selectable text and no links, and the
- *  context menu is off. Every page gets a placeholder sized from its own
- *  shape, scaled to the container's width; only pages within about a screen
- *  of the viewport are drawn, and ones that scroll far away are freed again,
+ *  context menu is off. Every page gets a placeholder sized from the first
+ *  page's shape (so nothing waits on the other pages), scaled to the
+ *  container's width, and corrected to its own shape when it's drawn; only
+ *  pages within about a screen of the viewer's scrolling area are drawn, and ones that scroll far away are freed again,
  *  so a long PDF can't exhaust a tablet's canvas memory. pdf.js (the legacy
  *  build, for older tablets) loads on first use: it's a large chunk nobody
  *  else needs. Fetching the file is a cross-origin request, unlike an
@@ -25,11 +26,14 @@ interface Slot {
 
 export default function PdfCanvasViewer({ url, title }: { url: string; title?: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  /** The scroller (wiki.css gives it a max-height): the observer's root. */
+  const viewerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<Status>('loading');
 
   useEffect(() => {
     const host = hostRef.current;
-    if (!host) return undefined;
+    const viewer = viewerRef.current;
+    if (!host || !viewer) return undefined;
     let live = true;
     let task: { destroy: () => Promise<void> | void } | undefined;
     let observer: IntersectionObserver | undefined;
@@ -51,12 +55,13 @@ export default function PdfCanvasViewer({ url, title }: { url: string; title?: s
       const width = host.clientWidth || FALLBACK_WIDTH;
       const ratio = Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
 
-      // a placeholder per page, sized from its shape, so the scroll height is right
+      // a placeholder per page, all sized from page 1 so the first paint
+      // doesn't wait on every page; each is corrected when it's drawn
+      const first = await doc.getPage(1);
+      if (!live) return;
+      const { width: w, height: h } = first.getViewport({ scale: 1 });
+      first.cleanup();
       for (let n = 1; n <= doc.numPages; n += 1) {
-        const page = await doc.getPage(n);
-        if (!live) return;
-        const { width: w, height: h } = page.getViewport({ scale: 1 });
-        page.cleanup();
         const wrap = document.createElement('div');
         wrap.className = 'wiki-pdf-page';
         wrap.style.aspectRatio = `${w} / ${h}`;
@@ -90,14 +95,17 @@ export default function PdfCanvasViewer({ url, title }: { url: string; title?: s
         slot.state = 'drawing';
         const page = await doc.getPage(i + 1);
         if (!live || slot.state !== 'drawing') { page.cleanup(); return; }
-        const scale = width / page.getViewport({ scale: 1 }).width;
+        const natural = page.getViewport({ scale: 1 });
+        slot.wrap.style.aspectRatio = `${natural.width} / ${natural.height}`;
+        const scale = width / natural.width;
         const viewport = page.getViewport({ scale: scale * ratio });
         slot.canvas.width = Math.floor(viewport.width);
         slot.canvas.height = Math.floor(viewport.height);
         const canvasContext = slot.canvas.getContext('2d');
         if (!canvasContext) throw new Error('no canvas context');
         const rendering = page.render({ canvasContext, viewport });
-        slot.cancel = () => rendering.cancel();
+        const cancel = () => rendering.cancel();
+        slot.cancel = cancel;
         try {
           await rendering.promise;
           slot.state = 'drawn';
@@ -107,6 +115,8 @@ export default function PdfCanvasViewer({ url, title }: { url: string; title?: s
           if (slot.state !== 'drawing') return;
           throw err;
         } finally {
+          // settled, so there's nothing left to cancel
+          if (slot.cancel === cancel) slot.cancel = undefined;
           page.cleanup();
         }
       };
@@ -146,7 +156,7 @@ export default function PdfCanvasViewer({ url, title }: { url: string; title?: s
           }
         }
         void pump();
-      }, { rootMargin: `${window.innerHeight}px 0px` });
+      }, { root: viewer, rootMargin: `${window.innerHeight}px 0px` });
       for (const s of slots) observer.observe(s.wrap);
     })().catch(() => { if (live) setStatus('error'); });
 
@@ -159,7 +169,7 @@ export default function PdfCanvasViewer({ url, title }: { url: string; title?: s
   }, [url]);
 
   return (
-    <div className="wiki-pdf-viewer" aria-label={title ? `Preview of ${title}` : 'PDF preview'}
+    <div ref={viewerRef} className="wiki-pdf-viewer" aria-label={title ? `Preview of ${title}` : 'PDF preview'}
          onContextMenu={(e) => e.preventDefault()}>
       {status === 'loading' && <p className="page-hint">Loading preview…</p>}
       {status === 'error' && <p className="page-hint">Couldn't show this PDF.</p>}

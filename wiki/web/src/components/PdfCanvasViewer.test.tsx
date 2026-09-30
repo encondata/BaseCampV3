@@ -6,11 +6,16 @@ const renderPage = vi.fn((_: unknown) => ({ promise: Promise.resolve(), cancel: 
 const pageCleanup = vi.fn();
 const destroy = vi.fn(() => Promise.resolve());
 const PAGES = 12;
-const getPage = vi.fn(async () => ({
-  getViewport: ({ scale }: { scale: number }) => ({ width: 600 * scale, height: 800 * scale }),
-  render: renderPage,
-  cleanup: pageCleanup,
-}));
+/** Page shapes by 1-based number; any other page is 600 x 800. */
+const shapes: Record<number, [number, number]> = {};
+const getPage = vi.fn(async (n: number) => {
+  const [w, h] = shapes[n] ?? [600, 800];
+  return {
+    getViewport: ({ scale }: { scale: number }) => ({ width: w * scale, height: h * scale }),
+    render: renderPage,
+    cleanup: pageCleanup,
+  };
+});
 const makeTask = () => ({ promise: Promise.resolve({ numPages: PAGES, getPage }), destroy });
 const getDocument = vi.fn((_: { url: string; isEvalSupported: boolean }) => makeTask());
 vi.mock('pdfjs-dist/legacy/build/pdf.mjs', () => ({ GlobalWorkerOptions: {}, getDocument }));
@@ -50,6 +55,7 @@ afterEach(() => {
   destroy.mockClear();
   getDocument.mockClear();
   getPage.mockClear();
+  for (const k of Object.keys(shapes)) delete shapes[Number(k)];
 });
 
 const canvases = (c: HTMLElement) => [...c.querySelectorAll('canvas')];
@@ -130,6 +136,44 @@ describe('PdfCanvasViewer with IntersectionObserver', () => {
     await waitFor(() => expect(renderPage).toHaveBeenCalledTimes(2));
     expect(canvases(container).filter((c) => c.width > 0)).toHaveLength(2);
     await waitFor(() => expect(screen.queryByText('Loading preview…')).toBeNull());
+  });
+
+  it('observes within the viewer\'s own scroller, so the one-screen margin applies', async () => {
+    const { container } = render(<PdfCanvasViewer url="https://s3/big.pdf" />);
+    await waitFor(() => expect(FakeObserver.all).toHaveLength(1));
+    const viewer = container.querySelector('.wiki-pdf-viewer');
+    expect(viewer).toBeTruthy();
+    expect(FakeObserver.all[0].options?.root).toBe(viewer);
+  });
+
+  it('sizes every placeholder from page 1 without waiting on the others, then corrects a page when it draws', async () => {
+    shapes[3] = [800, 600];
+    const { container } = render(<PdfCanvasViewer url="https://s3/big.pdf" />);
+    await waitFor(() => expect(FakeObserver.all).toHaveLength(1));
+    expect(getPage).toHaveBeenCalledTimes(1);
+    expect(getPage).toHaveBeenCalledWith(1);
+    const wraps = [...container.querySelectorAll<HTMLElement>('.wiki-pdf-page')];
+    expect(wraps).toHaveLength(PAGES);
+    expect(wraps.every((w) => w.style.aspectRatio === '600 / 800')).toBe(true);
+
+    FakeObserver.all[0].show(container, [2]);
+    await waitFor(() => expect(renderPage).toHaveBeenCalledTimes(1));
+    expect(wraps[2].style.aspectRatio).toBe('800 / 600');
+    expect(wraps[3].style.aspectRatio).toBe('600 / 800');
+  });
+
+  it('does not cancel a render that already finished when its page is freed', async () => {
+    const { container } = render(<PdfCanvasViewer url="https://s3/big.pdf" />);
+    await waitFor(() => expect(FakeObserver.all).toHaveLength(1));
+    const observer = FakeObserver.all[0];
+    observer.show(container, [0]);
+    await waitFor(() => expect(canvases(container)[0].width).toBeGreaterThan(0));
+    const cancelFirst = renderPage.mock.results[0].value.cancel as ReturnType<typeof vi.fn>;
+
+    observer.show(container, [5]);
+    await waitFor(() => expect(canvases(container)[5].width).toBeGreaterThan(0));
+    expect(canvases(container)[0].width).toBe(0);
+    expect(cancelFirst).not.toHaveBeenCalled();
   });
 
   it('frees a page that scrolls far away, and draws it again when it returns', async () => {

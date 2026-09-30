@@ -207,6 +207,30 @@ describe('PermissionsDialog — Private', () => {
     expect(screen.queryByText('Printing')).toBeNull();
   });
 
+  it('words the header for privacy when a non-manager sees only the switch', async () => {
+    const author = { ...NODE, my_level: 'edit' as const, can_set_private: true };
+    render(<PermissionsDialog target={{ kind: 'node', node: author }} onClose={() => {}} />);
+    await screen.findByRole('checkbox', { name: PRIVATE_LABEL });
+    expect(screen.getByText('Privacy', { selector: '.eyebrow' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Privacy for “Rack power”' })).toBeTruthy();
+    expect(screen.queryByText(/Who can access/)).toBeNull();
+  });
+
+  it('keeps the permissions header for a manager, and mentions privacy only if they can set it', async () => {
+    const { unmount } = render(
+      <PermissionsDialog target={{ kind: 'node', node: { ...NODE, can_set_private: true } }} onClose={() => {}} />);
+    await screen.findByRole('checkbox', { name: PRIVATE_LABEL });
+    expect(screen.getByText('Permissions', { selector: '.eyebrow' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Who can access “Rack power”' })).toBeTruthy();
+    expect(screen.getByText(/whether it's private/)).toBeTruthy();
+    unmount();
+
+    render(<PermissionsDialog target={{ kind: 'node', node: { ...NODE, can_set_private: false } }} onClose={() => {}} />);
+    await screen.findByText('Grace Hopper', { selector: '.wiki-perm-who b' });
+    expect(screen.getByText(/Who can open this page and whether it can be printed/)).toBeTruthy();
+    expect(screen.queryByText(/private/i)).toBeNull();
+  });
+
   it('is not offered on a library\'s home page', async () => {
     const home = { ...NODE, can_set_private: true, page: { ...NODE.page!, is_home: true } };
     render(<PermissionsDialog target={{ kind: 'node', node: home }} onClose={() => {}} />);
