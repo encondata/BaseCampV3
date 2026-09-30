@@ -6,6 +6,7 @@ import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.SystemStatus
 import com.serversherpa.kiosk.data.api.KioskApi
 import com.serversherpa.kiosk.data.auth.KioskAuth
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,7 +19,7 @@ data class LoginUi(
     val view: LoginView = LoginView.PASSWORD,
     val email: String = "", val password: String = "", val showPassword: Boolean = false,
     val error: String? = null, val invalidEmail: Boolean = false, val invalidPassword: Boolean = false, val loading: Boolean = false,
-    val movePassword: String = "", val moveNotice: Boolean = false,
+    val movePassword: String = "", val moveError: String? = null, val moveLoading: Boolean = false,
     val status: SystemStatus = SystemStatus(),
 )
 
@@ -29,6 +30,15 @@ val ERROR_MESSAGES = mapOf(
     "totp_required" to "This account requires a verification code. 2FA sign-in is coming soon — contact support.",
     "kiosk_not_allowed" to "This account isn't allowed to use kiosks. Ask your coordinator to grant kiosk access.",
     "network" to "Can't reach the server. Check the kiosk's network connection.",
+)
+
+/** The move form's own wording (kiosk/src/pages/Login.tsx MOVE_ERROR_MESSAGES): kiosk_not_allowed
+ *  on a move sign-in is about the move's kiosk identity, not a person's account. */
+val MOVE_ERROR_MESSAGES = ERROR_MESSAGES + mapOf(
+    "invalid_move_password" to "That move password isn't right.",
+    "move_not_active" to "That move password isn't active.",
+    "move_login_rate_limited" to "Too many tries. Wait a few minutes.",
+    "kiosk_not_allowed" to "That move can't sign in to kiosks right now. Ask a coordinator.",
 )
 
 class LoginViewModel(
@@ -43,13 +53,14 @@ class LoginViewModel(
     fun setEmail(v: String) = _state.update { it.copy(email = v, invalidEmail = false, error = null) }
     fun setPassword(v: String) = _state.update { it.copy(password = v, invalidPassword = false, error = null) }
     fun togglePassword() = _state.update { it.copy(showPassword = !it.showPassword) }
-    fun setView(v: LoginView) = _state.update { it.copy(view = v, error = null, moveNotice = false) }
-    fun setMovePassword(v: String) = _state.update { it.copy(movePassword = v, moveNotice = false) }
+    fun setView(v: LoginView) = _state.update { it.copy(view = v, error = null, moveError = null, movePassword = "") }
+    fun setMovePassword(v: String) = _state.update { it.copy(movePassword = v, moveError = null) }
 
     fun loadBanners() { scope.launch { try { _state.update { it.copy(status = api.systemStatus()) } } catch (e: Exception) { /* best effort */ } } }
 
     fun submitPassword(onDone: () -> Unit) {
         val s = _state.value
+        if (s.loading) return
         if (s.email.isBlank() || s.password.isBlank()) {
             _state.update { it.copy(error = "Please enter both email and password", invalidEmail = s.email.isBlank(), invalidPassword = s.password.isBlank()) }
             return
@@ -58,15 +69,44 @@ class LoginViewModel(
         scope.launch {
             try {
                 auth.login(s.email.trim(), s.password)
-                _state.update { it.copy(loading = false) }
-                onDone()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 val code = (e as? ApiError)?.code ?: "network"
                 _state.update { it.copy(loading = false, error = ERROR_MESSAGES[code] ?: "Login failed. Please try again.", invalidEmail = true, invalidPassword = true, password = "") }
+                return@launch
             }
+            // After the try: a navigation throw is not a failed sign-in.
+            _state.update { it.copy(loading = false) }
+            onDone()
         }
     }
 
-    /** Move passwords have no backend yet. */
-    fun submitMove() = _state.update { it.copy(moveNotice = true) }
+    /** Sign in with the move password in the field. The server trims it; a blank entry never leaves the kiosk. */
+    fun submitMove(onDone: () -> Unit) {
+        val s = _state.value
+        if (s.moveLoading) return
+        if (s.movePassword.isBlank()) { _state.update { it.copy(moveError = "Enter the move password.") }; return }
+        _state.update { it.copy(moveLoading = true, moveError = null) }
+        scope.launch {
+            try {
+                auth.loginWithMovePassword(s.movePassword)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val code = (e as? ApiError)?.code ?: "network"
+                _state.update { it.copy(moveLoading = false, movePassword = "", moveError = MOVE_ERROR_MESSAGES[code] ?: "Login failed. Please try again.") }
+                return@launch
+            }
+            _state.update { it.copy(moveLoading = false, movePassword = "") }
+            onDone()
+        }
+    }
+
+    /** A QR code read by the camera is the move password: fill the field with it and sign in. */
+    fun submitScannedMove(value: String, onDone: () -> Unit) {
+        if (_state.value.moveLoading) return
+        setMovePassword(value)
+        submitMove(onDone)
+    }
 }

@@ -26,6 +26,8 @@ import com.serversherpa.kiosk.core.model.SystemStatus
  *  unless a member says otherwise. */
 interface KioskApi {
     suspend fun login(email: String, password: String): SessionData
+    /** Sign in with a move's kiosk password (no person account involved); stores the session like [login]. */
+    suspend fun moveLogin(password: String): SessionData
     suspend fun logout()
     suspend fun systemStatus(): SystemStatus
     suspend fun createPairRequest(serial: String, name: String): PairCreated

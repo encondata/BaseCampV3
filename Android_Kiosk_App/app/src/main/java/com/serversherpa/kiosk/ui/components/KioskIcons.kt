@@ -11,7 +11,7 @@ import androidx.compose.ui.unit.dp
 /** Small line icons drawn the same way as the launcher tiles (FeatureIcons.kt):
  *  path data traced by hand, stroked in the caller's tint. The app pulls in no
  *  icon font or the material-icons-extended artifact for these. */
-private fun lineIcon(name: String, paths: List<String>, fills: List<String> = emptyList()): ImageVector {
+internal fun lineIcon(name: String, paths: List<String>, fills: List<String> = emptyList()): ImageVector {
     val b = ImageVector.Builder(name = name, defaultWidth = 24.dp, defaultHeight = 24.dp, viewportWidth = 24f, viewportHeight = 24f)
     for (d in paths) {
         b.addPath(
