@@ -103,6 +103,10 @@ final class URLSessionKioskApi: KioskApi {
         } catch let e as ApiError {
             throw e
         } catch {
+            // A canceled call (the screen went away) is not "Can't reach the portal".
+            if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
+                throw CancellationError()
+            }
             throw ApiError.network()
         }
     }

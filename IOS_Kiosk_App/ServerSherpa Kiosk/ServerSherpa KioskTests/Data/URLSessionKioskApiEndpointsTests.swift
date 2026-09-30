@@ -115,4 +115,24 @@ struct URLSessionKioskApiEndpointsTests {
             _ = try await h.api.fetchImage(url: "\(h.server.baseURL)/avatars/p.png")
         }
     }
+
+    /// Leaving a screen cancels its call: that is not "Can't reach the portal".
+    @Test func aCanceledCallThrowsCancellationNotANetworkError() async throws {
+        let h = ApiHarness()
+        let hold = StubHold()
+        var slow = StubResponse.json(200, #"{"read_only":false}"#)
+        slow.hold = hold
+        h.server.enqueue(slow)
+        let call = Task { try await h.api.systemStatus() }
+        await waitUntil { h.server.requestCount == 1 }
+        call.cancel()
+        do {
+            _ = try await call.value
+            Issue.record("expected CancellationError")
+        } catch is CancellationError {
+        } catch {
+            Issue.record("expected CancellationError, got \(error)")
+        }
+        hold.release()
+    }
 }
