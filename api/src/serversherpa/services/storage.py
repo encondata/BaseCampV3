@@ -7,31 +7,72 @@ URLs generated here (pure in-process signing — no network round-trip).
 """
 
 import asyncio
+import logging
+import threading
 from functools import lru_cache, partial
 from urllib.parse import quote
 
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+from botocore.httpsession import get_cert_path
 
 from serversherpa.config import get_settings
 from serversherpa.services.filenames import ascii_header_filename
+
+logger = logging.getLogger(__name__)
+
+
+_client_lock = threading.Lock()
 
 
 @lru_cache
 def _client():
     s = get_settings()
-    return boto3.client(
-        "s3",
-        endpoint_url=s.spaces_endpoint,
-        region_name=s.spaces_region,
-        aws_access_key_id=s.spaces_access_key.get_secret_value(),
-        aws_secret_access_key=s.spaces_secret_key.get_secret_value(),
-        config=Config(
-            signature_version="s3v4",
-            s3={"addressing_style": "path" if s.spaces_use_path_style else "virtual"},
-        ),
-    )
+    # boto3's default session isn't thread-safe, and list_keys builds the
+    # client from a worker thread — never let two builds overlap.
+    with _client_lock:
+        client = boto3.client(
+            "s3",
+            endpoint_url=s.spaces_endpoint,
+            region_name=s.spaces_region,
+            aws_access_key_id=s.spaces_access_key.get_secret_value(),
+            aws_secret_access_key=s.spaces_secret_key.get_secret_value(),
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path" if s.spaces_use_path_style else "virtual"},
+            ),
+        )
+        _preload_ca_bundle(client)
+    return client
+
+
+def _preload_ca_bundle(client) -> None:
+    """Load the CA bundle into the client's shared SSLContext once, before
+    any request can use it.
+
+    botocore gives the client ONE SSLContext for its whole connection pool,
+    and urllib3 calls `load_verify_locations()` on it for every new
+    connection. The first load on a context adds a lookup to OpenSSL's
+    X509_STORE with no lock (openssl/openssl#24480, boto/botocore#3164), so
+    two connections opening at once on a fresh client — several
+    `head_object`s in `asyncio.to_thread` — can corrupt it and segfault the
+    process in the next certificate check. Once this load is done, the
+    later per-connection loads find the lookup already present.
+
+    Reaches into botocore internals; if they ever move, log and carry on
+    (tests/test_storage_tls_preload.py fails loudly instead)."""
+    if not client.meta.endpoint_url.lower().startswith("https"):
+        return
+    try:
+        session = client._endpoint.http_session
+        verify = session._verify
+        ctx = session._manager.connection_pool_kw["ssl_context"]
+    except (AttributeError, KeyError):
+        logger.warning("storage: can't reach botocore's SSLContext to preload CA certs")
+        return
+    if verify:
+        ctx.load_verify_locations(get_cert_path(verify))
 
 
 def content_disposition(filename: str, *, inline: bool = False) -> str:
