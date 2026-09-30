@@ -20,15 +20,24 @@ and only to them — with a fresh download URL once it's done.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter
 from sqlalchemy import func, select
 
 from serversherpa.api.routes.wiki.deps import WikiContext, space_by_key, visible_nodes
 from serversherpa.api.routes.wiki.errors import err, not_found
-from serversherpa.api.routes.wiki.schemas import ExportCreatedOut, ExportIn, ExportOut
-from serversherpa.db.models import WikiJob, WikiNode, WikiPage
+from serversherpa.api.routes.wiki.schemas import (
+    ExportCreatedOut,
+    ExportIn,
+    ExportOut,
+    ExportSettingsIn,
+    ExportSettingsOut,
+)
+from serversherpa.db.models import SystemConfig, WikiJob, WikiNode, WikiPage
 from serversherpa.services import storage
+from serversherpa.services.audit import audit
+from serversherpa.system.config_store import read_section
 from serversherpa.wiki.export import (
     DOWNLOAD_URL_TTL_SECONDS,
     FAILED_MESSAGE,
@@ -36,6 +45,7 @@ from serversherpa.wiki.export import (
     export_filename,
 )
 from serversherpa.wiki.permissions import require_node_level, require_space_level
+from serversherpa.wiki.statement import MAX_STATEMENT_LENGTH, SECTION, standard_statement
 
 router = APIRouter()
 
@@ -139,3 +149,39 @@ async def get_export(job_id: uuid.UUID, ctx: WikiContext) -> ExportOut:
                                   max_ttl_seconds=DOWNLOAD_URL_TTL_SECONDS)
     error = (result.get("message") or FAILED_MESSAGE) if job.status == "failed" else None
     return ExportOut(id=job.id, status=job.status, filename=filename, url=url, error=error)
+
+
+def _require_admin(ctx: WikiContext) -> None:
+    if not ctx.principal.is_admin:
+        raise err(403, "forbidden", "Only wiki administrators can change export settings.")
+
+
+@router.get("/admin/export-settings", response_model=ExportSettingsOut)
+async def get_export_settings(ctx: WikiContext) -> ExportSettingsOut:
+    _require_admin(ctx)
+    return ExportSettingsOut(confidentiality_statement=await standard_statement(ctx.db))
+
+
+@router.put("/admin/export-settings", response_model=ExportSettingsOut)
+async def put_export_settings(body: ExportSettingsIn, ctx: WikiContext) -> ExportSettingsOut:
+    _require_admin(ctx)
+    statement = body.confidentiality_statement.strip()
+    if len(statement) > MAX_STATEMENT_LENGTH:
+        raise err(422, "bad_setting",
+                  f"The statement can be up to {MAX_STATEMENT_LENGTH} characters.",
+                  keys=["confidentiality_statement"])
+    stored = await read_section(ctx.db, SECTION)
+    before = str(stored.get("confidentiality_statement") or "")
+    row = await ctx.db.get(SystemConfig, SECTION)
+    if row is None:
+        row = SystemConfig(section=SECTION)
+        ctx.db.add(row)
+    row.data = {**stored, "confidentiality_statement": statement}
+    row.updated_at = datetime.now(UTC)
+    row.updated_by = ctx.user.person.id
+    if before != statement:
+        audit(ctx.db, actor_id=ctx.user.person.id, entity_type="system",
+              entity_id=SECTION, action="wiki_config_update",
+              changes={"confidentiality_statement": {"from": before, "to": statement}})
+    await ctx.db.commit()
+    return ExportSettingsOut(confidentiality_statement=statement)

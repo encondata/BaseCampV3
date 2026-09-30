@@ -154,7 +154,8 @@ async def patch_space(key: str, body: SpacePatchIn, ctx: WikiContext) -> SpaceOu
         bad = sorted(k for k, v in body.settings.items() if not space_settings.validate(k, v))
         if bad:
             raise err(422, "bad_setting", keys=bad)
-        space.settings = {**(space.settings or {}), **body.settings}
+        space.settings = {**(space.settings or {}),
+                          **{k: space_settings.normalize(k, v) for k, v in body.settings.items()}}
     if body.name is not None:
         space.name = body.name
     if body.description is not None:

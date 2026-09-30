@@ -14,6 +14,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
+    StrictStr,
     StringConstraints,
     model_validator,
 )
@@ -851,6 +852,18 @@ class ExportIn(BaseModel):
         if self.zip_format is not None and self.format != "zip":
             raise ValueError("zip_format only goes with format 'zip'.")
         return self
+
+
+class ExportSettingsIn(BaseModel):
+    """`PUT /wiki/admin/export-settings`: the wiki's standard confidentiality
+    statement ("" for none). Trimmed and length-checked by the route."""
+    model_config = ConfigDict(extra="forbid")
+
+    confidentiality_statement: StrictStr
+
+
+class ExportSettingsOut(BaseModel):
+    confidentiality_statement: str
 
 
 class ExportCreatedOut(BaseModel):

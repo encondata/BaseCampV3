@@ -11,6 +11,7 @@ export const SPACE_SETTING_DEFAULTS = {
   review_interval_months: null as number | null,
   allow_public_links: false as boolean,
   allow_printing: true as boolean,
+  confidentiality_statement: '' as string,
 };
 
 export type SpaceSettingKey = keyof typeof SPACE_SETTING_DEFAULTS;

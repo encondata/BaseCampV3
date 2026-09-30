@@ -3,7 +3,8 @@
  *  never show up in the ordinary space list), with a link to each space's
  *  settings and trash, and Unarchive — the one thing only a wiki admin,
  *  not even a space manager, can do. Below, the way to the portal/kiosk
- *  Help links page, the way to Analytics, and every public share link in
+ *  Help links page, the way to Analytics, the Exports settings (the standard
+ *  confidentiality statement), and every public share link in
  *  the wiki (live ones first, each group newest first), with Revoke. */
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -17,7 +18,8 @@ import { libraryPath } from '../lib/paths';
 import type { ShareLinkOut, ShareLinkStatus, SpaceOut } from '../lib/types';
 import { useWikiMe } from '../lib/useWikiMe';
 import {
-  errorMessage, listAllShareLinks, listSpaces, revokeShareLink, unarchiveSpace,
+  errorMessage, getExportSettings, listAllShareLinks, listSpaces, revokeShareLink, saveExportSettings,
+  unarchiveSpace,
 } from '../lib/wikiApi';
 import NotFound from './NotFound';
 
@@ -138,6 +140,69 @@ function PublicLinksSection() {
   );
 }
 
+/** The wiki's standard confidentiality statement — the text at the bottom
+ *  of an exported PDF's cover, unless a library sets its own. */
+function ExportsSection() {
+  const toast = useToast();
+  const [saved, setSaved] = useState<string | null>(null);
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let live = true;
+    getExportSettings()
+      .then((s) => { if (live) { setSaved(s.confidentiality_statement); setValue(s.confidentiality_statement); } })
+      .catch((err) => { if (live) setError(errorMessage(err, 'Couldn\'t load the export settings.')); });
+    return () => { live = false; };
+  }, []);
+
+  const changed = saved !== null && value.trim() !== saved;
+  const save = async () => {
+    if (!changed || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const s = await saveExportSettings(value.trim());
+      setSaved(s.confidentiality_statement);
+      setValue(s.confidentiality_statement);
+      toast('Saved.');
+    } catch (err) {
+      setError(errorMessage(err, 'Couldn\'t save the export settings. Try again.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="wiki-admin-section" aria-label="Exports">
+      <div className="dir-head wiki-folder-head">
+        <div>
+          <h2 className="wiki-section-title">Exports</h2>
+          <p className="page-hint">The statement at the bottom of an exported PDF's cover. A library can set its own in its settings.</p>
+        </div>
+      </div>
+      {saved === null && !error && <p className="page-hint">Loading…</p>}
+      {saved !== null && (
+        <form className="wiki-settings-form" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+          <div className="pf-form">
+            <div className="full">
+              <label htmlFor="admin-statement">Confidentiality statement</label>
+              <textarea id="admin-statement" rows={4} value={value} maxLength={1000} disabled={busy}
+                        onChange={(e) => setValue(e.target.value)} />
+              <p className="wiki-field-note">Leave empty for no statement. Up to 1000 characters.</p>
+            </div>
+          </div>
+          <div className="wiki-settings-actions">
+            <button className="btn-solid" type="submit" disabled={!changed || busy}>{busy ? 'Saving…' : 'Save'}</button>
+          </div>
+        </form>
+      )}
+      {error && <p className="pf-error">{error}</p>}
+    </section>
+  );
+}
+
 export default function AdminPage() {
   const toast = useToast();
   const me = useWikiMe();
@@ -244,6 +309,8 @@ export default function AdminPage() {
           <Link className="btn-ghost" to="/analytics">Open analytics</Link>
         </div>
       </section>
+
+      <ExportsSection />
 
       <PublicLinksSection />
     </div>

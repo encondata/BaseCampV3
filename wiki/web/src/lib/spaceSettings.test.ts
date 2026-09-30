@@ -16,8 +16,9 @@ function apiDefaults(): Record<string, unknown> {
   const block = source.match(/^DEFAULTS[^{]*\{([\s\S]*?)^\}/m);
   if (!block) throw new Error('DEFAULTS not found in space_settings.py');
   const out: Record<string, unknown> = {};
-  for (const [, key, value] of block[1].matchAll(/"(\w+)":\s*(True|False|None|-?\d+)/g)) {
-    out[key] = value === 'True' ? true : value === 'False' ? false : value === 'None' ? null : Number(value);
+  for (const [, key, value] of block[1].matchAll(/"(\w+)":\s*(True|False|None|-?\d+|"[^"\n]*")/g)) {
+    out[key] = value === 'True' ? true : value === 'False' ? false : value === 'None' ? null
+      : value.startsWith('"') ? value.slice(1, -1) : Number(value);
   }
   return out;
 }
@@ -34,5 +35,7 @@ describe('space settings', () => {
     expect(spaceSetting(space({ readers_can_comment: false }), 'readers_can_comment')).toBe(false);
     expect(spaceSetting(space({}), 'review_interval_months')).toBeNull();
     expect(spaceSetting(space({ review_interval_months: 6 }), 'review_interval_months')).toBe(6);
+    expect(spaceSetting(space({}), 'confidentiality_statement')).toBe('');
+    expect(spaceSetting(space({ confidentiality_statement: 'Hush' }), 'confidentiality_statement')).toBe('Hush');
   });
 });
