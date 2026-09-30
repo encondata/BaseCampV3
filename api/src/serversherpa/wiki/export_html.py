@@ -272,6 +272,34 @@ li[data-type="taskItem"] > div > p { margin: 0; }
 details { border: 1px solid #e4e8ee; border-radius: 4px; padding: 2mm 3mm; margin: 3mm 0; }
 summary { font-weight: 600; }
 .wiki-mention { color: #b45f06; font-weight: 500; }
+@page cover { @bottom-right { content: none; } }
+.ss-cover { page: cover; page-break-after: always; height: 240mm; position: relative; }
+.ss-cover-logo { height: 18mm; }
+.ss-cover-main { margin-top: 60mm; }
+.ss-cover-title { font-size: 28pt; line-height: 1.2; font-weight: 700; bookmark-level: none; }
+.ss-cover-location { font-size: 11pt; color: #667085; margin-top: 3mm; }
+.ss-cover-revision { font-size: 11pt; margin-top: 10mm; }
+.ss-cover-exported { font-size: 9.5pt; color: #667085; margin-top: 1.5mm; }
+.ss-cover-statement { position: absolute; bottom: 0; left: 0; right: 0; font-size: 8.5pt;
+                      color: #475467; border-top: 1px solid #e4e8ee; padding-top: 3mm; }
+.ss-section-title { font-size: 16pt; font-weight: 700; margin-bottom: 4mm; }
+.ss-contents { page-break-after: always; }
+.ss-toc { list-style: none; padding: 0; margin: 0; }
+.ss-toc li { margin: 0 0 1.5mm; }
+.ss-toc a { color: #1b2129; text-decoration: none; }
+.ss-toc a::after { content: leader('.') target-counter(attr(href), page); }
+.ss-toc-l2 { padding-left: 6mm; }
+.ss-toc-l3 { padding-left: 12mm; }
+.ss-comments { page-break-before: always; }
+.ss-thread { border-top: 1px solid #e4e8ee; padding-top: 3mm; margin-top: 3mm;
+             page-break-inside: avoid; }
+.ss-quote { font-style: italic; }
+.ss-resolved { font-size: 8.5pt; font-weight: 700; color: #16a34a; margin-bottom: 1mm; }
+.ss-comment { margin-bottom: 2mm; }
+.ss-reply { margin-left: 8mm; }
+.ss-comment-meta { font-size: 8.5pt; color: #667085; }
+h4, h5, h6 { bookmark-level: none; }
+.ss-title { bookmark-level: none; }
 """
 
 
