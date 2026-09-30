@@ -20,6 +20,8 @@ LOGO_PATH = Path(__file__).parent / "assets" / "serversherpa-logo.png"
 MIN_CONTENTS_HEADINGS = 2
 _HEADING = re.compile(r"<h([1-3])(\s[^>]*)?>(.*?)</h\1>", re.S | re.I)
 _TAG = re.compile(r"<[^>]+>")
+_BR = re.compile(r"<br\s*/?>", re.I)
+_ID_ATTR = re.compile(r"""\s+id\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)""", re.I)
 
 
 @cache
@@ -38,7 +40,7 @@ def day_time(at: datetime) -> str:
 
 def _lines(text: str) -> str:
     """Plain text as HTML, line breaks kept."""
-    return "<br>".join(html.escape(line) for line in text.split("\n"))
+    return "<br>".join(html.escape(line) for line in text.splitlines())
 
 
 @dataclass(frozen=True)
@@ -93,8 +95,8 @@ def number_headings(fragment: str) -> tuple[str, list[Heading]]:
     def tag(match: re.Match) -> str:
         level, attrs, inner = int(match.group(1)), match.group(2) or "", match.group(3)
         anchor = f"ss-h-{len(found) + 1}"
-        text = html.unescape(_TAG.sub("", inner)).strip()
-        attrs = re.sub(r'\s+id="[^"]*"', "", attrs)
+        text = " ".join(html.unescape(_TAG.sub("", _BR.sub(" ", inner))).split())
+        attrs = _ID_ATTR.sub("", attrs)
         found.append(Heading(level=level, text=text, anchor=anchor))
         return f'<h{level} id="{anchor}"{attrs}>{inner}</h{level}>'
 
@@ -130,24 +132,34 @@ class CommentThreadOut:
 
 
 def anchor_quotes(doc: dict | None) -> dict[str, str]:
-    """Each comment thread's marked text in `doc`, keyed by thread id,
-    in the order the threads first appear (text runs of one thread are
-    joined; separate blocks with a space)."""
+    """Each comment thread's marked text in `doc`, keyed by thread id
+    (lowercased), in the order the threads first appear. A thread's runs
+    inside one block join as written (a bold word stays one word); runs
+    in separate blocks are joined with a space."""
     quotes: dict[str, list[str]] = {}
-    stack: list[Any] = [doc or {}]
-    while stack:
-        node = stack.pop()
+
+    def walk(node: Any) -> None:
         if not isinstance(node, dict):
-            continue
-        if node.get("type") == "text" and isinstance(node.get("text"), str):
-            for mark in node.get("marks") or []:
-                if isinstance(mark, dict) and mark.get("type") == COMMENT_MARK:
-                    thread = (mark.get("attrs") or {}).get("threadId")
-                    if isinstance(thread, str) and thread:
-                        quotes.setdefault(thread.lower(), []).append(node["text"])
+            return
         content = node.get("content")
-        if isinstance(content, list):
-            stack.extend(reversed(content))
+        if not isinstance(content, list):
+            return
+        in_block: dict[str, list[str]] = {}
+        for child in content:
+            if isinstance(child, dict) and child.get("type") == "text" \
+                    and isinstance(child.get("text"), str):
+                for mark in child.get("marks") or []:
+                    if isinstance(mark, dict) and mark.get("type") == COMMENT_MARK:
+                        thread = (mark.get("attrs") or {}).get("threadId")
+                        if isinstance(thread, str) and thread:
+                            quotes.setdefault(thread.lower(), [])
+                            in_block.setdefault(thread.lower(), []).append(child["text"])
+            else:
+                walk(child)
+        for thread, runs in in_block.items():
+            quotes[thread].append("".join(runs))
+
+    walk(doc or {})
     return {k: " ".join(" ".join(v).split()) for k, v in quotes.items()}
 
 

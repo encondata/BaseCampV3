@@ -120,3 +120,23 @@ def test_day_time_twelve_hour_clock():
     assert day_time(datetime(2026, 9, 30, 16, 5)) == "September 30, 2026 at 4:05 PM"
     assert day_time(datetime(2026, 9, 30, 0, 30)) == "September 30, 2026 at 12:30 AM"
     assert day_time(datetime(2026, 9, 30, 12, 0)).endswith("12:00 PM")
+
+
+def test_a_quote_split_by_formatting_inside_a_word_stays_one_word():
+    t = {"type": "commentThread", "attrs": {"threadId": "T"}}
+    doc = {"type": "doc", "content": [{"type": "paragraph", "content": [
+        {"type": "text", "text": "Hel", "marks": [t]},
+        {"type": "text", "text": "lo", "marks": [t, {"type": "bold"}]},
+        {"type": "text", "text": ".", "marks": [t]}]}]}
+    assert anchor_quotes(doc) == {"t": "Hello."}
+
+
+def test_heading_text_spaces_line_breaks_and_any_old_id_form_is_dropped():
+    out, found = number_headings("<H2 ID='x' data-a=\"1\">A<br>B <strong>C</strong></H2>")
+    assert found == [Heading(level=2, text="A B C", anchor="ss-h-1")]
+    assert out.count("id=") == 1 and 'data-a="1"' in out
+
+
+def test_the_bundled_logo_is_small():
+    from serversherpa.wiki.export_sections import LOGO_PATH
+    assert LOGO_PATH.stat().st_size < 100_000
