@@ -1,52 +1,53 @@
 package com.serversherpa.kiosk.ui.screens.login
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.min
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import com.serversherpa.kiosk.LocalAppContainer
-import com.serversherpa.kiosk.R
+import com.serversherpa.kiosk.core.model.SessionData
 import com.serversherpa.kiosk.data.identity.KioskIdentity
 import com.serversherpa.kiosk.ui.Routes
-import com.serversherpa.kiosk.ui.components.KioskToast
-import com.serversherpa.kiosk.ui.components.LinkButton
-import com.serversherpa.kiosk.ui.components.MiniButton
-import com.serversherpa.kiosk.ui.components.SolidButton
 import com.serversherpa.kiosk.ui.components.kioskViewModel
-import com.serversherpa.kiosk.ui.theme.FragmentMono
-import com.serversherpa.kiosk.ui.theme.LocalKioskColors
+import com.serversherpa.kiosk.ui.theme.Geologica
 
-/** kiosk/src/pages/Login.tsx, stacked for portrait: brand band over the paper form. */
+/**
+ * The sign-in screen, in the light mockup style of the portal's login page
+ * (portal/src/styles/login-light.css). Behavior is the old screen's: this file only
+ * wires [LoginViewModel] and [PairViewModel] to [LoginContent], which is stateless
+ * and takes the whole UI state, so every state is testable without a container.
+ */
 @Composable
 fun LoginScreen(nav: NavHostController) {
     val container = LocalAppContainer.current
-    val c = LocalKioskColors.current
     val vm = kioskViewModel { LoginViewModel(container.auth, container.api) }
     val pairVm = kioskViewModel { PairViewModel(container.api, container.identity) }
     val ui by vm.state.collectAsStateWithLifecycle()
@@ -55,53 +56,112 @@ fun LoginScreen(nav: NavHostController) {
     LaunchedEffect(Unit) { vm.loadBanners() }
     val goHome = { nav.navigate(Routes.HOME) { popUpTo(0) } }
 
-    Column(Modifier.fillMaxSize().background(c.paper).verticalScroll(rememberScrollState())) {
-        // ── brand band ──
-        Row(Modifier.fillMaxWidth().background(c.ink).statusBarsPadding().padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
-            Image(painterResource(R.mipmap.ic_launcher_foreground), contentDescription = null, modifier = Modifier.size(56.dp))
-            Column(Modifier.padding(start = 12.dp).weight(1f)) {
-                Row { Text("Server", color = c.snow, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.headlineSmall); Text("Sherpa", color = c.accent, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.headlineSmall) }
-                Text("KIOSK · ANDROID", fontFamily = FragmentMono, style = MaterialTheme.typography.labelSmall, color = c.accentSoft)
-                Text(identity.name, fontFamily = FragmentMono, style = MaterialTheme.typography.labelMedium, color = c.snow)
-            }
-            IconButton(onClick = { nav.navigate(Routes.settings("this-kiosk")) }) { Text("⚙", color = c.snow) }
-        }
-        Column(Modifier.padding(20.dp)) {
-            if (ui.status.read_only) KioskToast(if (ui.status.read_only_message.isNotBlank()) "Read-only maintenance mode — ${ui.status.read_only_message}" else "Read-only maintenance mode", error = true)
-            ui.status.banner?.let { KioskToast(it) }
-            Text("Sign in", style = MaterialTheme.typography.displaySmall, modifier = Modifier.padding(bottom = 12.dp))
+    LoginContent(
+        ui = ui,
+        kioskName = identity.name,
+        actions = LoginActions(
+            setEmail = vm::setEmail, setPassword = vm::setPassword, togglePassword = vm::togglePassword,
+            submitPassword = { vm.submitPassword(goHome) },
+            setView = vm::setView, setMovePassword = vm::setMovePassword, submitMove = vm::submitMove,
+            openSettings = { nav.navigate(Routes.settings("this-kiosk")) },
+        ),
+        pairPanel = { PairPanel(pairVm, portalUrl) { session: SessionData -> container.auth.completePair(session); goHome() } },
+    )
+}
 
-            if (ui.view == LoginView.PASSWORD || ui.view == LoginView.CHOOSER) {
-                OutlinedTextField(ui.email, vm::setEmail, label = { Text("Email") }, placeholder = { Text("you@company.com") }, isError = ui.invalidEmail, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(ui.password, vm::setPassword, label = { Text("Password") }, isError = ui.invalidPassword, singleLine = true,
-                    visualTransformation = if (ui.showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                    trailingIcon = { LinkButton(if (ui.showPassword) "Hide" else "Show") { vm.togglePassword() } },
-                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-                KioskToast(ui.error, error = true)
-                SolidButton(if (ui.loading) "Signing in…" else "Sign in", onClick = { vm.submitPassword(goHome) }, enabled = !ui.loading, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-                Text("Forgot your password? Reset it in the portal.", style = MaterialTheme.typography.bodySmall, color = c.textMute, modifier = Modifier.padding(top = 8.dp))
-                Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                    HorizontalDivider(Modifier.weight(1f)); Text("  or  ", color = c.textMute); HorizontalDivider(Modifier.weight(1f))
+/** Everything the screen can do; one place so the stateless [LoginContent] stays readable. */
+internal class LoginActions(
+    val setEmail: (String) -> Unit,
+    val setPassword: (String) -> Unit,
+    val togglePassword: () -> Unit,
+    val submitPassword: () -> Unit,
+    val setView: (LoginView) -> Unit,
+    val setMovePassword: (String) -> Unit,
+    val submitMove: () -> Unit,
+    val openSettings: () -> Unit,
+)
+
+/** The artwork never takes more than this share of the screen's height (a 480x800 Zebra MC2200 is ~533 dp tall). */
+private const val MAX_ART_SHARE = 0.30f
+
+/** Full width at the artwork's own aspect, but never more than [MAX_ART_SHARE] of the height. */
+internal fun loginArtHeight(maxWidth: Dp, maxHeight: Dp): Dp = min(maxWidth / MOUNTAINS_ASPECT, maxHeight * MAX_ART_SHARE)
+
+@Composable
+internal fun LoginContent(ui: LoginUi, kioskName: String, actions: LoginActions, pairPanel: @Composable () -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(LoginPalette.Canvas)) {
+        // Anchored at the bottom, at the screen's width but capped by height so it can't crowd a short screen.
+        val artHeight = loginArtHeight(maxWidth, maxHeight)
+        LoginTopo(Modifier.matchParentSize())
+        LoginMountains(Modifier.align(Alignment.BottomEnd).fillMaxWidth().height(artHeight))
+
+        // The form scrolls over the art. The trailing spacer is the art's height, so at the
+        // end of the scroll (or on a tall screen) the last button sits clear of the peaks.
+        Column(Modifier.fillMaxSize().statusBarsPadding().verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(Modifier.widthIn(max = 440.dp).fillMaxWidth().padding(horizontal = 20.dp).padding(top = 16.dp)) {
+                LoginBrand(kioskName)
+
+                if (ui.status.read_only) LoginNotice(
+                    if (ui.status.read_only_message.isNotBlank()) "Read-only maintenance mode — ${ui.status.read_only_message}" else "Read-only maintenance mode",
+                    error = true, modifier = Modifier.padding(top = 16.dp),
+                )
+                ui.status.banner?.let { LoginNotice(it, modifier = Modifier.padding(top = 8.dp)) }
+
+                Text(
+                    "Sign in", color = LoginPalette.Ink, fontFamily = Geologica, fontWeight = FontWeight.ExtraBold,
+                    fontSize = 34.sp, letterSpacing = (-0.85).sp, lineHeight = 38.sp,
+                    modifier = Modifier.padding(top = 24.dp).semantics { heading() },
+                )
+                Text(
+                    if (ui.view == LoginView.LINK) "Link this kiosk with your phone."
+                    else if (ui.view == LoginView.MOVE) "Sign in with a move password."
+                    else "Sign in to start scanning.",
+                    color = LoginPalette.Slate, fontFamily = Geologica, fontWeight = FontWeight.Light, fontSize = 15.sp, lineHeight = 21.sp,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 20.dp),
+                )
+
+                when (ui.view) {
+                    // The chooser is the password view with its routes showing; the routes are always
+                    // shown now, so both views draw the same form.
+                    LoginView.PASSWORD, LoginView.CHOOSER -> PasswordForm(ui, actions)
+                    LoginView.LINK -> {
+                        pairPanel()
+                        LoginLink("Back to email & password", Modifier.align(Alignment.Start)) { actions.setView(LoginView.PASSWORD) }
+                    }
+                    LoginView.MOVE -> {
+                        LoginField("Move password", ui.movePassword, actions.setMovePassword, tag = "login-move", masked = true)
+                        if (ui.moveNotice) LoginNotice("Move passwords aren't available yet. Use email & password or link with your phone.", modifier = Modifier.padding(top = 8.dp))
+                        LoginPrimaryButton("Sign in", actions.submitMove, Modifier.padding(top = 16.dp).testTag("login-submit-move"))
+                        LoginLink("Back to email & password", Modifier.align(Alignment.Start)) { actions.setView(LoginView.PASSWORD) }
+                    }
                 }
-                if (ui.view == LoginView.PASSWORD) MiniButton("Other ways to sign in", { vm.setView(LoginView.CHOOSER) }, modifier = Modifier.fillMaxWidth())
-                else Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    MiniButton("Link with phone", { vm.setView(LoginView.LINK) }, modifier = Modifier.fillMaxWidth())
-                    MiniButton("Move password", { vm.setView(LoginView.MOVE) }, modifier = Modifier.fillMaxWidth())
-                }
+                Spacer(Modifier.height(24.dp + artHeight))
             }
-            if (ui.view == LoginView.LINK) {
-                Text("Link this kiosk with your phone.", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(bottom = 12.dp))
-                PairPanel(pairVm, portalUrl) { session -> container.auth.completePair(session); goHome() }
-                LinkButton("Back to email & password") { vm.setView(LoginView.PASSWORD) }
-            }
-            if (ui.view == LoginView.MOVE) {
-                Text("Sign in with a move password.", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(bottom = 12.dp))
-                OutlinedTextField(ui.movePassword, vm::setMovePassword, label = { Text("Move password") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-                if (ui.moveNotice) KioskToast("Move passwords aren't available yet. Use email & password or link with your phone.")
-                SolidButton("Sign in", { vm.submitMove() }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
-                LinkButton("Back to email & password") { vm.setView(LoginView.PASSWORD) }
-            }
-            Spacer(Modifier.size(24.dp))
         }
+        LoginGear(actions.openSettings, Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(top = 8.dp, end = 8.dp))
     }
+}
+
+@Composable
+private fun ColumnScope.PasswordForm(ui: LoginUi, actions: LoginActions) {
+    var forgotOpen by rememberSaveable { mutableStateOf(false) }
+    LoginField("Email", ui.email, actions.setEmail, tag = "login-email", placeholder = "you@company.com", invalid = ui.invalidEmail)
+    LoginField(
+        "Password", ui.password, actions.setPassword, tag = "login-password", placeholder = "••••••••••••", invalid = ui.invalidPassword,
+        masked = !ui.showPassword, modifier = Modifier.padding(top = 16.dp),
+        trailing = { PasswordEye(ui.showPassword, actions.togglePassword) },
+    )
+    LoginLink("Forgot password?", Modifier.align(Alignment.End).testTag("login-forgot")) { forgotOpen = !forgotOpen }
+    if (forgotOpen) Text(
+        "Forgot your password? Reset it in the portal.", color = LoginPalette.Slate, fontFamily = Geologica, fontSize = 13.sp,
+        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+    )
+    ui.error?.let { Text(it, color = LoginPalette.ErrorText, fontFamily = Geologica, fontSize = 13.sp, modifier = Modifier.padding(bottom = 8.dp)) }
+    LoginPrimaryButton(
+        if (ui.loading) "Signing in…" else "Sign in", actions.submitPassword,
+        Modifier.padding(top = 4.dp).testTag("login-submit"), loading = ui.loading, enabled = !ui.loading,
+    )
+    LoginOrDivider()
+    LoginSecondaryButton("Link with phone", RouteLinkIcon, { actions.setView(LoginView.LINK) })
+    LoginSecondaryButton("Move password", LockIcon, { actions.setView(LoginView.MOVE) }, Modifier.padding(top = 10.dp))
 }
