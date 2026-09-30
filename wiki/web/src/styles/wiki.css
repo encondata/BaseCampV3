@@ -520,7 +520,8 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 
 /* ── page view ────────────────────────────────────────────── */
 
-.wiki-page-view { max-width: 1240px; }
+/* pages and files use the whole main area; see .wiki-page-body for how it's shared */
+.wiki-page-view { max-width: none; }
 .wiki-page-head {
   display: flex;
   align-items: flex-start;
@@ -579,9 +580,18 @@ a.wiki-space-card:hover { border-color: var(--amber); box-shadow: 0 10px 30px -1
 .wiki-page-actions .wiki-row-menu-btn:hover,
 .wiki-page-actions .wiki-row-menu-btn.open { border-color: var(--amber); background: var(--surface, #fff); }
 
-.wiki-page-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 40px; align-items: start; }
-.wiki-page-body.has-rail { grid-template-columns: minmax(0, 1fr) 290px; }
-.wiki-page-content { min-width: 0; max-width: 860px; width: 100%; padding-bottom: 60px; }
+/* The page fills the main area with the Contents/Comments rail pinned to the
+   right edge. Text keeps a comfortable reading width, while tables, images,
+   file previews and code blocks stretch across the rest of the column. */
+.wiki-page-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: clamp(32px, 3vw, 56px); align-items: start; }
+.wiki-page-body.has-rail { grid-template-columns: minmax(0, 1fr) clamp(260px, 17vw, 320px); }
+.wiki-page-content { min-width: 0; width: 100%; padding-bottom: 60px; }
+.wiki-page-content .wiki-prose > :not(h1, h2, h3, hr, table, .tableWrapper, pre, .node-wikiImage, .node-fileEmbed) { max-width: 880px; }
+/* an image can grow with the page, but not past the size a screenshot reads well at */
+.wiki-page-content .wiki-image-frame { max-width: min(100%, 1200px); }
+/* line images up with the text on the left rather than floating mid-column */
+.wiki-page-content .wiki-image { align-items: flex-start; }
+.wiki-page-content .wiki-image figcaption { max-width: min(100%, 1200px); }
 .wiki-page-rail {
   position: sticky;
   top: 12px;
