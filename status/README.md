@@ -20,6 +20,37 @@ success. Every check counts toward uptime. History lives in SQLite at `/data/sta
 every…" line is generated from `STATUS_INTERVAL_SECONDS`/`STATUS_FAILURE_THRESHOLD`, so it
 always matches the configured cadence rather than a hardcoded guess.
 
+## Maintenance and background processing
+
+When the API reports read-only maintenance, the page shows an amber banner (with the
+admin's message, if any) and the overall status reads "maintenance" unless something is
+down. An admin announcement appears as a plain note. The **Background processing** card
+summarizes the workers behind the API ("N of M running"); it is red when any worker has
+failed and shows "paused" when workers are paused. The card needs an API that reports
+`background`; against an older API it is simply absent. A retired worker still counts as
+down until its row is deleted from the Processes page.
+
+## Alerts (ntfy)
+
+Set `STATUS_NTFY_TOPIC` and subscribe to that topic in the ntfy app (or at your ntfy
+server). Alerts carry titles only, never URLs or probe detail.
+
+| Event | Alert | Priority |
+|---|---|---|
+| Service goes down | "{Name} is down" | 4 |
+| Service recovers | "{Name} is back up" (with "Down for …" when known) | 3 |
+| Maintenance starts | "Maintenance started" (+ message) | 2 |
+| Maintenance ends | "Maintenance ended" | 2 |
+
+Paused workers never alert, and neither does the first maintenance reading or the state
+loaded at startup. Check delivery with:
+
+    docker compose -f status/docker-compose.yml --env-file status/.env exec status python -m serversherpa_status test-alert
+
+Public ntfy topics are readable by anyone who knows the name, so use a long random one.
+The status box cannot alert about itself: if this container or its host is down, no alert
+is sent.
+
 ## Configuration
 
 | Variable | Default | |
@@ -28,6 +59,10 @@ always matches the configured cadence rather than a hardcoded guess.
 | `STATUS_PORTAL_URL` | required | |
 | `STATUS_KIOSK_URL` | required | |
 | `STATUS_WIKI_URL` | unset | optional; when set, a Wiki card is added |
+| `STATUS_NTFY_TOPIC` | unset | enables ntfy alerts; letters, digits, `-`, `_`, up to 64 |
+| `STATUS_NTFY_SERVER` | `https://ntfy.sh` | ntfy server base URL |
+| `STATUS_NTFY_TOKEN` | unset | optional Bearer token for a protected topic |
+| `STATUS_PUBLIC_URL` | unset | optional; tapping an alert opens this page |
 | `STATUS_INTERVAL_SECONDS` | 60 | minimum 10 |
 | `STATUS_TIMEOUT_SECONDS` | 10 | |
 | `STATUS_FAILURE_THRESHOLD` | 2 | |

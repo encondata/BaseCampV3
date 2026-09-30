@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
+from serversherpa_status.alerts import AlertWatcher, publish
 from serversherpa_status.api_status import BACKGROUND_KEY, LatestApiStatus, parse_api_status
 from serversherpa_status.config import Settings
 from serversherpa_status.probes import probe
@@ -39,7 +40,9 @@ class Checker:
         client: httpx.AsyncClient,
         clock: Callable[[], datetime] = utcnow,
         latest: LatestApiStatus | None = None,
+        watcher: AlertWatcher | None = None,
     ) -> None:
+        self._watcher = watcher
         self._latest = latest
         self._settings = settings
         self._store = store
@@ -84,6 +87,17 @@ class Checker:
             except Exception:
                 store_ok = False
                 log.exception("failed to record background check")
+        if self._watcher is not None and self._settings.ntfy is not None:
+            keys = [s.key for s in services] + [BACKGROUND_KEY]
+            states = {k: self._tracker.snapshot(k).state for k in keys}
+            alerts = self._watcher.evaluate(
+                states,
+                status.maintenance if status else None,
+                status.maintenance_message if status else None,
+                now,
+            )
+            for alert in alerts:
+                await publish(self._client, self._settings.ntfy, alert)
         if self._last_prune is None or now - self._last_prune >= PRUNE_EVERY:
             try:
                 self._store.prune(now)

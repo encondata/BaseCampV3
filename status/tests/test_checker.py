@@ -254,3 +254,66 @@ def test_seed_tracker_seeds_background(settings, store):
     tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
     seed_tracker(tracker, store, settings)
     assert tracker.snapshot("background").state == "up"
+
+
+def _ntfy_settings(tmp_path):
+    return load_settings({
+        "STATUS_API_URL": "http://api.test",
+        "STATUS_PORTAL_URL": "http://portal.test",
+        "STATUS_KIOSK_URL": "http://kiosk.test",
+        "STATUS_INTERVAL_SECONDS": "10",
+        "STATUS_DB_PATH": str(tmp_path / "n.db"),
+        "STATUS_NTFY_TOPIC": "topic",
+        "STATUS_NTFY_SERVER": "http://ntfy.test",
+    })
+
+
+async def _two_kiosk_failures(settings, watcher, status=200):
+    from serversherpa_status.alerts import AlertWatcher  # noqa: F401
+
+    routes(kiosk_ok=False)
+    st = Store(settings.db_path)
+    try:
+        tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
+        clock = Clock()
+        async with httpx.AsyncClient() as client:
+            c = Checker(settings, st, tracker, client, clock=clock, watcher=watcher)
+            await c.run_cycle()
+            clock.now += timedelta(minutes=1)
+            await c.run_cycle()
+        return tracker
+    finally:
+        st.close()
+
+
+def _watcher(settings):
+    from serversherpa_status.alerts import AlertWatcher
+
+    return AlertWatcher({s.key: s.name for s in settings.services} | {BACKGROUND_KEY: "Background processing"})
+
+
+@respx.mock
+async def test_watcher_sends_one_down_alert(tmp_path):
+    import json
+
+    settings = _ntfy_settings(tmp_path)
+    ntfy = respx.post("http://ntfy.test/").respond(200)
+    await _two_kiosk_failures(settings, _watcher(settings))
+    assert ntfy.call_count == 1
+    assert json.loads(ntfy.calls[0].request.content)["title"] == "Kiosk is down"
+
+
+@respx.mock
+async def test_no_watcher_no_ntfy_request(tmp_path):
+    settings = _ntfy_settings(tmp_path)
+    ntfy = respx.post("http://ntfy.test/").respond(200)
+    await _two_kiosk_failures(settings, None)
+    assert ntfy.call_count == 0
+
+
+@respx.mock
+async def test_ntfy_failure_does_not_stop_the_cycle(tmp_path):
+    settings = _ntfy_settings(tmp_path)
+    respx.post("http://ntfy.test/").respond(500)
+    tracker = await _two_kiosk_failures(settings, _watcher(settings))
+    assert tracker.snapshot("kiosk").state == "down"

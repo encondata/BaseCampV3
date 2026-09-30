@@ -87,3 +87,39 @@ def test_wiki_added_last_when_configured():
 def test_wiki_url_must_be_http():
     with pytest.raises(ConfigError, match="STATUS_WIKI_URL"):
         load_settings({**BASE, "STATUS_WIKI_URL": "wiki.example.com"})
+
+
+NTFY_BASE = {
+    "STATUS_API_URL": "http://api.test",
+    "STATUS_PORTAL_URL": "http://portal.test",
+    "STATUS_KIOSK_URL": "http://kiosk.test",
+}
+
+
+def test_ntfy_off_by_default():
+    assert load_settings(NTFY_BASE).ntfy is None
+
+
+def test_ntfy_defaults():
+    cfg = load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "my-topic_1"}).ntfy
+    assert (cfg.server, cfg.topic, cfg.token, cfg.click_url) == ("https://ntfy.sh", "my-topic_1", None, None)
+
+
+def test_ntfy_overrides_strip_slashes():
+    cfg = load_settings({
+        **NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_NTFY_SERVER": "http://n.test/",
+        "STATUS_NTFY_TOKEN": "tok", "STATUS_PUBLIC_URL": "https://status.test/",
+    }).ntfy
+    assert (cfg.server, cfg.token, cfg.click_url) == ("http://n.test", "tok", "https://status.test")
+
+
+def test_ntfy_bad_topic():
+    with pytest.raises(ConfigError, match="STATUS_NTFY_TOPIC"):
+        load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "has space"})
+
+
+def test_ntfy_bad_server_and_public_url():
+    with pytest.raises(ConfigError, match="STATUS_NTFY_SERVER"):
+        load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_NTFY_SERVER": "ntfy.sh"})
+    with pytest.raises(ConfigError, match="STATUS_PUBLIC_URL"):
+        load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_PUBLIC_URL": "status.test"})

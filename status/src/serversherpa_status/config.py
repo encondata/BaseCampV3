@@ -2,6 +2,7 @@
 would render a permanent 'Checking…', which is worse than not starting."""
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,14 @@ class Service:
 
 
 @dataclass(frozen=True)
+class NtfyConfig:
+    server: str
+    topic: str
+    token: str | None
+    click_url: str | None
+
+
+@dataclass(frozen=True)
 class Settings:
     services: tuple[Service, ...]
     interval_seconds: float
@@ -39,6 +48,7 @@ class Settings:
     failure_threshold: int
     db_path: str
     static_dir: str
+    ntfy: NtfyConfig | None = None
 
 
 def _number(env: Mapping[str, str], var: str, default: float, minimum: float) -> float:
@@ -52,6 +62,32 @@ def _number(env: Mapping[str, str], var: str, default: float, minimum: float) ->
     if value < minimum:
         raise ConfigError(f"{var} must be at least {minimum:g} (got {raw!r})")
     return value
+
+
+NTFY_TOPIC_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _http_url(env: Mapping[str, str], var: str, default: str = "") -> str:
+    url = env.get(var, "").strip().rstrip("/") or default
+    if url and not url.startswith(("http://", "https://")):
+        raise ConfigError(f"{var} must start with http:// or https:// (got {url!r})")
+    return url
+
+
+def _load_ntfy(env: Mapping[str, str]) -> NtfyConfig | None:
+    topic = env.get("STATUS_NTFY_TOPIC", "").strip()
+    if not topic:
+        return None
+    if not NTFY_TOPIC_RE.match(topic):
+        raise ConfigError(
+            "STATUS_NTFY_TOPIC may only use letters, digits, - and _ (max 64 characters)"
+        )
+    return NtfyConfig(
+        server=_http_url(env, "STATUS_NTFY_SERVER", "https://ntfy.sh"),
+        topic=topic,
+        token=env.get("STATUS_NTFY_TOKEN", "").strip() or None,
+        click_url=_http_url(env, "STATUS_PUBLIC_URL") or None,
+    )
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
@@ -84,6 +120,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         failure_threshold=threshold,
         db_path=env.get("STATUS_DB_PATH", "").strip() or "/data/status.db",
         static_dir=env.get("STATUS_STATIC_DIR", "").strip() or DEFAULT_STATIC_DIR,
+        ntfy=_load_ntfy(env),
     )
 
 

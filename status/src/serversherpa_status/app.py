@@ -12,7 +12,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from serversherpa_status.api_status import BACKGROUND_KEY, LatestApiStatus
+from serversherpa_status.alerts import AlertWatcher
+from serversherpa_status.api_status import BACKGROUND_KEY, BACKGROUND_NAME, LatestApiStatus
 from serversherpa_status.checker import Checker, seed_tracker, utcnow
 from serversherpa_status.config import Settings, load_settings, stale_after_seconds
 from serversherpa_status.state import StateTracker
@@ -52,7 +53,18 @@ def create_app(settings: Settings | None = None, *, start_checker: bool = True) 
         client = httpx.AsyncClient(headers={"User-Agent": USER_AGENT})
         task = None
         if start_checker:
-            checker = Checker(settings, store, tracker, client, latest=latest)
+            watcher = None
+            if settings.ntfy is not None:
+                watcher = AlertWatcher(
+                    {s.key: s.name for s in settings.services} | {BACKGROUND_KEY: BACKGROUND_NAME}
+                )
+                watcher.prime(
+                    {
+                        k: tracker.snapshot(k).state
+                        for k in [s.key for s in settings.services] + [BACKGROUND_KEY]
+                    }
+                )
+            checker = Checker(settings, store, tracker, client, latest=latest, watcher=watcher)
             app.state.checker = checker
             task = asyncio.create_task(checker.run_forever())
         try:
