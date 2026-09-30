@@ -222,13 +222,18 @@ struct OutboxSnapshot: Equatable {
 
     /// One single-flight pass: send the due rows (up to MAX_BATCH) and save the
     /// outcome, then flush again if more is due, or wake at the earliest retry.
+    /// A pass whose saves failed waits out the first back-off step before the
+    /// next one (its rows are still due: an immediate retry would spin).
     func flushOnce() async {
         if isFlushing { flushAgain = true; return }
         isFlushing = true
-        await sendDueBatch()
+        let saved = await sendDueBatch()
         isFlushing = false
         guard isRunning else { return }
-        if flushAgain || !OutboxMachine.dueRows(Array(all.values), nowMs: clock()).isEmpty {
+        if !saved {
+            flushAgain = false
+            scheduleFlush(after: OutboxMachine.BACKOFF[0])
+        } else if flushAgain || !OutboxMachine.dueRows(Array(all.values), nowMs: clock()).isEmpty {
             flushAgain = false
             scheduleFlush(after: 0)
         } else if let wait = OutboxMachine.nextWake(Array(all.values), nowMs: clock()) {
@@ -236,16 +241,17 @@ struct OutboxSnapshot: Equatable {
         }
     }
 
-    private func sendDueBatch() async {
+    /// Sends one batch; false when marking it or writing its outcome back could not be saved.
+    private func sendDueBatch() async -> Bool {
         let due = OutboxMachine.dueRows(Array(all.values), nowMs: clock())
-        if due.isEmpty { return }
+        if due.isEmpty { return true }
         let batch = OutboxMachine.markSending(due)
         inFlight = Set(batch.map(\.clientScanId))
         do { try await save(batch) } catch {
             // Storage failed while marking the batch `sending`: nothing goes out this
             // pass, and the rows (never mirrored as sending) stay due for the next one.
             inFlight = []
-            return
+            return false
         }
         let body = KioskScanBatchIn(serial: serial(), scans: batch.map {
             KioskScanIn(clientScanId: $0.clientScanId, scannedValue: $0.scannedValue, scanType: $0.scanType, scannedAt: $0.scannedAt,
@@ -265,20 +271,23 @@ struct OutboxSnapshot: Equatable {
                 let code = (error as? ApiError).flatMap { $0.code.isEmpty ? nil : $0.code } ?? "timeout"
                 updated = OutboxMachine.applyFailure(batch, code: code, nowMs: clock())
             }
-            await writeBack(updated)
+            let saved = await writeBack(updated)
             backgroundTask.end(bgId)
+            return saved
         }
-        await sent.value
+        return await sent.value
     }
 
-    private func writeBack(_ updated: [OutboxRow]) async {
+    /// False when the outcome could not be saved (the rows went back to queued).
+    private func writeBack(_ updated: [OutboxRow]) async -> Bool {
         defer { inFlight = [] }
-        do { try await save(updated) } catch {
+        do { try await save(updated); return true } catch {
             // Storage failed: never leave rows `sending`, or they'd be stranded.
             for row in updated where all[row.clientScanId]?.status == .sending {
                 all[row.clientScanId]?.status = .queued
             }
             rebuild()
+            return false
         }
     }
 

@@ -71,10 +71,12 @@ private actor FlakyOutboxStore: OutboxStore {
     private let inner = MemoryOutboxStore()
     private var failUpserts = 0
     private var failDeletes = 0
+    private(set) var upsertAttempts = 0
     func setFailUpserts(_ n: Int) { failUpserts = n }
     func setFailDeletes(_ n: Int) { failDeletes = n }
     func all() async throws -> [OutboxRow] { try await inner.all() }
     func upsert(_ rows: [OutboxRow]) async throws {
+        upsertAttempts += 1
         if failUpserts > 0 { failUpserts -= 1; throw CocoaError(.fileWriteUnknown) }
         try await inner.upsert(rows)
     }
@@ -282,6 +284,8 @@ struct OutboxTests {
         _ = await ob.enqueue(input())                    // the enqueue itself persists
         await store.setFailUpserts(1)                    // fail the mark-sending save the 500 ms flush is about to trigger
         await time.advance(by: 600)
+        #expect(api.scanBatches.isEmpty)                 // nothing went out; the retry waits out the backoff
+        await time.advance(by: OutboxMachine.BACKOFF[0])
         // The failed mark-sending save reverts the row instead of stranding it `sending`,
         // and the sender retries on its own. Exactly one batch ever reaches the API.
         #expect(api.scanBatches.count == 1)
@@ -290,6 +294,47 @@ struct OutboxTests {
 
         // The sender is still alive afterward too.
         _ = await ob.enqueue(input("A-1")); await time.advance(by: 600)
+        #expect(api.scanBatches.count == 2)
+        #expect(ob.snapshot.rows.first?.status == .accepted)
+    }
+
+    /// A store that keeps failing is retried after the back-off, never in a hot loop.
+    @Test func aStoreThatKeepsFailingIsRetriedAfterTheBackoff() async {
+        let api = FakeKioskApi()
+        let store = FlakyOutboxStore()
+        let ob = await started(outbox(api, store))
+        _ = await ob.enqueue(input())
+        let base = await store.upsertAttempts             // the enqueue's own save
+        await store.setFailUpserts(Int.max)
+        await time.advance(by: 600)                       // the 500 ms flush: marking `sending` fails
+        #expect(await store.upsertAttempts == base + 1)
+        await time.advance(by: 1_000)                     // 1.6 s: still inside the 2 s back-off
+        #expect(await store.upsertAttempts == base + 1)
+        await time.advance(by: 1_000)                     // 2.6 s: the 2.5 s retry ran, and failed again
+        #expect(await store.upsertAttempts == base + 2)
+        await time.advance(by: 2_000)                     // 4.6 s: the 4.5 s retry
+        #expect(await store.upsertAttempts == base + 3)
+        #expect(api.scanBatches.isEmpty)
+        ob.stop()
+    }
+
+    /// A write-back that can't be saved re-queues the rows and waits out the back-off before resending.
+    @Test func aFailedWriteBackWaitsOutTheBackoff() async {
+        let api = FakeKioskApi()
+        let store = FlakyOutboxStore()
+        api.postScansResult = { body in
+            await store.setFailUpserts(1)                 // the write-back after this POST fails
+            return KioskScanBatchOut(accepted: body.scans.map(\.clientScanId))
+        }
+        let ob = await started(outbox(api, store))
+        _ = await ob.enqueue(input())
+        await time.advance(by: 600)
+        #expect(api.scanBatches.count == 1)
+        #expect(ob.snapshot.rows.first?.status == .queued)
+        await time.advance(by: 1_000)
+        #expect(api.scanBatches.count == 1)               // not resent at once
+        api.postScansResult = { KioskScanBatchOut(accepted: $0.scans.map(\.clientScanId)) }
+        await time.advance(by: 1_000)
         #expect(api.scanBatches.count == 2)
         #expect(ob.snapshot.rows.first?.status == .accepted)
     }
