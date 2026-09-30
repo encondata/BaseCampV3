@@ -1745,6 +1745,12 @@ class WikiNode(Base):
     title: Mapped[str]
     position: Mapped[float] = mapped_column(Float, server_default="0")
     inherit_permissions: Mapped[bool] = mapped_column(server_default=text("true"))
+    # private: only the author (created_by) and developers can see this
+    # node and everything inside it (wiki/permissions.py, migration 0084)
+    is_private: Mapped[bool] = mapped_column(server_default=text("false"))
+    # printing: null inherits from the nearest ancestor with a value, then
+    # the library's allow_printing setting
+    allow_printing: Mapped[bool | None]
     owner_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("people.id", ondelete="SET NULL"))
     created_by: Mapped[uuid.UUID | None] = mapped_column(
