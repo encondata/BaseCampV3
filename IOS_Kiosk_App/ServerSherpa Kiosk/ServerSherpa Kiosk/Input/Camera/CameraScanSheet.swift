@@ -72,6 +72,7 @@ struct CameraScanSheet: View {
     @State private var isActive = false
     @State private var failure: String?
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.kioskAccent) private var accent
 
     init(bus: ScanBus, prefs: KioskPrefs, onClose: @escaping () -> Void) {
         self.bus = bus
@@ -90,7 +91,7 @@ struct CameraScanSheet: View {
                 CameraPreview(scanner: scanner).ignoresSafeArea()
                 GeometryReader { geo in
                     RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.accentColor, lineWidth: 2)
+                        .stroke(accent, lineWidth: 2)
                         .frame(width: geo.size.width * 0.7, height: geo.size.width * 0.7)
                         .position(x: geo.size.width / 2, y: geo.size.height / 2)
                 }
@@ -152,7 +153,7 @@ struct CameraScanSheet: View {
             Spacer()
             if granted && showTorch {
                 Toggle(isOn: $torch) { Image(systemName: torch ? "flashlight.on.fill" : "flashlight.off.fill") }
-                    .toggleStyle(.button).tint(.accentColor)
+                    .toggleStyle(.button).tint(accent)
                     .accessibilityLabel(torch ? "Torch on" : "Torch off")
             }
             if granted && canFlip {
@@ -168,17 +169,14 @@ struct CameraScanSheet: View {
 
     private var bottomPanel: some View {
         VStack(spacing: 10) {
-            Picker("Mode", selection: $mode) {
-                ForEach(CameraMode.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
+            Segmented(options: CameraMode.allCases.map { ($0, $0.rawValue) }, selection: $mode)
             if mode == .multi {
                 HStack(spacing: 8) {
                     Text("\(count) scanned")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(.black)
                         .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(Color.accentColor, in: Capsule())
+                        .background(accent, in: Capsule())
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
                             ForEach(recent, id: \.self) { value in

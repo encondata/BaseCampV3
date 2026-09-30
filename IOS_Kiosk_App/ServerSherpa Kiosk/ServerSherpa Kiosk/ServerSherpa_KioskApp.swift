@@ -2,8 +2,16 @@ import SwiftUI
 
 @main
 struct ServerSherpa_KioskApp: App {
-    init() { KioskFonts.registerAll() }
+    @State private var container: AppContainer
+
+    init() {
+        KioskFonts.registerAll()
+        _container = State(initialValue: AppContainer.live())
+    }
+
     var body: some Scene {
-        WindowGroup { Text("ServerSherpa Kiosk") }
+        WindowGroup {
+            RootView().appContainer(container)
+        }
     }
 }
