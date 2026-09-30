@@ -33,6 +33,7 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     var clockInGate: (@Sendable () async -> Void)?
     var imageGate: (@Sendable (String) async -> Void)?
     var pollGate: (@Sendable () async -> Void)?
+    var signOutGate: (@Sendable () async -> Void)?
     var statusResult: @Sendable (String) throws -> KioskTimeclockStatus = { _ in throw unset }
     var clockInResult: @Sendable (ClockInIn) throws -> KioskTimeclockStatus = { _ in throw unset }
     var clockOutResult: @Sendable (ClockOutIn) throws -> KioskTimeclockStatus = { _ in throw unset }
@@ -51,7 +52,7 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
 
     func login(email: String, password: String) async throws -> SessionData { record("login"); return try loginResult() }
     func moveLogin(password: String) async throws -> SessionData { record("moveLogin"); return try moveLoginResult(password) }
-    func logout() async { record("logout") }
+    func logout(_ credentials: SignOutCredentials) async { record("logout") }
     func systemStatus() async throws -> SystemStatus { record("status"); return try systemStatusResult() }
     func createPairRequest(serial: String, name: String) async throws -> PairCreated { record("pair"); return try pairCreated() }
     func pollPair(code: String, pollToken: String) async throws -> PairPoll { record("poll"); await pollGate?(); return try pollResult() }
@@ -59,7 +60,7 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
         lock.lock(); _calls.append("heartbeat"); _heartbeats.append(body); lock.unlock()
         return try heartbeatResult(body)
     }
-    func signOut(serial: String) async { record("signOut") }
+    func signOut(serial: String, credentials: SignOutCredentials) async { record("signOut"); await signOutGate?() }
     func setupOptions() async throws -> SetupOptions { record("setupOptions"); return try setupOptionsResult() }
     func submitSetup(_ body: KioskSetupIn) async throws -> KioskSetupResult { record("submitSetup"); return try submitSetupResult(body) }
     func syncAssets(initiativeId: String) async throws -> KioskAssetsSync { record("syncAssets"); return try await assets() }
@@ -106,6 +107,12 @@ final class FakeRefresher: SessionRefresher, @unchecked Sendable {
     func store(_ data: SessionData) async { lock.lock(); _stored = data; lock.unlock() }
     func adopt(_ data: SessionData, cookie: PairCookie?) async { lock.lock(); _stored = data; _adoptedCookie = cookie; lock.unlock() }
     func clear() async { lock.lock(); _cleared += 1; _stored = nil; _adoptedCookie = nil; lock.unlock() }
+    func signOutLocally() async -> SignOutCredentials {
+        lock.lock(); defer { lock.unlock() }
+        let credentials = SignOutCredentials(apiUrl: "https://api.test", accessToken: _stored?.accessToken, refreshCookie: _adoptedCookie?.value)
+        _cleared += 1; _stored = nil; _adoptedCookie = nil
+        return credentials
+    }
     func emitSessionEnded() { continuation.yield() }
 }
 

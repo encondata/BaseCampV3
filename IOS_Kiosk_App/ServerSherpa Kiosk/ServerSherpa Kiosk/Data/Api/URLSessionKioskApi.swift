@@ -178,16 +178,13 @@ final class URLSessionKioskApi: KioskApi {
         return try await signedIn(response)
     }
 
-    func logout() async {
-        let base = await apiUrl()
-        guard let url = URL(string: "\(base)/auth/logout") else { await sessionStore.clear(); return }
+    func logout(_ credentials: SignOutCredentials) async {
+        guard let url = URL(string: "\(credentials.apiUrl)/auth/logout") else { return }
         var request = Self.request(url, "POST")
-        if let host = url.host, let value = cookies.value(forHost: host) {
+        if let value = credentials.refreshCookie {
             request.setValue("\(RefreshCookie.name)=\(value)", forHTTPHeaderField: "Cookie")
         }
-        _ = try? await execute(request)   // an offline logout still clears
-        if let host = url.host { cookies.clear(host: host) }
-        await sessionStore.clear()
+        _ = try? await execute(request)   // best effort: local state is already gone
     }
 
     func systemStatus() async throws -> SystemStatus {
@@ -221,8 +218,11 @@ final class URLSessionKioskApi: KioskApi {
         try Self.parse(await authed { try Self.request(Self.url("\($0)/kiosk/heartbeat"), post: body) })
     }
 
-    func signOut(serial: String) async {
-        _ = try? await authed { try Self.request(Self.url("\($0)/kiosk/sign-out"), post: KioskSignOutIn(serial: serial)) }
+    /// Not `authed`: no refresh or retry, the session is already gone locally.
+    func signOut(serial: String, credentials: SignOutCredentials) async {
+        guard var request = try? Self.request(Self.url("\(credentials.apiUrl)/kiosk/sign-out"), post: KioskSignOutIn(serial: serial)) else { return }
+        if let token = credentials.accessToken { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        _ = try? await execute(request)
     }
 
     // MARK: setup & sync

@@ -8,6 +8,9 @@ protocol SessionRefresher: Sendable {
     /// Keeps an accepted pair answer: its session and the refresh cookie it set.
     func adopt(_ data: SessionData, cookie: PairCookie?) async
     func clear() async
+    /// Sign-out: captures the token and refresh cookie for the server calls,
+    /// then clears both locally.
+    func signOutLocally() async -> SignOutCredentials
     /// Yields when an authed call could not recover from a 401.
     var sessionEnded: AsyncStream<Void> { get }
 }
@@ -81,6 +84,15 @@ actor SessionStore: SessionRefresher {
         token = nil
         tokenExpiresAt = 0
         sessionExpiry = nil
+    }
+
+    func signOutLocally() async -> SignOutCredentials {
+        let base = await apiUrl()
+        let host = URL(string: base)?.host
+        let credentials = SignOutCredentials(apiUrl: base, accessToken: token, refreshCookie: host.flatMap { cookies.value(forHost: $0) })
+        clear()
+        if let host { cookies.clear(host: host) }
+        return credentials
     }
 
     /// Clears the session, then tells the coordinator. The refresh cookie goes

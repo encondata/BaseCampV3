@@ -95,7 +95,7 @@ struct URLSessionKioskApiEndpointsTests {
         #expect(hb.bodyString.contains(#""mode":"ios""#))
 
         h.server.enqueue(.json(200, "{}"))
-        await h.api.signOut(serial: "serial")
+        await h.api.signOut(serial: "serial", credentials: SignOutCredentials(apiUrl: h.server.baseURL, accessToken: "tok1"))
         let so = try #require(h.server.takeRequest())
         #expect(so.method == "POST"); #expect(so.path == "/kiosk/sign-out")
         #expect(so.bodyString == #"{"serial":"serial"}"#)

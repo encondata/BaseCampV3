@@ -63,12 +63,19 @@ final class KioskAuth {
         apply(data)
     }
 
+    /// Signed out at once: the heartbeat stops, the state flips, the token and
+    /// cookie go locally; the portal is told in the background, best effort,
+    /// with what was captured (a hanging network never holds the kiosk).
     func logout() async {
         onLogout?()
-        await api.signOut(serial: identity.current.serial)
-        await api.logout()
-        await refresher.clear()
         state = .anon
+        let serial = identity.current.serial
+        let credentials = await refresher.signOutLocally()
+        let api = self.api
+        Task {
+            await api.signOut(serial: serial, credentials: credentials)
+            await api.logout(credentials)
+        }
     }
 
     /// The session died underneath us (SessionCoordinator).

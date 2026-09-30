@@ -1,5 +1,13 @@
 import Foundation
 
+/// What sign-out's server calls send, captured before local state is cleared,
+/// so they can run afterward (and never touch a later session).
+struct SignOutCredentials: Equatable, Sendable {
+    var apiUrl: String
+    var accessToken: String?
+    var refreshCookie: String? = nil
+}
+
 /// Every endpoint the kiosk calls - kiosk/src/lib/api.ts, function for function.
 /// Implementations throw `ApiError` on any non-2xx or transport failure
 /// unless a member says otherwise.
@@ -7,16 +15,18 @@ protocol KioskApi: Sendable {
     func login(email: String, password: String) async throws -> SessionData
     /// `POST /kiosk/move-login`: signs in as the move's hidden kiosk identity.
     func moveLogin(password: String) async throws -> SessionData
-    /// Never throws - an offline logout still clears local state.
-    func logout() async
+    /// `POST /auth/logout` with the refresh cookie captured at sign-out. Never
+    /// throws and keeps no state: local state was already cleared.
+    func logout(_ credentials: SignOutCredentials) async
     func systemStatus() async throws -> SystemStatus
     func createPairRequest(serial: String, name: String) async throws -> PairCreated
     /// 404 reads as `.expired`. An approved answer carries the session and its
     /// refresh cookie but keeps neither (`KioskAuth.completePair` does).
     func pollPair(code: String, pollToken: String) async throws -> PairPoll
     func heartbeat(_ body: HeartbeatIn) async throws -> HeartbeatResult
-    /// Never throws - the kiosk is dropping its own token either way.
-    func signOut(serial: String) async
+    /// `POST /kiosk/sign-out` with the token captured at sign-out. Never throws -
+    /// the kiosk has dropped its own token either way.
+    func signOut(serial: String, credentials: SignOutCredentials) async
 
     // MARK: setup & sync
 

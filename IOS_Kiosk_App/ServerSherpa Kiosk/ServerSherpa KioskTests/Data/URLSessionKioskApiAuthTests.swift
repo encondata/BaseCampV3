@@ -124,7 +124,7 @@ struct URLSessionKioskApiAuthTests {
     @Test func signOutNeverThrows() async throws {
         let h = ApiHarness()
         h.server.shutdown()
-        await h.api.signOut(serial: "serial")   // no exception
+        await h.api.signOut(serial: "serial", credentials: SignOutCredentials(apiUrl: h.server.baseURL, accessToken: "tok1"))   // no exception
     }
 
     @Test func moveLoginPostsThePasswordWithoutABearerAndStoresTheSession() async throws {
@@ -150,20 +150,24 @@ struct URLSessionKioskApiAuthTests {
         h.server.enqueue(.json(200, #"{"initiatives":[],"scan_types":[]}"#)); _ = try await h.api.setupOptions()
         h.server.enqueue(sessionResponse(cookie: nil, token: "tok2")); _ = await h.session.refresh()
         h.server.enqueue(.json(204, ""))
-        await h.api.logout()
+        await h.api.logout(await h.session.signOutLocally())
         let withCookie = h.server.requests.filter { $0.header("Cookie") != nil }.map(\.path)
         #expect(withCookie == ["/auth/refresh", "/auth/logout"])
         #expect(h.server.requests.last?.header("Cookie") == "ss_refresh=r1")
         #expect(h.server.requests.last?.header("Authorization") == nil)
     }
 
-    @Test func logoutClearsTheCookieAndSessionEvenOffline() async throws {
+    /// Sign-out clears the token and the cookie locally, before (and whatever) the
+    /// server calls do, and hands back what those calls must send.
+    @Test func signOutLocallyClearsTheSessionAndCookieAndReturnsThem() async throws {
         let h = ApiHarness()
         h.server.enqueue(sessionResponse()); _ = try await h.api.login(email: "a@b.c", password: "pw")
-        h.server.shutdown()
-        await h.api.logout()
+        let credentials = await h.session.signOutLocally()
+        #expect(credentials == SignOutCredentials(apiUrl: h.server.baseURL, accessToken: "tok1", refreshCookie: "r1"))
         #expect(await h.session.accessToken() == nil)
         #expect(h.cookies.value(forHost: h.server.host) == nil)
+        h.server.shutdown()
+        await h.api.logout(credentials)                      // offline: never throws
     }
 
     @Test func aDifferentHostGetsNoCookie() async throws {
@@ -259,7 +263,7 @@ struct URLSessionKioskApiAuthTests {
         let other = StubServer()
         other.enqueue(.json(200, "{}"))
         h.server.enqueue(.redirect(to: "\(other.baseURL)/auth/logout"))
-        await h.api.logout()
+        await h.api.logout(await h.session.signOutLocally())
         #expect(other.requestCount == 0)
     }
 
