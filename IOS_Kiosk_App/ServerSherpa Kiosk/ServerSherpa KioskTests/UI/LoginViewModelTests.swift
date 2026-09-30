@@ -41,6 +41,23 @@ struct LoginViewModelTests {
         #expect(h.vm.passwordInvalid)
     }
 
+    @Test func aWhitespaceOnlyPasswordIsNotEmpty() async {
+        let h = Harness()
+        h.api.loginResult = { fakeSession() }
+        h.vm.email = "  a@b.c "; h.vm.password = "   "
+        await h.vm.submit()
+        #expect(h.vm.error == nil)
+        #expect(!h.vm.passwordInvalid)
+        #expect(isAuthed(h.auth))
+    }
+
+    @Test func aLiterallyEmptyPasswordIsRejected() async {
+        let h = Harness()
+        h.vm.email = "a@b.c"
+        await h.vm.submit()
+        #expect(h.vm.passwordInvalid && !h.vm.emailInvalid)
+    }
+
     @Test func errorCodesMapToCopy() async {
         let h = Harness()
         h.api.loginResult = { throw ApiError(status: 403, code: "kiosk_not_allowed") }
@@ -64,6 +81,7 @@ struct LoginViewModelTests {
         #expect(isAuthed(h.auth))
         #expect(h.vm.error == nil)
         #expect(!h.vm.busy)
+        #expect(h.vm.password == "")   // cleared after a success too
     }
 
     @Test func typingClearsTheError() async {

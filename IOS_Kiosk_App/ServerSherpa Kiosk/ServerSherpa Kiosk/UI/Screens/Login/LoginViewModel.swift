@@ -58,7 +58,7 @@ final class LoginViewModel {
     func submit() async {
         guard !busy else { return }
         let blankEmail = email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let blankPassword = password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let blankPassword = password.isEmpty   // the web: only a literally empty password
         if blankEmail || blankPassword {
             emailInvalid = blankEmail
             passwordInvalid = blankPassword
@@ -70,6 +70,7 @@ final class LoginViewModel {
         defer { busy = false }
         do {
             try await auth.login(email: email.trimmingCharacters(in: .whitespacesAndNewlines), password: password)
+            password = ""
         } catch {
             password = ""   // before the flags: its didSet clears them
             emailInvalid = true

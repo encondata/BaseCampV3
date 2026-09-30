@@ -3,16 +3,12 @@ import SwiftUI
 /// Android `PairPanel.kt`: a code to approve from a phone, as a QR of the link
 /// and in large type, counting down; polls until approved, denied or expired.
 struct PairPanel: View {
-    @State private var vm: PairViewModel
+    /// Owned by the login screen, so a relayout (rotation) keeps the same code.
+    let vm: PairViewModel
     @Environment(KioskConfig.self) private var config
     /// Built once per code, not on every countdown tick.
     @State private var qr: UIImage?
     let f: CGFloat
-
-    init(makeModel: () -> PairViewModel, f: CGFloat) {
-        _vm = State(initialValue: makeModel())
-        self.f = f
-    }
 
     var body: some View {
         VStack(spacing: 10 * f) {
@@ -33,9 +29,7 @@ struct PairPanel: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .task { await vm.begin() }
         .task(id: vm.pair?.code) { qr = vm.pair.flatMap { Qr.image(for: $0.linkUrl, scale: 8) } }
-        .onDisappear { vm.stop() }
     }
 
     @ViewBuilder private func showing(_ pair: PairCreated) -> some View {
@@ -72,7 +66,7 @@ struct PairPanel: View {
                     .font(KioskType.sans(20 * f, .semibold))
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 56 * f)
+                    .frame(height: max(44, 56 * f))
                     .background(LoginTokens.ink, in: RoundedRectangle(cornerRadius: 8))
                     .contentShape(Rectangle())
             }

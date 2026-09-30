@@ -92,6 +92,31 @@ struct PairViewModelTests {
         #expect(!isAuthed(h.auth))
     }
 
+    /// A relayout (rotation) rebuilds the views but neither begins nor stops the
+    /// model: the same code keeps being polled, one code request in all.
+    @Test func aRelayoutKeepsTheSameCodeBeingPolled() async {
+        let h = Harness()
+        let created = Counter()
+        let polls = Counter()
+        h.api.pairCreated = { _ = created.bump(); return PairCreated(code: "ABCD1234", pollToken: "pt", linkUrl: "u", expiresAt: "2001-09-09T01:51:40Z") }
+        h.api.pollResult = { _ = polls.bump(); return PairPoll(status: .pending, session: nil) }
+        await h.vm.begin()
+        let code = h.vm.pair?.code
+        await h.tick(2)
+        await waitUntil { polls.n == 1 }
+        // rotate: nothing is called on the model
+        await h.tick(2)
+        await waitUntil { polls.n == 2 }
+        #expect(polls.n == 2)
+        #expect(created.n == 1)
+        #expect(h.vm.pair?.code == code)
+        h.vm.stop()
+        let atStop = polls.n
+        await h.tick(6)
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(polls.n == atStop)
+    }
+
     @Test func theCountdownRunsOutToExpired() async {
         let h = Harness()
         h.api.pairCreated = { PairCreated(code: "ABCD1234", pollToken: "pt", linkUrl: "u", expiresAt: "2001-09-09T01:46:42Z") }

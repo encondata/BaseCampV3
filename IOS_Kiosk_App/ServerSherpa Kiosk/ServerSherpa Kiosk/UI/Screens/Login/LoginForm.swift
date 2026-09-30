@@ -91,7 +91,7 @@ struct LoginTextField: View {
             }
         }
         .padding(.horizontal, 20 * f)
-        .frame(height: 60 * f)
+        .frame(height: max(44, 60 * f))
         .background(LoginTokens.field, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8)
             .stroke(invalid ? LoginFormColors.invalid : LoginTokens.line, lineWidth: invalid ? 1.5 : 1))
@@ -118,7 +118,7 @@ struct LoginSubmitButton: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 67 * f)
+            .frame(height: max(44, 67 * f))
             .background(LoginTokens.ink, in: RoundedRectangle(cornerRadius: 8))
             .contentShape(Rectangle())
         }
@@ -156,8 +156,10 @@ struct LoginQuietLink: View {
         Button(action: action) {
             Text(title)
                 .font(KioskType.sans(16 * f, .medium))
-                .foregroundStyle(LoginTokens.slate)
+                .foregroundStyle(LoginTokens.ink)
+                .padding(.horizontal, 14)
                 .frame(minHeight: 44)
+                .background(LoginTokens.canvas.opacity(0.88), in: Capsule())
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -216,7 +218,7 @@ private struct LoginBanners: View {
 struct LoginForm: View {
     @Bindable var vm: LoginViewModel
     let f: CGFloat
-    let makePair: () -> PairViewModel
+    let pair: PairViewModel
     @FocusState private var emailFocused: Bool
     @FocusState private var passwordFocused: Bool
 
@@ -298,6 +300,13 @@ struct LoginForm: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 10 * f)
             }
+            HStack(spacing: 10 * f) {
+                LoginQuietLink(title: "Pair with phone", f: f) { vm.view = .pair }
+                Text("·").foregroundStyle(LoginTokens.line)
+                LoginQuietLink(title: "Use a move password", f: f) { vm.view = .move }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 4 * f)
             HStack(spacing: 6 * f) {
                 Text("Need help?")
                     .font(KioskType.sans(20 * f))
@@ -306,18 +315,12 @@ struct LoginForm: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 8 * f)
-            HStack(spacing: 10 * f) {
-                LoginQuietLink(title: "Pair with phone", f: f) { vm.view = .pair }
-                Text("·").foregroundStyle(LoginTokens.line)
-                LoginQuietLink(title: "Use a move password", f: f) { vm.view = .move }
-            }
-            .frame(maxWidth: .infinity)
         }
     }
 
     private var pairBody: some View {
         VStack(spacing: 8 * f) {
-            PairPanel(makeModel: makePair, f: f)
+            PairPanel(vm: pair, f: f)
             LoginQuietLink(title: "Back to email & password", f: f, action: back)
         }
         .frame(maxWidth: .infinity)
@@ -344,7 +347,7 @@ struct LoginForm: View {
                     .foregroundStyle(LoginTokens.ink)
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 62 * f)
+            .frame(height: max(44, 62 * f))
             .background(Color.white.opacity(0.85), in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(LoginTokens.line, lineWidth: 1))
             .contentShape(Rectangle())

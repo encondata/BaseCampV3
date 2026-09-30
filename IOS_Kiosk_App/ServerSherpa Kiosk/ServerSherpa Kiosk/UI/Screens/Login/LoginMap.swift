@@ -48,9 +48,11 @@ struct LoginMap: View {
                         .font(.system(size: 20 * m, weight: .semibold, design: .monospaced))
                         .tracking(0.04 * 20 * m)
                         .foregroundStyle(LoginTokens.orange)
-                    Text(pin.place)
-                        .font(KioskType.mono(15.5 * m))
-                        .foregroundStyle(Self.slateDark)
+                    if details {
+                        Text(pin.place)
+                            .font(KioskType.mono(15.5 * m))
+                            .foregroundStyle(Self.slateDark)
+                    }
                 }
                 .fixedSize()
                 .offset(x: (pin.x + 36) * m, y: (pin.y - 21) * m)

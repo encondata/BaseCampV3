@@ -21,12 +21,16 @@ private struct ScreenFrame: Equatable {
 private struct LoginScreenBody: View {
     let container: AppContainer
     @State private var vm: LoginViewModel
+    /// Above the layout switch: crossing a width breakpoint rebuilds the form,
+    /// which must not restart pairing.
+    @State private var pair: PairViewModel
     @State private var kioskSheet = false
     @State private var frame: ScreenFrame?
 
     init(container: AppContainer) {
         self.container = container
         _vm = State(initialValue: LoginViewModel(auth: container.auth, api: container.api))
+        _pair = State(initialValue: PairViewModel(api: container.api, identity: container.identity, auth: container.auth))
     }
 
     var body: some View {
@@ -67,13 +71,17 @@ private struct LoginScreenBody: View {
             .environment(\.colorScheme, .light)
             .tint(LoginTokens.orange)
             .task { await vm.loadStatus() }
+            // Entering the pair view begins pairing, leaving it stops; the whole
+            // screen going away (signed in) stops it too.
+            .onChange(of: vm.view) { old, new in
+                if new == .pair { Task { await pair.begin() } } else if old == .pair { pair.stop() }
+            }
+            .onDisappear { pair.stop() }
             .sheet(isPresented: $kioskSheet) { LoginKioskSheet() }
     }
 
     private func form(_ metrics: LoginMetrics) -> some View {
-        LoginForm(vm: vm, f: metrics.f) {
-            PairViewModel(api: container.api, identity: container.identity, auth: container.auth)
-        }
+        LoginForm(vm: vm, f: metrics.f, pair: pair)
         .frame(width: metrics.formWidth)
     }
 
