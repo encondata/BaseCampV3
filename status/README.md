@@ -27,7 +27,8 @@ admin's message, if any) and the overall status reads "maintenance" unless somet
 down. An admin announcement appears as a plain note. The **Background processing** card
 summarizes the workers behind the API ("N of M running"); it is red when any worker has
 failed and shows "paused" when workers are paused. The card needs an API that reports
-`background`; against an older API it is simply absent. A retired worker still counts as
+`background`, and is absent whenever the API currently reports none (an older API, or
+every worker cleanly stopped). A retired worker still counts as
 down until its row is deleted from the Processes page.
 
 ## Alerts (ntfy)

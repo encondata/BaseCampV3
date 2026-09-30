@@ -50,7 +50,11 @@ def build_summary(
             _entry(s.key, s.name, snap, store, today, now, stale_after, snap.latency_ms)
         )
     bg_snap = tracker.snapshot(BACKGROUND_KEY)
-    if bg_snap.last_checked_at is not None:
+    # A fresh API report with no background (older API, or every worker cleanly
+    # stopped) means there is nothing to show; only a missing/stale report
+    # leaves the history-backed entry in place.
+    api_says_none = latest_status is not None and latest_status.background is None
+    if bg_snap.last_checked_at is not None and not api_says_none:
         entry = _entry(
             BACKGROUND_KEY, BACKGROUND_NAME, bg_snap, store, today, now, stale_after, None
         )

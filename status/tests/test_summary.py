@@ -209,3 +209,34 @@ def test_announcement_passes_through_without_leaking(ctx):
     assert out["maintenance"] == {"active": False, "message": None}
     blob = repr(out)
     assert "secret-api" not in blob and "internal" not in blob and "http" not in blob
+
+
+def test_fresh_api_without_background_drops_entry_and_stays_operational(ctx):
+    settings, store, tracker = ctx
+    all_up(settings, store, tracker)
+    tracker.record("background", True, None, NOW)
+    store.record("background", NOW, True, None, "")
+    later = NOW + timedelta(hours=1)
+    latest = latest_with(ApiStatus(False, None, None, None), later)
+    out = build_summary(settings, store, tracker, later, latest)
+    assert "background" not in [s["key"] for s in out["services"]]
+
+
+def test_fresh_api_without_background_does_not_pin_overall_unknown(ctx):
+    settings, store, tracker = ctx
+    all_up(settings, store, tracker)
+    tracker.record("background", True, None, NOW - timedelta(hours=2))
+    store.record("background", NOW - timedelta(hours=2), True, None, "")
+    latest = latest_with(ApiStatus(False, None, None, None))
+    out = build_summary(settings, store, tracker, NOW, latest)
+    assert "background" not in [s["key"] for s in out["services"]]
+    assert out["overall"] == "operational"
+
+
+def test_no_fresh_latest_keeps_background_entry(ctx):
+    settings, store, tracker = ctx
+    all_up(settings, store, tracker)
+    tracker.record("background", True, None, NOW)
+    store.record("background", NOW, True, None, "")
+    out = build_summary(settings, store, tracker, NOW, LatestApiStatus())
+    assert out["services"][-1]["key"] == "background"
