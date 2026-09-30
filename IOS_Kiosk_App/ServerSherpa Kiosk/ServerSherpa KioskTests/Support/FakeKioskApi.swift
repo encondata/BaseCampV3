@@ -32,6 +32,7 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     var statusGate: (@Sendable (String) async -> Void)?
     var clockInGate: (@Sendable () async -> Void)?
     var imageGate: (@Sendable (String) async -> Void)?
+    var pollGate: (@Sendable () async -> Void)?
     var statusResult: @Sendable (String) throws -> KioskTimeclockStatus = { _ in throw unset }
     var clockInResult: @Sendable (ClockInIn) throws -> KioskTimeclockStatus = { _ in throw unset }
     var clockOutResult: @Sendable (ClockOutIn) throws -> KioskTimeclockStatus = { _ in throw unset }
@@ -53,7 +54,7 @@ final class FakeKioskApi: KioskApi, @unchecked Sendable {
     func logout() async { record("logout") }
     func systemStatus() async throws -> SystemStatus { record("status"); return try systemStatusResult() }
     func createPairRequest(serial: String, name: String) async throws -> PairCreated { record("pair"); return try pairCreated() }
-    func pollPair(code: String, pollToken: String) async throws -> PairPoll { record("poll"); return try pollResult() }
+    func pollPair(code: String, pollToken: String) async throws -> PairPoll { record("poll"); await pollGate?(); return try pollResult() }
     func heartbeat(_ body: HeartbeatIn) async throws -> HeartbeatResult {
         lock.lock(); _calls.append("heartbeat"); _heartbeats.append(body); lock.unlock()
         return try heartbeatResult(body)
@@ -89,6 +90,7 @@ final class FakeRefresher: SessionRefresher, @unchecked Sendable {
     private let lock = NSLock()
     private var _cleared = 0
     private var _stored: SessionData?
+    private var _adoptedCookie: PairCookie?
     var refreshResult: @Sendable () -> SessionData? = { nil }
 
     let sessionEnded: AsyncStream<Void>
@@ -98,10 +100,12 @@ final class FakeRefresher: SessionRefresher, @unchecked Sendable {
 
     var cleared: Int { lock.lock(); defer { lock.unlock() }; return _cleared }
     var stored: SessionData? { lock.lock(); defer { lock.unlock() }; return _stored }
+    var adoptedCookie: PairCookie? { lock.lock(); defer { lock.unlock() }; return _adoptedCookie }
 
     func refresh() async -> SessionData? { refreshResult() }
     func store(_ data: SessionData) async { lock.lock(); _stored = data; lock.unlock() }
-    func clear() async { lock.lock(); _cleared += 1; _stored = nil; lock.unlock() }
+    func adopt(_ data: SessionData, cookie: PairCookie?) async { lock.lock(); _stored = data; _adoptedCookie = cookie; lock.unlock() }
+    func clear() async { lock.lock(); _cleared += 1; _stored = nil; _adoptedCookie = nil; lock.unlock() }
     func emitSessionEnded() { continuation.yield() }
 }
 

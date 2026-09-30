@@ -55,8 +55,10 @@ final class KioskAuth {
         apply(data)
     }
 
-    /// The pair poll has already stored the session with the refresher.
-    func completePair(_ data: SessionData) {
+    /// An approved pair answer the pair view still wants: keep its session and
+    /// refresh cookie, then sign in.
+    func completePair(_ data: SessionData, cookie: PairCookie? = nil) async {
+        await refresher.adopt(data, cookie: cookie)
         pendingSignIn = .link
         apply(data)
     }

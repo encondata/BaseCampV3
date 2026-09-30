@@ -5,6 +5,8 @@ func nowMs() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 protocol SessionRefresher: Sendable {
     func refresh() async -> SessionData?
     func store(_ data: SessionData) async
+    /// Keeps an accepted pair answer: its session and the refresh cookie it set.
+    func adopt(_ data: SessionData, cookie: PairCookie?) async
     func clear() async
     /// Yields when an authed call could not recover from a 401.
     var sessionEnded: AsyncStream<Void> { get }
@@ -67,6 +69,11 @@ actor SessionStore: SessionRefresher {
         token = data.accessToken
         tokenExpiresAt = clock() + Int64(data.expiresIn) * 1000
         sessionExpiry = data.sessionExpiresAt
+    }
+
+    func adopt(_ data: SessionData, cookie: PairCookie?) {
+        if let cookie { cookies.set(host: cookie.host, value: cookie.value) }
+        store(data)
     }
 
     func clear() {

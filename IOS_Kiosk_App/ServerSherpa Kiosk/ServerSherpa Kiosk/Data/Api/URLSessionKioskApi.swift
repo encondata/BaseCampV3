@@ -205,11 +205,14 @@ final class URLSessionKioskApi: KioskApi {
         if response.http.statusCode == 404 { return PairPoll(status: .expired, session: nil) }
         let out: PairPollOut = try Self.parse(response)
         let status = PairStatus.fromWire(out.status)
-        if status == .approved, let session = out.session {
-            if let url = response.http.url { cookies.capture(from: response.http, url: url) }
-            await sessionStore.store(session)
+        // Nothing is kept here: KioskAuth.completePair adopts the session and cookie
+        // only if the pair view still wants this answer.
+        var cookie: PairCookie?
+        if status == .approved, let url = response.http.url,
+           let parsed = RefreshCookie.parse(from: response.http, url: url), let value = parsed.value {
+            cookie = PairCookie(host: parsed.host, value: value)
         }
-        return PairPoll(status: status, session: out.session)
+        return PairPoll(status: status, session: out.session, cookie: cookie)
     }
 
     // MARK: heartbeat

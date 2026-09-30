@@ -23,6 +23,7 @@ struct PairViewModelTests {
 
     @MainActor private struct Harness {
         let api = FakeKioskApi()
+        let refresher = FakeRefresher()
         let auth: KioskAuth
         let gate = TickGate()
         let clock = TestClock()
@@ -30,7 +31,7 @@ struct PairViewModelTests {
         init() {
             let prefs = KioskPrefs(defaults: freshDefaults())
             let identity = Identity(prefs: prefs, secrets: MemorySecretStore())
-            auth = KioskAuth(api: api, refresher: FakeRefresher(), identity: identity, prefs: prefs)
+            auth = KioskAuth(api: api, refresher: refresher, identity: identity, prefs: prefs)
             api.pairCreated = { PairCreated(code: "ABCD1234", pollToken: "pt", linkUrl: "https://portal/link/ABCD1234", expiresAt: "2001-09-09T01:51:40Z") }
             let gate = gate, clock = clock
             vm = PairViewModel(api: api, identity: identity, auth: auth,
@@ -49,7 +50,8 @@ struct PairViewModelTests {
     @Test func requestsThenPollsUntilApproved() async {
         let h = Harness()
         let polls = Counter()
-        h.api.pollResult = { polls.bump() < 3 ? PairPoll(status: .pending, session: nil) : PairPoll(status: .approved, session: fakeSession()) }
+        h.api.pollResult = { polls.bump() < 3 ? PairPoll(status: .pending, session: nil)
+                                              : PairPoll(status: .approved, session: fakeSession(), cookie: PairCookie(host: "api", value: "p1")) }
         await h.vm.request()
         #expect(h.vm.phase == .showing)
         #expect(h.vm.remainingSec == 300)   // the clock starts at 1e9 s = 2001-09-09T01:46:40Z
@@ -61,6 +63,8 @@ struct PairViewModelTests {
         await waitUntil { self.isAuthed(h.auth) }
         #expect(isAuthed(h.auth))
         #expect(h.auth.takePendingSignIn() == .link)
+        #expect(h.refresher.stored == fakeSession())                         // kept only once accepted
+        #expect(h.refresher.adoptedCookie == PairCookie(host: "api", value: "p1"))
         #expect(formatPairCode(h.vm.pair!.code) == "ABCD-1234")
     }
 
@@ -128,6 +132,26 @@ struct PairViewModelTests {
         #expect(h.vm.phase == .expired)
     }
 
+    /// An approved answer that lands after the pair view was left changes nothing:
+    /// no session, no cookie, still signed out.
+    @Test func aStaleApprovedPollKeepsNothing() async {
+        let h = Harness()
+        let hold = PollHold()
+        h.api.pollGate = { await hold.wait() }
+        h.api.pollResult = { PairPoll(status: .approved, session: fakeSession(), cookie: PairCookie(host: "api", value: "p1")) }
+        await h.vm.request()
+        h.vm.startPolling()
+        await h.tick(2)
+        await waitUntil { h.api.calls.contains("poll") }                     // the poll is in flight
+        h.vm.stop()
+        await hold.open()
+        await waitUntil { h.gate.waiterCount == 0 && hold.passed }
+        await h.vm.request()                                                 // a later main-actor turn: the stale loop has had its say
+        #expect(h.refresher.stored == nil)
+        #expect(h.refresher.adoptedCookie == nil)
+        #expect(!isAuthed(h.auth))
+    }
+
     @Test func helpers() {
         #expect(formatPairCode("ABCD1234") == "ABCD-1234")
         #expect(formatPairCode("ABCD") == "ABCD")
@@ -135,5 +159,29 @@ struct PairViewModelTests {
         #expect(portalHost("not a url") == "not a url")
         #expect(formatRemaining(125) == "2:05")
         #expect(formatRemaining(9) == "0:09")
+    }
+}
+
+/// Holds the fake poll in flight until `open()`.
+private final class PollHold: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var _passed = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    var passed: Bool { lock.withLock { _passed } }
+    func wait() async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            let now = lock.withLock { () -> Bool in
+                if isOpen { return true }
+                waiters.append(c)
+                return false
+            }
+            if now { c.resume() }
+        }
+        lock.withLock { _passed = true }
+    }
+    func open() async {
+        let w = lock.withLock { () -> [CheckedContinuation<Void, Never>] in isOpen = true; defer { waiters = [] }; return waiters }
+        for c in w { c.resume() }
     }
 }

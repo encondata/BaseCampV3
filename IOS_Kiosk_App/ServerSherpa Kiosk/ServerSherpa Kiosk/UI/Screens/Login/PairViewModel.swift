@@ -100,7 +100,7 @@ final class PairViewModel {
                 guard !Task.isCancelled, mine == self.generation else { return }
                 switch result.status {
                 case .approved:
-                    if let session = result.session { self.auth.completePair(session); return }
+                    if let session = result.session { await self.auth.completePair(session, cookie: result.cookie); return }
                 case .denied: self.phase = .denied; return
                 case .expired: self.phase = .expired; return
                 case .pending: break

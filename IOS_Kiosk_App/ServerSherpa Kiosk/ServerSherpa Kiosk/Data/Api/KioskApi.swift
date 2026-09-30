@@ -11,7 +11,8 @@ protocol KioskApi: Sendable {
     func logout() async
     func systemStatus() async throws -> SystemStatus
     func createPairRequest(serial: String, name: String) async throws -> PairCreated
-    /// 404 reads as `.expired`; an approved answer stores the session.
+    /// 404 reads as `.expired`. An approved answer carries the session and its
+    /// refresh cookie but keeps neither (`KioskAuth.completePair` does).
     func pollPair(code: String, pollToken: String) async throws -> PairPoll
     func heartbeat(_ body: HeartbeatIn) async throws -> HeartbeatResult
     /// Never throws - the kiosk is dropping its own token either way.

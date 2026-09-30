@@ -377,6 +377,15 @@ enum PairStatus: String, Equatable, Sendable {
 struct PairPoll: Equatable, Sendable {
     var status: PairStatus
     var session: SessionData?
+    /// The refresh cookie an approved answer set. Neither it nor the session is
+    /// kept until `KioskAuth.completePair` accepts the answer.
+    var cookie: PairCookie? = nil
+}
+
+/// An `ss_refresh` value and the API host that set it.
+struct PairCookie: Equatable, Sendable {
+    var host: String
+    var value: String
 }
 
 /// What Kiosk Setup saved on this kiosk. Keys are camelCase: this is the web's

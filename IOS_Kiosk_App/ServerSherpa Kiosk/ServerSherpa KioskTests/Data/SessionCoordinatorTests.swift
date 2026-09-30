@@ -24,7 +24,7 @@ struct SessionCoordinatorTests {
     @Test func sessionEndedFlipsToAnonAndStopsHeartbeat() async {
         let h = Harness()
         h.coordinator.start()
-        h.auth.completePair(fakeSession())
+        await h.auth.completePair(fakeSession())
         h.coordinator.evaluate(foreground: true)
         await waitUntil { h.api.heartbeats.count == 1 }
         #expect(h.hb.registration == .ok)
@@ -39,7 +39,7 @@ struct SessionCoordinatorTests {
         h.coordinator.evaluate(foreground: true)
         #expect(h.gate.waiterCount == 0)                 // signed out: no heartbeat loop at all
         #expect(h.api.heartbeats.isEmpty)
-        h.auth.completePair(fakeSession())
+        await h.auth.completePair(fakeSession())
         h.coordinator.evaluate(foreground: true)
         await waitUntil { h.api.heartbeats.count == 1 }
         #expect(h.api.heartbeats[0].loginMethod == "link")
@@ -50,7 +50,7 @@ struct SessionCoordinatorTests {
         h.coordinator.evaluate(foreground: true)
         await waitUntil { h.api.heartbeats.count == 2 }
         #expect(h.api.heartbeats[1].signIn == false)     // resumed: immediate beat, no sign_in
-        h.auth.completePair(fakeSession(mustChange: true))
+        await h.auth.completePair(fakeSession(mustChange: true))
         await h.gate.waitForSleepers(1)
         h.coordinator.evaluate(foreground: true)
         #expect(h.gate.waiterCount == 0)                 // must-change-password: the loop stopped

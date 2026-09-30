@@ -106,6 +106,12 @@ struct URLSessionKioskApiAuthTests {
         h.server.enqueue(approvedResponse)
         let approved = try await h.api.pollPair(code: "ABCD1234", pollToken: "pt")
         #expect(approved.status == .approved)
+        #expect(approved.session?.accessToken == "tok1")
+        #expect(approved.cookie == PairCookie(host: h.server.host, value: "r1"))
+        // Nothing is kept until KioskAuth.completePair accepts the answer.
+        #expect(await h.session.accessToken() == nil)
+        #expect(h.cookies.value(forHost: h.server.host) == nil)
+        await h.session.adopt(try #require(approved.session), cookie: approved.cookie)
         #expect(await h.session.accessToken() == "tok1")
         #expect(h.cookies.value(forHost: h.server.host) == "r1")
         h.server.enqueue(.json(404, #"{"detail":{"code":"not_found"}}"#))

@@ -21,17 +21,28 @@ final class RefreshCookie: Sendable {
     /// Saves a `Set-Cookie: ss_refresh=…` from `response`; an empty value or an
     /// expiry in the past (e.g. `Max-Age=0`) deletes it. No such cookie: no change.
     func capture(from response: HTTPURLResponse, url: URL) {
-        guard let host = url.host else { return }
+        guard let parsed = Self.parse(from: response, url: url) else { return }
+        secrets.set(key(parsed.host), parsed.value)
+    }
+
+    /// The `ss_refresh` a response sets, without keeping it: nil when it sets
+    /// none; a nil value when it deletes it (empty, or already expired).
+    static func parse(from response: HTTPURLResponse, url: URL) -> (host: String, value: String?)? {
+        guard let host = url.host else { return nil }
         var fields: [String: String] = [:]
         for (name, value) in response.allHeaderFields {
             guard let name = name as? String, let value = value as? String else { continue }
             fields[name.caseInsensitiveCompare("Set-Cookie") == .orderedSame ? "Set-Cookie" : name] = value
         }
         let cookies = HTTPCookie.cookies(withResponseHeaderFields: fields, for: url)
-        guard let cookie = cookies.last(where: { $0.name == Self.name }) else { return }
+        guard let cookie = cookies.last(where: { $0.name == Self.name }) else { return nil }
         let emptied = cookie.value.isEmpty || cookie.value == "\"\""
         let expired = cookie.expiresDate.map { $0 <= Date() } ?? false
-        secrets.set(key(host), emptied || expired ? nil : cookie.value)
+        return (host, emptied || expired ? nil : cookie.value)
+    }
+
+    func set(host: String, value: String) {
+        secrets.set(key(host), value)
     }
 
     func clear(host: String) {

@@ -51,7 +51,7 @@ struct KioskAuthTests {
         let h = Harness()
         var stopped = 0
         h.auth.onLogout = { stopped += 1 }
-        h.auth.completePair(fakeSession())
+        await h.auth.completePair(fakeSession())
         #expect(h.auth.takePendingSignIn() == .link)
         await h.auth.logout()
         #expect(h.api.calls == ["signOut", "logout"])
@@ -60,9 +60,17 @@ struct KioskAuthTests {
         #expect(stopped == 1)
     }
 
-    @Test func endSessionFlipsToAnon() {
+    @Test func completePairKeepsTheSessionAndItsCookie() async {
         let h = Harness()
-        h.auth.completePair(fakeSession())
+        let cookie = PairCookie(host: "api.example.com", value: "p1")
+        await h.auth.completePair(fakeSession(), cookie: cookie)
+        #expect(h.refresher.stored == fakeSession())
+        #expect(h.refresher.adoptedCookie == cookie)
+    }
+
+    @Test func endSessionFlipsToAnon() async {
+        let h = Harness()
+        await h.auth.completePair(fakeSession())
         h.auth.endSession()
         #expect(h.auth.state == .anon)
     }
@@ -110,7 +118,7 @@ struct KioskAuthTests {
 
         h.prefs.setupSelection = testSelection(initiativeId: "i1")
         h.prefs.setupState = .complete
-        h.auth.completePair(fakeSession(kioskMove: KioskMove(initiativeId: "i2", name: "Other")))
+        await h.auth.completePair(fakeSession(kioskMove: KioskMove(initiativeId: "i2", name: "Other")))
         #expect(h.prefs.setupSelection == nil)
     }
 
