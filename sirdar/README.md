@@ -99,11 +99,18 @@ What it does:
 - Sparse-checks out `sirdar/` plus the portal files the SPA imports into
   `SIRDAR_DIR`, owned by you.
 - **First run:** writes `sirdar/.env` (mode 600) from `.env.example`. With a
-  terminal it asks for the port, cookie domain, portal database URL, password
+  terminal it asks for the port, listen address, cookie domain, public URL(s)
+  for CORS, portal database URL, password
   pepper, 2FA key, JWT secret and database password; press Enter to accept
   the default or generate a secret. Without a terminal, or with
   `SIRDAR_NONINTERACTIVE=1`, it generates every secret. Prompts go to the terminal, not stdout, so
   `curl ... | bash > install.log` still shows them.
+- **Later runs:** keeps your `.env`, and asks only for settings added since
+  your install (`SIRDAR_BIND`, `SIRDAR_ALLOWED_ORIGINS`,
+  `SIRDAR_PASSWORD_MIN_LENGTH`) that the file doesn't have yet; a line that is
+  present, even blank, is never re-asked or rewritten. Answers are appended
+  (mode 600, existing lines untouched). Without a terminal nothing is written
+  and the installer lists which settings are using their defaults.
 - Builds and starts the stack, waits for it to be healthy, and, when Sirdar
   has no users yet and a terminal is available, offers to create the first
   local admin (the first attempt plus up to 3 retries). It ends with the URL and the admin commands.
@@ -126,6 +133,23 @@ The app serves plain HTTP. The sign-in cookie is marked `Secure` (production)
 and, when `SIRDAR_COOKIE_DOMAIN` is set, only works on that domain, so browsing
 to `http://<ip>:<port>` directly will not keep you signed in. Use the proxy's
 HTTPS hostname.
+
+### Public URL for CORS (`SIRDAR_ALLOWED_ORIGINS`)
+
+The fourth first-install prompt sets `SIRDAR_ALLOWED_ORIGINS`: the address
+people use in the browser, e.g. `https://sirdar.example.com` (comma-separate
+several; each is `http(s)://host[:port]`, no path, a trailing `/` is dropped).
+Listed origins may call the API from the browser with credentials (allowed
+headers: `Authorization`, `Content-Type`, `X-Totp-Challenge`). Blank, the
+default, means same-origin only and sends no CORS headers; that is normal,
+because the web app and API are served from the same origin. It is only needed
+when another site calls the API. A bad value stops the API from starting.
+
+### Minimum password length (`SIRDAR_PASSWORD_MIN_LENGTH`)
+
+Minimum length for local passwords set with the CLI: 4 to 128, default 8 (the
+portal's default). Asked about only when re-running the installer on a `.env`
+that lacks it.
 
 ### Supported systems
 

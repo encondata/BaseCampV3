@@ -250,12 +250,158 @@ has_bad_chars() {  # single quote or a line break can't go into the env file
   return 1
 }
 
+# Settings added after the first release. Re-running the installer on an
+# existing .env asks only for the ones the file doesn't have yet. Add new
+# keys to the END of this list and give each a prompt in prompt_new_setting
+# and a default in new_setting_default.
+NEW_SETTINGS=(SIRDAR_BIND SIRDAR_ALLOWED_ORIGINS SIRDAR_PASSWORD_MIN_LENGTH)
+
+# normalize_origins "a, b/" -> "a,b" (trailing slashes stripped); returns 1 and
+# prints nothing unless every entry is http(s)://host[:port] with no path.
+normalize_origins() {
+  local raw="$1" part out='' o
+  local IFS=,
+  for part in $raw; do
+    o=$(printf '%s' "$part" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    o=${o%/}
+    [ -n "$o" ] || continue
+    printf '%s' "$o" | grep -Eq '^https?://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?$' || return 1
+    out="${out:+$out,}$o"
+  done
+  printf '%s' "$out"
+}
+
+# The three prompts below set the CALLER's locals (dynamic scope) so first
+# install and "new settings on an existing install" share one definition.
+# prompt_bind LABEL DEFAULT  -> bind, s_bind
+prompt_bind() {
+  local a
+  while :; do
+    ask a "$1Listen address [127.0.0.1 = this machine only; 0.0.0.0 = LAN] [$2]: " || die_eof
+    [ -z "$a" ] && a="$2"
+    if ! valid_ipv4 "$a"; then
+      echo "     Enter 0.0.0.0, 127.0.0.1, or an IPv4 address such as 10.10.48.14." >&4; continue
+    fi
+    if [ "$a" != 0.0.0.0 ] && [ "$a" != 127.0.0.1 ] && ! bind_on_host "$a"; then
+      warn "$a is not assigned to this host; Docker will fail to publish the port unless it is." 2>&4
+    fi
+    bind="$a"
+    if [ "$a" != "$2" ]; then s_bind='provided'; fi
+    break
+  done
+}
+
+# prompt_origins LABEL -> origins, s_origins
+prompt_origins() {
+  local a n
+  while :; do
+    ask a "$1Public URL(s) for CORS: the address people use in the browser, e.g. https://sirdar.example.com (comma-separate several) [blank = same-origin only]: " || die_eof
+    if has_bad_chars "$a"; then echo "     No quotes, please." >&4; continue; fi
+    if ! n=$(normalize_origins "$a"); then
+      echo "     Each URL must look like https://host[:port] (http or https, no path)." >&4; continue
+    fi
+    origins="$n"
+    [ -n "$n" ] && s_origins='provided'
+    break
+  done
+}
+
+# prompt_minlen LABEL DEFAULT -> minlen, s_minlen
+prompt_minlen() {
+  local a
+  while :; do
+    ask a "$1Minimum length for local passwords, 4 to 128 [$2]: " || die_eof
+    [ -z "$a" ] && a="$2"
+    case "$a" in ''|*[!0-9]*) echo "     Enter a whole number from 4 to 128." >&4; continue ;; esac
+    if [ "${#a}" -gt 3 ] || [ "$a" -lt 4 ] || [ "$a" -gt 128 ]; then
+      echo "     Enter a whole number from 4 to 128." >&4; continue
+    fi
+    minlen="$a"
+    if [ "$a" != "$2" ]; then s_minlen='provided'; fi
+    break
+  done
+}
+
+new_setting_default() {  # new_setting_default KEY -> the default used when not asked
+  case "$1" in
+    SIRDAR_BIND) printf '%s' "${SIRDAR_BIND:-127.0.0.1}" ;;
+    SIRDAR_ALLOWED_ORIGINS) printf '' ;;
+    SIRDAR_PASSWORD_MIN_LENGTH) printf '8' ;;
+  esac
+}
+
+# add_new_settings TARGET: for an existing .env, ask for (interactive) or
+# report (non-interactive) the NEW_SETTINGS the file lacks. A present line,
+# even a blank one, counts as present. Existing bytes are never changed:
+# the additions are appended to a copy that replaces the file (temp + mv).
+add_new_settings() {
+  local target="$1" key missing=() tmp
+  local bind origins minlen s_bind s_origins s_minlen v
+  for key in "${NEW_SETTINGS[@]}"; do
+    grep -q "^$key=" "$target" || missing+=("$key")
+  done
+  [ "${#missing[@]}" -gt 0 ] || return 0
+
+  bind=$(new_setting_default SIRDAR_BIND);                s_bind='default'
+  origins='';                                             s_origins='default (blank: same-origin only)'
+  minlen=$(new_setting_default SIRDAR_PASSWORD_MIN_LENGTH); s_minlen='default'
+
+  if ! interactive; then
+    info "Settings added since your install are using their defaults (not written to $target): ${missing[*]}"
+    return 0
+  fi
+
+  open_tty
+  echo >&4
+  info "New settings since your install: ${missing[*]}" >&4
+  echo "    Press Enter to accept the [default]." >&4
+  echo >&4
+  for key in "${missing[@]}"; do
+    case "$key" in
+      SIRDAR_BIND)
+        bind=$(new_setting_default SIRDAR_BIND)
+        prompt_bind "" "$bind" ;;
+      SIRDAR_ALLOWED_ORIGINS) prompt_origins "" ;;
+      SIRDAR_PASSWORD_MIN_LENGTH) prompt_minlen "" "$minlen" ;;
+    esac
+  done
+  close_tty
+
+  tmp=$(mktemp "$target.new.XXXXXX")
+  TMP_FILES+=("$tmp")
+  chmod 600 "$tmp"
+  cat "$target" >"$tmp"
+  # A file without a final newline would otherwise glue the first new key onto its last line.
+  [ ! -s "$tmp" ] || [ -z "$(tail -c 1 "$tmp")" ] || printf '\n' >>"$tmp"
+  for key in "${missing[@]}"; do
+    case "$key" in
+      SIRDAR_BIND) v=$bind ;;
+      SIRDAR_ALLOWED_ORIGINS) v=$origins ;;
+      SIRDAR_PASSWORD_MIN_LENGTH) v=$minlen ;;
+    esac
+    printf '%s=%s\n' "$key" "$(env_quote "$v")" >>"$tmp"
+  done
+  chmod 600 "$tmp"
+  mv "$tmp" "$target"
+
+  info "Added to $target:"
+  for key in "${missing[@]}"; do
+    case "$key" in
+      SIRDAR_BIND) printf '    %-28s %s\n' "$key" "$bind ($s_bind)" ;;
+      SIRDAR_ALLOWED_ORIGINS) printf '    %-28s %s\n' "$key" "${origins:-$s_origins}" ;;
+      SIRDAR_PASSWORD_MIN_LENGTH) printf '    %-28s %s\n' "$key" "$minlen ($s_minlen)" ;;
+    esac
+  done
+  if printf '%s\n' "${missing[@]}" | grep -qx SIRDAR_BIND; then bind_exposure_warning "$bind"; fi
+  echo
+}
+
 # ── .env creation (first run only) ────────────────────────────────────
 # write_env EXAMPLE TARGET: prompt (when interactive) and write TARGET, mode 600.
 write_env() {
   local example="$1" target="$2"
-  local port bind cookie source pepper totp jwt dbpw
-  local s_port s_bind s_cookie s_source s_pepper s_totp s_jwt s_dbpw
+  local port bind cookie origins source pepper totp jwt dbpw
+  local s_port s_bind s_cookie s_origins s_source s_pepper s_totp s_jwt s_dbpw
   local def_port="${SIRDAR_PORT:-8098}" def_bind="${SIRDAR_BIND:-127.0.0.1}" a yn
 
   [ -f "$target" ] && die "$target already exists; refusing to overwrite it."
@@ -266,6 +412,7 @@ write_env() {
   bind="$def_bind"; s_bind='default'
   [ -n "${SIRDAR_BIND:-}" ] && s_bind='from SIRDAR_BIND'
   cookie=''; s_cookie='default (blank: this host only)'
+  origins=''; s_origins='default (blank: same-origin only)'
   source=''; s_source='default (blank: import disabled)'
   pepper=''; s_pepper='generated'
   totp='';   s_totp='generated'
@@ -281,7 +428,7 @@ write_env() {
 
     # 1. Port
     while :; do
-      ask a "1/8  Host port for Sirdar [$def_port]: " || die_eof
+      ask a "1/9  Host port for Sirdar [$def_port]: " || die_eof
       [ -z "$a" ] && a="$def_port"
       case "$a" in ''|*[!0-9]*) echo "     Enter a number from 1024 to 65535." >&4; continue ;; esac
       if [ "${#a}" -gt 5 ] || [ "$a" -lt 1024 ] || [ "$a" -gt 65535 ]; then
@@ -298,23 +445,11 @@ write_env() {
     done
 
     # 2. Listen address
-    while :; do
-      ask a "2/8  Listen address [127.0.0.1 = this machine only; 0.0.0.0 = LAN] [$def_bind]: " || die_eof
-      [ -z "$a" ] && a="$def_bind"
-      if ! valid_ipv4 "$a"; then
-        echo "     Enter 0.0.0.0, 127.0.0.1, or an IPv4 address such as 10.10.48.14." >&4; continue
-      fi
-      if [ "$a" != 0.0.0.0 ] && [ "$a" != 127.0.0.1 ] && ! bind_on_host "$a"; then
-        warn "$a is not assigned to this host; Docker will fail to publish the port unless it is." 2>&4
-      fi
-      bind="$a"
-      if [ "$a" != "$def_bind" ]; then s_bind='provided'; fi
-      break
-    done
+    prompt_bind "2/9  " "$def_bind"
 
     # 3. Cookie domain
     while :; do
-      ask a "3/8  Cookie domain for the sign-in cookie [blank = this host only]: " || die_eof
+      ask a "3/9  Cookie domain for the sign-in cookie [blank = this host only]: " || die_eof
       case "$a" in *[[:space:]]*) echo "     No spaces, please." >&4; continue ;; esac
       if has_bad_chars "$a"; then echo "     No quotes, please." >&4; continue; fi
       cookie="$a"
@@ -322,8 +457,11 @@ write_env() {
       break
     done
 
-    # 4. Portal source database
-    echo "4/8  Portal database URL for \"Import from portal\" (a read-only role is recommended)." >&4
+    # 4. Public URL(s) for CORS
+    prompt_origins "4/9  "
+
+    # 5. Portal source database
+    echo "5/9  Portal database URL for \"Import from portal\" (a read-only role is recommended)." >&4
     while :; do
       ask a "     postgresql+asyncpg://user:pass@host:5432/db [blank = import disabled]: " || die_eof
       if [ -n "$a" ]; then
@@ -340,7 +478,7 @@ write_env() {
     done
 
     # 5. Password pepper
-    echo "5/8  Password pepper. Paste the portal's value to import portal users with their passwords." >&4
+    echo "6/9  Password pepper. Paste the portal's value to import portal users with their passwords." >&4
     while :; do
       ask_secret a "     SS_PASSWORD_PEPPER [Enter = generate]: " || die_eof
       if [ -n "$a" ] && has_bad_chars "$a"; then echo "     No quotes, please." >&4; continue; fi
@@ -349,7 +487,7 @@ write_env() {
     done
 
     # 6. 2FA encryption key
-    echo "6/8  2FA encryption key (a Fernet key). Paste the portal's value to keep imported 2FA working." >&4
+    echo "7/9  2FA encryption key (a Fernet key). Paste the portal's value to keep imported 2FA working." >&4
     while :; do
       ask_secret a "     SS_TOTP_ENCRYPTION_KEY [Enter = generate]: " || die_eof
       if [ -n "$a" ]; then
@@ -364,7 +502,7 @@ write_env() {
 
     # 7. JWT secret
     while :; do
-      ask_secret a "7/8  SIRDAR_JWT_SECRET (at least 32 characters) [Enter = generate]: " || die_eof
+      ask_secret a "8/9  SIRDAR_JWT_SECRET (at least 32 characters) [Enter = generate]: " || die_eof
       if [ -n "$a" ]; then
         if [ "${#a}" -lt 32 ]; then echo "     It must be at least 32 characters." >&4; continue; fi
         if has_bad_chars "$a"; then echo "     No quotes, please." >&4; continue; fi
@@ -375,7 +513,7 @@ write_env() {
 
     # 8. Database password
     while :; do
-      ask_secret a "8/8  SIRDAR_DB_PASSWORD for Sirdar's own Postgres (16+ characters) [Enter = generate]: " || die_eof
+      ask_secret a "9/9  SIRDAR_DB_PASSWORD for Sirdar's own Postgres (16+ characters) [Enter = generate]: " || die_eof
       if [ -n "$a" ]; then
         if [ "${#a}" -lt 16 ]; then echo "     It must be at least 16 characters." >&4; continue; fi
         case "$a" in
@@ -416,6 +554,7 @@ write_env() {
   set_env_key SIRDAR_JWT_SECRET "$jwt" "$tmp"
   set_env_key SIRDAR_SOURCE_DATABASE_URL "$source" "$tmp"
   set_env_key SIRDAR_COOKIE_DOMAIN "$cookie" "$tmp"
+  set_env_key SIRDAR_ALLOWED_ORIGINS "$origins" "$tmp"
   set_env_key SS_PASSWORD_PEPPER "$pepper" "$tmp"
   set_env_key SS_TOTP_ENCRYPTION_KEY "$totp" "$tmp"
   chmod 600 "$tmp"
@@ -427,6 +566,7 @@ write_env() {
     SIRDAR_PORT "$port ($s_port)" \
     SIRDAR_BIND "$bind ($s_bind)" \
     SIRDAR_COOKIE_DOMAIN "$s_cookie" \
+    SIRDAR_ALLOWED_ORIGINS "${origins:-$s_origins}" \
     SIRDAR_SOURCE_DATABASE_URL "$s_source" \
     SS_PASSWORD_PEPPER "$s_pepper" \
     SS_TOTP_ENCRYPTION_KEY "$s_totp" \
@@ -1413,6 +1553,7 @@ main() {
 
   if [ -f "$DIR/sirdar/.env" ]; then
     info "Keeping existing $DIR/sirdar/.env"
+    add_new_settings "$DIR/sirdar/.env"
   else
     write_env "$DIR/sirdar/.env.example" "$DIR/sirdar/.env"
   fi
