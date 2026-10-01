@@ -52,6 +52,10 @@ class Upstream:
         except httpx.TransportError as exc:
             self.online = False
             raise CloudOffline(str(exc)) from exc
+        finally:
+            # Cloud cookies belong to one person; the jar must never carry
+            # them to another request. Explicit Cookie headers still work.
+            self.client.cookies.clear()
         self.online = True
         self.last_contact = now_iso()
         return resp
@@ -76,6 +80,16 @@ class Upstream:
             "updated_at = excluded.updated_at",
             (person_id, encrypt(self.keys, refresh_token), encrypt(self.keys, access_token),
              expires, now_iso()))
+
+    def _store_tokens(self, person_id: str, refresh_token: str, access_token: str,
+                      expires_in: int) -> None:
+        """Refresh path: tokens and expiry only; never touches `ending`."""
+        expires = iso(datetime.now(UTC) + timedelta(seconds=expires_in - 30))
+        self.store.run(
+            "UPDATE cloud_sessions SET refresh_enc = ?, access_enc = ?, access_expires_at = ?, "
+            "updated_at = ? WHERE person_id = ?",
+            (encrypt(self.keys, refresh_token), encrypt(self.keys, access_token), expires,
+             now_iso(), person_id))
 
     def has_session(self, person_id: str) -> bool:
         return self.store.one("SELECT 1 FROM cloud_sessions WHERE person_id = ?",
@@ -125,9 +139,8 @@ class Upstream:
             if resp.status_code != 200:
                 raise CloudOffline(f"refresh answered {resp.status_code}")
             data = resp.json()
-            self.save_session(person_id,
-                              refresh_token=refresh_cookie_from(resp) or refresh_token,
-                              access_token=data["access_token"], expires_in=data["expires_in"])
+            self._store_tokens(person_id, refresh_cookie_from(resp) or refresh_token,
+                               data["access_token"], data["expires_in"])
             return data["access_token"]
 
     async def as_person(self, person_id: str, method: str, path: str,
@@ -149,13 +162,14 @@ class Upstream:
         return resp
 
     async def end_session(self, person_id: str) -> bool:
-        refresh_token = self._refresh_token(person_id)
-        if refresh_token is None:
+        async with self._locks.setdefault(person_id, asyncio.Lock()):
+            refresh_token = self._refresh_token(person_id)
+            if refresh_token is None:
+                return True
+            try:
+                await self.request("POST", "/auth/logout",
+                                   headers={"Cookie": f"{REFRESH_COOKIE}={refresh_token}"})
+            except CloudOffline:
+                return False
+            self.drop_session(person_id)
             return True
-        try:
-            await self.request("POST", "/auth/logout",
-                               headers={"Cookie": f"{REFRESH_COOKIE}={refresh_token}"})
-        except CloudOffline:
-            return False
-        self.drop_session(person_id)
-        return True

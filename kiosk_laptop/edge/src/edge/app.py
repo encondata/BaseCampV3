@@ -1,6 +1,6 @@
 """The edge app factory. State is built eagerly (not in lifespan) so tests
 driving the app through httpx.ASGITransport — which runs no lifespan — see
-the same app the container runs; lifespan only starts background work."""
+the same app the container runs; lifespan closes the upstream client and store on shutdown (and, later, runs background work)."""
 
 import json
 from contextlib import asynccontextmanager
@@ -25,9 +25,13 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        yield
-        await app.state.upstream.aclose()
-        app.state.store.close()
+        try:
+            yield
+        finally:
+            try:
+                await app.state.upstream.aclose()
+            finally:
+                app.state.store.close()
 
     app = FastAPI(lifespan=lifespan, title="ServerSherpa Kiosk Edge", docs_url=None, redoc_url=None,
                   openapi_url=None)

@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 import pytest
 
@@ -82,3 +84,45 @@ async def test_tokens_are_encrypted_at_rest(app):
                                      expires_in=900)
     row = app.state.store.one("SELECT * FROM cloud_sessions WHERE person_id='p-1'")
     assert "r1-secret" not in row["refresh_enc"] and "a1-secret" not in row["access_enc"]
+
+
+async def test_refresh_cookie_never_leaks_to_other_requests(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=-60)
+    cloud.get("/kiosk/setup-options").respond(200, json={})
+    cloud.post("/auth/refresh").respond(
+        200, json={"access_token": "a2", "expires_in": 900}, headers=_set_cookie("r2"))
+    login = cloud.post("/auth/login").respond(200, json={})
+    await up.as_person("p-1", "GET", "/kiosk/setup-options")
+    await up.request("POST", "/auth/login", json={"email": "x"})
+    assert "cookie" not in login.calls[0].request.headers
+
+
+async def test_refresh_keeps_ending_flag(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=-60)
+    up.mark_ending("p-1")
+    cloud.get("/kiosk/setup-options").respond(200, json={})
+    cloud.post("/auth/refresh").respond(200, json={"access_token": "a2", "expires_in": 900})
+    await up.as_person("p-1", "GET", "/kiosk/setup-options")
+    assert "p-1" in up.ending_people()
+
+
+async def test_concurrent_requests_refresh_once(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=-60)
+    cloud.get("/kiosk/setup-options").respond(200, json={})
+    refresh = cloud.post("/auth/refresh").respond(
+        200, json={"access_token": "a2", "expires_in": 900}, headers=_set_cookie("r2"))
+    r = await asyncio.gather(*[up.as_person("p-1", "GET", "/kiosk/setup-options")
+                               for _ in range(2)])
+    assert all(x.status_code == 200 for x in r)
+    assert refresh.call_count == 1
+
+
+async def test_end_session_offline_keeps_session(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    cloud.post("/auth/logout").mock(side_effect=httpx.ConnectError("down"))
+    assert await up.end_session("p-1") is False
+    assert up.has_session("p-1") is True
