@@ -28,7 +28,7 @@ def test_access_token_resolves_to_session(app):
 
 
 def test_foreign_or_tampered_tokens_rejected(app):
-    bad = jwt.encode({"sid": "x", "typ": "edge", "exp": 9999999999}, "other", algorithm="HS256")
+    bad = jwt.encode({"sid": "x", "typ": "edge", "exp": 9999999999}, "other-key-that-is-at-least-32-bytes!", algorithm="HS256")
     assert sessions.from_access_token(app.state.store, app.state.keys, bad) is None
     assert sessions.from_access_token(app.state.store, app.state.keys, "cloud-access-1") is None
 

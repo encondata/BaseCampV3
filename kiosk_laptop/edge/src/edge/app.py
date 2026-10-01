@@ -22,7 +22,7 @@ from edge.routes import proxy
 from edge.sync import Syncer
 from edge.upstream import Upstream
 
-API_PREFIXES = ("/auth/", "/kiosk/", "/system/")
+API_PREFIXES = ("/auth/", "/kiosk/", "/system/", "/edge/")
 
 
 def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
@@ -72,6 +72,8 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def catch_all(request: Request, full_path: str) -> Response:
         path = "/" + full_path
+        if path.startswith("/edge/"):
+            return Response(status_code=404)  # the laptop's own namespace: never proxied
         if path.startswith(API_PREFIXES):
             return await proxy.forward(request, path)
         if request.method != "GET":
