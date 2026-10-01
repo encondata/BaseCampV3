@@ -361,3 +361,53 @@ sections above where they differ.
   queue too.
 - **Rename:** the web kiosk lets anyone rename; the laptop restricts it
   to admins (rank 60+), enforced by the edge.
+
+## Implementation notes (2026-10-01, after the build)
+
+Decisions made at the final review (Jimmy) and what the build changed:
+
+- **Reconnect keeps offline sign-ins working.** A person with no cloud
+  session (offline sign-in, offline move-password sign-in) gets 403
+  `cloud_sign_in_required` from the edge — never 401, which the kiosk would
+  treat as "session ended" — and the heartbeat answers 503 `edge_offline` in
+  that state. Online-only screens show "Sign in again while online to do
+  this." The cloud session a signed-out person left behind stays alive while
+  they still have a live edge session on the laptop, so in practice an
+  offline re-sign-in usually uploads and heartbeats normally once back online.
+- **Unhealthy cloud = offline.** 502/503/504 count as offline (offline
+  sign-in, cached reads, no outbox attempts spent). Other transient answers
+  (5xx, 408, 423, 429) retry at 900 s forever; `failed` is only for
+  non-transient 4xx and malformed answers.
+- **Move-password endpoint** serves only a registered `laptop` kiosk that the
+  caller is signed in on (`not_a_laptop` / `device_not_registered` /
+  `not_signed_in_here`), returns a `version`, and with a matching `have=`
+  answers `unchanged` with no argon2 work and no audit row. The edge sync
+  acts as the person signed in now (person sessions before move sessions).
+- **Revoked/disabled accounts lose offline sign-in:** any 401/403 from the
+  cloud's refresh other than `session_expired` deletes that person's
+  verifiers.
+- **2FA:** the cloud exempts `client: "kiosk"` sign-ins from 2FA, so 2FA users
+  do get offline verifiers; `/auth/totp/verify` is still adopted (never
+  handed to the browser) for when that changes, and a 2FA challenge on login
+  forgets the verifier.
+- **Hardening added:** inert httpx cookie jar (no cross-person refresh-token
+  bleed), path-escape refusal (`.`/`..` segments, `%2f`, `%5c`, `%25`),
+  TrustedHostMiddleware (`EDGE_ALLOWED_HOSTS`), scan item validation, CAS on
+  refresh rotation, per-person ordering in the outbox, `sent` rows pruned
+  after 7 days, HEALTHCHECK.
+- **README:** `EDGE_BIND` must stay `127.0.0.1` until TLS lands.
+- **Live verify (2026-10-01):** branch API on :8001, container against
+  `host.docker.internal:8001`. Online sign-in registered one `laptop` device;
+  Kiosk Setup on NAP11 synced 187 assets / 119 people / 25 containers /
+  2 trucks plus the move-password hash; an online scan reached `raw_scans`;
+  with the API stopped, offline sign-in worked and two scans queued; with
+  it restarted they drained into `raw_scans` and the session stayed signed
+  in; `--force-recreate` kept the serial and the single device row. Not
+  exercised live: offline move-password sign-in (covered by tests), WebUSB
+  printing on hardware.
+
+Known follow-ups: offline sign-out isn't replayed to the cloud (the Device
+keeps `session_person_id` until the next sign-in); cloud sessions replaced
+on re-adopt or wipe aren't logged out (expire in 24 h); container runs as
+root (matters only on Linux hosts); `/edge/status` first poll after a reload
+is anonymous so the "Sign-in Offline" footer item appears on the next poll.
