@@ -4452,6 +4452,13 @@ export interface DeviceItem {
   current_initiative_id: string | null; current_initiative_name: string | null;
   session_person_id: string | null; session_person_name: string | null;
   session_login_method: string | null; session_started_at: string | null;
+  station_type?: 'label' | 'rfid' | null;
+  rfid_reader?: DeviceRfidReader | null;
+}
+
+export interface DeviceRfidReader {
+  ip: string; serial: string | null; model: string | null;
+  versions: Record<string, string> | null; paired_at: string | null;
 }
 
 export async function listDevices(deviceType?: string): Promise<DeviceItem[]> {

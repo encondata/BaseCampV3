@@ -86,6 +86,7 @@ function kiosk(overrides: Partial<DeviceItem>): DeviceItem {
     current_initiative_id: 'i1', current_initiative_name: 'NAP11 Hall Migration (demo)',
     session_person_id: null, session_person_name: null,
     session_login_method: null, session_started_at: null,
+    station_type: null, rfid_reader: null,
     ...overrides,
   };
 }
@@ -574,4 +575,55 @@ it('clears a lingering clear-offline notice once another action runs', async () 
   expect(screen.queryByText(/Deleted 1 kiosk/)).toBeNull();
 
   confirmSpy.mockRestore();
+});
+
+const READER = {
+  ip: '192.168.8.77', serial: '23001010101010', model: 'FX9600',
+  versions: { readerApplication: '3.4.2', radioFirmware: '2.1.0', cloudAgentApplication: '1.9.9' },
+  paired_at: '2026-10-01T15:30:00Z',
+};
+
+const STATION_DEVICES: DeviceItem[] = [
+  kiosk({ id: 's1', name: 'station-rfid', sub_type: 'laptop', station_type: 'rfid', rfid_reader: READER }),
+  kiosk({ id: 's2', name: 'station-label', sub_type: 'laptop', station_type: 'label' }),
+  kiosk({ id: 's3', name: 'plain-pi', sub_type: 'pi' }),
+];
+
+it('stationTypeLabel maps station and sub type', async () => {
+  const { stationTypeLabel } = await import('../lib/devices');
+  expect(stationTypeLabel(STATION_DEVICES[0])).toBe('RFID \u00b7 Laptop');
+  expect(stationTypeLabel(STATION_DEVICES[1])).toBe('Label Station \u00b7 Laptop');
+  expect(stationTypeLabel(kiosk({ station_type: 'rfid', sub_type: 'pi' }))).toBe('RFID \u00b7 Pi');
+  expect(stationTypeLabel(STATION_DEVICES[2])).toBe('Pi');
+});
+
+it('Type column and filter options use the station labels', async () => {
+  api.listDevices.mockResolvedValue(STATION_DEVICES);
+  render(<KioskDevices />);
+  await screen.findByText('station-rfid');
+  expect(screen.getByText('RFID \u00b7 Laptop')).not.toBeNull();
+  expect(screen.getByText('Label Station \u00b7 Laptop')).not.toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: /filter/i }));
+  const rfid = await screen.findAllByText('RFID \u00b7 Laptop');
+  expect(rfid.length).toBeGreaterThan(1);
+  expect(screen.getAllByText('Label Station \u00b7 Laptop').length).toBeGreaterThan(1);
+});
+
+it('shows the Reader panel for an RFID kiosk only', async () => {
+  api.listDevices.mockResolvedValue(STATION_DEVICES);
+  render(<KioskDevices />);
+  const row = (await screen.findByText('station-rfid')).closest('.dir-row') as HTMLElement;
+  expect(within(row).queryByText('Reader')).toBeNull();
+  await userEvent.click(row.querySelector('.row-main') as HTMLElement);
+  expect(within(row).getByText('Reader')).not.toBeNull();
+  expect(within(row).getByText('192.168.8.77')).not.toBeNull();
+  expect(within(row).getByText('FX9600')).not.toBeNull();
+  expect(within(row).getByText('23001010101010')).not.toBeNull();
+  expect(within(row).getByText('3.4.2')).not.toBeNull();
+  expect(within(row).getByText('2.1.0')).not.toBeNull();
+  expect(within(row).getByText('1.9.9')).not.toBeNull();
+  const other = (screen.getByText('station-label')).closest('.dir-row') as HTMLElement;
+  await userEvent.click(other.querySelector('.row-main') as HTMLElement);
+  expect(within(other).queryByText('Reader')).toBeNull();
+  expect(screen.getAllByText('Reader')).toHaveLength(1);
 });

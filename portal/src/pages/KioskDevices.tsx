@@ -37,7 +37,7 @@ import {
 } from '../lib/columnMenu';
 import {
   deviceCellText, deviceSearchText, deviceSortValue, loginMethodLabel, registrationLabel,
-  subTypeLabel, tokenExpiryState,
+  stationTypeLabel, tokenExpiryState,
 } from '../lib/devices';
 import {
   ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
@@ -61,7 +61,7 @@ import '../styles/hardware.css';
 // shows whenever the column actually has the room.
 const COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: '1.2fr', default: true, min: 140 },
-  { key: 'sub_type', label: 'Type', width: '72px', default: true },
+  { key: 'sub_type', label: 'Type', width: '72px', default: true, min: 104 },
   { key: 'ip', label: 'IP', width: '1fr', default: true, min: 100 },
   { key: 'mac', label: 'MAC', width: '1fr', default: true, min: 100 },
   { key: 'version', label: 'Version', short: 'Ver', width: '72px', default: true },
@@ -141,6 +141,36 @@ interface ClearOfflinePreview {
   total: number;
 }
 
+function ChevronIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+         strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+  );
+}
+
+/** The paired RFID reader, shown in the row's expansion. */
+function ReaderPanel({ reader }: { reader: NonNullable<DeviceItem['rfid_reader']> }) {
+  const v = reader.versions ?? {};
+  const dash = (x: string | null | undefined) => x || '\u2014';
+  return (
+    <div className="detail-grid">
+      <div className="detail-block">
+        <p className="eyebrow-sm">Reader</p>
+        <dl className="kv">
+          <dt>IP</dt><dd className="mono">{reader.ip}</dd>
+          <dt>Model</dt><dd>{dash(reader.model)}</dd>
+          <dt>Serial</dt><dd className="mono">{dash(reader.serial)}</dd>
+          <dt>Reader app</dt><dd>{dash(v.readerApplication)}</dd>
+          <dt>Radio firmware</dt><dd>{dash(v.radioFirmware)}</dd>
+          <dt>Cloud agent</dt><dd>{dash(v.cloudAgentApplication)}</dd>
+          <dt>Paired</dt>
+          <dd>{reader.paired_at ? new Date(reader.paired_at).toLocaleString() : '\u2014'}</dd>
+        </dl>
+      </div>
+    </div>
+  );
+}
+
 export default function KioskDevices() {
   const { can, maxRank, preferences } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
@@ -158,6 +188,7 @@ export default function KioskDevices() {
   const [notice, setNotice] = useState('');
   const [query, setQuery] = useState('');
   const [facets, setFacets] = useState<FacetState>({});
+  const [openId, setOpenId] = useState<string | null>(null);
   const [editing, setEditing] = useState<DeviceItem | 'new' | null>(null);
   const [registering, setRegistering] = useState<DeviceItem | null>(null);
   // null = the modal is closed; an object (even one with an empty `matches`)
@@ -200,7 +231,7 @@ export default function KioskDevices() {
     const sites = new Set<string>();
     const loginMethods = new Set<string>();
     for (const d of devices ?? []) {
-      subTypes.add(subTypeLabel(d.sub_type));
+      subTypes.add(stationTypeLabel(d));
       registrations.add(registrationLabel(tokenExpiryState(d.token_expires_at)));
       sites.add(d.site_name ?? '—');
       loginMethods.add(loginMethodLabel(d.session_login_method));
@@ -220,7 +251,7 @@ export default function KioskDevices() {
   }, [devices]);
 
   const facetValues = (d: DeviceItem) => (groupKey: string): string[] => {
-    if (groupKey === 'sub_type') return [subTypeLabel(d.sub_type)];
+    if (groupKey === 'sub_type') return [stationTypeLabel(d)];
     if (groupKey === 'registration') return [registrationLabel(tokenExpiryState(d.token_expires_at))];
     if (groupKey === 'site') return [d.site_name ?? '—'];
     if (groupKey === 'login_method') return [loginMethodLabel(d.session_login_method)];
@@ -341,7 +372,7 @@ export default function KioskDevices() {
       case 'sub_type':
         return d.sub_type == null
           ? <span>—</span>
-          : <span className="chip tag">{subTypeLabel(d.sub_type)}</span>;
+          : <span className="chip tag" title={stationTypeLabel(d)}>{stationTypeLabel(d)}</span>;
       case 'registration': {
         const state = tokenExpiryState(d.token_expires_at);
         const cls = state === 'ok' ? 'chip c-green'
@@ -467,13 +498,24 @@ export default function KioskDevices() {
           <VirtualRows rows={visible}
             renderRow={(d, vp) => {
               const state = tokenExpiryState(d.token_expires_at);
+              const open = openId === d.id && d.rfid_reader != null;
               return (
-                <div key={d.id} className="dir-row" {...vp} style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
-                  <div className="row-main" style={rowStyle}>
+                <div key={d.id} className={`dir-row${open ? ' open' : ''}`} {...vp}
+                     style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
+                  <div className="row-main" style={rowStyle}
+                       onClick={d.rfid_reader ? () => setOpenId(open ? null : d.id) : undefined}>
                     {shownCols.map((c) => (
                       <div className="cell" key={c.key}>{cellFor(d, c.key)}</div>
                     ))}
-                    <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end', gap: 4 }}
+                         onClick={(e) => e.stopPropagation()}>
+                      {d.rfid_reader && (
+                        <button type="button" className="chevron-cell" aria-label="Show reader"
+                                aria-expanded={open} onClick={() => setOpenId(open ? null : d.id)}
+                                style={{ background: 'none', border: 0, padding: 0 }}>
+                          <ChevronIcon />
+                        </button>
+                      )}
                       <RowActionsMenu actions={[
                         ...(canChange ? [{ key: 'edit', label: 'Edit', onSelect: () => setEditing(d) }] : []),
                         ...(canChange ? [state === 'none'
@@ -487,6 +529,15 @@ export default function KioskDevices() {
                       ]} />
                     </div>
                   </div>
+                  {d.rfid_reader && (
+                    <div className="detail">
+                      <div className="detail-clip">
+                        <div className="detail-inner">
+                          {open && <ReaderPanel reader={d.rfid_reader} />}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             }} />

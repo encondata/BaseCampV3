@@ -53,6 +53,15 @@ export function subTypeLabel(type: string | null): string {
   return SUB_TYPE_LABELS[type] ?? type;
 }
 
+const STATION_LABELS: Record<string, string> = { rfid: 'RFID', label: 'Label Station' };
+
+/** The Type column text: a station kiosk reads "RFID · Laptop" / "Label
+ *  Station · Laptop"; any other kiosk keeps its plain sub-type label. */
+export function stationTypeLabel(d: Pick<DeviceItem, 'station_type' | 'sub_type'>): string {
+  if (d.station_type == null) return subTypeLabel(d.sub_type);
+  return `${STATION_LABELS[d.station_type] ?? d.station_type} \u00b7 ${subTypeLabel(d.sub_type)}`;
+}
+
 export function registrationLabel(state: ReturnType<typeof tokenExpiryState>): string {
   if (state === 'ok') return 'Registered';
   if (state === 'soon') return 'Expires soon';
@@ -88,7 +97,7 @@ export function deviceCellText(d: DeviceItem, key: string): string {
     case 'antennas': return d.antennas_connected == null ? '—' : `${d.antennas_connected} / 8`;
     case 'connection': return connectionLabel(d.connection_type);
     case 'scan_status': return d.scan_status_label ?? (d.scan_status ?? '—');
-    case 'sub_type': return subTypeLabel(d.sub_type);
+    case 'sub_type': return stationTypeLabel(d);
     case 'version': return d.version ?? '—';
     case 'current_move': return d.current_initiative_name ?? '—';
     case 'registration': return registrationLabel(tokenExpiryState(d.token_expires_at));
@@ -103,7 +112,7 @@ export function deviceCellText(d: DeviceItem, key: string): string {
 export function deviceSearchText(d: DeviceItem): string {
   return [
     d.name, d.wan_ip, d.lan_ip, d.mac, d.serial, d.site_name, vpnLabel(d.vpn_status),
-    d.model, d.scan_status_label, d.version, subTypeLabel(d.sub_type),
+    d.model, d.scan_status_label, d.version, stationTypeLabel(d),
     d.current_initiative_name, d.session_person_name,
   ].filter(Boolean).join(' ');
 }
