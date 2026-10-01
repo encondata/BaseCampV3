@@ -61,6 +61,12 @@ class Store:
         self.conn = sqlite3.connect(str(path), check_same_thread=False,
                                     isolation_level=None, timeout=5.0)
         self.conn.row_factory = sqlite3.Row
+        # Only the edge process opens edge.db. Exclusive locking makes WAL
+        # keep its index in process memory instead of the -shm file, which
+        # is what breaks on Docker Desktop's shared folders (Windows WSL
+        # file sharing, macOS VirtioFS). Nothing else may open the file
+        # while the edge runs — backups stop the kiosk first.
+        self.conn.execute("PRAGMA locking_mode=EXCLUSIVE")
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
         self._migrate()

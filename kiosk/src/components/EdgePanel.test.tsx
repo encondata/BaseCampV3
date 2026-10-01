@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const render = (ui: ReactElement) => rtlRender(<MemoryRouter>{ui}</MemoryRouter>);
 
 const status = {
+  version: '1.2.3',
   cloud: { online: false, last_contact: '2026-10-01T12:00:00+00:00' },
   sync: { initiative_id: 'm-1', synced_at: '2026-10-01T11:00:00+00:00', last_error: null },
   outbox: { queued: 3, sending: 0, sent: 10, rejected: 1, failed: 2, needs_sign_in: 3 },
@@ -33,6 +34,7 @@ afterEach(cleanup);
 describe('EdgePanel', () => {
   it('shows cloud, sync and queue state with the waiting list', () => {
     render(<EdgePanel />);
+    expect(screen.getByText('1.2.3')).toBeTruthy();
     expect(screen.getByText('Offline')).toBeTruthy();
     expect(screen.getByText(/3 scans waiting for Jane Doe to sign in online/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Wipe this laptop' })).toBeNull();

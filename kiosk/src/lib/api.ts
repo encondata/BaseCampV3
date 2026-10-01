@@ -761,6 +761,7 @@ export async function fetchLabelVocab(kind?: string): Promise<LabelVocab[]> {
 export type OutboxStatus = 'queued' | 'sending' | 'sent' | 'rejected' | 'failed' | 'needs_sign_in';
 
 export interface EdgeStatus {
+  version: string;
   cloud: { online: boolean; last_contact: string | null };
   sync: { initiative_id: string | null; synced_at: string | null; last_error: string | null };
   outbox: Record<OutboxStatus, number>;

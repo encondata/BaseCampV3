@@ -36,6 +36,7 @@ def _status(request: Request, session: EdgeSession | None) -> dict:
     st = request.app.state
     meta = st.syncer.meta()
     return {
+        "version": st.settings.version,
         "cloud": {"online": st.upstream.online, "last_contact": st.upstream.last_contact},
         "sync": {"initiative_id": meta["initiative_id"], "synced_at": meta["synced_at"],
                  "last_error": meta["last_error"]},

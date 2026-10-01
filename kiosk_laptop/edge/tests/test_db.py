@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from edge.db import SCHEMA_STEPS, Store, iso
@@ -40,3 +42,14 @@ def test_a_version_one_database_upgrades_in_place(tmp_path, monkeypatch):
     row = store.one("SELECT initiative_id, version FROM move_passwords")
     assert (row["initiative_id"], row["version"]) == ("m-1", None)
     assert store.one("SELECT version FROM schema_version")["version"] == len(SCHEMA_STEPS)
+
+
+def test_store_holds_an_exclusive_lock(tmp_path):
+    store = Store(tmp_path / "edge.db")
+    store.run("INSERT INTO cache(key, status, body, stored_at) VALUES ('k', 200, 'b', 'now')")
+    other = sqlite3.connect(tmp_path / "edge.db", timeout=0.1)
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        other.execute("INSERT INTO cache(key, status, body, stored_at) VALUES ('j', 200, 'b', 'now')")
+    other.close()
+    assert not (tmp_path / "edge.db-shm").exists()   # WAL index kept in process memory
+    store.close()
