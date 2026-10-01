@@ -81,6 +81,9 @@ async def clean_db():
         await session.commit()
     with psycopg.connect(SOURCE_PSYCOPG_URL, autocommit=True) as conn:
         conn.execute(f"TRUNCATE {SOURCE_TABLES} CASCADE")
+    # Drop the setup engine so a sync test (the CLI, which runs its own event
+    # loop) never inherits a pool bound to this fixture's loop.
+    await dispose_engine()
     yield
     await dispose_engine()
 
