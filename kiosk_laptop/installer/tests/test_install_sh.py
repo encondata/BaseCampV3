@@ -145,7 +145,8 @@ def test_shellcheck_clean():
     sc = shutil.which("shellcheck") or ("/opt/homebrew/bin/shellcheck" if shutil.os.path.exists("/opt/homebrew/bin/shellcheck") else None)
     if sc is None:
         pytest.skip("shellcheck not installed")
-    for script in (INSTALL_SH, INSTALL_SH.parent / "update.sh", INSTALL_SH.parent / "launch.sh"):
+    for script in (INSTALL_SH, INSTALL_SH.parent / "update.sh", INSTALL_SH.parent / "launch.sh",
+                   INSTALL_SH.parent / "tests" / "test_linux_e2e.sh"):
         r = subprocess.run([sc, "-s", "bash", str(script)], capture_output=True, text=True)
         assert r.returncode == 0, (script.name, r.stdout)
 

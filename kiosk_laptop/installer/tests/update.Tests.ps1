@@ -350,3 +350,62 @@ Describe 'Script hygiene' {
         ($bytes | Where-Object { $_ -gt 127 }).Count | Should -Be 0
     }
 }
+
+# The real Invoke-Docker against a fake docker.cmd first on PATH: stdout comes
+# back, -Log puts stdout and stderr in update.log, a non-zero exit throws with
+# stderr. A .cmd only runs on Windows; $IsWindows is $null on Windows PowerShell 5.1.
+Describe 'Invoke-Docker with a fake docker.cmd' -Skip:($IsWindows -eq $false) {
+    BeforeAll {
+        $script:fakeBin = Join-Path $TestDrive 'fakebin'
+        New-Item -ItemType Directory $script:fakeBin | Out-Null
+        Set-Content -Path (Join-Path $script:fakeBin 'docker.cmd') -Encoding Ascii -Value @(
+            '@echo off'
+            'echo fake-out %*'
+            'echo fake-err %* 1>&2'
+            'exit /b %FAKE_DOCKER_EXIT%'
+        )
+        $script:savedPath = $env:Path
+        $script:savedExit = $env:FAKE_DOCKER_EXIT
+        $env:Path = "$script:fakeBin;$env:Path"
+    }
+    AfterAll {
+        $env:Path = $script:savedPath
+        $env:FAKE_DOCKER_EXIT = $script:savedExit
+        $env:KIOSK_DIR = $null
+    }
+    BeforeEach {
+        $script:dir = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory $script:dir | Out-Null
+        $env:KIOSK_DIR = $script:dir
+        Reset-UpdateContext
+    }
+
+    It 'returns only stdout, and logs both streams with -Log, when docker exits 0' {
+        $env:FAKE_DOCKER_EXIT = '0'
+        $out = @(Invoke-Docker -Arguments @('compose', 'pull') -Log)
+        ($out -join "`n") | Should -BeLike '*fake-out compose pull*'
+        ($out -join "`n") | Should -Not -BeLike '*fake-err*'
+        $log = [IO.File]::ReadAllText((Join-Path $script:dir 'update.log'))
+        $log | Should -BeLike '*fake-out compose pull*'
+        $log | Should -BeLike '*fake-err compose pull*'
+    }
+
+    It 'logs nothing without -Log' {
+        $env:FAKE_DOCKER_EXIT = '0'
+        Invoke-Docker -Arguments @('version') | Out-Null
+        Test-Path (Join-Path $script:dir 'update.log') | Should -BeFalse
+    }
+
+    It 'throws with the exit code and stderr when docker exits 1, after logging' {
+        $env:FAKE_DOCKER_EXIT = '1'
+        { Invoke-Docker -Arguments @('compose', 'up', '-d') -Log } |
+            Should -Throw -ExpectedMessage '*docker compose up -d failed (exit 1)*fake-err compose up -d*'
+        [IO.File]::ReadAllText((Join-Path $script:dir 'update.log')) | Should -BeLike '*fake-err compose up -d*'
+    }
+
+    It 'Test-DockerCall logs the reason and returns false on failure' {
+        $env:FAKE_DOCKER_EXIT = '1'
+        Test-DockerCall -Arguments @('tag', 'a', 'b') | Should -BeFalse
+        [IO.File]::ReadAllText((Join-Path $script:dir 'update.log')) | Should -BeLike '*docker tag a b failed (exit 1)*'
+    }
+}

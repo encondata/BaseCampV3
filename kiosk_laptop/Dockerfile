@@ -7,7 +7,9 @@
 #   docker build -f kiosk_laptop/Dockerfile -t serversherpa-kiosk-laptop .
 #   docker compose -f kiosk_laptop/docker-compose.yml up -d
 
-FROM node:20-alpine AS web
+# The bundle is plain JS, so build it on the build machine's own platform: a
+# multi-arch build then emulates (QEMU) only the Python stage's pip install.
+FROM --platform=$BUILDPLATFORM node:20-alpine AS web
 ARG KIOSK_VERSION=0.0.0
 WORKDIR /app
 COPY kiosk/package.json kiosk/package-lock.json ./kiosk/

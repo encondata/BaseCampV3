@@ -1,15 +1,18 @@
 #!/bin/sh
-# Builds the laptop image and checks it against an unreachable cloud:
+# Builds the laptop image (or uses SMOKE_IMAGE, already built, e.g. in CI)
+# and checks it against an unreachable cloud:
 # the app is served, config.js says laptop, the identity is fixed across a
 # restart, offline sign-in with no cached verifier is a clean 401, a path
 # escape is a 404, a foreign Host header is a 400, and the container
 # reports healthy.
 set -eu
 cd "$(dirname "$0")/../.."
-IMAGE=serversherpa-kiosk-laptop:smoke
+IMAGE=${SMOKE_IMAGE:-serversherpa-kiosk-laptop:smoke}
 DATA=$(mktemp -d)
 NAME=kiosk-laptop-smoke
-docker build -q -f kiosk_laptop/Dockerfile -t "$IMAGE" . >/dev/null
+if [ -z "${SMOKE_IMAGE:-}" ]; then
+  docker build -q -f kiosk_laptop/Dockerfile -t "$IMAGE" . >/dev/null
+fi
 cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; rm -rf "$DATA"; }
 trap cleanup EXIT
 start() {

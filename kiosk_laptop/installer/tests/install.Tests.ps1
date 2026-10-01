@@ -1,3 +1,8 @@
+# Pester idiom: variables set in BeforeAll/BeforeEach are used in It blocks,
+# which PSScriptAnalyzer can't see.
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseDeclaredVarsMoreThanAssignments', '')]
+param()
+
 BeforeAll {
     $script:SavedEnv = @{}
     foreach ($n in @('KIOSK_INSTALL_LIB', 'KIOSK_TEMPLATE_DIR', 'KIOSK_DIR', 'KIOSK_DATA_DIR', 'KIOSK_IMAGE', 'KIOSK_CONFIRM_PURGE', 'EDGE_DATA_HOST_DIR',
@@ -129,7 +134,7 @@ Describe 'Uninstall' {
     }
 }
 
-# ── Beyond the brief: the lessons from the reviewed shell installer ─────
+# -- Beyond the brief: the lessons from the reviewed shell installer -----
 
 Describe 'Saved data folder' {
     AfterEach { $env:KIOSK_DATA_DIR = $null }
@@ -956,8 +961,47 @@ Describe 'Uninstall message' {
         $data = Join-Path $TestDrive ([guid]::NewGuid().ToString())
         New-Item -ItemType Directory $inst, $data | Out-Null
         Mock Remove-LoginItems {}
+        # Never the real HKLM RunOnce key or docker on a Windows runner.
+        Mock Remove-ResumeRegistration {}
+        Mock Stop-KioskForUninstall {}
         Mock Write-Info {}
         Uninstall-Kiosk -InstallDir $inst -DataDir $data
         Should -Invoke Write-Info -Times 1 -ParameterFilter { $Message -like '*install.log and update.log were kept*' }
+    }
+}
+
+# The real Invoke-Docker against a fake docker.cmd first on PATH: stdout and
+# stderr both come back (merged), and a non-zero exit throws with the output.
+# A .cmd only runs on Windows; $IsWindows is $null on Windows PowerShell 5.1.
+Describe 'Invoke-Docker with a fake docker.cmd' -Skip:($IsWindows -eq $false) {
+    BeforeAll {
+        $script:fakeBin = Join-Path $TestDrive 'fakebin'
+        New-Item -ItemType Directory $script:fakeBin | Out-Null
+        Set-Content -Path (Join-Path $script:fakeBin 'docker.cmd') -Encoding Ascii -Value @(
+            '@echo off'
+            'echo fake-out %*'
+            'echo fake-err %* 1>&2'
+            'exit /b %FAKE_DOCKER_EXIT%'
+        )
+        $script:savedPath = $env:Path
+        $script:savedExit = $env:FAKE_DOCKER_EXIT
+        $env:Path = "$script:fakeBin;$env:Path"
+    }
+    AfterAll {
+        $env:Path = $script:savedPath
+        $env:FAKE_DOCKER_EXIT = $script:savedExit
+    }
+
+    It 'returns stdout and stderr when docker exits 0' {
+        $env:FAKE_DOCKER_EXIT = '0'
+        $out = @(Invoke-Docker -Arguments @('compose', 'version'))
+        ($out -join "`n") | Should -BeLike '*fake-out compose version*'
+        ($out -join "`n") | Should -BeLike '*fake-err compose version*'
+    }
+
+    It 'throws with the exit code and output when docker exits 1' {
+        $env:FAKE_DOCKER_EXIT = '1'
+        { Invoke-Docker -Arguments @('compose', 'pull') } |
+            Should -Throw -ExpectedMessage '*docker compose pull failed (exit 1)*fake-err compose pull*'
     }
 }
