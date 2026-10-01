@@ -1,8 +1,11 @@
 # Sirdar — two containers: the app (API + SPA) and its own Postgres.
+# Normally installed and updated with sirdar/install.sh (see sirdar/README.md).
+# By hand:
 #   cp sirdar/.env.example sirdar/.env   # then edit it
 #   docker compose -f sirdar/docker-compose.yml --env-file sirdar/.env up -d --build
-#   docker compose -f sirdar/docker-compose.yml run --rm sirdar create-admin --email … --first-name … --last-name …
-#   docker compose -f sirdar/docker-compose.yml run --rm sirdar import-users
+#   docker compose -f sirdar/docker-compose.yml --env-file sirdar/.env exec sirdar sirdar create-admin --email … --first-name … --last-name …
+#   docker compose -f sirdar/docker-compose.yml --env-file sirdar/.env exec sirdar sirdar import-users
+
 name: sirdar
 
 services:
