@@ -8,11 +8,14 @@ import { useState, type FormEvent } from 'react';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
 import { apiUrl, kioskVersion, portalUrl } from '../lib/config';
-import { getIdentity, setKioskName } from '../lib/identity';
-import { platform } from '../lib/platform';
+import { ApiError, renameLaptopKiosk } from '../lib/api';
+import { getIdentity, setKioskName, setLaptopName } from '../lib/identity';
+import { isLaptop, platform } from '../lib/platform';
 
 export default function ThisKioskPanel() {
-  const { status, heartbeatNow } = useKioskAuth();
+  const { status, heartbeatNow, isAdmin } = useKioskAuth();
+  const laptop = isLaptop();
+  const canRename = !laptop || (status === 'authed' && isAdmin);
   const [identity, setIdentity] = useState(getIdentity);
   const [name, setName] = useState(identity.name);
   const [saved, setSaved] = useState(false);
@@ -20,6 +23,24 @@ export default function ThisKioskPanel() {
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
+    if (laptop) {
+      renameLaptopKiosk(name).then(
+        (next) => {
+          setLaptopName(next.name);
+          setIdentity(getIdentity());
+          setError('');
+          setSaved(true);
+          if (status === 'authed') void heartbeatNow();
+        },
+        (err) => {
+          setSaved(false);
+          setError(err instanceof ApiError && err.code === 'bad_name'
+            ? 'Enter a name between 1 and 80 characters.'
+            : 'Only an admin can rename this laptop.');
+        },
+      );
+      return;
+    }
     if (!setKioskName(name)) {
       setError('Enter a name between 1 and 80 characters.');
       setSaved(false);
@@ -43,8 +64,9 @@ export default function ThisKioskPanel() {
       <form className="pf-form kiosk-settings" onSubmit={submit} noValidate>
         <div className="full">
           <label htmlFor="ks-name">Kiosk name</label>
-          <input id="ks-name" value={name} maxLength={80}
+          <input id="ks-name" value={name} maxLength={80} readOnly={!canRename}
                  onChange={(e) => { setName(e.target.value); setSaved(false); }} />
+          {laptop && !canRename && <p className="page-hint">Only an admin can rename this laptop.</p>}
         </div>
         <div>
           <label htmlFor="ks-serial">Serial</label>
@@ -69,7 +91,7 @@ export default function ThisKioskPanel() {
         {error && <p className="form-error full" role="alert">{error}</p>}
         {saved && <p className="form-notice full" role="status">Kiosk name saved.</p>}
         <div className="pf-form-actions full">
-          <button type="submit" className="btn-solid">Save</button>
+          {canRename && <button type="submit" className="btn-solid">Save</button>}
         </div>
       </form>
     </>
