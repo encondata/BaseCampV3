@@ -8,17 +8,26 @@ import { errorText, getOverrides, putOverrides } from '../lib/sirdarApi';
 
 type Board = Record<string, Partial<Record<Action, boolean>>>;
 
+function sameBoard(a: Board, b: Board): boolean {
+  const ids = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const id of ids) {
+    for (const act of ACTIONS) if (a[id]?.[act] !== b[id]?.[act]) return false;
+  }
+  return true;
+}
+
 export default function OverridesModal({ personId, name, resources, inherited, onClose, onSaved }: {
   personId: string; name: string; resources: AccessResourceOut[];
   inherited: Record<string, Record<Action, boolean>>;
   onClose: () => void; onSaved: () => void;
 }) {
   const [board, setBoard] = useState<Board | null>(null);
+  const [loaded, setLoaded] = useState<Board | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    getOverrides(personId).then((r) => setBoard(r.overrides))
+    getOverrides(personId).then((r) => { setBoard(r.overrides); setLoaded(r.overrides); })
       .catch((e) => setError(errorText(e, "Couldn't load overrides.")));
   }, [personId]);
 
@@ -47,15 +56,24 @@ export default function OverridesModal({ personId, name, resources, inherited, o
     }
   };
 
+  const dirty = board !== null && loaded !== null && !sameBoard(board, loaded);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !saving) onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [saving, onClose]);
+
   const locked = new Set(resources.filter((r) => r.developer_only).map((r) => r.id));
 
   return (
-    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}>
-      <div className="modal-card reports-modal-card rgm-card sirdar-import-card" role="dialog" aria-modal="true">
+    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !saving && !dirty) onClose(); }}>
+      <div className="modal-card reports-modal-card rgm-card sirdar-import-card" role="dialog" aria-modal="true"
+           aria-labelledby="sirdar-overrides-title">
         <div className="modal-head">
           <div className="rgm-head-text">
             <div className="eyebrow">Permission overrides</div>
-            <h3>{name}</h3>
+            <h3 id="sirdar-overrides-title">{name}</h3>
             <p className="page-hint">Click a cell to cycle inherit → allow → deny. Overrides win over roles.</p>
           </div>
           <button type="button" className="modal-close" aria-label="Close" onClick={onClose} disabled={saving}>

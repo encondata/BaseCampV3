@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+
 import DataTable from '@portal/components/DataTable';
 import { exportCsv } from '@portal/lib/listTools';
 
@@ -24,6 +26,11 @@ export default function ImportSummaryModal({ run, onClose }: { run: ImportRun; o
     ['Added', run.added], ['Updated', run.updated], ['Unchanged', run.unchanged],
     ['Disabled', run.disabled], ['Skipped', run.skipped],
   ];
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
   return (
     <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal-card reports-modal-card rgm-card sirdar-import-card" role="dialog" aria-modal="true"

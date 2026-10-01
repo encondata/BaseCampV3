@@ -19,7 +19,7 @@ vi.mock('../lib/sirdarApi', async (orig) => ({
 
 import Users from './Users';
 
-afterEach(cleanup);
+afterEach(() => { cleanup(); canAdd = true; });
 
 it('lists users and offers import to users:add holders', async () => {
   render(<MemoryRouter><Users /></MemoryRouter>);

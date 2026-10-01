@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -19,15 +19,28 @@ export default function UserDetail() {
   const [resources, setResources] = useState<AccessResourceOut[]>([]);
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState('');
+  const [actionError, setActionError] = useState('');
   const [notice, setNotice] = useState('');
+  const loadSeq = useRef(0);
 
   const load = useCallback(() => {
-    getUser(personId).then(setDetail).catch((e) => setError(errorText(e, "Couldn't load this user.")));
+    const seq = ++loadSeq.current;
+    getUser(personId)
+      .then((d) => { if (seq === loadSeq.current) setDetail(d); })
+      .catch((e) => {
+        if (seq === loadSeq.current) setError(errorText(e, "Couldn't load this user."));
+      });
   }, [personId]);
 
   useEffect(() => {
+    setDetail(null);
+    setError('');
+    setActionError('');
+    setNotice('');
     load();
-    getAccessSummary().then((s) => setResources(s.resources)).catch(() => {});
+    let cancelled = false;
+    getAccessSummary().then((s) => { if (!cancelled) setResources(s.resources); }).catch(() => {});
+    return () => { cancelled = true; loadSeq.current++; };
   }, [load]);
 
   if (error) return <div className="portal-page"><p className="form-error" role="alert">{error}</p></div>;
@@ -39,12 +52,14 @@ export default function UserDetail() {
   ]));
 
   const revoke = async () => {
+    setActionError('');
+    setNotice('');
     try {
       const r = await revokeSessions(u.person_id);
       setNotice(`Signed out of ${r.revoked} session${r.revoked === 1 ? '' : 's'}.`);
       load();
     } catch (e) {
-      setError(errorText(e, "Couldn't revoke sessions."));
+      setActionError(errorText(e, "Couldn't revoke sessions."));
     }
   };
 
@@ -82,6 +97,7 @@ export default function UserDetail() {
             <button type="button" className="btn-ghost danger" onClick={revoke}>Sign out everywhere</button>
           )}
         </div>
+        {actionError && <p className="form-error" role="alert">{actionError}</p>}
         <DataTable
           ariaLabel="Active sessions"
           columns={[{ key: 'started', label: 'Started' }, { key: 'expires', label: 'Expires' },

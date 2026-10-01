@@ -23,6 +23,7 @@ export default function Users() {
   const navigate = useNavigate();
   const [users, setUsers] = useState<UserRow[] | null>(null);
   const [configured, setConfigured] = useState(true);
+  const [sourceFailed, setSourceFailed] = useState(false);
   const [importing, setImporting] = useState(false);
   const [run, setRun] = useState<ImportRun | null>(null);
   const [error, setError] = useState('');
@@ -33,8 +34,15 @@ export default function Users() {
 
   useEffect(() => {
     load();
-    getImportSource().then((s) => setConfigured(s.configured)).catch(() => setConfigured(false));
   }, [load]);
+
+  const canAdd = can('users', 'add');
+  useEffect(() => {
+    if (!canAdd) return;
+    getImportSource()
+      .then((s) => { setConfigured(s.configured); setSourceFailed(false); })
+      .catch(() => { setConfigured(false); setSourceFailed(true); });
+  }, [canAdd]);
 
   const doImport = async () => {
     setImporting(true);
@@ -57,13 +65,17 @@ export default function Users() {
         <p>Everyone who can sign in to Sirdar: portal admins (copied by the import) and local users.</p>
       </div>
       <div className="dir-toolbar">
-        {can('users', 'add') && (
+        {canAdd && (
           <button type="button" className="btn-solid" onClick={doImport}
                   disabled={importing || !configured}>
             {importing ? 'Importing…' : 'Import from portal'}
           </button>
         )}
-        {!configured && <span className="page-hint">Portal database not configured.</span>}
+        {!configured && (
+          <span className="page-hint">
+            {sourceFailed ? "Couldn't check the portal database." : 'Portal database not configured.'}
+          </span>
+        )}
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
       {users && (
@@ -77,7 +89,6 @@ export default function Users() {
           ]}
           rows={users.map((u) => ({
             key: u.person_id,
-            className: 'sirdar-row-link',
             cells: [
               <button type="button" className="link-btn" onClick={() => navigate(`/admin/users/${u.person_id}`)}>
                 {u.display_name}
