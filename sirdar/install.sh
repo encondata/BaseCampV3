@@ -158,6 +158,7 @@ write_env() {
   [ -f "$example" ] || die "Missing $example"
 
   port="$def_port"; s_port='default'
+  [ -n "${SIRDAR_PORT:-}" ] && s_port='from SIRDAR_PORT'
   cookie=''; s_cookie='default (blank: this host only)'
   source=''; s_source='default (blank: import disabled)'
   pepper=''; s_pepper='generated'
