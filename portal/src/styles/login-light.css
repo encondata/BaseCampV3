@@ -176,3 +176,13 @@
   .login-shell.login-light .lx-status-sep { display: none }
   .login-shell.login-light .lx-status { row-gap: 6px }
 }
+
+.login-notice {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent, #d97706) 10%, transparent);
+  color: inherit;
+  font-size: 13px;
+}
+.login-notice code { font-family: 'Fragment Mono', monospace; font-size: 12px; }

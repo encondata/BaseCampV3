@@ -54,7 +54,7 @@ function contour(i: number): string {
 }
 const CONTOURS = Array.from({ length: 17 }, (_, i) => contour(i));
 
-export default function LoginScene() {
+export default function LoginScene({ tag = 'Datacenter Relocation Tools' }: { tag?: string } = {}) {
   return (
     <>
       <svg className="lx-topo" viewBox="0 0 1672 941" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
@@ -72,7 +72,7 @@ export default function LoginScene() {
         />
         <div>
           <div className="lx-logo-name">Server<em>Sherpa</em></div>
-          <div className="lx-logo-tag">Datacenter Relocation Tools</div>
+          <div className="lx-logo-tag">{tag}</div>
         </div>
       </header>
 
