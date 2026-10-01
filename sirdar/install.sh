@@ -10,7 +10,11 @@
 # Environment overrides:
 #   REPO_URL               git source  (default https://github.com/encondata/BaseCampV3.git)
 #   SIRDAR_BRANCH          branch      (default main)
-#   SIRDAR_DIR             install dir (default /opt/sirdar on Linux, $HOME/sirdar on macOS)
+#   SIRDAR_DIR             install dir (default /opt/serversherpa/sirdar on Linux and macOS).
+#                          A fresh interactive install asks for it first (Enter = default);
+#                          setting SIRDAR_DIR, or running non-interactively, skips the prompt.
+#                          It is the sparse-checkout root: the app lives in <dir>/sirdar/
+#                          and its settings in <dir>/sirdar/.env.
 #   SIRDAR_PORT            host port, used only when creating .env (default 8098)
 #   SIRDAR_NONINTERACTIVE  1 = never prompt; generate every secret, print the admin commands
 #
@@ -19,6 +23,11 @@
 #                          normally go to /dev/tty too (so `curl ... | bash > log`
 #                          still shows them); with SIRDAR_TTY set they go to stderr
 #                          instead. The file is only ever read, never written.
+#   SIRDAR_DEFAULT_DIR     replaces the built-in default directory (so a test can
+#                          exercise the "default exists, don't ask" rule without
+#                          touching /opt)
+#   SIRDAR_STOP_AFTER_DIR=1  exit 0 right after the directory step, before any
+#                          prerequisite, download or Docker work
 #   SIRDAR_INSTALL_LIB=1   define the functions without running main, so a test
 #                          can source this file and call write_env directly
 #
@@ -452,11 +461,17 @@ mac_prereqs() {
 
 # ── Download / update ─────────────────────────────────────────────────
 ensure_dir() {
-  # Owned by the invoking user, so git and the .env are theirs.
+  # Owned by the invoking user, so git and the .env are theirs. Works the same
+  # on Linux and macOS (numeric ids: no GNU-only chown flags).
   if [ -d "$DIR" ] && [ -w "$DIR" ]; then return 0; fi
   if [ ! -d "$DIR" ] && mkdir -p "$DIR" 2>/dev/null; then return 0; fi
+  # Missing ancestors (e.g. /opt/serversherpa) are created and handed to the
+  # user too, outermost first.
+  local made=() d="$DIR"
+  while [ ! -d "$d" ] && [ "$d" != / ]; do made=("$d" ${made[@]+"${made[@]}"}); d=$(dirname "$d"); done
   info "Creating $DIR (needs sudo)"
   as_root mkdir -p "$DIR"
+  for d in ${made[@]+"${made[@]}"}; do as_root chown "$(id -u):$(id -g)" "$d"; done
   as_root chown "$(id -u):$(id -g)" "$DIR"
 }
 
@@ -580,7 +595,7 @@ summary() {
   printf '%sSirdar is running.%s\n\n' "$C_BOLD" "$C_OFF"
   cat <<EOF
   URL:          http://127.0.0.1:$port   (local only)
-  Install dir:  $DIR
+  Install dir:  $DIR   (override with SIRDAR_DIR)
   Settings:     $DIR/sirdar/.env
   Update:       re-run this script to update
 
@@ -599,14 +614,35 @@ EOF
   echo
 }
 
+# Settle $DIR: SIRDAR_DIR wins; else the default when it already exists or we
+# can't prompt; else ask (absolute path, leading ~/ expanded, re-ask otherwise).
+choose_dir() {
+  local default="${SIRDAR_DEFAULT_DIR:-/opt/serversherpa/sirdar}" a
+  if [ -n "${SIRDAR_DIR:-}" ]; then DIR="$SIRDAR_DIR"; return 0; fi
+  DIR="$default"
+  if [ -e "$default" ] || ! interactive; then return 0; fi
+  open_tty
+  while :; do
+    ask a "Install directory [$default]: " || die_eof
+    [ -n "$a" ] || a="$default"
+    case "$a" in \~/*) a="$HOME/${a#\~/}" ;; esac
+    case "$a" in
+      /*) DIR="${a%/}"; [ -n "$DIR" ] || DIR=/; break ;;
+      *) printf 'Please enter an absolute path (starting with /).\n' >&4 ;;
+    esac
+  done
+  close_tty
+}
+
 main() {
   banner
   detect_os
+  choose_dir
   REPO="${REPO_URL:-https://github.com/encondata/BaseCampV3.git}"
   BRANCH="${SIRDAR_BRANCH:-main}"
-  if [ "$OS" = Darwin ]; then DIR="${SIRDAR_DIR:-$HOME/sirdar}"; else DIR="${SIRDAR_DIR:-/opt/sirdar}"; fi
 
-  info "Platform: $OS${DISTRO:+ ($DISTRO)}   Install dir: $DIR   Branch: $BRANCH"
+  info "Platform: $OS${DISTRO:+ ($DISTRO)}   Installing to: $DIR   Branch: $BRANCH"
+  if [ "${SIRDAR_STOP_AFTER_DIR:-0}" = 1 ]; then exit 0; fi
   if [ "$OS" = Darwin ]; then mac_prereqs; else linux_prereqs; fi
   info "Using: ${DOCKER[*]} ($("${DOCKER[@]}" compose version --short 2>/dev/null || echo compose))"
 

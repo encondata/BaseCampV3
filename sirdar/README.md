@@ -48,13 +48,30 @@ Or, from a checkout: `bash sirdar/install.sh`. Re-run either one to update:
 it pulls the branch, rebuilds, and restarts the stack. It never overwrites an
 existing `sirdar/.env`.
 
+**Install directory.** The default is `/opt/serversherpa/sirdar` on both Linux
+and macOS. On a fresh interactive install the first prompt is
+`Install directory [/opt/serversherpa/sirdar]:` (Enter accepts the default; the
+answer must be an absolute path, and a leading `~/` is expanded). There is no
+prompt when the default directory already exists (an existing install is just
+updated), when `SIRDAR_DIR` is set, or when running non-interactively. To pick
+a directory up front, including through the curl one-liner:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/encondata/BaseCampV3/main/sirdar/install.sh | SIRDAR_DIR=/srv/sirdar bash
+```
+
+The directory is the checkout root, so the app lives in `<dir>/sirdar/` and
+its settings in `<dir>/sirdar/.env` (by default
+`/opt/serversherpa/sirdar/sirdar/.env`). Creating it may need `sudo` (on macOS
+too); the installer then hands the new directories to you.
+
 Environment overrides:
 
 | Variable | Default |
 |---|---|
 | `REPO_URL` | `https://github.com/encondata/BaseCampV3.git` |
 | `SIRDAR_BRANCH` | `main` |
-| `SIRDAR_DIR` | `/opt/sirdar` on Linux, `$HOME/sirdar` on macOS |
+| `SIRDAR_DIR` | `/opt/serversherpa/sirdar` (Linux and macOS); setting it skips the directory prompt |
 | `SIRDAR_PORT` | `8098` (used only when creating `.env`) |
 | `SIRDAR_NONINTERACTIVE=1` | never prompt; generate every secret and print the admin commands |
 
