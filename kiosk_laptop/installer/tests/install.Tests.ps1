@@ -1,7 +1,35 @@
 BeforeAll {
+    $script:SavedEnv = @{}
+    foreach ($n in @('KIOSK_INSTALL_LIB', 'KIOSK_TEMPLATE_DIR', 'KIOSK_DIR', 'KIOSK_DATA_DIR', 'KIOSK_IMAGE', 'KIOSK_CONFIRM_PURGE', 'EDGE_DATA_HOST_DIR')) {
+        $script:SavedEnv[$n] = [Environment]::GetEnvironmentVariable($n)
+    }
     $env:KIOSK_INSTALL_LIB = '1'
     $env:KIOSK_TEMPLATE_DIR = (Resolve-Path "$PSScriptRoot/..").Path
     . "$PSScriptRoot/../install.ps1" -LibraryOnly
+
+    # Windows-only cmdlets: stubs where they don't exist (macOS/Linux pwsh), so Pester can mock them.
+    $stubs = @{
+        'Get-WindowsOptionalFeature'    = 'param([switch]$Online, [string]$FeatureName)'
+        'Enable-WindowsOptionalFeature' = 'param([switch]$Online, [string]$FeatureName, [switch]$All, [switch]$NoRestart)'
+        'Get-LocalGroupMember'          = 'param([string]$Group, $SID)'
+        'Add-LocalGroupMember'          = 'param([string]$Group, $Member)'
+        'Get-AuthenticodeSignature'     = 'param([string]$FilePath)'
+        'New-ScheduledTaskAction'       = 'param([string]$Execute)'
+        'New-ScheduledTaskPrincipal'    = 'param([string]$UserId, [string]$LogonType, [string]$RunLevel)'
+        'Register-ScheduledTask'        = 'param([string]$TaskName, $Action, $Principal, [switch]$Force)'
+        'Start-ScheduledTask'           = 'param([string]$TaskName)'
+        'Get-ScheduledTask'             = 'param([string]$TaskName)'
+        'Unregister-ScheduledTask'      = 'param([string]$TaskName, [switch]$Confirm)'
+    }
+    foreach ($name in $stubs.Keys) {
+        if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
+            Set-Item -Path "function:global:$name" -Value ([scriptblock]::Create("[CmdletBinding()] $($stubs[$name]) throw 'stub: $name is Windows-only'"))
+        }
+    }
+}
+
+AfterAll {
+    foreach ($n in $script:SavedEnv.Keys) { [Environment]::SetEnvironmentVariable($n, $script:SavedEnv[$n]) }
 }
 
 Describe 'Windows support gate' {
@@ -109,7 +137,7 @@ Describe 'Saved data folder' {
     It 'lets the env win over the saved folder' {
         $env:KIOSK_DATA_DIR = 'E:\Other'
         $saved = @{ KIOSK_DATA_DIR = 'D:\KioskData' }
-        (Merge-KioskConfig -Saved $saved -Options @{ DataDir = 'E:\Other' }).KIOSK_DATA_DIR | Should -Be 'E:\Other'
+        (Merge-KioskConfig -Saved $saved -Options @{}).KIOSK_DATA_DIR | Should -Be 'E:\Other'
     }
     It 'falls back to the default' {
         $env:KIOSK_DATA_DIR = $null
@@ -346,15 +374,55 @@ Describe 'Browser' {
 
 Describe 'Elevation command' {
     It 'forwards parameters and kiosk environment with safe quoting' {
-        $env:KIOSK_IMAGE = "o'brien/kiosk:test"
+        $curly = [string][char]0x2019
+        $image = "o'brien/kiosk:test$curly"
+        $script = "C:\Temp Dir\it's\serversherpa-kiosk-install.ps1"
+        $api = "https://api.a.com/x y'z$curly" + [char]0x2018 + 'end'
+        $env:KIOSK_IMAGE = $image
         try {
-            $cmd = Get-ElevationCommand -ScriptPath 'C:\Temp\serversherpa-kiosk-install.ps1' -Parameters @{ ApiUrl = 'https://api.a.com'; Yes = [switch]$true; Uninstall = [switch]$false }
+            $cmd = Get-ElevationCommand -ScriptPath $script -Parameters @{ ApiUrl = $api; Yes = [switch]$true; Uninstall = [switch]$false }
         } finally { $env:KIOSK_IMAGE = $null }
-        $cmd | Should -Match "\`$env:KIOSK_IMAGE = 'o''brien/kiosk:test'"
-        $cmd | Should -Match "& 'C:\\Temp\\serversherpa-kiosk-install.ps1'"
-        $cmd | Should -Match "-ApiUrl 'https://api.a.com'"
+        $tokens = $null; $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseInput($cmd, [ref]$tokens, [ref]$errors)
+        $errors.Count | Should -Be 0
+        $strings = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { $_.Value })
+        $strings | Should -Contain $image
+        $strings | Should -Contain $script
+        $strings | Should -Contain $api
         $cmd | Should -Match '-Yes(\s|$)'
         $cmd | Should -Not -Match '-Uninstall'
+        $cmd | Should -Match 'KIOSK_ELEVATED_CHILD'
+        Get-ElevationCommand -ScriptPath $script -NoChildMarker | Should -Not -Match 'KIOSK_ELEVATED_CHILD'
+    }
+}
+
+Describe 'Assert-Admin' {
+    BeforeEach { Mock Get-SelfScriptPath { 'C:\Temp\i.ps1' } }
+    It 'returns $null when already elevated' {
+        Mock Test-IsAdmin { $true }
+        Mock Start-Process {}
+        Assert-Admin | Should -BeNullOrEmpty
+        Should -Invoke Start-Process -Times 0
+    }
+    It 'maps a child without an exit code to 1, never $null' {
+        Mock Test-IsAdmin { $false }
+        Mock Start-Process { [pscustomobject]@{ ExitCode = $null } }
+        Assert-Admin | Should -Be 1
+    }
+    It "returns the child's exit code" {
+        Mock Test-IsAdmin { $false }
+        Mock Start-Process { [pscustomobject]@{ ExitCode = 0 } }
+        $r = Assert-Admin
+        $null -eq $r | Should -BeFalse
+        $r | Should -Be 0
+    }
+}
+
+Describe '64-bit PowerShell' {
+    It 'relaunches only a 32-bit process on 64-bit Windows' {
+        Test-Need64BitRelaunch -Is64BitOperatingSystem $true -Is64BitProcess $false | Should -BeTrue
+        Test-Need64BitRelaunch -Is64BitOperatingSystem $true -Is64BitProcess $true | Should -BeFalse
+        Test-Need64BitRelaunch -Is64BitOperatingSystem $false -Is64BitProcess $false | Should -BeFalse
     }
 }
 
@@ -362,5 +430,245 @@ Describe 'Script hygiene' {
     It 'is plain ASCII, so Windows PowerShell 5.1 reads it correctly without a byte-order mark' {
         $bytes = [System.IO.File]::ReadAllBytes((Join-Path $PSScriptRoot '../install.ps1'))
         ($bytes | Where-Object { $_ -gt 127 }).Count | Should -Be 0
+    }
+}
+
+Describe 'WSL decision table' {
+    BeforeEach {
+        $script:features = @{ 'Microsoft-Windows-Subsystem-Linux' = 'Disabled'; 'VirtualMachinePlatform' = 'Disabled' }
+        $script:statusExit = 1
+        $script:installExit = 0
+        $script:installEnables = 'EnablePending'
+        Mock Get-WslFeatureState { $script:features[$Name] }
+        Mock Invoke-Wsl { @{ Output = ''; ExitCode = $script:statusExit } } -ParameterFilter { $Arguments -contains '--status' }
+        Mock Invoke-Wsl {
+            if ($script:installEnables) { $script:features['VirtualMachinePlatform'] = $script:installEnables }
+            @{ Output = ''; ExitCode = $script:installExit }
+        } -ParameterFilter { $Arguments -contains '--install' }
+        Mock Enable-WslFeature { $true }
+    }
+    It 'Enabled platform + Store WSL (legacy feature Disabled) + status OK: ready, no restart' {
+        $script:features['VirtualMachinePlatform'] = 'Enabled'
+        $script:statusExit = 0
+        Enable-Wsl | Should -BeFalse
+        Should -Invoke Invoke-Wsl -Times 0 -ParameterFilter { $Arguments -contains '--install' }
+    }
+    It 'Disabled: installs, then the pending platform needs a restart' {
+        Enable-Wsl | Should -BeTrue
+        Should -Invoke Invoke-Wsl -Times 1 -ParameterFilter { $Arguments -contains '--install' }
+    }
+    It 'EnablePending: restart without installing again' {
+        $script:features['VirtualMachinePlatform'] = 'EnablePending'
+        Enable-Wsl | Should -BeTrue
+        Should -Invoke Invoke-Wsl -Times 0 -ParameterFilter { $Arguments -contains '--install' }
+    }
+    It 'install exit 3010: restart' {
+        $script:installExit = 3010
+        $script:installEnables = $null
+        Enable-Wsl | Should -BeTrue
+    }
+    It 'Enabled platform but status fails, install succeeds with nothing pending: no restart loop' {
+        $script:features['VirtualMachinePlatform'] = 'Enabled'
+        $script:installEnables = $null
+        Enable-Wsl | Should -BeFalse
+    }
+    It 'older wsl.exe (install fails): turns the features on directly' {
+        $script:installExit = 1
+        $script:installEnables = $null
+        Enable-Wsl | Should -BeTrue
+        Should -Invoke Enable-WslFeature -Times 2
+    }
+    It 'pending means EnablePending only, not Disabled' {
+        Test-WslFeaturesPending | Should -BeFalse
+        $script:features['Microsoft-Windows-Subsystem-Linux'] = 'EnablePending'
+        Test-WslFeaturesPending | Should -BeTrue
+    }
+}
+
+Describe 'docker-users membership' {
+    BeforeEach {
+        $user = @{ Name = 'PC\tech'; Sid = 'S-1-5-21-1-2-3-1001'; Profile = 'C:\Users\tech' }
+        Mock Stop-ForRestart {}
+        Mock Add-DockerUsersMember { $true }
+    }
+    It 'already a member: no add, no sign-out' {
+        Mock Test-DockerUsersMember { $true }
+        Confirm-DockerUsersMember -InstallDir 'C:\K' -DesktopUser $user
+        Should -Invoke Add-DockerUsersMember -Times 0
+        Should -Invoke Stop-ForRestart -Times 0
+    }
+    It 'not a member: adds by SID and asks for a sign-out, resuming at engine' {
+        Mock Test-DockerUsersMember { $false }
+        Confirm-DockerUsersMember -InstallDir 'C:\K' -DesktopUser $user
+        Should -Invoke Add-DockerUsersMember -Times 1 -ParameterFilter { $Sid -eq 'S-1-5-21-1-2-3-1001' }
+        Should -Invoke Stop-ForRestart -Times 1 -ParameterFilter { $Step -eq 'engine' -and $Action -eq 'signout' }
+    }
+    It 'added concurrently ("already a member"): success, no sign-out' {
+        Mock Test-DockerUsersMember { $false }
+        Mock Add-DockerUsersMember { $false }
+        Confirm-DockerUsersMember -InstallDir 'C:\K' -DesktopUser $user
+        Should -Invoke Stop-ForRestart -Times 0
+    }
+    It 'checks membership by SID' {
+        Mock Get-LocalGroupMember { @([pscustomobject]@{ SID = [pscustomobject]@{ Value = 'S-1-5-21-1-2-3-1001' } }) }
+        Test-DockerUsersMember -Sid 'S-1-5-21-1-2-3-1001' | Should -BeTrue
+        Test-DockerUsersMember -Sid 'S-1-5-21-9' | Should -BeFalse
+    }
+}
+
+Describe 'Adding to docker-users' {
+    It 'Add-DockerUsersMember treats "already a member" as success and adds by SID' {
+        Mock ConvertTo-SecurityIdentifier { $Sid }   # SecurityIdentifier is Windows-only
+        Mock Add-LocalGroupMember { throw 'S-1-5-21-1-2-3-1001 is already a member of group docker-users.' }
+        Add-DockerUsersMember -Sid 'S-1-5-21-1-2-3-1001' | Should -BeFalse
+        Mock Add-LocalGroupMember {}
+        Add-DockerUsersMember -Sid 'S-1-5-21-1-2-3-1001' | Should -BeTrue
+        Should -Invoke Add-LocalGroupMember -ParameterFilter { "$Member" -eq 'S-1-5-21-1-2-3-1001' -and $Group -eq 'docker-users' }
+        Mock Add-LocalGroupMember { throw 'Access denied.' }
+        { Add-DockerUsersMember -Sid 'S-1-5-21-1-2-3-1001' } | Should -Throw '*docker-users*'
+    }
+}
+
+Describe 'Docker Desktop install needing a restart (3010)' {
+    It 'stops for a restart and resumes at engine' {
+        Mock Test-DockerInstalled { $false }
+        Mock Test-DockerEngine { $false }
+        Mock Assert-Virtualization {}
+        Mock Enable-Wsl { $false }
+        Mock Get-WindowsArch { 'amd64' }
+        Mock Invoke-WebRequest {}
+        Mock Get-AuthenticodeSignature { [pscustomobject]@{ Status = 'Valid'; SignerCertificate = [pscustomobject]@{ Subject = 'CN=Docker Inc, O=Docker Inc' } } }
+        Mock Start-Process { [pscustomobject]@{ ExitCode = 3010 } }
+        Mock Stop-ForRestart { throw 'KIOSK_RESTART_PENDING test' }
+        { Install-DockerDesktop -InstallDir 'C:\K' } | Should -Throw '*KIOSK_RESTART_PENDING*'
+        Should -Invoke Stop-ForRestart -Times 1 -ParameterFilter { $Step -eq 'engine' -and $Action -eq 'restart' }
+    }
+}
+
+Describe 'Installer flow' {
+    BeforeEach {
+        $inst = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory $inst | Out-Null
+        $SelfPath = Join-Path $inst 'install.ps1'
+        $env:KIOSK_DIR = $inst
+        foreach ($f in @('Assert-64BitProcess', 'Assert-Admin', 'Assert-WindowsSupported', 'Set-KioskDirAcl', 'Test-ApiReachable',
+                'Add-DockerToPath', 'Install-DockerDesktop', 'Confirm-DockerUsersMember', 'Enable-DockerAutostart', 'Wait-DockerEngine',
+                'Assert-Compose', 'New-KioskDataDir', 'Write-KioskConfig', 'Set-KioskFileAcl', 'Copy-LegacyKioskData', 'Start-Kiosk',
+                'Install-LoginItems', 'Remove-ResumeRegistration', 'Write-Summary', 'Uninstall-Kiosk')) {
+            Mock $f {}
+        }
+        Mock Get-DesktopUser { @{ Name = 'PC\tech'; Sid = 'S-1-5-21-1'; Profile = 'C:\Users\tech' } }
+        Mock Find-Browser { 'C:\chrome.exe' }
+        Mock Start-InstallLog { $false }
+    }
+    AfterEach { $env:KIOSK_DIR = $null }
+    It 'a resume at engine skips the Docker install but still checks docker-users' {
+        Save-ResumeState -Path (Join-Path $inst 'install-state.json') -Step 'engine' -Arguments @{ ApiUrl = 'https://api.a.com'; Yes = $true; "env:KIOSK_DIR" = $inst }
+        $env:KIOSK_DIR = $null
+        Invoke-KioskInstaller -Parameters @{ Resume = $true } | Should -Be 0
+        Should -Invoke Install-DockerDesktop -Times 0
+        Should -Invoke Confirm-DockerUsersMember -Times 1
+        Should -Invoke Start-Kiosk -Times 1
+    }
+    It 'a plain re-run also checks docker-users' {
+        Invoke-KioskInstaller -Parameters @{ Yes = $true } | Should -Be 0
+        Should -Invoke Install-DockerDesktop -Times 1
+        Should -Invoke Confirm-DockerUsersMember -Times 1
+    }
+    It 'a restart request ends the run with exit code 0' {
+        Mock Confirm-DockerUsersMember { throw 'KIOSK_RESTART_PENDING sign out' }
+        Invoke-KioskInstaller -Parameters @{ Yes = $true } | Should -Be 0
+        Should -Invoke Start-Kiosk -Times 0
+    }
+    It 'returns the relaunched child exit code without running the install' {
+        Mock Assert-Admin { 1 }
+        Invoke-KioskInstaller -Parameters @{ Yes = $true } | Should -Be 1
+        Should -Invoke Get-DesktopUser -Times 0
+    }
+    It 'uninstall reads only the data folder, so a damaged channel cannot block it' {
+        "KIOSK_CHANNEL=nightly`nKIOSK_DATA_DIR=D:\KioskData`n" | Set-Content (Join-Path $inst 'config.env')
+        Invoke-KioskInstaller -Parameters @{ Uninstall = $true } | Should -Be 0
+        Should -Invoke Uninstall-Kiosk -Times 1 -ParameterFilter { $DataDir -eq 'D:\KioskData' -and $InstallDir -eq $inst }
+    }
+}
+
+Describe 'RunOnce resume' {
+    It 'registers a launcher that returns at once' {
+        Get-ResumeCommand -InstallDir 'C:\ProgramData\ServerSherpaKiosk' |
+            Should -Be 'cmd.exe /c start "ServerSherpa Kiosk install" powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\ServerSherpaKiosk\install.ps1" -Resume'
+    }
+    It 'tells an administrator the install continues at their sign-in' {
+        $m = Get-RestartMessage -Reason 'WSL2 was turned on.' -Action restart -DesktopUserIsAdmin $true -DesktopUserName 'PC\tech'
+        $m | Should -BeLike 'WSL2 was turned on. Restart Windows now.*continues automatically when an administrator signs in.'
+        $m | Should -Not -BeLike "*isn't an administrator*"
+    }
+    It 'tells a standard user to sign in as an administrator or re-run' {
+        $m = Get-RestartMessage -Reason 'x was added.' -Action signout -DesktopUserIsAdmin $false -DesktopUserName 'PC\kiosk'
+        $m | Should -BeLike '*Sign out of Windows and back in*'
+        $m | Should -BeLike "*PC\kiosk isn't an administrator*sign in once as an administrator, or run the install command again.*"
+    }
+    It 'Stop-ForRestart saves the state, registers RunOnce and picks the message by admin membership' {
+        Mock Save-ResumeState {}
+        Mock Register-Resume {}
+        Mock Test-UserIsAdmin { $false }
+        { Stop-ForRestart -InstallDir 'C:\K' -Step 'docker' -Arguments @{} -Reason 'R.' -DesktopUser @{ Name = 'PC\kiosk'; Sid = 'S-1-5-21-2' } } |
+            Should -Throw "KIOSK_RESTART_PENDING R. Restart Windows now.*isn't an administrator*"
+        Should -Invoke Save-ResumeState -Times 1 -ParameterFilter { $Step -eq 'docker' }
+        Should -Invoke Register-Resume -Times 1
+        Mock Test-UserIsAdmin { $true }
+        { Stop-ForRestart -InstallDir 'C:\K' -Step 'docker' -Arguments @{} -Reason 'R.' -DesktopUser @{ Name = 'PC\tech'; Sid = 'S-1-5-21-1' } } |
+            Should -Throw '*continues automatically when an administrator signs in.'
+    }
+}
+
+Describe 'Starting Docker Desktop as the user' {
+    BeforeEach {
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -like '*Docker Desktop.exe' }
+        Mock New-ScheduledTaskAction { 'action' }
+        Mock New-ScheduledTaskPrincipal { 'principal' }
+        Mock Register-ScheduledTask {}
+        Mock Start-ScheduledTask {}
+        Mock Unregister-ScheduledTask {}
+        Mock Start-Sleep {}
+        $script:taskStates = [System.Collections.Generic.Queue[string]]::new()
+        foreach ($st in @('Queued', 'Queued', 'Running')) { $script:taskStates.Enqueue($st) }
+        Mock Get-ScheduledTask { [pscustomobject]@{ State = $script:taskStates.Dequeue() } }
+        $user = @{ Name = 'PC\tech'; Sid = 'S-1-5-21-1' }
+    }
+    It 'waits while the task is Queued, then removes it' {
+        Mock Test-DockerDesktopRunning { $false }
+        Start-DockerDesktopAsUser -DesktopUser $user
+        Should -Invoke Get-ScheduledTask -Times 3 -Exactly
+        Should -Invoke Unregister-ScheduledTask -Times 1 -Exactly
+    }
+    It 'stops waiting as soon as Docker Desktop is running' {
+        Mock Test-DockerDesktopRunning { $true }
+        Start-DockerDesktopAsUser -DesktopUser $user
+        Should -Invoke Get-ScheduledTask -Times 0 -Exactly
+        Should -Invoke Unregister-ScheduledTask -Times 1 -Exactly
+    }
+}
+
+Describe 'Install folder rules agree' {
+    It 'uninstall accepts a shallow install folder (only named files are removed) but not a drive root' {
+        Mock Remove-LoginItems {}
+        $data = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        { Uninstall-Kiosk -InstallDir 'D:\K' -DataDir $data } | Should -Not -Throw
+        { Uninstall-Kiosk -InstallDir 'D:\' -DataDir $data } | Should -Throw '*too close to the top*'
+    }
+    It 'a shallow data folder is still refused for the recursive purge' {
+        { Assert-SafeRemovePath -Label 'x' -Path 'D:\K' } | Should -Throw
+        { Assert-SafeRemovePath -Label 'x' -Path 'D:\K' -MinComponents 1 } | Should -Not -Throw
+    }
+}
+
+Describe 'Uninstall data folder' {
+    AfterEach { $env:KIOSK_DATA_DIR = $null }
+    It 'env, then the saved folder, then the default' {
+        $env:KIOSK_DATA_DIR = $null
+        Get-UninstallDataDir -Saved @{ KIOSK_DATA_DIR = 'D:\Saved'; KIOSK_CHANNEL = 'nightly' } | Should -Be 'D:\Saved'
+        Get-UninstallDataDir -Saved @{} | Should -Be 'C:\ProgramData\ServerSherpaKiosk\data'
+        $env:KIOSK_DATA_DIR = 'E:\Env'
+        Get-UninstallDataDir -Saved @{ KIOSK_DATA_DIR = 'D:\Saved' } | Should -Be 'E:\Env'
     }
 }

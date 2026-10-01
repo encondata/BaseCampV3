@@ -114,7 +114,7 @@ function Enable-Tls12 {
 function Get-CompanionText {
     param([Parameter(Mandatory = $true)][string]$Name)
     if ($env:KIOSK_TEMPLATE_DIR) {
-        $p = Join-Path $env:KIOSK_TEMPLATE_DIR $Name
+        $p = Join-KioskPath $env:KIOSK_TEMPLATE_DIR $Name
         if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { throw "Missing $p" }
         return [IO.File]::ReadAllText($p)
     }
@@ -128,6 +128,13 @@ function Get-CompanionText {
     $c = $r.Content
     if ($c -is [byte[]]) { $c = [Text.Encoding]::UTF8.GetString($c) }
     [string]$c
+}
+
+# Join-KioskPath PATH CHILD: like Join-Path, without checking that the drive
+# exists (so C:\ paths also work in the tests on macOS/Linux).
+function Join-KioskPath {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$ChildPath)
+    [IO.Path]::Combine($Path, $ChildPath)
 }
 
 # Write-TextFile PATH TEXT: UTF-8 without a byte-order mark (compose and env
@@ -232,18 +239,23 @@ function Find-Browser {
 }
 
 # -- Elevation ----------------------------------------------------------------
-function ConvertTo-PsLiteral { param([string]$Value) "'" + $Value.Replace("'", "''") + "'" }
+# A single-quoted PowerShell literal. PowerShell also treats the curly quotes
+# U+2018..U+201B as single quotes, so those are doubled too.
+function ConvertTo-PsLiteral {
+    param([AllowEmptyString()][string]$Value)
+    "'" + ($Value -replace '[''\u2018-\u201B]', '$0$0') + "'"
+}
 
 # The command the elevated PowerShell runs: the kiosk environment (an elevated
 # process doesn't inherit it), then this script with the same parameters.
 function Get-ElevationCommand {
-    param([Parameter(Mandatory = $true)][string]$ScriptPath, [hashtable]$Parameters = @{})
+    param([Parameter(Mandatory = $true)][string]$ScriptPath, [hashtable]$Parameters = @{}, [switch]$NoChildMarker)
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($n in $KioskEnvNames) {
         $v = [Environment]::GetEnvironmentVariable($n)
         if ($v) { $lines.Add("`$env:$n = $(ConvertTo-PsLiteral $v)") }
     }
-    $lines.Add("`$env:KIOSK_ELEVATED_CHILD = '1'")
+    if (-not $NoChildMarker) { $lines.Add("`$env:KIOSK_ELEVATED_CHILD = '1'") }
     $call = "& $(ConvertTo-PsLiteral $ScriptPath)"
     foreach ($k in ($Parameters.Keys | Sort-Object)) {
         $v = $Parameters[$k]
@@ -265,13 +277,14 @@ function Get-SelfScriptPath {
     if (-not $env:KIOSK_INSTALLER_REF -and -not $env:KIOSK_TEMPLATE_DIR) {
         Write-Info 'Using the installer from the main branch (set KIOSK_INSTALLER_REF to use another).'
     }
-    $tmp = Join-Path $env:TEMP 'serversherpa-kiosk-install.ps1'
+    $tmp = Join-KioskPath ([IO.Path]::GetTempPath()) 'serversherpa-kiosk-install.ps1'
     Write-TextFile -Path $tmp -Text (Get-CompanionText -Name 'install.ps1')
     $tmp
 }
 
 # Assert-Admin: $null when already elevated; otherwise runs this script
-# elevated (UAC) with the same parameters and returns its exit code.
+# elevated (UAC) with the same parameters and returns its exit code (never
+# $null, so the caller can't mistake a finished child for "already elevated").
 function Assert-Admin {
     param([hashtable]$Parameters = @{})
     if (Test-IsAdmin) { return $null }
@@ -285,7 +298,33 @@ function Assert-Admin {
     } catch {
         throw 'Administrator rights were not granted. Re-run and choose Yes when Windows asks.'
     }
-    $p.ExitCode
+    if ($null -eq $p -or $null -eq $p.ExitCode) { return 1 }
+    [int]$p.ExitCode
+}
+
+# Test-Need64BitRelaunch: a 32-bit PowerShell on 64-bit Windows sees the
+# 32-bit registry and System32 (WOW64), so the installer must not run there.
+function Test-Need64BitRelaunch {
+    param([bool]$Is64BitOperatingSystem, [bool]$Is64BitProcess)
+    $Is64BitOperatingSystem -and -not $Is64BitProcess
+}
+
+# Assert-64BitProcess: $null when fine; otherwise runs this script in the
+# 64-bit Windows PowerShell (sysnative) and returns its exit code.
+function Assert-64BitProcess {
+    param([hashtable]$Parameters = @{})
+    if (-not (Test-IsWindows)) { return $null }
+    if (-not (Test-Need64BitRelaunch -Is64BitOperatingSystem ([Environment]::Is64BitOperatingSystem) -Is64BitProcess ([Environment]::Is64BitProcess))) { return $null }
+    $ps64 = "$env:windir\sysnative\WindowsPowerShell\v1.0\powershell.exe"
+    if (-not (Test-Path -LiteralPath $ps64 -PathType Leaf)) {
+        throw 'This is 32-bit PowerShell on 64-bit Windows. Open "Windows PowerShell" (not the x86 one) and run the install command again.'
+    }
+    Write-Info 'Switching to 64-bit PowerShell'
+    $command = Get-ElevationCommand -ScriptPath (Get-SelfScriptPath) -Parameters $Parameters -NoChildMarker
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    & $ps64 -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded
+    if ($null -eq $LASTEXITCODE) { return 1 }
+    [int]$LASTEXITCODE
 }
 
 # -- Configuration ------------------------------------------------------------
@@ -466,15 +505,17 @@ function Read-ResumeState {
     [pscustomobject]@{ step = [string]$o.step; arguments = $h }
 }
 
+# The RunOnce value: cmd's start returns at once, so sign-in isn't held up
+# while the install runs in its own window.
 function Get-ResumeCommand {
     param([Parameter(Mandatory = $true)][string]$InstallDir)
-    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$InstallDir\install.ps1`" -Resume"
+    "cmd.exe /c start `"ServerSherpa Kiosk install`" powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$InstallDir\install.ps1`" -Resume"
 }
 
 # Save-InstallerCopy: this script into the install folder (RunOnce runs that copy).
 function Save-InstallerCopy {
     param([Parameter(Mandatory = $true)][string]$InstallDir)
-    $dest = Join-Path $InstallDir 'install.ps1'
+    $dest = Join-KioskPath $InstallDir 'install.ps1'
     if ($SelfPath -and (Test-Path -LiteralPath $SelfPath -PathType Leaf)) {
         if ((Resolve-Path -LiteralPath $SelfPath).Path -ne $dest) { Copy-Item -LiteralPath $SelfPath -Destination $dest -Force }
     } else {
@@ -495,18 +536,49 @@ function Remove-ResumeRegistration {
         Remove-ItemProperty -LiteralPath $RunOnceKey -Name $ResumeValueName -ErrorAction SilentlyContinue
     }
     if ($InstallDir) {
-        $state = Join-Path $InstallDir 'install-state.json'
+        $state = Join-KioskPath $InstallDir 'install-state.json'
         if (Test-Path -LiteralPath $state) { Remove-Item -LiteralPath $state -Force }
     }
 }
 
-# Stop here until Windows restarts (or the user signs in again); the install
-# continues on its own at the next sign-in.
+# Is this account in the local Administrators group (S-1-5-32-544)?
+function Test-UserIsAdmin {
+    param([string]$Sid)
+    if (-not $Sid) { return $false }
+    try {
+        $members = Get-LocalGroupMember -SID 'S-1-5-32-544' -ErrorAction Stop
+        return [bool]($members | Where-Object { $_.SID -and $_.SID.Value -eq $Sid })
+    } catch { return $false }
+}
+
+# Get-RestartMessage: what to do now, and who the install continues for.
+# HKLM RunOnce only runs when an administrator signs in.
+function Get-RestartMessage {
+    param([string]$Reason, [ValidateSet('restart', 'signout')][string]$Action = 'restart',
+        [bool]$DesktopUserIsAdmin, [string]$DesktopUserName)
+    $msg = $Reason
+    if ($Action -eq 'signout') { $msg += ' Sign out of Windows and back in (or restart).' } else { $msg += ' Restart Windows now.' }
+    if ($DesktopUserIsAdmin) {
+        $msg += ' The install continues automatically when an administrator signs in.'
+    } else {
+        $who = 'This PC''s user'
+        if ($DesktopUserName) { $who = $DesktopUserName }
+        $msg += " The install continues automatically only when an administrator signs in. $who isn't an administrator, so after that either sign in once as an administrator, or run the install command again."
+    }
+    $msg
+}
+
+# Stop here until Windows restarts (or the user signs in again); RunOnce
+# continues the install at the next administrator sign-in.
 function Stop-ForRestart {
-    param([string]$InstallDir, [string]$Step, [hashtable]$Arguments, [string]$Message)
-    Save-ResumeState -Path (Join-Path $InstallDir 'install-state.json') -Step $Step -Arguments $Arguments
+    param([string]$InstallDir, [string]$Step, [hashtable]$Arguments, [string]$Reason,
+        [ValidateSet('restart', 'signout')][string]$Action = 'restart', $DesktopUser)
+    Save-ResumeState -Path (Join-KioskPath $InstallDir 'install-state.json') -Step $Step -Arguments $Arguments
     Register-Resume -InstallDir $InstallDir
-    Request-Restart -Message $Message
+    $isAdmin = $false
+    $name = $null
+    if ($DesktopUser) { $isAdmin = Test-UserIsAdmin -Sid $DesktopUser.Sid; $name = $DesktopUser.Name }
+    Request-Restart -Message (Get-RestartMessage -Reason $Reason -Action $Action -DesktopUserIsAdmin $isAdmin -DesktopUserName $name)
 }
 
 # -- Docker ---------------------------------------------------------------------
@@ -564,12 +636,18 @@ function Assert-Virtualization {
         "AMD-V / SVM Mode, save, start Windows, then re-run this command.")
 }
 
+# Get-WslFeatureState NAME: Enabled, Disabled, EnablePending, ... ('' if unknown).
+function Get-WslFeatureState {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    try { return [string](Get-WindowsOptionalFeature -Online -FeatureName $Name -ErrorAction Stop).State }
+    catch { return '' }
+}
+
+# Only a feature waiting for a restart counts as pending. Disabled does not:
+# the Store WSL 2.x leaves Microsoft-Windows-Subsystem-Linux Disabled for good.
 function Test-WslFeaturesPending {
     foreach ($f in @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform')) {
-        try {
-            $s = (Get-WindowsOptionalFeature -Online -FeatureName $f -ErrorAction Stop).State
-            if ("$s" -ne 'Enabled') { return $true }
-        } catch { Write-Verbose "Couldn't read the state of $f." }
+        if ((Get-WslFeatureState -Name $f) -eq 'EnablePending') { return $true }
     }
     $false
 }
@@ -587,15 +665,32 @@ function Invoke-Wsl {
     @{ Output = ($out -replace "`0", ''); ExitCode = $code }
 }
 
+# Enable-WslFeature NAME: $true when Windows must restart to finish.
+function Enable-WslFeature {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    try {
+        return [bool](Enable-WindowsOptionalFeature -Online -FeatureName $Name -All -NoRestart -ErrorAction Stop).RestartNeeded
+    } catch {
+        throw "Couldn't turn on $Name. Run Windows Update, then re-run. ($($_.Exception.Message))"
+    }
+}
+
+# WSL is ready: Virtual Machine Platform is on and `wsl --status` answers.
+function Test-WslReady {
+    if ((Get-WslFeatureState -Name 'VirtualMachinePlatform') -ne 'Enabled') { return $false }
+    $status = $null
+    try { $status = Invoke-Wsl -Arguments @('--status') } catch { $status = $null }
+    [bool]($status -and $status.ExitCode -eq 0)
+}
+
 # Enable-Wsl: WSL2 without a distribution. Returns $true when Windows must
 # restart before Docker Desktop can use it.
 function Enable-Wsl {
-    $status = $null
-    try { $status = Invoke-Wsl -Arguments @('--status') } catch { $status = $null }
-    if ($status -and $status.ExitCode -eq 0 -and -not (Test-WslFeaturesPending)) {
+    if (Test-WslReady) {
         Write-Info 'WSL2 is on.'
         return $false
     }
+    if (Test-WslFeaturesPending) { return $true }   # turned on earlier; waiting for the restart
     Write-Info 'Turning on WSL2 (Windows Subsystem for Linux)'
     $r = $null
     try { $r = Invoke-Wsl -Arguments @('--install', '--no-distribution') } catch { $r = $null }
@@ -605,18 +700,15 @@ function Enable-Wsl {
         Write-Info 'Turning on the Windows features WSL2 needs'
         $restart = $false
         foreach ($f in @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform')) {
-            try {
-                $res = Enable-WindowsOptionalFeature -Online -FeatureName $f -All -NoRestart -ErrorAction Stop
-                if ($res.RestartNeeded) { $restart = $true }
-            } catch {
-                throw "Couldn't turn on $f. Run Windows Update, then re-run. ($($_.Exception.Message))"
-            }
+            if (Enable-WslFeature -Name $f) { $restart = $true }
         }
         if ($restart) { return $true }
     }
     Test-WslFeaturesPending
 }
 
+# Members of docker-users by SID (the group name is fixed by Docker Desktop;
+# SIDs avoid name and domain-prefix mismatches).
 function Test-DockerUsersMember {
     param([Parameter(Mandatory = $true)][string]$Sid)
     try {
@@ -625,35 +717,53 @@ function Test-DockerUsersMember {
     } catch { return $false }
 }
 
+function ConvertTo-SecurityIdentifier {
+    param([Parameter(Mandatory = $true)][string]$Sid)
+    New-Object Security.Principal.SecurityIdentifier $Sid
+}
+
+# Add-DockerUsersMember SID: $true when newly added, $false when already a member.
 function Add-DockerUsersMember {
-    param([Parameter(Mandatory = $true)][string]$Name)
+    param([Parameter(Mandatory = $true)][string]$Sid)
     try {
-        Add-LocalGroupMember -Group 'docker-users' -Member $Name -ErrorAction Stop
+        Add-LocalGroupMember -Group 'docker-users' -Member (ConvertTo-SecurityIdentifier -Sid $Sid) -ErrorAction Stop
+        return $true
     } catch {
-        & net.exe localgroup docker-users $Name /add | Out-Null
-        if ($LASTEXITCODE -ne 0) { Write-Warn "Couldn't add $Name to the docker-users group; add them in Computer Management, then sign out and back in." }
+        if ($_.FullyQualifiedErrorId -like 'MemberExists*' -or $_.Exception.Message -match 'already a member') { return $false }
+        throw "Couldn't add the signed-in user to the docker-users group ($($_.Exception.Message)). Add them in Computer Management > Local Users and Groups, sign out and back in, then re-run."
     }
 }
 
-# Install-DockerDesktop: WSL2 (restart and resume if needed), Docker Desktop,
-# and the signed-in user in docker-users (sign out and resume if newly added).
+# Confirm-DockerUsersMember: the signed-in user must be in docker-users, or
+# Docker Desktop refuses to start for them. Runs on every install once Docker
+# is there. Newly added counts only from the next sign-in, so stop and resume.
+function Confirm-DockerUsersMember {
+    param([Parameter(Mandatory = $true)][string]$InstallDir, [hashtable]$ResumeArguments = @{}, $DesktopUser)
+    if (-not $DesktopUser) {
+        Write-Warn 'No signed-in user found, so nobody was added to the docker-users group. Docker Desktop only starts for its members.'
+        return
+    }
+    if (Test-DockerUsersMember -Sid $DesktopUser.Sid) { return }
+    if (-not (Add-DockerUsersMember -Sid $DesktopUser.Sid)) { return }
+    Stop-ForRestart -InstallDir $InstallDir -Step 'engine' -Arguments $ResumeArguments -Action 'signout' -DesktopUser $DesktopUser `
+        -Reason "$($DesktopUser.Name) was added to the docker-users group, which counts from the next sign-in."
+}
+
+# Install-DockerDesktop: WSL2 (restart and resume if needed), then Docker Desktop.
 function Install-DockerDesktop {
     param([Parameter(Mandatory = $true)][string]$InstallDir, [hashtable]$ResumeArguments = @{}, $DesktopUser)
-    if ((Get-Command docker -ErrorAction SilentlyContinue) -or (Test-DockerInstalled) -or (Test-DockerEngine)) {
+    if ((Test-DockerInstalled) -or (Test-DockerEngine)) {
         Write-Info 'Docker Desktop is installed.'
         return
     }
     Assert-Virtualization
     if (Enable-Wsl) {
-        Stop-ForRestart -InstallDir $InstallDir -Step 'docker' -Arguments $ResumeArguments `
-            -Message 'WSL2 was turned on and Windows needs to restart. Restart now; the install continues on its own after you sign in again.'
+        Stop-ForRestart -InstallDir $InstallDir -Step 'docker' -Arguments $ResumeArguments -Action 'restart' -DesktopUser $DesktopUser `
+            -Reason 'WSL2 was turned on and Windows needs to restart.'
     }
-    $wasMember = $true
-    if ($DesktopUser) { $wasMember = Test-DockerUsersMember -Sid $DesktopUser.Sid }
-
     $arch = Get-WindowsArch
     $url = "https://desktop.docker.com/win/main/$arch/Docker%20Desktop%20Installer.exe"
-    $exe = Join-Path $env:TEMP 'Docker Desktop Installer.exe'
+    $exe = Join-KioskPath ([IO.Path]::GetTempPath()) 'Docker Desktop Installer.exe'
     Write-Info "Downloading Docker Desktop ($arch)"
     Enable-Tls12
     try {
@@ -663,26 +773,20 @@ function Install-DockerDesktop {
     }
     try {
         $sig = Get-AuthenticodeSignature -FilePath $exe
-        if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Docker Inc') {
+        if ("$($sig.Status)" -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'Docker Inc') {
             throw "The Docker Desktop download isn't signed by Docker (signature: $($sig.Status)). Re-run; if it happens again, check for a proxy changing downloads."
         }
         Write-Info 'Installing Docker Desktop (this takes a few minutes)'
         $p = Start-Process -FilePath $exe -ArgumentList @('install', '--quiet', '--accept-license', '--backend=wsl-2') -Wait -PassThru
         if ($p.ExitCode -eq 3010) {
-            Stop-ForRestart -InstallDir $InstallDir -Step 'engine' -Arguments $ResumeArguments `
-                -Message 'Docker Desktop was installed and Windows needs to restart. Restart now; the install continues on its own after you sign in again.'
+            Stop-ForRestart -InstallDir $InstallDir -Step 'engine' -Arguments $ResumeArguments -Action 'restart' -DesktopUser $DesktopUser `
+                -Reason 'Docker Desktop was installed and Windows needs to restart.'
         }
         if ($p.ExitCode -ne 0) { throw "Docker Desktop didn't install (exit code $($p.ExitCode)). Restart Windows, then re-run." }
     } finally {
         Remove-Item -LiteralPath $exe -Force -ErrorAction SilentlyContinue
     }
     Add-DockerToPath
-    if ($DesktopUser -and -not $wasMember) {
-        Add-DockerUsersMember -Name $DesktopUser.Name
-        # Group membership counts only from the next sign-in; Docker Desktop refuses to start before that.
-        Stop-ForRestart -InstallDir $InstallDir -Step 'engine' -Arguments $ResumeArguments `
-            -Message "$($DesktopUser.Name) was added to the docker-users group. Sign out and back in (or restart); the install continues on its own after you sign in."
-    }
 }
 
 # Set-DockerAutostart PATH: "AutoStart": true in Docker Desktop's
@@ -710,10 +814,14 @@ function Set-DockerAutostart {
     }
 }
 
+function Test-DockerDesktopRunning {
+    [bool](Get-Process -Name 'Docker Desktop' -ErrorAction SilentlyContinue)
+}
+
 # Start Docker Desktop as the signed-in user (never elevated): a one-time
-# scheduled task running in their session.
+# scheduled task running in their session, removed once it has launched.
 function Start-DockerDesktopAsUser {
-    param($DesktopUser)
+    param($DesktopUser, [int]$WaitSeconds = 15)
     if (-not (Test-Path -LiteralPath $DockerDesktopExe)) { Write-Warn "Docker Desktop isn't at $DockerDesktopExe; start it from the Start menu."; return }
     $task = 'ServerSherpa Kiosk Start Docker'
     try {
@@ -721,9 +829,19 @@ function Start-DockerDesktopAsUser {
         $action = New-ScheduledTaskAction -Execute $DockerDesktopExe
         $principal = New-ScheduledTaskPrincipal -UserId $DesktopUser.Name -LogonType Interactive -RunLevel Limited
         Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Force | Out-Null
-        Start-ScheduledTask -TaskName $task
-        Start-Sleep -Seconds 3
-        Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+        try {
+            Start-ScheduledTask -TaskName $task
+            # Unregistering a task that is still Queued cancels the launch.
+            $deadline = (Get-Date).AddSeconds($WaitSeconds)
+            while ((Get-Date) -lt $deadline) {
+                if (Test-DockerDesktopRunning) { break }
+                $state = "$((Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue).State)"
+                if ($state -and $state -ne 'Queued' -and $state -ne 'Ready') { break }
+                Start-Sleep -Milliseconds 500
+            }
+        } finally {
+            Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+        }
     } catch {
         try { Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$DockerDesktopExe`"" }
         catch { Write-Warn "Couldn't start Docker Desktop; open it from the Start menu." }
@@ -734,7 +852,7 @@ function Start-DockerDesktopAsUser {
 function Enable-DockerAutostart {
     param($DesktopUser)
     if ($DesktopUser -and $DesktopUser.Profile) {
-        Set-DockerAutostart -Path (Join-Path $DesktopUser.Profile 'AppData\Roaming\Docker\settings-store.json')
+        Set-DockerAutostart -Path (Join-KioskPath $DesktopUser.Profile 'AppData\Roaming\Docker\settings-store.json')
     } else {
         Write-Warn 'No signed-in user found. In Docker Desktop > Settings > General, turn on Start Docker Desktop when you sign in.'
     }
@@ -790,7 +908,7 @@ function Stop-LegacyKiosk {
 # completely empty data folder, so nothing is ever overwritten. $true if copied.
 function Copy-LegacyKioskData {
     param([Parameter(Mandatory = $true)][string]$LegacyDir, [Parameter(Mandatory = $true)][string]$DataDir)
-    if (-not (Test-Path -LiteralPath (Join-Path $LegacyDir 'identity.json') -PathType Leaf)) { return $false }
+    if (-not (Test-Path -LiteralPath (Join-KioskPath $LegacyDir 'identity.json') -PathType Leaf)) { return $false }
     if ((Test-Path -LiteralPath $DataDir -PathType Container) -and
         (Get-ChildItem -LiteralPath $DataDir -Force | Select-Object -First 1)) {
         Write-Info "Keeping the existing data in $DataDir (earlier kiosk data in $LegacyDir was not copied)."
@@ -816,7 +934,7 @@ function Get-KioskJson {
 # Start-Kiosk: pull, start, wait until healthy, return /edge/identity (or $null).
 function Start-Kiosk {
     param([Parameter(Mandatory = $true)][string]$InstallDir, [int]$TimeoutSeconds = 120, [int]$PollSeconds = 3)
-    $compose = Join-Path $InstallDir 'docker-compose.yml'
+    $compose = Join-KioskPath $InstallDir 'docker-compose.yml'
     Stop-LegacyKiosk
     Write-Info 'Downloading the kiosk image'
     try { Invoke-Docker -Arguments @('compose', '-f', $compose, 'pull') -Stream }
@@ -918,15 +1036,17 @@ function Write-Summary {
 }
 
 # -- Uninstall ------------------------------------------------------------------
-# Assert-SafeRemovePath LABEL PATH: refuse paths it would be dangerous to
-# remove: empty, relative, a drive root, fewer than two components, . or ..
+# Assert-SafeRemovePath LABEL PATH [-MinComponents N]: refuse paths it would
+# be dangerous to remove from: empty, relative, a drive root, . or .. parts,
+# fewer than N components (2, for recursive deletes such as the data purge;
+# 1 for the install folder, where only named files are deleted, so D:\K works).
 function Assert-SafeRemovePath {
-    param([string]$Label, [AllowEmptyString()][string]$Path)
+    param([string]$Label, [AllowEmptyString()][string]$Path, [ValidateRange(1, 10)][int]$MinComponents = 2)
     if ([string]::IsNullOrWhiteSpace($Path)) { throw "$Label is empty; refusing to continue." }
     $p = $Path.Replace('\', '/')
-    $min = 2
+    $min = $MinComponents
     if ($p.StartsWith('//')) {
-        $rest = $p.Substring(2); $min = 4                  # \\server\share\a\b
+        $rest = $p.Substring(2); $min = $MinComponents + 2  # \\server\share\...
     } elseif ($p -match '^[A-Za-z]:') {
         if ($p -notmatch '^[A-Za-z]:/') { throw "$Label must be a full path (got '$Path'); refusing to continue." }
         $rest = $p.Substring(3)
@@ -947,7 +1067,7 @@ function Test-LooksLikeKioskData {
     param([string]$Path)
     if (-not (Get-ChildItem -LiteralPath $Path -Force | Select-Object -First 1)) { return $true }
     foreach ($f in @('identity.json', 'edge.db', 'edge.key')) {
-        if (Test-Path -LiteralPath (Join-Path $Path $f)) { return $true }
+        if (Test-Path -LiteralPath (Join-KioskPath $Path $f)) { return $true }
     }
     $false
 }
@@ -990,7 +1110,8 @@ function Uninstall-Kiosk {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$InstallDir,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$DataDir,
         [switch]$PurgeData, $DesktopUser)
-    Assert-SafeRemovePath -Label 'The install folder (KIOSK_DIR)' -Path $InstallDir
+    # Only named files are deleted from the install folder; the data folder may be deleted recursively.
+    Assert-SafeRemovePath -Label 'The install folder (KIOSK_DIR)' -Path $InstallDir -MinComponents 1
     Assert-SafeRemovePath -Label 'The data folder (KIOSK_DATA_DIR)' -Path $DataDir
     if ($PurgeData -and (Test-Path -LiteralPath $DataDir -PathType Container)) {
         if (-not (Test-LooksLikeKioskData -Path $DataDir)) {
@@ -1002,12 +1123,12 @@ function Uninstall-Kiosk {
     # The update task first, so it can't restart the container in between.
     Remove-LoginItems -InstallDir $InstallDir -DesktopUser $DesktopUser
     Remove-ResumeRegistration -InstallDir $InstallDir
-    $compose = Join-Path $InstallDir 'docker-compose.yml'
+    $compose = Join-KioskPath $InstallDir 'docker-compose.yml'
     if (Test-Path -LiteralPath $compose -PathType Leaf) {
         Stop-KioskForUninstall -ComposeFile $compose
     }
     foreach ($f in @('docker-compose.yml', 'config.env', 'install.ps1', 'update.ps1', 'launch.ps1', 'install-state.json', 'update-state.json')) {
-        $p = Join-Path $InstallDir $f
+        $p = Join-KioskPath $InstallDir $f
         if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
     }
     Write-Info "Removed the kiosk from $InstallDir (install.log was kept). Docker stays installed."
@@ -1021,11 +1142,19 @@ function Uninstall-Kiosk {
     }
 }
 
+# The data folder uninstall works on: environment, then saved config, then the default.
+function Get-UninstallDataDir {
+    param([hashtable]$Saved = @{})
+    if ($env:KIOSK_DATA_DIR) { return $env:KIOSK_DATA_DIR }
+    if ($Saved.KIOSK_DATA_DIR) { return $Saved.KIOSK_DATA_DIR }
+    (Get-KioskPaths).Data
+}
+
 # -- Main -----------------------------------------------------------------------
 function Start-InstallLog {
     param([string]$InstallDir)
     try {
-        Start-Transcript -Path (Join-Path $InstallDir 'install.log') -Append | Out-Null
+        Start-Transcript -Path (Join-KioskPath $InstallDir 'install.log') -Append | Out-Null
         return $true
     } catch { return $false }
 }
@@ -1036,17 +1165,20 @@ function Invoke-KioskInstaller {
     $ProgressPreference = 'SilentlyContinue'   # Invoke-WebRequest's progress bar slows 5.1 downloads badly
     $ErrorActionPreference = 'Stop'
     $logging = $false
+    $relaunched = $false
     try {
         if ($Parameters.PurgeData -and -not $Parameters.Uninstall) { throw '-PurgeData only works with -Uninstall.' }
-        $elevated = Assert-Admin -Parameters $Parameters
-        if ($null -ne $elevated) { return $elevated }
+        # 64-bit first, so the elevated relaunch is 64-bit too.
+        $childExit = Assert-64BitProcess -Parameters $Parameters
+        if ($null -eq $childExit) { $childExit = Assert-Admin -Parameters $Parameters }
+        if ($null -ne $childExit) { $relaunched = $true; return $childExit }
 
         $paths = Get-KioskPaths
         $installDir = $paths.Install
         $state = $null
         if ($Parameters.Resume) {
-            $statePath = Join-Path $installDir 'install-state.json'
-            if ($SelfPath) { $statePath = Join-Path (Split-Path -Parent $SelfPath) 'install-state.json' }
+            $statePath = Join-KioskPath $installDir 'install-state.json'
+            if ($SelfPath) { $statePath = Join-KioskPath (Split-Path -Parent $SelfPath) 'install-state.json' }
             $state = Read-ResumeState -Path $statePath
             if (-not $state) { throw "Nothing to resume ($statePath is missing). Run the install command again." }
             # The environment of the first run (RunOnce starts with a clean one).
@@ -1060,13 +1192,14 @@ function Invoke-KioskInstaller {
             $paths = Get-KioskPaths
             $installDir = $paths.Install
         }
-        $saved = Read-KioskConfig -Path (Join-Path $installDir 'config.env')
+        Assert-SafeRemovePath -Label 'The install folder (KIOSK_DIR)' -Path $installDir -MinComponents 1
+        $saved = Read-KioskConfig -Path (Join-KioskPath $installDir 'config.env')
         $desktopUser = Get-DesktopUser
 
         if ($Parameters.Uninstall) {
             if (Test-Path -LiteralPath $installDir) { $logging = Start-InstallLog -InstallDir $installDir }
-            $cfg = Merge-KioskConfig -Saved $saved -Options @{ DataDir = $env:KIOSK_DATA_DIR }
-            Uninstall-Kiosk -InstallDir $installDir -DataDir $cfg.KIOSK_DATA_DIR -PurgeData:([bool]$Parameters.PurgeData) -DesktopUser $desktopUser
+            # Only the data folder from the saved config: a damaged setting elsewhere must not block uninstall.
+            Uninstall-Kiosk -InstallDir $installDir -DataDir (Get-UninstallDataDir -Saved $saved) -PurgeData:([bool]$Parameters.PurgeData) -DesktopUser $desktopUser
             return 0
         }
 
@@ -1106,12 +1239,14 @@ function Invoke-KioskInstaller {
         if (-not $state -or $state.step -ne 'engine') {
             Install-DockerDesktop -InstallDir $installDir -ResumeArguments $resumeArgs -DesktopUser $desktopUser
         }
+        # Every run once Docker is there (a resume at 'engine' and a plain re-run too).
+        Confirm-DockerUsersMember -InstallDir $installDir -ResumeArguments $resumeArgs -DesktopUser $desktopUser
         Enable-DockerAutostart -DesktopUser $desktopUser
         Wait-DockerEngine -Seconds 180
         Assert-Compose
         New-KioskDataDir -DataDir $cfg.KIOSK_DATA_DIR -DesktopUser $desktopUser
-        Write-KioskConfig -Path (Join-Path $installDir 'config.env') -Config $cfg
-        $compose = Join-Path $installDir 'docker-compose.yml'
+        Write-KioskConfig -Path (Join-KioskPath $installDir 'config.env') -Config $cfg
+        $compose = Join-KioskPath $installDir 'docker-compose.yml'
         Write-TextFile -Path $compose -Text (Get-ComposeText -ImageRef (Get-ImageRef -Channel $cfg.KIOSK_CHANNEL) -DataDir $cfg.KIOSK_DATA_DIR)
         Set-KioskFileAcl -Path $compose
         Copy-LegacyKioskData -LegacyDir (Get-LegacyDataDir -UserProfile $profilePath) -DataDir $cfg.KIOSK_DATA_DIR | Out-Null
@@ -1131,7 +1266,8 @@ function Invoke-KioskInstaller {
         return 1
     } finally {
         if ($logging) { try { Stop-Transcript | Out-Null } catch { Write-Verbose 'No transcript to stop.' } }
-        if ($env:KIOSK_ELEVATED_CHILD -eq '1' -and (Test-Interactive)) {
+        # The elevated child and a RunOnce resume run in their own window: keep it open to read.
+        if (-not $relaunched -and ($env:KIOSK_ELEVATED_CHILD -eq '1' -or $Parameters.Resume) -and (Test-Interactive)) {
             Read-Answer -Prompt 'Press Enter to close this window' | Out-Null
         }
     }
