@@ -15,6 +15,7 @@ from edge.crypto import load_or_create_keys
 from edge.db import Store
 from edge.identity import load_or_create
 from edge.outbox import OutboxWorker
+from edge.routes import auth as auth_routes
 from edge.routes import edge as edge_routes
 from edge.routes import kiosk as kiosk_routes
 from edge.upstream import Upstream
@@ -48,6 +49,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     app.state.outbox_wake = asyncio.Event()
     outbox.requeue_sending(app.state.store)
 
+    app.include_router(auth_routes.router)
     app.include_router(edge_routes.router)
     app.include_router(kiosk_routes.router)
 
