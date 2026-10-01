@@ -18,6 +18,7 @@ ENV VITE_KIOSK_VERSION=$KIOSK_VERSION
 RUN npm --prefix kiosk run build:bundle
 
 FROM python:3.13-slim
+LABEL org.opencontainers.image.source=https://github.com/encondata/BaseCampV3
 ARG KIOSK_VERSION=0.0.0
 ENV EDGE_VERSION=$KIOSK_VERSION
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \

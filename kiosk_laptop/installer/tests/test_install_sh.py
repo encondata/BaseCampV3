@@ -353,6 +353,7 @@ def test_uninstall_stops_when_docker_is_down(sh, tmp_path):
     # compose down fails and the engine doesn't answer: nothing may be removed
     r, inst = _uninstall_with_docker(sh, tmp_path, "exit 1\n")
     assert r.returncode != 0 and "Docker isn't running" in r.stderr
+    assert "re-running the installer puts them back" in r.stderr
     assert (inst / "config.env").exists()
 
 
@@ -543,6 +544,7 @@ def test_remove_login_items_linux(sh, tmp_path):
     assert not (home / ".config/autostart/serversherpa-kiosk.desktop").exists()
     assert not (home / ".local/share/applications/serversherpa-kiosk.desktop").exists()
     assert "systemctl disable --now serversherpa-kiosk-update.timer" in calls.read_text()
+    assert "systemctl stop serversherpa-kiosk-update.service" in calls.read_text()
 
 
 def test_remove_login_items_macos(sh, tmp_path):
@@ -633,3 +635,13 @@ def test_remove_login_items_linux_without_user_warns(sh, tmp_path):
     inst, home, calls, stubs = _login_env(tmp_path)
     r = sh(stubs + 'desktop_user() { :; }; OS=Linux; remove_login_items')
     assert "serversherpa-kiosk.desktop" in r.stderr and "systemctl disable" in calls.read_text()
+
+
+
+# ── Task 4 fix round 2 ────────────────────────────────────────────────
+
+def test_dockerfile_runtime_stage_has_source_label():
+    from conftest import INSTALL_SH
+    text = (INSTALL_SH.parents[1] / "Dockerfile").read_text()
+    runtime = text[text.rindex("\nFROM "):]
+    assert "LABEL org.opencontainers.image.source=https://github.com/encondata/BaseCampV3\n" in runtime

@@ -904,6 +904,7 @@ remove_login_items() {
     esac
   else
     systemctl disable --now "$UPDATE_UNIT.timer" >/dev/null 2>&1 || true
+    systemctl stop "$UPDATE_UNIT.service" >/dev/null 2>&1 || true   # a run in progress
     rm -f "$SYSTEMD_UNIT_DIR/$UPDATE_UNIT.service" "$SYSTEMD_UNIT_DIR/$UPDATE_UNIT.timer"
     systemctl daemon-reload >/dev/null 2>&1 || true
     if [ -n "$user" ]; then
@@ -1004,15 +1005,16 @@ stop_kiosk_for_uninstall() {
     warn "Docker isn't installed, so there is no kiosk container to stop; continuing."
     return 0
   fi
+  local removed="The nightly update and the launcher were already removed; re-running the installer puts them back."
   compose down >/dev/null 2>&1 && return 0
   if ! docker_answers; then
     if [ "$OS" = Darwin ]; then
-      die "Docker isn't running — start Docker Desktop and re-run --uninstall."
+      die "Docker isn't running — start Docker Desktop and re-run --uninstall. $removed"
     fi
-    die "Docker isn't running — run 'sudo systemctl start docker' and re-run --uninstall."
+    die "Docker isn't running — run 'sudo systemctl start docker' and re-run --uninstall. $removed"
   fi
   if "${DOCKER[@]}" inspect "$KIOSK_CONTAINER" >/dev/null 2>&1; then
-    die "Couldn't remove the kiosk container $KIOSK_CONTAINER. Check Docker, then re-run --uninstall."
+    die "Couldn't remove the kiosk container $KIOSK_CONTAINER. Check Docker, then re-run --uninstall. $removed"
   fi
   return 0
 }

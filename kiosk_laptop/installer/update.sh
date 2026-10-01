@@ -131,10 +131,28 @@ pull_changed() {
     # included) recreates the container on the rejected one.
     if [ -n "$PREV_IMAGE" ]; then
       "${DOCKER[@]}" tag "$PREV_IMAGE" "$ref" || log "Couldn't re-tag $ref to $PREV_IMAGE."
+      return 1
     fi
+    start_without_container "$ref" || return 2
     return 1
   fi
   return 0
+}
+
+# start_without_container REF: no kiosk container is running and the channel
+# image is the rejected one. Start the kept :previous image if there is one,
+# else the rejected image anyway: a kiosk that might work beats no kiosk.
+start_without_container() {
+  local ref="$1" prev
+  prev=$("${DOCKER[@]}" image inspect --format '{{.Id}}' "$PREVIOUS_TAG" 2>/dev/null || true)
+  if [ -n "$prev" ] && [ "$prev" != "$NEW_IMAGE" ] && "${DOCKER[@]}" tag "$prev" "$ref"; then
+    log "No kiosk container is running; starting the kept previous image $prev."
+  else
+    log "No kiosk container is running and no earlier image is kept; starting it anyway ($NEW_IMAGE)."
+  fi
+  compose up -d && return 0
+  log "The kiosk didn't start."
+  return 1
 }
 
 # state_value KEY: a string value from update-state.json (written by write_state).
@@ -174,7 +192,9 @@ wait_healthy() {
 }
 
 # rollback IMAGE_ID: point the channel tag back at IMAGE_ID and restart.
-# The caller sets STATE_REJECTED to the image that failed.
+# The caller sets STATE_REJECTED to the image that failed. Only a rollback
+# that worked ends the update; after a failure the phase stays "updating",
+# so the next run tries again.
 rollback() {
   local id="$1" ref rc=2
   ref=$(image_ref)
@@ -183,13 +203,15 @@ rollback() {
   elif "${DOCKER[@]}" tag "$id" "$ref" && compose up -d; then
     log "rolled back to $id"
     rc=1
+    STATE_PHASE='done'
   else
-    log "Rollback to $id failed."
+    log "Rollback to $id failed; the next run tries again."
   fi
-  STATE_PHASE='done'
   write_state
   return "$rc"
 }
+
+docker_up() { "${DOCKER[@]}" info >/dev/null 2>&1; }
 
 # recover_interrupted: an update that never finished (crash, reboot, power
 # loss) left a container that isn't healthy: go back to the previous image.
@@ -197,8 +219,19 @@ rollback() {
 recover_interrupted() {
   local cur rc
   [ "$STATE_PHASE" = updating ] && [ -n "$STATE_PREVIOUS" ] || return 0
+  # Docker being down is not a missing container: leave everything for later.
+  if ! docker_up; then
+    log "Docker isn't answering; an unfinished update is left for the next run."
+    return 2
+  fi
   cur=$(current_digest || true)
-  [ "$cur" != "$STATE_PREVIOUS" ] || return 0
+  if [ "$cur" = "$STATE_PREVIOUS" ]; then
+    # Interrupted before the new image replaced the old one (or after a
+    # rollback that worked): the previous image is running, so it's over.
+    STATE_PHASE='done'
+    write_state
+    return 0
+  fi
   if wait_healthy; then
     STATE_PHASE='done'
     write_state

@@ -213,6 +213,78 @@ def test_update_newer_image_clears_rejected(tmp_path):
     assert st["rejected_image"] == "" and st["previous_image"] == "sha256:old"
 
 
+
+# ── fix round 2 ───────────────────────────────────────────────────────
+
+def test_failed_rollback_keeps_phase_updating(tmp_path):
+    script = ('#!/bin/sh\necho "$@" >> "$0.log"\n'
+              'case "$*" in\n'
+              '  tag*) exit 1 ;;\n'
+              '  *"--format {{.Image}}"*) echo sha256:old ;;\n'
+              '  *"image inspect"*) echo sha256:new ;;\n'
+              '  *Health*) echo unhealthy ;;\n'
+              'esac\n')
+    r = _upd(tmp_path, 'HEALTH_TIMEOUT_S=0; main; echo rc=$?', script, IDLE)
+    assert "rc=2" in r.stdout
+    st = _read_state(tmp_path)
+    assert st["phase"] == "updating" and st["previous_image"] == "sha256:old"
+    assert "failed" in (tmp_path / "update.log").read_text()
+
+
+def test_failed_recovery_keeps_phase_updating(tmp_path):
+    _state(tmp_path, previous_image="sha256:old", phase="updating")
+    script = ('#!/bin/sh\necho "$@" >> "$0.log"\n'
+              'case "$*" in\n'
+              '  tag*) exit 1 ;;\n'
+              '  *"--format {{.Image}}"*) echo sha256:new ;;\n'
+              '  *Health*) echo unhealthy ;;\n'
+              'esac\n')
+    r = _upd(tmp_path, 'HEALTH_TIMEOUT_S=0; main; echo rc=$?', script, IDLE)
+    assert "rc=2" in r.stdout and _read_state(tmp_path)["phase"] == "updating"
+
+
+def test_recovery_with_docker_down_leaves_state_alone(tmp_path):
+    _state(tmp_path, previous_image="sha256:old", phase="updating")
+    before = (tmp_path / "update-state.json").read_text()
+    script = ('#!/bin/sh\necho "$@" >> "$0.log"\n'
+              'case "$*" in info*) exit 1 ;; *) exit 1 ;; esac\n')
+    r = _upd(tmp_path, 'HEALTH_TIMEOUT_S=0; main; echo rc=$?', script, IDLE)
+    assert "rc=2" in r.stdout
+    assert (tmp_path / "update-state.json").read_text() == before
+    log = (tmp_path / "docker.log").read_text()
+    assert "tag" not in log and "pull" not in log
+
+
+def test_recovery_when_previous_is_running_marks_done(tmp_path):
+    # interrupted before the new container replaced the old one
+    _state(tmp_path, previous_image="sha256:old", phase="updating")
+    r = _upd(tmp_path, 'main; echo rc=$?', _docker("sha256:old", "sha256:old", "healthy"), IDLE)
+    assert "rc=0" in r.stdout and _read_state(tmp_path)["phase"] == "done"
+
+
+def test_rejected_image_with_no_container_still_starts_kiosk(tmp_path):
+    _state(tmp_path, rejected_image="sha256:bad")
+    r = _upd(tmp_path, 'main; echo rc=$?', _docker("", "sha256:bad", "healthy"), IDLE)
+    log = (tmp_path / "docker.log").read_text()
+    assert "rc=0" in r.stdout and any(l.endswith("up -d") for l in log.splitlines())
+    assert "starting it anyway" in (tmp_path / "update.log").read_text()
+
+
+def test_rejected_image_with_no_container_prefers_previous_tag(tmp_path):
+    _state(tmp_path, rejected_image="sha256:bad")
+    script = ('#!/bin/sh\necho "$@" >> "$0.log"\n'
+              'case "$*" in\n'
+              '  *"--format {{.Image}}"*) exit 1 ;;\n'
+              '  *"image inspect --format {{.Id}} serversherpa-kiosk-laptop:previous"*) echo sha256:prev ;;\n'
+              '  *"image inspect"*) echo sha256:bad ;;\n'
+              'esac\n')
+    r = _upd(tmp_path, 'main; echo rc=$?', script, IDLE)
+    lines = (tmp_path / "docker.log").read_text().splitlines()
+    i_tag = lines.index("tag sha256:prev ghcr.io/encondata/serversherpa-kiosk-laptop:stable")
+    assert "rc=0" in r.stdout and any(l.endswith("up -d") for l in lines[i_tag:])
+    assert "sha256:prev" in (tmp_path / "update.log").read_text()
+
+
 # ── launch.sh ─────────────────────────────────────────────────────────
 
 def _launch(tmp_path, body, config="KIOSK_BROWSER=/usr/bin/google-chrome\n"):
