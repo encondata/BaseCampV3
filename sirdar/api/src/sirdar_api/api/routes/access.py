@@ -55,7 +55,8 @@ async def summary(db: DbSession, actor: AuthContext = require_permission("access
 @router.put("/roles/{name}/matrix")
 async def put_role_matrix(name: str, body: MatrixIn, db: DbSession,
                           actor: AuthContext = require_permission("access", "change")):
-    role = await db.get(Role, name)
+    role = (await db.execute(select(Role).where(Role.name == name).with_for_update())
+            ).scalar_one_or_none()
     if role is None:
         raise _err(404, "role_not_found")
     if name in actor.access.role_names:
