@@ -71,6 +71,7 @@ $LegacyFilter = "label=com.docker.compose.project=$LegacyProject"
 # drops double quotes inside native command arguments.
 $LegacyMountFormat = '{{range .Mounts}}{{if eq .Destination `/data`}}{{.Source}}{{end}}{{end}}'
 $KioskContainer = 'serversherpa-kiosk-edge-1'     # project "serversherpa-kiosk", service "edge"
+$PreviousTag = 'serversherpa-kiosk-laptop:previous'   # kept by update.ps1
 $KioskUrl = 'http://localhost:8090'
 $ResumeValueName = 'ServerSherpaKioskInstall'
 $RunOnceKey = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
@@ -545,7 +546,18 @@ function Save-ResumeState {
         $plain[$k] = $v
     }
     $json = (@{ step = $Step; arguments = $plain } | ConvertTo-Json -Depth 5)
+    # A fresh file with the install ACL: a planted one (with its own write
+    # rights) never survives into what the elevated resume reads.
+    Remove-PlantedFile -Path $Path
     Write-TextFile -Path $Path -Text $json
+    Set-KioskFileAcl -Path $Path
+}
+
+# Remove-PlantedFile PATH: delete a file before it is rewritten, so nothing of
+# the old file (its permissions included) is kept.
+function Remove-PlantedFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Force }
 }
 
 # Read-ResumeState: { step, arguments } with arguments as a hashtable
@@ -572,11 +584,18 @@ function Get-ResumeCommand {
 function Save-InstallerCopy {
     param([Parameter(Mandatory = $true)][string]$InstallDir)
     $dest = Join-KioskPath $InstallDir 'install.ps1'
+    # RunOnce runs this copy elevated: a fresh file with the install ACL, so a
+    # planted copy (with its own write rights) never survives.
     if ($SelfPath -and (Test-Path -LiteralPath $SelfPath -PathType Leaf)) {
-        if ((Resolve-Path -LiteralPath $SelfPath).Path -ne $dest) { Copy-Item -LiteralPath $SelfPath -Destination $dest -Force }
+        if ((Resolve-Path -LiteralPath $SelfPath).Path -ne $dest) {
+            Remove-PlantedFile -Path $dest
+            Copy-Item -LiteralPath $SelfPath -Destination $dest -Force
+        }
     } else {
+        Remove-PlantedFile -Path $dest
         Write-TextFile -Path $dest -Text (Get-CompanionText -Name 'install.ps1')
     }
+    Set-KioskFileAcl -Path $dest
 }
 
 function Register-Resume {
@@ -1080,19 +1099,23 @@ function Find-LegacyKioskData {
 function Invoke-LegacyMigration {
     param([string]$UserProfile, [Parameter(Mandatory = $true)][string]$DataDir, [switch]$StartFresh)
     $found = Find-LegacyKioskData -UserProfile $UserProfile
+    $any = $found.Dir
+    if (-not $any) { $any = $found.Unreadable }
+    if ($any -and $StartFresh) {
+        Write-Warn "Starting fresh (-StartFresh): the earlier kiosk's data in $any was not copied."
+        return $false
+    }
     if ($found.Unreadable) {
         $where = $found.Unreadable
         if ((Test-Path -LiteralPath $DataDir -PathType Container) -and (Get-ChildItem -LiteralPath $DataDir -Force | Select-Object -First 1)) {
             Write-Info "Keeping the existing data in $DataDir (earlier kiosk data in $where was not copied)."
             return $false
         }
-        if ($StartFresh) {
-            Write-Warn "Starting fresh (-StartFresh): the earlier kiosk's data in $where was not copied."
-            return $false
-        }
         Stop-LegacyKiosk
         $hint = ''
-        if ($where.StartsWith('/')) {
+        if ($where.StartsWith('/run/desktop/mnt/host/wsl/')) {
+            $hint = ' The data is inside the WSL distribution, usually ' + '\\wsl$\<distro>\home\<you>\ServerSherpaKiosk' + ' (<distro> is the Linux distribution it ran in, for example Ubuntu).'
+        } elseif ($where.StartsWith('/')) {
             $hint = ' From Windows that folder is ' + '\\wsl$\<distro>' + $where.Replace('/', '\') + ' (<distro> is the Linux distribution it ran in, for example Ubuntu).'
         }
         throw ("The earlier kiosk keeps its data in $where, which this installer can't read.$hint The old kiosk was stopped. " +
@@ -1222,13 +1245,26 @@ function Start-Kiosk {
         try { Invoke-Docker -Arguments @('tag', $prev, $ImageRef) | Out-Null }
         catch { throw "Couldn't keep the current version (docker tag failed). $($_.Exception.Message)" }
         $new = $prev
+    } elseif (-not $prev -and $new -and $new -eq $state.Rejected) {
+        # No container to keep: like update.ps1, the kept :previous image if there is one.
+        $kept = Get-ImageId -Arguments @('image', 'inspect', '-f', '{{.Id}}', $PreviousTag)
+        $tagged = $false
+        if ($kept -and $kept -ne $new) {
+            try { Invoke-Docker -Arguments @('tag', $kept, $ImageRef) | Out-Null; $tagged = $true } catch { $tagged = $false }
+        }
+        if ($tagged) {
+            Write-Warn 'The newest version failed its health check on this laptop before; starting the kept previous version instead.'
+            $new = $kept
+        } else {
+            Write-Warn 'The newest version failed its health check on this laptop before, and no earlier version is kept, so starting it anyway.'
+        }
     }
     Write-Info 'Starting the kiosk'
     $r = Start-KioskContainer -Compose $compose -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds
     if (-not $r.Healthy) {
         if ($prev -and $prev -ne $new) {
             Write-Warn "The new version didn't become healthy (status: $($r.Status)); going back to the previous one."
-            $state.Rejected = $new   # the nightly update won't try it again
+            if ($new) { $state.Rejected = $new }   # the nightly update won't try it again
             $back = $false
             try { Invoke-Docker -Arguments @('tag', $prev, $ImageRef) | Out-Null; $back = $true } catch { $back = $false }
             if ($back) { $r = Start-KioskContainer -Compose $compose -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds }

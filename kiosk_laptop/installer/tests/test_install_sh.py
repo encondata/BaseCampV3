@@ -703,7 +703,7 @@ def test_derive_portal_url_is_case_sensitive(sh):
 # Fake docker for start_kiosk and the phase-1 migration: answers by call, logs
 # every call to docker.log, health answers in turn (the last one repeats).
 def _kiosk_docker(tmp_path, running="sha256:old", pulled="sha256:new", health=("healthy",),
-                  ps="", mount="", pull_error=None):
+                  ps="", mount="", pull_error=None, previous_tag=""):
     fake = tmp_path / "docker"
     (tmp_path / "docker.health").write_text("\n".join(health) + "\n")
     pull = f'echo "{pull_error}" >&2; exit 1' if pull_error else 'echo pulled'
@@ -714,6 +714,7 @@ def _kiosk_docker(tmp_path, running="sha256:old", pulled="sha256:new", health=("
         f'  "ps -a -q"*) [ -z "{ps}" ] || echo "{ps}" ;;\n'
         f'  "inspect -f {{{{range"*) echo "{mount}" ;;\n'
         f'  "inspect -f {{{{.Image}}}}"*) [ -n "{running}" ] || exit 1; echo "{running}" ;;\n'
+        f'  "image inspect -f {{{{.Id}}}} serversherpa-kiosk-laptop:previous") [ -n "{previous_tag}" ] || exit 1; echo "{previous_tag}" ;;\n'
         f'  "image inspect"*) echo "{pulled}" ;;\n'
         '  "inspect -f {{.State.Health.Status}}"*)\n'
         '     n=$(cat "$0.n" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$0.n"\n'
@@ -938,3 +939,45 @@ def test_summary_names_the_account_on_macos(sh):
     mac = sh('OS=Darwin; ' + base + 'summary').stdout
     assert "Set up for: alice (the kiosk opens when this account signs in)" in mac
     assert "Set up for:" not in sh('OS=Linux; ' + base + 'summary').stdout
+
+
+
+# ── fix round 2 ───────────────────────────────────────────────────────
+
+def test_start_fresh_skips_even_a_readable_legacy_folder(sh, tmp_path):
+    src = tmp_path / "old"; src.mkdir(); (src / "identity.json").write_text('{"serial":"old"}')
+    data = tmp_path / "data"; data.mkdir()
+    fake = _kiosk_docker(tmp_path, ps="abc123", mount=str(src))
+    r = _migrate(sh, tmp_path, fake, data, extra="START_FRESH=1;")
+    assert r.returncode == 0, r.stderr
+    assert f"Starting fresh (--start-fresh): the earlier kiosk's data in {src} was not copied." in r.stderr
+    assert not list(data.iterdir())
+
+
+def test_rollback_without_a_pulled_image_id_keeps_rejected_image(sh, tmp_path):
+    _write_state(tmp_path, rejected_image="sha256:bad")
+    fake = _kiosk_docker(tmp_path, running="sha256:old", pulled="", health=("unhealthy", "healthy"))
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0 and "rolled back to the previous version" in r.stderr
+    assert _state_of(tmp_path)["rejected_image"] == "sha256:bad"
+
+
+def test_rejected_image_without_container_prefers_previous_tag(sh, tmp_path):
+    _write_state(tmp_path, rejected_image="sha256:bad")
+    fake = _kiosk_docker(tmp_path, running="", pulled="sha256:bad", previous_tag="sha256:prev")
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode == 0, r.stderr
+    assert "starting the kept previous version" in r.stderr
+    calls = (tmp_path / "docker.log").read_text().splitlines()
+    i_tag = calls.index(f"tag sha256:prev {STABLE}")
+    assert i_tag < next(i for i, c in enumerate(calls) if c.endswith(" up -d"))
+    assert _state_of(tmp_path)["rejected_image"] == "sha256:bad"
+
+
+def test_rejected_image_without_container_or_previous_tag_starts_it_anyway(sh, tmp_path):
+    _write_state(tmp_path, rejected_image="sha256:bad")
+    fake = _kiosk_docker(tmp_path, running="", pulled="sha256:bad")
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode == 0, r.stderr
+    assert "no earlier version is kept, so starting it anyway" in r.stderr
+    assert not any(c.startswith("tag ") for c in (tmp_path / "docker.log").read_text().splitlines())

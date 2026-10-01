@@ -109,6 +109,7 @@ Describe 'Compose file' {
 }
 
 Describe 'Resume after reboot' {
+    BeforeEach { Mock Set-KioskFileAcl {} }
     It 'saves and reads the step and arguments' {
         $p = Join-Path $TestDrive 'install-state.json'
         Save-ResumeState -Path $p -Step 'docker' -Arguments @{ ApiUrl = 'https://api.a.com'; Yes = $true }
@@ -1060,6 +1061,10 @@ Describe 'Start-Kiosk and update-state.json' {
                 if (-not $script:fk.Running) { throw "docker $line failed (exit 1). No such object" }
                 return $script:fk.Running
             }
+            if ($line -eq 'image inspect -f {{.Id}} serversherpa-kiosk-laptop:previous') {
+                if (-not $script:fk.PreviousTag) { throw "docker $line failed (exit 1). No such image" }
+                return $script:fk.PreviousTag
+            }
             if ($line -like 'image inspect -f {{.Id}} *') { return $script:fk.Pulled }
             if ($line -like 'inspect -f {{.State.Health.Status}} *') {
                 $i = [Math]::Min($script:fk.HealthIndex, $script:fk.Health.Count - 1)
@@ -1080,7 +1085,7 @@ Describe 'Start-Kiosk and update-state.json' {
         $script:inst = Join-Path $TestDrive ([guid]::NewGuid().ToString())
         New-Item -ItemType Directory $script:inst | Out-Null
         $script:icalls = New-Object System.Collections.Generic.List[string]
-        $script:fk = @{ Ps = @(); Mount = ''; Running = 'sha256:old'; Pulled = 'sha256:new'; Health = @('healthy'); HealthIndex = 0; Fail = @(); FailText = '' }
+        $script:fk = @{ Ps = @(); Mount = ''; Running = 'sha256:old'; Pulled = 'sha256:new'; PreviousTag = ''; Health = @('healthy'); HealthIndex = 0; Fail = @(); FailText = '' }
         Mock Invoke-Docker { Invoke-FakeInstallDocker -Arguments $Arguments }
         Mock Get-KioskJson { [pscustomobject]@{ serial = 'K1' } }
         Mock Start-Sleep {}
@@ -1144,6 +1149,32 @@ Describe 'Start-Kiosk and update-state.json' {
         { Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -Channel stable -TimeoutSeconds 0 -PollSeconds 0 } |
             Should -Throw "*the stable image isn't published yet, or its package isn't public*try -Channel edge, or ask your administrator*"
     }
+    It 'a rollback without a pulled image ID keeps the earlier rejected image' {
+        Write-InstallStateFixture @{ rejected_image = 'sha256:bad' }
+        $script:fk.Pulled = ''; $script:fk.Health = @('unhealthy', 'healthy')
+        { Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -Channel stable -TimeoutSeconds 0 -PollSeconds 0 } |
+            Should -Throw '*rolled back to the previous version*'
+        (Get-InstallStateFile).rejected_image | Should -Be 'sha256:bad'
+    }
+    It 'with no container, a rejected image gives way to the kept :previous image' {
+        Write-InstallStateFixture @{ rejected_image = 'sha256:bad' }
+        $script:fk.Running = ''; $script:fk.Pulled = 'sha256:bad'; $script:fk.PreviousTag = 'sha256:prev'
+        Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -Channel stable -TimeoutSeconds 0 -PollSeconds 0 | Out-Null
+        Should -Invoke Write-Warn -ParameterFilter { $Message -like '*starting the kept previous version*' }
+        $calls = @($script:icalls)
+        $iTag = [array]::IndexOf($calls, "tag sha256:prev $script:Ref")
+        $iTag | Should -BeGreaterOrEqual 0
+        $iUp = [array]::IndexOf($calls, ($calls | Where-Object { $_ -like 'compose -f * up -d' } | Select-Object -First 1))
+        $iTag | Should -BeLessThan $iUp
+        (Get-InstallStateFile).rejected_image | Should -Be 'sha256:bad'
+    }
+    It 'with no container and no kept image, the rejected image starts anyway' {
+        Write-InstallStateFixture @{ rejected_image = 'sha256:bad' }
+        $script:fk.Running = ''; $script:fk.Pulled = 'sha256:bad'
+        Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -Channel stable -TimeoutSeconds 0 -PollSeconds 0 | Out-Null
+        Should -Invoke Write-Warn -ParameterFilter { $Message -like '*no earlier version is kept, so starting it anyway*' }
+        @($script:icalls | Where-Object { $_ -like 'tag *' }) | Should -BeNullOrEmpty
+    }
     It 'keeps the network message for other pull failures' {
         $script:fk.Fail = @('compose -f * pull'); $script:fk.FailText = 'dial tcp: lookup ghcr.io: no such host'
         { Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -Channel stable -TimeoutSeconds 0 -PollSeconds 0 } |
@@ -1191,6 +1222,18 @@ Describe 'Phase-1 data through the old container mount' {
         Invoke-LegacyMigration -UserProfile 'C:\Users\tech' -DataDir $script:data -StartFresh | Should -BeFalse
         Should -Invoke Write-Warn -ParameterFilter { $Message -like '*-StartFresh*/home/tech/ServerSherpaKiosk*' }
         @(Get-ChildItem $script:data).Count | Should -Be 0
+    }
+    It '-StartFresh skips a readable phase-1 folder too' {
+        $script:fk.Mount = $script:legacy
+        Mock ConvertFrom-DockerMountSource { $Source }
+        Invoke-LegacyMigration -UserProfile 'C:\Users\tech' -DataDir $script:data -StartFresh | Should -BeFalse
+        Should -Invoke Write-Warn -ParameterFilter { $Message -eq "Starting fresh (-StartFresh): the earlier kiosk's data in $script:legacy was not copied." }
+        @(Get-ChildItem $script:data).Count | Should -Be 0
+    }
+    It 'a mount inside a WSL distribution says so in the hint' {
+        $script:fk.Mount = '/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/Ubuntu/abc123'
+        { Invoke-LegacyMigration -UserProfile 'C:\Users\tech' -DataDir $script:data } |
+            Should -Throw '*inside the WSL distribution, usually \\wsl$\<distro>\home\<you>\ServerSherpaKiosk*-StartFresh*'
     }
     It 'an unreadable mount is fine when the data folder already holds data' {
         $script:fk.Mount = '/home/tech/ServerSherpaKiosk'
@@ -1316,5 +1359,41 @@ Describe 'Install summary' {
         Mock Write-Host {}
         Write-Summary -Identity $null -Config @{ KIOSK_CHANNEL = 'stable' } -InstallDir 'C:\K' -DesktopUser @{ Name = 'PC\tech'; Sid = 'S-1-5-21-1' }
         Should -Invoke Write-Host -ParameterFilter { "$Object" -eq '  Set up for: PC\tech (the kiosk opens when this account signs in)' }
+    }
+}
+
+Describe 'Resume files are rewritten with the install ACL' {
+    BeforeEach {
+        $script:inst = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory $script:inst | Out-Null
+        Mock Set-KioskFileAcl {}
+    }
+    It 'install-state.json: a planted file is removed first, the new one gets Set-KioskFileAcl' {
+        $p = Join-Path $script:inst 'install-state.json'
+        'planted' | Set-Content $p
+        $script:order = New-Object System.Collections.Generic.List[string]
+        Mock Remove-Item { $script:order.Add("remove $LiteralPath"); [IO.File]::Delete($LiteralPath) } -ParameterFilter { $LiteralPath -eq $p }
+        Mock Set-KioskFileAcl { $script:order.Add("acl $Path") }
+        Save-ResumeState -Path $p -Step 'engine' -Arguments @{ Yes = $true }
+        ($script:order -join ';') | Should -Be "remove $p;acl $p"
+        (Read-ResumeState -Path $p).step | Should -Be 'engine'
+    }
+    It 'install.ps1: a planted copy is removed first, the new one gets Set-KioskFileAcl' {
+        $dest = Join-Path $script:inst 'install.ps1'
+        'planted' | Set-Content $dest
+        $SelfPath = $null
+        $script:order = New-Object System.Collections.Generic.List[string]
+        Mock Remove-Item { $script:order.Add("remove $LiteralPath"); [IO.File]::Delete($LiteralPath) } -ParameterFilter { $LiteralPath -eq $dest }
+        Mock Set-KioskFileAcl { $script:order.Add("acl $Path") }
+        Save-InstallerCopy -InstallDir $script:inst
+        ($script:order -join ';') | Should -Be "remove $dest;acl $dest"
+        [IO.File]::ReadAllText($dest) | Should -Be ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../install.ps1')))
+    }
+    It 'install.ps1 copied from the running script also gets the ACL' {
+        $dest = Join-Path $script:inst 'install.ps1'
+        $SelfPath = (Resolve-Path (Join-Path $PSScriptRoot '../install.ps1')).Path
+        Save-InstallerCopy -InstallDir $script:inst
+        Should -Invoke Set-KioskFileAcl -Times 1 -ParameterFilter { $Path -eq $dest }
+        Test-Path $dest | Should -BeTrue
     }
 }

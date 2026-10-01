@@ -80,6 +80,7 @@ DEFAULT_API_URL='https://api.serversherpa.com'
 LEGACY_PROJECT='serversherpa-kiosk-laptop'
 LEGACY_FILTER="label=com.docker.compose.project=$LEGACY_PROJECT"
 KIOSK_CONTAINER='serversherpa-kiosk-edge-1'   # project "serversherpa-kiosk", service "edge"
+PREVIOUS_TAG='serversherpa-kiosk-laptop:previous'   # kept by update.sh
 KIOSK_URL='http://localhost:8090'
 
 DMG_MOUNT=''     # Docker Desktop disk image mount point while attached
@@ -422,16 +423,16 @@ migrate_legacy_data() {
   find_legacy_data
   legacy="${LEGACY_DIR:-$LEGACY_UNREADABLE}"
   [ -n "$legacy" ] || return 0
+  if [ "$START_FRESH" = 1 ]; then
+    warn "Starting fresh (--start-fresh): the earlier kiosk's data in $legacy was not copied."
+    return 0
+  fi
   # Only into a missing or completely empty folder; never overwrite anything.
   if [ -d "$KIOSK_DATA_DIR" ] && [ -n "$(ls -A "$KIOSK_DATA_DIR" 2>/dev/null)" ]; then
     info "Keeping the existing data in $KIOSK_DATA_DIR (earlier kiosk data in $legacy was not copied)."
     return 0
   fi
   if [ -n "$LEGACY_UNREADABLE" ]; then
-    if [ "$START_FRESH" = 1 ]; then
-      warn "Starting fresh (--start-fresh): the earlier kiosk's data in $LEGACY_UNREADABLE was not copied."
-      return 0
-    fi
     stop_legacy_kiosk
     die "The earlier kiosk keeps its data in $LEGACY_UNREADABLE, which this installer can't read. The old kiosk was stopped. Copy everything in that folder into $KIOSK_DATA_DIR, then re-run this command. To start without it (the kiosk gets a new identity, and scans the old one hadn't uploaded stay behind), re-run with --start-fresh."
   fi
@@ -784,7 +785,7 @@ wait_kiosk_healthy() {
 # check here before is not started again, and a new version that doesn't get
 # healthy is rolled back.
 start_kiosk() {
-  local ref prev new logs
+  local ref prev new kept logs
   ref=$(image_ref)
   logs="See: docker compose -f \"$KIOSK_DIR/docker-compose.yml\" logs edge"
   stop_legacy_kiosk
@@ -798,12 +799,21 @@ start_kiosk() {
     # The channel tag back on the running image, so compose doesn't recreate it.
     "${DOCKER[@]}" tag "$prev" "$ref" || die "Couldn't keep the current version (docker tag failed)."
     new="$prev"
+  elif [ -z "$prev" ] && [ -n "$new" ] && [ "$new" = "$UPD_REJECTED" ]; then
+    # No container to keep: like update.sh, the kept :previous image if there is one.
+    kept=$("${DOCKER[@]}" image inspect -f '{{.Id}}' "$PREVIOUS_TAG" 2>/dev/null || true)
+    if [ -n "$kept" ] && [ "$kept" != "$new" ] && "${DOCKER[@]}" tag "$kept" "$ref"; then
+      warn "The newest version failed its health check on this laptop before; starting the kept previous version instead."
+      new="$kept"
+    else
+      warn "The newest version failed its health check on this laptop before, and no earlier version is kept, so starting it anyway."
+    fi
   fi
   info "Starting the kiosk"
   if ! { compose up -d && wait_kiosk_healthy; }; then
     if [ -n "$prev" ] && [ "$prev" != "$new" ]; then
       warn "The new version didn't become healthy (status: ${KIOSK_STATUS:-unknown}); going back to the previous one."
-      UPD_REJECTED="$new"   # the nightly update won't try it again
+      [ -z "$new" ] || UPD_REJECTED="$new"   # the nightly update won't try it again
       if "${DOCKER[@]}" tag "$prev" "$ref" && compose up -d && wait_kiosk_healthy; then
         write_update_state
         die "The new kiosk version didn't become healthy, so the installer rolled back to the previous version, which is running. $logs"

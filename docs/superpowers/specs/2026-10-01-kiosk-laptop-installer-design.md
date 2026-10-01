@@ -252,6 +252,33 @@ Never uninstalls Docker.
   each: sign in online, Kiosk Setup, scan, reboot → kiosk back by itself,
   force an update (`:edge` channel), uninstall keeps data. Plus, on Windows,
   a Zebra printer through Zadig/WinUSB.
+- **Hardware-only checks (CI can't reach these; add to the manual run):**
+  - Windows: `SetOwner` on real files and folders (the install files and the
+    data folder end up owned by BUILTIN\Administrators), and the `Get-Acl`
+    owner read that guards a pre-created data folder.
+  - Windows PowerShell 5.1: the raw-string inspect template
+    (``{{if eq .Destination `/data`}}``) reaches docker intact and returns
+    the phase-1 container's `/data` Source.
+  - Docker Desktop's reported mount Source, on Windows (`C:\...`,
+    `/run/desktop/mnt/host/c/...`, or a `/run/desktop/mnt/host/wsl/...` or
+    `/home/...` WSL path) and on macOS (the plain host path or `/host_mnt/...`).
+  - `Invoke-Docker -Stream`: pull progress shows live under 5.1 and pwsh, and
+    a refused pull still carries docker's output into the "isn't published
+    yet" message.
+  - macOS: `stat -f %Su` on `/Users/Shared/ServerSherpaKiosk` as the
+    installer runs it (under sudo).
+  - A forced rollback on Docker Desktop (Windows and macOS): an unhealthy new
+    image from the installer re-run and from the nightly update, then a
+    re-run that keeps the rejected image off.
+  - Installing from a technician (admin) account versus the account that
+    signs in automatically: who the summary's "Set up for" names, who owns
+    the update task / launch agents, and that the kiosk opens at the
+    auto-login.
+  - Upgrading a phase-1 Windows laptop whose kiosk ran from WSL: the
+    installer stops with the `\\wsl$` hint; the copy and a re-run work, and
+    so does `-StartFresh`.
+  - The RunOnce resume when the console user is a standard user (the install
+    continues at an administrator sign-in, or after re-running the command).
 
 ## 5. README
 

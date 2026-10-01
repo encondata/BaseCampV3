@@ -21,7 +21,8 @@
 #   3b. update to a newer good image: exit 0, running it, :previous = the old
 #      one, same serial, phase done
 #   4. update to a broken image: exit 1, rolled back to the (3b) image and
-#      healthy; the next run skips the rejected image and exits 0
+#      healthy; the next run skips the rejected image and exits 0; a
+#      re-install keeps the running image too (warns, no recreate)
 #   5. uninstall keeps the data folder; uninstall --purge-data (DELETE typed
 #      on the KIOSK_TTY file) deletes it
 set -euo pipefail
@@ -214,6 +215,20 @@ update_log | grep -q "skipping $BROKEN_IMAGE" || fail "update.log doesn't say it
 [ "$(container_field '{{.Image}}')" = "$GOOD_IMAGE" ] || fail "container left the old image"
 [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" = "$GOOD_IMAGE" ] || fail "the channel tag wasn't pointed back at the running image"
 pass "exit 0, rejected image skipped, container untouched"
+
+step "4c. Re-install keeps the rejected image off too"
+CREATED=$(container_field '{{.Created}}')
+REJECTED=$(state_value rejected_image)
+rc=0; OUT=$(install_kiosk 2>&1) || rc=$?
+printf '%s\n' "$OUT" | tail -n 20
+[ "$rc" = 0 ] || fail "install.sh exited $rc on a re-install with the rejected image published"
+printf '%s\n' "$OUT" | grep -q "failed its health check on this laptop before" \
+  || fail "install.sh didn't warn that the newest version failed its health check before"
+[ "$(container_field '{{.Created}}')" = "$CREATED" ] || fail "the re-install recreated the container"
+[ "$(container_field '{{.Image}}')" = "$GOOD_IMAGE" ] || fail "the re-install left the good image $GOOD_IMAGE"
+[ "$(state_value rejected_image)" = "$REJECTED" ] || fail "the re-install changed rejected_image ($REJECTED -> $(state_value rejected_image))"
+stop_timer
+pass "exit 0, warned, container untouched, rejected_image unchanged"
 
 # ── 5. Uninstall, then purge ──────────────────────────────────────────
 step "5. Uninstall (data kept)"
