@@ -10,6 +10,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import PlainTextResponse
 
 from edge import outbox, static
+from edge.background import Background
 from edge.config import Settings, load_settings
 from edge.crypto import load_or_create_keys
 from edge.db import Store
@@ -31,13 +32,21 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        runner = Background(app.state) if settings.background else None
+        app.state.background = runner
         try:
+            if runner:
+                runner.start()
             yield
         finally:
             try:
-                await app.state.upstream.aclose()
+                if runner:
+                    await runner.stop()
             finally:
-                app.state.store.close()
+                try:
+                    await app.state.upstream.aclose()
+                finally:
+                    app.state.store.close()
 
     app = FastAPI(lifespan=lifespan, title="ServerSherpa Kiosk Edge", docs_url=None, redoc_url=None,
                   openapi_url=None)
