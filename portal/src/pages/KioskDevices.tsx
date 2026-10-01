@@ -44,6 +44,7 @@ import {
   listGridStyle, listScale, moveKey, passesFacets, titleFor, useReorderDrag, useSearchHaystacks,
   visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
+import DataTable, { type DataTableColumn } from '../components/DataTable';
 import { VirtualRows } from '../lib/virtualRows';
 import ClearOfflineKiosksModal from '../components/hardware/ClearOfflineKiosksModal';
 import DeviceEditModal from '../components/hardware/DeviceEditModal';
@@ -61,7 +62,7 @@ import '../styles/hardware.css';
 // shows whenever the column actually has the room.
 const COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: '1.2fr', default: true, min: 140 },
-  { key: 'sub_type', label: 'Type', width: '72px', default: true, min: 104 },
+  { key: 'sub_type', label: 'Type', width: '1fr', default: true, min: 130 },
   { key: 'ip', label: 'IP', width: '1fr', default: true, min: 100 },
   { key: 'mac', label: 'MAC', width: '1fr', default: true, min: 100 },
   { key: 'version', label: 'Version', short: 'Ver', width: '72px', default: true },
@@ -141,32 +142,58 @@ interface ClearOfflinePreview {
   total: number;
 }
 
-function ChevronIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-         strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
-  );
-}
+const dash = (x: string | null | undefined) => x || '\u2014';
 
-/** The paired RFID reader, shown in the row's expansion. */
-function ReaderPanel({ reader }: { reader: NonNullable<DeviceItem['rfid_reader']> }) {
-  const v = reader.versions ?? {};
-  const dash = (x: string | null | undefined) => x || '\u2014';
+const STATION_COLUMNS: DataTableColumn[] = [
+  { key: 'station', label: 'Station type' }, { key: 'move', label: 'Move' },
+  { key: 'site', label: 'Site' }, { key: 'scan', label: 'Scan type' },
+];
+const READER_COLUMNS: DataTableColumn[] = [
+  { key: 'ip', label: 'IP', mono: true }, { key: 'model', label: 'Model' },
+  { key: 'serial', label: 'Serial', mono: true }, { key: 'app', label: 'Reader app' },
+  { key: 'radio', label: 'Radio' }, { key: 'agent', label: 'Cloud agent' },
+  { key: 'paired', label: 'Paired', mono: true },
+];
+
+/** The row's expansion: a Station table for every kiosk, plus a Reader table
+ *  (behind a segmented switcher) when an RFID reader is paired. */
+function KioskDetail({ device: d }: { device: DeviceItem }) {
+  const [view, setView] = useState<'station' | 'reader'>('station');
+  const reader = d.rfid_reader ?? null;
+  const v = reader?.versions ?? {};
   return (
-    <div className="detail-grid">
-      <div className="detail-block">
-        <p className="eyebrow-sm">Reader</p>
-        <dl className="kv">
-          <dt>IP</dt><dd className="mono">{reader.ip}</dd>
-          <dt>Model</dt><dd>{dash(reader.model)}</dd>
-          <dt>Serial</dt><dd className="mono">{dash(reader.serial)}</dd>
-          <dt>Reader app</dt><dd>{dash(v.readerApplication)}</dd>
-          <dt>Radio firmware</dt><dd>{dash(v.radioFirmware)}</dd>
-          <dt>Cloud agent</dt><dd>{dash(v.cloudAgentApplication)}</dd>
-          <dt>Paired</dt>
-          <dd>{reader.paired_at ? new Date(reader.paired_at).toLocaleString() : '\u2014'}</dd>
-        </dl>
-      </div>
+    <div className="detail-block" style={{ paddingTop: 16 }}>
+      {reader && (
+        <div className="segmented" role="tablist" aria-label="Kiosk detail view"
+             style={{ marginBottom: 12 }}>
+          <button type="button" role="tab" aria-selected={view === 'station'}
+                  className={view === 'station' ? 'on' : ''} onClick={() => setView('station')}>
+            Station
+          </button>
+          <button type="button" role="tab" aria-selected={view === 'reader'}
+                  className={view === 'reader' ? 'on' : ''} onClick={() => setView('reader')}>
+            Reader
+          </button>
+        </div>
+      )}
+      {reader && view === 'reader' ? (
+        <DataTable ariaLabel="Paired reader" columns={READER_COLUMNS} rows={[{
+          key: 'reader',
+          cells: [
+            dash(reader.ip), dash(reader.model), dash(reader.serial),
+            dash(v.readerApplication), dash(v.radioFirmware), dash(v.cloudAgentApplication),
+            reader.paired_at ? new Date(reader.paired_at).toLocaleString() : '\u2014',
+          ],
+        }]} />
+      ) : (
+        <DataTable ariaLabel="Station" columns={STATION_COLUMNS} rows={[{
+          key: 'station',
+          cells: [
+            d.station_type ? stationTypeLabel(d) : '\u2014', dash(d.current_initiative_name),
+            dash(d.site_name), deviceCellText(d, 'scan_status'),
+          ],
+        }]} />
+      )}
     </div>
   );
 }
@@ -369,10 +396,12 @@ export default function KioskDevices() {
         const text = deviceCellText(d, key);
         return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
       }
-      case 'sub_type':
-        return d.sub_type == null
-          ? <span>—</span>
-          : <span className="chip tag" title={stationTypeLabel(d)}>{stationTypeLabel(d)}</span>;
+      case 'sub_type': {
+        const text = stationTypeLabel(d);
+        return text === '\u2014'
+          ? <span>{'\u2014'}</span>
+          : <span className="chip tag cell-line" title={text}>{text}</span>;
+      }
       case 'registration': {
         const state = tokenExpiryState(d.token_expires_at);
         const cls = state === 'ok' ? 'chip c-green'
@@ -498,24 +527,22 @@ export default function KioskDevices() {
           <VirtualRows rows={visible}
             renderRow={(d, vp) => {
               const state = tokenExpiryState(d.token_expires_at);
-              const open = openId === d.id && d.rfid_reader != null;
+              const open = openId === d.id;
               return (
                 <div key={d.id} className={`dir-row${open ? ' open' : ''}`} {...vp}
                      style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
                   <div className="row-main" style={rowStyle}
-                       onClick={d.rfid_reader ? () => setOpenId(open ? null : d.id) : undefined}>
+                       onClick={() => setOpenId(open ? null : d.id)}>
                     {shownCols.map((c) => (
                       <div className="cell" key={c.key}>{cellFor(d, c.key)}</div>
                     ))}
-                    <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end', gap: 4 }}
+                    <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}
                          onClick={(e) => e.stopPropagation()}>
-                      {d.rfid_reader && (
-                        <button type="button" className="chevron-cell" aria-label="Show reader"
-                                aria-expanded={open} onClick={() => setOpenId(open ? null : d.id)}
-                                style={{ background: 'none', border: 0, padding: 0 }}>
-                          <ChevronIcon />
-                        </button>
-                      )}
+                      <div className="chevron-cell" style={{ marginRight: 4 }}
+                           onClick={() => setOpenId(open ? null : d.id)}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                             strokeLinecap="round" strokeLinejoin="round"><path d="m9 6 6 6-6 6" /></svg>
+                      </div>
                       <RowActionsMenu actions={[
                         ...(canChange ? [{ key: 'edit', label: 'Edit', onSelect: () => setEditing(d) }] : []),
                         ...(canChange ? [state === 'none'
@@ -529,15 +556,13 @@ export default function KioskDevices() {
                       ]} />
                     </div>
                   </div>
-                  {d.rfid_reader && (
-                    <div className="detail">
-                      <div className="detail-clip">
-                        <div className="detail-inner">
-                          {open && <ReaderPanel reader={d.rfid_reader} />}
-                        </div>
+                  <div className="detail">
+                    <div className="detail-clip">
+                      <div className="detail-inner">
+                        {open && <KioskDetail device={d} />}
                       </div>
                     </div>
-                  )}
+                  </div>
                 </div>
               );
             }} />

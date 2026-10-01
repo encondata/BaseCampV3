@@ -609,21 +609,62 @@ it('Type column and filter options use the station labels', async () => {
   expect(screen.getAllByText('Label Station \u00b7 Laptop').length).toBeGreaterThan(1);
 });
 
-it('shows the Reader panel for an RFID kiosk only', async () => {
+const open = async (name: string) => {
+  const row = (await screen.findByText(name)).closest('.dir-row') as HTMLElement;
+  await userEvent.click(row.querySelector('.row-main') as HTMLElement);
+  return row;
+};
+
+it('every kiosk row has a chevron and a Station table; no switcher without a reader', async () => {
   api.listDevices.mockResolvedValue(STATION_DEVICES);
   render(<KioskDevices />);
-  const row = (await screen.findByText('station-rfid')).closest('.dir-row') as HTMLElement;
-  expect(within(row).queryByText('Reader')).toBeNull();
-  await userEvent.click(row.querySelector('.row-main') as HTMLElement);
-  expect(within(row).getByText('Reader')).not.toBeNull();
-  expect(within(row).getByText('192.168.8.77')).not.toBeNull();
-  expect(within(row).getByText('FX9600')).not.toBeNull();
-  expect(within(row).getByText('23001010101010')).not.toBeNull();
-  expect(within(row).getByText('3.4.2')).not.toBeNull();
-  expect(within(row).getByText('2.1.0')).not.toBeNull();
-  expect(within(row).getByText('1.9.9')).not.toBeNull();
-  const other = (screen.getByText('station-label')).closest('.dir-row') as HTMLElement;
-  await userEvent.click(other.querySelector('.row-main') as HTMLElement);
-  expect(within(other).queryByText('Reader')).toBeNull();
-  expect(screen.getAllByText('Reader')).toHaveLength(1);
+  const row = await open('station-label');
+  expect(row.querySelector('.chevron-cell')).not.toBeNull();
+  const t = within(row).getByRole('table', { name: 'Station' });
+  expect(within(t).getByText('Station type')).not.toBeNull();
+  expect(within(t).getByText('Label Station \u00b7 Laptop')).not.toBeNull();
+  expect(within(row).queryByRole('tablist')).toBeNull();
+  const pi = await open('plain-pi');
+  expect(within(pi).getByRole('table', { name: 'Station' })).not.toBeNull();
+  expect(within(pi).queryByRole('tablist')).toBeNull();
+});
+
+it('RFID kiosk gets a Station/Reader switcher and a Reader table with the paired time', async () => {
+  api.listDevices.mockResolvedValue(STATION_DEVICES);
+  render(<KioskDevices />);
+  const row = await open('station-rfid');
+  expect(within(row).getByRole('tablist')).not.toBeNull();
+  expect(within(row).getByRole('table', { name: 'Station' })).not.toBeNull();
+  await userEvent.click(within(row).getByRole('tab', { name: 'Reader' }));
+  const t = within(row).getByRole('table', { name: 'Paired reader' });
+  for (const h of ['IP', 'Model', 'Serial', 'Reader app', 'Radio', 'Cloud agent', 'Paired']) {
+    expect(within(t).getByText(h)).not.toBeNull();
+  }
+  for (const v of ['192.168.8.77', 'FX9600', '23001010101010', '3.4.2', '2.1.0', '1.9.9']) {
+    expect(within(t).getByText(v)).not.toBeNull();
+  }
+  expect(within(t).getByText(new Date(READER.paired_at).toLocaleString())).not.toBeNull();
+});
+
+it('Reader table falls back to dashes for missing versions and paired time', async () => {
+  api.listDevices.mockResolvedValue([kiosk({
+    id: 's9', name: 'station-bare', sub_type: 'laptop', station_type: 'rfid',
+    rfid_reader: { ip: '10.0.0.5', serial: null, model: null, versions: null, paired_at: null },
+  })]);
+  render(<KioskDevices />);
+  const row = await open('station-bare');
+  await userEvent.click(within(row).getByRole('tab', { name: 'Reader' }));
+  const t = within(row).getByRole('table', { name: 'Paired reader' });
+  expect(within(t).getAllByText('\u2014')).toHaveLength(6);
+});
+
+it('Type cell, filter and search agree for a null sub_type', async () => {
+  api.listDevices.mockResolvedValue([kiosk({ id: 'n1', name: 'no-type', sub_type: null })]);
+  render(<KioskDevices />);
+  const row = (await screen.findByText('no-type')).closest('.dir-row') as HTMLElement;
+  const { stationTypeLabel, deviceCellText } = await import('../lib/devices');
+  expect(stationTypeLabel({ station_type: null, sub_type: null })).toBe('\u2014');
+  expect(deviceCellText(DEVICES[0], 'sub_type')).toBe('Pi');
+  expect(row.querySelector('.chip.tag.cell-line')).toBeNull();
+  expect(deviceCellText(kiosk({ sub_type: null }), 'sub_type')).toBe('\u2014');
 });
