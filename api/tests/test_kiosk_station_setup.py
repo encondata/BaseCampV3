@@ -2,13 +2,20 @@
 accepts `station_type` ('label' | 'rfid') and `reader`; the device list and
 detail payloads return `station_type` and `rfid_reader`. Spec §3."""
 
+import os
+import subprocess
+import uuid
 from pathlib import Path
 
+import psycopg
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import select, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from serversherpa.db.models import AuditLog, Device
+from serversherpa.config import get_settings
+from serversherpa.db.models import AuditLog, Device, Initiative
 from tests.test_kiosk_setup_api import (
     SERIAL,
     _seed_initiatives,
@@ -105,6 +112,21 @@ async def test_label_clears_the_reader(client, db, seeded_user):
     assert d.rfid_paired_at is None
 
 
+async def test_label_with_a_reader_ignores_it_and_clears(client, db, seeded_user):
+    hdrs = await login(client)
+    body, device_id = await _setup_body(db)
+    await client.post("/kiosk/setup", headers=hdrs,
+                      json={**body, "station_type": "rfid", "reader": READER})
+    r = await client.post("/kiosk/setup", headers=hdrs, json={
+        **body, "station_type": "label", "reader": {**READER, "serial": "OTHER-1"}})
+    assert r.status_code == 200, r.text
+    d = await _device(db, device_id)
+    assert d.station_type == "label"
+    assert d.rfid_reader_ip is None and d.rfid_reader_serial is None
+    assert d.rfid_reader_model is None and d.rfid_reader_versions is None
+    assert d.rfid_paired_at is None
+
+
 async def test_omitting_both_leaves_them_untouched(client, db, seeded_user):
     hdrs = await login(client)
     body, device_id = await _setup_body(db)
@@ -122,11 +144,10 @@ async def test_omitting_both_leaves_them_untouched(client, db, seeded_user):
 async def test_move_locked_session_is_still_refused(client, db, seeded_user):
     admin = await _make(db, client, "admin", "station-admin@test.example.com")
     body, device_id = await _setup_body(db)
-    from serversherpa.db.models import Initiative
     other = Initiative(name="Other move", initiative_type="move", status="in_progress")
     db.add(other)
     await db.commit()
-    mine = await db.get(Initiative, __import__("uuid").UUID(body["initiative_id"]))
+    mine = await db.get(Initiative, uuid.UUID(body["initiative_id"]))
     assert (await client.patch(f"/initiatives/{mine.id}", headers=admin,
                                json={"kiosk_password": PW})).status_code == 200
     r = await client.post("/kiosk/move-login", json={"password": PW})
@@ -214,9 +235,55 @@ async def test_migration_0086_chain_columns_and_check(db):
                     "rfid_paired_at": "timestamp with time zone"}
     d = Device(device_type="kiosk", name="Bad", serial="bad-st", station_type="toaster")
     db.add(d)
-    from sqlalchemy.exc import DBAPIError, IntegrityError
     try:
         await db.flush()
         raise AssertionError("check constraint did not fire")
     except (IntegrityError, DBAPIError):
         await db.rollback()
+
+
+THROWAWAY_DB = os.environ.get("SS_TEST_DB", "serversherpa_test") + "_downgrade_0086"
+_COLS = ("station_type", "rfid_reader_ip", "rfid_reader_serial", "rfid_reader_model",
+         "rfid_reader_versions", "rfid_paired_at")
+
+
+def _alembic(url, *args):
+    env = {**os.environ, "SS_DATABASE_URL": url.render_as_string(hide_password=False)}
+    result = subprocess.run([str(API_DIR / ".venv/bin/alembic"), *args], cwd=API_DIR,
+                            env=env, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr[-2000:]
+
+
+def test_0086_downgrades_and_upgrades_again():
+    """Runs on a throwaway database (never the shared test DB, whose schema
+    must stay at head), same pattern as test_wiki_migration_downgrade."""
+    assert THROWAWAY_DB.startswith("serversherpa_test")
+    base = make_url(get_settings().database_url.get_secret_value())
+    admin = base.set(drivername="postgresql", database="postgres").render_as_string(
+        hide_password=False)
+    url = base.set(database=THROWAWAY_DB)
+    sync = url.set(drivername="postgresql").render_as_string(hide_password=False)
+
+    def state():
+        with psycopg.connect(sync, autocommit=True) as conn:
+            cols = {r[0] for r in conn.execute(
+                "select column_name from information_schema.columns "
+                "where table_name='devices'")}
+            check = conn.execute(
+                "select count(*) from pg_constraint where conname='ck_devices_station_type'"
+            ).fetchone()[0]
+        return {c for c in _COLS if c in cols}, check
+
+    with psycopg.connect(admin, autocommit=True) as conn:
+        conn.execute(f'DROP DATABASE IF EXISTS "{THROWAWAY_DB}" WITH (FORCE)')
+        conn.execute(f'CREATE DATABASE "{THROWAWAY_DB}"')
+    try:
+        _alembic(url, "upgrade", "0086")
+        assert state() == (set(_COLS), 1)
+        _alembic(url, "downgrade", "0085")
+        assert state() == (set(), 0)
+        _alembic(url, "upgrade", "0086")
+        assert state() == (set(_COLS), 1)
+    finally:
+        with psycopg.connect(admin, autocommit=True) as conn:
+            conn.execute(f'DROP DATABASE IF EXISTS "{THROWAWAY_DB}" WITH (FORCE)')
