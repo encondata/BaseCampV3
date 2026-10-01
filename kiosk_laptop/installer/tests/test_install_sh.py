@@ -37,7 +37,7 @@ def test_config_round_trip_and_merge_precedence(sh, tmp_path):
        f'CFG_DATA_DIR=/d; write_config "{cfg}"')
     text = cfg.read_text()
     assert "EDGE_CLOUD_API_URL=https://api.a.com\n" in text and "KIOSK_CHANNEL=edge\n" in text
-    assert oct(cfg.stat().st_mode & 0o777) == "0o600"
+    assert oct(cfg.stat().st_mode & 0o777) == "0o644"
     # re-run with no flags keeps saved values
     out = sh(f'load_config "{cfg}"; merge_config; echo "$CFG_API_URL $CFG_CHANNEL"').stdout.strip()
     assert out == "https://api.a.com edge"
@@ -85,6 +85,53 @@ def test_migration_copies_legacy_identity_once(sh, tmp_path):
     (legacy / "identity.json").write_text('{"serial":"other"}')
     sh(f'KIOSK_DATA_DIR="{data}"; DOCKER=(true); migrate_legacy_data')
     assert "kiosk-laptop-old" in (data / "identity.json").read_text()
+
+
+def test_saved_data_dir_survives_rerun_but_env_wins(sh, tmp_path):
+    cfg = tmp_path / "config.env"
+    sh(f'CFG_API_URL=https://api.a.com CFG_PORTAL_URL=https://portal.a.com CFG_CHANNEL=stable '
+       f'CFG_DATA_DIR=/custom; write_config "{cfg}"')
+    body = f'OS=Linux; default_dirs; load_config "{cfg}"; merge_config; echo "$KIOSK_DATA_DIR $CFG_DATA_DIR"'
+    assert sh(body).stdout.split() == ["/custom", "/custom"]
+    assert sh(body, env={"KIOSK_DATA_DIR": "/fromenv"}).stdout.split() == ["/fromenv", "/fromenv"]
+    out = sh(f'OS=Linux; default_dirs; load_config "{tmp_path}/none"; merge_config; echo "$KIOSK_DATA_DIR"').stdout.strip()
+    assert out == "/var/lib/serversherpa-kiosk"
+
+
+def test_migration_never_overwrites_nonempty_data_dir(sh, tmp_path):
+    legacy = tmp_path / "home" / "ServerSherpaKiosk"
+    legacy.mkdir(parents=True)
+    (legacy / "identity.json").write_text("{}")
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "edge.db").write_text("mine")
+    out = sh(f'KIOSK_DATA_DIR="{data}"; DOCKER=(true); migrate_legacy_data').stdout
+    assert (data / "edge.db").read_text() == "mine" and not (data / "identity.json").exists()
+    assert "Keeping" in out
+
+
+def test_portal_rederived_only_when_api_changes(sh, tmp_path):
+    cfg = tmp_path / "config.env"
+    sh(f'CFG_API_URL=https://api.a.com CFG_PORTAL_URL=https://custom.a.com CFG_CHANNEL=stable '
+       f'CFG_DATA_DIR=/d; write_config "{cfg}"')
+    same = sh(f'load_config "{cfg}"; OPT_API_URL=https://api.a.com//; merge_config; echo "$CFG_PORTAL_URL"').stdout.strip()
+    assert same == "https://custom.a.com"
+    chg = sh(f'load_config "{cfg}"; OPT_API_URL=https://api.b.com; merge_config; echo "$CFG_PORTAL_URL"').stdout.strip()
+    assert chg == "https://portal.b.com"
+    odd = sh(f'load_config "{cfg}"; OPT_API_URL=http://10.0.0.5:8000; merge_config; echo "[$CFG_PORTAL_URL]"')
+    assert odd.stdout.strip() == "[]" and "--portal-url" in odd.stderr
+
+
+@pytest.mark.parametrize("bad", ["/a:b", "C\\x"])
+def test_data_dir_rejects_backslash_and_colon(sh, tmp_path, bad):
+    r = sh(f"CFG_API_URL=https://api.a.com CFG_PORTAL_URL= CFG_CHANNEL=stable CFG_DATA_DIR='{bad}'; "
+           f'write_config "{tmp_path}/c.env"', check=False)
+    assert r.returncode != 0
+
+
+def test_usage_works_without_script_path(sh):
+    out = sh('usage').stdout
+    assert "--api-url" in out and "--purge-data" in out
 
 
 def test_shellcheck_clean():

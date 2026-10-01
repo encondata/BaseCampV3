@@ -43,6 +43,10 @@ die()  { printf '%sError:%s %s\n' "$C_RED$C_BOLD" "$C_OFF" "$*" >&2; exit 1; }
 OS=''            # Darwin | Linux
 ARCH=''          # amd64 | arm64
 OS_VERSION=''
+# Remember what the environment set before default_dirs fills the blanks, so a
+# saved custom data folder can win over the OS default (but not over the env).
+ENV_DATA_DIR_SET=0
+[ -z "${KIOSK_DATA_DIR:-}" ] || ENV_DATA_DIR_SET=1
 KIOSK_DIR="${KIOSK_DIR:-}"
 KIOSK_DATA_DIR="${KIOSK_DATA_DIR:-}"
 CFG_API_URL=''
@@ -106,7 +110,25 @@ ask() {  # ask VAR "prompt"  -> visible answer; returns 1 on EOF
 }
 
 usage() {
-  sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+  cat <<'EOF'
+ServerSherpa kiosk installer (laptop edition) for macOS and Linux.
+
+  curl -fsSL https://raw.githubusercontent.com/encondata/BaseCampV3/main/kiosk_laptop/installer/install.sh | bash
+  curl -fsSL .../install.sh | bash -s -- --channel edge
+  bash kiosk_laptop/installer/install.sh          # from a checkout
+
+Options:
+  --api-url URL      cloud API URL (default https://api.serversherpa.com)
+  --portal-url URL   portal URL (default: the API URL with api. -> portal.)
+  --channel NAME     stable (default) or edge
+  --yes              never prompt
+  --uninstall        remove the kiosk (the data folder is kept)
+  --purge-data       with --uninstall, also delete the data folder (asks you to type DELETE)
+  --help             show this help
+
+Environment: KIOSK_DIR, KIOSK_DATA_DIR, KIOSK_IMAGE, KIOSK_INSTALLER_REF,
+KIOSK_NONINTERACTIVE.
+EOF
 }
 
 # ── Companion files ───────────────────────────────────────────────────
@@ -186,23 +208,33 @@ config_value() {  # config_value FILE KEY -> value of the first KEY= line
 
 # merge_config: flags/env beat the saved config beat the defaults.
 merge_config() {
-  [ -n "$OPT_API_URL" ] && CFG_API_URL="$OPT_API_URL"
+  local opt_api="$OPT_API_URL" saved_api="$CFG_API_URL" changed=0
+  while [ "${opt_api%/}" != "$opt_api" ]; do opt_api="${opt_api%/}"; done
+  while [ "${saved_api%/}" != "$saved_api" ]; do saved_api="${saved_api%/}"; done
+  [ -z "$opt_api" ] || [ "$opt_api" = "$saved_api" ] || changed=1
+  CFG_API_URL="${opt_api:-$saved_api}"
   [ -n "$CFG_API_URL" ] || CFG_API_URL="$DEFAULT_API_URL"
-  CFG_API_URL="${CFG_API_URL%/}"
-  if [ -n "$OPT_PORTAL_URL" ]; then
-    CFG_PORTAL_URL="$OPT_PORTAL_URL"
-  elif [ -n "$OPT_API_URL" ] || [ -z "$CFG_PORTAL_URL" ]; then
-    # A new API URL invalidates a saved portal URL that belonged to the old one.
-    CFG_PORTAL_URL=$(derive_portal_url "$CFG_API_URL")
-  fi
   CFG_PORTAL_URL="${CFG_PORTAL_URL%/}"
-  [ -n "$OPT_CHANNEL" ] && CFG_CHANNEL="$OPT_CHANNEL"
+  if [ -n "$OPT_PORTAL_URL" ]; then
+    CFG_PORTAL_URL="${OPT_PORTAL_URL%/}"
+  elif [ "$changed" = 1 ] || [ -z "$CFG_PORTAL_URL" ]; then
+    # Re-derive only when the API URL changed (or nothing was saved).
+    CFG_PORTAL_URL=$(derive_portal_url "$CFG_API_URL")
+    [ -n "$CFG_PORTAL_URL" ] \
+      || warn "Can't derive a portal URL from $CFG_API_URL; links to the portal won't work until you pass --portal-url."
+  fi
+  [ -z "$OPT_CHANNEL" ] || CFG_CHANNEL="$OPT_CHANNEL"
   [ -n "$CFG_CHANNEL" ] || CFG_CHANNEL=stable
   case "$CFG_CHANNEL" in
     stable|edge) ;;
     *) die "Unknown channel '$CFG_CHANNEL' (use stable or edge)." ;;
   esac
-  [ -n "$KIOSK_DATA_DIR" ] && CFG_DATA_DIR="$KIOSK_DATA_DIR"
+  # Data folder: environment, then saved config, then the OS default.
+  if [ "$ENV_DATA_DIR_SET" = 1 ] || [ -z "$CFG_DATA_DIR" ]; then
+    CFG_DATA_DIR="$KIOSK_DATA_DIR"
+  else
+    KIOSK_DATA_DIR="$CFG_DATA_DIR"
+  fi
   return 0
 }
 
@@ -213,16 +245,24 @@ check_config_value() {  # check_config_value NAME VALUE
   esac
 }
 
-# write_config FILE: the four keys, KEY=value, mode 600.
+# The data folder also lands in a YAML string and a host:/data volume spec.
+check_data_dir() {
+  check_config_value "Data folder" "$1"
+  case "$1" in
+    *\\*|*:*) die "The data folder can't contain a backslash or colon: $1" ;;
+  esac
+}
+
+# write_config FILE: the four keys, KEY=value, mode 644 (no secrets in it).
 write_config() {
   local file="$1" tmp
   check_config_value "API URL" "$CFG_API_URL"
   check_config_value "Portal URL" "$CFG_PORTAL_URL"
   check_config_value "Channel" "$CFG_CHANNEL"
-  check_config_value "Data folder" "$CFG_DATA_DIR"
+  check_data_dir "$CFG_DATA_DIR"
   tmp=$(mktemp "$file.XXXXXX")
   TMP_FILES+=("$tmp")
-  chmod 600 "$tmp"
+  chmod 644 "$tmp"   # URLs only; the macOS update job runs as the signed-in user
   {
     printf 'EDGE_CLOUD_API_URL=%s\n' "$CFG_API_URL"
     printf 'EDGE_PORTAL_URL=%s\n' "$CFG_PORTAL_URL"
@@ -245,7 +285,7 @@ render_compose() {
   image=$(image_ref)
   data="$KIOSK_DATA_DIR"
   check_config_value "Image" "$image"
-  check_config_value "Data folder" "$data"
+  check_data_dir "$data"
   # Substitute with awk (ENVIRON) so '&', '/' and '\' in paths stay literal.
   IMG="$image" DATA="$data" awk '
     {
@@ -282,9 +322,13 @@ find_legacy_data() {
 # migrate_legacy_data: one-time copy into an empty data folder.
 migrate_legacy_data() {
   local legacy
-  [ ! -f "$KIOSK_DATA_DIR/identity.json" ] || return 0
   legacy=$(find_legacy_data)
   [ -n "$legacy" ] || return 0
+  # Only into a missing or completely empty folder; never overwrite anything.
+  if [ -d "$KIOSK_DATA_DIR" ] && [ -n "$(ls -A "$KIOSK_DATA_DIR" 2>/dev/null)" ]; then
+    info "Keeping the existing data in $KIOSK_DATA_DIR (earlier kiosk data in $legacy was not copied)."
+    return 0
+  fi
   info "Found the earlier kiosk data in $legacy; copying it to $KIOSK_DATA_DIR"
   "${DOCKER[@]}" compose -p "$LEGACY_PROJECT" stop >/dev/null 2>&1 || true
   mkdir -p "$KIOSK_DATA_DIR"
