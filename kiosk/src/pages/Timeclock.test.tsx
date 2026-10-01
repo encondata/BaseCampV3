@@ -227,6 +227,15 @@ it('a network failure says the punch was not recorded', async () => {
     .toBeTruthy();
 });
 
+it('a laptop sign-in made offline is told to sign in again while online', async () => {
+  api.postClockIn.mockRejectedValue(new ApiError(403, 'cloud_sign_in_required'));
+  render_();
+  await typeAndPick('tina', /Tina Tanaka/);
+  await userEvent.click(await screen.findByRole('button', { name: 'Clock in' }));
+
+  expect(await screen.findByText('Sign in again while online to do this.')).toBeTruthy();
+});
+
 it('Cancel returns to the entry state', async () => {
   render_();
   await typeAndPick('tina', /Tina Tanaka/);

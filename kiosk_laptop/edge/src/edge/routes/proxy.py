@@ -7,7 +7,13 @@ move data is the same for everyone signed in to this kiosk) and served
 from SQLite when the cloud is unreachable — never across a move lock.
 Writes have no offline fallback here: the outbox handles scans and
 printer events; everything else answers 503 `edge_offline`, which the
-kiosk shows as its normal offline message."""
+kiosk shows as its normal offline message.
+
+A person signed in offline (or whose cloud session was refused) has no
+usable cloud session. Their edge session is still good, so the answer is
+403 `cloud_sign_in_required` — never 401, which the kiosk reads as "your
+session ended" and signs them out. The heartbeat in that state answers 503
+`edge_offline`, so the kiosk keeps its last registration state."""
 
 import json
 from urllib.parse import parse_qs
@@ -24,6 +30,7 @@ from edge.upstream import CloudOffline
 CACHEABLE = ("/kiosk/sync/", "/kiosk/setup-options", "/kiosk/labels/vocab", "/system/status")
 ANONYMOUS_OK = ("/system/status",)
 OFFLINE_OK_WRITES = {"/kiosk/sign-out"}
+HEARTBEAT = "/kiosk/heartbeat"
 DROP_HEADERS = {"content-length", "transfer-encoding", "connection", "set-cookie",
                 "content-encoding", "keep-alive"}
 
@@ -77,6 +84,12 @@ def _cached(store: Store, session: EdgeSession | None, path: str, query: str) ->
                     headers=hit)
 
 
+def _no_cloud_session(path: str):
+    if path == HEARTBEAT:
+        return err(503, "edge_offline")
+    return err(403, "cloud_sign_in_required")
+
+
 def _offline_answer(store, session, method, path, query, cacheable) -> Response:
     if cacheable and (cached := _cached(store, session, path, query)) is not None:
         return cached
@@ -105,12 +118,12 @@ async def forward(request: Request, path: str) -> Response:
                 if cacheable and (hit := _cached(st.store, session, path, query)) is not None:
                     return hit
                 if st.upstream.online:
-                    raise err(401, "cloud_sign_in_required")
+                    raise _no_cloud_session(path)
                 raise err(503, "edge_offline")
             resp = await st.upstream.as_person(session.person_id, method, target,
                                                content=body, headers=headers)
             if resp is None:
-                raise err(401, "cloud_sign_in_required")
+                raise _no_cloud_session(path)
         else:
             if auth := request.headers.get("authorization"):
                 headers["authorization"] = auth

@@ -50,7 +50,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 
 import { displayRfid } from '@portal/lib/format';
 
-import { ApiError, postRfidEnroll } from '../lib/api';
+import { ApiError, CLOUD_SIGN_IN_TEXT, postRfidEnroll } from '../lib/api';
 import { hslCss, useAppearance } from '../lib/appearance';
 import { useCheckpoint } from '../lib/checkpointSettings';
 import { checkTagEntry } from '../lib/enrollGate';
@@ -125,6 +125,7 @@ function saveErrorText(err: unknown): string {
     return 'The portal is in read-only mode. Try again shortly.';
   }
   if (code === 'network') return "Can't reach the portal. The tag was not saved.";
+  if (code === 'cloud_sign_in_required') return CLOUD_SIGN_IN_TEXT;
   return `Couldn't save the tag (${code}).`;
 }
 

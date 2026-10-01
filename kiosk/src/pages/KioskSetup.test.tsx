@@ -216,6 +216,17 @@ it('clicking a scan type saves the setup and shows the summary', async () => {
   expect(readSetupState()).toBe('complete');
 });
 
+it('a laptop sign-in made offline is told to sign in again while online', async () => {
+  apiMock.submitKioskSetup.mockRejectedValue(new ApiError(403, 'cloud_sign_in_required'));
+  const user = userEvent.setup();
+  renderPage();
+  await goToScanStep(user);
+  await user.click(cardFor('RFID 1 - Cage Exit'));
+
+  expect(await screen.findByText('Sign in again while online to do this.')).toBeTruthy();
+  expect(readSetupState()).toBe('failed');
+});
+
 it('a rejected submit shows the inline error, sets failed, and re-enables the cards', async () => {
   apiMock.submitKioskSetup.mockRejectedValue(new ApiError(500, 'server_error'));
   const user = userEvent.setup();

@@ -16,7 +16,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import {
-  ApiError, getSetupOptions, submitKioskSetup, type SetupOptionInitiative,
+  ApiError, CLOUD_SIGN_IN_TEXT, getSetupOptions, submitKioskSetup, type SetupOptionInitiative,
   type SetupOptions, type SetupOptionSite,
 } from '../lib/api';
 import { getIdentity } from '../lib/identity';
@@ -316,7 +316,9 @@ export default function KioskSetup() {
             </div>
             {submitError && (
               <p className="form-error" role="alert">
-                Couldn&apos;t save the kiosk setup ({submitError}). Try again.
+                {submitError === 'cloud_sign_in_required'
+                  ? CLOUD_SIGN_IN_TEXT
+                  : <>Couldn&apos;t save the kiosk setup ({submitError}). Try again.</>}
               </p>
             )}
             <div className="pf-form-actions">

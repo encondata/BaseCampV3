@@ -15,7 +15,7 @@ import { buildBrandScene } from '@portal/lib/brandScene';
 import { useKioskAuth } from '../auth/KioskAuthContext';
 import KioskBanners from '../components/KioskBanners';
 import PairPanel from '../components/PairPanel';
-import { ApiError, type SessionData } from '../lib/api';
+import { ApiError, CLOUD_SIGN_IN_TEXT, type SessionData } from '../lib/api';
 import { useEdgeStatus } from '../lib/edgeStatus';
 import { getIdentity } from '../lib/identity';
 
@@ -31,6 +31,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   move_not_active: "That move password isn't active.",
   move_login_rate_limited: 'Too many tries. Wait a few minutes.',
   network: "Can't reach the server. Check the kiosk's network connection.",
+  cloud_sign_in_required: CLOUD_SIGN_IN_TEXT,
 };
 
 /** The move form's own wording where a code means something else there:

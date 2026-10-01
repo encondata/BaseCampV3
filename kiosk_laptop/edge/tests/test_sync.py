@@ -28,6 +28,11 @@ async def test_setup_forwards_then_syncs(app, client, cloud):
     assert set(sync_paths("m-1")) <= keys
 
 
+async def test_setup_without_cloud_session_is_403(app, client, cloud):
+    r = await client.post("/kiosk/setup", headers=make_session(app), json={"initiative_id": "m-1"})
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "cloud_sign_in_required"
+
+
 async def test_setup_offline_is_edge_offline(app, client, cloud):
     app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
     cloud.post("/kiosk/setup").mock(side_effect=httpx.ConnectError("down"))

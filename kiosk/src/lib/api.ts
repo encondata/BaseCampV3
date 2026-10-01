@@ -26,6 +26,13 @@ export class ApiError extends Error {
   }
 }
 
+/** What a screen says when the laptop edge answers 403
+ *  `cloud_sign_in_required`: the person signed in while the laptop was
+ *  offline (or with the move password offline), so the edge holds no
+ *  cloud session for them. Their edge session is still good — it is not a
+ *  401, so they are never signed out — but this action needs the cloud. */
+export const CLOUD_SIGN_IN_TEXT = 'Sign in again while online to do this.';
+
 async function errorFrom(resp: Response): Promise<ApiError> {
   let code = 'unknown_error';
   let detail: unknown;

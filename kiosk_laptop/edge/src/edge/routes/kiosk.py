@@ -56,7 +56,7 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
     except CloudOffline:
         raise err(503, "edge_offline") from None
     if resp is None:
-        raise err(401, "cloud_sign_in_required")
+        raise err(403, "cloud_sign_in_required")  # not 401: the edge session is still good
     if resp.status_code == 200:
         st.syncer.set_target(str(resp.json()["initiative_id"]), session.person_id)
         await st.syncer.run()

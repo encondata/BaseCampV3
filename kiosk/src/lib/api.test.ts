@@ -131,6 +131,21 @@ it('getSystemStatus fetches without auth', async () => {
   expect((fetchMock.mock.calls[0] as unknown as Call)[0]).toBe('http://api.test/system/status');
 });
 
+it('cloud_sign_in_required keeps its own code and never ends the edge session', async () => {
+  const ended = vi.fn();
+  const off = api.onSessionEnded(ended);
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => (String(url).endsWith('/auth/login')
+    ? json(SESSION)
+    : json({ detail: { code: 'cloud_sign_in_required' } }, 403))));
+  await api.loginRequest('a@x', 'pw');
+  await expect(api.getSetupOptions()).rejects.toMatchObject({
+    status: 403, code: 'cloud_sign_in_required',
+  });
+  expect(ended).not.toHaveBeenCalled();
+  expect(api.CLOUD_SIGN_IN_TEXT).toBe('Sign in again while online to do this.');
+  off();
+});
+
 it('maps the edge_offline code to the network error the screens already handle', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(
     JSON.stringify({ detail: { code: 'edge_offline' } }), { status: 503 })));

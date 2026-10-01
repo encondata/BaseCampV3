@@ -347,6 +347,16 @@ it('an unreachable portal says the tag was not saved', async () => {
   )).toBeTruthy();
 });
 
+it('a laptop sign-in made offline is told to sign in again while online', async () => {
+  const user = userEvent.setup();
+  api.postRfidEnroll.mockRejectedValue(new ApiError(403, 'cloud_sign_in_required'));
+  render_();
+  await scanAsset('SN-4242');
+  await screen.findByLabelText('RFID tag');
+  await user.type(tagInput(), `${FREE}{Enter}`);
+  expect(await screen.findByText('Sign in again while online to do this.')).toBeTruthy();
+});
+
 it('read-only mode says to try again shortly', async () => {
   const user = userEvent.setup();
   api.postRfidEnroll.mockRejectedValue(new ApiError(423, 'read_only_mode'));
