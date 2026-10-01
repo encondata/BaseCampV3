@@ -321,3 +321,43 @@ Small and gated on `mode === 'laptop'`:
 FX9600 / LLRP, network printing, LAN/VPN binding with TLS, offline
 queuing for enroll/packs/loads/punches, auto-update of the image,
 multiple moves per laptop at once, Windows-native (non-Docker) install.
+
+## Plan-time adjustments (2026-10-01)
+
+Found while writing the implementation plan
+(`docs/superpowers/plans/2026-10-01-kiosk-laptop.md`); these override the
+sections above where they differ.
+
+- **Move-password cache is scoped to the laptop's own move.**
+  `GET /kiosk/edge/move-passwords?serial=` returns the hash only for the
+  move the kiosk Device with that serial is set up on (and only while it
+  is active), not every active move. Shipping every move's hash to any
+  `kiosk:view` holder would expose them all to offline guessing; the laptop
+  only ever needs its own move.
+- **Laptop mode is a runtime flag, not a build mode.** The edge serves
+  `config.js` with `mode: "laptop"` and the fixed identity; the same kiosk
+  bundle runs everywhere. `GET /edge/identity` still exists; the browser
+  reads the identity from `config.js`.
+- **Cached responses instead of per-kind tables.** The edge stores the
+  cloud's JSON answers for the kiosk's reads (`cache` table, keyed by path
+  + query, shared by everyone signed in to the laptop) and serves them when
+  the cloud is unreachable; online, the reads pass through and refresh the
+  cache. Indexed per-asset tables wait for phase 2, when the FX9600 worker
+  needs server-side matching. The move lock is enforced on cached reads.
+- **No label-bundle caching yet.** The kiosk's Label Printing section
+  today has only the printer tools (Zebra WebUSB setup/alignment, label
+  vocab); asset-label screens are placeholders. Phase 1 caches the label
+  vocab; bundles come with the screens that print them.
+- **2FA:** the kiosk does not support 2FA sign-in yet (it shows "coming
+  soon"), so a challenge is passed through and 2FA users never get an
+  offline verifier. The offline 2FA rule above applies once the kiosk
+  supports 2FA.
+- **Heartbeat is not queued:** the browser already retries it every
+  minute; offline it gets `edge_offline` and keeps its last state.
+- **Sign-out defers ending the cloud session** until that person's queued
+  work has uploaded (otherwise it would be stranded as needs-sign-in).
+- **Wipe:** with an empty outbox it clears everything except identity and
+  key; with pending work it refuses until a typed `WIPE`, then clears the
+  queue too.
+- **Rename:** the web kiosk lets anyone rename; the laptop restricts it
+  to admins (rank 60+), enforced by the edge.
