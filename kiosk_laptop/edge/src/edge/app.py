@@ -2,18 +2,21 @@
 driving the app through httpx.ASGITransport — which runs no lifespan — see
 the same app the container runs; lifespan closes the upstream client and store on shutdown (and, later, runs background work)."""
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import PlainTextResponse
 
-from edge import static
+from edge import outbox, static
 from edge.config import Settings, load_settings
 from edge.crypto import load_or_create_keys
 from edge.db import Store
 from edge.identity import load_or_create
+from edge.outbox import OutboxWorker
 from edge.routes import edge as edge_routes
+from edge.routes import kiosk as kiosk_routes
 from edge.upstream import Upstream
 
 API_PREFIXES = ("/auth/", "/kiosk/", "/system/")
@@ -40,8 +43,13 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     app.state.store = Store(settings.data_dir / "edge.db")
     app.state.keys = load_or_create_keys(settings.data_dir)
     app.state.upstream = Upstream(settings, app.state.store, app.state.keys, transport=transport)
+    app.state.outbox = OutboxWorker(app.state.store, app.state.upstream,
+                                    lambda: app.state.identity.serial)
+    app.state.outbox_wake = asyncio.Event()
+    outbox.requeue_sending(app.state.store)
 
     app.include_router(edge_routes.router)
+    app.include_router(kiosk_routes.router)
 
     @app.get("/config.js")
     async def config_js(request: Request) -> Response:
