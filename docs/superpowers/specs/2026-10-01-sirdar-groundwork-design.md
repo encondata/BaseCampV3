@@ -348,3 +348,37 @@ log); Settings. The account menu in the topbar opens `/me` and Sign out.
 Building or installing environments, scheduled sync, access groups,
 trusted devices, 2FA enrollment for local users, and app/environment
 pages.
+
+## Addendum (2026-10-01): /me — profile, preferences, history
+
+Decided with the product owner after the first real install.
+
+- **Tabs** (segmented, like the portal): Profile `/me`, Preferences `/me/preferences`, History `/me/history`. The user menu's single item stays "My profile & preferences" → `/me`.
+- **Profile tab** (fork of portal `pages/Profile.tsx`; same layout and copy, Sirdar wording):
+  - **Hero:** initials avatar (Sirdar has no file storage), display name, job title, roles, contact line.
+  - **Profile panel:** editable by **every** user: first_name*, last_name*, preferred_name, job_title, contact_email (EmailStr, not unique), phone, address_line1, address_line2, city, region, postal_code, country* (2 letters, default US). Sign-in email is shown, not editable.
+    - For portal users, a note says "The next import from the portal overwrites these until two-way sync exists."
+    - New `users` columns come from migration 0002. The import copies them from portal `people` (`email`→contact_email, phone, address_*, city, region, postal_code, country).
+  - **Security panel:**
+    - **Local users:**
+      - Change password, using the portal `ChangePasswordForm`: current + new + confirm, min length = `SIRDAR_PASSWORD_MIN_LENGTH`. Errors: wrong current → 403 `invalid_current_password`; same as current → 422 `same_as_current`; too short → 422 `password_too_short`. Success revokes every other session family.
+      - 2FA enroll / regenerate backup codes, using the portal `TotpEnrollModal` / `RegenerateCodesModal`. Enrolling sets `totp_confirmed_at` and `totp_enabled = true`, so later sign-ins challenge.
+    - **Portal users:** password and 2FA status shown read-only with "Managed in the portal". The password and TOTP endpoints answer 403 `managed_in_portal` for them.
+  - **Active sessions:** every live session family (current marked) with "Sign out" on others.
+- **Preferences tab:** the portal `pages/me/MePreferences` component reused as-is. Its "portal" wording takes an optional app-name prop: accent (swatches + custom), theme, density, list size, sidebar mode / background (swatches + custom) / text size, motion.
+- **History tab:** Sirdar's own list of audit rows where the actor or the target is me, newest first, with action and record-type filters and CSV export.
+- **API** (portal paths and shapes):
+
+  | Method + path | Who | Returns |
+  |---|---|---|
+  | GET /api/auth/me/profile | any signed-in user | PersonDetail-like |
+  | PATCH /api/auth/me/profile | any signed-in user | updated profile |
+  | POST /api/auth/me/password | local users only | 204 |
+  | GET /api/auth/me/sessions | any signed-in user | `[{family_id, started_at, last_active_at, expires_at, ip_address, user_agent, current}]` |
+  | DELETE /api/auth/me/sessions/{family_id} | own sessions only | 204 |
+  | GET /api/auth/me/activity | any signed-in user | audit items |
+  | POST /api/auth/totp/enroll/start | local users only | `{secret, otpauth_uri}` |
+  | POST /api/auth/totp/enroll/confirm | local users only | body `{code, remember}`; returns `{backup_codes}` (8 codes, portal format) |
+  | POST /api/auth/totp/backup-codes/regenerate | local users only | body `{code}`; returns `{backup_codes}` |
+
+  The issuer name in the otpauth URI is "Sirdar".
