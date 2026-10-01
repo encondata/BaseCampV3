@@ -11,3 +11,6 @@ docs
 *.md
 !kiosk/README.md
 !wiki/README.md
+**/.venv
+**/__pycache__
+**/.pytest_cache
