@@ -5,6 +5,7 @@ set -e
 if [ "${1:-serve}" = "serve" ]; then
   cd /app/api
   alembic upgrade head
+  # --forwarded-allow-ips='*' is safe here: docker-compose binds the port to 127.0.0.1 behind the reverse proxy.
   exec uvicorn --factory sirdar_api.api.app:create_app --host 0.0.0.0 --port 8080 \
     --proxy-headers --forwarded-allow-ips='*'
 fi

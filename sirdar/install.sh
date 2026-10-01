@@ -26,4 +26,5 @@ if [[ ! -f "$DIR/sirdar/.env" ]]; then
 fi
 
 docker compose -f "$DIR/sirdar/docker-compose.yml" --env-file "$DIR/sirdar/.env" up -d --build
-echo "Sirdar is starting on 127.0.0.1:\${SIRDAR_PORT:-8098}."
+PORT=$(grep -E '^SIRDAR_PORT=' "$DIR/sirdar/.env" | cut -d= -f2- || true)
+echo "Sirdar is starting on 127.0.0.1:${PORT:-8098}."
