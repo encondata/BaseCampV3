@@ -61,6 +61,26 @@ async def test_lockout_after_ten_failures(db):
     assert await _code(db, user) == "account_locked"
 
 
+async def test_concurrent_wrong_passwords_all_count(db):
+    """The user row is locked on login, so parallel strikes serialize."""
+    import asyncio
+
+    from sirdar_api.db.engine import get_sessionmaker
+
+    user = await make_user(db)
+
+    async def attempt() -> str:
+        async with get_sessionmaker()() as session:
+            with pytest.raises(AuthError) as exc:
+                await auth.login(session, email=user.email, password="wrong")
+            return exc.value.code
+
+    codes = await asyncio.gather(*(attempt() for _ in range(10)))
+    assert set(codes) == {"invalid_credentials"}
+    await db.refresh(user)
+    assert user.locked_until is not None and user.failed_login_count == 0
+
+
 async def test_status_checks_only_after_correct_password(db):
     user = await make_user(db, disabled_at=datetime.now(UTC))
     with pytest.raises(AuthError) as exc:
@@ -80,6 +100,30 @@ async def test_password_change_required_for_portal_users(db):
 async def test_totp_required_but_not_enrolled(db):
     user = await make_user(db, totp_enabled=True, totp_required=True)
     assert await _code(db, user) == "totp_enrollment_required"
+
+
+async def test_totp_required_confirmed_but_seedless_is_refused(db):
+    user = await make_user(db, totp_required=True, totp_enabled=True,
+                           totp_confirmed_at=datetime.now(UTC), totp_secret_enc=None)
+    assert await _code(db, user) == "totp_enrollment_required"
+
+
+async def test_refusals_release_the_row_lock(db):
+    from sqlalchemy import text
+
+    from sirdar_api.db.engine import get_sessionmaker
+
+    user = await make_user(db)
+    first = await auth.login(db, email=user.email, password=PASSWORD)
+    async with get_sessionmaker()() as other:
+        await other.execute(text("UPDATE auth_sessions SET expires_at = now() - interval '1 hour'"))
+        await other.commit()
+    with pytest.raises(AuthError) as exc:
+        await auth.refresh(db, refresh_token=first.refresh_token)
+    assert exc.value.code == "session_expired"
+    async with get_sessionmaker()() as other:   # would block forever if the lock were held
+        await other.execute(text("SET lock_timeout = '2s'"))
+        await other.execute(text("SELECT 1 FROM auth_sessions FOR UPDATE"))
 
 
 async def test_enrolled_user_gets_challenge_then_verifies(db):
@@ -133,8 +177,9 @@ async def test_refresh_rotates_and_detects_reuse(db):
     with pytest.raises(AuthError) as exc:
         await auth.refresh(db, refresh_token=first.refresh_token)
     assert exc.value.code == "session_reuse_detected"
-    with pytest.raises(AuthError):
+    with pytest.raises(AuthError) as revoked:
         await auth.refresh(db, refresh_token=second.refresh_token)   # family revoked
+    assert revoked.value.code == "invalid_session"
 
 
 async def test_refresh_rejects_disabled_user(db):
@@ -149,13 +194,14 @@ async def test_refresh_rejects_disabled_user(db):
 
 async def test_logout_and_revoke_sessions(db):
     user = await make_user(db)
-    a = await auth.login(db, email=user.email, password=PASSWORD)
+    email, person_id = user.email, user.person_id   # a refusal's rollback expires `user`
+    a = await auth.login(db, email=email, password=PASSWORD)
     await auth.logout(db, refresh_token=a.refresh_token)
     await auth.logout(db, refresh_token="unknown")          # never fails
     with pytest.raises(AuthError):
         await auth.refresh(db, refresh_token=a.refresh_token)
-    await auth.login(db, email=user.email, password=PASSWORD)
-    assert await auth.revoke_sessions(db, user.person_id, reason="test") == 1
+    await auth.login(db, email=email, password=PASSWORD)
+    assert await auth.revoke_sessions(db, person_id, reason="test") == 1
     await db.commit()
     live = await db.scalar(select(func.count()).select_from(AuthSession)
                            .where(AuthSession.revoked_at.is_(None)))

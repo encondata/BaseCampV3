@@ -74,7 +74,9 @@ async def login(db: AsyncSession, *, email: str, password: str, ip: str | None =
     pepper = settings.password_pepper.get_secret_value()
     now = datetime.now(UTC)
 
-    user = await db.scalar(select(User).where(User.email == email))
+    # row lock: parallel wrong passwords serialize, so every strike counts
+    user = await db.scalar(select(User).where(User.email == email).with_for_update()
+                           .execution_options(populate_existing=True))
     if user is None or user.password_hash is None:
         verify_password(DUMMY_HASH, password, pepper=pepper)   # same time as a real check
         audit(db, actor_id=None, entity_type="auth", entity_id=email,
@@ -100,7 +102,8 @@ async def login(db: AsyncSession, *, email: str, password: str, ip: str | None =
             user.must_change_password
             or (user.password_expires_at is not None and user.password_expires_at <= now)):
         raise await _refuse(db, user, "password_change_required", ip)
-    if user.totp_required and user.totp_confirmed_at is None:
+    if user.totp_required and (user.totp_confirmed_at is None
+                               or user.totp_secret_enc is None):
         raise await _refuse(db, user, "totp_enrollment_required", ip)
 
     if (user.totp_enabled and user.totp_confirmed_at is not None
@@ -131,10 +134,13 @@ async def verify_totp(db: AsyncSession, *, challenge_token: str, code: str,
                            .with_for_update().execution_options(populate_existing=True))
     now = datetime.now(UTC)
     if user is None or user.disabled_at is not None:
+        await db.rollback()
         raise AuthError("invalid_challenge")
     if user.locked_until is not None and user.locked_until > now:
+        await db.rollback()
         raise AuthError("account_locked")
     if user.totp_confirmed_at is None or user.totp_secret_enc is None:
+        await db.rollback()
         raise AuthError("invalid_challenge")
 
     compact = compact_code(code)
@@ -143,6 +149,7 @@ async def verify_totp(db: AsyncSession, *, challenge_token: str, code: str,
             seed = decrypt_secret(user.totp_secret_enc,
                                   key=settings.totp_encryption_key.get_secret_value())
         except TotpSeedError:
+            await db.rollback()
             raise AuthError("totp_seed_unreadable") from None
         counter = match_counter(seed, compact, user.totp_last_counter)
         if counter is not None:
@@ -219,6 +226,7 @@ async def refresh(db: AsyncSession, *, refresh_token: str, ip: str | None = None
                               .where(AuthSession.token_hash == hash_refresh_token(refresh_token))
                               .with_for_update())
     if session is None or session.revoked_at is not None:
+        await db.rollback()
         raise AuthError("invalid_session")
     if session.rotated_at is not None:
         # a rotated token presented again = replay of a stolen token
@@ -228,10 +236,12 @@ async def refresh(db: AsyncSession, *, refresh_token: str, ip: str | None = None
         await db.commit()
         raise AuthError("session_reuse_detected")
     if session.expires_at <= now:
+        await db.rollback()
         raise AuthError("session_expired")
 
     user = await db.get(User, session.person_id)
     if user is None or user.disabled_at is not None:
+        await db.rollback()
         raise AuthError("account_disabled")
 
     new_token = generate_refresh_token()
