@@ -34,6 +34,13 @@ def refresh_cookie_from(resp: httpx.Response) -> str | None:
     return None
 
 
+def _detail_code(resp: httpx.Response) -> str | None:
+    try:
+        return resp.json()["detail"]["code"]
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
 class Upstream:
     def __init__(self, settings: Settings, store: Store, keys: Keys, *, transport=None) -> None:
         self.store = store
@@ -136,6 +143,9 @@ class Upstream:
                                       headers={"Cookie": f"{REFRESH_COOKIE}={refresh_token}"})
             if resp.status_code in (401, 403):
                 self.drop_session(person_id)
+                if _detail_code(resp) != "session_expired":
+                    # revoked, disabled, replayed: their offline sign-in goes too
+                    self.store.run("DELETE FROM offline_logins WHERE person_id = ?", (person_id,))
                 return None
             if resp.status_code != 200:
                 raise CloudOffline(f"refresh answered {resp.status_code}")

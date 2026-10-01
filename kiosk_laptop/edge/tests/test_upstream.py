@@ -65,6 +65,32 @@ async def test_rejected_refresh_drops_the_cloud_session(app, cloud):
     assert up.has_session("p-1") is False
 
 
+def _cache_verifier(app, person_id="p-1"):
+    app.state.store.run("INSERT INTO offline_logins VALUES ('jane@example.com', ?, 'v', '{}', "
+                        "'2099-01-01T00:00:00+00:00')", (person_id,))
+
+
+async def test_revoked_or_disabled_refresh_forgets_offline_verifier(app, cloud):
+    up = app.state.upstream
+    for code, status in (("invalid_session", 401), ("account_disabled", 403),
+                         ("session_reuse_detected", 401)):
+        _cache_verifier(app)
+        up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=-60)
+        cloud.post("/auth/refresh").respond(status, json={"detail": {"code": code}})
+        assert await up.as_person("p-1", "GET", "/kiosk/setup-options") is None
+        assert app.state.store.one("SELECT 1 FROM offline_logins WHERE person_id='p-1'") is None, code
+
+
+async def test_naturally_expired_refresh_keeps_offline_verifier(app, cloud):
+    up = app.state.upstream
+    _cache_verifier(app)
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=-60)
+    cloud.post("/auth/refresh").respond(401, json={"detail": {"code": "session_expired"}})
+    assert await up.as_person("p-1", "GET", "/kiosk/setup-options") is None
+    assert up.has_session("p-1") is False
+    assert app.state.store.one("SELECT 1 FROM offline_logins WHERE person_id='p-1'")
+
+
 async def test_no_session_returns_none_without_network(app, cloud):
     assert await app.state.upstream.as_person("nobody", "GET", "/x") is None
     assert len(cloud.calls) == 0
