@@ -48,6 +48,14 @@ class _Account:
     last_name: str
     preferred_name: str | None
     job_title: str | None
+    contact_email: str | None
+    phone: str | None
+    address_line1: str | None
+    address_line2: str | None
+    city: str | None
+    region: str | None
+    postal_code: str | None
+    country: str
     password_hash: str | None
     must_change_password: bool
     password_updated_at: datetime | None
@@ -87,7 +95,10 @@ async def _read_source(url: str) -> _Snapshot:
             await conn.execute(text("SET TRANSACTION READ ONLY"))
             accounts = [_Account(**dict(r)) for r in (await conn.execute(text("""
                 SELECT ua.person_id, ua.email::text AS email, p.first_name, p.last_name,
-                       p.preferred_name, p.job_title, ua.password_hash,
+                       p.preferred_name, p.job_title,
+                       p.email::text AS contact_email, p.phone, p.address_line1,
+                       p.address_line2, p.city, p.region, p.postal_code, p.country,
+                       ua.password_hash,
                        ua.must_change_password, ua.password_updated_at, ua.totp_secret_enc,
                        ua.totp_confirmed_at, ua.totp_last_counter, ua.totp_required,
                        ua.disabled_at, p.archived_at
@@ -134,6 +145,10 @@ def _identity_fields(acct: _Account, snap: _Snapshot) -> dict:
     return {
         "email": acct.email, "first_name": acct.first_name, "last_name": acct.last_name,
         "preferred_name": acct.preferred_name, "job_title": acct.job_title,
+        "contact_email": acct.contact_email, "phone": acct.phone,
+        "address_line1": acct.address_line1, "address_line2": acct.address_line2,
+        "city": acct.city, "region": acct.region, "postal_code": acct.postal_code,
+        "country": acct.country,
         "password_hash": acct.password_hash,
         "must_change_password": acct.must_change_password,
         "password_updated_at": acct.password_updated_at,
