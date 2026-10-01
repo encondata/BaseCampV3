@@ -54,6 +54,43 @@ class Settings(BaseSettings):
     totp_encryption_key: SecretStr = Field(
         validation_alias=AliasChoices("SS_TOTP_ENCRYPTION_KEY", "SIRDAR_TOTP_ENCRYPTION_KEY"))
 
+    # Deploy page (read-only cloud views + SSH connection test). All optional.
+    deploy_do_token: SecretStr | None = None
+    deploy_do_region: str = ""
+    deploy_aws_access_key_id: str = ""
+    deploy_aws_secret_access_key: SecretStr | None = None
+    deploy_aws_region: str = ""
+    deploy_gcp_project_id: str = ""
+    deploy_gcp_credentials_file: str = ""
+    deploy_gcp_region: str = ""
+    deploy_ssh_host: str = ""
+    deploy_ssh_port: int = 22
+    deploy_ssh_user: str = ""
+    deploy_ssh_password: SecretStr | None = None
+    deploy_ssh_key_path: str = ""
+    deploy_ssh_key_passphrase: SecretStr | None = None
+    deploy_keys_dir: str = "/app/deploy-keys"
+
+    @field_validator("deploy_do_token", "deploy_aws_secret_access_key",
+                     "deploy_ssh_password", "deploy_ssh_key_passphrase", mode="before")
+    @classmethod
+    def _blank_secret_is_none(cls, v):
+        return None if isinstance(v, str) and v == "" else v
+
+    @property
+    def deploy_ssh_key_file(self) -> str | None:
+        """Absolute paths as-is; bare names live in deploy_keys_dir. A
+        relative value that isn't a plain file name ("sub/x", "..", ".")
+        could escape that folder, so it resolves to nothing (= key not found)."""
+        p = self.deploy_ssh_key_path.strip()
+        if not p:
+            return None
+        if p.startswith("/"):
+            return p
+        if "/" in p or "\\" in p or p in (".", ".."):
+            return None
+        return str(Path(self.deploy_keys_dir) / p)
+
     @field_validator("jwt_secret")
     @classmethod
     def _jwt_secret_long_enough(cls, v: SecretStr) -> SecretStr:

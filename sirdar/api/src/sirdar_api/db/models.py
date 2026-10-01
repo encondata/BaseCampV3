@@ -163,3 +163,17 @@ class ImportRun(Base):
     disabled: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     skipped: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     rows: Mapped[list] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
+
+
+class SshKnownHost(Base):
+    __tablename__ = "ssh_known_hosts"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    host: Mapped[str]
+    port: Mapped[int] = mapped_column(Integer)
+    key_type: Mapped[str]
+    fingerprint_sha256: Mapped[str]
+    public_key: Mapped[str]
+    trusted_by: Mapped[uuid.UUID | None]
+    trusted_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

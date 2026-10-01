@@ -17,13 +17,32 @@ def test_defaults_only_name_known_resources_and_actions():
     assert [r for r, g in DEFAULT_GRANTS.items() if "devtools" in g] == ["developer"]
 
 
-def test_migration_seed_matches_defaults():
-    path = Path(__file__).resolve().parents[1] / "migrations/versions/0001_initial.py"
-    spec = importlib.util.spec_from_file_location("m0001", path)
+def _load(name, fname):
+    path = Path(__file__).resolve().parents[1] / "migrations/versions" / fname
+    spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    assert mod.ROLES == DEFAULT_ROLES
-    assert mod.GRANTS == DEFAULT_GRANTS
+    return mod
+
+
+def test_migration_seed_matches_defaults():
+    m1 = _load("m0001", "0001_initial.py")
+    m3 = _load("m0003", "0003_deploy.py")
+    assert m1.ROLES == DEFAULT_ROLES
+    expected = {role: {**grants} for role, grants in m1.GRANTS.items()}
+    for role, actions in m3.DEPLOY_GRANTS.items():
+        expected[role]["deploy"] = actions
+    assert expected == DEFAULT_GRANTS
+
+
+async def test_deploy_grants_resolve(db):
+    sa = await resolve_access(db, (await make_user(db, roles=("super_admin",))).person_id)
+    assert sa.can("deploy", "view") and sa.can("deploy", "add") and sa.can("deploy", "change")
+    assert not sa.can("deploy", "delete")
+    ad = await resolve_access(db, (await make_user(db, email="b@test.example.com",
+                                                   roles=("admin",))).person_id)
+    assert ad.can("deploy", "view")
+    assert not ad.can("deploy", "add") and not ad.can("deploy", "change")
 
 
 def test_can_touch_rank():

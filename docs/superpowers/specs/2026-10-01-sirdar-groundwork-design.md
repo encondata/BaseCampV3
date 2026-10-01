@@ -382,3 +382,42 @@ Decided with the product owner after the first real install.
   | POST /api/auth/totp/backup-codes/regenerate | local users only | body `{code}`; returns `{backup_codes}` |
 
   The issuer name in the otpauth URI is "Sirdar".
+
+## Addendum (2026-10-01): Deploy page, step 1 — targets and connection
+
+Sirdar will deploy the ServerSherpa apps (api, portal, kiosk, wiki, spaces, db) from GitHub to a target. This step builds only the Deploy page, the target settings and a **connection test**. Actual deployment comes next.
+
+Decided with the product owner:
+
+- **Targets:** AWS, GCP, DigitalOcean and Custom (direct SSH). Only DigitalOcean and Custom are built now. AWS and GCP appear as "Coming soon" cards, and their settings already exist in `.env`.
+- **Deployment types:** Blue (prod), Green (prod), Dev (development), Beta (external testing). For now the type is a label carried with the connection test and recorded in the audit log. All types use the same per-provider credentials.
+- **Credentials (one set per provider, all in the "Target deployment" section of `.env`):**
+
+  | Provider | Settings |
+  |---|---|
+  | DigitalOcean | `SIRDAR_DEPLOY_DO_TOKEN`, `SIRDAR_DEPLOY_DO_REGION` (optional, e.g. `nyc3`) |
+  | AWS | `SIRDAR_DEPLOY_AWS_ACCESS_KEY_ID`, `SIRDAR_DEPLOY_AWS_SECRET_ACCESS_KEY`, `SIRDAR_DEPLOY_AWS_REGION` |
+  | GCP | `SIRDAR_DEPLOY_GCP_PROJECT_ID`, `SIRDAR_DEPLOY_GCP_CREDENTIALS_FILE` (path inside the container), `SIRDAR_DEPLOY_GCP_REGION` |
+  | Custom SSH | `SIRDAR_DEPLOY_SSH_HOST`, `SIRDAR_DEPLOY_SSH_PORT` (default 22), `SIRDAR_DEPLOY_SSH_USER`, `SIRDAR_DEPLOY_SSH_PASSWORD`, `SIRDAR_DEPLOY_SSH_KEY_PATH`, `SIRDAR_DEPLOY_SSH_KEY_PASSPHRASE` |
+
+  - **SSH auth:** password and/or private key. The key wins when both are set.
+  - **Key files:** live in `sirdar/deploy-keys/` on the host (mode 700), mounted read-only into the container at `/app/deploy-keys`. `SIRDAR_DEPLOY_SSH_KEY_PATH` may be a bare file name in that folder or an absolute container path.
+  - Secrets are never returned by the API or shown in the UI.
+- **Permissions:** a new resource `deploy` ("Deploy"):
+
+  | Action | Allows |
+  |---|---|
+  | view | see the page and targets |
+  | add | run a connection test |
+  | change | trust or forget SSH host keys |
+
+  Defaults: developer, founder and super_admin get view, add and change; admin gets view only. It is seeded by migration 0003 and editable on Roles & access.
+- **SSH host keys (trust on first use):**
+  - **First connection** to an unknown host:port answers 409 `host_key_unknown` with the key type and SHA256 fingerprint. The page shows them, and **Trust this host** (deploy:change) stores the key. The server re-reads the key and confirms the fingerprint still matches before storing.
+  - **Later connections** require the stored key. A different key answers 409 `host_key_mismatch` with both fingerprints and the connection is refused.
+  - **Forgetting a host** (deploy:change) lets a legitimately rebuilt server be trusted again.
+- **Connection test results:**
+  - **DigitalOcean:** account email and status, droplet limit and count, and whether the configured region is available.
+  - **SSH:** OS (`/etc/os-release` PRETTY_NAME), kernel (`uname -srm`), Docker version, Docker Compose version, free disk on `/`, and memory. Each check is shown as pass, warn or fail. Missing Docker is a warning, because a later step can install it.
+- **Audit:** `deploy.connect` (target, type, ok or error), `deploy.host_trust` and `deploy.host_forget`.
+- **Installer:** the first install asks "Configure deployment targets now? [y/N]". Answering yes prompts for DigitalOcean (token hidden, region) and then Custom SSH (host, port, user, password hidden, key file name). AWS and GCP stay blank for now. On re-runs, the deploy keys are asked once as a group through the same yes/no; a "no" writes them blank so the question isn't repeated.

@@ -56,6 +56,20 @@ export interface SirdarSettings {
   access_token_ttl_seconds: number; max_failed_logins: number; lockout_seconds: number;
 }
 
+export interface DeployTarget {
+  id: 'aws' | 'gcp' | 'digitalocean' | 'ssh'; label: string; available: boolean;
+  configured: boolean; summary: string | null;
+}
+export interface DeployType { id: 'blue' | 'green' | 'dev' | 'beta'; label: string; description: string }
+export interface DeployCheck { label: string; status: 'pass' | 'warn' | 'fail'; value: string }
+export interface ConnectResult {
+  ok: boolean; target: string; type: string; checks: DeployCheck[]; facts: Record<string, unknown>;
+}
+export interface KnownHost {
+  host: string; port: number; key_type: string; fingerprint: string;
+  trusted_at: string; trusted_by_name: string | null;
+}
+
 async function errorOf(resp: Response): Promise<ApiError> {
   let code = `http_${resp.status}`;
   let detail: unknown;
@@ -96,12 +110,24 @@ const MESSAGES: Record<string, string> = {
   developer_only_resource: 'Developer tools can only be granted to the developer role.',
   access_view_locked: 'Every role keeps view on Roles & access.',
   source_not_configured: 'The portal database is not configured for this Sirdar.',
+  target_unavailable: "That target isn't available yet.",
+  target_not_configured: "That target isn't configured. Set its keys in the .env file and re-run the installer.",
+  connect_failed: "Couldn't connect.",
+  host_key_changed: "The server's key changed while you were looking. Try again.",
+  not_configured_host: "Only the configured SSH host can be trusted.",
+  not_found: 'That host is no longer trusted.',
   source_unavailable: "Couldn't reach the portal database. Nothing was changed.",
 };
 
 export function errorText(err: unknown, fallback: string): string {
   if (err instanceof ApiError) return MESSAGES[err.code] ?? fallback;
   return fallback;
+}
+
+/** The detail object of an API error (code plus extras such as a fingerprint). */
+export function errorDetail<T extends object = Record<string, unknown>>(err: unknown): T | null {
+  if (err instanceof ApiError && err.detail && typeof err.detail === 'object') return err.detail as T;
+  return null;
 }
 
 export const listUsers = () => getJson<UserRow[]>('/users');
@@ -128,3 +154,16 @@ export function listAudit(q: { entity_type?: string; action?: string; offset?: n
 export const getAuditFacets = () =>
   getJson<{ entity_types: string[]; actions: string[] }>('/audit/facets');
 export const getSettings = () => getJson<SirdarSettings>('/settings');
+
+export const getDeployTargets = () =>
+  getJson<{ targets: DeployTarget[]; types: DeployType[] }>('/deploy/targets');
+export const connectDeploy = (target: string, type: string) =>
+  sendJson<ConnectResult>('POST', '/deploy/connect', { target, type });
+export const listKnownHosts = () => getJson<KnownHost[]>('/deploy/known-hosts');
+export const trustKnownHost = (host: string, port: number, fingerprint: string) =>
+  sendJson<KnownHost>('POST', '/deploy/known-hosts', { host, port, fingerprint });
+export async function forgetKnownHost(host: string, port: number): Promise<void> {
+  const resp = await apiFetch(`/deploy/known-hosts?host=${encodeURIComponent(host)}&port=${port}`,
+                              { method: 'DELETE' });
+  if (!resp.ok) throw await errorOf(resp);
+}

@@ -151,6 +151,44 @@ Minimum length for local passwords set with the CLI: 4 to 128, default 8 (the
 portal's default). Asked about only when re-running the installer on a `.env`
 that lacks it.
 
+### Deployment targets (Deploy page)
+
+Optional settings for the Deploy page (read-only cloud views and an SSH
+connection test). The installer asks "Configure deployment targets now?" on a
+first install, and once on a re-run when the `.env` has none of these keys;
+answering no writes them blank. All are `SIRDAR_DEPLOY_*` keys in `.env`:
+
+| Keys | Purpose |
+|---|---|
+| `DO_TOKEN`, `DO_REGION` | DigitalOcean read-only token and region slug |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | AWS read-only IAM user |
+| `GCP_PROJECT_ID`, `GCP_CREDENTIALS_FILE`, `GCP_REGION` | Google Cloud project and service-account file name |
+| `SSH_HOST`, `SSH_PORT` (22), `SSH_USER`, `SSH_PASSWORD`, `SSH_KEY_PATH`, `SSH_KEY_PASSPHRASE` | Custom SSH target |
+
+The installer prompts for DigitalOcean and the SSH host (and for the key
+passphrase, hidden, when you name a key file); edit `.env` for AWS and GCP.
+
+**Key files.** Put private keys in `sirdar/deploy-keys/` (git-ignored; created
+by the installer, mode 711) and give the bare file name in `SSH_KEY_PATH` or
+`GCP_CREDENTIALS_FILE` (no `/` or `..`). The folder is mounted read-only at
+`/app/deploy-keys`. The container runs as uid 10001, so that user must be able
+to read the file:
+
+    chmod 600 sirdar/deploy-keys/id_ed25519
+    sudo chown 10001 sirdar/deploy-keys/id_ed25519
+
+or, if you want to keep your own ownership, make it group-readable by a group
+the container user is in (for example `chmod 640` plus a matching group id);
+a world-readable key is not recommended. The installer warns when a named key
+isn't readable by uid 10001. To keep keys elsewhere, set
+`SIRDAR_DEPLOY_KEYS_DIR` to the host folder (relative to `docker-compose.yml`).
+
+**Trusting a host (TOFU).** The first connection test to an SSH host shows its
+host-key fingerprint and does not log in. Compare it with the server's real
+fingerprint, then trust it on the Deploy page; later tests refuse a host whose
+key has changed until you forget the old key and trust the new one. Secrets are
+never shown or logged.
+
 ### Supported systems
 
 | Family | Detected from `/etc/os-release` (`ID`, else `ID_LIKE`) | Prerequisites with | Docker Engine + compose v2 |

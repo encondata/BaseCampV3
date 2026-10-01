@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 FULL = ("view", "add", "change", "delete")
+DEPLOY = ("view", "add", "change")   # no delete action on Deploy
 
 # name, label, rank — the portal's global roles at rank >= 60
 DEFAULT_ROLES: list[tuple[str, str, int]] = [
@@ -17,13 +18,13 @@ DEFAULT_ROLES: list[tuple[str, str, int]] = [
 
 DEFAULT_GRANTS: dict[str, dict[str, tuple[str, ...]]] = {
     "developer": {"dashboard": ("view",), "users": FULL, "access": FULL,
-                  "audit": ("view",), "settings": FULL, "devtools": FULL},
+                  "audit": ("view",), "settings": FULL, "deploy": DEPLOY, "devtools": FULL},
     "founder": {"dashboard": ("view",), "users": FULL, "access": FULL,
-                "audit": ("view",), "settings": FULL},
+                "audit": ("view",), "settings": FULL, "deploy": DEPLOY},
     "super_admin": {"dashboard": ("view",), "users": FULL, "access": ("view", "change"),
-                    "audit": ("view",), "settings": ("view", "change")},
+                    "audit": ("view",), "settings": ("view", "change"), "deploy": DEPLOY},
     "admin": {"dashboard": ("view",), "users": ("view",), "access": ("view",),
-              "audit": ("view",), "settings": ("view",)},
+              "audit": ("view",), "settings": ("view",), "deploy": ("view",)},
 }
 
 

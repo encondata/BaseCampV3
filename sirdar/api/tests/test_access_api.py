@@ -11,7 +11,7 @@ async def test_summary(client, db):
     h = await auth_headers(client, db)
     body = (await client.get("/api/access/summary", headers=h)).json()
     assert [r["id"] for r in body["resources"]] == [
-        "dashboard", "users", "access", "audit", "settings", "devtools"]
+        "dashboard", "users", "access", "audit", "settings", "deploy", "devtools"]
     assert [r["name"] for r in body["roles"]] == ["developer", "founder", "super_admin", "admin"]
     admin = body["roles"][-1]
     assert admin["matrix"]["users"] == {"view": True, "add": False, "change": False,
