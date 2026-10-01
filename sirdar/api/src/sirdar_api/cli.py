@@ -7,17 +7,17 @@ from typing import TypeVar
 
 import typer
 
+from sirdar_api.config import get_settings
 from sirdar_api.db.engine import dispose_engine, get_sessionmaker
 from sirdar_api.services.import_users import ImportNotConfigured, ImportSourceError, import_users
 from sirdar_api.services.local_users import (
-    MIN_PASSWORD_LENGTH, LocalUserError, create_local_admin, reset_local_password,
+    LocalUserError, create_local_admin, reset_local_password,
 )
 
 app = typer.Typer(help="Sirdar — manage ServerSherpa environments.", no_args_is_help=True)
 T = TypeVar("T")
 
 _MESSAGES = {
-    "password_too_short": f"Password must be at least {MIN_PASSWORD_LENGTH} characters.",
     "unknown_role": "Unknown role. Use one of the roles on the Roles & access page.",
     "invalid_email": ("That email address can't be used to sign in. "
                       "Use a normal address like name@company.com."),
@@ -25,6 +25,13 @@ _MESSAGES = {
     "not_found": "No user with that email.",
     "not_local": "That user comes from the portal — change the password there, then re-import.",
 }
+
+
+
+def _message(code: str) -> str:
+    if code == "password_too_short":
+        return f"Password must be at least {get_settings().password_min_length} characters."
+    return _MESSAGES[code]
 
 
 def _run(fn: Callable[..., Awaitable[T]]) -> T:
@@ -70,7 +77,7 @@ def create_admin_cmd(
                                                   last_name=last_name, role=role,
                                                   password=password))
     except LocalUserError as exc:
-        typer.echo(_MESSAGES[exc.code])
+        typer.echo(_message(exc.code))
         raise typer.Exit(1) from None
     typer.echo(f"Created local {role} {user.email}")
 
@@ -82,6 +89,6 @@ def reset_password_cmd(email: str = typer.Option(...)) -> None:
     try:
         user = _run(lambda db: reset_local_password(db, email=email, password=password))
     except LocalUserError as exc:
-        typer.echo(_MESSAGES[exc.code])
+        typer.echo(_message(exc.code))
         raise typer.Exit(1) from None
     typer.echo(f"Password updated for {user.email}")

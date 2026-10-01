@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     session_ttl_seconds: int = 86_400
     max_failed_logins: int = 10
     lockout_seconds: int = 900
+    # Same bar as the portal (SS_PASSWORD_MIN_LENGTH, default 8); applies to
+    # local passwords set with the CLI. SIRDAR_PASSWORD_MIN_LENGTH overrides.
+    password_min_length: int = 8
     cookie_domain: str = ""
     # Built SPA directory; empty = API only (local dev uses Vite).
     static_dir: str = ""
