@@ -5,6 +5,7 @@ import re
 import urllib.parse
 import uuid
 from datetime import date, datetime, time
+from ipaddress import IPv4Address
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -2735,6 +2736,14 @@ class StatusRuleExecStat(BaseModel):
 
 # ── devices ──────────────────────────────────────────────────────────
 
+class DeviceRfidReader(BaseModel):
+    ip: str
+    serial: str | None
+    model: str | None
+    versions: dict | None
+    paired_at: datetime | None
+
+
 class DeviceItem(BaseModel):
     id: uuid.UUID
     device_type: str
@@ -2767,6 +2776,8 @@ class DeviceItem(BaseModel):
     session_person_name: str | None
     session_login_method: str | None
     session_started_at: datetime | None
+    station_type: str | None = None
+    rfid_reader: DeviceRfidReader | None = None
 
 
 class DevicePatch(BaseModel):
@@ -2865,11 +2876,20 @@ class SetupOptionsOut(BaseModel):
     scan_types: list[SetupOptionScanType]
 
 
+class KioskReaderIn(BaseModel):
+    ip: IPv4Address
+    serial: str = Field(min_length=1, max_length=64)
+    model: str = Field(min_length=1, max_length=64)
+    versions: dict[str, Annotated[str, Field(max_length=64)]] = Field(max_length=10)
+
+
 class KioskSetupIn(BaseModel):
     serial: str = Field(min_length=1, max_length=120)
     initiative_id: uuid.UUID
     site_id: uuid.UUID
     scan_status: str = Field(min_length=1)
+    station_type: Literal["label", "rfid"] | None = None
+    reader: KioskReaderIn | None = None
 
 
 class KioskSetupOut(BaseModel):

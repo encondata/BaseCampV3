@@ -607,6 +607,36 @@ async def kiosk_setup(
     site = await db.get(Site, body.site_id)
     if site is None:
         raise _err(422, "bad_site")
+    if body.station_type == "rfid":
+        if body.reader is None:
+            raise _err(422, "reader_required")
+        if device.sub_type != "laptop":
+            raise _err(422, "rfid_needs_laptop")
+
+    now = datetime.now(UTC)
+    station_changes: dict[str, dict] = {}
+
+    def _stamp(field: str, new) -> None:
+        old = getattr(device, field)
+        old_cmp = old if old is None or isinstance(old, dict) else str(old)
+        if old_cmp != new:
+            station_changes[field] = {"from": old_cmp, "to": new}
+            setattr(device, field, new)
+
+    if body.station_type == "rfid":
+        reader = body.reader
+        _stamp("station_type", "rfid")
+        _stamp("rfid_reader_ip", str(reader.ip))
+        _stamp("rfid_reader_serial", reader.serial)
+        _stamp("rfid_reader_model", reader.model)
+        _stamp("rfid_reader_versions", dict(reader.versions))
+        device.rfid_paired_at = now
+    elif body.station_type == "label":
+        _stamp("station_type", "label")
+        for field in ("rfid_reader_ip", "rfid_reader_serial",
+                      "rfid_reader_model", "rfid_reader_versions"):
+            _stamp(field, None)
+        device.rfid_paired_at = None
 
     device.current_initiative_id = initiative.id
     device.site_id = site.id
@@ -616,6 +646,10 @@ async def kiosk_setup(
           entity_id=str(device.id), action="kiosk_setup",
           changes={"initiative_id": str(initiative.id), "site_id": str(site.id),
                    "scan_status": scan_type.key})
+    if station_changes:
+        audit(db, actor_id=actor.person.id, entity_type="device",
+              entity_id=str(device.id), action="kiosk_station_setup",
+              changes=station_changes)
     await db.commit()
     return KioskSetupOut(device_id=device.id, initiative_id=initiative.id,
                          initiative_name=initiative.name,

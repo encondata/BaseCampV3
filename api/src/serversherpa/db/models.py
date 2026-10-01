@@ -1089,6 +1089,14 @@ class Device(Base):
         ForeignKey("people.id", ondelete="SET NULL"))
     session_login_method: Mapped[str | None]
     session_started_at: Mapped[datetime | None]
+    # kiosk station type ('label' | 'rfid') and the paired RFID reader;
+    # set by POST /kiosk/setup, never by the heartbeat (migration 0086)
+    station_type: Mapped[str | None]
+    rfid_reader_ip: Mapped[str | None] = mapped_column(INET)
+    rfid_reader_serial: Mapped[str | None]
+    rfid_reader_model: Mapped[str | None]
+    rfid_reader_versions: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
+    rfid_paired_at: Mapped[datetime | None]
 
 
 class DeviceDhcpLease(Base):
