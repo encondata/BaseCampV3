@@ -50,6 +50,7 @@ flags.
 | `--portal-url URL` | `-PortalUrl URL` | Portal address (default: the API URL with `api.` replaced by `portal.`). |
 | `--channel NAME` | `-Channel NAME` | `stable` (default) or `edge`. `edge` is for test laptops. |
 | `--yes` | `-Yes` | Never prompt. |
+| `--start-fresh` | `-StartFresh` | Don't copy an earlier (manually installed) kiosk's data; this laptop gets a new identity. |
 
 What it does: installs Docker if needed, saves your settings in
 `config.env`, writes `docker-compose.yml`, downloads the kiosk image, starts
@@ -67,6 +68,15 @@ Where things go:
 | Linux | `/opt/serversherpa-kiosk` | `/var/lib/serversherpa-kiosk` |
 
 Override them with the `KIOSK_DIR` and `KIOSK_DATA_DIR` environment variables.
+
+A laptop that ran the earlier, manually installed kiosk (Docker Compose project
+`serversherpa-kiosk-laptop`) keeps its identity: the installer stops that
+kiosk and copies its data folder (the one its container mounts at `/data`)
+into the new, empty data folder, once. If the installer can't read that folder
+(on Windows, for example, a folder inside WSL such as
+`\\wsl$\<distro>\home\<you>\ServerSherpaKiosk`), it stops and tells you where
+the data is: copy it into the data folder yourself and run the command again,
+or run it with `--start-fresh` (Windows: `-StartFresh`) to start without it.
 
 Windows notes:
 
@@ -92,6 +102,14 @@ menu entry.
   nobody signs in to, turn on automatic sign-in:
   - Windows: Sysinternals Autologon, or `netplwiz`.
   - macOS: System Settings › Users & Groups › "Automatically log in as".
+- Run the installer while signed in as the account that will sign in
+  automatically. The nightly update, the launcher and (on macOS) Docker
+  Desktop are set up for that account, and the install summary names it
+  ("Set up for:").
+- Windows: when the install needs a restart, it continues by itself only when
+  an administrator signs in. If the automatic sign-in account isn't an
+  administrator, run the install command again as that account after the
+  restart.
 - Linux starts the kiosk at boot (Docker starts it); the browser opens when
   someone signs in to the desktop.
 
@@ -250,8 +268,11 @@ Images are published to `ghcr.io/encondata/serversherpa-kiosk-laptop` by the
 - Cut a release:
 
   ```
-  git tag kiosk-laptop-vX.Y.Z && git push github kiosk-laptop-vX.Y.Z
+  git tag kiosk-laptop-vX.Y.Z && git push origin kiosk-laptop-vX.Y.Z
   ```
+
+  Use your remote's name in place of `origin` (`git remote -v` shows it; some
+  checkouts call it `github`).
 
 - The encondata organization must allow GitHub Actions to create packages
   (Organization settings › Packages), or the first publish fails.

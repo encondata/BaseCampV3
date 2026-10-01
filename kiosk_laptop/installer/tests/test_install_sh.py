@@ -930,3 +930,11 @@ def test_mac_symlinked_parent_stops(sh, tmp_path):
     r = sh(stubs + 'create_data_dir', check=False)
     assert r.returncode != 0 and "symbolic link" in r.stderr and str(parent) in r.stderr
     assert not (tmp_path / "elsewhere" / "data").exists()
+
+
+def test_summary_names_the_account_on_macos(sh):
+    base = ('CFG_CHANNEL=stable; KIOSK_DIR=/k; KIOSK_IDENTITY=; kiosk_version() { :; }; '
+            'desktop_user() { printf alice; }; ')
+    mac = sh('OS=Darwin; ' + base + 'summary').stdout
+    assert "Set up for: alice (the kiosk opens when this account signs in)" in mac
+    assert "Set up for:" not in sh('OS=Linux; ' + base + 'summary').stdout

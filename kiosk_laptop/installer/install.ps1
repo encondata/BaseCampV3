@@ -1434,7 +1434,7 @@ function Test-ApiReachable {
 
 # -- Summary --------------------------------------------------------------------
 function Write-Summary {
-    param($Identity, [hashtable]$Config, [string]$InstallDir)
+    param($Identity, [hashtable]$Config, [string]$InstallDir, $DesktopUser)
     $serial = 'unknown'; $name = 'unknown'; $version = 'unknown'
     if ($Identity) {
         if ($Identity.serial) { $serial = $Identity.serial }
@@ -1449,6 +1449,7 @@ function Write-Summary {
     Write-Host "  Open:     $KioskUrl"
     Write-Host "  Channel:  $($Config.KIOSK_CHANNEL) (version $version); updates nightly at 03:00"
     Write-Host "  Log:      $InstallDir\install.log"
+    if ($DesktopUser) { Write-Host "  Set up for: $($DesktopUser.Name) (the kiosk opens when this account signs in)" }
     Write-Host ''
     Write-Host 'Next: sign in online on the kiosk, then open Kiosk Setup.'
     Write-Host 'The kiosk opens when someone signs in to Windows (Docker Desktop only runs then).'
@@ -1681,7 +1682,7 @@ function Invoke-KioskInstaller {
         $identity = Start-Kiosk -InstallDir $installDir -ImageRef $imageRef -Channel $cfg.KIOSK_CHANNEL
         Install-LoginItems -InstallDir $installDir -DesktopUser $desktopUser
         Remove-ResumeRegistration -InstallDir $installDir
-        Write-Summary -Identity $identity -Config $cfg -InstallDir $installDir
+        Write-Summary -Identity $identity -Config $cfg -InstallDir $installDir -DesktopUser $desktopUser
         return 0
     } catch {
         $msg = $_.Exception.Message

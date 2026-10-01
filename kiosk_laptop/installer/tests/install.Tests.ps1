@@ -1309,3 +1309,12 @@ Describe 'Data folder placement' {
         Should -Invoke Set-KioskDirAcl -Times 0
     }
 }
+
+Describe 'Install summary' {
+    It 'names the account the kiosk was set up for' {
+        Mock Get-KioskJson { $null }
+        Mock Write-Host {}
+        Write-Summary -Identity $null -Config @{ KIOSK_CHANNEL = 'stable' } -InstallDir 'C:\K' -DesktopUser @{ Name = 'PC\tech'; Sid = 'S-1-5-21-1' }
+        Should -Invoke Write-Host -ParameterFilter { "$Object" -eq '  Set up for: PC\tech (the kiosk opens when this account signs in)' }
+    }
+}

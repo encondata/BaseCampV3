@@ -1078,7 +1078,7 @@ kiosk_version() {
 }
 
 summary() {
-  local serial name version
+  local serial name version user
   serial=$(json_field "$KIOSK_IDENTITY" serial)
   name=$(json_field "$KIOSK_IDENTITY" name)
   version=$(kiosk_version || true)
@@ -1089,6 +1089,10 @@ summary() {
   echo "  Open:     $KIOSK_URL"
   echo "  Channel:  $CFG_CHANNEL (version ${version:-unknown}); updates nightly at 03:00"
   echo "  Log:      $KIOSK_DIR/install.log"
+  if [ "$OS" = Darwin ]; then
+    user=$(desktop_user)
+    [ -z "$user" ] || echo "  Set up for: $user (the kiosk opens when this account signs in)"
+  fi
   echo
   echo "Next: sign in online on the kiosk, then open Kiosk Setup."
   if [ "$OS" = Darwin ]; then
