@@ -101,6 +101,11 @@ wait_healthy() {  # wait_healthy SECONDS
   return 1
 }
 
+# Stop (not disable) the timer, so a run that spans 03:00 can't race this
+# test's own update.sh calls. install.sh starts it again (enable --now), so
+# this follows every install. Later steps only check is-enabled.
+stop_timer() { sudo systemctl stop "$TIMER" || fail "couldn't stop $TIMER"; }
+
 update_log() { sudo cat "$INSTALL_DIR/update.log" 2>/dev/null || true; }
 state_value() {
   sudo sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$INSTALL_DIR/update-state.json" 2>/dev/null | head -n 1
@@ -132,6 +137,7 @@ pass "$TIMER enabled"
 sudo grep -qx "EDGE_CLOUD_API_URL=http://127.0.0.1:9" "$INSTALL_DIR/config.env" || fail "config.env has the wrong API URL"
 [ -f "$HOME/.config/autostart/serversherpa-kiosk.desktop" ] || fail "autostart entry missing for $(id -un)"
 pass "container healthy, config.env and autostart entry written"
+stop_timer
 
 # ── 2. Re-install is idempotent ───────────────────────────────────────
 step "2. Re-install"
@@ -140,6 +146,8 @@ rc=0; install_kiosk || rc=$?
 AGAIN=$(serial || true)
 [ "$AGAIN" = "$SERIAL" ] || fail "serial changed on re-install ($SERIAL -> $AGAIN)"
 pass "same serial"
+systemctl is-enabled "$TIMER" >/dev/null 2>&1 || fail "$TIMER isn't enabled after re-install"
+stop_timer
 
 # ── 3. Update with an unchanged image ─────────────────────────────────
 step "3. Update, image unchanged"
