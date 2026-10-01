@@ -61,3 +61,11 @@ def test_deploy_empty_secrets_are_none(monkeypatch):
     assert s.deploy_do_token is None and s.deploy_ssh_password is None
     monkeypatch.setenv("SIRDAR_DEPLOY_DO_TOKEN", "tok")
     assert _settings().deploy_do_token.get_secret_value() == "tok"
+
+
+def test_deploy_key_file_bare_name_cannot_escape_keys_dir():
+    for bad in ("../etc/shadow", "sub/id_ed25519", "..", "a/../b", "."):
+        assert _settings(deploy_keys_dir="/x", deploy_ssh_key_path=bad).deploy_ssh_key_file is None
+    assert _settings(deploy_ssh_key_path="/abs/../id").deploy_ssh_key_file == "/abs/../id"
+    assert _settings(deploy_keys_dir="/x", deploy_ssh_key_path="id..bak").deploy_ssh_key_file == \
+        "/x/id..bak"

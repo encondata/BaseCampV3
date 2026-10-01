@@ -79,11 +79,17 @@ class Settings(BaseSettings):
 
     @property
     def deploy_ssh_key_file(self) -> str | None:
-        """Absolute paths as-is; bare names live in deploy_keys_dir."""
+        """Absolute paths as-is; bare names live in deploy_keys_dir. A
+        relative value that isn't a plain file name ("sub/x", "..", ".")
+        could escape that folder, so it resolves to nothing (= key not found)."""
         p = self.deploy_ssh_key_path.strip()
         if not p:
             return None
-        return p if p.startswith("/") else str(Path(self.deploy_keys_dir) / p)
+        if p.startswith("/"):
+            return p
+        if "/" in p or "\\" in p or p in (".", ".."):
+            return None
+        return str(Path(self.deploy_keys_dir) / p)
 
     @field_validator("jwt_secret")
     @classmethod
