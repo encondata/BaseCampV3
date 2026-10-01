@@ -24,3 +24,21 @@ async def test_default_roles_seeded(db):
 async def test_unknown_api_path_is_404_not_spa(client):
     resp = await client.get("/api/nope")
     assert resp.status_code == 404
+
+
+def _settings(**over):
+    from cryptography.fernet import Fernet
+    from sirdar_api.config import Settings
+    kw = dict(database_url="postgresql+asyncpg://u:p@h/d", jwt_secret="j" * 40,
+              SIRDAR_PASSWORD_PEPPER="pepper", SIRDAR_TOTP_ENCRYPTION_KEY=Fernet.generate_key().decode())
+    kw.update(over)
+    return Settings(_env_file=None, **kw)
+
+
+def test_settings_reject_weak_secrets():
+    import pytest
+    from pydantic import ValidationError
+    assert _settings()
+    for bad in ({"jwt_secret": "short"}, {"SIRDAR_PASSWORD_PEPPER": ""}, {"SIRDAR_TOTP_ENCRYPTION_KEY": ""}):
+        with pytest.raises(ValidationError):
+            _settings(**bad)

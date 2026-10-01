@@ -138,3 +138,19 @@ async def test_access_changes_write_audit_rows(client, db):
     rows = (await client.get("/api/audit?action=override.set", headers=h)).json()
     assert len(rows) == 1
     assert rows[0]["entity_type"] == "user" and rows[0]["entity_id"] == str(target.person_id)
+
+
+async def test_overrides_resave_keeps_existing_allow_the_actor_lacks(client, db):
+    from sirdar_api.db.models import PermissionOverride
+    h = await auth_headers(client, db, roles=("super_admin",))
+    target = await make_user(db, email="admin@test.example.com", roles=("admin",))
+    db.add(PermissionOverride(person_id=target.person_id, resource="access", action="add",
+                              allow=True, set_by=target.person_id))
+    await db.commit()
+    url = f"/api/access/overrides/{target.person_id}"
+    ok = await client.put(url, headers=h, json={"overrides": {
+        "access": {"add": True}, "users": {"view": True}}})
+    assert ok.status_code == 200, ok.text
+    new = await client.put(url, headers=h, json={"overrides": {
+        "access": {"add": True, "delete": True}}})
+    assert new.status_code == 403 and new.json()["detail"]["code"] == "grant_exceeds_own"

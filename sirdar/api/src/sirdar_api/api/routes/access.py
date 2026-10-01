@@ -119,9 +119,12 @@ async def put_overrides(person_id: uuid.UUID, body: OverridesIn, db: DbSession,
               for a, allow in acts.items() if allow is not None}
     if any(REGISTRY[res].developer_only for res, _ in wanted):
         raise _err(422, "developer_only_resource")
-    if any(allow and not actor.access.can(res, a) for (res, a), allow in wanted.items()):
-        raise _err(403, "grant_exceeds_own")
     before = await _overrides(db, person_id)
+    # Only cells that are newly allowed (or flipped to allow) count against the
+    # actor; an allow that was already there is not theirs to re-vouch for.
+    if any(allow and before.get(res, {}).get(a) is not True and not actor.access.can(res, a)
+           for (res, a), allow in wanted.items()):
+        raise _err(403, "grant_exceeds_own")
     await db.execute(delete(PermissionOverride).where(PermissionOverride.person_id == person_id))
     for (res, a), allow in wanted.items():
         db.add(PermissionOverride(person_id=person_id, resource=res, action=a, allow=allow,

@@ -38,6 +38,7 @@ async def authenticate_token(db: AsyncSession, token: str) -> AuthContext:
         raise _unauthorized("invalid_token") from None
     session = await db.get(AuthSession, session_id)
     if (session is None or session.revoked_at is not None
+            or session.rotated_at is not None or session.person_id != person_id
             or session.expires_at <= datetime.now(UTC)):
         raise _unauthorized("session_ended")
     user = await db.get(User, person_id)

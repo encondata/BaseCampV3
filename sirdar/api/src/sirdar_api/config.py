@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # sirdar/api/src/sirdar_api/config.py -> sirdar/
@@ -44,6 +44,20 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("SS_PASSWORD_PEPPER", "SIRDAR_PASSWORD_PEPPER"))
     totp_encryption_key: SecretStr = Field(
         validation_alias=AliasChoices("SS_TOTP_ENCRYPTION_KEY", "SIRDAR_TOTP_ENCRYPTION_KEY"))
+
+    @field_validator("jwt_secret")
+    @classmethod
+    def _jwt_secret_long_enough(cls, v: SecretStr) -> SecretStr:
+        if len(v.get_secret_value()) < 32:
+            raise ValueError("SIRDAR_JWT_SECRET must be at least 32 characters")
+        return v
+
+    @field_validator("password_pepper", "totp_encryption_key")
+    @classmethod
+    def _not_empty(cls, v: SecretStr) -> SecretStr:
+        if not v.get_secret_value():
+            raise ValueError("must not be empty")
+        return v
 
     @property
     def sync_database_url(self) -> str:

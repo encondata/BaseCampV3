@@ -117,3 +117,29 @@ async def test_system_status(client, db):
                            "banner": None, "totp_trust_days": 0, "needs_setup": True}
     await make_user(db)
     assert (await client.get("/api/system/status")).json()["needs_setup"] is False
+
+
+async def test_token_with_foreign_sub_rejected(client, db):
+    from sirdar_api.config import get_settings
+    from sirdar_api.security.tokens import create_access_token
+    import uuid
+    await make_user(db)
+    other = await make_user(db, email="other@test.example.com")
+    token = (await _login(client)).json()["access_token"]
+    from sirdar_api.security.tokens import decode_access_token
+    secret = get_settings().jwt_secret.get_secret_value()
+    sid = uuid.UUID(decode_access_token(token, secret=secret)["sid"])
+    forged = create_access_token(person_id=other.person_id, session_id=sid, secret=secret,
+                                 ttl_seconds=60)
+    resp = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {forged}"})
+    assert resp.status_code == 401 and resp.json()["detail"]["code"] == "session_ended"
+
+
+async def test_old_access_token_dies_after_refresh(client, db):
+    await make_user(db)
+    old = (await _login(client)).json()["access_token"]
+    new = (await client.post("/api/auth/refresh")).json()["access_token"]
+    h = lambda t: {"Authorization": f"Bearer {t}"}
+    stale = await client.get("/api/auth/me", headers=h(old))
+    assert stale.status_code == 401 and stale.json()["detail"]["code"] == "session_ended"
+    assert (await client.get("/api/auth/me", headers=h(new))).status_code == 200
