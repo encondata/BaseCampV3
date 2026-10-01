@@ -32,7 +32,7 @@ async def test_setup_offline_is_edge_offline(app, client, cloud):
     app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
     cloud.post("/kiosk/setup").mock(side_effect=httpx.ConnectError("down"))
     r = await client.post("/kiosk/setup", headers=make_session(app), json={"initiative_id": "m-1"})
-    assert r.status_code == 503
+    assert r.status_code == 503 and r.json()["detail"]["code"] == "edge_offline"
 
 
 async def test_sync_replaces_move_passwords(app, cloud):
@@ -86,3 +86,17 @@ async def test_sync_without_any_cloud_session_records_needs_sign_in(app):
     app.state.syncer.set_target("m-1", "p-1")
     meta = await app.state.syncer.run()
     assert meta["last_error"] == "needs_sign_in"
+
+
+async def test_malformed_move_passwords_keep_old_and_still_cache(app, cloud):
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    app.state.syncer.set_target("m-1", "p-1")
+    for path in sync_paths("m-1"):
+        cloud.get(path).respond(200, json={"path": path})
+    cloud.get(url__regex=r"/kiosk/edge/move-passwords.*").respond(
+        200, json={"moves": [{"initiative_id": "m-1"}]})
+    app.state.store.run("INSERT INTO move_passwords VALUES ('old', 'Old', 'v', '{}', 'now')")
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] == "bad_move_passwords"
+    assert app.state.store.one("SELECT 1 FROM move_passwords WHERE initiative_id='old'")
+    assert app.state.store.one("SELECT 1 FROM cache WHERE key=?", (sync_paths("m-1")[0],))

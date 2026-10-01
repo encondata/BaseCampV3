@@ -102,3 +102,34 @@ async def test_non_edge_bearer_forwarded_verbatim(client, cloud):
     await client.post("/auth/totp/verify", json={"code": "1"},
                       headers={"Authorization": "Bearer challenge-token"})
     assert route.calls[0].request.headers["authorization"] == "Bearer challenge-token"
+
+
+async def test_duplicated_initiative_param_cannot_bypass_move_lock(app, client):
+    key = "/kiosk/sync/assets?initiative_id=m-1&initiative_id=m-2"
+    app.state.store.run("INSERT INTO cache VALUES (?, 200, '{}', 'now')", (key,))
+    hdrs = make_session(app, kiosk_move={"initiative_id": "m-1", "name": "Move"})
+    r = await client.get(key, headers=hdrs)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "move_locked"
+
+
+async def test_online_no_cloud_session_cacheable_miss_is_401_hit_is_served(app, client, cloud):
+    cloud.get("/system/status").respond(200, json={})
+    await app.state.upstream.probe()
+    hdrs = make_session(app)
+    r = await client.get(ASSETS, headers=hdrs)
+    assert r.status_code == 401 and r.json()["detail"]["code"] == "cloud_sign_in_required"
+    app.state.store.run("INSERT INTO cache VALUES (?, 200, '{}', 'now')", (ASSETS,))
+    r = await client.get(ASSETS, headers=hdrs)
+    assert r.status_code == 200 and r.headers["x-edge-cache"] == "hit"
+
+
+async def test_sign_out_without_cloud_session_is_204_even_online(app, client, cloud):
+    cloud.get("/system/status").respond(200, json={})
+    await app.state.upstream.probe()
+    r = await client.post("/kiosk/sign-out", json={"serial": "x"}, headers=make_session(app))
+    assert r.status_code == 204
+
+
+async def test_offline_no_cloud_session_cacheable_miss_is_503(app, client):
+    r = await client.get(ASSETS, headers=make_session(app))
+    assert r.status_code == 503 and r.json()["detail"]["code"] == "edge_offline"

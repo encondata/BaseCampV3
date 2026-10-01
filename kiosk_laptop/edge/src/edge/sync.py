@@ -61,18 +61,25 @@ class Syncer:
                 actor, "GET", f"/kiosk/edge/move-passwords?serial={quote(self.serial(), safe='')}")
         except CloudOffline:
             return self._error("offline")
+        rows: list[tuple] | None = None
+        bad = False
+        if moves is not None and moves.status_code == 200:
+            try:
+                rows = [(str(m["initiative_id"]), m["name"], m["argon2_hash"],
+                         json.dumps(m["session"]), now_iso())
+                        for m in moves.json().get("moves", [])]
+            except (ValueError, KeyError, TypeError, AttributeError):
+                bad = True
         with self.store.tx() as c:
             for path, body in pulled:
                 c.execute("INSERT INTO cache (key, status, body, stored_at) VALUES (?, 200, ?, ?) "
                           "ON CONFLICT(key) DO UPDATE SET status = 200, body = excluded.body, "
                           "stored_at = excluded.stored_at", (path, body, now_iso()))
-            if moves is not None and moves.status_code == 200:
+            if rows is not None:
                 c.execute("DELETE FROM move_passwords")
-                for m in moves.json().get("moves", []):
+                for row in rows:
                     c.execute("INSERT INTO move_passwords (initiative_id, name, verifier, "
-                              "session_json, updated_at) VALUES (?, ?, ?, ?, ?)",
-                              (str(m["initiative_id"]), m["name"], m["argon2_hash"],
-                               json.dumps(m["session"]), now_iso()))
-            c.execute("UPDATE sync_meta SET synced_at = ?, last_error = NULL WHERE id = 1",
-                      (now_iso(),))
+                              "session_json, updated_at) VALUES (?, ?, ?, ?, ?)", row)
+            c.execute("UPDATE sync_meta SET synced_at = ?, last_error = ? WHERE id = 1",
+                      (now_iso(), "bad_move_passwords" if bad else None))
         return self.meta()

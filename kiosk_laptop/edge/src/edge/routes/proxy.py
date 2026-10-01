@@ -63,9 +63,10 @@ def _cached(store: Store, session: EdgeSession | None, path: str, query: str) ->
         return None
     hit = {"X-Edge-Cache": "hit"}
     if session is not None and session.move_id is not None:
-        initiative = parse_qs(query).get("initiative_id", [None])[0]
+        # The cloud reads the LAST duplicate; accept only exactly the locked move.
+        values = parse_qs(query).get("initiative_id", [])
         if path.startswith("/kiosk/sync/") and path != "/kiosk/sync/people" \
-                and initiative != session.move_id:
+                and values != [session.move_id]:
             raise err(403, "move_locked")
         if path == "/kiosk/setup-options":
             data = json.loads(row["body"])
@@ -99,9 +100,13 @@ async def forward(request: Request, path: str) -> Response:
     try:
         if session is not None:
             if not st.upstream.has_session(session.person_id):
-                if not st.upstream.online or cacheable:
-                    return _offline_answer(st.store, session, method, path, query, cacheable)
-                raise err(401, "cloud_sign_in_required")
+                if method != "GET" and path in OFFLINE_OK_WRITES:
+                    return Response(status_code=204)
+                if cacheable and (hit := _cached(st.store, session, path, query)) is not None:
+                    return hit
+                if st.upstream.online:
+                    raise err(401, "cloud_sign_in_required")
+                raise err(503, "edge_offline")
             resp = await st.upstream.as_person(session.person_id, method, target,
                                                content=body, headers=headers)
             if resp is None:
