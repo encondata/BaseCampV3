@@ -2,8 +2,8 @@ import { expect, it } from 'vitest';
 
 import { SIRDAR_NAV, visibleSections } from './sirdarNav';
 
-it('has Dashboard, Administration and System sections', () => {
-  expect(SIRDAR_NAV.map((s) => s.label)).toEqual(['Dashboard', 'Administration', 'System']);
+it('has Dashboard, Deployments, Administration and System sections', () => {
+  expect(SIRDAR_NAV.map((s) => s.label)).toEqual(['Dashboard', 'Deployments', 'Administration', 'System']);
 });
 
 it('drops items and empty sections the user cannot view', () => {
