@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import ComboBox from '@portal/components/ComboBox';
 import DataTable from '@portal/components/DataTable';
@@ -14,14 +14,22 @@ export default function Audit() {
   const [action, setAction] = useState('');
   const [more, setMore] = useState(false);
   const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const reqId = useRef(0);
 
   const load = useCallback((offset: number) => {
+    const id = ++reqId.current;
+    setError('');
+    setLoading(true);
+    if (offset === 0) { setItems([]); setMore(false); }
     listAudit({ entity_type: entityType, action, offset, limit: PAGE })
       .then((rows) => {
+        if (id !== reqId.current) return;
         setItems((cur) => (offset === 0 ? rows : [...cur, ...rows]));
         setMore(rows.length === PAGE);
       })
-      .catch((e) => setError(errorText(e, "Couldn't load the audit log.")));
+      .catch((e) => { if (id === reqId.current) setError(errorText(e, "Couldn't load the audit log.")); })
+      .finally(() => { if (id === reqId.current) setLoading(false); });
   }, [entityType, action]);
 
   useEffect(() => { load(0); }, [load]);
@@ -56,7 +64,7 @@ export default function Audit() {
         emptyText="Nothing recorded yet."
       />
       {more && (
-        <button type="button" className="btn-ghost" onClick={() => load(items.length)}>Load more</button>
+        <button type="button" className="btn-ghost" disabled={loading} onClick={() => load(items.length)}>Load more</button>
       )}
     </div>
   );

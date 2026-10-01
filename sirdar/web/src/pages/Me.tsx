@@ -3,6 +3,7 @@ import type { UiPreferences } from '@portal/lib/api';
 import { NAV_BACKGROUNDS } from '@portal/lib/settings';
 
 const SIZES: UiPreferences['nav_size'][] = ['small', 'default', 'large', 'xlarge'];
+const SIZE_LABELS: Record<string, string> = { small: 'Small', default: 'Default', large: 'Large', xlarge: 'Extra large' };
 const MODES: [UiPreferences['nav_mode'], string][] = [['expanded', 'Expanded'], ['rail', 'Icons only'], ['hidden', 'Hidden']];
 
 export default function Me() {
@@ -32,7 +33,7 @@ export default function Me() {
           <div className="segmented" role="radiogroup" aria-label="Navigation text size">
             {SIZES.map((sz) => (
               <button key={sz} type="button" role="radio" aria-checked={preferences.nav_size === sz}
-                      className={preferences.nav_size === sz ? 'on' : ''} onClick={() => set({ nav_size: sz })}>{sz}</button>
+                      className={preferences.nav_size === sz ? 'on' : ''} onClick={() => set({ nav_size: sz })}>{SIZE_LABELS[sz]}</button>
             ))}
           </div>
           <span>Background</span>
@@ -52,7 +53,7 @@ export default function Me() {
         <div className="segmented" role="radiogroup" aria-label="List text size">
           {SIZES.map((sz) => (
             <button key={sz} type="button" role="radio" aria-checked={preferences.list_size === sz}
-                    className={preferences.list_size === sz ? 'on' : ''} onClick={() => set({ list_size: sz })}>{sz}</button>
+                    className={preferences.list_size === sz ? 'on' : ''} onClick={() => set({ list_size: sz })}>{SIZE_LABELS[sz]}</button>
           ))}
         </div>
       </section>

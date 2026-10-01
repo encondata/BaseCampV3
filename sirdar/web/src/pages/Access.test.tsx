@@ -31,10 +31,27 @@ afterEach(cleanup);
 
 it('own role is read-only; a lower role can be edited and saved', async () => {
   render(<Access />);
-  await waitFor(() => expect(screen.getByRole('tab', { name: /super admin/i })).toBeTruthy());
+  await waitFor(() => expect(screen.getByRole('radio', { name: /super admin/i })).toBeTruthy());
   expect(screen.getByText(/you hold this role/i)).toBeTruthy();
-  await userEvent.click(screen.getByRole('tab', { name: /administrator/i }));
+  await userEvent.click(screen.getByRole('radio', { name: /administrator/i }));
   await userEvent.click(screen.getByRole('button', { name: /toggle add for every row/i }));
   await userEvent.click(screen.getByRole('button', { name: /save changes/i }));
-  expect(putRoleMatrix).toHaveBeenCalledWith('admin', expect.objectContaining({ users: expect.any(Object) }));
+  expect(putRoleMatrix).toHaveBeenCalledWith('admin', expect.objectContaining({
+    users: expect.objectContaining({ add: true }),
+  }));
+  const saved = putRoleMatrix.mock.calls[0][1] as Record<string, Record<string, boolean>>;
+  expect(saved.users.add).toBe(true);
+});
+
+it('switching roles with unsaved edits asks first and stays put when declined', async () => {
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  render(<Access />);
+  await waitFor(() => expect(screen.getByRole('radio', { name: /administrator/i })).toBeTruthy());
+  await userEvent.click(screen.getByRole('radio', { name: /administrator/i }));
+  await userEvent.click(screen.getByRole('button', { name: /toggle add for every row/i }));
+  await userEvent.click(screen.getByRole('radio', { name: /super admin/i }));
+  expect(confirm).toHaveBeenCalledWith('Discard your unsaved changes to Administrator?');
+  expect(screen.getByRole('radio', { name: /administrator/i }).getAttribute('aria-checked')).toBe('true');
+  expect(screen.getByRole('button', { name: /save changes/i }).hasAttribute('disabled')).toBe(false);
+  confirm.mockRestore();
 });

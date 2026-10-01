@@ -26,7 +26,11 @@ export default function Access() {
   useEffect(load, [load]);
 
   const role = summary?.roles.find((r) => r.name === selected);
-  useEffect(() => { setDraft(role ? structuredClone(role.matrix) : null); }, [role]);
+  // Reset the draft only when the selected role changes; reloads and saves keep unsaved edits.
+  useEffect(() => {
+    setDraft(role ? structuredClone(role.matrix) : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, !!summary]);
   if (!summary || !role || !draft) return message ? <p className="form-error">{message}</p> : null;
 
   const holds = myRoles.includes(role.name);
@@ -35,7 +39,7 @@ export default function Access() {
   const dirty = JSON.stringify(draft) !== JSON.stringify(role.matrix);
 
   const toggle = (res: string, action: Action) =>
-    setDraft((d) => d && { ...d, [res]: { ...d[res], [action]: !d[res][action] } });
+    setDraft((d) => d && { ...d, [res]: { ...d[res], [action]: !d[res]?.[action] } });
   const toggleColumn = (action: Action) => setDraft((d) => {
     if (!d) return d;
     const open = summary.resources.filter((r) => !locked.has(r.id));
@@ -47,6 +51,13 @@ export default function Access() {
     }
     return next;
   });
+
+  const pick = (name: string) => {
+    if (name === selected) return;
+    if (dirty && !window.confirm(`Discard your unsaved changes to ${role.label}?`)) return;
+    setMessage('');
+    setSelected(name);
+  };
 
   const save = async () => {
     setSaving(true);
@@ -69,10 +80,10 @@ export default function Access() {
         <h1>Roles &amp; access</h1>
         <p>What each role can do in Sirdar. Per-person overrides live on each user's page.</p>
       </div>
-      <div className="segmented" role="tablist" aria-label="Roles">
+      <div className="segmented" role="radiogroup" aria-label="Roles">
         {summary.roles.map((r) => (
-          <button key={r.name} type="button" role="tab" aria-selected={r.name === selected}
-                  className={r.name === selected ? 'on' : ''} onClick={() => setSelected(r.name)}>
+          <button key={r.name} type="button" role="radio" aria-checked={r.name === selected}
+                  className={r.name === selected ? 'on' : ''} onClick={() => pick(r.name)}>
             {r.label} <span className="page-hint">({r.member_count})</span>
           </button>
         ))}
