@@ -291,11 +291,11 @@ def test_docker_autostart_keeps_other_keys(sh, tmp_path):
 def test_docker_autostart_creates_missing_file_without_python(sh, tmp_path):
     import json
     f = tmp_path / "gc" / "settings-store.json"
-    sh(f'has_python() {{ return 1; }}; set_docker_autostart "{f}"')
+    sh(f'python_bin() {{ return 1; }}; set_docker_autostart "{f}"')
     assert json.loads(f.read_text()) == {"AutoStart": True}
     # an existing file is never rewritten without python
     f.write_text('{"AutoStart": false, "Keep": 1}')
-    r = sh(f'has_python() {{ return 1; }}; set_docker_autostart "{f}"')
+    r = sh(f'python_bin() {{ return 1; }}; set_docker_autostart "{f}"')
     assert f.read_text() == '{"AutoStart": false, "Keep": 1}' and "Start Docker Desktop" in r.stderr
 
 
@@ -310,3 +310,108 @@ def test_summary_shows_serial_and_url(sh):
              'kiosk_version() { echo 1.2.3; }; summary').stdout
     assert "kiosk-laptop-abc" in out and "Dock 1" in out and "http://localhost:8090" in out
     assert "1.2.3" in out and "stable" in out
+
+
+# ── Task 3 fix round 1 ────────────────────────────────────────────────
+
+def test_macos_runs_docker_as_desktop_user(sh):
+    out = sh('OS=Darwin; desktop_user() { printf alice; }; setup_docker_cli; '
+             'printf "%s\\n" "${DOCKER[@]}"').stdout.splitlines()
+    assert out[:4] == ["sudo", "-u", "alice", "-H"] and out[-1] == "docker"
+    assert any(a.startswith("PATH=") and "/Applications/Docker.app/Contents/Resources/bin" in a for a in out)
+    assert sh('OS=Linux; setup_docker_cli; echo "${DOCKER[*]}"').stdout.strip() == "docker"
+
+
+def test_macos_without_desktop_user_stops(sh):
+    r = sh('OS=Darwin; desktop_user() { :; }; setup_docker_cli', check=False)
+    assert r.returncode != 0 and "signed-in user" in r.stderr
+
+
+def test_check_compose_dies_without_plugin(sh):
+    r = sh('OS=Linux; DOCKER=(false); check_compose', check=False)
+    assert r.returncode != 0 and "Compose" in r.stderr
+    sh('OS=Linux; DOCKER=(true); check_compose')
+
+
+def _uninstall_with_docker(sh, tmp_path, script):
+    inst, data = tmp_path / "inst", tmp_path / "data"
+    inst.mkdir(); data.mkdir(); (data / "identity.json").write_text("{}")
+    for f in ("docker-compose.yml", "config.env"):
+        (inst / f).write_text("x")
+    fake = tmp_path / "docker"; fake.write_text("#!/bin/sh\n" + script); fake.chmod(0o755)
+    r = sh(f'DOCKER=("{fake}"); KIOSK_DIR="{inst}"; KIOSK_DATA_DIR="{data}"; '
+           f'remove_login_items() {{ echo REMOVED-LOGIN-ITEMS; }}; uninstall', check=False)
+    return r, inst
+
+
+def test_uninstall_stops_when_docker_is_down(sh, tmp_path):
+    # compose down fails and the engine doesn't answer: nothing may be removed
+    r, inst = _uninstall_with_docker(sh, tmp_path, "exit 1\n")
+    assert r.returncode != 0 and "Docker isn't running" in r.stderr
+    assert (inst / "config.env").exists() and "REMOVED-LOGIN-ITEMS" not in r.stdout
+
+
+def test_uninstall_stops_when_container_still_exists(sh, tmp_path):
+    r, inst = _uninstall_with_docker(
+        sh, tmp_path, 'case "$1" in compose) exit 1 ;; *) exit 0 ;; esac\n')
+    assert r.returncode != 0 and "serversherpa-kiosk-edge-1" in r.stderr
+    assert (inst / "config.env").exists() and "REMOVED-LOGIN-ITEMS" not in r.stdout
+
+
+def test_uninstall_continues_when_container_is_gone(sh, tmp_path):
+    r, inst = _uninstall_with_docker(
+        sh, tmp_path, 'case "$1" in compose|inspect) exit 1 ;; *) exit 0 ;; esac\n')
+    assert r.returncode == 0, r.stderr
+    assert not (inst / "config.env").exists() and "REMOVED-LOGIN-ITEMS" in r.stdout
+
+
+def test_rosetta_reports_arm64(sh):
+    stubs = ('uname() { case "$1" in -s) echo Darwin ;; -m) echo x86_64 ;; esac; }; '
+             'sw_vers() { echo 14.5; }; ')
+    out = sh(stubs + 'sysctl() { echo 1; }; detect_os; echo "$ARCH"').stdout.strip()
+    assert out == "arm64"
+    out = sh(stubs + 'sysctl() { return 1; }; detect_os; echo "$ARCH"').stdout.strip()
+    assert out == "amd64"
+
+
+def test_ensure_root_forwards_args_and_env(sh, tmp_path):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    shim = bindir / "sudo"
+    shim.write_text('#!/bin/sh\nfor a in "$@"; do echo "ARG:$a"; done\n'); shim.chmod(0o755)
+    env = {"KIOSK_IMAGE": "local/kiosk:test", "KIOSK_INSTALLER_REF": "feature-x",
+           "KIOSK_TEMPLATE_DIR": str(tmp_path / "tpl")}
+    (tmp_path / "tpl").mkdir()
+    r = sh(f'PATH="{bindir}:$PATH"; is_root() {{ return 1; }}; '
+           f'ensure_root --api-url https://api.x.com --yes; echo NOT-REACHED', env=env)
+    args = [l[4:] for l in r.stdout.splitlines() if l.startswith("ARG:")]
+    assert args[0] == "env" and "NOT-REACHED" not in r.stdout
+    for kv in ("KIOSK_IMAGE=local/kiosk:test", "KIOSK_INSTALLER_REF=feature-x",
+               f"KIOSK_TEMPLATE_DIR={tmp_path / 'tpl'}"):
+        assert kv in args
+    i = args.index("bash")
+    assert args[i + 1].endswith("install.sh")
+    assert args[i + 2:] == ["--api-url", "https://api.x.com", "--yes"]
+
+
+def test_ensure_root_downloads_copy_and_says_main(sh, tmp_path):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    shim = bindir / "sudo"
+    shim.write_text('#!/bin/sh\nfor a in "$@"; do echo "ARG:$a"; done\n'); shim.chmod(0o755)
+    r = sh(f'PATH="{bindir}:$PATH"; is_root() {{ return 1; }}; self_script() {{ :; }}; '
+           f'ensure_root --yes')
+    assert "main branch" in r.stdout
+    args = [l[4:] for l in r.stdout.splitlines() if l.startswith("ARG:")]
+    copy = args[args.index("bash") + 1]
+    assert "kiosk-install." in copy and not copy.endswith("/install.sh")
+
+
+def test_docker_autostart_python_cleans_temp_on_failure(sh, tmp_path):
+    d = tmp_path / "ro"; d.mkdir()
+    f = d / "settings-store.json"; f.write_text('{"Keep": 1}')
+    d.chmod(0o500)
+    try:
+        r = sh(f'set_docker_autostart "{f}"')
+    finally:
+        d.chmod(0o700)
+    assert f.read_text() == '{"Keep": 1}' and "Start Docker Desktop" in r.stderr
+    assert not (d / "settings-store.json.kiosk-tmp").exists()

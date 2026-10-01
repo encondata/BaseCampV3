@@ -77,8 +77,14 @@ LEGACY_PROJECT='serversherpa-kiosk-laptop'
 KIOSK_CONTAINER='serversherpa-kiosk-edge-1'   # project "serversherpa-kiosk", service "edge"
 KIOSK_URL='http://localhost:8090'
 
+DMG_MOUNT=''     # Docker Desktop disk image mount point while attached
+
 cleanup() {
   local f
+  if [ -n "$DMG_MOUNT" ]; then
+    hdiutil detach -quiet "$DMG_MOUNT" >/dev/null 2>&1 || true
+    rmdir "$DMG_MOUNT" 2>/dev/null || true
+  fi
   for f in ${TMP_FILES[@]+"${TMP_FILES[@]}"}; do rm -f "$f"; done
 }
 trap cleanup EXIT
@@ -176,6 +182,10 @@ detect_os() {
     arm64|aarch64) ARCH=arm64 ;;
     *) die "Unsupported CPU architecture '$(uname -m)'." ;;
   esac
+  # Under Rosetta, uname -m says x86_64 on Apple silicon.
+  if [ "$OS" = Darwin ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then
+    ARCH=arm64
+  fi
 }
 
 default_dirs() {
@@ -352,12 +362,17 @@ migrate_legacy_data() {
 # ── Preflight ─────────────────────────────────────────────────────────
 # ensure_root ARGS...: re-run this script through sudo (once) unless root.
 # Under `curl | bash` there is no script file, so fetch a copy to run.
+self_script() { printf '%s' "${BASH_SOURCE[0]:-}"; }  # this file, if it is one
+
 ensure_root() {
   is_root && return 0
   command -v sudo >/dev/null 2>&1 || die "This installer needs root. Run it as root, or install sudo and re-run."
-  local script="${BASH_SOURCE[0]:-}" v rc=0
+  local script v rc=0
   local envs=()
+  script=$(self_script)
   if [ -z "$script" ] || [ ! -f "$script" ]; then
+    [ -n "${KIOSK_INSTALLER_REF:-}" ] \
+      || info "Using the installer from the main branch (set KIOSK_INSTALLER_REF to use another)."
     script=$(mktemp "${TMPDIR:-/tmp}/kiosk-install.XXXXXX")
     TMP_FILES+=("$script")
     fetch_companion install.sh "$script"
@@ -459,13 +474,29 @@ check_api_reachable() {
 }
 
 # ── Docker ────────────────────────────────────────────────────────────
+DOCKER_DESKTOP_BIN='/Applications/Docker.app/Contents/Resources/bin'
+
+# setup_docker_cli: how this script runs docker. Linux: as root. macOS: as the
+# Docker Desktop user, whose ~/.docker holds the compose plugin path and
+# credential helpers (root's CLI has neither, and must not litter that folder).
+setup_docker_cli() {
+  local user
+  if [ "$OS" = Darwin ]; then
+    PATH="$PATH:/usr/local/bin:$DOCKER_DESKTOP_BIN"
+    export PATH
+    user=$(desktop_user)
+    [ -n "$user" ] || die "No signed-in user found. Sign in to this Mac and run the command from your own account."
+    DOCKER=(sudo -u "$user" -H env "PATH=$PATH" docker)
+  else
+    DOCKER=(docker)
+  fi
+}
+
 docker_answers() { "${DOCKER[@]}" version >/dev/null 2>&1; }
 
 # ensure_docker: install Docker Desktop (macOS) or Docker Engine (Linux) if missing.
 ensure_docker() {
   if [ "$OS" = Darwin ]; then
-    PATH="$PATH:/usr/local/bin:/Applications/Docker.app/Contents/Resources/bin"
-    export PATH
     if docker_answers || [ -d /Applications/Docker.app ]; then
       info "Docker Desktop is installed."
       return 0
@@ -478,18 +509,20 @@ ensure_docker() {
       info "Installing Docker Engine (get.docker.com)"
       curl -fsSL https://get.docker.com | sh || die "Docker Engine didn't install. See the messages above, then re-run."
     fi
-    "${DOCKER[@]}" compose version >/dev/null 2>&1 \
-      || die "Docker Compose v2 is missing. Install the docker-compose-plugin package, then re-run."
     if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && getent group docker >/dev/null 2>&1; then
       if ! id -nG "$SUDO_USER" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
-        usermod -aG docker "$SUDO_USER" && ADDED_DOCKER_GROUP=1
+        if usermod -aG docker "$SUDO_USER"; then
+          ADDED_DOCKER_GROUP=1
+        else
+          warn "Couldn't add $SUDO_USER to the docker group; the kiosk still works, but docker needs sudo."
+        fi
       fi
     fi
   fi
 }
 
 install_docker_desktop() {
-  local user dmg mnt=/Volumes/Docker
+  local user dmg
   user=$(desktop_user)
   [ -n "$user" ] || die "Run this installer from your own account (with sudo), not as root, so Docker Desktop is set up for you."
   dmg=$(mktemp "${TMPDIR:-/tmp}/Docker.XXXXXX")
@@ -497,33 +530,38 @@ install_docker_desktop() {
   info "Downloading Docker Desktop ($ARCH)"
   curl -fL --progress-bar "https://desktop.docker.com/mac/main/$ARCH/Docker.dmg" -o "$dmg" \
     || die "Couldn't download Docker Desktop. Check the network, then re-run."
-  hdiutil attach -nobrowse -quiet -mountpoint "$mnt" "$dmg" || die "Couldn't open the Docker Desktop disk image."
+  DMG_MOUNT=$(mktemp -d "${TMPDIR:-/tmp}/kiosk-docker-dmg.XXXXXX")   # cleanup detaches it
+  hdiutil attach -nobrowse -quiet -mountpoint "$DMG_MOUNT" "$dmg" || die "Couldn't open the Docker Desktop disk image."
   info "Installing Docker Desktop for $user"
-  if ! "$mnt/Docker.app/Contents/MacOS/install" --accept-license --user="$user"; then
-    hdiutil detach -quiet "$mnt" || true
-    die "Docker Desktop didn't install. See the messages above, then re-run."
-  fi
-  hdiutil detach -quiet "$mnt" || true
+  "$DMG_MOUNT/Docker.app/Contents/MacOS/install" --accept-license --user="$user" \
+    || die "Docker Desktop didn't install. See the messages above, then re-run."
+  hdiutil detach -quiet "$DMG_MOUNT" || true
+  rmdir "$DMG_MOUNT" 2>/dev/null || true
+  DMG_MOUNT=''
 }
 
-# Use python3 for JSON, but not macOS's /usr/bin/python3 stub when the
+# python3 path for JSON, but not macOS's /usr/bin/python3 stub when the
 # command line tools are missing (it pops an install dialog instead).
-has_python() {
-  command -v python3 >/dev/null 2>&1 || return 1
-  if [ "$OS" = Darwin ] && [ "$(command -v python3)" = /usr/bin/python3 ]; then
+python_bin() {
+  local py
+  py=$(command -v python3 2>/dev/null) || return 1
+  if [ "$OS" = Darwin ] && [ "$py" = /usr/bin/python3 ]; then
     xcode-select -p >/dev/null 2>&1 || return 1
   fi
-  return 0
+  printf '%s' "$py"
 }
 
-# set_docker_autostart FILE: "AutoStart": true, every other key kept.
+# set_docker_autostart FILE [USER]: "AutoStart": true, every other key kept,
+# written as USER (when given) so the file and its folder stay theirs.
 # Without python3 the file is only created when missing, never rewritten.
 set_docker_autostart() {
-  local file="$1"
+  local file="$1" py
+  local as_user=()
   local manual="In Docker Desktop › Settings › General, turn on Start Docker Desktop when you sign in."
-  mkdir -p "$(dirname "$file")"
-  if has_python; then
-    python3 - "$file" <<'PY' || warn "Couldn't update $file. $manual"
+  [ -z "${2:-}" ] || as_user=(sudo -u "$2" -H)
+  ${as_user[@]+"${as_user[@]}"} mkdir -p "$(dirname "$file")" || { warn "Couldn't create $(dirname "$file"). $manual"; return 0; }
+  if py=$(python_bin); then
+    ${as_user[@]+"${as_user[@]}"} "$py" - "$file" <<'PY' || warn "Couldn't update $file. $manual"
 import json, os, sys
 path = sys.argv[1]
 try:
@@ -535,12 +573,18 @@ if not isinstance(data, dict):
     sys.exit(3)
 data["AutoStart"] = True
 tmp = path + ".kiosk-tmp"
-with open(tmp, "w") as f:
-    json.dump(data, f, indent=2)
-os.replace(tmp, path)
+try:
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, path)
+except BaseException:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    raise
 PY
   elif [ ! -e "$file" ]; then
-    printf '{\n  "AutoStart": true\n}\n' >"$file"
+    printf '{\n  "AutoStart": true\n}\n' | ${as_user[@]+"${as_user[@]}"} tee "$file" >/dev/null \
+      || warn "Couldn't create $file. $manual"
   else
     warn "Python 3 isn't available to edit Docker Desktop's settings. $manual"
   fi
@@ -549,7 +593,7 @@ PY
 
 # enable_docker_autostart: Docker starts on its own from now on, and now.
 enable_docker_autostart() {
-  local user home file uid
+  local user home uid
   if [ "$OS" = Linux ]; then
     systemctl enable --now docker >/dev/null || die "Couldn't start Docker (systemctl enable --now docker)."
     return 0
@@ -560,11 +604,7 @@ enable_docker_autostart() {
     return 0
   fi
   home=$(SUDO_USER="$user" home_of_user)
-  file="$home/Library/Group Containers/group.com.docker/settings-store.json"
-  # Create the folder as the user, so Docker Desktop can still write to it.
-  [ -d "$(dirname "$file")" ] || sudo -u "$user" mkdir -p "$(dirname "$file")" || true
-  set_docker_autostart "$file"
-  [ ! -e "$file" ] || chown "$user" "$file" || true
+  set_docker_autostart "$home/Library/Group Containers/group.com.docker/settings-store.json" "$user"
   if ! docker_answers; then
     info "Starting Docker Desktop"
     uid=$(id -u "$user")
@@ -575,15 +615,9 @@ enable_docker_autostart() {
 
 # wait_for_engine SECONDS: until `docker version` answers.
 wait_for_engine() {
-  local deadline=$((SECONDS + $1)) home sock
+  local deadline=$((SECONDS + $1))
   info "Waiting for the Docker engine (up to $(($1 / 60)) minutes)"
   while ! docker_answers; do
-    # Docker Desktop without the default socket: use the user's socket.
-    if [ "$OS" = Darwin ] && [ -z "${DOCKER_HOST:-}" ] && [ ! -S /var/run/docker.sock ]; then
-      home=$(SUDO_USER="$(desktop_user)" home_of_user)
-      sock="$home/.docker/run/docker.sock"
-      if [ -S "$sock" ]; then DOCKER_HOST="unix://$sock"; export DOCKER_HOST; continue; fi
-    fi
     if [ "$SECONDS" -ge "$deadline" ]; then
       if [ "$OS" = Darwin ]; then
         die "Docker didn't start — open Docker Desktop once, accept any prompt, then re-run this command."
@@ -592,6 +626,15 @@ wait_for_engine() {
     fi
     sleep "$ENGINE_POLL_S"
   done
+}
+
+# check_compose: Docker Compose v2 is there for the docker we run.
+check_compose() {
+  "${DOCKER[@]}" compose version >/dev/null 2>&1 && return 0
+  if [ "$OS" = Darwin ]; then
+    die "Docker Compose isn't available to Docker Desktop. Reinstall or update Docker Desktop, then re-run."
+  fi
+  die "Docker Compose v2 is missing. Install the docker-compose-plugin package, then re-run."
 }
 
 # ── Start ─────────────────────────────────────────────────────────────
@@ -697,6 +740,18 @@ confirm_purge() {
   [ "$ans" = DELETE ] || die "Not confirmed; nothing was removed."
 }
 
+# stop_kiosk_for_uninstall: compose down, or stop before any file is removed
+# if the container may still be there (it would come back with Docker).
+stop_kiosk_for_uninstall() {
+  compose down >/dev/null 2>&1 && return 0
+  docker_answers \
+    || die "Docker isn't running — start Docker Desktop and re-run --uninstall."
+  if "${DOCKER[@]}" inspect "$KIOSK_CONTAINER" >/dev/null 2>&1; then
+    die "Couldn't remove the kiosk container $KIOSK_CONTAINER. Check Docker, then re-run --uninstall."
+  fi
+  return 0
+}
+
 uninstall() {
   local f
   check_rm_target "The install folder (KIOSK_DIR)" "$KIOSK_DIR"
@@ -708,7 +763,7 @@ uninstall() {
   fi
   info "Removing the ServerSherpa kiosk"
   if [ -f "$KIOSK_DIR/docker-compose.yml" ]; then
-    compose down >/dev/null 2>&1 || warn "Couldn't stop the kiosk container (is Docker running?)."
+    stop_kiosk_for_uninstall
   fi
   remove_login_items
   for f in docker-compose.yml config.env update.sh launch.sh install-state.json update-state.json; do
@@ -759,8 +814,8 @@ create_data_dir() {
     [ -z "$user" ] || owner="$user"
   fi
   mkdir -p "$KIOSK_DATA_DIR"
-  chown "$owner" "$KIOSK_DATA_DIR"
-  chmod 700 "$KIOSK_DATA_DIR"
+  chown "$owner" "$KIOSK_DATA_DIR" || die "Couldn't make $owner the owner of $KIOSK_DATA_DIR."
+  chmod 700 "$KIOSK_DATA_DIR" || die "Couldn't set the permissions of $KIOSK_DATA_DIR."
 }
 
 main() {
@@ -772,6 +827,7 @@ main() {
     ensure_root "$@"
     merge_config
     start_log "$@"
+    setup_docker_cli
     uninstall
     return 0
   fi
@@ -783,9 +839,11 @@ main() {
   prompt_settings
   merge_config
   check_api_reachable
+  setup_docker_cli
   ensure_docker
   enable_docker_autostart
   wait_for_engine 180
+  check_compose
   create_data_dir
   write_config "$KIOSK_DIR/config.env"
   render_compose "$KIOSK_DIR/docker-compose.yml"
