@@ -58,7 +58,7 @@ async def test_wipe_clears_auth_and_move_data_when_outbox_empty(app, client):
     store = app.state.store
     app.state.upstream.save_session("p-1", refresh_token="r", access_token="a", expires_in=900)
     store.run("INSERT INTO cache VALUES ('/kiosk/sync/people', 200, '{}', 'now')")
-    store.run("INSERT INTO move_passwords VALUES ('m', 'M', 'v', '{}', 'now')")
+    store.run("INSERT INTO move_passwords VALUES ('m', 'M', 'v', '{}', 'now', 'v1')")
     r = await client.post("/edge/wipe", json={}, headers=make_session(app, max_rank=60))
     assert r.json() == {"cleared_move_data": True}
     for table in ("cloud_sessions", "offline_logins", "edge_sessions", "move_passwords", "cache"):

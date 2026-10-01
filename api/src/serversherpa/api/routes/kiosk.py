@@ -4,6 +4,7 @@ phone side) and, in Task 4, the signed-in heartbeat that upserts the
 kiosk's Device row. Design:
 docs/superpowers/specs/2026-09-13-kiosk-web-design.md"""
 
+import hashlib
 import ipaddress
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -249,28 +250,47 @@ async def move_login(
 _EDGE_HASHER = PasswordHasher()
 
 
+def edge_move_password_version(initiative: Initiative) -> str:
+    """Changes whenever the move's (encrypted) password changes."""
+    raw = str(initiative.id) + (initiative.kiosk_password_enc or "")
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
 @router.get("/edge/move-passwords", response_model=KioskEdgeMovePasswordsOut)
 async def edge_move_passwords(
     db: DbSession,
     serial: str = Query(min_length=1, max_length=120),
+    have: str | None = Query(None, max_length=64),
     actor: AuthContext = require_permission("kiosk", "view"),
 ) -> KioskEdgeMovePasswordsOut:
     """For the laptop edge: an argon2 hash of the password of the move the
     kiosk with `serial` is set up on, plus the session template for that
     move's kiosk identity, so a move sign-in works offline. Only that move,
     only while active; the plaintext and the HMAC fingerprint key never
-    leave the server. Spec: docs/superpowers/specs/2026-10-01-kiosk-laptop-design.md"""
+    leave the server. Only a registered laptop kiosk the caller is signed in
+    on gets it. When `have` matches the move's current `version`, the answer
+    is `unchanged` with no hashing and no audit row.
+    Spec: docs/superpowers/specs/2026-10-01-kiosk-laptop-design.md"""
     if actor.session.initiative_id is not None:
         raise _err(403, "move_locked")
     device = await db.scalar(select(Device).where(Device.serial == serial))
     if device is None or device.device_type != "kiosk":
         raise _err(404, "device_not_found")
+    if device.sub_type != "laptop":
+        raise _err(403, "not_a_laptop")
+    if registration_state(device.token_expires_at, datetime.now(UTC)) not in ("ok", "soon"):
+        raise _err(403, "device_not_registered")
+    if device.session_person_id != actor.person.id:
+        raise _err(403, "not_signed_in_here")
     initiative = (await db.get(Initiative, device.current_initiative_id)
                   if device.current_initiative_id else None)
     moves: list[KioskEdgeMovePassword] = []
     if (initiative is not None and initiative.kiosk_password_enc
             and move_password_service.is_move(initiative)
             and move_password_service.is_move_active(initiative)):
+        version = edge_move_password_version(initiative)
+        if have is not None and have == version:
+            return KioskEdgeMovePasswordsOut(moves=[], unchanged=True)
         account = await move_password_service.ensure_kiosk_identity(db, initiative)
         access = await resolve_access(db, account.person_id)
         if access.can("kiosk", "view"):
@@ -285,7 +305,7 @@ async def edge_move_passwords(
             moves.append(KioskEdgeMovePassword(
                 initiative_id=initiative.id, name=initiative.name,
                 argon2_hash=_EDGE_HASHER.hash(move_password_service.reveal(initiative)),
-                session=template))
+                session=template, version=version))
             audit(db, actor_id=actor.person.id, entity_type="initiative",
                   entity_id=str(initiative.id), action="kiosk_edge_move_password",
                   changes={"serial": serial})

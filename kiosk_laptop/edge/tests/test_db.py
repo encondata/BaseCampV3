@@ -27,3 +27,16 @@ def test_tx_rolls_back_on_error(tmp_path):
 def test_iso_normalizes_to_utc_seconds():
     assert iso("2026-10-01T12:00:00.123456Z") == "2026-10-01T12:00:00+00:00"
     assert iso("2026-10-01T07:00:00-05:00") == "2026-10-01T12:00:00+00:00"
+
+
+def test_a_version_one_database_upgrades_in_place(tmp_path, monkeypatch):
+    import edge.db as db
+    monkeypatch.setattr(db, "SCHEMA_STEPS", SCHEMA_STEPS[:1])
+    old = Store(tmp_path / "edge.db")
+    old.run("INSERT INTO move_passwords VALUES ('m-1', 'Move', 'v', '{}', 'now')")
+    old.close()
+    monkeypatch.setattr(db, "SCHEMA_STEPS", SCHEMA_STEPS)
+    store = Store(tmp_path / "edge.db")
+    row = store.one("SELECT initiative_id, version FROM move_passwords")
+    assert (row["initiative_id"], row["version"]) == ("m-1", None)
+    assert store.one("SELECT version FROM schema_version")["version"] == len(SCHEMA_STEPS)

@@ -2,7 +2,11 @@
 kiosk makes after Kiosk Setup, stored as the cache entries the proxy serves
 offline, plus the move's hashed password (so a move sign-in works with no
 internet). All-or-nothing: every read must succeed before any is written,
-in one transaction, so a dropped connection never leaves mixed data."""
+in one transaction, so a dropped connection never leaves mixed data.
+
+The move password is sent back as `have=<version>`; when the cloud says
+it is `unchanged`, the stored row stays. Any other refusal also keeps the
+stored row and records `move_passwords_http_<status>`."""
 
 import json
 from collections.abc import Callable
@@ -57,19 +61,22 @@ class Syncer:
                 if resp.status_code != 200:
                     return self._error(f"http_{resp.status_code}:{path}")
                 pulled.append((path, resp.text))
-            moves = await self.upstream.as_person(
-                actor, "GET", f"/kiosk/edge/move-passwords?serial={quote(self.serial(), safe='')}")
+            moves = await self.upstream.as_person(actor, "GET", self._moves_path(initiative))
         except CloudOffline:
             return self._error("offline")
         rows: list[tuple] | None = None
-        bad = False
+        error: str | None = None
         if moves is not None and moves.status_code == 200:
             try:
-                rows = [(str(m["initiative_id"]), m["name"], m["argon2_hash"],
-                         json.dumps(m["session"]), now_iso())
-                        for m in moves.json().get("moves", [])]
+                data = moves.json()
+                if not data.get("unchanged"):
+                    rows = [(str(m["initiative_id"]), m["name"], m["argon2_hash"],
+                             json.dumps(m["session"]), now_iso(), m.get("version"))
+                            for m in data.get("moves", [])]
             except (ValueError, KeyError, TypeError, AttributeError):
-                bad = True
+                error = "bad_move_passwords"
+        elif moves is not None:
+            error = f"move_passwords_http_{moves.status_code}"
         with self.store.tx() as c:
             for path, body in pulled:
                 c.execute("INSERT INTO cache (key, status, body, stored_at) VALUES (?, 200, ?, ?) "
@@ -79,7 +86,15 @@ class Syncer:
                 c.execute("DELETE FROM move_passwords")
                 for row in rows:
                     c.execute("INSERT INTO move_passwords (initiative_id, name, verifier, "
-                              "session_json, updated_at) VALUES (?, ?, ?, ?, ?)", row)
+                              "session_json, updated_at, version) VALUES (?, ?, ?, ?, ?, ?)", row)
             c.execute("UPDATE sync_meta SET synced_at = ?, last_error = ? WHERE id = 1",
-                      (now_iso(), "bad_move_passwords" if bad else None))
+                      (now_iso(), error))
         return self.meta()
+
+    def _moves_path(self, initiative: str) -> str:
+        path = f"/kiosk/edge/move-passwords?serial={quote(self.serial(), safe='')}"
+        row = self.store.one("SELECT version FROM move_passwords WHERE initiative_id = ?",
+                             (initiative,))
+        if row is not None and row["version"]:
+            path += f"&have={quote(row['version'], safe='')}"
+        return path

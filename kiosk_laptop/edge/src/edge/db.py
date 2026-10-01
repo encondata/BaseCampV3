@@ -38,6 +38,8 @@ SCHEMA_STEPS: list[str] = [
         created_at TEXT NOT NULL, dedupe_key TEXT UNIQUE);
     CREATE INDEX outbox_due ON outbox (status, next_attempt_at);
     """,
+    # the cloud's move-password version, sent back as `have=` (unchanged → no rehash)
+    "ALTER TABLE move_passwords ADD COLUMN version TEXT",
 ]
 
 

@@ -99,7 +99,7 @@ async def test_move_login_offline_uses_cached_hash(app, client, cloud):
     tpl = template_from(session_out(person_id="kiosk-m1", name="Kiosk Move",
                                     kiosk_move={"initiative_id": "m-1", "name": "Move"}))
     app.state.store.run(
-        "INSERT INTO move_passwords VALUES ('m-1', 'Move', ?, ?, '2026-10-01T00:00:00+00:00')",
+        "INSERT INTO move_passwords VALUES ('m-1', 'Move', ?, ?, '2026-10-01T00:00:00+00:00', 'v1')",
         (make_verifier("Crew-2026!"), json.dumps(tpl)))
     _offline(cloud)
     r = await client.post("/kiosk/move-login", json={"password": "Crew-2026!"})

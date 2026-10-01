@@ -6,11 +6,11 @@ from edge.sync import sync_paths
 from tests.conftest import make_session, session_out
 
 
-def _mock_sync(cloud, initiative="m-1", mp_status=200, moves=None):
+def _mock_sync(cloud, initiative="m-1", mp_status=200, moves=None, unchanged=False):
     for path in sync_paths(initiative):
         cloud.get(path).respond(200, json={"path": path})
-    cloud.get(url__regex=r"/kiosk/edge/move-passwords.*").respond(
-        mp_status, json={"moves": moves or []})
+    return cloud.get(url__regex=r"/kiosk/edge/move-passwords.*").respond(
+        mp_status, json={"moves": moves or [], "unchanged": unchanged})
 
 
 async def test_setup_forwards_then_syncs(app, client, cloud):
@@ -48,21 +48,41 @@ async def test_sync_replaces_move_passwords(app, cloud):
     tpl = {k: v for k, v in session_out(person_id="km", kiosk_move={
         "initiative_id": "m-1", "name": "Move"}).items()
         if k not in ("status", "access_token", "token_type", "expires_in", "session_expires_at")}
-    _mock_sync(cloud, moves=[{"initiative_id": "m-1", "name": "Move",
+    _mock_sync(cloud, moves=[{"initiative_id": "m-1", "name": "Move", "version": "v1",
                               "argon2_hash": make_verifier("Crew-2026!"), "session": tpl}])
-    app.state.store.run("INSERT INTO move_passwords VALUES ('old', 'Old', 'v', '{}', 'now')")
+    app.state.store.run("INSERT INTO move_passwords VALUES ('old', 'Old', 'v', '{}', 'now', 'v0')")
     await app.state.syncer.run()
-    rows = app.state.store.all("SELECT initiative_id FROM move_passwords")
-    assert [r["initiative_id"] for r in rows] == ["m-1"]
+    rows = app.state.store.all("SELECT initiative_id, version FROM move_passwords")
+    assert [(r["initiative_id"], r["version"]) for r in rows] == [("m-1", "v1")]
+
+
+async def test_sync_sends_stored_version_and_keeps_rows_when_unchanged(app, cloud):
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    app.state.syncer.set_target("m-1", "p-1")
+    route = _mock_sync(cloud, unchanged=True)
+    app.state.store.run("INSERT INTO move_passwords VALUES ('m-1', 'Move', 'v', '{}', 'now', "
+                        "'abc123')")
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] is None
+    assert "have=abc123" in str(route.calls[0].request.url)
+    assert app.state.store.one("SELECT version FROM move_passwords WHERE initiative_id='m-1'")
+
+
+async def test_sync_without_stored_version_sends_no_have(app, cloud):
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    app.state.syncer.set_target("m-1", "p-1")
+    route = _mock_sync(cloud)
+    await app.state.syncer.run()
+    assert "have=" not in str(route.calls[0].request.url)
 
 
 async def test_sync_keeps_move_passwords_when_endpoint_refuses(app, cloud):
     app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
     app.state.syncer.set_target("m-1", "p-1")
     _mock_sync(cloud, mp_status=403)
-    app.state.store.run("INSERT INTO move_passwords VALUES ('m-1', 'Move', 'v', '{}', 'now')")
+    app.state.store.run("INSERT INTO move_passwords VALUES ('m-1', 'Move', 'v', '{}', 'now', 'v1')")
     meta = await app.state.syncer.run()
-    assert meta["last_error"] is None
+    assert meta["last_error"] == "move_passwords_http_403"
     assert app.state.store.one("SELECT 1 FROM move_passwords WHERE initiative_id='m-1'")
 
 
@@ -100,7 +120,7 @@ async def test_malformed_move_passwords_keep_old_and_still_cache(app, cloud):
         cloud.get(path).respond(200, json={"path": path})
     cloud.get(url__regex=r"/kiosk/edge/move-passwords.*").respond(
         200, json={"moves": [{"initiative_id": "m-1"}]})
-    app.state.store.run("INSERT INTO move_passwords VALUES ('old', 'Old', 'v', '{}', 'now')")
+    app.state.store.run("INSERT INTO move_passwords VALUES ('old', 'Old', 'v', '{}', 'now', 'v0')")
     meta = await app.state.syncer.run()
     assert meta["last_error"] == "bad_move_passwords"
     assert app.state.store.one("SELECT 1 FROM move_passwords WHERE initiative_id='old'")

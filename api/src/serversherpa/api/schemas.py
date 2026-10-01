@@ -172,10 +172,14 @@ class KioskEdgeMovePassword(BaseModel):
     name: str
     argon2_hash: str
     session: SessionTemplateOut
+    # changes whenever the move's password changes; the edge sends it back
+    # as `have=` so an unchanged password costs no hashing and no audit row
+    version: str
 
 
 class KioskEdgeMovePasswordsOut(BaseModel):
     moves: list[KioskEdgeMovePassword]
+    unchanged: bool = False
 
 
 class LoginChallengeOut(BaseModel):
