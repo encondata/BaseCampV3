@@ -24,6 +24,16 @@ vi.mock('@portal/lib/api', async (orig) => ({
   updateProfileRequest: vi.fn(),
 }));
 
+vi.mock('@portal/components/ChangePasswordForm', () => ({
+  default: ({ onSuccess }: { onSuccess: () => void }) => <button type="button" onClick={onSuccess}>mock pw done</button>,
+}));
+vi.mock('@portal/components/totp/TotpEnrollModal', () => ({
+  default: ({ onEnrolled }: { onEnrolled: (n: number) => void }) => <button type="button" onClick={() => onEnrolled(10)}>mock enroll done</button>,
+}));
+vi.mock('@portal/components/totp/RegenerateCodesModal', () => ({
+  default: ({ onRegenerated }: { onRegenerated: (n: number) => void }) => <button type="button" onClick={() => onRegenerated(9)}>mock regen done</button>,
+}));
+
 import * as api from '@portal/lib/api';
 import { ApiError } from '@portal/lib/api';
 
@@ -135,4 +145,46 @@ it('signs out the non-current session and refreshes the list', async () => {
   await waitFor(() => expect(api.revokeSessionRequest).toHaveBeenCalledWith('f-other'));
   expect(await screen.findByText('1 live')).toBeTruthy();
   expect(api.getSessionsRequest).toHaveBeenCalledTimes(2);
+});
+
+it('a failed sign-out shows an alert and still re-fetches', async () => {
+  vi.mocked(api.revokeSessionRequest).mockRejectedValue(new Error('boom'));
+  render(<Harness initial={profile()} />);
+  await screen.findByText('2 live');
+  fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+  const alert = await screen.findByRole('alert');
+  expect(alert.textContent).toBe("Couldn't sign that session out.");
+  await waitFor(() => expect(api.getSessionsRequest).toHaveBeenCalledTimes(2));
+});
+
+it('a failed sessions load says so instead of "No live sessions"', async () => {
+  vi.mocked(api.getSessionsRequest).mockRejectedValue(new Error('down'));
+  render(<Harness initial={profile()} />);
+  expect(await screen.findByText("Couldn't load sessions.")).toBeTruthy();
+  expect(screen.queryByText('No live sessions found.')).toBeNull();
+});
+
+it('a successful password change clears must-change, re-fetches sessions and shows the chip', async () => {
+  render(<Harness initial={profile()} />);
+  await screen.findByText('2 live');
+  await userEvent.click(screen.getByRole('button', { name: 'Change password' }));
+  await userEvent.click(screen.getByRole('button', { name: 'mock pw done' }));
+  expect(auth.clearMustChange).toHaveBeenCalled();
+  await waitFor(() => expect(api.getSessionsRequest).toHaveBeenCalledTimes(2));
+  expect(screen.getByText(/changed — other sessions signed out/)).toBeTruthy();
+});
+
+it('applyTotp is called after enrolling', async () => {
+  render(<Harness initial={profile()} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Set up 2FA' }));
+  await userEvent.click(screen.getByRole('button', { name: 'mock enroll done' }));
+  expect(auth.applyTotp).toHaveBeenCalledWith(expect.objectContaining({ enrolled: true, backup_codes_remaining: 10 }));
+});
+
+it('applyTotp is called after regenerating backup codes', async () => {
+  auth.totp = { enrolled: true, enrolled_at: '2026-03-01T00:00:00Z', required: false, backup_codes_remaining: 7 };
+  render(<Harness initial={profile()} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Regenerate backup codes' }));
+  await userEvent.click(screen.getByRole('button', { name: 'mock regen done' }));
+  expect(auth.applyTotp).toHaveBeenCalledWith(expect.objectContaining({ backup_codes_remaining: 9 }));
 });

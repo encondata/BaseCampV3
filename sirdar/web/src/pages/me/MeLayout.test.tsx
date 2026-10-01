@@ -82,3 +82,20 @@ it('opens directly on a deep-linked tab', async () => {
   renderAt('/me/history');
   expect(await screen.findByText('history tab')).toBeTruthy();
 });
+
+it('shows a loading line, then Retry after a failed load', async () => {
+  vi.mocked(api.getProfileRequest).mockRejectedValueOnce(new Error('x'));
+  renderAt('/me');
+  expect(screen.getByText('Loading your profile…')).toBeTruthy();
+  await userEvent.click(await screen.findByRole('button', { name: 'Retry' }));
+  expect(await screen.findByRole('heading', { name: /Ada Lovelace/ })).toBeTruthy();
+});
+
+it('leaving the Profile tab resets edit mode', async () => {
+  renderAt('/me');
+  await userEvent.click(await screen.findByRole('button', { name: 'Edit details' }));
+  await screen.findByText('profile tab editing');
+  await userEvent.click(screen.getByRole('tab', { name: 'History' }));
+  await userEvent.click(screen.getByRole('tab', { name: 'Profile' }));
+  expect(await screen.findByText('profile tab')).toBeTruthy();
+});

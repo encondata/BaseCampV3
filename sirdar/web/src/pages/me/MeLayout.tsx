@@ -1,6 +1,6 @@
 /** /me — the signed-in account: hero + Profile / Preferences / History tabs,
  *  the same shape as the portal's My profile page. */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -33,16 +33,26 @@ export default function MeLayout() {
   const [error, setError] = useState('');
   const [editing, setEditing] = useState(false);
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setError('');
     getSirdarProfile().then(setProfile)
       .catch((e) => setError(errorText(e, "Couldn't load your profile.")));
   }, []);
+  useEffect(load, [load]);
+  useEffect(() => { if (tab !== 'profile') setEditing(false); }, [tab]);
 
   if (!profile) {
     return (
       <div className="portal-page">
         <div className="eyebrow">Account</div>
-        {error && <p className="form-error" role="alert">{error}</p>}
+        {error
+          ? (
+            <>
+              <p className="form-error" role="alert">{error}</p>
+              <button type="button" className="mini-btn" onClick={load}>Retry</button>
+            </>
+          )
+          : <p className="set-note">Loading your profile…</p>}
       </div>
     );
   }

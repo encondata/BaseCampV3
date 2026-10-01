@@ -13,7 +13,7 @@ import {
 } from '@portal/lib/api';
 import { describeUserAgent, longDate, relativeTime } from '@portal/lib/format';
 
-import type { SirdarProfile } from '../../lib/sirdarApi';
+import { errorText, type SirdarProfile } from '../../lib/sirdarApi';
 
 /** The portal's EDIT_FIELDS (pages/Profile.tsx), field for field. */
 const EDIT_FIELDS = [
@@ -65,8 +65,13 @@ export default function MeProfile({ profile, onProfile, editing, onEditingChange
   const [enrollOpen, setEnrollOpen] = useState(false);
   const [regenOpen, setRegenOpen] = useState(false);
 
+  const [sessionsError, setSessionsError] = useState('');
+  const [loadError, setLoadError] = useState(false);
+
   const loadSessions = useCallback(() => {
-    getSessionsRequest().then(setSessions).catch(() => {});
+    getSessionsRequest()
+      .then((list) => { setSessions(list); setLoadError(false); })
+      .catch(() => setLoadError(true));
   }, []);
   useEffect(loadSessions, [loadSessions]);
 
@@ -104,6 +109,9 @@ export default function MeProfile({ profile, onProfile, editing, onEditingChange
   const revoke = async (familyId: string) => {
     try {
       await revokeSessionRequest(familyId);
+      setSessionsError('');
+    } catch (e) {
+      setSessionsError(errorText(e, "Couldn't sign that session out."));
     } finally {
       loadSessions();
     }
@@ -220,7 +228,7 @@ export default function MeProfile({ profile, onProfile, editing, onEditingChange
         <div className="panel">
           <div className="panel-head">
             <h3>Active sessions</h3>
-            <span className="result-count">{sessions.length} live</span>
+            <span className="result-count">{loadError ? '—' : `${sessions.length} live`}</span>
           </div>
           <div className="panel-body">
             {sessions.map((s) => (
@@ -243,7 +251,9 @@ export default function MeProfile({ profile, onProfile, editing, onEditingChange
                   : <button type="button" className="mini-btn" onClick={() => void revoke(s.family_id)}>Sign out</button>}
               </div>
             ))}
-            {sessions.length === 0 && <p className="set-note" style={{ padding: 0 }}>No live sessions found.</p>}
+            {sessionsError && <p className="form-error" role="alert">{sessionsError}</p>}
+            {loadError && <p className="set-note" style={{ padding: 0 }}>Couldn't load sessions.</p>}
+            {!loadError && sessions.length === 0 && <p className="set-note" style={{ padding: 0 }}>No live sessions found.</p>}
           </div>
         </div>
       </div>
