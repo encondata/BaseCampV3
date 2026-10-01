@@ -105,11 +105,12 @@ async def get_analytics(ctx: WikiContext, space: str | None = None,
     window = analytics.Window.ending_now(days)
     db = ctx.db
 
-    top = await analytics.top_pages(db, space_ids, window)
-    by_day = await analytics.views_by_day(db, space_ids, window)
+    me = ctx.principal
+    top = await analytics.top_pages(db, space_ids, window, viewer=me)
+    by_day = await analytics.views_by_day(db, space_ids, window, viewer=me)
     failed = await analytics.failed_searches(db, window) if ctx.principal.is_admin else []
-    stale = await analytics.stale_pages(db, space_ids)
-    overdue = await analytics.overdue_reviews(db, space_ids)
+    stale = await analytics.stale_pages(db, space_ids, viewer=me)
+    overdue = await analytics.overdue_reviews(db, space_ids, viewer=me)
 
     refs = await _node_refs(ctx, [
         *(t.node_id for t in top), *(nid for nid, _ in stale),

@@ -1,12 +1,13 @@
 """Admin controls: public status, gated admin config get/put, audit."""
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import select
 
 from serversherpa.db.engine import get_sessionmaker
-from serversherpa.db.models import AuditLog, SystemConfig
+from serversherpa.db.models import AuditLog, SystemConfig, SystemProcess
 from serversherpa.scans import worker as scan_worker
 from serversherpa.system.admin_config import workers_paused
 
@@ -24,6 +25,7 @@ async def test_status_is_public_and_defaults_off(client):
         "read_only": False, "read_only_message": "",
         "workers_paused": False, "banner": None,
         "totp_trust_days": 7,
+        "background": None,
     }
 
 
@@ -70,7 +72,7 @@ async def test_put_merges_trims_and_audits(client, db, seeded_user):
     status = (await client.get("/system/status")).json()
     assert status == {"read_only": True, "read_only_message": "Cutover until 14:00",
                       "workers_paused": False, "banner": "Hello all",
-                      "totp_trust_days": 7}
+                      "totp_trust_days": 7, "background": None}
 
 
 async def test_status_hides_read_only_message_until_mode_is_on(client, db, seeded_user):
@@ -292,3 +294,73 @@ async def test_scan_worker_survives_pause_check_blip(client, db, seeded_user, mo
     assert len(calls) >= 1               # treated as "not paused" — work keeps flowing
     task.cancel()
     await asyncio.gather(task, return_exceptions=True)
+
+
+async def _proc(db, name, kind="worker", *, beat_age=1, stopped=False, paused=False):
+    now = datetime.now(UTC)
+    beat = now - timedelta(seconds=beat_age)
+    db.add(SystemProcess(
+        name=name, kind=kind, pid=1, hostname="h", started_at=beat - timedelta(hours=1),
+        heartbeat_at=beat, stopped_at=(beat + timedelta(seconds=1)) if stopped else None,
+        meta={"paused": True} if paused else None,
+    ))
+    await db.commit()
+
+
+async def test_background_null_without_workers(client, db):
+    await _proc(db, "api", kind="service")
+    assert (await client.get("/system/status")).json()["background"] is None
+
+
+async def test_background_null_when_all_workers_stopped(client, db):
+    await _proc(db, "report-worker", beat_age=600, stopped=True)
+    await _proc(db, "import-worker", beat_age=600, stopped=True)
+    assert (await client.get("/system/status")).json()["background"] is None
+
+
+async def test_background_running(client, db):
+    await _proc(db, "scan-matching-worker")
+    await _proc(db, "import-worker")
+    assert (await client.get("/system/status")).json()["background"] == {
+        "state": "running", "running": 2, "total": 2}
+
+
+async def test_background_down_when_a_heartbeat_is_stale(client, db):
+    await _proc(db, "scan-matching-worker", beat_age=600)
+    await _proc(db, "import-worker")
+    assert (await client.get("/system/status")).json()["background"] == {
+        "state": "down", "running": 1, "total": 2}
+
+
+async def test_background_ignores_cleanly_stopped_workers(client, db):
+    await _proc(db, "report-worker", beat_age=600, stopped=True)
+    await _proc(db, "import-worker")
+    assert (await client.get("/system/status")).json()["background"] == {
+        "state": "running", "running": 1, "total": 1}
+
+
+async def test_background_paused(client, db):
+    await _proc(db, "import-worker", paused=True)
+    await _proc(db, "label-worker")
+    assert (await client.get("/system/status")).json()["background"] == {
+        "state": "paused", "running": 2, "total": 2}
+
+
+async def test_background_down_wins_over_paused(client, db):
+    await _proc(db, "import-worker", paused=True)
+    await _proc(db, "label-worker", beat_age=600)
+    assert (await client.get("/system/status")).json()["background"]["state"] == "down"
+
+
+async def test_background_ignores_services_and_probes(client, db):
+    await _proc(db, "api", kind="service", beat_age=600)
+    await _proc(db, "web", kind="probe", beat_age=600)
+    await _proc(db, "import-worker")
+    assert (await client.get("/system/status")).json()["background"] == {
+        "state": "running", "running": 1, "total": 1}
+
+
+async def test_background_never_names_workers(client, db):
+    await _proc(db, "scan-matching-worker", beat_age=600)
+    body = (await client.get("/system/status")).text
+    assert "scan-matching" not in body and "worker" not in body.replace('"workers_paused"', "")

@@ -5,9 +5,13 @@
 **/dist-node
 **/dist-server
 api/.venv
+**/.venv
 api/backups
 **/.env
 docs
 *.md
 !kiosk/README.md
 !wiki/README.md
+**/.venv
+**/__pycache__
+**/.pytest_cache

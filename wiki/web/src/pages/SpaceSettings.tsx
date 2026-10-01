@@ -1,7 +1,7 @@
 /** /library/:spaceKey/settings — for space managers: the space's name,
  *  description, icon and color; its members (the permissions editor,
  *  inline); collaboration settings, with a link to the pages due for
- *  review; sharing (public links); archiving (unarchiving is for wiki
+ *  review; sharing (public links, printing); archiving (unarchiving is for wiki
  *  administrators); and a link to the space's trash. */
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -38,7 +38,7 @@ function useSettingSaver(space: SpaceOut, onSaved: (space: SpaceOut) => void) {
   const toast = useToast();
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
-  const save = async (key: string, value: boolean | number | null) => {
+  const save = async (key: string, value: boolean | number | string | null) => {
     setBusyKey(key);
     try {
       onSaved(await updateSpace(space.key, { settings: { [key]: value } }));
@@ -98,9 +98,31 @@ function CollaborationSection({ space, onSaved }: { space: SpaceOut; onSaved: (s
   );
 }
 
+/** The library's own confidentiality statement for exported PDFs; saved
+ *  when the field loses focus (empty falls back to the standard one). */
+function StatementField({ space, busy, onSave }: {
+  space: SpaceOut; busy: boolean; onSave: (value: string) => void;
+}) {
+  const stored = spaceSetting(space, 'confidentiality_statement');
+  const [value, setValue] = useState(stored);
+  useEffect(() => { setValue(stored); }, [stored]);
+  return (
+    <div className="pf-form">
+      <div className="full">
+        <label htmlFor="ss-statement">Confidentiality statement</label>
+        <textarea id="ss-statement" rows={4} value={value} maxLength={1000} disabled={busy}
+                  onChange={(e) => setValue(e.target.value)}
+                  onBlur={() => { if (value.trim() !== stored) onSave(value.trim()); }} />
+        <p className="wiki-field-note">Leave empty to use the standard statement.</p>
+      </div>
+    </div>
+  );
+}
+
 function SharingSection({ space, onSaved }: { space: SpaceOut; onSaved: (space: SpaceOut) => void }) {
   const { busyKey, save } = useSettingSaver(space, onSaved);
   const allowPublicLinks = spaceSetting(space, 'allow_public_links');
+  const allowPrinting = spaceSetting(space, 'allow_printing');
   return (
     <section className="wiki-settings-section" aria-label="Sharing">
       <div className="wiki-section-label">Sharing</div>
@@ -115,6 +137,19 @@ function SharingSection({ space, onSaved }: { space: SpaceOut; onSaved: (space: 
         <Switch checked={allowPublicLinks} disabled={busyKey === 'allow_public_links'}
                 label="Allow public links" onChange={(v) => void save('allow_public_links', v)} />
       </div>
+      <div className="wiki-settings-row">
+        <div>
+          <span className="wiki-settings-label">Allow printing</span>
+          <p className="page-hint">
+            Off stops printing, exporting, downloading and public links for everything in the library, for everyone,
+            except items that turn it back on themselves. It can't stop screenshots.
+          </p>
+        </div>
+        <Switch checked={allowPrinting} disabled={busyKey === 'allow_printing'}
+                label="Allow printing" onChange={(v) => void save('allow_printing', v)} />
+      </div>
+      <StatementField space={space} busy={busyKey === 'confidentiality_statement'}
+                      onSave={(v) => void save('confidentiality_statement', v)} />
     </section>
   );
 }
@@ -355,10 +390,16 @@ export default function SpaceSettings() {
       <section className="wiki-settings-section" aria-label="Export">
         <div className="wiki-section-label">Export</div>
         <div className="wiki-settings-row">
-          <p className="page-hint">Download the whole library as a .zip — every page and file you can see, in its folders.</p>
-          <button type="button" className="btn-ghost" onClick={() => requestExport({ kind: 'space', space })}>
-            Export library…
-          </button>
+          {spaceSetting(space, 'allow_printing') ? (
+            <>
+              <p className="page-hint">Download the whole library as a .zip — every page and file you can see, in its folders.</p>
+              <button type="button" className="btn-ghost" onClick={() => requestExport({ kind: 'space', space })}>
+                Export library…
+              </button>
+            </>
+          ) : (
+            <p className="page-hint">Printing is turned off for this library, so it can't be exported.</p>
+          )}
         </div>
       </section>
 

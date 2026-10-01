@@ -12,11 +12,11 @@ operation that can't be done (`tree.TreeError`) is a 422 with its code.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from sqlalchemy import or_, select, update
+from sqlalchemy import exists, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from serversherpa.api.routes.wiki.deps import (
@@ -29,6 +29,7 @@ from serversherpa.api.routes.wiki.deps import (
 from serversherpa.api.routes.wiki.errors import conflict, err, forbidden, is_edit, not_found
 from serversherpa.api.routes.wiki.schemas import (
     Breadcrumb,
+    DocTypeIn,
     NodeCopyIn,
     NodeCreateIn,
     NodeDeleteOut,
@@ -36,6 +37,8 @@ from serversherpa.api.routes.wiki.schemas import (
     NodeMoveIn,
     NodeOut,
     NodePatchIn,
+    PrintingIn,
+    PrivacyIn,
 )
 from serversherpa.api.routes.wiki.serialize import node_out, nodes_out, space_out
 from serversherpa.api.routes.wiki.templates import template_visible
@@ -43,9 +46,12 @@ from serversherpa.db.models import Person, WikiFavorite, WikiNode, WikiPage, Wik
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.wiki import notify, reviews, tree
 from serversherpa.wiki.content import strip_comment_marks
+from serversherpa.wiki.doc_types import DOC_TYPES, TEMPLATE_DOC_TYPES
 from serversherpa.wiki.pages import check_doc
 from serversherpa.wiki.permissions import (
     AccessIndex,
+    can_set_private,
+    is_developer,
     require_node_level,
     require_space_level,
 )
@@ -58,6 +64,9 @@ RECENT_KINDS = ("page", "file")
 DRAFTS_LIMIT = 50
 NODE_FIELDS = ["title", "owner_id"]
 REVIEW_FIELDS = ["review_interval_months", "next_review_at"]
+PRIVACY_FIELDS = ["is_private"]
+PRINTING_FIELDS = ["allow_printing"]
+DOC_TYPE_FIELDS = ["doc_type"]
 
 
 def _tree_error(exc: tree.TreeError) -> HTTPException:
@@ -106,6 +115,10 @@ async def create(body: NodeCreateIn, ctx: WikiContext) -> NodeOut:
         ctx.db, space=space, parent=parent, kind=body.kind, title=title,
         actor_id=actor_id, after_id=body.after_id,
         initial_content=initial_content)
+    if (template is not None and template.is_builtin and node.kind == "page"
+            and template.name in TEMPLATE_DOC_TYPES):
+        page = await ctx.db.get(WikiPage, node.id)
+        page.doc_type = TEMPLATE_DOC_TYPES[template.name]
     audit(ctx.db, actor_id=actor_id, entity_type="wiki_node",
           entity_id=str(node.id), action="create",
           changes=diff({}, {"kind": node.kind, "title": node.title,
@@ -212,26 +225,124 @@ async def patch_node(node_id: uuid.UUID, body: NodePatchIn, ctx: WikiContext) ->
     return await node_out(ctx, node, await ctx.ix.level_for_node(node))
 
 
+# ── privacy / printing ───────────────────────────────────────────────
+
+
+@router.patch("/nodes/{node_id}/privacy", response_model=NodeOut)
+async def set_privacy(node_id: uuid.UUID, body: PrivacyIn, ctx: WikiContext) -> NodeOut:
+    """Mark an item private, or clear it. Only its author or a developer
+    may — not a manager, not a wiki administrator — and never the library's
+    home page (which everyone who can see the library opens). An archived
+    library is read-only, so only a wiki administrator may change it there."""
+    node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "view")
+    if not can_set_private(ctx.principal, node):
+        raise err(403, "forbidden", "Only the author or a developer can change this.")
+    # locked, so nothing moves into the subtree between the checks and the commit
+    node = await lock_and_reread(ctx, node, "view")
+    space = await ctx.db.get(WikiSpace, node.space_id)
+    # an archived library is read-only for everyone but a wiki administrator
+    if space.archived_at is not None and not ctx.principal.is_admin:
+        raise forbidden("edit")
+    if space.home_node_id == node.id:
+        raise err(422, "home_page", "The library's home page can't be private.")
+    if body.is_private and not node.is_private:
+        # making a folder private hands everything inside to its author
+        await _refuse_hidden_descendants(
+            ctx, node, "This contains items you can't see, so you can't make it private. "
+                       "Ask a library manager.")
+        await _refuse_others_items(ctx, node, [node.created_by],
+                                   "Everything inside must be yours to make this private.")
+
+    if node.is_private != body.is_private:
+        before = snapshot(node, PRIVACY_FIELDS)
+        node.is_private = body.is_private
+        audit(ctx.db, actor_id=ctx.user.person.id, entity_type="wiki_node",
+              entity_id=str(node.id), action="privacy",
+              changes=diff(before, snapshot(node, PRIVACY_FIELDS)))
+        await ctx.db.commit()
+    # the collab server's periodic re-check (it goes through
+    # `level_for_node`, every WIKI_REAUTH_MS) disconnects anyone who lost
+    # access to a live page
+    return await node_out(ctx, node, await ctx.ix.level_for_node(node))
+
+
+@router.patch("/nodes/{node_id}/printing", response_model=NodeOut)
+async def set_printing(node_id: uuid.UUID, body: PrintingIn, ctx: WikiContext) -> NodeOut:
+    """Set whether an item (and, unless they set their own, everything
+    under it) can be printed; null goes back to inheriting. Manage."""
+    node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "manage")
+
+    if node.allow_printing != body.allow_printing:
+        before = snapshot(node, PRINTING_FIELDS)
+        node.allow_printing = body.allow_printing
+        audit(ctx.db, actor_id=ctx.user.person.id, entity_type="wiki_node",
+              entity_id=str(node.id), action="printing",
+              changes=diff(before, snapshot(node, PRINTING_FIELDS)))
+        await ctx.db.commit()
+    return await node_out(ctx, node, await ctx.ix.level_for_node(node))
+
+
+@router.patch("/nodes/{node_id}/doc-type", response_model=NodeOut)
+async def set_doc_type(node_id: uuid.UUID, body: DocTypeIn, ctx: WikiContext) -> NodeOut:
+    """Set a page's document type (shown on its exported PDF's cover), or
+    clear it with null. Edit."""
+    node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "edit")
+    if node.kind != "page":
+        raise err(422, "not_a_page", "Only a page has a document type.")
+    if body.doc_type is not None and body.doc_type not in DOC_TYPES:
+        raise err(422, "bad_doc_type", "That isn't a document type.")
+
+    page = await ctx.db.get(WikiPage, node.id)
+    if page.doc_type != body.doc_type:
+        before = snapshot(page, DOC_TYPE_FIELDS)
+        page.doc_type = body.doc_type
+        audit(ctx.db, actor_id=ctx.user.person.id, entity_type="wiki_node",
+              entity_id=str(node.id), action="doc_type",
+              changes=diff(before, snapshot(page, DOC_TYPE_FIELDS)))
+        await ctx.db.commit()
+    return await node_out(ctx, node, await ctx.ix.level_for_node(node))
+
+
 # ── move / copy ──────────────────────────────────────────────────────
 
 
-async def _refuse_hidden_descendants(ctx: WikiContext, node: WikiNode) -> None:
+async def _refuse_hidden_descendants(
+        ctx: WikiContext, node: WikiNode,
+        message: str = "This contains items you can't see, so you can't move it to another "
+                       "library or delete it. Ask a library manager.") -> None:
     """409 `hidden_items` when `node`'s live subtree holds anything the
     caller can't see — a descendant behind broken inheritance, or a
     never-published page they only have view on (`visible_nodes`, the
     tree's own rule): a delete or cross-space move would act on content
     its owner never shared with them — and a cross-space move would hand
-    it to the destination space's managers. Wiki administrators see
-    everything, so never hit this."""
+    it to the destination space's managers, as making it private (or
+    moving it into a private folder) would to that folder's author.
+    Private items are hidden from wiki administrators too, so they hit
+    this like anyone."""
     subtree = (await ctx.db.scalars(
         select(WikiNode).where(WikiNode.path.contains([node.id]),
                                WikiNode.deleted_at.is_(None))
     )).all()
     shown, _ = await visible_nodes(ctx, subtree)
     if len(shown) < len(subtree):
-        raise err(409, "hidden_items",
-                  "This contains items you can't see, so you can't move it to another "
-                  "library or delete it. Ask a library manager.")
+        raise err(409, "hidden_items", message)
+
+
+async def _refuse_others_items(ctx: WikiContext, node: WikiNode,
+                               authors: Iterable[uuid.UUID | None], message: str) -> None:
+    """409 `others_items` unless every item in `node`'s subtree (itself
+    and its descendants, trashed ones included — a restore would bring
+    them back under the same chain) was created by each of `authors`:
+    a private folder's author manages everything inside it, so putting
+    someone else's item there would take it from them. Developers are
+    exempt; they see every private item anyway."""
+    if is_developer(ctx.principal):
+        return
+    for author in set(authors):
+        if await ctx.db.scalar(select(exists().where(
+                or_(WikiNode.id == node.id, WikiNode.path.contains([node.id])),
+                WikiNode.created_by.is_distinct_from(author)))):
+            raise err(409, "others_items", message)
 
 
 @router.post("/nodes/{node_id}/move", response_model=NodeOut)
@@ -249,13 +360,45 @@ async def move(node_id: uuid.UUID, body: NodeMoveIn, ctx: WikiContext) -> NodeOu
         # out, the destination's managers would gain it
         await _refuse_hidden_descendants(ctx, node)
 
-    fields = ["space_id", "parent_id", "position"]
+    relocating = (parent.id if parent else None) != node.parent_id \
+        or space.id != node.space_id
+    pin_private = pin_printing_off = False
+    if relocating:
+        source_private = await ctx.ix.private_ancestors(node)
+        dest_private = await ctx.ix.private_chain(parent)
+        if dest_private.keys() - source_private.keys():
+            # into a private folder: its author would gain everything moved
+            await _refuse_hidden_descendants(
+                ctx, node, "This contains items you can't see, so you can't move it "
+                           "into a private folder. Ask a library manager.")
+            await _refuse_others_items(ctx, node, dest_private.values(),
+                                       "Only your own items can go into a private folder.")
+        if source_private and not dest_private and not node.is_private:
+            # private only through the folder it leaves: pinned, so the move
+            # can't publish it — but pinning hands it to its own author,
+            # which only keeps it private when that's the folder's author
+            if any(a != node.created_by for a in source_private.values()):
+                raise err(409, "others_items",
+                          "Only items the private folder's author created can be moved "
+                          "out of it.")
+            pin_private = True
+        # inheriting "off" from where it is: moving somewhere printable must
+        # never turn printing on
+        pin_printing_off = (node.allow_printing is None
+                            and not await ctx.ix.can_print(node)
+                            and await ctx.ix.can_print_under(space.id, parent))
+
+    fields = ["space_id", "parent_id", "position", "is_private", "allow_printing"]
     before = snapshot(node, fields)
     try:
         await tree.move_node(ctx.db, node, new_parent=parent, new_space=space,
                              before_id=body.before_id, after_id=body.after_id)
     except tree.TreeError as exc:
         raise _tree_error(exc) from exc
+    if pin_private:
+        node.is_private = True
+    if pin_printing_off:
+        node.allow_printing = False
     audit(ctx.db, actor_id=ctx.user.person.id, entity_type="wiki_node",
           entity_id=str(node.id), action="move",
           changes=diff(before, snapshot(node, fields)))
@@ -289,7 +432,9 @@ async def copy(node_id: uuid.UUID, body: NodeCopyIn, ctx: WikiContext) -> NodeOu
     try:
         new_root = await tree.copy_subtree(ctx.db, node, dest_parent=parent,
                                            dest_space=space, actor_id=actor_id,
-                                           levels=levels)
+                                           levels=levels,
+                                           printing_off=not await ctx.ix.can_print(node),
+                                           private=await ctx.ix.is_private(node))
     except tree.TreeError as exc:
         raise _tree_error(exc) from exc
     new_ids = await tree.subtree_ids(ctx.db, new_root)

@@ -54,7 +54,7 @@
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
-import { ApiError, postTruckContainer } from '../lib/api';
+import { ApiError, CLOUD_SIGN_IN_TEXT, postTruckContainer } from '../lib/api';
 import { hslCss, useAppearance } from '../lib/appearance';
 import { useCheckpoint } from '../lib/checkpointSettings';
 import {
@@ -160,6 +160,7 @@ function scanErrorText(err: unknown): string {
     return 'The portal is in read-only mode. Try again shortly.';
   }
   if (code === 'network') return "Can't reach the portal. That scan was not recorded.";
+  if (code === 'cloud_sign_in_required') return CLOUD_SIGN_IN_TEXT;
   return `Couldn't record that (${code}).`;
 }
 

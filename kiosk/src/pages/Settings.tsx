@@ -17,6 +17,7 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { useKioskAuth } from '../auth/KioskAuthContext';
+import EdgePanel from '../components/EdgePanel';
 import HslPicker from '../components/HslPicker';
 import LocalDataInspector from '../components/LocalDataInspector';
 import SoundPanel from '../components/SoundPanel';
@@ -29,6 +30,7 @@ import {
   effectiveCheckpoint, useCheckpoint, type CheckpointId,
 } from '../lib/checkpointSettings';
 import { clearDb } from '../lib/localDb';
+import { isLaptop } from '../lib/platform';
 import { SETTINGS_TABS, visibleTabs, type SettingsTabId } from '../lib/settingsTabs';
 import { SETUP_STATES, setupStateLabel, useKioskSetupState } from '../lib/setupState';
 import { formatSyncedAt, resetSyncStatus, useSyncStatus } from '../lib/sync';
@@ -130,7 +132,7 @@ export default function Settings() {
     clearDb().then(resetSyncStatus).catch(() => setClearError(true));
   };
 
-  const tabs = visibleTabs(SETTINGS_TABS, { isAdmin, isDeveloper, signedIn });
+  const tabs = visibleTabs(SETTINGS_TABS, { isAdmin, isDeveloper, signedIn, laptop: isLaptop() });
   const requested = searchParams.get('tab');
   const active = tabs.find((t) => t.id === requested) ?? tabs.find((t) => t.id === DEFAULT_TAB) ?? tabs[0];
 
@@ -173,6 +175,7 @@ export default function Settings() {
         <h2 className="settings-tab-title">{active.label}</h2>
         <p className="page-hint">{active.blurb}</p>
         {active.id === 'this-kiosk' && <ThisKioskPanel />}
+        {active.id === 'edge' && <EdgePanel />}
         {active.id === 'appearance' && (
           <>
             <div className="settings-row">
@@ -316,7 +319,7 @@ export default function Settings() {
         )}
         {active.id === 'developer' && <LocalDataInspector />}
         {active.id !== 'this-kiosk' && active.id !== 'appearance' && active.id !== 'sound'
-          && active.id !== 'admin' && (
+          && active.id !== 'admin' && active.id !== 'edge' && (
           <div className="kiosk-placeholder">
             <p>This section is not available yet.</p>
           </div>

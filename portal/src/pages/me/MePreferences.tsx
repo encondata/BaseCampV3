@@ -12,7 +12,13 @@ import SaveHint from './SaveHint';
 import { usePreferenceSave } from './usePreferenceSave';
 import '../../styles/settings.css';
 
-export default function MePreferences() {
+/** 'portal' reads as "the portal"; any other product name stands alone. */
+function productLabel(appName: string): string {
+  return appName === 'portal' ? 'the portal' : appName;
+}
+
+export default function MePreferences({ appName = 'portal' }: { appName?: string } = {}) {
+  const product = productLabel(appName);
   const { preferences, update, saveState } = usePreferenceSave();
 
   const isCustomNavBg = preferences.nav_bg.startsWith('#')
@@ -21,20 +27,19 @@ export default function MePreferences() {
   return (
     <>
       <SaveHint state={saveState}>
-        Preferences are saved to your account — sign in on any device and the
-        portal looks the way you left it.
+        {`Preferences are saved to your account — sign in on any device and ${product} looks the way you left it.`}
       </SaveHint>
 
       <div className="set-stack">
         <section className="set-section">
           <div className="set-head">
             <h3>Appearance</h3>
-            <p>How the portal looks and moves, everywhere you sign in.</p>
+            <p>{`How ${product} looks and moves, everywhere you sign in.`}</p>
           </div>
           <div className="set-row">
             <div className="set-label">
               <b>Accent color</b>
-              <span>Highlights, active states, and focus rings across the portal.</span>
+              <span>{`Highlights, active states, and focus rings across ${product}.`}</span>
             </div>
             <div className="accent-swatches">
               {ACCENTS.map((a) => (

@@ -1,4 +1,4 @@
-"""Exports (spec §8): a page as a PDF, Word document or Markdown file, or
+"""Exports (spec §8): a page as a PDF or Markdown file, or
 a folder, a page with its subpages, or a whole space as a .zip.
 
 `POST /wiki/exports` (routes/wiki/exports.py) queues an `export` job;
@@ -8,6 +8,10 @@ the wiki worker runs it through `run`, as the person who asked:
   only what they can view goes in. A node they can't view leaves out
   its whole subtree (its folder name would name it); so does a
   never-published page they only have view on (they can't see it at all).
+- What they can see but can't print (printing turned off, for everyone
+  alike) is left out too, and named in `_skipped.txt` — its subpages
+  still go in unless they turn printing off themselves. A single page
+  whose printing is off fails the job.
 - Pages export their PUBLISHED content only, without comment anchors. A
   never-published page an editor can see is left out and named in
   `_skipped.txt` at the top of the zip; its subpages still go in, under
@@ -17,8 +21,9 @@ the wiki worker runs it through `run`, as the person who asked:
   (and to files) in the same zip become relative links; anything else
   becomes its title — or "(linked page)" / "(linked file)" for what the
   requester can't view.
-- PDF and Word pages go through the wiki server's renderer and the
-  print template (`export_html`), with images inlined as data URIs;
+- PDF pages go through the wiki server's renderer and the
+  print template (`export_html`), with images inlined as data URIs, and
+  get a cover, a contents page and a comments page (`export_sections`);
   Markdown goes through `markdown.to_markdown`, with images written into
   `assets/` in a zip (a single Markdown page gets a placeholder for each).
 
@@ -38,9 +43,9 @@ import time
 import unicodedata
 import uuid
 import zipfile
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +56,7 @@ from serversherpa.config import get_settings
 from serversherpa.db.models import (
     Person,
     UserAccount,
+    WikiComment,
     WikiFile,
     WikiFileVersion,
     WikiJob,
@@ -61,7 +67,8 @@ from serversherpa.db.models import (
     WikiSpace,
 )
 from serversherpa.services import storage
-from serversherpa.wiki import convert, export_html
+from serversherpa.services.timezone import report_timezone
+from serversherpa.wiki import export_html, export_sections
 from serversherpa.wiki.content import (
     EMPTY_DOC,
     PUBLIC_FILE_TEXT,
@@ -72,13 +79,13 @@ from serversherpa.wiki.content import (
 from serversherpa.wiki.files import normalize_content_type, sanitize_filename
 from serversherpa.wiki.markdown import MarkdownRefs, to_markdown
 from serversherpa.wiki.permissions import AccessIndex, principal_for_person, viewable_nodes
+from serversherpa.wiki.statement import effective_statement, standard_statement
 
-PAGE_FORMATS = ("pdf", "docx", "md")
+PAGE_FORMATS = ("pdf", "md")
 FORMATS = (*PAGE_FORMATS, "zip")
-EXTENSIONS = {"pdf": ".pdf", "docx": ".docx", "md": ".md", "zip": ".zip"}
+EXTENSIONS = {"pdf": ".pdf", "md": ".md", "zip": ".zip"}
 CONTENT_TYPES = {
     "pdf": "application/pdf",
-    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "md": "text/markdown; charset=utf-8",
     "zip": "application/zip",
 }
@@ -97,10 +104,10 @@ DOWNLOAD_URL_TTL_SECONDS = 600
 SKIPPED_FILE = "_skipped.txt"
 ASSETS_DIR = "assets"
 HIDDEN_CRUMB = "…"
-# images a PDF/Word page inlines (never SVG: it's active markup)
+# images a PDF page inlines (never SVG: it's active markup)
 INLINE_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 MAX_INLINE_IMAGE_BYTES = 20 * 1024 * 1024
-# the most image data one PDF/Word page inlines; past it, alt text only
+# the most image data one PDF page inlines; past it, alt text only
 MAX_INLINE_PAGE_IMAGE_BYTES = 50 * 1024 * 1024
 # how often a running export bumps its job's progress_at
 TOUCH_SECONDS = 60
@@ -108,6 +115,11 @@ TOUCH_SECONDS = 60
 # what the requester reads when a job failed for a reason they can't act on
 FAILED_MESSAGE = ("The export couldn't be finished. Try again, or ask a wiki "
                   "administrator if it keeps failing.")
+# a job queued before Word export was removed
+WORD_GONE_MESSAGE = ("Word export is no longer available. Export as PDF or Markdown "
+                     "instead.")
+# a comment's author, or a thread's resolver, whose person row is gone
+UNKNOWN_PERSON = "Unknown"
 
 
 class ExportError(Exception):
@@ -201,15 +213,24 @@ class _Node:
     parent_id: uuid.UUID | None
     path: list[uuid.UUID]
     position: float
+    created_by: uuid.UUID | None = None    # the node's creator (a PDF cover's author)
     children: list[_Node] = field(default_factory=list)
     content: dict | None = None            # a page's published content
     published_at: datetime | None = None
     published: bool = False
+    printable: bool = True                 # printing isn't turned off for it
     file: _File | None = None
     assets: dict[str, _Asset] = field(default_factory=dict)   # by the id the doc spells
     crumbs: list[str] = field(default_factory=list)
     zip_path: str | None = None            # page/file: its entry; folder: its directory
     dir_path: str | None = None            # a page's subpages directory
+    # a PDF's cover, revision history and comments page (`_pdf_sections`)
+    revision: int = 0                      # how many times it has been published
+    published_by: str | None = None        # who published the current version
+    doc_type: str | None = None
+    author: str | None = None              # the creator's name
+    revisions: list[export_sections.RevisionRow] = field(default_factory=list)
+    threads: list[export_sections.CommentThreadOut] = field(default_factory=list)
 
 
 @dataclass
@@ -222,7 +243,7 @@ class _Target:
 
 @dataclass
 class _Plan:
-    format: str                            # pdf | docx | md | zip
+    format: str                            # pdf | md | zip
     page_format: str                       # the pages' format (zip_format for a zip)
     filename: str
     roots: list[_Node]
@@ -230,7 +251,12 @@ class _Plan:
     files: list[_Node] = field(default_factory=list)
     folders: list[_Node] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)      # zip paths of unpublished pages
+    unprintable: list[str] = field(default_factory=list)  # zip paths of printing-off items
     targets: dict[str, _Target] = field(default_factory=dict)   # by lowercase node id
+    # every PDF's cover (`_pdf_sections`)
+    exported_by: str = ""
+    exported_at: datetime | None = None    # in report_timezone()
+    statement: str = ""
 
     @property
     def is_zip(self) -> bool:
@@ -292,14 +318,118 @@ async def _is_active(db: AsyncSession, person_id: uuid.UUID) -> bool:
 
 
 async def _published(db: AsyncSession, page_ids: list[uuid.UUID],
-                     ) -> dict[uuid.UUID, tuple[dict | None, datetime]]:
+                     ) -> dict[uuid.UUID, tuple[dict | None, datetime, uuid.UUID | None]]:
+    """Each page's published version: (content, when, by whom)."""
     if not page_ids:
         return {}
     rows = (await db.execute(
-        select(WikiPage.node_id, WikiPageVersion.content_json, WikiPageVersion.created_at)
+        select(WikiPage.node_id, WikiPageVersion.content_json, WikiPageVersion.created_at,
+               WikiPageVersion.created_by)
         .join(WikiPageVersion, WikiPageVersion.id == WikiPage.published_version_id)
         .where(WikiPage.node_id.in_(page_ids)))).all()
-    return {node_id: (content, at) for node_id, content, at in rows}
+    return {node_id: (content, at, by) for node_id, content, at, by in rows}
+
+
+async def _names(db: AsyncSession, ids: Iterable[uuid.UUID | None]) -> dict[uuid.UUID, str]:
+    """Display names for every (non-None) id, in one query; ids with no
+    person row are absent."""
+    wanted = {i for i in ids if i is not None}
+    if not wanted:
+        return {}
+    people = (await db.scalars(select(Person).where(Person.id.in_(wanted)))).all()
+    return {p.id: p.display_name for p in people}
+
+
+def _threads(rows: list[WikiComment], quotes: dict[str, str], names: dict[uuid.UUID, str],
+             tz: tzinfo) -> list[export_sections.CommentThreadOut]:
+    """A page's comment threads (`rows`, deleted ones included) for its
+    comments page: those anchored in the published content first, in
+    document order (`quotes`, from `anchor_quotes`); then the rest —
+    page-level, or anchored to text that's gone — oldest first. Deleted
+    comments are left out, and a thread with none left; whether a thread
+    is resolved lives on its first comment, deleted or not."""
+    grouped: dict[uuid.UUID, list[WikiComment]] = {}
+    for row in sorted(rows, key=lambda c: (c.created_at, str(c.id))):
+        grouped.setdefault(row.thread_id, []).append(row)
+    anchored: dict[str, export_sections.CommentThreadOut] = {}
+    rest: list[tuple[datetime, str, export_sections.CommentThreadOut]] = []
+    for thread_id, items in grouped.items():
+        first = next((c for c in items if c.id == thread_id), items[0])
+        lines = [export_sections.CommentLine(
+                     author=names.get(c.author_id) or UNKNOWN_PERSON,
+                     at=c.created_at.astimezone(tz),
+                     text=str((c.body or {}).get("text") or ""))
+                 for c in [first, *(c for c in items if c is not first)]
+                 if c.deleted_at is None]
+        if not lines:
+            continue
+        key = str(thread_id).lower()
+        found = first.anchor and key in quotes
+        thread = export_sections.CommentThreadOut(
+            quote=(quotes[key] or None) if found else None,
+            resolved=first.resolved_at is not None,
+            resolved_by=names.get(first.resolved_by) if first.resolved_by else None,
+            resolved_at=first.resolved_at.astimezone(tz) if first.resolved_at else None,
+            comments=lines)
+        if found:
+            anchored[key] = thread
+        else:
+            rest.append((first.created_at, str(first.id), thread))
+    return ([anchored[k] for k in quotes if k in anchored]
+            + [thread for *_, thread in sorted(rest, key=lambda r: (r[0], r[1]))])
+
+
+async def _pdf_sections(db: AsyncSession, plan: _Plan, space: WikiSpace | None,
+                        requester_id: uuid.UUID,
+                        publishers: dict[uuid.UUID, uuid.UUID | None]) -> None:
+    """What every PDF's cover, revision history and comments page need:
+    the requester's name, the export time and the statement (once per
+    export — it's one library), then per page its document type, author
+    (the node's creator), published versions (the history; their count is
+    the revision), publisher and comment threads. One query each across
+    all the pages, names batched."""
+    tz = report_timezone()
+    page_ids = [page.id for page in plan.pages]
+    doc_types = dict((await db.execute(
+        select(WikiPage.node_id, WikiPage.doc_type)
+        .where(WikiPage.node_id.in_(page_ids)))).all())
+    versions = (await db.execute(
+        select(WikiPageVersion.node_id, WikiPageVersion.created_at,
+               WikiPageVersion.created_by, WikiPageVersion.note)
+        .where(WikiPageVersion.node_id.in_(page_ids), WikiPageVersion.kind == "published")
+        .order_by(WikiPageVersion.created_at, WikiPageVersion.version_no,
+                  WikiPageVersion.id))).all()
+    comments = (await db.scalars(select(WikiComment).where(
+        WikiComment.node_id.in_(page_ids)))).all()
+    names = await _names(db, [requester_id, *publishers.values(),
+                              *(page.created_by for page in plan.pages),
+                              *(v.created_by for v in versions),
+                              *(c.author_id for c in comments),
+                              *(c.resolved_by for c in comments)])
+    plan.exported_by = names.get(requester_id, "")
+    plan.exported_at = datetime.now(tz)
+    plan.statement = effective_statement(await standard_statement(db),
+                                         space.settings if space else None)
+    history: dict[uuid.UUID, list[export_sections.RevisionRow]] = {}
+    for node_id, at, by, note in versions:
+        rows = history.setdefault(node_id, [])
+        rows.append(export_sections.RevisionRow(
+            rev=len(rows) + 1, at=at.astimezone(tz),
+            by=names.get(by) or UNKNOWN_PERSON,
+            note=(note or "").strip()))
+    by_page: dict[uuid.UUID, list[WikiComment]] = {}
+    for comment in comments:
+        by_page.setdefault(comment.node_id, []).append(comment)
+    for page in plan.pages:
+        page.revisions = history.get(page.id, [])
+        page.revision = len(page.revisions)
+        page.doc_type = doc_types.get(page.id)
+        page.author = names.get(page.created_by) if page.created_by else None
+        publisher = publishers.get(page.id)
+        page.published_by = names.get(publisher) if publisher else None
+        # the quotes come from the content with its comment marks still in
+        page.threads = _threads(by_page.get(page.id, []),
+                                export_sections.anchor_quotes(page.content), names, tz)
 
 
 async def _visible_titles(db: AsyncSession, ix: AccessIndex,
@@ -318,6 +448,8 @@ async def _gather(db: AsyncSession, payload: dict) -> _Plan:
     requester_id = _as_uuid(payload.get("requester"))
     fmt = payload.get("format")
     title = payload.get("title") or "this item"
+    if fmt == "docx" or (fmt == "zip" and payload.get("zip_format") == "docx"):
+        raise ExportError(WORD_GONE_MESSAGE)
     if requester_id is None or fmt not in FORMATS:
         raise ExportError("This export request is incomplete.")
     if not await _is_active(db, requester_id):
@@ -344,11 +476,14 @@ async def _gather(db: AsyncSession, payload: dict) -> _Plan:
     shown_ids = {n.id for n in shown}
     published = await _published(db, [n.id for n in rows if n.kind == "page"])
     nodes = {n.id: _Node(id=n.id, kind=n.kind, title=n.title, parent_id=n.parent_id,
-                         path=list(n.path or []), position=n.position) for n in rows}
+                         path=list(n.path or []), position=n.position,
+                         created_by=n.created_by) for n in rows}
     for node in nodes.values():
         if node.id in published:
             node.published = True
-            node.content, node.published_at = published[node.id]
+            node.content, node.published_at, _ = published[node.id]
+    for row in shown:
+        nodes[row.id].printable = await ix.can_print(row)
 
     def visible(node: _Node) -> bool:
         return node.id in shown_ids
@@ -377,6 +512,8 @@ async def _gather(db: AsyncSession, payload: dict) -> _Plan:
         page = roots[0]
         if page.kind != "page":
             raise ExportError(f"“{page.title}” can only be exported as a .zip.")
+        if not page.printable:
+            raise ExportError(f"Printing is turned off for “{page.title}”.")
         if not page.published:
             raise ExportError(f"“{page.title}” has never been published — only "
                               "published pages can be exported.")
@@ -439,6 +576,10 @@ async def _gather(db: AsyncSession, payload: dict) -> _Plan:
     for page in plan.pages:
         page.crumbs = [space.name if space else "",
                        *(known.get(a, HIDDEN_CRUMB) for a in page.path)]
+
+    if plan.page_format == "pdf" and plan.pages:
+        await _pdf_sections(db, plan, space, requester_id,
+                            {page.id: published[page.id][2] for page in plan.pages})
     return plan
 
 
@@ -499,8 +640,10 @@ def _file_parts(title: str, filename: str) -> tuple[str, str]:
 def _collect(plan: _Plan, roots: list[_Node]) -> None:
     """Give every node in the tree its path in the zip (unique per
     directory, depth-first in tree order) and sort them into pages,
-    files, folders and skipped pages. A page with subpages also gets a
-    directory of the same name for them. Iterative, however deep."""
+    files, folders, and what is left out: pages never published, and pages
+    and files with printing off (`plan.unprintable`). A page with subpages
+    also gets a directory of the same name for them. Iterative, however
+    deep."""
     ext = EXTENSIONS[plan.page_format]
     reserved = (SKIPPED_FILE, *((ASSETS_DIR,) if plan.page_format == "md" else ()))
     dirs = {"": _Dir(reserved)}
@@ -514,19 +657,26 @@ def _collect(plan: _Plan, roots: list[_Node]) -> None:
                                                                      ("",)))
             plan.folders.append(node)
         elif node.kind == "page":
-            suffixes = ((ext,) if node.published else ()) + (("",) if node.children else ())
+            exported = node.published and node.printable
+            suffixes = ((ext,) if exported else ()) + (("",) if node.children else ())
             base = directory.claim(safe_name(node.title), suffixes or ("",))
-            if node.published:
+            if exported:
                 node.zip_path = _join(parent, base + ext)
                 plan.pages.append(node)
+            elif not node.printable:
+                plan.unprintable.append(_join(parent, base))
             else:
                 plan.skipped.append(_join(parent, base))
             if node.children:
                 node.dir_path = child_dir = _join(parent, base)
         elif node.file is not None:
             stem, fext = _file_parts(node.title, node.file.filename)
-            node.zip_path = _join(parent, directory.claim(stem, (fext,)) + fext)
-            plan.files.append(node)
+            path = _join(parent, directory.claim(stem, (fext,)) + fext)
+            if node.printable:
+                node.zip_path = path
+                plan.files.append(node)
+            else:
+                plan.unprintable.append(path)
         if child_dir is not None:
             dirs[child_dir] = _Dir()
             work.extend((c, child_dir) for c in reversed(node.children))
@@ -553,7 +703,8 @@ class _Refs(MarkdownRefs):
         if target is None or target.title is None:
             return hidden, None
         path = target.node.zip_path if target.node is not None else None
-        if target.node is not None and target.node.kind == "page" and not target.node.published:
+        if (target.node is not None and target.node.kind == "page"
+                and not (target.node.published and target.node.printable)):
             path = target.node.dir_path
         return target.title, self._rel(path)
 
@@ -607,6 +758,9 @@ async def _image_data(page: _Node, workdir: Path) -> dict[str, str]:
 
 
 async def _page_html(client, plan: _Plan, page: _Node, workdir: Path) -> str:
+    """A page's printable document for its PDF: cover, revision history,
+    contents (with ids on the body's headings to link to), header and
+    body, comments — and the running footer on every page but the cover."""
     refs = _Refs(plan, page)
     doc, hrefs = export_html.prepare_doc(
         strip_comment_marks(page.content or EMPTY_DOC),
@@ -614,8 +768,21 @@ async def _page_html(client, plan: _Plan, page: _Node, workdir: Path) -> str:
     fragment = await export_html.render_fragment(client, doc)
     body = export_html.finish_fragment(fragment, hrefs=hrefs,
                                        images=await _image_data(page, workdir))
-    return export_html.page_document(title=page.title, breadcrumbs=page.crumbs,
-                                     published_at=page.published_at, body=body)
+    body, headings = export_sections.number_headings(body)
+    tz = report_timezone()
+    published_at = page.published_at.astimezone(tz) if page.published_at else None
+    cover = export_sections.cover_html(export_sections.CoverInfo(
+        title=page.title, doc_type=page.doc_type, author=page.author,
+        revision=page.revision, published_at=published_at, published_by=page.published_by,
+        exported_at=plan.exported_at or datetime.now(tz), exported_by=plan.exported_by,
+        statement=plan.statement))
+    return export_html.page_document(
+        title=page.title, breadcrumbs=page.crumbs, published_at=published_at, body=body,
+        cover=cover, revisions=export_sections.revision_history_html(page.revisions),
+        contents=export_sections.contents_html(headings),
+        comments=export_sections.comments_html(page.threads),
+        footer_css=export_sections.footer_css(page.title,
+                                              confidential=bool(plan.statement.strip())))
 
 
 async def _pdf(client, plan: _Plan, page: _Node, workdir: Path) -> bytes:
@@ -623,26 +790,11 @@ async def _pdf(client, plan: _Plan, page: _Node, workdir: Path) -> bytes:
     return await export_html.html_to_pdf(document, workdir)
 
 
-async def _docx_all(client, plan: _Plan, workdir: Path, touch: Touch) -> list[Path]:
-    """Every page as a .docx, in plan order (one LibreOffice run per batch)."""
-    html_dir = workdir / "html"
-    html_dir.mkdir()
-    sources = []
-    for i, page in enumerate(plan.pages, 1):
-        src = html_dir / f"p{i:05d}.html"
-        src.write_text(await _page_html(client, plan, page, workdir), encoding="utf-8")
-        sources.append(src)
-        await touch()
-    return await convert.html_to_docx(sources, touch=touch)
-
-
 async def _single(client, plan: _Plan, workdir: Path, touch: Touch) -> Path:
     page = plan.pages[0]
     out = workdir / f"export{EXTENSIONS[plan.format]}"
     if plan.format == "pdf":
         out.write_bytes(await _pdf(client, plan, page, workdir))
-    elif plan.format == "docx":
-        out = (await _docx_all(client, plan, workdir, touch))[0]
     else:
         text = to_markdown(strip_comment_marks(page.content or EMPTY_DOC),
                            refs=_Refs(plan, page), title=page.title)
@@ -650,9 +802,15 @@ async def _single(client, plan: _Plan, workdir: Path, touch: Touch) -> Path:
     return out
 
 
-def _skipped_text(paths: list[str]) -> str:
-    lines = ["These pages were left out because they have never been published:", ""]
-    return "\n".join(lines + paths) + "\n"
+def _skipped_text(unpublished: list[str], unprintable: list[str]) -> str:
+    blocks = []
+    if unpublished:
+        blocks.append(["These pages were left out because they have never been published:",
+                       "", *unpublished])
+    if unprintable:
+        blocks.append(["These items were left out because printing is turned off for them:",
+                       "", *unprintable])
+    return "\n\n".join("\n".join(lines) for lines in blocks) + "\n"
 
 
 async def _zip(client, plan: _Plan, workdir: Path, touch: Touch) -> Path:
@@ -665,10 +823,6 @@ async def _zip(client, plan: _Plan, workdir: Path, touch: Touch) -> Path:
             for page in plan.pages:
                 zf.writestr(page.zip_path, await _pdf(client, plan, page, workdir))
                 await touch()
-        elif plan.page_format == "docx":
-            docs = await _docx_all(client, plan, workdir, touch)
-            for page, docx in zip(plan.pages, docs, strict=True):
-                await asyncio.to_thread(zf.write, docx, page.zip_path)
         else:
             assets_dir = _Dir()
             written: dict[str, str] = {}               # asset storage key → zip path
@@ -694,8 +848,9 @@ async def _zip(client, plan: _Plan, workdir: Path, touch: Touch) -> Path:
             await asyncio.to_thread(zf.write, scratch, node.zip_path)
             scratch.unlink(missing_ok=True)
             await touch()
-        if plan.skipped:
-            zf.writestr(SKIPPED_FILE, _skipped_text(plan.skipped).encode("utf-8"))
+        if plan.skipped or plan.unprintable:
+            zf.writestr(SKIPPED_FILE,
+                        _skipped_text(plan.skipped, plan.unprintable).encode("utf-8"))
     return out
 
 
@@ -734,7 +889,8 @@ async def run(db: AsyncSession, job: WikiJob) -> dict:
                 path = await _single(client, plan, workdir, touch)
         await storage.upload_from(path, key, CONTENT_TYPES[plan.format])
     return {"key": key, "filename": plan.filename, "pages": len(plan.pages),
-            "files": len(plan.files), "skipped": len(plan.skipped)}
+            "files": len(plan.files), "skipped": len(plan.skipped),
+            "unprintable": len(plan.unprintable)}
 
 
 # ── retention ────────────────────────────────────────────────────────

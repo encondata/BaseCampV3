@@ -20,6 +20,7 @@ function fakeShell(): ShellValue {
     requestMove: vi.fn(),
     requestCopy: vi.fn(),
     requestPermissions: vi.fn(),
+    requestDocType: vi.fn(),
     requestShare: vi.fn(),
     requestExport: vi.fn(),
   };
@@ -50,9 +51,55 @@ describe('RowMenu', () => {
     ]);
   });
 
+  it('drops Export… and Share… while printing is off', () => {
+    open(makeNode('n1', { kind: 'folder', my_level: 'manage', can_print: false }));
+    expect(items()).not.toContain('Export…');
+    cleanup();
+    open(makeNode('n2', { kind: 'page', my_level: 'manage', can_print: false, has_children: true }));
+    expect(items()).not.toContain('Export…');
+    expect(items()).not.toContain('Share…');
+    expect(items()).toContain('Permissions…');
+    cleanup();
+    open(makeNode('n3', { kind: 'file', my_level: 'manage', can_print: false, page: null }));
+    expect(items()).not.toContain('Share…');
+    cleanup();
+    open(makeNode('n4', { kind: 'file', my_level: 'manage', page: null }));
+    expect(items()).toContain('Share…');
+  });
+
   it('adds Permissions at manage level', () => {
     open(makeNode('n1', { kind: 'folder', my_level: 'manage' }));
     expect(items()).toContain('Permissions…');
+  });
+
+  it('offers Permissions… to an author who can set Private but not manage', () => {
+    open(makeNode('n1', { kind: 'page', my_level: 'edit', can_set_private: true }));
+    expect(items()).toContain('Permissions…');
+    cleanup();
+    open(makeNode('n2', { kind: 'file', my_level: 'view', can_set_private: true, page: null }));
+    expect(items()).toContain('Permissions…');
+    cleanup();
+    open(makeNode('n3', { kind: 'page', my_level: 'edit', can_set_private: false }));
+    expect(items()).not.toContain('Permissions…');
+  });
+
+  it('does not offer Permissions… to an author on a library home page, where the dialog would be empty', () => {
+    const home = { is_home: true, published_version_id: null, published_at: null, has_unpublished_changes: false, doc_type: null };
+    open(makeNode('home', { kind: 'page', my_level: 'edit', can_set_private: true, page: home }));
+    expect(items()).not.toContain('Permissions…');
+    cleanup();
+    // a manager still reaches the grants there
+    open(makeNode('home2', { kind: 'page', my_level: 'manage', can_set_private: true, page: home }));
+    expect(items()).toContain('Permissions…');
+  });
+
+  it('drops Save as template… while printing is off', () => {
+    const onSaveAsTemplate = vi.fn();
+    open(makeNode('n1', { kind: 'page', my_level: 'manage', can_print: false }), { onSaveAsTemplate });
+    expect(items()).not.toContain('Save as template…');
+    cleanup();
+    open(makeNode('n2', { kind: 'page', my_level: 'manage', can_print: true }), { onSaveAsTemplate });
+    expect(items()).toContain('Save as template…');
   });
 
   it('never offers New … here on a file, nor Delete on the space home', () => {
@@ -61,7 +108,7 @@ describe('RowMenu', () => {
     cleanup();
     open(makeNode('home', {
       my_level: 'manage',
-      page: { is_home: true, published_version_id: null, published_at: null, has_unpublished_changes: false },
+      page: { is_home: true, published_version_id: null, published_at: null, has_unpublished_changes: false, doc_type: null },
     }));
     expect(items()).not.toContain('Delete');
   });
@@ -81,6 +128,25 @@ describe('RowMenu', () => {
     expect(shell.requestPermissions).toHaveBeenCalledWith(node);
     pick('Delete');
     expect(shell.requestDelete).toHaveBeenCalledWith(node);
+  });
+
+  it('offers Document type… on a page to an editor, and hands it to the shell', () => {
+    const page = makeNode('n1', { kind: 'page', my_level: 'edit' });
+    const { shell } = open(page);
+    expect(items()).toContain('Document type…');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Document type…' }));
+    expect(shell.requestDocType).toHaveBeenCalledWith(page);
+  });
+
+  it('keeps Document type… from viewers, folders and files', () => {
+    open(makeNode('n1', { kind: 'page', my_level: 'view' }));
+    expect(items()).not.toContain('Document type…');
+    cleanup();
+    open(makeNode('n2', { kind: 'folder', my_level: 'manage' }));
+    expect(items()).not.toContain('Document type…');
+    cleanup();
+    open(makeNode('n3', { kind: 'file', my_level: 'manage' }));
+    expect(items()).not.toContain('Document type…');
   });
 
   it('offers Share… on a page or file to a manager, and hands it to the shell', () => {
@@ -135,8 +201,26 @@ describe('RowMenu', () => {
     expect(items()).not.toContain('Use as help for…');
   });
 
+  it('drops Share…, Save as template… and Use as help for… on a private item or inside a private folder', () => {
+    const handlers = { onSaveAsTemplate: vi.fn(), onUseAsHelp: vi.fn() };
+    for (const over of [{ is_private: true }, { is_private: false, in_private: true }]) {
+      open(makeNode('n1', { kind: 'page', my_level: 'manage', ...over }), handlers);
+      expect(items()).not.toContain('Share…');
+      expect(items()).not.toContain('Save as template…');
+      expect(items()).not.toContain('Use as help for…');
+      expect(items()).toContain('Permissions…');
+      cleanup();
+      open(makeNode('f1', { kind: 'file', my_level: 'manage', page: null, ...over }), handlers);
+      expect(items()).not.toContain('Share…');
+      expect(items()).not.toContain('Use as help for…');
+      cleanup();
+    }
+    open(makeNode('n2', { kind: 'page', my_level: 'manage' }), handlers);
+    expect(items()).toEqual(expect.arrayContaining(['Share…', 'Save as template…', 'Use as help for…']));
+  });
+
   it('offers Export… on a folder, and on a page once published or with subpages — never a file', () => {
-    const published = { is_home: false, published_version_id: 'v1', published_at: null, has_unpublished_changes: false };
+    const published = { is_home: false, published_version_id: 'v1', published_at: null, has_unpublished_changes: false, doc_type: null };
     const folder = makeNode('f', { kind: 'folder', my_level: 'view' });
     const { shell } = open(folder);
     fireEvent.click(screen.getByRole('menuitem', { name: 'Export…' }));

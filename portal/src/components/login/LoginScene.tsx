@@ -7,10 +7,11 @@
  * the map scales as one piece (login-light.css sizes the box and scales its
  * text with container units).
  *
- * Shared by the portal, the wiki and the kiosk — one sign-in page for all
- * three. Everything is fixed except the headline and the line under it:
- * each app names itself there, and the props default to the portal's
- * wording so the portal and the wiki render exactly as before.
+ * Shared by the portal, the wiki, the kiosk and Sirdar — one sign-in page
+ * for all of them. Everything is fixed except the words that name the app:
+ * the tagline under the logo, the headline and the line under it. Every
+ * prop defaults to the portal's wording, so an app that passes nothing
+ * renders exactly the portal's page.
  */
 import type { CSSProperties, ReactNode } from 'react';
 
@@ -60,6 +61,8 @@ function contour(i: number): string {
 const CONTOURS = Array.from({ length: 17 }, (_, i) => contour(i));
 
 export interface LoginSceneProps {
+  /** The line under the logo name. Sirdar names itself here. */
+  tag?: string;
   /** The hero's first line, in ink. Pass `null` for a one-line hero —
    *  the kiosk's headline is the single accent word "Kiosk". OMITTING it
    *  keeps the portal's default, which is what the wiki relies on. */
@@ -70,13 +73,14 @@ export interface LoginSceneProps {
   sub?: ReactNode;
 }
 
+const DEFAULT_TAG = 'Datacenter Relocation Tools';
 const DEFAULT_LEAD = 'Migration Control.';
 const DEFAULT_ACCENT = 'From First Scan to Final Rack.';
 const DEFAULT_SUB = 'Track relocation progress, review manifests, verify assets, '
   + 'and access complete migration records.';
 
 export default function LoginScene({
-  lead = DEFAULT_LEAD, accent = DEFAULT_ACCENT, sub = DEFAULT_SUB,
+  tag = DEFAULT_TAG, lead = DEFAULT_LEAD, accent = DEFAULT_ACCENT, sub = DEFAULT_SUB,
 }: LoginSceneProps = {}) {
   return (
     <>
@@ -95,7 +99,7 @@ export default function LoginScene({
         />
         <div>
           <div className="lx-logo-name">Server<em>Sherpa</em></div>
-          <div className="lx-logo-tag">Datacenter Relocation Tools</div>
+          <div className="lx-logo-tag">{tag}</div>
         </div>
       </header>
 

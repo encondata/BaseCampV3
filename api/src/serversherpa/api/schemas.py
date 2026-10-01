@@ -149,6 +149,39 @@ class SessionOut(BaseModel):
     kiosk_move: KioskMoveOut | None = None
 
 
+class SessionTemplateOut(BaseModel):
+    """A SessionOut without its tokens — what the laptop edge needs to mint
+    its own offline session for a move's kiosk identity."""
+
+    person: PersonOut
+    roles: list[str]
+    must_change_password: bool
+    must_change_reason: Literal["temporary", "expired"] | None = None
+    password_expires_at: datetime | None = None
+    preferences: UiPreferences
+    perms: dict[str, dict[str, bool]]
+    max_rank: int
+    scope: ScopeOut
+    password_min_length: int = 8
+    totp: TotpStatusOut
+    kiosk_move: KioskMoveOut | None = None
+
+
+class KioskEdgeMovePassword(BaseModel):
+    initiative_id: uuid.UUID
+    name: str
+    argon2_hash: str
+    session: SessionTemplateOut
+    # changes whenever the move's password changes; the edge sends it back
+    # as `have=` so an unchanged password costs no hashing and no audit row
+    version: str
+
+
+class KioskEdgeMovePasswordsOut(BaseModel):
+    moves: list[KioskEdgeMovePassword]
+    unchanged: bool = False
+
+
 class LoginChallengeOut(BaseModel):
     """Password accepted; the second factor is still owed. No session or
     cookie exists yet — only the 2FA endpoints accept the token."""
@@ -2202,6 +2235,15 @@ class SystemProcessOut(BaseModel):
     meta: dict
 
 
+class BackgroundStatusOut(BaseModel):
+    """Aggregate worker health for the public status page — counts only,
+    never process names."""
+
+    state: Literal["running", "down", "paused"]
+    running: int
+    total: int
+
+
 class SystemStatusOut(BaseModel):
     """Public (unauthenticated) portal status — banners + read-only state."""
 
@@ -2210,6 +2252,7 @@ class SystemStatusOut(BaseModel):
     workers_paused: bool
     banner: str | None
     totp_trust_days: int
+    background: BackgroundStatusOut | None = None
 
 
 class AdminConfigOut(BaseModel):

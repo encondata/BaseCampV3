@@ -15,6 +15,7 @@ import { Link } from 'react-router-dom';
 import { useToast } from '@portal/lib/notificationsContext';
 
 import NodeIcon from '../components/NodeIcon';
+import { PrivateMark } from '../components/NodeMarks';
 import RowMenu, { atLeast, type RowMenuHandle } from '../components/RowMenu';
 import {
   childrenKey, noteChanged, noteMoved, refetchChildren, useChildren, useTreeSnapshot,
@@ -283,6 +284,7 @@ function Row({ node, depth, ancestors }: { node: NodeOut; depth: number; ancesto
             {node.title}
           </Link>
         )}
+        <PrivateMark node={node} />
         <RowMenu
           ref={menuRef}
           node={node}

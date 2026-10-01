@@ -1,7 +1,7 @@
 /** Export… for a page, a folder or a whole space (view level). A page
- *  exports as a PDF, a Word document or Markdown — its published version,
- *  without comments — or, when it has subpages, as a .zip of it and them
- *  (the only choice for a never-published page with subpages).
+ *  exports as a PDF or Markdown — its published version — or, when it has
+ *  subpages, as a .zip of it and them (the only choice for a never-published
+ *  page with subpages).
  *  A folder or a space exports as a .zip mirroring the tree: every page
  *  and file the person can see, pages in the chosen format. Once started,
  *  the dialog follows the export (ExportProgress) through to a Download
@@ -16,7 +16,6 @@ import ExportProgress from './ExportProgress';
 
 const FORMATS: { value: ExportPageFormat; label: string }[] = [
   { value: 'pdf', label: 'PDF' },
-  { value: 'docx', label: 'Word' },
   { value: 'md', label: 'Markdown' },
 ];
 
@@ -58,7 +57,9 @@ export default function ExportDialog({ target, onClose }: { target: ExportTarget
   const what = !node ? 'library' : node.kind === 'folder' ? 'folder' : 'page';
   const hint = zip
     ? `A .zip of the ${what === 'page' ? 'page and its subpages' : what} — every page and file in it you can see, in the same folders. Pages that were never published are left out.`
-    : 'The published version of the page, without comments.';
+    : format === 'pdf'
+      ? 'The published version of the page, with a cover page, contents and its comments.'
+      : 'The published version of the page, without comments.';
 
   return (
     <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>

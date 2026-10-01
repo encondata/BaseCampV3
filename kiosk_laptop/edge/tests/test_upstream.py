@@ -1,0 +1,246 @@
+import asyncio
+
+import httpx
+import pytest
+
+from edge.upstream import CloudOffline, refresh_cookie_from
+
+
+def _set_cookie(token):
+    return {"set-cookie": f"ss_refresh={token}; HttpOnly; Path=/auth; SameSite=lax"}
+
+
+async def test_transport_error_is_offline(app, cloud):
+    cloud.get("/system/status").mock(side_effect=httpx.ConnectError("down"))
+    up = app.state.upstream
+    with pytest.raises(CloudOffline):
+        await up.request("GET", "/system/status")
+    assert up.online is False
+    assert await up.probe() is False
+
+
+async def test_any_other_http_answer_is_online(app, cloud):
+    up = app.state.upstream
+    for status in (500, 401, 404):
+        cloud.get("/system/status").respond(status, json={"detail": "x"})
+        resp = await up.request("GET", "/system/status")
+        assert resp.status_code == status and up.online is True and up.last_contact
+
+
+@pytest.mark.parametrize("status", [502, 503, 504])
+async def test_unhealthy_cloud_is_offline(app, cloud, status):
+    up = app.state.upstream
+    cloud.get("/system/status").respond(200, json={})
+    assert await up.probe() is True
+    cloud.get("/system/status").respond(status, text="bad gateway")
+    with pytest.raises(CloudOffline):
+        await up.request("GET", "/system/status")
+    assert up.online is False
+    assert await up.probe() is False
+
+
+def test_refresh_cookie_parsed_from_set_cookie():
+    resp = httpx.Response(200, headers=[("set-cookie", "other=1; Path=/"),
+                                        ("set-cookie", "ss_refresh=abc123; HttpOnly; Path=/auth")])
+    assert refresh_cookie_from(resp) == "abc123"
+    assert refresh_cookie_from(httpx.Response(200)) is None
+
+
+async def test_as_person_uses_stored_access_token(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    route = cloud.get("/kiosk/setup-options").respond(200, json={"ok": True})
+    resp = await up.as_person("p-1", "GET", "/kiosk/setup-options")
+    assert resp.json() == {"ok": True}
+    assert route.calls[0].request.headers["authorization"] == "Bearer a1"
+
+
+async def test_as_person_refreshes_on_401_and_stores_rotated_cookie(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="stale", expires_in=900)
+    cloud.get("/kiosk/setup-options").mock(side_effect=[
+        httpx.Response(401, json={"detail": {"code": "token_expired"}}),
+        httpx.Response(200, json={"ok": True}),
+    ])
+    refresh = cloud.post("/auth/refresh").respond(
+        200, json={"access_token": "a2", "expires_in": 900}, headers=_set_cookie("r2"))
+    resp = await up.as_person("p-1", "GET", "/kiosk/setup-options")
+    assert resp.status_code == 200
+    assert refresh.calls[0].request.headers["cookie"] == "ss_refresh=r1"
+    assert up._refresh_token("p-1") == "r2"     # the rotated token is the one kept
+
+
+async def test_rejected_refresh_drops_the_cloud_session(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=-60)
+    cloud.post("/auth/refresh").respond(401, json={"detail": {"code": "invalid_refresh"}})
+    assert await up.as_person("p-1", "GET", "/kiosk/setup-options") is None
+    assert up.has_session("p-1") is False
+
+
+def _cache_verifier(app, person_id="p-1"):
+    app.state.store.run("INSERT INTO offline_logins VALUES ('jane@example.com', ?, 'v', '{}', "
+                        "'2099-01-01T00:00:00+00:00')", (person_id,))
+
+
+async def test_revoked_or_disabled_refresh_forgets_offline_verifier(app, cloud):
+    up = app.state.upstream
+    for code, status in (("invalid_session", 401), ("account_disabled", 403),
+                         ("session_reuse_detected", 401)):
+        _cache_verifier(app)
+        up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=-60)
+        cloud.post("/auth/refresh").respond(status, json={"detail": {"code": code}})
+        assert await up.as_person("p-1", "GET", "/kiosk/setup-options") is None
+        assert app.state.store.one("SELECT 1 FROM offline_logins WHERE person_id='p-1'") is None, code
+
+
+async def test_naturally_expired_refresh_keeps_offline_verifier(app, cloud):
+    up = app.state.upstream
+    _cache_verifier(app)
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=-60)
+    cloud.post("/auth/refresh").respond(401, json={"detail": {"code": "session_expired"}})
+    assert await up.as_person("p-1", "GET", "/kiosk/setup-options") is None
+    assert up.has_session("p-1") is False
+    assert app.state.store.one("SELECT 1 FROM offline_logins WHERE person_id='p-1'")
+
+
+async def test_no_session_returns_none_without_network(app, cloud):
+    assert await app.state.upstream.as_person("nobody", "GET", "/x") is None
+    assert len(cloud.calls) == 0
+
+
+async def test_end_session_logs_out_and_drops(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    up.mark_ending("p-1")       # end_session only ever ends a session marked ending
+    logout = cloud.post("/auth/logout").respond(204)
+    assert await up.end_session("p-1") is True
+    assert logout.calls[0].request.headers["cookie"] == "ss_refresh=r1"
+    assert up.has_session("p-1") is False
+
+
+async def test_tokens_are_encrypted_at_rest(app):
+    app.state.upstream.save_session("p-1", refresh_token="r1-secret", access_token="a1-secret",
+                                     expires_in=900)
+    row = app.state.store.one("SELECT * FROM cloud_sessions WHERE person_id='p-1'")
+    assert "r1-secret" not in row["refresh_enc"] and "a1-secret" not in row["access_enc"]
+
+
+async def test_refresh_cookie_never_leaks_to_other_requests(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=-60)
+    cloud.get("/kiosk/setup-options").respond(200, json={})
+    cloud.post("/auth/refresh").respond(
+        200, json={"access_token": "a2", "expires_in": 900}, headers=_set_cookie("r2"))
+    login = cloud.post("/auth/login").respond(200, json={})
+    await up.as_person("p-1", "GET", "/kiosk/setup-options")
+    await up.request("POST", "/auth/login", json={"email": "x"})
+    assert "cookie" not in login.calls[0].request.headers
+
+
+async def test_refresh_keeps_ending_flag(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=-60)
+    up.mark_ending("p-1")
+    cloud.get("/kiosk/setup-options").respond(200, json={})
+    cloud.post("/auth/refresh").respond(200, json={"access_token": "a2", "expires_in": 900})
+    await up.as_person("p-1", "GET", "/kiosk/setup-options")
+    assert "p-1" in up.ending_people()
+
+
+async def test_concurrent_requests_refresh_once(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=-60)
+    cloud.get("/kiosk/setup-options").respond(200, json={})
+    refresh = cloud.post("/auth/refresh").respond(
+        200, json={"access_token": "a2", "expires_in": 900}, headers=_set_cookie("r2"))
+    r = await asyncio.gather(*[up.as_person("p-1", "GET", "/kiosk/setup-options")
+                               for _ in range(2)])
+    assert all(x.status_code == 200 for x in r)
+    assert refresh.call_count == 1
+
+
+async def test_end_session_offline_keeps_session(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    up.mark_ending("p-1")
+    cloud.post("/auth/logout").mock(side_effect=httpx.ConnectError("down"))
+    assert await up.end_session("p-1") is False
+    assert up.has_session("p-1") is True
+
+
+async def test_cookie_not_leaked_under_concurrency(settings, app):
+    seen = {}
+
+    async def handler(request):
+        if request.url.path == "/auth/refresh":
+            async def body():
+                await asyncio.sleep(0.05)
+                yield b'{"access_token": "a2", "expires_in": 900}'
+            return httpx.Response(200, headers={"set-cookie": "ss_refresh=r2; Path=/auth"},
+                                  stream=_AsyncStream(body()))
+        seen[request.url.path] = request.headers.get("cookie")
+        return httpx.Response(200, json={})
+
+    from edge.upstream import Upstream
+    up = Upstream(settings, app.state.store, app.state.keys,
+                  transport=httpx.MockTransport(handler))
+    try:
+        refresh = asyncio.create_task(
+            up.request("POST", "/auth/refresh", headers={"Cookie": "ss_refresh=r1"}))
+        await asyncio.sleep(0.01)
+        await up.request("POST", "/auth/login", json={"email": "x"})
+        await refresh
+    finally:
+        await up.aclose()
+    assert seen["/auth/login"] is None
+
+
+class _AsyncStream(httpx.AsyncByteStream):
+    def __init__(self, gen):
+        self.gen = gen
+
+    async def __aiter__(self):
+        async for chunk in self.gen:
+            yield chunk
+
+
+async def test_sign_in_landing_mid_logout_keeps_its_fresh_session(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    up.mark_ending("p-1")
+
+    def logout(request):
+        # a new online sign-in for the same person lands while logout is in flight
+        up.save_session("p-1", refresh_token="r2", access_token="a2", expires_in=900)
+        return httpx.Response(204)
+
+    cloud.post("/auth/logout").mock(side_effect=logout)
+    assert await up.end_session("p-1") is True
+    assert up.has_session("p-1") and up._refresh_token("p-1") == "r2"
+    assert up.ending_people() == []
+
+
+async def test_undecryptable_tokens_drop_the_row_and_act_as_no_session(app, cloud):
+    from cryptography.fernet import Fernet
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    other = Fernet(Fernet.generate_key())
+    app.state.store.run("UPDATE cloud_sessions SET refresh_enc = ?, access_enc = ?",
+                        (other.encrypt(b"r1").decode(), other.encrypt(b"a1").decode()))
+    assert await up.as_person("p-1", "GET", "/kiosk/setup-options") is None
+    assert up.has_session("p-1") is False
+    assert len(cloud.calls) == 0
+    up.save_session("p-2", refresh_token="r2", access_token="a2", expires_in=-60)
+    app.state.store.run("UPDATE cloud_sessions SET refresh_enc = 'garbage' WHERE person_id='p-2'")
+    assert await up.as_person("p-2", "GET", "/kiosk/setup-options") is None
+    assert up.has_session("p-2") is False
+    assert await up.end_session("p-2") is True
+
+
+async def test_end_session_leaves_a_session_that_is_no_longer_ending(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)  # not ending
+    logout = cloud.post("/auth/logout").respond(204)
+    assert await up.end_session("p-1") is True
+    assert not logout.called and up.has_session("p-1")

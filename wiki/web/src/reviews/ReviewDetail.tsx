@@ -13,6 +13,7 @@ import { ApiError } from '@portal/lib/api';
 import { relativeTime } from '@portal/lib/format';
 import { useToast } from '@portal/lib/notificationsContext';
 
+import PrintGuard from '../components/PrintGuard';
 import { atLeast } from '../components/RowMenu';
 import { diffDocs } from '../history/diff';
 import DiffView from '../history/DiffView';
@@ -27,7 +28,7 @@ import { noteReviewsChanged } from './ReviewsLink';
 const NOTE_MAX = 1000;
 
 type State =
-  | { id: string; status: 'ready'; review: ReviewDetailOut; level: Level | null }
+  | { id: string; status: 'ready'; review: ReviewDetailOut; level: Level | null; canPrint: boolean }
   | { id: string; status: 'missing' }
   | { id: string; status: 'error'; message: string };
 
@@ -58,8 +59,12 @@ export default function ReviewDetail() {
     getReview(reviewId)
       .then(async (review) => {
         // the review doesn't say what I may do on its page; the node does
-        const level = await getNode(review.node.id).then((n) => n.my_level, () => null);
-        if (live) setState({ id: reviewId, status: 'ready', review, level });
+        // and whether it may print (unknown counts as no: the diff shows its content)
+        const { level, canPrint } = await getNode(review.node.id).then(
+          (n) => ({ level: n.my_level, canPrint: n.can_print === true }),
+          () => ({ level: null, canPrint: false }),
+        );
+        if (live) setState({ id: reviewId, status: 'ready', review, level, canPrint });
       })
       .catch((err) => {
         if (!live) return;
@@ -122,6 +127,7 @@ export default function ReviewDetail() {
 
   return (
     <div className="portal-page wiki-page wiki-review-detail" data-testid="review-detail">
+      <PrintGuard active={!shown.canPrint} />
       <nav className="wiki-crumbs" aria-label="Breadcrumb">
         <Link to="/reviews">Reviews</Link>
         <span className="wiki-crumb"><span className="wiki-crumb-sep" aria-hidden="true">/</span>{r.node.space_name}</span>

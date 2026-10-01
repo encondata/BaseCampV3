@@ -159,8 +159,10 @@ async def test_nodes_out_uses_a_fixed_number_of_statements(db):
         lambda: nodes_out(ctx, large, {n.id: "edit" for n in large}))
 
     assert len(small_out) == 4 and len(large_out) == 32
-    # spaces, pages, files, people, favorites, child counts
-    assert len(small_stmts) == len(large_stmts) == 6, large_stmts
+    # spaces, pages, files, people, favorites, child counts — plus the
+    # index's one-time load of the space for printing (space row, grants,
+    # nodes); a request that already computed levels has that cached
+    assert len(small_stmts) == len(large_stmts) == 9, large_stmts
 
 
 async def test_nodes_out_empty_is_free(db):

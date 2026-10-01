@@ -18,6 +18,7 @@ import com.serversherpa.kiosk.core.model.KioskSignOutIn
 import com.serversherpa.kiosk.core.model.KioskTimeclockStatus
 import com.serversherpa.kiosk.core.model.KioskTrucksSync
 import com.serversherpa.kiosk.core.model.LoginIn
+import com.serversherpa.kiosk.core.model.MoveLoginIn
 import com.serversherpa.kiosk.core.model.PairCreateIn
 import com.serversherpa.kiosk.core.model.PairCreated
 import com.serversherpa.kiosk.core.model.PairPoll
@@ -112,6 +113,11 @@ class OkHttpKioskApi(
 
     override suspend fun login(email: String, password: String): SessionData {
         val resp = plain { url(apiUrl("/auth/login")).post(jsonBody(LoginIn.serializer(), LoginIn(email, password))) }
+        return parse(resp, SessionData.serializer()).also { session.store(it) }
+    }
+
+    override suspend fun moveLogin(password: String): SessionData {
+        val resp = plain { url(apiUrl("/kiosk/move-login")).post(jsonBody(MoveLoginIn.serializer(), MoveLoginIn(password))) }
         return parse(resp, SessionData.serializer()).also { session.store(it) }
     }
 

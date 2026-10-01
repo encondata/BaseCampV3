@@ -102,14 +102,14 @@ left at its default they all point at `http://localhost:5176`
 
 **On the wiki worker** (`wiki/.env`), exports are also capped, and the
 worker needs to reach the wiki service itself for `POST /internal/render`
-(a page's JSON -> the HTML a PDF/Word export renders — see Exports below):
+(a page's JSON -> the HTML a PDF export renders — see Exports below):
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `SS_WIKI_ORIGIN` | `http://localhost:5176` | **Required** — the wiki's public origin, equal to the API's. Links in the notifications the workers send (export ready/failed, review reminders). |
 | `SS_WIKI_EXPORT_MAX_PAGES` | `1000` | Most pages one export may hold. |
 | `SS_WIKI_EXPORT_MAX_BYTES` | `2147483648` (2 GiB) | Most bytes of files and page images one export may hold. |
-| `SS_WIKI_RENDER_URL` | `http://localhost:5177` | The wiki service's own origin. `wiki/docker-compose.yml` sets this to `http://wiki:8080` (the compose network's service name) for you; only change it if you run the worker outside that compose file. Unreachable (or pointed nowhere real) and every PDF/Word export fails with a retried `RenderError`. |
+| `SS_WIKI_RENDER_URL` | `http://localhost:5177` | The wiki service's own origin. `wiki/docker-compose.yml` sets this to `http://wiki:8080` (the compose network's service name) for you; only change it if you run the worker outside that compose file. Unreachable (or pointed nowhere real) and every PDF export fails with a retried `RenderError`. |
 | `SS_WIKI_SERVICE_TOKEN` | *(empty)* | The same secret the wiki service checks `/internal/render` requests against (its `WIKI_SERVICE_TOKEN`) — the worker presents this as `X-Wiki-Service-Token`. All three (the API's, the wiki service's `WIKI_SERVICE_TOKEN`, and this one) must be equal. `wiki/docker-compose.yml` sets it from `WIKI_SERVICE_TOKEN` in `wiki/.env` for you. |
 | `WIKI_EXPORT_PDF_MAX_MEMORY_MB` | `2048` | **Not** `SS_`-prefixed — read straight from the environment by the WeasyPrint child process (`serversherpa.wiki.export_pdf`), not through `Settings`, since it's a standalone subprocess entry point. Caps that process's own memory (`RLIMIT_AS`) so one pathological page's conversion is killed rather than left to slowly exhaust the host. Best-effort: there's no `resource` module on Windows, and even on Linux/macOS the platform may not honor it (macOS in particular often doesn't). |
 
@@ -236,20 +236,46 @@ client and renderer.
 
 ## Exports
 
-`POST /wiki/exports` (spec §8) queues a page as PDF, Word (`.docx`) or
-Markdown, or a folder or whole library as a `.zip`, run by the wiki worker
+`POST /wiki/exports` (spec §8) queues a page as PDF or Markdown, or a folder or whole library as a `.zip`, run by the wiki worker
 as the person who asked — only what they can currently view goes in; a
 never-published page an editor can see is named in `_skipped.txt` inside
-the zip rather than included. PDF and Word pages go through the wiki
+the zip rather than included. PDF pages go through the wiki
 service's `POST /internal/render` (the print template, `wiki/export_html.py`)
 and then WeasyPrint, run in a child process of its own
 (`python -m serversherpa.wiki.export_pdf`) so the worker can time one
-pathological page out and kill it instead of hanging; Word (and a zip of
-Word pages) goes through LibreOffice; a Markdown zip's images are written
+pathological page out and kill it instead of hanging; a Markdown zip's images are written
 into an `assets/` folder. `GET /wiki/exports/{job_id}` reports progress to
 the requester (and only them) with a fresh 10-minute download URL once
 it's done.
 
+- **What a PDF holds.** Every exported PDF — a single page, or each page
+  in a PDF zip — reads like a controlled document, in this order:
+  - **A cover page** with no page number: the ServerSherpa logo, the page
+    title, where it lives (the library, then its folders, with "…" for a
+    folder the requester can't see), "Revision N · Published <date> by
+    <name>" (N counts every time the page has been published; "by <name>"
+    is dropped when the publisher is unknown), "Exported <date> by
+    <name>" for the person who asked, and the confidentiality statement
+    at the bottom (left off when it's empty).
+  - **A contents page**, only when the page has at least two headings of
+    levels 1–3: one line per heading, indented by level, with the PDF
+    page it's on and a link to it. The same headings make up the PDF's
+    bookmarks.
+  - **The page itself**, starting on a new page under its usual header
+    (location, title, published date).
+  - **A comments page** at the end, only when the page has comments that
+    weren't deleted. Threads anchored to text in the published page come
+    first, in the order they appear there, each under a quote of that
+    text; page-level comments (and threads whose text is gone) follow,
+    oldest first. Each comment shows its author, date and time, and text,
+    with replies indented; a resolved thread is labeled Resolved, with
+    who resolved it and when.
+
+  Dates and times are in the company time zone. The confidentiality
+  statement is set by wiki administrators on the wiki's Admin page, under
+  Exports; a library manager can give their library its own statement in
+  Library settings, and leaving it empty uses the standard one. Markdown
+  exports have none of this: they're the page's text as before.
 - **Limits.** An export over `SS_WIKI_EXPORT_MAX_PAGES` pages, or whose
   files and page images add up to more than `SS_WIKI_EXPORT_MAX_BYTES`,
   fails immediately with a message saying which limit and by how much. A
@@ -266,7 +292,7 @@ it's done.
     Pillow, both already installed as Python dependencies — it no longer
     needs cairo or gdk-pixbuf the way older versions did).
   - **LibreOffice** (`libreoffice-writer`/`-calc`/`-impress`, already
-    installed) for `.docx` conversion, and **poppler** (`poppler-utils`,
+    installed) for the file previews (Word, Excel and PowerPoint to PDF), and **poppler** (`poppler-utils`,
     already installed) for the file-preview/search-text side of the same
     image.
   - **`SS_WIKI_RENDER_URL`** pointing at the wiki service itself — see
@@ -286,6 +312,73 @@ it's done.
   behind under the same job id is swept up too — 7 days after the job
   finished, along with the job row itself.
 
+## Private items and printing
+
+Two per-item controls, both enforced by the main API
+(`api/src/serversherpa/wiki/`); the wiki SPA only shows them.
+
+- **Private.** A page, file, or folder marked Private can be seen only by
+  its author and by developers. Everything inside a private folder is
+  private too. Wiki administrators and library managers can't see someone
+  else's private items, and neither can anyone holding a grant on them:
+  to everyone else a private item behaves as if it doesn't exist (404 from
+  the API, "Nothing here" in the wiki), and it's left out of the tree,
+  lists, search, analytics, trash, @mention suggestions, notifications,
+  and folder or library exports someone else asks for. The author and
+  developers get manage on it and on everything inside it.
+  - **Who can change it.** Only the author or a developer can set or clear
+    Private, from the Permissions dialog. An author who doesn't have
+    manage on the item sees a Private-only version of that dialog. A
+    library's home page can't be made private. In an archived library,
+    only wiki administrators can change privacy. A folder can be made
+    private only when everything inside it was created by the same person,
+    and only your own items can be moved into a private folder
+    (developers are exempt), so no one can take over other people's pages
+    by making a shared folder private.
+  - **Knock-on rules.** A private item can't get a public share link, be
+    the target of a help link, or be saved as a template, and existing
+    public links to it stop working. Moving or copying a private item keeps
+    it private, including an item that was private only because of the
+    folder it was in, and only someone who can see a private folder can
+    move something into it.
+- **Allow printing.** Each library has an Allow printing setting (on by
+  default, under Library settings, Sharing). Any page, file, or folder can
+  override it, from the Permissions dialog, with Inherit, Allowed, or Not
+  allowed; the nearest setting going up the tree wins, and only someone
+  with manage on the item can change it. When printing is off, that
+  applies to everyone, including developers and wiki administrators; a
+  manager has to turn it back on first. The item shows a "Printing off"
+  chip, and these are blocked:
+  - **Printing.** Ctrl+P or ⌘P is blocked with a message, and the
+    browser's print menu prints only a notice that printing is turned off.
+  - **Getting a copy out.** Export, Download, Share, and "Save as
+    template" are hidden, and the API refuses them. Folder and library
+    exports leave those items out and list them in a skipped-items file in
+    the zip. An attachment embedded on such a page that can't be previewed
+    inline isn't offered at all.
+  - **Previews.** A PDF shows as images drawn on the page, with no
+    toolbar, save, or print. Video and audio have no download or
+    picture-in-picture, and images have no right-click menu.
+  - **Mixed pages.** An embedded file with printing off, on a page that
+    allows printing, is left out of that page's printout.
+  - **Public links.** Existing public links stop working until printing is
+    turned back on, and new ones can't be created.
+  - **Copying and moving.** Copying an item that has printing off keeps it
+    off. Moving an item that inherits "off" from its old location pins it
+    to off, so the move can't quietly turn printing back on.
+- **The honest limit.** This is a deterrent, not copy protection.
+  Screenshots, and a determined person with their browser's developer
+  tools, can still copy what's on screen, and the Printing control says so.
+- **Deploying.** Previews of PDFs with printing off are read straight from
+  Spaces, so the bucket's CORS rule must allow `GET` from the wiki origin;
+  see the Production checklist below.
+
+**Private items and live editing.** Someone already editing an item
+live when it becomes private isn't disconnected at once: the wiki server
+re-checks every open editing session against the API every few minutes
+(`WIKI_REAUTH_MS`, five minutes by default) and closes the ones that
+lost access.
+
 ## Production checklist
 
 - Add `https://wiki.<domain>` to the main API's `SS_ALLOWED_ORIGINS`.
@@ -296,9 +389,11 @@ it's done.
 - Add a Spaces bucket CORS rule from the wiki origin allowing `PUT` with
   the `Content-Type` header (uploads go straight from the browser to
   Spaces via a presigned URL) **and `GET`** (the file view `fetch()`es
-  text and Markdown previews from their presigned URL; without it those
-  previews fail. Images, PDF previews, downloads and public share-link
-  pages are not CORS reads and work either way).
+  text and Markdown previews from their presigned URL, and pdf.js reads a
+  PDF with printing turned off the same way, with a plain `GET`; without
+  it those previews fail. Images, PDF previews of files that can be
+  printed, downloads and public share-link pages are not CORS reads and
+  work either way).
 - Exports need the `wiki-worker` image's WeasyPrint/LibreOffice
   dependencies and `SS_WIKI_RENDER_URL` pointing at the `wiki` container —
   see Exports above; `wiki/docker-compose.yml` already wires this up, so

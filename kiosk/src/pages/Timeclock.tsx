@@ -29,7 +29,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { displayRfid } from '@portal/lib/format';
 
 import {
-  ApiError, fetchTimeclockStatus, postClockIn, postClockOut,
+  ApiError, CLOUD_SIGN_IN_TEXT, fetchTimeclockStatus, postClockIn, postClockOut,
   type KioskPersonRow, type KioskTimeclockStatus,
 } from '../lib/api';
 import { hslCss, useAppearance } from '../lib/appearance';
@@ -90,6 +90,7 @@ function punchErrorText(err: unknown): string {
     return 'The portal is in read-only mode. Try again shortly.';
   }
   if (code === 'network') return "Can't reach the portal. The punch was not recorded.";
+  if (code === 'cloud_sign_in_required') return CLOUD_SIGN_IN_TEXT;
   return `Couldn't record the punch (${code}).`;
 }
 

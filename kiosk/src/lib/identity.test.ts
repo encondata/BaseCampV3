@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { readCookie, writeCookie } from './cookies';
-import { defaultName, getIdentity, setKioskName } from './identity';
+import { defaultName, getIdentity, setKioskName, setLaptopName } from './identity';
 
 function wipeCookies(): void {
   for (const part of document.cookie.split(';')) {
@@ -99,4 +99,20 @@ it('survives both stores failing, and says the identity is not persistent', () =
   expect(id.persistent).toBe(false);
   expect(getIdentity().serial).toBe(id.serial);   // stable within the page
   expect(setKioskName('Dock')).toBe(false);
+});
+
+describe('laptop identity', () => {
+  afterEach(() => { delete window.__KIOSK_CONFIG__; });
+
+  it('uses the edge identity and ignores cookies/localStorage', () => {
+    localStorage.setItem('ss.kiosk.serial', 'kiosk-web-old');
+    window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1234', name: 'Dock 3' } };
+    expect(getIdentity()).toEqual({ serial: 'kiosk-laptop-1234', name: 'Dock 3', persistent: true });
+  });
+
+  it('reflects a rename made through the edge', () => {
+    window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1234', name: 'Dock 3' } };
+    setLaptopName('Dock 4');
+    expect(getIdentity().name).toBe('Dock 4');
+  });
 });

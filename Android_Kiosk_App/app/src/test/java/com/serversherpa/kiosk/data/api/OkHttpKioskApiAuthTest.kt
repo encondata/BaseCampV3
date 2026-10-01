@@ -98,4 +98,34 @@ class OkHttpKioskApiAuthTest {
             h.api.signOut("serial")   // no exception
         }
     }
+
+    @Test fun moveLoginPostsThePasswordAndStoresTheLockedSession() = runBlocking {
+        ApiHarness(tmp.root).use { h ->
+            h.server.enqueue(jsonResponse(200, SESSION_JSON.dropLast(1) + ""","kiosk_move":{"initiative_id":"m1","name":"Dallas Move"}}"""))
+            val s = h.api.moveLogin("orange-kayak-42")
+            val req = h.server.takeRequest()
+            assertEquals("/kiosk/move-login", req.path)
+            assertEquals("POST", req.method)
+            assertEquals("""{"password":"orange-kayak-42"}""", req.body.readUtf8())
+            assertEquals("m1", s.kiosk_move?.initiative_id)
+            assertEquals("Dallas Move", s.kiosk_move?.name)
+            assertEquals("tok1", h.session.accessToken())
+        }
+    }
+
+    @Test fun moveLoginErrorsCarryTheirCode() = runBlocking {
+        ApiHarness(tmp.root).use { h ->
+            h.server.enqueue(jsonResponse(429, """{"detail":{"code":"move_login_rate_limited"}}"""))
+            try { h.api.moveLogin("x"); fail("expected ApiError") } catch (e: ApiError) {
+                assertEquals(429, e.status); assertEquals("move_login_rate_limited", e.code)
+            }
+        }
+    }
+
+    @Test fun anOrdinarySessionHasNoMove() = runBlocking {
+        ApiHarness(tmp.root).use { h ->
+            h.server.enqueue(sessionResponse())
+            assertEquals(null, h.api.login("a@b.c", "pw").kiosk_move)
+        }
+    }
 }

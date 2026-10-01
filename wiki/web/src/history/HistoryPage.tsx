@@ -5,7 +5,8 @@
  *  a version: after a confirmation the page opens in the editor with
  *  `?restore=<id>`, and the editor puts that version's content into the
  *  live document (see PageView). Viewers only ever get published versions,
- *  and no Restore. */
+ *  and no Restore. With printing off, the preview loses its download links
+ *  and Ctrl+P is stopped (PrintGuard). */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
@@ -14,10 +15,12 @@ import { ApiError } from '@portal/lib/api';
 import { relativeTime } from '@portal/lib/format';
 
 import ConfirmDialog from '../components/ConfirmDialog';
+import PrintGuard from '../components/PrintGuard';
 import { atLeast } from '../components/RowMenu';
 import { Icon } from '../editor/icons';
 import ReadOnlyDoc from '../editor/ReadOnlyDoc';
 import { useWikiShell } from '../layout/shellContext';
+import { CanPrintContext } from '../lib/printPolicy';
 import type { NodeDetailOut, VersionDetail, VersionKind, VersionOut } from '../lib/types';
 import { errorMessage, getNode, getVersion, listVersions } from '../lib/wikiApi';
 import { Breadcrumbs } from '../pages/FolderView';
@@ -189,6 +192,7 @@ export default function HistoryPage() {
 
   return (
     <div className="portal-page wiki-page wiki-history-page" data-testid="history-page">
+      <PrintGuard active={!page.can_print} />
       <Breadcrumbs node={page} />
       <header className="wiki-page-head">
         <div className="wiki-page-head-main">
@@ -277,7 +281,11 @@ export default function HistoryPage() {
                 {shownContent?.status === 'loading' && <p className="page-hint">Loading…</p>}
                 {shownContent?.status === 'error' && <p className="pf-error">{shownContent.message}</p>}
                 {shownContent?.status === 'ready' && (
-                  <div className="wiki-history-preview"><ReadOnlyDoc content={shownContent.value.content_json} /></div>
+                  <div className="wiki-history-preview">
+                    <CanPrintContext.Provider value={page.can_print}>
+                      <ReadOnlyDoc content={shownContent.value.content_json} />
+                    </CanPrintContext.Provider>
+                  </div>
                 )}
               </>
             )}

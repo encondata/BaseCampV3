@@ -3,33 +3,43 @@
 Levels are `view < edit < manage`. A user's effective level on a node
 (spec §3):
 
-1. A wiki administrator (`wiki:delete`) manages everything; a user
-   without `wiki:view` gets nothing.
-2. Start from the space-level grants, then walk the node's ancestors
+1. A user without `wiki:view` gets nothing.
+2. Private items (spec 2026-09-30 §1): for every private node on the
+   node's chain (its ancestors and itself), the user must be that node's
+   author (`created_by`) or a developer (the `developer` role) —
+   otherwise nothing, whatever the grants, library membership or wiki
+   administrator permission say. A user who passes manages the item (an
+   archived space still clamps that to view for non-administrators).
+3. A wiki administrator (`wiki:delete`) manages everything else.
+4. Start from the space-level grants, then walk the node's ancestors
    (root first) and finally the node itself. A node that breaks
    inheritance *replaces* the set with its own grants; any other node
    *adds* its grants to the set. Space-level `manage` grants are always
    added back after a replace, so a space manager can't be locked out.
-3. The level is the highest level among the final set's grants that
+5. The level is the highest level among the final set's grants that
    match the user.
-4. An archived space is read-only (anything above view becomes view)
+6. An archived space is read-only (anything above view becomes view)
    for everyone but wiki administrators.
 
 `AccessIndex` is the per-request cache every wiki endpoint goes through:
-it loads each space's grants and inheritance breaks once, then computes
-levels in Python with memoization, so filtering a listing of many nodes
-costs a fixed number of queries per space rather than per node.
+it loads each space's grants, inheritance breaks, private nodes and
+printing values once, then computes levels in Python with memoization, so
+filtering a listing of many nodes costs a fixed number of queries per
+space rather than per node. It also answers whether a node can be
+printed: the nearest `allow_printing` set on the node or an ancestor,
+else the library's `allow_printing` setting.
 """
 from __future__ import annotations
 
 import uuid
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import any_, exists, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from serversherpa.access.resolver import resolve_access, resolve_access_many
 from serversherpa.db.models import (
@@ -44,6 +54,7 @@ from serversherpa.db.models import (
     WikiPage,
     WikiSpace,
 )
+from serversherpa.wiki.space_settings import DEFAULTS as SPACE_SETTING_DEFAULTS
 
 if TYPE_CHECKING:
     from serversherpa.access.resolver import AccessInfo
@@ -77,6 +88,28 @@ class Principal:
     is_internal: bool       # AccessInfo.is_global
     is_admin: bool          # wiki:delete — the wiki administrator
     can_view_wiki: bool     # wiki:view
+
+
+def is_developer(p: Principal) -> bool:
+    """Developers see (and manage) every private item."""
+    return "developer" in p.roles
+
+
+# Nobody in particular: for asking what is true of a node whoever asks
+# (`AccessIndex.is_private`, `can_print`) where there is no caller — a
+# public share link's read — or where the answer is about the node, not a
+# person (a review's approvers).
+ANONYMOUS = Principal(
+    person_id=uuid.UUID(int=0), roles=frozenset(), group_ids=frozenset(),
+    client_ids=frozenset(), partner_ids=frozenset(), is_internal=False,
+    is_admin=False, can_view_wiki=False)
+
+
+def can_set_private(p: Principal, node: WikiNode) -> bool:
+    """Only a node's author or a developer may mark it private or clear
+    that — not a manager, not a wiki administrator."""
+    return (node.created_by is not None and node.created_by == p.person_id) \
+        or is_developer(p)
 
 
 async def principal_for(db: AsyncSession, user: AuthContext) -> Principal:
@@ -199,6 +232,12 @@ class _SpaceData:
     space_grants: list[_Grant]                      # node_id NULL
     node_grants: dict[uuid.UUID, list[_Grant]]
     breaks: frozenset[uuid.UUID]                    # inherit_permissions = false
+    # is_private nodes -> their author (created_by). Trashed nodes are
+    # included so a private item stays private in the library trash.
+    private: dict[uuid.UUID, uuid.UUID | None] = field(default_factory=dict)
+    # nodes with an explicit allow_printing (null means inherit, so absent)
+    printing: dict[uuid.UUID, bool] = field(default_factory=dict)
+    allow_printing: bool = True                     # the library setting
 
 
 class AccessIndex:
@@ -216,24 +255,30 @@ class AccessIndex:
         self.db = db
         self.p = principal
         self._spaces: dict[uuid.UUID, _SpaceData] = spaces if spaces is not None else {}
-        self._memo: dict[tuple[uuid.UUID, tuple[uuid.UUID, ...]], str | None] = {}
+        self._memo: dict[tuple, str | None] = {}
 
     # ── loading ─────────────────────────────────────────────────────
 
     async def _load_spaces(self, space_ids: Iterable[uuid.UUID]) -> None:
         """Three queries for any number of not-yet-loaded spaces: the space
-        rows, their grants, and their inheritance-breaking node ids."""
+        rows (with their settings), their grants, and their nodes that
+        matter to access or printing — inheritance breaks, private nodes
+        and nodes with an explicit `allow_printing`."""
         missing = {sid for sid in space_ids if sid not in self._spaces}
         if not missing:
             return
         rows = (await self.db.execute(
-            select(WikiSpace.id, WikiSpace.name, WikiSpace.archived_at)
+            select(WikiSpace.id, WikiSpace.name, WikiSpace.archived_at,
+                   WikiSpace.settings)
             .where(WikiSpace.id.in_(missing))
         )).all()
         spaces = {sid: _SpaceData(None, False, [], {}, frozenset()) for sid in missing}
-        for sid, name, archived_at in rows:
+        for sid, name, archived_at, settings in rows:
             spaces[sid].name = name
             spaces[sid].archived = archived_at is not None
+            # validate() only lets bools in; a missing key means the default
+            spaces[sid].allow_printing = bool((settings or {}).get(
+                "allow_printing", SPACE_SETTING_DEFAULTS["allow_printing"]))
 
         for sid, node_id, ptype, pid, level in (await self.db.execute(
             select(WikiGrant.space_id, WikiGrant.node_id, WikiGrant.principal_type,
@@ -247,16 +292,32 @@ class AccessIndex:
                 spaces[sid].node_grants.setdefault(node_id, []).append(g)
 
         breaks: dict[uuid.UUID, set[uuid.UUID]] = {}
-        for sid, node_id in (await self.db.execute(
-            select(WikiNode.space_id, WikiNode.id)
-            .where(WikiNode.space_id.in_(missing),
-                   WikiNode.inherit_permissions.is_(False))
-        )).all():
-            breaks.setdefault(sid, set()).add(node_id)
+        for sid, node_id, inherit, is_private, created_by, allow_printing in (
+                await self.db.execute(
+                    select(WikiNode.space_id, WikiNode.id, WikiNode.inherit_permissions,
+                           WikiNode.is_private, WikiNode.created_by,
+                           WikiNode.allow_printing)
+                    .where(WikiNode.space_id.in_(missing),
+                           or_(WikiNode.inherit_permissions.is_(False),
+                               WikiNode.is_private.is_(True),
+                               WikiNode.allow_printing.is_not(None)))
+                )).all():
+            data = spaces[sid]
+            if not inherit:
+                breaks.setdefault(sid, set()).add(node_id)
+            if is_private:
+                data.private[node_id] = created_by
+            if allow_printing is not None:
+                data.printing[node_id] = allow_printing
         for sid, ids in breaks.items():
             spaces[sid].breaks = frozenset(ids)
 
         self._spaces.update(spaces)
+
+    async def warm(self, space_ids: Iterable[uuid.UUID]) -> None:
+        """Load every not-yet-cached space among `space_ids` in one batch,
+        so a listing spanning several spaces doesn't load them one by one."""
+        await self._load_spaces(space_ids)
 
     # ── resolution ──────────────────────────────────────────────────
 
@@ -273,15 +334,42 @@ class AccessIndex:
                 current = current + list(own)
         return current
 
-    async def _level(self, space_id: uuid.UUID, chain: Sequence[uuid.UUID]) -> str | None:
+    async def _level(self, space_id: uuid.UUID, chain: Sequence[uuid.UUID],
+                     own: tuple[bool, uuid.UUID | None] | None = None) -> str | None:
+        """`own` is the chain's last node's (is_private, created_by) as read
+        from the node object itself, when the caller has it: the loaded
+        snapshot can be stale for a node changed earlier in the request.
+        It is part of the memo key, so a change never serves a stale level."""
         p = self.p
         if not p.can_view_wiki:
             return None
-        if p.is_admin:
-            return "manage"
-        key = (space_id, tuple(chain))
+        key = (space_id, tuple(chain), own)
         if key in self._memo:
             return self._memo[key]
+        level = await self._compute_level(space_id, chain, own)
+        self._memo[key] = level
+        return level
+
+    async def _compute_level(self, space_id: uuid.UUID, chain: Sequence[uuid.UUID],
+                             own: tuple[bool, uuid.UUID | None] | None) -> str | None:
+        p = self.p
+        if chain:
+            # the private rule comes before the administrator shortcut —
+            # a wiki administrator doesn't see someone else's private item
+            await self._load_spaces([space_id])
+            data = self._spaces[space_id]
+            # ancestors come from the snapshot; the node itself (the last
+            # element) from `own` when given
+            ancestors = chain[:-1] if own is not None else chain
+            authors = [data.private[nid] for nid in ancestors if nid in data.private]
+            if own is not None and own[0]:
+                authors.append(own[1])
+            if authors:
+                if not (is_developer(p) or all(a == p.person_id for a in authors)):
+                    return None
+                return "view" if data.archived and not p.is_admin else "manage"
+        if p.is_admin:
+            return "manage"
         await self._load_spaces([space_id])
         data = self._spaces[space_id]
         best: str | None = None
@@ -290,7 +378,6 @@ class AccessIndex:
                 best = max_level(best, g.level)
         if best and data.archived:
             best = "view"
-        self._memo[key] = best
         return best
 
     @staticmethod
@@ -299,6 +386,35 @@ class AccessIndex:
 
     async def level_for_space(self, space_id: uuid.UUID) -> str | None:
         return await self._level(space_id, [])
+
+    async def is_private(self, node: WikiNode) -> bool:
+        """Whether `node` or any of its ancestors is private — the same
+        answer for every caller (`level_for_node` is the one that says
+        who may see it). The node's own flag is read from `node` itself,
+        like `printing_source` reads its value."""
+        if node.is_private:
+            return True
+        await self._load_spaces([node.space_id])
+        data = self._spaces[node.space_id]
+        return any(nid in data.private for nid in (node.path or []))
+
+    async def private_ancestors(self, node: WikiNode) -> dict[uuid.UUID, uuid.UUID | None]:
+        """The private nodes among `node`'s ancestors, each with its author
+        (`created_by`) — trashed ones included, like `is_private`."""
+        await self._load_spaces([node.space_id])
+        data = self._spaces[node.space_id]
+        return {nid: data.private[nid] for nid in (node.path or []) if nid in data.private}
+
+    async def private_chain(self, node: WikiNode | None) -> dict[uuid.UUID, uuid.UUID | None]:
+        """`private_ancestors` plus `node` itself when it is private (its
+        own flag read from `node`) — the private nodes an item placed
+        under `node` would sit beneath. None (a library's root) has none."""
+        if node is None:
+            return {}
+        chain = await self.private_ancestors(node)
+        if node.is_private:
+            chain[node.id] = node.created_by
+        return chain
 
     async def levels_for_spaces(
             self, space_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str | None]:
@@ -310,14 +426,48 @@ class AccessIndex:
         return {sid: await self.level_for_space(sid) for sid in ids}
 
     async def level_for_node(self, node: WikiNode) -> str | None:
-        return await self._level(node.space_id, self._chain(node))
+        return await self._level(node.space_id, self._chain(node),
+                                 (node.is_private, node.created_by))
 
     async def levels_for_nodes(self, nodes: Sequence[WikiNode]) -> dict[uuid.UUID, str | None]:
         """Does NOT filter deleted nodes — a caller listing a mix of live
-        and soft-deleted nodes must filter `deleted_at` itself first."""
-        if self.p.can_view_wiki and not self.p.is_admin:
+        and soft-deleted nodes must filter `deleted_at` itself first.
+
+        Loads for wiki administrators too: the private rule applies to
+        them."""
+        if self.p.can_view_wiki:
             await self._load_spaces({n.space_id for n in nodes})
         return {n.id: await self.level_for_node(n) for n in nodes}
+
+    async def printing_source(self, node: WikiNode) -> tuple[bool, uuid.UUID | None]:
+        """Whether `node` can be printed, and where that comes from: the id
+        of the nearest node (itself first, then its ancestors walking up)
+        with an explicit `allow_printing`, or None when it is the library
+        setting. The same for every caller — no one is exempt.
+
+        The node's own value is read from `node` itself rather than the
+        loaded snapshot, so a change made earlier in the request counts."""
+        if node.allow_printing is not None:
+            return node.allow_printing, node.id
+        await self._load_spaces([node.space_id])
+        data = self._spaces[node.space_id]
+        for nid in reversed(node.path or []):
+            if nid in data.printing:
+                return data.printing[nid], nid
+        return data.allow_printing, None
+
+    async def can_print(self, node: WikiNode) -> bool:
+        """The effective printing value for `node` (see `printing_source`)."""
+        return (await self.printing_source(node))[0]
+
+    async def can_print_under(self, space_id: uuid.UUID, parent: WikiNode | None) -> bool:
+        """Whether an item that inherits printing could be printed placed
+        under `parent` (None = the root of `space_id`): the parent's own
+        effective value, or the library setting at the root."""
+        if parent is not None:
+            return await self.can_print(parent)
+        await self._load_spaces([space_id])
+        return self._spaces[space_id].allow_printing
 
     async def effective_grants(self, node: WikiNode | None,
                                space_id: uuid.UUID) -> list[EffectiveGrantRow]:
@@ -378,6 +528,22 @@ async def viewable_nodes(db: AsyncSession, ix: AccessIndex, nodes: Sequence[Wiki
                 WikiPage.published_version_id.is_(None))
         )).all())
     return [n for n in live if levels[n.id] and n.id not in unpublished], levels
+
+
+def private_filter(p: Principal):
+    """WHERE clause over `WikiNode` for a query that filters in SQL rather
+    than through `AccessIndex`: no node on the row's chain (its ancestors
+    and itself) is private unless `p` may see it — its author, or a
+    developer. The same private rule as `AccessIndex.level_for_node`;
+    every other rule (grants, archiving) is still the caller's. Correlates
+    to `WikiNode` in the enclosing query."""
+    if is_developer(p):
+        return true()
+    on_chain = aliased(WikiNode)
+    return ~exists().where(
+        on_chain.is_private.is_(True),
+        on_chain.created_by.is_distinct_from(p.person_id),
+        or_(on_chain.id == WikiNode.id, on_chain.id == any_(WikiNode.path)))
 
 
 # ── guards ──────────────────────────────────────────────────────────

@@ -1,10 +1,10 @@
-import { expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { SETTINGS_TABS, visibleTabs } from './settingsTabs';
 
 it('tab order includes This Kiosk right after Devices', () => {
   expect(SETTINGS_TABS.map((t) => t.id)).toEqual([
-    'appearance', 'sound', 'devices', 'this-kiosk', 'admin', 'developer',
+    'appearance', 'sound', 'devices', 'this-kiosk', 'edge', 'admin', 'developer',
   ]);
 });
 
@@ -38,4 +38,12 @@ it('a developer (who also clears the admin rank) sees all six tabs', () => {
 it('gates only on the flag each tab requires — a developer below admin rank still skips Admin', () => {
   const tabs = visibleTabs(SETTINGS_TABS, { isAdmin: false, isDeveloper: true, signedIn: true });
   expect(tabs.map((t) => t.id)).toEqual(['appearance', 'sound', 'devices', 'this-kiosk', 'developer']);
+});
+
+describe('edge tab', () => {
+  it('appears only in laptop mode', () => {
+    const base = { isAdmin: false, isDeveloper: false, signedIn: true };
+    expect(visibleTabs(SETTINGS_TABS, base).map((t) => t.id)).not.toContain('edge');
+    expect(visibleTabs(SETTINGS_TABS, { ...base, laptop: true }).map((t) => t.id)).toContain('edge');
+  });
 });

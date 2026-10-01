@@ -140,7 +140,8 @@ async def test_create_folders_and_pages_at_root_and_nested(client, db):
                          parent=folder)
     assert page["parent_id"] == folder["id"]
     assert page["page"] == {"is_home": False, "published_version_id": None,
-                            "published_at": None, "has_unpublished_changes": False}
+                            "published_at": None, "has_unpublished_changes": False,
+                            "doc_type": None}
     nested = await _create(client, s["editor"], space, "Details", kind="page",
                            parent=page)
     assert (await _node_row(db, nested["id"])).path == [

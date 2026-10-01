@@ -13,11 +13,16 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   unarchiveSpace: vi.fn(),
   listAllShareLinks: vi.fn(),
   revokeShareLink: vi.fn(),
+  getExportSettings: vi.fn(),
+  saveExportSettings: vi.fn(),
 }));
 
+import { ApiError } from '@portal/lib/api';
 import { clearWikiMe } from '../lib/useWikiMe';
 import type { ShareLinkOut } from '../lib/types';
-import { getMe, listAllShareLinks, listSpaces, revokeShareLink, unarchiveSpace } from '../lib/wikiApi';
+import {
+  getExportSettings, getMe, listAllShareLinks, listSpaces, revokeShareLink, saveExportSettings, unarchiveSpace,
+} from '../lib/wikiApi';
 import { makeMe, makeSpace } from '../testing/fixtures';
 import AdminPage from './AdminPage';
 
@@ -33,6 +38,8 @@ beforeEach(() => {
   vi.mocked(unarchiveSpace).mockReset();
   vi.mocked(listAllShareLinks).mockReset().mockResolvedValue([]);
   vi.mocked(revokeShareLink).mockReset();
+  vi.mocked(getExportSettings).mockReset().mockResolvedValue({ confidentiality_statement: 'Keep it in the family.' });
+  vi.mocked(saveExportSettings).mockReset();
 });
 afterEach(cleanup);
 
@@ -135,5 +142,39 @@ describe('AdminPage', () => {
     renderAdmin();
     await screen.findByText('Page 0');
     expect(screen.queryByText('Showing 500 links, live ones first.')).toBeNull();
+  });
+
+  it('edits the standard confidentiality statement in the Exports section', async () => {
+    vi.mocked(listSpaces).mockResolvedValue([]);
+    vi.mocked(saveExportSettings).mockResolvedValue({ confidentiality_statement: 'New words' });
+    renderAdmin();
+    const section = await screen.findByRole('region', { name: 'Exports' });
+    const field = await within(section).findByLabelText('Confidentiality statement') as HTMLTextAreaElement;
+    expect(field.value).toBe('Keep it in the family.');
+    expect(field.maxLength).toBe(1000);
+    const save = within(section).getByRole('button', { name: 'Save' });
+    expect(save).toHaveProperty('disabled', true);
+
+    fireEvent.change(field, { target: { value: '  New words  ' } });
+    expect(save).toHaveProperty('disabled', false);
+    fireEvent.click(save);
+    await waitFor(() => expect(saveExportSettings).toHaveBeenCalledWith('New words'));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Saved.'));
+    await waitFor(() => expect(within(section).getByRole('button', { name: 'Save' })).toHaveProperty('disabled', true));
+    expect((within(section).getByLabelText('Confidentiality statement') as HTMLTextAreaElement).value).toBe('New words');
+  });
+
+  it('shows the error when saving the statement fails, and keeps the text', async () => {
+    vi.mocked(listSpaces).mockResolvedValue([]);
+    vi.mocked(saveExportSettings).mockRejectedValue(
+      new ApiError(422, 'bad_setting', undefined, 'The statement can be up to 1000 characters.'));
+    renderAdmin();
+    const section = await screen.findByRole('region', { name: 'Exports' });
+    const field = await within(section).findByLabelText('Confidentiality statement') as HTMLTextAreaElement;
+    fireEvent.change(field, { target: { value: 'Changed' } });
+    fireEvent.click(within(section).getByRole('button', { name: 'Save' }));
+    expect(await within(section).findByText('The statement can be up to 1000 characters.')).toBeTruthy();
+    expect(field.value).toBe('Changed');
+    expect(toast).not.toHaveBeenCalledWith('Saved.');
   });
 });

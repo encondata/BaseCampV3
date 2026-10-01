@@ -45,7 +45,7 @@ export function makeNode(
     has_children: false,
     is_favorite: false,
     page: kind === 'page'
-      ? { is_home: false, published_version_id: null, published_at: null, has_unpublished_changes: false }
+      ? { is_home: false, published_version_id: null, published_at: null, has_unpublished_changes: false, doc_type: null }
       : null,
     file: null,
     review: kind === 'page'
@@ -54,6 +54,13 @@ export function makeNode(
         last_reviewed_at: null, state: null, pending_review_id: null,
       }
       : null,
+    is_private: false,
+    // the API's rule: a private item is always in a private chain
+    in_private: !!over.is_private,
+    allow_printing: null,
+    can_print: true,
+    printing_from: { node_id: null, title: 'Library' },
+    can_set_private: false,
     ...over,
   };
 }

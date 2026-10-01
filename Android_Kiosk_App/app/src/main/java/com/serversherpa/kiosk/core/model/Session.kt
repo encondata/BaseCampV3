@@ -18,7 +18,11 @@ data class PersonOut(
 @Serializable
 data class UiPreferences(val accent: String = "amber", val theme: String = "light")
 
-/** `SessionOut` — what /auth/login, /auth/refresh, and an approved pair poll return. */
+/** The move a move-password session is locked to (`kiosk_move` on the session). */
+@Serializable
+data class KioskMove(val initiative_id: String, val name: String)
+
+/** `SessionOut` — what /auth/login, /kiosk/move-login, /auth/refresh, and an approved pair poll return. */
 @Serializable
 data class SessionData(
     val access_token: String,
@@ -30,10 +34,15 @@ data class SessionData(
     val preferences: UiPreferences = UiPreferences(),
     val perms: Map<String, Map<String, Boolean>> = emptyMap(),
     val max_rank: Int = 0,
+    /** Set only on a move-password sign-in: the session works on this move alone. */
+    val kiosk_move: KioskMove? = null,
 )
 
 @Serializable
 data class LoginIn(val email: String, val password: String, val client: String = "kiosk")
+
+@Serializable
+data class MoveLoginIn(val password: String)
 
 @Serializable
 data class SystemStatus(

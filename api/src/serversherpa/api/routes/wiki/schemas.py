@@ -9,7 +9,15 @@ import uuid
 from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictStr,
+    StringConstraints,
+    model_validator,
+)
 
 Level = Literal["view", "edit", "manage"]
 PrincipalType = Literal[
@@ -143,6 +151,7 @@ class NodePageOut(BaseModel):
     published_version_id: uuid.UUID | None
     published_at: datetime | None
     has_unpublished_changes: bool
+    doc_type: str | None
 
 
 class FileVersionOut(BaseModel):
@@ -179,6 +188,14 @@ class NodeReviewOut(BaseModel):
     pending_review_id: uuid.UUID | None
 
 
+class PrintingSourceOut(BaseModel):
+    """Where a node's effective printing value comes from: an ancestor (or
+    the node) that sets it, or — `node_id` null, title "Library" — the
+    library's setting."""
+    node_id: uuid.UUID | None
+    title: str
+
+
 class NodeOut(BaseModel):
     id: uuid.UUID
     space_id: uuid.UUID
@@ -199,6 +216,16 @@ class NodeOut(BaseModel):
     file: NodeFileOut | None
     # pages only (null for folders and files)
     review: NodeReviewOut | None = None
+    # Private items and printing (spec 2026-09-30): `allow_printing` is the
+    # node's own explicit value (null = inherit); `can_print` is the effective
+    # value; `printing_from` says who set it, only while the node inherits.
+    # `in_private`: the node or a folder above it is private.
+    is_private: bool
+    in_private: bool
+    allow_printing: bool | None
+    can_print: bool
+    printing_from: PrintingSourceOut | None
+    can_set_private: bool
 
 
 class Breadcrumb(BaseModel):
@@ -247,6 +274,26 @@ class NodePatchIn(BaseModel):
     title: Title | None = None
     owner_id: uuid.UUID | None = None
     review_interval_months: int | None = Field(default=None, ge=1, le=60)
+
+
+class PrivacyIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    is_private: StrictBool
+
+
+class PrintingIn(BaseModel):
+    """`allow_printing` null clears the node's own value (it inherits)."""
+    model_config = ConfigDict(extra="forbid")
+
+    allow_printing: StrictBool | None
+
+
+class DocTypeIn(BaseModel):
+    """`doc_type` null clears the page's document type."""
+    model_config = ConfigDict(extra="forbid")
+
+    doc_type: StrictStr | None
 
 
 class NodeMoveIn(BaseModel):
@@ -795,7 +842,7 @@ class AnalyticsOut(BaseModel):
 
 class ExportIn(BaseModel):
     """Export a node (`node_id`) or a whole space (`space_key`) — exactly
-    one. A page exports as `pdf`, `docx` or `md`; a folder, a page with
+    one. A page exports as `pdf` or `md`; a folder, a page with
     subpages, or a space as a `zip` whose pages are `zip_format` (pdf when
     left out)."""
     model_config = ConfigDict(extra="forbid")
@@ -803,8 +850,8 @@ class ExportIn(BaseModel):
     node_id: uuid.UUID | None = None
     space_key: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
                                                 max_length=40)] | None = None
-    format: Literal["pdf", "docx", "md", "zip"]
-    zip_format: Literal["pdf", "docx", "md"] | None = None
+    format: Literal["pdf", "md", "zip"]
+    zip_format: Literal["pdf", "md"] | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> ExportIn:
@@ -813,6 +860,18 @@ class ExportIn(BaseModel):
         if self.zip_format is not None and self.format != "zip":
             raise ValueError("zip_format only goes with format 'zip'.")
         return self
+
+
+class ExportSettingsIn(BaseModel):
+    """`PUT /wiki/admin/export-settings`: the wiki's standard confidentiality
+    statement ("" for none). Trimmed and length-checked by the route."""
+    model_config = ConfigDict(extra="forbid")
+
+    confidentiality_statement: StrictStr
+
+
+class ExportSettingsOut(BaseModel):
+    confidentiality_statement: str
 
 
 class ExportCreatedOut(BaseModel):

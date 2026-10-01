@@ -117,6 +117,8 @@ export interface NodePageOut {
   published_version_id: string | null;
   published_at: string | null;
   has_unpublished_changes: boolean;
+  /** One of the five document types (shown on an exported PDF's cover), or null. */
+  doc_type: string | null;
 }
 
 /** Where a page stands in its review cycle: `overdue` once
@@ -161,6 +163,26 @@ export interface NodeOut {
   file: NodeFileOut | null;
   /** Pages only (null for folders and files). */
   review: NodeReviewOut | null;
+  /** Only its author and developers can see a private item (and only they
+   *  can change this: `can_set_private`). */
+  is_private: boolean;
+  /** The item or a folder above it is private — what the lock, the chip and
+   *  the hidden Share/template/help items go by (`is_private` is only the
+   *  item's own switch). */
+  in_private: boolean;
+  /** The node's own printing setting; null = it inherits. `can_print` is
+   *  what applies to the caller; `printing_from` says where an inherited
+   *  value comes from (`node_id` null = the library's setting, or a source
+   *  the caller can't see). */
+  allow_printing: boolean | null;
+  can_print: boolean;
+  printing_from: PrintingSource | null;
+  can_set_private: boolean;
+}
+
+export interface PrintingSource {
+  node_id: string | null;
+  title: string;
 }
 
 /** An ancestor the caller can't view comes back as `{id: null, title: "…"}`. */
@@ -564,10 +586,10 @@ export interface AnalyticsOut {
 // ── exports ─────────────────────────────────────────────────────────
 
 /** What a page exports as — and, in a .zip, what its pages are. */
-export type ExportPageFormat = 'pdf' | 'docx' | 'md';
+export type ExportPageFormat = 'pdf' | 'md';
 
 /** POST /wiki/exports: a node (`node_id`) or a whole space (`space_key`).
- *  A page is pdf/docx/md, or a zip when it has subpages; a folder or a
+ *  A page is pdf/md, or a zip when it has subpages; a folder or a
  *  space is a zip whose pages are `zip_format` (pdf by default). */
 export interface ExportIn {
   node_id?: string;

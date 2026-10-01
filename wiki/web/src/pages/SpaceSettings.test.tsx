@@ -104,6 +104,13 @@ describe('SpaceSettings', () => {
     expect(requestExport).toHaveBeenCalledWith({ kind: 'space', space });
   });
 
+  it('has no Export library… while the library\'s printing is off', async () => {
+    renderSettings(makeSpace({ my_level: 'manage', settings: { allow_printing: false } }));
+    const section = await screen.findByRole('region', { name: 'Export' });
+    expect(within(section).queryByRole('button', { name: 'Export library…' })).toBeNull();
+    expect(within(section).getByText('Printing is turned off for this library, so it can\'t be exported.')).toBeTruthy();
+  });
+
   it('archives after a confirmation', async () => {
     const space = makeSpace({ my_level: 'manage' });
     vi.mocked(archiveSpace).mockResolvedValue({ ...space, archived_at: '2026-09-25T00:00:00Z', my_level: 'view' });
@@ -191,6 +198,52 @@ describe('SpaceSettings — Collaboration', () => {
     fireEvent.click(toggle);
     await waitFor(() => expect(updateSpace).toHaveBeenCalledWith('ops', { settings: { allow_public_links: true } }));
     await waitFor(() => expect(within(section).getByLabelText('Allow public links')).toHaveProperty('checked', true));
+  });
+
+  it('turns printing on and off in the Sharing section (on by default)', async () => {
+    const space = makeSpace({ my_level: 'manage', settings: {} });
+    vi.mocked(updateSpace).mockResolvedValue({ ...space, settings: { allow_printing: false } });
+    renderSettings(space);
+    const section = await screen.findByRole('region', { name: 'Sharing' });
+    const toggle = within(section).getByLabelText('Allow printing');
+    expect(toggle).toHaveProperty('checked', true);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(updateSpace).toHaveBeenCalledWith('ops', { settings: { allow_printing: false } }));
+    await waitFor(() => expect(within(section).getByLabelText('Allow printing')).toHaveProperty('checked', false));
+  });
+
+  it('sets the library\'s own confidentiality statement in the Sharing section', async () => {
+    const space = makeSpace({ my_level: 'manage', settings: {} });
+    vi.mocked(updateSpace).mockResolvedValue({ ...space, settings: { confidentiality_statement: 'Ours only' } });
+    renderSettings(space);
+    const section = await screen.findByRole('region', { name: 'Sharing' });
+    const field = within(section).getByLabelText('Confidentiality statement') as HTMLTextAreaElement;
+    expect(field.value).toBe('');
+    expect(field.maxLength).toBe(1000);
+    expect(within(section).getByText('Leave empty to use the standard statement.')).toBeTruthy();
+
+    // blurring without a change saves nothing
+    fireEvent.blur(field);
+    expect(updateSpace).not.toHaveBeenCalled();
+
+    fireEvent.change(field, { target: { value: '  Ours only  ' } });
+    fireEvent.blur(field);
+    await waitFor(() => expect(updateSpace).toHaveBeenCalledWith('ops', {
+      settings: { confidentiality_statement: 'Ours only' } }));
+    await waitFor(() => expect(
+      (within(section).getByLabelText('Confidentiality statement') as HTMLTextAreaElement).value).toBe('Ours only'));
+  });
+
+  it('shows a stored library statement, and clears it with an empty one', async () => {
+    const space = makeSpace({ my_level: 'manage', settings: { confidentiality_statement: 'Ours only' } });
+    vi.mocked(updateSpace).mockResolvedValue({ ...space, settings: { confidentiality_statement: '' } });
+    renderSettings(space);
+    const field = await screen.findByLabelText('Confidentiality statement') as HTMLTextAreaElement;
+    expect(field.value).toBe('Ours only');
+    fireEvent.change(field, { target: { value: '' } });
+    fireEvent.blur(field);
+    await waitFor(() => expect(updateSpace).toHaveBeenCalledWith('ops', {
+      settings: { confidentiality_statement: '' } }));
   });
 
   it('tells everyone that an archived space\'s public links keep working', async () => {

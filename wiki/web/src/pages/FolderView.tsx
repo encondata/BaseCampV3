@@ -1,5 +1,5 @@
 /** A folder: breadcrumbs, its title (renamed inline by editors), Watch and
- *  Export…, New page / New folder / Upload / Import, and its contents in the portal's list
+ *  Export… (while printing is on), New page / New folder / Upload / Import, and its contents in the portal's list
  *  styling (Name, Type, Updated, By, Size; pages due for review carry a
  *  chip). Editors can also drop files and folders from their computer
  *  anywhere on it (the upload tray takes over). */
@@ -11,6 +11,7 @@ import { useToast } from '@portal/lib/notificationsContext';
 
 import NewNodeDialog from '../components/NewNodeDialog';
 import NodeIcon, { nodeTypeLabel } from '../components/NodeIcon';
+import { NodeChips, PrivateMark } from '../components/NodeMarks';
 import { atLeast } from '../components/RowMenu';
 import WatchButton from '../components/WatchButton';
 import ImportDialog from '../import/ImportDialog';
@@ -123,6 +124,7 @@ function Row({ node }: { node: NodeOut }) {
         <div className="cell cell-primary">
           <NodeIcon node={node} className="wiki-row-icon" />
           <div className="pn"><b title={node.title}>{node.title}</b></div>
+          <PrivateMark node={node} />
           <ReviewChip review={node.review} />
         </div>
         <div className="cell"><span className="cell-top cell-line">{nodeTypeLabel(node)}</span></div>
@@ -178,16 +180,21 @@ export default function FolderView({ node }: { node: NodeDetailOut }) {
         <div className="portal-page wiki-page">
           <Breadcrumbs node={node} />
           <div className="dir-head wiki-folder-head">
-            <InlineTitle node={node} />
+            <div className="wiki-head-marks">
+              <InlineTitle node={node} />
+              <NodeChips node={node} />
+            </div>
           </div>
 
           <div className="dir-toolbar">
             <WatchButton target={{ kind: 'node', nodeId: node.id }} />
-            <button type="button" className="btn-ghost" onClick={() => requestExport({ kind: 'node', node })}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
-                   strokeLinejoin="round" aria-hidden="true"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14" /></svg>
-              Export…
-            </button>
+            {node.can_print && (
+              <button type="button" className="btn-ghost" onClick={() => requestExport({ kind: 'node', node })}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"
+                     strokeLinejoin="round" aria-hidden="true"><path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14" /></svg>
+                Export…
+              </button>
+            )}
             {canEdit && (
               <div className="toolbar-right wiki-toolbar">
                 <button type="button" className="btn-ghost" onClick={() => setCreating('page')}>

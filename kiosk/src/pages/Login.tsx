@@ -28,7 +28,8 @@ import '@portal/styles/login-light.css';
 import { useKioskAuth } from '../auth/KioskAuthContext';
 import KioskBanners from '../components/KioskBanners';
 import PairPanel from '../components/PairPanel';
-import { ApiError, type SessionData } from '../lib/api';
+import { ApiError, CLOUD_SIGN_IN_TEXT, type SessionData } from '../lib/api';
+import { useEdgeStatus } from '../lib/edgeStatus';
 import { getIdentity } from '../lib/identity';
 
 type View = 'password' | 'chooser' | 'link' | 'move';
@@ -49,6 +50,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   move_not_active: "That move password isn't active.",
   move_login_rate_limited: 'Too many tries. Wait a few minutes.',
   network: "Can't reach the server. Check the kiosk's network connection.",
+  cloud_sign_in_required: CLOUD_SIGN_IN_TEXT,
 };
 
 /** The move form's own wording where a code means something else there:
@@ -98,6 +100,10 @@ export default function Login() {
   const fromState = (location.state as { from?: { pathname?: string } } | null)?.from;
   const from = fromState?.pathname && !fromState.pathname.startsWith('/login') ? fromState.pathname : '/';
 
+  const { status: edge } = useEdgeStatus();
+  // Linking with a phone needs the cloud; on an offline laptop only the
+  // methods the edge can check stay.
+  const canLink = !edge || edge.cloud.online;
   const [view, setView] = useState<View>('password');
 
   const [email, setEmail] = useState('');
@@ -248,10 +254,12 @@ export default function Login() {
                 </button>
               ) : (
                 <div className="alt-methods">
-                  <button type="button" className="btn-alt" onClick={() => setView('link')}>
-                    <LinkIcon />
-                    Link with phone
-                  </button>
+                  {canLink && (
+                    <button type="button" className="btn-alt" onClick={() => setView('link')}>
+                      <LinkIcon />
+                      Link with phone
+                    </button>
+                  )}
                   <button type="button" className="btn-alt" onClick={() => setView('move')}>
                     <KeyIcon />
                     Move password

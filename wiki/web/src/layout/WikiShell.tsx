@@ -11,6 +11,7 @@ import { useToast } from '@portal/lib/notificationsContext';
 
 import AnalyticsPage from '../analytics/AnalyticsPage';
 import ConfirmDialog from '../components/ConfirmDialog';
+import DocTypeDialog from '../components/DocTypeDialog';
 import ErrorBoundary from '../components/ErrorBoundary';
 import ExportDialog from '../components/ExportDialog';
 import MoveCopyDialog from '../components/MoveCopyDialog';
@@ -80,6 +81,7 @@ export default function WikiShell() {
   const [deleting, setDeleting] = useState<{ node: NodeOut; busy: boolean; error: string } | null>(null);
   const [moving, setMoving] = useState<{ node: NodeOut; mode: 'move' | 'copy' } | null>(null);
   const [permissionsFor, setPermissionsFor] = useState<NodeOut | null>(null);
+  const [docTypeFor, setDocTypeFor] = useState<NodeOut | null>(null);
   const [sharing, setSharing] = useState<NodeOut | null>(null);
   const [exporting, setExporting] = useState<ExportTarget | null>(null);
   // Home (and New library over it) shows favorites and recent itself
@@ -227,6 +229,8 @@ export default function WikiShell() {
   const requestMove = useCallback((node: NodeOut) => setMoving({ node, mode: 'move' }), []);
   const requestCopy = useCallback((node: NodeOut) => setMoving({ node, mode: 'copy' }), []);
   const requestPermissions = useCallback((node: NodeOut) => setPermissionsFor(node), []);
+  const requestDocType = useCallback((node: NodeOut) => setDocTypeFor(node), []);
+  const closeDocType = useCallback(() => setDocTypeFor(null), []);
   const closeMoving = useCallback(() => setMoving(null), []);
   const closePermissions = useCallback(() => setPermissionsFor(null), []);
   const requestShare = useCallback((node: NodeOut) => setSharing(node), []);
@@ -242,10 +246,11 @@ export default function WikiShell() {
     requestMove,
     requestCopy,
     requestPermissions,
+    requestDocType,
     requestShare,
     requestExport,
-  }), [setCurrentSpace, openNewNode, requestDelete, requestMove, requestCopy, requestPermissions, requestShare,
-    requestExport]);
+  }), [setCurrentSpace, openNewNode, requestDelete, requestMove, requestCopy, requestPermissions, requestDocType,
+    requestShare, requestExport]);
 
   return (
     <ShellContext.Provider value={shell}>
@@ -322,6 +327,7 @@ export default function WikiShell() {
       {permissionsFor && (
         <PermissionsDialog target={{ kind: 'node', node: permissionsFor }} onClose={closePermissions} />
       )}
+      {docTypeFor && <DocTypeDialog node={docTypeFor} onClose={closeDocType} />}
       {sharing && <ShareDialog node={sharing} onClose={closeShare} />}
       {exporting && <ExportDialog target={exporting} onClose={closeExport} />}
       {deleting && (

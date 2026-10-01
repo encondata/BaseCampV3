@@ -94,6 +94,34 @@ describe('FolderView', () => {
     expect(rows[2].querySelector('.wiki-review-chip')).toBeNull();
   });
 
+  it('locks the private rows of the list, and only those', async () => {
+    vi.mocked(getTree).mockResolvedValue([
+      makeNode('a', { title: 'Payroll', parent_id: 'f1', is_private: true }),
+      makeNode('b', { title: 'Cabling', parent_id: 'f1' }),
+    ]);
+    renderFolder();
+    const rows = await within(await screen.findByRole('list', { name: 'Contents of Guides' })).findAllByRole('listitem');
+    expect(within(rows[0]).getByRole('img', { name: 'Private' })).toBeTruthy();
+    expect(within(rows[1]).queryByRole('img', { name: 'Private' })).toBeNull();
+  });
+
+  it('shows Private and Printing off chips in the header, not the lock', async () => {
+    renderFolder({ ...FOLDER, is_private: true, can_print: false });
+    const head = screen.getByRole('heading', { name: 'Guides' }).closest('.wiki-folder-head') as HTMLElement;
+    expect(within(head).getByText('Private')).toBeTruthy();
+    expect(within(head).getByText('Printing off')).toBeTruthy();
+    expect(within(head).queryByRole('img', { name: 'Private' })).toBeNull();
+    await screen.findByRole('list', { name: 'Contents of Guides' });
+  });
+
+  it('shows no chips for an ordinary folder', async () => {
+    renderFolder();
+    const head = screen.getByRole('heading', { name: 'Guides' }).closest('.wiki-folder-head') as HTMLElement;
+    expect(within(head).queryByText('Private')).toBeNull();
+    expect(within(head).queryByText('Printing off')).toBeNull();
+    await screen.findByRole('list', { name: 'Contents of Guides' });
+  });
+
   it('shows breadcrumbs and lists the folder\'s children with type, author and size', async () => {
     renderFolder();
     const nav = screen.getByRole('navigation', { name: 'Breadcrumb' });
@@ -172,6 +200,13 @@ describe('FolderView', () => {
     );
     fireEvent.click(await screen.findByRole('button', { name: 'Export…' }));
     expect(requestExport).toHaveBeenCalledWith({ kind: 'node', node });
+  });
+
+  it('has no Export… while printing is off', async () => {
+    renderFolder({ ...FOLDER, can_print: false });
+    await screen.findByText('Cabling');
+    expect(screen.queryByRole('button', { name: 'Export…' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'New page' })).toBeTruthy();
   });
 
   it('keeps the edit controls, uploads and drops from a viewer', async () => {

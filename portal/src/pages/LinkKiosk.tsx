@@ -4,9 +4,16 @@
  * text); the signed-in person confirms here and the kiosk's next poll
  * signs it in as them. Sits behind ProtectedRoute like every page, so an
  * anonymous phone bounces through /login and comes straight back.
+ *
+ * Right after approving, the page offers to sign this phone out (the
+ * phone was usually borrowed for one approval). Doing nothing for 15
+ * seconds signs it out; Stay signed in cancels. Only the phone's own
+ * login ends — the kiosk got its own session when it was approved — and
+ * the countdown lives in this page alone, so sign-in and the normal
+ * session timers are untouched.
  */
 
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -80,6 +87,67 @@ function CodeEntry() {
 
 const GENERIC_ERROR = 'Something went wrong. Try again.';
 
+/** Seconds the person has to choose before this phone is signed out. */
+export const SIGN_OUT_SECONDS = 15;
+
+/** Shown under "Done." after an approval made on this visit. Counts down
+ *  against a fixed deadline (not by counting ticks), so a phone that was
+ *  locked mid-countdown still signs out on time when it wakes. */
+function SignOutPrompt() {
+  const { logout } = useAuth();
+  const navigate = useNavigate();
+  const [deadline] = useState(() => Date.now() + SIGN_OUT_SECONDS * 1000);
+  const [left, setLeft] = useState(SIGN_OUT_SECONDS);
+  const [choice, setChoice] = useState<'waiting' | 'stay' | 'leaving'>('waiting');
+  const leaving = useRef(false);
+
+  const signOut = useCallback(async () => {
+    if (leaving.current) return;
+    leaving.current = true;
+    setChoice('leaving');
+    try {
+      await logout();
+    } finally {
+      navigate('/login', { replace: true });
+    }
+  }, [logout, navigate]);
+
+  useEffect(() => {
+    if (choice !== 'waiting') return undefined;
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      setLeft(remaining);
+      if (remaining === 0) void signOut();
+    };
+    const id = window.setInterval(tick, 250);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener('visibilitychange', tick);
+    };
+  }, [choice, deadline, signOut]);
+
+  if (choice === 'stay') {
+    return <p className="page-hint" role="status">You&apos;re still signed in on this phone.</p>;
+  }
+  return (
+    <div className="link-card">
+      <div className="link-prompt-title">Stay signed in on this phone?</div>
+      <p className="page-hint">
+        {choice === 'leaving'
+          ? 'Signing you out…'
+          : `You'll be signed out in ${left} second${left === 1 ? '' : 's'}.`}
+      </p>
+      <div className="link-actions">
+        <button type="button" className="btn-solid" disabled={choice === 'leaving'}
+                onClick={() => void signOut()}>Sign out now</button>
+        <button type="button" className="mini-btn" disabled={choice === 'leaving'}
+                onClick={() => setChoice('stay')}>Stay signed in</button>
+      </div>
+    </div>
+  );
+}
+
 type Phase = 'loading' | 'pending' | 'busy' | 'approved' | 'denied' | 'gone' | 'error';
 
 function phaseFor(status: PairInfo['status']): Phase {
@@ -94,6 +162,9 @@ function PairDecision({ code, displayName }: { code: string; displayName: string
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  // Only an approval made on this visit offers the sign-out prompt —
+  // reopening an already-approved code just shows the done copy.
+  const [approvedHere, setApprovedHere] = useState(false);
 
   const load = useCallback((cancelledRef: { cancelled: boolean }) => {
     setPhase('loading');
@@ -122,6 +193,7 @@ function PairDecision({ code, displayName }: { code: string; displayName: string
     setError('');
     try {
       await fn(code);
+      if (next === 'approved') setApprovedHere(true);
       setPhase(next);
     } catch (err) {
       if (err instanceof ApiError && (err.code === 'pair_not_pending' || err.code === 'pair_not_found')) {
@@ -152,7 +224,10 @@ function PairDecision({ code, displayName }: { code: string; displayName: string
         </>
       )}
       {phase === 'approved' && (
-        <p className="page-hint">Done. {name} is signing in — you can put your phone away.</p>
+        <>
+          <p className="page-hint">Done. {name} is signing in — you can put your phone away.</p>
+          {approvedHere && <SignOutPrompt />}
+        </>
       )}
       {phase === 'denied' && <p className="page-hint">Declined.</p>}
       {(phase === 'pending' || phase === 'busy') && info && (

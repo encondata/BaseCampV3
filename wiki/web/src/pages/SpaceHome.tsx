@@ -10,6 +10,7 @@ import { ApiError } from '@portal/lib/api';
 import WatchButton from '../components/WatchButton';
 import { useWikiShell } from '../layout/shellContext';
 import { libraryPath } from '../lib/paths';
+import { spaceSetting } from '../lib/spaceSettings';
 import { useChildren } from '../lib/treeStore';
 import type { SpaceOut } from '../lib/types';
 import { errorMessage, getSpace, listDueReviews } from '../lib/wikiApi';
@@ -89,10 +90,12 @@ export default function SpaceHome() {
             </Link>
           )}
           <div className="wiki-space-contents-actions">
-            <button type="button" className="btn-ghost"
-                    onClick={() => requestExport({ kind: 'space', space: shown.space })}>
-              Export library…
-            </button>
+            {spaceSetting(shown.space, 'allow_printing') && (
+              <button type="button" className="btn-ghost"
+                      onClick={() => requestExport({ kind: 'space', space: shown.space })}>
+                Export library…
+              </button>
+            )}
             {shown.space.home_node_id && (
               <WatchButton target={{ kind: 'space', spaceId: shown.space.id, spaceKey: shown.space.key }} />
             )}

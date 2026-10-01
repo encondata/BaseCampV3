@@ -4,6 +4,13 @@ missing row never breaks a caller; the DB row's keys win on conflict."""
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+# The wiki's standard confidentiality statement for an exported PDF's cover
+# (defined here, not in wiki/statement.py, which reads this module).
+DEFAULT_CONFIDENTIALITY_STATEMENT = (
+    "CONFIDENTIAL — This document contains proprietary information of Cumulus "
+    "Solutions Group. It is intended solely for authorized recipients and may not "
+    "be copied, distributed or disclosed without written permission.")
+
 DEFAULTS: dict[str, dict] = {
     "logging": {
         "mode": "local",
@@ -45,6 +52,8 @@ DEFAULTS: dict[str, dict] = {
         "retry_after_days": 90,
         "effort": "medium",            # low | medium | high (spec_lookup.provider)
     },
+    # Wiki-wide settings, edited by wiki administrators (wiki/statement.py).
+    "wiki": {"confidentiality_statement": DEFAULT_CONFIDENTIALITY_STATEMENT},
 }
 
 

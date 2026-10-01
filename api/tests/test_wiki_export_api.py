@@ -54,7 +54,7 @@ async def test_formats_by_kind(client, db):
     parent = await _page(client, s, db, "Parent page", parent=folder)
     await _page(client, s, db, "Child page", parent=parent)
 
-    for fmt in ("pdf", "docx", "md"):
+    for fmt in ("pdf", "md"):
         await _export(client, s["owner"], node_id=lone["id"], format=fmt)
         await _export(client, s["owner"], node_id=parent["id"], format=fmt)
         # finished, so they don't count against the in-progress limit
@@ -152,6 +152,14 @@ async def test_body_validation(client, db):
                   space_key=s["space"]["key"], format="zip")
     await _export(client, s["owner"], 422, node_id=page["id"], format="pdf", zip_format="md")
     await _export(client, s["owner"], 422, node_id=page["id"], format="html")
+
+
+async def test_word_export_is_gone(client, db):
+    s = await _setup(client, db)
+    page = await _page(client, s, db)
+    await _export(client, s["owner"], 422, node_id=page["id"], format="docx")
+    await _export(client, s["owner"], 422, space_key=s["space"]["key"], format="zip",
+                  zip_format="docx")
 
 
 async def test_too_many_exports_in_progress(client, db):

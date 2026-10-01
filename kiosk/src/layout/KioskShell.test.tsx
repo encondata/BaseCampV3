@@ -37,6 +37,17 @@ const auth = vi.hoisted(() => ({
 }));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 
+const edgeMock = vi.hoisted(() => ({
+  status: null as null | {
+    cloud: { online: boolean; last_contact: string | null };
+    outbox: { queued: number; sending: number; needs_sign_in: number };
+    session: { offline: boolean };
+  },
+}));
+vi.mock('../lib/edgeStatus', () => ({
+  useEdgeStatus: () => ({ status: edgeMock.status, refresh: async () => {} }),
+}));
+
 import { clearFlash, flash } from '../lib/flash';
 import { getIdentity } from '../lib/identity';
 import { writeKioskSetup } from '../lib/kioskSetup';
@@ -356,4 +367,26 @@ it('renders the scan flash overlay, which paints once a flash fires', () => {
   expect((document.querySelector('.scan-flash') as HTMLElement).style.background)
     .toBe('rgb(46, 184, 115)');
   act(() => { clearFlash(); });
+});
+
+it('laptop mode: the footer shows a bad Cloud item and Sign-in Offline', () => {
+  edgeMock.status = {
+    cloud: { online: false, last_contact: null },
+    outbox: { queued: 2, sending: 0, needs_sign_in: 1 },
+    session: { offline: true },
+  };
+  render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+  const cloud = screen.getByText('Cloud').closest('.kiosk-foot-item') as HTMLElement;
+  expect(cloud.className).toContain('is-bad');
+  expect(cloud.title).toContain('3 queued');
+  expect(screen.getByText('Sign-in')).toBeTruthy();
+  expect(screen.getByText('Offline')).toBeTruthy();
+  edgeMock.status = null;
+});
+
+it('web mode (no edge status): no Cloud or Sign-in item', () => {
+  edgeMock.status = null;
+  render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+  expect(screen.queryByText('Cloud')).toBeNull();
+  expect(screen.queryByText('Sign-in')).toBeNull();
 });

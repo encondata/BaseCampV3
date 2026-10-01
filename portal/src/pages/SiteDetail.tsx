@@ -113,7 +113,7 @@ export default function SiteDetail() {
           <dt>Address line 1</dt><dd>{site.address_line1 ?? '—'}</dd>
           <dt>Address line 2</dt><dd>{site.address_line2 ?? '—'}</dd>
           <dt>City</dt><dd>{site.city ?? '—'}</dd>
-          <dt>Region</dt><dd>{site.region ?? '—'}</dd>
+          <dt>Region / State</dt><dd>{site.region ?? '—'}</dd>
           <dt>Postal code</dt><dd>{site.postal_code ?? '—'}</dd>
           <dt>Country</dt><dd>{site.country ?? '—'}</dd>
           <dt>Timezone</dt><dd>{site.timezone ?? '—'}</dd>

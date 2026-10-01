@@ -1,0 +1,7 @@
+.env
+api/.venv/
+api/*.egg-info/
+api/src/*.egg-info/
+web/node_modules/
+web/dist/
+__pycache__/

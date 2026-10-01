@@ -6,8 +6,10 @@ only credential.
   keyed by `deps.rate_limit_ip`): 429 `rate_limited` past the cap.
 - Every other failure is the same 404 `not_found` — an unknown, revoked
   or expired token, a space whose public links were turned off, a node
-  that was trashed or purged, a page that was never published — so a
-  response never says which.
+  that was trashed or purged, a page that was never published, a node
+  that is private (or inside a private folder) or has printing turned
+  off — so a response never says which. The link itself is kept: it
+  works again once the setting is restored.
 - A page answers its PUBLISHED content only, through
   `content.public_doc` (no comment anchors, no links into the rest of the
   wiki, no person ids), with presigned URLs for exactly the page's own
@@ -50,6 +52,7 @@ from serversherpa.system import admin_config
 from serversherpa.wiki.content import EMPTY_DOC, public_doc, referenced_asset_ids
 from serversherpa.wiki.files import inline_content_type
 from serversherpa.wiki.pages import utcnow
+from serversherpa.wiki.permissions import ANONYMOUS, AccessIndex
 from serversherpa.wiki.share_links import (
     MAX_TOKEN_LENGTH,
     PUBLIC_URL_TTL_SECONDS,
@@ -144,6 +147,11 @@ async def _serve(token: str, request: Request, db: AsyncSession, *,
         raise not_found()
     space = await db.get(WikiSpace, node.space_id)
     if space is None or not space_setting(space, "allow_public_links"):
+        raise not_found()
+    # there is no caller here, so the node's own settings decide, the same
+    # for everyone: nothing private, nothing with printing off
+    ix = AccessIndex(db, ANONYMOUS)
+    if await ix.is_private(node) or not await ix.can_print(node):
         raise not_found()
 
     if node.kind == "page":

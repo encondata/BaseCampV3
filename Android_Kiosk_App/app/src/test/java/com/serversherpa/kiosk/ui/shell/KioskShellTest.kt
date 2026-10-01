@@ -10,6 +10,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.navigation.compose.rememberNavController
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.core.model.KioskMove
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.data.auth.AuthState
 import com.serversherpa.kiosk.data.fakeSession
@@ -77,5 +78,16 @@ class KioskShellTest {
             }
         }
         compose.onNodeWithText("Sign out").assertIsDisplayed()
+    }
+
+    @Test fun aMoveSessionWithNoSetupYetShowsItsMoveInTheFooter() {
+        val c = testContainer()
+        c.auth.completePair(fakeSession(kioskMove = KioskMove("m1", "Dallas Move")))
+        compose.setContent {
+            CompositionLocalProvider(LocalAppContainer provides c) {
+                KioskTheme { KioskShell(rememberNavController()) { Text("page body") } }
+            }
+        }
+        compose.onNodeWithText("Dallas Move", substring = true).assertIsDisplayed()
     }
 }

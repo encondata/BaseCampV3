@@ -56,6 +56,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.google.mlkit.vision.barcode.common.Barcode
 import com.serversherpa.kiosk.input.ScanEvent
 import com.serversherpa.kiosk.input.ScanSource
 import com.serversherpa.kiosk.ui.theme.FragmentMono
@@ -84,10 +85,11 @@ private val SNOW = Color(0xFFE8EDF4)
  *
  * SINGLE publishes the first barcode and dismisses; MULTI publishes each
  * distinct barcode once and stays open until Done. Frames are never
- * stored, and Back closes the sheet.
+ * stored, and Back closes the sheet. [qrOnly] reads QR codes only, stays in SINGLE mode and hides the
+ * Single/Multi switch — the sign-in screen's move-password scan uses it.
  */
 @Composable
-fun CameraScanSheet(initialMode: CameraMode = CameraMode.SINGLE, onScan: (ScanEvent) -> Unit, onDismiss: () -> Unit) {
+fun CameraScanSheet(initialMode: CameraMode = CameraMode.SINGLE, onScan: (ScanEvent) -> Unit, onDismiss: () -> Unit, qrOnly: Boolean = false) {
     val context = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current
     // The kiosk paints in the signed-in person's accent; the sheet follows it
@@ -97,7 +99,7 @@ fun CameraScanSheet(initialMode: CameraMode = CameraMode.SINGLE, onScan: (ScanEv
     // Dialog the window insets report zero, so navigationBarsPadding() there is a
     // no-op and the Done button ends up drawn under the pill.
     val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
-    var mode by remember { mutableStateOf(initialMode) }
+    var mode by remember { mutableStateOf(if (qrOnly) CameraMode.SINGLE else initialMode) }
     var granted by remember { mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) }
     var denied by remember { mutableStateOf(false) }
     var torch by remember { mutableStateOf(false) }
@@ -114,7 +116,7 @@ fun CameraScanSheet(initialMode: CameraMode = CameraMode.SINGLE, onScan: (ScanEv
     val analyzer = remember {
         // ML Kit Task listeners registered without an executor run on the main thread, so these
         // Compose state writes (finished/count/recent) from the analyzer callback are safe.
-        BarcodeAnalyzer { value, symbology ->
+        BarcodeAnalyzer({ value, symbology ->
             if (finished) return@BarcodeAnalyzer
             if (!session.offer(value)) return@BarcodeAnalyzer
             if (mode == CameraMode.SINGLE) {
@@ -125,7 +127,7 @@ fun CameraScanSheet(initialMode: CameraMode = CameraMode.SINGLE, onScan: (ScanEv
                 count = session.count; recent = session.recent
                 onScan(ScanEvent(value, ScanSource.CAMERA, symbology))
             }
-        }
+        }, formats = if (qrOnly) intArrayOf(Barcode.FORMAT_QR_CODE) else intArrayOf())
     }
     DisposableEffect(Unit) {
         onDispose {
@@ -208,9 +210,11 @@ fun CameraScanSheet(initialMode: CameraMode = CameraMode.SINGLE, onScan: (ScanEv
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    ModeButton("Single", mode == CameraMode.SINGLE, accent) { mode = CameraMode.SINGLE }
-                    ModeButton("Multi", mode == CameraMode.MULTI, accent) { mode = CameraMode.MULTI }
-                    Spacer(Modifier.weight(1f))
+                    if (!qrOnly) {
+                        ModeButton("Single", mode == CameraMode.SINGLE, accent) { mode = CameraMode.SINGLE }
+                        ModeButton("Multi", mode == CameraMode.MULTI, accent) { mode = CameraMode.MULTI }
+                        Spacer(Modifier.weight(1f))
+                    } else Text("Point the camera at the move password's QR code.", color = SNOW, fontSize = 14.sp, modifier = Modifier.weight(1f))
                     TextButton(onClick = { torch = !torch }) {
                         Text(if (torch) "Torch on" else "Torch off", color = if (torch) accent else SNOW)
                     }

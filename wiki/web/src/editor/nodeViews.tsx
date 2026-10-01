@@ -1,7 +1,8 @@
 /** React node views for the wiki's custom nodes, used by both the live
  *  editor and the read-only view (controls that change the document only
  *  show while the editor is editable):
- *    - WikiImage: resolves its asset URL, caption and alt text, a resize handle
+ *    - WikiImage: resolves its asset URL, caption and alt text, a resize handle;
+ *      read-only, a click opens it full size in the ImageLightbox viewer
  *    - FileEmbed: a card with an inline PDF/image/video preview
  *    - PageLink: the target's current title ("Missing page" when it's gone,
  *      "Couldn't load link" when the lookup failed — retried once)
@@ -13,7 +14,13 @@
  *  In public mode (the `PublicShare` extension — a public share link's
  *  view, signed out) nothing is looked up in the wiki: images and embedded
  *  files use the URLs that came with the content, a page link is plain
- *  text, and an embed of another wiki file shows as unavailable. */
+ *  text, and an embed of another wiki file shows as unavailable.
+ *
+ *  Where printing is off (the page's `can_print`, through CanPrintContext,
+ *  or an embedded file's own): no download links, images and video lose
+ *  their context menus and native download controls, a PDF is drawn on
+ *  canvases (PdfCanvasViewer) and a file the API won't preview shows only
+ *  its name and icon. */
 import { Extension, type AnyExtension, type Editor, type Extensions } from '@tiptap/core';
 import { TextSelection } from '@tiptap/pm/state';
 import {
@@ -22,10 +29,13 @@ import {
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
+import ImageLightbox from '../components/ImageLightbox';
 import { fileType } from '../components/NodeIcon';
+import PdfCanvasViewer from '../components/PdfCanvasViewer';
 import { resolveAssetUrl } from '../lib/assetUrls';
-import { nodeTitle } from '../lib/nodeTitles';
+import { nodeInfo, nodeTitle } from '../lib/nodeTitles';
 import { personName } from '../lib/personNames';
+import { IMAGE_LOCKED, MEDIA_LOCKED, useCanPrint } from '../lib/printPolicy';
 import { getFileUrl } from '../lib/wikiApi';
 import { CALLOUT_VARIANTS, type CalloutVariant } from './extensions/Callout';
 import { Icon, type IconName } from './icons';
@@ -107,10 +117,13 @@ function WikiImageView({ node, updateAttributes, editor, selected }: NodeViewPro
     assetId: string | null; alt: string; caption: string; width: number | null;
   };
   const url = useAssetUrl(assetId, publicAssets(editor));
+  const canPrint = useCanPrint();
+  const locked = canPrint ? {} : IMAGE_LOCKED;
   const editable = editor.isEditable;
   const frameRef = useRef<HTMLDivElement>(null);
   const [dragWidth, setDragWidth] = useState<number | null>(null);
   const [editingAlt, setEditingAlt] = useState(false);
+  const [viewing, setViewing] = useState(false);
 
   const startResize = (e: ReactPointerEvent<HTMLSpanElement>) => {
     e.preventDefault();
@@ -144,7 +157,14 @@ function WikiImageView({ node, updateAttributes, editor, selected }: NodeViewPro
         {url === null && (
           <div className="wiki-image-missing"><Icon name="image" /><span>Image unavailable</span></div>
         )}
-        {url && <img src={url} alt={alt} draggable={false} onError={publicOnError(editor)} />}
+        {url && (editable
+          ? <img src={url} alt={alt} draggable={false} onError={publicOnError(editor)} {...locked} />
+          : (
+            <button type="button" className="wiki-image-open" onClick={() => setViewing(true)}
+                    aria-label={alt ? `View full size: ${alt}` : 'View full size'}>
+              <img src={url} alt={alt} draggable={false} onError={publicOnError(editor)} {...locked} />
+            </button>
+          ))}
         {editable && url && (
           <span className="wiki-image-resize" role="presentation" title="Drag to resize"
                 onPointerDown={startResize} />
@@ -166,6 +186,9 @@ function WikiImageView({ node, updateAttributes, editor, selected }: NodeViewPro
           ))}
         </div>
       ) : (caption && <figcaption>{caption}</figcaption>)}
+      {viewing && url && (
+        <ImageLightbox src={url} alt={alt} caption={caption} onClose={() => setViewing(false)} />
+      )}
     </NodeViewWrapper>
   );
 }
@@ -174,24 +197,29 @@ function WikiImageView({ node, updateAttributes, editor, selected }: NodeViewPro
 
 type Preview = { url: string | null; type: string } | undefined;
 
+/** What a file node's lookup said: its live title (null when not viewable) and whether it can be printed. */
+type Looked = { id: string; title: string | null; canPrint: boolean };
+
 function FileEmbedView({ node, editor, selected }: NodeViewProps) {
   const { nodeId, assetId, filename, contentType } = node.attrs as {
     nodeId: string | null; assetId: string | null; filename: string; contentType: string;
   };
   const share = publicShareOf(editor);
   const publicUrls = share?.assetUrls ?? null;
+  const pageCanPrint = useCanPrint();
   const [preview, setPreview] = useState<Preview>(undefined);
   const [open, setOpen] = useState(true);
   // a file node shows its live title; the stored name is the page's own
   // asset's (a file node's is never stored — it may name a hidden file)
-  const [liveTitle, setLiveTitle] = useState<{ id: string; title: string | null } | null>(null);
+  const [liveTitle, setLiveTitle] = useState<Looked | null>(null);
 
   useEffect(() => {
     if (!nodeId || publicUrls) return undefined;
     let live = true;
-    nodeTitle(nodeId)
-      .then((title) => { if (live) setLiveTitle({ id: nodeId, title }); })
-      .catch(() => { if (live) setLiveTitle({ id: nodeId, title: null }); });
+    nodeInfo(nodeId)
+      .then((info) => { if (live) setLiveTitle({ id: nodeId, title: info?.title ?? null, canPrint: info?.canPrint ?? false }); })
+      // a lookup that failed can't say the file may be printed
+      .catch(() => { if (live) setLiveTitle({ id: nodeId, title: null, canPrint: false }); });
     return () => { live = false; };
   }, [nodeId, publicUrls]);
 
@@ -221,8 +249,12 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
   const previewable = type === 'pdf' || type === 'image' || type === 'video';
   const loading = preview === undefined || titleLoading;
   const missing = !loading && !preview?.url;
+  // printing off for the page, or for the embedded file (shown only once known)
+  const printOff = !pageCanPrint || (!!nodeId && !publicUrls && liveTitle?.id === nodeId && !liveTitle.canPrint);
+  // the API leaves out a file it won't preview while printing is off: show what it is, without a link
+  const printBlocked = missing && printOff && !!shownName;
   // the stored name shows only once the reader is known to be able to see the file
-  const name = loading ? 'Loading…' : missing ? 'File unavailable' : shownName || 'Untitled file';
+  const name = loading ? 'Loading…' : printBlocked ? shownName : missing ? 'File unavailable' : shownName || 'Untitled file';
   const label = { pdf: 'PDF', image: 'Image', video: 'Video', doc: 'Document', sheet: 'Spreadsheet',
     slides: 'Presentation', other: 'File' }[type];
 
@@ -232,9 +264,11 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
       <div className="wiki-file-card" data-drag-handle="">
         <span className={`wiki-file-icon wiki-file-${type}`}><Icon name="file" /></span>
         <span className="wiki-file-text">
-          <b title={loading || missing ? undefined : shownName}>{name}</b>
+          <b title={loading || (missing && !printBlocked) ? undefined : shownName}>{name}</b>
           <span>
-            {missing ? (publicUrls ? 'Not included in this share' : 'Removed, or not shared with you') : loading ? '' : label}
+            {printBlocked ? 'Not available while printing is off'
+              : missing ? (publicUrls ? 'Not included in this share' : 'Removed, or not shared with you')
+                : loading ? '' : label}
           </span>
         </span>
         <span className="wiki-file-actions" contentEditable={false}>
@@ -250,7 +284,7 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
           {nodeId && !missing && (
             <Link className="we-chip-btn" to={nodePath(nodeId)}><Icon name="external" />Open</Link>
           )}
-          {!nodeId && preview?.url && (
+          {!nodeId && preview?.url && !printOff && (
             <a className="we-chip-btn" href={preview.url} target="_blank" rel="noopener noreferrer"
                onClick={(e) => {
                  if (!share?.isStale() || !assetId) return;
@@ -267,15 +301,20 @@ function FileEmbedView({ node, editor, selected }: NodeViewProps) {
           )}
         </span>
       </div>
-      {open && preview?.url && previewable && (
-        <div className="wiki-file-preview" contentEditable={false}>
+      {open && !titleLoading && preview?.url && previewable && (
+        // data-print-off: a printable page must not print an embedded file whose printing is off
+        <div className="wiki-file-preview" contentEditable={false} {...(printOff ? { 'data-print-off': '' } : {})}>
           {type === 'image' && (
-            <img src={preview.url} alt={shownName} draggable={false} onError={publicOnError(editor)} />
+            <img src={preview.url} alt={shownName} draggable={false} onError={publicOnError(editor)}
+                 {...(printOff ? IMAGE_LOCKED : {})} />
           )}
-          {type === 'pdf' && (
-            <iframe src={preview.url} title={`Preview of ${shownName}`} loading="lazy" />
+          {type === 'pdf' && (printOff
+            ? <PdfCanvasViewer url={preview.url} title={shownName} />
+            : <iframe src={preview.url} title={`Preview of ${shownName}`} loading="lazy" />)}
+          {type === 'video' && (
+            <video src={preview.url} controls preload="metadata" onError={publicOnError(editor)}
+                   {...(printOff ? MEDIA_LOCKED : {})} />
           )}
-          {type === 'video' && <video src={preview.url} controls preload="metadata" onError={publicOnError(editor)} />}
         </div>
       )}
     </NodeViewWrapper>
