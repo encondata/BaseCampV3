@@ -10,6 +10,8 @@ concurrent requests from both spending one rotating refresh token."""
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+from http.cookiejar import DefaultCookiePolicy
+
 import httpx
 
 from edge.config import Settings
@@ -39,6 +41,9 @@ class Upstream:
         self.client = httpx.AsyncClient(base_url=settings.cloud_api_url,
                                         timeout=httpx.Timeout(15.0, connect=5.0),
                                         transport=transport)
+        # Cloud cookies belong to one person: make the jar structurally unable
+        # to store or return any. Callers pass explicit Cookie headers.
+        self.client.cookies.jar.set_policy(DefaultCookiePolicy(allowed_domains=[]))
         self.online = False
         self.last_contact: str | None = None
         self._locks: dict[str, asyncio.Lock] = {}
@@ -52,10 +57,6 @@ class Upstream:
         except httpx.TransportError as exc:
             self.online = False
             raise CloudOffline(str(exc)) from exc
-        finally:
-            # Cloud cookies belong to one person; the jar must never carry
-            # them to another request. Explicit Cookie headers still work.
-            self.client.cookies.clear()
         self.online = True
         self.last_contact = now_iso()
         return resp

@@ -126,3 +126,39 @@ async def test_end_session_offline_keeps_session(app, cloud):
     cloud.post("/auth/logout").mock(side_effect=httpx.ConnectError("down"))
     assert await up.end_session("p-1") is False
     assert up.has_session("p-1") is True
+
+
+async def test_cookie_not_leaked_under_concurrency(settings, app):
+    seen = {}
+
+    async def handler(request):
+        if request.url.path == "/auth/refresh":
+            async def body():
+                await asyncio.sleep(0.05)
+                yield b'{"access_token": "a2", "expires_in": 900}'
+            return httpx.Response(200, headers={"set-cookie": "ss_refresh=r2; Path=/auth"},
+                                  stream=_AsyncStream(body()))
+        seen[request.url.path] = request.headers.get("cookie")
+        return httpx.Response(200, json={})
+
+    from edge.upstream import Upstream
+    up = Upstream(settings, app.state.store, app.state.keys,
+                  transport=httpx.MockTransport(handler))
+    try:
+        refresh = asyncio.create_task(
+            up.request("POST", "/auth/refresh", headers={"Cookie": "ss_refresh=r1"}))
+        await asyncio.sleep(0.01)
+        await up.request("POST", "/auth/login", json={"email": "x"})
+        await refresh
+    finally:
+        await up.aclose()
+    assert seen["/auth/login"] is None
+
+
+class _AsyncStream(httpx.AsyncByteStream):
+    def __init__(self, gen):
+        self.gen = gen
+
+    async def __aiter__(self):
+        async for chunk in self.gen:
+            yield chunk
