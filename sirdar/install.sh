@@ -31,8 +31,20 @@
 #   SIRDAR_INSTALL_LIB=1   define the functions without running main, so a test
 #                          can source this file and call write_env directly
 #
-# Supports Ubuntu/Debian (installs missing prerequisites) and macOS (needs
-# Docker Desktop already installed). Written for bash 3.2 (macOS's bash).
+#   SIRDAR_DOCKER_VERSION  Linux, static install only: Docker Engine version to
+#                          install (e.g. 29.8.2; default = newest stable)
+#
+# Supports Linux (Debian/Ubuntu, Fedora/RHEL, openSUSE/SLES, Arch, Alpine,
+# Void, Slackware and others via Docker's static binaries; see README.md) and
+# macOS (needs Docker Desktop already installed). Written for bash 3.2
+# (macOS's bash).
+
+# POSIX guard: must stay above any bash-only syntax.
+if [ -z "${BASH_VERSION:-}" ] || case ":${SHELLOPTS:-}:" in *:posix:*) true ;; *) false ;; esac; then
+  echo "This installer needs bash. Run it with bash: curl -fsSL https://raw.githubusercontent.com/encondata/BaseCampV3/main/sirdar/install.sh | bash" >&2
+  exit 1
+fi
+
 set -euo pipefail
 
 # ── Output helpers ────────────────────────────────────────────────────
@@ -61,7 +73,11 @@ EOF
 
 # ── Globals (set in main) ─────────────────────────────────────────────
 OS=''            # Darwin | Linux
-DISTRO=''        # ubuntu | debian (Linux only)
+DISTRO=''        # Linux: the os-release ID (ubuntu, fedora, slackware...)
+FAMILY=''        # Linux: debian | fedora | suse | arch | alpine | void | slackware | other
+PKG_MGR=''       # Linux: apt | dnf | yum | zypper | pacman | apk | xbps | emerge | '' (none)
+DOCKER_SOURCE='' # Linux: existing | packages | static
+DOCKER_LOG=''    # Linux: dockerd's log file when we started it outside systemd
 DIR=''
 BRANCH=''
 REPO=''
@@ -70,10 +86,12 @@ DOCKER=(docker)
 ADDED_TO_DOCKER_GROUP=0
 GIT_SRC_OPTS=()
 TMP_FILES=()     # temp files to remove on exit (see cleanup)
+TMP_DIRS=()      # temp dirs to remove on exit
 
 cleanup() {
   local f
   for f in ${TMP_FILES[@]+"${TMP_FILES[@]}"}; do rm -f "$f"; done
+  for f in ${TMP_DIRS[@]+"${TMP_DIRS[@]}"}; do rm -rf "$f"; done
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -344,103 +362,570 @@ write_env() {
   fi
 }
 
-# ── Platform detection and prerequisites ──────────────────────────────
+# ── Platform detection ────────────────────────────────────────────────
+# os_release KEY -> the value from /etc/os-release (empty when unset/absent).
+os_release() {
+  [ -r /etc/os-release ] || return 0
+  # shellcheck disable=SC1091  # runtime file, not a script to lint
+  ( . /etc/os-release && eval "printf '%s' \"\${$1:-}\"" )
+}
+
+# Sets FAMILY (debian | fedora | suse | arch | alpine | void | slackware | other)
+# and DISTRO (the os-release ID, or a best guess without one).
+detect_linux_family() {
+  local id='' id_like=''
+  if [ -r /etc/os-release ]; then
+    id=$(os_release ID); id_like=$(os_release ID_LIKE)
+  elif [ -f /etc/slackware-version ]; then id=slackware
+  elif [ -f /etc/gentoo-release ]; then id=gentoo
+  elif [ -f /etc/alpine-release ]; then id=alpine
+  fi
+  DISTRO="${id:-unknown}"
+  # The ID decides first; ID_LIKE only when the ID itself is unknown.
+  FAMILY=$(linux_family_of "$id")
+  if [ "$FAMILY" = other ] && [ -n "$id_like" ]; then
+    local w
+    for w in $id_like; do
+      FAMILY=$(linux_family_of "$w")
+      [ "$FAMILY" = other ] || break
+    done
+  fi
+}
+
+linux_family_of() {
+  case "$1" in
+    debian|ubuntu|raspbian|linuxmint|pop|elementary|zorin|kali|neon) echo debian ;;
+    fedora|rhel|centos|rocky|almalinux|ol|amzn|redhat) echo fedora ;;
+    suse|opensuse|opensuse-*|sles|sled|sle-micro) echo suse ;;
+    arch|archarm|manjaro|endeavouros|garuda|artix) echo arch ;;
+    alpine) echo alpine ;;
+    void) echo void ;;
+    slackware) echo slackware ;;
+    *) echo other ;;
+  esac
+}
+
 detect_os() {
   OS=$(uname -s)
   case "$OS" in
     Darwin) ;;
-    Linux)
-      [ -r /etc/os-release ] || die "Can't read /etc/os-release; this installer supports Ubuntu, Debian and macOS."
-      local id id_like
-      # shellcheck disable=SC1091  # runtime file, not a script to lint
-      id=$(. /etc/os-release && printf '%s' "${ID:-}")
-      # shellcheck disable=SC1091
-      id_like=$(. /etc/os-release && printf '%s' "${ID_LIKE:-}")
-      case " $id $id_like " in
-        *" ubuntu "*) DISTRO=ubuntu ;;
-        *" debian "*) DISTRO=debian ;;
-        *) die "Unsupported Linux distribution '$id'. This installer supports Ubuntu, Debian and macOS." ;;
-      esac
-      ;;
-    *) die "Unsupported OS '$OS'. This installer supports Ubuntu, Debian and macOS." ;;
+    Linux) detect_linux_family ;;
+    *) die "Unsupported OS '$OS'. This installer supports Linux and macOS." ;;
   esac
 }
 
-apt_install() {
-  as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+# ── Linux: packages ───────────────────────────────────────────────────
+# The package manager for this family (empty on Slackware; first one found
+# on other systems).
+pick_pkg_mgr() {
+  case "$FAMILY" in
+    debian) PKG_MGR=apt ;;
+    fedora) if command -v dnf >/dev/null 2>&1; then PKG_MGR=dnf; else PKG_MGR=yum; fi ;;
+    suse) PKG_MGR=zypper ;;
+    arch) PKG_MGR=pacman ;;
+    alpine) PKG_MGR=apk ;;
+    void) PKG_MGR=xbps ;;
+    slackware) PKG_MGR='' ;;
+    *)
+      PKG_MGR=''
+      local c
+      for c in apt-get dnf yum zypper pacman apk xbps-install emerge; do
+        if command -v "$c" >/dev/null 2>&1; then
+          case "$c" in apt-get) PKG_MGR=apt ;; xbps-install) PKG_MGR=xbps ;; *) PKG_MGR="$c" ;; esac
+          break
+        fi
+      done
+      ;;
+  esac
 }
 
-install_docker_apt_repo() {
-  info "Adding Docker's official apt repository"
-  as_root install -m 0755 -d /etc/apt/keyrings
-  as_root curl -fsSL "https://download.docker.com/linux/$DISTRO/gpg" -o /etc/apt/keyrings/docker.asc
-  as_root chmod a+r /etc/apt/keyrings/docker.asc
-  local codename arch
-  # Docker's docs: VERSION_CODENAME (UBUNTU_CODENAME first on Ubuntu derivatives).
-  # shellcheck disable=SC1091
-  codename=$(. /etc/os-release && printf '%s' "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}")
-  [ -n "$codename" ] || die "Can't tell which Ubuntu/Debian release this is (no VERSION_CODENAME in /etc/os-release). Docker's apt repository supports only Ubuntu and Debian proper; derivatives such as Kali or Raspbian may not work. Install Docker yourself and re-run."
-  arch=$(dpkg --print-architecture)
-  echo "deb [arch=$arch signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$DISTRO $codename stable" \
-    | as_root tee /etc/apt/sources.list.d/docker.list >/dev/null
-  as_root env DEBIAN_FRONTEND=noninteractive apt-get update
+pkg_refresh() {
+  case "$PKG_MGR" in
+    apt) as_root env DEBIAN_FRONTEND=noninteractive apt-get update ;;
+    zypper) as_root zypper --non-interactive refresh ;;
+    apk) as_root apk update ;;
+    xbps) as_root xbps-install -Sy xbps ;;  # xbps refuses other updates while it is outdated
+    *) : ;;  # dnf/yum/pacman/emerge refresh as part of install
+  esac
 }
 
-linux_prereqs() {
-  local missing=() pkg
-  is_root || command -v sudo >/dev/null 2>&1 \
-    || die "This installer needs root. Run it as root, or install sudo and re-run."
+pkg_install() {
+  case "$PKG_MGR" in
+    apt) as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" ;;
+    dnf) as_root dnf -y install "$@" ;;
+    yum) as_root yum -y install "$@" ;;
+    zypper) as_root zypper --non-interactive install "$@" ;;
+    pacman) as_root pacman -Sy --noconfirm --needed "$@" ;;
+    apk) as_root apk add "$@" ;;
+    xbps) as_root xbps-install -Sy "$@" ;;
+    emerge)
+      local p q=()
+      for p in "$@"; do
+        case "$p" in
+          git) q+=(dev-vcs/git) ;; curl) q+=(net-misc/curl) ;;
+          openssl) q+=(dev-libs/openssl) ;; ca-certificates) q+=(app-misc/ca-certificates) ;;
+          *) q+=("$p") ;;
+        esac
+      done
+      as_root emerge --noreplace "${q[@]}" ;;
+    *) return 1 ;;
+  esac
+}
+
+have_ca_bundle() {
+  local f
+  for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \
+           /etc/ssl/ca-bundle.pem /etc/ssl/cert.pem /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem; do
+    [ -s "$f" ] && return 0
+  done
+  return 1
+}
+
+# git, curl, openssl and a CA bundle: installed with the family's package
+# manager, or listed with instructions where there is none (Slackware).
+linux_base_prereqs() {
+  local missing=()
   command -v git >/dev/null 2>&1 || missing+=(git)
   command -v curl >/dev/null 2>&1 || missing+=(curl)
   command -v openssl >/dev/null 2>&1 || missing+=(openssl)
-  [ -f /etc/ssl/certs/ca-certificates.crt ] || missing+=(ca-certificates)
-  if [ "${#missing[@]}" -gt 0 ]; then
-    info "Installing prerequisites: ${missing[*]}"
-    as_root env DEBIAN_FRONTEND=noninteractive apt-get update
-    apt_install "${missing[@]}"
+  have_ca_bundle || missing+=(ca-certificates)
+  [ "${#missing[@]}" -gt 0 ] || return 0
+
+  if [ "$FAMILY" = slackware ]; then
+    die "Missing: ${missing[*]}. A full Slackware install includes them; add them with:
+    slackpkg update && slackpkg install ${missing[*]}
+  (git and curl also need their libraries, e.g. perl, nghttp2, brotli, libssh2, cyrus-sasl), then re-run."
+  fi
+  [ -n "$PKG_MGR" ] || die "Missing: ${missing[*]}, and no supported package manager was found. Install them and re-run."
+  info "Installing prerequisites: ${missing[*]}"
+  pkg_refresh
+  pkg_install "${missing[@]}"
+}
+
+# sparse-checkout needs git 2.25+ (CentOS 7, for one, ships 1.8).
+check_git_version() {
+  local v major minor
+  v=$(git --version 2>/dev/null); v=${v#git version }
+  major=${v%%.*}; minor=${v#*.}; minor=${minor%%.*}
+  case "$major$minor" in ''|*[!0-9]*) warn "Couldn't read the git version ('$v'); it needs to be 2.25 or newer."; return 0 ;; esac
+  if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 25 ]; }; then
+    die "git $v is too old: Sirdar's download needs git 2.25 or newer (sparse-checkout). Upgrade git (e.g. from your distribution's backports, or IUS/endpoint on CentOS 7) and re-run."
+  fi
+}
+
+# ── Linux: Docker from the family's packages ──────────────────────────
+url_exists() { curl -fsSL -o /dev/null -I "$1" 2>/dev/null || curl -fsS -o /dev/null -r 0-0 "$1" 2>/dev/null; }
+
+# Docker's apt repo for Debian, Ubuntu and their derivatives (mapped to the
+# upstream release). Returns 1 when there is no usable repo, so the caller can
+# fall back to the static binaries.
+docker_pkgs_debian() {
+  local repo='' codename='' id
+  id=$(os_release ID)
+  if [ "$id" = ubuntu ]; then repo=ubuntu; codename=$(os_release VERSION_CODENAME)
+  elif [ -n "$(os_release UBUNTU_CODENAME)" ]; then repo=ubuntu; codename=$(os_release UBUNTU_CODENAME)
+  elif [ "$id" = debian ]; then repo=debian; codename=$(os_release VERSION_CODENAME)
+  elif [ -n "$(os_release DEBIAN_CODENAME)" ]; then repo=debian; codename=$(os_release DEBIAN_CODENAME)
+  else repo=debian; codename=$(os_release VERSION_CODENAME)
+  fi
+  if [ -z "$codename" ] || ! url_exists "https://download.docker.com/linux/$repo/dists/$codename/Release"; then
+    warn "Docker's apt repository has no '$repo ${codename:-?}' release; using Docker's static binaries instead."
+    return 1
+  fi
+  info "Adding Docker's official apt repository ($repo $codename)"
+  as_root install -m 0755 -d /etc/apt/keyrings
+  as_root curl -fsSL "https://download.docker.com/linux/$repo/gpg" -o /etc/apt/keyrings/docker.asc
+  as_root chmod a+r /etc/apt/keyrings/docker.asc
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$repo $codename stable" \
+    | as_root tee /etc/apt/sources.list.d/docker.list >/dev/null
+  pkg_refresh
+  pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+}
+
+# Fedora / RHEL and rebuilds: Docker's repo (fedora, rhel, else centos).
+# Amazon Linux: the distro's docker package (compose/buildx come as plugins).
+docker_pkgs_fedora() {
+  local id repo ver
+  id=$(os_release ID)
+  if [ "$id" = amzn ]; then
+    info "Installing Docker from Amazon Linux's packages"
+    pkg_install docker
+    return
+  fi
+  case "$id" in fedora) repo=fedora ;; rhel) repo=rhel ;; *) repo=centos ;; esac
+  ver=$(os_release VERSION_ID)
+  [ "$repo" = fedora ] || ver=${ver%%.*}
+  if [ -z "$ver" ] || ! url_exists "https://download.docker.com/linux/$repo/$ver/"; then
+    warn "Docker's $repo repository has no release $ver yet; using Docker's static binaries instead."
+    return 1
+  fi
+  info "Adding Docker's official $repo repository"
+  curl -fsSL "https://download.docker.com/linux/$repo/docker-ce.repo" \
+    | as_root tee /etc/yum.repos.d/docker-ce.repo >/dev/null
+  pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+}
+
+docker_pkgs_suse()   { pkg_refresh; pkg_install docker docker-compose; }
+docker_pkgs_arch()   { pkg_install docker docker-compose; }
+docker_pkgs_alpine() { pkg_refresh; pkg_install docker docker-cli-compose; }
+docker_pkgs_void()   { pkg_refresh; pkg_install docker docker-compose; }
+
+# The family's package for a CLI plugin (compose | buildx); empty = none.
+plugin_pkg() {
+  case "$FAMILY:$1" in
+    debian:*) [ -f /etc/apt/sources.list.d/docker.list ] && echo "docker-$1-plugin" ;;
+    fedora:*) [ -f /etc/yum.repos.d/docker-ce.repo ] && echo "docker-$1-plugin" ;;
+    suse:*|arch:*|void:*) echo "docker-$1" ;;
+    alpine:*) echo "docker-cli-$1" ;;
+  esac
+  return 0
+}
+
+# ── Linux: Docker's static binaries ───────────────────────────────────
+STATIC_ARCH=''   # x86_64 | aarch64
+static_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) STATIC_ARCH=x86_64 ;;
+    aarch64|arm64) STATIC_ARCH=aarch64 ;;
+    *) die "Docker's static binaries cover x86_64 and aarch64 only (this machine is $(uname -m)). Install Docker Engine and the compose plugin yourself, then re-run." ;;
+  esac
+}
+
+new_tmp_dir() {  # new_tmp_dir VAR -> a temp dir removed on exit
+  local d
+  d=$(mktemp -d "${TMPDIR:-/tmp}/sirdar.XXXXXX")
+  TMP_DIRS+=("$d")
+  eval "$1=\$d"
+}
+
+# Docker Engine (dockerd, containerd, runc, docker CLI...) into /usr/local/bin.
+install_docker_static() {
+  static_arch
+  local base="https://download.docker.com/linux/static/stable/$STATIC_ARCH" ver tmp
+  ver="${SIRDAR_DOCKER_VERSION:-}"
+  if [ -z "$ver" ]; then
+    ver=$(curl -fsSL "$base/" | grep -oE 'docker-[0-9]+\.[0-9]+\.[0-9]+\.tgz' \
+            | sed -e 's/^docker-//' -e 's/\.tgz$//' | sort -u -t. -k1,1n -k2,2n -k3,3n | tail -n 1) || true
+    [ -n "$ver" ] || die "Couldn't list Docker's static releases at $base/."
+  fi
+  info "Installing Docker $ver from Docker's static binaries ($STATIC_ARCH) into /usr/local/bin"
+  new_tmp_dir tmp
+  curl -fL --retry 3 -o "$tmp/docker.tgz" "$base/docker-$ver.tgz" \
+    || die "Couldn't download $base/docker-$ver.tgz"
+  [ -s "$tmp/docker.tgz" ] || die "The download of docker-$ver.tgz is empty."
+  tar -xzf "$tmp/docker.tgz" -C "$tmp" || die "docker-$ver.tgz didn't extract."
+  [ -x "$tmp/docker/dockerd" ] && [ -x "$tmp/docker/docker" ] || die "docker-$ver.tgz doesn't contain dockerd and docker."
+  as_root mkdir -p /usr/local/bin
+  local b
+  for b in "$tmp"/docker/*; do
+    as_root cp -f "$b" /usr/local/bin/
+    as_root chmod 0755 "/usr/local/bin/${b##*/}"
+  done
+  hash -r
+  DOCKER_SOURCE=static
+}
+
+CLI_PLUGINS=/usr/local/lib/docker/cli-plugins
+
+install_cli_plugin() {  # install_cli_plugin NAME URL
+  local tmp
+  new_tmp_dir tmp
+  curl -fL --retry 3 -o "$tmp/$1" "$2" || die "Couldn't download $2"
+  [ -s "$tmp/$1" ] || die "The download of $2 is empty."
+  as_root mkdir -p "$CLI_PLUGINS"
+  as_root cp -f "$tmp/$1" "$CLI_PLUGINS/$1"
+  as_root chmod 0755 "$CLI_PLUGINS/$1"
+}
+
+# docker compose v2: the family's package when Docker came from packages,
+# else (or if that didn't work) the latest static plugin from GitHub.
+ensure_compose_plugin() {
+  docker compose version >/dev/null 2>&1 && return 0
+  local pkg
+  pkg=$(plugin_pkg compose)
+  if [ "$DOCKER_SOURCE" != static ] && [ -n "$pkg" ] && [ -n "$PKG_MGR" ]; then
+    info "Installing the Docker Compose plugin ($pkg)"
+    pkg_install "$pkg" || true
+    docker compose version >/dev/null 2>&1 && return 0
+  fi
+  static_arch
+  info "Installing the Docker Compose plugin (latest release from GitHub)"
+  install_cli_plugin docker-compose \
+    "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$STATIC_ARCH"
+  docker compose version >/dev/null 2>&1 \
+    || die "'docker compose' still doesn't work. Install Docker's compose plugin (https://docs.docker.com/compose/install/linux/) and re-run."
+}
+
+# buildx: compose builds with BuildKit and needs it for --build.
+ensure_buildx_plugin() {
+  docker buildx version >/dev/null 2>&1 && return 0
+  local pkg tag arch
+  pkg=$(plugin_pkg buildx)
+  if [ "$DOCKER_SOURCE" != static ] && [ -n "$pkg" ] && [ -n "$PKG_MGR" ]; then
+    info "Installing the Docker buildx plugin ($pkg)"
+    pkg_install "$pkg" || true
+    docker buildx version >/dev/null 2>&1 && return 0
+  fi
+  static_arch
+  # Asset names carry the version: read the tag from /releases/latest's redirect.
+  tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/docker/buildx/releases/latest) || true
+  tag=${tag##*/}
+  case "$tag" in v[0-9]*) ;; *) die "Couldn't find the latest docker/buildx release (got '$tag')." ;; esac
+  case "$STATIC_ARCH" in x86_64) arch=amd64 ;; *) arch=arm64 ;; esac
+  info "Installing the Docker buildx plugin ($tag from GitHub)"
+  install_cli_plugin docker-buildx \
+    "https://github.com/docker/buildx/releases/download/$tag/buildx-$tag.linux-$arch"
+  docker buildx version >/dev/null 2>&1 || die "'docker buildx' still doesn't work after installing $tag."
+}
+
+# ── Linux: the Docker daemon ──────────────────────────────────────────
+docker_bin() { command -v docker 2>/dev/null || echo docker; }
+docker_reachable() { docker info >/dev/null 2>&1 || as_root "$(docker_bin)" info >/dev/null 2>&1; }
+
+ensure_docker_group() {
+  grep -q '^docker:' /etc/group 2>/dev/null && return 0
+  info "Creating the docker group"
+  if command -v groupadd >/dev/null 2>&1; then as_root groupadd docker
+  else as_root addgroup docker
+  fi
+}
+
+add_user_to_docker_group() {
+  local me="$1"
+  if command -v usermod >/dev/null 2>&1; then as_root usermod -aG docker "$me"
+  elif command -v gpasswd >/dev/null 2>&1; then as_root gpasswd -a "$me" docker
+  else as_root addgroup "$me" docker
+  fi
+}
+
+SIRDAR_MARK='# Added by the Sirdar installer'
+
+# Make sure dockerd has cgroups to work with (Slackware mounts v1 in rc.S).
+ensure_cgroups() {
+  [ -n "$(ls -A /sys/fs/cgroup 2>/dev/null)" ] && return 0
+  as_root mkdir -p /sys/fs/cgroup
+  as_root mount -t cgroup2 none /sys/fs/cgroup \
+    || warn "/sys/fs/cgroup is empty and mounting cgroup2 there failed; dockerd may not start."
+}
+
+write_root_file() {  # write_root_file PATH MODE  (content on stdin)
+  local tmp
+  new_tmp_dir tmp
+  cat >"$tmp/f"
+  as_root cp -f "$tmp/f" "$1"
+  as_root chmod "$2" "$1"
+}
+
+# Append a marker-guarded block to a Slackware rc script (created if missing).
+hook_rc_file() {  # hook_rc_file FILE ACTION
+  local f="$1" act="$2"
+  if [ -f "$f" ] && grep -qF "$SIRDAR_MARK (docker)" "$f"; then
+    as_root chmod +x "$f"; return 0
+  fi
+  if [ ! -f "$f" ]; then printf '#!/bin/sh\n' | write_root_file "$f" 0755; fi
+  printf '\n%s (docker)\nif [ -x /etc/rc.d/rc.docker ]; then\n  /etc/rc.d/rc.docker %s\nfi\n' "$SIRDAR_MARK" "$act" \
+    | as_root tee -a "$f" >/dev/null
+  as_root chmod +x "$f"
+}
+
+slackware_rc_docker() {
+  local rc=/etc/rc.d/rc.docker dockerd
+  dockerd=$(command -v dockerd 2>/dev/null || echo /usr/local/bin/dockerd)
+  if [ -f "$rc" ] && ! grep -qF "$SIRDAR_MARK" "$rc"; then
+    info "Using the existing $rc"
+  else
+    info "Writing $rc and hooking it into rc.local / rc.local_shutdown"
+    write_root_file "$rc" 0755 <<EOF
+#!/bin/sh
+$SIRDAR_MARK: start/stop the Docker daemon (Docker's static binaries).
+# Usage: /etc/rc.d/rc.docker start|stop|restart|status
+
+DOCKERD=$dockerd
+PIDFILE=/var/run/docker.pid
+LOGFILE=/var/log/docker.log
+
+running() {
+  [ -f "\$PIDFILE" ] && kill -0 "\$(cat "\$PIDFILE")" 2>/dev/null
+}
+
+docker_start() {
+  if running; then echo "dockerd is already running."; return 0; fi
+  # dockerd needs cgroups; mount cgroup2 when nothing is mounted yet.
+  if [ -z "\$(ls -A /sys/fs/cgroup 2>/dev/null)" ]; then
+    mkdir -p /sys/fs/cgroup
+    mount -t cgroup2 none /sys/fs/cgroup || echo "rc.docker: couldn't mount cgroup2 on /sys/fs/cgroup" >&2
+  fi
+  echo "Starting dockerd:  \$DOCKERD"
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \\
+    nohup "\$DOCKERD" --pidfile "\$PIDFILE" </dev/null >>"\$LOGFILE" 2>&1 &
+}
+
+docker_stop() {
+  if ! running; then echo "dockerd is not running."; rm -f "\$PIDFILE"; return 0; fi
+  echo "Stopping dockerd."
+  kill "\$(cat "\$PIDFILE")"
+  i=0
+  while running && [ "\$i" -lt 30 ]; do sleep 1; i=\$((i + 1)); done
+  running && echo "dockerd didn't stop within 30 s." >&2
+  return 0
+}
+
+case "\$1" in
+  start) docker_start ;;
+  stop) docker_stop ;;
+  restart) docker_stop; sleep 1; docker_start ;;
+  status) if running; then echo "dockerd is running (pid \$(cat "\$PIDFILE"))."; else echo "dockerd is stopped."; exit 1; fi ;;
+  *) echo "usage: \$0 start|stop|restart|status"; exit 1 ;;
+esac
+EOF
+    hook_rc_file /etc/rc.d/rc.local start
+    hook_rc_file /etc/rc.d/rc.local_shutdown stop
+  fi
+  ensure_cgroups
+  as_root "$rc" start
+  DOCKER_LOG=/var/log/docker.log
+}
+
+systemd_docker() {
+  if ! systemctl cat docker.service >/dev/null 2>&1; then
+    info "Writing /etc/systemd/system/docker.service"
+    write_root_file /etc/systemd/system/docker.service 0644 <<EOF
+$SIRDAR_MARK: Docker's static binaries.
+[Unit]
+Description=Docker Application Container Engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$(command -v dockerd 2>/dev/null || echo /usr/local/bin/dockerd)
+ExecReload=/bin/kill -s HUP \$MAINPID
+Restart=always
+RestartSec=2
+LimitNOFILE=infinity
+Delegate=yes
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    as_root systemctl daemon-reload
+  fi
+  info "Starting the Docker daemon (systemctl enable --now docker)"
+  as_root systemctl enable --now docker || true
+}
+
+openrc_docker() {
+  if [ ! -f /etc/init.d/docker ]; then
+    info "Writing /etc/init.d/docker"
+    write_root_file /etc/init.d/docker 0755 <<EOF
+#!/sbin/openrc-run
+$SIRDAR_MARK: Docker's static binaries.
+command=$(command -v dockerd 2>/dev/null || echo /usr/local/bin/dockerd)
+command_background=yes
+pidfile=/run/docker.pid
+output_log=/var/log/docker.log
+error_log=/var/log/docker.log
+depend() { need net; after firewall; }
+EOF
+  fi
+  info "Starting the Docker daemon (OpenRC)"
+  as_root rc-update add docker default || true
+  as_root rc-service docker start || true
+  DOCKER_LOG=/var/log/docker.log
+}
+
+# Start dockerd now and at boot, the way this system's init does it.
+start_docker_daemon() {
+  DOCKER_LOG=''
+  if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+    systemd_docker
+  elif [ "$FAMILY" = slackware ] || [ -f /etc/rc.d/rc.M ]; then
+    slackware_rc_docker
+  elif command -v rc-service >/dev/null 2>&1; then
+    openrc_docker
+  elif [ -d /etc/sv/docker ] && [ -d /var/service ]; then
+    info "Enabling the runit docker service"
+    [ -e /var/service/docker ] || as_root ln -s /etc/sv/docker /var/service/
+  else
+    warn "No supported init system found: starting dockerd in the background. It won't start at boot."
+    ensure_cgroups
+    as_root sh -c "nohup '$(command -v dockerd 2>/dev/null || echo /usr/local/bin/dockerd)' </dev/null >>/var/log/docker.log 2>&1 &"
+    DOCKER_LOG=/var/log/docker.log
   fi
 
-  if ! command -v docker >/dev/null 2>&1; then
-    info "Installing Docker Engine from Docker's apt repository"
-    install_docker_apt_repo
-    apt_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-  fi
-
-  # Daemon
-  if ! docker info >/dev/null 2>&1 && ! as_root docker info >/dev/null 2>&1; then
-    if command -v systemctl >/dev/null 2>&1; then
-      info "Starting the Docker daemon"
-      as_root systemctl enable --now docker || true
+  info "Waiting for the Docker daemon (up to 60 s)"
+  local waited=0
+  until docker_reachable; do
+    if [ "$waited" -ge 60 ]; then
+      if [ -n "$DOCKER_LOG" ] && [ -f "$DOCKER_LOG" ]; then
+        warn "Last 30 lines of $DOCKER_LOG:"; as_root tail -n 30 "$DOCKER_LOG" >&2 || true
+      elif command -v journalctl >/dev/null 2>&1; then
+        warn "Last 30 lines of the docker journal:"; as_root journalctl -u docker -n 30 --no-pager >&2 || true
+      fi
+      die "The Docker daemon didn't come up within 60 s."
     fi
-    as_root docker info >/dev/null 2>&1 || die "The Docker daemon isn't reachable. Start it (systemctl start docker) and re-run."
+    sleep 2; waited=$((waited + 2))
+  done
+}
+
+# Docker Engine (CLI + daemon). Nothing is installed or started when
+# `docker info` already works (e.g. a mounted socket).
+ensure_docker() {
+  DOCKER_SOURCE=existing
+  if command -v docker >/dev/null 2>&1 && docker --version >/dev/null 2>&1; then
+    docker_reachable && return 0
+  else
+    case "$FAMILY" in
+      debian|fedora|suse|arch|alpine|void)
+        info "Installing Docker Engine ($FAMILY packages)"
+        if "docker_pkgs_$FAMILY" && command -v docker >/dev/null 2>&1; then
+          DOCKER_SOURCE=packages
+        else
+          warn "Docker's packages didn't install; falling back to Docker's static binaries."
+          install_docker_static
+        fi
+        ;;
+      *) install_docker_static ;;
+    esac
+    hash -r
+    docker_reachable && return 0
   fi
+  ensure_docker_group
+  start_docker_daemon
+}
+
+linux_prereqs() {
+  # Static Docker lands in /usr/local/bin, which minimal root PATHs can lack.
+  case ":$PATH:" in *:/usr/local/bin:*) ;; *) PATH="/usr/local/bin:$PATH" ;; esac
+  is_root || command -v sudo >/dev/null 2>&1 \
+    || die "This installer needs root. Run it as root, or install sudo and re-run."
+  pick_pkg_mgr
+  linux_base_prereqs
+  check_git_version
+  ensure_docker
 
   # Who runs docker this time
   if is_root || docker info >/dev/null 2>&1; then
     DOCKER=(docker)
   else
-    DOCKER=(sudo docker)
+    # Absolute path: sudo's secure_path often leaves out /usr/local/bin.
+    DOCKER=(sudo "$(docker_bin)")
     local me
     me=$(id -un)
+    ensure_docker_group
     if ! id -nG "$me" | tr ' ' '\n' | grep -qx docker; then
       info "Adding $me to the docker group (takes effect on your next login)"
-      as_root usermod -aG docker "$me"
+      add_user_to_docker_group "$me"
       ADDED_TO_DOCKER_GROUP=1
     fi
   fi
 
-  # Compose plugin
-  if ! "${DOCKER[@]}" compose version >/dev/null 2>&1; then
-    info "Installing the Docker Compose plugin"
-    pkg=docker-compose-plugin
-    [ -f /etc/apt/sources.list.d/docker.list ] || install_docker_apt_repo
-    as_root env DEBIAN_FRONTEND=noninteractive apt-get update
-    apt_install "$pkg"
-    "${DOCKER[@]}" compose version >/dev/null 2>&1 \
-      || die "'docker compose' isn't available. Install Docker's compose plugin (https://docs.docker.com/compose/install/linux/) and re-run."
-  fi
+  ensure_compose_plugin
+  ensure_buildx_plugin
 }
 
+# ── macOS ─────────────────────────────────────────────────────────────
 mac_prereqs() {
   command -v git >/dev/null 2>&1 || die "git is missing. Install Xcode Command Line Tools: xcode-select --install"
   command -v openssl >/dev/null 2>&1 || die "openssl is missing."
@@ -541,7 +1026,7 @@ env_value() {  # env_value KEY -> value from sirdar/.env, quotes stripped
 
 cmd_prefix() {
   local p="docker"
-  [ "${DOCKER[0]}" = sudo ] && p="sudo docker"
+  [ "${DOCKER[0]}" = sudo ] && p="${DOCKER[*]}"
   printf '%s compose -f %s --env-file %s' "$p" "$DIR/sirdar/docker-compose.yml" "$DIR/sirdar/.env"
 }
 
@@ -641,7 +1126,7 @@ main() {
   REPO="${REPO_URL:-https://github.com/encondata/BaseCampV3.git}"
   BRANCH="${SIRDAR_BRANCH:-main}"
 
-  info "Platform: $OS${DISTRO:+ ($DISTRO)}   Installing to: $DIR   Branch: $BRANCH"
+  info "Platform: $OS${DISTRO:+ ($DISTRO, $FAMILY family)}   Installing to: $DIR   Branch: $BRANCH"
   if [ "${SIRDAR_STOP_AFTER_DIR:-0}" = 1 ]; then exit 0; fi
   if [ "$OS" = Darwin ]; then mac_prereqs; else linux_prereqs; fi
   info "Using: ${DOCKER[*]} ($("${DOCKER[@]}" compose version --short 2>/dev/null || echo compose))"
