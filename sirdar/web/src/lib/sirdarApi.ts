@@ -65,6 +65,7 @@ export interface DeployCheck { label: string; status: 'pass' | 'warn' | 'fail'; 
 export interface ConnectResult {
   ok: boolean; target: string; type: string; checks: DeployCheck[]; facts: Record<string, unknown>;
 }
+export interface DoRegions { regions: { slug: string; name: string }[]; default: string | null }
 export interface KnownHost {
   host: string; port: number; key_type: string; fingerprint: string;
   trusted_at: string; trusted_by_name: string | null;
@@ -157,8 +158,9 @@ export const getSettings = () => getJson<SirdarSettings>('/settings');
 
 export const getDeployTargets = () =>
   getJson<{ targets: DeployTarget[]; types: DeployType[] }>('/deploy/targets');
-export const connectDeploy = (target: string, type: string) =>
-  sendJson<ConnectResult>('POST', '/deploy/connect', { target, type });
+export const connectDeploy = (target: string, type: string, region?: string) =>
+  sendJson<ConnectResult>('POST', '/deploy/connect', region ? { target, type, region } : { target, type });
+export const getDoRegions = () => getJson<DoRegions>('/deploy/digitalocean/regions');
 export const listKnownHosts = () => getJson<KnownHost[]>('/deploy/known-hosts');
 export const trustKnownHost = (host: string, port: number, fingerprint: string) =>
   sendJson<KnownHost>('POST', '/deploy/known-hosts', { host, port, fingerprint });

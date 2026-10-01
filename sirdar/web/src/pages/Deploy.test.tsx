@@ -11,7 +11,7 @@ vi.mock('@portal/auth/AuthContext', () => ({
 }));
 
 const api = vi.hoisted(() => ({
-  getDeployTargets: vi.fn(), connectDeploy: vi.fn(), listKnownHosts: vi.fn(),
+  getDeployTargets: vi.fn(), getDoRegions: vi.fn(), connectDeploy: vi.fn(), listKnownHosts: vi.fn(),
   trustKnownHost: vi.fn(), forgetKnownHost: vi.fn(),
 }));
 vi.mock('../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../lib/sirdarApi')>()), ...api }));
@@ -49,6 +49,7 @@ beforeEach(() => {
   api.getDeployTargets.mockResolvedValue(TARGETS);
   api.listKnownHosts.mockResolvedValue([]);
 });
+Element.prototype.scrollIntoView = () => {};   // jsdom lacks it (ComboBox calls it)
 afterEach(cleanup);
 
 async function ready() {
@@ -238,4 +239,55 @@ it('lists trusted hosts and forgets one after confirming', async () => {
 it('empty hosts list shows the empty state', async () => {
   await ready();
   expect(await screen.findByText('No hosts trusted yet.')).toBeTruthy();
+});
+
+
+const DO_TARGETS = { ...TARGETS, targets: TARGETS.targets.map((t) => t.id === 'digitalocean' ? { ...t, configured: true, summary: 'token set' } : t) };
+const REGIONS = { regions: [{ slug: 'nyc3', name: 'New York 3' }, { slug: 'sfo3', name: 'San Francisco 3' }], default: 'nyc3' };
+const DO_OK = { ok: true, target: 'digitalocean', type: 'dev', facts: {}, checks: [{ label: 'Account', status: 'pass', value: 'ops@example.com · active' }] };
+
+async function pickDo() {
+  api.getDeployTargets.mockResolvedValue(DO_TARGETS);
+  await ready();
+  await userEvent.click(screen.getByRole('radio', { name: /DigitalOcean/ }));
+}
+
+it('DigitalOcean: loads regions, preselects the default, and sends the chosen region', async () => {
+  api.getDoRegions.mockResolvedValue(REGIONS);
+  api.connectDeploy.mockResolvedValue(DO_OK);
+  await pickDo();
+  const box = await screen.findByRole('combobox', { name: 'Region' }) as HTMLInputElement;
+  await waitFor(() => expect(box.value).toContain('New York 3 (nyc3)'));
+  await userEvent.click(box);
+  await userEvent.click(await screen.findByText('San Francisco 3 (sfo3)'));
+  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(testBtn());
+  expect(api.connectDeploy).toHaveBeenCalledWith('digitalocean', 'dev', 'sfo3');
+  await waitFor(() => expect(screen.getByText(/sfo3 ·/)).toBeTruthy());
+});
+
+it('DigitalOcean: sends the preselected default, and switching targets reuses the list', async () => {
+  api.getDoRegions.mockResolvedValue(REGIONS);
+  api.connectDeploy.mockResolvedValue(DO_OK);
+  await pickDo();
+  await screen.findByRole('combobox', { name: 'Region' });
+  await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
+  expect(screen.queryByRole('combobox', { name: 'Region' })).toBeNull();
+  await userEvent.click(screen.getByRole('radio', { name: /DigitalOcean/ }));
+  await screen.findByRole('combobox', { name: 'Region' });
+  expect(api.getDoRegions).toHaveBeenCalledTimes(1);
+  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(testBtn());
+  expect(api.connectDeploy).toHaveBeenCalledWith('digitalocean', 'dev', 'nyc3');
+});
+
+it('DigitalOcean: a region load error shows inline with Retry', async () => {
+  api.getDoRegions
+    .mockRejectedValueOnce(new ApiError(502, 'connect_failed', { code: 'connect_failed', reason: 'DigitalOcean rejected the API token.' }))
+    .mockResolvedValueOnce(REGIONS);
+  await pickDo();
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('DigitalOcean rejected the API token.'));
+  await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+  await screen.findByRole('combobox', { name: 'Region' });
+  expect(api.getDoRegions).toHaveBeenCalledTimes(2);
 });

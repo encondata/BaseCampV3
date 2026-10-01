@@ -1,12 +1,13 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
+import ComboBox from '@portal/components/ComboBox';
 import DataTable from '@portal/components/DataTable';
 
 import HostKeyModal from '../components/HostKeyModal';
 import {
-  connectDeploy, errorDetail, errorText, forgetKnownHost, getDeployTargets, listKnownHosts,
-  trustKnownHost, type ConnectResult, type DeployCheck, type DeployTarget, type DeployType, type KnownHost,
+  connectDeploy, errorDetail, errorText, forgetKnownHost, getDeployTargets, getDoRegions, listKnownHosts,
+  trustKnownHost, type ConnectResult, type DeployCheck, type DeployTarget, type DeployType, type DoRegions, type KnownHost,
 } from '../lib/sirdarApi';
 
 /** .env keys (names only) each target needs; the API never reports which are missing.
@@ -54,7 +55,7 @@ export default function Deploy() {
   const [type, setType] = useState('');
   const [loadError, setLoadError] = useState('');
   const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<(ConnectResult & { at: string }) | null>(null);
+  const [result, setResult] = useState<(ConnectResult & { at: string; region?: string }) | null>(null);
   const [error, setError] = useState('');
   const [hostsError, setHostsError] = useState('');
   const inFlight = useRef(false);
@@ -62,6 +63,10 @@ export default function Deploy() {
   const [mismatch, setMismatch] = useState<KeyInfo | null>(null);
   const [trusting, setTrusting] = useState(false);
   const [trustError, setTrustError] = useState('');
+  const [doRegions, setDoRegions] = useState<DoRegions | null>(null);   // fetched once, reused
+  const [regionsLoading, setRegionsLoading] = useState(false);
+  const [regionsError, setRegionsError] = useState('');
+  const [region, setRegion] = useState('');
 
   const loadHosts = useCallback(() =>
     listKnownHosts().then((h) => { setHosts(h); setHostsError(''); })
@@ -74,6 +79,25 @@ export default function Deploy() {
   }, [loadHosts]);
 
   const selected = targets.find((t) => t.id === target);
+  const doReady = selected?.id === 'digitalocean' && selected.available && selected.configured;
+
+  const loadRegions = useCallback(() => {
+    setRegionsLoading(true); setRegionsError('');
+    getDoRegions()
+      .then((r) => { setDoRegions(r); setRegion((cur) => cur || r.default || ''); })
+      .catch((e) => {
+        const d = errorDetail<{ reason?: string }>(e);
+        setRegionsError(d?.reason || errorText(e, "Couldn't load DigitalOcean regions."));
+      })
+      .finally(() => setRegionsLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!doReady) { setRegion(''); return; }
+    if (doRegions) setRegion((cur) => cur || doRegions.default || '');
+    else loadRegions();
+  }, [doReady, doRegions, loadRegions]);
+
   const canRun = !!selected && selected.available && selected.configured && !!type && canAdd && !running;
 
   const clearOutcome = () => { setResult(null); setMismatch(null); setError(''); };
@@ -88,8 +112,9 @@ export default function Deploy() {
     setRunning(true);
     setError(''); setResult(null); setMismatch(null);
     try {
-      const r = await connectDeploy(target, type);
-      setResult({ ...r, at: new Date().toISOString() });
+      const sent = doReady && region ? region : undefined;
+      const r = sent ? await connectDeploy(target, type, sent) : await connectDeploy(target, type);
+      setResult({ ...r, region: sent, at: new Date().toISOString() });
     } catch (e) {
       const d = errorDetail<KeyInfo>(e);
       const code = (e as { code?: string }).code;
@@ -194,6 +219,22 @@ export default function Deploy() {
             {running ? 'Connecting…' : 'Test connection'}
           </button>
         </div>
+        {doReady && (
+          <div className="sirdar-region">
+            <label className="field-label" htmlFor="do-region">Region</label>
+            {regionsLoading && <p className="page-hint">Loading regions…</p>}
+            {regionsError && (
+              <p className="form-error" role="alert">{regionsError}{' '}
+                <button type="button" className="mini-btn" onClick={loadRegions}>Retry</button></p>
+            )}
+            {doRegions && (
+              <ComboBox inputId="do-region" ariaLabel="Region" portal value={region}
+                        placeholder="Select a region…"
+                        options={doRegions.regions.map((r) => ({ value: r.slug, label: `${r.name} (${r.slug})` }))}
+                        onChange={(v) => { setRegion(v); clearOutcome(); }} />
+            )}
+          </div>
+        )}
         {!canAdd && (
           <p className="page-hint">You can view deployments but not run tests. Ask a super admin for access.</p>
         )}
@@ -218,6 +259,7 @@ export default function Deploy() {
           <div className="sirdar-card sirdar-result">
             <p className="page-hint">
               {targets.find((t) => t.id === result.target)?.label ?? result.target} ·{' '}
+              {result.region && <>{result.region} · </>}
               {types.find((t) => t.id === result.type)?.label ?? result.type} ·{' '}
               <span className="mono">{new Date(result.at).toLocaleString()}</span>
             </p>

@@ -127,12 +127,16 @@ async def test_connect_validation_and_audit(client, db, deploy_env, bodies):
 @pytest.fixture
 def do_transport(monkeypatch):
     holder = {"transport": _transport()}
-    real = digitalocean.test_connection
+    real, real_regions = digitalocean.test_connection, digitalocean.list_regions
 
-    async def fake(settings, *, transport=None):
-        return await real(settings, transport=holder["transport"])
+    async def fake(settings, *, region=None, transport=None):
+        return await real(settings, region=region, transport=holder["transport"])
+
+    async def fake_regions(settings, *, transport=None):
+        return await real_regions(settings, transport=holder["transport"])
 
     monkeypatch.setattr(digitalocean, "test_connection", fake)
+    monkeypatch.setattr(digitalocean, "list_regions", fake_regions)
     return holder
 
 
@@ -286,3 +290,81 @@ async def test_unexpected_connect_error_is_audited(client, db, deploy_env, ssh_s
         await client.post("/api/deploy/connect", headers=h, json={"target": "ssh", "type": "dev"})
     assert await _connect_audits(db) == [
         {"target": "ssh", "type": "dev", "ok": False, "code": "error"}]
+
+
+LIST = {"regions": [
+    {"slug": "sfo3", "name": "San Francisco 3", "available": True},
+    {"slug": "nyc3", "name": "New York 3", "available": True},
+    {"slug": "nyc1", "name": "New York 1", "available": True},
+    {"slug": "sfo1", "name": "San Francisco 1", "available": False},
+    {"slug": "ams3", "name": "amsterdam 3", "available": True}]}
+
+
+async def test_regions_list_filters_sorts_and_defaults(client, db, deploy_env, do_transport, bodies):
+    do_transport["transport"] = _transport(regions=LIST)
+    h = await auth_headers(client, db, email="admin@test.example.com", roles=("admin",))
+    deploy_env(do_token=TOKEN, do_region="nyc3")
+    resp = await client.get("/api/deploy/digitalocean/regions", headers=h)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"regions": [
+        {"slug": "ams3", "name": "amsterdam 3"}, {"slug": "nyc1", "name": "New York 1"},
+        {"slug": "nyc3", "name": "New York 3"}, {"slug": "sfo3", "name": "San Francisco 3"}],
+        "default": "nyc3"}
+    deploy_env(do_token=TOKEN, do_region="sfo1")          # present but unavailable
+    assert (await client.get("/api/deploy/digitalocean/regions", headers=h)).json()["default"] is None
+    deploy_env(do_token=TOKEN, do_region="zzz9")          # absent
+    assert (await client.get("/api/deploy/digitalocean/regions", headers=h)).json()["default"] is None
+    deploy_env(do_token=TOKEN)                            # unset
+    assert (await client.get("/api/deploy/digitalocean/regions", headers=h)).json()["default"] is None
+
+
+async def test_regions_errors(client, db, deploy_env, do_transport, bodies):
+    h = await auth_headers(client, db)
+    resp = await client.get("/api/deploy/digitalocean/regions", headers=h)   # not configured
+    assert resp.status_code == 400 and resp.json()["detail"]["code"] == "target_not_configured"
+    deploy_env(do_token=TOKEN)
+    do_transport["transport"] = _transport(status=401)
+    resp = await client.get("/api/deploy/digitalocean/regions", headers=h)
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == {"code": "connect_failed",
+                                     "reason": "DigitalOcean rejected the API token."}
+
+    def boom(request):
+        raise httpx.ConnectError(f"boom {TOKEN}")
+    do_transport["transport"] = httpx.MockTransport(boom)
+    resp = await client.get("/api/deploy/digitalocean/regions", headers=h)
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["reason"] == "Couldn't reach the DigitalOcean API."
+
+
+async def test_regions_needs_auth(client, deploy_env):
+    deploy_env(do_token=TOKEN)
+    assert (await client.get("/api/deploy/digitalocean/regions")).status_code in (401, 403)
+
+
+async def test_connect_with_region_param(client, db, deploy_env, do_transport, bodies):
+    deploy_env(do_token=TOKEN, do_region="nyc3")
+    h = await auth_headers(client, db)
+    post = lambda **kw: client.post("/api/deploy/connect", headers=h, json={  # noqa: E731
+        "target": "digitalocean", "type": "dev", **kw})
+    body = (await post(region="sfo1")).json()                 # overrides env nyc3; unavailable
+    assert {"label": "Region", "status": "warn", "value": "sfo1 not available"} in body["checks"]
+    body = (await post(region="nyc3")).json()
+    assert {"label": "Region", "status": "pass", "value": "nyc3 available"} in body["checks"]
+    deploy_env(do_token=TOKEN)                                # no env default, region given
+    body = (await post(region="nyc3")).json()
+    assert body["facts"]["region"] == "nyc3"
+    for bad in ("NYC3", "n", "nyc 3", "x" * 21, "nyc3;"):
+        assert (await post(region=bad)).status_code == 422
+    audits = await _connect_audits(db)
+    assert audits[0] == {"target": "digitalocean", "type": "dev", "ok": True, "region": "sfo1"}
+    assert len(audits) == 3
+
+
+async def test_connect_region_ignored_for_ssh(client, db, deploy_env, bodies, ssh_server):
+    _ssh_env(deploy_env, ssh_server)
+    h = await auth_headers(client, db)
+    resp = await client.post("/api/deploy/connect", headers=h,
+                             json={"target": "ssh", "type": "dev", "region": "nyc3"})
+    assert resp.status_code in (200, 409)
+    assert "region" not in resp.json().get("facts", {})

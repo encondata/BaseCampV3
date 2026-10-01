@@ -44,3 +44,6 @@
 .sirdar-mismatch { border-color: var(--c-red-bd, #fca5a5); }
 .sirdar-hostkey-card { width: min(560px, calc(100vw - 48px)); }
 .sirdar-fingerprint { word-break: break-all; }
+
+.sirdar-region { display: flex; flex-direction: column; gap: 6px; max-width: 360px; margin-bottom: 12px; }
+.sirdar-region label { font-weight: 600; }
