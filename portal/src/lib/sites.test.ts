@@ -7,6 +7,7 @@ import {
   type SiteFormState,
 } from './sites';
 import type { SiteItem, SurveySchema } from './api';
+import { siteTimezoneOptions } from './sites';
 
 const site: SiteItem = {
   id: 's1', name: 'Acme DC1', code: 'ADC1',
@@ -112,6 +113,25 @@ describe('sitePayload', () => {
   it('half-set — longitude only sends the value and an explicit null latitude', () => {
     const out = sitePayload({ ...base, latitude: '', longitude: '-97.7431' });
     expect(out).toEqual({ country: 'US', latitude: null, longitude: -97.7431 });
+  });
+});
+
+describe('sitePayload on update', () => {
+  it('sends an explicit null for every optional field the user cleared', () => {
+    const out = sitePayload({
+      ...formFromSite({ ...site, notes: 'Gate code 1234', partner_id: 'p1' }),
+      notes: '  ', timezone: '', dc_provider: '', partner_id: '', code: '', city: '',
+    }, 'update');
+    expect(out).toMatchObject({
+      notes: null, timezone: null, dc_provider: null, partner_id: null, code: null, city: null,
+    });
+    expect(out.name).toBe('Acme DC1');
+  });
+  it('never sends null for the required fields', () => {
+    const out = sitePayload({ ...formFromSite(site), name: '', status: '', country: '' }, 'update');
+    expect('name' in out).toBe(false);
+    expect('status' in out).toBe(false);
+    expect('country' in out).toBe(false);
   });
 });
 
@@ -316,5 +336,26 @@ describe('naturalCompare', () => {
   });
   it('handles empty strings without throwing', () => {
     expect(['b', '', 'a'].sort(naturalCompare)).toEqual(['', 'a', 'b']);
+  });
+});
+
+describe('siteTimezoneOptions', () => {
+  it('offers every standard zone with its UTC offset', () => {
+    const opts = siteTimezoneOptions('');
+    const zurich = opts.find((o) => o.value === 'Europe/Zurich');
+    expect(zurich?.label).toBe('Europe/Zurich');
+    expect(zurich?.sub).toMatch(/^UTC[+−]\d\d:\d\d$/);
+    expect(opts.some((o) => o.value === 'America/New_York')).toBe(true);
+  });
+
+  it('does not duplicate a standard zone the site already has', () => {
+    const opts = siteTimezoneOptions('America/Chicago');
+    expect(opts.filter((o) => o.value === 'America/Chicago')).toHaveLength(1);
+  });
+
+  it('keeps a non-standard saved value visible as its own option, first', () => {
+    const opts = siteTimezoneOptions('Eastern');
+    expect(opts[0]).toEqual({ value: 'Eastern', label: 'Eastern', sub: 'Not a standard time zone' });
+    expect(opts.filter((o) => o.value === 'Eastern')).toHaveLength(1);
   });
 });
