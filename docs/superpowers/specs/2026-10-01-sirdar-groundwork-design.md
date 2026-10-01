@@ -64,17 +64,23 @@ returns 200, or 503 when its database is unreachable.
 
 - **`users`**: `person_id` (uuid PK; the portal person id for portal users,
   a new uuid for local users), `source` (`portal` | `local`), `email`
-  (citext, unique), `display_name`, `password_hash`,
+  (citext, unique), `first_name`, `last_name`, `preferred_name`,
+  `job_title` (display name = preferred-or-first + last, as in the
+  portal), `password_hash`,
   `must_change_password`, `password_updated_at`, `password_expires_at`
   (worked out at import from the portal's password-expiry policy; null =
   never), `totp_secret_enc`, `totp_confirmed_at`, `totp_last_counter`,
+  `totp_enabled` (the portal's site-wide 2FA switch was on at import),
   `totp_required`, `failed_login_count`, `locked_until`, `last_login_at`,
   `last_login_ip`, `disabled_at`, `disabled_reason`, `last_imported_at`,
   `ui_prefs` (jsonb), `created_at`, `updated_at`.
-- **`roles`**: `name` PK, `label`, `rank`, `color`. Only the portal roles
-  with global scope and rank ≥ 60 are copied (today: developer 100,
-  founder 100, super_admin 80, admin 60). Roles that disappear from the
-  portal stay in place, but nobody is granted them.
+- **`roles`**: `name` PK, `label`, `rank`, `color`. Migration 0001 seeds
+  the four portal roles with global scope and rank ≥ 60 (developer 100,
+  founder 100, super_admin 80, admin 60) and their default permissions.
+  The import updates label, rank and color from the portal and adds any
+  new global rank ≥ 60 role (with no permissions until someone grants
+  them). Roles that disappear from the portal stay in place, but nobody
+  is granted them.
 - **`user_roles`**: (`person_id`, `role`) PK.
 - **`role_permissions`**: (`role`, `resource`, `action`) PK. Seeded
   defaults below, then edited on the Roles & access page.
@@ -85,8 +91,9 @@ returns 200, or 503 when its database is unreachable.
   family id for reuse detection, `expires_at` absolute, `revoked_at`, ip,
   user agent).
 - **`audit_log`**: actor, action, target, details (jsonb), at.
-- **`import_runs`**: started/finished, actor (null for CLI), status
-  (`ok` | `failed`), error, counts (added / updated / disabled / skipped),
+- **`import_runs`**: started/finished, actor (null for CLI), trigger
+  (`cli` | `web`), status (`ok` | `failed`), error, counts (added /
+  updated / unchanged / disabled / skipped),
   and per-row results (jsonb) for the summary and CSV.
 
 ## Import from portal
@@ -109,8 +116,11 @@ returns 200, or 503 when its database is unreachable.
    - **Eligible and new:** insert the user and their roles and backup
      codes. Row result `added`.
    - **Eligible and existing:** overwrite email, name, password fields,
-     TOTP fields, `totp_required`, roles and backup codes. Clear
-     `disabled_at` if the import had set it. Row result `updated`.
+     TOTP fields, `totp_enabled`, `totp_required`, roles and backup
+     codes. `totp_last_counter` keeps the higher of the two values, and a
+     backup code used in Sirdar stays used. Clear `disabled_at` if the
+     import had set it. Row result `updated`, or `unchanged` when nothing
+     differed.
    - **No longer eligible:** set `disabled_at` with reason
      `not_eligible` and revoke all sessions. Never delete. Row result
      `disabled`.
@@ -126,10 +136,10 @@ returns 200, or 503 when its database is unreachable.
 ## CLI
 
 - `sirdar import-users`: runs the import and prints the summary.
-- `sirdar create-admin --email --name [--role developer]`: creates a
-  `source = local` user and prompts for the password twice. The role must
-  be one of the copied roles. If no roles exist yet, the four default
-  roles are seeded first.
+- `sirdar create-admin --email --first-name --last-name [--role developer]`:
+  creates a `source = local` user and prompts for the password twice.
+  The role must exist in `roles` (the four defaults are always seeded by
+  migration 0001).
 - `sirdar reset-password --email`: local users only, prompts for the
   password.
 
@@ -138,34 +148,51 @@ fresh installs.
 
 ## Authentication
 
-This follows the portal's flow. The access JWT is held in memory by the
-SPA. The refresh token travels only in an httpOnly cookie named
-`sirdar_refresh`.
+Sirdar's API follows the portal's auth contract (same paths, request and
+response shapes, error codes) so the SPA can reuse the portal's `Login`
+page, `AuthProvider` and API client unchanged. Every API route lives
+under `/api` (the SPA sets `VITE_API_URL=/api`). The access JWT is held
+in memory by the SPA; the refresh token travels only in an httpOnly
+cookie named `sirdar_refresh` with path `/api/auth`. Tokens are signed
+with `SIRDAR_JWT_SECRET` and issuer `sirdar`, so portal tokens never
+verify here.
 
-- **`POST /auth/login`** (`email`, `password`). Checks run in this order:
-  1. Unknown email: verify against a dummy hash (equal timing), then
-     `invalid_credentials`.
-  2. `locked_until` in the future: `locked`.
-  3. Wrong password: increment `failed_login_count`, lock using the
-     portal's threshold and duration, then `invalid_credentials`.
-  4. `disabled_at` set: `disabled`.
+- **`POST /api/auth/login`** (`email`, `password`). Checks run in this
+  order, matching the portal (status checks only after a correct
+  password, so nobody can probe account states):
+  1. Unknown email or no password hash: verify against a dummy hash
+     (equal timing), then 401 `invalid_credentials`.
+  2. Wrong password: increment `failed_login_count`; at 10 failures lock
+     for 900 s and reset the count (`SIRDAR_MAX_FAILED_LOGINS`,
+     `SIRDAR_LOCKOUT_SECONDS`). 401 `invalid_credentials`.
+  3. `disabled_at` set: 401 `account_disabled`.
+  4. `locked_until` in the future: 423 `account_locked`.
   5. Portal user with `must_change_password` set or
-     `password_expires_at` passed: `password_change_required`, with a
-     message telling them to update the password in the portal and then
-     re-import.
-  6. `totp_required` set without a confirmed secret:
-     `totp_enrollment_required`, with a message pointing to the portal.
-  7. Confirmed secret: return a challenge token (5 min, purpose
-     `verify`).
-  8. Otherwise: create a session.
-- **`POST /auth/totp/verify`** (challenge, code or backup code). Rejects
-  a code at or below `totp_last_counter`. A backup code is single-use.
-  Failures count toward lockout.
-- **`POST /auth/refresh`**: rotation with reuse detection (reuse revokes
-  the family). Every rotation inherits the original absolute deadline.
-- **`POST /auth/logout`**.
-- **`GET /me`**: person, source, roles, rank, effective permissions,
-  `ui_prefs`. **`PATCH /me/preferences`**.
+     `password_expires_at` passed: 403 `password_change_required`.
+  6. `totp_required` set without a confirmed secret: 403
+     `totp_enrollment_required`.
+  7. `totp_enabled` and a confirmed secret: return
+     `{status: "totp_verify", challenge_token, backup_codes_remaining}`
+     (challenge JWT, 5 min, `typ: totp`).
+  8. Otherwise: create a session and return `SessionOut` (the portal's
+     shape: access_token, expires_in, session_expires_at, person, roles,
+     must_change_password (always false), preferences, perms, max_rank,
+     scope `{global: true}`, password_min_length, totp status).
+- **`POST /api/auth/totp/verify`** (header `X-Totp-Challenge`, body
+  `{code, remember}`; `remember` is ignored). A 6-digit code is matched
+  ±1 step and rejected at or below `totp_last_counter`. A 10-character
+  backup code is single-use. Failures count toward lockout (401
+  `totp_invalid`); a bad or expired challenge is 401 `invalid_challenge`.
+- **`POST /api/auth/refresh`**: rotation with reuse detection (reuse
+  revokes the family, 401 `session_reuse_detected`). Every rotation
+  inherits the original absolute deadline. No cookie: 401
+  `missing_refresh`.
+- **`POST /api/auth/logout`** (204, never fails).
+- **`GET /api/auth/me`**, **`PUT /api/auth/me/preferences`** (the
+  portal's `UiPreferences` shape and defaults).
+- **`GET /api/system/status`** (public): the portal's shape with
+  `totp_trust_days: 0` (hides "Remember this browser") plus
+  `needs_setup: true` when Sirdar has no users.
 
 There are no trusted devices in v1. Each sign-in that owes 2FA asks for a
 code.
@@ -205,17 +232,22 @@ Shared from the portal through `@portal` (enforced by an allowlist test,
 with `dedupe` for react, react-dom, react-router-dom and gsap):
 
 - the portal stylesheets (tokens, list typography, forms, modals);
-- `LoginScene`, `OtpInput`;
+- `pages/Login` (whole page) with `AuthProvider` and
+  `SystemStatusProvider`, `LoginScene`, `OtpInput`;
 - `AppShell`, `NavPanel`, `Topbar` structure (expanded/rail/hidden,
   Ctrl/⌘+B, nav background and text-size prefs);
-- `DataTable`, `ComboBox`, `Switch`, the toast host, the modal header
-  pattern;
-- the bulk-summary pattern (per-row summary + CSV download).
+- `DataTable`, `ComboBox`, `Switch`, `access/MatrixTable`, the modal
+  header pattern, `lib/listTools` `exportCsv`.
 
-Sirdar supplies its own API client and auth context. Where a portal
-component reads portal globals, the portal gets a minimal refactor so the
-component takes props or a context with the same interface. The portal's
-existing tests must stay green.
+The portal's API client (`lib/api` `apiFetch`, refresh, session events)
+is reused as-is against Sirdar's `/api`. Sirdar has its own shell built
+from `NavPanel` (the portal's `AppShell`/`Topbar` are tied to portal
+data). Minimal, backward-compatible portal props: `Login` gains optional
+`eyebrow`, `notice` and `extraErrors`, and hides "Remember this browser"
+when `totp_trust_days` is 0; `LoginScene` gains optional `tag`;
+`NavPanel` gains optional `tag`. Portal defaults stay unchanged and the
+portal's existing tests must stay green. No notifications or toast host
+in v1.
 
 Branding: "Sirdar" in the topbar and on the sign-in page, the ServerSherpa
 mark, "A Cumulus Solutions Group product", and an accent color distinct
@@ -239,10 +271,11 @@ log); Settings. The account menu in the topbar opens `/me` and Sign out.
 
 ## Errors
 
-- Auth errors use stable codes: `invalid_credentials`, `locked`,
-  `disabled`, `password_change_required`, `totp_enrollment_required`,
-  `totp_invalid`, `challenge_expired`, `session_expired`,
-  `missing_refresh`.
+- Auth errors use the portal's stable codes: `invalid_credentials`,
+  `account_locked`, `account_disabled`, `password_change_required`,
+  `totp_enrollment_required`, `totp_invalid`, `invalid_challenge`,
+  `invalid_session`, `session_expired`, `session_reuse_detected`,
+  `missing_refresh`, `invalid_token`, `session_ended`.
 - Permission failures return 403 `forbidden`. A failed import returns
   502 `source_unavailable` (unreachable) or 409 `source_not_configured`
   (unset).
