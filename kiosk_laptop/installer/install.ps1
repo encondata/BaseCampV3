@@ -80,11 +80,24 @@ $AssumeYes = [bool]$Yes
 function Write-Info { param([string]$Message) Write-Host "==> $Message" -ForegroundColor Cyan }
 function Write-Warn { param([string]$Message) Write-Host "Warning: $Message" -ForegroundColor Yellow }
 
-# True when we may prompt: not forced non-interactive, not library mode, a console to read.
-function Test-Interactive {
-    if ($env:KIOSK_NONINTERACTIVE -eq '1' -or $AssumeYes -or $env:KIOSK_INSTALL_LIB -eq '1') { return $false }
+# A console someone can type into (never in library mode, so tests can't block).
+function Test-ConsoleAvailable {
+    if ($env:KIOSK_INSTALL_LIB -eq '1') { return $false }
     if (-not [Environment]::UserInteractive) { return $false }
     try { return -not [Console]::IsInputRedirected } catch { return $false }
+}
+
+# True when we may ask questions: not -Yes, not forced non-interactive, a console.
+function Test-Interactive {
+    if ($env:KIOSK_NONINTERACTIVE -eq '1' -or $AssumeYes) { return $false }
+    Test-ConsoleAvailable
+}
+
+# True when the closing "Press Enter" may wait. -Yes only means no questions:
+# a technician who used it still needs to read the result in its own window.
+function Test-CanPause {
+    if ($env:KIOSK_NONINTERACTIVE -eq '1') { return $false }
+    Test-ConsoleAvailable
 }
 
 function Read-Answer { param([string]$Prompt) Read-Host -Prompt $Prompt }
@@ -406,6 +419,13 @@ function Merge-KioskConfig {
 function Test-ConfigValue {
     param([string]$Name, [AllowEmptyString()][string]$Value)
     if ($Value -match '[\r\n''"$]') { throw "$Name contains a newline, quote or `$ character, which isn't allowed." }
+}
+
+# The install folder lands in the RunOnce cmd /c start command, where % would
+# expand environment variables, and in the shortcut and task command lines.
+function Test-KioskInstallDir {
+    param([AllowEmptyString()][string]$Path)
+    if ($Path.Contains('%')) { throw "The install folder (KIOSK_DIR) can't contain %: $Path" }
 }
 
 # The data folder also lands in a YAML string and a host:/data volume spec.
@@ -744,7 +764,15 @@ function Confirm-DockerUsersMember {
         return
     }
     if (Test-DockerUsersMember -Sid $DesktopUser.Sid) { return }
-    if (-not (Add-DockerUsersMember -Sid $DesktopUser.Sid)) { return }
+    try {
+        $added = Add-DockerUsersMember -Sid $DesktopUser.Sid
+    } catch {
+        # Administrators can run Docker Desktop without the group.
+        if (-not (Test-UserIsAdmin -Sid $DesktopUser.Sid)) { throw }
+        Write-Warn "$($_.Exception.Message) $($DesktopUser.Name) is an administrator, so Docker Desktop runs for them anyway; continuing."
+        return
+    }
+    if (-not $added) { return }
     Stop-ForRestart -InstallDir $InstallDir -Step 'engine' -Arguments $ResumeArguments -Action 'signout' -DesktopUser $DesktopUser `
         -Reason "$($DesktopUser.Name) was added to the docker-users group, which counts from the next sign-in."
 }
@@ -779,6 +807,13 @@ function Install-DockerDesktop {
         Write-Info 'Installing Docker Desktop (this takes a few minutes)'
         $p = Start-Process -FilePath $exe -ArgumentList @('install', '--quiet', '--accept-license', '--backend=wsl-2') -Wait -PassThru
         if ($p.ExitCode -eq 3010) {
+            # Join docker-users now, so this one restart also covers the
+            # membership (no sign-out needed afterwards). A failure is left to
+            # Confirm-DockerUsersMember after the restart.
+            if ($DesktopUser -and -not (Test-DockerUsersMember -Sid $DesktopUser.Sid)) {
+                try { Add-DockerUsersMember -Sid $DesktopUser.Sid | Out-Null }
+                catch { Write-Warn "$($_.Exception.Message) The installer tries again after the restart." }
+            }
             Stop-ForRestart -InstallDir $InstallDir -Step 'engine' -Arguments $ResumeArguments -Action 'restart' -DesktopUser $DesktopUser `
                 -Reason 'Docker Desktop was installed and Windows needs to restart.'
         }
@@ -960,18 +995,148 @@ function Start-Kiosk {
     $identity
 }
 
-# -- Login items (Task 6 fills these in) -----------------------------------------
-# Install-LoginItems: update.ps1/launch.ps1, the nightly update task, the
-# Startup-folder launcher and the Desktop/Start menu shortcuts.
-function Install-LoginItems {
-    param([string]$InstallDir, $DesktopUser)
-    Write-Verbose "Login items for $InstallDir ($($DesktopUser.Name)) are not set up yet."
+# -- Login items ------------------------------------------------------------------
+$UpdateTaskName = 'ServerSherpa Kiosk Update'
+$ShortcutName = 'ServerSherpa Kiosk.lnk'
+
+# Join-WindowsPath DIR NAME: DIR\NAME for a Windows command line (the same on
+# every host, so the tests check exactly what Windows gets).
+function Join-WindowsPath {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$ChildPath)
+    $Path.TrimEnd('\', '/') + '\' + $ChildPath
 }
 
-# Remove-LoginItems: undo Install-LoginItems (and stop a running update).
+# Get-UpdateTaskSpec: the nightly update task, as plain values (Pester checks
+# these; Install-LoginItems turns them into the scheduled task). It runs as the
+# signed-in user only while they're signed in (Docker Desktop runs only then).
+function Get-UpdateTaskSpec {
+    param([Parameter(Mandatory = $true)][string]$InstallDir, [Parameter(Mandatory = $true)][string]$User)
+    @{
+        Name                      = $UpdateTaskName
+        Time                      = '03:00'
+        Execute                   = 'powershell.exe'
+        Argument                  = "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-WindowsPath $InstallDir 'update.ps1')`""
+        User                      = $User
+        LogonType                 = 'Interactive'
+        ExecutionTimeLimitMinutes = 30     # as update.sh's TimeoutStartSec
+    }
+}
+
+# Get-ShortcutSpec: what the ServerSherpa Kiosk shortcuts run.
+function Get-ShortcutSpec {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+    $windir = $env:SystemRoot
+    if (-not $windir) { $windir = 'C:\Windows' }
+    @{
+        Target           = $windir + '\System32\WindowsPowerShell\v1.0\powershell.exe'
+        Arguments        = "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$(Join-WindowsPath $InstallDir 'launch.ps1')`""
+        WorkingDirectory = $InstallDir
+        Description      = 'Open the ServerSherpa kiosk'
+    }
+}
+
+# Get-ShortcutPaths: Public Desktop, all-users Start menu, all-users StartUp.
+function Get-ShortcutPaths {
+    $public = $env:PUBLIC
+    if (-not $public) { $public = 'C:\Users\Public' }
+    $programData = $env:ProgramData
+    if (-not $programData) { $programData = 'C:\ProgramData' }
+    $programs = $programData + '\Microsoft\Windows\Start Menu\Programs'
+    @(
+        ($public + '\Desktop\' + $ShortcutName),
+        ($programs + '\' + $ShortcutName),
+        ($programs + '\StartUp\' + $ShortcutName)
+    )
+}
+
+# New-KioskShortcut PATH SPEC: a .lnk through the Windows Script Host.
+function New-KioskShortcut {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][hashtable]$Spec)
+    $dir = Split-Path -Parent $Path
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $shell = New-Object -ComObject WScript.Shell
+    $lnk = $shell.CreateShortcut($Path)
+    $lnk.TargetPath = $Spec.Target
+    $lnk.Arguments = $Spec.Arguments
+    $lnk.WorkingDirectory = $Spec.WorkingDirectory
+    $lnk.Description = $Spec.Description
+    $lnk.WindowStyle = 7            # minimized: the PowerShell window barely shows
+    $lnk.Save()
+}
+
+# Set-KioskUserWritableFileAcl PATH USERSID: like Set-KioskFileAcl, plus Modify
+# for that one user (the update task runs as them and rewrites this file in place).
+function Set-KioskUserWritableFileAcl {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$UserSid)
+    $acl = New-Object Security.AccessControl.FileSecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($r in @(@('S-1-5-32-544', 'FullControl'), @('S-1-5-18', 'FullControl'), @('S-1-5-32-545', 'ReadAndExecute'), @($UserSid, 'Modify'))) {
+        $sid = New-Object Security.Principal.SecurityIdentifier $r[0]
+        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule $sid, $r[1], 'Allow'))
+    }
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+# Register-UpdateTask SPEC: the scheduled task (replaced if it exists).
+function Register-UpdateTask {
+    param([Parameter(Mandatory = $true)][hashtable]$Spec)
+    $action = New-ScheduledTaskAction -Execute $Spec.Execute -Argument $Spec.Argument
+    $trigger = New-ScheduledTaskTrigger -Daily -At ([datetime]::Today.Add([TimeSpan]::Parse($Spec.Time)))
+    $principal = New-ScheduledTaskPrincipal -UserId $Spec.User -LogonType $Spec.LogonType
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes $Spec.ExecutionTimeLimitMinutes)
+    Register-ScheduledTask -TaskName $Spec.Name -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
+        -Description 'ServerSherpa kiosk nightly update (update.ps1; log in update.log).' -Force | Out-Null
+}
+
+# Install-LoginItems: update.ps1/launch.ps1, the nightly update task, and the
+# ServerSherpa Kiosk shortcuts (Public Desktop, Start menu, StartUp).
+function Install-LoginItems {
+    param([Parameter(Mandatory = $true)][string]$InstallDir, $DesktopUser)
+    foreach ($name in @('update.ps1', 'launch.ps1')) {
+        $dest = Join-KioskPath $InstallDir $name
+        Write-TextFile -Path $dest -Text (Get-CompanionText -Name $name)
+        Set-KioskFileAcl -Path $dest
+    }
+    if ($DesktopUser) {
+        # The install folder is read-only for users; the update task (running as
+        # the signed-in user) may write its log and state files, and only those.
+        foreach ($name in @('update.log', 'update-state.json')) {
+            $p = Join-KioskPath $InstallDir $name
+            if (-not (Test-Path -LiteralPath $p)) { [IO.File]::WriteAllText($p, '') }
+            Set-KioskUserWritableFileAcl -Path $p -UserSid $DesktopUser.Sid
+        }
+        try {
+            Register-UpdateTask -Spec (Get-UpdateTaskSpec -InstallDir $InstallDir -User $DesktopUser.Name)
+            Write-Info "Nightly update scheduled (03:00, while $($DesktopUser.Name) is signed in)."
+        } catch {
+            Write-Warn "Couldn't schedule the nightly update ($($_.Exception.Message)). Re-run the installer to try again."
+        }
+    } else {
+        Write-Warn "No signed-in user found, so the nightly update wasn't scheduled. Re-run the installer from the kiosk's account."
+    }
+    $spec = Get-ShortcutSpec -InstallDir $InstallDir
+    foreach ($lnk in Get-ShortcutPaths) {
+        try { New-KioskShortcut -Path $lnk -Spec $spec }
+        catch { Write-Warn "Couldn't create $lnk ($($_.Exception.Message))." }
+    }
+    Write-Info 'The kiosk opens at sign-in, and from the ServerSherpa Kiosk shortcut on the Desktop and in the Start menu.'
+}
+
+# Remove-LoginItems: undo Install-LoginItems, stopping an update that is running
+# (so it can't restart the container while uninstall stops it).
 function Remove-LoginItems {
     param([string]$InstallDir, $DesktopUser)
-    Write-Verbose "No login items to remove for $InstallDir ($($DesktopUser.Name)) yet."
+    $task = $null
+    try { $task = Get-ScheduledTask -TaskName $UpdateTaskName -ErrorAction Stop } catch { $task = $null }
+    if ($task) {
+        try { Stop-ScheduledTask -TaskName $UpdateTaskName -ErrorAction Stop } catch { Write-Verbose 'The update task was not running.' }
+        try { Unregister-ScheduledTask -TaskName $UpdateTaskName -Confirm:$false -ErrorAction Stop }
+        catch { Write-Warn "Couldn't remove the scheduled task '$UpdateTaskName'; delete it in Task Scheduler." }
+    }
+    foreach ($lnk in Get-ShortcutPaths) {
+        if (Test-Path -LiteralPath $lnk) { Remove-Item -LiteralPath $lnk -Force -ErrorAction SilentlyContinue }
+    }
+    Write-Verbose "Login items removed for $InstallDir ($($DesktopUser.Name))."
 }
 
 # -- Settings -------------------------------------------------------------------
@@ -1193,6 +1358,7 @@ function Invoke-KioskInstaller {
             $installDir = $paths.Install
         }
         Assert-SafeRemovePath -Label 'The install folder (KIOSK_DIR)' -Path $installDir -MinComponents 1
+        if (-not $Parameters.Uninstall) { Test-KioskInstallDir -Path $installDir }
         $saved = Read-KioskConfig -Path (Join-KioskPath $installDir 'config.env')
         $desktopUser = Get-DesktopUser
 
@@ -1267,7 +1433,7 @@ function Invoke-KioskInstaller {
     } finally {
         if ($logging) { try { Stop-Transcript | Out-Null } catch { Write-Verbose 'No transcript to stop.' } }
         # The elevated child and a RunOnce resume run in their own window: keep it open to read.
-        if (-not $relaunched -and ($env:KIOSK_ELEVATED_CHILD -eq '1' -or $Parameters.Resume) -and (Test-Interactive)) {
+        if (-not $relaunched -and ($env:KIOSK_ELEVATED_CHILD -eq '1' -or $Parameters.Resume) -and (Test-CanPause)) {
             Read-Answer -Prompt 'Press Enter to close this window' | Out-Null
         }
     }
