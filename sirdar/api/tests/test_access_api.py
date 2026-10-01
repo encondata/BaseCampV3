@@ -186,3 +186,17 @@ async def test_overrides_resave_keeps_existing_allow_the_actor_lacks(client, db)
     new = await client.put(url, headers=h, json={"overrides": {
         "access": {"add": True, "delete": True}}})
     assert new.status_code == 403 and new.json()["detail"]["code"] == "grant_exceeds_own"
+
+
+async def test_overrides_on_developer_core_cells(client, db):
+    founder = await auth_headers(client, db, roles=("founder",))
+    dev = await auth_headers(client, db, email="dev2@test.example.com")
+    target = await make_user(db, email="dev3@test.example.com", roles=("developer",))
+    url = f"/api/access/overrides/{target.person_id}"
+    deny = {"overrides": {"access": {"change": False}}}
+    r = await client.put(url, headers=founder, json=deny)
+    assert r.status_code == 403 and r.json()["detail"]["code"] == "developer_role_locked"
+    r = await client.put(url, headers=dev, json=deny)
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "developer_role_core"
+    r = await client.put(url, headers=founder, json={"overrides": {"users": {"delete": False}}})
+    assert r.status_code == 200, r.json()

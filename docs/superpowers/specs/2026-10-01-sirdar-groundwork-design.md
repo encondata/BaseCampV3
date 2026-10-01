@@ -160,13 +160,16 @@ verify here.
 - **`POST /api/auth/login`** (`email`, `password`). Checks run in this
   order (the lock check comes right after the user is loaded, before the
   password result is revealed; the disabled and later checks run only after
-  a correct password, so nobody can probe account states):
+  a correct password, so disabled and similar states are not probeable):
   1. Unknown email or no password hash: verify against a dummy hash
      (equal timing), then 401 `invalid_credentials`.
   2. `locked_until` in the future: still verify the password (equal
      timing), add no strike, audit `login_failed` (reason
      `account_locked`), and return 423 `account_locked` for ANY password,
-     so a lock is never a password oracle.
+     so a lock is never a password oracle. Accepted trade-off: while an
+     account is locked every password answers `account_locked`, so a locked
+     account is distinguishable from an unknown email (which answers 401
+     `invalid_credentials`).
   3. Wrong password: increment `failed_login_count`; at 10 failures lock
      for 900 s and reset the count (`SIRDAR_MAX_FAILED_LOGINS`,
      `SIRDAR_LOCKOUT_SECONDS`). 401 `invalid_credentials`.
@@ -223,6 +226,15 @@ The model and resolver match the portal:
   action plus `access:view` and `access:change` (422
   `developer_role_core`). Every other role keeps the own-role and rank
   rules; `grant_exceeds_own` applies everywhere.
+- Per-user overrides protect the same core cells on anyone who holds the
+  `developer` role: setting any override (allow or deny) on a core cell
+  requires the actor to hold `developer` (403 `developer_role_locked`,
+  founders included), and denying a core cell is rejected even for
+  developers (422 `developer_role_core`). Other cells follow the normal
+  rank/peer, `grant_exceeds_own` and `developer_only_resource` rules.
+  Precedence: person_not_found, cannot_target_self, developer_role_locked,
+  developer_role_core, rank_too_low, developer_only_resource,
+  grant_exceeds_own.
 - Session details (IPs, browsers, times) are visible only for people you
   can manage (yourself, or strictly below your rank; rank 100 also
   peers). For anyone else `GET /users/{id}` returns `sessions: []`

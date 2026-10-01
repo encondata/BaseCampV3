@@ -65,7 +65,8 @@ The app listens on 127.0.0.1:8098 by default; put a TLS reverse proxy in front.
 - Have the proxy rate-limit `/api/auth/*`; account lockout alone does not stop
   password guessing while an account is locked. (A locked account answers
   `account_locked` to every password and adds no strikes, so the lock never
-  reveals whether a guess was right.)
+  reveals whether a guess was right. The accepted trade-off: a locked account
+  is distinguishable from an unknown email, which answers `invalid_credentials`.)
 - The dev import uses the portal's own DB URL, but the import always runs in a
   READ ONLY transaction. In production, use a read-only role anyway.
 - Local users created with `create-admin` have no 2FA.
