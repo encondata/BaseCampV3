@@ -39,7 +39,8 @@ async def test_deploy_grants_resolve(db):
     sa = await resolve_access(db, (await make_user(db, roles=("super_admin",))).person_id)
     assert sa.can("deploy", "view") and sa.can("deploy", "add") and sa.can("deploy", "change")
     assert not sa.can("deploy", "delete")
-    ad = await resolve_access(db, (await make_user(db, roles=("admin",))).person_id)
+    ad = await resolve_access(db, (await make_user(db, email="b@test.example.com",
+                                                   roles=("admin",))).person_id)
     assert ad.can("deploy", "view")
     assert not ad.can("deploy", "add") and not ad.can("deploy", "change")
 
