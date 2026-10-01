@@ -511,7 +511,7 @@ check_git_version() {
   major=${v%%.*}; minor=${v#*.}; minor=${minor%%.*}
   case "$major$minor" in ''|*[!0-9]*) warn "Couldn't read the git version ('$v'); it needs to be 2.25 or newer."; return 0 ;; esac
   if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 25 ]; }; then
-    die "git $v is too old: Sirdar's download needs git 2.25 or newer (sparse-checkout). Upgrade git (e.g. from your distribution's backports, or IUS/endpoint on CentOS 7) and re-run."
+    die "git $v is too old: Sirdar's download needs git 2.25 or newer (sparse-checkout). Upgrade git (e.g. from your distribution's backports) and re-run."
   fi
 }
 
@@ -519,8 +519,8 @@ check_git_version() {
 url_exists() { curl -fsSL -o /dev/null -I "$1" 2>/dev/null || curl -fsS -o /dev/null -r 0-0 "$1" 2>/dev/null; }
 
 # Docker's apt repo for Debian, Ubuntu and their derivatives (mapped to the
-# upstream release). Returns 1 when there is no usable repo, so the caller can
-# fall back to the static binaries.
+# upstream release). Returns 2 (after a warning) when there is no usable repo,
+# so the caller falls back to the static binaries.
 docker_pkgs_debian() {
   local repo='' codename='' id
   id=$(os_release ID)
@@ -532,7 +532,7 @@ docker_pkgs_debian() {
   fi
   if [ -z "$codename" ] || ! url_exists "https://download.docker.com/linux/$repo/dists/$codename/Release"; then
     warn "Docker's apt repository has no '$repo ${codename:-?}' release; using Docker's static binaries instead."
-    return 1
+    return 2
   fi
   info "Adding Docker's official apt repository ($repo $codename)"
   as_root install -m 0755 -d /etc/apt/keyrings
@@ -559,7 +559,7 @@ docker_pkgs_fedora() {
   [ "$repo" = fedora ] || ver=${ver%%.*}
   if [ -z "$ver" ] || ! url_exists "https://download.docker.com/linux/$repo/$ver/"; then
     warn "Docker's $repo repository has no release $ver yet; using Docker's static binaries instead."
-    return 1
+    return 2
   fi
   info "Adding Docker's official $repo repository"
   curl -fsSL "https://download.docker.com/linux/$repo/docker-ce.repo" \
@@ -737,6 +737,7 @@ slackware_rc_docker() {
     info "Using the existing $rc"
   else
     info "Writing $rc and hooking it into rc.local / rc.local_shutdown"
+    as_root mkdir -p /etc/rc.d
     write_root_file "$rc" 0755 <<EOF
 #!/bin/sh
 $SIRDAR_MARK: start/stop the Docker daemon (Docker's static binaries).
@@ -881,10 +882,13 @@ ensure_docker() {
     case "$FAMILY" in
       debian|fedora|suse|arch|alpine|void)
         info "Installing Docker Engine ($FAMILY packages)"
-        if "docker_pkgs_$FAMILY" && command -v docker >/dev/null 2>&1; then
+        local rc=0
+        "docker_pkgs_$FAMILY" || rc=$?
+        if [ "$rc" = 0 ] && command -v docker >/dev/null 2>&1; then
           DOCKER_SOURCE=packages
         else
-          warn "Docker's packages didn't install; falling back to Docker's static binaries."
+          # 2 = no repo for this release (already explained)
+          [ "$rc" = 2 ] || warn "Docker's packages didn't install; falling back to Docker's static binaries."
           install_docker_static
         fi
         ;;
