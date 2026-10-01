@@ -646,3 +646,51 @@ def test_dockerfile_runtime_stage_has_source_label():
     text = (INSTALL_SH.parents[1] / "Dockerfile").read_text()
     runtime = text[text.rindex("\nFROM "):]
     assert "LABEL org.opencontainers.image.source=https://github.com/encondata/BaseCampV3\n" in runtime
+
+
+# ── final fix round ──────────────────────────────────────────────────
+
+def test_uninstall_reads_only_the_data_folder(sh, tmp_path):
+    # a damaged channel in config.env must not block uninstall
+    inst = tmp_path / "inst"; inst.mkdir()
+    (inst / "config.env").write_text("KIOSK_CHANNEL=nightly\nEDGE_CLOUD_API_URL=ftp://x\n"
+                                     "KIOSK_DATA_DIR=/custom/kioskdata\n")
+    r = sh('is_root() { return 0; }; uninstall() { echo "UNINSTALL $KIOSK_DATA_DIR"; }; main --uninstall',
+           env={"KIOSK_DIR": str(inst)})
+    assert "UNINSTALL /custom/kioskdata" in r.stdout
+
+
+def test_uninstall_data_dir_env_then_saved_then_default(sh, tmp_path):
+    cfg = tmp_path / "config.env"; cfg.write_text("KIOSK_DATA_DIR=/saved\n")
+    body = f'OS=Linux; default_dirs; load_config "{cfg}"; uninstall_data_dir'
+    assert sh(body).stdout == "/saved"
+    assert sh(body, env={"KIOSK_DATA_DIR": "/fromenv"}).stdout == "/fromenv"
+    none = f'OS=Linux; default_dirs; load_config "{tmp_path}/none"; uninstall_data_dir'
+    assert sh(none).stdout == "/var/lib/serversherpa-kiosk"
+
+
+def test_uninstall_says_both_logs_were_kept(sh, tmp_path):
+    inst, data = tmp_path / "inst", tmp_path / "data"
+    inst.mkdir(); data.mkdir()
+    r = sh(f'DOCKER=(true); KIOSK_DIR="{inst}"; KIOSK_DATA_DIR="{data}"; '
+           f'remove_login_items() {{ :; }}; uninstall')
+    assert "install.log and update.log were kept" in r.stdout
+
+
+@pytest.mark.parametrize("flag,value", [("OPT_API_URL", "api.serversherpa.com"),
+                                        ("OPT_API_URL", "ftp://api.x.com"),
+                                        ("OPT_PORTAL_URL", "portal.x.com")])
+def test_merge_rejects_urls_without_http_scheme(sh, tmp_path, flag, value):
+    r = sh(f'load_config "{tmp_path}/none"; {flag}="{value}"; merge_config', check=False)
+    assert r.returncode != 0 and "must start with http:// or https://" in r.stderr
+
+
+def test_merge_accepts_http_and_https(sh, tmp_path):
+    out = sh(f'load_config "{tmp_path}/none"; OPT_API_URL=http://10.0.0.5:8000; '
+             f'OPT_PORTAL_URL=https://p.x.com; merge_config; echo "$CFG_API_URL $CFG_PORTAL_URL"').stdout
+    assert out.split() == ["http://10.0.0.5:8000", "https://p.x.com"]
+
+
+def test_derive_portal_url_is_case_sensitive(sh):
+    # agrees with Get-PortalUrl (-cmatch)
+    assert sh('derive_portal_url "https://API.serversherpa.com"').stdout == ""

@@ -351,7 +351,7 @@ function Remove-TrailingSlash {
 function Get-PortalUrl {
     param([string]$ApiUrl)
     $u = Remove-TrailingSlash $ApiUrl
-    if ($u -match '^(https?://)api\.(.+)$') { return "$($Matches[1])portal.$($Matches[2])" }
+    if ($u -cmatch '^(https?://)api\.(.+)$') { return "$($Matches[1])portal.$($Matches[2])" }
     ''
 }
 
@@ -367,6 +367,11 @@ function Read-KioskConfig {
         }
     }
     $h
+}
+
+function Assert-UrlScheme {
+    param([string]$Label, [AllowEmptyString()][string]$Url)
+    if ($Url -cnotmatch '^https?://.') { throw "$Label must start with http:// or https:// (got '$Url')." }
 }
 
 # Merge-KioskConfig: options beat the saved config beat the defaults.
@@ -390,6 +395,9 @@ function Merge-KioskConfig {
             Write-Warn "Can't derive a portal URL from $api; links to the portal won't work until you pass -PortalUrl."
         }
     }
+
+    Assert-UrlScheme -Label 'The API URL' -Url $api
+    if ($portal) { Assert-UrlScheme -Label 'The portal URL' -Url $portal }
 
     $ch = $Options.Channel
     if (-not $ch) { $ch = $Saved.KIOSK_CHANNEL }

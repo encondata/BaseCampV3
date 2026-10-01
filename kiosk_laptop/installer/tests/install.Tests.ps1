@@ -1005,3 +1005,22 @@ Describe 'Invoke-Docker with a fake docker.cmd' -Skip:($IsWindows -eq $false) {
             Should -Throw -ExpectedMessage '*docker compose pull failed (exit 1)*fake-err compose pull*'
     }
 }
+
+# -- final fix round ------------------------------------------------------------------
+
+Describe 'URL schemes and portal derivation' {
+    It 'rejects an API or portal URL without http:// or https://' {
+        { Merge-KioskConfig -Saved @{} -Options @{ ApiUrl = 'api.serversherpa.com' } } | Should -Throw '*must start with http:// or https://*'
+        { Merge-KioskConfig -Saved @{} -Options @{ ApiUrl = 'ftp://api.x.com' } } | Should -Throw '*must start with http:// or https://*'
+        { Merge-KioskConfig -Saved @{} -Options @{ PortalUrl = 'portal.x.com' } } | Should -Throw '*must start with http:// or https://*'
+    }
+    It 'accepts http and https' {
+        $c = Merge-KioskConfig -Saved @{} -Options @{ ApiUrl = 'http://10.0.0.5:8000'; PortalUrl = 'https://p.x.com' }
+        $c.EDGE_CLOUD_API_URL | Should -Be 'http://10.0.0.5:8000'
+        $c.EDGE_PORTAL_URL | Should -Be 'https://p.x.com'
+    }
+    It 'derives the portal case-sensitively, like install.sh' {
+        Get-PortalUrl -ApiUrl 'https://API.serversherpa.com' | Should -Be ''
+        Get-PortalUrl -ApiUrl 'HTTPS://api.serversherpa.com' | Should -Be ''
+    }
+}

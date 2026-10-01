@@ -229,6 +229,24 @@ config_value() {  # config_value FILE KEY -> value of the first KEY= line
   printf '%s' "${line#*=}"
 }
 
+check_url_scheme() {  # check_url_scheme LABEL URL
+  case "$2" in
+    http://?*|https://?*) ;;
+    *) die "$1 must start with http:// or https:// (got '$2')." ;;
+  esac
+}
+
+# uninstall_data_dir: the data folder uninstall works on (environment, then the
+# saved config, then the OS default). Nothing else is read or checked, so a
+# damaged setting can't block uninstall. Call after default_dirs and load_config.
+uninstall_data_dir() {
+  if [ "$ENV_DATA_DIR_SET" = 1 ] || [ -z "$CFG_DATA_DIR" ]; then
+    printf '%s' "$KIOSK_DATA_DIR"
+  else
+    printf '%s' "$CFG_DATA_DIR"
+  fi
+}
+
 # merge_config: flags/env beat the saved config beat the defaults.
 merge_config() {
   local opt_api="$OPT_API_URL" saved_api="$CFG_API_URL" changed=0
@@ -246,6 +264,8 @@ merge_config() {
     [ -n "$CFG_PORTAL_URL" ] \
       || warn "Can't derive a portal URL from $CFG_API_URL; links to the portal won't work until you pass --portal-url."
   fi
+  check_url_scheme "The API URL" "$CFG_API_URL"
+  [ -z "$CFG_PORTAL_URL" ] || check_url_scheme "The portal URL" "$CFG_PORTAL_URL"
   [ -z "$OPT_CHANNEL" ] || CFG_CHANNEL="$OPT_CHANNEL"
   [ -n "$CFG_CHANNEL" ] || CFG_CHANNEL=stable
   case "$CFG_CHANNEL" in
@@ -1037,7 +1057,7 @@ uninstall() {
   for f in docker-compose.yml config.env update.sh launch.sh install-state.json update-state.json; do
     rm -f "${KIOSK_DIR:?}/$f"
   done
-  info "Removed the kiosk from $KIOSK_DIR (install.log was kept). Docker stays installed."
+  info "Removed the kiosk from $KIOSK_DIR (install.log and update.log were kept). Docker stays installed."
   if [ "$PURGE_DATA" = 1 ]; then
     if [ -d "$KIOSK_DATA_DIR" ]; then
       rm -rf "${KIOSK_DATA_DIR:?}"
@@ -1093,7 +1113,8 @@ main() {
   load_config "$KIOSK_DIR/config.env"
   if [ "$DO_UNINSTALL" = 1 ]; then
     ensure_root "$@"
-    merge_config
+    # Only the data folder from the saved config: a damaged setting elsewhere must not block uninstall.
+    KIOSK_DATA_DIR=$(uninstall_data_dir)
     start_log "$@"
     # Without a compose file there is no container to stop (and on macOS no
     # signed-in user needs to be found for docker).
