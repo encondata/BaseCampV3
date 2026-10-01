@@ -17,3 +17,13 @@
 .sirdar-card { padding: 16px; border: 1px solid var(--line, #e5e7eb); border-radius: 12px; background: var(--surface, #fff); }
 .sirdar-card h3 { margin: 0 0 6px; }
 .sirdar-kv { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; }
+
+.sirdar-import-card { width: min(920px, calc(100vw - 48px)); }
+.sirdar-stats { display: flex; gap: 12px; margin: 0 0 16px; flex-wrap: wrap; }
+.sirdar-stat { display: flex; flex-direction: column; padding: 8px 14px; border: 1px solid var(--line, #e5e7eb); border-radius: 10px; min-width: 96px; }
+.sirdar-stat b { font-size: 20px; }
+.sirdar-stat span { font-size: 12px; opacity: 0.7; }
+
+.sirdar-section { margin: 24px 0; }
+.sirdar-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+

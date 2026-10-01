@@ -33,6 +33,7 @@ const REACT_ALLOWLIST = [
   'components/access/MatrixTable',
   'layout/NavPanel',
   'lib/systemStatusContext',
+  'lib/listTools',
 ];
 
 // static `import … from '…'`, `import '…'` and `export … from '…'`; the
