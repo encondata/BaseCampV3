@@ -3,6 +3,7 @@ driving the app through httpx.ASGITransport — which runs no lifespan — see
 the same app the container runs; lifespan only starts background work."""
 
 import json
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import PlainTextResponse
@@ -13,6 +14,7 @@ from edge.crypto import load_or_create_keys
 from edge.db import Store
 from edge.identity import load_or_create
 from edge.routes import edge as edge_routes
+from edge.upstream import Upstream
 
 API_PREFIXES = ("/auth/", "/kiosk/", "/system/")
 
@@ -20,12 +22,20 @@ API_PREFIXES = ("/auth/", "/kiosk/", "/system/")
 def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     settings = settings or load_settings()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    app = FastAPI(title="ServerSherpa Kiosk Edge", docs_url=None, redoc_url=None,
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        await app.state.upstream.aclose()
+        app.state.store.close()
+
+    app = FastAPI(lifespan=lifespan, title="ServerSherpa Kiosk Edge", docs_url=None, redoc_url=None,
                   openapi_url=None)
     app.state.settings = settings
     app.state.identity = load_or_create(settings.data_dir)
     app.state.store = Store(settings.data_dir / "edge.db")
     app.state.keys = load_or_create_keys(settings.data_dir)
+    app.state.upstream = Upstream(settings, app.state.store, app.state.keys, transport=transport)
 
     app.include_router(edge_routes.router)
 
