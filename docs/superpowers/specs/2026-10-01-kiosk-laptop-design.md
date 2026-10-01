@@ -56,7 +56,7 @@ FastAPI + SQLite service listening on port 8090.
   bundle / vocab reads the Labels screens use. Any path the edge does not
   implement is proxied to the cloud when online and answered `503
   {"detail": "edge_offline"}` when not.
-- **SQLite** at `/data/edge.db` in a named volume, WAL mode. Rebuilding
+- **SQLite** at `/data/edge.db` (a host bind mount — see Kiosk identity), WAL mode. Rebuilding
   or upgrading the container keeps the move, the queue and the auth
   cache. Schema is created/upgraded by the edge on start (a small
   ordered list of SQL steps tracked in a `schema_version` table — no
@@ -104,6 +104,40 @@ kiosk_laptop/
 - `upstream.py` treats only **connect errors and timeouts** (default 5 s
   connect / 15 s read) as "offline". Any HTTP answer from the cloud —
   including 401/403/5xx — is the cloud's answer and is passed through.
+
+### Kiosk identity (fixed for the life of the install)
+
+The web kiosk generates its serial and name in the browser (cookie +
+`localStorage`, `kiosk/src/lib/identity.ts`). On the laptop the **edge
+owns the identity** instead, so a different browser, cleared site data,
+or an image update can never turn the laptop into a new kiosk:
+
+- On first start the edge generates the **serial** (UUID) and the
+  default **name** (same generator/format as the web kiosk) and writes
+  them to `/data/identity.json` together with `created_at`. Every later
+  start reads that file; nothing regenerates while it exists.
+- `identity.json` is separate from `edge.db` and is **never touched** by
+  image updates, schema upgrades, Sync, Clear local data, or Wipe this
+  laptop. Losing it is the only way the laptop gets a new identity.
+- The edge serves it at `GET /edge/identity`; in laptop mode
+  `identity.ts` reads it from there and ignores/overwrites its cookie and
+  `localStorage` copies. Every heartbeat the edge forwards carries this
+  serial, so the cloud's Device row (upserted by serial) stays the same
+  row forever.
+- **Renaming:** the name stays editable only by an admin (rank 60+) in
+  Settings, the same as the web kiosk; a rename is written to
+  `identity.json`. The serial never changes.
+- **`/data` is a bind mount, not a named volume** — default
+  `~/ServerSherpaKiosk` on the host — so `docker compose down -v`, a
+  Docker Desktop reset, or reinstalling Docker cannot delete the identity,
+  key, or queued work. The README says to back up that folder.
+
+### First run order
+
+The first sync needs the cloud: **online sign-in** (whose first heartbeat
+registers the laptop as a `laptop` kiosk under the fixed serial) →
+**Kiosk Setup** (needs the cloud's setup options) → **move sync**. After
+that the laptop can run standalone.
 
 ## 2. Sign-in, the cloud session and offline auth
 
@@ -169,7 +203,7 @@ model for uploads.
 
 ### Security posture
 
-- Cloud tokens and offline verifiers live only in the volume; localhost
+- Cloud tokens and offline verifiers live only in `/data`; localhost
   binding keeps the endpoints off the network.
 - Sign-out clears the local session and the cloud session; it keeps the
   offline verifier (the person may need to sign back in offline). A cloud
