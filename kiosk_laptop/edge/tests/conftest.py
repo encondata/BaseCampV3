@@ -3,6 +3,7 @@ import pytest
 import respx
 
 from edge.app import create_app
+from edge import sessions
 from edge.config import Settings
 
 CLOUD = "http://cloud.test"
@@ -34,3 +35,28 @@ async def client(app):
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://edge.test") as c:
         yield c
+
+
+def session_out(person_id="p-1", name="Jane Doe", max_rank=10, kiosk_move=None,
+                access_token="cloud-access-1", email="jane@example.com"):
+    """A cloud SessionOut, as /auth/login returns it."""
+    return {
+        "status": "ok", "access_token": access_token, "token_type": "bearer",
+        "expires_in": 900, "session_expires_at": "2099-01-01T00:00:00Z",
+        "person": {"id": person_id, "display_name": name, "first_name": name.split()[0],
+                   "last_name": name.split()[-1], "email": email},
+        "roles": ["worker"], "must_change_password": False, "must_change_reason": None,
+        "password_expires_at": None, "preferences": {}, "perms": {"kiosk": {"view": True}},
+        "max_rank": max_rank, "scope": {"global": False, "client_ids": [], "partner_ids": []},
+        "password_min_length": 8,
+        "totp": {"enrolled": False, "enrolled_at": None, "required": False,
+                 "backup_codes_remaining": None},
+        "kiosk_move": kiosk_move,
+    }
+
+
+def make_session(app, offline=False, **kw):
+    out, _refresh = sessions.issue(app.state.store, app.state.keys,
+                                   template=sessions.template_from(session_out(**kw)),
+                                   offline=offline, expires_at="2099-01-01T00:00:00Z")
+    return {"Authorization": f"Bearer {out['access_token']}"}

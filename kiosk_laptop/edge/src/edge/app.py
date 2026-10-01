@@ -9,6 +9,7 @@ from fastapi.responses import PlainTextResponse
 
 from edge import static
 from edge.config import Settings, load_settings
+from edge.crypto import load_or_create_keys
 from edge.db import Store
 from edge.identity import load_or_create
 from edge.routes import edge as edge_routes
@@ -24,6 +25,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     app.state.settings = settings
     app.state.identity = load_or_create(settings.data_dir)
     app.state.store = Store(settings.data_dir / "edge.db")
+    app.state.keys = load_or_create_keys(settings.data_dir)
 
     app.include_router(edge_routes.router)
 
