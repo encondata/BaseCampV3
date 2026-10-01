@@ -63,8 +63,11 @@ What it does:
 - **Ubuntu/Debian:** installs any missing `git`, `curl`, `ca-certificates`
   and `openssl` with apt, and Docker Engine + the compose plugin from
   Docker's official apt repository. Starts the daemon with systemd if needed,
-  and adds you to the `docker` group (log out and back in for that to take
-  effect; this run uses `sudo docker`). Uses `sudo` only when not root.
+  and adds you to the `docker` group if Docker needs sudo (log out and back in
+  for that to take effect; until then the `docker compose ...` admin
+  commands it prints start with `sudo`). Uses `sudo` only when not root, and
+  stops if you are neither root nor have sudo. Docker's repository supports
+  only Ubuntu and Debian proper; derivatives such as Kali or Raspbian may fail.
 - **macOS:** needs Docker Desktop already installed (it starts it if it isn't
   running) and git (`xcode-select --install`).
 - **Other systems:** stops with a message.
@@ -74,10 +77,11 @@ What it does:
   terminal it asks for the port, cookie domain, portal database URL, password
   pepper, 2FA key, JWT secret and database password; press Enter to accept
   the default or generate a secret. Without a terminal, or with
-  `SIRDAR_NONINTERACTIVE=1`, it generates every secret.
+  `SIRDAR_NONINTERACTIVE=1`, it generates every secret. Prompts go to the terminal, not stdout, so
+  `curl ... | bash > install.log` still shows them.
 - Builds and starts the stack, waits for it to be healthy, and, when Sirdar
   has no users yet and a terminal is available, offers to create the first
-  local admin. It ends with the URL and the admin commands.
+  local admin (the first attempt plus up to 3 retries). It ends with the URL and the admin commands.
 
 The app listens on 127.0.0.1:8098 by default; put a TLS reverse proxy in front.
 

@@ -15,7 +15,10 @@
 #   SIRDAR_NONINTERACTIVE  1 = never prompt; generate every secret, print the admin commands
 #
 # Testing hooks (not for normal use):
-#   SIRDAR_TTY             file to read answers from instead of /dev/tty
+#   SIRDAR_TTY             file to read answers from instead of /dev/tty. Prompts
+#                          normally go to /dev/tty too (so `curl ... | bash > log`
+#                          still shows them); with SIRDAR_TTY set they go to stderr
+#                          instead. The file is only ever read, never written.
 #   SIRDAR_INSTALL_LIB=1   define the functions without running main, so a test
 #                          can source this file and call write_env directly
 #
@@ -57,6 +60,15 @@ TTY_PATH="${SIRDAR_TTY:-/dev/tty}"
 DOCKER=(docker)
 ADDED_TO_DOCKER_GROUP=0
 GIT_SRC_OPTS=()
+TMP_FILES=()     # temp files to remove on exit (see cleanup)
+
+cleanup() {
+  local f
+  for f in ${TMP_FILES[@]+"${TMP_FILES[@]}"}; do rm -f "$f"; done
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 is_root() { [ "$(id -u)" -eq 0 ]; }
 
@@ -76,22 +88,29 @@ interactive() {
   { : <"$TTY_PATH"; } 2>/dev/null
 }
 
-# Answers come from fd 3, opened once on the tty (or SIRDAR_TTY in tests),
-# so stdin can stay a curl pipe and a file-backed test reads sequentially.
-open_tty() { exec 3<"$TTY_PATH"; }
+# Answers come from fd 3 and prompts go to fd 4, both opened once on the tty
+# (in tests, fd 3 is SIRDAR_TTY and fd 4 is stderr), so stdin and stdout can
+# be a curl pipe and a log file while the person still sees the prompts.
+open_tty() {
+  exec 3<"$TTY_PATH"
+  if [ -n "${SIRDAR_TTY:-}" ]; then exec 4>&2; else exec 4>"$TTY_PATH"; fi
+}
+close_tty() { exec 3<&- 4>&-; }
 
-ask() {  # ask VAR "prompt"         -> visible answer
+die_eof() { die "Input ended before the prompts were answered. Run the installer in a terminal, or set SIRDAR_NONINTERACTIVE=1."; }
+
+ask() {  # ask VAR "prompt"         -> visible answer; returns 1 on EOF
   local _a
-  printf '%s' "$2"
-  IFS= read -r -u 3 _a || _a=''
+  printf '%s' "$2" >&4
+  IFS= read -r -u 3 _a || return 1
   eval "$1=\$_a"
 }
 
-ask_secret() {  # ask_secret VAR "prompt" -> hidden answer, never echoed
+ask_secret() {  # ask_secret VAR "prompt" -> hidden answer, never echoed; 1 on EOF
   local _a
-  printf '%s' "$2"
-  IFS= read -r -s -u 3 _a || _a=''
-  printf '\n'
+  printf '%s' "$2" >&4
+  IFS= read -r -s -u 3 _a || { printf '\n' >&4; return 1; }
+  printf '\n' >&4
   eval "$1=\$_a"
 }
 
@@ -131,6 +150,7 @@ env_quote() {
 set_env_key() {
   local key="$1" value="$2" file="$3" tmp
   tmp=$(mktemp "$file.XXXXXX")
+  TMP_FILES+=("$tmp")
   K="$key" V="$(env_quote "$value")" awk '
     BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"]; done = 0 }
     !done && index($0, k "=") == 1 { print k "=" v; done = 1; next }
@@ -168,22 +188,22 @@ write_env() {
 
   if interactive; then
     open_tty
-    echo
-    info "First install: a few settings for $target"
-    echo "    Press Enter to accept the [default]. Secrets are hidden as you type."
-    echo
+    echo >&4
+    info "First install: a few settings for $target" >&4
+    echo "    Press Enter to accept the [default]. Secrets are hidden as you type." >&4
+    echo >&4
 
     # 1. Port
     while :; do
-      ask a "1/7  Host port for Sirdar (127.0.0.1 only, behind your reverse proxy) [$def_port]: "
+      ask a "1/7  Host port for Sirdar (127.0.0.1 only, behind your reverse proxy) [$def_port]: " || die_eof
       [ -z "$a" ] && a="$def_port"
-      case "$a" in ''|*[!0-9]*) echo "     Enter a number from 1024 to 65535."; continue ;; esac
+      case "$a" in ''|*[!0-9]*) echo "     Enter a number from 1024 to 65535." >&4; continue ;; esac
       if [ "${#a}" -gt 5 ] || [ "$a" -lt 1024 ] || [ "$a" -gt 65535 ]; then
-        echo "     Enter a number from 1024 to 65535."; continue
+        echo "     Enter a number from 1024 to 65535." >&4; continue
       fi
       if port_in_use "$a"; then
-        warn "something is already listening on port $a."
-        ask yn "     Use it anyway? [y/N]: "
+        warn "something is already listening on port $a." 2>&4
+        ask yn "     Use it anyway? [y/N]: " || die_eof
         case "$yn" in [Yy]*) ;; *) continue ;; esac
       fi
       port="$a"
@@ -193,25 +213,25 @@ write_env() {
 
     # 2. Cookie domain
     while :; do
-      ask a "2/7  Cookie domain for the sign-in cookie [blank = this host only]: "
-      case "$a" in *[[:space:]]*) echo "     No spaces, please."; continue ;; esac
-      if has_bad_chars "$a"; then echo "     No quotes, please."; continue; fi
+      ask a "2/7  Cookie domain for the sign-in cookie [blank = this host only]: " || die_eof
+      case "$a" in *[[:space:]]*) echo "     No spaces, please." >&4; continue ;; esac
+      if has_bad_chars "$a"; then echo "     No quotes, please." >&4; continue; fi
       cookie="$a"
       [ -n "$a" ] && s_cookie='provided'
       break
     done
 
     # 3. Portal source database
-    echo "3/7  Portal database URL for \"Import from portal\" (a read-only role is recommended)."
+    echo "3/7  Portal database URL for \"Import from portal\" (a read-only role is recommended)." >&4
     while :; do
-      ask a "     postgresql+asyncpg://user:pass@host:5432/db [blank = import disabled]: "
+      ask a "     postgresql+asyncpg://user:pass@host:5432/db [blank = import disabled]: " || die_eof
       if [ -n "$a" ]; then
         case "$a" in
           postgresql+asyncpg://?*) ;;
-          *) echo "     It must start with postgresql+asyncpg://"; continue ;;
+          *) echo "     It must start with postgresql+asyncpg://" >&4; continue ;;
         esac
-        case "$a" in *[[:space:]]*) echo "     No spaces, please."; continue ;; esac
-        if has_bad_chars "$a"; then echo "     No quotes, please."; continue; fi
+        case "$a" in *[[:space:]]*) echo "     No spaces, please." >&4; continue ;; esac
+        if has_bad_chars "$a"; then echo "     No quotes, please." >&4; continue; fi
         s_source='provided'
       fi
       source="$a"
@@ -219,21 +239,21 @@ write_env() {
     done
 
     # 4. Password pepper
-    echo "4/7  Password pepper. Paste the portal's value to import portal users with their passwords."
+    echo "4/7  Password pepper. Paste the portal's value to import portal users with their passwords." >&4
     while :; do
-      ask_secret a "     SS_PASSWORD_PEPPER [Enter = generate]: "
-      if [ -n "$a" ] && has_bad_chars "$a"; then echo "     No quotes, please."; continue; fi
+      ask_secret a "     SS_PASSWORD_PEPPER [Enter = generate]: " || die_eof
+      if [ -n "$a" ] && has_bad_chars "$a"; then echo "     No quotes, please." >&4; continue; fi
       [ -n "$a" ] && { pepper="$a"; s_pepper='provided'; }
       break
     done
 
     # 5. 2FA encryption key
-    echo "5/7  2FA encryption key (a Fernet key). Paste the portal's value to keep imported 2FA working."
+    echo "5/7  2FA encryption key (a Fernet key). Paste the portal's value to keep imported 2FA working." >&4
     while :; do
-      ask_secret a "     SS_TOTP_ENCRYPTION_KEY [Enter = generate]: "
+      ask_secret a "     SS_TOTP_ENCRYPTION_KEY [Enter = generate]: " || die_eof
       if [ -n "$a" ]; then
         if [ "${#a}" -ne 44 ] || ! printf '%s' "$a" | grep -Eq '^[A-Za-z0-9_-]{43}=$'; then
-          echo "     That doesn't look like a Fernet key (44 characters of URL-safe base64 ending in '=')."
+          echo "     That doesn't look like a Fernet key (44 characters of URL-safe base64 ending in '=')." >&4
           continue
         fi
         totp="$a"; s_totp='provided'
@@ -243,10 +263,10 @@ write_env() {
 
     # 6. JWT secret
     while :; do
-      ask_secret a "6/7  SIRDAR_JWT_SECRET (at least 32 characters) [Enter = generate]: "
+      ask_secret a "6/7  SIRDAR_JWT_SECRET (at least 32 characters) [Enter = generate]: " || die_eof
       if [ -n "$a" ]; then
-        if [ "${#a}" -lt 32 ]; then echo "     It must be at least 32 characters."; continue; fi
-        if has_bad_chars "$a"; then echo "     No quotes, please."; continue; fi
+        if [ "${#a}" -lt 32 ]; then echo "     It must be at least 32 characters." >&4; continue; fi
+        if has_bad_chars "$a"; then echo "     No quotes, please." >&4; continue; fi
         jwt="$a"; s_jwt='provided'
       fi
       break
@@ -254,17 +274,17 @@ write_env() {
 
     # 7. Database password
     while :; do
-      ask_secret a "7/7  SIRDAR_DB_PASSWORD for Sirdar's own Postgres (16+ characters) [Enter = generate]: "
+      ask_secret a "7/7  SIRDAR_DB_PASSWORD for Sirdar's own Postgres (16+ characters) [Enter = generate]: " || die_eof
       if [ -n "$a" ]; then
-        if [ "${#a}" -lt 16 ]; then echo "     It must be at least 16 characters."; continue; fi
+        if [ "${#a}" -lt 16 ]; then echo "     It must be at least 16 characters." >&4; continue; fi
         case "$a" in
-          *[@:/?#]*|*[[:space:]]*|*"'"*) echo "     It goes into a URL: no @ : / ? # quotes or spaces."; continue ;;
+          *[!A-Za-z0-9._~-]*) echo "     It goes into a URL: use only letters, digits and . _ ~ -" >&4; continue ;;
         esac
         dbpw="$a"; s_dbpw='provided'
       fi
       break
     done
-    exec 3<&-
+    close_tty
   else
     case "$port" in ''|*[!0-9]*) die "SIRDAR_PORT must be a number (got '$port')." ;; esac
     if [ "${#port}" -gt 5 ] || [ "$port" -lt 1024 ] || [ "$port" -gt 65535 ]; then
@@ -281,6 +301,7 @@ write_env() {
   # Build the file next to the target, then move it into place.
   local tmp
   tmp=$(mktemp "$target.new.XXXXXX")
+  TMP_FILES+=("$tmp")
   chmod 600 "$tmp"
   cat "$example" >"$tmp"
   set_env_key SIRDAR_ENV production "$tmp"
@@ -348,7 +369,8 @@ install_docker_apt_repo() {
   local codename arch
   # Docker's docs: VERSION_CODENAME (UBUNTU_CODENAME first on Ubuntu derivatives).
   # shellcheck disable=SC1091
-  codename=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
+  codename=$(. /etc/os-release && printf '%s' "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}")
+  [ -n "$codename" ] || die "Can't tell which Ubuntu/Debian release this is (no VERSION_CODENAME in /etc/os-release). Docker's apt repository supports only Ubuntu and Debian proper; derivatives such as Kali or Raspbian may not work. Install Docker yourself and re-run."
   arch=$(dpkg --print-architecture)
   echo "deb [arch=$arch signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$DISTRO $codename stable" \
     | as_root tee /etc/apt/sources.list.d/docker.list >/dev/null
@@ -357,6 +379,8 @@ install_docker_apt_repo() {
 
 linux_prereqs() {
   local missing=() pkg
+  is_root || command -v sudo >/dev/null 2>&1 \
+    || die "This installer needs root. Run it as root, or install sudo and re-run."
   command -v git >/dev/null 2>&1 || missing+=(git)
   command -v curl >/dev/null 2>&1 || missing+=(curl)
   command -v openssl >/dev/null 2>&1 || missing+=(openssl)
@@ -401,7 +425,8 @@ linux_prereqs() {
     info "Installing the Docker Compose plugin"
     pkg=docker-compose-plugin
     [ -f /etc/apt/sources.list.d/docker.list ] || install_docker_apt_repo
-    apt_install "$pkg" || true
+    as_root env DEBIAN_FRONTEND=noninteractive apt-get update
+    apt_install "$pkg"
     "${DOCKER[@]}" compose version >/dev/null 2>&1 \
       || die "'docker compose' isn't available. Install Docker's compose plugin (https://docs.docker.com/compose/install/linux/) and re-run."
   fi
@@ -444,6 +469,10 @@ fetch_code() {
   esac
 
   if [ -e "$DIR/.git" ]; then
+    # Never fetch/checkout/reset in a git repo that isn't a Sirdar install.
+    { [ -f "$DIR/sirdar/docker-compose.yml" ] \
+        && git -C "$DIR" sparse-checkout list 2>/dev/null | grep -qx 'sirdar'; } \
+      || die "$DIR is not a Sirdar install; choose another SIRDAR_DIR."
     info "Updating $DIR to origin/$BRANCH"
     git "${GIT_SRC_OPTS[@]+"${GIT_SRC_OPTS[@]}"}" -C "$DIR" fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
     git -C "$DIR" checkout -f -B "$BRANCH" "refs/remotes/origin/$BRANCH" --
@@ -517,28 +546,28 @@ first_admin() {
 
   open_tty
   local yn email first last tries=0
-  ask yn "Create the first Sirdar admin now? [Y/n]: "
-  case "$yn" in [Nn]*) exec 3<&-; echo "    Later: $admin_cmd"; return 0 ;; esac
-  while [ "$tries" -lt 3 ]; do
+  ask yn "Create the first Sirdar admin now? [Y/n]: " || die_eof
+  case "$yn" in [Nn]*) close_tty; echo "    Later: $admin_cmd"; return 0 ;; esac
+  while [ "$tries" -lt 4 ]; do   # first attempt + 3 retries
     tries=$((tries + 1))
     email=''; first=''; last=''
-    while [ -z "$email" ]; do ask email "  Email: "; done
-    while [ -z "$first" ]; do ask first "  First name: "; done
+    while [ -z "$email" ]; do ask email "  Email: " || die_eof; done
+    while [ -z "$first" ]; do ask first "  First name: " || die_eof; done
     while [ -z "$last" ];  do ask last  "  Last name: "; done
-    # The CLI's own hidden password prompt needs the terminal on both ends.
-    # shellcheck disable=SC2094
+    # The CLI's own hidden password prompt needs the terminal on both ends
+    # (fd 3 is the tty for reading, fd 4 for writing).
     if compose exec sirdar sirdar create-admin --email "$email" --first-name "$first" --last-name "$last" \
-         <"$TTY_PATH" >"$TTY_PATH"; then
+         <&3 >&4; then
       info "Admin $email created"
-      exec 3<&-
+      close_tty
       return 0
     fi
     warn "create-admin failed."
-    [ "$tries" -lt 3 ] || break
-    ask yn "Try again? [Y/n]: "
+    [ "$tries" -lt 4 ] || break
+    ask yn "Try again? [Y/n]: " || die_eof
     case "$yn" in [Nn]*) break ;; esac
   done
-  exec 3<&-
+  close_tty
   echo "    Create the admin later with:"
   echo "      $admin_cmd"
 }
