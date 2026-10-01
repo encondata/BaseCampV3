@@ -33,8 +33,16 @@ macOS and Linux:
 curl -fsSL https://raw.githubusercontent.com/encondata/BaseCampV3/main/kiosk_laptop/installer/install.sh | bash
 ```
 
-To pass flags, run the script from a checkout, or use
-`curl -fsSL .../install.sh | bash -s -- --channel edge`.
+To pass flags on macOS or Linux, use
+`curl -fsSL .../install.sh | bash -s -- --channel edge`. On Windows, use the
+scriptblock form, which accepts the flags:
+
+```
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/encondata/BaseCampV3/main/kiosk_laptop/installer/install.ps1))) -Channel edge
+```
+
+You can also run `install.ps1` or `install.sh` from a checkout with the same
+flags.
 
 | macOS / Linux | Windows | Meaning |
 | --- | --- | --- |
@@ -175,11 +183,13 @@ macOS and Linux:
 curl -fsSL https://raw.githubusercontent.com/encondata/BaseCampV3/main/kiosk_laptop/installer/install.sh | bash -s -- --uninstall
 ```
 
-Windows, from a checkout or a downloaded `install.ps1`:
+Windows:
 
 ```
-powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/encondata/BaseCampV3/main/kiosk_laptop/installer/install.ps1))) -Uninstall
 ```
+
+(Or run `install.ps1 -Uninstall` from a checkout.)
 
 It removes the update job and the launcher first, then stops the kiosk. If
 Docker isn't running, it stops and asks you to start Docker and run the
@@ -197,10 +207,13 @@ instead.
 - Kiosk logs: `docker compose -f <install folder>/docker-compose.yml logs -f edge`
 - Health: `docker compose -f <install folder>/docker-compose.yml ps` shows the
   container as healthy once the kiosk answers.
-- "edge.key is unreadable": run
+- "edge.key is unreadable": stop the kiosk first (it holds an exclusive lock
+  on `edge.db`), reset the key, then start it again:
 
   ```
+  docker compose -f <install folder>/docker-compose.yml stop edge
   docker compose -f <install folder>/docker-compose.yml run --rm edge python -m edge reset-key
+  docker compose -f <install folder>/docker-compose.yml up -d
   ```
 
   Everyone then signs in online again; scans waiting to upload are kept and
