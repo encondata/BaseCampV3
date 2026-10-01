@@ -130,3 +130,9 @@ it('getSystemStatus fetches without auth', async () => {
   expect(s.read_only).toBe(true);
   expect((fetchMock.mock.calls[0] as unknown as Call)[0]).toBe('http://api.test/system/status');
 });
+
+it('maps the edge_offline code to the network error the screens already handle', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(
+    JSON.stringify({ detail: { code: 'edge_offline' } }), { status: 503 })));
+  await expect(api.getSetupOptions()).rejects.toMatchObject({ status: 0, code: 'network' });
+});
