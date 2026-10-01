@@ -1,0 +1,74 @@
+from .api_helpers import auth_headers
+from .factories import make_user
+
+
+def _admin_matrix(view_users=True, add_users=False):
+    return {"dashboard": {"view": True}, "users": {"view": view_users, "add": add_users},
+            "access": {"view": True}, "audit": {"view": True}, "settings": {"view": True}}
+
+
+async def test_summary(client, db):
+    h = await auth_headers(client, db)
+    body = (await client.get("/api/access/summary", headers=h)).json()
+    assert [r["id"] for r in body["resources"]] == [
+        "dashboard", "users", "access", "audit", "settings", "devtools"]
+    assert [r["name"] for r in body["roles"]] == ["developer", "founder", "super_admin", "admin"]
+    admin = body["roles"][-1]
+    assert admin["matrix"]["users"] == {"view": True, "add": False, "change": False,
+                                        "delete": False}
+    assert body["roles"][0]["member_count"] == 1
+
+
+async def test_matrix_update_and_rules(client, db):
+    h = await auth_headers(client, db)                       # developer, rank 100
+    ok = await client.put("/api/access/roles/admin/matrix", headers=h,
+                          json={"matrix": _admin_matrix(add_users=True)})
+    assert ok.status_code == 200 and ok.json()["grants"] == 6
+    bad_dev = await client.put("/api/access/roles/admin/matrix", headers=h,
+                               json={"matrix": {**_admin_matrix(), "devtools": {"view": True}}})
+    assert bad_dev.json()["detail"]["code"] == "developer_only_resource"
+    locked = await client.put("/api/access/roles/admin/matrix", headers=h,
+                              json={"matrix": {**_admin_matrix(), "access": {"view": False}}})
+    assert locked.json()["detail"]["code"] == "access_view_locked"
+    own = await client.put("/api/access/roles/developer/matrix", headers=h,
+                           json={"matrix": _admin_matrix()})
+    assert own.json()["detail"]["code"] == "cannot_edit_own_role"
+    unknown = await client.put("/api/access/roles/admin/matrix", headers=h,
+                               json={"matrix": {**_admin_matrix(), "nope": {"view": True}}})
+    assert unknown.status_code == 422 and unknown.json()["detail"]["code"] == "unknown_resource"
+
+
+async def test_super_admin_cannot_grant_beyond_own(client, db):
+    h = await auth_headers(client, db, roles=("super_admin",))
+    # super_admin lacks access.add — granting it to admin exceeds their own
+    resp = await client.put("/api/access/roles/admin/matrix", headers=h,
+                            json={"matrix": {**_admin_matrix(), "access": {"view": True,
+                                                                           "add": True}}})
+    assert resp.status_code == 403 and resp.json()["detail"]["code"] == "grant_exceeds_own"
+    peer = await client.put("/api/access/roles/super_admin/matrix", headers=h,
+                            json={"matrix": _admin_matrix()})
+    assert peer.json()["detail"]["code"] == "cannot_edit_own_role"
+
+
+async def test_overrides_roundtrip_and_rules(client, db):
+    h = await auth_headers(client, db)
+    target = await make_user(db, email="admin@test.example.com", roles=("admin",))
+    url = f"/api/access/overrides/{target.person_id}"
+    put = await client.put(url, headers=h,
+                           json={"overrides": {"users": {"change": True, "view": None}}})
+    assert put.status_code == 200 and put.json()["overrides"] == 1
+    got = (await client.get(url, headers=h)).json()
+    assert got["overrides"] == {"users": {"change": True}}
+    dev = await client.put(url, headers=h, json={"overrides": {"devtools": {"view": True}}})
+    assert dev.json()["detail"]["code"] == "developer_only_resource"
+    me = (await client.get("/api/auth/me", headers=h)).json()["person"]["id"]
+    self_edit = await client.put(f"/api/access/overrides/{me}", headers=h,
+                                 json={"overrides": {}})
+    assert self_edit.json()["detail"]["code"] == "cannot_target_self"
+
+
+async def test_admin_cannot_edit_matrix(client, db):
+    h = await auth_headers(client, db, roles=("admin",))
+    resp = await client.put("/api/access/roles/admin/matrix", headers=h,
+                            json={"matrix": _admin_matrix()})
+    assert resp.status_code == 403 and resp.json()["detail"]["code"] == "forbidden"
