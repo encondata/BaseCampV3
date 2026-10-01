@@ -155,7 +155,9 @@ fernet_key() { openssl rand -base64 32 | tr -d '\n' | tr '+/' '-_'; }
 
 port_in_use() {
   if command -v lsof >/dev/null 2>&1; then
-    lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1 && return 0
+    # Match the port in the output: BusyBox's lsof ignores the filters and
+    # lists every open file.
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | grep -q ":$1 (LISTEN)" && return 0
   fi
   if command -v ss >/dev/null 2>&1; then
     [ -n "$(ss -ltnH "sport = :$1" 2>/dev/null)" ] && return 0
