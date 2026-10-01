@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime
 
 import pyotp
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import get_settings
@@ -33,9 +33,12 @@ def is_enrolled(user: User) -> bool:
     return bool(user.totp_enabled and user.totp_confirmed_at and user.totp_secret_enc)
 
 
-def start_enrollment(user: User) -> dict:
-    """Store a fresh unconfirmed seed. Does not commit."""
-    if is_enrolled(user):
+async def start_enrollment(db: AsyncSession, person_id: uuid.UUID) -> dict:
+    """Store a fresh unconfirmed seed under a row lock (re-checks enrollment
+    so a concurrent confirm cannot be overwritten). Commits."""
+    user = await _locked_user(db, person_id)
+    if user.totp_confirmed_at is not None:
+        await db.rollback()
         raise AuthError("totp_already_enrolled")
     secret = pyotp.random_base32()
     user.totp_secret_enc = encrypt_secret(secret, key=_key())
@@ -43,6 +46,7 @@ def start_enrollment(user: User) -> dict:
     user.totp_last_counter = None
     user.totp_enabled = False
     uri = pyotp.TOTP(secret).provisioning_uri(name=user.email, issuer_name=ISSUER)
+    await db.commit()
     return {"secret": secret, "otpauth_uri": uri}
 
 
@@ -58,7 +62,6 @@ async def _replace_backup_codes(db: AsyncSession, user: User) -> list[str]:
 
 
 async def _locked_user(db: AsyncSession, person_id: uuid.UUID) -> User:
-    from sqlalchemy import select
     return await db.scalar(select(User).where(User.person_id == person_id)
                            .with_for_update().execution_options(populate_existing=True))
 

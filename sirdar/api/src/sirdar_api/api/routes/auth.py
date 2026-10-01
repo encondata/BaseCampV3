@@ -182,10 +182,9 @@ def _local_only(user: User) -> None:
 async def totp_enroll_start(ctx: CurrentUser, db: DbSession):
     _local_only(ctx.user)
     try:
-        out = totp_enroll.start_enrollment(ctx.user)
+        out = await totp_enroll.start_enrollment(db, ctx.user.person_id)
     except AuthError as exc:
         raise _auth_http_error(exc) from None
-    await db.commit()
     return out
 
 

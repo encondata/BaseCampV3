@@ -237,14 +237,14 @@ async def change_password(body: PasswordChangeIn, request: Request, ctx: Current
         raise HTTPException(status_code=403, detail={"code": "managed_in_portal"})
     settings = get_settings()
     pepper = settings.password_pepper.get_secret_value()
+    if len(body.new_password) < settings.password_min_length:
+        raise HTTPException(status_code=422, detail={
+            "code": "password_too_short", "min_length": settings.password_min_length})
     if user.password_hash is None or not verify_password(
             user.password_hash, body.current_password, pepper=pepper):
         raise HTTPException(status_code=403, detail={"code": "invalid_current_password"})
     if body.new_password == body.current_password:
         raise HTTPException(status_code=422, detail={"code": "same_as_current"})
-    if len(body.new_password) < settings.password_min_length:
-        raise HTTPException(status_code=422, detail={
-            "code": "password_too_short", "min_length": settings.password_min_length})
     now = datetime.now(UTC)
     user.password_hash = hash_password(body.new_password, pepper=pepper)
     user.password_updated_at = now

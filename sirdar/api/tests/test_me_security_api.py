@@ -45,6 +45,7 @@ async def test_password_change_success(client, db):
     headers = await _local(client, db)
     other = await client.post("/api/auth/login", json={"email": EMAIL, "password": PASSWORD})
     assert other.status_code == 200
+    other_headers = {"Authorization": f"Bearer {other.json()['access_token']}"}
     resp = await _pw(client, headers)
     assert resp.status_code == 204
     user = await _user(db)
@@ -56,6 +57,8 @@ async def test_password_change_success(client, db):
     assert revoked and all(s.revoke_reason == "password_change" for s in revoked)
     assert len({s.family_id for s in live}) == 1          # only the current one survives
     assert (await client.get("/api/auth/me", headers=headers)).status_code == 200
+    gone = await client.get("/api/auth/me", headers=other_headers)
+    assert gone.status_code == 401 and gone.json()["detail"]["code"] == "session_ended"
     assert (await client.post("/api/auth/login",
                               json={"email": EMAIL, "password": PASSWORD})).status_code == 401
     assert (await client.post("/api/auth/login", json={
@@ -219,3 +222,26 @@ async def test_portal_users_managed_in_portal(client, db):
 async def test_requires_sign_in(client, db):
     for path in ("/api/auth/me/password", "/api/auth/totp/enroll/start"):
         assert (await client.post(path, json={})).status_code in (401, 403)
+
+
+async def test_password_length_checked_before_current(client, db):
+    headers = await _local(client, db)
+    resp = await _pw(client, headers, cur="nope-nope-nope", new="short")
+    assert resp.status_code == 422 and resp.json()["detail"]["code"] == "password_too_short"
+
+
+async def test_password_wrong_current_before_same(client, db):
+    headers = await _local(client, db)
+    resp = await _pw(client, headers, cur="nope-nope-nope", new="nope-nope-nope")
+    assert resp.status_code == 403
+
+
+async def test_enroll_start_rechecks_row_not_request_user(client, db):
+    headers = await _local(client, db)
+    user = await _user(db)
+    user.totp_secret_enc = b"sentinel-secret"
+    user.totp_confirmed_at = datetime.now(UTC)
+    await db.commit()
+    resp = await client.post("/api/auth/totp/enroll/start", headers=headers)
+    assert resp.status_code == 409 and resp.json()["detail"] == {"code": "totp_already_enrolled"}
+    assert (await _user(db)).totp_secret_enc == b"sentinel-secret"
