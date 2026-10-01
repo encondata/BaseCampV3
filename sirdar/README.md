@@ -40,7 +40,7 @@ Ports: database 127.0.0.1:5434, API 8097, web 5178.
 
 On a Docker host, run `sirdar/install.sh` (it sparse-checks out `sirdar/` plus
 the portal files the SPA imports, creates `sirdar/.env` on the first run, then
-builds and starts the stack). Override with `SIRDAR_DIR`, `SIRDAR_BRANCH`, or
+builds and starts the stack). Override with `SIRDAR_DIR`, `SIRDAR_BRANCH` (default `main`), or
 `REPO_URL`. Or run compose by hand:
 
 ```bash
@@ -58,5 +58,13 @@ The app listens on 127.0.0.1:8098 by default; put a TLS reverse proxy in front.
   values, or copied password hashes and 2FA seeds will not verify.
 - Point `SIRDAR_SOURCE_DATABASE_URL` at a read-only role that can only SELECT
   the tables the import reads. Leave it empty to disable the import.
+- Sirdar must sit behind a trusted reverse proxy: the API trusts
+  `X-Forwarded-For` for audit and session IPs, uvicorn runs with
+  `--forwarded-allow-ips='*'`, and the port is bound to 127.0.0.1. Never expose
+  the container port directly.
+- Have the proxy rate-limit `/api/auth/*`; account lockout alone does not stop
+  password guessing while an account is locked.
+- The dev import uses the portal's own DB URL, but the import always runs in a
+  READ ONLY transaction. In production, use a read-only role anyway.
 - Local users created with `create-admin` have no 2FA.
 - Never commit `sirdar/.env`.

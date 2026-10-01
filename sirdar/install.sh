@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Install or update Sirdar from GitHub with a sparse checkout (sirdar/ plus
 # the portal files its SPA imports). Run as a user who can use docker.
-#   SIRDAR_DIR=/opt/sirdar SIRDAR_BRANCH=sirdar ./install.sh
+#   SIRDAR_DIR=/opt/sirdar SIRDAR_BRANCH=main ./install.sh
 set -euo pipefail
 REPO_URL=${REPO_URL:-https://github.com/encondata/BaseCampV3.git}
 DIR=${SIRDAR_DIR:-/opt/sirdar}
-BRANCH=${SIRDAR_BRANCH:-sirdar}
+BRANCH=${SIRDAR_BRANCH:-main}
 
 if [[ ! -d "$DIR/.git" ]]; then
   git clone --filter=blob:none --no-checkout --branch "$BRANCH" "$REPO_URL" "$DIR"
