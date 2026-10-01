@@ -9,7 +9,8 @@ the cloud is reachable again.
 
 ## Requirements
 
-- Docker Desktop.
+- Docker Desktop (on Windows, with the WSL2 engine — see
+  [Windows (WSL2)](#windows-wsl2) before installing).
 - Chrome or Edge (WebUSB label printing does not work in other browsers).
 
 ## Install
@@ -28,8 +29,9 @@ Optional settings:
 
 - `EDGE_PORTAL_URL`: the portal address, used for links.
 - `EDGE_DATA_HOST_DIR`: where the data folder lives (default
-  `~/ServerSherpaKiosk`). On Windows, set it to a full path such as
-  `C:\ServerSherpaKiosk`.
+  `~/ServerSherpaKiosk`). On Windows, leave it at the default and run compose
+  from the WSL2 shell; don't point it at a `C:\` folder (see
+  [Windows (WSL2)](#windows-wsl2)).
 - `EDGE_OFFLINE_LOGIN_DAYS` (default `14`): how long after an online sign-in
   a person can still sign in offline on this laptop.
 - `EDGE_SYNC_INTERVAL_S` (default `300`): how often the move data is
@@ -69,6 +71,47 @@ Optional settings:
   the cloud refuses outright is marked failed, and Edge settings can retry
   it.
 
+## Windows (WSL2)
+
+The kiosk runs on Windows through Docker Desktop's WSL2 engine. Three things
+differ from a Mac.
+
+**Run everything from the WSL2 shell.** Install a WSL2 distribution (Ubuntu
+is fine), turn on Docker Desktop › Settings › Resources › WSL integration for
+it, then open the Ubuntu shell and clone the repository there (for example
+`~/BaseCampV3`), not under `C:\` or `/mnt/c`. Run the install, update and
+troubleshooting commands from that shell, exactly as written in this README.
+
+Why: the data folder holds a SQLite database, and SQLite's locking is not
+reliable on Windows folders shared into Docker (`C:\…`, `/mnt/c/…`). Doing so
+can give "database is locked" errors or a damaged database. Run from the WSL2
+shell, `~/ServerSherpaKiosk` is on the Linux disk, where it is fast and safe.
+
+**The data folder lives inside the WSL2 distribution.** From Windows you can
+reach it at `\\wsl$\Ubuntu\home\<you>\ServerSherpaKiosk`. Uninstalling,
+resetting or running `wsl --unregister` on that distribution deletes it — and
+with it the kiosk's identity and any scans that have not uploaded. Back it up
+before any of those (see [Data and backups](#data-and-backups)).
+
+**Label printers need the WinUSB driver.** Chrome can only print to a USB
+printer that no Windows driver has claimed. If the Zebra driver (ZDesigner)
+is installed for the printer, Chrome can't connect to it. For each label
+printer on the laptop:
+
+1. Plug the printer in and turn it on.
+2. Run [Zadig](https://zadig.akeo.ie/), choose Options › List All Devices,
+   and select the Zebra printer.
+3. Set the driver to **WinUSB** and click Replace Driver.
+4. Unplug the printer and plug it back in, then connect it from Label
+   Printing › Printers in the kiosk.
+
+That printer then prints only through the kiosk, not through Windows print
+dialogs. To undo it, uninstall the device in Device Manager (tick "Delete the
+driver software") and reinstall the Zebra driver.
+
+Each laptop builds its own image (`up -d --build`), so it does not matter
+that Windows laptops are x86 and Macs are ARM.
+
 ## Data and backups
 
 The data folder (default `~/ServerSherpaKiosk`, set by `EDGE_DATA_HOST_DIR`) is
@@ -79,7 +122,13 @@ a normal folder on the laptop, not a Docker volume. It holds:
 - `edge.db` — settings, cached data and scans waiting to upload.
 
 Back this folder up. Deleting it creates a brand-new kiosk, and any scans that
-had not uploaded are lost.
+had not uploaded are lost. Stop the kiosk first
+(`docker compose -f kiosk_laptop/docker-compose.yml stop`) so the copy of
+`edge.db` is consistent, then copy the whole folder. On Windows the folder is
+inside the WSL2 distribution; copy it out from `\\wsl$\Ubuntu\home\<you>\` or
+with `cp -r ~/ServerSherpaKiosk /mnt/c/Users/<you>/Backups/` from the Ubuntu
+shell (a backup copy on `C:\` is fine; only the live folder must stay on the
+Linux side).
 
 ## Updating
 
