@@ -139,7 +139,30 @@ async def test_unreachable_source_records_failed_run_and_changes_nothing(db):
                            source_url="postgresql+asyncpg://nobody:x@127.0.0.1:1/nope")
     run = await db.get(ImportRun, exc.value.run_id)
     assert run.status == "failed" and run.error
+    assert "nobody:x" not in run.error and "postgresql" not in run.error
     assert list(await db.scalars(select(User))) == []
+
+
+async def test_apply_failure_rolls_back_and_records_failed_run(db, source, monkeypatch):
+    from sirdar_api.db.models import AuditLog
+    from sirdar_api.services import import_users as mod
+    _std_roles(source)
+    add_portal_person(source, email="admin@test.example.com")
+    real_apply = mod._apply
+
+    async def broken_apply(db_, snap, now):
+        await real_apply(db_, snap, now)          # writes happen, then the run blows up
+        await db_.flush()
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(mod, "_apply", broken_apply)
+    with pytest.raises(RuntimeError):
+        await import_users(db, actor_id=None, trigger="cli")
+    run = await db.scalar(select(ImportRun))
+    assert run.status == "failed" and "boom" in run.error and run.finished_at is not None
+    assert list(await db.scalars(select(User))) == []
+    actions = list(await db.scalars(select(AuditLog.action)))
+    assert "users.import_failed" in actions
 
 
 async def test_not_configured(db, monkeypatch):
@@ -152,3 +175,90 @@ async def test_not_configured(db, monkeypatch):
             await import_users(db, actor_id=None, trigger="cli")
     finally:
         get_settings.cache_clear()
+
+
+def _by_pid(run) -> dict:
+    out: dict = {}
+    for r in run.rows:
+        out.setdefault(r["person_id"], []).append(r)
+    return out
+
+
+async def test_email_swap_between_portal_admins(db, source):
+    _std_roles(source)
+    a = add_portal_person(source, email="a@test.example.com")
+    b = add_portal_person(source, email="b@test.example.com")
+    await import_users(db, actor_id=None, trigger="cli")
+    source.execute("UPDATE user_accounts SET email = 'tmp@test.example.com' WHERE person_id = %s",
+                   (a,))
+    source.execute("UPDATE user_accounts SET email = 'a@test.example.com' WHERE person_id = %s",
+                   (b,))
+    source.execute("UPDATE user_accounts SET email = 'b@test.example.com' WHERE person_id = %s",
+                   (a,))
+    run = await import_users(db, actor_id=None, trigger="cli")
+    assert (run.updated, run.disabled, run.skipped) == (2, 0, 0)
+    ua, ub = await db.get(User, a), await db.get(User, b)
+    await db.refresh(ua)
+    await db.refresh(ub)
+    assert ua.email == "b@test.example.com" and ub.email == "a@test.example.com"
+    assert ua.disabled_at is None and ub.disabled_at is None
+    assert all("email" in r["changes"] for r in run.rows)
+
+
+async def test_email_freed_from_demoted_portal_user(db, source):
+    _std_roles(source)
+    a = add_portal_person(source, email="x@test.example.com")
+    await import_users(db, actor_id=None, trigger="cli")
+    source.execute("UPDATE person_roles SET revoked_at = now() WHERE person_id = %s", (a,))
+    source.execute("UPDATE user_accounts SET email = 'old-x@test.example.com' "
+                   "WHERE person_id = %s", (a,))
+    c = add_portal_person(source, email="x@test.example.com")
+    run = await import_users(db, actor_id=None, trigger="cli")
+    rows = _by_pid(run)
+    assert all(len(v) == 1 for v in rows.values()) and len(rows) == 2
+    ra, rc = rows[str(a)][0], rows[str(c)][0]
+    assert ra["action"] == "disabled" and ra["reason"] == "not_eligible"
+    assert "email_released" in ra["changes"]
+    assert rc["action"] == "added"
+    ua = await db.get(User, a)
+    await db.refresh(ua)
+    assert ua.email == f"released+{a}@sirdar.invalid" and ua.disabled_at is not None
+    assert (await db.get(User, c)).email == "x@test.example.com"
+    # the next run leaves the already-disabled holder alone: no second row
+    run2 = await import_users(db, actor_id=None, trigger="cli")
+    assert str(a) not in _by_pid(run2) and run2.disabled == 0
+
+
+async def test_email_freed_from_already_disabled_portal_user(db, source):
+    _std_roles(source)
+    a = add_portal_person(source, email="x@test.example.com")
+    await import_users(db, actor_id=None, trigger="cli")
+    source.execute("UPDATE person_roles SET revoked_at = now() WHERE person_id = %s", (a,))
+    await import_users(db, actor_id=None, trigger="cli")          # a disabled, keeps x@
+    source.execute("UPDATE user_accounts SET email = 'old-x@test.example.com' "
+                   "WHERE person_id = %s", (a,))
+    c = add_portal_person(source, email="x@test.example.com")
+    run = await import_users(db, actor_id=None, trigger="cli")
+    rows = _by_pid(run)
+    assert list(rows) == [str(c)] and rows[str(c)][0]["action"] == "added"
+    ua = await db.get(User, a)
+    await db.refresh(ua)
+    assert ua.email == f"released+{a}@sirdar.invalid"
+
+
+async def test_skipped_person_not_also_disabled(db, source):
+    _std_roles(source)
+    a = add_portal_person(source, email="a@test.example.com")
+    await import_users(db, actor_id=None, trigger="cli")
+    await make_user(db, email="local@test.example.com", source="local", roles=("developer",))
+    source.execute("UPDATE user_accounts SET email = 'local@test.example.com' "
+                   "WHERE person_id = %s", (a,))
+    run = await import_users(db, actor_id=None, trigger="cli")
+    rows = _by_pid(run)
+    assert len(rows[str(a)]) == 1
+    assert rows[str(a)][0]["action"] == "skipped"
+    assert rows[str(a)][0]["reason"] == "email_collision_local"
+    assert run.disabled == 0
+    ua = await db.get(User, a)
+    await db.refresh(ua)
+    assert ua.disabled_at is None and ua.email == "a@test.example.com"

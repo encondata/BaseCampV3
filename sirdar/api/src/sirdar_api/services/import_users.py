@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from sqlalchemy import delete, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -190,30 +191,65 @@ async def _replace_backup_codes(db: AsyncSession, person_id: uuid.UUID,
     return True
 
 
+def _is_eligible(acct: _Account, roles: list[str]) -> bool:
+    return bool(roles) and acct.password_hash is not None and acct.disabled_at is None \
+        and acct.archived_at is None
+
+
+async def _move_emails(db: AsyncSession, existing: dict[uuid.UUID, User],
+                       importing: dict[uuid.UUID, _Account]) -> set[uuid.UUID]:
+    """Clear the way for the emails this run assigns. The portal is the source
+    of truth, so a portal user's email never blocks another portal person:
+    every importing user whose email changes is parked on a unique
+    placeholder, and every other portal user holding a wanted email gets it
+    released to a tombstone. One flush, then the final emails can be written
+    in any order without tripping UNIQUE(email). Returns the released ids."""
+    wanted = {a.email.lower() for a in importing.values()}
+    released: set[uuid.UUID] = set()
+    for user in existing.values():
+        if user.source != "portal":
+            continue
+        acct = importing.get(user.person_id)
+        if acct is not None:
+            if acct.email.lower() != user.email.lower():
+                user.email = f"pending+{user.person_id}@sirdar.invalid"
+        elif user.email.lower() in wanted:
+            user.email = f"released+{user.person_id}@sirdar.invalid"
+            released.add(user.person_id)
+    await db.flush()
+    return released
+
+
 async def _apply(db: AsyncSession, snap: _Snapshot, now: datetime) -> list[dict]:
     await _sync_roles(db, snap)
     existing = {u.person_id: u for u in await db.scalars(select(User))}
-    by_email = {u.email.lower(): u for u in existing.values()}
+    local_emails = {u.email.lower() for u in existing.values() if u.source == "local"}
+    old_email = {pid: u.email for pid, u in existing.items()}
     rows: list[dict] = []
-    seen: set[uuid.UUID] = set()
+    skipped: dict[uuid.UUID, dict] = {}
+    importing: dict[uuid.UUID, tuple[_Account, list[str]]] = {}
 
+    # decide first: who imports and who is skipped (only a LOCAL user blocks)
     for acct in sorted(snap.accounts, key=lambda a: a.email.lower()):
         roles = _eligible_roles(snap, acct.person_id)
-        if (not roles or acct.password_hash is None or acct.disabled_at is not None
-                or acct.archived_at is not None):
-            continue
-        holder = by_email.get(acct.email.lower())
-        if holder is not None and holder.person_id != acct.person_id:
-            reason = "email_collision_local" if holder.source == "local" else "email_collision"
-            rows.append(_row(acct, "skipped", reason=reason, roles=roles))
+        if not _is_eligible(acct, roles):
             continue
         user = existing.get(acct.person_id)
         if user is not None and user.source == "local":
-            rows.append(_row(acct, "skipped", reason="person_is_local", roles=roles))
+            reason = "person_is_local"
+        elif acct.email.lower() in local_emails:
+            reason = "email_collision_local"
+        else:
+            importing[acct.person_id] = (acct, roles)
             continue
-        seen.add(acct.person_id)
-        fields = _identity_fields(acct, snap)
+        skipped[acct.person_id] = _row(acct, "skipped", reason=reason, roles=roles)
+        rows.append(skipped[acct.person_id])
 
+    released = await _move_emails(db, existing, {p: a for p, (a, _) in importing.items()})
+
+    for acct, roles in importing.values():
+        fields = _identity_fields(acct, snap)
+        user = existing.get(acct.person_id)
         if user is None:
             user = User(person_id=acct.person_id, source="portal",
                         totp_last_counter=acct.totp_last_counter, last_imported_at=now, **fields)
@@ -225,7 +261,8 @@ async def _apply(db: AsyncSession, snap: _Snapshot, now: datetime) -> list[dict]
             rows.append(_row(acct, "added", roles=roles))
             continue
 
-        changes = [k for k, v in fields.items() if getattr(user, k) != v]
+        before = {**{k: getattr(user, k) for k in fields}, "email": old_email[user.person_id]}
+        changes = [k for k, v in fields.items() if before[k] != v]
         for k in changes:
             setattr(user, k, fields[k])
         counters = [c for c in (user.totp_last_counter, acct.totp_last_counter) if c is not None]
@@ -249,18 +286,32 @@ async def _apply(db: AsyncSession, snap: _Snapshot, now: datetime) -> list[dict]
         else:
             rows.append(_row(acct, "unchanged", roles=roles))
 
+    # one row per person: a skipped person is never also disabled, and a holder
+    # that was already disabled only has its email released (no new row)
     for user in existing.values():
-        if user.source != "portal" or user.person_id in seen or user.disabled_at is not None:
+        if user.source != "portal" or user.person_id in importing:
+            continue
+        was_released = ["email_released"] if user.person_id in released else []
+        if user.person_id in skipped:
+            skipped[user.person_id]["changes"] += was_released
+            continue
+        if user.disabled_at is not None:
+            if was_released:
+                user.updated_at = now
             continue
         user.disabled_at = now
         user.disabled_reason = "not_eligible"
         user.updated_at = now
         await revoke_sessions(db, user.person_id, reason="import_disabled")
-        rows.append(_row(user, "disabled", reason="not_eligible"))
+        rows.append(_row(user, "disabled", reason="not_eligible", changes=was_released))
     return rows
 
 
 def _describe(exc: Exception) -> str:
+    if isinstance(exc, DBAPIError) and exc.orig is not None:
+        # never the statement or its parameters (emails, password hashes)
+        first_line = (str(exc.orig).splitlines() or [""])[0]
+        return f"{type(exc.orig).__name__}: {first_line[:300]}"
     return f"{type(exc).__name__}: {str(exc)[:300]}"
 
 
@@ -305,6 +356,8 @@ async def import_users(db: AsyncSession, *, actor_id: uuid.UUID | None,
         failed = await db.get(ImportRun, run_id)
         failed.status, failed.error = "failed", _describe(exc)
         failed.finished_at = datetime.now(UTC)
+        audit(db, actor_id=actor_id, action="users.import_failed", entity_type="import_run",
+              entity_id=str(run_id), changes={"error": failed.error})
         await db.commit()
         raise
     return run
