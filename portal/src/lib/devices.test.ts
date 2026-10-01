@@ -21,6 +21,7 @@ const R: DeviceItem = {
   current_initiative_id: null, current_initiative_name: null,
   session_person_id: null, session_person_name: null,
   session_login_method: null, session_started_at: null,
+    setup_clear_requested_at: null, setup_clear_requested_by_name: null,
 };
 
 describe('formatUptime', () => {

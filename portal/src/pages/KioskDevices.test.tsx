@@ -21,7 +21,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-import type { DeviceItem, UiPreferences } from '../lib/api';
+import { ApiError, type DeviceItem, type UiPreferences } from '../lib/api';
 import { LIST_FIT } from '../lib/listTools';
 
 const auth = vi.hoisted(() => {
@@ -59,6 +59,8 @@ const api = vi.hoisted(() => ({
   createDevice: vi.fn(),
   patchDevice: vi.fn(),
   clearOfflineKiosks: vi.fn(),
+  requestClearSetup: vi.fn(),
+  cancelClearSetup: vi.fn(),
 }));
 
 vi.mock('../lib/api', async (importActual) => ({
@@ -86,6 +88,7 @@ function kiosk(overrides: Partial<DeviceItem>): DeviceItem {
     current_initiative_id: 'i1', current_initiative_name: 'NAP11 Hall Migration (demo)',
     session_person_id: null, session_person_name: null,
     session_login_method: null, session_started_at: null,
+    setup_clear_requested_at: null, setup_clear_requested_by_name: null,
     ...overrides,
   };
 }
@@ -574,4 +577,88 @@ it('clears a lingering clear-offline notice once another action runs', async () 
   expect(screen.queryByText(/Deleted 1 kiosk/)).toBeNull();
 
   confirmSpy.mockRestore();
+});
+
+/* ── Clear Setup ───────────────────────────────────────────────────── */
+
+async function openActions(name: string) {
+  const user = userEvent.setup();
+  const row = (await screen.findByText(name)).closest('.dir-row') as HTMLElement;
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  return { user, row };
+}
+
+it('Clear Setup confirms with the spec copy, posts, and reloads', async () => {
+  api.listDevices.mockResolvedValue([kiosk({ id: 'k1', name: 'kiosk-dock-1' })]);
+  api.requestClearSetup.mockResolvedValue(kiosk({ id: 'k1' }));
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  render(<KioskDevices />);
+  const { user } = await openActions('kiosk-dock-1');
+  await user.click(await screen.findByRole('menuitem', { name: 'Clear Setup' }));
+  expect(confirm).toHaveBeenCalledWith(
+    'Clear Setup on "kiosk-dock-1"? The next time it checks in, its move, site and checkpoint are cleared and whoever is signed in is sent to Kiosk Setup. Queued scans are kept.');
+  await waitFor(() => expect(api.requestClearSetup).toHaveBeenCalledWith('k1'));
+  await waitFor(() => expect(api.listDevices).toHaveBeenCalledTimes(2));
+  confirm.mockRestore();
+});
+
+it('declining the confirm does nothing', async () => {
+  api.listDevices.mockResolvedValue([kiosk({ id: 'k1', name: 'kiosk-dock-1' })]);
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  render(<KioskDevices />);
+  const { user } = await openActions('kiosk-dock-1');
+  await user.click(await screen.findByRole('menuitem', { name: 'Clear Setup' }));
+  expect(confirm).toHaveBeenCalledTimes(1);
+  expect(api.requestClearSetup).not.toHaveBeenCalled();
+  expect(api.listDevices).toHaveBeenCalledTimes(1);
+  confirm.mockRestore();
+});
+
+it('a pending clear shows the chip with who/when and offers Cancel instead', async () => {
+  api.listDevices.mockResolvedValue([kiosk({
+    id: 'k1', name: 'kiosk-dock-1',
+    setup_clear_requested_at: '2026-10-01T14:14:00Z',
+    setup_clear_requested_by_name: 'Jimmy Henderson',
+  })]);
+  api.cancelClearSetup.mockResolvedValue(kiosk({ id: 'k1' }));
+  render(<KioskDevices />);
+  const chip = await screen.findByText('Setup clear pending');
+  expect(chip.className).toContain('c-amber');
+  expect(chip.getAttribute('title')).toMatch(/^Requested by Jimmy Henderson, /);
+  const { user } = await openActions('kiosk-dock-1');
+  expect(screen.queryByRole('menuitem', { name: 'Clear Setup' })).toBeNull();
+  await user.click(screen.getByRole('menuitem', { name: 'Cancel clear setup' }));
+  await waitFor(() => expect(api.cancelClearSetup).toHaveBeenCalledWith('k1'));
+  await waitFor(() => expect(api.listDevices).toHaveBeenCalledTimes(2));
+});
+
+it('a kiosk with nothing pending shows no chip and no Cancel item', async () => {
+  api.listDevices.mockResolvedValue([kiosk({ id: 'k1', name: 'kiosk-dock-1' })]);
+  render(<KioskDevices />);
+  await openActions('kiosk-dock-1');
+  expect(screen.queryByText('Setup clear pending')).toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'Cancel clear setup' })).toBeNull();
+  expect(screen.getByRole('menuitem', { name: 'Clear Setup' })).not.toBeNull();
+});
+
+it('not_a_kiosk shows the friendly error', async () => {
+  api.listDevices.mockResolvedValue([kiosk({ id: 'k1', name: 'kiosk-dock-1' })]);
+  api.requestClearSetup.mockRejectedValue(new ApiError(409, 'not_a_kiosk'));
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  render(<KioskDevices />);
+  const { user } = await openActions('kiosk-dock-1');
+  await user.click(await screen.findByRole('menuitem', { name: 'Clear Setup' }));
+  expect(await screen.findByText('Only kiosks can have their setup cleared.')).not.toBeNull();
+  confirm.mockRestore();
+});
+
+it('Clear Setup is hidden without change permission', async () => {
+  auth.can = (resource, action) => !(resource === 'scanning_hardware' && action === 'change');
+  api.listDevices.mockResolvedValue([kiosk({ id: 'k1', name: 'kiosk-dock-1' })]);
+  render(<KioskDevices />);
+  // delete is still granted, so the Actions menu exists but offers Delete only
+  await openActions('kiosk-dock-1');
+  expect(screen.getByRole('menuitem', { name: 'Delete' })).not.toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'Clear Setup' })).toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'Cancel clear setup' })).toBeNull();
 });

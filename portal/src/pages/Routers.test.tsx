@@ -64,6 +64,7 @@ const DEVICES: DeviceItem[] = [
     current_initiative_id: null, current_initiative_name: null,
     session_person_id: null, session_person_name: null,
     session_login_method: null, session_started_at: null,
+    setup_clear_requested_at: null, setup_clear_requested_by_name: null,
   },
   {
     id: 'd1', device_type: 'router', name: 'dock-router-1',
@@ -80,6 +81,7 @@ const DEVICES: DeviceItem[] = [
     current_initiative_id: null, current_initiative_name: null,
     session_person_id: null, session_person_name: null,
     session_login_method: null, session_started_at: null,
+    setup_clear_requested_at: null, setup_clear_requested_by_name: null,
   },
 ];
 
@@ -189,6 +191,7 @@ it('renders VPN chips and token-expiry chips per state', async () => {
       current_initiative_id: null, current_initiative_name: null,
       session_person_id: null, session_person_name: null,
       session_login_method: null, session_started_at: null,
+      setup_clear_requested_at: null, setup_clear_requested_by_name: null,
     },
     {
       id: 'c2', device_type: 'router', name: 'chip-router-disconnected',
@@ -206,6 +209,7 @@ it('renders VPN chips and token-expiry chips per state', async () => {
       current_initiative_id: null, current_initiative_name: null,
       session_person_id: null, session_person_name: null,
       session_login_method: null, session_started_at: null,
+      setup_clear_requested_at: null, setup_clear_requested_by_name: null,
     },
     {
       id: 'c3', device_type: 'router', name: 'chip-router-healthy',
@@ -223,6 +227,7 @@ it('renders VPN chips and token-expiry chips per state', async () => {
       current_initiative_id: null, current_initiative_name: null,
       session_person_id: null, session_person_name: null,
       session_login_method: null, session_started_at: null,
+      setup_clear_requested_at: null, setup_clear_requested_by_name: null,
     },
   ];
   api.listDevices.mockResolvedValue(CHIP_DEVICES);
