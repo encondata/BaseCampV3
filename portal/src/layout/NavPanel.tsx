@@ -21,6 +21,7 @@ export interface NavPanelProps {
   onNavigate?: () => void;
   footer?: ReactNode;
   className?: string;
+  tag?: string;
   godMode?: boolean;
   godNavColor?: string | null;
 }
@@ -57,6 +58,7 @@ export default function NavPanel({
   onNavigate,
   footer,
   className,
+  tag = 'Portal',
   godMode,
   godNavColor,
 }: NavPanelProps) {
@@ -110,7 +112,7 @@ export default function NavPanel({
         />
         <div>
           <div className="logo-name">Server<em>Sherpa</em></div>
-          <div className="logo-tag">Portal</div>
+          <div className="logo-tag">{tag}</div>
         </div>
       </div>
 

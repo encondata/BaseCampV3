@@ -10,7 +10,7 @@
  */
 
 import { gsap } from 'gsap';
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -36,7 +36,14 @@ const CODE_ERRORS: Record<string, string> = {
   invalid_challenge: 'This sign-in expired. Start again.',
 };
 
-export default function Login() {
+export interface LoginProps {
+  eyebrow?: string;
+  sceneTag?: string;
+  notice?: ReactNode;
+  extraErrors?: Record<string, string>;
+}
+
+export default function Login({ eyebrow = 'ServerSherpa Portal', sceneTag, notice, extraErrors }: LoginProps = {}) {
   const navigate = useNavigate();
   const location = useLocation();
   const { login, completeLogin } = useAuth();
@@ -106,7 +113,7 @@ export default function Login() {
       navigate(from ?? '/', { replace: true });
     } catch (err) {
       const errCode = err instanceof ApiError ? err.code : 'network';
-      setError(ERROR_MESSAGES[errCode] ?? 'Login failed. Please try again.');
+      setError(extraErrors?.[errCode] ?? ERROR_MESSAGES[errCode] ?? 'Login failed. Please try again.');
       setInvalid({ email: true, password: true });
       setPassword('');
       shakeForm();
@@ -151,12 +158,13 @@ export default function Login() {
 
   return (
     <div className="login-shell login-light">
-      <LoginScene />
+      <LoginScene tag={sceneTag} />
 
       {/* ============ SIGN-IN FORM ============ */}
       <main className="lx-form-col">
         <div className="form-wrap" ref={formWrapRef}>
-          <div className="eyebrow">ServerSherpa Portal</div>
+          <div className="eyebrow">{eyebrow}</div>
+          {notice && <div className="login-notice" role="status">{notice}</div>}
           <div className="login-banners"><SystemBanners /></div>
           <h2 className="form-title">Sign in</h2>
           <p className="form-hint">Use the account credentials provided by your migration coordination team.</p>
@@ -270,15 +278,17 @@ export default function Login() {
                           invalid={!!codeError} autoFocus idPrefix="login-otp" />
               )}
               <p className={`otp-error ${codeError ? 'show' : ''}`} role={codeError ? 'alert' : undefined}>{codeError}</p>
-              <div className="otp-row">
-                <label className="remember">
-                  <input type="checkbox" checked={rememberBrowser} onChange={(e) => setRememberBrowser(e.target.checked)} />
-                  <span className="box">
-                    <svg viewBox="0 0 12 12" fill="none" stroke="#0c1117" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M2 6.5 4.8 9.5 10 2.8" /></svg>
-                  </span>
-                  Remember this browser for {trustDays} days
-                </label>
-              </div>
+              {trustDays > 0 && (
+                <div className="otp-row">
+                  <label className="remember">
+                    <input type="checkbox" checked={rememberBrowser} onChange={(e) => setRememberBrowser(e.target.checked)} />
+                    <span className="box">
+                      <svg viewBox="0 0 12 12" fill="none" stroke="#0c1117" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M2 6.5 4.8 9.5 10 2.8" /></svg>
+                    </span>
+                    Remember this browser for {trustDays} days
+                  </label>
+                </div>
+              )}
               <button className={`btn otp-verify ${verifying ? 'loading' : ''}`} type="button"
                       disabled={verifying || (backupMode ? code.replace(/[^a-z0-9]/gi, '').length < 10 : code.length < 6)}
                       onClick={() => void submitCode(code)}>
@@ -308,7 +318,7 @@ export default function Login() {
                   if (r.session) completeLogin(r.session);
                   return r;
                 }}
-                remember={{ checked: rememberBrowser, onChange: setRememberBrowser, days: trustDays }}
+                remember={trustDays > 0 ? { checked: rememberBrowser, onChange: setRememberBrowser, days: trustDays } : null}
                 onDone={finish}
                 onError={(c) => {
                   shakeForm();

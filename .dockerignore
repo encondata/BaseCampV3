@@ -5,6 +5,7 @@
 **/dist-node
 **/dist-server
 api/.venv
+**/.venv
 api/backups
 **/.env
 docs

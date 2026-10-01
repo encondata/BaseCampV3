@@ -1,0 +1,39 @@
+# Sirdar — two containers: the app (API + SPA) and its own Postgres.
+#   cp sirdar/.env.example sirdar/.env   # then edit it
+#   docker compose -f sirdar/docker-compose.yml --env-file sirdar/.env up -d --build
+#   docker compose -f sirdar/docker-compose.yml run --rm sirdar create-admin --email … --first-name … --last-name …
+#   docker compose -f sirdar/docker-compose.yml run --rm sirdar import-users
+name: sirdar
+
+services:
+  sirdar:
+    build:
+      context: ..
+      dockerfile: sirdar/Dockerfile
+    env_file: .env
+    environment:
+      SIRDAR_DATABASE_URL: postgresql+asyncpg://sirdar:${SIRDAR_DB_PASSWORD:?set SIRDAR_DB_PASSWORD in sirdar/.env}@sirdar-db:5432/sirdar
+    ports:
+      - "127.0.0.1:${SIRDAR_PORT:-8098}:8080"   # put the reverse proxy in front
+    depends_on:
+      sirdar-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  sirdar-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sirdar
+      POSTGRES_PASSWORD: ${SIRDAR_DB_PASSWORD:?set SIRDAR_DB_PASSWORD in sirdar/.env}
+      POSTGRES_DB: sirdar
+    volumes:
+      - sirdar-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sirdar -d sirdar"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  sirdar-db:
