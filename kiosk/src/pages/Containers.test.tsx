@@ -362,6 +362,7 @@ it('maps the portal\'s other refusals to their own copy', async () => {
     [new ApiError(404, 'container_not_found'), 'That container is gone — scan it again.'],
     [new ApiError(423, 'read_only_mode'), 'The portal is in read-only mode. Try again shortly.'],
     [new ApiError(0, 'network'), "Can't reach the portal. That scan was not recorded."],
+    [new ApiError(403, 'cloud_sign_in_required'), 'Sign in again while online to do this.'],
     [new ApiError(500, 'server_error'), "Couldn't record that (server_error)."],
   ];
   for (const [err, text] of cases) {

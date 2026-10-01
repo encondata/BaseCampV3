@@ -1,0 +1,24 @@
+# ServerSherpa kiosk — laptop edition.
+#   EDGE_CLOUD_API_URL=https://api.serversherpa.com docker compose -f kiosk_laptop/docker-compose.yml up -d
+# /data is a folder on this laptop (not a Docker volume) so `down -v`, a
+# Docker Desktop reset or a reinstall can't delete the kiosk's identity,
+# its key, or scans still waiting to upload. Back that folder up.
+name: serversherpa-kiosk-laptop
+services:
+  edge:
+    image: serversherpa-kiosk-laptop:latest
+    build:
+      context: ..
+      dockerfile: kiosk_laptop/Dockerfile
+    restart: unless-stopped
+    ports:
+      # keep 127.0.0.1 until the edge serves TLS (see README)
+      - "${EDGE_BIND:-127.0.0.1}:8090:8090"
+    environment:
+      EDGE_CLOUD_API_URL: ${EDGE_CLOUD_API_URL:?set EDGE_CLOUD_API_URL to the ServerSherpa API}
+      EDGE_PORTAL_URL: ${EDGE_PORTAL_URL:-}
+      EDGE_OFFLINE_LOGIN_DAYS: ${EDGE_OFFLINE_LOGIN_DAYS:-14}
+      EDGE_SYNC_INTERVAL_S: ${EDGE_SYNC_INTERVAL_S:-300}
+      EDGE_ALLOWED_HOSTS: ${EDGE_ALLOWED_HOSTS:-}
+    volumes:
+      - "${EDGE_DATA_HOST_DIR:-~/ServerSherpaKiosk}:/data"

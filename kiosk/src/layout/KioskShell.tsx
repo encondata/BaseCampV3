@@ -22,6 +22,7 @@ import { FEATURES } from '../lib/features';
 import { getIdentity } from '../lib/identity';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { platform } from '../lib/platform';
+import { useEdgeStatus } from '../lib/edgeStatus';
 import { useSyncStatus } from '../lib/sync';
 
 const REG_CHIP: Record<RegistrationState, string> = {
@@ -63,6 +64,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   const [devMode] = useDevMode();
   const [kioskSetup] = useKioskSetup();
   const sync = useSyncStatus();
+  const { status: edge } = useEdgeStatus();
 
   useEffect(() => {
     applyPreferences(preferences ?? DEFAULT_PREFERENCES);
@@ -95,6 +97,17 @@ export default function KioskShell({ children }: { children: ReactNode }) {
     status: sync.phase === 'done' ? 'good' : 'bad',
     title: syncTitle(sync),
   });
+  if (edge) {
+    const queued = edge.outbox.queued + edge.outbox.sending + edge.outbox.needs_sign_in;
+    footItems.push({
+      label: 'Cloud',
+      status: edge.cloud.online ? 'good' : 'bad',
+      title: `${edge.cloud.online ? 'Online' : 'Offline'}`
+        + `${edge.cloud.last_contact ? ` · last contact ${new Date(edge.cloud.last_contact).toLocaleString()}` : ''}`
+        + ` · ${queued} queued`,
+    });
+    if (edge.session?.offline) footItems.push({ label: 'Sign-in', value: 'Offline' });
+  }
 
   return (
     <div className="portal-shell kiosk-shell">

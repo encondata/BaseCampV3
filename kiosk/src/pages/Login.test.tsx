@@ -28,6 +28,11 @@ vi.mock('../lib/api', async (importActual) => ({
   ...api,
 }));
 
+const edgeMock = vi.hoisted(() => ({ status: null as null | { cloud: { online: boolean } } }));
+vi.mock('../lib/edgeStatus', () => ({
+  useEdgeStatus: () => ({ status: edgeMock.status, refresh: async () => {} }),
+}));
+
 import { ApiError } from '../lib/api';
 import Login from './Login';
 
@@ -50,7 +55,7 @@ beforeEach(() => {
   auth.login.mockResolvedValue({});
   auth.loginWithMovePassword.mockResolvedValue({});
 });
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); edgeMock.status = null; });
 
 it('opens on the email & password form by default', async () => {
   renderLogin();
@@ -182,4 +187,20 @@ it('hands PairPanel a stable onApproved across Login re-renders', async () => {
   );
   expect(seenOnApproved).toHaveLength(2);
   expect(seenOnApproved[1]).toBe(seenOnApproved[0]);
+});
+
+it('laptop mode offline: Link with phone is hidden, Move password stays', async () => {
+  edgeMock.status = { cloud: { online: false } };
+  renderLogin();
+  await userEvent.click(screen.getByRole('button', { name: 'Other ways to sign in' }));
+  expect(screen.queryByRole('button', { name: 'Link with phone' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Move password' })).toBeTruthy();
+});
+
+it('laptop mode online: both alternate methods show', async () => {
+  edgeMock.status = { cloud: { online: true } };
+  renderLogin();
+  await userEvent.click(screen.getByRole('button', { name: 'Other ways to sign in' }));
+  expect(screen.getByRole('button', { name: 'Link with phone' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Move password' })).toBeTruthy();
 });

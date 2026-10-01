@@ -23,8 +23,12 @@
  * Both can be unavailable (a private window, blocked site data) — then
  * the identity lives for the page only and `persistent` is false so
  * Settings can warn.
+ *
+ * In the laptop edition the edge supplies the identity instead (see
+ * `laptopIdentity`).
  */
 
+import { laptopIdentity } from './config';
 import { readCookie, writeCookie } from './cookies';
 
 const SERIAL_KEY = 'ss.kiosk.serial';
@@ -41,6 +45,14 @@ export interface KioskIdentity {
 }
 
 let memorySerial: string | null = null;
+
+/** A rename made through the edge this page load (config.js is fetched
+ *  once, so it would otherwise show the old name until a reload). */
+let laptopName: string | null = null;
+
+export function setLaptopName(name: string): void {
+  laptopName = name;
+}
 
 function read(key: string): string | null {
   try {
@@ -96,6 +108,11 @@ function remember(cookie: string, key: string, value: string): boolean {
 }
 
 export function getIdentity(): KioskIdentity {
+  // Laptop edition: the edge owns the identity (identity.json), so a
+  // different browser or cleared site data can't make this a new kiosk.
+  const laptop = laptopIdentity();
+  if (laptop) return { serial: laptop.serial, name: laptopName ?? laptop.name, persistent: true };
+
   const found = remembered(SERIAL_COOKIE, SERIAL_KEY);
   const serial = found ?? memorySerial ?? newSerial();
   if (!found) memorySerial = serial;

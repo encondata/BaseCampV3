@@ -10,7 +10,14 @@ import { siblingOrigin } from '@portal/lib/siblingOrigin';
 
 declare global {
   interface Window {
-    __KIOSK_CONFIG__?: { apiUrl?: string; portalUrl?: string };
+    __KIOSK_CONFIG__?: {
+      apiUrl?: string;
+      portalUrl?: string;
+      /** 'laptop' when served by the laptop edition's edge (kiosk_laptop/). */
+      mode?: string;
+      /** The laptop's fixed identity, owned by the edge (/data/identity.json). */
+      identity?: { serial: string; name: string };
+    };
   }
 }
 
@@ -46,4 +53,11 @@ export function portalUrl(): string {
 
 export function kioskVersion(): string {
   return trim(import.meta.env.VITE_KIOSK_VERSION as string | undefined) ?? __KIOSK_VERSION__;
+}
+
+/** The edge-owned identity in laptop mode; undefined everywhere else. */
+export function laptopIdentity(): { serial: string; name: string } | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const id = window.__KIOSK_CONFIG__?.identity;
+  return id?.serial ? id : undefined;
 }

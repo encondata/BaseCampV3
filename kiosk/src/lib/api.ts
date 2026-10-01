@@ -26,6 +26,13 @@ export class ApiError extends Error {
   }
 }
 
+/** What a screen says when the laptop edge answers 403
+ *  `cloud_sign_in_required`: the person signed in while the laptop was
+ *  offline (or with the move password offline), so the edge holds no
+ *  cloud session for them. Their edge session is still good — it is not a
+ *  401, so they are never signed out — but this action needs the cloud. */
+export const CLOUD_SIGN_IN_TEXT = 'Sign in again while online to do this.';
+
 async function errorFrom(resp: Response): Promise<ApiError> {
   let code = 'unknown_error';
   let detail: unknown;
@@ -36,6 +43,9 @@ async function errorFrom(resp: Response): Promise<ApiError> {
   } catch {
     /* non-JSON error body */
   }
+  // The laptop edge answers 503 edge_offline when the cloud is unreachable;
+  // to every screen that is the same as the network being down.
+  if (code === 'edge_offline') return new ApiError(0, 'network', detail);
   return new ApiError(resp.status, code, detail);
 }
 
@@ -744,4 +754,53 @@ export async function fetchLabelVocab(kind?: string): Promise<LabelVocab[]> {
     ? `/kiosk/labels/vocab?kind=${encodeURIComponent(kind)}`
     : '/kiosk/labels/vocab');
   return jsonFrom<LabelVocab[]>(resp);
+}
+
+// ── laptop edge (kiosk_laptop/) ─────────────────────────────────────
+
+export type OutboxStatus = 'queued' | 'sending' | 'sent' | 'rejected' | 'failed' | 'needs_sign_in';
+
+export interface EdgeStatus {
+  cloud: { online: boolean; last_contact: string | null };
+  sync: { initiative_id: string | null; synced_at: string | null; last_error: string | null };
+  outbox: Record<OutboxStatus, number>;
+  waiting: { person_name: string; count: number }[];
+  session: { offline: boolean } | null;
+  identity: { serial: string; name: string };
+}
+
+/** Polled by the footer and the Login page, signed in or not — so it sends
+ *  the token if there is one but never triggers a refresh. */
+export async function getEdgeStatus(): Promise<EdgeStatus> {
+  const resp = await request(`${apiUrl()}/edge/status`, {
+    headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+  });
+  return jsonFrom<EdgeStatus>(resp);
+}
+
+export async function edgeSyncNow(): Promise<EdgeStatus> {
+  return jsonFrom<EdgeStatus>(await apiFetch('/edge/sync', { method: 'POST' }));
+}
+
+export async function edgeRetryFailed(): Promise<{ requeued: number }> {
+  return jsonFrom<{ requeued: number }>(await apiFetch('/edge/outbox/retry', { method: 'POST' }));
+}
+
+/** 409 `outbox_not_empty` (detail.pending) until confirm is 'WIPE'. */
+export async function edgeWipe(confirm?: string): Promise<{ cleared_move_data: boolean }> {
+  const resp = await apiFetch('/edge/wipe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(confirm ? { confirm } : {}),
+  });
+  return jsonFrom<{ cleared_move_data: boolean }>(resp);
+}
+
+export async function renameLaptopKiosk(name: string): Promise<{ serial: string; name: string }> {
+  const resp = await apiFetch('/edge/identity', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  return jsonFrom<{ serial: string; name: string }>(resp);
 }
