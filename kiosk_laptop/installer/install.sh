@@ -1223,16 +1223,44 @@ start_log() {
   echo "---- $(date '+%Y-%m-%d %H:%M:%S') install.sh $* ----"
 }
 
+path_owner() {  # path_owner PATH -> user name of the owner
+  if [ "$OS" = Darwin ]; then stat -f %Su "$1" 2>/dev/null; else stat -c %U "$1" 2>/dev/null; fi
+}
+
+# check_mac_data_parent: /Users/Shared is writable by everyone, so a folder
+# there may have been set up by someone else: no symbolic links, and the
+# parent (/Users/Shared/ServerSherpaKiosk by default) is made root:wheel 755,
+# or must already belong to root or the desktop user.
+check_mac_data_parent() {
+  local user="$1" parent powner
+  parent=$(dirname "$KIOSK_DATA_DIR")
+  [ ! -L "$KIOSK_DATA_DIR" ] \
+    || die "The data folder $KIOSK_DATA_DIR is a symbolic link; the installer won't use it. Remove the link (or set KIOSK_DATA_DIR to another folder), then re-run."
+  [ ! -L "$parent" ] \
+    || die "$parent is a symbolic link; the installer won't keep the kiosk's data under it. Remove the link (or set KIOSK_DATA_DIR to another folder), then re-run."
+  if [ -e "$parent" ]; then
+    powner=$(path_owner "$parent")
+    if [ "$powner" != root ] && { [ -z "$user" ] || [ "$powner" != "$user" ]; }; then
+      die "$parent belongs to ${powner:-an unknown user}, not to root${user:+ or $user}, so the installer won't keep the kiosk's data there. Move it aside (or set KIOSK_DATA_DIR to another folder), then re-run."
+    fi
+  else
+    mkdir -p "$parent"
+    chown root:wheel "$parent" || die "Couldn't make root the owner of $parent."
+    chmod 755 "$parent" || die "Couldn't set the permissions of $parent."
+  fi
+}
+
 # create_data_dir: made once, mode 700, never touched again. Linux: owned by
 # root (the engine runs as root). macOS: owned by the Docker Desktop user,
 # because Docker Desktop's file sharing reads the folder as that user.
 create_data_dir() {
-  local owner=0 user
-  [ ! -d "$KIOSK_DATA_DIR" ] || return 0
+  local owner=0 user=''
   if [ "$OS" = Darwin ]; then
     user=$(desktop_user)
+    check_mac_data_parent "$user"
     [ -z "$user" ] || owner="$user"
   fi
+  [ ! -d "$KIOSK_DATA_DIR" ] || return 0
   mkdir -p "$KIOSK_DATA_DIR"
   chown "$owner" "$KIOSK_DATA_DIR" || die "Couldn't make $owner the owner of $KIOSK_DATA_DIR."
   chmod 700 "$KIOSK_DATA_DIR" || die "Couldn't set the permissions of $KIOSK_DATA_DIR."

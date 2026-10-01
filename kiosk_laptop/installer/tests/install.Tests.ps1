@@ -29,6 +29,8 @@ BeforeAll {
         'Stop-ScheduledTask'            = 'param([string]$TaskName)'
         'Get-ScheduledTask'             = 'param([string]$TaskName)'
         'Unregister-ScheduledTask'      = 'param([string]$TaskName, [switch]$Confirm)'
+        'Set-Acl'                       = 'param([string]$LiteralPath, $AclObject)'
+        'Get-Acl'                       = 'param([string]$LiteralPath)'
     }
     foreach ($name in $stubs.Keys) {
         if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
@@ -1206,5 +1208,104 @@ Describe 'Phase-1 data through the old container mount' {
         ConvertFrom-DockerMountSource -Source '/run/desktop/mnt/host/c/Users/tech/ServerSherpaKiosk' | Should -Be 'C:\Users\tech\ServerSherpaKiosk'
         ConvertFrom-DockerMountSource -Source '/host_mnt/d/kiosk' | Should -Be 'D:\kiosk'
         ConvertFrom-DockerMountSource -Source '/home/tech/ServerSherpaKiosk' | Should -Be ''
+    }
+}
+
+Describe 'ACL owner' {
+    BeforeEach {
+        # A stand-in for FileSecurity/DirectorySecurity (ACL types need Windows).
+        $script:sec = [pscustomobject]@{ Owner = $null; Rules = (New-Object System.Collections.ArrayList); Protected = $null; Kind = '' }
+        $script:sec | Add-Member ScriptMethod SetOwner { param($o) $this.Owner = $o }
+        $script:sec | Add-Member ScriptMethod AddAccessRule { param($r) [void]$this.Rules.Add($r) }
+        $script:sec | Add-Member ScriptMethod SetAccessRuleProtection { param($a, $b) $this.Protected = $a; $null = $b }
+        Mock New-KioskSecurity { $script:sec.Kind = $(if ($Directory) { 'dir' } else { 'file' }); $script:sec }
+        Mock ConvertTo-SecurityIdentifier { "sid:$Sid" }
+        Mock New-KioskAccessRule { "$Sid=$Rights" + $(if ($Inherit) { '+inherit' } else { '' }) }
+        Mock Set-Acl {}
+    }
+    It 'Set-KioskFileAcl makes BUILTIN\Administrators the owner' {
+        Set-KioskFileAcl -Path 'C:\K\config.env'
+        $script:sec.Kind | Should -Be 'file'
+        $script:sec.Owner | Should -Be 'sid:S-1-5-32-544'
+        $script:sec.Protected | Should -BeTrue
+        ($script:sec.Rules -join ';') | Should -Be 'sid:S-1-5-32-544=FullControl;sid:S-1-5-18=FullControl;sid:S-1-5-32-545=ReadAndExecute'
+        Should -Invoke Set-Acl -Times 1 -ParameterFilter { $LiteralPath -eq 'C:\K\config.env' }
+    }
+    It 'Set-KioskDirAcl makes BUILTIN\Administrators the owner' {
+        Set-KioskDirAcl -Path 'C:\K\data' -UserSid 'S-1-5-21-9'
+        $script:sec.Kind | Should -Be 'dir'
+        $script:sec.Owner | Should -Be 'sid:S-1-5-32-544'
+        ($script:sec.Rules -join ';') | Should -Be 'sid:S-1-5-32-544=FullControl+inherit;sid:S-1-5-18=FullControl+inherit;sid:S-1-5-21-9=FullControl+inherit'
+    }
+    It 'the per-user writable update files get the same owner' {
+        Set-KioskUserWritableFileAcl -Path 'C:\K\update.log' -UserSid 'S-1-5-21-9'
+        $script:sec.Owner | Should -Be 'sid:S-1-5-32-544'
+        ($script:sec.Rules -join ';') | Should -BeLike '*sid:S-1-5-21-9=Write, ReadAndExecute'
+    }
+}
+
+Describe 'Pre-created data folder' {
+    BeforeEach {
+        $script:user = @{ Name = 'PC\tech'; Sid = 'S-1-5-21-1-2-3-1001'; Profile = 'C:\Users\tech' }
+        $script:data = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        Mock Set-KioskDirAcl {}
+    }
+    It 'creates a missing folder with the data ACL' {
+        New-KioskDataDir -DataDir $script:data -DesktopUser $script:user
+        Test-Path $script:data | Should -BeTrue
+        Should -Invoke Set-KioskDirAcl -Times 1 -ParameterFilter { $Path -eq $script:data -and $UserSid -eq 'S-1-5-21-1-2-3-1001' -and -not $UsersRead }
+    }
+    It 'accepts an existing folder owned by <_>, leaving it alone when it holds data' -ForEach @('S-1-5-32-544', 'S-1-5-18', 'S-1-5-21-1-2-3-1001') {
+        New-Item -ItemType Directory $script:data | Out-Null
+        'db' | Set-Content (Join-Path $script:data 'edge.db')
+        $owner = $_
+        Mock Get-KioskPathOwnerSid { $owner }
+        New-KioskDataDir -DataDir $script:data -DesktopUser $script:user
+        Should -Invoke Set-KioskDirAcl -Times 0
+    }
+    It 'finishes an empty folder an earlier run made (the data ACL again)' {
+        New-Item -ItemType Directory $script:data | Out-Null
+        Mock Get-KioskPathOwnerSid { 'S-1-5-32-544' }
+        New-KioskDataDir -DataDir $script:data -DesktopUser $script:user
+        Should -Invoke Set-KioskDirAcl -Times 1 -ParameterFilter { $Path -eq $script:data }
+    }
+    It 'stops, without changing it, when someone else owns the folder' {
+        New-Item -ItemType Directory $script:data | Out-Null
+        Mock Get-KioskPathOwnerSid { 'S-1-5-21-6-6-6-1234' }
+        { New-KioskDataDir -DataDir $script:data -DesktopUser $script:user } | Should -Throw '*S-1-5-21-6-6-6-1234*'
+        Should -Invoke Set-KioskDirAcl -Times 0
+    }
+    It 'stops when the owner cannot be read' {
+        New-Item -ItemType Directory $script:data | Out-Null
+        Mock Get-KioskPathOwnerSid { throw 'access denied' }
+        { New-KioskDataDir -DataDir $script:data -DesktopUser $script:user } | Should -Throw "*Couldn't check who owns*"
+        Should -Invoke Set-KioskDirAcl -Times 0
+    }
+}
+
+Describe 'Data folder placement' {
+    It 'refuses the install folder itself' {
+        { Assert-KioskDataDirPlacement -InstallDir 'C:\ProgramData\ServerSherpaKiosk' -DataDir 'C:\ProgramData\ServerSherpaKiosk' } | Should -Throw '*install folder*'
+        { Assert-KioskDataDirPlacement -InstallDir 'C:\ProgramData\ServerSherpaKiosk' -DataDir 'c:/programdata/serversherpakiosk/' } | Should -Throw '*install folder*'
+    }
+    It 'refuses a folder inside the install folder other than its data subfolder' {
+        { Assert-KioskDataDirPlacement -InstallDir 'C:\K' -DataDir 'C:\K\other' } | Should -Throw '*inside the install folder*'
+        { Assert-KioskDataDirPlacement -InstallDir 'C:\K' -DataDir 'C:\K\data\deeper' } | Should -Throw '*inside the install folder*'
+    }
+    It 'allows the default data subfolder and folders elsewhere' {
+        { Assert-KioskDataDirPlacement -InstallDir 'C:\ProgramData\ServerSherpaKiosk' -DataDir 'C:\ProgramData\ServerSherpaKiosk\data' } | Should -Not -Throw
+        { Assert-KioskDataDirPlacement -InstallDir 'C:\K' -DataDir 'C:\K2\data' } | Should -Not -Throw
+        { Assert-KioskDataDirPlacement -InstallDir 'C:\K' -DataDir 'D:\KioskData' } | Should -Not -Throw
+    }
+    It 'the installer checks it before the install folder ACL is applied' {
+        $inst = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $env:KIOSK_DIR = $inst; $env:KIOSK_DATA_DIR = $inst
+        foreach ($f in @('Assert-64BitProcess', 'Assert-Admin', 'Assert-WindowsSupported', 'Set-KioskDirAcl', 'Start-InstallLog')) { Mock $f {} }
+        Mock Get-DesktopUser { $null }
+        Mock Find-Browser { '' }
+        try {
+            Invoke-KioskInstaller -Parameters @{ Yes = $true } | Should -Be 1
+        } finally { $env:KIOSK_DIR = $null; $env:KIOSK_DATA_DIR = $null }
+        Should -Invoke Set-KioskDirAcl -Times 0
     }
 }

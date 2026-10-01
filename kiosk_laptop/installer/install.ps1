@@ -452,16 +452,43 @@ function Test-KioskDataDir {
     if ($Path.Substring(2).Contains(':')) { throw "The data folder can't contain a colon except after the drive letter: $Path" }
 }
 
+$AdministratorsSid = 'S-1-5-32-544'
+$SystemSid = 'S-1-5-18'
+
+# The ACL building blocks, as wrappers Pester can mock (the .NET ACL types
+# only work on Windows).
+function New-KioskSecurity {
+    param([switch]$Directory)
+    if ($Directory) { return New-Object Security.AccessControl.DirectorySecurity }
+    New-Object Security.AccessControl.FileSecurity
+}
+
+function New-KioskAccessRule {
+    param([Parameter(Mandatory = $true)]$Sid, [Parameter(Mandatory = $true)][string]$Rights, [switch]$Inherit)
+    if ($Inherit) {
+        return New-Object Security.AccessControl.FileSystemAccessRule $Sid, $Rights, 'ContainerInherit,ObjectInherit', 'None', 'Allow'
+    }
+    New-Object Security.AccessControl.FileSystemAccessRule $Sid, $Rights, 'Allow'
+}
+
+# Set-KioskAcl PATH RULES [-Directory]: exactly these rules, inheritance from
+# the parent off, and BUILTIN\Administrators the owner (an owner can always
+# change the permissions, so a pre-created file or folder keeps no other owner).
+function Set-KioskAcl {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][object[]]$Rules, [switch]$Directory)
+    $acl = New-KioskSecurity -Directory:$Directory
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner((ConvertTo-SecurityIdentifier -Sid $AdministratorsSid))
+    foreach ($r in $Rules) {
+        $acl.AddAccessRule((New-KioskAccessRule -Sid (ConvertTo-SecurityIdentifier -Sid $r[0]) -Rights $r[1] -Inherit:$Directory))
+    }
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
 # Administrators and SYSTEM full control, signed-in users read; inheritance off.
 function Set-KioskFileAcl {
     param([Parameter(Mandatory = $true)][string]$Path)
-    $acl = New-Object Security.AccessControl.FileSecurity
-    $acl.SetAccessRuleProtection($true, $false)
-    foreach ($r in @(@('S-1-5-32-544', 'FullControl'), @('S-1-5-18', 'FullControl'), @('S-1-5-32-545', 'ReadAndExecute'))) {
-        $sid = New-Object Security.Principal.SecurityIdentifier $r[0]
-        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule $sid, $r[1], 'Allow'))
-    }
-    Set-Acl -LiteralPath $Path -AclObject $acl
+    Set-KioskAcl -Path $Path -Rules @(@($AdministratorsSid, 'FullControl'), @($SystemSid, 'FullControl'), @('S-1-5-32-545', 'ReadAndExecute'))
 }
 
 # Set-KioskDirAcl PATH [USERSID] [-UsersRead]: Administrators + SYSTEM full
@@ -469,16 +496,10 @@ function Set-KioskFileAcl {
 # by everything inside; the parent's permissions are not inherited.
 function Set-KioskDirAcl {
     param([Parameter(Mandatory = $true)][string]$Path, [string]$UserSid, [switch]$UsersRead)
-    $acl = New-Object Security.AccessControl.DirectorySecurity
-    $acl.SetAccessRuleProtection($true, $false)
-    $rules = @(@('S-1-5-32-544', 'FullControl'), @('S-1-5-18', 'FullControl'))
+    $rules = @(@($AdministratorsSid, 'FullControl'), @($SystemSid, 'FullControl'))
     if ($UserSid) { $rules += , @($UserSid, 'FullControl') }
     if ($UsersRead) { $rules += , @('S-1-5-32-545', 'ReadAndExecute') }
-    foreach ($r in $rules) {
-        $sid = New-Object Security.Principal.SecurityIdentifier $r[0]
-        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule $sid, $r[1], 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
-    }
-    Set-Acl -LiteralPath $Path -AclObject $acl
+    Set-KioskAcl -Path $Path -Rules $rules -Directory
 }
 
 # Write-KioskConfig: the settings plus the browser the launcher opens. No
@@ -932,12 +953,52 @@ function Assert-Compose {
 }
 
 # -- Data folder ----------------------------------------------------------------
+function Get-KioskPathOwnerSid {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    (Get-Acl -LiteralPath $Path).GetOwner([Security.Principal.SecurityIdentifier]).Value
+}
+
+# Assert-KioskDataDirOwner: a data folder that already exists must belong to
+# Administrators, SYSTEM or the desktop user; one someone else set up is never
+# used (or changed).
+function Assert-KioskDataDirOwner {
+    param([Parameter(Mandatory = $true)][string]$DataDir, $DesktopUser)
+    $fix = 'Move it aside (or set KIOSK_DATA_DIR to another folder), then run the install command again.'
+    try { $owner = [string](Get-KioskPathOwnerSid -Path $DataDir) }
+    catch { throw "Couldn't check who owns the data folder $DataDir ($($_.Exception.Message)). $fix" }
+    $trusted = @($AdministratorsSid, $SystemSid)
+    $who = 'Administrators or SYSTEM'
+    if ($DesktopUser -and $DesktopUser.Sid) { $trusted += $DesktopUser.Sid; $who = "Administrators, SYSTEM or $($DesktopUser.Name)" }
+    if ($trusted -notcontains $owner) {
+        throw "The data folder $DataDir already exists and belongs to $owner, not to $who, so the installer won't use it. $fix"
+    }
+}
+
+# Assert-KioskDataDirPlacement: the data folder may not be the install folder
+# (whose ACL lets every user read) or inside it, except as its own data
+# subfolder (the default), which gets its own protected ACL.
+function Assert-KioskDataDirPlacement {
+    param([Parameter(Mandatory = $true)][string]$InstallDir, [Parameter(Mandatory = $true)][string]$DataDir)
+    $i = $InstallDir.Replace('/', '\').TrimEnd('\')
+    $d = $DataDir.Replace('/', '\').TrimEnd('\')
+    if ($d -ieq $i) { throw "The data folder can't be the install folder ($InstallDir). Set KIOSK_DATA_DIR to another folder, then run the install command again." }
+    if ($d.StartsWith($i + '\', [StringComparison]::OrdinalIgnoreCase) -and $d -ine ($i + '\data')) {
+        throw "The data folder can't be inside the install folder ($InstallDir) except as its data subfolder (got $DataDir). Set KIOSK_DATA_DIR to another folder, then run the install command again."
+    }
+}
+
 # New-KioskDataDir: made once (Administrators, SYSTEM and the Docker Desktop
-# user, who shares it into the engine), never touched again.
+# user, who shares it into the engine), never touched again. An existing
+# folder must have a trusted owner; an empty one (an earlier run stopped
+# right after making it) gets its permissions again.
 function New-KioskDataDir {
     param([Parameter(Mandatory = $true)][string]$DataDir, $DesktopUser)
-    if (Test-Path -LiteralPath $DataDir -PathType Container) { return }
-    New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
+    if (Test-Path -LiteralPath $DataDir -PathType Container) {
+        Assert-KioskDataDirOwner -DataDir $DataDir -DesktopUser $DesktopUser
+        if (Get-ChildItem -LiteralPath $DataDir -Force | Select-Object -First 1) { return }
+    } else {
+        New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
+    }
     $sid = $null
     if ($DesktopUser) { $sid = $DesktopUser.Sid } else { Write-Warn "No signed-in user found; only administrators can read $DataDir." }
     Set-KioskDirAcl -Path $DataDir -UserSid $sid
@@ -1264,16 +1325,11 @@ function Get-KioskUserWritableAclRules {
     @(@('S-1-5-32-544', 'FullControl'), @('S-1-5-18', 'FullControl'), @('S-1-5-32-545', 'ReadAndExecute'), @($UserSid, 'Write, ReadAndExecute'))
 }
 
-# Set-KioskUserWritableFileAcl PATH USERSID: those rules, inheritance off.
+# Set-KioskUserWritableFileAcl PATH USERSID: those rules, inheritance off,
+# owned by Administrators.
 function Set-KioskUserWritableFileAcl {
     param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$UserSid)
-    $acl = New-Object Security.AccessControl.FileSecurity
-    $acl.SetAccessRuleProtection($true, $false)
-    foreach ($r in (Get-KioskUserWritableAclRules -UserSid $UserSid)) {
-        $sid = New-Object Security.Principal.SecurityIdentifier $r[0]
-        $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule $sid, $r[1], 'Allow'))
-    }
-    Set-Acl -LiteralPath $Path -AclObject $acl
+    Set-KioskAcl -Path $Path -Rules (Get-KioskUserWritableAclRules -UserSid $UserSid)
 }
 
 # Register-UpdateTask SPEC: the scheduled task (replaced if it exists).
@@ -1509,7 +1565,8 @@ function Uninstall-Kiosk {
     }
 }
 
-# The data folder uninstall works on: environment, then saved config, then the default.
+# The data folder setting: environment, then saved config, then the default
+# (what uninstall works on, and what Merge-KioskConfig picks).
 function Get-UninstallDataDir {
     param([hashtable]$Saved = @{})
     if ($env:KIOSK_DATA_DIR) { return $env:KIOSK_DATA_DIR }
@@ -1562,6 +1619,8 @@ function Invoke-KioskInstaller {
         Assert-SafeRemovePath -Label 'The install folder (KIOSK_DIR)' -Path $installDir -MinComponents 1
         if (-not $Parameters.Uninstall) { Test-KioskInstallDir -Path $installDir }
         $saved = Read-KioskConfig -Path (Join-KioskPath $installDir 'config.env')
+        # Before the install folder's ACL (Users may read) is applied anywhere.
+        if (-not $Parameters.Uninstall) { Assert-KioskDataDirPlacement -InstallDir $installDir -DataDir (Get-UninstallDataDir -Saved $saved) }
         $desktopUser = Get-DesktopUser
 
         if ($Parameters.Uninstall) {

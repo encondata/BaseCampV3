@@ -874,3 +874,59 @@ def test_migration_without_legacy_container_uses_the_home_folder(sh, tmp_path):
 
 def test_start_fresh_flag_parses(sh):
     assert sh('parse_args --start-fresh; echo "$START_FRESH"').stdout.strip() == "1"
+
+
+# macOS data folder: never trust a pre-created folder
+
+def _mac_data(tmp_path, owner="root"):
+    parent = tmp_path / "Shared" / "ServerSherpaKiosk"
+    data = parent / "data"
+    calls = tmp_path / "calls"
+    stubs = (f'OS=Darwin; KIOSK_DATA_DIR="{data}"; desktop_user() {{ printf alice; }}; '
+             f'path_owner() {{ printf "%s" "{owner}"; }}; '
+             f'chown() {{ echo "chown $*" >> "{calls}"; }}; chmod() {{ echo "chmod $*" >> "{calls}"; }}; ')
+    return parent, data, calls, stubs
+
+
+def test_mac_new_parent_is_root_wheel_755(sh, tmp_path):
+    parent, data, calls, stubs = _mac_data(tmp_path)
+    sh(stubs + 'create_data_dir')
+    log = calls.read_text().splitlines()
+    assert f"chown root:wheel {parent}" in log and f"chmod 755 {parent}" in log
+    assert f"chown alice {data}" in log and f"chmod 700 {data}" in log
+
+
+@pytest.mark.parametrize("owner", ["root", "alice"])
+def test_mac_existing_parent_owned_by_root_or_desktop_user_is_fine(sh, tmp_path, owner):
+    parent, data, calls, stubs = _mac_data(tmp_path, owner=owner)
+    parent.mkdir(parents=True)
+    sh(stubs + 'create_data_dir')
+    assert f"chown root:wheel {parent}" not in calls.read_text()   # left as it is
+    assert data.is_dir()
+
+
+def test_mac_existing_parent_owned_by_someone_else_stops(sh, tmp_path):
+    parent, data, calls, stubs = _mac_data(tmp_path, owner="mallory")
+    parent.mkdir(parents=True)
+    r = sh(stubs + 'create_data_dir', check=False)
+    assert r.returncode != 0 and "mallory" in r.stderr and str(parent) in r.stderr
+    assert not data.exists()
+
+
+def test_mac_symlinked_data_folder_stops(sh, tmp_path):
+    parent, data, calls, stubs = _mac_data(tmp_path)
+    parent.mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    data.symlink_to(tmp_path / "elsewhere")
+    r = sh(stubs + 'create_data_dir', check=False)
+    assert r.returncode != 0 and "symbolic link" in r.stderr and str(data) in r.stderr
+
+
+def test_mac_symlinked_parent_stops(sh, tmp_path):
+    parent, data, calls, stubs = _mac_data(tmp_path)
+    (tmp_path / "Shared").mkdir()
+    (tmp_path / "elsewhere").mkdir()
+    parent.symlink_to(tmp_path / "elsewhere")
+    r = sh(stubs + 'create_data_dir', check=False)
+    assert r.returncode != 0 and "symbolic link" in r.stderr and str(parent) in r.stderr
+    assert not (tmp_path / "elsewhere" / "data").exists()
