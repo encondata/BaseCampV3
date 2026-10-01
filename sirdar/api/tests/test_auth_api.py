@@ -69,11 +69,16 @@ async def test_refresh_me_preferences_logout(client, db):
     refreshed = await client.post("/api/auth/refresh")       # httpx keeps the cookie jar
     assert refreshed.status_code == 200
     assert refreshed.json()["preferences"]["nav_mode"] == "rail"
+    # Capture the refresh cookie value before logout
+    refresh_token = client.cookies.get("sirdar_refresh")
+    assert refresh_token is not None
     out = await client.post("/api/auth/logout")
     assert out.status_code == 204
-    again = await client.post("/api/auth/refresh")
-    assert again.status_code == 401
-    assert again.json()["detail"]["code"] in ("missing_refresh", "invalid_session")
+    # Re-send the captured refresh token to prove server revoked it
+    client.cookies.set("sirdar_refresh", refresh_token, path="/api/auth")
+    revoked = await client.post("/api/auth/refresh")
+    assert revoked.status_code == 401
+    assert revoked.json()["detail"]["code"] == "invalid_session"
 
 
 async def test_refresh_without_cookie(client):
@@ -89,6 +94,21 @@ async def test_me_requires_token_and_rejects_disabled(client, db):
     await db.commit()
     resp = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 401 and resp.json()["detail"]["code"] == "account_disabled"
+
+
+async def test_me_rejects_revoked_session(client, db):
+    await make_user(db)
+    login = await _login(client)
+    access_token = login.json()["access_token"]
+    # Verify the token works before logout
+    me = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {access_token}"})
+    assert me.status_code == 200 and me.json()["person"]["email"] == "alice@test.example.com"
+    # Logout revokes the session on the server
+    out = await client.post("/api/auth/logout")
+    assert out.status_code == 204
+    # Try to use the old bearer token; server should reject it
+    resp = await client.get("/api/auth/me", headers={"Authorization": f"Bearer {access_token}"})
+    assert resp.status_code == 401 and resp.json()["detail"]["code"] == "session_ended"
 
 
 async def test_system_status(client, db):
