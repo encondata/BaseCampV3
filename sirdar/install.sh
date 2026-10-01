@@ -31,8 +31,15 @@
 #   SIRDAR_INSTALL_LIB=1   define the functions without running main, so a test
 #                          can source this file and call write_env directly
 #
+#   SIRDAR_TEST_COMPOSE_URL  download the compose plugin from this URL instead of
+#                          the GitHub release (the checksum still comes from the
+#                          release), so a test can prove a bad download is rejected
+#
 #   SIRDAR_DOCKER_VERSION  Linux, static install only: Docker Engine version to
 #                          install (e.g. 29.8.2; default = newest stable)
+#   SIRDAR_FORCE_STATIC=1  Linux, static install only: replace Docker binaries in
+#                          /usr/local/bin that this installer didn't put there
+#                          (by default they are left alone with a warning)
 #
 # Supports Linux (Debian/Ubuntu, Fedora/RHEL, openSUSE/SLES, Arch, Alpine,
 # Void, Slackware and others via Docker's static binaries; see README.md) and
@@ -457,7 +464,7 @@ pkg_install() {
     dnf) as_root dnf -y install "$@" ;;
     yum) as_root yum -y install "$@" ;;
     zypper) as_root zypper --non-interactive install "$@" ;;
-    pacman) as_root pacman -Sy --noconfirm --needed "$@" ;;
+    pacman) as_root pacman -Syu --noconfirm --needed "$@" ;;  # Arch supports full upgrades only
     apk) as_root apk add "$@" ;;
     xbps) as_root xbps-install -Sy "$@" ;;
     emerge)
@@ -516,13 +523,39 @@ check_git_version() {
 }
 
 # ── Linux: Docker from the family's packages ──────────────────────────
+# Contract for docker_pkgs_<family>: 0 = installed; 2 = Docker has no repo for
+# this release (already explained; the caller uses the static binaries);
+# anything else = a real failure, described in DOCKER_PKG_ERR (the caller
+# stops). The caller runs them under `||`, so set -e is off inside: every
+# step checks its own status.
+DOCKER_PKG_ERR=''
+
 url_exists() { curl -fsSL -o /dev/null -I "$1" 2>/dev/null || curl -fsS -o /dev/null -r 0-0 "$1" 2>/dev/null; }
 
+# pkg_step DESC CMD...: run CMD; on failure record DESC and its exit status.
+pkg_step() {
+  local desc="$1" s=0
+  shift
+  "$@" || s=$?
+  [ "$s" = 0 ] && return 0
+  DOCKER_PKG_ERR="$desc failed (exit status $s)"
+  return 1
+}
+
+# install_root_file SRC DEST MODE: copy as root, atomically (a temp name next
+# to DEST, then mv), so DEST is never left half-written.
+install_root_file() {
+  as_root install -m "$3" "$1" "$2.sirdar-new" && as_root mv -f "$2.sirdar-new" "$2" && return 0
+  as_root rm -f "$2.sirdar-new" 2>/dev/null || true
+  return 1
+}
+
 # Docker's apt repo for Debian, Ubuntu and their derivatives (mapped to the
-# upstream release). Returns 2 (after a warning) when there is no usable repo,
-# so the caller falls back to the static binaries.
+# upstream release). The source list goes in only after the key is in place,
+# and comes out again if the packages don't install.
 docker_pkgs_debian() {
-  local repo='' codename='' id
+  local repo='' codename='' id arch tmp
+  local key=/etc/apt/keyrings/docker.asc list=/etc/apt/sources.list.d/docker.list new_key=0 new_list=0
   id=$(os_release ID)
   if [ "$id" = ubuntu ]; then repo=ubuntu; codename=$(os_release VERSION_CODENAME)
   elif [ -n "$(os_release UBUNTU_CODENAME)" ]; then repo=ubuntu; codename=$(os_release UBUNTU_CODENAME)
@@ -535,24 +568,44 @@ docker_pkgs_debian() {
     return 2
   fi
   info "Adding Docker's official apt repository ($repo $codename)"
-  as_root install -m 0755 -d /etc/apt/keyrings
-  as_root curl -fsSL "https://download.docker.com/linux/$repo/gpg" -o /etc/apt/keyrings/docker.asc
-  as_root chmod a+r /etc/apt/keyrings/docker.asc
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$repo $codename stable" \
-    | as_root tee /etc/apt/sources.list.d/docker.list >/dev/null
-  pkg_refresh
-  pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  arch=$(dpkg --print-architecture) || { DOCKER_PKG_ERR="dpkg --print-architecture failed"; return 1; }
+  new_tmp_dir tmp || return 1
+  if ! curl -fsSL --retry 3 -o "$tmp/docker.asc" "https://download.docker.com/linux/$repo/gpg" || [ ! -s "$tmp/docker.asc" ]; then
+    DOCKER_PKG_ERR="downloading Docker's signing key from https://download.docker.com/linux/$repo/gpg failed"
+    return 1
+  fi
+  [ -e "$key" ] || new_key=1
+  [ -e "$list" ] || new_list=1
+  as_root install -m 0755 -d /etc/apt/keyrings || { DOCKER_PKG_ERR="creating /etc/apt/keyrings failed"; return 1; }
+  if ! install_root_file "$tmp/docker.asc" "$key" 0644 || ! [ -s "$key" ]; then
+    DOCKER_PKG_ERR="writing $key failed"
+    [ "$new_key" = 0 ] || as_root rm -f "$key"
+    return 1
+  fi
+  printf 'deb [arch=%s signed-by=%s] https://download.docker.com/linux/%s %s stable\n' \
+    "$arch" "$key" "$repo" "$codename" >"$tmp/docker.list" || return 1
+  install_root_file "$tmp/docker.list" "$list" 0644 || { DOCKER_PKG_ERR="writing $list failed"; return 1; }
+  if pkg_step "apt-get update" pkg_refresh \
+     && pkg_step "apt-get install" pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
+    return 0
+  fi
+  # Don't leave a source behind that the next apt-get update trips over.
+  if [ "$new_list" = 1 ]; then as_root rm -f "$list"; warn "Removed $list again."; fi
+  [ "$new_key" = 0 ] || as_root rm -f "$key"
+  return 1
 }
 
-# Fedora / RHEL and rebuilds: Docker's repo (fedora, rhel, else centos).
-# Amazon Linux: the distro's docker package (compose/buildx come as plugins).
+# Fedora / RHEL and rebuilds: Docker's repo (fedora, rhel, else centos). The
+# repo file goes in only after the key is confirmed, and comes out again if
+# the packages don't install. Amazon Linux: the distro's docker package
+# (compose/buildx come as plugins).
 docker_pkgs_fedora() {
-  local id repo ver
+  local id repo ver tmp mgr="$PKG_MGR" file=/etc/yum.repos.d/docker-ce.repo new_file=0
   id=$(os_release ID)
   if [ "$id" = amzn ]; then
     info "Installing Docker from Amazon Linux's packages"
-    pkg_install docker
-    return
+    pkg_step "$mgr install docker" pkg_install docker || return 1
+    return 0
   fi
   case "$id" in fedora) repo=fedora ;; rhel) repo=rhel ;; *) repo=centos ;; esac
   ver=$(os_release VERSION_ID)
@@ -562,15 +615,38 @@ docker_pkgs_fedora() {
     return 2
   fi
   info "Adding Docker's official $repo repository"
-  curl -fsSL "https://download.docker.com/linux/$repo/docker-ce.repo" \
-    | as_root tee /etc/yum.repos.d/docker-ce.repo >/dev/null
-  pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  new_tmp_dir tmp || return 1
+  # The repo file names this key (gpgkey=); dnf imports it during the install.
+  if ! curl -fsSL --retry 3 -o "$tmp/gpg" "https://download.docker.com/linux/$repo/gpg" || [ ! -s "$tmp/gpg" ]; then
+    DOCKER_PKG_ERR="downloading Docker's signing key from https://download.docker.com/linux/$repo/gpg failed"
+    return 1
+  fi
+  if ! curl -fsSL --retry 3 -o "$tmp/docker-ce.repo" "https://download.docker.com/linux/$repo/docker-ce.repo" \
+     || ! grep -q '^\[docker-ce-stable\]' "$tmp/docker-ce.repo"; then
+    DOCKER_PKG_ERR="downloading https://download.docker.com/linux/$repo/docker-ce.repo failed"
+    return 1
+  fi
+  [ -e "$file" ] || new_file=1
+  install_root_file "$tmp/docker-ce.repo" "$file" 0644 || { DOCKER_PKG_ERR="writing $file failed"; return 1; }
+  pkg_step "$mgr install" pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+    && return 0
+  if [ "$new_file" = 1 ]; then as_root rm -f "$file"; warn "Removed $file again."; fi
+  return 1
 }
 
-docker_pkgs_suse()   { pkg_refresh; pkg_install docker docker-compose; }
-docker_pkgs_arch()   { pkg_install docker docker-compose; }
-docker_pkgs_alpine() { pkg_refresh; pkg_install docker docker-cli-compose; }
-docker_pkgs_void()   { pkg_refresh; pkg_install docker docker-compose; }
+docker_pkgs_suse() {
+  pkg_step "zypper refresh" pkg_refresh || return 1
+  pkg_step "zypper install" pkg_install docker docker-compose
+}
+docker_pkgs_arch() { pkg_step "pacman -Syu" pkg_install docker docker-compose; }
+docker_pkgs_alpine() {
+  pkg_step "apk update" pkg_refresh || return 1
+  pkg_step "apk add" pkg_install docker docker-cli-compose
+}
+docker_pkgs_void() {
+  pkg_step "xbps-install -Sy xbps" pkg_refresh || return 1
+  pkg_step "xbps-install" pkg_install docker docker-compose
+}
 
 # The family's package for a CLI plugin (compose | buildx); empty = none.
 plugin_pkg() {
@@ -600,10 +676,30 @@ new_tmp_dir() {  # new_tmp_dir VAR -> a temp dir removed on exit
   eval "$1=\$d"
 }
 
+# True when FILE starts with the ELF magic (\x7fELF): an executable, not an
+# HTML error page or a truncated download.
+is_elf() { [ "$(head -c 4 "$1" 2>/dev/null)" = "$(printf '\177ELF')" ]; }
+
+sha256_of() {  # sha256_of FILE -> lowercase hex digest
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1"
+  else openssl dgst -sha256 -r "$1"
+  fi | awk '{print $1}'
+}
+
+is_sha256() { case "$1" in *[!0-9a-f]*|'') return 1 ;; esac; [ "${#1}" -eq 64 ]; }
+
+# What the static install put in /usr/local/bin: line 1 = the Docker version,
+# then one binary name per line. A binary not listed here isn't ours.
+STATIC_MARKER=/usr/local/lib/sirdar-installer/static-docker-version
+static_ours() { [ -f "$STATIC_MARKER" ] && tail -n +2 "$STATIC_MARKER" | grep -qxF "$1"; }
+
 # Docker Engine (dockerd, containerd, runc, docker CLI...) into /usr/local/bin.
+# A binary already there that this installer didn't put there is left alone
+# (with a warning) unless SIRDAR_FORCE_STATIC=1.
 install_docker_static() {
   static_arch
-  local base="https://download.docker.com/linux/static/stable/$STATIC_ARCH" ver tmp
+  local base="https://download.docker.com/linux/static/stable/$STATIC_ARCH" ver tmp tgz
   ver="${SIRDAR_DOCKER_VERSION:-}"
   if [ -z "$ver" ]; then
     ver=$(curl -fsSL "$base/" | grep -oE 'docker-[0-9]+\.[0-9]+\.[0-9]+\.tgz' \
@@ -612,38 +708,80 @@ install_docker_static() {
   fi
   info "Installing Docker $ver from Docker's static binaries ($STATIC_ARCH) into /usr/local/bin"
   new_tmp_dir tmp
-  curl -fL --retry 3 -o "$tmp/docker.tgz" "$base/docker-$ver.tgz" \
-    || die "Couldn't download $base/docker-$ver.tgz"
-  [ -s "$tmp/docker.tgz" ] || die "The download of docker-$ver.tgz is empty."
-  tar -xzf "$tmp/docker.tgz" -C "$tmp" || die "docker-$ver.tgz didn't extract."
-  [ -x "$tmp/docker/dockerd" ] && [ -x "$tmp/docker/docker" ] || die "docker-$ver.tgz doesn't contain dockerd and docker."
-  as_root mkdir -p /usr/local/bin
-  local b
-  for b in "$tmp"/docker/*; do
-    as_root cp -f "$b" /usr/local/bin/
-    as_root chmod 0755 "/usr/local/bin/${b##*/}"
+  tgz="$tmp/docker.tgz"
+  curl -fL --retry 3 -o "$tgz" "$base/docker-$ver.tgz" \
+    || { rm -f "$tgz"; die "Couldn't download $base/docker-$ver.tgz"; }
+  # Docker publishes no checksum for these: at least the archive must list.
+  if [ ! -s "$tgz" ] || ! tar -tzf "$tgz" >/dev/null 2>&1; then
+    rm -f "$tgz"
+    die "The download of docker-$ver.tgz is empty or not a valid archive; removed it. Re-run the installer."
+  fi
+  tar -xzf "$tgz" -C "$tmp" || { rm -rf "$tmp/docker" "$tgz"; die "docker-$ver.tgz didn't extract."; }
+  rm -f "$tgz"
+  local b n installed=() skipped=()
+  for n in dockerd docker; do
+    is_elf "$tmp/docker/$n" || die "docker-$ver.tgz doesn't contain a usable $n."
   done
+  as_root mkdir -p /usr/local/bin
+  for b in "$tmp"/docker/*; do
+    n=${b##*/}
+    if [ -e "/usr/local/bin/$n" ] && ! static_ours "$n" && [ "${SIRDAR_FORCE_STATIC:-0}" != 1 ]; then
+      skipped+=("$n"); continue
+    fi
+    install_root_file "$b" "/usr/local/bin/$n" 0755 || die "Couldn't install /usr/local/bin/$n."
+    installed+=("$n")
+  done
+  if [ "${#skipped[@]}" -gt 0 ]; then
+    warn "These are already in /usr/local/bin and weren't put there by this installer, so they were left alone: ${skipped[*]}. To replace them with Docker $ver's, re-run with SIRDAR_FORCE_STATIC=1."
+  fi
+  if [ "${#installed[@]}" -gt 0 ]; then
+    { echo "$ver"
+      { [ -f "$STATIC_MARKER" ] && tail -n +2 "$STATIC_MARKER"; printf '%s\n' "${installed[@]}"; } | sort -u
+    } >"$tmp/marker"
+    as_root mkdir -p "${STATIC_MARKER%/*}"
+    write_root_file "$STATIC_MARKER" 0644 <"$tmp/marker"
+  fi
   hash -r
   DOCKER_SOURCE=static
 }
 
 CLI_PLUGINS=/usr/local/lib/docker/cli-plugins
 
-install_cli_plugin() {  # install_cli_plugin NAME URL
-  local tmp
+# The tag of a GitHub repo's latest release, from /releases/latest's redirect
+# (no API call, so no rate limit).
+github_latest_tag() {
+  local tag
+  tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$1/releases/latest") || true
+  tag=${tag##*/}
+  case "$tag" in v[0-9]*) printf '%s' "$tag" ;; *) die "Couldn't find the latest $1 release (got '$tag')." ;; esac
+}
+
+# install_cli_plugin NAME URL SHA256: download, check it is an ELF binary with
+# the published checksum, then install it. A bad download is deleted.
+install_cli_plugin() {
+  local tmp f got
   new_tmp_dir tmp
-  curl -fL --retry 3 -o "$tmp/$1" "$2" || die "Couldn't download $2"
-  [ -s "$tmp/$1" ] || die "The download of $2 is empty."
+  f="$tmp/$1"
+  curl -fL --retry 3 -o "$f" "$2" || { rm -f "$f"; die "Couldn't download $2"; }
+  if [ ! -s "$f" ] || ! is_elf "$f"; then
+    rm -f "$f"
+    die "The download of $2 isn't a Linux executable (corrupted, or an error page); removed it. Re-run the installer."
+  fi
+  got=$(sha256_of "$f")
+  if [ "$got" != "$3" ]; then
+    rm -f "$f"
+    die "Checksum mismatch for $2 (expected $3, got ${got:-nothing}); removed the download. Re-run the installer."
+  fi
   as_root mkdir -p "$CLI_PLUGINS"
-  as_root cp -f "$tmp/$1" "$CLI_PLUGINS/$1"
-  as_root chmod 0755 "$CLI_PLUGINS/$1"
+  install_root_file "$f" "$CLI_PLUGINS/$1" 0755 || die "Couldn't install $CLI_PLUGINS/$1."
 }
 
 # docker compose v2: the family's package when Docker came from packages,
-# else (or if that didn't work) the latest static plugin from GitHub.
+# else (or if that didn't work) the latest static plugin from GitHub,
+# checked against the release's <asset>.sha256.
 ensure_compose_plugin() {
   docker compose version >/dev/null 2>&1 && return 0
-  local pkg
+  local pkg tag asset rel sha
   pkg=$(plugin_pkg compose)
   if [ "$DOCKER_SOURCE" != static ] && [ -n "$pkg" ] && [ -n "$PKG_MGR" ]; then
     info "Installing the Docker Compose plugin ($pkg)"
@@ -651,17 +789,22 @@ ensure_compose_plugin() {
     docker compose version >/dev/null 2>&1 && return 0
   fi
   static_arch
-  info "Installing the Docker Compose plugin (latest release from GitHub)"
-  install_cli_plugin docker-compose \
-    "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-$STATIC_ARCH"
+  tag=$(github_latest_tag docker/compose) || exit 1
+  asset="docker-compose-linux-$STATIC_ARCH"
+  rel="https://github.com/docker/compose/releases/download/$tag"
+  sha=$(curl -fsSL --retry 3 "$rel/$asset.sha256" | awk '{print $1}') || true
+  is_sha256 "$sha" || die "Couldn't read the checksum $rel/$asset.sha256."
+  info "Installing the Docker Compose plugin ($tag from GitHub)"
+  install_cli_plugin docker-compose "${SIRDAR_TEST_COMPOSE_URL:-$rel/$asset}" "$sha"
   docker compose version >/dev/null 2>&1 \
     || die "'docker compose' still doesn't work. Install Docker's compose plugin (https://docs.docker.com/compose/install/linux/) and re-run."
 }
 
-# buildx: compose builds with BuildKit and needs it for --build.
+# buildx: compose builds with BuildKit and needs it for --build. The GitHub
+# binary is checked against the release's checksums.txt.
 ensure_buildx_plugin() {
   docker buildx version >/dev/null 2>&1 && return 0
-  local pkg tag arch
+  local pkg tag arch asset rel sha
   pkg=$(plugin_pkg buildx)
   if [ "$DOCKER_SOURCE" != static ] && [ -n "$pkg" ] && [ -n "$PKG_MGR" ]; then
     info "Installing the Docker buildx plugin ($pkg)"
@@ -669,14 +812,16 @@ ensure_buildx_plugin() {
     docker buildx version >/dev/null 2>&1 && return 0
   fi
   static_arch
-  # Asset names carry the version: read the tag from /releases/latest's redirect.
-  tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/docker/buildx/releases/latest) || true
-  tag=${tag##*/}
-  case "$tag" in v[0-9]*) ;; *) die "Couldn't find the latest docker/buildx release (got '$tag')." ;; esac
+  tag=$(github_latest_tag docker/buildx) || exit 1
   case "$STATIC_ARCH" in x86_64) arch=amd64 ;; *) arch=arm64 ;; esac
+  asset="buildx-$tag.linux-$arch"
+  rel="https://github.com/docker/buildx/releases/download/$tag"
+  # Lines look like "<sha256> *buildx-v0.37.2.linux-arm64".
+  sha=$(curl -fsSL --retry 3 "$rel/checksums.txt" \
+          | awk -v a="$asset" '{ n = $2; sub(/^\*/, "", n) } n == a { print $1; exit }') || true
+  is_sha256 "$sha" || die "Couldn't find $asset in $rel/checksums.txt."
   info "Installing the Docker buildx plugin ($tag from GitHub)"
-  install_cli_plugin docker-buildx \
-    "https://github.com/docker/buildx/releases/download/$tag/buildx-$tag.linux-$arch"
+  install_cli_plugin docker-buildx "$rel/$asset" "$sha"
   docker buildx version >/dev/null 2>&1 || die "'docker buildx' still doesn't work after installing $tag."
 }
 
@@ -685,7 +830,11 @@ docker_bin() { command -v docker 2>/dev/null || echo docker; }
 docker_reachable() { docker info >/dev/null 2>&1 || as_root "$(docker_bin)" info >/dev/null 2>&1; }
 
 ensure_docker_group() {
-  grep -q '^docker:' /etc/group 2>/dev/null && return 0
+  if command -v getent >/dev/null 2>&1; then
+    getent group docker >/dev/null 2>&1 && return 0
+  else
+    grep -q '^docker:' /etc/group 2>/dev/null && return 0
+  fi
   info "Creating the docker group"
   if command -v groupadd >/dev/null 2>&1; then as_root groupadd docker
   else as_root addgroup docker
@@ -710,31 +859,42 @@ ensure_cgroups() {
     || warn "/sys/fs/cgroup is empty and mounting cgroup2 there failed; dockerd may not start."
 }
 
-write_root_file() {  # write_root_file PATH MODE  (content on stdin)
+# write_root_file PATH MODE (content on stdin): written atomically as root.
+write_root_file() {
   local tmp
   new_tmp_dir tmp
   cat >"$tmp/f"
-  as_root cp -f "$tmp/f" "$1"
-  as_root chmod "$2" "$1"
+  install_root_file "$tmp/f" "$1" "$2" || die "Couldn't write $1."
 }
 
-# Append a marker-guarded block to a Slackware rc script (created if missing).
+# Append a marker-guarded block to a Slackware rc script. A missing script is
+# created (executable); an existing one keeps its mode: Slackware runs only
+# executable rc scripts, so a non-executable one gets a warning instead.
 hook_rc_file() {  # hook_rc_file FILE ACTION
   local f="$1" act="$2"
-  if [ -f "$f" ] && grep -qF "$SIRDAR_MARK (docker)" "$f"; then
-    as_root chmod +x "$f"; return 0
+  if [ ! -f "$f" ]; then
+    printf '#!/bin/sh\n' | write_root_file "$f" 0755
+  elif [ ! -x "$f" ]; then
+    warn "$f isn't executable, so Slackware won't run it (or the rc.docker $act in it). To enable it: chmod +x $f"
   fi
-  if [ ! -f "$f" ]; then printf '#!/bin/sh\n' | write_root_file "$f" 0755; fi
+  grep -qF "$SIRDAR_MARK (docker)" "$f" && return 0
   printf '\n%s (docker)\nif [ -x /etc/rc.d/rc.docker ]; then\n  /etc/rc.d/rc.docker %s\nfi\n' "$SIRDAR_MARK" "$act" \
     | as_root tee -a "$f" >/dev/null
-  as_root chmod +x "$f"
 }
 
 slackware_rc_docker() {
-  local rc=/etc/rc.d/rc.docker dockerd
+  local rc=/etc/rc.d/rc.docker dockerd start=(/etc/rc.d/rc.docker start)
   dockerd=$(command -v dockerd 2>/dev/null || echo /usr/local/bin/dockerd)
   if [ -f "$rc" ] && ! grep -qF "$SIRDAR_MARK" "$rc"; then
-    info "Using the existing $rc"
+    # Someone else's rc.docker (e.g. from SlackBuilds): never edited or chmodded.
+    info "Using the existing $rc (not written by this installer; left unchanged)"
+    if [ ! -x "$rc" ]; then
+      warn "$rc isn't executable, which Slackware treats as disabled: it won't start at boot. Starting it with sh for this run only."
+      start=(sh "$rc" start)
+    fi
+    if ! grep -qs 'rc\.docker' /etc/rc.d/rc.local; then
+      warn "/etc/rc.d/rc.local doesn't run rc.docker, so starting Docker at boot is up to you: chmod +x $rc and add it to /etc/rc.d/rc.local."
+    fi
   else
     info "Writing $rc and hooking it into rc.local / rc.local_shutdown"
     as_root mkdir -p /etc/rc.d
@@ -785,7 +945,7 @@ EOF
     hook_rc_file /etc/rc.d/rc.local_shutdown stop
   fi
   ensure_cgroups
-  as_root "$rc" start
+  as_root "${start[@]}"
   DOCKER_LOG=/var/log/docker.log
 }
 
@@ -820,6 +980,9 @@ EOF
 
 openrc_docker() {
   if [ ! -f /etc/init.d/docker ]; then
+    local cg=''
+    # Alpine and Gentoo mount cgroups with their own service; wait for it.
+    rc-service -e cgroups 2>/dev/null && cg=' need cgroups;'
     info "Writing /etc/init.d/docker"
     write_root_file /etc/init.d/docker 0755 <<EOF
 #!/sbin/openrc-run
@@ -829,7 +992,7 @@ command_background=yes
 pidfile=/run/docker.pid
 output_log=/var/log/docker.log
 error_log=/var/log/docker.log
-depend() { need net; after firewall; }
+depend() { need net;$cg after firewall; }
 EOF
   fi
   info "Starting the Docker daemon (OpenRC)"
@@ -877,19 +1040,26 @@ start_docker_daemon() {
 ensure_docker() {
   DOCKER_SOURCE=existing
   if command -v docker >/dev/null 2>&1 && docker --version >/dev/null 2>&1; then
+    if docker --version 2>&1 | grep -qi podman; then
+      die "'docker' here is Podman's docker shim ($(docker --version 2>&1 | head -n 1)). Sirdar needs Docker Engine with the compose plugin: remove podman-docker, install Docker Engine (https://docs.docker.com/engine/install/), and re-run."
+    fi
     docker_reachable && return 0
   else
     case "$FAMILY" in
       debian|fedora|suse|arch|alpine|void)
         info "Installing Docker Engine ($FAMILY packages)"
         local rc=0
+        DOCKER_PKG_ERR=''
         "docker_pkgs_$FAMILY" || rc=$?
-        if [ "$rc" = 0 ] && command -v docker >/dev/null 2>&1; then
-          DOCKER_SOURCE=packages
-        else
-          # 2 = no repo for this release (already explained)
-          [ "$rc" = 2 ] || warn "Docker's packages didn't install; falling back to Docker's static binaries."
+        if [ "$rc" = 2 ]; then
+          # No Docker repo for this release (already explained): static binaries.
           install_docker_static
+        elif [ "$rc" != 0 ]; then
+          die "Installing Docker from the $FAMILY packages failed: ${DOCKER_PKG_ERR:-exit status $rc}. If another package job holds the lock (unattended-upgrades or dpkg on Debian/Ubuntu, dnf-automatic or PackageKit on Fedora/RHEL), wait for it to finish, then re-run the installer. Nothing else was installed."
+        elif ! command -v docker >/dev/null 2>&1; then
+          die "Docker's $FAMILY packages installed, but there is no docker command on PATH. Check the package install, then re-run."
+        else
+          DOCKER_SOURCE=packages
         fi
         ;;
       *) install_docker_static ;;
