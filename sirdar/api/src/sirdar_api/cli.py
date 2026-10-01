@@ -19,6 +19,8 @@ T = TypeVar("T")
 _MESSAGES = {
     "password_too_short": f"Password must be at least {MIN_PASSWORD_LENGTH} characters.",
     "unknown_role": "Unknown role. Use one of the roles on the Roles & access page.",
+    "invalid_email": ("That email address can't be used to sign in. "
+                      "Use a normal address like name@company.com."),
     "email_taken": "A user with that email already exists.",
     "not_found": "No user with that email.",
     "not_local": "That user comes from the portal — change the password there, then re-import.",

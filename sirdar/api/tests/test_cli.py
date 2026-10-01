@@ -54,3 +54,23 @@ def test_import_users_prints_summary(source):
     assert result.exit_code == 0, result.output
     assert "added 1" in result.output
     assert "admin@test.example.com" in result.output
+
+
+def test_create_admin_rejects_special_use_email():
+    result = runner.invoke(app, ["create-admin", "--email", "admin@sirdar.local",
+                                 "--first-name", "A", "--last-name", "B"],
+                           input="LongEnoughPass1\nLongEnoughPass1\n")
+    assert result.exit_code == 1
+    assert "can't be used to sign in" in result.output
+
+
+async def test_created_admin_can_log_in(client):
+    import asyncio
+    result = await asyncio.to_thread(
+        runner.invoke, app, ["create-admin", "--email", "Root@Test.Example.com",
+                             "--first-name", "Root", "--last-name", "Admin"],
+        input="LongEnoughPass1\nLongEnoughPass1\n")
+    assert result.exit_code == 0, result.output
+    resp = await client.post("/api/auth/login", json={"email": "root@test.example.com",
+                                                      "password": "LongEnoughPass1"})
+    assert resp.status_code == 200, resp.text

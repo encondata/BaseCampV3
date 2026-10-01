@@ -4,6 +4,7 @@ reads or changes them. No 2FA in v1."""
 import uuid
 from datetime import UTC, datetime
 
+from email_validator import EmailNotValidError, validate_email
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +22,15 @@ class LocalUserError(Exception):
         super().__init__(code)
 
 
+def _normalize_email(email: str) -> str:
+    """Same validator pydantic's EmailStr uses on the login form, so an
+    account that can be created can also sign in."""
+    try:
+        return validate_email(email, check_deliverability=False).normalized
+    except EmailNotValidError:
+        raise LocalUserError("invalid_email") from None
+
+
 def _hash(password: str) -> str:
     if len(password) < MIN_PASSWORD_LENGTH:
         raise LocalUserError("password_too_short")
@@ -29,6 +39,7 @@ def _hash(password: str) -> str:
 
 async def create_local_admin(db: AsyncSession, *, email: str, first_name: str, last_name: str,
                              role: str, password: str) -> User:
+    email = _normalize_email(email)
     if await db.get(Role, role) is None:
         raise LocalUserError("unknown_role")
     if await db.scalar(select(User).where(User.email == email)) is not None:
@@ -46,6 +57,7 @@ async def create_local_admin(db: AsyncSession, *, email: str, first_name: str, l
 
 
 async def reset_local_password(db: AsyncSession, *, email: str, password: str) -> User:
+    email = _normalize_email(email)
     user = await db.scalar(select(User).where(User.email == email))
     if user is None:
         raise LocalUserError("not_found")
