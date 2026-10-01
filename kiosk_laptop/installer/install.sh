@@ -181,7 +181,8 @@ detect_os() {
 default_dirs() {
   if [ "$OS" = Darwin ]; then
     : "${KIOSK_DIR:=/Library/Application Support/ServerSherpaKiosk}"
-    : "${KIOSK_DATA_DIR:=/Library/Application Support/ServerSherpaKiosk/data}"
+    # /Users/Shared: Docker Desktop shares /Users by default, not /Library.
+    : "${KIOSK_DATA_DIR:=/Users/Shared/ServerSherpaKiosk/data}"
   else
     : "${KIOSK_DIR:=/opt/serversherpa-kiosk}"
     : "${KIOSK_DATA_DIR:=/var/lib/serversherpa-kiosk}"
@@ -515,19 +516,16 @@ has_python() {
   return 0
 }
 
-DOCKER_DEFAULT_SHARES='"/Users", "/Volumes", "/private", "/tmp", "/var/folders"'
-
-# set_docker_settings FILE SHARE_DIR: AutoStart on and SHARE_DIR shared with
-# containers (Docker Desktop doesn't share /Library by default); every other
-# key is kept. Without python3 the file is only created when missing, never
-# rewritten.
-set_docker_settings() {
-  local file="$1" share="$2"
+# set_docker_autostart FILE: "AutoStart": true, every other key kept.
+# Without python3 the file is only created when missing, never rewritten.
+set_docker_autostart() {
+  local file="$1"
+  local manual="In Docker Desktop › Settings › General, turn on Start Docker Desktop when you sign in."
   mkdir -p "$(dirname "$file")"
   if has_python; then
-    python3 - "$file" "$share" <<'PY' || warn "Couldn't update $file. In Docker Desktop › Settings › General, turn on Start Docker Desktop when you sign in, and under Resources › File sharing add $share."
+    python3 - "$file" <<'PY' || warn "Couldn't update $file. $manual"
 import json, os, sys
-path, share = sys.argv[1], sys.argv[2]
+path = sys.argv[1]
 try:
     with open(path) as f:
         data = json.load(f)
@@ -536,23 +534,15 @@ except FileNotFoundError:
 if not isinstance(data, dict):
     sys.exit(3)
 data["AutoStart"] = True
-dirs = data.get("FilesharingDirectories")
-if not isinstance(dirs, list):
-    dirs = ["/Users", "/Volumes", "/private", "/tmp", "/var/folders"]
-if share and not any(share == d or share.startswith(d.rstrip("/") + "/") for d in dirs):
-    dirs.append(share)
-data["FilesharingDirectories"] = dirs
 tmp = path + ".kiosk-tmp"
 with open(tmp, "w") as f:
     json.dump(data, f, indent=2)
 os.replace(tmp, path)
 PY
   elif [ ! -e "$file" ]; then
-    check_data_dir "$share"
-    printf '{\n  "AutoStart": true,\n  "FilesharingDirectories": [%s, "%s"]\n}\n' \
-      "$DOCKER_DEFAULT_SHARES" "$share" >"$file"
+    printf '{\n  "AutoStart": true\n}\n' >"$file"
   else
-    warn "Python 3 isn't available to edit Docker Desktop's settings. In Docker Desktop › Settings › General, turn on Start Docker Desktop when you sign in, and under Resources › File sharing add $share."
+    warn "Python 3 isn't available to edit Docker Desktop's settings. $manual"
   fi
   return 0
 }
@@ -571,7 +561,9 @@ enable_docker_autostart() {
   fi
   home=$(SUDO_USER="$user" home_of_user)
   file="$home/Library/Group Containers/group.com.docker/settings-store.json"
-  set_docker_settings "$file" "$KIOSK_DATA_DIR"
+  # Create the folder as the user, so Docker Desktop can still write to it.
+  [ -d "$(dirname "$file")" ] || sudo -u "$user" mkdir -p "$(dirname "$file")" || true
+  set_docker_autostart "$file"
   [ ! -e "$file" ] || chown "$user" "$file" || true
   if ! docker_answers; then
     info "Starting Docker Desktop"
@@ -787,8 +779,7 @@ main() {
   mkdir -p "$KIOSK_DIR"
   chmod 755 "$KIOSK_DIR"
   start_log "$@"
-  # Settings before Docker: the person answers before the long steps, and the
-  # data folder is known when Docker Desktop's file sharing is set.
+  # Settings before Docker, so the person answers before the long steps.
   prompt_settings
   merge_config
   check_api_reachable

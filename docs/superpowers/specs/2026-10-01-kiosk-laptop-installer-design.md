@@ -109,11 +109,12 @@ the functions without running `main`, so tests can call them.
 | | Windows | macOS | Linux |
 |---|---|---|---|
 | Install folder (compose, `config.env`, scripts, logs) | `C:\ProgramData\ServerSherpaKiosk` | `/Library/Application Support/ServerSherpaKiosk` | `/opt/serversherpa-kiosk` |
-| Data folder (`identity.json`, `edge.key`, `edge.db`) | `C:\ProgramData\ServerSherpaKiosk\data` | `…/ServerSherpaKiosk/data` | `/var/lib/serversherpa-kiosk` |
+| Data folder (`identity.json`, `edge.key`, `edge.db`) | `C:\ProgramData\ServerSherpaKiosk\data` | `/Users/Shared/ServerSherpaKiosk/data` | `/var/lib/serversherpa-kiosk` |
 | Docker | Docker Desktop (WSL2 backend) | Docker Desktop | Docker Engine (`get.docker.com`) |
 
 Data is machine-wide (the kiosk belongs to the laptop, not a user) and
-outside any user profile. Overrides: `KIOSK_DIR`, `KIOSK_DATA_DIR`.
+outside any user profile. On macOS the data folder is under `/Users/Shared` because Docker
+Desktop shares `/Users` with containers by default and not `/Library`. Overrides: `KIOSK_DIR`, `KIOSK_DATA_DIR`.
 The data folder is created readable/writable by administrators (root on
 macOS/Linux) and the Docker engine only.
 

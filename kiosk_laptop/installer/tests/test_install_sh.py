@@ -9,7 +9,7 @@ def test_detect_os_sets_os_and_arch(sh):
 @pytest.mark.parametrize("os_name,install,data", [
     ("Linux", "/opt/serversherpa-kiosk", "/var/lib/serversherpa-kiosk"),
     ("Darwin", "/Library/Application Support/ServerSherpaKiosk",
-     "/Library/Application Support/ServerSherpaKiosk/data"),
+     "/Users/Shared/ServerSherpaKiosk/data"),
 ])
 def test_default_dirs(sh, os_name, install, data):
     out = sh(f'OS={os_name}; default_dirs; printf "%s\\n%s" "$KIOSK_DIR" "$KIOSK_DATA_DIR"').stdout
@@ -280,25 +280,22 @@ def test_uninstall_purge_refuses_folder_that_is_not_kiosk_data(sh, tmp_path):
 
 
 def test_docker_autostart_keeps_other_keys(sh, tmp_path):
+    import json
     f = tmp_path / "settings-store.json"
     f.write_text('{"AutoStart": false, "MemoryMiB": 4096, "FilesharingDirectories": ["/Users"]}')
-    sh(f'set_docker_settings "{f}" "/Library/Application Support/ServerSherpaKiosk/data"')
-    import json
+    sh(f'set_docker_autostart "{f}"')
     d = json.loads(f.read_text())
-    assert d["AutoStart"] is True and d["MemoryMiB"] == 4096
-    assert d["FilesharingDirectories"] == ["/Users", "/Library/Application Support/ServerSherpaKiosk/data"]
+    assert d == {"AutoStart": True, "MemoryMiB": 4096, "FilesharingDirectories": ["/Users"]}
 
 
 def test_docker_autostart_creates_missing_file_without_python(sh, tmp_path):
     import json
     f = tmp_path / "gc" / "settings-store.json"
-    sh(f'has_python() {{ return 1; }}; set_docker_settings "{f}" /Library/x/data')
-    d = json.loads(f.read_text())
-    assert d["AutoStart"] is True and "/Library/x/data" in d["FilesharingDirectories"]
-    assert "/Users" in d["FilesharingDirectories"]
+    sh(f'has_python() {{ return 1; }}; set_docker_autostart "{f}"')
+    assert json.loads(f.read_text()) == {"AutoStart": True}
     # an existing file is never rewritten without python
     f.write_text('{"AutoStart": false, "Keep": 1}')
-    r = sh(f'has_python() {{ return 1; }}; set_docker_settings "{f}" /Library/x/data')
+    r = sh(f'has_python() {{ return 1; }}; set_docker_autostart "{f}"')
     assert f.read_text() == '{"AutoStart": false, "Keep": 1}' and "Start Docker Desktop" in r.stderr
 
 
