@@ -330,33 +330,166 @@ new_setting_default() {  # new_setting_default KEY -> the default used when not 
   esac
 }
 
+# ── Target deployment settings (Deploy page) ───────────────────────────
+# The keys the installer manages, as ONE group: if any is absent from an
+# existing .env the installer asks the yes/no once and appends the absent ones.
+DEPLOY_KEYS=(SIRDAR_DEPLOY_DO_TOKEN SIRDAR_DEPLOY_DO_REGION SIRDAR_DEPLOY_SSH_HOST
+  SIRDAR_DEPLOY_SSH_PORT SIRDAR_DEPLOY_SSH_USER SIRDAR_DEPLOY_SSH_PASSWORD
+  SIRDAR_DEPLOY_SSH_KEY_PATH)
+
+# The container runs as uid 10001. Mode 711 lets that uid reach a key file it
+# can read without letting anyone else list the directory (the key files
+# themselves stay 600). Created on every run.
+ensure_deploy_keys_dir() {  # ensure_deploy_keys_dir DIR
+  mkdir -p "$1" 2>/dev/null || as_root mkdir -p "$1"
+  chmod 711 "$1" 2>/dev/null || as_root chmod 711 "$1" || true
+}
+
+# check_key_file KEYSDIR NAME: warn (never fail) when the key file is missing
+# or the container user (uid 10001) could not read it.
+check_key_file() {
+  local f="$1/$2" owner mode
+  if [ ! -f "$f" ]; then
+    echo "     Note: $f doesn't exist yet. Copy the key there (chmod 600, chown 10001) before using it." >&4
+    return 0
+  fi
+  owner=$(stat -c %u "$f" 2>/dev/null || stat -f %u "$f" 2>/dev/null || echo '')
+  mode=$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f" 2>/dev/null || echo '')
+  case "$owner" in
+    10001) ;;
+    *)
+      case "$mode" in
+        *[4567]) ;;
+        *) echo "     Warning: the container user (uid 10001) can't read $f. Run: sudo chown 10001 '$f' && sudo chmod 600 '$f'" >&4 ;;
+      esac ;;
+  esac
+}
+
+# prompt_deploy KEYSDIR: sets the CALLER's d_do_token d_do_region d_ssh_host
+# d_ssh_port d_ssh_user d_ssh_pw d_ssh_key. Every answer is optional. Secrets
+# are read hidden and never printed.
+prompt_deploy() {
+  local keysdir="$1" a
+  d_do_token=''; d_do_region=''; d_ssh_host=''; d_ssh_port=22; d_ssh_user=''; d_ssh_pw=''; d_ssh_key=''
+  echo "     DigitalOcean (read-only views). Create a read-only token in the DO control panel under API." >&4
+  while :; do
+    ask_secret a "     DigitalOcean API token [Enter = skip]: " || die_eof
+    if has_bad_chars "$a"; then echo "     No quotes or line breaks, please." >&4; continue; fi
+    d_do_token="$a"; break
+  done
+  while :; do
+    ask a "     DigitalOcean region, e.g. nyc3 [Enter = skip]: " || die_eof
+    case "$a" in *[[:space:]]*) echo "     No spaces, please." >&4; continue ;; esac
+    if has_bad_chars "$a"; then echo "     No quotes, please." >&4; continue; fi
+    d_do_region="$a"; break
+  done
+  echo "     Custom SSH target (connection test only)." >&4
+  while :; do
+    ask a "     SSH host [Enter = skip]: " || die_eof
+    case "$a" in *[[:space:]]*) echo "     No spaces, please." >&4; continue ;; esac
+    if has_bad_chars "$a"; then echo "     No quotes, please." >&4; continue; fi
+    d_ssh_host="$a"; break
+  done
+  [ -n "$d_ssh_host" ] || return 0
+  while :; do
+    ask a "     SSH port [22]: " || die_eof
+    [ -n "$a" ] || a=22
+    case "$a" in ''|*[!0-9]*) echo "     Enter a number from 1 to 65535." >&4; continue ;; esac
+    if [ "${#a}" -gt 5 ] || [ "$a" -lt 1 ] || [ "$a" -gt 65535 ]; then
+      echo "     Enter a number from 1 to 65535." >&4; continue
+    fi
+    d_ssh_port="$a"; break
+  done
+  while :; do
+    ask a "     SSH user [Enter = skip]: " || die_eof
+    case "$a" in *[[:space:]]*) echo "     No spaces, please." >&4; continue ;; esac
+    if has_bad_chars "$a"; then echo "     No quotes, please." >&4; continue; fi
+    d_ssh_user="$a"; break
+  done
+  while :; do
+    ask_secret a "     SSH password [Enter = none]: " || die_eof
+    if has_bad_chars "$a"; then echo "     No quotes or line breaks, please." >&4; continue; fi
+    d_ssh_pw="$a"; break
+  done
+  echo "     SSH key: the file name of a key you put in $keysdir/ (or an absolute path inside the container)." >&4
+  while :; do
+    ask a "     SSH key file name [Enter = none]: " || die_eof
+    case "$a" in *[[:space:]]*) echo "     No spaces, please." >&4; continue ;; esac
+    if has_bad_chars "$a"; then echo "     No quotes, please." >&4; continue; fi
+    case "$a" in
+      /*) ;;
+      *[/\\]*|.|..|*..*) echo "     Use a bare file name (no / or ..), or an absolute path." >&4; continue ;;
+      '') ;;
+      *) check_key_file "$keysdir" "$a" ;;
+    esac
+    d_ssh_key="$a"; break
+  done
+}
+
+# ask_deploy KEYSDIR -> d_* as above; asks the yes/no first (default no, all blank).
+ask_deploy() {
+  local yn
+  d_do_token=''; d_do_region=''; d_ssh_host=''; d_ssh_port=22; d_ssh_user=''; d_ssh_pw=''; d_ssh_key=''
+  ask yn "Configure deployment targets now? [y/N]: " || die_eof
+  case "$yn" in [Yy]*) prompt_deploy "$1" ;; esac
+}
+
+deploy_value() {  # deploy_value KEY -> the d_* value for that env key
+  case "$1" in
+    SIRDAR_DEPLOY_DO_TOKEN) printf '%s' "$d_do_token" ;;
+    SIRDAR_DEPLOY_DO_REGION) printf '%s' "$d_do_region" ;;
+    SIRDAR_DEPLOY_SSH_HOST) printf '%s' "$d_ssh_host" ;;
+    SIRDAR_DEPLOY_SSH_PORT) printf '%s' "$d_ssh_port" ;;
+    SIRDAR_DEPLOY_SSH_USER) printf '%s' "$d_ssh_user" ;;
+    SIRDAR_DEPLOY_SSH_PASSWORD) printf '%s' "$d_ssh_pw" ;;
+    SIRDAR_DEPLOY_SSH_KEY_PATH) printf '%s' "$d_ssh_key" ;;
+  esac
+}
+
+# deploy_row KEY: summary row; secrets show set/blank, never the value.
+deploy_row() {
+  local v
+  v=$(deploy_value "$1")
+  case "$1" in
+    *_TOKEN|*_PASSWORD) if [ -n "$v" ]; then v="set"; else v="blank"; fi ;;
+    *) [ -n "$v" ] || v=blank ;;
+  esac
+  printf '    %-28s %s\n' "$1" "$v"
+}
+
 # add_new_settings TARGET: for an existing .env, ask for (interactive) or
 # report (non-interactive) the NEW_SETTINGS the file lacks. A present line,
 # even a blank one, counts as present. Existing bytes are never changed:
 # the additions are appended to a copy that replaces the file (temp + mv).
 add_new_settings() {
   local target="$1" key missing=() tmp
-  local bind origins minlen s_bind s_origins s_minlen v
+  local bind origins minlen s_bind s_origins s_minlen v dmissing=() keysdir
+  local d_do_token d_do_region d_ssh_host d_ssh_port d_ssh_user d_ssh_pw d_ssh_key
+  keysdir="$(dirname "$target")/deploy-keys"
   for key in "${NEW_SETTINGS[@]}"; do
     grep -q "^$key=" "$target" || missing+=("$key")
   done
-  [ "${#missing[@]}" -gt 0 ] || return 0
+  for key in "${DEPLOY_KEYS[@]}"; do
+    grep -q "^$key=" "$target" || dmissing+=("$key")
+  done
+  [ "${#missing[@]}" -gt 0 ] || [ "${#dmissing[@]}" -gt 0 ] || return 0
+  d_do_token=''; d_do_region=''; d_ssh_host=''; d_ssh_port=22; d_ssh_user=''; d_ssh_pw=''; d_ssh_key=''
 
   bind=$(new_setting_default SIRDAR_BIND);                s_bind='default'
   origins='';                                             s_origins='default (blank: same-origin only)'
   minlen=$(new_setting_default SIRDAR_PASSWORD_MIN_LENGTH); s_minlen='default'
 
   if ! interactive; then
-    info "Settings added since your install are using their defaults (not written to $target): ${missing[*]}"
+    info "Settings added since your install are using their defaults (not written to $target): ${missing[*]} ${dmissing[*]}"
     return 0
   fi
 
   open_tty
   echo >&4
-  info "New settings since your install: ${missing[*]}" >&4
+  info "New settings since your install: ${missing[*]+${missing[*]} }${dmissing[*]+(target deployment settings)}" >&4
   echo "    Press Enter to accept the [default]." >&4
   echo >&4
-  for key in "${missing[@]}"; do
+  for key in ${missing[@]+"${missing[@]}"}; do
     case "$key" in
       SIRDAR_BIND)
         bind=$(new_setting_default SIRDAR_BIND)
@@ -365,6 +498,7 @@ add_new_settings() {
       SIRDAR_PASSWORD_MIN_LENGTH) prompt_minlen "" "$minlen" ;;
     esac
   done
+  if [ "${#dmissing[@]}" -gt 0 ]; then ask_deploy "$keysdir"; fi
   close_tty
 
   tmp=$(mktemp "$target.new.XXXXXX")
@@ -373,7 +507,7 @@ add_new_settings() {
   cat "$target" >"$tmp"
   # A file without a final newline would otherwise glue the first new key onto its last line.
   [ ! -s "$tmp" ] || [ -z "$(tail -c 1 "$tmp")" ] || printf '\n' >>"$tmp"
-  for key in "${missing[@]}"; do
+  for key in ${missing[@]+"${missing[@]}"}; do
     case "$key" in
       SIRDAR_BIND) v=$bind ;;
       SIRDAR_ALLOWED_ORIGINS) v=$origins ;;
@@ -381,18 +515,22 @@ add_new_settings() {
     esac
     printf '%s=%s\n' "$key" "$(env_quote "$v")" >>"$tmp"
   done
+  for key in ${dmissing[@]+"${dmissing[@]}"}; do
+    printf '%s=%s\n' "$key" "$(env_quote "$(deploy_value "$key")")" >>"$tmp"
+  done
   chmod 600 "$tmp"
   mv "$tmp" "$target"
 
   info "Added to $target:"
-  for key in "${missing[@]}"; do
+  for key in ${dmissing[@]+"${dmissing[@]}"}; do deploy_row "$key"; done
+  for key in ${missing[@]+"${missing[@]}"}; do
     case "$key" in
       SIRDAR_BIND) printf '    %-28s %s\n' "$key" "$bind ($s_bind)" ;;
       SIRDAR_ALLOWED_ORIGINS) printf '    %-28s %s\n' "$key" "${origins:-$s_origins}" ;;
       SIRDAR_PASSWORD_MIN_LENGTH) printf '    %-28s %s\n' "$key" "$minlen ($s_minlen)" ;;
     esac
   done
-  if printf '%s\n' "${missing[@]}" | grep -qx SIRDAR_BIND; then bind_exposure_warning "$bind"; fi
+  if printf '%s\n' ${missing[@]+"${missing[@]}"} | grep -qx SIRDAR_BIND; then bind_exposure_warning "$bind"; fi
   echo
 }
 
@@ -402,6 +540,8 @@ write_env() {
   local example="$1" target="$2"
   local port bind cookie origins source pepper totp jwt dbpw
   local s_port s_bind s_cookie s_origins s_source s_pepper s_totp s_jwt s_dbpw
+  local d_do_token d_do_region d_ssh_host d_ssh_port d_ssh_user d_ssh_pw d_ssh_key dk
+  d_do_token=''; d_do_region=''; d_ssh_host=''; d_ssh_port=22; d_ssh_user=''; d_ssh_pw=''; d_ssh_key=''
   local def_port="${SIRDAR_PORT:-8098}" def_bind="${SIRDAR_BIND:-127.0.0.1}" a yn
 
   [ -f "$target" ] && die "$target already exists; refusing to overwrite it."
@@ -523,6 +663,10 @@ write_env() {
       fi
       break
     done
+
+    # Target deployment (optional)
+    echo >&4
+    ask_deploy "$(dirname "$target")/deploy-keys"
     close_tty
   else
     case "$port" in ''|*[!0-9]*) die "SIRDAR_PORT must be a number (got '$port')." ;; esac
@@ -557,6 +701,7 @@ write_env() {
   set_env_key SIRDAR_ALLOWED_ORIGINS "$origins" "$tmp"
   set_env_key SS_PASSWORD_PEPPER "$pepper" "$tmp"
   set_env_key SS_TOTP_ENCRYPTION_KEY "$totp" "$tmp"
+  for dk in "${DEPLOY_KEYS[@]}"; do set_env_key "$dk" "$(deploy_value "$dk")" "$tmp"; done
   chmod 600 "$tmp"
   mv "$tmp" "$target"
 
@@ -572,6 +717,7 @@ write_env() {
     SS_TOTP_ENCRYPTION_KEY "$s_totp" \
     SIRDAR_JWT_SECRET "$s_jwt" \
     SIRDAR_DB_PASSWORD "$s_dbpw"
+  for dk in "${DEPLOY_KEYS[@]}"; do deploy_row "$dk"; done
   echo
 
   bind_exposure_warning "$bind"
@@ -1550,6 +1696,7 @@ main() {
   info "Using: ${DOCKER[*]} ($("${DOCKER[@]}" compose version --short 2>/dev/null || echo compose))"
 
   fetch_code
+  ensure_deploy_keys_dir "$DIR/sirdar/deploy-keys"
 
   if [ -f "$DIR/sirdar/.env" ]; then
     info "Keeping existing $DIR/sirdar/.env"
