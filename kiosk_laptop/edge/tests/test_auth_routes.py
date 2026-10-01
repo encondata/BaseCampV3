@@ -150,3 +150,38 @@ async def test_refresh_and_logout(app, client, cloud):
     assert app.state.upstream.ending_people() == ["p-1"]
     r = await client.post("/auth/refresh")
     assert r.status_code == 401 and r.json()["detail"]["code"] == "invalid_refresh"
+
+
+async def test_totp_verify_adopts(app, client, cloud):
+    route = cloud.post("/auth/totp/verify").respond(
+        200, json=session_out(), headers=SET_COOKIE)
+    r = await client.post("/auth/totp/verify", json={"code": "123456"},
+                          headers={"authorization": "Bearer chal"})
+    assert r.status_code == 200
+    assert r.json()["access_token"] != "cloud-access-1"
+    assert "cloud-r1" not in r.headers.get("set-cookie", "")
+    assert client.cookies.get("ss_refresh")
+    assert app.state.upstream.has_session("p-1")
+    assert route.calls[0].request.headers["authorization"] == "Bearer chal"
+
+
+async def test_totp_verify_offline(client, cloud):
+    cloud.post("/auth/totp/verify").mock(side_effect=httpx.ConnectError("down"))
+    r = await client.post("/auth/totp/verify", json={"code": "1"})
+    assert r.status_code == 503 and r.json()["detail"]["code"] == "edge_offline"
+
+
+async def test_challenge_forgets_verifier(app, client, cloud):
+    _cloud_login_ok(cloud)
+    await client.post("/auth/login", json=LOGIN)
+    cloud.post("/auth/login").respond(200, json={"status": "totp_verify", "challenge_token": "c"})
+    await client.post("/auth/login", json=LOGIN)
+    assert app.state.store.one("SELECT 1 FROM offline_logins") is None
+
+
+async def test_malformed_body_is_422(client):
+    for path in ("/auth/login", "/kiosk/move-login", "/auth/totp/verify"):
+        r = await client.post(path, content=b"{nope", headers={"content-type": "application/json"})
+        assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_request"
+        r = await client.post(path, json=[1])
+        assert r.status_code == 422
