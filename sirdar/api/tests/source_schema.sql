@@ -8,6 +8,14 @@ CREATE TABLE people (
   last_name text NOT NULL,
   preferred_name text,
   job_title text,
+  email citext,
+  phone text,
+  address_line1 text,
+  address_line2 text,
+  city text,
+  region text,
+  postal_code text,
+  country text NOT NULL DEFAULT 'US',
   archived_at timestamptz
 );
 CREATE TABLE user_accounts (

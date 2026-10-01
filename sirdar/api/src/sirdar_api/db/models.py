@@ -40,6 +40,14 @@ class User(Base):
     last_name: Mapped[str]
     preferred_name: Mapped[str | None]
     job_title: Mapped[str | None]
+    contact_email: Mapped[str | None]
+    phone: Mapped[str | None]
+    address_line1: Mapped[str | None]
+    address_line2: Mapped[str | None]
+    city: Mapped[str | None]
+    region: Mapped[str | None]
+    postal_code: Mapped[str | None]
+    country: Mapped[str] = mapped_column(server_default=text("'US'"))
     password_hash: Mapped[str | None]
     must_change_password: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     password_updated_at: Mapped[datetime | None]

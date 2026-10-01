@@ -1,7 +1,18 @@
 /** Sirdar endpoints, through the portal's apiFetch (token refresh and
  *  session-ended handling come with it; VITE_API_URL=/api). */
-import { ApiError, apiFetch, type AccessResourceOut, type EffectiveCell } from '@portal/lib/api';
+import {
+  ApiError, apiFetch, getProfileRequest, type AccessResourceOut, type EffectiveCell, type PersonDetail,
+} from '@portal/lib/api';
 import type { Action } from '@portal/lib/access';
+
+/** /api/auth/me/profile — the portal's PersonDetail plus the sign-in email
+ *  and where the account comes from (Sirdar can't provide avatar or badge). */
+export interface SirdarProfile extends PersonDetail {
+  login_email: string;
+  source: 'portal' | 'local';
+}
+/** The portal client's getProfileRequest, typed with Sirdar's extra fields. */
+export const getSirdarProfile = () => getProfileRequest() as Promise<SirdarProfile>;
 
 export interface UserRow {
   person_id: string; display_name: string; email: string; source: 'portal' | 'local';

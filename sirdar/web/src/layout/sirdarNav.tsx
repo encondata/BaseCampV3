@@ -33,7 +33,9 @@ export const PAGE_TITLES: Record<string, string> = {
   '/admin/access': 'Roles & access',
   '/admin/audit': 'Audit log',
   '/settings': 'Settings',
-  '/me': 'My profile & preferences',
+  '/me': 'My profile',
+  '/me/preferences': 'My preferences',
+  '/me/history': 'My history',
 };
 
 export function visibleSections(can: (resource: string, action: 'view') => boolean): NavSection[] {
