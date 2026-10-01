@@ -5,9 +5,11 @@
 #   Linux: serversherpa-kiosk-update.timer, as root.
 #   macOS: launch agent com.serversherpa.kiosk.update, as the Docker Desktop user.
 #
-# Each run: skip while scans are uploading; pull the channel image; if it
-# changed, restart on it and wait for healthy; if it doesn't get healthy,
-# put the previous image back. Logged to update.log (last 1 MB kept).
+# Each run: finish off an update a crash or reboot interrupted; skip while
+# scans are uploading; pull the channel image; if it changed (and isn't one
+# that already failed), restart on it and wait for healthy; if it doesn't get
+# healthy, put the previous image back and remember the bad one.
+# Logged to update.log (last 1 MB kept).
 #
 # Exit codes: 0 updated, unchanged or skipped; 1 rolled back; 2 other failure.
 #
@@ -25,7 +27,13 @@ LOG_MAX_BYTES=1048576
 HEALTH_POLL_S="${HEALTH_POLL_S:-5}"
 HEALTH_TIMEOUT_S="${HEALTH_TIMEOUT_S:-120}"
 OS=$(uname -s)
-PREV_IMAGE=''
+PREV_IMAGE=''      # running before this update
+NEW_IMAGE=''       # pulled by this update
+# update-state.json, read by load_state and written by write_state.
+STATE_PREVIOUS=''  # the image to go back to
+STATE_REJECTED=''  # an image that failed its health check; not tried again
+STATE_PHASE=''     # updating while an update is under way, else done
+IMAGE_SOURCE_LABEL='org.opencontainers.image.source=https://github.com/encondata/BaseCampV3'
 
 # launchd and systemd start jobs with a bare PATH; Docker Desktop's CLI lives
 # inside the app bundle.
@@ -101,9 +109,10 @@ current_digest() {
 }
 
 # pull_changed: 0 when the pulled channel image differs from the running one,
-# 1 when it is the same, 2 when the pull fails. Sets PREV_IMAGE.
+# 1 when it is the same or was rejected before, 2 when the pull fails.
+# Sets PREV_IMAGE and NEW_IMAGE.
 pull_changed() {
-  local ref after
+  local ref
   ref=$(image_ref)
   PREV_IMAGE=$(current_digest || true)
   log "Pulling $ref (running ${PREV_IMAGE:-nothing})"
@@ -111,19 +120,41 @@ pull_changed() {
     log "Couldn't pull $ref; the kiosk keeps running the current image."
     return 2
   fi
-  after=$("${DOCKER[@]}" image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)
-  if [ -n "$after" ] && [ "$after" = "$PREV_IMAGE" ]; then
-    log "Already up to date ($after)."
+  NEW_IMAGE=$("${DOCKER[@]}" image inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)
+  if [ -n "$NEW_IMAGE" ] && [ "$NEW_IMAGE" = "$PREV_IMAGE" ]; then
+    log "Already up to date ($NEW_IMAGE)."
+    return 1
+  fi
+  if [ -n "$NEW_IMAGE" ] && [ "$NEW_IMAGE" = "$STATE_REJECTED" ]; then
+    log "skipping $NEW_IMAGE — it failed its health check before"
+    # Point the channel tag back at the running image, so nothing (compose
+    # included) recreates the container on the rejected one.
+    if [ -n "$PREV_IMAGE" ]; then
+      "${DOCKER[@]}" tag "$PREV_IMAGE" "$ref" || log "Couldn't re-tag $ref to $PREV_IMAGE."
+    fi
     return 1
   fi
   return 0
 }
 
-# write_state: the image to go back to. Written in place (not renamed), so on
-# macOS the file the installer made for the desktop user stays theirs.
+# state_value KEY: a string value from update-state.json (written by write_state).
+state_value() {
+  [ -f "$UPDATE_STATE" ] || return 0
+  sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$UPDATE_STATE" 2>/dev/null | head -n 1
+}
+
+load_state() {
+  STATE_PREVIOUS=$(state_value previous_image)
+  STATE_REJECTED=$(state_value rejected_image)
+  STATE_PHASE=$(state_value phase)
+}
+
+# write_state: written in place (not renamed), so on macOS the file the
+# installer made for the desktop user stays theirs.
 write_state() {
-  { printf '{"previous_image": "%s", "image": "%s", "updated_at": "%s"}\n' \
-      "$PREV_IMAGE" "$(image_ref)" "$(date '+%Y-%m-%dT%H:%M:%S%z')" >"$UPDATE_STATE"; } 2>/dev/null \
+  { printf '{"previous_image": "%s", "image": "%s", "rejected_image": "%s", "phase": "%s", "updated_at": "%s"}\n' \
+      "$STATE_PREVIOUS" "$(image_ref)" "$STATE_REJECTED" "$STATE_PHASE" \
+      "$(date '+%Y-%m-%dT%H:%M:%S%z')" >"$UPDATE_STATE"; } 2>/dev/null \
     || log "Couldn't write $UPDATE_STATE (continuing)."
 }
 
@@ -143,22 +174,47 @@ wait_healthy() {
 }
 
 # rollback IMAGE_ID: point the channel tag back at IMAGE_ID and restart.
+# The caller sets STATE_REJECTED to the image that failed.
 rollback() {
-  local id="$1" ref
+  local id="$1" ref rc=2
   ref=$(image_ref)
   if [ -z "$id" ]; then
     log "No previous image to roll back to."
-    return 2
-  fi
-  if "${DOCKER[@]}" tag "$id" "$ref" && compose up -d; then
+  elif "${DOCKER[@]}" tag "$id" "$ref" && compose up -d; then
     log "rolled back to $id"
-    return 1
+    rc=1
+  else
+    log "Rollback to $id failed."
   fi
-  log "Rollback to $id failed."
-  return 2
+  STATE_PHASE='done'
+  write_state
+  return "$rc"
+}
+
+# recover_interrupted: an update that never finished (crash, reboot, power
+# loss) left a container that isn't healthy: go back to the previous image.
+# 0 = nothing to recover (or it came up after all); else the rollback's code.
+recover_interrupted() {
+  local cur rc
+  [ "$STATE_PHASE" = updating ] && [ -n "$STATE_PREVIOUS" ] || return 0
+  cur=$(current_digest || true)
+  [ "$cur" != "$STATE_PREVIOUS" ] || return 0
+  if wait_healthy; then
+    STATE_PHASE='done'
+    write_state
+    return 0
+  fi
+  log "The last update didn't finish and the kiosk isn't healthy."
+  STATE_REJECTED="$cur"
+  rollback "$STATE_PREVIOUS"; rc=$?
+  [ "$rc" != 1 ] || log "recovered from an interrupted update"
+  return "$rc"
 }
 
 apply_update() {
+  STATE_PREVIOUS="$PREV_IMAGE"
+  STATE_REJECTED=''   # a different, newer image: forget the rejected one
+  STATE_PHASE=updating
   write_state
   # Keep a tag on the previous image, so the prune below can't remove it.
   if [ -n "$PREV_IMAGE" ]; then
@@ -167,15 +223,21 @@ apply_update() {
   log "Starting the new image"
   if ! compose up -d; then
     log "The new image didn't start."
+    STATE_REJECTED="$NEW_IMAGE"
     rollback "$PREV_IMAGE"
     return $?
   fi
   if ! wait_healthy; then
+    STATE_REJECTED="$NEW_IMAGE"
     rollback "$PREV_IMAGE"
     return $?
   fi
+  STATE_PHASE='done'
+  write_state
   log "updated to $(current_digest || echo unknown)"
-  "${DOCKER[@]}" image prune -f >/dev/null || log "Couldn't prune old images (continuing)."
+  # Only the kiosk's own untagged images; :previous is tagged, so it stays.
+  "${DOCKER[@]}" image prune -f --filter "label=$IMAGE_SOURCE_LABEL" >/dev/null \
+    || log "Couldn't prune old images (continuing)."
   return 0
 }
 
@@ -193,6 +255,9 @@ trim_log() {
 run_update() {
   local rc
   log "---- update.sh ----"
+  load_state
+  recover_interrupted; rc=$?
+  [ "$rc" = 0 ] || return "$rc"
   if uploading; then
     log "Scans are uploading — skipped; trying again tomorrow night."
     return 0

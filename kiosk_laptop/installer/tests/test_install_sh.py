@@ -353,14 +353,14 @@ def test_uninstall_stops_when_docker_is_down(sh, tmp_path):
     # compose down fails and the engine doesn't answer: nothing may be removed
     r, inst = _uninstall_with_docker(sh, tmp_path, "exit 1\n")
     assert r.returncode != 0 and "Docker isn't running" in r.stderr
-    assert (inst / "config.env").exists() and "REMOVED-LOGIN-ITEMS" not in r.stdout
+    assert (inst / "config.env").exists()
 
 
 def test_uninstall_stops_when_container_still_exists(sh, tmp_path):
     r, inst = _uninstall_with_docker(
         sh, tmp_path, 'case "$1" in compose) exit 1 ;; *) exit 0 ;; esac\n')
     assert r.returncode != 0 and "serversherpa-kiosk-edge-1" in r.stderr
-    assert (inst / "config.env").exists() and "REMOVED-LOGIN-ITEMS" not in r.stdout
+    assert (inst / "config.env").exists()
 
 
 def test_uninstall_continues_when_container_is_gone(sh, tmp_path):
@@ -439,6 +439,7 @@ def test_render_systemd_units(sh, tmp_path):
     tmr = (tmp_path / "serversherpa-kiosk-update.timer").read_text()
     assert "ExecStart=/opt/serversherpa-kiosk/update.sh" in svc and "Type=oneshot" in svc
     assert "OnCalendar=*-*-* 03:00:00" in tmr and "Persistent=true" in tmr
+    assert "TimeoutStartSec=30min" in svc
 
 
 def test_render_launch_agents(sh, tmp_path):
@@ -613,3 +614,22 @@ def test_render_compose_is_mode_644(sh, tmp_path):
     out = tmp_path / "docker-compose.yml"
     sh(f'umask 077; CFG_CHANNEL=stable; KIOSK_DATA_DIR=/d; render_compose "{out}"')
     assert out.stat().st_mode & 0o777 == 0o644
+
+
+
+# ── Task 4 fix round 1 ────────────────────────────────────────────────
+
+def test_uninstall_removes_update_job_before_stopping_kiosk(sh, tmp_path):
+    inst, data = tmp_path / "inst", tmp_path / "data"
+    inst.mkdir(); data.mkdir(); (inst / "docker-compose.yml").write_text("x")
+    r = sh(f'DOCKER=(true); KIOSK_DIR="{inst}"; KIOSK_DATA_DIR="{data}"; '
+           f'remove_login_items() {{ echo REMOVE-LOGIN-ITEMS; }}; '
+           f'stop_kiosk_for_uninstall() {{ echo STOP-KIOSK; }}; uninstall')
+    out = r.stdout.splitlines()
+    assert out.index("REMOVE-LOGIN-ITEMS") < out.index("STOP-KIOSK")
+
+
+def test_remove_login_items_linux_without_user_warns(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    r = sh(stubs + 'desktop_user() { :; }; OS=Linux; remove_login_items')
+    assert "serversherpa-kiosk.desktop" in r.stderr and "systemctl disable" in calls.read_text()

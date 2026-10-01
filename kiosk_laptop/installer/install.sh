@@ -710,6 +710,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+TimeoutStartSec=30min
 ExecStart=$(exec_path "$KIOSK_DIR/update.sh")
 EOF
   cat >"$dir/$UPDATE_UNIT.timer" <<'EOF'
@@ -908,6 +909,8 @@ remove_login_items() {
     if [ -n "$user" ]; then
       home=$(user_home "$user")
       rm -f "$home/.config/autostart/$DESKTOP_FILE" "$home/.local/share/applications/$DESKTOP_FILE"
+    else
+      warn "No desktop user found; remove ~/.config/autostart/$DESKTOP_FILE and ~/.local/share/applications/$DESKTOP_FILE from that account yourself."
     fi
   fi
   return 0
@@ -1024,10 +1027,11 @@ uninstall() {
     confirm_purge
   fi
   info "Removing the ServerSherpa kiosk"
+  # The update job first, so it can't restart the container in between.
+  remove_login_items
   if [ -f "$KIOSK_DIR/docker-compose.yml" ]; then
     stop_kiosk_for_uninstall
   fi
-  remove_login_items
   for f in docker-compose.yml config.env update.sh launch.sh install-state.json update-state.json; do
     rm -f "${KIOSK_DIR:?}/$f"
   done

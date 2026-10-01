@@ -77,7 +77,8 @@ def test_update_applies_new_image_keeps_previous_and_prunes(tmp_path):
     # the previous image keeps a tag so the prune can't remove it
     i_keep = lines.index("tag sha256:old serversherpa-kiosk-laptop:previous")
     i_up = next(i for i, l in enumerate(lines) if l.endswith("up -d"))
-    i_prune = lines.index("image prune -f")
+    i_prune = lines.index("image prune -f --filter "
+                          "label=org.opencontainers.image.source=https://github.com/encondata/BaseCampV3")
     assert i_keep < i_up < i_prune
     assert "sha256:old" in (tmp_path / "update-state.json").read_text()
     assert "updated" in (tmp_path / "update.log").read_text()
@@ -134,6 +135,82 @@ def test_update_log_falls_back_when_not_writable(tmp_path):
         ro.chmod(0o700)
     assert "rc=0" in r.stdout
     assert "updated" in (tmp_path / "serversherpa-kiosk-update.log").read_text()
+
+
+
+# ── fix round 1: interrupted updates, rejected images ────────────────
+
+def _state(tmp_path, **kw):
+    import json
+    (tmp_path / "update-state.json").write_text(json.dumps({"previous_image": "", "image": "",
+                                                            "rejected_image": "", "phase": "done", **kw}))
+
+
+def _read_state(tmp_path):
+    import json
+    return json.loads((tmp_path / "update-state.json").read_text())
+
+
+def _docker(running, pulled, health):
+    return ('#!/bin/sh\necho "$@" >> "$0.log"\n'
+            'case "$*" in\n'
+            f'  *"--format {{{{.Image}}}}"*) echo {running} ;;\n'
+            f'  *"image inspect"*) echo {pulled} ;;\n'
+            f'  *Health*) echo {health} ;;\n'
+            'esac\n')
+
+
+def test_update_recovers_from_interrupted_update(tmp_path):
+    _state(tmp_path, previous_image="sha256:old", phase="updating")
+    r = _upd(tmp_path, 'HEALTH_TIMEOUT_S=0; main; echo rc=$?',
+             _docker("sha256:new", "sha256:new", "unhealthy"), IDLE)
+    log = (tmp_path / "docker.log").read_text()
+    assert "rc=1" in r.stdout
+    assert "tag sha256:old ghcr.io/encondata/serversherpa-kiosk-laptop:stable" in log
+    assert "pull" not in log
+    assert "recovered from an interrupted update" in (tmp_path / "update.log").read_text()
+    st = _read_state(tmp_path)
+    assert st["rejected_image"] == "sha256:new" and st["phase"] == "done"
+
+
+def test_update_no_recovery_when_interrupted_update_is_healthy(tmp_path):
+    _state(tmp_path, previous_image="sha256:old", phase="updating")
+    r = _upd(tmp_path, 'HEALTH_TIMEOUT_S=0; main; echo rc=$?',
+             _docker("sha256:new", "sha256:new", "healthy"), IDLE)
+    assert "rc=0" in r.stdout and "tag sha256:old" not in (tmp_path / "docker.log").read_text()
+    assert _read_state(tmp_path)["phase"] == "done"
+
+
+def test_update_no_recovery_after_finished_update(tmp_path):
+    # a finished update whose container later turns unhealthy is not rolled back
+    _state(tmp_path, previous_image="sha256:old", phase="done")
+    _upd(tmp_path, 'HEALTH_TIMEOUT_S=0; main', _docker("sha256:new", "sha256:new", "unhealthy"), IDLE)
+    assert "recovered" not in (tmp_path / "update.log").read_text()
+    assert "tag sha256:old" not in (tmp_path / "docker.log").read_text()
+
+
+def test_update_rollback_records_rejected_image(tmp_path):
+    _upd(tmp_path, 'HEALTH_TIMEOUT_S=0; main', _docker("sha256:old", "sha256:new", "unhealthy"), IDLE)
+    assert _read_state(tmp_path)["rejected_image"] == "sha256:new"
+
+
+def test_update_skips_rejected_image(tmp_path):
+    _state(tmp_path, previous_image="sha256:old", rejected_image="sha256:bad")
+    r = _upd(tmp_path, 'main; echo rc=$?', _docker("sha256:old", "sha256:bad", "healthy"), IDLE)
+    log = (tmp_path / "docker.log").read_text()
+    assert "rc=0" in r.stdout
+    assert "skipping sha256:bad — it failed its health check before" in (tmp_path / "update.log").read_text()
+    assert "tag sha256:old ghcr.io/encondata/serversherpa-kiosk-laptop:stable" in log
+    assert " up " not in f" {log} "
+    assert _read_state(tmp_path)["rejected_image"] == "sha256:bad"
+
+
+def test_update_newer_image_clears_rejected(tmp_path):
+    _state(tmp_path, previous_image="sha256:older", rejected_image="sha256:bad")
+    r = _upd(tmp_path, 'main; echo rc=$?', _docker("sha256:old", "sha256:newer", "healthy"), IDLE)
+    assert "rc=0" in r.stdout
+    st = _read_state(tmp_path)
+    assert st["rejected_image"] == "" and st["previous_image"] == "sha256:old"
 
 
 # ── launch.sh ─────────────────────────────────────────────────────────
