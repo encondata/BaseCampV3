@@ -73,6 +73,7 @@ Environment overrides:
 | `SIRDAR_BRANCH` | `main` |
 | `SIRDAR_DIR` | `/opt/serversherpa/sirdar` (Linux and macOS); setting it skips the directory prompt |
 | `SIRDAR_PORT` | `8098` (used only when creating `.env`) |
+| `SIRDAR_BIND` | `127.0.0.1` (used only when creating `.env`); the address the port is published on, default for the listen-address prompt |
 | `SIRDAR_NONINTERACTIVE=1` | never prompt; generate every secret and print the admin commands |
 | `SIRDAR_DOCKER_VERSION` | newest stable; Linux static installs only: the Docker Engine version to download (e.g. `29.8.2`) |
 | `SIRDAR_FORCE_STATIC=1` | off; Linux static installs only: replace Docker binaries in `/usr/local/bin` that the installer didn't put there |
@@ -98,16 +99,57 @@ What it does:
 - Sparse-checks out `sirdar/` plus the portal files the SPA imports into
   `SIRDAR_DIR`, owned by you.
 - **First run:** writes `sirdar/.env` (mode 600) from `.env.example`. With a
-  terminal it asks for the port, cookie domain, portal database URL, password
+  terminal it asks for the port, listen address, cookie domain, public URL(s)
+  for CORS, portal database URL, password
   pepper, 2FA key, JWT secret and database password; press Enter to accept
   the default or generate a secret. Without a terminal, or with
   `SIRDAR_NONINTERACTIVE=1`, it generates every secret. Prompts go to the terminal, not stdout, so
   `curl ... | bash > install.log` still shows them.
+- **Later runs:** keeps your `.env`, and asks only for settings added since
+  your install (`SIRDAR_BIND`, `SIRDAR_ALLOWED_ORIGINS`,
+  `SIRDAR_PASSWORD_MIN_LENGTH`) that the file doesn't have yet; a line that is
+  present, even blank, is never re-asked or rewritten. Answers are appended
+  (mode 600, existing lines untouched). Without a terminal nothing is written
+  and the installer lists which settings are using their defaults.
 - Builds and starts the stack, waits for it to be healthy, and, when Sirdar
   has no users yet and a terminal is available, offers to create the first
   local admin (the first attempt plus up to 3 retries). It ends with the URL and the admin commands.
 
 The app listens on 127.0.0.1:8098 by default; put a TLS reverse proxy in front.
+
+### Listen address (`SIRDAR_BIND`)
+
+The second first-install prompt, `Listen address`, sets `SIRDAR_BIND` in
+`.env`: `127.0.0.1` (default) is this machine only, for a reverse proxy on the
+same box; `0.0.0.0` publishes on every interface; or give a specific host IPv4.
+Non-interactive installs use the `SIRDAR_BIND` environment variable, else
+`127.0.0.1`. Existing installs without the line stay on `127.0.0.1`; add
+`SIRDAR_BIND=0.0.0.0` to `.env` and re-run the installer to change it.
+
+Example, an Unraid box at 10.10.48.14 with the reverse proxy elsewhere: bind
+`0.0.0.0` and point the proxy at `http://10.10.48.14:8098`.
+
+The app serves plain HTTP. The sign-in cookie is marked `Secure` (production)
+and, when `SIRDAR_COOKIE_DOMAIN` is set, only works on that domain, so browsing
+to `http://<ip>:<port>` directly will not keep you signed in. Use the proxy's
+HTTPS hostname.
+
+### Public URL for CORS (`SIRDAR_ALLOWED_ORIGINS`)
+
+The fourth first-install prompt sets `SIRDAR_ALLOWED_ORIGINS`: the address
+people use in the browser, e.g. `https://sirdar.example.com` (comma-separate
+several; each is `http(s)://host[:port]`, no path, a trailing `/` is dropped).
+Listed origins may call the API from the browser with credentials (allowed
+headers: `Authorization`, `Content-Type`, `X-Totp-Challenge`). Blank, the
+default, means same-origin only and sends no CORS headers; that is normal,
+because the web app and API are served from the same origin. It is only needed
+when another site calls the API. A bad value stops the API from starting.
+
+### Minimum password length (`SIRDAR_PASSWORD_MIN_LENGTH`)
+
+Minimum length for local passwords set with the CLI: 4 to 128, default 8 (the
+portal's default). Asked about only when re-running the installer on a `.env`
+that lacks it.
 
 ### Supported systems
 
@@ -198,8 +240,10 @@ fill in every secret, then
   the tables the import reads. Leave it empty to disable the import.
 - Sirdar must sit behind a trusted reverse proxy: the API trusts
   `X-Forwarded-For` for audit and session IPs, uvicorn runs with
-  `--forwarded-allow-ips='*'`, and the port is bound to 127.0.0.1. Never expose
-  the container port directly.
+  `--forwarded-allow-ips='*'`, and the port is bound to 127.0.0.1 by default.
+  Never expose the container port directly. If you set `SIRDAR_BIND` beyond
+  127.0.0.1, LAN clients can spoof `X-Forwarded-For` (audit and session IPs
+  only); bind to the proxy-facing address or firewall the port to the proxy.
 - Have the proxy rate-limit `/api/auth/*`; account lockout alone does not stop
   password guessing while an account is locked. (A locked account answers
   `account_locked` to every password and adds no strikes, so the lock never

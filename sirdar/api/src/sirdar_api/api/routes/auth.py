@@ -66,6 +66,7 @@ async def me_fields(db: AsyncSession, user: User, access: AccessInfo,
             required=user.totp_required,
             backup_codes_remaining=await auth_service.backup_codes_remaining(
                 db, user.person_id)),
+        "password_min_length": get_settings().password_min_length,
         "source": user.source,
     }
 
