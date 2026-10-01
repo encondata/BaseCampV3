@@ -80,3 +80,18 @@ def test_code_helpers():
     assert totp.compact_code("123 456") == "123456"
     assert totp.is_app_code("123456") and not totp.is_app_code("12345a")
     assert totp.normalize_backup("ABCDE-fghjk") == "abcdefghjk"
+
+
+def test_is_app_code_rejects_non_ascii_digits():
+    # Arabic-Indic digits (should be rejected)
+    assert not totp.is_app_code("١٢٣٤٥٦")
+    # Mixed ASCII and non-ASCII (should be rejected)
+    assert not totp.is_app_code("12345١")
+
+
+def test_match_counter_handles_non_ascii_gracefully():
+    # Non-ASCII code should return None instead of raising TypeError
+    seed = pyotp.random_base32()
+    assert totp.match_counter(seed, "١٢٣٤٥٦", None) is None
+    # Mixed ASCII and non-ASCII should also return None
+    assert totp.match_counter(seed, "12345١", None) is None

@@ -38,11 +38,13 @@ def match_counter(secret: str, code: str, last_counter: int | None, *,
                   now: datetime | None = None) -> int | None:
     """The time-step counter `code` belongs to (±1 step), or None when it
     matches nothing new. A counter at or below `last_counter` is a replay."""
+    if not code.isascii():
+        return None
     otp = pyotp.TOTP(secret, digits=6, interval=30)
     base = otp.timecode(now or datetime.now(UTC))
     for offset in (0, -1, 1):
         counter = base + offset
-        if hmac.compare_digest(otp.generate_otp(counter), code):
+        if hmac.compare_digest(otp.generate_otp(counter).encode(), code.encode()):
             if last_counter is not None and counter <= last_counter:
                 return None
             return counter
@@ -55,7 +57,7 @@ def compact_code(code: str) -> str:
 
 
 def is_app_code(compact: str) -> bool:
-    return compact.isdigit() and len(compact) == 6
+    return compact.isascii() and compact.isdigit() and len(compact) == 6
 
 
 def normalize_backup(code: str) -> str:
