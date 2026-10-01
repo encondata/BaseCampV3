@@ -1,0 +1,12 @@
+# ServerSherpa kiosk — laptop edition (installed). Managed by the installer;
+# re-run the installer instead of editing this file.
+name: serversherpa-kiosk
+services:
+  edge:
+    image: __IMAGE__
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8090:8090"
+    env_file: config.env
+    volumes:
+      - "__DATA_DIR__:/data"
