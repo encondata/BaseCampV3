@@ -1015,7 +1015,7 @@ function Get-UpdateTaskSpec {
         Name                      = $UpdateTaskName
         Time                      = '03:00'
         Execute                   = 'powershell.exe'
-        Argument                  = "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-WindowsPath $InstallDir 'update.ps1')`""
+        Argument                  = "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$(Join-WindowsPath $InstallDir 'update.ps1')`""
         User                      = $User
         LogonType                 = 'Interactive'
         ExecutionTimeLimitMinutes = 30     # as update.sh's TimeoutStartSec

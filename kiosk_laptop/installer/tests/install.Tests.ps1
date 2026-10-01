@@ -685,7 +685,7 @@ Describe 'Login item specs' {
         $t.Name | Should -Be 'ServerSherpa Kiosk Update'
         $t.Time | Should -Be '03:00'
         $t.Execute | Should -Be 'powershell.exe'
-        $t.Argument | Should -Be '-NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\ServerSherpaKiosk\update.ps1"'
+        $t.Argument | Should -Be '-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\ServerSherpaKiosk\update.ps1"'
         $t.LogonType | Should -Be 'Interactive'
         $t.User | Should -Be 'PC\tech'
         $t.ExecutionTimeLimitMinutes | Should -Be 30
@@ -743,7 +743,7 @@ Describe 'Install-LoginItems' {
     }
     It 'registers the nightly task at 03:00 for the signed-in user, interactive, start when available' {
         Install-LoginItems -InstallDir $inst -DesktopUser $user
-        Should -Invoke New-ScheduledTaskAction -ParameterFilter { $Execute -eq 'powershell.exe' -and $Argument -eq "-NoProfile -ExecutionPolicy Bypass -File `"$inst\update.ps1`"" }
+        Should -Invoke New-ScheduledTaskAction -ParameterFilter { $Execute -eq 'powershell.exe' -and $Argument -eq "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$inst\update.ps1`"" }
         Should -Invoke New-ScheduledTaskTrigger -ParameterFilter { $Daily -and "$At" -like '*03:00*' }
         Should -Invoke New-ScheduledTaskPrincipal -ParameterFilter { $UserId -eq 'PC\tech' -and $LogonType -eq 'Interactive' }
         Should -Invoke New-ScheduledTaskSettingsSet -ParameterFilter { $StartWhenAvailable }
