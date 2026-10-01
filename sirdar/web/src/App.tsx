@@ -1,5 +1,6 @@
-import { Route, Routes } from 'react-router-dom';
+import { Link, Route, Routes } from 'react-router-dom';
 
+import Gate from './auth/Gate';
 import RequireAuth from './auth/RequireAuth';
 import SirdarShell from './layout/SirdarShell';
 import Access from './pages/Access';
@@ -19,13 +20,18 @@ export default function App() {
         <RequireAuth>
           <SirdarShell>
             <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/admin/users" element={<Users />} />
-              <Route path="/admin/users/:personId" element={<UserDetail />} />
-              <Route path="/admin/access" element={<Access />} />
-              <Route path="/admin/audit" element={<Audit />} />
-              <Route path="/settings" element={<Settings />} />
+              <Route path="/" element={<Gate resource="dashboard"><Dashboard /></Gate>} />
+              <Route path="/admin/users" element={<Gate resource="users"><Users /></Gate>} />
+              <Route path="/admin/users/:personId" element={<Gate resource="users"><UserDetail /></Gate>} />
+              <Route path="/admin/access" element={<Gate resource="access"><Access /></Gate>} />
+              <Route path="/admin/audit" element={<Gate resource="audit"><Audit /></Gate>} />
+              <Route path="/settings" element={<Gate resource="settings"><Settings /></Gate>} />
               <Route path="/me" element={<Me />} />
+              <Route path="*" element={
+                <div className="portal-page">
+                  <p className="page-hint">Page not found. <Link to="/">Back to the dashboard</Link></p>
+                </div>
+              } />
             </Routes>
           </SirdarShell>
         </RequireAuth>
