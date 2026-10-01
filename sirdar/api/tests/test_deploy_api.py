@@ -270,3 +270,19 @@ async def test_ssh_key_problems_and_trust_unreachable(client, db, deploy_env, ss
     assert resp.status_code == 502
     assert resp.json() == {"detail": {"code": "connect_failed",
                                       "reason": "Couldn't reach 127.0.0.1:1."}}
+
+
+async def test_unexpected_connect_error_is_audited(client, db, deploy_env, ssh_server,
+                                                   monkeypatch):
+    from sirdar_api.deploy import ssh as ssh_mod
+
+    async def boom(settings, db):
+        raise RuntimeError("kaboom")
+
+    _ssh_env(deploy_env, ssh_server)
+    monkeypatch.setattr(ssh_mod, "test_connection", boom)
+    h = await auth_headers(client, db)
+    with pytest.raises(RuntimeError):
+        await client.post("/api/deploy/connect", headers=h, json={"target": "ssh", "type": "dev"})
+    assert await _connect_audits(db) == [
+        {"target": "ssh", "type": "dev", "ok": False, "code": "error"}]

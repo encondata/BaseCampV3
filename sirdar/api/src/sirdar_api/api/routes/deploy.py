@@ -87,6 +87,9 @@ async def connect(body: ConnectIn, request: Request, db: DbSession,
                          key_type=e.key_type, expected=e.expected, actual=e.actual) from None
     except ConnectFailed as e:
         raise await fail(502, "connect_failed", reason=e.reason) from None
+    except Exception:
+        await record(False, "error")
+        raise
 
     await record(result.ok)
     return {"ok": result.ok, "target": result.target, "type": body.type,

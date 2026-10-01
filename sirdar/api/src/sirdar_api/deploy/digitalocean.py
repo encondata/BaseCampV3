@@ -10,6 +10,7 @@ from sirdar_api.deploy import Check, ConnectFailed, ConnectResult
 BASE_URL = "https://api.digitalocean.com/v2"
 _UNREACHABLE = "Couldn't reach the DigitalOcean API."
 _BAD_TOKEN = "DigitalOcean rejected the API token."
+_MALFORMED_TOKEN = "The DigitalOcean API token is malformed."
 _UNEXPECTED = "DigitalOcean sent a response Sirdar didn't understand."
 
 
@@ -37,8 +38,12 @@ async def test_connection(settings: Settings, *,
         raise ConnectFailed("No DigitalOcean API token is configured.")
     token = settings.deploy_do_token.get_secret_value()
     region = settings.deploy_do_region.strip()
-    async with httpx.AsyncClient(base_url=BASE_URL, headers={"Authorization": f"Bearer {token}"},
-                                 timeout=15, transport=transport) as client:
+    try:
+        client = httpx.AsyncClient(base_url=BASE_URL, headers={"Authorization": f"Bearer {token}"},
+                                   timeout=15, transport=transport)
+    except (UnicodeError, ValueError, TypeError):      # e.g. a non-ASCII token
+        raise ConnectFailed(_MALFORMED_TOKEN) from None
+    async with client:
         try:
             account = (await _get(client, "/account"))["account"]
             email, status = str(account["email"]), str(account["status"])

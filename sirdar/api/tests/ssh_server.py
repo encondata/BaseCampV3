@@ -2,6 +2,7 @@
 one user with a password or an authorized ed25519 key and answers the
 connection-check commands with canned output."""
 
+import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,6 +35,7 @@ class FakeSshServer:
     docker: bool = True
     overrides: dict = field(default_factory=dict)
     commands: list = field(default_factory=list)
+    delays: dict = field(default_factory=dict)   # command -> seconds to sleep first
 
     @property
     def fingerprint(self) -> str:
@@ -75,10 +77,13 @@ def _server_class(state: dict):
 async def ssh_server(tmp_path):
     state: dict = {}
 
-    def process_factory(process: asyncssh.SSHServerProcess) -> None:
-        out, err, code = state["fake"].answer(process.command or "")
-        process.stdout.write(out)
-        process.stderr.write(err)
+    async def process_factory(process: asyncssh.SSHServerProcess) -> None:
+        fake = state["fake"]
+        out, err, code = fake.answer(process.command or "")
+        if process.command in fake.delays:
+            await asyncio.sleep(fake.delays[process.command])
+        process.stdout.write(out if isinstance(out, bytes) else out.encode())
+        process.stderr.write(err.encode())
         process.exit(code)
 
     host_key = asyncssh.generate_private_key("ssh-ed25519")
@@ -91,7 +96,7 @@ async def ssh_server(tmp_path):
 
     server = await asyncssh.create_server(
         _server_class(state), "127.0.0.1", 0, server_host_keys=[host_key],
-        process_factory=process_factory)
+        process_factory=process_factory, encoding=None)
     port = server.sockets[0].getsockname()[1]
     state["fake"] = FakeSshServer(port=port, host_key=host_key, client_key=client_key,
                                   keys_dir=keys_dir)

@@ -103,3 +103,13 @@ async def test_unexpected_body_is_connect_failed():
         await digitalocean.test_connection(_settings(deploy_do_token=TOKEN),
                                            transport=httpx.MockTransport(handler))
     assert exc.value.reason == "DigitalOcean sent a response Sirdar didn't understand."
+
+
+async def test_malformed_token_is_connect_failed():
+    token = "dop_v1_tökén_SECRET"
+    s = _settings(deploy_do_token=token)
+    with pytest.raises(ConnectFailed) as exc:
+        await digitalocean.test_connection(s)
+    assert exc.value.reason in ("The DigitalOcean API token is malformed.",
+                                "DigitalOcean rejected the API token.")
+    assert "SECRET" not in exc.value.reason and exc.value.__cause__ is None

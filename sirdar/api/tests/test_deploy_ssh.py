@@ -197,3 +197,49 @@ async def test_connect_pins_the_stored_public_key(db, ssh_server):
         await ssh.test_connection(ssh_settings(ssh_server), db)
     assert exc.value.reason == "The server's host key changed during the test. Try again."
     assert ssh_server.commands == []
+
+
+async def test_retrust_audits_previous_fingerprint(db, ssh_server):
+    await _trust(db, ssh_server)
+    row = await db.scalar(select(SshKnownHost))
+    row.fingerprint_sha256 = "SHA256:old"
+    await db.commit()
+    await _trust(db, ssh_server)
+    audits = list(await db.scalars(
+        select(AuditLog).where(AuditLog.action == "deploy.host_trust").order_by(AuditLog.id)))
+    assert "previous_fingerprint" not in audits[0].changes
+    assert audits[1].changes["previous_fingerprint"] == "SHA256:old"
+    assert audits[1].changes["fingerprint"] == ssh_server.fingerprint
+
+
+async def test_corrupt_stored_key_is_connect_failed(db, ssh_server):
+    db.add(SshKnownHost(host="127.0.0.1", port=ssh_server.port, key_type="ssh-ed25519",
+                        fingerprint_sha256=ssh_server.fingerprint, public_key="ssh-ed25519 !!junk!!"))
+    await db.commit()
+    with pytest.raises(ConnectFailed) as exc:
+        await ssh.test_connection(ssh_settings(ssh_server), db)
+    assert exc.value.reason == ("Sirdar's saved key for this host is unreadable. "
+                                "Forget the host and trust it again.")
+
+
+async def test_checks_budget_keeps_finished_results(db, ssh_server, monkeypatch):
+    await _trust(db, ssh_server)
+    monkeypatch.setattr(ssh, "CHECKS_BUDGET_SECONDS", 1)
+    ssh_server.delays = {"docker --version": 30}
+    result = await ssh.test_connection(ssh_settings(ssh_server), db)
+    checks = _checks(result)
+    assert not result.ok
+    assert checks["OS"] == ("pass", "Ubuntu 24.04.1 LTS")
+    assert checks["Kernel"][0] == "pass"
+    for label in ("Docker", "Compose", "Disk", "Memory"):
+        assert checks[label] == ("fail", "No answer")
+    assert list(checks) == ["OS", "Kernel", "Docker", "Compose", "Disk", "Memory"]
+
+
+async def test_non_utf8_output_is_not_a_failure(db, ssh_server):
+    await _trust(db, ssh_server)
+    ssh_server.overrides = {"uname -srm": b"Linux \xff\xfe 6.8\n"}
+    result = await ssh.test_connection(ssh_settings(ssh_server), db)
+    assert result.ok
+    status, value = _checks(result)["Kernel"]
+    assert status == "pass" and value.startswith("Linux ") and value.endswith(" 6.8")

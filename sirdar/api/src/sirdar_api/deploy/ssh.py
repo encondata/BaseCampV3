@@ -14,6 +14,7 @@ from sirdar_api.deploy.targets import ssh_auth_label
 
 CONNECT_TIMEOUT = 15
 COMMAND_TIMEOUT = 10
+CHECKS_BUDGET_SECONDS = 30
 _MAX_VALUE = 200
 _AUTH_FAILED = "The SSH server rejected the username, password or key."
 _UNLOCK_FAILED = "Couldn't unlock the SSH key (check the passphrase)."
@@ -36,7 +37,7 @@ class HostKeyMismatch(Exception):
         self.expected, self.actual, self.key_type = expected, actual, key_type
 
 
-def _load_client_key(s: Settings) -> asyncssh.SSHKey | None:
+async def _load_client_key(s: Settings) -> asyncssh.SSHKey | None:
     raw = s.deploy_ssh_key_path.strip()
     if not raw:
         return None
@@ -48,7 +49,7 @@ def _load_client_key(s: Settings) -> asyncssh.SSHKey | None:
     passphrase = (s.deploy_ssh_key_passphrase.get_secret_value()
                   if s.deploy_ssh_key_passphrase is not None else None)
     try:
-        return asyncssh.read_private_key(path, passphrase)
+        return await asyncio.to_thread(asyncssh.read_private_key, path, passphrase)
     except OSError:
         raise not_found from None
     except asyncssh.KeyEncryptionError:
@@ -63,7 +64,7 @@ def _load_client_key(s: Settings) -> asyncssh.SSHKey | None:
 async def _run(conn: asyncssh.SSHClientConnection, command: str) -> tuple[int | None, str]:
     """(exit status, first stdout line); exit None when the command didn't answer."""
     try:
-        result = await asyncio.wait_for(conn.run(command, check=False), COMMAND_TIMEOUT)
+        result = await asyncio.wait_for(conn.run(command, check=False, errors="replace"), COMMAND_TIMEOUT)
     except (OSError, TimeoutError, asyncssh.Error):
         return None, ""
     out = result.stdout if isinstance(result.stdout, str) else ""
@@ -86,36 +87,51 @@ def _number(line: str, index: int) -> float | None:
         return None
 
 
-async def _checks(conn: asyncssh.SSHClientConnection) -> list[Check]:
-    checks = []
-    for label, command, missing in (
-            ("OS", '. /etc/os-release && echo "$PRETTY_NAME"', "Unknown"),
-            ("Kernel", "uname -srm", "Unknown"),
-            ("Docker", "docker --version", "Not installed"),
-            ("Compose", "docker compose version", "Not available")):
-        checks.append(_text_check(label, *(await _run(conn, command)), missing))
+_TEXT_CHECKS = (
+    ("OS", '. /etc/os-release && echo "$PRETTY_NAME"', "Unknown"),
+    ("Kernel", "uname -srm", "Unknown"),
+    ("Docker", "docker --version", "Not installed"),
+    ("Compose", "docker compose version", "Not available"),
+)
+_CHECK_LABELS = ["OS", "Kernel", "Docker", "Compose", "Disk", "Memory"]
+
+
+async def _run_checks(conn: asyncssh.SSHClientConnection, done: list[Check]) -> None:
+    """Run the checks in order, appending each to `done` as it finishes so a
+    timeout keeps the completed ones."""
+    for label, command, missing in _TEXT_CHECKS:
+        done.append(_text_check(label, *(await _run(conn, command)), missing))
 
     status, line = await _run(conn, "df -Pk / | tail -1")
     free_kib = _number(line, 3) if status == 0 else None
     if status is None:
-        checks.append(Check("Disk", "fail", "No answer"))
+        done.append(Check("Disk", "fail", "No answer"))
     elif free_kib is None:
-        checks.append(Check("Disk", "warn", "Unknown"))
+        done.append(Check("Disk", "warn", "Unknown"))
     else:
         gb = free_kib / _GB
-        checks.append(Check("Disk", "pass" if gb >= MIN_DISK_GB else "warn",
-                            f"{gb:.1f} GB free on /"))
+        done.append(Check("Disk", "pass" if gb >= MIN_DISK_GB else "warn",
+                          f"{gb:.1f} GB free on /"))
 
     status, line = await _run(conn, "grep MemTotal /proc/meminfo")
     total_kib = _number(line, 1) if status == 0 else None
     if status is None:
-        checks.append(Check("Memory", "fail", "No answer"))
+        done.append(Check("Memory", "fail", "No answer"))
     elif total_kib is None:
-        checks.append(Check("Memory", "warn", "Unknown"))
+        done.append(Check("Memory", "warn", "Unknown"))
     else:
         gb = total_kib / _GB
-        checks.append(Check("Memory", "pass" if gb >= MIN_MEMORY_GB else "warn", f"{gb:.1f} GB"))
-    return checks
+        done.append(Check("Memory", "pass" if gb >= MIN_MEMORY_GB else "warn", f"{gb:.1f} GB"))
+
+
+async def _checks(conn: asyncssh.SSHClientConnection) -> list[Check]:
+    done: list[Check] = []
+    try:
+        await asyncio.wait_for(_run_checks(conn, done), CHECKS_BUDGET_SECONDS)
+    except TimeoutError:
+        pass
+    done.extend(Check(label, "fail", "No answer") for label in _CHECK_LABELS[len(done):])
+    return done
 
 
 async def test_connection(settings: Settings, db: AsyncSession) -> ConnectResult:
@@ -129,9 +145,13 @@ async def test_connection(settings: Settings, db: AsyncSession) -> ConnectResult
         raise HostKeyUnknown(host, port, key_type, actual)
     if stored.fingerprint_sha256 != actual:
         raise HostKeyMismatch(host, port, stored.fingerprint_sha256, actual, key_type)
-    pinned = asyncssh.import_public_key(stored.public_key)
+    try:
+        pinned = asyncssh.import_public_key(stored.public_key)
+    except (asyncssh.KeyImportError, ValueError):
+        raise ConnectFailed("Sirdar's saved key for this host is unreadable. "
+                            "Forget the host and trust it again.") from None
 
-    client_key = _load_client_key(settings)
+    client_key = await _load_client_key(settings)
     password = (settings.deploy_ssh_password.get_secret_value()
                 if settings.deploy_ssh_password is not None else None)
     try:

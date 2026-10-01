@@ -68,6 +68,8 @@ async def trust(db: AsyncSession, host: str, port: int, expected_fingerprint: st
     actual, key_type = fingerprint(live), live.get_algorithm()
     if actual != expected_fingerprint:
         raise HostKeyChanged(host, port, expected_fingerprint, actual, key_type)
+    previous = await lookup(db, host, port)
+    previous_fingerprint = previous.fingerprint_sha256 if previous else None
     values = dict(key_type=key_type, fingerprint_sha256=actual,
                   public_key=public_key_text(live), trusted_by=actor_id)
     await db.execute(
@@ -76,7 +78,8 @@ async def trust(db: AsyncSession, host: str, port: int, expected_fingerprint: st
                                set_={**values, "trusted_at": func.now()}))
     audit(db, actor_id=actor_id, action="deploy.host_trust", entity_type="ssh_known_host",
           entity_id=f"{host}:{port}", ip=ip,
-          changes={"host": host, "port": port, "key_type": key_type, "fingerprint": actual})
+          changes={"host": host, "port": port, "key_type": key_type, "fingerprint": actual,
+                   **({"previous_fingerprint": previous_fingerprint} if previous else {})})
     await db.flush()
     return await db.scalar(
         select(SshKnownHost).where(SshKnownHost.host == host, SshKnownHost.port == port)
@@ -106,5 +109,3 @@ async def list_hosts(db: AsyncSession) -> list[tuple[SshKnownHost, str | None]]:
         .order_by(SshKnownHost.host, SshKnownHost.port))).all()
     return [(host, user.display_name if user else None) for host, user in rows]
 
-
-list = list_hosts  # noqa: A001 — the plan's name; nothing in this module calls builtins.list
