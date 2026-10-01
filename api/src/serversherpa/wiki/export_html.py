@@ -296,7 +296,8 @@ summary { font-weight: 600; }
 .ss-cover-rule { width: 60%; margin: 0 auto; border: 0; border-top: 0.75pt solid #0f766e; }
 .ss-cover-title { font-size: 26pt; line-height: 1.2; font-weight: 700; margin: 6mm 8mm;
                   bookmark-level: none; }
-.ss-cover-meta { font-size: 10pt; line-height: 1.7; color: #344054; margin-top: 7mm; }
+.ss-cover-meta { font-size: 10pt; line-height: 1.7; color: #344054; margin-top: 7mm;
+                 page-break-inside: avoid; }
 /* font-size 0: no line for the (empty) footnote marker */
 .ss-cover-foot { float: footnote; text-align: center; padding-top: 8mm;
                  font-size: 0; line-height: 0; }
@@ -304,7 +305,8 @@ summary { font-weight: 600; }
 .ss-cover-exported { font-size: 8.5pt; line-height: 1.5; color: #667085; margin-bottom: 3mm; }
 .ss-cover-statement { font-size: 8.5pt; line-height: 1.5; color: #475467;
                       border-top: 1px solid #e4e8ee;
-                      padding-top: 3mm; max-height: 70mm; overflow: hidden; }
+                      padding-top: 3mm; max-height: 191.25pt; overflow: hidden; }
+/* the statement's cap is exactly 15 lines (8.5pt × 1.5), so a clipped one ends on a line */
 .ss-section-title { font-size: 16pt; font-weight: 700; margin-bottom: 4mm; }
 .ss-history { page-break-after: always; }
 .ss-revisions { font-size: 9pt; }

@@ -156,7 +156,9 @@ def test_a_long_title_and_statement_share_one_cover(tmp_path, statement):
     """The statement is a footnote: pinned to the cover's foot, it can't
     overlap the title, and it never moves on to the history's page."""
     _pdftotext()
-    title = ("Decommissioning and Relocating Every Rack Row in Data Hall 2 " * 3)[:140]
+    # ~100 characters: long, yet short enough to fit with any of the
+    # worker's fonts (DejaVu Sans is wider than macOS's Helvetica)
+    title = ("Decommissioning and Relocating Every Rack Row in Data Hall 2 " * 3)[:100]
     cover = cover_html(CoverInfo(
         title=title, doc_type="Operating Procedure", author="Linus Torvalds", revision=3,
         published_at=AT, published_by="Ada Lovelace", exported_at=AT,
