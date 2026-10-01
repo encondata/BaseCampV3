@@ -76,15 +76,15 @@ async def test_targets_for_admin(client, db, deploy_env, bodies):
     assert resp.status_code == 200
     body = resp.json()
     assert body["targets"] == [
-        {"id": "aws", "label": "AWS", "available": False, "configured": True,
-         "summary": "region us-east-1"},
-        {"id": "gcp", "label": "Google Cloud", "available": False, "configured": False,
-         "summary": None},
-        {"id": "digitalocean", "label": "DigitalOcean", "available": True, "configured": True,
-         "summary": "region nyc3"},
-        {"id": "ssh", "label": "Custom (SSH)", "available": True, "configured": True,
-         "summary": "root@10.10.48.20:22 · key + password"},
+        {"id": "aws", "label": "AWS", "available": False, "configured": True},
+        {"id": "gcp", "label": "Google Cloud", "available": False, "configured": False},
+        {"id": "digitalocean", "label": "DigitalOcean", "available": True, "configured": True},
+        {"id": "ssh", "label": "Custom (SSH)", "available": True, "configured": True},
     ]
+    assert all("summary" not in t for t in body["targets"])
+    # product owner decision: cards show no connection details, secret or not
+    for detail in ("10.10.48.20", "root", "nyc3", "us-east-1", ":22"):
+        assert detail not in resp.text
     assert [t["id"] for t in body["types"]] == ["blue", "green", "dev", "beta"]
     assert body["types"][0] == {"id": "blue", "label": "Blue", "description": "Production slot"}
 

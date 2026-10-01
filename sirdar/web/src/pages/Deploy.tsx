@@ -183,7 +183,6 @@ export default function Deploy() {
                 {statusChip(t)}
               </span>
               <b>{t.label}</b>
-              <span className="cell-sub">{t.summary ?? (t.available ? 'Not set up yet' : 'Not built yet')}</span>
             </button>
           ))}
         </div>

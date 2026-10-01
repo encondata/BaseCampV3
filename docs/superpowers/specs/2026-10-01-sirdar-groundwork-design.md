@@ -389,7 +389,7 @@ Sirdar will deploy the ServerSherpa apps (api, portal, kiosk, wiki, spaces, db) 
 
 Decided with the product owner:
 
-- **Targets:** AWS, GCP, DigitalOcean and Custom (direct SSH). Only DigitalOcean and Custom are built now. AWS and GCP appear as "Coming soon" cards, and their settings already exist in `.env`.
+- **Targets:** AWS, GCP, DigitalOcean and Custom (direct SSH). Only DigitalOcean and Custom are built now. AWS and GCP appear as "Coming soon" cards, and their settings already exist in `.env`. Target cards show only the icon, label and a status chip (Ready, Not configured, Coming soon), never connection details such as host, user, port or region (product owner decision 2026-10-01).
 - **Deployment types:** Blue (prod), Green (prod), Dev (development), Beta (external testing). For now the type is a label carried with the connection test and recorded in the audit log. All types use the same per-provider credentials.
 - **Credentials (one set per provider, all in the "Target deployment" section of `.env`):**
 

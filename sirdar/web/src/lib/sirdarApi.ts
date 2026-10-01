@@ -58,7 +58,7 @@ export interface SirdarSettings {
 
 export interface DeployTarget {
   id: 'aws' | 'gcp' | 'digitalocean' | 'ssh'; label: string; available: boolean;
-  configured: boolean; summary: string | null;
+  configured: boolean;
 }
 export interface DeployType { id: 'blue' | 'green' | 'dev' | 'beta'; label: string; description: string }
 export interface DeployCheck { label: string; status: 'pass' | 'warn' | 'fail'; value: string }

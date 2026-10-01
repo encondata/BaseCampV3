@@ -22,10 +22,10 @@ import Deploy from './Deploy';
 
 const TARGETS = {
   targets: [
-    { id: 'aws', label: 'AWS', available: false, configured: false, summary: null },
-    { id: 'gcp', label: 'Google Cloud', available: false, configured: false, summary: null },
-    { id: 'digitalocean', label: 'DigitalOcean', available: true, configured: false, summary: null },
-    { id: 'ssh', label: 'Custom (SSH)', available: true, configured: true, summary: 'deploy@srv.example.com:22 · key' },
+    { id: 'aws', label: 'AWS', available: false, configured: false },
+    { id: 'gcp', label: 'Google Cloud', available: false, configured: false },
+    { id: 'digitalocean', label: 'DigitalOcean', available: true, configured: false },
+    { id: 'ssh', label: 'Custom (SSH)', available: true, configured: true },
   ],
   types: [
     { id: 'blue', label: 'Blue', description: 'Production slot' },
@@ -66,7 +66,8 @@ it('renders the four cards with the right chips; aws and gcp are disabled', asyn
   expect(within(screen.getByRole('radio', { name: /DigitalOcean/ })).getByText('Not configured')).toBeTruthy();
   const ssh = screen.getByRole('radio', { name: /Custom \(SSH\)/ });
   expect(within(ssh).getByText('Ready')).toBeTruthy();
-  expect(within(ssh).getByText(/deploy@srv\.example\.com:22/)).toBeTruthy();
+  expect(within(ssh).queryByText(/srv\.example\.com|deploy@|:22|nyc3/)).toBeNull();
+  expect(ssh.textContent).not.toMatch(/srv\.example\.com|deploy@|:22|nyc3|token set/);
   await userEvent.click(aws);
   expect(aws.getAttribute('aria-checked')).toBe('false');
 });
@@ -242,7 +243,7 @@ it('empty hosts list shows the empty state', async () => {
 });
 
 
-const DO_TARGETS = { ...TARGETS, targets: TARGETS.targets.map((t) => t.id === 'digitalocean' ? { ...t, configured: true, summary: 'token set' } : t) };
+const DO_TARGETS = { ...TARGETS, targets: TARGETS.targets.map((t) => t.id === 'digitalocean' ? { ...t, configured: true } : t) };
 const REGIONS = { regions: [{ slug: 'nyc3', name: 'New York 3' }, { slug: 'sfo3', name: 'San Francisco 3' }], default: 'nyc3' };
 const DO_OK = { ok: true, target: 'digitalocean', type: 'dev', facts: {}, checks: [{ label: 'Account', status: 'pass', value: 'ops@example.com · active' }] };
 
