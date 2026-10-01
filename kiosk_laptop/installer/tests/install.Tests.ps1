@@ -18,7 +18,7 @@ BeforeAll {
         'New-ScheduledTaskAction'       = 'param([string]$Execute, [string]$Argument)'
         'New-ScheduledTaskPrincipal'    = 'param([string]$UserId, [string]$LogonType, [string]$RunLevel)'
         'New-ScheduledTaskTrigger'      = 'param([switch]$Daily, $At)'
-        'New-ScheduledTaskSettingsSet'  = 'param([switch]$StartWhenAvailable, $ExecutionTimeLimit)'
+        'New-ScheduledTaskSettingsSet'  = 'param([switch]$StartWhenAvailable, [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, $ExecutionTimeLimit)'
         'Register-ScheduledTask'        = 'param([string]$TaskName, $Action, $Principal, $Trigger, $Settings, [string]$Description, [switch]$Force)'
         'Start-ScheduledTask'           = 'param([string]$TaskName)'
         'Stop-ScheduledTask'            = 'param([string]$TaskName)'
@@ -709,7 +709,7 @@ Describe 'Install-LoginItems' {
     BeforeEach {
         $inst = Join-Path $TestDrive ([guid]::NewGuid().ToString())
         New-Item -ItemType Directory $inst | Out-Null
-        $user = @{ Name = 'PC\tech'; Sid = 'S-1-5-21-1-2-3-1001'; Profile = 'C:\Users\tech' }
+        $script:user = @{ Name = 'PC\tech'; Sid = 'S-1-5-21-1-2-3-1001'; Profile = 'C:\Users\tech' }
         Mock Set-KioskFileAcl {}
         Mock Set-KioskUserWritableFileAcl {}
         Mock New-KioskShortcut {}
@@ -720,14 +720,14 @@ Describe 'Install-LoginItems' {
         Mock Register-ScheduledTask {}
     }
     It 'copies update.ps1 and launch.ps1 into the install folder' {
-        Install-LoginItems -InstallDir $inst -DesktopUser $user
+        Install-LoginItems -InstallDir $inst -DesktopUser $script:user
         [IO.File]::ReadAllText((Join-Path $inst 'update.ps1')) | Should -Be ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../update.ps1')))
         [IO.File]::ReadAllText((Join-Path $inst 'launch.ps1')) | Should -Be ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../launch.ps1')))
         Should -Invoke Set-KioskFileAcl -ParameterFilter { $Path -like '*update.ps1' }
         Should -Invoke Set-KioskFileAcl -ParameterFilter { $Path -like '*launch.ps1' }
     }
     It 'makes update.log and update-state.json (only those) writable by the signed-in user' {
-        Install-LoginItems -InstallDir $inst -DesktopUser $user
+        Install-LoginItems -InstallDir $inst -DesktopUser $script:user
         Test-Path (Join-Path $inst 'update.log') | Should -BeTrue
         Test-Path (Join-Path $inst 'update-state.json') | Should -BeTrue
         Should -Invoke Set-KioskUserWritableFileAcl -Times 2 -Exactly
@@ -737,20 +737,20 @@ Describe 'Install-LoginItems' {
     It 'keeps an existing update-state.json and update.log' {
         [IO.File]::WriteAllText((Join-Path $inst 'update-state.json'), '{"rejected_image": "sha256:bad"}')
         [IO.File]::WriteAllText((Join-Path $inst 'update.log'), 'old lines')
-        Install-LoginItems -InstallDir $inst -DesktopUser $user
+        Install-LoginItems -InstallDir $inst -DesktopUser $script:user
         [IO.File]::ReadAllText((Join-Path $inst 'update-state.json')) | Should -BeLike '*sha256:bad*'
         [IO.File]::ReadAllText((Join-Path $inst 'update.log')) | Should -Be 'old lines'
     }
     It 'registers the nightly task at 03:00 for the signed-in user, interactive, start when available' {
-        Install-LoginItems -InstallDir $inst -DesktopUser $user
+        Install-LoginItems -InstallDir $inst -DesktopUser $script:user
         Should -Invoke New-ScheduledTaskAction -ParameterFilter { $Execute -eq 'powershell.exe' -and $Argument -eq "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$inst\update.ps1`"" }
         Should -Invoke New-ScheduledTaskTrigger -ParameterFilter { $Daily -and "$At" -like '*03:00*' }
         Should -Invoke New-ScheduledTaskPrincipal -ParameterFilter { $UserId -eq 'PC\tech' -and $LogonType -eq 'Interactive' }
-        Should -Invoke New-ScheduledTaskSettingsSet -ParameterFilter { $StartWhenAvailable }
+        Should -Invoke New-ScheduledTaskSettingsSet -ParameterFilter { $StartWhenAvailable -and $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries }
         Should -Invoke Register-ScheduledTask -Times 1 -Exactly -ParameterFilter { $TaskName -eq 'ServerSherpa Kiosk Update' -and $Force }
     }
     It 'creates the three shortcuts' {
-        Install-LoginItems -InstallDir $inst -DesktopUser $user
+        Install-LoginItems -InstallDir $inst -DesktopUser $script:user
         Should -Invoke New-KioskShortcut -Times 3 -Exactly
         Should -Invoke New-KioskShortcut -ParameterFilter { $Path -like '*StartUp\ServerSherpa Kiosk.lnk' -and $Spec.Arguments -like '*launch.ps1*' }
     }
@@ -765,7 +765,7 @@ Describe 'Install-LoginItems' {
     It 'warns but finishes when the task cannot be registered' {
         Mock Register-ScheduledTask { throw 'access denied' }
         Mock Write-Warn {}
-        { Install-LoginItems -InstallDir $inst -DesktopUser $user } | Should -Not -Throw
+        { Install-LoginItems -InstallDir $inst -DesktopUser $script:user } | Should -Not -Throw
         Should -Invoke Write-Warn -ParameterFilter { $Message -like '*nightly update*' }
         Should -Invoke New-KioskShortcut -Times 3 -Exactly
     }
@@ -803,7 +803,8 @@ Describe 'Closing pause' {
     BeforeEach {
         $inst = Join-Path $TestDrive ([guid]::NewGuid().ToString())
         New-Item -ItemType Directory $inst | Out-Null
-        $SelfPath = Join-Path $inst 'install.ps1'
+        # Set-Variable: the installer functions read $SelfPath through dynamic scoping.
+        Set-Variable -Name SelfPath -Value (Join-Path $inst 'install.ps1')
         $env:KIOSK_DIR = $inst
         foreach ($f in @('Assert-64BitProcess', 'Assert-Admin', 'Assert-WindowsSupported', 'Set-KioskDirAcl', 'Test-ApiReachable',
                 'Add-DockerToPath', 'Install-DockerDesktop', 'Confirm-DockerUsersMember', 'Enable-DockerAutostart', 'Wait-DockerEngine',
@@ -848,7 +849,7 @@ Describe 'Closing pause' {
 
 Describe 'docker-users add failure for an administrator' {
     BeforeEach {
-        $user = @{ Name = 'PC\admin'; Sid = 'S-1-5-21-1-2-3-500'; Profile = 'C:\Users\admin' }
+        $script:user = @{ Name = 'PC\admin'; Sid = 'S-1-5-21-1-2-3-500'; Profile = 'C:\Users\admin' }
         Mock Test-DockerUsersMember { $false }
         Mock Add-DockerUsersMember { throw "Couldn't add the signed-in user to the docker-users group (Access denied)." }
         Mock Stop-ForRestart {}
@@ -856,19 +857,19 @@ Describe 'docker-users add failure for an administrator' {
     }
     It 'an administrator: warns and continues (admins can run Docker Desktop anyway)' {
         Mock Test-UserIsAdmin { $true }
-        { Confirm-DockerUsersMember -InstallDir 'C:\K' -DesktopUser $user } | Should -Not -Throw
+        { Confirm-DockerUsersMember -InstallDir 'C:\K' -DesktopUser $script:user } | Should -Not -Throw
         Should -Invoke Write-Warn -Times 1 -ParameterFilter { $Message -like '*docker-users*' }
         Should -Invoke Stop-ForRestart -Times 0
     }
     It 'a standard user: still stops with the error' {
         Mock Test-UserIsAdmin { $false }
-        { Confirm-DockerUsersMember -InstallDir 'C:\K' -DesktopUser $user } | Should -Throw '*docker-users*'
+        { Confirm-DockerUsersMember -InstallDir 'C:\K' -DesktopUser $script:user } | Should -Throw '*docker-users*'
     }
 }
 
 Describe 'docker-users before the Docker Desktop restart (3010)' {
     BeforeEach {
-        $user = @{ Name = 'PC\tech'; Sid = 'S-1-5-21-1-2-3-1001'; Profile = 'C:\Users\tech' }
+        $script:user = @{ Name = 'PC\tech'; Sid = 'S-1-5-21-1-2-3-1001'; Profile = 'C:\Users\tech' }
         Mock Test-DockerInstalled { $false }
         Mock Test-DockerEngine { $false }
         Mock Assert-Virtualization {}
@@ -883,20 +884,20 @@ Describe 'docker-users before the Docker Desktop restart (3010)' {
     }
     It 'adds the user, then the one restart covers the membership too' {
         Mock Test-DockerUsersMember { $false }
-        { Install-DockerDesktop -InstallDir 'C:\K' -DesktopUser $user } | Should -Throw '*KIOSK_RESTART_PENDING*'
+        { Install-DockerDesktop -InstallDir 'C:\K' -DesktopUser $script:user } | Should -Throw '*KIOSK_RESTART_PENDING*'
         ($script:order -join ',') | Should -Be 'add,stop:restart'
         Should -Invoke Add-DockerUsersMember -ParameterFilter { $Sid -eq 'S-1-5-21-1-2-3-1001' }
     }
     It 'skips the add for a member' {
         Mock Test-DockerUsersMember { $true }
-        { Install-DockerDesktop -InstallDir 'C:\K' -DesktopUser $user } | Should -Throw '*KIOSK_RESTART_PENDING*'
+        { Install-DockerDesktop -InstallDir 'C:\K' -DesktopUser $script:user } | Should -Throw '*KIOSK_RESTART_PENDING*'
         ($script:order -join ',') | Should -Be 'stop:restart'
     }
     It 'a failed add still restarts (the check after the restart deals with it)' {
         Mock Test-DockerUsersMember { $false }
         Mock Add-DockerUsersMember { throw 'Access denied' }
         Mock Write-Warn {}
-        { Install-DockerDesktop -InstallDir 'C:\K' -DesktopUser $user } | Should -Throw '*KIOSK_RESTART_PENDING*'
+        { Install-DockerDesktop -InstallDir 'C:\K' -DesktopUser $script:user } | Should -Throw '*KIOSK_RESTART_PENDING*'
         ($script:order -join ',') | Should -Be 'stop:restart'
     }
 }
@@ -922,5 +923,41 @@ Describe 'Install folder characters' {
         } finally { $env:KIOSK_DIR = $null }
         Should -Invoke Set-KioskDirAcl -Times 0
         Should -Invoke Install-DockerDesktop -Times 0
+    }
+}
+
+# -- Task 6 fix round 2 -------------------------------------------------------------
+
+Describe 'Per-user ACE on the update files' {
+    It 'Admins and SYSTEM full control, Users read, the user Write + ReadAndExecute (no delete)' {
+        $rules = @(Get-KioskUserWritableAclRules -UserSid 'S-1-5-21-1-2-3-1001')
+        ($rules | ForEach-Object { "$($_[0])=$($_[1])" }) -join ';' |
+            Should -Be 'S-1-5-32-544=FullControl;S-1-5-18=FullControl;S-1-5-32-545=ReadAndExecute;S-1-5-21-1-2-3-1001=Write, ReadAndExecute'
+        ($rules | ForEach-Object { $_[1] }) | Should -Not -Contain 'Modify'
+    }
+}
+
+Describe 'Shortcut removal failures' {
+    It 'warns instead of swallowing the error' {
+        $p = Join-Path $TestDrive 'stuck.lnk'
+        'x' | Set-Content $p
+        Mock Get-ShortcutPaths { @($p) }
+        Mock Get-ScheduledTask { $null }
+        Mock Remove-Item { throw 'in use' } -ParameterFilter { $LiteralPath -eq $p }
+        Mock Write-Warn {}
+        { Remove-LoginItems -InstallDir 'C:\K' } | Should -Not -Throw
+        Should -Invoke Write-Warn -Times 1 -ParameterFilter { $Message -like "*stuck.lnk*in use*" }
+    }
+}
+
+Describe 'Uninstall message' {
+    It 'says install.log and update.log were kept' {
+        $inst = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $data = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory $inst, $data | Out-Null
+        Mock Remove-LoginItems {}
+        Mock Write-Info {}
+        Uninstall-Kiosk -InstallDir $inst -DataDir $data
+        Should -Invoke Write-Info -Times 1 -ParameterFilter { $Message -like '*install.log and update.log were kept*' }
     }
 }

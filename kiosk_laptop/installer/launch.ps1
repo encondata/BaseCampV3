@@ -20,7 +20,9 @@ param([switch]$LibraryOnly)
 
 $LaunchScriptDir = $PSScriptRoot
 $KioskUrl = 'http://localhost:8090'
-$KioskIdentityUrl = "$KioskUrl/edge/identity"
+# Probed on 127.0.0.1: Docker publishes the port there only, and localhost
+# may try ::1 first. The browser still opens localhost.
+$KioskIdentityUrl = 'http://127.0.0.1:8090/edge/identity'
 
 function Get-LaunchDir {
     if ($env:KIOSK_DIR) { return $env:KIOSK_DIR }

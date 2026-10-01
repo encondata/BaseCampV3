@@ -214,6 +214,8 @@ Describe 'update.ps1' {
         $st.phase | Should -Be 'updating'
         $st.previous_image | Should -Be 'sha256:old'
         Get-UpdateLogText | Should -BeLike '*failed*'
+        # docker's own reason is in the log, not just "failed"
+        Get-UpdateLogText | Should -BeLike "*docker tag sha256:old $script:Stable failed (exit 1)*"
     }
     It 'a failed recovery exits 2 and keeps phase=updating' {
         Write-StateFixture @{ previous_image = 'sha256:old'; phase = 'updating' }
@@ -320,9 +322,10 @@ Describe 'launch.ps1' {
         try { Invoke-KioskLaunch } finally { $env:KIOSK_LAUNCH_TIMEOUT_S = $null }
         Should -Invoke Start-Process -Times 1 -Exactly
     }
-    It 'waits 300 seconds by default and polls /edge/identity on localhost:8090' {
+    It 'waits 300 seconds by default and polls /edge/identity on 127.0.0.1:8090 (the app URL stays localhost)' {
         Get-LaunchTimeout | Should -Be 300
-        $KioskIdentityUrl | Should -Be 'http://localhost:8090/edge/identity'
+        $KioskIdentityUrl | Should -Be 'http://127.0.0.1:8090/edge/identity'
+        $KioskUrl | Should -Be 'http://localhost:8090'
     }
     It 'opens the default browser when none is configured' {
         [IO.File]::WriteAllText((Join-Path $script:dir 'config.env'), "KIOSK_BROWSER=`n")

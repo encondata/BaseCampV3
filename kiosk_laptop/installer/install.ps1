@@ -1064,13 +1064,20 @@ function New-KioskShortcut {
     $lnk.Save()
 }
 
-# Set-KioskUserWritableFileAcl PATH USERSID: like Set-KioskFileAcl, plus Modify
-# for that one user (the update task runs as them and rewrites this file in place).
+# Get-KioskUserWritableAclRules USERSID: like Set-KioskFileAcl's rules, plus
+# Write + ReadAndExecute for that one user. The update task runs as them and
+# rewrites the file in place, so it never needs delete rights (no Modify).
+function Get-KioskUserWritableAclRules {
+    param([Parameter(Mandatory = $true)][string]$UserSid)
+    @(@('S-1-5-32-544', 'FullControl'), @('S-1-5-18', 'FullControl'), @('S-1-5-32-545', 'ReadAndExecute'), @($UserSid, 'Write, ReadAndExecute'))
+}
+
+# Set-KioskUserWritableFileAcl PATH USERSID: those rules, inheritance off.
 function Set-KioskUserWritableFileAcl {
     param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$UserSid)
     $acl = New-Object Security.AccessControl.FileSecurity
     $acl.SetAccessRuleProtection($true, $false)
-    foreach ($r in @(@('S-1-5-32-544', 'FullControl'), @('S-1-5-18', 'FullControl'), @('S-1-5-32-545', 'ReadAndExecute'), @($UserSid, 'Modify'))) {
+    foreach ($r in (Get-KioskUserWritableAclRules -UserSid $UserSid)) {
         $sid = New-Object Security.Principal.SecurityIdentifier $r[0]
         $acl.AddAccessRule((New-Object Security.AccessControl.FileSystemAccessRule $sid, $r[1], 'Allow'))
     }
@@ -1083,7 +1090,7 @@ function Register-UpdateTask {
     $action = New-ScheduledTaskAction -Execute $Spec.Execute -Argument $Spec.Argument
     $trigger = New-ScheduledTaskTrigger -Daily -At ([datetime]::Today.Add([TimeSpan]::Parse($Spec.Time)))
     $principal = New-ScheduledTaskPrincipal -UserId $Spec.User -LogonType $Spec.LogonType
-    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes $Spec.ExecutionTimeLimitMinutes)
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes $Spec.ExecutionTimeLimitMinutes)
     Register-ScheduledTask -TaskName $Spec.Name -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
         -Description 'ServerSherpa kiosk nightly update (update.ps1; log in update.log).' -Force | Out-Null
 }
@@ -1134,7 +1141,10 @@ function Remove-LoginItems {
         catch { Write-Warn "Couldn't remove the scheduled task '$UpdateTaskName'; delete it in Task Scheduler." }
     }
     foreach ($lnk in Get-ShortcutPaths) {
-        if (Test-Path -LiteralPath $lnk) { Remove-Item -LiteralPath $lnk -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $lnk) {
+            try { Remove-Item -LiteralPath $lnk -Force -ErrorAction Stop }
+            catch { Write-Warn "Couldn't remove $lnk ($($_.Exception.Message)); delete it by hand." }
+        }
     }
     Write-Verbose "Login items removed for $InstallDir ($($DesktopUser.Name))."
 }
@@ -1296,7 +1306,7 @@ function Uninstall-Kiosk {
         $p = Join-KioskPath $InstallDir $f
         if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
     }
-    Write-Info "Removed the kiosk from $InstallDir (install.log was kept). Docker stays installed."
+    Write-Info "Removed the kiosk from $InstallDir (install.log and update.log were kept). Docker stays installed."
     if ($PurgeData) {
         if (Test-Path -LiteralPath $DataDir -PathType Container) {
             Remove-Item -LiteralPath $DataDir -Recurse -Force

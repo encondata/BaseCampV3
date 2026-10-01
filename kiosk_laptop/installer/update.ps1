@@ -155,10 +155,12 @@ function Invoke-Compose {
     Invoke-Docker -Arguments (@('compose', '-f', (Join-KioskPath $Upd.Dir 'docker-compose.yml')) + $Arguments) -Log
 }
 
-# Test-DockerCall ARGS: $true when the docker call worked (output dropped).
+# Test-DockerCall ARGS: $true when the docker call worked (output dropped);
+# a failure logs docker's reason, as update.sh's stderr does.
 function Test-DockerCall {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
-    try { Invoke-Docker -Arguments $Arguments | Out-Null; return $true } catch { return $false }
+    try { Invoke-Docker -Arguments $Arguments | Out-Null; return $true }
+    catch { Write-UpdateLog $_.Exception.Message; return $false }
 }
 
 # Get-DockerValue ARGS: trimmed stdout, '' when docker fails.
