@@ -2767,6 +2767,8 @@ class DeviceItem(BaseModel):
     session_person_name: str | None
     session_login_method: str | None
     session_started_at: datetime | None
+    setup_clear_requested_at: datetime | None = None
+    setup_clear_requested_by_name: str | None = None
 
 
 class DevicePatch(BaseModel):
