@@ -26,4 +26,7 @@ COPY kiosk_laptop/edge/src ./edge/src
 RUN pip install --no-cache-dir ./edge
 COPY --from=web /app/kiosk/dist /app/web
 EXPOSE 8090
+# python's urllib, so the slim image needs no curl
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --start-interval=2s --retries=3 \
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/edge/identity', timeout=4)"]
 CMD ["uvicorn", "edge.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8090"]
