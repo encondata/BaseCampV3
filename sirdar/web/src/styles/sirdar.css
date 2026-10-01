@@ -27,3 +27,4 @@
 .sirdar-section { margin: 24px 0; }
 .sirdar-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
+.sirdar-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
