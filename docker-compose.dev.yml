@@ -70,6 +70,25 @@ services:
       MP_SMTP_AUTH_ACCEPT_ANY: "1"
       MP_SMTP_AUTH_ALLOW_INSECURE: "1"
 
+  # Sirdar's own database (sirdar/ — the environment builder). Separate
+  # from the portal's Postgres on purpose: Sirdar keeps working when the
+  # portal database is down or not built yet.
+  sirdar-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: sirdar
+      POSTGRES_PASSWORD: sirdar
+      POSTGRES_DB: sirdar
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - sirdardata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sirdar -d sirdar"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   loki:
     image: grafana/loki:3.0.0
     ports:
@@ -95,3 +114,4 @@ volumes:
   miniodata:
   lokidata:
   grafanadata:
+  sirdardata:
