@@ -6,7 +6,8 @@ in one transaction, so a dropped connection never leaves mixed data.
 
 The move password is sent back as `have=<version>`; when the cloud says
 it is `unchanged`, the stored row stays. Any other refusal also keeps the
-stored row and records `move_passwords_http_<status>`."""
+stored row and records `move_passwords_http_<status>`, except a 403
+`move_locked`/`not_signed_in_here`, which is skipped without an error."""
 
 import json
 from collections.abc import Callable
@@ -20,6 +21,20 @@ def sync_paths(initiative_id: str) -> list[str]:
     q = f"initiative_id={quote(initiative_id, safe='')}"
     return [f"/kiosk/sync/assets?{q}", "/kiosk/sync/people", f"/kiosk/sync/containers?{q}",
             f"/kiosk/sync/trucks?{q}", "/kiosk/labels/vocab", "/kiosk/setup-options"]
+
+
+SKIP_CODES = {"move_locked", "not_signed_in_here"}
+
+
+def _skipped(resp) -> bool:
+    """A 403 that only means "not this actor" (a move session, or nobody
+    with a cloud session signed in here): keep the rows, record no error."""
+    if resp.status_code != 403:
+        return False
+    try:
+        return resp.json()["detail"]["code"] in SKIP_CODES
+    except (ValueError, KeyError, TypeError):
+        return False
 
 
 class Syncer:
@@ -73,7 +88,7 @@ class Syncer:
                             for m in data.get("moves", [])]
             except (ValueError, KeyError, TypeError, AttributeError):
                 error = "bad_move_passwords"
-        elif moves is not None:
+        elif moves is not None and not _skipped(moves):
             error = f"move_passwords_http_{moves.status_code}"
         with self.store.tx() as c:
             for path, body in pulled:
@@ -94,13 +109,16 @@ class Syncer:
         a usable cloud session (the cloud hands the move password only to the
         person signed in on that kiosk), else the person who ran Kiosk Setup,
         else the latest cloud session."""
-        row = self.store.one(
-            "SELECT e.person_id FROM edge_sessions e JOIN cloud_sessions c "
-            "ON c.person_id = e.person_id AND c.ending = 0 "
-            "WHERE e.revoked_at IS NULL AND e.expires_at > ? "
-            "ORDER BY e.created_at DESC, e.rowid DESC LIMIT 1", (now_iso(),))
-        if row is not None:
-            return row["person_id"]
+        live = ("SELECT e.person_id FROM edge_sessions e JOIN cloud_sessions c "
+                "ON c.person_id = e.person_id AND c.ending = 0 "
+                "WHERE e.revoked_at IS NULL AND e.expires_at > ? {} "
+                "ORDER BY e.created_at DESC, e.rowid DESC LIMIT 1")
+        # a person beats a move-password session: the cloud refuses a move
+        # session the move passwords (move_locked)
+        for extra in ("AND json_extract(e.session_json, '$.kiosk_move') IS NULL", ""):
+            row = self.store.one(live.format(extra), (now_iso(),))
+            if row is not None:
+                return row["person_id"]
         if configured and self.upstream.has_session(configured):
             return configured
         return self.upstream.latest_session_person()

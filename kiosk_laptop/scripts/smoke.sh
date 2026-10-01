@@ -31,7 +31,8 @@ CODE=$(curl -s -o /dev/null -w '%{http_code}' --path-as-is http://127.0.0.1:1809
 CODE=$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example.com' http://127.0.0.1:18090/edge/identity)
 [ "$CODE" = 400 ] || { echo "foreign Host answered $CODE"; exit 1; }
 HEALTH=
-for _ in $(seq 1 30); do
+# the first health check runs one --interval (30 s) after start
+for _ in $(seq 1 60); do
   HEALTH=$(docker inspect -f '{{.State.Health.Status}}' "$NAME")
   [ "$HEALTH" = healthy ] && break
   sleep 1

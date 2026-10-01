@@ -17,6 +17,8 @@ from edge.app import create_app
     "/kiosk/a%2fb",
     "/kiosk/a%2Fb",
     "/kiosk/a%5cb",
+    "/kiosk/%252e%252e/admin/users",
+    "/kiosk/a%2525b",
     "/auth/%2e%2e/admin/users",
     "/system/%2e%2e%2fadmin",
 ])

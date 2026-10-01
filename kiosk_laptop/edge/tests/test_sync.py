@@ -150,3 +150,46 @@ async def test_sync_skips_signed_in_person_whose_cloud_session_is_ending(app, cl
     route = _mock_sync(cloud)
     await app.state.syncer.run()
     assert route.calls[0].request.headers["authorization"] == "Bearer tok-a"
+
+
+async def test_sync_prefers_a_person_session_over_a_newer_move_session(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="tok-p", expires_in=900)
+    make_session(app, person_id="p-1")
+    up.save_session("kiosk-m1", refresh_token="rm", access_token="tok-m", expires_in=900)
+    make_session(app, person_id="kiosk-m1", name="Kiosk Move",
+                 kiosk_move={"initiative_id": "m-1", "name": "Move"})       # newest
+    app.state.syncer.set_target("m-1", "p-1")
+    route = _mock_sync(cloud)
+    await app.state.syncer.run()
+    assert route.calls[0].request.headers["authorization"] == "Bearer tok-p"
+
+
+async def test_only_a_move_session_skips_move_passwords_without_error(app, cloud):
+    up = app.state.upstream
+    up.save_session("kiosk-m1", refresh_token="rm", access_token="tok-m", expires_in=900)
+    make_session(app, person_id="kiosk-m1", name="Kiosk Move",
+                 kiosk_move={"initiative_id": "m-1", "name": "Move"})
+    app.state.syncer.set_target("m-1", "kiosk-m1")
+    for path in sync_paths("m-1"):
+        cloud.get(path).respond(200, json={"path": path})
+    route = cloud.get(url__regex=r"/kiosk/edge/move-passwords.*").respond(
+        403, json={"detail": {"code": "move_locked"}})
+    app.state.store.run("INSERT INTO move_passwords VALUES ('m-1', 'Move', 'v', '{}', 'now', 'v1')")
+    meta = await app.state.syncer.run()
+    assert route.calls[0].request.headers["authorization"] == "Bearer tok-m"
+    assert meta["last_error"] is None and meta["synced_at"]
+    assert app.state.store.one("SELECT 1 FROM move_passwords WHERE initiative_id='m-1'")
+
+
+async def test_not_signed_in_here_is_skipped_without_error(app, cloud):
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    app.state.syncer.set_target("m-1", "p-1")
+    for path in sync_paths("m-1"):
+        cloud.get(path).respond(200, json={"path": path})
+    cloud.get(url__regex=r"/kiosk/edge/move-passwords.*").respond(
+        403, json={"detail": {"code": "not_signed_in_here"}})
+    app.state.store.run("INSERT INTO move_passwords VALUES ('m-1', 'Move', 'v', '{}', 'now', 'v1')")
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] is None
+    assert app.state.store.one("SELECT 1 FROM move_passwords WHERE initiative_id='m-1'")

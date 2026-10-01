@@ -6,7 +6,7 @@ client and the store.
 
 Routing: the edge's own routers and /config.js come first; the catch-all
 proxies /auth, /kiosk and /system to the cloud (never /edge, and never a
-path with a `.`/`..` segment or an encoded slash) and serves the kiosk's
+path with a `.`/`..` segment, an encoded slash or an encoded `%`) and serves the kiosk's
 web files for everything else. Only local Host names are answered."""
 
 import asyncio
@@ -41,7 +41,9 @@ def escapes(request: Request) -> bool:
     would resolve it to some other path than the one checked here."""
     raw = request.scope.get("raw_path") or request.url.path.encode()
     raw_path = raw.decode("latin-1").split("?", 1)[0]
-    if "%2f" in raw_path.lower() or "%5c" in raw_path.lower() or "\\" in raw_path:
+    lowered = raw_path.lower()
+    # %25 = an encoded "%": a double-encoded escape decoded again downstream
+    if "%2f" in lowered or "%5c" in lowered or "%25" in lowered or "\\" in raw_path:
         return True
     return any(unquote(seg) in (".", "..") for seg in raw_path.split("/"))
 
