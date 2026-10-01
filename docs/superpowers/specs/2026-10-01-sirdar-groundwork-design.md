@@ -223,6 +223,11 @@ The model and resolver match the portal:
   action plus `access:view` and `access:change` (422
   `developer_role_core`). Every other role keeps the own-role and rank
   rules; `grant_exceeds_own` applies everywhere.
+- Session details (IPs, browsers, times) are visible only for people you
+  can manage (yourself, or strictly below your rank; rank 100 also
+  peers). For anyone else `GET /users/{id}` returns `sessions: []`
+  without querying them, and the page says "Session details are hidden
+  for people who outrank you."
 - API routes declare `require(resource, action)`. The SPA gates nav
   items, pages and buttons using the map from `/me`.
 

@@ -60,3 +60,13 @@ it('keeps the page and shows an inline error when revoke fails', async () => {
   await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
   expect(screen.getByText('Bob Builder')).toBeTruthy();
 });
+
+it('hides session details for people who outrank the viewer', async () => {
+  vi.mocked(api.getUser).mockImplementation(
+    async (id: string) => ({ ...detail(id), can_manage: false, sessions: [] }) as never);
+  renderAt('other');
+  await waitFor(() => expect(screen.getByText('Bob Builder')).toBeTruthy());
+  expect(screen.getByText('Session details are hidden for people who outrank you.')).toBeTruthy();
+  expect(screen.queryByRole('table', { name: /active sessions/i })).toBeNull();
+  expect(screen.queryByText('No active sessions.')).toBeNull();
+});

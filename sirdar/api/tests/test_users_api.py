@@ -50,6 +50,17 @@ async def test_revoke_sessions_respects_rank(client, db):
     assert ok.status_code == 200 and ok.json()["revoked"] == 1
 
 
+async def test_session_details_hidden_for_people_you_cannot_manage(client, db):
+    dev = await make_user(db, email="dev@test.example.com", roles=("developer",))
+    await client.post("/api/auth/login", json={"email": dev.email, "password": PASSWORD})
+    h_admin = await auth_headers(client, db, email="a@test.example.com", roles=("super_admin",))
+    hidden = (await client.get(f"/api/users/{dev.person_id}", headers=h_admin)).json()
+    assert hidden["can_manage"] is False and hidden["sessions"] == []
+    h_dev = await auth_headers(client, db, email="root@test.example.com", roles=("developer",))
+    shown = (await client.get(f"/api/users/{dev.person_id}", headers=h_dev)).json()
+    assert shown["can_manage"] is True and len(shown["sessions"]) == 1
+
+
 async def test_unknown_person(client, db):
     h = await auth_headers(client, db)
     resp = await client.get("/api/users/00000000-0000-0000-0000-000000000000", headers=h)

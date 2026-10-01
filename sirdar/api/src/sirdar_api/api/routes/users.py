@@ -181,11 +181,14 @@ async def get_user(person_id: uuid.UUID, db: DbSession,
                    PermissionOverride.allow)
             .where(PermissionOverride.person_id == person_id))).all():
         overrides.setdefault(res, {})[action] = allow
-    now = datetime.now(UTC)
-    sessions = await db.scalars(select(AuthSession).where(
-        AuthSession.person_id == person_id, AuthSession.revoked_at.is_(None),
-        AuthSession.rotated_at.is_(None), AuthSession.expires_at > now)
-        .order_by(AuthSession.created_at.desc()))
+    can_manage = _can_manage(actor.access, actor.user.person_id, person_id, access.max_rank)
+    sessions = []   # session details (IPs, browsers) stay hidden for people who outrank you
+    if can_manage:
+        now = datetime.now(UTC)
+        sessions = await db.scalars(select(AuthSession).where(
+            AuthSession.person_id == person_id, AuthSession.revoked_at.is_(None),
+            AuthSession.rotated_at.is_(None), AuthSession.expires_at > now)
+            .order_by(AuthSession.created_at.desc()))
     return UserDetailOut(
         user=_row(user, roles.get(person_id, []), ranks),
         first_name=user.first_name, last_name=user.last_name,
@@ -198,7 +201,7 @@ async def get_user(person_id: uuid.UUID, db: DbSession,
                                 expires_at=s.expires_at,
                                 ip_address=str(s.ip_address) if s.ip_address else None,
                                 user_agent=s.user_agent) for s in sessions],
-        can_manage=_can_manage(actor.access, actor.user.person_id, person_id, access.max_rank))
+        can_manage=can_manage)
 
 
 @router.post("/{person_id}/sessions/revoke")
