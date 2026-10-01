@@ -18,9 +18,12 @@
 #   1. install: exit 0, kiosk-laptop-* serial, laptop config.js, timer enabled
 #   2. re-install: same serial
 #   3. update with an unchanged image: exit 0, container not recreated
-#   4. update to a broken image: exit 1, rolled back to the old image and
+#   3b. update to a newer good image: exit 0, running it, :previous = the old
+#      one, same serial, phase done
+#   4. update to a broken image: exit 1, rolled back to the (3b) image and
 #      healthy; the next run skips the rejected image and exits 0
-#   5. uninstall keeps the data folder; uninstall --purge-data deletes it
+#   5. uninstall keeps the data folder; uninstall --purge-data (DELETE typed
+#      on the KIOSK_TTY file) deletes it
 set -euo pipefail
 
 SRC_IMAGE="${1:-}"
@@ -70,8 +73,11 @@ fail() {
   exit 1
 }
 
+TTY_FILE=''
+
 cleanup() {
   docker rm -f "$REG_NAME" >/dev/null 2>&1 || true
+  [ -z "$TTY_FILE" ] || rm -f "$TTY_FILE"
 }
 trap cleanup EXIT
 
@@ -160,6 +166,26 @@ rc=0; run_update || rc=$?
 update_log | grep -q 'Already up to date' || fail "update.log doesn't say 'Already up to date'"
 pass "exit 0, container not recreated"
 
+# ── 3b. Update to a newer good image ──────────────────────────────────
+step "3b. Update to a newer image"
+OLD_IMAGE="$GOOD_IMAGE"
+printf 'FROM %s\nLABEL e2e.rev=2\n' "$IMAGE" \
+  | docker buildx build --builder "$BUILDER" --load -q -t "$IMAGE" - >/dev/null \
+  || fail "couldn't build the newer image"
+NEW_IMAGE=$(docker image inspect -f '{{.Id}}' "$IMAGE")
+[ "$NEW_IMAGE" != "$OLD_IMAGE" ] || fail "the newer image has the old image's ID"
+docker push -q "$IMAGE" >/dev/null || fail "couldn't push the newer image"
+rc=0; run_update HEALTH_TIMEOUT_S=150 HEALTH_POLL_S=2 || rc=$?
+[ "$rc" = 0 ] || fail "update.sh exited $rc on a newer good image (expected 0)"
+[ "$(container_field '{{.Image}}')" = "$NEW_IMAGE" ] || fail "container isn't running the newer image $NEW_IMAGE"
+[ "$(docker image inspect -f '{{.Id}}' serversherpa-kiosk-laptop:previous 2>/dev/null || true)" = "$OLD_IMAGE" ] \
+  || fail "serversherpa-kiosk-laptop:previous isn't the old image $OLD_IMAGE"
+[ "$(serial || true)" = "$SERIAL" ] || fail "serial changed across the update"
+[ "$(state_value phase)" = "done" ] || fail "update-state.json phase isn't done after the update"
+update_log | grep -qF "updated to $NEW_IMAGE" || fail "update.log doesn't say 'updated to $NEW_IMAGE'"
+GOOD_IMAGE="$NEW_IMAGE"
+pass "exit 0, running the newer image, :previous kept, same serial"
+
 # ── 4. Rollback from a broken image ───────────────────────────────────
 step "4. Update to a broken image, then roll back"
 printf 'FROM %s\nHEALTHCHECK --interval=5s --timeout=3s --retries=1 CMD exit 1\n' "$IMAGE" \
@@ -203,7 +229,10 @@ sudo test -f "$DATA_DIR/identity.json" || fail "$DATA_DIR/identity.json is gone 
 pass "kiosk removed, identity.json kept, timer gone"
 
 step "5b. Uninstall --purge-data"
-rc=0; sudo env KIOSK_TEMPLATE_DIR="$INSTALLER_DIR" KIOSK_NONINTERACTIVE=1 KIOSK_CONFIRM_PURGE=DELETE \
+# The confirmation is typed on the "terminal": KIOSK_TTY is a file holding DELETE.
+TTY_FILE=$(mktemp "${TMPDIR:-/tmp}/kiosk-e2e-tty.XXXXXX")
+printf 'DELETE\n' >"$TTY_FILE"
+rc=0; sudo env KIOSK_TEMPLATE_DIR="$INSTALLER_DIR" KIOSK_NONINTERACTIVE=0 KIOSK_TTY="$TTY_FILE" \
   bash "$INSTALLER_DIR/install.sh" --uninstall --purge-data || rc=$?
 [ "$rc" = 0 ] || fail "install.sh --uninstall --purge-data exited $rc"
 ! sudo test -e "$DATA_DIR" || fail "$DATA_DIR still exists after --purge-data"
