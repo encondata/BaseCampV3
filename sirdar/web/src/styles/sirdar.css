@@ -1,26 +1,27 @@
 /* Sirdar's own accents on top of the portal stylesheets. Only Sirdar-
    specific classes live here; everything else is the portal's. */
+:root { --sirdar-accent: #0f766e; }
 .sirdar-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   padding: 2px 8px;
   border-radius: 999px;
-  background: color-mix(in srgb, #0f766e 14%, transparent);
-  color: #0f766e;
+  background: color-mix(in srgb, var(--sirdar-accent) 14%, transparent);
+  color: var(--sirdar-accent);
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 .sirdar-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
-.sirdar-card { padding: 16px; border: 1px solid var(--line, #e5e7eb); border-radius: 12px; background: var(--surface, #fff); }
+.sirdar-card { padding: 16px; border: 1px solid var(--paper-line, #e5e7eb); border-radius: 12px; background: var(--surface, #fff); }
 .sirdar-card h3 { margin: 0 0 6px; }
 .sirdar-kv { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; }
 
 .sirdar-import-card { width: min(920px, calc(100vw - 48px)); }
 .sirdar-stats { display: flex; gap: 12px; margin: 0 0 16px; flex-wrap: wrap; }
-.sirdar-stat { display: flex; flex-direction: column; padding: 8px 14px; border: 1px solid var(--line, #e5e7eb); border-radius: 10px; min-width: 96px; }
+.sirdar-stat { display: flex; flex-direction: column; padding: 8px 14px; border: 1px solid var(--paper-line, #e5e7eb); border-radius: 10px; min-width: 96px; }
 .sirdar-stat b { font-size: 20px; }
 .sirdar-stat span { font-size: 12px; opacity: 0.7; }
 
@@ -31,9 +32,9 @@
 
 .sirdar-target { text-align: left; display: flex; flex-direction: column; gap: 6px; cursor: pointer; font: inherit; color: inherit; }
 .sirdar-target[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
-.sirdar-target[aria-checked="true"] { border-color: #0f766e; box-shadow: 0 0 0 2px color-mix(in srgb, #0f766e 25%, transparent); }
+.sirdar-target[aria-checked="true"] { border-color: var(--sirdar-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--sirdar-accent) 25%, transparent); }
 .sirdar-target-top { display: flex; align-items: center; justify-content: space-between; }
-.sirdar-target-icon { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 9px; background: color-mix(in srgb, #0f766e 14%, transparent); color: #0f766e; font-size: 12px; font-weight: 700; }
+.sirdar-target-icon { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 9px; background: color-mix(in srgb, var(--sirdar-accent) 14%, transparent); color: var(--sirdar-accent); font-size: 12px; font-weight: 700; }
 .sirdar-envnote code { margin: 0 2px; }
 .sirdar-types button { align-items: flex-start; }
 .sirdar-type-label { display: flex; flex-direction: column; gap: 2px; text-align: left; }

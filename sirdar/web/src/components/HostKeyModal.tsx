@@ -1,17 +1,27 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 export default function HostKeyModal({ host, port, keyType, fingerprint, canTrust, busy, error, onTrust, onCancel }: {
   host: string; port: number; keyType: string; fingerprint: string;
   canTrust: boolean; busy: boolean; error: string;
   onTrust: () => void; onCancel: () => void;
 }) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  const onCancelRef = useRef(onCancel);
+  onCancelRef.current = onCancel;
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel(); };
+    const opener = document.activeElement as HTMLElement | null;
+    cancelRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !busyRef.current) onCancelRef.current(); };
     document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onCancel]);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      if (opener && opener.isConnected) opener.focus();
+    };
+  }, []);
   return (
-    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
+    <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onCancel(); }}>
       <div className="modal-card reports-modal-card rgm-card sirdar-hostkey-card" role="dialog" aria-modal="true"
            aria-labelledby="sirdar-hostkey-title">
         <div className="modal-head">
@@ -41,7 +51,7 @@ export default function HostKeyModal({ host, port, keyType, fingerprint, canTrus
           {error && <p className="form-error" role="alert">{error}</p>}
         </div>
         <div className="modal-foot">
-          <button type="button" className="btn-ghost" onClick={onCancel}>Cancel</button>
+          <button type="button" ref={cancelRef} className="btn-ghost" onClick={onCancel}>Cancel</button>
           <button type="button" className="btn-solid" disabled={!canTrust || busy} onClick={onTrust}>
             Trust and connect
           </button>

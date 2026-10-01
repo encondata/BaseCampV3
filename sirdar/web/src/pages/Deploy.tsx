@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type KeyboardEvent } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
 import DataTable from '@portal/components/DataTable';
@@ -9,7 +9,8 @@ import {
   trustKnownHost, type ConnectResult, type DeployCheck, type DeployTarget, type DeployType, type KnownHost,
 } from '../lib/sirdarApi';
 
-/** .env keys (names only) each target needs; the API never reports which are missing. */
+/** .env keys (names only) each target needs; the API never reports which are missing.
+ *  Keep in sync with sirdar/api/src/sirdar_api/config.py and the Deploy spec. */
 const ENV_KEYS: Record<string, string[]> = {
   digitalocean: ['SIRDAR_DEPLOY_DO_TOKEN'],
   ssh: ['SIRDAR_DEPLOY_SSH_HOST', 'SIRDAR_DEPLOY_SSH_USER',
@@ -55,13 +56,16 @@ export default function Deploy() {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<(ConnectResult & { at: string }) | null>(null);
   const [error, setError] = useState('');
+  const [hostsError, setHostsError] = useState('');
+  const inFlight = useRef(false);
   const [unknown, setUnknown] = useState<KeyInfo | null>(null);
   const [mismatch, setMismatch] = useState<KeyInfo | null>(null);
   const [trusting, setTrusting] = useState(false);
   const [trustError, setTrustError] = useState('');
 
   const loadHosts = useCallback(() =>
-    listKnownHosts().then(setHosts).catch((e) => setError(errorText(e, "Couldn't load trusted hosts."))), []);
+    listKnownHosts().then((h) => { setHosts(h); setHostsError(''); })
+      .catch((e) => setHostsError(errorText(e, "Couldn't load trusted hosts."))), []);
 
   useEffect(() => {
     getDeployTargets().then((r) => { setTargets(r.targets); setTypes(r.types); })
@@ -72,7 +76,15 @@ export default function Deploy() {
   const selected = targets.find((t) => t.id === target);
   const canRun = !!selected && selected.available && selected.configured && !!type && canAdd && !running;
 
+  const clearOutcome = () => { setResult(null); setMismatch(null); setError(''); };
+  const pick = (set: (v: string) => void, v: string, current: string) => {
+    if (v === current) return;
+    set(v); clearOutcome();
+  };
+
   const run = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setRunning(true);
     setError(''); setResult(null); setMismatch(null);
     try {
@@ -87,7 +99,7 @@ export default function Deploy() {
         const reason = code === 'connect_failed' && d && 'reason' in d ? String((d as { reason: unknown }).reason) : '';
         setError(reason || errorText(e, "Couldn't run the connection test."));
       }
-    } finally { setRunning(false); }
+    } finally { inFlight.current = false; setRunning(false); }
   };
 
   const trust = async () => {
@@ -96,8 +108,13 @@ export default function Deploy() {
     try {
       await trustKnownHost(unknown.host, unknown.port, unknown.fingerprint);
     } catch (e) {
-      setTrustError(errorText(e, "Couldn't trust this server."));
       setTrusting(false);
+      if ((e as { code?: string }).code === 'host_key_changed') {
+        setUnknown(null);
+        setError("The server's key changed while you were looking. Try again.");
+        return;
+      }
+      setTrustError(errorText(e, "Couldn't trust this server."));
       return;
     }
     setTrusting(false);
@@ -135,7 +152,7 @@ export default function Deploy() {
                     aria-checked={t.id === target} aria-disabled={!t.available}
                     tabIndex={t.id === target || (!target && t.id === firstEnabled) ? 0 : -1}
                     onKeyDown={arrowNav}
-                    onClick={() => { if (t.available) setTarget(t.id); }}>
+                    onClick={() => { if (t.available) pick(setTarget, t.id, target); }}>
               <span className="sirdar-target-top">
                 <span className="sirdar-target-icon" aria-hidden="true">{INITIALS[t.id] ?? t.label.slice(0, 2)}</span>
                 {statusChip(t)}
@@ -160,7 +177,7 @@ export default function Deploy() {
           {types.map((t) => (
             <button key={t.id} type="button" role="radio" className={t.id === type ? 'on' : ''}
                     aria-checked={t.id === type} tabIndex={t.id === type || (!type && t === types[0]) ? 0 : -1}
-                    onKeyDown={arrowNav} onClick={() => setType(t.id)}>
+                    onKeyDown={arrowNav} onClick={() => pick(setType, t.id, type)}>
               <span className="sirdar-type-label">
                 <b>{t.label}</b>
                 <span className="cell-sub">{t.description}</span>
@@ -216,9 +233,9 @@ export default function Deploy() {
             {Object.keys(result.facts).length > 0 && (
               <dl className="sirdar-kv">
                 {Object.entries(result.facts).map(([k, v]) => (
-                  <div key={k} style={{ display: 'contents' }}>
+                  <Fragment key={k}>
                     <dt>{k.replaceAll('_', ' ')}</dt><dd className="mono">{String(v)}</dd>
-                  </div>
+                  </Fragment>
                 ))}
               </dl>
             )}
@@ -228,6 +245,7 @@ export default function Deploy() {
 
       <section className="sirdar-section">
         <h2>Trusted SSH hosts</h2>
+        {hostsError && <p className="form-error" role="alert">{hostsError}</p>}
         <DataTable
           ariaLabel="Trusted SSH hosts"
           columns={[

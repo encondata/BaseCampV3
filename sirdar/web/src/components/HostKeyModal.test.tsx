@@ -34,3 +34,25 @@ it('shows an error inline', () => {
   render(<HostKeyModal {...base} error="Try again." onTrust={vi.fn()} onCancel={vi.fn()} />);
   expect(screen.getByRole('alert').textContent).toContain('Try again.');
 });
+
+it('Escape cancels, but not while busy; focus lands on Cancel', async () => {
+  const onCancel = vi.fn();
+  const { rerender } = render(<HostKeyModal {...base} onTrust={vi.fn()} onCancel={onCancel} />);
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }));
+  rerender(<HostKeyModal {...base} busy onTrust={vi.fn()} onCancel={onCancel} />);
+  await userEvent.keyboard('{Escape}');
+  expect(onCancel).not.toHaveBeenCalled();
+  rerender(<HostKeyModal {...base} onTrust={vi.fn()} onCancel={onCancel} />);
+  await userEvent.keyboard('{Escape}');
+  expect(onCancel).toHaveBeenCalledTimes(1);
+});
+
+it('restores focus to the opener on close', () => {
+  const opener = document.createElement('button');
+  document.body.appendChild(opener);
+  opener.focus();
+  const { unmount } = render(<HostKeyModal {...base} onTrust={vi.fn()} onCancel={vi.fn()} />);
+  unmount();
+  expect(document.activeElement).toBe(opener);
+  opener.remove();
+});

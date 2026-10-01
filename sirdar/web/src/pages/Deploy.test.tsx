@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -125,7 +125,7 @@ it('an unknown host key opens the trust modal; trusting calls trust then connect
   expect(screen.queryByRole('dialog')).toBeNull();
 });
 
-it('host_key_changed while trusting shows the retry message in the modal', async () => {
+it('host_key_changed while trusting closes the modal and shows the retry message on the page', async () => {
   api.connectDeploy.mockRejectedValueOnce(UNKNOWN);
   api.trustKnownHost.mockRejectedValue(new ApiError(409, 'host_key_changed', { code: 'host_key_changed' }));
   await ready();
@@ -134,7 +134,56 @@ it('host_key_changed while trusting shows the retry message in the modal', async
   await userEvent.click(testBtn());
   const dialog = await screen.findByRole('dialog');
   await userEvent.click(within(dialog).getByRole('button', { name: 'Trust and connect' }));
-  await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toContain('key changed while you were looking'));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(screen.getByRole('alert').textContent).toContain('key changed while you were looking. Try again.');
+});
+
+it('changing the target or type clears the result, mismatch and error', async () => {
+  api.connectDeploy.mockResolvedValueOnce(OK).mockRejectedValueOnce(MISMATCH)
+    .mockRejectedValueOnce(new ApiError(502, 'connect_failed', { code: 'connect_failed', reason: 'Timed out.' }));
+  await ready();
+  await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
+  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(testBtn());
+  await waitFor(() => expect(screen.getByText('Connected as deploy')).toBeTruthy());
+  await userEvent.click(screen.getByRole('radio', { name: /^Beta/ }));
+  expect(screen.queryByText('Connected as deploy')).toBeNull();
+  await userEvent.click(testBtn());
+  await waitFor(() => expect(screen.getByText('SHA256:old')).toBeTruthy());
+  await userEvent.click(screen.getByRole('radio', { name: /^Blue/ }));
+  expect(screen.queryByText('SHA256:old')).toBeNull();
+  await userEvent.click(testBtn());
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Timed out.'));
+  await userEvent.click(screen.getByRole('radio', { name: /^Green/ }));
+  expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('a double click on Test connection sends one request', async () => {
+  let release: (v: unknown) => void = () => {};
+  api.connectDeploy.mockReturnValue(new Promise((r) => { release = r; }));
+  await ready();
+  await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
+  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  const btn = testBtn();
+  act(() => { btn.click(); btn.click(); });
+  expect(api.connectDeploy).toHaveBeenCalledTimes(1);
+  release(OK);
+  await waitFor(() => expect(screen.getByText('Connected as deploy')).toBeTruthy());
+});
+
+it('forgetting after a mismatch deletes the key; the next test asks to trust again', async () => {
+  api.connectDeploy.mockRejectedValueOnce(MISMATCH).mockRejectedValueOnce(UNKNOWN);
+  api.forgetKnownHost.mockResolvedValue(undefined);
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  await ready();
+  await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
+  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(testBtn());
+  await userEvent.click(await screen.findByRole('button', { name: 'Forget the old key' }));
+  expect(api.forgetKnownHost).toHaveBeenCalledWith('srv.example.com', 22);
+  await waitFor(() => expect(screen.queryByText('SHA256:old')).toBeNull());
+  await userEvent.click(testBtn());
+  expect(await screen.findByRole('dialog')).toBeTruthy();
 });
 
 it('a key mismatch shows both fingerprints and offers Forget with deploy:change', async () => {
