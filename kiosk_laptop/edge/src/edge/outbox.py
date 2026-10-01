@@ -91,8 +91,15 @@ class OutboxWorker:
         self.serial = serial_getter
 
     def _due_group(self) -> list:
-        rows = self.store.all("SELECT * FROM outbox WHERE status = 'queued' AND "
-                              "next_attempt_at <= ? ORDER BY id LIMIT ?", (now_iso(), SCAN_BATCH))
+        # A row is eligible only if the same person has no EARLIER row still
+        # waiting (queued/sending but not yet due): back-off must not let later
+        # scans overtake. `failed` rows do not block.
+        now = now_iso()
+        rows = self.store.all(
+            "SELECT * FROM outbox o WHERE o.status = 'queued' AND o.next_attempt_at <= ? "
+            "AND NOT EXISTS (SELECT 1 FROM outbox e WHERE e.person_id = o.person_id "
+            "AND e.id < o.id AND e.status IN ('queued', 'sending') AND e.next_attempt_at > ?) "
+            "ORDER BY o.id LIMIT ?", (now, now, SCAN_BATCH))
         if not rows:
             return []
         first = rows[0]
@@ -141,27 +148,49 @@ class OutboxWorker:
             except CloudOffline:
                 self._set(ids, "queued")
                 break
+            except Exception:
+                self._back_off(group, "bad_response")
+                continue
             if resp is None:
                 self._set(ids, "needs_sign_in")
                 continue
-            if resp.status_code in (200, 204):
-                rejected = {}
-                if group[0]["kind"] == KIND_SCAN and resp.status_code == 200:
-                    rejected = {r["client_scan_id"]: r["code"]
-                                for r in resp.json().get("rejected", [])}
-                for row in group:
-                    scan_id = json.loads(row["payload"]).get("client_scan_id")
-                    if scan_id in rejected:
-                        self._set([row["id"]], "rejected", rejected[scan_id])
-                    else:
-                        self._set([row["id"]], "sent")
-                        sent += 1
-            elif resp.status_code >= 500 or resp.status_code in TRANSIENT:
-                self._back_off(group, _code(resp))
-            else:
-                self._set(ids, "failed", _code(resp))
+            try:
+                sent += self._handle(group, resp)
+            except Exception:
+                self._back_off(group, "bad_response")
         await self._end_sessions()
         return sent
+
+    def _handle(self, group: list, resp) -> int:
+        """Apply one response to its rows; returns rows sent. May raise on a
+        malformed body — the caller backs the whole group off."""
+        ids = [r["id"] for r in group]
+        if resp.status_code in (200, 204):
+            if group[0]["kind"] != KIND_SCAN:
+                self._set(ids, "sent")
+                return len(ids)
+            body = resp.json()
+            accepted = set(body["accepted"])
+            rejected = {r["client_scan_id"]: r["code"] for r in body.get("rejected", [])}
+            sent = 0
+            unacked = []
+            for row in group:
+                scan_id = json.loads(row["payload"]).get("client_scan_id")
+                if scan_id in rejected:
+                    self._set([row["id"]], "rejected", rejected[scan_id])
+                elif scan_id in accepted:
+                    self._set([row["id"]], "sent")
+                    sent += 1
+                else:
+                    unacked.append(row)
+            if unacked:
+                self._back_off(unacked, "not_acknowledged")
+            return sent
+        if resp.status_code >= 500 or resp.status_code in TRANSIENT:
+            self._back_off(group, _code(resp))
+        else:
+            self._set(ids, "failed", _code(resp))
+        return 0
 
     async def _end_sessions(self) -> None:
         for person_id in self.upstream.ending_people():

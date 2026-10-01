@@ -120,3 +120,52 @@ async def test_ending_session_logged_out_after_its_rows_drain(app, cloud):
     logout = cloud.post("/auth/logout").respond(204)
     await app.state.outbox.drain_once()
     assert logout.called and up.has_session("p-1") is False
+
+
+async def test_backoff_keeps_later_batches_behind(app, cloud, monkeypatch):
+    monkeypatch.setattr(outbox, "SCAN_BATCH", 2)
+    store, up = app.state.store, app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    outbox.enqueue_scans(store, "p-1", "Jane Doe", [_scan(i) for i in range(4)])
+    route = cloud.post("/kiosk/scans").respond(500)
+    assert await app.state.outbox.drain_once() == 0
+    assert route.call_count == 1
+    assert outbox.counts(store)["queued"] == 4
+
+
+async def test_non_json_200_backs_off_as_bad_response(app, cloud):
+    store, up = app.state.store, app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    outbox.enqueue_scans(store, "p-1", "Jane Doe", [_scan(1)])
+    cloud.post("/kiosk/scans").respond(200, content=b"not json")
+    await app.state.outbox.drain_once()
+    row = store.one("SELECT status, attempts, last_error FROM outbox")
+    assert (row["status"], row["attempts"], row["last_error"]) == ("queued", 1, "bad_response")
+
+
+async def test_unacknowledged_scan_backs_off(app, cloud):
+    store, up = app.state.store, app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    outbox.enqueue_scans(store, "p-1", "Jane Doe", [_scan(1), _scan(2)])
+    cloud.post("/kiosk/scans").respond(200, json={"accepted": [_scan(1)["client_scan_id"]],
+                                                  "rejected": []})
+    assert await app.state.outbox.drain_once() == 1
+    row = store.one("SELECT status, attempts, last_error FROM outbox WHERE status='queued'")
+    assert (row["attempts"], row["last_error"]) == (1, "not_acknowledged")
+    assert outbox.counts(store)["sent"] == 1
+
+
+async def test_non_json_body_is_422(app, client):
+    r = await client.post("/kiosk/scans", content=b"nope", headers=make_session(app))
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_scans"
+
+
+async def test_no_logout_while_rows_queued_and_offline(app, cloud):
+    store, up = app.state.store, app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    up.mark_ending("p-1")
+    outbox.enqueue_scans(store, "p-1", "Jane Doe", [_scan(1)])
+    cloud.post("/kiosk/scans").mock(side_effect=httpx.ConnectError("down"))
+    logout = cloud.post("/auth/logout").respond(204)
+    await app.state.outbox.drain_once()
+    assert not logout.called and "p-1" in up.ending_people()
