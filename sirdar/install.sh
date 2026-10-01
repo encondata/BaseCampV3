@@ -1055,7 +1055,7 @@ ensure_docker() {
           # No Docker repo for this release (already explained): static binaries.
           install_docker_static
         elif [ "$rc" != 0 ]; then
-          die "Installing Docker from the $FAMILY packages failed: ${DOCKER_PKG_ERR:-exit status $rc}. If another package job holds the lock (unattended-upgrades or dpkg on Debian/Ubuntu, dnf-automatic or PackageKit on Fedora/RHEL), wait for it to finish, then re-run the installer. Nothing else was installed."
+          die "Installing Docker from the $FAMILY packages failed: ${DOCKER_PKG_ERR:-exit status $rc}. This is usually temporary: a network problem, or another package job holding the lock (unattended-upgrades or dpkg on Debian/Ubuntu, dnf-automatic or PackageKit on Fedora/RHEL). Wait for it to finish, then re-run the installer. (Docker's static binaries are only used where Docker has no repository for this release.)"
         elif ! command -v docker >/dev/null 2>&1; then
           die "Docker's $FAMILY packages installed, but there is no docker command on PATH. Check the package install, then re-run."
         else
