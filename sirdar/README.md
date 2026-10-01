@@ -74,20 +74,27 @@ Environment overrides:
 | `SIRDAR_DIR` | `/opt/serversherpa/sirdar` (Linux and macOS); setting it skips the directory prompt |
 | `SIRDAR_PORT` | `8098` (used only when creating `.env`) |
 | `SIRDAR_NONINTERACTIVE=1` | never prompt; generate every secret and print the admin commands |
+| `SIRDAR_DOCKER_VERSION` | newest stable; Linux static installs only: the Docker Engine version to download (e.g. `29.8.2`) |
+| `SIRDAR_FORCE_STATIC=1` | off; Linux static installs only: replace Docker binaries in `/usr/local/bin` that the installer didn't put there |
 
 What it does:
 
-- **Ubuntu/Debian:** installs any missing `git`, `curl`, `ca-certificates`
-  and `openssl` with apt, and Docker Engine + the compose plugin from
-  Docker's official apt repository. Starts the daemon with systemd if needed,
-  and adds you to the `docker` group if Docker needs sudo (log out and back in
-  for that to take effect; until then the `docker compose ...` admin
-  commands it prints start with `sudo`). Uses `sudo` only when not root, and
-  stops if you are neither root nor have sudo. Docker's repository supports
-  only Ubuntu and Debian proper; derivatives such as Kali or Raspbian may fail.
+- **Linux:** installs any missing `git`, `curl`, `openssl` and CA
+  certificates, and Docker Engine with the compose (v2) and buildx plugins,
+  the way the table under [Supported systems](#supported-systems) shows. If
+  `docker info` already works, it installs nothing for Docker except missing
+  compose/buildx plugins, and never starts a daemon. Otherwise it starts the
+  daemon (now and at boot) and waits up to 60 s for it. It uses `sudo` only
+  when not root, and stops if you are neither root nor have sudo. If Docker
+  needs sudo, it adds you to the `docker` group (log out and back in for that
+  to take effect; until then the `docker compose ...` admin commands it prints
+  start with `sudo`). git must be 2.25 or newer (for sparse checkout). A
+  Podman `docker` shim (podman-docker) isn't enough: the installer stops and
+  asks for Docker Engine with the compose plugin.
 - **macOS:** needs Docker Desktop already installed (it starts it if it isn't
   running) and git (`xcode-select --install`).
-- **Other systems:** stops with a message.
+- **Other operating systems** (anything but Linux and macOS): stops with a
+  message.
 - Sparse-checks out `sirdar/` plus the portal files the SPA imports into
   `SIRDAR_DIR`, owned by you.
 - **First run:** writes `sirdar/.env` (mode 600) from `.env.example`. With a
@@ -101,6 +108,71 @@ What it does:
   local admin (the first attempt plus up to 3 retries). It ends with the URL and the admin commands.
 
 The app listens on 127.0.0.1:8098 by default; put a TLS reverse proxy in front.
+
+### Supported systems
+
+| Family | Detected from `/etc/os-release` (`ID`, else `ID_LIKE`) | Prerequisites with | Docker Engine + compose v2 |
+|---|---|---|---|
+| Debian | debian, ubuntu and derivatives (Mint, Pop!_OS, Raspberry Pi OS…) | `apt-get` | Docker's apt repository, mapped to the upstream release (`UBUNTU_CODENAME` / `DEBIAN_CODENAME`); static binaries if Docker has no repo for that release |
+| Fedora / RHEL | fedora, rhel, centos, rocky, almalinux, ol, amzn | `dnf` (`yum` without dnf) | Docker's repository (`fedora`, `rhel`, else `centos`); static binaries if it has no repo for that release yet. Amazon Linux: the distro's `docker` package plus the compose/buildx plugins |
+| SUSE | opensuse-leap, opensuse-tumbleweed, sles | `zypper` | `docker` + `docker-compose` packages |
+| Arch | arch, manjaro, endeavouros | `pacman -Syu` (a full system upgrade) | `docker` + `docker-compose` (+ `docker-buildx`) packages |
+| Alpine | alpine | `apk` | `docker` + `docker-cli-compose` packages, started with OpenRC |
+| Void | void | `xbps-install` | `docker` + `docker-compose` packages, enabled as a runit service |
+| Slackware | slackware (or `/etc/slackware-version`) | none: if something is missing it stops and tells you the `slackpkg install …` line (a full install includes them) | Docker's static binaries |
+| Gentoo / other | anything else | the first package manager it finds (`emerge` included); otherwise it lists what is missing | Docker's static binaries |
+
+**When packages fail.** Docker's static binaries are used only where they are
+the design: Slackware, Gentoo and other systems, and Debian/Ubuntu or
+Fedora/RHEL releases (or derivatives) that Docker's repository doesn't cover.
+If a package step fails anywhere else (a download error, or another package
+job holding the dpkg/rpm lock, such as unattended-upgrades), the installer
+stops with the package manager's exit status and asks you to wait and re-run;
+it never switches to the static binaries on its own. On Debian and Fedora it
+adds Docker's source (`/etc/apt/sources.list.d/docker.list`,
+`/etc/yum.repos.d/docker-ce.repo`) only after Docker's signing key downloaded,
+and removes a source it just added if the packages then don't install.
+
+**Arch:** pacman supports full upgrades only, so on Arch the installer runs
+`pacman -Syu`, which upgrades the whole system along with installing what it
+needs.
+
+**Static binaries** (x86_64 and aarch64 only): the newest stable
+`docker-X.Y.Z.tgz` from `https://download.docker.com/linux/static/stable/<arch>/`
+(or `SIRDAR_DOCKER_VERSION`) goes into `/usr/local/bin` (`docker`, `dockerd`,
+`containerd`, `containerd-shim-runc-v2`, `ctr`, `runc`, `docker-init`,
+`docker-proxy`). The archive must list cleanly and `docker`/`dockerd` must be
+Linux executables. A binary already in `/usr/local/bin` that the installer
+didn't put there (it records its own in
+`/usr/local/lib/sirdar-installer/static-docker-version`) is left alone with a
+warning; set `SIRDAR_FORCE_STATIC=1` to replace it. The compose and buildx
+plugins come from their latest GitHub releases into
+`/usr/local/lib/docker/cli-plugins/`, checked against the release's published
+SHA-256 (compose's `<asset>.sha256`, buildx's `checksums.txt`); a download
+that doesn't match is deleted and the installer stops. The installer creates the
+`docker` group, then starts `dockerd` by init system: a
+`/etc/systemd/system/docker.service` with systemd, `/etc/init.d/docker` with
+OpenRC, or, with no init it knows, `nohup dockerd` (with a warning that it
+won't start at boot).
+
+**Slackware:** it writes `/etc/rc.d/rc.docker` (`start|stop|restart|status`,
+pidfile `/var/run/docker.pid`, log `/var/log/docker.log`), adds a
+marked block to `/etc/rc.d/rc.local` that starts it at boot and one to
+`/etc/rc.d/rc.local_shutdown` (created if missing) that stops it, then runs
+`/etc/rc.d/rc.docker start`. An `rc.docker` you already have (e.g. from
+SlackBuilds) is never edited or chmodded, and gets no rc.local block; it is
+just started. If it isn't executable (Slackware's "disabled"), the installer
+warns and starts it once with `sh /etc/rc.d/rc.docker start`. If `rc.local`
+doesn't mention rc.docker, it warns that starting Docker at boot is up to you
+(`chmod +x /etc/rc.d/rc.docker` and add it to `rc.local`). An existing
+`rc.local` or `rc.local_shutdown` keeps its mode: if it isn't executable, the
+installer warns instead of changing it. If `/sys/fs/cgroup` is empty it
+tries to mount cgroup2 there first. Re-running doesn't add the blocks twice.
+
+**Alpine:** the installer itself needs bash and curl, so run
+`apk add bash curl` first; the one-liner is then unchanged. Running the script
+with `sh` stops with a "run it with bash" message.
+
 
 Admin commands (the installer prints them with your paths):
 
