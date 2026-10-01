@@ -149,6 +149,35 @@ class SessionOut(BaseModel):
     kiosk_move: KioskMoveOut | None = None
 
 
+class SessionTemplateOut(BaseModel):
+    """A SessionOut without its tokens — what the laptop edge needs to mint
+    its own offline session for a move's kiosk identity."""
+
+    person: PersonOut
+    roles: list[str]
+    must_change_password: bool
+    must_change_reason: Literal["temporary", "expired"] | None = None
+    password_expires_at: datetime | None = None
+    preferences: UiPreferences
+    perms: dict[str, dict[str, bool]]
+    max_rank: int
+    scope: ScopeOut
+    password_min_length: int = 8
+    totp: TotpStatusOut
+    kiosk_move: KioskMoveOut | None = None
+
+
+class KioskEdgeMovePassword(BaseModel):
+    initiative_id: uuid.UUID
+    name: str
+    argon2_hash: str
+    session: SessionTemplateOut
+
+
+class KioskEdgeMovePasswordsOut(BaseModel):
+    moves: list[KioskEdgeMovePassword]
+
+
 class LoginChallengeOut(BaseModel):
     """Password accepted; the second factor is still owed. No session or
     cookie exists yet — only the 2FA endpoints accept the token."""

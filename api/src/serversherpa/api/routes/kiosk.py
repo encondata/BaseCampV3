@@ -8,6 +8,7 @@ import ipaddress
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from argon2 import PasswordHasher
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from sqlalchemy import case, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -18,13 +19,16 @@ from serversherpa.access.resolver import resolve_access
 from serversherpa.api.deps import (
     AuthContext, DbSession, client_ip, rate_limit_ip, require_permission,
 )
-from serversherpa.api.routes.auth import session_response, totp_status_out
+from serversherpa.api.routes.auth import (
+    _scope_out, person_out, session_response, totp_status_out,
+)
 from serversherpa.api.routes.labels import vocab_usage as _vocab_usage
 from serversherpa.api.schemas import (
     HeartbeatIn, HeartbeatOut, KioskAssetOut, KioskAssetsSyncOut, KioskClockInIn,
     KioskClockOutIn, KioskContainerAssetIn, KioskContainerAssetOut,
     KioskContainerAssetRow, KioskContainerOut, KioskContainerRef,
-    KioskContainersSyncOut, KioskContainerStateOut, KioskMoveOut,
+    KioskContainersSyncOut, KioskContainerStateOut, KioskEdgeMovePassword,
+    KioskEdgeMovePasswordsOut, KioskMoveOut,
     KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
     KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn,
     KioskScanBatchOut, KioskScanRejected, KioskSetupIn, KioskSetupOut,
@@ -33,9 +37,11 @@ from serversherpa.api.schemas import (
     KioskTruckContainerOut, KioskTruckContainerRow, KioskTruckOut,
     KioskTruckRef, KioskTrucksSyncOut, KioskTruckStateOut, LabelVocabOut,
     MoveLoginIn, PairCreateIn, PairCreateOut,
-    PairInfoOut, PairPollIn, PairPollOut, SessionOut, SetupOptionInitiative,
-    SetupOptionScanType, SetupOptionSite, SetupOptionsOut,
+    PairInfoOut, PairPollIn, PairPollOut, SessionOut, SessionTemplateOut,
+    SetupOptionInitiative, SetupOptionScanType, SetupOptionSite, SetupOptionsOut,
+    UiPreferences,
 )
+from serversherpa.config import get_settings
 from serversherpa.db.models import (
     Asset, AssetModel, AuditLog, Client, Container, ContainerAsset, Device, Initiative,
     InitiativeAsset, KioskPairRequest, LabelPlaceholder, LabelVocab, Person,
@@ -238,6 +244,53 @@ async def move_login(
         initiative_id=initiative.id)
     return session_response(result, response, await totp_status_out(db, account),
                             await load_policy(db), kiosk_move=kiosk_move)
+
+
+_EDGE_HASHER = PasswordHasher()
+
+
+@router.get("/edge/move-passwords", response_model=KioskEdgeMovePasswordsOut)
+async def edge_move_passwords(
+    db: DbSession,
+    serial: str = Query(min_length=1, max_length=120),
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskEdgeMovePasswordsOut:
+    """For the laptop edge: an argon2 hash of the password of the move the
+    kiosk with `serial` is set up on, plus the session template for that
+    move's kiosk identity, so a move sign-in works offline. Only that move,
+    only while active; the plaintext and the HMAC fingerprint key never
+    leave the server. Spec: docs/superpowers/specs/2026-10-01-kiosk-laptop-design.md"""
+    if actor.session.initiative_id is not None:
+        raise _err(403, "move_locked")
+    device = await db.scalar(select(Device).where(Device.serial == serial))
+    if device is None or device.device_type != "kiosk":
+        raise _err(404, "device_not_found")
+    initiative = (await db.get(Initiative, device.current_initiative_id)
+                  if device.current_initiative_id else None)
+    moves: list[KioskEdgeMovePassword] = []
+    if (initiative is not None and initiative.kiosk_password_enc
+            and move_password_service.is_move(initiative)
+            and move_password_service.is_move_active(initiative)):
+        account = await move_password_service.ensure_kiosk_identity(db, initiative)
+        access = await resolve_access(db, account.person_id)
+        if access.can("kiosk", "view"):
+            template = SessionTemplateOut(
+                person=person_out(account.person), roles=access.role_names,
+                must_change_password=False,
+                preferences=UiPreferences.model_validate(account.ui_prefs or {}),
+                perms=access.perms, max_rank=access.max_rank, scope=_scope_out(access),
+                password_min_length=get_settings().password_min_length,
+                totp=await totp_status_out(db, account),
+                kiosk_move=KioskMoveOut(initiative_id=initiative.id, name=initiative.name))
+            moves.append(KioskEdgeMovePassword(
+                initiative_id=initiative.id, name=initiative.name,
+                argon2_hash=_EDGE_HASHER.hash(move_password_service.reveal(initiative)),
+                session=template))
+            audit(db, actor_id=actor.person.id, entity_type="initiative",
+                  entity_id=str(initiative.id), action="kiosk_edge_move_password",
+                  changes={"serial": serial})
+    await db.commit()
+    return KioskEdgeMovePasswordsOut(moves=moves)
 
 
 # ── pairing: phone side (kiosk:view) ────────────────────────────────
