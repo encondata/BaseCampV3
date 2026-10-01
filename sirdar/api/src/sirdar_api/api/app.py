@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
 
@@ -50,6 +51,15 @@ def create_app() -> FastAPI:
         redoc_url=None,
         openapi_url=None if prod else "/api/openapi.json",
     )
+
+    if settings.allowed_origin_list:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.allowed_origin_list,
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+            allow_headers=["Authorization", "Content-Type", "X-Totp-Challenge"],
+        )
 
     api = APIRouter(prefix="/api")
 
