@@ -14,6 +14,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
+    StrictStr,
     StringConstraints,
     model_validator,
 )
@@ -150,6 +151,7 @@ class NodePageOut(BaseModel):
     published_version_id: uuid.UUID | None
     published_at: datetime | None
     has_unpublished_changes: bool
+    doc_type: str | None
 
 
 class FileVersionOut(BaseModel):
@@ -285,6 +287,13 @@ class PrintingIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     allow_printing: StrictBool | None
+
+
+class DocTypeIn(BaseModel):
+    """`doc_type` null clears the page's document type."""
+    model_config = ConfigDict(extra="forbid")
+
+    doc_type: StrictStr | None
 
 
 class NodeMoveIn(BaseModel):
@@ -833,7 +842,7 @@ class AnalyticsOut(BaseModel):
 
 class ExportIn(BaseModel):
     """Export a node (`node_id`) or a whole space (`space_key`) — exactly
-    one. A page exports as `pdf`, `docx` or `md`; a folder, a page with
+    one. A page exports as `pdf` or `md`; a folder, a page with
     subpages, or a space as a `zip` whose pages are `zip_format` (pdf when
     left out)."""
     model_config = ConfigDict(extra="forbid")
@@ -841,8 +850,8 @@ class ExportIn(BaseModel):
     node_id: uuid.UUID | None = None
     space_key: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
                                                 max_length=40)] | None = None
-    format: Literal["pdf", "docx", "md", "zip"]
-    zip_format: Literal["pdf", "docx", "md"] | None = None
+    format: Literal["pdf", "md", "zip"]
+    zip_format: Literal["pdf", "md"] | None = None
 
     @model_validator(mode="after")
     def _validate(self) -> ExportIn:
@@ -851,6 +860,18 @@ class ExportIn(BaseModel):
         if self.zip_format is not None and self.format != "zip":
             raise ValueError("zip_format only goes with format 'zip'.")
         return self
+
+
+class ExportSettingsIn(BaseModel):
+    """`PUT /wiki/admin/export-settings`: the wiki's standard confidentiality
+    statement ("" for none). Trimmed and length-checked by the route."""
+    model_config = ConfigDict(extra="forbid")
+
+    confidentiality_statement: StrictStr
+
+
+class ExportSettingsOut(BaseModel):
+    confidentiality_statement: str
 
 
 class ExportCreatedOut(BaseModel):

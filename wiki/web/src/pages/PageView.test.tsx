@@ -102,8 +102,8 @@ const PUBLISHED: PageContentOut = {
 };
 
 const published = { is_home: false, published_version_id: 'v3', published_at: PUBLISHED.created_at,
-  has_unpublished_changes: false };
-const never = { is_home: false, published_version_id: null, published_at: null, has_unpublished_changes: true };
+  has_unpublished_changes: false, doc_type: null };
+const never = { is_home: false, published_version_id: null, published_at: null, has_unpublished_changes: true, doc_type: null };
 
 function Probe() {
   const loc = useLocation();
@@ -163,7 +163,7 @@ describe('PageView — private and printing', () => {
     expect(fireEvent.contextMenu(img)).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: 'Actions for Rack power' }));
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(
-      ['Move…', 'Copy…', 'Copy link', 'Review schedule…', 'Permissions…', 'Delete']);
+      ['Move…', 'Copy…', 'Copy link', 'Document type…', 'Review schedule…', 'Permissions…', 'Delete']);
     expect(document.body.dataset.noPrint).toBe('1');
     const e = new KeyboardEvent('keydown', { key: 'p', metaKey: true, bubbles: true, cancelable: true });
     window.dispatchEvent(e);
@@ -296,7 +296,7 @@ describe('PageView — the ⋯ menu', () => {
   it('routes Move, Copy, Permissions, Share and Delete through the shell, like the tree', async () => {
     const shell: ShellValue = {
       setCurrentNode: vi.fn(), setCurrentSpace: vi.fn(), openNewNode: vi.fn(),
-      requestDelete: vi.fn(), requestMove: vi.fn(), requestCopy: vi.fn(), requestPermissions: vi.fn(), requestShare: vi.fn(),
+      requestDelete: vi.fn(), requestMove: vi.fn(), requestCopy: vi.fn(), requestPermissions: vi.fn(), requestDocType: vi.fn(), requestShare: vi.fn(),
       requestExport: vi.fn(),
     };
     const node = makeDetail('p1', { title: 'Rack power', my_level: 'manage', page: published });
@@ -312,7 +312,7 @@ describe('PageView — the ⋯ menu', () => {
 
     open();
     expect(screen.getAllByRole('menuitem').map((m) => m.textContent)).toEqual(
-      ['Move…', 'Copy…', 'Copy link', 'Export…', 'Save as template…', 'Review schedule…', 'Permissions…', 'Share…', 'Delete']);
+      ['Move…', 'Copy…', 'Copy link', 'Export…', 'Save as template…', 'Document type…', 'Review schedule…', 'Permissions…', 'Share…', 'Delete']);
     fireEvent.click(screen.getByRole('menuitem', { name: 'Move…' }));
     expect(shell.requestMove).toHaveBeenCalledWith(node);
     open();

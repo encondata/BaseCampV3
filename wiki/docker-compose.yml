@@ -11,7 +11,7 @@
 # text, exports), so their env_file carries the full set of API SS_*
 # settings, not just the wiki-specific ones — see wiki/.env.example.
 #
-# Two workers from one image, so a big export (minutes of PDF/Word
+# Two workers from one image, so a big export (minutes of PDF
 # rendering) never holds up everyone's file previews, search text, purges
 # and reminders: `wiki-worker` runs every job kind but exports,
 # `wiki-export-worker` runs only exports. Add replicas of either freely —
@@ -29,7 +29,7 @@ x-wiki-worker: &wiki-worker
     # at http://localhost:5176. Must equal the main API's SS_WIKI_ORIGIN.
     SS_WIKI_ORIGIN: ${SS_WIKI_ORIGIN:?set SS_WIKI_ORIGIN in wiki/.env (the same value as the API's)}
     # the wiki service's own origin, for POST /internal/render (export
-    # to PDF/Word) — the compose network's service name, not localhost
+    # to PDF) — the compose network's service name, not localhost
     SS_WIKI_RENDER_URL: http://wiki:8080
     # the same secret the `wiki` service checks /internal/render
     # requests against (its WIKI_SERVICE_TOKEN below) — one variable in

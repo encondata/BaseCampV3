@@ -20,6 +20,7 @@ function fakeShell(): ShellValue {
     requestMove: vi.fn(),
     requestCopy: vi.fn(),
     requestPermissions: vi.fn(),
+    requestDocType: vi.fn(),
     requestShare: vi.fn(),
     requestExport: vi.fn(),
   };
@@ -83,7 +84,7 @@ describe('RowMenu', () => {
   });
 
   it('does not offer Permissions… to an author on a library home page, where the dialog would be empty', () => {
-    const home = { is_home: true, published_version_id: null, published_at: null, has_unpublished_changes: false };
+    const home = { is_home: true, published_version_id: null, published_at: null, has_unpublished_changes: false, doc_type: null };
     open(makeNode('home', { kind: 'page', my_level: 'edit', can_set_private: true, page: home }));
     expect(items()).not.toContain('Permissions…');
     cleanup();
@@ -107,7 +108,7 @@ describe('RowMenu', () => {
     cleanup();
     open(makeNode('home', {
       my_level: 'manage',
-      page: { is_home: true, published_version_id: null, published_at: null, has_unpublished_changes: false },
+      page: { is_home: true, published_version_id: null, published_at: null, has_unpublished_changes: false, doc_type: null },
     }));
     expect(items()).not.toContain('Delete');
   });
@@ -127,6 +128,25 @@ describe('RowMenu', () => {
     expect(shell.requestPermissions).toHaveBeenCalledWith(node);
     pick('Delete');
     expect(shell.requestDelete).toHaveBeenCalledWith(node);
+  });
+
+  it('offers Document type… on a page to an editor, and hands it to the shell', () => {
+    const page = makeNode('n1', { kind: 'page', my_level: 'edit' });
+    const { shell } = open(page);
+    expect(items()).toContain('Document type…');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Document type…' }));
+    expect(shell.requestDocType).toHaveBeenCalledWith(page);
+  });
+
+  it('keeps Document type… from viewers, folders and files', () => {
+    open(makeNode('n1', { kind: 'page', my_level: 'view' }));
+    expect(items()).not.toContain('Document type…');
+    cleanup();
+    open(makeNode('n2', { kind: 'folder', my_level: 'manage' }));
+    expect(items()).not.toContain('Document type…');
+    cleanup();
+    open(makeNode('n3', { kind: 'file', my_level: 'manage' }));
+    expect(items()).not.toContain('Document type…');
   });
 
   it('offers Share… on a page or file to a manager, and hands it to the shell', () => {
@@ -200,7 +220,7 @@ describe('RowMenu', () => {
   });
 
   it('offers Export… on a folder, and on a page once published or with subpages — never a file', () => {
-    const published = { is_home: false, published_version_id: 'v1', published_at: null, has_unpublished_changes: false };
+    const published = { is_home: false, published_version_id: 'v1', published_at: null, has_unpublished_changes: false, doc_type: null };
     const folder = makeNode('f', { kind: 'folder', my_level: 'view' });
     const { shell } = open(folder);
     fireEvent.click(screen.getByRole('menuitem', { name: 'Export…' }));

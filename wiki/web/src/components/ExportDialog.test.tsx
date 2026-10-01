@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -19,7 +19,7 @@ import { makeNode, makeSpace } from '../testing/fixtures';
 import ExportDialog from './ExportDialog';
 import { EXPORT_POLL_MAX_MS, EXPORT_POLL_MS } from './ExportProgress';
 
-const PUBLISHED = { is_home: false, published_version_id: 'v1', published_at: '2026-09-20T12:00:00Z', has_unpublished_changes: false };
+const PUBLISHED = { is_home: false, published_version_id: 'v1', published_at: '2026-09-20T12:00:00Z', has_unpublished_changes: false, doc_type: null };
 const PAGE = makeNode('n1', { title: 'Rack Guide', my_level: 'view', page: PUBLISHED });
 
 function job(over: Partial<ExportOut> = {}): ExportOut {
@@ -82,10 +82,25 @@ describe('ExportDialog', () => {
     renderDialog({ kind: 'node', node: { ...PAGE, has_children: true } });
     expect(pressed('This page')).toBe('true');
     fireEvent.click(screen.getByRole('button', { name: 'With subpages (.zip)' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Word' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Markdown' }));
     fireEvent.click(screen.getByRole('button', { name: 'Export' }));
     await waitFor(() => expect(createExport).toHaveBeenCalledWith(
-      { node_id: 'n1', format: 'zip', zip_format: 'docx' }));
+      { node_id: 'n1', format: 'zip', zip_format: 'md' }));
+  });
+
+  it('says a PDF has a cover, contents and comments, and Markdown has no comments', () => {
+    renderDialog({ kind: 'node', node: PAGE });
+    expect(screen.getByText('The published version of the page, with a cover page, contents and its comments.')).toBeTruthy();
+    const group = screen.getByRole('group', { name: 'Format' });
+    fireEvent.click(within(group).getByRole('button', { name: 'Markdown' }));
+    expect(screen.getByText('The published version of the page, without comments.')).toBeTruthy();
+  });
+
+  it('offers exactly PDF and Markdown as formats (no Word)', () => {
+    renderDialog({ kind: 'node', node: PAGE });
+    const group = screen.getByRole('group', { name: 'Format' });
+    expect(Array.from(group.querySelectorAll('button')).map((b) => b.textContent)).toEqual(['PDF', 'Markdown']);
+    expect(screen.queryByRole('button', { name: 'Word' })).toBeNull();
   });
 
   it('forces a .zip for a never-published page with subpages', async () => {

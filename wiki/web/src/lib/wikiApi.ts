@@ -190,6 +190,10 @@ export const setNodePrivacy = (id: string, isPrivate: boolean) =>
 export const setNodePrinting = (id: string, allow: boolean | null) =>
   request<NodeOut>('PATCH', `/nodes/${seg(id)}/printing`, { body: { allow_printing: allow } });
 
+/** The export cover's document type; `null` clears it. Edit. */
+export const setNodeDocType = (nodeId: string, docType: string | null) =>
+  request<NodeOut>('PATCH', `/nodes/${seg(nodeId)}/doc-type`, { body: { doc_type: docType } });
+
 export const setFavorite = (id: string, favorite: boolean) =>
   request<void>(favorite ? 'PUT' : 'DELETE', `/nodes/${seg(id)}/favorite`);
 
@@ -389,6 +393,19 @@ export const revokeShareLink = (id: string) =>
 
 /** Wiki administrators: every link, newest first. */
 export const listAllShareLinks = () => request<ShareLinkOut[]>('GET', '/share-links');
+
+// ── export settings (wiki admins) ───────────────────────────────────
+
+/** The wiki's standard confidentiality statement for an exported PDF's
+ *  cover ("" for none). A library can set its own in its settings. */
+export const getExportSettings = () =>
+  request<{ confidentiality_statement: string }>('GET', '/admin/export-settings');
+
+/** The server trims it; 422 `bad_setting` over 1000 characters. */
+export const saveExportSettings = (statement: string) =>
+  request<{ confidentiality_statement: string }>('PUT', '/admin/export-settings', {
+    body: { confidentiality_statement: statement },
+  });
 
 // ── help links (wiki admins) ─────────────────────────────────────────
 

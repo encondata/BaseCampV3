@@ -134,7 +134,7 @@ class Settings(BaseSettings):
     # days a soft-deleted node stays restorable before the purge job drops it
     wiki_trash_days: int = 30
     # the wiki server's own origin, used by the worker for POST
-    # /internal/render (export-to-PDF/docx) with X-Wiki-Service-Token.
+    # /internal/render (export-to-PDF) with X-Wiki-Service-Token.
     wiki_render_url: str = "http://localhost:5177"
     # the most one export (worker) may hold: pages, and the summed size of
     # the files and page images it includes

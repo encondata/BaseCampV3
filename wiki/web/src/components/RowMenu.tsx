@@ -2,11 +2,12 @@
  *  a page's header: New page/folder here, Rename, Move…, Copy…, Copy link,
  *  Export… (a folder, or a page once published or with subpages),
  *  (a page's header only: Save as template…, Review schedule…),
+ *  Document type… (pages, edit),
  *  Permissions…, Share… (pages and files), Use as help for… (a page's or
  *  file's header, wiki admins), Delete — each shown only at the
  *  level it needs (Export… and Share… also need printing on; Share…, Save
  *  as template… and Use as help for… are gone inside a private folder or on
- *  a private item). Move, Copy, Permissions, Share, Export and Delete open
+ *  a private item). Move, Copy, Permissions, Document type, Share, Export and Delete open
  *  the shell's dialogs. The menu is
  *  position:fixed so the sidebar's scroll box never clips it; it closes on
  *  any outside click, scroll, resize or Escape. */
@@ -137,6 +138,13 @@ const RowMenu = forwardRef<RowMenuHandle, RowMenuProps>(function RowMenu(
     items.push({
       label: 'Save as template…', action: onSaveAsTemplate,
       icon: <><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5M10.5 15.5a2 2 0 0 0 2.8 0l1.5-1.5a2 2 0 0 0-2.8-2.8l-.5.5" /></>,
+    });
+  }
+  // the export cover's document type (pages only)
+  if (node.kind === 'page' && canEdit) {
+    items.push({
+      label: 'Document type…', action: () => shell.requestDocType(node),
+      icon: <><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5M9 13h6M9 17h4" /></>,
     });
   }
   if (node.kind === 'page' && canManage && onReviewSchedule) {

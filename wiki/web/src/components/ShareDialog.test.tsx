@@ -20,7 +20,7 @@ import ShareDialog from './ShareDialog';
 
 if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
 
-const PUBLISHED = { is_home: false, published_version_id: 'v1', published_at: '2026-09-20T12:00:00Z', has_unpublished_changes: false };
+const PUBLISHED = { is_home: false, published_version_id: 'v1', published_at: '2026-09-20T12:00:00Z', has_unpublished_changes: false, doc_type: null };
 const NODE = makeNode('n1', { title: 'Rack Guide', my_level: 'manage', page: PUBLISHED });
 
 function link(over: Partial<ShareLinkOut> = {}): ShareLinkOut {

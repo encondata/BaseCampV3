@@ -45,7 +45,7 @@ export function makeNode(
     has_children: false,
     is_favorite: false,
     page: kind === 'page'
-      ? { is_home: false, published_version_id: null, published_at: null, has_unpublished_changes: false }
+      ? { is_home: false, published_version_id: null, published_at: null, has_unpublished_changes: false, doc_type: null }
       : null,
     file: null,
     review: kind === 'page'

@@ -29,6 +29,7 @@ from serversherpa.api.routes.wiki.deps import (
 from serversherpa.api.routes.wiki.errors import conflict, err, forbidden, is_edit, not_found
 from serversherpa.api.routes.wiki.schemas import (
     Breadcrumb,
+    DocTypeIn,
     NodeCopyIn,
     NodeCreateIn,
     NodeDeleteOut,
@@ -45,6 +46,7 @@ from serversherpa.db.models import Person, WikiFavorite, WikiNode, WikiPage, Wik
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.wiki import notify, reviews, tree
 from serversherpa.wiki.content import strip_comment_marks
+from serversherpa.wiki.doc_types import DOC_TYPES, TEMPLATE_DOC_TYPES
 from serversherpa.wiki.pages import check_doc
 from serversherpa.wiki.permissions import (
     AccessIndex,
@@ -64,6 +66,7 @@ NODE_FIELDS = ["title", "owner_id"]
 REVIEW_FIELDS = ["review_interval_months", "next_review_at"]
 PRIVACY_FIELDS = ["is_private"]
 PRINTING_FIELDS = ["allow_printing"]
+DOC_TYPE_FIELDS = ["doc_type"]
 
 
 def _tree_error(exc: tree.TreeError) -> HTTPException:
@@ -112,6 +115,10 @@ async def create(body: NodeCreateIn, ctx: WikiContext) -> NodeOut:
         ctx.db, space=space, parent=parent, kind=body.kind, title=title,
         actor_id=actor_id, after_id=body.after_id,
         initial_content=initial_content)
+    if (template is not None and template.is_builtin and node.kind == "page"
+            and template.name in TEMPLATE_DOC_TYPES):
+        page = await ctx.db.get(WikiPage, node.id)
+        page.doc_type = TEMPLATE_DOC_TYPES[template.name]
     audit(ctx.db, actor_id=actor_id, entity_type="wiki_node",
           entity_id=str(node.id), action="create",
           changes=diff({}, {"kind": node.kind, "title": node.title,
@@ -271,6 +278,27 @@ async def set_printing(node_id: uuid.UUID, body: PrintingIn, ctx: WikiContext) -
         audit(ctx.db, actor_id=ctx.user.person.id, entity_type="wiki_node",
               entity_id=str(node.id), action="printing",
               changes=diff(before, snapshot(node, PRINTING_FIELDS)))
+        await ctx.db.commit()
+    return await node_out(ctx, node, await ctx.ix.level_for_node(node))
+
+
+@router.patch("/nodes/{node_id}/doc-type", response_model=NodeOut)
+async def set_doc_type(node_id: uuid.UUID, body: DocTypeIn, ctx: WikiContext) -> NodeOut:
+    """Set a page's document type (shown on its exported PDF's cover), or
+    clear it with null. Edit."""
+    node = await require_node_level(ctx.ix, await ctx.db.get(WikiNode, node_id), "edit")
+    if node.kind != "page":
+        raise err(422, "not_a_page", "Only a page has a document type.")
+    if body.doc_type is not None and body.doc_type not in DOC_TYPES:
+        raise err(422, "bad_doc_type", "That isn't a document type.")
+
+    page = await ctx.db.get(WikiPage, node.id)
+    if page.doc_type != body.doc_type:
+        before = snapshot(page, DOC_TYPE_FIELDS)
+        page.doc_type = body.doc_type
+        audit(ctx.db, actor_id=ctx.user.person.id, entity_type="wiki_node",
+              entity_id=str(node.id), action="doc_type",
+              changes=diff(before, snapshot(page, DOC_TYPE_FIELDS)))
         await ctx.db.commit()
     return await node_out(ctx, node, await ctx.ix.level_for_node(node))
 

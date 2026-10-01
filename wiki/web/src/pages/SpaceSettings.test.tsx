@@ -212,6 +212,40 @@ describe('SpaceSettings — Collaboration', () => {
     await waitFor(() => expect(within(section).getByLabelText('Allow printing')).toHaveProperty('checked', false));
   });
 
+  it('sets the library\'s own confidentiality statement in the Sharing section', async () => {
+    const space = makeSpace({ my_level: 'manage', settings: {} });
+    vi.mocked(updateSpace).mockResolvedValue({ ...space, settings: { confidentiality_statement: 'Ours only' } });
+    renderSettings(space);
+    const section = await screen.findByRole('region', { name: 'Sharing' });
+    const field = within(section).getByLabelText('Confidentiality statement') as HTMLTextAreaElement;
+    expect(field.value).toBe('');
+    expect(field.maxLength).toBe(1000);
+    expect(within(section).getByText('Leave empty to use the standard statement.')).toBeTruthy();
+
+    // blurring without a change saves nothing
+    fireEvent.blur(field);
+    expect(updateSpace).not.toHaveBeenCalled();
+
+    fireEvent.change(field, { target: { value: '  Ours only  ' } });
+    fireEvent.blur(field);
+    await waitFor(() => expect(updateSpace).toHaveBeenCalledWith('ops', {
+      settings: { confidentiality_statement: 'Ours only' } }));
+    await waitFor(() => expect(
+      (within(section).getByLabelText('Confidentiality statement') as HTMLTextAreaElement).value).toBe('Ours only'));
+  });
+
+  it('shows a stored library statement, and clears it with an empty one', async () => {
+    const space = makeSpace({ my_level: 'manage', settings: { confidentiality_statement: 'Ours only' } });
+    vi.mocked(updateSpace).mockResolvedValue({ ...space, settings: { confidentiality_statement: '' } });
+    renderSettings(space);
+    const field = await screen.findByLabelText('Confidentiality statement') as HTMLTextAreaElement;
+    expect(field.value).toBe('Ours only');
+    fireEvent.change(field, { target: { value: '' } });
+    fireEvent.blur(field);
+    await waitFor(() => expect(updateSpace).toHaveBeenCalledWith('ops', {
+      settings: { confidentiality_statement: '' } }));
+  });
+
   it('tells everyone that an archived space\'s public links keep working', async () => {
     renderSettings(makeSpace({
       my_level: 'view', archived_at: '2026-09-25T00:00:00Z', settings: { allow_public_links: true } }));
