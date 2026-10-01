@@ -276,12 +276,14 @@ check_data_dir() {
   esac
 }
 
-# write_config FILE: the four keys, KEY=value, mode 644 (no secrets in it).
+# write_config FILE: the settings plus the browser launch.sh opens, KEY=value,
+# mode 644 (no secrets in it).
 write_config() {
   local file="$1" tmp
   check_config_value "API URL" "$CFG_API_URL"
   check_config_value "Portal URL" "$CFG_PORTAL_URL"
   check_config_value "Channel" "$CFG_CHANNEL"
+  check_config_value "Browser" "$BROWSER_BIN"
   check_data_dir "$CFG_DATA_DIR"
   tmp=$(mktemp "$file.XXXXXX")
   TMP_FILES+=("$tmp")
@@ -291,6 +293,7 @@ write_config() {
     printf 'EDGE_PORTAL_URL=%s\n' "$CFG_PORTAL_URL"
     printf 'KIOSK_CHANNEL=%s\n' "$CFG_CHANNEL"
     printf 'KIOSK_DATA_DIR=%s\n' "$CFG_DATA_DIR"
+    printf 'KIOSK_BROWSER=%s\n' "$BROWSER_BIN"
   } >"$tmp"
   mv "$tmp" "$file"
 }
@@ -319,6 +322,7 @@ render_compose() {
       print
     }
   ' "$tpl" >"$file"
+  chmod 644 "$file"   # read by the macOS update job, which runs as the signed-in user
 }
 
 # ── Phase-1 data migration ────────────────────────────────────────────
@@ -474,7 +478,8 @@ check_api_reachable() {
 }
 
 # ── Docker ────────────────────────────────────────────────────────────
-DOCKER_DESKTOP_BIN='/Applications/Docker.app/Contents/Resources/bin'
+DOCKER_APP='/Applications/Docker.app'
+DOCKER_DESKTOP_BIN="$DOCKER_APP/Contents/Resources/bin"
 
 # setup_docker_cli: how this script runs docker. Linux: as root. macOS: as the
 # Docker Desktop user, whose ~/.docker holds the compose plugin path and
@@ -664,9 +669,249 @@ start_kiosk() {
   info "The kiosk is running."
 }
 
-# ── Login items (Task 4 fills these in) ───────────────────────────────
-install_login_items() { :; }
-remove_login_items() { :; }
+# ── Login items ───────────────────────────────────────────────────────
+# Linux: a root systemd timer runs update.sh; an autostart entry (and a menu
+# entry) runs launch.sh at sign-in. macOS: two launch agents in the desktop
+# user's account (the update job runs as that user, like Docker Desktop) and
+# a small app in /Applications.
+UPDATE_LABEL='com.serversherpa.kiosk.update'
+LAUNCH_LABEL='com.serversherpa.kiosk.launch'
+UPDATE_UNIT='serversherpa-kiosk-update'
+DESKTOP_FILE='serversherpa-kiosk.desktop'
+SYSTEMD_UNIT_DIR='/etc/systemd/system'
+MAC_APP_DIR='/Applications/ServerSherpa Kiosk.app'
+
+user_home() { SUDO_USER="$1" home_of_user; }
+
+# as_user USER CMD...: run CMD as USER, so the files it makes are theirs.
+as_user() {
+  local u="$1"
+  shift
+  if [ "$(id -un)" = "$u" ]; then "$@"; else sudo -u "$u" -H "$@"; fi
+}
+
+xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
+# A path on an Exec=/ExecStart= line: % doubled (systemd), quoted when it has spaces.
+exec_path() {
+  local p
+  p=$(printf '%s' "$1" | sed 's/%/%%/g')
+  case "$p" in *[[:space:]]*) printf '"%s"' "$p" ;; *) printf '%s' "$p" ;; esac
+}
+
+# render_systemd_units DIR: the nightly update service and its 03:00 timer.
+render_systemd_units() {
+  local dir="$1"
+  cat >"$dir/$UPDATE_UNIT.service" <<EOF
+[Unit]
+Description=ServerSherpa kiosk nightly update
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=$(exec_path "$KIOSK_DIR/update.sh")
+EOF
+  cat >"$dir/$UPDATE_UNIT.timer" <<'EOF'
+[Unit]
+Description=ServerSherpa kiosk nightly update at 03:00
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  chmod 644 "$dir/$UPDATE_UNIT.service" "$dir/$UPDATE_UNIT.timer"
+}
+
+# render_desktop_entry FILE: runs launch.sh (autostart and the app menu).
+render_desktop_entry() {
+  cat >"$1" <<EOF
+[Desktop Entry]
+Type=Application
+Name=ServerSherpa Kiosk
+Comment=Open the ServerSherpa kiosk
+Exec=$(exec_path "$KIOSK_DIR/launch.sh")
+Terminal=false
+Categories=Utility;
+X-GNOME-Autostart-enabled=true
+EOF
+}
+
+# render_launch_agent LABEL FILE calendar|runatload PROGRAM
+render_launch_agent() {
+  local label="$1" file="$2" mode="$3" program="$4" when
+  case "$mode" in
+    calendar)  when='  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>' ;;
+    runatload) when='  <key>RunAtLoad</key>
+  <true/>' ;;
+    *) die "render_launch_agent: unknown mode '$mode'" ;;
+  esac
+  cat >"$file" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$(xml_escape "$label")</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$(xml_escape "$program")</string>
+  </array>
+$when
+</dict>
+</plist>
+EOF
+}
+
+# render_app_bundle DIR: a minimal app whose executable runs launch.sh.
+render_app_bundle() {
+  local dir="$1" exe="$1/Contents/MacOS/ServerSherpa Kiosk"
+  case "$KIOSK_DIR" in
+    *'"'*|*'$'*|*'`'*|*\\*) die "The install folder can't contain a quote, \$, backquote or backslash: $KIOSK_DIR" ;;
+  esac
+  mkdir -p "$dir/Contents/MacOS"
+  cat >"$dir/Contents/Info.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>ServerSherpa Kiosk</string>
+  <key>CFBundleDisplayName</key>
+  <string>ServerSherpa Kiosk</string>
+  <key>CFBundleExecutable</key>
+  <string>ServerSherpa Kiosk</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.serversherpa.kiosk</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>
+EOF
+  printf '#!/bin/sh\nexec "%s/launch.sh"\n' "$KIOSK_DIR" >"$exe"
+  chmod 755 "$exe"
+  chmod -R a+rX "$dir"
+}
+
+# write_as_user USER SRC DEST: copy SRC to DEST as USER (DEST ends up theirs).
+write_as_user() {
+  as_user "$1" tee "$3" <"$2" >/dev/null
+}
+
+install_launch_agent() {  # USER UID LABEL FILE MODE PROGRAM
+  local user="$1" uid="$2" label="$3" file="$4" tmp
+  tmp=$(mktemp "${TMPDIR:-/tmp}/kiosk-agent.XXXXXX")
+  TMP_FILES+=("$tmp")
+  render_launch_agent "$label" "$tmp" "$5" "$6"
+  launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
+  if ! write_as_user "$user" "$tmp" "$file"; then
+    warn "Couldn't write $file."
+    return 0
+  fi
+  launchctl bootstrap "gui/$uid" "$file" \
+    || warn "Couldn't load $label now; it loads the next time $user signs in."
+}
+
+install_login_items_macos() {
+  local user uid home agents f
+  user=$(desktop_user)
+  if [ -z "$user" ]; then
+    warn "No signed-in user found, so the nightly update and the kiosk opening at sign-in weren't set up. Re-run the installer from your own account."
+    return 0
+  fi
+  uid=$(id -u "$user")
+  home=$(user_home "$user")
+  # The update job runs as $user, so its log and state files are theirs.
+  for f in update.log update-state.json; do
+    [ -e "$KIOSK_DIR/$f" ] || : >"$KIOSK_DIR/$f"
+    chown "$user" "$KIOSK_DIR/$f" || warn "Couldn't make $user the owner of $KIOSK_DIR/$f."
+    chmod 644 "$KIOSK_DIR/$f"
+  done
+  agents="$home/Library/LaunchAgents"
+  as_user "$user" mkdir -p "$agents" || warn "Couldn't create $agents."
+  install_launch_agent "$user" "$uid" "$UPDATE_LABEL" "$agents/$UPDATE_LABEL.plist" calendar "$KIOSK_DIR/update.sh"
+  install_launch_agent "$user" "$uid" "$LAUNCH_LABEL" "$agents/$LAUNCH_LABEL.plist" runatload "$KIOSK_DIR/launch.sh"
+  render_app_bundle "$MAC_APP_DIR"
+  info "Nightly update scheduled (03:00); the kiosk opens when $user signs in, or from Applications › ServerSherpa Kiosk."
+}
+
+install_login_items_linux() {
+  local user home d tmp
+  render_systemd_units "$SYSTEMD_UNIT_DIR"
+  if systemctl daemon-reload && systemctl enable --now "$UPDATE_UNIT.timer"; then
+    info "Nightly update scheduled (03:00, $UPDATE_UNIT.timer)."
+  else
+    warn "Couldn't schedule the nightly update; check: systemctl status $UPDATE_UNIT.timer"
+  fi
+  user=$(desktop_user)
+  if [ -z "$user" ]; then
+    warn "No desktop user found (run the installer with sudo from your own account), so the kiosk won't open at sign-in. Run $KIOSK_DIR/launch.sh to open it."
+    return 0
+  fi
+  home=$(user_home "$user")
+  tmp=$(mktemp "${TMPDIR:-/tmp}/kiosk-desktop.XXXXXX")
+  TMP_FILES+=("$tmp")
+  render_desktop_entry "$tmp"
+  for d in "$home/.config/autostart" "$home/.local/share/applications"; do
+    if ! { as_user "$user" mkdir -p "$d" && write_as_user "$user" "$tmp" "$d/$DESKTOP_FILE"; }; then
+      warn "Couldn't write $d/$DESKTOP_FILE."
+    fi
+  done
+  info "The kiosk opens when $user signs in, or from the app menu (ServerSherpa Kiosk)."
+}
+
+# install_login_items: copy update.sh/launch.sh in, then schedule them.
+install_login_items() {
+  local f
+  for f in update.sh launch.sh; do
+    fetch_companion "$f" "$KIOSK_DIR/$f"
+    chmod 755 "$KIOSK_DIR/$f"
+  done
+  if [ "$OS" = Darwin ]; then install_login_items_macos; else install_login_items_linux; fi
+}
+
+# remove_login_items: undo install_login_items; anything missing is skipped.
+remove_login_items() {
+  local user home uid label
+  user=$(desktop_user)
+  if [ "$OS" = Darwin ]; then
+    if [ -n "$user" ]; then
+      uid=$(id -u "$user" 2>/dev/null || true)
+      home=$(user_home "$user")
+      for label in "$UPDATE_LABEL" "$LAUNCH_LABEL"; do
+        [ -z "$uid" ] || launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
+        rm -f "$home/Library/LaunchAgents/$label.plist"
+      done
+    else
+      warn "No signed-in user found; remove ~/Library/LaunchAgents/$UPDATE_LABEL.plist and $LAUNCH_LABEL.plist from that account yourself."
+    fi
+    case "$MAC_APP_DIR" in
+      /*.app) rm -rf "${MAC_APP_DIR:?}" ;;
+    esac
+  else
+    systemctl disable --now "$UPDATE_UNIT.timer" >/dev/null 2>&1 || true
+    rm -f "$SYSTEMD_UNIT_DIR/$UPDATE_UNIT.service" "$SYSTEMD_UNIT_DIR/$UPDATE_UNIT.timer"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if [ -n "$user" ]; then
+      home=$(user_home "$user")
+      rm -f "$home/.config/autostart/$DESKTOP_FILE" "$home/.local/share/applications/$DESKTOP_FILE"
+    fi
+  fi
+  return 0
+}
 
 # ── Summary ───────────────────────────────────────────────────────────
 json_field() {  # json_field JSON KEY -> a top-level string value
@@ -742,10 +987,27 @@ confirm_purge() {
 
 # stop_kiosk_for_uninstall: compose down, or stop before any file is removed
 # if the container may still be there (it would come back with Docker).
+# Without Docker no engine can bring the container back, so there is nothing to stop.
+docker_installed() {
+  if [ "$OS" = Darwin ]; then
+    [ -d "$DOCKER_APP" ]
+  else
+    command -v "${DOCKER[0]}" >/dev/null 2>&1
+  fi
+}
+
 stop_kiosk_for_uninstall() {
+  if ! docker_installed; then
+    warn "Docker isn't installed, so there is no kiosk container to stop; continuing."
+    return 0
+  fi
   compose down >/dev/null 2>&1 && return 0
-  docker_answers \
-    || die "Docker isn't running — start Docker Desktop and re-run --uninstall."
+  if ! docker_answers; then
+    if [ "$OS" = Darwin ]; then
+      die "Docker isn't running — start Docker Desktop and re-run --uninstall."
+    fi
+    die "Docker isn't running — run 'sudo systemctl start docker' and re-run --uninstall."
+  fi
   if "${DOCKER[@]}" inspect "$KIOSK_CONTAINER" >/dev/null 2>&1; then
     die "Couldn't remove the kiosk container $KIOSK_CONTAINER. Check Docker, then re-run --uninstall."
   fi
@@ -827,7 +1089,9 @@ main() {
     ensure_root "$@"
     merge_config
     start_log "$@"
-    setup_docker_cli
+    # Without a compose file there is no container to stop (and on macOS no
+    # signed-in user needs to be found for docker).
+    [ ! -f "$KIOSK_DIR/docker-compose.yml" ] || setup_docker_cli
     uninstall
     return 0
   fi

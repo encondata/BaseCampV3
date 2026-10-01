@@ -37,6 +37,10 @@ def test_config_round_trip_and_merge_precedence(sh, tmp_path):
        f'CFG_DATA_DIR=/d; write_config "{cfg}"')
     text = cfg.read_text()
     assert "EDGE_CLOUD_API_URL=https://api.a.com\n" in text and "KIOSK_CHANNEL=edge\n" in text
+    assert "KIOSK_BROWSER=\n" in text   # no browser found
+    sh(f'CFG_API_URL=https://api.a.com CFG_PORTAL_URL= CFG_CHANNEL=edge CFG_DATA_DIR=/d '
+       f'BROWSER_BIN="/Applications/Google Chrome.app"; write_config "{cfg}"')
+    assert "KIOSK_BROWSER=/Applications/Google Chrome.app\n" in cfg.read_text()
     assert oct(cfg.stat().st_mode & 0o777) == "0o644"
     # re-run with no flags keeps saved values
     out = sh(f'load_config "{cfg}"; merge_config; echo "$CFG_API_URL $CFG_CHANNEL"').stdout.strip()
@@ -141,8 +145,9 @@ def test_shellcheck_clean():
     sc = shutil.which("shellcheck") or ("/opt/homebrew/bin/shellcheck" if shutil.os.path.exists("/opt/homebrew/bin/shellcheck") else None)
     if sc is None:
         pytest.skip("shellcheck not installed")
-    r = subprocess.run([sc, "-s", "bash", str(INSTALL_SH)], capture_output=True, text=True)
-    assert r.returncode == 0, r.stdout
+    for script in (INSTALL_SH, INSTALL_SH.parent / "update.sh", INSTALL_SH.parent / "launch.sh"):
+        r = subprocess.run([sc, "-s", "bash", str(script)], capture_output=True, text=True)
+        assert r.returncode == 0, (script.name, r.stdout)
 
 
 # ── Task 3: preflight, Docker, start, uninstall ───────────────────────
@@ -406,12 +411,205 @@ def test_ensure_root_downloads_copy_and_says_main(sh, tmp_path):
 
 
 def test_docker_autostart_python_cleans_temp_on_failure(sh, tmp_path):
-    d = tmp_path / "ro"; d.mkdir()
-    f = d / "settings-store.json"; f.write_text('{"Keep": 1}')
-    d.chmod(0o500)
-    try:
-        r = sh(f'set_docker_autostart "{f}"')
-    finally:
-        d.chmod(0o700)
+    # os.replace fails after the temp file is written; the temp must not be left.
+    # A directory at the destination can't be read as JSON (open() fails before
+    # any write), so os.replace is made to fail the way it does for a directory.
+    site = tmp_path / "site"; site.mkdir()
+    marker = tmp_path / "tmp-was-written"
+    (site / "sitecustomize.py").write_text(
+        "import os\n"
+        "def _replace(src, dst):\n"
+        f"    if os.path.exists(src): open({str(marker)!r}, 'w').close()\n"
+        "    raise IsADirectoryError(21, 'Is a directory', dst)\n"
+        "os.replace = _replace\n")
+    f = tmp_path / "settings-store.json"; f.write_text('{"Keep": 1}')
+    r = sh(f'set_docker_autostart "{f}"', env={"PYTHONPATH": str(site)})
+    assert marker.exists(), "the temp file should have been written before os.replace"
     assert f.read_text() == '{"Keep": 1}' and "Start Docker Desktop" in r.stderr
-    assert not (d / "settings-store.json.kiosk-tmp").exists()
+    assert not (tmp_path / "settings-store.json.kiosk-tmp").exists()
+
+
+# ── Task 4: login items, update and launch scripts ────────────────────
+import plistlib
+
+
+def test_render_systemd_units(sh, tmp_path):
+    sh(f'KIOSK_DIR=/opt/serversherpa-kiosk; render_systemd_units "{tmp_path}"')
+    svc = (tmp_path / "serversherpa-kiosk-update.service").read_text()
+    tmr = (tmp_path / "serversherpa-kiosk-update.timer").read_text()
+    assert "ExecStart=/opt/serversherpa-kiosk/update.sh" in svc and "Type=oneshot" in svc
+    assert "OnCalendar=*-*-* 03:00:00" in tmr and "Persistent=true" in tmr
+
+
+def test_render_launch_agents(sh, tmp_path):
+    upd, lch = tmp_path / "u.plist", tmp_path / "l.plist"
+    sh(f'render_launch_agent com.serversherpa.kiosk.update "{upd}" calendar /k/update.sh; '
+       f'render_launch_agent com.serversherpa.kiosk.launch "{lch}" runatload /k/launch.sh')
+    u = plistlib.loads(upd.read_bytes()); l = plistlib.loads(lch.read_bytes())
+    assert u["Label"] == "com.serversherpa.kiosk.update"
+    assert u["StartCalendarInterval"] == {"Hour": 3, "Minute": 0}
+    assert u["ProgramArguments"] == ["/k/update.sh"]
+    assert l["RunAtLoad"] is True and l["ProgramArguments"] == ["/k/launch.sh"]
+
+
+def test_render_launch_agent_escapes_xml(sh, tmp_path):
+    f = tmp_path / "a.plist"
+    sh(f'render_launch_agent x "{f}" runatload "/Library/A & B <x>/launch.sh"')
+    assert plistlib.loads(f.read_bytes())["ProgramArguments"] == ["/Library/A & B <x>/launch.sh"]
+
+
+def test_render_desktop_entry(sh, tmp_path):
+    f = tmp_path / "serversherpa-kiosk.desktop"
+    sh(f'KIOSK_DIR=/opt/serversherpa-kiosk; render_desktop_entry "{f}"')
+    t = f.read_text()
+    assert "Name=ServerSherpa Kiosk" in t and "Exec=/opt/serversherpa-kiosk/launch.sh" in t
+    assert "Type=Application" in t
+
+
+def test_render_app_bundle(sh, tmp_path):
+    app = tmp_path / "ServerSherpa Kiosk.app"
+    sh(f'KIOSK_DIR="/Library/Application Support/ServerSherpaKiosk"; render_app_bundle "{app}"')
+    info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
+    assert info["CFBundleName"] == "ServerSherpa Kiosk"
+    assert info["CFBundleExecutable"] == "ServerSherpa Kiosk"
+    assert info["CFBundleIdentifier"] == "com.serversherpa.kiosk"
+    exe = app / "Contents" / "MacOS" / "ServerSherpa Kiosk"
+    assert exe.stat().st_mode & 0o111
+    assert 'exec "/Library/Application Support/ServerSherpaKiosk/launch.sh"' in exe.read_text()
+
+
+def _login_env(tmp_path):
+    inst = tmp_path / "inst"; inst.mkdir()
+    home = tmp_path / "uhome"; home.mkdir()
+    calls = tmp_path / "calls"
+    stubs = (f'KIOSK_DIR="{inst}"; desktop_user() {{ printf alice; }}; '
+             f'user_home() {{ printf "%s" "{home}"; }}; as_user() {{ shift; "$@"; }}; '
+             f'id() {{ echo 501; }}; chown() {{ echo "chown $*" >> "{calls}"; }}; '
+             f'systemctl() {{ echo "systemctl $*" >> "{calls}"; }}; '
+             f'launchctl() {{ echo "launchctl $*" >> "{calls}"; }}; '
+             f'SYSTEMD_UNIT_DIR="{tmp_path / "units"}"; MAC_APP_DIR="{tmp_path / "ServerSherpa Kiosk.app"}"; ')
+    (tmp_path / "units").mkdir()
+    return inst, home, calls, stubs
+
+
+def test_install_login_items_linux(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + 'OS=Linux; install_login_items')
+    for f in ("update.sh", "launch.sh"):
+        assert (inst / f).stat().st_mode & 0o777 == 0o755
+    assert (tmp_path / "units" / "serversherpa-kiosk-update.timer").exists()
+    svc = (tmp_path / "units" / "serversherpa-kiosk-update.service").read_text()
+    assert f"ExecStart={inst}/update.sh" in svc
+    log = calls.read_text().splitlines()
+    assert "systemctl daemon-reload" in log
+    assert "systemctl enable --now serversherpa-kiosk-update.timer" in log
+    for d in (".config/autostart", ".local/share/applications"):
+        t = (home / d / "serversherpa-kiosk.desktop").read_text()
+        assert f"Exec={inst}/launch.sh" in t
+
+
+def test_install_login_items_macos(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + 'OS=Darwin; install_login_items')
+    agents = home / "Library" / "LaunchAgents"
+    u = plistlib.loads((agents / "com.serversherpa.kiosk.update.plist").read_bytes())
+    l = plistlib.loads((agents / "com.serversherpa.kiosk.launch.plist").read_bytes())
+    assert u["ProgramArguments"] == [f"{inst}/update.sh"] and u["StartCalendarInterval"] == {"Hour": 3, "Minute": 0}
+    assert l["ProgramArguments"] == [f"{inst}/launch.sh"] and l["RunAtLoad"] is True
+    log = calls.read_text().splitlines()
+    for label in ("update", "launch"):
+        assert f"launchctl bootstrap gui/501 {agents}/com.serversherpa.kiosk.{label}.plist" in log
+    # the update job runs as alice: its log and state files are hers
+    for f in ("update.log", "update-state.json"):
+        assert (inst / f).stat().st_mode & 0o777 == 0o644
+        assert f"chown alice {inst}/{f}" in log
+    assert (tmp_path / "ServerSherpa Kiosk.app" / "Contents" / "Info.plist").exists()
+
+
+def test_install_login_items_macos_reload_boots_out_first(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + 'OS=Darwin; install_login_items')
+    log = calls.read_text().splitlines()
+    i_out = log.index("launchctl bootout gui/501/com.serversherpa.kiosk.update")
+    i_in = next(i for i, l in enumerate(log) if l.startswith("launchctl bootstrap") and "update" in l)
+    assert i_out < i_in
+
+
+def test_remove_login_items_linux(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + 'OS=Linux; install_login_items; remove_login_items; remove_login_items')
+    assert not list((tmp_path / "units").iterdir())
+    assert not (home / ".config/autostart/serversherpa-kiosk.desktop").exists()
+    assert not (home / ".local/share/applications/serversherpa-kiosk.desktop").exists()
+    assert "systemctl disable --now serversherpa-kiosk-update.timer" in calls.read_text()
+
+
+def test_remove_login_items_macos(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + 'OS=Darwin; install_login_items; remove_login_items; remove_login_items')
+    assert not list((home / "Library" / "LaunchAgents").iterdir())
+    assert not (tmp_path / "ServerSherpa Kiosk.app").exists()
+    assert "launchctl bootout gui/501/com.serversherpa.kiosk.launch" in calls.read_text()
+
+
+def test_login_items_without_desktop_user_still_schedules_update_on_linux(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    r = sh(stubs + 'desktop_user() { :; }; OS=Linux; install_login_items')
+    assert "systemctl enable --now serversherpa-kiosk-update.timer" in calls.read_text()
+    assert not (home / ".config").exists() and "sign-in" in r.stderr
+
+
+# ── Task 3 review leftovers ───────────────────────────────────────────
+
+def test_uninstall_continues_when_docker_cli_is_gone(sh, tmp_path):
+    inst, data = tmp_path / "inst", tmp_path / "data"
+    inst.mkdir(); data.mkdir()
+    (inst / "docker-compose.yml").write_text("x"); (inst / "config.env").write_text("x")
+    r = sh(f'OS=Linux; DOCKER=("{tmp_path}/no-such-docker"); KIOSK_DIR="{inst}"; '
+           f'KIOSK_DATA_DIR="{data}"; remove_login_items() {{ :; }}; uninstall')
+    assert not (inst / "config.env").exists() and "Docker isn't installed" in r.stderr
+
+
+def test_uninstall_continues_when_docker_desktop_is_gone(sh, tmp_path):
+    inst, data = tmp_path / "inst", tmp_path / "data"
+    inst.mkdir(); data.mkdir()
+    (inst / "docker-compose.yml").write_text("x"); (inst / "config.env").write_text("x")
+    r = sh(f'OS=Darwin; DOCKER=(false); DOCKER_APP="{tmp_path}/Docker.app"; KIOSK_DIR="{inst}"; '
+           f'KIOSK_DATA_DIR="{data}"; remove_login_items() {{ :; }}; uninstall')
+    assert not (inst / "config.env").exists() and "Docker isn't installed" in r.stderr
+
+
+def test_docker_down_message_per_os(sh, tmp_path):
+    inst, data = tmp_path / "inst", tmp_path / "data"
+    inst.mkdir(); data.mkdir(); (inst / "docker-compose.yml").write_text("x")
+    app = tmp_path / "Docker.app"; app.mkdir()
+    base = (f'DOCKER=(false); DOCKER_APP="{app}"; KIOSK_DIR="{inst}"; KIOSK_DATA_DIR="{data}"; '
+            f'remove_login_items() {{ :; }}; uninstall')
+    lin = sh('OS=Linux; ' + base.replace("DOCKER=(false)", f'DOCKER=("{shutil_which_false()}")'), check=False)
+    assert lin.returncode != 0 and "sudo systemctl start docker" in lin.stderr
+    assert "Docker Desktop" not in lin.stderr
+    mac = sh('OS=Darwin; ' + base, check=False)
+    assert mac.returncode != 0 and "start Docker Desktop" in mac.stderr
+
+
+def shutil_which_false():
+    import shutil
+    return shutil.which("false")
+
+
+@pytest.mark.parametrize("has_compose", [False, True])
+def test_uninstall_sets_up_docker_only_with_compose_file(sh, tmp_path, has_compose):
+    inst = tmp_path / "inst"
+    if has_compose:
+        inst.mkdir(); (inst / "docker-compose.yml").write_text("x")
+    r = sh('is_root() { return 0; }; setup_docker_cli() { echo SETUP-DOCKER; }; '
+           'uninstall() { echo UNINSTALL; }; main --uninstall',
+           env={"KIOSK_DIR": str(inst), "KIOSK_DATA_DIR": str(tmp_path / "data")})
+    assert "UNINSTALL" in r.stdout
+    assert ("SETUP-DOCKER" in r.stdout) == has_compose
+
+
+def test_render_compose_is_mode_644(sh, tmp_path):
+    out = tmp_path / "docker-compose.yml"
+    sh(f'umask 077; CFG_CHANNEL=stable; KIOSK_DATA_DIR=/d; render_compose "{out}"')
+    assert out.stat().st_mode & 0o777 == 0o644
