@@ -182,12 +182,14 @@ class OutboxWorker:
                 self._set(ids, "sent")
                 return len(ids)
             body = resp.json()
-            accepted = set(body["accepted"])
-            rejected = {r["client_scan_id"]: r["code"] for r in body.get("rejected", [])}
+            # the cloud answers canonical (lower-case) UUIDs
+            accepted = {str(a).lower() for a in body["accepted"]}
+            rejected = {str(r["client_scan_id"]).lower(): r["code"]
+                        for r in body.get("rejected", [])}
             sent = 0
             unacked = []
             for row in group:
-                scan_id = json.loads(row["payload"]).get("client_scan_id")
+                scan_id = str(json.loads(row["payload"]).get("client_scan_id")).lower()
                 if scan_id in rejected:
                     self._set([row["id"]], "rejected", rejected[scan_id])
                 elif scan_id in accepted:

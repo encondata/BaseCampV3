@@ -30,7 +30,7 @@ def test_iso_normalizes_to_utc_seconds():
 
 
 def test_a_version_one_database_upgrades_in_place(tmp_path, monkeypatch):
-    import edge.db as db
+    from edge import db
     monkeypatch.setattr(db, "SCHEMA_STEPS", SCHEMA_STEPS[:1])
     old = Store(tmp_path / "edge.db")
     old.run("INSERT INTO move_passwords VALUES ('m-1', 'Move', 'v', '{}', 'now')")

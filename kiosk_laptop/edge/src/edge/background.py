@@ -27,6 +27,9 @@ class Background:
 
     async def _loop(self) -> None:
         while True:
+            # clear BEFORE the tick: a wake that arrives while it runs is kept
+            # and starts the next tick at once
+            self.state.outbox_wake.clear()
             try:
                 await self.tick(time.monotonic())
             except Exception:
@@ -34,7 +37,6 @@ class Background:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self.state.outbox_wake.wait(),
                                        timeout=self.state.settings.probe_interval_s)
-            self.state.outbox_wake.clear()
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop())

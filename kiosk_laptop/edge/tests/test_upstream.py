@@ -112,6 +112,7 @@ async def test_no_session_returns_none_without_network(app, cloud):
 async def test_end_session_logs_out_and_drops(app, cloud):
     up = app.state.upstream
     up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    up.mark_ending("p-1")       # end_session only ever ends a session marked ending
     logout = cloud.post("/auth/logout").respond(204)
     assert await up.end_session("p-1") is True
     assert logout.calls[0].request.headers["cookie"] == "ss_refresh=r1"
@@ -162,6 +163,7 @@ async def test_concurrent_requests_refresh_once(app, cloud):
 async def test_end_session_offline_keeps_session(app, cloud):
     up = app.state.upstream
     up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    up.mark_ending("p-1")
     cloud.post("/auth/logout").mock(side_effect=httpx.ConnectError("down"))
     assert await up.end_session("p-1") is False
     assert up.has_session("p-1") is True
@@ -201,3 +203,44 @@ class _AsyncStream(httpx.AsyncByteStream):
     async def __aiter__(self):
         async for chunk in self.gen:
             yield chunk
+
+
+async def test_sign_in_landing_mid_logout_keeps_its_fresh_session(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    up.mark_ending("p-1")
+
+    def logout(request):
+        # a new online sign-in for the same person lands while logout is in flight
+        up.save_session("p-1", refresh_token="r2", access_token="a2", expires_in=900)
+        return httpx.Response(204)
+
+    cloud.post("/auth/logout").mock(side_effect=logout)
+    assert await up.end_session("p-1") is True
+    assert up.has_session("p-1") and up._refresh_token("p-1") == "r2"
+    assert up.ending_people() == []
+
+
+async def test_undecryptable_tokens_drop_the_row_and_act_as_no_session(app, cloud):
+    from cryptography.fernet import Fernet
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    other = Fernet(Fernet.generate_key())
+    app.state.store.run("UPDATE cloud_sessions SET refresh_enc = ?, access_enc = ?",
+                        (other.encrypt(b"r1").decode(), other.encrypt(b"a1").decode()))
+    assert await up.as_person("p-1", "GET", "/kiosk/setup-options") is None
+    assert up.has_session("p-1") is False
+    assert len(cloud.calls) == 0
+    up.save_session("p-2", refresh_token="r2", access_token="a2", expires_in=-60)
+    app.state.store.run("UPDATE cloud_sessions SET refresh_enc = 'garbage' WHERE person_id='p-2'")
+    assert await up.as_person("p-2", "GET", "/kiosk/setup-options") is None
+    assert up.has_session("p-2") is False
+    assert await up.end_session("p-2") is True
+
+
+async def test_end_session_leaves_a_session_that_is_no_longer_ending(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)  # not ending
+    logout = cloud.post("/auth/logout").respond(204)
+    assert await up.end_session("p-1") is True
+    assert not logout.called and up.has_session("p-1")

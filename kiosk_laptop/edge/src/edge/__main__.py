@@ -16,7 +16,8 @@ def main() -> None:
     parser.add_argument("--data-dir", default="/data")
     args = parser.parse_args()
     data_dir = Path(args.data_dir)
-    (data_dir / KEY_FILE).unlink(missing_ok=True)
+    # DB first, key last: if the cleanup fails, the old key (and the tokens
+    # it can read) stay as they were and the command can simply be re-run.
     db = data_dir / "edge.db"
     if db.exists():
         conn = sqlite3.connect(db)
@@ -26,6 +27,7 @@ def main() -> None:
             conn.execute("UPDATE outbox SET status = 'needs_sign_in' "
                          "WHERE status IN ('queued', 'sending')")
         conn.close()
+    (data_dir / KEY_FILE).unlink(missing_ok=True)
     print("edge.key removed; a new one is created on the next start. Everyone signs in online again.")
 
 

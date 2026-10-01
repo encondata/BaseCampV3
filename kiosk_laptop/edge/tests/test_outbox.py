@@ -2,6 +2,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 
 from edge import outbox
 from edge.db import iso
@@ -241,6 +242,54 @@ async def test_unacknowledged_scan_backs_off(app, cloud):
     row = store.one("SELECT status, attempts, last_error FROM outbox WHERE status='queued'")
     assert (row["attempts"], row["last_error"]) == (1, "not_acknowledged")
     assert outbox.counts(store)["sent"] == 1
+
+
+@pytest.mark.parametrize("bad", [
+    {"client_scan_id": "not-a-uuid"},
+    {"client_scan_id": None},
+    {"scan_type": "nfc"},
+    {"scan_type": None},
+    {"scanned_value": ""},
+    {"scanned_value": "   "},
+    {"scanned_value": 42},
+    {"scanned_value": "x" * 201},
+    {"scanned_at": "yesterday"},
+    {"scanned_at": None},
+])
+async def test_bad_scans_are_422_and_nothing_is_queued(app, client, bad):
+    good = _scan(1)
+    r = await client.post("/kiosk/scans", json={"serial": "s", "scans": [good, {**_scan(2), **bad}]},
+                          headers=make_session(app))
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_scans"
+    assert store_count(app) == 0
+
+
+async def test_scans_missing_fields_are_422(app, client):
+    for field in ("client_scan_id", "scan_type", "scanned_value", "scanned_at"):
+        scan = _scan(1)
+        del scan[field]
+        r = await client.post("/kiosk/scans", json={"serial": "s", "scans": [scan]},
+                              headers=make_session(app))
+        assert r.status_code == 422, field
+    assert store_count(app) == 0
+
+
+def store_count(app) -> int:
+    return app.state.store.one("SELECT COUNT(*) AS n FROM outbox")["n"]
+
+
+async def test_cloud_acknowledgement_matches_case_insensitively(app, cloud):
+    store, up = app.state.store, app.state.upstream
+    up.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+    upper = {**_scan(1), "client_scan_id": "ABCDEF00-0000-4000-8000-000000000001"}
+    upper2 = {**_scan(2), "client_scan_id": "ABCDEF00-0000-4000-8000-000000000002"}
+    outbox.enqueue_scans(store, "p-1", "Jane Doe", [upper, upper2])
+    cloud.post("/kiosk/scans").respond(200, json={
+        "accepted": [upper["client_scan_id"].lower()],
+        "rejected": [{"client_scan_id": upper2["client_scan_id"].lower(), "code": "bad_site"}]})
+    assert await app.state.outbox.drain_once() == 1
+    c = outbox.counts(store)
+    assert c["sent"] == 1 and c["rejected"] == 1
 
 
 async def test_non_json_body_is_422(app, client):

@@ -195,3 +195,56 @@ async def test_unhealthy_cloud_falls_back_to_offline_sign_in(app, client, cloud)
     assert r.status_code == 200
     row = app.state.store.one("SELECT offline FROM edge_sessions ORDER BY rowid DESC")
     assert row["offline"] == 1
+
+
+async def test_cloud_answer_without_refresh_cookie_is_502_and_issues_nothing(app, client, cloud):
+    cloud.post("/auth/login").respond(200, json=session_out())       # no set-cookie
+    r = await client.post("/auth/login", json=LOGIN)
+    assert r.status_code == 502 and r.json()["detail"]["code"] == "edge_bad_cloud"
+    assert not client.cookies.get("ss_refresh")
+    assert app.state.store.one("SELECT COUNT(*) AS n FROM edge_sessions")["n"] == 0
+    assert app.state.store.one("SELECT 1 FROM offline_logins") is None
+    assert app.state.upstream.has_session("p-1") is False
+    cloud.post("/kiosk/move-login").respond(200, json=session_out(person_id="kiosk-m1"))
+    r = await client.post("/kiosk/move-login", json={"password": "Crew-2026!"})
+    assert r.status_code == 502 and r.json()["detail"]["code"] == "edge_bad_cloud"
+    cloud.post("/kiosk/pair/AB12/poll").respond(
+        200, json={"status": "approved", "session": session_out()})
+    r = await client.post("/kiosk/pair/AB12/poll", json={"poll_token": "t"})
+    assert r.status_code == 502
+    assert app.state.store.one("SELECT COUNT(*) AS n FROM edge_sessions")["n"] == 0
+
+
+async def test_cloud_cookie_never_reaches_browser_on_move_login(client, cloud):
+    cloud.post("/kiosk/move-login").respond(
+        200, json=session_out(person_id="kiosk-m1",
+                              kiosk_move={"initiative_id": "m-1", "name": "Move"}),
+        headers=SET_COOKIE)
+    r = await client.post("/kiosk/move-login", json={"password": "Crew-2026!"})
+    assert r.status_code == 200
+    assert "cloud-r1" not in r.headers.get("set-cookie", "")
+    assert "cloud-r1" not in r.text and "cloud-access-1" not in r.text
+    assert client.cookies.get("ss_refresh") not in (None, "cloud-r1")
+
+
+async def test_cloud_cookie_never_reaches_browser_on_pair_poll(client, cloud):
+    cloud.post("/kiosk/pair/AB12/poll").respond(
+        200, json={"status": "approved", "session": session_out()}, headers=SET_COOKIE)
+    r = await client.post("/kiosk/pair/AB12/poll", json={"poll_token": "t"})
+    assert r.status_code == 200
+    assert "cloud-r1" not in r.headers.get("set-cookie", "")
+    assert "cloud-r1" not in r.text and "cloud-access-1" not in r.text
+    assert client.cookies.get("ss_refresh") not in (None, "cloud-r1")
+
+
+async def test_logout_keeps_cloud_session_while_another_edge_session_lives(app, client, cloud):
+    _cloud_login_ok(cloud)
+    await client.post("/auth/login", json=LOGIN)
+    first = client.cookies.get("ss_refresh")
+    await client.post("/auth/login", json=LOGIN)          # the same person, a second tab
+    client.cookies.clear()
+    client.cookies.set("ss_refresh", first, domain="edge.test", path="/auth")
+    r = await client.post("/auth/logout")
+    assert r.status_code == 204
+    assert app.state.upstream.ending_people() == []
+    assert app.state.upstream.has_session("p-1")

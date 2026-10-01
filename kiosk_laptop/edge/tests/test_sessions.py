@@ -53,3 +53,24 @@ def test_move_id_from_kiosk_move(app):
     out, _ = _issue(app, kiosk_move={"initiative_id": "m-1", "name": "Move"})
     s = sessions.from_access_token(app.state.store, app.state.keys, out["access_token"])
     assert s.move_id == "m-1"
+
+
+def test_concurrent_refresh_with_one_token_rotates_once(app, monkeypatch):
+    """Both requests read the row before either rotates it: only one wins."""
+    store = app.state.store
+    _, r1 = _issue(app)
+    real_one = store.one
+    seen = {}
+
+    def stale_one(sql, params=()):
+        if "FROM edge_sessions WHERE refresh_hash" in sql:
+            seen.setdefault("row", real_one(sql, params))
+            return seen["row"]
+        return real_one(sql, params)
+
+    monkeypatch.setattr(store, "one", stale_one)
+    first = sessions.refresh(store, app.state.keys, r1)
+    second = sessions.refresh(store, app.state.keys, r1)
+    assert first is not None and second is None
+    monkeypatch.undo()
+    assert sessions.refresh(store, app.state.keys, first[1]) is not None

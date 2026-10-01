@@ -14,6 +14,7 @@ vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 const api = vi.hoisted(() => ({ renameLaptopKiosk: vi.fn() }));
 vi.mock('../lib/api', async (orig) => ({ ...(await orig<object>()), ...api }));
 
+import { ApiError } from '../lib/api';
 import { getIdentity } from '../lib/identity';
 import ThisKioskPanel from './ThisKioskPanel';
 
@@ -82,5 +83,25 @@ describe('laptop mode', () => {
     expect(await screen.findByText('Kiosk name saved.')).toBeTruthy();
     expect(api.renameLaptopKiosk).toHaveBeenCalledWith('Dock 9');
     expect(auth.heartbeatNow).toHaveBeenCalled();
+  });
+
+  it('says the edge is unreachable when the rename cannot reach it', async () => {
+    auth.isAdmin = true;
+    const cases: [ApiError, string][] = [
+      [new ApiError(0, 'network'), "Can't reach this laptop's edge service. Try again."],
+      [new ApiError(503, 'edge_offline'), "Can't reach this laptop's edge service. Try again."],
+      [new ApiError(403, 'forbidden'), 'Only an admin can rename this laptop.'],
+      [new ApiError(401, 'not_authenticated'), 'Only an admin can rename this laptop.'],
+      [new ApiError(422, 'bad_name'), 'Enter a name between 1 and 80 characters.'],
+    ];
+    for (const [err, text] of cases) {
+      api.renameLaptopKiosk.mockReset().mockRejectedValue(err);
+      render(<ThisKioskPanel />);
+      // eslint-disable-next-line no-await-in-loop -- each case is its own render
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+      // eslint-disable-next-line no-await-in-loop
+      expect(await screen.findByRole('alert')).toHaveProperty('textContent', text);
+      cleanup();
+    }
   });
 });

@@ -16,6 +16,9 @@ class Settings:
     probe_interval_s: int = 30
     background: bool = True
     secure_cookies: bool = False
+    # Host names the edge answers besides localhost/127.0.0.1/[::1]
+    # (TrustedHostMiddleware: a DNS-rebinding page gets 400).
+    allowed_hosts: tuple[str, ...] = ()
 
 
 def load_settings() -> Settings:
@@ -31,4 +34,6 @@ def load_settings() -> Settings:
         sync_interval_s=int(os.environ.get("EDGE_SYNC_INTERVAL_S", "300")),
         background=os.environ.get("EDGE_BACKGROUND", "1") != "0",
         secure_cookies=os.environ.get("EDGE_SECURE_COOKIES", "0") == "1",
+        allowed_hosts=tuple(h.strip() for h in os.environ.get("EDGE_ALLOWED_HOSTS", "").split(",")
+                            if h.strip()),
     )

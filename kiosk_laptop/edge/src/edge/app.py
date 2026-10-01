@@ -1,13 +1,22 @@
 """The edge app factory. State is built eagerly (not in lifespan) so tests
 driving the app through httpx.ASGITransport — which runs no lifespan — see
-the same app the container runs; lifespan closes the upstream client and store on shutdown (and, later, runs background work)."""
+the same app the container runs. The lifespan starts the background
+probe/drain/sync loop and, on shutdown, stops it and closes the upstream
+client and the store.
+
+Routing: the edge's own routers and /config.js come first; the catch-all
+proxies /auth, /kiosk and /system to the cloud (never /edge, and never a
+path with a `.`/`..` segment or an encoded slash) and serves the kiosk's
+web files for everything else. Only local Host names are answered."""
 
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from urllib.parse import unquote
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import PlainTextResponse
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from edge import outbox, static
 from edge.background import Background
@@ -24,6 +33,17 @@ from edge.sync import Syncer
 from edge.upstream import Upstream
 
 API_PREFIXES = ("/auth/", "/kiosk/", "/system/", "/edge/")
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]", "edge.test")  # edge.test: the test client
+
+
+def escapes(request: Request) -> bool:
+    """A `.`/`..` segment (however encoded) or an encoded slash: the cloud
+    would resolve it to some other path than the one checked here."""
+    raw = request.scope.get("raw_path") or request.url.path.encode()
+    raw_path = raw.decode("latin-1").split("?", 1)[0]
+    if "%2f" in raw_path.lower() or "%5c" in raw_path.lower() or "\\" in raw_path:
+        return True
+    return any(unquote(seg) in (".", "..") for seg in raw_path.split("/"))
 
 
 def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
@@ -50,6 +70,8 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
 
     app = FastAPI(lifespan=lifespan, title="ServerSherpa Kiosk Edge", docs_url=None, redoc_url=None,
                   openapi_url=None)
+    app.add_middleware(TrustedHostMiddleware,
+                       allowed_hosts=[*LOCAL_HOSTS, *settings.allowed_hosts])
     app.state.settings = settings
     app.state.identity = load_or_create(settings.data_dir)
     app.state.store = Store(settings.data_dir / "edge.db")
@@ -81,6 +103,8 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def catch_all(request: Request, full_path: str) -> Response:
         path = "/" + full_path
+        if path.startswith(API_PREFIXES) and escapes(request):
+            return Response(status_code=404)  # never proxied
         if path.startswith("/edge/"):
             return Response(status_code=404)  # the laptop's own namespace: never proxied
         if path.startswith(API_PREFIXES):

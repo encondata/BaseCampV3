@@ -41,3 +41,26 @@ async def test_lifespan_starts_and_stops_runner(settings, cloud):
         task = bg_app.state.background._task
         assert task is not None and not task.done()
     assert task.cancelled()
+
+
+async def test_a_wake_during_a_tick_is_not_lost(settings, cloud):
+    import asyncio
+    bg_app = create_app(dataclasses.replace(settings, background=False, probe_interval_s=30))
+    bg = Background(bg_app.state)
+    ticks = []
+
+    async def tick(now):
+        ticks.append(now)
+        if len(ticks) == 1:
+            bg_app.state.outbox_wake.set()        # work queued while this tick ran
+
+    bg.tick = tick
+    bg.start()
+    try:
+        for _ in range(50):
+            if len(ticks) >= 2:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        await bg.stop()
+    assert len(ticks) >= 2                         # woke at once, not after 30 s

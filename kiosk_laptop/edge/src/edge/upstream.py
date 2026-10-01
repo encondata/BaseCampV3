@@ -12,10 +12,10 @@ concurrent requests from both spending one rotating refresh token."""
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-
 from http.cookiejar import DefaultCookiePolicy
 
 import httpx
+from cryptography.fernet import InvalidToken
 
 from edge.config import Settings
 from edge.crypto import Keys, decrypt, encrypt
@@ -126,16 +126,25 @@ class Upstream:
         return [r["person_id"] for r in
                 self.store.all("SELECT person_id FROM cloud_sessions WHERE ending = 1")]
 
+    def _decrypt(self, person_id: str, value: str) -> str | None:
+        """A token this key can't read (edge.key replaced, row corrupted) is
+        dropped: the person simply has no cloud session until they sign in."""
+        try:
+            return decrypt(self.keys, value)
+        except InvalidToken:
+            self.drop_session(person_id)
+            return None
+
     def _refresh_token(self, person_id: str) -> str | None:
         row = self.store.one("SELECT refresh_enc FROM cloud_sessions WHERE person_id = ?",
                              (person_id,))
-        return decrypt(self.keys, row["refresh_enc"]) if row else None
+        return self._decrypt(person_id, row["refresh_enc"]) if row else None
 
     def _fresh_access(self, person_id: str) -> str | None:
         row = self.store.one("SELECT access_enc, access_expires_at FROM cloud_sessions "
                              "WHERE person_id = ?", (person_id,))
         if row and row["access_enc"] and row["access_expires_at"] > now_iso():
-            return decrypt(self.keys, row["access_enc"])
+            return self._decrypt(person_id, row["access_enc"])
         return None
 
     async def _refresh(self, person_id: str, stale: str | None) -> str | None:
@@ -181,8 +190,12 @@ class Upstream:
         return resp
 
     async def end_session(self, person_id: str) -> bool:
+        """Log the person's ENDING cloud session out and drop it. A session
+        that is no longer ending (they signed in again) is left alone."""
         async with self._locks.setdefault(person_id, asyncio.Lock()):
-            refresh_token = self._refresh_token(person_id)
+            row = self.store.one("SELECT refresh_enc FROM cloud_sessions "
+                                 "WHERE person_id = ? AND ending = 1", (person_id,))
+            refresh_token = self._decrypt(person_id, row["refresh_enc"]) if row else None
             if refresh_token is None:
                 return True
             try:
@@ -190,5 +203,8 @@ class Upstream:
                                    headers={"Cookie": f"{REFRESH_COOKIE}={refresh_token}"})
             except CloudOffline:
                 return False
-            self.drop_session(person_id)
+            # only the session that was ending: a sign-in that landed while
+            # the logout was in flight saved a fresh one (ending = 0)
+            self.store.run("DELETE FROM cloud_sessions WHERE person_id = ? AND ending = 1",
+                           (person_id,))
             return True

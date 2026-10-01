@@ -12,6 +12,19 @@ import { ApiError, renameLaptopKiosk } from '../lib/api';
 import { getIdentity, setKioskName, setLaptopName } from '../lib/identity';
 import { isLaptop, platform } from '../lib/platform';
 
+/** What a refused laptop rename says. */
+function renameErrorText(err: unknown): string {
+  const code = err instanceof ApiError ? err.code : 'network';
+  if (code === 'bad_name') return 'Enter a name between 1 and 80 characters.';
+  if (code === 'network' || code === 'edge_offline') {
+    return "Can't reach this laptop's edge service. Try again.";
+  }
+  if (code === 'forbidden' || code === 'not_authenticated') {
+    return 'Only an admin can rename this laptop.';
+  }
+  return `Couldn't rename this laptop (${code}).`;
+}
+
 export default function ThisKioskPanel() {
   const { status, heartbeatNow, isAdmin } = useKioskAuth();
   const laptop = isLaptop();
@@ -34,9 +47,7 @@ export default function ThisKioskPanel() {
         },
         (err) => {
           setSaved(false);
-          setError(err instanceof ApiError && err.code === 'bad_name'
-            ? 'Enter a name between 1 and 80 characters.'
-            : 'Only an admin can rename this laptop.');
+          setError(renameErrorText(err));
         },
       );
       return;

@@ -39,12 +39,14 @@ def passthrough(resp: httpx.Response) -> Response:
 def adopt(state, resp: httpx.Response, data: dict) -> tuple[dict, str]:
     person_id = str(data["person"]["id"])
     cloud_refresh = refresh_cookie_from(resp)
-    if cloud_refresh:
-        state.upstream.save_session(person_id, refresh_token=cloud_refresh,
-                                    access_token=data["access_token"],
-                                    expires_in=data["expires_in"])
-        if outbox.release_waiting(state.store, person_id):
-            state.outbox_wake.set()
+    if not cloud_refresh:
+        # without it the edge could never act as this person: issue nothing
+        raise err(502, "edge_bad_cloud")
+    state.upstream.save_session(person_id, refresh_token=cloud_refresh,
+                                access_token=data["access_token"],
+                                expires_in=data["expires_in"])
+    if outbox.release_waiting(state.store, person_id):
+        state.outbox_wake.set()
     return sessions.issue(state.store, state.keys, template=sessions.template_from(data),
                           offline=False, expires_at=data["session_expires_at"])
 

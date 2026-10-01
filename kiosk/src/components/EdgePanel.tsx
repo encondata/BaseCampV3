@@ -91,8 +91,8 @@ export default function EdgePanel() {
           <p className="page-hint">
             {o.queued + o.sending} waiting · {o.sent} sent · {o.failed} failed · {o.rejected} rejected
           </p>
-          {status.waiting.map((w) => (
-            <p key={w.person_name} className="page-hint">
+          {status.waiting.map((w, i) => (
+            <p key={`${w.person_name}-${i}`} className="page-hint">
               {w.count} scans waiting for {w.person_name} to sign in online
             </p>
           ))}

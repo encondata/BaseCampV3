@@ -6,9 +6,9 @@ in online again."""
 import json
 
 import httpx
+from tests.conftest import session_out
 
 from edge import outbox
-from tests.conftest import session_out
 
 LOGIN = {"email": "jane@example.com", "password": "CorrectHorse9!"}
 ASSETS = "/kiosk/sync/assets?initiative_id=m-1"

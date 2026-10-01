@@ -101,8 +101,11 @@ def refresh(store: Store, keys: Keys, refresh_token: str) -> tuple[dict, str] | 
     if row is None:
         return None
     new_refresh = secrets.token_urlsafe(32)
-    store.run("UPDATE edge_sessions SET refresh_hash = ? WHERE id = ?",
-              (_hash(new_refresh), row["id"]))
+    # compare-and-swap: two requests that read the same row rotate it once
+    rotated = store.run("UPDATE edge_sessions SET refresh_hash = ? WHERE id = ? AND refresh_hash = ?",
+                        (_hash(new_refresh), row["id"], _hash(refresh_token)))
+    if rotated == 0:
+        return None
     return (_out(json.loads(row["session_json"]), _access_token(keys, row["id"]),
                  row["expires_at"]), new_refresh)
 
