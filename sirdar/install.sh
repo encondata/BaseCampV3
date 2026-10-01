@@ -583,7 +583,7 @@ docker_pkgs_debian() {
     return 1
   fi
   printf 'deb [arch=%s signed-by=%s] https://download.docker.com/linux/%s %s stable\n' \
-    "$arch" "$key" "$repo" "$codename" >"$tmp/docker.list" || return 1
+    "$arch" "$key" "$repo" "$codename" >"$tmp/docker.list" || { DOCKER_PKG_ERR="writing the apt source file $list failed"; return 1; }
   install_root_file "$tmp/docker.list" "$list" 0644 || { DOCKER_PKG_ERR="writing $list failed"; return 1; }
   if pkg_step "apt-get update" pkg_refresh \
      && pkg_step "apt-get install" pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; then
@@ -722,6 +722,20 @@ install_docker_static() {
   for n in dockerd docker; do
     is_elf "$tmp/docker/$n" || die "docker-$ver.tgz doesn't contain a usable $n."
   done
+  # A foreign core binary would leave a half-Docker that fails later at the
+  # daemon wait, so stop before installing anything.
+  if [ "${SIRDAR_FORCE_STATIC:-0}" != 1 ]; then
+    local blocked=()
+    for n in docker dockerd containerd runc; do
+      if [ -e "$tmp/docker/$n" ] && [ -e "/usr/local/bin/$n" ] && ! static_ours "$n"; then
+        blocked+=("/usr/local/bin/$n")
+      fi
+    done
+    if [ "${#blocked[@]}" -gt 0 ]; then
+      rm -rf "$tmp/docker"
+      die "Can't install Docker $ver's binaries: ${blocked[*]} already exist and weren't put there by this installer, so Docker would be half-installed. Nothing was changed. To replace them with Docker $ver's, re-run with SIRDAR_FORCE_STATIC=1 (it overwrites those files); otherwise remove or rename them yourself."
+    fi
+  fi
   as_root mkdir -p /usr/local/bin
   for b in "$tmp"/docker/*; do
     n=${b##*/}
