@@ -11,6 +11,10 @@ from sirdar_api.api.deps import AuthContext, DbSession, require_permission
 from sirdar_api.db.models import PermissionOverride, Role, RolePermission, User, UserRole
 from sirdar_api.services.audit import audit
 
+# The developer role can never lose these: every devtools action, plus the
+# ability to see and change Roles & access (so it can always repair itself).
+DEVELOPER_CORE = {("devtools", a) for a in ACTIONS} | {("access", "view"), ("access", "change")}
+
 router = APIRouter(prefix="/access", tags=["access"])
 
 
@@ -59,14 +63,22 @@ async def put_role_matrix(name: str, body: MatrixIn, db: DbSession,
             ).scalar_one_or_none()
     if role is None:
         raise _err(404, "role_not_found")
-    if name in actor.access.role_names:
-        raise _err(403, "cannot_edit_own_role")
-    if not can_touch_rank(actor.access.max_rank, role.rank):
-        raise _err(403, "rank_too_low")
+    is_developer_role = name == "developer"
+    if is_developer_role and "developer" not in actor.access.role_names:
+        raise _err(403, "developer_role_locked")
+    # The developer role is the one exception to the own-role and rank rules:
+    # only developers can edit it, and they hold it.
+    if not is_developer_role:
+        if name in actor.access.role_names:
+            raise _err(403, "cannot_edit_own_role")
+        if not can_touch_rank(actor.access.max_rank, role.rank):
+            raise _err(403, "rank_too_low")
     _check_names(body.matrix)
     desired = {(res, a) for res, acts in body.matrix.items() for a, on in acts.items() if on}
     if name != "developer" and any(REGISTRY[res].developer_only for res, _ in desired):
         raise _err(422, "developer_only_resource")
+    if is_developer_role and not DEVELOPER_CORE <= desired:
+        raise _err(422, "developer_role_core")
     if ("access", "view") not in desired:
         raise _err(422, "access_view_locked")
     current = set((await db.execute(select(RolePermission.resource, RolePermission.action)
@@ -112,11 +124,23 @@ async def put_overrides(person_id: uuid.UUID, body: OverridesIn, db: DbSession,
         raise _err(404, "person_not_found")
     if person_id == actor.user.person_id:
         raise _err(403, "cannot_target_self")
-    if not can_touch_rank(actor.access.max_rank, (await resolve_access(db, person_id)).max_rank):
-        raise _err(403, "rank_too_low")
+    target_access = await resolve_access(db, person_id)
     _check_names(body.overrides)
     wanted = {(res, a): allow for res, acts in body.overrides.items()
               for a, allow in acts.items() if allow is not None}
+    # Error precedence (deterministic): person_not_found, cannot_target_self,
+    # unknown names (422), developer_role_locked, developer_role_core,
+    # rank_too_low, developer_only_resource, grant_exceeds_own.
+    # A developer's core cells (DEVELOPER_CORE) are protected per user, too:
+    # only developers may set any override on them, and nobody may deny them.
+    if "developer" in target_access.role_names:
+        core_wanted = {cell: allow for cell, allow in wanted.items() if cell in DEVELOPER_CORE}
+        if core_wanted and "developer" not in actor.access.role_names:
+            raise _err(403, "developer_role_locked")
+        if not all(core_wanted.values()):
+            raise _err(422, "developer_role_core")
+    if not can_touch_rank(actor.access.max_rank, target_access.max_rank):
+        raise _err(403, "rank_too_low")
     if any(REGISTRY[res].developer_only for res, _ in wanted):
         raise _err(422, "developer_only_resource")
     before = await _overrides(db, person_id)

@@ -58,7 +58,15 @@ async def test_lockout_after_ten_failures(db):
             await auth.login(db, email=user.email, password="wrong")
     await db.refresh(user)
     assert user.locked_until is not None and user.failed_login_count == 0
+    # during the lock every password gets the same answer and adds no strike
+    assert await _code(db, user, password="wrong") == "account_locked"
+    assert await _code(db, user, password="still wrong") == "account_locked"
+    await db.refresh(user)
+    assert user.failed_login_count == 0
     assert await _code(db, user) == "account_locked"
+    reasons = list(await db.scalars(select(AuditLog.changes).where(
+        AuditLog.action == "login_failed", AuditLog.entity_id == str(user.person_id))))
+    assert {"reason": "account_locked"} in reasons
 
 
 async def test_concurrent_wrong_passwords_all_count(db):

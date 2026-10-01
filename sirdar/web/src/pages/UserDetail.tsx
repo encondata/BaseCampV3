@@ -98,17 +98,21 @@ export default function UserDetail() {
           )}
         </div>
         {actionError && <p className="form-error" role="alert">{actionError}</p>}
-        <DataTable
-          ariaLabel="Active sessions"
-          columns={[{ key: 'started', label: 'Started' }, { key: 'expires', label: 'Expires' },
-                    { key: 'ip', label: 'IP', mono: true }, { key: 'agent', label: 'Browser' }]}
-          rows={detail.sessions.map((s) => ({
-            key: s.id,
-            cells: [new Date(s.created_at).toLocaleString(), new Date(s.expires_at).toLocaleString(),
-                    s.ip_address ?? '—', s.user_agent ?? '—'],
-          }))}
-          emptyText="No active sessions."
-        />
+        {detail.can_manage ? (
+          <DataTable
+            ariaLabel="Active sessions"
+            columns={[{ key: 'started', label: 'Started' }, { key: 'expires', label: 'Expires' },
+                      { key: 'ip', label: 'IP', mono: true }, { key: 'agent', label: 'Browser' }]}
+            rows={detail.sessions.map((s) => ({
+              key: s.id,
+              cells: [new Date(s.created_at).toLocaleString(), new Date(s.expires_at).toLocaleString(),
+                      s.ip_address ?? '—', s.user_agent ?? '—'],
+            }))}
+            emptyText="No active sessions."
+          />
+        ) : (
+          <p className="page-hint">Session details are hidden for people who outrank you.</p>
+        )}
       </section>
 
       {editing && (
