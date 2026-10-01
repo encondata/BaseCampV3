@@ -138,8 +138,12 @@ async def test_token_with_foreign_sub_rejected(client, db):
 async def test_old_access_token_dies_after_refresh(client, db):
     await make_user(db)
     old = (await _login(client)).json()["access_token"]
-    new = (await client.post("/api/auth/refresh")).json()["access_token"]
+    # After refresh, the old access token still works (rotation alone doesn't end it)
+    await client.post("/api/auth/refresh")
     h = lambda t: {"Authorization": f"Bearer {t}"}
-    stale = await client.get("/api/auth/me", headers=h(old))
-    assert stale.status_code == 401 and stale.json()["detail"]["code"] == "session_ended"
-    assert (await client.get("/api/auth/me", headers=h(new))).status_code == 200
+    still_works = await client.get("/api/auth/me", headers=h(old))
+    assert still_works.status_code == 200
+    # After logout, the old token is revoked along with the family
+    await client.post("/api/auth/logout")
+    revoked = await client.get("/api/auth/me", headers=h(old))
+    assert revoked.status_code == 401 and revoked.json()["detail"]["code"] == "session_ended"
