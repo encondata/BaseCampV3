@@ -37,6 +37,8 @@ Never prompt.
 Remove the kiosk (the data folder is kept).
 .PARAMETER PurgeData
 With -Uninstall, also delete the data folder (asks you to type DELETE).
+.PARAMETER StartFresh
+Don't look for a phase-1 kiosk's data (the kiosk gets a new identity).
 .PARAMETER Resume
 Continue an install after a restart (set up by the installer itself).
 .PARAMETER LibraryOnly
@@ -56,6 +58,7 @@ param(
     [switch]$Yes,
     [switch]$Uninstall,
     [switch]$PurgeData,
+    [switch]$StartFresh,
     [switch]$Resume,
     [switch]$LibraryOnly
 )
@@ -63,6 +66,10 @@ param(
 # -- Constants --------------------------------------------------------------
 $DefaultApiUrl = 'https://api.serversherpa.com'
 $LegacyProject = 'serversherpa-kiosk-laptop'
+$LegacyFilter = "label=com.docker.compose.project=$LegacyProject"
+# A Go template raw string (backquotes) for "/data": Windows PowerShell 5.1
+# drops double quotes inside native command arguments.
+$LegacyMountFormat = '{{range .Mounts}}{{if eq .Destination `/data`}}{{.Source}}{{end}}{{end}}'
 $KioskContainer = 'serversherpa-kiosk-edge-1'     # project "serversherpa-kiosk", service "edge"
 $KioskUrl = 'http://localhost:8090'
 $ResumeValueName = 'ServerSherpaKioskInstall'
@@ -612,7 +619,8 @@ function Stop-ForRestart {
 # -- Docker ---------------------------------------------------------------------
 # Invoke-Docker -Arguments ARGS [-Stream]: every docker call goes through here
 # (Pester mocks it). Throws when docker fails; returns its output otherwise.
-# -Stream shows the output (pull progress) instead of returning it.
+# -Stream shows the output (pull progress) instead of returning it; a failure
+# still carries it in the error.
 function Invoke-Docker {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string[]]$Arguments, [switch]$Stream)
@@ -623,7 +631,8 @@ function Invoke-Docker {
     $out = @()
     try {
         if ($Stream) {
-            & docker @Arguments | Out-Host
+            # Shown as it comes (pull progress), and kept for the error message.
+            $out = @(& docker @Arguments 2>&1 | ForEach-Object { $line = "$_"; $line | Out-Host; $line })
         } else {
             $out = @(& docker @Arguments 2>&1 | ForEach-Object { "$_" })
         }
@@ -632,7 +641,7 @@ function Invoke-Docker {
         $ErrorActionPreference = $eap
     }
     if ($code -ne 0) { throw "docker $($Arguments -join ' ') failed (exit $code). $($out -join ' ')" }
-    $out
+    if (-not $Stream) { $out }
 }
 
 function Test-DockerEngine {
@@ -941,10 +950,96 @@ function Get-LegacyDataDir {
     $UserProfile + '\ServerSherpaKiosk'
 }
 
-# The phase-1 manual install holds port 8090.
+# The phase-1 kiosk's containers, by their compose project label (not
+# `compose -p ... stop`, which depends on the folder it runs in).
+function Get-LegacyContainerIds {
+    try { @(Invoke-Docker -Arguments @('ps', '-a', '-q', '--filter', $LegacyFilter) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) }
+    catch { @() }
+}
+
+# Get-LegacyMountSource ID: the host folder that container mounts at /data.
+function Get-LegacyMountSource {
+    param([Parameter(Mandatory = $true)][string]$Id)
+    try { return ((@(Invoke-Docker -Arguments @('inspect', '-f', $LegacyMountFormat, $Id)) -join '').Trim()) } catch { return '' }
+}
+
+# The phase-1 kiosk holds port 8090; stop it (nothing to stop is fine).
 function Stop-LegacyKiosk {
-    try { Invoke-Docker -Arguments @('compose', '-p', $LegacyProject, 'stop') | Out-Null }
+    $ids = @(Get-LegacyContainerIds)
+    if ($ids.Count -eq 0) { return }
+    try { Invoke-Docker -Arguments (@('stop') + $ids) | Out-Null }
     catch { Write-Verbose 'No phase-1 kiosk to stop.' }
+}
+
+# ConvertFrom-DockerMountSource SOURCE: the Windows folder behind a bind
+# mount's Source as Docker Desktop reports it, or '' for a folder inside WSL.
+function ConvertFrom-DockerMountSource {
+    param([AllowEmptyString()][string]$Source)
+    if ($Source -match '^[A-Za-z]:[\\/]') { return $Source.Replace('/', '\') }
+    if ($Source -match '^/(?:run/desktop/mnt/host|host_mnt|mnt/host)/([A-Za-z])(/.*)?$') {
+        $rest = $Matches[2]
+        if (-not $rest) { $rest = '/' }
+        return $Matches[1].ToUpper() + ':' + $rest.Replace('/', '\')
+    }
+    ''
+}
+
+# Find-LegacyKioskData: @{ Dir; Unreadable }. Dir is the phase-1 data folder
+# if it holds identity.json. The old container's /data mount wins over the
+# profile-folder guess (the guess is only for when no old container exists);
+# a mount Windows can't read (a WSL folder, a missing one) sets Unreadable.
+function Find-LegacyKioskData {
+    param([string]$UserProfile)
+    $r = @{ Dir = ''; Unreadable = '' }
+    if ($env:EDGE_DATA_HOST_DIR) {
+        if (Test-Path -LiteralPath (Join-KioskPath $env:EDGE_DATA_HOST_DIR 'identity.json') -PathType Leaf) { $r.Dir = $env:EDGE_DATA_HOST_DIR }
+        return $r
+    }
+    $src = ''
+    foreach ($id in @(Get-LegacyContainerIds)) {
+        $src = Get-LegacyMountSource -Id $id
+        if ($src) { break }
+    }
+    if ($src) {
+        $win = ConvertFrom-DockerMountSource -Source $src
+        if ($win -and (Test-Path -LiteralPath $win -PathType Container)) {
+            if (Test-Path -LiteralPath (Join-KioskPath $win 'identity.json') -PathType Leaf) { $r.Dir = $win }
+        } else {
+            $r.Unreadable = $src
+        }
+        return $r
+    }
+    $guess = Get-LegacyDataDir -UserProfile $UserProfile
+    if (Test-Path -LiteralPath (Join-KioskPath $guess 'identity.json') -PathType Leaf) { $r.Dir = $guess }
+    $r
+}
+
+# Invoke-LegacyMigration: the one-time phase-1 copy. Stops before the new
+# kiosk starts when the old data can't be read, unless -StartFresh. $true if copied.
+function Invoke-LegacyMigration {
+    param([string]$UserProfile, [Parameter(Mandatory = $true)][string]$DataDir, [switch]$StartFresh)
+    $found = Find-LegacyKioskData -UserProfile $UserProfile
+    if ($found.Unreadable) {
+        $where = $found.Unreadable
+        if ((Test-Path -LiteralPath $DataDir -PathType Container) -and (Get-ChildItem -LiteralPath $DataDir -Force | Select-Object -First 1)) {
+            Write-Info "Keeping the existing data in $DataDir (earlier kiosk data in $where was not copied)."
+            return $false
+        }
+        if ($StartFresh) {
+            Write-Warn "Starting fresh (-StartFresh): the earlier kiosk's data in $where was not copied."
+            return $false
+        }
+        Stop-LegacyKiosk
+        $hint = ''
+        if ($where.StartsWith('/')) {
+            $hint = ' From Windows that folder is ' + '\\wsl$\<distro>' + $where.Replace('/', '\') + ' (<distro> is the Linux distribution it ran in, for example Ubuntu).'
+        }
+        throw ("The earlier kiosk keeps its data in $where, which this installer can't read.$hint The old kiosk was stopped. " +
+            "Copy everything in that folder into $DataDir, then run the install command again. To start without it " +
+            "(the kiosk gets a new identity, and scans the old one hadn't uploaded stay behind), run it again with -StartFresh.")
+    }
+    if (-not $found.Dir) { return $false }
+    Copy-LegacyKioskData -LegacyDir $found.Dir -DataDir $DataDir
 }
 
 # Copy-LegacyKioskData: one-time copy of the phase-1 data into an absent or
@@ -974,29 +1069,118 @@ function Get-KioskJson {
     } catch { return $null }
 }
 
-# Start-Kiosk: pull, start, wait until healthy, return /edge/identity (or $null).
-function Start-Kiosk {
-    param([Parameter(Mandatory = $true)][string]$InstallDir, [int]$TimeoutSeconds = 120, [int]$PollSeconds = 3)
-    $compose = Join-KioskPath $InstallDir 'docker-compose.yml'
-    Stop-LegacyKiosk
-    Write-Info 'Downloading the kiosk image'
-    try { Invoke-Docker -Arguments @('compose', '-f', $compose, 'pull') -Stream }
-    catch { throw "Couldn't download the kiosk image. Check the network, then re-run." }
-    Write-Info 'Starting the kiosk'
-    try { Invoke-Docker -Arguments @('compose', '-f', $compose, 'up', '-d') -Stream }
-    catch { throw "The kiosk didn't start. See the messages above, then re-run." }
+# update-state.json, shared with update.ps1 (same keys and format).
+function Read-InstallUpdateState {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $st = @{ Previous = ''; Rejected = '' }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $st }
+    try {
+        $raw = [IO.File]::ReadAllText($Path)
+        if ($raw.Trim()) {
+            $o = $raw | ConvertFrom-Json
+            if ($o.previous_image) { $st.Previous = [string]$o.previous_image }
+            if ($o.rejected_image) { $st.Rejected = [string]$o.rejected_image }
+        }
+    } catch { Write-Warn "Couldn't read $Path; treating it as empty." }
+    $st
+}
+
+# Write-InstallUpdateState: phase=done, previous_image and rejected_image kept.
+# Written in place (not renamed), so the signed-in user's write permission on
+# this one file stays (Install-LoginItems sets it).
+function Write-InstallUpdateState {
+    param([Parameter(Mandatory = $true)][string]$Path, [hashtable]$State, [string]$ImageRef)
+    $o = [ordered]@{
+        previous_image = $State.Previous
+        image          = $ImageRef
+        rejected_image = $State.Rejected
+        phase          = 'done'
+        updated_at     = (Get-Date -Format 'yyyy-MM-ddTHH:mm:sszzz')
+    }
+    try { [IO.File]::WriteAllText($Path, (($o | ConvertTo-Json -Compress) + "`n"), (New-Object Text.UTF8Encoding $false)) }
+    catch { Write-Warn "Couldn't write $Path." }
+}
+
+# Wait-KioskContainerHealthy: @{ Healthy; Status }, checked at least once,
+# then every PollSeconds until the timeout.
+function Wait-KioskContainerHealthy {
+    param([int]$TimeoutSeconds = 120, [int]$PollSeconds = 3)
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ($true) {
         $status = ''
-        try { $status = (Invoke-Docker -Arguments @('inspect', '-f', '{{.State.Health.Status}}', $KioskContainer)) -join '' } catch { $status = '' }
-        if ($status.Trim() -eq 'healthy') { break }
+        try { $status = ((Invoke-Docker -Arguments @('inspect', '-f', '{{.State.Health.Status}}', $KioskContainer)) -join '').Trim() } catch { $status = '' }
+        if ($status -eq 'healthy') { return @{ Healthy = $true; Status = $status } }
         if ((Get-Date) -ge $deadline) {
-            $shown = $status.Trim()
-            if (-not $shown) { $shown = 'unknown' }
-            throw "The kiosk didn't become healthy in time (status: $shown). See: docker compose -f `"$compose`" logs edge"
+            if (-not $status) { $status = 'unknown' }
+            return @{ Healthy = $false; Status = $status }
         }
         Start-Sleep -Seconds $PollSeconds
     }
+}
+
+function Get-ImageId {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    try { return ((@(Invoke-Docker -Arguments $Arguments) -join '').Trim()) } catch { return '' }
+}
+
+# Start-KioskContainer: compose up -d, then the health wait. @{ Healthy; Status }.
+function Start-KioskContainer {
+    param([string]$Compose, [int]$TimeoutSeconds, [int]$PollSeconds)
+    try { Invoke-Docker -Arguments @('compose', '-f', $Compose, 'up', '-d') -Stream | Out-Null }
+    catch { return @{ Healthy = $false; Status = "didn't start" } }
+    Wait-KioskContainerHealthy -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds
+}
+
+# Start-Kiosk: pull, start, wait until healthy, return /edge/identity (or
+# $null). Respects update-state.json like the nightly update: a version that
+# failed its health check here before is not started again, and a new version
+# that doesn't get healthy is rolled back.
+function Start-Kiosk {
+    param([Parameter(Mandatory = $true)][string]$InstallDir, [Parameter(Mandatory = $true)][string]$ImageRef,
+        [string]$Channel = 'stable', [int]$TimeoutSeconds = 120, [int]$PollSeconds = 3)
+    $compose = Join-KioskPath $InstallDir 'docker-compose.yml'
+    $statePath = Join-KioskPath $InstallDir 'update-state.json'
+    $logs = "See: docker compose -f `"$compose`" logs edge"
+    Stop-LegacyKiosk
+    $prev = Get-ImageId -Arguments @('inspect', '-f', '{{.Image}}', $KioskContainer)
+    Write-Info 'Downloading the kiosk image'
+    try { Invoke-Docker -Arguments @('compose', '-f', $compose, 'pull') -Stream | Out-Null }
+    catch {
+        if ($_.Exception.Message -match 'manifest unknown|not found|denied|unauthorized') {
+            $hint = 'try -Channel edge, or ask your administrator'
+            if ($Channel -eq 'edge') { $hint = 'ask your administrator' }
+            throw "The $Channel image isn't published yet, or its package isn't public $Dash $hint."
+        }
+        throw "Couldn't download the kiosk image. Check the network, then re-run."
+    }
+    $new = Get-ImageId -Arguments @('image', 'inspect', '-f', '{{.Id}}', $ImageRef)
+    $state = Read-InstallUpdateState -Path $statePath
+    if ($prev -and $new -and $new -ne $prev -and $new -eq $state.Rejected) {
+        Write-Warn 'The newest version failed its health check on this laptop before; keeping the current one.'
+        # The channel tag back on the running image, so compose doesn't recreate it.
+        try { Invoke-Docker -Arguments @('tag', $prev, $ImageRef) | Out-Null }
+        catch { throw "Couldn't keep the current version (docker tag failed). $($_.Exception.Message)" }
+        $new = $prev
+    }
+    Write-Info 'Starting the kiosk'
+    $r = Start-KioskContainer -Compose $compose -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds
+    if (-not $r.Healthy) {
+        if ($prev -and $prev -ne $new) {
+            Write-Warn "The new version didn't become healthy (status: $($r.Status)); going back to the previous one."
+            $state.Rejected = $new   # the nightly update won't try it again
+            $back = $false
+            try { Invoke-Docker -Arguments @('tag', $prev, $ImageRef) | Out-Null; $back = $true } catch { $back = $false }
+            if ($back) { $r = Start-KioskContainer -Compose $compose -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds }
+            Write-InstallUpdateState -Path $statePath -State $state -ImageRef $ImageRef
+            if ($back -and $r.Healthy) {
+                throw "The new kiosk version didn't become healthy, so the installer rolled back to the previous version, which is running. $logs"
+            }
+            throw "The new kiosk version didn't become healthy, and the previous version isn't healthy either (status: $($r.Status)). $logs"
+        }
+        throw "The kiosk didn't become healthy in time (status: $($r.Status)). $logs"
+    }
+    # A re-run ends any update a crash left half done.
+    Write-InstallUpdateState -Path $statePath -State $state -ImageRef $ImageRef
     $identity = Get-KioskJson -Path '/edge/identity'
     if (-not $identity) { Write-Warn "The kiosk is running but didn't answer $KioskUrl/edge/identity yet." }
     Write-Info 'The kiosk is running.'
@@ -1368,7 +1552,7 @@ function Invoke-KioskInstaller {
             foreach ($n in $KioskEnvNames) {
                 if ($state.arguments.ContainsKey("env:$n")) { [Environment]::SetEnvironmentVariable($n, [string]$state.arguments["env:$n"]) }
             }
-            foreach ($k in @('ApiUrl', 'PortalUrl', 'Channel', 'Yes')) {
+            foreach ($k in @('ApiUrl', 'PortalUrl', 'Channel', 'Yes', 'StartFresh')) {
                 if ($state.arguments.ContainsKey($k) -and -not $Parameters.ContainsKey($k)) { $Parameters[$k] = $state.arguments[$k] }
             }
             if ($Parameters.Yes) { $script:AssumeYes = $true }
@@ -1413,7 +1597,7 @@ function Invoke-KioskInstaller {
         Test-ApiReachable -ApiUrl $cfg.EDGE_CLOUD_API_URL
 
         # What a resumed run needs: the answers and the environment.
-        $resumeArgs = @{ ApiUrl = $cfg.EDGE_CLOUD_API_URL; PortalUrl = $cfg.EDGE_PORTAL_URL; Channel = $cfg.KIOSK_CHANNEL; Yes = [bool]$Parameters.Yes }
+        $resumeArgs = @{ ApiUrl = $cfg.EDGE_CLOUD_API_URL; PortalUrl = $cfg.EDGE_PORTAL_URL; Channel = $cfg.KIOSK_CHANNEL; Yes = [bool]$Parameters.Yes; StartFresh = [bool]$Parameters.StartFresh }
         foreach ($n in $KioskEnvNames) {
             $v = [Environment]::GetEnvironmentVariable($n)
             if ($v) { $resumeArgs["env:$n"] = $v }
@@ -1431,10 +1615,11 @@ function Invoke-KioskInstaller {
         New-KioskDataDir -DataDir $cfg.KIOSK_DATA_DIR -DesktopUser $desktopUser
         Write-KioskConfig -Path (Join-KioskPath $installDir 'config.env') -Config $cfg
         $compose = Join-KioskPath $installDir 'docker-compose.yml'
-        Write-TextFile -Path $compose -Text (Get-ComposeText -ImageRef (Get-ImageRef -Channel $cfg.KIOSK_CHANNEL) -DataDir $cfg.KIOSK_DATA_DIR)
+        $imageRef = Get-ImageRef -Channel $cfg.KIOSK_CHANNEL
+        Write-TextFile -Path $compose -Text (Get-ComposeText -ImageRef $imageRef -DataDir $cfg.KIOSK_DATA_DIR)
         Set-KioskFileAcl -Path $compose
-        Copy-LegacyKioskData -LegacyDir (Get-LegacyDataDir -UserProfile $profilePath) -DataDir $cfg.KIOSK_DATA_DIR | Out-Null
-        $identity = Start-Kiosk -InstallDir $installDir
+        Invoke-LegacyMigration -UserProfile $profilePath -DataDir $cfg.KIOSK_DATA_DIR -StartFresh:([bool]$Parameters.StartFresh) | Out-Null
+        $identity = Start-Kiosk -InstallDir $installDir -ImageRef $imageRef -Channel $cfg.KIOSK_CHANNEL
         Install-LoginItems -InstallDir $installDir -DesktopUser $desktopUser
         Remove-ResumeRegistration -InstallDir $installDir
         Write-Summary -Identity $identity -Config $cfg -InstallDir $installDir

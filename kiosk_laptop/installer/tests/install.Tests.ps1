@@ -246,14 +246,15 @@ Describe 'Phase-1 data migration' {
         $legacy = Join-Path $TestDrive ([guid]::NewGuid().ToString())
         New-Item -ItemType Directory $legacy | Out-Null
         '{"serial":"K1"}' | Set-Content (Join-Path $legacy 'identity.json')
-        Mock Invoke-Docker {}
+        # the phase-1 container, found by its compose label
+        Mock Invoke-Docker { if ($Arguments[0] -eq 'ps') { 'abc123' } }
     }
     It 'copies into an absent data folder and stops the phase-1 kiosk' {
         $data = Join-Path $TestDrive ([guid]::NewGuid().ToString())
         Copy-LegacyKioskData -LegacyDir $legacy -DataDir $data | Should -BeTrue
         Test-Path (Join-Path $data 'identity.json') | Should -BeTrue
         Test-Path (Join-Path $legacy 'identity.json') | Should -BeTrue
-        Should -Invoke Invoke-Docker -ParameterFilter { $Arguments -contains 'stop' }
+        Should -Invoke Invoke-Docker -ParameterFilter { ($Arguments -join ' ') -eq 'stop abc123' }
     }
     It 'copies into an empty data folder' {
         $data = Join-Path $TestDrive ([guid]::NewGuid().ToString())
@@ -562,7 +563,7 @@ Describe 'Installer flow' {
         $env:KIOSK_DIR = $inst
         foreach ($f in @('Assert-64BitProcess', 'Assert-Admin', 'Assert-WindowsSupported', 'Set-KioskDirAcl', 'Test-ApiReachable',
                 'Add-DockerToPath', 'Install-DockerDesktop', 'Confirm-DockerUsersMember', 'Enable-DockerAutostart', 'Wait-DockerEngine',
-                'Assert-Compose', 'New-KioskDataDir', 'Write-KioskConfig', 'Set-KioskFileAcl', 'Copy-LegacyKioskData', 'Start-Kiosk',
+                'Assert-Compose', 'New-KioskDataDir', 'Write-KioskConfig', 'Set-KioskFileAcl', 'Copy-LegacyKioskData', 'Invoke-LegacyMigration', 'Start-Kiosk',
                 'Install-LoginItems', 'Remove-ResumeRegistration', 'Write-Summary', 'Uninstall-Kiosk')) {
             Mock $f {}
         }
@@ -593,6 +594,18 @@ Describe 'Installer flow' {
         Mock Assert-Admin { 1 }
         Invoke-KioskInstaller -Parameters @{ Yes = $true } | Should -Be 1
         Should -Invoke Get-DesktopUser -Times 0
+    }
+    It '-StartFresh reaches the phase-1 migration, and a resume keeps it' {
+        Invoke-KioskInstaller -Parameters @{ Yes = $true; StartFresh = $true } | Should -Be 0
+        Should -Invoke Invoke-LegacyMigration -Times 1 -ParameterFilter { $StartFresh }
+        Save-ResumeState -Path (Join-Path $inst 'install-state.json') -Step 'engine' -Arguments @{ StartFresh = $true; "env:KIOSK_DIR" = $inst }
+        $env:KIOSK_DIR = $null
+        Invoke-KioskInstaller -Parameters @{ Resume = $true } | Should -Be 0
+        Should -Invoke Invoke-LegacyMigration -Times 2 -Exactly -ParameterFilter { $StartFresh }
+    }
+    It 'passes the channel and image to Start-Kiosk' {
+        Invoke-KioskInstaller -Parameters @{ Yes = $true; Channel = 'edge' } | Should -Be 0
+        Should -Invoke Start-Kiosk -Times 1 -ParameterFilter { $Channel -eq 'edge' -and $ImageRef -like '*:edge' }
     }
     It 'uninstall reads only the data folder, so a damaged channel cannot block it' {
         "KIOSK_CHANNEL=nightly`nKIOSK_DATA_DIR=D:\KioskData`n" | Set-Content (Join-Path $inst 'config.env')
@@ -813,7 +826,7 @@ Describe 'Closing pause' {
         $env:KIOSK_DIR = $inst
         foreach ($f in @('Assert-64BitProcess', 'Assert-Admin', 'Assert-WindowsSupported', 'Set-KioskDirAcl', 'Test-ApiReachable',
                 'Add-DockerToPath', 'Install-DockerDesktop', 'Confirm-DockerUsersMember', 'Enable-DockerAutostart', 'Wait-DockerEngine',
-                'Assert-Compose', 'New-KioskDataDir', 'Write-KioskConfig', 'Set-KioskFileAcl', 'Copy-LegacyKioskData', 'Start-Kiosk',
+                'Assert-Compose', 'New-KioskDataDir', 'Write-KioskConfig', 'Set-KioskFileAcl', 'Copy-LegacyKioskData', 'Invoke-LegacyMigration', 'Start-Kiosk',
                 'Install-LoginItems', 'Remove-ResumeRegistration', 'Write-Summary')) {
             Mock $f {}
         }
@@ -1004,6 +1017,12 @@ Describe 'Invoke-Docker with a fake docker.cmd' -Skip:($IsWindows -eq $false) {
         { Invoke-Docker -Arguments @('compose', 'pull') } |
             Should -Throw -ExpectedMessage '*docker compose pull failed (exit 1)*fake-err compose pull*'
     }
+
+    It '-Stream shows the output and still puts it in the error when docker exits 1' {
+        $env:FAKE_DOCKER_EXIT = '1'
+        { Invoke-Docker -Arguments @('compose', 'pull') -Stream } |
+            Should -Throw -ExpectedMessage '*docker compose pull failed (exit 1)*fake-err compose pull*'
+    }
 }
 
 # -- final fix round ------------------------------------------------------------------
@@ -1022,5 +1041,170 @@ Describe 'URL schemes and portal derivation' {
     It 'derives the portal case-sensitively, like install.sh' {
         Get-PortalUrl -ApiUrl 'https://API.serversherpa.com' | Should -Be ''
         Get-PortalUrl -ApiUrl 'HTTPS://api.serversherpa.com' | Should -Be ''
+    }
+}
+
+Describe 'Start-Kiosk and update-state.json' {
+    BeforeAll {
+        # Fake docker for Start-Kiosk: records each call; health answers in turn (the last repeats).
+        function Invoke-FakeInstallDocker {
+            param([string[]]$Arguments)
+            $line = $Arguments -join ' '
+            $script:icalls.Add($line)
+            foreach ($p in $script:fk.Fail) { if ($line -like $p) { throw "docker $line failed (exit 1). $($script:fk.FailText)" } }
+            if ($line -like 'ps -a -q --filter *') { return $script:fk.Ps }
+            if ($line -like 'inspect -f {{range*') { return $script:fk.Mount }
+            if ($line -like 'inspect -f {{.Image}} *') {
+                if (-not $script:fk.Running) { throw "docker $line failed (exit 1). No such object" }
+                return $script:fk.Running
+            }
+            if ($line -like 'image inspect -f {{.Id}} *') { return $script:fk.Pulled }
+            if ($line -like 'inspect -f {{.State.Health.Status}} *') {
+                $i = [Math]::Min($script:fk.HealthIndex, $script:fk.Health.Count - 1)
+                $script:fk.HealthIndex++
+                return $script:fk.Health[$i]
+            }
+        }
+        function Write-InstallStateFixture {
+            param([hashtable]$Values)
+            $st = @{ previous_image = ''; image = ''; rejected_image = ''; phase = 'done' }
+            foreach ($k in $Values.Keys) { $st[$k] = $Values[$k] }
+            [IO.File]::WriteAllText((Join-Path $script:inst 'update-state.json'), ($st | ConvertTo-Json))
+        }
+        function Get-InstallStateFile { [IO.File]::ReadAllText((Join-Path $script:inst 'update-state.json')) | ConvertFrom-Json }
+        $script:Ref = 'ghcr.io/encondata/serversherpa-kiosk-laptop:stable'
+    }
+    BeforeEach {
+        $script:inst = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory $script:inst | Out-Null
+        $script:icalls = New-Object System.Collections.Generic.List[string]
+        $script:fk = @{ Ps = @(); Mount = ''; Running = 'sha256:old'; Pulled = 'sha256:new'; Health = @('healthy'); HealthIndex = 0; Fail = @(); FailText = '' }
+        Mock Invoke-Docker { Invoke-FakeInstallDocker -Arguments $Arguments }
+        Mock Get-KioskJson { [pscustomobject]@{ serial = 'K1' } }
+        Mock Start-Sleep {}
+        Mock Write-Warn {}
+    }
+    It 'stops the phase-1 kiosk by its compose label, never compose -p' {
+        $script:fk.Ps = @('abc123', 'def456')
+        Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -Channel stable -TimeoutSeconds 0 -PollSeconds 0 | Out-Null
+        $script:icalls[0] | Should -Be 'ps -a -q --filter label=com.docker.compose.project=serversherpa-kiosk-laptop'
+        $script:icalls[1] | Should -Be 'stop abc123 def456'
+        @($script:icalls | Where-Object { $_ -like 'compose -p*' }) | Should -BeNullOrEmpty
+    }
+    It 'keeps the current version when the pulled image failed its health check before' {
+        Write-InstallStateFixture @{ previous_image = 'sha256:older'; rejected_image = 'sha256:bad' }
+        $script:fk.Pulled = 'sha256:bad'
+        Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -Channel stable -TimeoutSeconds 0 -PollSeconds 0 | Out-Null
+        Should -Invoke Write-Warn -ParameterFilter { $Message -eq 'The newest version failed its health check on this laptop before; keeping the current one.' }
+        $calls = @($script:icalls)
+        $iTag = [array]::IndexOf($calls, "tag sha256:old $script:Ref")
+        $iTag | Should -BeGreaterOrEqual 0
+        $iUp = [array]::IndexOf($calls, ($calls | Where-Object { $_ -like 'compose -f * up -d' } | Select-Object -First 1))
+        $iTag | Should -BeLessThan $iUp
+        $st = Get-InstallStateFile
+        "$($st.phase) $($st.rejected_image) $($st.previous_image)" | Should -Be 'done sha256:bad sha256:older'
+    }
+    It 'rolls back to the previous version when the new one never turns healthy' {
+        $script:fk.Health = @('unhealthy', 'healthy')
+        { Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -Channel stable -TimeoutSeconds 0 -PollSeconds 0 } |
+            Should -Throw '*rolled back to the previous version*'
+        $calls = @($script:icalls)
+        $iTag = [array]::IndexOf($calls, "tag sha256:old $script:Ref")
+        $iTag | Should -BeGreaterOrEqual 0
+        @($calls[$iTag..($calls.Count - 1)] | Where-Object { $_ -like 'compose -f * up -d' }).Count | Should -Be 1
+        $st = Get-InstallStateFile
+        $st.rejected_image | Should -Be 'sha256:new'
+        $st.phase | Should -Be 'done'
+    }
+    It 'says so when the rollback is not healthy either' {
+        $script:fk.Health = @('unhealthy')
+        { Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -Channel stable -TimeoutSeconds 0 -PollSeconds 0 } |
+            Should -Throw "*isn't healthy either*"
+    }
+    It 'does not roll back without an earlier image' {
+        $script:fk.Running = ''; $script:fk.Health = @('unhealthy')
+        { Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -Channel stable -TimeoutSeconds 0 -PollSeconds 0 } |
+            Should -Throw "*didn't become healthy in time*"
+        @($script:icalls | Where-Object { $_ -like 'tag *' }) | Should -BeNullOrEmpty
+    }
+    It 'resets a stale updating phase to done, keeping rejected_image and previous_image, written in place' {
+        Write-InstallStateFixture @{ previous_image = 'sha256:older'; rejected_image = 'sha256:x'; phase = 'updating' }
+        $p = Join-Path $script:inst 'update-state.json'
+        $created = (Get-Item $p).CreationTimeUtc
+        [Threading.Thread]::Sleep(20)
+        Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -Channel stable -TimeoutSeconds 0 -PollSeconds 0 | Out-Null
+        $st = Get-InstallStateFile
+        "$($st.phase) $($st.rejected_image) $($st.previous_image)" | Should -Be 'done sha256:x sha256:older'
+        (Get-Item $p).CreationTimeUtc | Should -Be $created
+    }
+    It 'says the image is not published when the registry refuses it (<_>)' -ForEach @('manifest unknown', 'denied: requested access to the resource is denied', 'unauthorized: authentication required', 'not found') {
+        $script:fk.Fail = @('compose -f * pull'); $script:fk.FailText = "Error response from daemon: $_"
+        { Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -Channel stable -TimeoutSeconds 0 -PollSeconds 0 } |
+            Should -Throw "*the stable image isn't published yet, or its package isn't public*try -Channel edge, or ask your administrator*"
+    }
+    It 'keeps the network message for other pull failures' {
+        $script:fk.Fail = @('compose -f * pull'); $script:fk.FailText = 'dial tcp: lookup ghcr.io: no such host'
+        { Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -Channel stable -TimeoutSeconds 0 -PollSeconds 0 } |
+            Should -Throw '*Check the network*'
+    }
+}
+
+Describe 'Phase-1 data through the old container mount' {
+    BeforeEach {
+        $script:icalls = New-Object System.Collections.Generic.List[string]
+        $script:fk = @{ Ps = @('abc123'); Mount = ''; Running = ''; Pulled = ''; Health = @('healthy'); HealthIndex = 0; Fail = @(); FailText = '' }
+        Mock Invoke-Docker {
+            $line = $Arguments -join ' '
+            $script:icalls.Add($line)
+            if ($line -like 'ps -a -q --filter *') { return $script:fk.Ps }
+            if ($line -like 'inspect -f {{range*') { return $script:fk.Mount }
+        }
+        $script:legacy = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory $script:legacy | Out-Null
+        '{"serial":"from-mount"}' | Set-Content (Join-Path $script:legacy 'identity.json')
+        $script:data = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory $script:data | Out-Null
+        $env:EDGE_DATA_HOST_DIR = $null
+        Mock Write-Warn {}
+    }
+    It 'copies from the folder the old container mounts at /data, asking docker by label' {
+        $script:fk.Mount = $script:legacy
+        Mock ConvertFrom-DockerMountSource { $Source }
+        $home1 = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        Mock Get-LegacyDataDir { $home1 }
+        Invoke-LegacyMigration -UserProfile 'C:\Users\tech' -DataDir $script:data | Should -BeTrue
+        (Get-Content (Join-Path $script:data 'identity.json')) | Should -BeLike '*from-mount*'
+        $script:icalls | Should -Contain 'ps -a -q --filter label=com.docker.compose.project=serversherpa-kiosk-laptop'
+        $script:icalls | Should -Contain 'inspect -f {{range .Mounts}}{{if eq .Destination `/data`}}{{.Source}}{{end}}{{end}} abc123'
+        $script:icalls | Should -Contain 'stop abc123'
+    }
+    It 'stops before the new kiosk when the mount is a WSL folder, with the \\wsl$ path to copy from' {
+        $script:fk.Mount = '/home/tech/ServerSherpaKiosk'
+        { Invoke-LegacyMigration -UserProfile 'C:\Users\tech' -DataDir $script:data } |
+            Should -Throw '*/home/tech/ServerSherpaKiosk*\\wsl$\<distro>\home\tech\ServerSherpaKiosk*-StartFresh*'
+        @(Get-ChildItem $script:data).Count | Should -Be 0
+    }
+    It '-StartFresh skips an unreadable mount knowingly' {
+        $script:fk.Mount = '/home/tech/ServerSherpaKiosk'
+        Invoke-LegacyMigration -UserProfile 'C:\Users\tech' -DataDir $script:data -StartFresh | Should -BeFalse
+        Should -Invoke Write-Warn -ParameterFilter { $Message -like '*-StartFresh*/home/tech/ServerSherpaKiosk*' }
+        @(Get-ChildItem $script:data).Count | Should -Be 0
+    }
+    It 'an unreadable mount is fine when the data folder already holds data' {
+        $script:fk.Mount = '/home/tech/ServerSherpaKiosk'
+        'mine' | Set-Content (Join-Path $script:data 'edge.db')
+        Invoke-LegacyMigration -UserProfile 'C:\Users\tech' -DataDir $script:data | Should -BeFalse
+    }
+    It 'without an old container, falls back to the home folder' {
+        $script:fk.Ps = @()
+        Mock Get-LegacyDataDir { $script:legacy }
+        Invoke-LegacyMigration -UserProfile 'C:\Users\tech' -DataDir $script:data | Should -BeTrue
+        (Get-Content (Join-Path $script:data 'identity.json')) | Should -BeLike '*from-mount*'
+    }
+    It 'maps Docker Desktop mount sources to Windows folders; WSL paths map to nothing' {
+        ConvertFrom-DockerMountSource -Source 'C:\Users\tech\ServerSherpaKiosk' | Should -Be 'C:\Users\tech\ServerSherpaKiosk'
+        ConvertFrom-DockerMountSource -Source '/run/desktop/mnt/host/c/Users/tech/ServerSherpaKiosk' | Should -Be 'C:\Users\tech\ServerSherpaKiosk'
+        ConvertFrom-DockerMountSource -Source '/host_mnt/d/kiosk' | Should -Be 'D:\kiosk'
+        ConvertFrom-DockerMountSource -Source '/home/tech/ServerSherpaKiosk' | Should -Be ''
     }
 }

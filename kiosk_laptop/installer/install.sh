@@ -11,6 +11,7 @@
 #   --yes              never prompt
 #   --uninstall        remove the kiosk (the data folder is kept)
 #   --purge-data       with --uninstall, also delete the data folder (asks you to type DELETE)
+#   --start-fresh      don't look for a phase-1 kiosk's data (it gets a new identity)
 #   --help             show this help
 #
 # Environment overrides:
@@ -61,6 +62,9 @@ OPT_PORTAL_URL="${OPT_PORTAL_URL:-}"
 OPT_CHANNEL="${OPT_CHANNEL:-}"
 DO_UNINSTALL=0
 PURGE_DATA=0
+START_FRESH=0    # --start-fresh: skip a phase-1 kiosk's data knowingly
+LEGACY_DIR=''         # phase-1 data to copy (find_legacy_data)
+LEGACY_UNREADABLE=''  # a phase-1 container's /data folder this script can't read
 TTY_PATH="${KIOSK_TTY:-/dev/tty}"
 DOCKER=(docker)
 TMP_FILES=()     # temp files to remove on exit (see cleanup)
@@ -74,6 +78,7 @@ ENGINE_POLL_S="${ENGINE_POLL_S:-3}"
 
 DEFAULT_API_URL='https://api.serversherpa.com'
 LEGACY_PROJECT='serversherpa-kiosk-laptop'
+LEGACY_FILTER="label=com.docker.compose.project=$LEGACY_PROJECT"
 KIOSK_CONTAINER='serversherpa-kiosk-edge-1'   # project "serversherpa-kiosk", service "edge"
 KIOSK_URL='http://localhost:8090'
 
@@ -142,6 +147,7 @@ Options:
   --yes              never prompt
   --uninstall        remove the kiosk (the data folder is kept)
   --purge-data       with --uninstall, also delete the data folder (asks you to type DELETE)
+  --start-fresh      don't look for a phase-1 kiosk's data (it gets a new identity)
   --help             show this help
 
 Environment: KIOSK_DIR, KIOSK_DATA_DIR, KIOSK_IMAGE, KIOSK_INSTALLER_REF,
@@ -359,25 +365,78 @@ home_of_user() {
   printf '%s' "${h:-$HOME}"
 }
 
-# find_legacy_data: print the phase-1 data folder if it holds identity.json.
-find_legacy_data() {
-  local dir="${EDGE_DATA_HOST_DIR:-}"
-  [ -n "$dir" ] || dir="${HOME_OF_USER:-$(home_of_user)}/ServerSherpaKiosk"
-  if [ -f "$dir/identity.json" ]; then printf '%s' "$dir"; fi
+# The phase-1 kiosk's containers, found by their compose project label (not
+# `compose -p … stop`, which depends on the folder it runs in).
+legacy_container_ids() {
+  "${DOCKER[@]}" ps -a -q --filter "$LEGACY_FILTER" 2>/dev/null || true
 }
 
-# migrate_legacy_data: one-time copy into an empty data folder.
+# legacy_mount_source ID: the host folder that container mounts at /data.
+legacy_mount_source() {
+  "${DOCKER[@]}" inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$1" 2>/dev/null || true
+}
+
+# The phase-1 kiosk holds port 8090; stop it (nothing to stop is fine).
+stop_legacy_kiosk() {
+  local ids
+  ids=$(legacy_container_ids)
+  [ -n "$ids" ] || return 0
+  # shellcheck disable=SC2086  # one container id per word
+  "${DOCKER[@]}" stop $ids >/dev/null 2>&1 || true
+}
+
+# find_legacy_data: sets LEGACY_DIR to the phase-1 data folder if it holds
+# identity.json. The old container's /data mount wins over the home-folder
+# guess (the guess is only for when no old container exists); a mount this
+# script can't read sets LEGACY_UNREADABLE instead.
+find_legacy_data() {
+  local ids id src=''
+  LEGACY_DIR=''; LEGACY_UNREADABLE=''
+  if [ -n "${EDGE_DATA_HOST_DIR:-}" ]; then
+    [ ! -f "$EDGE_DATA_HOST_DIR/identity.json" ] || LEGACY_DIR="$EDGE_DATA_HOST_DIR"
+    return 0
+  fi
+  ids=$(legacy_container_ids)
+  for id in $ids; do
+    src=$(legacy_mount_source "$id")
+    [ -z "$src" ] || break
+  done
+  if [ -n "$src" ]; then
+    # Older Docker Desktop for Mac reports host folders under /host_mnt.
+    case "$src" in /host_mnt/*) [ -d "$src" ] || src="${src#/host_mnt}" ;; esac
+    if [ -d "$src" ]; then
+      [ ! -f "$src/identity.json" ] || LEGACY_DIR="$src"
+    else
+      LEGACY_UNREADABLE="$src"
+    fi
+    return 0
+  fi
+  src="${HOME_OF_USER:-$(home_of_user)}/ServerSherpaKiosk"
+  [ ! -f "$src/identity.json" ] || LEGACY_DIR="$src"
+}
+
+# migrate_legacy_data: one-time copy into an empty data folder. Stops before
+# the new kiosk starts when the old data can't be read (unless --start-fresh).
 migrate_legacy_data() {
   local legacy
-  legacy=$(find_legacy_data)
+  find_legacy_data
+  legacy="${LEGACY_DIR:-$LEGACY_UNREADABLE}"
   [ -n "$legacy" ] || return 0
   # Only into a missing or completely empty folder; never overwrite anything.
   if [ -d "$KIOSK_DATA_DIR" ] && [ -n "$(ls -A "$KIOSK_DATA_DIR" 2>/dev/null)" ]; then
     info "Keeping the existing data in $KIOSK_DATA_DIR (earlier kiosk data in $legacy was not copied)."
     return 0
   fi
+  if [ -n "$LEGACY_UNREADABLE" ]; then
+    if [ "$START_FRESH" = 1 ]; then
+      warn "Starting fresh (--start-fresh): the earlier kiosk's data in $LEGACY_UNREADABLE was not copied."
+      return 0
+    fi
+    stop_legacy_kiosk
+    die "The earlier kiosk keeps its data in $LEGACY_UNREADABLE, which this installer can't read. The old kiosk was stopped. Copy everything in that folder into $KIOSK_DATA_DIR, then re-run this command. To start without it (the kiosk gets a new identity, and scans the old one hadn't uploaded stay behind), re-run with --start-fresh."
+  fi
   info "Found the earlier kiosk data in $legacy; copying it to $KIOSK_DATA_DIR"
-  "${DOCKER[@]}" compose -p "$LEGACY_PROJECT" stop >/dev/null 2>&1 || true
+  stop_legacy_kiosk
   mkdir -p "$KIOSK_DATA_DIR"
   cp -Rp "$legacy"/. "$KIOSK_DATA_DIR"/
   info "The old folder $legacy was left in place; you can delete it once the kiosk works."
@@ -667,23 +726,95 @@ compose() { "${DOCKER[@]}" compose -f "$KIOSK_DIR/docker-compose.yml" "$@"; }
 
 identity_check() { curl -fsS --max-time 5 "http://127.0.0.1:8090/edge/identity"; }
 
-# start_kiosk: pull, start, wait until healthy, read the identity.
-start_kiosk() {
-  local status='' deadline
-  # A phase-1 manual install holds port 8090.
-  "${DOCKER[@]}" compose -p "$LEGACY_PROJECT" stop >/dev/null 2>&1 || true
-  info "Downloading the kiosk image"
-  compose pull || die "Couldn't download the kiosk image. Check the network, then re-run."
-  info "Starting the kiosk"
-  compose up -d || die "The kiosk didn't start. See the messages above, then re-run."
-  deadline=$((SECONDS + HEALTH_TIMEOUT_S))
+# update-state.json, shared with update.sh (same keys and format).
+UPD_PREVIOUS=''
+UPD_REJECTED=''
+
+update_state_value() {  # update_state_value KEY
+  local f="$KIOSK_DIR/update-state.json"
+  [ -f "$f" ] || return 0
+  sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$f" 2>/dev/null | head -n 1
+}
+
+read_update_state() {
+  UPD_PREVIOUS=$(update_state_value previous_image)
+  UPD_REJECTED=$(update_state_value rejected_image)
+}
+
+# write_update_state: phase=done, previous_image and rejected_image kept.
+# Written in place (not renamed), so on macOS the file stays the desktop
+# user's (install_login_items makes it theirs).
+write_update_state() {
+  { printf '{"previous_image": "%s", "image": "%s", "rejected_image": "%s", "phase": "%s", "updated_at": "%s"}\n' \
+      "$UPD_PREVIOUS" "$(image_ref)" "$UPD_REJECTED" "done" \
+      "$(date '+%Y-%m-%dT%H:%M:%S%z')" >"$KIOSK_DIR/update-state.json"; } 2>/dev/null \
+    || warn "Couldn't write $KIOSK_DIR/update-state.json."
+}
+
+# pull_image: compose pull, shown as it runs, with a clear message when the
+# channel's image isn't published (or its package isn't public) yet.
+pull_image() {
+  local out rc=0 hint='try --channel edge, or ask your administrator'
+  out=$(mktemp "${TMPDIR:-/tmp}/kiosk-pull.XXXXXX")
+  TMP_FILES+=("$out")
+  compose pull 2>&1 | tee "$out" || rc=$?
+  [ "$rc" != 0 ] || return 0
+  [ "$CFG_CHANNEL" != edge ] || hint='ask your administrator'
+  if grep -qiE 'manifest unknown|not found|denied|unauthorized' "$out"; then
+    die "The $CFG_CHANNEL image isn't published yet, or its package isn't public — $hint."
+  fi
+  die "Couldn't download the kiosk image. Check the network, then re-run."
+}
+
+KIOSK_STATUS=''   # the last health status wait_kiosk_healthy saw
+
+# wait_kiosk_healthy: checked at least once, then every HEALTH_POLL_S until HEALTH_TIMEOUT_S.
+wait_kiosk_healthy() {
+  local deadline=$((SECONDS + HEALTH_TIMEOUT_S))
   while :; do
-    status=$("${DOCKER[@]}" inspect -f '{{.State.Health.Status}}' "$KIOSK_CONTAINER" 2>/dev/null || true)
-    [ "$status" != healthy ] || break
-    [ "$SECONDS" -lt "$deadline" ] \
-      || die "The kiosk didn't become healthy in time (status: ${status:-unknown}). See: docker compose -f \"$KIOSK_DIR/docker-compose.yml\" logs edge"
+    KIOSK_STATUS=$("${DOCKER[@]}" inspect -f '{{.State.Health.Status}}' "$KIOSK_CONTAINER" 2>/dev/null || true)
+    [ "$KIOSK_STATUS" != healthy ] || return 0
+    [ "$SECONDS" -lt "$deadline" ] || return 1
     sleep "$HEALTH_POLL_S"
   done
+}
+
+# start_kiosk: pull, start, wait until healthy, read the identity. Respects
+# update-state.json like the nightly update: a version that failed its health
+# check here before is not started again, and a new version that doesn't get
+# healthy is rolled back.
+start_kiosk() {
+  local ref prev new logs
+  ref=$(image_ref)
+  logs="See: docker compose -f \"$KIOSK_DIR/docker-compose.yml\" logs edge"
+  stop_legacy_kiosk
+  prev=$("${DOCKER[@]}" inspect -f '{{.Image}}' "$KIOSK_CONTAINER" 2>/dev/null || true)
+  info "Downloading the kiosk image"
+  pull_image
+  new=$("${DOCKER[@]}" image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)
+  read_update_state
+  if [ -n "$prev" ] && [ -n "$new" ] && [ "$new" != "$prev" ] && [ "$new" = "$UPD_REJECTED" ]; then
+    warn "The newest version failed its health check on this laptop before; keeping the current one."
+    # The channel tag back on the running image, so compose doesn't recreate it.
+    "${DOCKER[@]}" tag "$prev" "$ref" || die "Couldn't keep the current version (docker tag failed)."
+    new="$prev"
+  fi
+  info "Starting the kiosk"
+  if ! { compose up -d && wait_kiosk_healthy; }; then
+    if [ -n "$prev" ] && [ "$prev" != "$new" ]; then
+      warn "The new version didn't become healthy (status: ${KIOSK_STATUS:-unknown}); going back to the previous one."
+      UPD_REJECTED="$new"   # the nightly update won't try it again
+      if "${DOCKER[@]}" tag "$prev" "$ref" && compose up -d && wait_kiosk_healthy; then
+        write_update_state
+        die "The new kiosk version didn't become healthy, so the installer rolled back to the previous version, which is running. $logs"
+      fi
+      write_update_state
+      die "The new kiosk version didn't become healthy, and the previous version isn't healthy either (status: ${KIOSK_STATUS:-unknown}). $logs"
+    fi
+    die "The kiosk didn't become healthy in time (status: ${KIOSK_STATUS:-unknown}). $logs"
+  fi
+  # A re-run ends any update a crash left half done.
+  write_update_state
   KIOSK_IDENTITY=$(identity_check 2>/dev/null || true)
   [ -n "$KIOSK_IDENTITY" ] || warn "The kiosk is running but didn't answer $KIOSK_URL/edge/identity yet."
   info "The kiosk is running."
@@ -1078,6 +1209,7 @@ parse_args() {
       --yes|-y)     KIOSK_NONINTERACTIVE=1; shift ;;
       --uninstall)  DO_UNINSTALL=1; shift ;;
       --purge-data) PURGE_DATA=1; shift ;;
+      --start-fresh) START_FRESH=1; shift ;;
       --help|-h)    usage; exit 0 ;;
       *) die "Unknown option '$1'. Try --help." ;;
     esac

@@ -207,15 +207,18 @@ def test_start_kiosk_times_out(sh, tmp_path):
     assert r.returncode != 0 and "healthy" in r.stderr.lower()
 
 
-def test_start_kiosk_stops_phase1_project_first(sh, tmp_path):
+def test_start_kiosk_stops_phase1_container_by_label_first(sh, tmp_path):
     log = tmp_path / "calls"
     fake = tmp_path / "docker"
-    fake.write_text(f'#!/bin/sh\necho "$*" >> "{log}"\n[ "$1" = inspect ] && echo healthy\nexit 0\n')
+    fake.write_text(f'#!/bin/sh\necho "$*" >> "{log}"\n'
+                    'case "$1" in ps) echo abc123; echo def456 ;; inspect) echo healthy ;; esac\nexit 0\n')
     fake.chmod(0o755)
     sh(f'DOCKER=("{fake}"); KIOSK_DIR="{tmp_path}"; HEALTH_POLL_S=0; '
        f'identity_check() {{ echo ok; }}; start_kiosk')
     calls = log.read_text().splitlines()
-    assert calls[0] == "compose -p serversherpa-kiosk-laptop stop"
+    assert calls[0] == "ps -a -q --filter label=com.docker.compose.project=serversherpa-kiosk-laptop"
+    assert calls[1] == "stop abc123 def456"
+    assert not any(c.startswith("compose -p") for c in calls)
     assert any(c.endswith(" pull") for c in calls) and any(c.endswith(" up -d") for c in calls)
 
 
@@ -694,3 +697,180 @@ def test_merge_accepts_http_and_https(sh, tmp_path):
 def test_derive_portal_url_is_case_sensitive(sh):
     # agrees with Get-PortalUrl (-cmatch)
     assert sh('derive_portal_url "https://API.serversherpa.com"').stdout == ""
+
+
+
+# Fake docker for start_kiosk and the phase-1 migration: answers by call, logs
+# every call to docker.log, health answers in turn (the last one repeats).
+def _kiosk_docker(tmp_path, running="sha256:old", pulled="sha256:new", health=("healthy",),
+                  ps="", mount="", pull_error=None):
+    fake = tmp_path / "docker"
+    (tmp_path / "docker.health").write_text("\n".join(health) + "\n")
+    pull = f'echo "{pull_error}" >&2; exit 1' if pull_error else 'echo pulled'
+    fake.write_text(
+        '#!/bin/sh\n'
+        'echo "$*" >> "$0.log"\n'
+        'case "$*" in\n'
+        f'  "ps -a -q"*) [ -z "{ps}" ] || echo "{ps}" ;;\n'
+        f'  "inspect -f {{{{range"*) echo "{mount}" ;;\n'
+        f'  "inspect -f {{{{.Image}}}}"*) [ -n "{running}" ] || exit 1; echo "{running}" ;;\n'
+        f'  "image inspect"*) echo "{pulled}" ;;\n'
+        '  "inspect -f {{.State.Health.Status}}"*)\n'
+        '     n=$(cat "$0.n" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$0.n"\n'
+        '     line=$(sed -n "${n}p" "$0.health"); [ -n "$line" ] || line=$(tail -n 1 "$0.health")\n'
+        '     echo "$line" ;;\n'
+        f'  *" pull") {pull} ;;\n'
+        'esac\n'
+        'exit 0\n')
+    fake.chmod(0o755)
+    return fake
+
+
+def _write_state(tmp_path, **kw):
+    import json
+    (tmp_path / "update-state.json").write_text(json.dumps(
+        {"previous_image": "", "image": "", "rejected_image": "", "phase": "done", **kw}))
+
+
+def _state_of(tmp_path):
+    import json
+    return json.loads((tmp_path / "update-state.json").read_text())
+
+
+def _start(sh, tmp_path, fake, extra=""):
+    return sh(f'DOCKER=("{fake}"); KIOSK_DIR="{tmp_path}"; CFG_CHANNEL=stable; HEALTH_POLL_S=0; '
+              f'HEALTH_TIMEOUT_S=0; identity_check() {{ echo ok; }}; {extra} start_kiosk',
+              env={"KIOSK_IMAGE": ""}, check=False)
+
+
+STABLE = "ghcr.io/encondata/serversherpa-kiosk-laptop:stable"
+
+
+def test_start_kiosk_keeps_current_version_when_pulled_image_was_rejected(sh, tmp_path):
+    _write_state(tmp_path, previous_image="sha256:older", rejected_image="sha256:bad")
+    fake = _kiosk_docker(tmp_path, running="sha256:old", pulled="sha256:bad")
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode == 0, r.stderr
+    assert ("The newest version failed its health check on this laptop before; "
+            "keeping the current one.") in r.stderr
+    calls = (tmp_path / "docker.log").read_text().splitlines()
+    i_tag = calls.index(f"tag sha256:old {STABLE}")
+    assert i_tag < next(i for i, c in enumerate(calls) if c.endswith(" up -d"))
+    st = _state_of(tmp_path)
+    assert (st["phase"], st["rejected_image"], st["previous_image"]) == ("done", "sha256:bad", "sha256:older")
+
+
+def test_start_kiosk_rolls_back_when_the_new_version_is_unhealthy(sh, tmp_path):
+    fake = _kiosk_docker(tmp_path, running="sha256:old", pulled="sha256:new",
+                         health=("unhealthy", "healthy"))
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0 and "rolled back to the previous version" in r.stderr
+    calls = (tmp_path / "docker.log").read_text().splitlines()
+    i_tag = calls.index(f"tag sha256:old {STABLE}")
+    assert any(c.endswith(" up -d") for c in calls[i_tag:])
+    st = _state_of(tmp_path)
+    assert st["rejected_image"] == "sha256:new" and st["phase"] == "done"
+
+
+def test_start_kiosk_failed_rollback_says_so(sh, tmp_path):
+    fake = _kiosk_docker(tmp_path, running="sha256:old", pulled="sha256:new", health=("unhealthy",))
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0
+    assert "rolled back to the previous version" not in r.stderr and "isn't healthy either" in r.stderr
+
+
+def test_start_kiosk_no_rollback_without_an_earlier_image(sh, tmp_path):
+    fake = _kiosk_docker(tmp_path, running="", pulled="sha256:new", health=("unhealthy",))
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0 and "didn't become healthy in time" in r.stderr
+    assert "tag " not in (tmp_path / "docker.log").read_text()
+
+
+def test_start_kiosk_resets_a_stale_updating_phase(sh, tmp_path):
+    _write_state(tmp_path, previous_image="sha256:older", rejected_image="sha256:x", phase="updating")
+    st_file = tmp_path / "update-state.json"
+    ino = st_file.stat().st_ino
+    fake = _kiosk_docker(tmp_path, running="sha256:old", pulled="sha256:new")
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode == 0, r.stderr
+    st = _state_of(tmp_path)
+    assert (st["phase"], st["rejected_image"], st["previous_image"]) == ("done", "sha256:x", "sha256:older")
+    assert st_file.stat().st_ino == ino   # rewritten in place: owner and mode stay
+
+
+@pytest.mark.parametrize("err", ["manifest unknown", "pull access denied for x, repository does not exist",
+                                 "unauthorized: authentication required", "not found"])
+def test_pull_failure_when_image_not_published(sh, tmp_path, err):
+    fake = _kiosk_docker(tmp_path, pull_error=f"Error response from daemon: {err}")
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0
+    assert ("the stable image isn't published yet, or its package isn't public — "
+            "try --channel edge, or ask your administrator") in r.stderr.lower()
+
+
+def test_pull_failure_from_the_network_keeps_network_message(sh, tmp_path):
+    fake = _kiosk_docker(tmp_path, pull_error="dial tcp: lookup ghcr.io: no such host")
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0 and "Check the network" in r.stderr and "published" not in r.stderr
+
+
+# phase-1 data: found through the old container's /data mount
+
+def _migrate(sh, tmp_path, fake, data, extra=""):
+    return sh(f'DOCKER=("{fake}"); KIOSK_DATA_DIR="{data}"; {extra} migrate_legacy_data', check=False)
+
+
+def test_migration_uses_the_legacy_containers_mount(sh, tmp_path):
+    src = tmp_path / "elsewhere" / "kioskdata"; src.mkdir(parents=True)
+    (src / "identity.json").write_text('{"serial":"from-mount"}')
+    home_guess = tmp_path / "home" / "ServerSherpaKiosk"; home_guess.mkdir(parents=True)
+    (home_guess / "identity.json").write_text('{"serial":"from-home"}')
+    data = tmp_path / "data"; data.mkdir()
+    fake = _kiosk_docker(tmp_path, ps="abc123", mount=str(src))
+    r = _migrate(sh, tmp_path, fake, data)
+    assert r.returncode == 0, r.stderr
+    assert "from-mount" in (data / "identity.json").read_text()
+    calls = (tmp_path / "docker.log").read_text().splitlines()
+    assert "inspect -f {{range .Mounts}}{{if eq .Destination \"/data\"}}{{.Source}}{{end}}{{end}} abc123" in calls
+    assert "stop abc123" in calls
+
+
+def test_migration_stops_when_the_legacy_mount_is_unreadable(sh, tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    fake = _kiosk_docker(tmp_path, ps="abc123", mount="/home/nobody-xyz/ServerSherpaKiosk")
+    r = _migrate(sh, tmp_path, fake, data)
+    assert r.returncode != 0
+    assert "/home/nobody-xyz/ServerSherpaKiosk" in r.stderr and str(data) in r.stderr
+    assert "--start-fresh" in r.stderr
+    assert not list(data.iterdir())
+
+
+def test_migration_start_fresh_skips_an_unreadable_mount(sh, tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    fake = _kiosk_docker(tmp_path, ps="abc123", mount="/home/nobody-xyz/ServerSherpaKiosk")
+    r = _migrate(sh, tmp_path, fake, data, extra="START_FRESH=1;")
+    assert r.returncode == 0, r.stderr
+    assert "start-fresh" in r.stderr.lower() or "fresh" in r.stdout.lower() + r.stderr.lower()
+    assert not list(data.iterdir())
+
+
+def test_migration_unreadable_mount_with_data_already_there_is_fine(sh, tmp_path):
+    data = tmp_path / "data"; data.mkdir(); (data / "edge.db").write_text("mine")
+    fake = _kiosk_docker(tmp_path, ps="abc123", mount="/home/nobody-xyz/ServerSherpaKiosk")
+    r = _migrate(sh, tmp_path, fake, data)
+    assert r.returncode == 0, r.stderr
+    assert (data / "edge.db").read_text() == "mine"
+
+
+def test_migration_without_legacy_container_uses_the_home_folder(sh, tmp_path):
+    home_guess = tmp_path / "home" / "ServerSherpaKiosk"; home_guess.mkdir(parents=True)
+    (home_guess / "identity.json").write_text('{"serial":"from-home"}')
+    data = tmp_path / "data"; data.mkdir()
+    fake = _kiosk_docker(tmp_path, ps="")
+    r = _migrate(sh, tmp_path, fake, data)
+    assert r.returncode == 0, r.stderr
+    assert "from-home" in (data / "identity.json").read_text()
+
+
+def test_start_fresh_flag_parses(sh):
+    assert sh('parse_args --start-fresh; echo "$START_FRESH"').stdout.strip() == "1"
