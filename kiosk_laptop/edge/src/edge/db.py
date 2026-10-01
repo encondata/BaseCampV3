@@ -10,6 +10,10 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+# Steps must be additive (new tables, new nullable columns). After a
+# rollback an older image keeps running on a database a newer image already
+# migrated, so nothing an older image reads or writes may be renamed,
+# dropped or tightened, and `schema_version` never goes down.
 SCHEMA_STEPS: list[str] = [
     """
     CREATE TABLE edge_sessions (
@@ -83,7 +87,8 @@ class Store:
                         c.execute(stmt)
             if row is None:
                 c.execute("INSERT INTO schema_version (version) VALUES (?)", (len(SCHEMA_STEPS),))
-            else:
+            elif current < len(SCHEMA_STEPS):
+                # an older image (fewer steps) leaves a newer record alone
                 c.execute("UPDATE schema_version SET version = ?", (len(SCHEMA_STEPS),))
 
     @contextmanager
