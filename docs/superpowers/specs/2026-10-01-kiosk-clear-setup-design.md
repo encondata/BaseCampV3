@@ -78,9 +78,8 @@ exposed to the portal.
 - Pending chip next to the kiosk name in the Name cell: `chip c-amber`
   "Setup clear pending", `title` = "Requested by <name>, <local date time>"
   (name omitted when null).
-- After either action the row is replaced from the returned `DeviceItem`
-  (same as Register/De-Register). No live polling — existing reload-on-focus
-  behavior picks up the acknowledgment.
+- After either action the list reloads (same as Register/De-Register). No
+  live polling — the existing reload picks up the acknowledgment.
 - Errors use the page's existing error notice pattern; `not_a_kiosk` → "Only
   kiosks can have their setup cleared."
 
@@ -91,18 +90,19 @@ exposed to the portal.
 - `startHeartbeat` gains an `onClearSetup(id)` hook. When a reply carries a
   `clear_setup` id not yet applied this session:
   1. `clearKioskSetup()` and `writeSetupState('incomplete')`;
-  2. persist `ss.kiosk.setupClearedBy` = the id (localStorage, try/catch) so a
-     reload doesn't re-apply it and the ack survives a reload;
-  3. set the pending ack and beat again immediately;
+  2. persist `ss.kiosk.setupClear` = `{"id", "acked": false, "notice": true}`
+     (localStorage, try/catch) so a reload doesn't re-apply it and the ack
+     survives a reload;
+  3. beat again immediately (that beat carries the ack);
   4. call `onClearSetup(id)`.
-  Every beat sends `setup_cleared` while an ack is pending; the pending ack is
-  dropped once a reply returns `clear_setup` ≠ that id (null or a newer id).
-  A newer id is applied normally.
-- `KioskAuthContext` exposes `setupClearedNotice: boolean` (+ dismiss) and on
-  `onClearSetup` navigates to `/setup`.
+  Every beat sends `setup_cleared` while `acked` is false; `acked` flips once a
+  reply returns `clear_setup` ≠ that id (null or a newer id). A newer id is
+  applied normally.
+- `KioskAuthContext` exposes `setupClearedSignal` (increments per applied
+  clear); `KioskShell` (inside the router) navigates to `/setup` on a new signal.
 - Kiosk Setup page shows the banner "An administrator cleared this kiosk's
-  setup. Run Kiosk Setup to continue." while the notice is set; completing setup
-  clears the notice.
+  setup. Run Kiosk Setup to continue." while `notice` is true; completing setup
+  sets `notice` false.
 - Not touched: outbox / offline scan queue, IndexedDB move caches, sign-in.
 
 ## Android app (`Android_Kiosk_App/`)
@@ -111,9 +111,9 @@ exposed to the portal.
   omits it when null); `HeartbeatResult` gains `clear_setup: String? = null`
   (`ignoreUnknownKeys` already makes older builds safe).
 - `Heartbeat` mirrors the web flow: on a new `clear_setup` id →
-  `prefs.clearSetup()`, remember the applied id in prefs
-  (`ss.kiosk.setupClearedBy`), set pending ack, beat again, emit an event on a
-  `SharedFlow<Unit>` (`setupCleared`).
+  clear the setup and store the same `ss.kiosk.setupClear` record in one
+  DataStore write, beat again (carrying the ack), emit the id on a
+  `SharedFlow<String>` (`setupCleared`).
 - `KioskApp` collects `setupCleared` → navigate to `Routes.SETUP`; the Setup
   screen shows the same banner text until setup completes.
 
