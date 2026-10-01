@@ -351,9 +351,10 @@ Describe 'launch.ps1' {
         $KioskIdentityUrl | Should -Be 'http://127.0.0.1:8090/edge/identity'
         $KioskUrl | Should -Be 'http://localhost:8090'
     }
-    It 'opens the default browser when none is configured' {
+    It 'opens the default browser when none is configured and none is found now' {
         [IO.File]::WriteAllText((Join-Path $script:dir 'config.env'), "KIOSK_BROWSER=`n")
         Mock Test-KioskResponding { $true }
+        Mock Find-LaunchBrowser { '' }
         Invoke-KioskLaunch
         Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'http://localhost:8090' }
     }
@@ -362,6 +363,21 @@ Describe 'launch.ps1' {
         Mock Start-Process { throw 'not found' } -ParameterFilter { $FilePath -like '*chrome.exe' }
         Invoke-KioskLaunch
         Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'http://localhost:8090' }
+    }
+    It 'detects Chrome or Edge at launch when none was configured (installed after the kiosk)' {
+        [IO.File]::WriteAllText((Join-Path $script:dir 'config.env'), "KIOSK_BROWSER=`n")
+        Mock Test-KioskResponding { $true }
+        Mock Find-LaunchBrowser { 'C:\Edge\msedge.exe' }
+        Invoke-KioskLaunch
+        Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter { $FilePath -eq 'C:\Edge\msedge.exe' -and "$ArgumentList" -eq '--app=http://localhost:8090' }
+    }
+    It 'Find-LaunchBrowser uses the installer order: Chrome first, then Edge, else nothing' {
+        Mock Test-Path { $Path -like '*chrome.exe' -or $Path -like '*msedge.exe' }
+        Find-LaunchBrowser | Should -BeLike '*Google\Chrome\Application\chrome.exe'
+        Mock Test-Path { $Path -like '*msedge.exe' }
+        Find-LaunchBrowser | Should -BeLike '*Microsoft\Edge\Application\msedge.exe'
+        Mock Test-Path { $false }
+        Find-LaunchBrowser | Should -Be ''
     }
     It 'reads KIOSK_BROWSER without running config.env' {
         Get-KioskBrowser | Should -Be 'C:\Program Files\Google\Chrome\Application\chrome.exe'

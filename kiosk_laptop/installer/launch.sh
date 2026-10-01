@@ -4,7 +4,8 @@
 # Run at sign-in (macOS launch agent com.serversherpa.kiosk.launch, Linux
 # autostart serversherpa-kiosk.desktop) and from the ServerSherpa Kiosk app
 # or menu entry. Waits for the kiosk to answer, then opens it in the browser
-# the installer found (KIOSK_BROWSER in config.env), in app mode.
+# the installer found (KIOSK_BROWSER in config.env), in app mode; when it found
+# none, Chrome or Edge is looked for again, else the default browser opens.
 #
 # Environment: KIOSK_LAUNCH_TIMEOUT_S (default 300), KIOSK_LAUNCH_POLL_S (2).
 # Testing hooks: KIOSK_LAUNCH_LIB=1 defines the functions without running main.
@@ -39,11 +40,29 @@ browser() {
   printf '%s' "${line#*=}"
 }
 
+# find_browser: Chrome, Chromium or Edge, in install.sh's order, for a
+# station where none was installed when the kiosk was (empty when none).
+MAC_APPS_DIR='/Applications'
+find_browser() {
+  local c
+  if [ "$OS" = Darwin ]; then
+    for c in "$MAC_APPS_DIR/Google Chrome.app" "$MAC_APPS_DIR/Microsoft Edge.app" "$MAC_APPS_DIR/Chromium.app"; do
+      if [ -d "$c" ]; then printf '%s' "$c"; return 0; fi
+    done
+  else
+    for c in google-chrome google-chrome-stable chromium chromium-browser microsoft-edge; do
+      if command -v "$c" >/dev/null 2>&1; then command -v "$c"; return 0; fi
+    done
+  fi
+  return 0
+}
+
 run_browser() { "$@" >/dev/null 2>&1 & }
 
 open_kiosk() {
   local b
   b=$(browser)
+  [ -n "$b" ] || b=$(find_browser)
   if [ "$OS" = Darwin ]; then
     if [ -n "$b" ]; then
       open -na "$b" --args --app="$KIOSK_URL"

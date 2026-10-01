@@ -362,7 +362,34 @@ def test_launch_gives_up_waiting_and_still_opens(tmp_path):
 def test_launch_without_browser_uses_default_opener(tmp_path):
     calls = tmp_path / "calls"
     body = (f'kiosk_answers() {{ :; }}; xdg-open() {{ echo "xdg $*" >> "{calls}"; }}; '
+            f'find_browser() {{ :; }}; '
             f'open() {{ echo "open $*" >> "{calls}"; }}; OS=Linux; main; OS=Darwin; main')
     _launch(tmp_path, body, config="KIOSK_BROWSER=\n")
     assert calls.read_text().splitlines() == ["xdg http://localhost:8090", "open http://localhost:8090"]
 
+
+
+def test_launch_detects_browser_when_none_configured_linux(tmp_path):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    for name in ("microsoft-edge", "chromium"):
+        (bindir / name).write_text("#!/bin/sh\n"); (bindir / name).chmod(0o755)
+    import shutil
+    for tool in ("grep", "head"):   # only these on PATH: no real Chrome on a CI runner
+        (bindir / tool).symlink_to(shutil.which(tool))
+    calls = tmp_path / "calls"
+    body = (f'kiosk_answers() {{ :; }}; run_browser() {{ echo "$*" >> "{calls}"; }}; '
+            f'PATH="{bindir}"; OS=Linux; main')
+    _launch(tmp_path, body, config="KIOSK_BROWSER=\n")
+    # the installer's order: Chromium before Edge
+    assert calls.read_text().strip() == f"{bindir}/chromium --app=http://localhost:8090"
+
+
+def test_launch_detects_browser_when_none_configured_macos(tmp_path):
+    apps = tmp_path / "Applications"
+    (apps / "Microsoft Edge.app").mkdir(parents=True)
+    (apps / "Google Chrome.app").mkdir()
+    calls = tmp_path / "calls"
+    body = (f'kiosk_answers() {{ :; }}; open() {{ echo "$*" >> "{calls}"; }}; '
+            f'MAC_APPS_DIR="{apps}"; OS=Darwin; main')
+    _launch(tmp_path, body, config="KIOSK_BROWSER=\n")
+    assert calls.read_text().strip() == f"-na {apps}/Google Chrome.app --args --app=http://localhost:8090"

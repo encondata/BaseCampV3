@@ -6,7 +6,8 @@ ServerSherpa kiosk launcher (laptop edition), Windows.
 Run at sign-in (the all-users StartUp shortcut) and from the ServerSherpa
 Kiosk shortcuts on the Desktop and in the Start menu. Waits for the kiosk to
 answer, then opens it in the browser the installer found (KIOSK_BROWSER in
-config.env), in app mode. The Windows port of launch.sh.
+config.env), in app mode; when it found none, Chrome or Edge is looked for
+again, else the default browser opens. The Windows port of launch.sh.
 
 Environment: KIOSK_LAUNCH_TIMEOUT_S (default 300), KIOSK_LAUNCH_POLL_S (2).
 Testing hooks: -LibraryOnly or KIOSK_LAUNCH_LIB=1 defines the functions
@@ -72,9 +73,27 @@ function Get-KioskBrowser {
     ''
 }
 
-# Open-Kiosk: the configured browser in app mode, else the default browser.
+# Find-LaunchBrowser: Chrome, then Edge, in install.ps1's order (Find-Browser),
+# for a PC where neither was found at install time ('' when none). The
+# launcher runs as the signed-in user, so LOCALAPPDATA is theirs.
+function Find-LaunchBrowser {
+    $candidates = @(
+        "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+        "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+        "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe",
+        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
+        "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path -Path $c -PathType Leaf) { return $c }
+    }
+    ''
+}
+
+# Open-Kiosk: the configured browser (or one found now) in app mode, else the default browser.
 function Open-Kiosk {
     $b = Get-KioskBrowser
+    if (-not $b) { $b = Find-LaunchBrowser }
     if ($b) {
         try {
             Start-Process -FilePath $b -ArgumentList "--app=$KioskUrl" -ErrorAction Stop
