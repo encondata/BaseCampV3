@@ -185,3 +185,13 @@ async def test_malformed_body_is_422(client):
         assert r.status_code == 422 and r.json()["detail"]["code"] == "bad_request"
         r = await client.post(path, json=[1])
         assert r.status_code == 422
+
+
+async def test_unhealthy_cloud_falls_back_to_offline_sign_in(app, client, cloud):
+    _cloud_login_ok(cloud)
+    await client.post("/auth/login", json=LOGIN)
+    cloud.post("/auth/login").respond(503, text="Service Unavailable")
+    r = await client.post("/auth/login", json=LOGIN)
+    assert r.status_code == 200
+    row = app.state.store.one("SELECT offline FROM edge_sessions ORDER BY rowid DESC")
+    assert row["offline"] == 1

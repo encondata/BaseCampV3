@@ -19,11 +19,24 @@ async def test_transport_error_is_offline(app, cloud):
     assert await up.probe() is False
 
 
-async def test_any_http_answer_is_online(app, cloud):
-    cloud.get("/system/status").respond(503, json={"detail": "x"})
+async def test_any_other_http_answer_is_online(app, cloud):
     up = app.state.upstream
-    resp = await up.request("GET", "/system/status")
-    assert resp.status_code == 503 and up.online is True and up.last_contact
+    for status in (500, 401, 404):
+        cloud.get("/system/status").respond(status, json={"detail": "x"})
+        resp = await up.request("GET", "/system/status")
+        assert resp.status_code == status and up.online is True and up.last_contact
+
+
+@pytest.mark.parametrize("status", [502, 503, 504])
+async def test_unhealthy_cloud_is_offline(app, cloud, status):
+    up = app.state.upstream
+    cloud.get("/system/status").respond(200, json={})
+    assert await up.probe() is True
+    cloud.get("/system/status").respond(status, text="bad gateway")
+    with pytest.raises(CloudOffline):
+        await up.request("GET", "/system/status")
+    assert up.online is False
+    assert await up.probe() is False
 
 
 def test_refresh_cookie_parsed_from_set_cookie():

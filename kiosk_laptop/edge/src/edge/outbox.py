@@ -1,11 +1,14 @@
 """The upstream queue. The browser's own outbox sends scans to the edge,
 which accepts them at once and owns getting them to the cloud: in order,
 batched (≤100, the cloud's limit), as the person whose session took them.
-Offline is not a failure — rows stay queued and no attempt is spent. A
-cloud rejection code is final (shown, never retried); 5xx/408/423/429 back
-off along BACKOFF_S and end `failed` (operator: Retry failed); a person
-with no usable cloud session parks their rows as `needs_sign_in` until they
-sign in online again (release_waiting)."""
+Offline (including an unhealthy cloud, see upstream.py) is not a failure —
+rows stay queued and no attempt is spent. A cloud rejection code is final
+(shown, never retried). Transient answers (5xx, 408, 423, 429) back off
+along BACKOFF_S and then keep retrying at its last step forever. `failed`
+(operator: Retry failed) is only for a non-transient 4xx, or a malformed
+answer that is still malformed at the end of the ladder. A person with no
+usable cloud session parks their rows as `needs_sign_in` until they sign
+in online again (release_waiting). Sent rows are pruned after a week."""
 
 import json
 from collections.abc import Callable
@@ -22,6 +25,7 @@ SCAN_BATCH = 100
 STATUSES = ("queued", "sending", "sent", "rejected", "failed", "needs_sign_in")
 PENDING = ("queued", "sending", "needs_sign_in", "failed")
 TRANSIENT = {408, 423, 429}
+SENT_KEEP_DAYS = 7
 
 
 def _insert(store: Store, kind: str, person_id: str, person_name: str, payload: dict,
@@ -117,13 +121,16 @@ class OutboxWorker:
         self.store.run(f"UPDATE outbox SET status = ?, last_error = ? WHERE id IN ({marks})",
                        (status, error, *ids))
 
-    def _back_off(self, rows: list, error: str) -> None:
+    def _back_off(self, rows: list, error: str, *, forever: bool = False) -> None:
+        """Next attempt along BACKOFF_S. A transient answer (`forever`) stays
+        at the last step indefinitely; a malformed one ends `failed`."""
         for row in rows:
             attempts = row["attempts"] + 1
-            if attempts > len(BACKOFF_S):
+            if attempts > len(BACKOFF_S) and not forever:
                 self._set([row["id"]], "failed", error)
                 continue
-            due = iso(datetime.now(UTC) + timedelta(seconds=BACKOFF_S[attempts - 1]))
+            step = BACKOFF_S[min(attempts, len(BACKOFF_S)) - 1]
+            due = iso(datetime.now(UTC) + timedelta(seconds=step))
             self.store.run("UPDATE outbox SET status = 'queued', attempts = ?, "
                            "next_attempt_at = ?, last_error = ? WHERE id = ?",
                            (attempts, due, error, row["id"]))
@@ -159,7 +166,12 @@ class OutboxWorker:
             except Exception:
                 self._back_off(group, "bad_response")
         await self._end_sessions()
+        self._prune_sent()
         return sent
+
+    def _prune_sent(self) -> None:
+        cutoff = iso(datetime.now(UTC) - timedelta(days=SENT_KEEP_DAYS))
+        self.store.run("DELETE FROM outbox WHERE status = 'sent' AND created_at < ?", (cutoff,))
 
     def _handle(self, group: list, resp) -> int:
         """Apply one response to its rows; returns rows sent. May raise on a
@@ -187,7 +199,7 @@ class OutboxWorker:
                 self._back_off(unacked, "not_acknowledged")
             return sent
         if resp.status_code >= 500 or resp.status_code in TRANSIENT:
-            self._back_off(group, _code(resp))
+            self._back_off(group, _code(resp), forever=True)
         else:
             self._set(ids, "failed", _code(resp))
         return 0

@@ -157,3 +157,13 @@ async def test_heartbeat_with_rejected_cloud_refresh_is_edge_offline(app, client
     cloud.post("/auth/refresh").respond(401, json={"detail": {"code": "session_expired"}})
     r = await client.post("/kiosk/heartbeat", json={"serial": "x"}, headers=make_session(app))
     assert r.status_code == 503 and r.json()["detail"]["code"] == "edge_offline"
+
+
+async def test_unhealthy_cloud_serves_cache(app, client, cloud):
+    _online_as(app)
+    cloud.get(ASSETS).respond(200, json={"assets": [1]})
+    hdrs = make_session(app)
+    await client.get(ASSETS, headers=hdrs)
+    cloud.get(ASSETS).respond(504, text="Gateway Timeout")
+    r = await client.get(ASSETS, headers=hdrs)
+    assert r.status_code == 200 and r.headers["x-edge-cache"] == "hit"

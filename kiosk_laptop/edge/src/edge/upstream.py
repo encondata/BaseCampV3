@@ -1,7 +1,10 @@
 """The edge's line to the cloud API.
 
-Only transport failures (connect refused, DNS, timeouts) mean "offline";
-any HTTP answer — 401, 5xx, anything — is the cloud's answer and is
+Transport failures (connect refused, DNS, timeouts) and an unhealthy
+cloud (502/503/504 — a proxy with nothing behind it, a deploy, an
+overloaded gateway) mean "offline": every caller then gets its offline
+behavior (offline sign-in, cached reads, the outbox spending no attempts).
+Any other HTTP answer — 401, 500, anything — is the cloud's answer and is
 returned to the caller. Each person who signed in online has their own
 cloud session here (encrypted); the edge always acts on the cloud AS that
 person, so attribution is never forged. A per-person lock keeps two
@@ -19,6 +22,7 @@ from edge.crypto import Keys, decrypt, encrypt
 from edge.db import Store, iso, now_iso
 
 REFRESH_COOKIE = "ss_refresh"
+UNHEALTHY = {502, 503, 504}
 
 
 class CloudOffline(Exception):
@@ -64,6 +68,10 @@ class Upstream:
         except httpx.TransportError as exc:
             self.online = False
             raise CloudOffline(str(exc)) from exc
+        if resp.status_code in UNHEALTHY:
+            await resp.aclose()
+            self.online = False
+            raise CloudOffline(f"cloud answered {resp.status_code}")
         self.online = True
         self.last_contact = now_iso()
         return resp
