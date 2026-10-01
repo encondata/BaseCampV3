@@ -32,10 +32,6 @@ async def test_matrix_update_and_rules(client, db):
                               json={"matrix": {**_admin_matrix(), "access": {"view": False}}})
     assert locked.status_code == 422
     assert locked.json()["detail"]["code"] == "access_view_locked"
-    own = await client.put("/api/access/roles/developer/matrix", headers=h,
-                           json={"matrix": _admin_matrix()})
-    assert own.status_code == 403
-    assert own.json()["detail"]["code"] == "cannot_edit_own_role"
     unknown = await client.put("/api/access/roles/admin/matrix", headers=h,
                                json={"matrix": {**_admin_matrix(), "nope": {"view": True}}})
     assert unknown.status_code == 422 and unknown.json()["detail"]["code"] == "unknown_resource"
@@ -52,6 +48,42 @@ async def test_super_admin_cannot_grant_beyond_own(client, db):
                             json={"matrix": _admin_matrix()})
     assert peer.status_code == 403
     assert peer.json()["detail"]["code"] == "cannot_edit_own_role"
+
+
+def _dev_matrix(*, drop=()):
+    """The developer role's full grants, minus any 'resource:action' in drop."""
+    full = {res: {a: True for a in ("view", "add", "change", "delete")}
+            for res in ("users", "access", "settings", "devtools")}
+    full |= {"dashboard": {"view": True}, "audit": {"view": True}}
+    for cell in drop:
+        res, a = cell.split(":")
+        full[res][a] = False
+    return full
+
+
+async def test_developer_can_edit_the_developer_role(client, db):
+    h = await auth_headers(client, db)                       # developer
+    ok = await client.put("/api/access/roles/developer/matrix", headers=h,
+                          json={"matrix": _dev_matrix(drop=["users:delete"])})
+    assert ok.status_code == 200, ok.json()
+
+
+async def test_founder_cannot_edit_developer_role(client, db):
+    h = await auth_headers(client, db, roles=("founder",))
+    resp = await client.put("/api/access/roles/developer/matrix", headers=h,
+                            json={"matrix": _dev_matrix()})
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "developer_role_locked"
+
+
+async def test_developer_role_core_grants_cannot_be_removed(client, db):
+    h = await auth_headers(client, db)
+    for cell in ("devtools:view", "devtools:add", "devtools:change", "devtools:delete",
+                 "access:change", "access:view"):
+        resp = await client.put("/api/access/roles/developer/matrix", headers=h,
+                                json={"matrix": _dev_matrix(drop=[cell])})
+        assert resp.status_code == 422, cell
+        assert resp.json()["detail"]["code"] == "developer_role_core", cell
 
 
 async def test_overrides_roundtrip_and_rules(client, db):
@@ -125,7 +157,7 @@ async def test_access_changes_write_audit_rows(client, db):
     h = await auth_headers(client, db)
     ok = await client.put("/api/access/roles/admin/matrix", headers=h,
                           json={"matrix": _admin_matrix(add_users=True)})
-    assert ok.status_code == 200
+    assert ok.status_code == 200, ok.json()
     rows = (await client.get("/api/audit?action=matrix.update", headers=h)).json()
     assert len(rows) == 1
     assert rows[0]["entity_type"] == "role" and rows[0]["entity_id"] == "admin"

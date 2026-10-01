@@ -33,9 +33,24 @@ export default function Access() {
   }, [selected, !!summary]);
   if (!summary || !role || !draft) return message ? <p className="form-error">{message}</p> : null;
 
-  const holds = myRoles.includes(role.name);
-  const editable = can('access', 'change') && canTouchRank(maxRank, role.rank) && !holds && !saving;
-  const locked = new Set(summary.resources.filter((r) => r.developer_only && role.name !== 'developer').map((r) => r.id));
+  const isDeveloperRole = role.name === 'developer';
+  const iAmDeveloper = myRoles.includes('developer');
+  // The developer role is the one exception to the own-role and rank rules:
+  // only developers can edit it (and they hold it).
+  const holds = !isDeveloperRole && myRoles.includes(role.name);
+  const developerLocked = isDeveloperRole && !iAmDeveloper;
+  const mayTouch = isDeveloperRole ? iAmDeveloper : canTouchRank(maxRank, role.rank) && !holds;
+  const editable = can('access', 'change') && mayTouch && !saving;
+  const locked = new Set(summary.resources.filter((r) => r.developer_only && !isDeveloperRole).map((r) => r.id));
+  // Cells that can never change: Roles & access view always; on the developer
+  // role also every Developer tools action and Roles & access change.
+  const lockedCells = new Set(['access:view']);
+  if (isDeveloperRole) {
+    lockedCells.add('access:change');
+    for (const r of summary.resources) {
+      if (r.developer_only) for (const a of ['view', 'add', 'change', 'delete']) lockedCells.add(`${r.id}:${a}`);
+    }
+  }
   const dirty = JSON.stringify(draft) !== JSON.stringify(role.matrix);
 
   const toggle = (res: string, action: Action) =>
@@ -46,7 +61,7 @@ export default function Access() {
     const allOn = open.every((r) => d[r.id]?.[action]);
     const next = { ...d };
     for (const r of open) {
-      if (r.id === 'access' && action === 'view') continue;
+      if (lockedCells.has(`${r.id}:${action}`)) continue;
       next[r.id] = { ...next[r.id], [action]: !allOn };
     }
     return next;
@@ -89,9 +104,10 @@ export default function Access() {
         ))}
       </div>
       {holds && <p className="page-hint">You hold this role, so you can't change it.</p>}
-      {!holds && !canTouchRank(maxRank, role.rank) && <p className="page-hint">This role outranks you.</p>}
+      {developerLocked && <p className="page-hint">Only developers can change the developer role.</p>}
+      {!holds && !isDeveloperRole && !canTouchRank(maxRank, role.rank) && <p className="page-hint">This role outranks you.</p>}
       <MatrixTable mode="role" resources={summary.resources} matrix={draft} editable={editable}
-                   lockedResources={locked} lockedCells={new Set(['access:view'])}
+                   lockedResources={locked} lockedCells={lockedCells}
                    onToggle={toggle} onToggleColumn={toggleColumn} />
       {message && <p className="page-hint" role="status">{message}</p>}
       {editable && (

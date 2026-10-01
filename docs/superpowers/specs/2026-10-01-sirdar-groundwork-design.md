@@ -216,6 +216,13 @@ The model and resolver match the portal:
   rank, and rank 100 also manages peers. This applies to editing a user's
   overrides and revoking their sessions. Nobody can grant a permission
   they do not hold themselves.
+- Only developers can edit the `developer` role (403
+  `developer_role_locked` for anyone else, founders included). It is the
+  one exception to `cannot_edit_own_role` and the rank rule: a developer
+  may edit it. Its core grants can never be removed: every `devtools`
+  action plus `access:view` and `access:change` (422
+  `developer_role_core`). Every other role keeps the own-role and rank
+  rules; `grant_exceeds_own` applies everywhere.
 - API routes declare `require(resource, action)`. The SPA gates nav
   items, pages and buttons using the map from `/me`.
 

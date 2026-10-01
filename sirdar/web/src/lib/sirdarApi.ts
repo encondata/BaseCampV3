@@ -78,6 +78,8 @@ const MESSAGES: Record<string, string> = {
   forbidden: "You don't have permission to do that.",
   rank_too_low: 'That person outranks you.',
   cannot_edit_own_role: "You can't change the permissions of a role you hold.",
+  developer_role_locked: 'Only developers can change the developer role.',
+  developer_role_core: 'The developer role always keeps Developer tools and Roles & access view/change.',
   cannot_target_self: "You can't change your own overrides.",
   grant_exceeds_own: "You can't grant a permission you don't have yourself.",
   developer_only_resource: 'Developer tools can only be granted to the developer role.',

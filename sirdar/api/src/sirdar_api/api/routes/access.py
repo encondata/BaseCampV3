@@ -11,6 +11,10 @@ from sirdar_api.api.deps import AuthContext, DbSession, require_permission
 from sirdar_api.db.models import PermissionOverride, Role, RolePermission, User, UserRole
 from sirdar_api.services.audit import audit
 
+# The developer role can never lose these: every devtools action, plus the
+# ability to see and change Roles & access (so it can always repair itself).
+DEVELOPER_CORE = {("devtools", a) for a in ACTIONS} | {("access", "view"), ("access", "change")}
+
 router = APIRouter(prefix="/access", tags=["access"])
 
 
@@ -59,14 +63,22 @@ async def put_role_matrix(name: str, body: MatrixIn, db: DbSession,
             ).scalar_one_or_none()
     if role is None:
         raise _err(404, "role_not_found")
-    if name in actor.access.role_names:
-        raise _err(403, "cannot_edit_own_role")
-    if not can_touch_rank(actor.access.max_rank, role.rank):
-        raise _err(403, "rank_too_low")
+    is_developer_role = name == "developer"
+    if is_developer_role and "developer" not in actor.access.role_names:
+        raise _err(403, "developer_role_locked")
+    # The developer role is the one exception to the own-role and rank rules:
+    # only developers can edit it, and they hold it.
+    if not is_developer_role:
+        if name in actor.access.role_names:
+            raise _err(403, "cannot_edit_own_role")
+        if not can_touch_rank(actor.access.max_rank, role.rank):
+            raise _err(403, "rank_too_low")
     _check_names(body.matrix)
     desired = {(res, a) for res, acts in body.matrix.items() for a, on in acts.items() if on}
     if name != "developer" and any(REGISTRY[res].developer_only for res, _ in desired):
         raise _err(422, "developer_only_resource")
+    if is_developer_role and not DEVELOPER_CORE <= desired:
+        raise _err(422, "developer_role_core")
     if ("access", "view") not in desired:
         raise _err(422, "access_view_locked")
     current = set((await db.execute(select(RolePermission.resource, RolePermission.action)
