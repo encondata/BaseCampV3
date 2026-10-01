@@ -18,6 +18,8 @@ from edge.outbox import OutboxWorker
 from edge.routes import auth as auth_routes
 from edge.routes import edge as edge_routes
 from edge.routes import kiosk as kiosk_routes
+from edge.routes import proxy
+from edge.sync import Syncer
 from edge.upstream import Upstream
 
 API_PREFIXES = ("/auth/", "/kiosk/", "/system/")
@@ -48,6 +50,8 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
                                     lambda: app.state.identity.serial)
     app.state.outbox_wake = asyncio.Event()
     outbox.requeue_sending(app.state.store)
+    app.state.syncer = Syncer(app.state.store, app.state.upstream,
+                              lambda: app.state.identity.serial)
 
     app.include_router(auth_routes.router)
     app.include_router(edge_routes.router)
@@ -69,7 +73,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     async def catch_all(request: Request, full_path: str) -> Response:
         path = "/" + full_path
         if path.startswith(API_PREFIXES):
-            return Response(status_code=404)  # replaced by the proxy in Task 6
+            return await proxy.forward(request, path)
         if request.method != "GET":
             return Response(status_code=404)
         return static.serve(settings.web_dir, path)

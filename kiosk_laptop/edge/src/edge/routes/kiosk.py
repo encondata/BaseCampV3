@@ -4,7 +4,10 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from edge import outbox
 from edge.deps import err, require_session
+from edge.routes.auth import passthrough
+from edge.routes.proxy import rewrite_body
 from edge.sessions import EdgeSession
+from edge.upstream import CloudOffline
 
 router = APIRouter(prefix="/kiosk")
 
@@ -37,3 +40,24 @@ async def printer_events(request: Request,
                                  session.person_name, body)
     request.app.state.outbox_wake.set()
     return Response(status_code=204)
+
+
+@router.post("/setup")
+async def setup(request: Request, session: EdgeSession = Depends(require_session)) -> Response:
+    """Kiosk Setup needs the cloud. On success the laptop is now set up for
+    that move, so pull it down before answering — the browser's own download
+    that follows then reads what the edge just stored."""
+    st = request.app.state
+    body = rewrite_body("/kiosk/setup", await request.body(), st.identity)
+    try:
+        resp = await st.upstream.as_person(session.person_id, "POST", "/kiosk/setup",
+                                           content=body,
+                                           headers={"content-type": "application/json"})
+    except CloudOffline:
+        raise err(503, "edge_offline") from None
+    if resp is None:
+        raise err(401, "cloud_sign_in_required")
+    if resp.status_code == 200:
+        st.syncer.set_target(str(resp.json()["initiative_id"]), session.person_id)
+        await st.syncer.run()
+    return passthrough(resp)
