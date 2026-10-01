@@ -165,8 +165,8 @@ answering no writes them blank. All are `SIRDAR_DEPLOY_*` keys in `.env`:
 | `GCP_PROJECT_ID`, `GCP_CREDENTIALS_FILE`, `GCP_REGION` | Google Cloud project and service-account file name |
 | `SSH_HOST`, `SSH_PORT` (22), `SSH_USER`, `SSH_PASSWORD`, `SSH_KEY_PATH`, `SSH_KEY_PASSPHRASE` | Custom SSH target |
 
-The installer prompts for DigitalOcean and the SSH host; edit `.env` for AWS
-and GCP.
+The installer prompts for DigitalOcean and the SSH host (and for the key
+passphrase, hidden, when you name a key file); edit `.env` for AWS and GCP.
 
 **Key files.** Put private keys in `sirdar/deploy-keys/` (git-ignored; created
 by the installer, mode 711) and give the bare file name in `SSH_KEY_PATH` or

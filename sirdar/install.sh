@@ -335,7 +335,7 @@ new_setting_default() {  # new_setting_default KEY -> the default used when not 
 # existing .env the installer asks the yes/no once and appends the absent ones.
 DEPLOY_KEYS=(SIRDAR_DEPLOY_DO_TOKEN SIRDAR_DEPLOY_DO_REGION SIRDAR_DEPLOY_SSH_HOST
   SIRDAR_DEPLOY_SSH_PORT SIRDAR_DEPLOY_SSH_USER SIRDAR_DEPLOY_SSH_PASSWORD
-  SIRDAR_DEPLOY_SSH_KEY_PATH)
+  SIRDAR_DEPLOY_SSH_KEY_PATH SIRDAR_DEPLOY_SSH_KEY_PASSPHRASE)
 
 # The container runs as uid 10001. Mode 711 lets that uid reach a key file it
 # can read without letting anyone else list the directory (the key files
@@ -366,11 +366,11 @@ check_key_file() {
 }
 
 # prompt_deploy KEYSDIR: sets the CALLER's d_do_token d_do_region d_ssh_host
-# d_ssh_port d_ssh_user d_ssh_pw d_ssh_key. Every answer is optional. Secrets
+# d_ssh_port d_ssh_user d_ssh_pw d_ssh_key d_ssh_pass. Every answer is optional. Secrets
 # are read hidden and never printed.
 prompt_deploy() {
   local keysdir="$1" a
-  d_do_token=''; d_do_region=''; d_ssh_host=''; d_ssh_port=22; d_ssh_user=''; d_ssh_pw=''; d_ssh_key=''
+  d_do_token=''; d_do_region=''; d_ssh_host=''; d_ssh_port=22; d_ssh_user=''; d_ssh_pw=''; d_ssh_key=''; d_ssh_pass=''
   echo "     DigitalOcean (read-only views). Create a read-only token in the DO control panel under API." >&4
   while :; do
     ask_secret a "     DigitalOcean API token [Enter = skip]: " || die_eof
@@ -424,12 +424,18 @@ prompt_deploy() {
     esac
     d_ssh_key="$a"; break
   done
+  [ -n "$d_ssh_key" ] || return 0
+  while :; do
+    ask_secret a "     SSH key passphrase [Enter = none]: " || die_eof
+    if has_bad_chars "$a"; then echo "     No quotes or line breaks, please." >&4; continue; fi
+    d_ssh_pass="$a"; break
+  done
 }
 
 # ask_deploy KEYSDIR -> d_* as above; asks the yes/no first (default no, all blank).
 ask_deploy() {
   local yn
-  d_do_token=''; d_do_region=''; d_ssh_host=''; d_ssh_port=22; d_ssh_user=''; d_ssh_pw=''; d_ssh_key=''
+  d_do_token=''; d_do_region=''; d_ssh_host=''; d_ssh_port=22; d_ssh_user=''; d_ssh_pw=''; d_ssh_key=''; d_ssh_pass=''
   ask yn "Configure deployment targets now? [y/N]: " || die_eof
   case "$yn" in [Yy]*) prompt_deploy "$1" ;; esac
 }
@@ -443,6 +449,7 @@ deploy_value() {  # deploy_value KEY -> the d_* value for that env key
     SIRDAR_DEPLOY_SSH_USER) printf '%s' "$d_ssh_user" ;;
     SIRDAR_DEPLOY_SSH_PASSWORD) printf '%s' "$d_ssh_pw" ;;
     SIRDAR_DEPLOY_SSH_KEY_PATH) printf '%s' "$d_ssh_key" ;;
+    SIRDAR_DEPLOY_SSH_KEY_PASSPHRASE) printf '%s' "$d_ssh_pass" ;;
   esac
 }
 
@@ -451,7 +458,7 @@ deploy_row() {
   local v
   v=$(deploy_value "$1")
   case "$1" in
-    *_TOKEN|*_PASSWORD) if [ -n "$v" ]; then v="set"; else v="blank"; fi ;;
+    *_TOKEN|*_PASSWORD|*_PASSPHRASE) if [ -n "$v" ]; then v="set"; else v="blank"; fi ;;
     *) [ -n "$v" ] || v=blank ;;
   esac
   printf '    %-28s %s\n' "$1" "$v"
@@ -464,7 +471,7 @@ deploy_row() {
 add_new_settings() {
   local target="$1" key missing=() tmp
   local bind origins minlen s_bind s_origins s_minlen v dmissing=() keysdir
-  local d_do_token d_do_region d_ssh_host d_ssh_port d_ssh_user d_ssh_pw d_ssh_key
+  local d_do_token d_do_region d_ssh_host d_ssh_port d_ssh_user d_ssh_pw d_ssh_key d_ssh_pass
   keysdir="$(dirname "$target")/deploy-keys"
   for key in "${NEW_SETTINGS[@]}"; do
     grep -q "^$key=" "$target" || missing+=("$key")
@@ -473,14 +480,14 @@ add_new_settings() {
     grep -q "^$key=" "$target" || dmissing+=("$key")
   done
   [ "${#missing[@]}" -gt 0 ] || [ "${#dmissing[@]}" -gt 0 ] || return 0
-  d_do_token=''; d_do_region=''; d_ssh_host=''; d_ssh_port=22; d_ssh_user=''; d_ssh_pw=''; d_ssh_key=''
+  d_do_token=''; d_do_region=''; d_ssh_host=''; d_ssh_port=22; d_ssh_user=''; d_ssh_pw=''; d_ssh_key=''; d_ssh_pass=''
 
   bind=$(new_setting_default SIRDAR_BIND);                s_bind='default'
   origins='';                                             s_origins='default (blank: same-origin only)'
   minlen=$(new_setting_default SIRDAR_PASSWORD_MIN_LENGTH); s_minlen='default'
 
   if ! interactive; then
-    info "Settings added since your install are using their defaults (not written to $target): ${missing[*]} ${dmissing[*]}"
+    info "Settings added since your install are using their defaults (not written to $target): ${missing[*]+${missing[*]} }${dmissing[*]+${dmissing[*]}}"
     return 0
   fi
 
@@ -540,8 +547,8 @@ write_env() {
   local example="$1" target="$2"
   local port bind cookie origins source pepper totp jwt dbpw
   local s_port s_bind s_cookie s_origins s_source s_pepper s_totp s_jwt s_dbpw
-  local d_do_token d_do_region d_ssh_host d_ssh_port d_ssh_user d_ssh_pw d_ssh_key dk
-  d_do_token=''; d_do_region=''; d_ssh_host=''; d_ssh_port=22; d_ssh_user=''; d_ssh_pw=''; d_ssh_key=''
+  local d_do_token d_do_region d_ssh_host d_ssh_port d_ssh_user d_ssh_pw d_ssh_key d_ssh_pass dk
+  d_do_token=''; d_do_region=''; d_ssh_host=''; d_ssh_port=22; d_ssh_user=''; d_ssh_pw=''; d_ssh_key=''; d_ssh_pass=''
   local def_port="${SIRDAR_PORT:-8098}" def_bind="${SIRDAR_BIND:-127.0.0.1}" a yn
 
   [ -f "$target" ] && die "$target already exists; refusing to overwrite it."
