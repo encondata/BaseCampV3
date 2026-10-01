@@ -191,6 +191,7 @@ async def test_activity_own_rows_newest_first_and_isolated(client, db):
     assert actions.index("a.about_me") < actions.index("a.mine")      # newest first
     assert "login" in actions
     mine = next(i for i in items if i["action"] == "a.mine")
+    assert isinstance(mine["id"], str)
     assert set(mine) >= {"id", "at", "action", "entity_type", "entity_id", "entity_name",
                          "actor_id", "actor_name", "ip", "changes"}
     assert mine["actor_name"] == "Boss User" and mine["changes"] == {"x": 1}

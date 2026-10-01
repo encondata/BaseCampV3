@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.access.resolver import AccessInfo
@@ -17,6 +18,7 @@ from sirdar_api.api.schemas import (
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import User
 from sirdar_api.services import auth as auth_service
+from sirdar_api.services import totp_enroll
 from sirdar_api.services.auth import AuthError, AuthResult, LoginChallenge
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -24,7 +26,8 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 REFRESH_COOKIE = "sirdar_refresh"
 COOKIE_PATH = "/api/auth"
 _STATUS = {"account_locked": 423, "password_change_required": 403,
-           "totp_enrollment_required": 403, "totp_seed_unreadable": 409}
+           "totp_enrollment_required": 403, "totp_seed_unreadable": 409,
+           "totp_already_enrolled": 409, "totp_not_started": 409, "totp_not_enrolled": 409}
 
 
 def _auth_http_error(exc: AuthError) -> HTTPException:
@@ -143,3 +146,68 @@ async def save_preferences(prefs: UiPreferences, user: CurrentUser, db: DbSessio
     user.user.ui_prefs = prefs.model_dump(mode="json")
     await db.commit()
     return prefs
+
+
+# ── two-factor enrollment (local users) ──────────────────────────────
+
+class TotpEnrollStartOut(BaseModel):
+    secret: str
+    otpauth_uri: str
+
+
+class TotpEnrollConfirmIn(BaseModel):
+    code: str = Field(min_length=6, max_length=16)
+    remember: bool = False
+
+
+class TotpEnrollConfirmOut(BaseModel):
+    backup_codes: list[str]
+    session: None = None
+
+
+class TotpRegenerateIn(BaseModel):
+    code: str = Field(min_length=6, max_length=16)
+
+
+class BackupCodesOut(BaseModel):
+    backup_codes: list[str]
+
+
+def _local_only(user: User) -> None:
+    if user.source != "local":
+        raise HTTPException(status_code=403, detail={"code": "managed_in_portal"})
+
+
+@router.post("/totp/enroll/start", response_model=TotpEnrollStartOut)
+async def totp_enroll_start(ctx: CurrentUser, db: DbSession):
+    _local_only(ctx.user)
+    try:
+        out = totp_enroll.start_enrollment(ctx.user)
+    except AuthError as exc:
+        raise _auth_http_error(exc) from None
+    await db.commit()
+    return out
+
+
+@router.post("/totp/enroll/confirm", response_model=TotpEnrollConfirmOut)
+async def totp_enroll_confirm(body: TotpEnrollConfirmIn, request: Request, ctx: CurrentUser,
+                              db: DbSession):
+    _local_only(ctx.user)
+    try:
+        codes = await totp_enroll.confirm_enrollment(
+            db, ctx.user.person_id, body.code, client_ip(request))
+    except AuthError as exc:
+        raise _auth_http_error(exc) from None
+    return TotpEnrollConfirmOut(backup_codes=codes)
+
+
+@router.post("/totp/backup-codes/regenerate", response_model=BackupCodesOut)
+async def totp_regenerate(body: TotpRegenerateIn, request: Request, ctx: CurrentUser,
+                          db: DbSession):
+    _local_only(ctx.user)
+    try:
+        codes = await totp_enroll.regenerate_backup_codes(
+            db, ctx.user.person_id, body.code, client_ip(request))
+    except AuthError as exc:
+        raise _auth_http_error(exc) from None
+    return BackupCodesOut(backup_codes=codes)

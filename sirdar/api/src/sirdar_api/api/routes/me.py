@@ -7,11 +7,13 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 
 from sirdar_api.api.deps import CurrentUser, DbSession, client_ip
+from sirdar_api.config import get_settings
 from sirdar_api.db.models import AuditLog, AuthSession, User
 from sirdar_api.services.audit import audit
+from sirdar_api.security.passwords import hash_password, verify_password
 from sirdar_api.services.auth import _revoke_family
 
 router = APIRouter(prefix="/auth/me", tags=["me"])
@@ -87,7 +89,7 @@ class SessionInfo(BaseModel):
 
 
 class MyActivityItem(BaseModel):
-    id: int
+    id: str
     at: datetime
     action: str
     entity_type: str
@@ -213,8 +215,46 @@ async def my_activity(ctx: CurrentUser, db: DbSession,
             except ValueError:
                 pass
         out.append(MyActivityItem(
-            id=r.id, at=r.at, action=r.action, entity_type=r.entity_type,
+            id=str(r.id), at=r.at, action=r.action, entity_type=r.entity_type,
             entity_id=r.entity_id, entity_name=entity_name, actor_id=r.actor_id,
             actor_name=names.get(r.actor_id) if r.actor_id else None,
             ip=str(r.ip) if r.ip else None, changes=r.changes, by_me=r.actor_id == me))
     return out
+
+
+class PasswordChangeIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.post("/password", status_code=204)
+async def change_password(body: PasswordChangeIn, request: Request, ctx: CurrentUser,
+                          db: DbSession):
+    """Local users only. A wrong current password is not a lockout strike
+    (the caller already holds a valid session), matching the portal."""
+    user = ctx.user
+    if user.source != "local":
+        raise HTTPException(status_code=403, detail={"code": "managed_in_portal"})
+    settings = get_settings()
+    pepper = settings.password_pepper.get_secret_value()
+    if user.password_hash is None or not verify_password(
+            user.password_hash, body.current_password, pepper=pepper):
+        raise HTTPException(status_code=403, detail={"code": "invalid_current_password"})
+    if body.new_password == body.current_password:
+        raise HTTPException(status_code=422, detail={"code": "same_as_current"})
+    if len(body.new_password) < settings.password_min_length:
+        raise HTTPException(status_code=422, detail={
+            "code": "password_too_short", "min_length": settings.password_min_length})
+    now = datetime.now(UTC)
+    user.password_hash = hash_password(body.new_password, pepper=pepper)
+    user.password_updated_at = now
+    user.must_change_password = False
+    user.updated_at = now
+    await db.execute(update(AuthSession).where(
+        AuthSession.person_id == user.person_id,
+        AuthSession.family_id != ctx.session.family_id,
+        AuthSession.revoked_at.is_(None),
+    ).values(revoked_at=now, revoke_reason="password_change"))
+    audit(db, actor_id=user.person_id, action="password.change", entity_type="user",
+          entity_id=str(user.person_id), ip=client_ip(request))
+    await db.commit()
