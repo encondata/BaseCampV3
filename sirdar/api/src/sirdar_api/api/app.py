@@ -59,10 +59,11 @@ def create_app() -> FastAPI:
         return JSONResponse({"status": "ok" if ok else "db_unreachable"},
                             status_code=200 if ok else 503)
 
-    from sirdar_api.api.routes import auth, system
+    from sirdar_api.api.routes import auth, system, users
 
     api.include_router(auth.router)
     api.include_router(system.router)
+    api.include_router(users.router)
 
     app.include_router(api)
 
