@@ -125,3 +125,28 @@ async def test_malformed_move_passwords_keep_old_and_still_cache(app, cloud):
     assert meta["last_error"] == "bad_move_passwords"
     assert app.state.store.one("SELECT 1 FROM move_passwords WHERE initiative_id='old'")
     assert app.state.store.one("SELECT 1 FROM cache WHERE key=?", (sync_paths("m-1")[0],))
+
+
+async def test_sync_acts_as_the_person_signed_in_now(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-a", refresh_token="ra", access_token="tok-a", expires_in=900)
+    app.state.syncer.set_target("m-1", "p-a")                 # A ran Kiosk Setup
+    up.save_session("p-b", refresh_token="rb", access_token="tok-b", expires_in=900)
+    make_session(app, person_id="p-b", name="Bo Brown")         # B is signed in now
+    route = _mock_sync(cloud)
+    meta = await app.state.syncer.run()
+    assert meta["last_error"] is None
+    assert route.calls[0].request.headers["authorization"] == "Bearer tok-b"
+
+
+async def test_sync_skips_signed_in_person_whose_cloud_session_is_ending(app, cloud):
+    up = app.state.upstream
+    up.save_session("p-a", refresh_token="ra", access_token="tok-a", expires_in=900)
+    app.state.syncer.set_target("m-1", "p-a")
+    up.save_session("p-b", refresh_token="rb", access_token="tok-b", expires_in=900)
+    up.mark_ending("p-b")
+    make_session(app, person_id="p-b", name="Bo Brown")
+    make_session(app, person_id="p-c", name="Cy Offline")       # offline sign-in: no cloud row
+    route = _mock_sync(cloud)
+    await app.state.syncer.run()
+    assert route.calls[0].request.headers["authorization"] == "Bearer tok-a"

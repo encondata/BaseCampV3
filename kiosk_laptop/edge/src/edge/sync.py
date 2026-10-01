@@ -47,9 +47,7 @@ class Syncer:
         initiative = meta["initiative_id"]
         if not initiative:
             return meta
-        actor = meta["actor_person_id"]
-        if not actor or not self.upstream.has_session(actor):
-            actor = self.upstream.latest_session_person()
+        actor = self._actor(meta["actor_person_id"])
         if actor is None:
             return self._error("needs_sign_in")
         pulled: list[tuple[str, str]] = []
@@ -90,6 +88,22 @@ class Syncer:
             c.execute("UPDATE sync_meta SET synced_at = ?, last_error = ? WHERE id = 1",
                       (now_iso(), error))
         return self.meta()
+
+    def _actor(self, configured: str | None) -> str | None:
+        """Who the sync acts as: whoever is signed in on the laptop NOW with
+        a usable cloud session (the cloud hands the move password only to the
+        person signed in on that kiosk), else the person who ran Kiosk Setup,
+        else the latest cloud session."""
+        row = self.store.one(
+            "SELECT e.person_id FROM edge_sessions e JOIN cloud_sessions c "
+            "ON c.person_id = e.person_id AND c.ending = 0 "
+            "WHERE e.revoked_at IS NULL AND e.expires_at > ? "
+            "ORDER BY e.created_at DESC, e.rowid DESC LIMIT 1", (now_iso(),))
+        if row is not None:
+            return row["person_id"]
+        if configured and self.upstream.has_session(configured):
+            return configured
+        return self.upstream.latest_session_person()
 
     def _moves_path(self, initiative: str) -> str:
         path = f"/kiosk/edge/move-passwords?serial={quote(self.serial(), safe='')}"
