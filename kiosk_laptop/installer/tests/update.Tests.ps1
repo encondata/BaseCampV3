@@ -289,6 +289,30 @@ Describe 'update.ps1' {
         Get-CurrentImageId | Should -Be ''
         Get-PulledImageId -Ref 'x/y:z' | Should -Be ''
     }
+    # -- final fix round ----------------------------------------------------------
+    It 'recovery with no container keeps the earlier rejected image (never blanks it)' {
+        Write-StateFixture @{ previous_image = 'sha256:old'; phase = 'updating'; rejected_image = 'sha256:bad' }
+        $script:dk.Fail = @('inspect --format {{.Image}} *')
+        $script:dk.Health = ''
+        Invoke-KioskUpdate -HealthTimeoutSeconds 0 | Should -Be 1
+        (Get-UpdateStateFile).rejected_image | Should -Be 'sha256:bad'
+        (Get-UpdateStateFile).phase | Should -Be 'done'
+    }
+    It 'recovery records the running image as rejected when there is one' {
+        Write-StateFixture @{ previous_image = 'sha256:old'; phase = 'updating'; rejected_image = 'sha256:bad' }
+        $script:dk.Running = 'sha256:new'; $script:dk.Health = 'unhealthy'
+        Invoke-KioskUpdate -HealthTimeoutSeconds 0 | Should -Be 1
+        (Get-UpdateStateFile).rejected_image | Should -Be 'sha256:new'
+    }
+    It 'a rejected image with no container logs a failed re-tag of :previous, not "no earlier image"' {
+        Write-StateFixture @{ rejected_image = 'sha256:bad' }
+        $script:dk.Fail = @('inspect --format {{.Image}} *', 'tag *')
+        $script:dk.Pulled = 'sha256:bad'; $script:dk.PreviousTag = 'sha256:prev'
+        Invoke-KioskUpdate | Should -Be 0
+        Get-UpdateLogText | Should -BeLike "*Couldn't re-tag $script:Stable to the kept previous image sha256:prev; starting it anyway (sha256:bad).*"
+        Get-UpdateLogText | Should -Not -BeLike '*no earlier image is kept*'
+        Test-UpAfter -Index 0 | Should -BeTrue
+    }
     It 'Invoke-Rollback without an image keeps phase=updating and exits 2' {
         Write-StateFixture @{ previous_image = ''; phase = 'updating' }
         Read-UpdateState

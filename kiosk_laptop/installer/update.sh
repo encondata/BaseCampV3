@@ -145,10 +145,12 @@ pull_changed() {
 start_without_container() {
   local ref="$1" prev
   prev=$("${DOCKER[@]}" image inspect --format '{{.Id}}' "$PREVIOUS_TAG" 2>/dev/null || true)
-  if [ -n "$prev" ] && [ "$prev" != "$NEW_IMAGE" ] && "${DOCKER[@]}" tag "$prev" "$ref"; then
+  if [ -z "$prev" ] || [ "$prev" = "$NEW_IMAGE" ]; then
+    log "No kiosk container is running and no earlier image is kept; starting it anyway ($NEW_IMAGE)."
+  elif "${DOCKER[@]}" tag "$prev" "$ref"; then
     log "No kiosk container is running; starting the kept previous image $prev."
   else
-    log "No kiosk container is running and no earlier image is kept; starting it anyway ($NEW_IMAGE)."
+    log "Couldn't re-tag $ref to the kept previous image $prev; starting it anyway ($NEW_IMAGE)."
   fi
   compose up -d && return 0
   log "The kiosk didn't start."
@@ -238,7 +240,8 @@ recover_interrupted() {
     return 0
   fi
   log "The last update didn't finish and the kiosk isn't healthy."
-  STATE_REJECTED="$cur"
+  # No container means no image to blame: keep the one rejected before.
+  [ -z "$cur" ] || STATE_REJECTED="$cur"
   rollback "$STATE_PREVIOUS"; rc=$?
   [ "$rc" != 1 ] || log "recovered from an interrupted update"
   return "$rc"

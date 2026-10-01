@@ -286,10 +286,12 @@ function Wait-KioskHealthy {
 function Start-WithoutContainer {
     param([Parameter(Mandatory = $true)][string]$Ref)
     $prev = Get-PulledImageId -Ref $PreviousTag
-    if ($prev -and $prev -ne $Upd.NewImage -and (Test-DockerCall -Arguments @('tag', $prev, $Ref))) {
+    if (-not $prev -or $prev -eq $Upd.NewImage) {
+        Write-UpdateLog "No kiosk container is running and no earlier image is kept; starting it anyway ($($Upd.NewImage))."
+    } elseif (Test-DockerCall -Arguments @('tag', $prev, $Ref)) {
         Write-UpdateLog "No kiosk container is running; starting the kept previous image $prev."
     } else {
-        Write-UpdateLog "No kiosk container is running and no earlier image is kept; starting it anyway ($($Upd.NewImage))."
+        Write-UpdateLog "Couldn't re-tag $Ref to the kept previous image $prev; starting it anyway ($($Upd.NewImage))."
     }
     try { Invoke-Compose -Arguments @('up', '-d') | Out-Null; return $true }
     catch { Write-UpdateLog "The kiosk didn't start."; return $false }
@@ -379,7 +381,8 @@ function Invoke-InterruptedRecovery {
         return 0
     }
     Write-UpdateLog "The last update didn't finish and the kiosk isn't healthy."
-    $Upd.Rejected = $cur
+    # No container means no image to blame: keep the one rejected before.
+    if ($cur) { $Upd.Rejected = $cur }
     $rc = Invoke-Rollback -ImageId $Upd.Previous
     if ($rc -eq 1) { Write-UpdateLog 'recovered from an interrupted update' }
     $rc

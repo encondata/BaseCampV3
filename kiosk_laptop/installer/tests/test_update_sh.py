@@ -285,6 +285,46 @@ def test_rejected_image_with_no_container_prefers_previous_tag(tmp_path):
     assert "sha256:prev" in (tmp_path / "update.log").read_text()
 
 
+# ── final fix round ──────────────────────────────────────────────────
+
+def test_recovery_without_container_keeps_earlier_rejected_image(tmp_path):
+    _state(tmp_path, previous_image="sha256:old", phase="updating", rejected_image="sha256:bad")
+    script = ('#!/bin/sh\necho "$@" >> "$0.log"\n'
+              'case "$*" in\n'
+              '  *"--format {{.Image}}"*) exit 1 ;;\n'
+              '  *Health*) exit 1 ;;\n'
+              'esac\n')
+    r = _upd(tmp_path, 'HEALTH_TIMEOUT_S=0; main; echo rc=$?', script, IDLE)
+    assert "rc=1" in r.stdout
+    st = _read_state(tmp_path)
+    assert st["rejected_image"] == "sha256:bad" and st["phase"] == "done"
+
+
+def test_recovery_records_running_image_as_rejected(tmp_path):
+    _state(tmp_path, previous_image="sha256:old", phase="updating", rejected_image="sha256:bad")
+    r = _upd(tmp_path, 'HEALTH_TIMEOUT_S=0; main; echo rc=$?',
+             _docker("sha256:new", "sha256:new", "unhealthy"), IDLE)
+    assert "rc=1" in r.stdout and _read_state(tmp_path)["rejected_image"] == "sha256:new"
+
+
+def test_rejected_image_no_container_logs_failed_retag(tmp_path):
+    _state(tmp_path, rejected_image="sha256:bad")
+    script = ('#!/bin/sh\necho "$@" >> "$0.log"\n'
+              'case "$*" in\n'
+              '  tag*) exit 1 ;;\n'
+              '  *"--format {{.Image}}"*) exit 1 ;;\n'
+              '  *"image inspect --format {{.Id}} serversherpa-kiosk-laptop:previous"*) echo sha256:prev ;;\n'
+              '  *"image inspect"*) echo sha256:bad ;;\n'
+              'esac\n')
+    r = _upd(tmp_path, 'main; echo rc=$?', script, IDLE)
+    log = (tmp_path / "update.log").read_text()
+    assert "rc=0" in r.stdout
+    assert ("Couldn't re-tag ghcr.io/encondata/serversherpa-kiosk-laptop:stable to the kept previous "
+            "image sha256:prev; starting it anyway (sha256:bad).") in log
+    assert "no earlier image is kept" not in log
+    assert any(l.endswith("up -d") for l in (tmp_path / "docker.log").read_text().splitlines())
+
+
 # ── launch.sh ─────────────────────────────────────────────────────────
 
 def _launch(tmp_path, body, config="KIOSK_BROWSER=/usr/bin/google-chrome\n"):
