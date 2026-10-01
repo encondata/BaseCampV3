@@ -251,7 +251,7 @@ Describe 'update.ps1' {
         $script:dk.Fail = @('inspect --format {{.Image}} *')
         $script:dk.Pulled = 'sha256:bad'; $script:dk.PreviousTag = 'sha256:prev'
         Invoke-KioskUpdate | Should -Be 0
-        $iTag = [array]::IndexOf(@(Get-DockerCallLine), "tag sha256:prev $script:Stable")
+        $iTag = [array]::IndexOf(@(Get-DockerCallLine), "tag serversherpa-kiosk-laptop:previous $script:Stable")
         $iTag | Should -BeGreaterOrEqual 0
         Test-UpAfter -Index $iTag | Should -BeTrue
         Get-UpdateLogText | Should -BeLike '*sha256:prev*'
@@ -318,6 +318,124 @@ Describe 'update.ps1' {
         Read-UpdateState
         Invoke-Rollback -ImageId '' | Should -Be 2
         (Get-UpdateStateFile).phase | Should -Be 'updating'
+    }
+}
+
+Describe 'update.ps1 on the containerd image store' {
+    BeforeAll {
+
+# A stateful fake docker modeling the image store (fix round 3). Mode
+# 'containerd' (Docker Desktop's containerd store): an image with no name
+# left can't be found by its ID, even while a container runs it. Mode
+# 'classic': it can (dangling). compose pull moves Ref to Pulled; compose
+# up -d runs what Ref names; images in Bad are unhealthy.
+function Initialize-StoreDocker {
+    param([string]$Mode, [string]$Ref, [hashtable]$Tags, [string]$Running = '', [string]$Pulled = '', [string[]]$Bad = @())
+    $known = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($v in $Tags.Values) { [void]$known.Add($v) }
+    if ($Running) { [void]$known.Add($Running) }
+    $script:store = @{ Mode = $Mode; Ref = $Ref; Tags = $Tags.Clone(); Running = $Running; Pulled = $Pulled; Bad = $Bad; Known = $known
+        Calls = (New-Object System.Collections.Generic.List[string]) }
+}
+function Resolve-StoreImage {
+    param([string]$Name)
+    if ($Name -like 'sha256:*') {
+        if ($script:store.Tags.Values -contains $Name) { return $Name }
+        if ($script:store.Mode -eq 'classic' -and $script:store.Known.Contains($Name)) { return $Name }
+        return $null
+    }
+    $script:store.Tags[$Name]
+}
+function Invoke-StoreDocker {
+    param([string[]]$Arguments)
+    $line = $Arguments -join ' '
+    $script:store.Calls.Add($line)
+    $a = $Arguments
+    if ($a[0] -eq 'inspect') {
+        if (-not $script:store.Running) { throw "docker $line failed (exit 1). No such object" }
+        if ($line -like '*State.Health*') { if ($script:store.Bad -contains $script:store.Running) { return 'unhealthy' } else { return 'healthy' } }
+        if ($line -like '*{{.Image}}*') { return $script:store.Running }
+        return
+    }
+    if ($a[0] -eq 'image' -and $a[1] -eq 'inspect') {
+        $id = Resolve-StoreImage -Name $a[-1]
+        if (-not $id) { throw "docker $line failed (exit 1). No such image: $($a[-1])" }
+        return $id
+    }
+    if ($a[0] -eq 'tag') {
+        $id = Resolve-StoreImage -Name $a[1]
+        if (-not $id) { throw "docker $line failed (exit 1). Error response from daemon: No such image: $($a[1])" }
+        $script:store.Tags[$a[2]] = $id
+        return
+    }
+    if ($a[0] -eq 'compose') {
+        if ($a[-1] -eq 'pull') { $script:store.Tags[$script:store.Ref] = $script:store.Pulled; [void]$script:store.Known.Add($script:store.Pulled) }
+        if ($a[-1] -eq '-d') {
+            $id = Resolve-StoreImage -Name $script:store.Ref
+            if (-not $id) { throw "docker $line failed (exit 1)." }
+            $script:store.Running = $id
+        }
+    }
+}
+
+    }
+    BeforeEach {
+        $script:dir = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory $script:dir | Out-Null
+        $env:KIOSK_DIR = $script:dir
+        Mock Invoke-Docker { Invoke-StoreDocker -Arguments $Arguments }
+        Mock Get-EdgeStatusJson { $script:Idle }
+        Mock Start-Sleep {}
+        $script:Prev = 'serversherpa-kiosk-laptop:previous'
+    }
+    AfterEach { $env:KIOSK_DIR = $null }
+    It 'a normal update tags :previous by name before the pull (<_>)' -ForEach @('containerd', 'classic') {
+        Initialize-StoreDocker -Mode $_ -Ref $script:Stable -Tags @{ $script:Stable = 'sha256:old' } -Running 'sha256:old' -Pulled 'sha256:new'
+        Invoke-KioskUpdate -HealthTimeoutSeconds 0 | Should -Be 0
+        $calls = @($script:store.Calls)
+        $iPrev = [array]::IndexOf($calls, "tag $script:Stable $script:Prev")
+        $iPrev | Should -BeGreaterOrEqual 0
+        $iPrev | Should -BeLessThan ([array]::IndexOf($calls, ($calls | Where-Object { $_ -like '* pull' } | Select-Object -First 1)))
+        $script:store.Tags[$script:Prev] | Should -Be 'sha256:old'
+        $script:store.Running | Should -Be 'sha256:new'
+        Get-UpdateLogText | Should -Not -BeLike "*Couldn't tag*"
+    }
+    It 'a rollback tags the channel from :previous (<_>)' -ForEach @('containerd', 'classic') {
+        Initialize-StoreDocker -Mode $_ -Ref $script:Stable -Tags @{ $script:Stable = 'sha256:old' } -Running 'sha256:old' -Pulled 'sha256:new' -Bad @('sha256:new')
+        Invoke-KioskUpdate -HealthTimeoutSeconds 0 | Should -Be 1
+        $script:store.Calls | Should -Contain "tag $script:Prev $script:Stable"
+        $script:store.Running | Should -Be 'sha256:old'
+        $script:store.Tags[$script:Stable] | Should -Be 'sha256:old'
+    }
+    It 'the rejected skip re-points the channel from :previous (<_>)' -ForEach @('containerd', 'classic') {
+        Write-StateFixture @{ rejected_image = 'sha256:bad' }
+        Initialize-StoreDocker -Mode $_ -Ref $script:Stable -Tags @{ $script:Stable = 'sha256:old' } -Running 'sha256:old' -Pulled 'sha256:bad'
+        Invoke-KioskUpdate | Should -Be 0
+        $script:store.Calls | Should -Contain "tag $script:Prev $script:Stable"
+        $script:store.Tags[$script:Stable] | Should -Be 'sha256:old'
+        Get-UpdateLogText | Should -Not -BeLike "*Couldn't re-tag*"
+    }
+    It 'recovery puts the previous image back (<_>)' -ForEach @('containerd', 'classic') {
+        Write-StateFixture @{ previous_image = 'sha256:old'; phase = 'updating' }
+        Initialize-StoreDocker -Mode $_ -Ref $script:Stable -Tags @{ $script:Stable = 'sha256:new'; $script:Prev = 'sha256:old' } -Running 'sha256:new' -Pulled 'sha256:new' -Bad @('sha256:new')
+        Invoke-KioskUpdate -HealthTimeoutSeconds 0 | Should -Be 1
+        $script:store.Calls | Should -Contain "tag $script:Prev $script:Stable"
+        $script:store.Running | Should -Be 'sha256:old'
+    }
+    It 'with no container, a rejected image gives way to :previous by name (<_>)' -ForEach @('containerd', 'classic') {
+        Write-StateFixture @{ rejected_image = 'sha256:bad' }
+        Initialize-StoreDocker -Mode $_ -Ref $script:Stable -Tags @{ $script:Stable = 'sha256:old'; $script:Prev = 'sha256:old' } -Running '' -Pulled 'sha256:bad'
+        Invoke-KioskUpdate | Should -Be 0
+        $script:store.Calls | Should -Contain "tag $script:Prev $script:Stable"
+        $script:store.Running | Should -Be 'sha256:old'
+    }
+    It 'a :previous holding another image falls back to the ID and logs why' {
+        Initialize-StoreDocker -Mode 'classic' -Ref $script:Stable -Tags @{ $script:Stable = 'sha256:new'; $script:Prev = 'sha256:older' } -Running 'sha256:new' -Pulled 'sha256:new'
+        Reset-UpdateContext
+        [void]$script:store.Known.Add('sha256:old')   # classic store: still found by ID
+        Restore-ImageTag -Id 'sha256:old' -Ref $script:Stable | Should -BeTrue
+        $script:store.Calls | Should -Contain "tag sha256:old $script:Stable"
+        Get-UpdateLogText | Should -BeLike '*holds sha256:older, not sha256:old;*'
     }
 }
 

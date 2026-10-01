@@ -280,7 +280,8 @@ def test_rejected_image_with_no_container_prefers_previous_tag(tmp_path):
               'esac\n')
     r = _upd(tmp_path, 'main; echo rc=$?', script, IDLE)
     lines = (tmp_path / "docker.log").read_text().splitlines()
-    i_tag = lines.index("tag sha256:prev ghcr.io/encondata/serversherpa-kiosk-laptop:stable")
+    # by name: on the containerd store the ID alone may not resolve
+    i_tag = lines.index("tag serversherpa-kiosk-laptop:previous ghcr.io/encondata/serversherpa-kiosk-laptop:stable")
     assert "rc=0" in r.stdout and any(l.endswith("up -d") for l in lines[i_tag:])
     assert "sha256:prev" in (tmp_path / "update.log").read_text()
 
@@ -323,6 +324,101 @@ def test_rejected_image_no_container_logs_failed_retag(tmp_path):
             "image sha256:prev; starting it anyway (sha256:bad).") in log
     assert "no earlier image is kept" not in log
     assert any(l.endswith("up -d") for l in (tmp_path / "docker.log").read_text().splitlines())
+
+
+# ── fix round 3: containerd image store ──────────────────────────────
+
+from conftest import store_docker  # noqa: E402
+
+REF = "ghcr.io/encondata/serversherpa-kiosk-laptop:stable"
+PREV = "serversherpa-kiosk-laptop:previous"
+
+
+def _run_store(tmp_path, body="main; echo rc=$?"):
+    st = tmp_path / "status.json"; st.write_text(IDLE)
+    env = {**os.environ, "KIOSK_UPDATE_LIB": "1", "KIOSK_DIR": str(tmp_path)}
+    return subprocess.run([BASH, "-c", f'source "{UPDATE_SH}"; DOCKER=("{tmp_path}/docker"); '
+                           f'status_json() {{ cat "{st}"; }}; HEALTH_POLL_S=0; HEALTH_TIMEOUT_S=0; {body}'],
+                          capture_output=True, text=True, env=env)
+
+
+def _calls(tmp_path):
+    return (tmp_path / "docker.log").read_text().splitlines()
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("mode", ["containerd", "classic"])
+def test_store_update_tags_previous_by_name_before_the_pull(tmp_path, mode):
+    _, store = store_docker(tmp_path, mode, REF, {REF: "sha256:old"}, running="sha256:old", pulled="sha256:new")
+    r = _run_store(tmp_path)
+    assert "rc=0" in r.stdout
+    calls = _calls(tmp_path)
+    i_prev = calls.index(f"tag {REF} {PREV}")
+    assert i_prev < next(i for i, c in enumerate(calls) if c.endswith(" pull"))
+    tags, running = store()
+    assert tags[PREV] == "sha256:old" and running == "sha256:new"
+    assert "Couldn't tag" not in (tmp_path / "update.log").read_text()
+
+
+@pytest.mark.parametrize("mode", ["containerd", "classic"])
+def test_store_rollback_tags_from_previous(tmp_path, mode):
+    _, store = store_docker(tmp_path, mode, REF, {REF: "sha256:old"}, running="sha256:old",
+                            pulled="sha256:new", bad=("sha256:new",))
+    r = _run_store(tmp_path)
+    assert "rc=1" in r.stdout, (tmp_path / "update.log").read_text()
+    assert f"tag {PREV} {REF}" in _calls(tmp_path)
+    tags, running = store()
+    assert running == "sha256:old" and tags[REF] == "sha256:old"
+    assert _read_state(tmp_path)["rejected_image"] == "sha256:new"
+
+
+@pytest.mark.parametrize("mode", ["containerd", "classic"])
+def test_store_rejected_skip_repoints_ref_from_previous(tmp_path, mode):
+    _state(tmp_path, rejected_image="sha256:bad")
+    _, store = store_docker(tmp_path, mode, REF, {REF: "sha256:old"}, running="sha256:old", pulled="sha256:bad")
+    r = _run_store(tmp_path)
+    assert "rc=0" in r.stdout
+    assert f"tag {PREV} {REF}" in _calls(tmp_path)
+    tags, running = store()
+    assert tags[REF] == "sha256:old" and running == "sha256:old"
+    assert "Couldn't re-tag" not in (tmp_path / "update.log").read_text()
+
+
+@pytest.mark.parametrize("mode", ["containerd", "classic"])
+def test_store_recovery_tags_from_previous(tmp_path, mode):
+    # interrupted: :previous was tagged before the pull, the new (bad) image runs
+    _state(tmp_path, previous_image="sha256:old", phase="updating")
+    _, store = store_docker(tmp_path, mode, REF, {REF: "sha256:new", PREV: "sha256:old"},
+                            running="sha256:new", pulled="sha256:new", bad=("sha256:new",))
+    r = _run_store(tmp_path)
+    assert "rc=1" in r.stdout, (tmp_path / "update.log").read_text()
+    tags, running = store()
+    assert running == "sha256:old" and tags[REF] == "sha256:old"
+    assert "recovered from an interrupted update" in (tmp_path / "update.log").read_text()
+
+
+@pytest.mark.parametrize("mode", ["containerd", "classic"])
+def test_store_start_without_container_uses_previous_name(tmp_path, mode):
+    _state(tmp_path, rejected_image="sha256:bad")
+    _, store = store_docker(tmp_path, mode, REF, {REF: "sha256:old", PREV: "sha256:old"},
+                            running="", pulled="sha256:bad")
+    r = _run_store(tmp_path)
+    assert "rc=0" in r.stdout
+    assert f"tag {PREV} {REF}" in _calls(tmp_path)
+    tags, running = store()
+    assert running == "sha256:old"
+
+
+def test_store_previous_holding_another_image_falls_back_to_id_and_logs(tmp_path):
+    # classic store: :previous is stale, the ID still resolves
+    _, store = store_docker(tmp_path, "classic", REF, {REF: "sha256:old", PREV: "sha256:older"},
+                            running="sha256:old", pulled="sha256:new", bad=("sha256:new",))
+    r = _run_store(tmp_path, 'PREV_IMAGE=sha256:old; NEW_IMAGE=sha256:new; rollback sha256:old; echo rc=$?')
+    assert "rc=1" in r.stdout
+    assert f"tag sha256:old {REF}" in _calls(tmp_path)
+    assert "holds sha256:older, not sha256:old" in r.stdout   # log() prints; main sends it to update.log
 
 
 # ── launch.sh ─────────────────────────────────────────────────────────

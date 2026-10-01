@@ -179,8 +179,12 @@ docker push -q "$IMAGE" >/dev/null || fail "couldn't push the newer image"
 rc=0; run_update HEALTH_TIMEOUT_S=150 HEALTH_POLL_S=2 || rc=$?
 [ "$rc" = 0 ] || fail "update.sh exited $rc on a newer good image (expected 0)"
 [ "$(container_field '{{.Image}}')" = "$NEW_IMAGE" ] || fail "container isn't running the newer image $NEW_IMAGE"
+[ -n "$OLD_IMAGE" ] || fail "no old image ID recorded before the update"
+docker image inspect serversherpa-kiosk-laptop:previous >/dev/null 2>&1 \
+  || fail "serversherpa-kiosk-laptop:previous doesn't exist after the update"
 [ "$(docker image inspect -f '{{.Id}}' serversherpa-kiosk-laptop:previous 2>/dev/null || true)" = "$OLD_IMAGE" ] \
   || fail "serversherpa-kiosk-laptop:previous isn't the old image $OLD_IMAGE"
+! update_log | grep -q "Couldn't tag the previous image" || fail "update.log says the previous image couldn't be tagged"
 [ "$(serial || true)" = "$SERIAL" ] || fail "serial changed across the update"
 [ "$(state_value phase)" = "done" ] || fail "update-state.json phase isn't done after the update"
 update_log | grep -qF "updated to $NEW_IMAGE" || fail "update.log doesn't say 'updated to $NEW_IMAGE'"

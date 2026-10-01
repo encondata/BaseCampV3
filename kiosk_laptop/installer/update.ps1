@@ -206,6 +206,38 @@ function Get-PulledImageId {
     Get-DockerValue -Arguments @('image', 'inspect', '--format', '{{.Id}}', $Ref)
 }
 
+# Docker Desktop's containerd image store can't find an image by its ID once
+# it has no name left, even while a container runs it, so images are named
+# before a pull moves the channel tag, and put back by name.
+
+# Save-PreviousImageTag ID REF: tag the running image ID as :previous, from REF
+# while REF still names it (before the pull), else by ID (classic store).
+function Save-PreviousImageTag {
+    param([Parameter(Mandatory = $true)][string]$Id, [Parameter(Mandatory = $true)][string]$Ref)
+    if ((Get-PulledImageId -Ref $Ref) -eq $Id) {
+        if (Test-DockerCall -Arguments @('tag', $Ref, $PreviousTag)) { return $true }
+    }
+    if (Test-DockerCall -Arguments @('tag', $Id, $PreviousTag)) { return $true }
+    Write-UpdateLog "Couldn't tag the previous image $Id as $PreviousTag (continuing)."
+    $false
+}
+
+# Restore-ImageTag ID REF: put image ID back on REF, from :previous when it
+# holds that image, else by ID (logging why). $true when tagged.
+function Restore-ImageTag {
+    param([Parameter(Mandatory = $true)][string]$Id, [Parameter(Mandatory = $true)][string]$Ref)
+    $kept = Get-PulledImageId -Ref $PreviousTag
+    if ($kept -eq $Id) {
+        if (Test-DockerCall -Arguments @('tag', $PreviousTag, $Ref)) { return $true }
+        Write-UpdateLog "Couldn't tag $Ref from $PreviousTag; trying $Id by ID."
+    } elseif ($kept) {
+        Write-UpdateLog "$PreviousTag holds $kept, not $Id; tagging $Id by ID."
+    } else {
+        Write-UpdateLog "$PreviousTag doesn't exist; tagging $Id by ID."
+    }
+    Test-DockerCall -Arguments @('tag', $Id, $Ref)
+}
+
 function Get-KioskHealth { Get-DockerValue -Arguments @('inspect', '--format', '{{.State.Health.Status}}', $KioskContainer) }
 
 function Test-DockerUp { Test-DockerCall -Arguments @('info') }
@@ -288,7 +320,7 @@ function Start-WithoutContainer {
     $prev = Get-PulledImageId -Ref $PreviousTag
     if (-not $prev -or $prev -eq $Upd.NewImage) {
         Write-UpdateLog "No kiosk container is running and no earlier image is kept; starting it anyway ($($Upd.NewImage))."
-    } elseif (Test-DockerCall -Arguments @('tag', $prev, $Ref)) {
+    } elseif (Test-DockerCall -Arguments @('tag', $PreviousTag, $Ref)) {
         Write-UpdateLog "No kiosk container is running; starting the kept previous image $prev."
     } else {
         Write-UpdateLog "Couldn't re-tag $Ref to the kept previous image $prev; starting it anyway ($($Upd.NewImage))."
@@ -303,6 +335,8 @@ function Start-WithoutContainer {
 function Invoke-Pull {
     $ref = Get-UpdateImageRef
     $Upd.PrevImage = Get-CurrentImageId
+    # Before the pull, while the channel tag still names the running image.
+    if ($Upd.PrevImage) { Save-PreviousImageTag -Id $Upd.PrevImage -Ref $ref | Out-Null }
     $running = $Upd.PrevImage
     if (-not $running) { $running = 'nothing' }
     Write-UpdateLog "Pulling $ref (running $running)"
@@ -321,7 +355,7 @@ function Invoke-Pull {
         # Point the channel tag back at the running image, so nothing (compose
         # included) recreates the container on the rejected one.
         if ($Upd.PrevImage) {
-            if (-not (Test-DockerCall -Arguments @('tag', $Upd.PrevImage, $ref))) { Write-UpdateLog "Couldn't re-tag $ref to $($Upd.PrevImage)." }
+            if (-not (Restore-ImageTag -Id $Upd.PrevImage -Ref $ref)) { Write-UpdateLog "Couldn't re-tag $ref to $($Upd.PrevImage)." }
             return 1
         }
         if (-not (Start-WithoutContainer -Ref $ref)) { return 2 }
@@ -341,7 +375,7 @@ function Invoke-Rollback {
     if (-not $ImageId) {
         Write-UpdateLog 'No previous image to roll back to.'
     } else {
-        $ok = Test-DockerCall -Arguments @('tag', $ImageId, $ref)
+        $ok = Restore-ImageTag -Id $ImageId -Ref $ref
         if ($ok) {
             try { Invoke-Compose -Arguments @('up', '-d') | Out-Null } catch { $ok = $false }
         }
@@ -393,8 +427,9 @@ function Invoke-ApplyUpdate {
     $Upd.Rejected = ''   # a different, newer image: forget the rejected one
     $Upd.Phase = 'updating'
     Write-UpdateState
-    # Keep a tag on the previous image, so the prune below can't remove it.
-    if ($Upd.PrevImage) {
+    # :previous (tagged before the pull) keeps the prune below off the previous
+    # image; tag it now if that didn't work.
+    if ($Upd.PrevImage -and (Get-PulledImageId -Ref $PreviousTag) -ne $Upd.PrevImage) {
         if (-not (Test-DockerCall -Arguments @('tag', $Upd.PrevImage, $PreviousTag))) { Write-UpdateLog "Couldn't tag the previous image (continuing)." }
     }
     Write-UpdateLog 'Starting the new image'

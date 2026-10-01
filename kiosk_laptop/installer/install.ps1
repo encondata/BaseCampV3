@@ -1207,6 +1207,45 @@ function Get-ImageId {
     try { return ((@(Invoke-Docker -Arguments $Arguments) -join '').Trim()) } catch { return '' }
 }
 
+# Test-DockerTag SOURCE TARGET: $true when docker tag worked.
+function Test-DockerTag {
+    param([Parameter(Mandatory = $true)][string]$Source, [Parameter(Mandatory = $true)][string]$Target)
+    try { Invoke-Docker -Arguments @('tag', $Source, $Target) | Out-Null; return $true } catch { return $false }
+}
+
+# Docker Desktop's containerd image store can't find an image by its ID once
+# it has no name left, even while a container runs it, so the running image is
+# named :previous before the pull moves the channel tag, and images are put
+# back by name (as update.ps1 does).
+
+# Save-PreviousImageTag ID REF: tag image ID as :previous, from REF while REF
+# still names it (before the pull), else by ID (classic store).
+function Save-PreviousImageTag {
+    param([Parameter(Mandatory = $true)][string]$Id, [Parameter(Mandatory = $true)][string]$Ref)
+    if ((Get-ImageId -Arguments @('image', 'inspect', '-f', '{{.Id}}', $Ref)) -eq $Id) {
+        if (Test-DockerTag -Source $Ref -Target $PreviousTag) { return $true }
+    }
+    if (Test-DockerTag -Source $Id -Target $PreviousTag) { return $true }
+    Write-Warn "Couldn't tag the running image $Id as $PreviousTag (continuing)."
+    $false
+}
+
+# Restore-ImageTag ID REF: put image ID back on REF, from :previous when it
+# holds that image, else by ID (saying why). $true when tagged.
+function Restore-ImageTag {
+    param([Parameter(Mandatory = $true)][string]$Id, [Parameter(Mandatory = $true)][string]$Ref)
+    $kept = Get-ImageId -Arguments @('image', 'inspect', '-f', '{{.Id}}', $PreviousTag)
+    if ($kept -eq $Id) {
+        if (Test-DockerTag -Source $PreviousTag -Target $Ref) { return $true }
+        Write-Warn "Couldn't tag $Ref from $PreviousTag; trying $Id by ID."
+    } elseif ($kept) {
+        Write-Warn "$PreviousTag holds $kept, not $Id; tagging $Id by ID."
+    } else {
+        Write-Warn "$PreviousTag doesn't exist; tagging $Id by ID."
+    }
+    Test-DockerTag -Source $Id -Target $Ref
+}
+
 # Start-KioskContainer: compose up -d, then the health wait. @{ Healthy; Status }.
 function Start-KioskContainer {
     param([string]$Compose, [int]$TimeoutSeconds, [int]$PollSeconds)
@@ -1227,6 +1266,8 @@ function Start-Kiosk {
     $logs = "See: docker compose -f `"$compose`" logs edge"
     Stop-LegacyKiosk
     $prev = Get-ImageId -Arguments @('inspect', '-f', '{{.Image}}', $KioskContainer)
+    # Before the pull, while the channel tag still names the running image.
+    if ($prev) { Save-PreviousImageTag -Id $prev -Ref $ImageRef | Out-Null }
     Write-Info 'Downloading the kiosk image'
     try { Invoke-Docker -Arguments @('compose', '-f', $compose, 'pull') -Stream | Out-Null }
     catch {
@@ -1242,15 +1283,14 @@ function Start-Kiosk {
     if ($prev -and $new -and $new -ne $prev -and $new -eq $state.Rejected) {
         Write-Warn 'The newest version failed its health check on this laptop before; keeping the current one.'
         # The channel tag back on the running image, so compose doesn't recreate it.
-        try { Invoke-Docker -Arguments @('tag', $prev, $ImageRef) | Out-Null }
-        catch { throw "Couldn't keep the current version (docker tag failed). $($_.Exception.Message)" }
+        if (-not (Restore-ImageTag -Id $prev -Ref $ImageRef)) { throw "Couldn't keep the current version (docker tag failed)." }
         $new = $prev
     } elseif (-not $prev -and $new -and $new -eq $state.Rejected) {
         # No container to keep: like update.ps1, the kept :previous image if there is one.
         $kept = Get-ImageId -Arguments @('image', 'inspect', '-f', '{{.Id}}', $PreviousTag)
         $tagged = $false
         if ($kept -and $kept -ne $new) {
-            try { Invoke-Docker -Arguments @('tag', $kept, $ImageRef) | Out-Null; $tagged = $true } catch { $tagged = $false }
+            $tagged = Test-DockerTag -Source $PreviousTag -Target $ImageRef
         }
         if ($tagged) {
             Write-Warn 'The newest version failed its health check on this laptop before; starting the kept previous version instead.'
@@ -1265,8 +1305,7 @@ function Start-Kiosk {
         if ($prev -and $prev -ne $new) {
             Write-Warn "The new version didn't become healthy (status: $($r.Status)); going back to the previous one."
             if ($new) { $state.Rejected = $new }   # the nightly update won't try it again
-            $back = $false
-            try { Invoke-Docker -Arguments @('tag', $prev, $ImageRef) | Out-Null; $back = $true } catch { $back = $false }
+            $back = Restore-ImageTag -Id $prev -Ref $ImageRef
             if ($back) { $r = Start-KioskContainer -Compose $compose -TimeoutSeconds $TimeoutSeconds -PollSeconds $PollSeconds }
             Write-InstallUpdateState -Path $statePath -State $state -ImageRef $ImageRef
             if ($back -and $r.Healthy) {

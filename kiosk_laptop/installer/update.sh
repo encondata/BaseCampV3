@@ -108,6 +108,40 @@ current_digest() {
   "${DOCKER[@]}" inspect --format '{{.Image}}' "$KIOSK_CONTAINER" 2>/dev/null
 }
 
+image_id() { "${DOCKER[@]}" image inspect --format '{{.Id}}' "$1" 2>/dev/null || true; }
+
+# Docker Desktop's containerd image store can't find an image by its ID once
+# it has no name left, even while a container runs it, so images are named
+# before a pull moves the channel tag, and put back by name.
+
+# keep_previous ID REF: tag the running image ID as :previous, from REF while
+# REF still names it (before the pull), else by ID (classic store).
+keep_previous() {
+  local id="$1" ref="$2"
+  if [ "$(image_id "$ref")" = "$id" ]; then
+    "${DOCKER[@]}" tag "$ref" "$PREVIOUS_TAG" && return 0
+  fi
+  "${DOCKER[@]}" tag "$id" "$PREVIOUS_TAG" && return 0
+  log "Couldn't tag the previous image $id as $PREVIOUS_TAG (continuing)."
+  return 1
+}
+
+# retag ID REF: put image ID back on REF, from :previous when it holds that
+# image, else by ID (logging why).
+retag() {
+  local id="$1" ref="$2" kept
+  kept=$(image_id "$PREVIOUS_TAG")
+  if [ "$kept" = "$id" ]; then
+    "${DOCKER[@]}" tag "$PREVIOUS_TAG" "$ref" && return 0
+    log "Couldn't tag $ref from $PREVIOUS_TAG; trying $id by ID."
+  elif [ -n "$kept" ]; then
+    log "$PREVIOUS_TAG holds $kept, not $id; tagging $id by ID."
+  else
+    log "$PREVIOUS_TAG doesn't exist; tagging $id by ID."
+  fi
+  "${DOCKER[@]}" tag "$id" "$ref"
+}
+
 # pull_changed: 0 when the pulled channel image differs from the running one,
 # 1 when it is the same or was rejected before, 2 when the pull fails.
 # Sets PREV_IMAGE and NEW_IMAGE.
@@ -115,6 +149,8 @@ pull_changed() {
   local ref
   ref=$(image_ref)
   PREV_IMAGE=$(current_digest || true)
+  # Before the pull, while the channel tag still names the running image.
+  [ -z "$PREV_IMAGE" ] || keep_previous "$PREV_IMAGE" "$ref" || true
   log "Pulling $ref (running ${PREV_IMAGE:-nothing})"
   if ! compose pull; then
     log "Couldn't pull $ref; the kiosk keeps running the current image."
@@ -130,7 +166,7 @@ pull_changed() {
     # Point the channel tag back at the running image, so nothing (compose
     # included) recreates the container on the rejected one.
     if [ -n "$PREV_IMAGE" ]; then
-      "${DOCKER[@]}" tag "$PREV_IMAGE" "$ref" || log "Couldn't re-tag $ref to $PREV_IMAGE."
+      retag "$PREV_IMAGE" "$ref" || log "Couldn't re-tag $ref to $PREV_IMAGE."
       return 1
     fi
     start_without_container "$ref" || return 2
@@ -144,10 +180,10 @@ pull_changed() {
 # else the rejected image anyway: a kiosk that might work beats no kiosk.
 start_without_container() {
   local ref="$1" prev
-  prev=$("${DOCKER[@]}" image inspect --format '{{.Id}}' "$PREVIOUS_TAG" 2>/dev/null || true)
+  prev=$(image_id "$PREVIOUS_TAG")
   if [ -z "$prev" ] || [ "$prev" = "$NEW_IMAGE" ]; then
     log "No kiosk container is running and no earlier image is kept; starting it anyway ($NEW_IMAGE)."
-  elif "${DOCKER[@]}" tag "$prev" "$ref"; then
+  elif "${DOCKER[@]}" tag "$PREVIOUS_TAG" "$ref"; then
     log "No kiosk container is running; starting the kept previous image $prev."
   else
     log "Couldn't re-tag $ref to the kept previous image $prev; starting it anyway ($NEW_IMAGE)."
@@ -202,7 +238,7 @@ rollback() {
   ref=$(image_ref)
   if [ -z "$id" ]; then
     log "No previous image to roll back to."
-  elif "${DOCKER[@]}" tag "$id" "$ref" && compose up -d; then
+  elif retag "$id" "$ref" && compose up -d; then
     log "rolled back to $id"
     rc=1
     STATE_PHASE='done'
@@ -252,8 +288,9 @@ apply_update() {
   STATE_REJECTED=''   # a different, newer image: forget the rejected one
   STATE_PHASE=updating
   write_state
-  # Keep a tag on the previous image, so the prune below can't remove it.
-  if [ -n "$PREV_IMAGE" ]; then
+  # :previous (tagged before the pull) keeps the prune below off the previous
+  # image; tag it now if that didn't work.
+  if [ -n "$PREV_IMAGE" ] && [ "$(image_id "$PREVIOUS_TAG")" != "$PREV_IMAGE" ]; then
     "${DOCKER[@]}" tag "$PREV_IMAGE" "$PREVIOUS_TAG" || log "Couldn't tag the previous image (continuing)."
   fi
   log "Starting the new image"

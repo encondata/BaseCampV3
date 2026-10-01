@@ -767,6 +767,41 @@ pull_image() {
   die "Couldn't download the kiosk image. Check the network, then re-run."
 }
 
+image_id() { "${DOCKER[@]}" image inspect -f '{{.Id}}' "$1" 2>/dev/null || true; }
+
+# Docker Desktop's containerd image store can't find an image by its ID once
+# it has no name left, even while a container runs it, so the running image
+# is named :previous before the pull moves the channel tag, and images are
+# put back by name (as update.sh does).
+
+# keep_previous ID REF: tag image ID as :previous, from REF while REF still
+# names it (before the pull), else by ID (classic store).
+keep_previous() {
+  local id="$1" ref="$2"
+  if [ "$(image_id "$ref")" = "$id" ]; then
+    "${DOCKER[@]}" tag "$ref" "$PREVIOUS_TAG" && return 0
+  fi
+  "${DOCKER[@]}" tag "$id" "$PREVIOUS_TAG" && return 0
+  warn "Couldn't tag the running image $id as $PREVIOUS_TAG (continuing)."
+  return 1
+}
+
+# retag ID REF: put image ID back on REF, from :previous when it holds that
+# image, else by ID (saying why).
+retag() {
+  local id="$1" ref="$2" kept
+  kept=$(image_id "$PREVIOUS_TAG")
+  if [ "$kept" = "$id" ]; then
+    "${DOCKER[@]}" tag "$PREVIOUS_TAG" "$ref" && return 0
+    warn "Couldn't tag $ref from $PREVIOUS_TAG; trying $id by ID."
+  elif [ -n "$kept" ]; then
+    warn "$PREVIOUS_TAG holds $kept, not $id; tagging $id by ID."
+  else
+    warn "$PREVIOUS_TAG doesn't exist; tagging $id by ID."
+  fi
+  "${DOCKER[@]}" tag "$id" "$ref"
+}
+
 KIOSK_STATUS=''   # the last health status wait_kiosk_healthy saw
 
 # wait_kiosk_healthy: checked at least once, then every HEALTH_POLL_S until HEALTH_TIMEOUT_S.
@@ -790,6 +825,8 @@ start_kiosk() {
   logs="See: docker compose -f \"$KIOSK_DIR/docker-compose.yml\" logs edge"
   stop_legacy_kiosk
   prev=$("${DOCKER[@]}" inspect -f '{{.Image}}' "$KIOSK_CONTAINER" 2>/dev/null || true)
+  # Before the pull, while the channel tag still names the running image.
+  [ -z "$prev" ] || keep_previous "$prev" "$ref" || true
   info "Downloading the kiosk image"
   pull_image
   new=$("${DOCKER[@]}" image inspect -f '{{.Id}}' "$ref" 2>/dev/null || true)
@@ -797,12 +834,12 @@ start_kiosk() {
   if [ -n "$prev" ] && [ -n "$new" ] && [ "$new" != "$prev" ] && [ "$new" = "$UPD_REJECTED" ]; then
     warn "The newest version failed its health check on this laptop before; keeping the current one."
     # The channel tag back on the running image, so compose doesn't recreate it.
-    "${DOCKER[@]}" tag "$prev" "$ref" || die "Couldn't keep the current version (docker tag failed)."
+    retag "$prev" "$ref" || die "Couldn't keep the current version (docker tag failed)."
     new="$prev"
   elif [ -z "$prev" ] && [ -n "$new" ] && [ "$new" = "$UPD_REJECTED" ]; then
     # No container to keep: like update.sh, the kept :previous image if there is one.
-    kept=$("${DOCKER[@]}" image inspect -f '{{.Id}}' "$PREVIOUS_TAG" 2>/dev/null || true)
-    if [ -n "$kept" ] && [ "$kept" != "$new" ] && "${DOCKER[@]}" tag "$kept" "$ref"; then
+    kept=$(image_id "$PREVIOUS_TAG")
+    if [ -n "$kept" ] && [ "$kept" != "$new" ] && "${DOCKER[@]}" tag "$PREVIOUS_TAG" "$ref"; then
       warn "The newest version failed its health check on this laptop before; starting the kept previous version instead."
       new="$kept"
     else
@@ -814,7 +851,7 @@ start_kiosk() {
     if [ -n "$prev" ] && [ "$prev" != "$new" ]; then
       warn "The new version didn't become healthy (status: ${KIOSK_STATUS:-unknown}); going back to the previous one."
       [ -z "$new" ] || UPD_REJECTED="$new"   # the nightly update won't try it again
-      if "${DOCKER[@]}" tag "$prev" "$ref" && compose up -d && wait_kiosk_healthy; then
+      if retag "$prev" "$ref" && compose up -d && wait_kiosk_healthy; then
         write_update_state
         die "The new kiosk version didn't become healthy, so the installer rolled back to the previous version, which is running. $logs"
       fi

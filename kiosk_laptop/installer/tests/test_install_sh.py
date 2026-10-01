@@ -969,7 +969,7 @@ def test_rejected_image_without_container_prefers_previous_tag(sh, tmp_path):
     assert r.returncode == 0, r.stderr
     assert "starting the kept previous version" in r.stderr
     calls = (tmp_path / "docker.log").read_text().splitlines()
-    i_tag = calls.index(f"tag sha256:prev {STABLE}")
+    i_tag = calls.index(f"tag serversherpa-kiosk-laptop:previous {STABLE}")   # by name
     assert i_tag < next(i for i, c in enumerate(calls) if c.endswith(" up -d"))
     assert _state_of(tmp_path)["rejected_image"] == "sha256:bad"
 
@@ -981,3 +981,56 @@ def test_rejected_image_without_container_or_previous_tag_starts_it_anyway(sh, t
     assert r.returncode == 0, r.stderr
     assert "no earlier version is kept, so starting it anyway" in r.stderr
     assert not any(c.startswith("tag ") for c in (tmp_path / "docker.log").read_text().splitlines())
+
+
+# ── fix round 3: containerd image store ──────────────────────────────
+
+from conftest import store_docker  # noqa: E402
+
+PREV_TAG = "serversherpa-kiosk-laptop:previous"
+
+
+@pytest.mark.parametrize("mode", ["containerd", "classic"])
+def test_store_installer_tags_previous_before_the_pull(sh, tmp_path, mode):
+    fake, store = store_docker(tmp_path, mode, STABLE, {STABLE: "sha256:old"}, running="sha256:old",
+                               pulled="sha256:new")
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode == 0, r.stderr
+    calls = (tmp_path / "docker.log").read_text().splitlines()
+    assert calls.index(f"tag {STABLE} {PREV_TAG}") < next(i for i, c in enumerate(calls) if c.endswith(" pull"))
+    tags, running = store()
+    assert tags[PREV_TAG] == "sha256:old" and running == "sha256:new"
+
+
+@pytest.mark.parametrize("mode", ["containerd", "classic"])
+def test_store_installer_rollback_tags_from_previous(sh, tmp_path, mode):
+    fake, store = store_docker(tmp_path, mode, STABLE, {STABLE: "sha256:old"}, running="sha256:old",
+                               pulled="sha256:new", bad=("sha256:new",))
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode != 0 and "rolled back to the previous version" in r.stderr, r.stderr
+    tags, running = store()
+    assert running == "sha256:old" and tags[STABLE] == "sha256:old"
+    assert _state_of(tmp_path)["rejected_image"] == "sha256:new"
+
+
+@pytest.mark.parametrize("mode", ["containerd", "classic"])
+def test_store_installer_rejected_skip_repoints_from_previous(sh, tmp_path, mode):
+    _write_state(tmp_path, rejected_image="sha256:bad")
+    fake, store = store_docker(tmp_path, mode, STABLE, {STABLE: "sha256:old"}, running="sha256:old",
+                               pulled="sha256:bad")
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode == 0, r.stderr
+    assert f"tag {PREV_TAG} {STABLE}" in (tmp_path / "docker.log").read_text().splitlines()
+    tags, running = store()
+    assert tags[STABLE] == "sha256:old" and running == "sha256:old"
+
+
+@pytest.mark.parametrize("mode", ["containerd", "classic"])
+def test_store_installer_no_container_rejected_uses_previous(sh, tmp_path, mode):
+    _write_state(tmp_path, rejected_image="sha256:bad")
+    fake, store = store_docker(tmp_path, mode, STABLE, {STABLE: "sha256:old", PREV_TAG: "sha256:old"},
+                               running="", pulled="sha256:bad")
+    r = _start(sh, tmp_path, fake)
+    assert r.returncode == 0, r.stderr
+    tags, running = store()
+    assert running == "sha256:old"

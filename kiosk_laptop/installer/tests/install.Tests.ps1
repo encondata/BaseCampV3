@@ -1162,7 +1162,7 @@ Describe 'Start-Kiosk and update-state.json' {
         Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -Channel stable -TimeoutSeconds 0 -PollSeconds 0 | Out-Null
         Should -Invoke Write-Warn -ParameterFilter { $Message -like '*starting the kept previous version*' }
         $calls = @($script:icalls)
-        $iTag = [array]::IndexOf($calls, "tag sha256:prev $script:Ref")
+        $iTag = [array]::IndexOf($calls, "tag serversherpa-kiosk-laptop:previous $script:Ref")
         $iTag | Should -BeGreaterOrEqual 0
         $iUp = [array]::IndexOf($calls, ($calls | Where-Object { $_ -like 'compose -f * up -d' } | Select-Object -First 1))
         $iTag | Should -BeLessThan $iUp
@@ -1395,5 +1395,100 @@ Describe 'Resume files are rewritten with the install ACL' {
         Save-InstallerCopy -InstallDir $script:inst
         Should -Invoke Set-KioskFileAcl -Times 1 -ParameterFilter { $Path -eq $dest }
         Test-Path $dest | Should -BeTrue
+    }
+}
+
+Describe 'Start-Kiosk on the containerd image store' {
+    BeforeAll {
+
+# A stateful fake docker modeling the image store (fix round 3). Mode
+# 'containerd' (Docker Desktop's containerd store): an image with no name
+# left can't be found by its ID, even while a container runs it. Mode
+# 'classic': it can (dangling). compose pull moves Ref to Pulled; compose
+# up -d runs what Ref names; images in Bad are unhealthy.
+function Initialize-StoreDocker {
+    param([string]$Mode, [string]$Ref, [hashtable]$Tags, [string]$Running = '', [string]$Pulled = '', [string[]]$Bad = @())
+    $known = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($v in $Tags.Values) { [void]$known.Add($v) }
+    if ($Running) { [void]$known.Add($Running) }
+    $script:store = @{ Mode = $Mode; Ref = $Ref; Tags = $Tags.Clone(); Running = $Running; Pulled = $Pulled; Bad = $Bad; Known = $known
+        Calls = (New-Object System.Collections.Generic.List[string]) }
+}
+function Resolve-StoreImage {
+    param([string]$Name)
+    if ($Name -like 'sha256:*') {
+        if ($script:store.Tags.Values -contains $Name) { return $Name }
+        if ($script:store.Mode -eq 'classic' -and $script:store.Known.Contains($Name)) { return $Name }
+        return $null
+    }
+    $script:store.Tags[$Name]
+}
+function Invoke-StoreDocker {
+    param([string[]]$Arguments)
+    $line = $Arguments -join ' '
+    $script:store.Calls.Add($line)
+    $a = $Arguments
+    if ($a[0] -eq 'inspect') {
+        if (-not $script:store.Running) { throw "docker $line failed (exit 1). No such object" }
+        if ($line -like '*State.Health*') { if ($script:store.Bad -contains $script:store.Running) { return 'unhealthy' } else { return 'healthy' } }
+        if ($line -like '*{{.Image}}*') { return $script:store.Running }
+        return
+    }
+    if ($a[0] -eq 'image' -and $a[1] -eq 'inspect') {
+        $id = Resolve-StoreImage -Name $a[-1]
+        if (-not $id) { throw "docker $line failed (exit 1). No such image: $($a[-1])" }
+        return $id
+    }
+    if ($a[0] -eq 'tag') {
+        $id = Resolve-StoreImage -Name $a[1]
+        if (-not $id) { throw "docker $line failed (exit 1). Error response from daemon: No such image: $($a[1])" }
+        $script:store.Tags[$a[2]] = $id
+        return
+    }
+    if ($a[0] -eq 'compose') {
+        if ($a[-1] -eq 'pull') { $script:store.Tags[$script:store.Ref] = $script:store.Pulled; [void]$script:store.Known.Add($script:store.Pulled) }
+        if ($a[-1] -eq '-d') {
+            $id = Resolve-StoreImage -Name $script:store.Ref
+            if (-not $id) { throw "docker $line failed (exit 1)." }
+            $script:store.Running = $id
+        }
+    }
+}
+
+        function Get-InstallStateFile2 { [IO.File]::ReadAllText((Join-Path $script:inst 'update-state.json')) | ConvertFrom-Json }
+    }
+    BeforeEach {
+        $script:inst = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory $script:inst | Out-Null
+        $script:Ref = 'ghcr.io/encondata/serversherpa-kiosk-laptop:stable'
+        $script:Prev = 'serversherpa-kiosk-laptop:previous'
+        Mock Invoke-Docker { Invoke-StoreDocker -Arguments $Arguments }
+        Mock Get-KioskJson { [pscustomobject]@{ serial = 'K1' } }
+        Mock Start-Sleep {}
+        Mock Write-Warn {}
+    }
+    It 'tags :previous by name before the pull (<_>)' -ForEach @('containerd', 'classic') {
+        Initialize-StoreDocker -Mode $_ -Ref $script:Ref -Tags @{ $script:Ref = 'sha256:old' } -Running 'sha256:old' -Pulled 'sha256:new'
+        Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -TimeoutSeconds 0 -PollSeconds 0 | Out-Null
+        $calls = @($script:store.Calls)
+        $iPrev = [array]::IndexOf($calls, "tag $script:Ref $script:Prev")
+        $iPrev | Should -BeGreaterOrEqual 0
+        $iPrev | Should -BeLessThan ([array]::IndexOf($calls, ($calls | Where-Object { $_ -like 'compose * pull' } | Select-Object -First 1)))
+        $script:store.Tags[$script:Prev] | Should -Be 'sha256:old'
+    }
+    It 'a rollback tags the channel from :previous (<_>)' -ForEach @('containerd', 'classic') {
+        Initialize-StoreDocker -Mode $_ -Ref $script:Ref -Tags @{ $script:Ref = 'sha256:old' } -Running 'sha256:old' -Pulled 'sha256:new' -Bad @('sha256:new')
+        { Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -TimeoutSeconds 0 -PollSeconds 0 } | Should -Throw '*rolled back to the previous version*'
+        $script:store.Running | Should -Be 'sha256:old'
+        (Get-InstallStateFile2).rejected_image | Should -Be 'sha256:new'
+    }
+    It 'the rejected skip re-points the channel from :previous (<_>)' -ForEach @('containerd', 'classic') {
+        $st = @{ previous_image = ''; image = ''; rejected_image = 'sha256:bad'; phase = 'done' }
+        [IO.File]::WriteAllText((Join-Path $script:inst 'update-state.json'), ($st | ConvertTo-Json))
+        Initialize-StoreDocker -Mode $_ -Ref $script:Ref -Tags @{ $script:Ref = 'sha256:old' } -Running 'sha256:old' -Pulled 'sha256:bad'
+        Start-Kiosk -InstallDir $script:inst -ImageRef $script:Ref -TimeoutSeconds 0 -PollSeconds 0 | Out-Null
+        $script:store.Calls | Should -Contain "tag $script:Prev $script:Ref"
+        $script:store.Tags[$script:Ref] | Should -Be 'sha256:old'
+        $script:store.Running | Should -Be 'sha256:old'
     }
 }
