@@ -84,7 +84,14 @@ async def login(db: AsyncSession, *, email: str, password: str, ip: str | None =
         await db.commit()
         raise AuthError("invalid_credentials")
 
-    if not verify_password(user.password_hash, password, pepper=pepper):
+    password_ok = verify_password(user.password_hash, password, pepper=pepper)
+
+    # While locked, every password (right or wrong) gets the same answer and
+    # no strike, so the lock can't be used as a password oracle.
+    if user.locked_until is not None and user.locked_until > now:
+        raise await _refuse(db, user, "account_locked", ip)
+
+    if not password_ok:
         _strike(user, now, settings)
         audit(db, actor_id=None, entity_type="auth", entity_id=email,
               action="login_failed", ip=ip)
@@ -92,12 +99,10 @@ async def login(db: AsyncSession, *, email: str, password: str, ip: str | None =
         raise AuthError("invalid_credentials")
 
     # Password is correct from here on — only now is it safe to reveal
-    # account status (otherwise an email list could be sorted into
-    # disabled / locked / other without knowing any password).
+    # the account's other states (otherwise an email list could be sorted
+    # into disabled / other without knowing any password).
     if user.disabled_at is not None:
         raise await _refuse(db, user, "account_disabled", ip)
-    if user.locked_until is not None and user.locked_until > now:
-        raise await _refuse(db, user, "account_locked", ip)
     if user.source == "portal" and (
             user.must_change_password
             or (user.password_expires_at is not None and user.password_expires_at <= now)):
