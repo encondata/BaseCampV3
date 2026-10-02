@@ -1,0 +1,242 @@
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from serversherpa_status.api_status import BACKGROUND_KEY, ApiStatus, Background, LatestApiStatus
+from serversherpa_status.config import load_settings
+from serversherpa_status.state import StateTracker
+from serversherpa_status.store import Store
+from serversherpa_status.summary import build_summary
+
+NOW = datetime(2026, 9, 23, 12, 0, 5, tzinfo=UTC)
+
+
+@pytest.fixture
+def ctx(tmp_path):
+    settings = load_settings({
+        "STATUS_API_URL": "http://secret-api.internal:8000",
+        "STATUS_PORTAL_URL": "http://portal.test",
+        "STATUS_KIOSK_URL": "http://kiosk.test",
+        "STATUS_DB_PATH": str(tmp_path / "s.db"),
+    })
+    store = Store(settings.db_path)
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
+    yield settings, store, tracker
+    store.close()
+
+
+def test_unknown_before_any_checks(ctx):
+    out = build_summary(*ctx, NOW)
+    assert out["overall"] == "unknown"
+    assert out["generated_at"] == "2026-09-23T12:00:05Z"
+    assert [s["key"] for s in out["services"]] == ["api", "portal", "kiosk"]
+    api = out["services"][0]
+    assert api == {
+        "key": "api", "name": "API", "state": "unknown",
+        "last_checked_at": None, "latency_ms": None, "uptime_90d": None,
+        "days": api["days"],
+    }
+    assert len(api["days"]) == 90
+    assert api["days"][0] == {"day": "2026-06-26", "ok": None, "total": None}
+    assert api["days"][-1]["day"] == "2026-09-23"
+
+
+def test_operational_and_degraded(ctx):
+    settings, store, tracker = ctx
+    for s in settings.services:
+        store.record(s.key, NOW, True, 30, "")
+        tracker.record(s.key, True, 30, NOW)
+    out = build_summary(settings, store, tracker, NOW)
+    assert out["overall"] == "operational"
+    assert out["services"][0]["uptime_90d"] == 100.0
+    assert out["services"][0]["last_checked_at"] == "2026-09-23T12:00:05Z"
+    assert out["services"][0]["days"][-1] == {"day": "2026-09-23", "ok": 1, "total": 1}
+
+    for n in (1, 2):
+        at = NOW + timedelta(minutes=n)
+        store.record("kiosk", at, False, None, "HTTP 502 from http://kiosk.test")
+        tracker.record("kiosk", False, None, at)
+    out = build_summary(settings, store, tracker, NOW + timedelta(minutes=2))
+    assert out["overall"] == "degraded"
+    kiosk = out["services"][2]
+    assert kiosk["state"] == "down"
+    assert kiosk["uptime_90d"] == 33.3333
+
+
+def test_mixed_up_and_unknown_is_unknown(ctx):
+    settings, store, tracker = ctx
+    tracker.record("api", True, 1, NOW)
+    assert build_summary(settings, store, tracker, NOW)["overall"] == "unknown"
+
+
+def test_never_leaks_urls_or_detail(ctx):
+    settings, store, tracker = ctx
+    store.record("api", NOW, False, None, "connection error to secret-api.internal")
+    tracker.record("api", False, None, NOW)
+    blob = repr(build_summary(settings, store, tracker, NOW))
+    assert "secret-api" not in blob
+    assert "internal" not in blob
+    assert "http" not in blob
+
+
+def test_summary_includes_interval_and_threshold(ctx):
+    settings, store, tracker = ctx
+    out = build_summary(settings, store, tracker, NOW)
+    assert out["interval_seconds"] == settings.interval_seconds
+    assert out["failure_threshold"] == settings.failure_threshold
+
+
+def test_stale_last_checked_reports_unknown(ctx):
+    settings, store, tracker = ctx
+    tracker.record("api", True, 5, NOW)
+    # default interval is 60s, timeout 10s -> stale_after = 190s
+    later = NOW + timedelta(seconds=200)
+    out = build_summary(settings, store, tracker, later)
+    assert out["services"][0]["state"] == "unknown"
+    assert out["overall"] == "unknown"
+
+
+def test_fresh_last_checked_not_stale(ctx):
+    settings, store, tracker = ctx
+    tracker.record("api", True, 5, NOW)
+    later = NOW + timedelta(seconds=100)
+    out = build_summary(settings, store, tracker, later)
+    assert out["services"][0]["state"] == "up"
+
+
+def test_wiki_shows_title_only(tmp_path):
+    settings = load_settings({
+        "STATUS_API_URL": "http://api.test",
+        "STATUS_PORTAL_URL": "http://portal.test",
+        "STATUS_KIOSK_URL": "http://kiosk.test",
+        "STATUS_WIKI_URL": "https://wiki.dev.serversherpa.com",
+        "STATUS_DB_PATH": str(tmp_path / "s.db"),
+    })
+    store = Store(settings.db_path)
+    tracker = StateTracker([s.key for s in settings.services] + [BACKGROUND_KEY], 2)
+    try:
+        out = build_summary(settings, store, tracker, NOW)
+    finally:
+        store.close()
+    assert [(s["key"], s["name"]) for s in out["services"]][-1] == ("wiki", "Wiki")
+    assert "serversherpa.com" not in repr(out)
+
+
+def latest_with(status, at=NOW):
+    latest = LatestApiStatus()
+    latest.set(status, at)
+    return latest
+
+
+def all_up(settings, store, tracker):
+    for s in settings.services:
+        store.record(s.key, NOW, True, 30, "")
+        tracker.record(s.key, True, 30, NOW)
+
+
+def test_background_entry_only_once_checked(ctx):
+    settings, store, tracker = ctx
+    assert "background" not in [s["key"] for s in build_summary(settings, store, tracker, NOW)["services"]]
+    tracker.record("background", True, None, NOW)
+    store.record("background", NOW, True, None, "")
+    latest = latest_with(ApiStatus(False, None, None, Background("running", 7, 9)))
+    out = build_summary(settings, store, tracker, NOW, latest)
+    last = out["services"][-1]
+    assert last["key"] == "background"
+    assert last["name"] == "Background processing"
+    assert last["latency_ms"] is None
+    assert last["state"] == "up"
+    assert last["workers"] == {"running": 7, "total": 9}
+    assert last["uptime_90d"] == 100.0
+    assert all("workers" not in s for s in out["services"][:-1])
+
+
+def test_background_workers_none_without_fresh_report(ctx):
+    settings, store, tracker = ctx
+    tracker.record("background", True, None, NOW)
+    out = build_summary(settings, store, tracker, NOW)
+    assert out["services"][-1]["workers"] is None
+
+
+def test_background_paused_overrides_up_and_stays_operational(ctx):
+    settings, store, tracker = ctx
+    all_up(settings, store, tracker)
+    tracker.record("background", True, None, NOW)
+    latest = latest_with(ApiStatus(False, None, None, Background("paused", 3, 3)))
+    out = build_summary(settings, store, tracker, NOW, latest)
+    assert out["services"][-1]["state"] == "paused"
+    assert out["overall"] == "operational"
+
+
+def test_background_down_degrades(ctx):
+    settings, store, tracker = ctx
+    all_up(settings, store, tracker)
+    for n in (0, 1):
+        tracker.record("background", False, None, NOW)
+    out = build_summary(settings, store, tracker, NOW)
+    assert out["services"][-1]["state"] == "down"
+    assert out["overall"] == "degraded"
+
+
+def test_maintenance_overall_and_precedence(ctx):
+    settings, store, tracker = ctx
+    all_up(settings, store, tracker)
+    latest = latest_with(ApiStatus(True, "Cutover", None, None))
+    out = build_summary(settings, store, tracker, NOW, latest)
+    assert out["maintenance"] == {"active": True, "message": "Cutover"}
+    assert out["overall"] == "maintenance"
+    for n in (1, 2):
+        tracker.record("kiosk", False, None, NOW + timedelta(seconds=n))
+    out = build_summary(settings, store, tracker, NOW + timedelta(seconds=2), latest_with(ApiStatus(True, "Cutover", None, None), NOW + timedelta(seconds=2)))
+    assert out["overall"] == "degraded"
+
+
+def test_no_or_stale_latest_means_no_maintenance(ctx):
+    settings, store, tracker = ctx
+    out = build_summary(settings, store, tracker, NOW)
+    assert out["maintenance"] is None and out["announcement"] is None
+    stale = latest_with(ApiStatus(True, "M", "A", None), NOW - timedelta(seconds=500))
+    out = build_summary(settings, store, tracker, NOW, stale)
+    assert out["maintenance"] is None and out["announcement"] is None
+
+
+def test_announcement_passes_through_without_leaking(ctx):
+    settings, store, tracker = ctx
+    tracker.record("api", True, 5, NOW)
+    latest = latest_with(ApiStatus(False, None, "Planned upgrade Friday", None))
+    out = build_summary(settings, store, tracker, NOW, latest)
+    assert out["announcement"] == "Planned upgrade Friday"
+    assert out["maintenance"] == {"active": False, "message": None}
+    blob = repr(out)
+    assert "secret-api" not in blob and "internal" not in blob and "http" not in blob
+
+
+def test_fresh_api_without_background_drops_entry_and_stays_operational(ctx):
+    settings, store, tracker = ctx
+    all_up(settings, store, tracker)
+    tracker.record("background", True, None, NOW)
+    store.record("background", NOW, True, None, "")
+    later = NOW + timedelta(hours=1)
+    latest = latest_with(ApiStatus(False, None, None, None), later)
+    out = build_summary(settings, store, tracker, later, latest)
+    assert "background" not in [s["key"] for s in out["services"]]
+
+
+def test_fresh_api_without_background_does_not_pin_overall_unknown(ctx):
+    settings, store, tracker = ctx
+    all_up(settings, store, tracker)
+    tracker.record("background", True, None, NOW - timedelta(hours=2))
+    store.record("background", NOW - timedelta(hours=2), True, None, "")
+    latest = latest_with(ApiStatus(False, None, None, None))
+    out = build_summary(settings, store, tracker, NOW, latest)
+    assert "background" not in [s["key"] for s in out["services"]]
+    assert out["overall"] == "operational"
+
+
+def test_no_fresh_latest_keeps_background_entry(ctx):
+    settings, store, tracker = ctx
+    all_up(settings, store, tracker)
+    tracker.record("background", True, None, NOW)
+    store.record("background", NOW, True, None, "")
+    out = build_summary(settings, store, tracker, NOW, LatestApiStatus())
+    assert out["services"][-1]["key"] == "background"

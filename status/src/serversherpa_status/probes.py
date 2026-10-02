@@ -1,0 +1,65 @@
+"""One HTTP probe per service. A probe never raises: every outcome is a
+ProbeResult, and anything short of the expected response is a failure."""
+
+import asyncio
+import time
+from dataclasses import dataclass
+
+import httpx
+
+from serversherpa_status.config import Service
+
+# The API probe reads the database (/system/status), so a dead DB reads red;
+# /healthz would only prove the process is alive. The kiosk's config.js is
+# written by its entrypoint, so a 200 proves Caddy AND the runtime config.
+# The portal and the wiki are both single-page apps: a 200 must carry the
+# app's mount point, not a proxy's placeholder page.
+PROBE_PATHS = {"api": "/system/status", "portal": "/", "kiosk": "/config.js", "wiki": "/"}
+SPA_SERVICES = {"portal", "wiki"}
+
+DETAIL_MAX = 200
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    ok: bool
+    latency_ms: int | None
+    detail: str
+    payload: dict | None = None
+
+
+def _body_problem(key: str, resp: httpx.Response) -> bool:
+    if key == "api":
+        try:
+            return not isinstance(resp.json(), dict)
+        except ValueError:
+            return True
+    if key in SPA_SERVICES:
+        return 'id="root"' not in resp.text
+    return False
+
+
+async def probe(client: httpx.AsyncClient, service: Service, timeout: float) -> ProbeResult:
+    url = service.url + PROBE_PATHS[service.key]
+    started = time.monotonic()
+    try:
+        # httpx's own timeout only bounds socket I/O; wrapping the whole
+        # call in asyncio.timeout enforces a total deadline even against a
+        # mock/side effect (or an httpx internal wait) that never triggers
+        # httpx.TimeoutException on its own.
+        async with asyncio.timeout(timeout):
+            resp = await client.get(url, timeout=timeout, follow_redirects=True)
+    except TimeoutError:
+        return ProbeResult(False, None, "timeout")
+    except httpx.TimeoutException:
+        return ProbeResult(False, None, "timeout")
+    except httpx.HTTPError as exc:
+        return ProbeResult(False, None, f"connection error: {type(exc).__name__}"[:DETAIL_MAX])
+    latency = int(round((time.monotonic() - started) * 1000))
+    if resp.status_code != 200:
+        return ProbeResult(False, latency, f"HTTP {resp.status_code}")
+    if _body_problem(service.key, resp):
+        return ProbeResult(False, latency, "unexpected response body")
+    if service.key == "api":
+        return ProbeResult(True, latency, "", resp.json())  # _body_problem proved it a dict
+    return ProbeResult(True, latency, "")

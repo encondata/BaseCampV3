@@ -1,0 +1,141 @@
+import pytest
+
+from serversherpa_status.config import ConfigError, load_settings, stale_after_seconds
+
+BASE = {
+    "STATUS_API_URL": "https://api.example.com/",
+    "STATUS_PORTAL_URL": "https://portal.example.com",
+    "STATUS_KIOSK_URL": "https://kiosk.example.com//",
+}
+
+
+def test_defaults_and_trailing_slashes_stripped():
+    s = load_settings(BASE)
+    assert [(x.key, x.name, x.url) for x in s.services] == [
+        ("api", "API", "https://api.example.com"),
+        ("portal", "Portal", "https://portal.example.com"),
+        ("kiosk", "Kiosk", "https://kiosk.example.com"),
+    ]
+    assert s.interval_seconds == 60
+    assert s.timeout_seconds == 10
+    assert s.failure_threshold == 2
+    assert s.db_path == "/data/status.db"
+    assert s.static_dir.endswith("static")
+
+
+@pytest.mark.parametrize("missing", list(BASE))
+def test_missing_url_names_the_variable(missing):
+    env = {k: v for k, v in BASE.items() if k != missing}
+    with pytest.raises(ConfigError, match=missing):
+        load_settings(env)
+
+
+def test_blank_url_is_missing():
+    with pytest.raises(ConfigError, match="STATUS_API_URL"):
+        load_settings({**BASE, "STATUS_API_URL": "  "})
+
+
+def test_url_must_be_http():
+    with pytest.raises(ConfigError, match="STATUS_PORTAL_URL"):
+        load_settings({**BASE, "STATUS_PORTAL_URL": "portal.example.com"})
+
+
+def test_overrides():
+    s = load_settings({
+        **BASE,
+        "STATUS_INTERVAL_SECONDS": "15",
+        "STATUS_TIMEOUT_SECONDS": "3.5",
+        "STATUS_FAILURE_THRESHOLD": "3",
+        "STATUS_DB_PATH": "/tmp/x.db",
+        "STATUS_STATIC_DIR": "/srv/page",
+    })
+    assert (s.interval_seconds, s.timeout_seconds, s.failure_threshold) == (15, 3.5, 3)
+    assert (s.db_path, s.static_dir) == ("/tmp/x.db", "/srv/page")
+
+
+@pytest.mark.parametrize("var,value", [
+    ("STATUS_INTERVAL_SECONDS", "5"),
+    ("STATUS_INTERVAL_SECONDS", "soon"),
+    ("STATUS_TIMEOUT_SECONDS", "0"),
+    ("STATUS_FAILURE_THRESHOLD", "0"),
+    ("STATUS_FAILURE_THRESHOLD", "1.5"),
+])
+def test_bad_numbers_rejected(var, value):
+    with pytest.raises(ConfigError, match=var):
+        load_settings({**BASE, var: value})
+
+
+def test_stale_after_seconds_is_three_intervals_plus_timeout():
+    s = load_settings({**BASE, "STATUS_INTERVAL_SECONDS": "20", "STATUS_TIMEOUT_SECONDS": "5"})
+    assert stale_after_seconds(s) == 65
+
+
+def test_wiki_is_optional_and_off_by_default():
+    assert [s.key for s in load_settings(BASE).services] == ["api", "portal", "kiosk"]
+    assert [s.key for s in load_settings({**BASE, "STATUS_WIKI_URL": "  "}).services] == [
+        "api", "portal", "kiosk",
+    ]
+
+
+def test_wiki_added_last_when_configured():
+    s = load_settings({**BASE, "STATUS_WIKI_URL": "https://wiki.example.com/"})
+    assert [(x.key, x.name, x.url) for x in s.services][-1] == (
+        "wiki", "Wiki", "https://wiki.example.com",
+    )
+
+
+def test_wiki_url_must_be_http():
+    with pytest.raises(ConfigError, match="STATUS_WIKI_URL"):
+        load_settings({**BASE, "STATUS_WIKI_URL": "wiki.example.com"})
+
+
+NTFY_BASE = {
+    "STATUS_API_URL": "http://api.test",
+    "STATUS_PORTAL_URL": "http://portal.test",
+    "STATUS_KIOSK_URL": "http://kiosk.test",
+}
+
+
+def test_ntfy_off_by_default():
+    assert load_settings(NTFY_BASE).ntfy is None
+
+
+def test_ntfy_defaults():
+    cfg = load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "my-topic_1"}).ntfy
+    assert (cfg.server, cfg.topic, cfg.token, cfg.click_url) == ("https://ntfy.sh", "my-topic_1", None, None)
+
+
+def test_ntfy_overrides_strip_slashes():
+    cfg = load_settings({
+        **NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_NTFY_SERVER": "http://n.test/",
+        "STATUS_NTFY_TOKEN": "tok", "STATUS_PUBLIC_URL": "https://status.test/",
+    }).ntfy
+    assert (cfg.server, cfg.token, cfg.click_url) == ("http://n.test", "tok", "https://status.test")
+
+
+def test_ntfy_bad_topic():
+    with pytest.raises(ConfigError, match="STATUS_NTFY_TOPIC"):
+        load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "has space"})
+
+
+def test_ntfy_bad_server_and_public_url():
+    with pytest.raises(ConfigError, match="STATUS_NTFY_SERVER"):
+        load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_NTFY_SERVER": "ntfy.sh"})
+    with pytest.raises(ConfigError, match="STATUS_PUBLIC_URL"):
+        load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_PUBLIC_URL": "status.test"})
+
+
+def test_warns_about_token_over_cleartext_server(caplog):
+    env = {**NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_NTFY_SERVER": "http://ntfy.internal",
+           "STATUS_NTFY_TOKEN": "tk_secret"}
+    with caplog.at_level("WARNING"):
+        load_settings(env)
+    assert any("cleartext" in r.getMessage() for r in caplog.records)
+    assert "tk_secret" not in caplog.text
+
+
+def test_no_cleartext_warning_for_https_or_no_token(caplog):
+    with caplog.at_level("WARNING"):
+        load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_NTFY_TOKEN": "tk"})
+        load_settings({**NTFY_BASE, "STATUS_NTFY_TOPIC": "t", "STATUS_NTFY_SERVER": "http://ntfy.internal"})
+    assert caplog.records == []
