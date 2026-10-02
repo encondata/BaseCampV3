@@ -114,3 +114,9 @@ def ssh_settings(fake: FakeSshServer, **over):
               deploy_ssh_password=SSH_PASSWORD, deploy_keys_dir=str(fake.keys_dir))
     kw.update(over)
     return _settings(**kw)
+
+
+def ssh_config(fake: FakeSshServer, **over):
+    """The installer target's SshTargetConfig built from ssh_settings()."""
+    from sirdar_api.deploy.ssh import SshTargetConfig
+    return SshTargetConfig.from_settings(ssh_settings(fake, **over))

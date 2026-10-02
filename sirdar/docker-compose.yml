@@ -23,9 +23,14 @@ services:
       # In the container the keys always live at the mount point, even when
       # SIRDAR_DEPLOY_KEYS_DIR in .env names the host folder.
       SIRDAR_DEPLOY_KEYS_DIR: /app/deploy-keys
+      # Saved SSH targets (written by the Deploy page).
+      SIRDAR_DEPLOY_TARGETS_FILE: /app/config/deploy-targets.env
     volumes:
       # Deploy-page SSH/GCP key files; the container runs as uid 10001.
       - ${SIRDAR_DEPLOY_KEYS_DIR:-./deploy-keys}:/app/deploy-keys:ro
+      # Saved SSH targets: the whole folder is writable by uid 10001 (the app
+      # renames a temp file over deploy-targets.env, so a file mount won't do).
+      - ./config:/app/config
     ports:
       - "${SIRDAR_BIND:-127.0.0.1}:${SIRDAR_PORT:-8098}:8080"   # put the reverse proxy in front
     depends_on:

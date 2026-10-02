@@ -57,8 +57,19 @@ export interface SirdarSettings {
 }
 
 export interface DeployTarget {
-  id: 'aws' | 'gcp' | 'digitalocean' | 'ssh'; label: string; available: boolean;
-  configured: boolean;
+  /** 'aws' | 'gcp' | 'digitalocean' | 'ssh' (installer) | 'ssh:<slug>' (saved). */
+  id: string; label: string; kind?: 'aws' | 'gcp' | 'digitalocean' | 'ssh';
+  source?: 'installer' | 'saved'; available: boolean; configured: boolean;
+}
+export interface SshTarget {
+  slug: string; name: string; host: string; port: number; user: string;
+  key_path: string | null; password_set: boolean; passphrase_set: boolean;
+}
+/** Create body; on update every field is optional and a secret that is omitted is kept,
+ *  "" is cleared and a value is set. */
+export interface SshTargetBody {
+  name: string; host: string; port: number; user: string;
+  password?: string; key_path?: string; key_passphrase?: string;
 }
 export interface DeployType { id: 'blue' | 'green' | 'dev' | 'beta' | 'custom'; label: string; description: string }
 export interface DeployCheck { label: string; status: 'pass' | 'warn' | 'fail'; value: string }
@@ -120,6 +131,9 @@ const MESSAGES: Record<string, string> = {
   host_key_changed: "The server's key changed while you were looking. Try again.",
   not_configured_host: "Only the configured SSH host can be trusted.",
   not_found: 'That host is no longer trusted.',
+  target_not_found: 'That target no longer exists.',
+  targets_file_unwritable: "Sirdar couldn't save deploy-targets.env. Check that it's writable; see the README.",
+  targets_file_unreadable: "Sirdar couldn't read deploy-targets.env. Check that it's valid UTF-8; see the README.",
   source_unavailable: "Couldn't reach the portal database. Nothing was changed.",
 };
 
@@ -160,16 +174,64 @@ export const getAuditFacets = () =>
 export const getSettings = () => getJson<SirdarSettings>('/settings');
 
 export const getDeployTargets = () =>
-  getJson<{ targets: DeployTarget[]; types: DeployType[] }>('/deploy/targets');
+  getJson<{ targets: DeployTarget[]; types: DeployType[]; can_add_ssh?: boolean; ssh_store_hint?: string | null }>(
+    '/deploy/targets');
+export const getSshTarget = (slug: string) => getJson<SshTarget>(`/deploy/ssh-targets/${encodeURIComponent(slug)}`);
+export const createSshTarget = (body: SshTargetBody) => sendJson<SshTarget>('POST', '/deploy/ssh-targets', body);
+export const updateSshTarget = (slug: string, body: Partial<SshTargetBody>) =>
+  sendJson<SshTarget>('PUT', `/deploy/ssh-targets/${encodeURIComponent(slug)}`, body);
+export async function deleteSshTarget(slug: string): Promise<void> {
+  const resp = await apiFetch(`/deploy/ssh-targets/${encodeURIComponent(slug)}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorOf(resp);
+}
+export const listKeyFiles = () => getJson<{ files: string[] }>('/deploy/key-files');
 export const connectDeploy = (target: string, type: string, region?: string, name?: string) =>
   sendJson<ConnectResult>('POST', '/deploy/connect',
     { target, type, ...(region ? { region } : {}), ...(name ? { name } : {}) });
 export const getDoRegions = () => getJson<DoRegions>('/deploy/digitalocean/regions');
 export const listKnownHosts = () => getJson<KnownHost[]>('/deploy/known-hosts');
-export const trustKnownHost = (host: string, port: number, fingerprint: string) =>
-  sendJson<KnownHost>('POST', '/deploy/known-hosts', { host, port, fingerprint });
+export const trustKnownHost = (host: string, port: number, fingerprint: string, target?: string) =>
+  sendJson<KnownHost>('POST', '/deploy/known-hosts', { host, port, fingerprint, ...(target ? { target } : {}) });
 export async function forgetKnownHost(host: string, port: number): Promise<void> {
   const resp = await apiFetch(`/deploy/known-hosts?host=${encodeURIComponent(host)}&port=${port}`,
                               { method: 'DELETE' });
   if (!resp.ok) throw await errorOf(resp);
+}
+
+/* ---- Dashboard (GET /api/dashboard) ---- */
+export interface DashHealth { status: 'healthy' | 'degraded' | 'unknown' | string; label: string }
+export interface DashSlot {
+  id: 'blue' | 'green' | string; label: string;
+  state: 'active' | 'standby' | 'empty' | string;
+  health: 'healthy' | 'degraded' | 'unknown' | string;
+  version: string | null; instances: { running: number; total: number }; traffic_pct: number;
+}
+export interface DashProduction {
+  status: 'active' | 'inactive' | string; active_slot: string | null;
+  traffic: { label: string; sub: string };
+  load_balancer: { label: string; sub: string; present: boolean };
+  slots: DashSlot[];
+}
+export interface DashEnvironment {
+  id: string; label: string; state: 'active' | 'empty' | string; version: string | null;
+  last_release: string | null; action_label: string;
+}
+export interface DashNode {
+  id: string; name: string;
+  kind: 'environment' | 'deployment' | 'group' | 'droplet' | 'database' | 'spaces' | 'load_balancer' | string;
+  type_label: string; status: string; status_label: string; region: string; endpoint: string;
+  badge: string | null; dot: 'green' | 'gray' | 'blue' | string | null;
+  tone: 'shared' | null; children: DashNode[];
+}
+export interface DashboardData {
+  demo: boolean; generated_at: string; health: DashHealth; production: DashProduction;
+  environments: DashEnvironment[];
+  infrastructure: { source: 'none' | 'digitalocean' | 'demo' | string; error: string | null; tree: DashNode[] };
+}
+export function getDashboard(opts: { demo?: boolean; refresh?: boolean } = {}) {
+  const params = new URLSearchParams();
+  if (opts.demo) params.set('demo', '1');
+  if (opts.refresh) params.set('refresh', '1');
+  const qs = params.toString();
+  return getJson<DashboardData>(`/dashboard${qs ? `?${qs}` : ''}`);
 }

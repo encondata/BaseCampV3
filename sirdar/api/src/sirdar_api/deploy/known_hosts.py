@@ -61,7 +61,8 @@ async def lookup(db: AsyncSession, host: str, port: int) -> SshKnownHost | None:
 
 
 async def trust(db: AsyncSession, host: str, port: int, expected_fingerprint: str,
-                actor_id: uuid.UUID | None, *, ip: str | None = None) -> SshKnownHost:
+                actor_id: uuid.UUID | None, *, ip: str | None = None,
+                target_id: str | None = None) -> SshKnownHost:
     """Store the live key for host:port if it still has the fingerprint the
     user saw. Queues an audit row; the caller commits."""
     live = await fetch_host_key(host, port)
@@ -79,7 +80,8 @@ async def trust(db: AsyncSession, host: str, port: int, expected_fingerprint: st
     audit(db, actor_id=actor_id, action="deploy.host_trust", entity_type="ssh_known_host",
           entity_id=f"{host}:{port}", ip=ip,
           changes={"host": host, "port": port, "key_type": key_type, "fingerprint": actual,
-                   **({"previous_fingerprint": previous_fingerprint} if previous else {})})
+                   **({"previous_fingerprint": previous_fingerprint} if previous else {}),
+                   **({"target": target_id} if target_id else {})})
     await db.flush()
     return await db.scalar(
         select(SshKnownHost).where(SshKnownHost.host == host, SshKnownHost.port == port)
@@ -87,7 +89,7 @@ async def trust(db: AsyncSession, host: str, port: int, expected_fingerprint: st
 
 
 async def forget(db: AsyncSession, host: str, port: int, actor_id: uuid.UUID | None, *,
-                 ip: str | None = None) -> bool:
+                 ip: str | None = None, target_id: str | None = None) -> bool:
     """Drop the stored key; False when there was none. The caller commits."""
     row = await lookup(db, host, port)
     if row is None:
@@ -96,7 +98,8 @@ async def forget(db: AsyncSession, host: str, port: int, actor_id: uuid.UUID | N
     audit(db, actor_id=actor_id, action="deploy.host_forget", entity_type="ssh_known_host",
           entity_id=f"{host}:{port}", ip=ip,
           changes={"host": host, "port": port, "key_type": row.key_type,
-                   "fingerprint": row.fingerprint_sha256})
+                   "fingerprint": row.fingerprint_sha256,
+                   **({"target": target_id} if target_id else {})})
     await db.flush()
     return True
 

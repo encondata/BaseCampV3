@@ -47,3 +47,16 @@
 
 .sirdar-region { display: flex; flex-direction: column; gap: 6px; max-width: 360px; margin-bottom: 12px; }
 .sirdar-region label { font-weight: 600; }
+
+.sirdar-sshtarget-card { width: min(560px, calc(100vw - 48px)); }
+.sirdar-sshtarget-grid { display: grid; grid-template-columns: minmax(0, 1fr) 110px; gap: 12px 16px; }
+.sirdar-sshtarget-grid .sirdar-span2 { grid-column: 1 / -1; }
+.sirdar-sshtarget-sub { margin: 16px 0 8px; }
+.sirdar-secret { margin-bottom: 12px; }
+.sirdar-secret-row { display: flex; align-items: center; gap: 8px; }
+.sirdar-secret-row input { flex: 1; }
+.sirdar-add-target { border-style: dashed; align-items: center; justify-content: center; }
+.sirdar-target-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+
+/* A wrapper that adds semantics (radiogroup) but no box of its own. */
+.sirdar-contents { display: contents; }

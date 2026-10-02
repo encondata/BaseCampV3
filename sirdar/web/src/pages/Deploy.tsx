@@ -5,8 +5,9 @@ import ComboBox from '@portal/components/ComboBox';
 import DataTable from '@portal/components/DataTable';
 
 import HostKeyModal from '../components/HostKeyModal';
+import SshTargetModal from '../components/SshTargetModal';
 import {
-  connectDeploy, errorDetail, errorText, forgetKnownHost, getDeployTargets, getDoRegions, listKnownHosts,
+  connectDeploy, deleteSshTarget, errorDetail, errorText, forgetKnownHost, getDeployTargets, getDoRegions, listKnownHosts,
   trustKnownHost, type ConnectResult, type DeployCheck, type DeployTarget, type DeployType, type DoRegions, type KnownHost,
 } from '../lib/sirdarApi';
 
@@ -20,6 +21,7 @@ const ENV_KEYS: Record<string, string[]> = {
   gcp: ['SIRDAR_DEPLOY_GCP_PROJECT_ID', 'SIRDAR_DEPLOY_GCP_CREDENTIALS_FILE'],
 };
 const INITIALS: Record<string, string> = { aws: 'AWS', gcp: 'GC', digitalocean: 'DO', ssh: 'SSH' };
+const kindOf = (t: DeployTarget) => t.kind ?? t.id;
 const CHECK_CHIP: Record<DeployCheck['status'], { cls: string; text: string }> = {
   pass: { cls: 'c-green', text: 'Pass' }, warn: { cls: 'c-amber', text: 'Warning' }, fail: { cls: 'c-red', text: 'Fail' },
 };
@@ -81,19 +83,26 @@ export default function Deploy() {
   const [regionsError, setRegionsError] = useState('');
   const [region, setRegion] = useState('');
   const [envName, setEnvName] = useState('');
+  const [canAddSsh, setCanAddSsh] = useState(false);
+  const [sshHint, setSshHint] = useState('');
+  const [sshModal, setSshModal] = useState<{ mode: 'add' } | { mode: 'edit'; slug: string } | null>(null);
 
   const loadHosts = useCallback(() =>
     listKnownHosts().then((h) => { setHosts(h); setHostsError(''); })
       .catch((e) => setHostsError(errorText(e, "Couldn't load trusted hosts."))), []);
 
-  useEffect(() => {
-    getDeployTargets().then((r) => { setTargets(r.targets); setTypes(r.types); })
-      .catch((e) => setLoadError(errorText(e, "Couldn't load deployment targets.")));
-    loadHosts();
-  }, [loadHosts]);
+  const loadTargets = useCallback(() =>
+    getDeployTargets().then((r) => {
+      setTargets(r.targets); setTypes(r.types);
+      setCanAddSsh(!!r.can_add_ssh); setSshHint(r.ssh_store_hint ?? '');
+      setTarget((cur) => (cur && !r.targets.some((t) => t.id === cur) ? '' : cur));
+      setLoadError('');
+    }).catch((e) => setLoadError(errorText(e, "Couldn't load deployment targets."))), []);
+
+  useEffect(() => { loadTargets(); loadHosts(); }, [loadTargets, loadHosts]);
 
   const selected = targets.find((t) => t.id === target);
-  const doReady = selected?.id === 'digitalocean' && selected.available && selected.configured;
+  const doReady = !!selected && kindOf(selected) === 'digitalocean' && selected.available && selected.configured;
 
   const loadRegions = useCallback(() => {
     setRegionsLoading(true); setRegionsError('');
@@ -151,7 +160,8 @@ export default function Deploy() {
     if (!unknown?.fingerprint) return;
     setTrusting(true); setTrustError('');
     try {
-      await trustKnownHost(unknown.host, unknown.port, unknown.fingerprint);
+      if (target.startsWith('ssh:')) await trustKnownHost(unknown.host, unknown.port, unknown.fingerprint, target);
+      else await trustKnownHost(unknown.host, unknown.port, unknown.fingerprint);
     } catch (e) {
       setTrusting(false);
       if ((e as { code?: string }).code === 'host_key_changed') {
@@ -178,6 +188,22 @@ export default function Deploy() {
     } catch (e) { setError(errorText(e, "Couldn't forget that host.")); }
   };
 
+  const savedSelected = selected?.source === 'saved' ? selected : undefined;
+  const removeSaved = async () => {
+    if (!savedSelected) return;
+    const msg = `Remove ${savedSelected.label}? Its saved password and key settings are deleted. Trusted host keys stay until you forget them.`;
+    if (!window.confirm(msg)) return;
+    try {
+      await deleteSshTarget(savedSelected.id.slice('ssh:'.length));
+      setTarget(''); clearOutcome();
+      await loadTargets();
+    } catch (e) { setError(errorText(e, "Couldn't remove that target.")); }
+  };
+  const savedSsh = (slug: string) => {
+    setSshModal(null); clearOutcome(); setTarget(`ssh:${slug}`);
+    loadTargets();
+  };
+
   const firstEnabled = targets.find((t) => t.available)?.id;
   return (
     <div className="portal-page">
@@ -191,7 +217,8 @@ export default function Deploy() {
 
       <section className="sirdar-section">
         <h2>Target</h2>
-        <div className="sirdar-cards" role="radiogroup" aria-label="Deployment target">
+        <div className="sirdar-cards">
+          <div role="radiogroup" aria-label="Deployment target" className="sirdar-contents">
           {targets.map((t) => (
             <button key={t.id} type="button" role="radio" className={`sirdar-card sirdar-target${t.id === target ? ' on' : ''}`}
                     aria-checked={t.id === target} aria-disabled={!t.available}
@@ -199,16 +226,35 @@ export default function Deploy() {
                     onKeyDown={arrowNav}
                     onClick={() => { if (t.available) pick(setTarget, t.id, target); }}>
               <span className="sirdar-target-top">
-                <span className="sirdar-target-icon" aria-hidden="true">{INITIALS[t.id] ?? t.label.slice(0, 2)}</span>
+                <span className="sirdar-target-icon" aria-hidden="true">{INITIALS[kindOf(t)] ?? t.label.slice(0, 2)}</span>
                 {statusChip(t)}
               </span>
               <b>{t.label}</b>
             </button>
           ))}
+          </div>
+          {canChange && canAddSsh && (
+            <button type="button" className="sirdar-card sirdar-target sirdar-add-target"
+                    onClick={() => setSshModal({ mode: 'add' })}>
+              <b>+ Add SSH target</b>
+            </button>
+          )}
         </div>
-        {selected && selected.available && !selected.configured && (
+        {canChange && !canAddSsh && sshHint && <p className="page-hint">{sshHint}</p>}
+        {canChange && savedSelected && (
+          <div className="sirdar-target-actions">
+            <button type="button" className="mini-btn"
+                    onClick={() => setSshModal({ mode: 'edit', slug: savedSelected.id.slice('ssh:'.length) })}>Edit</button>
+            <button type="button" className="mini-btn" onClick={removeSaved}>Remove</button>
+          </div>
+        )}
+        {selected?.source === 'installer' && <p className="page-hint">Edit this target in sirdar/.env.</p>}
+        {savedSelected && !savedSelected.configured && (
+          <p className="page-hint sirdar-envnote">This target needs a password or a key file. Use Edit to add one.</p>
+        )}
+        {selected && selected.available && !selected.configured && selected.source !== 'saved' && (
           <p className="page-hint sirdar-envnote">
-            Set {ENV_KEYS[selected.id]?.map((k, i) => (
+            Set {ENV_KEYS[kindOf(selected)]?.map((k, i) => (
               <span key={k}>{i > 0 && ', '}<code>{k}</code></span>
             ))} in the .env file, then re-run the installer.
           </p>
@@ -341,6 +387,10 @@ export default function Deploy() {
         />
       </section>
 
+      {sshModal && (
+        <SshTargetModal mode={sshModal.mode} slug={sshModal.mode === 'edit' ? sshModal.slug : undefined}
+                        onSaved={savedSsh} onClose={() => setSshModal(null)} />
+      )}
       {unknown && (
         <HostKeyModal host={unknown.host} port={unknown.port} keyType={unknown.key_type}
                       fingerprint={unknown.fingerprint ?? ''} canTrust={canChange}

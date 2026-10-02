@@ -69,6 +69,40 @@ async def list_regions(settings: Settings, *,
     return {"regions": regions, "default": default}
 
 
+_MAX_DROPLET_PAGES = 5
+
+
+async def inventory(settings: Settings, *,
+                    transport: httpx.AsyncBaseTransport | None = None) -> dict:
+    """Raw read-only inventory: {droplets, databases, load_balancers}, each a list
+    of DO resource dicts. Droplets follow links.pages.next up to 5 pages. Never
+    carries the token; errors are sanitized ConnectFailed."""
+    async with _client(settings, transport) as client:
+        try:
+            droplets: list = []
+            params: dict = {"per_page": 200}
+            for _ in range(_MAX_DROPLET_PAGES):
+                body = await _get(client, "/droplets", **params)
+                page = body["droplets"]
+                if not isinstance(page, list):
+                    raise TypeError
+                droplets += [d for d in page if isinstance(d, dict)]
+                nxt = ((body.get("links") or {}).get("pages") or {}).get("next")
+                number = httpx.URL(nxt).params.get("page") if isinstance(nxt, str) else None
+                if not number:
+                    break
+                params = {"per_page": 200, "page": number}
+            databases = (await _get(client, "/databases"))["databases"]
+            lbs = (await _get(client, "/load_balancers", per_page=200))["load_balancers"]
+            if not isinstance(databases, list) or not isinstance(lbs, list):
+                raise TypeError
+        except (KeyError, TypeError, ValueError):
+            raise ConnectFailed(_UNEXPECTED) from None
+    return {"droplets": droplets,
+            "databases": [d for d in databases if isinstance(d, dict)],
+            "load_balancers": [d for d in lbs if isinstance(d, dict)]}
+
+
 async def test_connection(settings: Settings, *, region: str | None = None,
                           transport: httpx.AsyncBaseTransport | None = None) -> ConnectResult:
     """region: the caller's choice; None falls back to the env default (blank = no check)."""

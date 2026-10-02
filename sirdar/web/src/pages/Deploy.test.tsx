@@ -12,7 +12,8 @@ vi.mock('@portal/auth/AuthContext', () => ({
 
 const api = vi.hoisted(() => ({
   getDeployTargets: vi.fn(), getDoRegions: vi.fn(), connectDeploy: vi.fn(), listKnownHosts: vi.fn(),
-  trustKnownHost: vi.fn(), forgetKnownHost: vi.fn(),
+  trustKnownHost: vi.fn(), forgetKnownHost: vi.fn(), deleteSshTarget: vi.fn(),
+  getSshTarget: vi.fn(), listKeyFiles: vi.fn(), createSshTarget: vi.fn(), updateSshTarget: vi.fn(),
 }));
 vi.mock('../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../lib/sirdarApi')>()), ...api }));
 
@@ -347,4 +348,110 @@ it('sends the name and shows it in the results header; other types do not send i
   // the typed name is kept when switching back
   await userEvent.click(screen.getByRole('radio', { name: /^Custom\s*Your own/ }));
   expect((screen.getByLabelText('Environment name') as HTMLInputElement).value).toBe('demo-acme');
+});
+
+
+// ---- saved Custom (SSH) targets ----
+const SAVED_T = { id: 'ssh:edge-box', label: 'Edge Box', kind: 'ssh', source: 'saved', available: true, configured: true };
+const INSTALLER_T = { id: 'ssh', label: 'Custom (SSH) · Installer', kind: 'ssh', source: 'installer', available: true, configured: true };
+const withSsh = (extra: object = {}, targets = [INSTALLER_T, SAVED_T]) => ({
+  ...TARGETS, targets: [...TARGETS.targets.filter((t) => t.id !== 'ssh'), ...targets],
+  can_add_ssh: true, ssh_store_hint: null, ...extra,
+});
+const SAVED_DETAIL = { slug: 'edge-box', name: 'Edge Box', host: '10.0.0.5', port: 2222, user: 'deployer',
+                       key_path: null, password_set: true, passphrase_set: false };
+
+it('shows the add card only with deploy:change and can_add_ssh; otherwise a hint', async () => {
+  api.getDeployTargets.mockResolvedValue(withSsh());
+  await ready();
+  const add = screen.getByRole('button', { name: /Add SSH target/ });
+  expect(add.getAttribute('role')).toBeNull();
+  expect(screen.queryByText(/isn't writable/)).toBeNull();
+  cleanup();
+
+  api.getDeployTargets.mockResolvedValue(withSsh({ can_add_ssh: false, ssh_store_hint: "deploy-targets.env isn't writable; see the README." }));
+  await ready();
+  expect(screen.queryByRole('button', { name: /Add SSH target/ })).toBeNull();
+  expect(screen.getByText("deploy-targets.env isn't writable; see the README.")).toBeTruthy();
+  cleanup();
+
+  perms.change = false;
+  api.getDeployTargets.mockResolvedValue(withSsh({ can_add_ssh: false, ssh_store_hint: 'hint-text' }));
+  await ready();
+  expect(screen.queryByRole('button', { name: /Add SSH target/ })).toBeNull();
+  expect(screen.queryByText('hint-text')).toBeNull();
+});
+
+it('saved SSH cards show names only; the installer card shows its label and note, with no Edit or Remove', async () => {
+  api.getDeployTargets.mockResolvedValue(withSsh());
+  await ready();
+  const saved = screen.getByRole('radio', { name: /Edge Box/ });
+  expect(saved.textContent).not.toMatch(/10\.0\.0\.5|deployer|:2222/);
+  await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\) · Installer/ }));
+  expect(screen.getByText('Edit this target in sirdar/.env.')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
+});
+
+it('adding a target selects it and reloads the list', async () => {
+  api.getDeployTargets.mockResolvedValueOnce(withSsh({}, []));
+  api.listKeyFiles.mockResolvedValue({ files: [] });
+  api.createSshTarget.mockResolvedValue({ ...SAVED_DETAIL, slug: 'edge-box' });
+  await ready();
+  api.getDeployTargets.mockResolvedValue(withSsh({}, [SAVED_T]));
+  await userEvent.click(screen.getByRole('button', { name: /Add SSH target/ }));
+  await userEvent.type(await screen.findByLabelText('Name'), 'Edge Box');
+  await userEvent.type(screen.getByLabelText('Host'), '10.0.0.5');
+  await userEvent.type(screen.getByLabelText('User'), 'deployer');
+  await userEvent.type(screen.getByLabelText('Password'), 'pw');
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(screen.getByRole('radio', { name: /Edge Box/ }).getAttribute('aria-checked')).toBe('true'));
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('Edit opens the modal for the selected saved target and reselects it after saving', async () => {
+  api.getDeployTargets.mockResolvedValue(withSsh());
+  api.getSshTarget.mockResolvedValue(SAVED_DETAIL);
+  api.listKeyFiles.mockResolvedValue({ files: [] });
+  api.updateSshTarget.mockResolvedValue(SAVED_DETAIL);
+  await ready();
+  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+  await userEvent.click(screen.getByRole('radio', { name: /Edge Box/ }));
+  await userEvent.click(screen.getByRole('button', { name: 'Edit' }));
+  expect((await screen.findByLabelText('Host') as HTMLInputElement).value).toBe('10.0.0.5');
+  expect(api.getSshTarget).toHaveBeenCalledWith('edge-box');
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(screen.getByRole('radio', { name: /Edge Box/ }).getAttribute('aria-checked')).toBe('true');
+});
+
+it('Remove confirms, deletes, refreshes and clears the selection', async () => {
+  api.getDeployTargets.mockResolvedValueOnce(withSsh());
+  api.deleteSshTarget.mockResolvedValue(undefined);
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  await ready();
+  await userEvent.click(screen.getByRole('radio', { name: /Edge Box/ }));
+  await userEvent.click(screen.getByRole('button', { name: 'Remove' }));
+  expect(confirm).toHaveBeenCalledWith('Remove Edge Box? Its saved password and key settings are deleted. Trusted host keys stay until you forget them.');
+  expect(api.deleteSshTarget).not.toHaveBeenCalled();
+  confirm.mockReturnValue(true);
+  api.getDeployTargets.mockResolvedValue(withSsh({}, [INSTALLER_T]));
+  await userEvent.click(screen.getByRole('button', { name: 'Remove' }));
+  await waitFor(() => expect(api.deleteSshTarget).toHaveBeenCalledWith('edge-box'));
+  await waitFor(() => expect(screen.queryByRole('radio', { name: /Edge Box/ })).toBeNull());
+  expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull();
+  confirm.mockRestore();
+});
+
+it('connects with the saved target id, and trusts with it', async () => {
+  api.getDeployTargets.mockResolvedValue(withSsh());
+  api.connectDeploy.mockRejectedValueOnce(UNKNOWN).mockResolvedValue({ ...OK, target: 'ssh:edge-box' });
+  api.trustKnownHost.mockResolvedValue({});
+  await ready();
+  await userEvent.click(screen.getByRole('radio', { name: /Edge Box/ }));
+  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(testBtn());
+  expect(api.connectDeploy).toHaveBeenCalledWith('ssh:edge-box', 'dev');
+  await userEvent.click(await screen.findByRole('button', { name: 'Trust and connect' }));
+  await waitFor(() => expect(api.trustKnownHost).toHaveBeenCalledWith('srv.example.com', 22, 'SHA256:abc', 'ssh:edge-box'));
 });
