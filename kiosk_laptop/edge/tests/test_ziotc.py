@@ -260,7 +260,7 @@ async def test_probe_returns_the_reader():
     reader = FakeReader(password_index=1, model="FX7500", serial="SER123")
     found = await probe(IP, transport=reader.transport())
     assert found == {
-        "ip": IP, "model": "FX7500", "serial": "SER123",
+        "ip": IP, "scheme": "https", "port": 443, "model": "FX7500", "serial": "SER123",
         "versions": {"readerApplication": "2.7.19.0", "radioFirmware": "2.1.14.0",
                      "cloudAgentApplication": "1.0.0"},
         "status": reader.status, "password_index": 1,
@@ -346,3 +346,110 @@ async def test_fake_reader_requires_the_full_http_post_security(field):
 
 def get_conns(reader):
     return reader.config["READER-GATEWAY"]["endpointConfig"]["data"]["event"]["connections"]
+
+
+# ── final fix round: both ports, fingerprint before credentials ─────
+
+from fake_reader import FakeNas  # noqa: E402
+
+
+def test_client_takes_a_scheme_and_port():
+    https = ZiotcClient(IP)
+    plain = ZiotcClient(IP, scheme="http", port=80)
+    odd = ZiotcClient(IP, scheme="https", port=8443)
+    assert str(https._http.base_url) == f"https://{IP}"
+    assert str(plain._http.base_url) == f"http://{IP}"
+    assert str(odd._http.base_url) == f"https://{IP}:8443"
+    with pytest.raises(ValueError):
+        ZiotcClient(IP, scheme="ftp")
+
+
+async def test_http_only_reader_on_port_80():
+    reader = FakeReader(ports=(80,))
+    found = await probe(IP, transport=reader.transport(), scheme="http", port=80)
+    assert found["serial"] == "84248dee5721"
+    assert (found["scheme"], found["port"]) == ("http", 80)
+    with pytest.raises(ReaderError) as err:
+        await probe(IP, transport=reader.transport())  # https 443: closed
+    assert err.value.code == "reader_unreachable"
+
+
+async def test_login_with_an_explicit_password_list_tries_only_those():
+    reader = FakeReader(password_index=3)
+    client = make(reader, passwords=[1])
+    with pytest.raises(ReaderError) as err:
+        await client.login()
+    assert err.value.code == "reader_auth_failed"
+    assert reader.login_attempts == [1]
+    await client.aclose()
+
+
+@pytest.mark.parametrize("kw", [{}, {"server": "Zebra FX9600"}, {"realm": "FX9600"}])
+async def test_fingerprint_knows_a_zebra_reader_without_credentials(kw):
+    reader = FakeReader(**kw)
+    transport = reader.transport()
+    assert await ziotc.fingerprint(IP, transport=transport) is True
+    assert reader.login_attempts == []
+    assert all("authorization" not in r.headers for r in transport.requests)
+
+
+async def test_fingerprint_drops_a_generic_401_host_and_non_iotc():
+    nas = FakeNas()
+    assert await ziotc.fingerprint(IP, transport=nas.transport()) is False
+    assert nas.credential_attempts == 0 and nas.requests >= 1
+    assert await ziotc.fingerprint(IP, transport=FakeReader(mode="not_iotc").transport()) is False
+    assert await ziotc.fingerprint(IP, transport=FakeReader(mode="unreachable").transport()) is False
+
+
+def _resp(status, *, json=None, text=None, headers=None):
+    return httpx.Response(status, json=json, text=text, headers=headers or {})
+
+
+@pytest.mark.parametrize("login, version, expected", [
+    # (b) ZIOTC: 401 on sign-in, ZIOTC's JSON error on /cloud/version
+    (_resp(401), _resp(401, json={"code": 2, "message": "Unauthorized"}), True),
+    (_resp(401, text="no"), _resp(403, json={"code": 2, "message": "Forbidden"}), True),
+    # (a) the box names itself
+    (_resp(401, headers={"www-authenticate": 'Basic realm="Zebra Reader"'}), None, True),
+    (_resp(200, headers={"server": "IoT Connector"}), _resp(404, text="x"), True),
+    (_resp(404, text="<title>FX7500 web console</title>"), None, True),
+    # generic hosts
+    (_resp(401, text="<h1>401</h1>", headers={"www-authenticate": 'Basic realm="NAS"'}),
+     _resp(401, text="<h1>401</h1>", headers={"www-authenticate": 'Basic realm="NAS"'}), False),
+    (_resp(401), _resp(401, text="Unauthorized"), False),
+    (_resp(200, text="hello"), _resp(200, json={"code": 2, "message": "x"}), False),
+    (_resp(404, text="Not Found"), _resp(404, text="Not Found"), False),
+    (None, None, False),
+    # "fx" inside another word isn't a mention
+    (_resp(401, text="effxy firefox"), None, False),
+])
+def test_zebra_matcher(login, version, expected):
+    assert ziotc.looks_like_ziotc(login, version) is expected
+
+
+async def test_discover_needs_connect_without_a_remembered_index():
+    reader = FakeReader()
+    found = await ziotc.discover(IP, transport=reader.transport(), password_index=None)
+    assert found == {"ip": IP, "scheme": "https", "port": 443, "model": None, "serial": None,
+                     "needs_connect": True}
+    assert reader.login_attempts == []
+
+
+async def test_discover_tries_only_the_remembered_index():
+    reader = FakeReader(password_index=3)
+    found = await ziotc.discover(IP, transport=reader.transport(), password_index=1)
+    assert found["needs_connect"] is True and found["serial"] is None
+    assert reader.login_attempts == [1]
+    reader.login_attempts.clear()
+    found = await ziotc.discover(IP, transport=reader.transport(), password_index=3)
+    assert reader.login_attempts == [3]
+    assert found["needs_connect"] is False and found["serial"] == "84248dee5721"
+    assert found["config"]["READER-GATEWAY"] and found["password_index"] == 3
+
+
+async def test_discover_drops_non_candidates_with_zero_credentials():
+    nas = FakeNas()
+    assert await ziotc.discover(IP, transport=nas.transport(), password_index=0) is None
+    assert nas.credential_attempts == 0
+    assert await ziotc.discover(IP, transport=FakeReader(model="ATR7000").transport(),
+                                password_index=3) is None

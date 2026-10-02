@@ -1,6 +1,9 @@
 """The edge's client for Zebra FX readers in IoT Connector (Local REST) mode.
 
-Sign-in is `GET https://<ip>/cloud/localRestLogin` with basic auth
+A reader answers on 443 (HTTPS, self-signed, verify off) and/or 80 (plain
+HTTP); the client takes the scheme and port to use.
+
+Sign-in is `GET <scheme>://<ip>/cloud/localRestLogin` with basic auth
 `admin:<password>`; the reader answers with a token (Zebra support article
 000022894: `{"message": "JWT Token: <token>"}`), sent afterwards as
 `Authorization: Bearer <token>`. The passwords are tried in a fixed order,
@@ -18,7 +21,10 @@ Passwords never appear in an exception, a log line or a repr: errors carry
 only fixed text and the reader's own message, and httpx exceptions are not
 chained (their request carries the basic-auth header)."""
 
+import json
 import logging
+import re
+from collections.abc import Sequence
 
 import httpx
 
@@ -29,6 +35,10 @@ PASSWORDS: tuple[str, ...] = ("Cumulus$G0", "Cumulu$SG.", "33q44w40x5", "change"
 TIMEOUT = httpx.Timeout(10.0, connect=3.0)
 LOGIN_PATH = "/cloud/localRestLogin"
 TOKEN_PREFIX = "JWT Token:"
+VERSION_PATH = "/cloud/version"
+SCHEME_PORTS = {"https": 443, "http": 80}
+# where a manually entered reader is tried, in order
+DEFAULT_ENDPOINTS: tuple[tuple[str, int], ...] = (("https", 443), ("http", 80))
 
 
 class ReaderError(Exception):
@@ -73,18 +83,105 @@ def _token_from(resp: httpx.Response) -> str:
     return token
 
 
+def base_url(ip: str, scheme: str = "https", port: int | None = None) -> str:
+    if scheme not in SCHEME_PORTS:
+        raise ValueError(f"unsupported scheme {scheme!r}")
+    if port is None or port == SCHEME_PORTS[scheme]:
+        return f"{scheme}://{ip}"
+    return f"{scheme}://{ip}:{port}"
+
+
+# ── fingerprint: is this a Zebra reader? (no credentials sent) ──
+
+# Text a Zebra reader is known or expected to put in its WWW-Authenticate
+# realm, its Server header or its body. Word boundaries keep "fx" inside
+# another word ("firefox", base64 noise) from counting.
+ZEBRA_TEXT = re.compile(r"\bzebra\b|\bfx\d{0,4}\b|\biot\s*connector\b", re.IGNORECASE)
+_BODY_SNIFF = 4096  # characters of a body the text signal looks at
+
+
+def _names_zebra(resp: httpx.Response | None) -> bool:
+    if resp is None:
+        return False
+    texts = (resp.headers.get("www-authenticate", ""), resp.headers.get("server", ""),
+             resp.text[:_BODY_SNIFF])
+    return any(ZEBRA_TEXT.search(text) for text in texts)
+
+
+def _ziotc_error_shape(resp: httpx.Response | None) -> bool:
+    """ZIOTC's error body: `{"code": <int>, "message": <str>}` on a refusal."""
+    if resp is None or resp.is_success:
+        return False
+    try:
+        body = json.loads(resp.text)
+    except ValueError:
+        return False
+    return (isinstance(body, dict) and isinstance(body.get("code"), int)
+            and not isinstance(body.get("code"), bool) and isinstance(body.get("message"), str))
+
+
+def _signal_names_zebra(login, version) -> bool:
+    """(a) the realm, Server header or body mentions Zebra, FX or IoT Connector."""
+    return _names_zebra(login) or _names_zebra(version)
+
+
+def _signal_ziotc_refusal(login, version) -> bool:
+    """(b) sign-in refused with 401 AND /cloud/version refused in ZIOTC's
+    JSON error shape. A bare 401 on both isn't enough: any basic-auth box
+    (a NAS, a printer) answers 401 on every path."""
+    return login is not None and login.status_code == 401 and _ziotc_error_shape(version)
+
+
+# A device is a Zebra candidate when any signal fires. These come from Zebra's
+# ZIOTC OpenAPI and support articles, not from a real FX9600 capture yet —
+# refine the list (and its tests) once one is captured.
+ZEBRA_SIGNALS = (_signal_names_zebra, _signal_ziotc_refusal)
+
+
+def looks_like_ziotc(login: httpx.Response | None, version: httpx.Response | None) -> bool:
+    """Whether unauthenticated answers from `/cloud/localRestLogin` and
+    `/cloud/version` look like a Zebra FX reader (None: no answer)."""
+    return any(signal(login, version) for signal in ZEBRA_SIGNALS)
+
+
+async def fingerprint(ip: str, *, scheme: str = "https", port: int | None = None,
+                      transport=None, timeout: httpx.Timeout = TIMEOUT) -> bool:
+    """Unauthenticated GETs of the sign-in and version paths, then the
+    matcher. No credentials are ever sent here; any failure is False."""
+    async with httpx.AsyncClient(base_url=base_url(ip, scheme, port), verify=False,
+                                 timeout=timeout, transport=transport) as http:
+        answers: list[httpx.Response | None] = []
+        for path in (LOGIN_PATH, VERSION_PATH):
+            try:
+                answers.append(await http.get(path))
+            except httpx.HTTPError:
+                answers.append(None)
+    if answers == [None, None]:
+        return False
+    return looks_like_ziotc(*answers)
+
+
 class ZiotcClient:
-    def __init__(self, ip: str, *, transport=None, password_first: int | None = None,
+    """`passwords`, when given, is the only password indexes tried (in that
+    order); otherwise all of them, starting with `password_first`."""
+
+    def __init__(self, ip: str, *, scheme: str = "https", port: int | None = None,
+                 transport=None, password_first: int | None = None,
+                 passwords: Sequence[int] | None = None,
                  timeout: httpx.Timeout = TIMEOUT) -> None:
         self.ip = ip
+        self.scheme = scheme
+        self.port = port if port is not None else SCHEME_PORTS.get(scheme)
         self.password_first = password_first
+        self.passwords = list(passwords) if passwords is not None else None
         self.password_index: int | None = None
         self._token: str | None = None
-        self._http = httpx.AsyncClient(base_url=f"https://{ip}", verify=False,
+        self._http = httpx.AsyncClient(base_url=base_url(ip, scheme, port), verify=False,
                                        timeout=timeout, transport=transport)
 
     def __repr__(self) -> str:
-        return f"ZiotcClient(ip={self.ip!r}, password_index={self.password_index!r})"
+        return (f"ZiotcClient(ip={self.ip!r}, scheme={self.scheme!r}, port={self.port!r}, "
+                f"password_index={self.password_index!r})")
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -111,7 +208,14 @@ class ZiotcClient:
 
     async def login(self) -> int:
         first = self.password_index if self.password_index is not None else self.password_first
-        for index in _password_order(first):
+        if self.passwords is not None:
+            order = [i for i in self.passwords if 0 <= i < len(PASSWORDS)]
+            if self.password_index is not None and self.password_index in order:
+                order.remove(self.password_index)
+                order.insert(0, self.password_index)
+        else:
+            order = _password_order(first)
+        for index in order:
             resp = await self._send("GET", LOGIN_PATH,
                                     auth=httpx.BasicAuth(USERNAME, PASSWORDS[index]))
             if resp.status_code in (401, 403):
@@ -165,13 +269,16 @@ class ZiotcClient:
 
 
 async def probe(ip: str, transport=None, password_first: int | None = None, *,
+                scheme: str = "https", port: int | None = None,
+                passwords: Sequence[int] | None = None,
                 quiet: bool = False, with_config: bool = False,
                 timeout: httpx.Timeout = TIMEOUT) -> dict | None:
     """Sign in and read version + status. None when the host isn't an FX
     reader (no IoT Connector API, or a model not starting with FX). Auth,
-    unreachable and reader errors raise ReaderError — unless `quiet`
-    (discovery), where every failure is just None."""
-    async with ZiotcClient(ip, transport=transport, password_first=password_first,
+    unreachable and reader errors raise ReaderError — unless `quiet`,
+    where every failure is just None."""
+    async with ZiotcClient(ip, scheme=scheme, port=port, transport=transport,
+                           password_first=password_first, passwords=passwords,
                            timeout=timeout) as client:
         try:
             version = await client.version()
@@ -186,6 +293,8 @@ async def probe(ip: str, transport=None, password_first: int | None = None, *,
             raise
         found = {
             "ip": ip,
+            "scheme": client.scheme,
+            "port": client.port,
             "model": model,
             "serial": version.get("serialNumber"),
             "versions": {key: version.get(key) for key in
@@ -196,3 +305,34 @@ async def probe(ip: str, transport=None, password_first: int | None = None, *,
         if with_config:
             found["config"] = config
         return found
+
+
+async def discover(ip: str, *, scheme: str = "https", port: int | None = None,
+                   password_index: int | None, transport=None,
+                   timeout: httpx.Timeout = TIMEOUT) -> dict | None:
+    """What a scan learns about one responding host (spec §2.2, D1).
+
+    - Not a Zebra candidate by the unauthenticated fingerprint: None, and no
+      credentials were sent.
+    - A candidate with no remembered password index: a `needs_connect` card
+      (model and serial unknown); still no credentials sent.
+    - With a remembered index: sign in with that one password only. It
+      failing (or anything else going wrong) is a `needs_connect` card; a
+      host that turns out not to be an FX is None.
+    The full password list is only ever tried by an explicit Connect."""
+    if not await fingerprint(ip, scheme=scheme, port=port, transport=transport,
+                             timeout=timeout):
+        return None
+    card = {"ip": ip, "scheme": scheme, "port": port if port is not None else SCHEME_PORTS[scheme],
+            "model": None, "serial": None, "needs_connect": True}
+    if password_index is None or not 0 <= password_index < len(PASSWORDS):
+        return card
+    try:
+        found = await probe(ip, transport, scheme=scheme, port=port, passwords=[password_index],
+                            with_config=True, timeout=timeout)
+    except ReaderError as exc:
+        log.debug("reader %s: remembered password didn't open it (%s)", ip, exc.code)
+        return card
+    if found is None:
+        return None
+    return {**found, "needs_connect": False}

@@ -54,6 +54,17 @@ SCHEMA_STEPS: list[str] = [
         id INTEGER PRIMARY KEY CHECK (id = 1),
         serial TEXT NOT NULL REFERENCES rfid_readers (serial));
     """,
+    # where each reader answers: https 443 or http 80 (reused by connect and pair)
+    """
+    ALTER TABLE rfid_readers ADD COLUMN scheme TEXT;
+    ALTER TABLE rfid_readers ADD COLUMN port INTEGER
+    """,
+    # the laptop's finished Kiosk Setup, shared with every browser (JSON)
+    """
+    CREATE TABLE laptop_setup (
+        id INTEGER PRIMARY KEY CHECK (id = 1), setup_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL)
+    """,
 ]
 
 

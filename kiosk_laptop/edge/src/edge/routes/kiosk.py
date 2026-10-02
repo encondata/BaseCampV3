@@ -6,7 +6,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, Request, Response
 
-from edge import outbox
+from edge import laptop_setup, outbox
 from edge.deps import err, require_session
 from edge.rfid import pairing
 from edge.routes.auth import passthrough
@@ -65,31 +65,37 @@ async def printer_events(request: Request,
     return Response(status_code=204)
 
 
-def with_station(body: bytes, store) -> bytes:
+def with_station(body: bytes, store) -> tuple[bytes, str | None]:
     """The browser picks the station type; the edge alone supplies the reader
-    (from its current pairing), whatever the browser sent."""
+    (from its current pairing), whatever the browser sent. Returns the body
+    and the station type. No pairing for `rfid` is 422 `reader_required`,
+    as the cloud answers it."""
     try:
         data = json.loads(body) if body else None
     except ValueError:
-        return body
+        return body, None
     if not isinstance(data, dict):
-        return body
+        return body, None
     data.pop("reader", None)
-    if data.get("station_type") == "rfid":
+    station = data.get("station_type")
+    if station == "rfid":
         reader = pairing.cloud_reader(store)
         if reader is None:
-            raise err(409, "reader_required")
+            raise err(422, "reader_required")
         data["reader"] = reader
-    return json.dumps(data).encode()
+    return json.dumps(data).encode(), station if isinstance(station, str) else None
 
 
 @router.post("/setup")
 async def setup(request: Request, session: EdgeSession = Depends(require_session)) -> Response:
     """Kiosk Setup needs the cloud. On success the laptop is now set up for
     that move, so pull it down before answering — the browser's own download
-    that follows then reads what the edge just stored."""
+    that follows then reads what the edge just stored. The result is also
+    kept for every browser (GET /edge/setup), and a Label Station drops the
+    reader pairing — the reader row (password index, token) stays, so
+    pairing it again later reuses them."""
     st = request.app.state
-    body = with_station(await request.body(), st.store)
+    body, station = with_station(await request.body(), st.store)
     body = rewrite_body("/kiosk/setup", body, st.identity)
     try:
         resp = await st.upstream.as_person(session.person_id, "POST", "/kiosk/setup",
@@ -100,6 +106,11 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
     if resp is None:
         raise err(403, "cloud_sign_in_required")  # not 401: the edge session is still good
     if resp.status_code == 200:
-        st.syncer.set_target(str(resp.json()["initiative_id"]), session.person_id)
+        result = resp.json()
+        if station == "label":
+            st.store.run("DELETE FROM rfid_pairing")
+        if isinstance(result, dict):
+            laptop_setup.save(st.store, result, station)
+        st.syncer.set_target(str(result["initiative_id"]), session.person_id)
         await st.syncer.run()
     return passthrough(resp)

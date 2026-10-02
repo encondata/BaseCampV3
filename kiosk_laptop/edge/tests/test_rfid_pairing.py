@@ -222,7 +222,9 @@ async def test_no_laptop_ip_is_host_network_unknown(app, client):
     assert r.status_code == 409 and code(r) == "host_network_unknown"
     assert reader.login_attempts == []
     write_host(app, ips=("192.168.1.5",))  # fresh, but not on the reader's subnet
-    assert code(await pair(client, app)) == "host_network_unknown"
+    r = await pair(client, app)
+    assert r.status_code == 409 and code(r) == "reader_not_on_subnet"
+    assert reader.login_attempts == []
 
 
 async def test_laptop_ip_from_the_host_network(app, client):
@@ -291,7 +293,7 @@ async def test_setup_rfid_without_a_pairing(app, client, cloud):
     route = cloud.post("/kiosk/setup").respond(200, json={"initiative_id": "m-1"})
     r = await client.post("/kiosk/setup", headers=make_session(app),
                           json={**SETUP, "station_type": "rfid"})
-    assert r.status_code == 409 and code(r) == "reader_required"
+    assert r.status_code == 422 and code(r) == "reader_required"
     assert not route.called
 
 
@@ -363,3 +365,120 @@ async def test_our_token_under_another_kiosks_name_is_not_ours(app, client):
                                    f"http://10.0.0.5:8091/rfid/{SERIAL}/ourtoken")])
     r = await client.post("/edge/rfid/connect", headers=make_session(app), json={"ip": READER_IP})
     assert r.json()["paired_with"] == "ServerSherpa Kiosk 9999 (Dock)"
+
+
+# ── final fix round: either port ──
+
+async def test_a_manual_ip_tries_443_then_80(app, client):
+    reader = use_reader(app, ports=(80,))
+    r = await client.post("/edge/rfid/connect", headers=make_session(app), json={"ip": READER_IP})
+    assert r.status_code == 200, r.text
+    row = stored(app)
+    assert (row["scheme"], row["port"], row["password_index"], row["token"]) == ("http", 80, 3, None)
+    schemes = [req.url.scheme for req in app.state.reader_transport.requests]
+    assert schemes[0] == "https" and set(schemes[1:]) == {"http"}
+    # pair reuses where it answered: no https attempt this time
+    app.state.reader_transport.requests.clear()
+    assert (await pair(client, app, laptop_ip="10.0.0.5")).status_code == 200
+    assert {req.url.scheme for req in app.state.reader_transport.requests} == {"http"}
+    assert reader_connections(reader)[0]["name"] == own_name(app)
+
+
+async def test_pair_on_a_fresh_manual_http_reader(app, client):
+    reader = use_reader(app, ports=(80,))
+    r = await pair(client, app, laptop_ip="10.0.0.5")
+    assert r.status_code == 200, r.text
+    assert (stored(app)["scheme"], stored(app)["port"]) == ("http", 80)
+    assert len(reader_connections(reader)) == 1
+
+
+async def test_a_closed_reader_is_unreachable_on_both_ports(app, client):
+    use_reader(app, ports=())
+    r = await client.post("/edge/rfid/connect", headers=make_session(app), json={"ip": READER_IP})
+    assert code(r) == "reader_unreachable"
+    schemes = [req.url.scheme for req in app.state.reader_transport.requests]
+    assert schemes == ["https", "http"]
+
+
+# ── final fix round: offline sessions can't connect or pair ──
+
+async def test_offline_sessions_cannot_connect_or_pair(app, client):
+    reader = use_reader(app)
+    write_host(app)
+    offline = make_session(app, offline=True)
+    for path in ("/edge/rfid/connect", "/edge/rfid/pair"):
+        r = await client.post(path, headers=offline, json={"ip": READER_IP, "laptop_ip": "10.0.0.5"})
+        assert r.status_code == 503 and code(r) == "edge_offline", path
+    assert reader.login_attempts == [] and reader.puts == []
+    # scanning stays open offline
+    assert (await client.post("/edge/rfid/scan", headers=offline)).status_code == 200
+    assert (await client.get("/edge/rfid/scan", headers=offline)).status_code == 200
+
+
+# ── final fix round: pairing a new reader releases the old one ──
+
+from tests.fake_reader import RoutingTransport  # noqa: E402
+
+OLD_IP, NEW_IP = "10.0.0.30", "10.0.0.31"
+
+
+async def pair_at(client, app, ip):
+    return await client.post("/edge/rfid/pair", headers=make_session(app),
+                              json={"ip": ip, "laptop_ip": "10.0.0.5"})
+
+
+async def test_pairing_a_new_reader_removes_ours_from_the_old_one(app, client, caplog):
+    caplog.set_level(logging.DEBUG)
+    old, new = FakeReader(serial="OLD1"), FakeReader(serial="NEW2")
+    app.state.reader_transport = RoutingTransport({OLD_IP: old, NEW_IP: new})
+    assert (await pair_at(client, app, OLD_IP)).status_code == 200
+    old_token = stored(app, "OLD1")["token"]
+    # someone else's connection and a twin kiosk's share the old reader
+    set_connections(old, [other(), *reader_connections(old)])
+    r = await pair_at(client, app, NEW_IP)
+    assert r.status_code == 200, r.text
+    assert [c["name"] for c in reader_connections(old)] == ["Warehouse MQTT"]
+    assert [c["name"] for c in reader_connections(new)] == [own_name(app)]
+    assert app.state.store.one("SELECT serial FROM rfid_pairing")["serial"] == "NEW2"
+    assert old_token not in caplog.text
+
+
+async def test_the_old_reader_keeps_connections_that_are_not_ours(app, client):
+    old, new = FakeReader(serial="OLD1"), FakeReader(serial="NEW2")
+    app.state.reader_transport = RoutingTransport({OLD_IP: old, NEW_IP: new})
+    assert (await pair_at(client, app, OLD_IP)).status_code == 200
+    # another kiosk took the old reader over since: nothing of ours is left there
+    twin = other(own_name(app), "http://10.0.0.7:8091/rfid/OLD1/theirs")
+    set_connections(old, [twin])
+    puts_before = len(old.puts)
+    assert (await pair_at(client, app, NEW_IP)).status_code == 200
+    assert reader_connections(old) == [twin]
+    assert len(old.puts) == puts_before  # no write when there's nothing to remove
+
+
+async def test_an_unreachable_old_reader_never_fails_the_new_pairing(app, client, caplog):
+    caplog.set_level(logging.DEBUG)
+    old, new = FakeReader(serial="OLD1"), FakeReader(serial="NEW2")
+    routing = RoutingTransport({OLD_IP: old, NEW_IP: new})
+    app.state.reader_transport = routing
+    assert (await pair_at(client, app, OLD_IP)).status_code == 200
+    old_token = stored(app, "OLD1")["token"]
+    old.mode = "unreachable"
+    r = await pair_at(client, app, NEW_IP)
+    assert r.status_code == 200, r.text
+    assert app.state.store.one("SELECT serial FROM rfid_pairing")["serial"] == "NEW2"
+    assert "OLD1" in caplog.text and old_token not in caplog.text
+    # an old reader that refuses the write is no different
+    old.mode = "normal"
+    assert (await pair_at(client, app, OLD_IP)).status_code == 200
+    old.fail_next["PUT /cloud/config"] = (500, {"code": 1, "message": "busy"})
+    assert (await pair_at(client, app, NEW_IP)).status_code == 200
+    assert not old.fail_next  # the write was tried, and refused
+
+
+async def test_re_pairing_the_same_reader_touches_no_other(app, client):
+    reader = use_reader(app)
+    assert (await pair(client, app, laptop_ip="10.0.0.5")).status_code == 200
+    puts = len(reader.puts)
+    assert (await pair(client, app, laptop_ip="10.0.0.6")).status_code == 200
+    assert len(reader.puts) == puts + 1  # just the new pairing's write

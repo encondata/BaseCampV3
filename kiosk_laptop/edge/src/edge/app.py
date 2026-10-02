@@ -88,7 +88,8 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     outbox.requeue_sending(app.state.store)
     app.state.discovery = Discovery(
         app.state.store, settings.data_dir,
-        identity=lambda: app.state.identity)
+        identity=lambda: app.state.identity,
+        transport=lambda ip: app.state.reader_transport)
     app.state.reader_transport = None  # tests hand in a fake reader's transport
     app.state.pair_lock = asyncio.Lock()
     app.state.syncer = Syncer(app.state.store, app.state.upstream,

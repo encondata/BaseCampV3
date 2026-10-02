@@ -10,13 +10,20 @@ any other connection named `ServerSherpa Kiosk…` belongs to another kiosk
 nothing). Discovery, connect and pair all use this rule via `paired_with`.
 When pairing, every `ServerSherpa Kiosk…` connection and any connection
 carrying our token (one somebody renamed) is replaced by ours. The token is a secret: it is redacted as `…` in every
-response and log line."""
+response and log line.
+
+A reader answers on https 443 or http 80; connect and pair use where the
+latest scan found it, else where it answered before, else 443 then 80, and
+remember the winner per serial. Pairing a different reader than the current
+one takes our connection off the old reader, best effort (`release`)."""
 
 import copy
 import ipaddress
 import json
 import logging
 import secrets
+
+import httpx
 
 from edge import hostnet
 from edge.db import Store, now_iso
@@ -140,15 +147,37 @@ def password_first(store: Store, ip: str) -> int | None:
 
 
 def remember(store: Store, *, serial: str, ip: str, model: str, versions: dict,
-             password_index: int | None, token: str | None = None) -> None:
-    """Upsert what we know of a reader. A NULL token never overwrites a stored one."""
+             password_index: int | None, token: str | None = None,
+             scheme: str | None = None, port: int | None = None) -> None:
+    """Upsert what we know of a reader. A NULL token, password index, scheme
+    or port never overwrites a stored one."""
     store.run(
-        "INSERT INTO rfid_readers (serial, ip, model, versions, password_index, token) "
-        "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (serial) DO UPDATE SET ip = excluded.ip, "
-        "model = excluded.model, versions = excluded.versions, "
+        "INSERT INTO rfid_readers (serial, ip, model, versions, password_index, token, "
+        "scheme, port) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (serial) DO UPDATE SET "
+        "ip = excluded.ip, model = excluded.model, versions = excluded.versions, "
         "password_index = COALESCE(excluded.password_index, rfid_readers.password_index), "
-        "token = COALESCE(excluded.token, rfid_readers.token)",
-        (serial, ip, model, json.dumps(versions), password_index, token))
+        "token = COALESCE(excluded.token, rfid_readers.token), "
+        "scheme = COALESCE(excluded.scheme, rfid_readers.scheme), "
+        "port = COALESCE(excluded.port, rfid_readers.port)",
+        (serial, ip, model, json.dumps(versions), password_index, token, scheme, port))
+
+
+def remembered_endpoint(store: Store, ip: str) -> tuple[str, int] | None:
+    """(scheme, port) the reader last seen at this IP answered on."""
+    row = store.one("SELECT scheme, port FROM rfid_readers WHERE ip = ? AND scheme IS NOT NULL "
+                    "AND port IS NOT NULL ORDER BY COALESCE(paired_at, '') DESC LIMIT 1", (ip,))
+    return (row["scheme"], row["port"]) if row else None
+
+
+def endpoints(store: Store, ip: str, found_at: tuple[str, int] | None = None
+              ) -> list[tuple[str, int]]:
+    """Where to try a reader, in order: where the latest scan found it, where
+    it answered before, then https 443 and http 80 (a manually entered IP)."""
+    order: list[tuple[str, int]] = []
+    for candidate in (found_at, remembered_endpoint(store, ip), *ziotc.DEFAULT_ENDPOINTS):
+        if candidate and tuple(candidate) not in order:
+            order.append(tuple(candidate))
+    return order
 
 
 def _public(row) -> dict:
@@ -192,13 +221,24 @@ def _versions(version: dict) -> dict:
 
 
 async def connect(store: Store, identity: Identity, ip: str, *, transport=None,
-                  probe=ziotc.probe) -> dict:
-    found = await probe(ip, transport, password_first(store, ip), with_config=True)
+                  probe=ziotc.probe, found_at: tuple[str, int] | None = None) -> dict:
+    """An explicit Connect: the full password list (remembered index first),
+    on each endpoint in turn while the reader can't be reached."""
+    order = endpoints(store, ip, found_at)
+    for i, (scheme, port) in enumerate(order):
+        try:
+            found = await probe(ip, transport, password_first(store, ip), scheme=scheme,
+                                port=port, with_config=True)
+            break
+        except ReaderError as exc:
+            if exc.code != "reader_unreachable" or i == len(order) - 1:
+                raise
     if not found or not found.get("serial"):
         raise ReaderError("reader_not_iotc", "This isn't an FX reader in IoT Connector mode.")
     serial = str(found["serial"])
+    # the winning index and where it answered, by serial (and so by IP); no token yet
     remember(store, serial=serial, ip=ip, model=found["model"], versions=found["versions"],
-             password_index=found.get("password_index"))
+             password_index=found.get("password_index"), scheme=scheme, port=port)
     elsewhere = paired_with(found.get("config"), identity, serial, stored_token(store, serial))
     log.debug("connected to reader %s at %s (paired with: %s)", serial, ip, elsewhere)
     return {"ip": ip, "model": found["model"], "serial": serial,
@@ -207,20 +247,57 @@ async def connect(store: Store, identity: Identity, ip: str, *, transport=None,
 
 
 def laptop_address(data_dir, reader_ip: str, given: str | None) -> str:
+    """The laptop IP the reader should send to: the one given, else the
+    fresh laptop address on the reader's subnet. No fresh address file is
+    409 `host_network_unknown`; a fresh one with no address on the reader's
+    subnet is 409 `reader_not_on_subnet` (routed networks, bridges, VLANs)."""
     if given:
         return valid_ipv4(given)
     interfaces, fresh = hostnet.read_host_network(data_dir)
-    found = hostnet.laptop_ip_for(reader_ip, interfaces) if fresh else None
-    if found is None:
+    if not fresh:
         raise err(409, "host_network_unknown")
+    found = hostnet.laptop_ip_for(reader_ip, interfaces)
+    if found is None:
+        raise err(409, "reader_not_on_subnet")
     return found
 
 
+RELEASE_TIMEOUT = httpx.Timeout(5.0, connect=3.0)
+
+
+async def release(row, identity: Identity, *, transport=None) -> None:
+    """Best effort, after pairing a different reader: take our connection off
+    the reader this laptop was paired with before. Only connections
+    `is_ours` matches are removed. Any failure is logged (never the token)
+    and swallowed — it never fails the new pairing."""
+    serial, token = row["serial"], row["token"]
+    scheme = row["scheme"] or "https"
+    try:
+        async with ziotc.ZiotcClient(row["ip"], scheme=scheme, port=row["port"],
+                                     transport=transport, password_first=row["password_index"],
+                                     timeout=RELEASE_TIMEOUT) as client:
+            config = await client.get_config()
+            connections = get_connections(config)
+            kept = [c for c in connections if not is_ours(c, identity, serial, token)]
+            if len(kept) == len(connections):
+                log.info("old reader %s holds no connection of ours", serial)
+                return
+            await client.put_config({"READER-GATEWAY": with_connections(config, kept)})
+        log.info("removed our connection from old reader %s", serial)
+    except ReaderError as exc:
+        log.warning("couldn't remove our connection from old reader %s (%s)", serial, exc.code)
+    except Exception as exc:  # never fail the new pairing
+        log.warning("couldn't remove our connection from old reader %s (%s)", serial,
+                    type(exc).__name__)
+
+
 async def pair(store: Store, identity: Identity, ip: str, laptop_ip: str, *,
-               confirm_takeover: bool = False, transport=None) -> dict:
+               confirm_takeover: bool = False, transport=None,
+               found_at: tuple[str, int] | None = None) -> dict:
     tokens: list[str] = []  # the token once known, for redacting reader messages
     try:
-        return await _pair(store, identity, ip, laptop_ip, confirm_takeover, transport, tokens)
+        return await _pair(store, identity, ip, laptop_ip, confirm_takeover, transport, tokens,
+                           found_at)
     except ReaderError as exc:
         # a reader may echo the endpoint URL back in its error message
         message = exc.message
@@ -231,11 +308,29 @@ async def pair(store: Store, identity: Identity, ip: str, laptop_ip: str, *,
         raise
 
 
+async def open_reader(store: Store, ip: str, *, transport=None,
+                      found_at: tuple[str, int] | None = None
+                      ) -> tuple[ziotc.ZiotcClient, dict]:
+    """A signed-in client and the reader's /cloud/version, on the first
+    endpoint that answers (see `endpoints`). The caller closes the client."""
+    order = endpoints(store, ip, found_at)
+    for i, (scheme, port) in enumerate(order):
+        client = ziotc.ZiotcClient(ip, scheme=scheme, port=port, transport=transport,
+                                   password_first=password_first(store, ip))
+        try:
+            return client, await client.version()
+        except ReaderError as exc:
+            await client.aclose()
+            if exc.code != "reader_unreachable" or i == len(order) - 1:
+                raise
+    raise ReaderError("reader_unreachable", f"Can't reach {ip}.")  # no endpoints: unreachable
+
+
 async def _pair(store: Store, identity: Identity, ip: str, laptop_ip: str,
-                confirm_takeover: bool, transport, tokens: list[str]) -> dict:
-    async with ziotc.ZiotcClient(ip, transport=transport,
-                                 password_first=password_first(store, ip)) as client:
-        version = await client.version()
+                confirm_takeover: bool, transport, tokens: list[str],
+                found_at: tuple[str, int] | None) -> dict:
+    client, version = await open_reader(store, ip, transport=transport, found_at=found_at)
+    try:
         model = str(version.get("model") or "")
         serial = str(version.get("serialNumber") or "")
         if not model.startswith("FX") or not serial:
@@ -245,7 +340,8 @@ async def _pair(store: Store, identity: Identity, ip: str, laptop_ip: str,
         token = stored_token(store, serial) or secrets.token_urlsafe(32)
         tokens.append(token)
         remember(store, serial=serial, ip=ip, model=model, versions=versions,
-                 password_index=client.password_index, token=token)
+                 password_index=client.password_index, token=token,
+                 scheme=client.scheme, port=client.port)
 
         config = await client.get_config()
         if not isinstance(config.get("READER-GATEWAY"), dict):
@@ -273,7 +369,11 @@ async def _pair(store: Store, identity: Identity, ip: str, laptop_ip: str,
             log.info("reader %s did not keep %s", serial, redact_url(url))
             raise ReaderError("reader_verify_failed",
                               "The reader didn't keep the new endpoint.")
+    finally:
+        await client.aclose()
 
+    previous = store.one("SELECT r.* FROM rfid_pairing p JOIN rfid_readers r "
+                         "ON r.serial = p.serial WHERE p.id = 1")
     paired_at = now_iso()
     with store.tx() as c:
         c.execute("UPDATE rfid_readers SET laptop_ip = ?, paired_at = ? WHERE serial = ?",
@@ -281,6 +381,8 @@ async def _pair(store: Store, identity: Identity, ip: str, laptop_ip: str,
         c.execute("INSERT INTO rfid_pairing (id, serial) VALUES (1, ?) "
                   "ON CONFLICT (id) DO UPDATE SET serial = excluded.serial", (serial,))
     log.info("paired reader %s at %s -> %s", serial, ip, redact_url(url))
+    if previous is not None and previous["serial"] != serial:
+        await release(previous, identity, transport=transport)
     reader = current(store)
     return {"paired": True,
             "reader": {k: reader[k] for k in ("ip", "serial", "model", "versions", "paired_at")},

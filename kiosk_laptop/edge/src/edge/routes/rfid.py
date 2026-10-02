@@ -1,11 +1,14 @@
 """/edge/rfid/* — reader discovery (spec §2.2) and pairing (spec §2.4) for
-Kiosk Setup."""
+Kiosk Setup. Connect and pair need an online session: Kiosk Setup can't
+finish without the cloud, so an offline sign-in mustn't change a reader
+(503 edge_offline). Scanning stays open."""
 
 from fastapi import APIRouter, Depends, Request
 
 from edge.deps import err, require_session
 from edge.rfid import pairing
 from edge.rfid.ziotc import ReaderError
+from edge.sessions import EdgeSession
 
 router = APIRouter(prefix="/edge/rfid", dependencies=[Depends(require_session)])
 
@@ -20,6 +23,12 @@ async def _json_object(request: Request) -> dict:
     return body
 
 
+def online(session: EdgeSession = Depends(require_session)) -> EdgeSession:
+    if session.offline:
+        raise err(503, "edge_offline")
+    return session
+
+
 @router.post("/scan")
 async def start_scan(request: Request) -> dict:
     return {"scan_id": request.app.state.discovery.start()}
@@ -30,19 +39,20 @@ async def scan(request: Request) -> dict:
     return request.app.state.discovery.snapshot()
 
 
-@router.post("/connect")
+@router.post("/connect", dependencies=[Depends(online)])
 async def connect(request: Request) -> dict:
     body = await _json_object(request)
     ip = pairing.valid_ipv4(body.get("ip"))
     st = request.app.state
     try:
         return await pairing.connect(st.store, st.identity, ip,
-                                     transport=st.reader_transport)
+                                     transport=st.reader_transport,
+                                     found_at=st.discovery.endpoint_for(ip))
     except ReaderError as exc:
         raise pairing.reader_http_error(exc) from None
 
 
-@router.post("/pair")
+@router.post("/pair", dependencies=[Depends(online)])
 async def pair(request: Request) -> dict:
     body = await _json_object(request)
     ip = pairing.valid_ipv4(body.get("ip"))
@@ -52,7 +62,8 @@ async def pair(request: Request) -> dict:
         try:
             return await pairing.pair(st.store, st.identity, ip, laptop_ip,
                                       confirm_takeover=body.get("confirm_takeover") is True,
-                                      transport=st.reader_transport)
+                                      transport=st.reader_transport,
+                                      found_at=st.discovery.endpoint_for(ip))
         except ReaderError as exc:
             raise pairing.reader_http_error(exc) from None
 

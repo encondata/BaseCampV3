@@ -14,6 +14,17 @@ Modes:
 - `not_iotc`: 404 everywhere (a host with no IoT Connector API)
 - `unreachable`: every request raises a transport error
 - `verify_mismatch`: PUT /cloud/config succeeds, GET keeps returning the old config
+
+Unauthenticated, the fake answers like ZIOTC does in the OpenAPI examples:
+`/cloud/localRestLogin` and every `/cloud/*` call are 401 with the JSON error
+shape `{"code": 2, "message": "Unauthorized"}` (the edge's fingerprint, spec
+§2.2). `server=` adds a `Server` header to every answer, `realm=` a
+`WWW-Authenticate` header to every 401.
+
+`ports` are the ports the fake listens on (443 = https, 80 = http); a request
+to any other port fails like a closed port. `FakeNas` is a generic basic-auth
+box (realm "NAS") that answers 401 everywhere; `RoutingTransport` serves
+several fakes, one per IP.
 """
 
 import base64
@@ -93,8 +104,13 @@ def default_config() -> dict:
 class FakeReader:
     def __init__(self, *, password_index: int = 3, mode: str = "normal",
                  model: str = "FX9600", serial: str = "84248dee5721",
-                 login_style: str = "json_message", password: str | None = None) -> None:
+                 login_style: str = "json_message", password: str | None = None,
+                 ports: tuple[int, ...] = (443,), server: str | None = None,
+                 realm: str | None = None) -> None:
         self.password_index = password_index
+        self.ports = ports
+        self.server = server
+        self.realm = realm
         # a password that isn't on our list (a reader we can't sign in to)
         self.password = password
         self.mode = mode
@@ -102,7 +118,9 @@ class FakeReader:
         self.version = {**VERSION, "model": model, "serialNumber": serial}
         self.status = copy.deepcopy(STATUS)
         self.config = default_config()
-        self.login_attempts: list[int | None] = []  # index of each password tried
+        # index of each password tried (None: one not on our list); only
+        # requests that carried credentials count
+        self.login_attempts: list[int | None] = []
         self.puts: list[dict] = []
         self.tokens: set[str] = set()
         # path or "METHOD path" -> (status, body); the next matching request answers this, once
@@ -118,6 +136,15 @@ class FakeReader:
     def _build(self) -> FastAPI:
         app = FastAPI()
         reader = self
+
+        @app.middleware("http")
+        async def headers(request: Request, call_next):
+            response = await call_next(request)
+            if reader.server:
+                response.headers["server"] = reader.server
+            if reader.realm and response.status_code == 401:
+                response.headers["www-authenticate"] = f'Basic realm="{reader.realm}"'
+            return response
 
         @app.middleware("http")
         async def gate(request: Request, call_next):
@@ -148,8 +175,9 @@ class FakeReader:
                 user, _, password = base64.b64decode(auth[6:]).decode().partition(":")
                 if user != "admin":
                     password = None
-            reader.login_attempts.append(
-                PASSWORDS.index(password) if password in PASSWORDS else None)
+            if auth:
+                reader.login_attempts.append(
+                    PASSWORDS.index(password) if password in PASSWORDS else None)
             expected = reader.password or PASSWORDS[reader.password_index]
             if password != expected:
                 return unauthorized()
@@ -204,17 +232,69 @@ class FakeReader:
         return app
 
 
+NAS_PAGE = "<html><body><h1>401 Unauthorized</h1><p>Synology DiskStation</p></body></html>"
+
+
+class FakeNas:
+    """A generic box behind basic auth (realm "NAS"): 401 on every path,
+    with or without credentials. `credential_attempts` counts requests that
+    carried an Authorization header — a scan must never send one here."""
+
+    def __init__(self, *, ports: tuple[int, ...] = (443,)) -> None:
+        self.ports = ports
+        self.mode = "normal"
+        self.credential_attempts = 0
+        self.requests = 0
+        app = FastAPI()
+        nas = self
+
+        @app.api_route("/{rest:path}", methods=["GET", "PUT", "POST", "DELETE"])
+        async def everything(request: Request, rest: str):
+            nas.requests += 1
+            if request.headers.get("authorization"):
+                nas.credential_attempts += 1
+            return HTMLResponse(NAS_PAGE, status_code=401,
+                                headers={"www-authenticate": 'Basic realm="NAS"'})
+
+        self.app = app
+
+    def transport(self) -> httpx.AsyncBaseTransport:
+        return _FakeTransport(self)
+
+
+def _port(url: httpx.URL) -> int:
+    return url.port or {"https": 443, "http": 80}[url.scheme]
+
+
 class _FakeTransport(httpx.AsyncBaseTransport):
-    def __init__(self, reader: FakeReader) -> None:
+    def __init__(self, reader) -> None:
         self.reader = reader
         self.inner = httpx.ASGITransport(app=reader.app)
         self.requests: list[httpx.Request] = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
-        if self.reader.mode == "unreachable":
+        if self.reader.mode == "unreachable" or _port(request.url) not in self.reader.ports:
             raise httpx.ConnectError("All connection attempts failed", request=request)
         return await self.inner.handle_async_request(request)
 
     async def aclose(self) -> None:
         await self.inner.aclose()
+
+
+class RoutingTransport(httpx.AsyncBaseTransport):
+    """Several fakes on one transport, chosen by the request's host; an IP
+    with no fake behaves like a dead host."""
+
+    def __init__(self, hosts: dict) -> None:
+        self.hosts = {ip: fake.transport() for ip, fake in hosts.items()}
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        inner = self.hosts.get(request.url.host)
+        if inner is None:
+            raise httpx.ConnectError("All connection attempts failed", request=request)
+        return await inner.handle_async_request(request)
+
+    def open_ports(self, ip: str) -> tuple[int, ...]:
+        inner = self.hosts.get(ip)
+        return () if inner is None or inner.reader.mode == "unreachable" else inner.reader.ports
