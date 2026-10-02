@@ -19,9 +19,9 @@ import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -64,25 +64,35 @@ class KioskSetupViewModel(
     private val _state = MutableStateFlow(SetupUi())
     val state: StateFlow<SetupUi> = _state
 
+    private data class Saved(val hasSelection: Boolean, val setUp: Boolean)
+
     init {
         scope.launch {
-            // Not just the first read: the saved setup can be dropped while the summary
-            // shows (a Clear Setup from the portal, a move-password sign-in for another
-            // move). The summary then has nothing to show, so the wizard opens fresh and
-            // loads the moves, instead of sitting on "Loading moves…" with no load running.
-            combine(prefs.setupSelection, prefs.setupState) { sel, st -> sel != null && st.isComplete }
+            // Not just the first read: the saved setup can be dropped while the screen is
+            // open (a Clear Setup from the portal, a move-password sign-in for another
+            // move). On the summary there is then nothing to show; in "Change setup" the
+            // choices belong to a setup that no longer exists. Either way the wizard
+            // starts over and loads the moves, never sitting on "Loading moves…".
+            var wasSetUp: Boolean? = null
+            combine(prefs.setupSelection, prefs.setupState) { sel, st -> Saved(sel != null, sel != null && st.isComplete) }
                 .distinctUntilChanged()
-                .collect { setUp ->
+                .collect { saved ->
+                    val dropped = wasSetUp == true && !saved.setUp && !saved.hasSelection
+                    wasSetUp = saved.setUp
                     when (_state.value.wizardOpen) {
-                        null -> { _state.update { it.copy(wizardOpen = !setUp) }; if (!setUp) load() }
-                        false -> if (!setUp) {
-                            _state.update { it.copy(wizardOpen = true, step = 1, submitError = null, initiativeId = "", siteId = "", scanStatus = "") }
-                            load()
-                        }
-                        true -> Unit   // the wizard is already open (and loads its own options)
+                        null -> { _state.update { it.copy(wizardOpen = !saved.setUp) }; if (!saved.setUp) load() }
+                        false -> if (!saved.setUp) restartWizard()
+                        // finish() only ever writes a selection and then COMPLETE, so it never
+                        // looks like a drop: only a cleared selection restarts an open wizard.
+                        true -> if (dropped) restartWizard()
                     }
                 }
         }
+    }
+
+    private fun restartWizard() {
+        _state.update { it.copy(wizardOpen = true, step = 1, submitError = null, initiativeId = "", siteId = "", scanStatus = "") }
+        load()
     }
 
     fun load() {

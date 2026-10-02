@@ -1,15 +1,15 @@
 package com.serversherpa.kiosk.ui.guards
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.Text
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.foundation.layout.Column
+import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import com.serversherpa.kiosk.ui.Routes
 import androidx.navigation.compose.rememberNavController
 import com.serversherpa.kiosk.LocalAppContainer
 import com.serversherpa.kiosk.core.features.FeatureId
@@ -17,8 +17,10 @@ import com.serversherpa.kiosk.core.features.feature
 import com.serversherpa.kiosk.core.setup.SetupState
 import com.serversherpa.kiosk.data.fakeSession
 import com.serversherpa.kiosk.testContainer
+import com.serversherpa.kiosk.ui.Routes
 import com.serversherpa.kiosk.ui.theme.KioskTheme
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -87,6 +89,33 @@ class GuardsTest {
             }
         }
         compose.waitUntil(5_000) { compose.onAllNodesWithText("home page").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("scanning").assertDoesNotExist()
+    }
+
+    /** Belt and braces for Clear Setup: a gated screen whose setup was just cleared (the
+     *  notice is up) sends the person to Kiosk Setup, popping itself, never Home. */
+    @Test fun setupGateSendsAClearedKioskToSetupNotHome() {
+        val c = testContainer()
+        c.auth.completePair(fakeSession())
+        runBlocking { c.prefs.applySetupClear("c1") }   // INCOMPLETE, notice up
+        lateinit var nav: NavHostController
+        compose.setContent {
+            CompositionLocalProvider(LocalAppContainer provides c) {
+                KioskTheme {
+                    nav = rememberNavController()
+                    NavHost(nav, startDestination = Routes.HOME) {
+                        composable(Routes.HOME) { Text("home page") }
+                        composable(Routes.SETUP) { Text("setup page") }
+                        composable(Routes.SCAN) { SetupGate(feature(FeatureId.SCAN), nav) { Text("scanning") } }
+                    }
+                }
+            }
+        }
+        compose.runOnIdle { nav.navigate(Routes.SCAN) }
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("setup page").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitForIdle()
+        assertEquals(Routes.SETUP, nav.currentDestination?.route)
+        assertEquals(Routes.HOME, nav.previousBackStackEntry?.destination?.route)   // Scan popped: Back goes Home
         compose.onNodeWithText("scanning").assertDoesNotExist()
     }
 }

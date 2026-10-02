@@ -54,12 +54,21 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
     /** Drops the saved setup and marks setup incomplete in one write, so a crash between can't leave a half-cleared setup. */
     suspend fun clearSetup() { store.edit { it.remove(Keys.setupSelection); it[Keys.setupState] = SetupState.INCOMPLETE.wire } }
 
-    private fun decodeSetupClear(raw: String?): SetupClearRecord? =
-        raw?.let { try { json.decodeFromString<SetupClearRecord>(it) } catch (e: Exception) { null } }
+    /** Writes all three fields, defaults included, so the stored shape matches the web's; reads tolerantly. */
+    private val clearJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
-    private fun encodeSetupClear(r: SetupClearRecord): String = json.encodeToString(SetupClearRecord.serializer(), r)
+    private fun decodeSetupClear(raw: String?): SetupClearRecord? =
+        raw?.let { try { clearJson.decodeFromString<SetupClearRecord>(it) } catch (e: Exception) { null } }
+
+    private fun encodeSetupClear(r: SetupClearRecord): String = clearJson.encodeToString(SetupClearRecord.serializer(), r)
 
     val setupClear: Flow<SetupClearRecord?> = store.data.map { decodeSetupClear(it[Keys.setupClear]) }
+
+    /** The setup state and whether the Clear Setup notice is up, from one snapshot, so a
+     *  reader never sees the INCOMPLETE a clear wrote without the notice it wrote with it. */
+    val setupStateWithClearNotice: Flow<Pair<SetupState, Boolean>> = store.data.map { p ->
+        SetupState.fromWire(p[Keys.setupState]) to (decodeSetupClear(p[Keys.setupClear])?.notice == true)
+    }
 
     /**
      * Applies a Clear Setup id not applied before: drops the saved setup, marks setup

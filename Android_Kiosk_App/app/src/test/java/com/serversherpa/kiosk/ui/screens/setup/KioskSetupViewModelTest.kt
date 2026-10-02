@@ -91,6 +91,46 @@ class KioskSetupViewModelTest {
         assertEquals(1, api.calls.count { it == "setupOptions" })
     }
 
+    /** "Change setup" is open (picking a move) when a Clear Setup lands: the wizard starts
+     *  over at step 1 with no choices and reloads the moves, as on the summary. */
+    @Test fun aClearLandingWhileTheWizardIsOpenRestartsIt() = runTest {
+        val api = FakeKioskApi().apply { setupOptionsResult = { options } }
+        val prefs = KioskPrefs(PreferenceDataStoreFactory.create(scope = backgroundScope) { File(tmp.root, "w.preferences_pb") })
+        prefs.setSetupSelection(KioskSetupSelection("i1", "Move A", "s2", "Dest", "destination", "pre_stage", "Pre-stage"))
+        prefs.setSetupState(SetupState.COMPLETE)
+        val sync = Sync(api, KioskDatabase.inMemory(ApplicationProvider.getApplicationContext()), backgroundScope)
+        val vm = KioskSetupViewModel(api, prefs, Identity(prefs), sync, backgroundScope)
+        repeat(5) { runCurrent() }
+        vm.openWizard(preselect = true); repeat(5) { runCurrent() }
+        vm.selectMove("i1"); vm.selectSite("s1")
+        assertEquals(3, vm.state.value.step)
+        assertEquals(1, api.calls.count { it == "setupOptions" })
+        prefs.applySetupClear("c3"); repeat(5) { runCurrent() }
+        assertEquals(true, vm.state.value.wizardOpen)
+        assertEquals(1, vm.state.value.step)
+        assertEquals("", vm.state.value.initiativeId); assertEquals("", vm.state.value.siteId)
+        assertEquals(2, api.calls.count { it == "setupOptions" })
+    }
+
+    /** Changing an existing setup through the wizard never restarts it on the way out. */
+    @Test fun changingSetupThroughTheWizardDoesNotRestartIt() = runTest {
+        val api = FakeKioskApi().apply {
+            setupOptionsResult = { options }
+            submitSetupResult = { KioskSetupResult("d", it.initiative_id, "Move A", it.site_id, "Origin", "source", it.scan_status, "Pre-stage") }
+        }
+        val prefs = KioskPrefs(PreferenceDataStoreFactory.create(scope = backgroundScope) { File(tmp.root, "x.preferences_pb") })
+        prefs.setSetupSelection(KioskSetupSelection("i1", "Move A", "s2", "Dest", "destination", "pre_stage", "Pre-stage"))
+        prefs.setSetupState(SetupState.COMPLETE)
+        val sync = Sync(api, KioskDatabase.inMemory(ApplicationProvider.getApplicationContext()), backgroundScope)
+        val vm = KioskSetupViewModel(api, prefs, Identity(prefs), sync, backgroundScope)
+        repeat(5) { runCurrent() }
+        vm.openWizard(preselect = true); repeat(5) { runCurrent() }
+        vm.selectMove("i1"); vm.selectSite("s1"); vm.finish("pre_stage"); repeat(5) { runCurrent() }
+        assertEquals(false, vm.state.value.wizardOpen)
+        assertEquals("Origin", prefs.setupSelection.first()?.siteName)
+        assertEquals(1, api.calls.count { it == "setupOptions" })
+    }
+
     @Test fun finishingSetupDismissesTheClearNotice() = runTest {
         val api = FakeKioskApi().apply {
             setupOptionsResult = { options }

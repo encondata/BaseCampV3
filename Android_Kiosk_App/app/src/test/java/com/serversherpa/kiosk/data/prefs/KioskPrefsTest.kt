@@ -1,6 +1,7 @@
 package com.serversherpa.kiosk.data.prefs
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
+import androidx.datastore.preferences.core.stringPreferencesKey
 import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.core.settings.CheckpointId
 import com.serversherpa.kiosk.core.settings.DEFAULT_APPEARANCE
@@ -64,5 +65,14 @@ class KioskPrefsTest {
         assertEquals("http://10.0.2.2:8000", prefs.apiUrl.first())
         assertEquals("kiosk-android-x", prefs.serial.first()); assertEquals("Dock 4", prefs.name.first())
         prefs.setSetupSelection(null); assertNull(prefs.setupSelection.first())
+    }
+
+    /** Same stored shape as the web kiosk's setupClear.ts: all three fields, even at their defaults. */
+    @Test fun setupClearIsStoredWithAllThreeFields() = runBlocking {
+        prefs.applySetupClear("x1")
+        assertEquals("""{"id":"x1","acked":false,"notice":true}""", prefs.snapshot()[stringPreferencesKey("ss.kiosk.setupClear")])
+        prefs.settleSetupClearAck(sentAck = "x1", replyId = null); prefs.dismissSetupClearNotice()
+        assertEquals("""{"id":"x1","acked":true,"notice":false}""", prefs.snapshot()[stringPreferencesKey("ss.kiosk.setupClear")])
+        assertEquals(SetupClearRecord("x1", acked = true, notice = false), prefs.setupClear.first())
     }
 }
