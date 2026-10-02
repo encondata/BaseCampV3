@@ -1,0 +1,14 @@
+# Static SPA: every unknown path falls back to index.html. Vite's
+# /assets/* names carry a content hash, so they can be cached forever.
+:8080 {
+	root * /srv
+	encode gzip
+	header /assets/* Cache-Control "public, max-age=31536000, immutable"
+	header {
+		X-Frame-Options SAMEORIGIN
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+	}
+	try_files {path} /index.html
+	file_server
+}
