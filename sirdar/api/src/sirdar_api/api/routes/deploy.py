@@ -1,6 +1,7 @@
 """Deploy page, step 1: targets, connection tests and trusted SSH host keys.
 Responses never carry secrets; error reasons are our own copy."""
 
+import re
 from datetime import datetime
 from typing import Literal
 
@@ -16,12 +17,15 @@ from sirdar_api.services.audit import audit
 router = APIRouter(prefix="/deploy", tags=["deploy"])
 
 TargetId = Literal["aws", "gcp", "digitalocean", "ssh"]
-DeployType = Literal["blue", "green", "dev", "beta"]
+DeployType = Literal["blue", "green", "dev", "beta", "custom"]
+CUSTOM_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
 
 
 class ConnectIn(BaseModel):
     target: TargetId
     type: DeployType
+    region: str | None = Field(default=None, pattern=r"^[a-z0-9-]{2,20}$")
+    name: str | None = None
 
 
 class TrustIn(BaseModel):
@@ -50,13 +54,38 @@ async def list_targets(actor: AuthContext = require_permission("deploy", "view")
     return {"targets": targets.public_targets(get_settings()), "types": targets.DEPLOY_TYPES}
 
 
+@router.get("/digitalocean/regions")
+async def digitalocean_regions(actor: AuthContext = require_permission("deploy", "view")):
+    settings = get_settings()
+    if not targets.is_configured("digitalocean", settings):
+        raise HTTPException(status_code=400, detail={"code": "target_not_configured"})
+    try:
+        return await digitalocean.list_regions(settings)
+    except ConnectFailed as e:
+        raise HTTPException(status_code=502,
+                            detail={"code": "connect_failed", "reason": e.reason}) from None
+
+
 @router.post("/connect")
 async def connect(body: ConnectIn, request: Request, db: DbSession,
                   actor: AuthContext = require_permission("deploy", "add")):
     settings = get_settings()
+    name: str | None = None
+    if body.type == "custom":
+        name = (body.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail={"code": "custom_name_required"})
+        if not CUSTOM_NAME_RE.fullmatch(name) or name.endswith("-"):
+            raise HTTPException(status_code=422, detail={"code": "custom_name_invalid"})
+        if name in targets.DEPLOY_TYPE_IDS:
+            raise HTTPException(status_code=422, detail={"code": "custom_name_reserved"})
 
     async def record(ok: bool, code: str | None = None) -> None:
         changes: dict = {"target": body.target, "type": body.type, "ok": ok}
+        if name:
+            changes["name"] = name
+        if body.region:
+            changes["region"] = body.region
         if code:
             changes["code"] = code
         audit(db, actor_id=actor.user.person_id, action="deploy.connect",
@@ -76,7 +105,7 @@ async def connect(body: ConnectIn, request: Request, db: DbSession,
 
     try:
         if body.target == "digitalocean":
-            result = await digitalocean.test_connection(settings)
+            result = await digitalocean.test_connection(settings, region=body.region)
         else:
             result = await ssh.test_connection(settings, db)
     except ssh.HostKeyUnknown as e:
@@ -93,7 +122,7 @@ async def connect(body: ConnectIn, request: Request, db: DbSession,
 
     await record(result.ok)
     return {"ok": result.ok, "target": result.target, "type": body.type,
-            "checks": result.as_dict()["checks"], "facts": result.facts}
+            "name": name, "checks": result.as_dict()["checks"], "facts": result.facts}
 
 
 @router.get("/known-hosts", response_model=list[KnownHostOut])

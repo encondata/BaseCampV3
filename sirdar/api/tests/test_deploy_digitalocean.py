@@ -113,3 +113,9 @@ async def test_malformed_token_is_connect_failed():
     assert exc.value.reason in ("The DigitalOcean API token is malformed.",
                                 "DigitalOcean rejected the API token.")
     assert "SECRET" not in exc.value.reason and exc.value.__cause__ is None
+
+
+async def test_explicit_region_overrides_env_and_blank_skips():
+    s = _settings(deploy_do_token=TOKEN, deploy_do_region="sfo1")
+    result = await digitalocean.test_connection(s, region="nyc3", transport=_transport())
+    assert _checks(result)["Region"] == ("pass", "nyc3 available")

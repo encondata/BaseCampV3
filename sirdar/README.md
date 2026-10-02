@@ -160,7 +160,7 @@ answering no writes them blank. All are `SIRDAR_DEPLOY_*` keys in `.env`:
 
 | Keys | Purpose |
 |---|---|
-| `DO_TOKEN`, `DO_REGION` | DigitalOcean read-only token and region slug |
+| `DO_TOKEN`, `DO_REGION` | DigitalOcean read-only token; the region is optional (a default for the Deploy page's region list, which comes live from DigitalOcean) |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | AWS read-only IAM user |
 | `GCP_PROJECT_ID`, `GCP_CREDENTIALS_FILE`, `GCP_REGION` | Google Cloud project and service-account file name |
 | `SSH_HOST`, `SSH_PORT` (22), `SSH_USER`, `SSH_PASSWORD`, `SSH_KEY_PATH`, `SSH_KEY_PASSPHRASE` | Custom SSH target |

@@ -18,49 +18,42 @@ def test_deploy_types():
         {"id": "blue", "label": "Blue", "description": "Production slot"},
         {"id": "green", "label": "Green", "description": "Production slot"},
         {"id": "dev", "label": "Dev", "description": "Development"},
-        {"id": "beta", "label": "Beta", "description": "External testing"}]
+        {"id": "beta", "label": "Beta", "description": "External testing"},
+        {"id": "custom", "label": "Custom", "description": "Your own named environment"}]
 
 
 def test_nothing_configured_by_default():
     out = _by_id(_settings())
-    assert {k: (v["configured"], v["summary"]) for k, v in out.items()} == {
-        "aws": (False, None), "gcp": (False, None),
-        "digitalocean": (False, None), "ssh": (False, None)}
-    assert set(out["ssh"]) == {"id", "label", "available", "configured", "summary"}
+    assert {k: v["configured"] for k, v in out.items()} == {
+        "aws": False, "gcp": False, "digitalocean": False, "ssh": False}
+    assert set(out["ssh"]) == {"id", "label", "available", "configured"}
 
 
-def test_digitalocean_configured_and_summary():
-    assert _by_id(_settings(deploy_do_token="dop_v1_SECRET"))["digitalocean"] == {
-        "id": "digitalocean", "label": "DigitalOcean", "available": True,
-        "configured": True, "summary": "token set"}
+def test_digitalocean_configured():
     t = _by_id(_settings(deploy_do_token="dop_v1_SECRET", deploy_do_region="nyc3"))
-    assert t["digitalocean"]["summary"] == "region nyc3"
+    assert t["digitalocean"] == {
+        "id": "digitalocean", "label": "DigitalOcean", "available": True, "configured": True}
     assert not _by_id(_settings(deploy_do_region="nyc3"))["digitalocean"]["configured"]
 
 
-def test_ssh_configured_rules_and_summary():
+def test_ssh_configured_rules():
     base = dict(deploy_ssh_host="10.10.48.20", deploy_ssh_user="root")
     assert not _by_id(_settings(**base))["ssh"]["configured"]
     assert not _by_id(_settings(deploy_ssh_host="h", deploy_ssh_password="pw"))["ssh"]["configured"]
     assert not _by_id(_settings(deploy_ssh_user="u", deploy_ssh_password="pw"))["ssh"]["configured"]
-    key = _by_id(_settings(**base, deploy_ssh_key_path="id_ed25519"))["ssh"]
-    assert key["configured"] and key["summary"] == "root@10.10.48.20:22 · key"
-    pw = _by_id(_settings(**base, deploy_ssh_password="hunter2-SECRET", deploy_ssh_port=2222))["ssh"]
-    assert pw["configured"] and pw["summary"] == "root@10.10.48.20:2222 · password"
-    both = _by_id(_settings(**base, deploy_ssh_password="hunter2-SECRET",
-                            deploy_ssh_key_path="k"))["ssh"]
-    assert both["summary"] == "root@10.10.48.20:22 · key + password"
+    assert _by_id(_settings(**base, deploy_ssh_key_path="id_ed25519"))["ssh"]["configured"]
+    assert _by_id(_settings(**base, deploy_ssh_password="hunter2-SECRET",
+                            deploy_ssh_port=2222))["ssh"]["configured"]
 
 
 def test_aws_and_gcp_configured_rules():
     aws = _by_id(_settings(deploy_aws_access_key_id="AKIA", deploy_aws_secret_access_key="SECRET",
                            deploy_aws_region="us-east-1"))["aws"]
-    assert aws == {"id": "aws", "label": "AWS", "available": False, "configured": True,
-                   "summary": "region us-east-1"}
+    assert aws == {"id": "aws", "label": "AWS", "available": False, "configured": True}
     assert not _by_id(_settings(deploy_aws_access_key_id="AKIA"))["aws"]["configured"]
     gcp = _by_id(_settings(deploy_gcp_project_id="proj-1",
                            deploy_gcp_credentials_file="/app/gcp.json"))["gcp"]
-    assert gcp["configured"] and gcp["summary"] == "project proj-1"
+    assert gcp["configured"]
     assert not _by_id(_settings(deploy_gcp_project_id="p"))["gcp"]["configured"]
 
 

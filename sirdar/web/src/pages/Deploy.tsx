@@ -1,12 +1,13 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
+import ComboBox from '@portal/components/ComboBox';
 import DataTable from '@portal/components/DataTable';
 
 import HostKeyModal from '../components/HostKeyModal';
 import {
-  connectDeploy, errorDetail, errorText, forgetKnownHost, getDeployTargets, listKnownHosts,
-  trustKnownHost, type ConnectResult, type DeployCheck, type DeployTarget, type DeployType, type KnownHost,
+  connectDeploy, errorDetail, errorText, forgetKnownHost, getDeployTargets, getDoRegions, listKnownHosts,
+  trustKnownHost, type ConnectResult, type DeployCheck, type DeployTarget, type DeployType, type DoRegions, type KnownHost,
 } from '../lib/sirdarApi';
 
 /** .env keys (names only) each target needs; the API never reports which are missing.
@@ -22,6 +23,19 @@ const INITIALS: Record<string, string> = { aws: 'AWS', gcp: 'GC', digitalocean: 
 const CHECK_CHIP: Record<DeployCheck['status'], { cls: string; text: string }> = {
   pass: { cls: 'c-green', text: 'Pass' }, warn: { cls: 'c-amber', text: 'Warning' }, fail: { cls: 'c-red', text: 'Fail' },
 };
+
+const RESERVED_NAMES = ['blue', 'green', 'dev', 'beta', 'custom'];
+const NAME_HELP = 'Lowercase letters, numbers and hyphens; starts with a letter; 2–32 characters.';
+
+/** Mirrors the API's custom-name rule; returns an inline message or ''. */
+function nameProblem(raw: string): string {
+  const n = raw.trim();
+  if (!n) return '';
+  if (!/^[a-z][a-z0-9-]{1,31}$/.test(n) || n.endsWith('-'))
+    return 'Use lowercase letters, numbers and hyphens, starting with a letter (2–32 characters, no trailing hyphen).';
+  if (RESERVED_NAMES.includes(n)) return 'That name is reserved. Choose a different one.';
+  return '';
+}
 
 interface KeyInfo { host: string; port: number; key_type: string; fingerprint?: string; expected?: string; actual?: string }
 
@@ -54,7 +68,7 @@ export default function Deploy() {
   const [type, setType] = useState('');
   const [loadError, setLoadError] = useState('');
   const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<(ConnectResult & { at: string }) | null>(null);
+  const [result, setResult] = useState<(ConnectResult & { at: string; region?: string; sentName?: string }) | null>(null);
   const [error, setError] = useState('');
   const [hostsError, setHostsError] = useState('');
   const inFlight = useRef(false);
@@ -62,6 +76,11 @@ export default function Deploy() {
   const [mismatch, setMismatch] = useState<KeyInfo | null>(null);
   const [trusting, setTrusting] = useState(false);
   const [trustError, setTrustError] = useState('');
+  const [doRegions, setDoRegions] = useState<DoRegions | null>(null);   // fetched once, reused
+  const [regionsLoading, setRegionsLoading] = useState(false);
+  const [regionsError, setRegionsError] = useState('');
+  const [region, setRegion] = useState('');
+  const [envName, setEnvName] = useState('');
 
   const loadHosts = useCallback(() =>
     listKnownHosts().then((h) => { setHosts(h); setHostsError(''); })
@@ -74,7 +93,30 @@ export default function Deploy() {
   }, [loadHosts]);
 
   const selected = targets.find((t) => t.id === target);
-  const canRun = !!selected && selected.available && selected.configured && !!type && canAdd && !running;
+  const doReady = selected?.id === 'digitalocean' && selected.available && selected.configured;
+
+  const loadRegions = useCallback(() => {
+    setRegionsLoading(true); setRegionsError('');
+    getDoRegions()
+      .then((r) => { setDoRegions(r); setRegion((cur) => cur || r.default || ''); })
+      .catch((e) => {
+        const d = errorDetail<{ reason?: string }>(e);
+        setRegionsError(d?.reason || errorText(e, "Couldn't load DigitalOcean regions."));
+      })
+      .finally(() => setRegionsLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!doReady) { setRegion(''); return; }
+    if (doRegions) setRegion((cur) => cur || doRegions.default || '');
+    else loadRegions();
+  }, [doReady, doRegions, loadRegions]);
+
+  const isCustom = type === 'custom';
+  const trimmedName = envName.trim();
+  const nameError = isCustom ? nameProblem(envName) : '';
+  const nameOk = !isCustom || (!!trimmedName && !nameError);
+  const canRun = !!selected && selected.available && selected.configured && !!type && nameOk && canAdd && !running;
 
   const clearOutcome = () => { setResult(null); setMismatch(null); setError(''); };
   const pick = (set: (v: string) => void, v: string, current: string) => {
@@ -88,8 +130,11 @@ export default function Deploy() {
     setRunning(true);
     setError(''); setResult(null); setMismatch(null);
     try {
-      const r = await connectDeploy(target, type);
-      setResult({ ...r, at: new Date().toISOString() });
+      const sent = doReady && region ? region : undefined;
+      const sentName = isCustom ? trimmedName : undefined;
+      const r = sentName ? await connectDeploy(target, type, sent, sentName)
+        : sent ? await connectDeploy(target, type, sent) : await connectDeploy(target, type);
+      setResult({ ...r, region: sent, at: new Date().toISOString() });
     } catch (e) {
       const d = errorDetail<KeyInfo>(e);
       const code = (e as { code?: string }).code;
@@ -158,7 +203,6 @@ export default function Deploy() {
                 {statusChip(t)}
               </span>
               <b>{t.label}</b>
-              <span className="cell-sub">{t.summary ?? (t.available ? 'Not set up yet' : 'Not built yet')}</span>
             </button>
           ))}
         </div>
@@ -185,6 +229,17 @@ export default function Deploy() {
             </button>
           ))}
         </div>
+        {isCustom && (
+          <div className="pf-form sirdar-envname">
+            <label className="field-label" htmlFor="env-name">Environment name</label>
+            <input id="env-name" type="text" value={envName} maxLength={64} autoComplete="off"
+                   spellCheck={false} aria-required="true" aria-invalid={!!nameError}
+                   aria-describedby="env-name-help"
+                   onChange={(e) => { setEnvName(e.target.value); clearOutcome(); }} />
+            <p id="env-name-help" className="page-hint">{NAME_HELP}</p>
+            {nameError && <p className="form-error" role="alert">{nameError}</p>}
+          </div>
+        )}
       </section>
 
       <section className="sirdar-section">
@@ -194,6 +249,22 @@ export default function Deploy() {
             {running ? 'Connecting…' : 'Test connection'}
           </button>
         </div>
+        {doReady && (
+          <div className="sirdar-region">
+            <label className="field-label" htmlFor="do-region">Region</label>
+            {regionsLoading && <p className="page-hint">Loading regions…</p>}
+            {regionsError && (
+              <p className="form-error" role="alert">{regionsError}{' '}
+                <button type="button" className="mini-btn" onClick={loadRegions}>Retry</button></p>
+            )}
+            {doRegions && (
+              <ComboBox inputId="do-region" ariaLabel="Region" portal value={region}
+                        placeholder="Select a region…"
+                        options={doRegions.regions.map((r) => ({ value: r.slug, label: `${r.name} (${r.slug})` }))}
+                        onChange={(v) => { setRegion(v); clearOutcome(); }} />
+            )}
+          </div>
+        )}
         {!canAdd && (
           <p className="page-hint">You can view deployments but not run tests. Ask a super admin for access.</p>
         )}
@@ -218,7 +289,9 @@ export default function Deploy() {
           <div className="sirdar-card sirdar-result">
             <p className="page-hint">
               {targets.find((t) => t.id === result.target)?.label ?? result.target} ·{' '}
-              {types.find((t) => t.id === result.type)?.label ?? result.type} ·{' '}
+              {result.region && <>{result.region} · </>}
+              {types.find((t) => t.id === result.type)?.label ?? result.type}
+              {result.type === 'custom' && result.name && <>: {result.name}</>} ·{' '}
               <span className="mono">{new Date(result.at).toLocaleString()}</span>
             </p>
             <ul className="sirdar-checks">

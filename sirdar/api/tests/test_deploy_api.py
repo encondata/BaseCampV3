@@ -76,16 +76,16 @@ async def test_targets_for_admin(client, db, deploy_env, bodies):
     assert resp.status_code == 200
     body = resp.json()
     assert body["targets"] == [
-        {"id": "aws", "label": "AWS", "available": False, "configured": True,
-         "summary": "region us-east-1"},
-        {"id": "gcp", "label": "Google Cloud", "available": False, "configured": False,
-         "summary": None},
-        {"id": "digitalocean", "label": "DigitalOcean", "available": True, "configured": True,
-         "summary": "region nyc3"},
-        {"id": "ssh", "label": "Custom (SSH)", "available": True, "configured": True,
-         "summary": "root@10.10.48.20:22 · key + password"},
+        {"id": "aws", "label": "AWS", "available": False, "configured": True},
+        {"id": "gcp", "label": "Google Cloud", "available": False, "configured": False},
+        {"id": "digitalocean", "label": "DigitalOcean", "available": True, "configured": True},
+        {"id": "ssh", "label": "Custom (SSH)", "available": True, "configured": True},
     ]
-    assert [t["id"] for t in body["types"]] == ["blue", "green", "dev", "beta"]
+    assert all("summary" not in t for t in body["targets"])
+    # product owner decision: cards show no connection details, secret or not
+    for detail in ("10.10.48.20", "root", "nyc3", "us-east-1", ":22"):
+        assert detail not in resp.text
+    assert [t["id"] for t in body["types"]] == ["blue", "green", "dev", "beta", "custom"]
     assert body["types"][0] == {"id": "blue", "label": "Blue", "description": "Production slot"}
 
 
@@ -127,12 +127,16 @@ async def test_connect_validation_and_audit(client, db, deploy_env, bodies):
 @pytest.fixture
 def do_transport(monkeypatch):
     holder = {"transport": _transport()}
-    real = digitalocean.test_connection
+    real, real_regions = digitalocean.test_connection, digitalocean.list_regions
 
-    async def fake(settings, *, transport=None):
-        return await real(settings, transport=holder["transport"])
+    async def fake(settings, *, region=None, transport=None):
+        return await real(settings, region=region, transport=holder["transport"])
+
+    async def fake_regions(settings, *, transport=None):
+        return await real_regions(settings, transport=holder["transport"])
 
     monkeypatch.setattr(digitalocean, "test_connection", fake)
+    monkeypatch.setattr(digitalocean, "list_regions", fake_regions)
     return holder
 
 
@@ -286,3 +290,147 @@ async def test_unexpected_connect_error_is_audited(client, db, deploy_env, ssh_s
         await client.post("/api/deploy/connect", headers=h, json={"target": "ssh", "type": "dev"})
     assert await _connect_audits(db) == [
         {"target": "ssh", "type": "dev", "ok": False, "code": "error"}]
+
+
+LIST = {"regions": [
+    {"slug": "sfo3", "name": "San Francisco 3", "available": True},
+    {"slug": "nyc3", "name": "New York 3", "available": True},
+    {"slug": "nyc1", "name": "New York 1", "available": True},
+    {"slug": "sfo1", "name": "San Francisco 1", "available": False},
+    {"slug": "ams3", "name": "amsterdam 3", "available": True}]}
+
+
+async def test_regions_list_filters_sorts_and_defaults(client, db, deploy_env, do_transport, bodies):
+    do_transport["transport"] = _transport(regions=LIST)
+    h = await auth_headers(client, db, email="admin@test.example.com", roles=("admin",))
+    deploy_env(do_token=TOKEN, do_region="nyc3")
+    resp = await client.get("/api/deploy/digitalocean/regions", headers=h)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"regions": [
+        {"slug": "ams3", "name": "amsterdam 3"}, {"slug": "nyc1", "name": "New York 1"},
+        {"slug": "nyc3", "name": "New York 3"}, {"slug": "sfo3", "name": "San Francisco 3"}],
+        "default": "nyc3"}
+    deploy_env(do_token=TOKEN, do_region="sfo1")          # present but unavailable
+    assert (await client.get("/api/deploy/digitalocean/regions", headers=h)).json()["default"] is None
+    deploy_env(do_token=TOKEN, do_region="zzz9")          # absent
+    assert (await client.get("/api/deploy/digitalocean/regions", headers=h)).json()["default"] is None
+    deploy_env(do_token=TOKEN)                            # unset
+    assert (await client.get("/api/deploy/digitalocean/regions", headers=h)).json()["default"] is None
+
+
+async def test_regions_errors(client, db, deploy_env, do_transport, bodies):
+    h = await auth_headers(client, db)
+    resp = await client.get("/api/deploy/digitalocean/regions", headers=h)   # not configured
+    assert resp.status_code == 400 and resp.json()["detail"]["code"] == "target_not_configured"
+    deploy_env(do_token=TOKEN)
+    do_transport["transport"] = _transport(status=401)
+    resp = await client.get("/api/deploy/digitalocean/regions", headers=h)
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == {"code": "connect_failed",
+                                     "reason": "DigitalOcean rejected the API token."}
+
+    def boom(request):
+        raise httpx.ConnectError(f"boom {TOKEN}")
+    do_transport["transport"] = httpx.MockTransport(boom)
+    resp = await client.get("/api/deploy/digitalocean/regions", headers=h)
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["reason"] == "Couldn't reach the DigitalOcean API."
+
+
+async def test_regions_needs_auth(client, deploy_env):
+    deploy_env(do_token=TOKEN)
+    assert (await client.get("/api/deploy/digitalocean/regions")).status_code in (401, 403)
+
+
+async def test_connect_with_region_param(client, db, deploy_env, do_transport, bodies):
+    deploy_env(do_token=TOKEN, do_region="nyc3")
+    h = await auth_headers(client, db)
+    post = lambda **kw: client.post("/api/deploy/connect", headers=h, json={  # noqa: E731
+        "target": "digitalocean", "type": "dev", **kw})
+    body = (await post(region="sfo1")).json()                 # overrides env nyc3; unavailable
+    assert {"label": "Region", "status": "warn", "value": "sfo1 not available"} in body["checks"]
+    body = (await post(region="nyc3")).json()
+    assert {"label": "Region", "status": "pass", "value": "nyc3 available"} in body["checks"]
+    deploy_env(do_token=TOKEN)                                # no env default, region given
+    body = (await post(region="nyc3")).json()
+    assert body["facts"]["region"] == "nyc3"
+    for bad in ("NYC3", "n", "nyc 3", "x" * 21, "nyc3;"):
+        assert (await post(region=bad)).status_code == 422
+    audits = await _connect_audits(db)
+    assert audits[0] == {"target": "digitalocean", "type": "dev", "ok": True, "region": "sfo1"}
+    assert len(audits) == 3
+
+
+async def test_connect_region_ignored_for_ssh(client, db, deploy_env, bodies, ssh_server):
+    _ssh_env(deploy_env, ssh_server)
+    h = await auth_headers(client, db)
+    resp = await client.post("/api/deploy/connect", headers=h,
+                             json={"target": "ssh", "type": "dev", "region": "nyc3"})
+    assert resp.status_code in (200, 409)
+    assert "region" not in resp.json().get("facts", {})
+
+
+async def test_custom_type_listed_last(client, db, deploy_env, bodies):
+    h = await auth_headers(client, db, email="admin@test.example.com", roles=("admin",))
+    types = (await client.get("/api/deploy/targets", headers=h)).json()["types"]
+    assert types[-1] == {"id": "custom", "label": "Custom",
+                         "description": "Your own named environment"}
+
+
+async def test_custom_name_valid_returns_and_audits_name(client, db, deploy_env, bodies,
+                                                         ssh_server):
+    _ssh_env(deploy_env, ssh_server)
+    h = await auth_headers(client, db)
+    resp = await client.post("/api/deploy/connect", headers=h,
+                             json={"target": "ssh", "type": "custom", "name": "demo-acme"})
+    assert resp.status_code in (200, 409)
+    # unknown host key answers 409 before success; trust it and retry
+    if resp.status_code == 409:
+        d = resp.json()["detail"]
+        await client.post("/api/deploy/known-hosts", headers=h,
+                          json={"host": d["host"], "port": d["port"],
+                                "fingerprint": d["fingerprint"]})
+        resp = await client.post("/api/deploy/connect", headers=h,
+                                 json={"target": "ssh", "type": "custom", "name": "demo-acme"})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "demo-acme" and resp.json()["type"] == "custom"
+    audits = await _connect_audits(db)
+    assert audits[-1]["name"] == "demo-acme" and audits[-1]["ok"] is True
+
+
+@pytest.mark.parametrize("payload_name", [None, "", "   "])
+async def test_custom_name_required(client, db, deploy_env, bodies, payload_name):
+    h = await auth_headers(client, db)
+    payload = {"target": "ssh", "type": "custom"}
+    if payload_name is not None:
+        payload["name"] = payload_name
+    resp = await client.post("/api/deploy/connect", headers=h, json=payload)
+    assert resp.status_code == 422
+    assert resp.json() == {"detail": {"code": "custom_name_required"}}
+
+
+@pytest.mark.parametrize("bad", ["Demo", "1abc", "my_env", "demo-", "a" * 33, "a"])
+async def test_custom_name_invalid(client, db, deploy_env, bodies, bad):
+    h = await auth_headers(client, db)
+    resp = await client.post("/api/deploy/connect", headers=h,
+                             json={"target": "ssh", "type": "custom", "name": bad})
+    assert resp.status_code == 422
+    assert resp.json() == {"detail": {"code": "custom_name_invalid"}}
+
+
+@pytest.mark.parametrize("reserved", ["blue", "green", "dev", "beta", "custom"])
+async def test_custom_name_reserved(client, db, deploy_env, bodies, reserved):
+    h = await auth_headers(client, db)
+    resp = await client.post("/api/deploy/connect", headers=h,
+                             json={"target": "ssh", "type": "custom", "name": reserved})
+    assert resp.status_code == 422
+    assert resp.json() == {"detail": {"code": "custom_name_reserved"}}
+
+
+async def test_name_ignored_for_non_custom(client, db, deploy_env, bodies):
+    h = await auth_headers(client, db)
+    resp = await client.post("/api/deploy/connect", headers=h,
+                             json={"target": "ssh", "type": "dev", "name": "Bad Name!"})
+    assert resp.status_code == 400 and resp.json() == {"detail": {"code": "target_not_configured"}}
+    assert (await _connect_audits(db))[-1] == {"target": "ssh", "type": "dev", "ok": False,
+                                              "code": "target_not_configured"}

@@ -139,14 +139,7 @@
      | AWS | key id and secret set |
      | GCP | project and credentials file set |
 
-   - `summary`, which must never contain secrets:
-
-     | Target | Summary format | Example |
-     |---|---|---|
-     | DigitalOcean | `"region <r>"` or `"token set"` | `region nyc3` |
-     | SSH | `"<user>@<host>:<port> · key"`, `"· password"` or `"· key + password"` | `root@10.10.48.20:22 · key` |
-     | AWS | `"region <r>"` | |
-     | GCP | `"project <p>"` | |
+   - No summary or connection details in the public list (product owner decision 2026-10-01): `public_targets` returns `{id, label, available, configured}` only.
 
    - `DEPLOY_TYPES`:
 
@@ -220,7 +213,7 @@
 
    | Route | Permission | Behavior |
    |---|---|---|
-   | `GET /targets` | deploy:view | `{targets:[{id,label,available,configured,summary}], types:[…]}` |
+   | `GET /targets` | deploy:view | `{targets:[{id,label,available,configured}], types:[…]}` |
    | `POST /connect` `{target, type}` | deploy:add | see below |
    | `GET /known-hosts` | deploy:view | `[{host, port, key_type, fingerprint, trusted_at, trusted_by_name}]` |
    | `POST /known-hosts` `{host, port, fingerprint}` | deploy:change | Only the configured SSH host and port may be trusted, else 400 `not_configured_host` |
@@ -253,7 +246,7 @@
 **Requirements:**
 1. **Layout.** Eyebrow "Deployments", title "Deploy", lead "Pick where and what kind of environment to deploy. This step tests the connection; deploying the apps comes next." Then three stacked sections:
    1. **Target.** Four cards in a grid:
-      - icon/initials, label, summary;
+      - icon/initials and label only. Cards show no connection details (host, user, port, region, auth method): product owner decision 2026-10-01;
       - a status chip: "Ready" (configured + available), "Not configured" (available) or "Coming soon" (aws/gcp, disabled);
       - selectable by click or keyboard: `role="radio"` in a `radiogroup`.
       - When a not-configured target is selected, show which `.env` keys to set (names only, e.g. `SIRDAR_DEPLOY_DO_TOKEN`) and "then re-run the installer".

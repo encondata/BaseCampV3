@@ -365,8 +365,9 @@ check_key_file() {
   esac
 }
 
-# prompt_deploy KEYSDIR: sets the CALLER's d_do_token d_do_region d_ssh_host
-# d_ssh_port d_ssh_user d_ssh_pw d_ssh_key d_ssh_pass. Every answer is optional. Secrets
+# prompt_deploy KEYSDIR: sets the CALLER's d_do_token d_ssh_host
+# d_ssh_port d_ssh_user d_ssh_pw d_ssh_key d_ssh_pass (d_do_region stays blank: the Deploy
+# page lists DigitalOcean's regions). Every answer is optional. Secrets
 # are read hidden and never printed.
 prompt_deploy() {
   local keysdir="$1" a
@@ -376,12 +377,6 @@ prompt_deploy() {
     ask_secret a "     DigitalOcean API token [Enter = skip]: " || die_eof
     if has_bad_chars "$a"; then echo "     No quotes or line breaks, please." >&4; continue; fi
     d_do_token="$a"; break
-  done
-  while :; do
-    ask a "     DigitalOcean region, e.g. nyc3 [Enter = skip]: " || die_eof
-    case "$a" in *[[:space:]]*) echo "     No spaces, please." >&4; continue ;; esac
-    if has_bad_chars "$a"; then echo "     No quotes, please." >&4; continue; fi
-    d_do_region="$a"; break
   done
   echo "     Custom SSH target (connection test only)." >&4
   while :; do

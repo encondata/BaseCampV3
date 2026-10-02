@@ -1,5 +1,5 @@
 """Deployment targets and types: registry, configured detection and
-public (secret-free) summaries for GET /api/deploy/targets."""
+the public list (no connection details) for GET /api/deploy/targets."""
 
 from dataclasses import dataclass
 
@@ -26,6 +26,7 @@ DEPLOY_TYPES: list[dict] = [
     {"id": "green", "label": "Green", "description": "Production slot"},
     {"id": "dev", "label": "Dev", "description": "Development"},
     {"id": "beta", "label": "Beta", "description": "External testing"},
+    {"id": "custom", "label": "Custom", "description": "Your own named environment"},
 ]
 DEPLOY_TYPE_IDS = tuple(t["id"] for t in DEPLOY_TYPES)
 
@@ -54,26 +55,7 @@ def ssh_auth_label(s: Settings) -> str:
     return "key + password" if key and password else "key" if key else "password"
 
 
-def summary(target_id: str, s: Settings) -> str | None:
-    """One non-secret line about a configured target; None when not configured."""
-    if not is_configured(target_id, s):
-        return None
-    match target_id:
-        case "digitalocean":
-            region = s.deploy_do_region.strip()
-            return f"region {region}" if region else "token set"
-        case "ssh":
-            return (f"{s.deploy_ssh_user.strip()}@{s.deploy_ssh_host.strip()}:"
-                    f"{s.deploy_ssh_port} · {ssh_auth_label(s)}")
-        case "aws":
-            region = s.deploy_aws_region.strip()
-            return f"region {region}" if region else "keys set"
-        case "gcp":
-            return f"project {s.deploy_gcp_project_id.strip()}"
-    return None
-
-
 def public_targets(s: Settings) -> list[dict]:
     return [{"id": t.id, "label": t.label, "available": t.available,
-             "configured": is_configured(t.id, s), "summary": summary(t.id, s)}
+             "configured": is_configured(t.id, s)}
             for t in TARGETS]
