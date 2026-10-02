@@ -290,7 +290,10 @@ may take 0087 when it is re-pointed.
 - **Row Actions menu** (the shared `RowActionsMenu`): Approve (pending
   or revoked), Revoke (approved), Delete. Approve and Revoke confirm with
   `window.confirm`, the Kiosk Devices idiom, and the message names the
-  MAC, model and source IP.
+  MAC, model and source IP. Approving a knocked-down router (pending,
+  previously approved, with a mismatch) warns instead that approving
+  trusts the new secret and that a genuine router restores itself on its
+  next check-in.
 - **Expanded row tabs:** DHCP clients (existing `RouterLeases`), WiFi
   (radio, band, SSID, channel, enabled, clients) and VPN (name, type,
   role, up/down chip, endpoint, last handshake). For pending or revoked

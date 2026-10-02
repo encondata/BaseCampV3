@@ -258,6 +258,11 @@ async def handle_report(db: AsyncSession, report: RouterReportIn, ip: str) -> st
             await db.commit()
             return "approved"
         await db.refresh(device)
+        if device.approval_state == "approved":
+            # an admin approved it while this report was in flight: leave
+            # their decision alone; the next report takes the normal path
+            await db.commit()
+            return "pending"
 
     # pending or revoked, genuine secret: identity only. A revoked router
     # that keeps reporting goes back to pending, quietly (no notification).

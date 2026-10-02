@@ -316,6 +316,10 @@ it('Approve on a knocked-down router (approved before, now pending with a mismat
     + 'reinstalled, don\'t approve: it restores itself the next time it checks in '
     + 'with its approved secret. Approve anyway?');
   expect(api.approveRouter).not.toHaveBeenCalled();
+  confirmSpy.mockReturnValue(true);
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Approve' }));
+  await waitFor(() => expect(api.approveRouter).toHaveBeenCalledWith('d2'));
   confirmSpy.mockRestore();
 });
 
