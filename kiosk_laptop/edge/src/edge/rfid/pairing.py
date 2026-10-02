@@ -56,11 +56,40 @@ def get_connections(config) -> list[dict]:
     return [c for c in node if isinstance(c, dict)] if isinstance(node, list) else []
 
 
+# The reader keeps one global batching (and retention) entry per data
+# connection, index for index, in READER-GATEWAY; a PUT whose lists don't
+# match the connections is refused ("Incorrect number of batching objects for
+# the given endpoints"). Ours gets the same values Zebra's own UI writes.
+DEFAULT_BATCHING = {"maxPayloadSizePerReport": 256000, "reportingInterval": 2000}
+DEFAULT_RETENTION = {"maxEventRetentionTimeInMin": 500, "maxNumEvents": 150000,
+                     "throttle": 100}
+PER_CONNECTION = (("batching", DEFAULT_BATCHING), ("retention", DEFAULT_RETENTION))
+
+
 def with_connections(config: dict, connections: list[dict]) -> dict:
-    """A copy of the config's READER-GATEWAY object with its connections replaced."""
+    """A copy of the config's READER-GATEWAY object with its connections
+    replaced, and its per-connection batching/retention lists kept in step:
+    a connection that was already there keeps its entry, a new one gets its
+    own `additionalOptions` value or the default. A list the reader doesn't
+    have is left out."""
     gateway = copy.deepcopy(config.get("READER-GATEWAY"))
     if not isinstance(gateway, dict):
         gateway = {}
+    before = get_connections(config)
+    for key, default in PER_CONNECTION:
+        entries = gateway.get(key)
+        if not isinstance(entries, list):
+            continue
+        aligned = []
+        for conn in connections:
+            index = next((i for i, old in enumerate(before) if old == conn), None)
+            if index is not None and index < len(entries):
+                aligned.append(entries[index])
+                continue
+            extra = conn.get("additionalOptions")
+            own = extra.get(key) if isinstance(extra, dict) else None
+            aligned.append(copy.deepcopy(own if isinstance(own, dict) else default))
+        gateway[key] = aligned
     node = gateway
     for key in CONNECTIONS_PATH[:-1]:
         if not isinstance(node.get(key), dict):
@@ -384,7 +413,9 @@ async def _pair(store: Store, identity: Identity, ip: str, laptop_ip: str,
         mine = {"type": "httpPost", "name": connection_name(identity),
                 "description": f"ServerSherpa kiosk {identity.serial}",
                 "options": {"URL": url, "security": {"verifyPeer": False, "verifyHost": False,
-                                                     "authenticationType": "NONE"}}}
+                                                     "authenticationType": "NONE"}},
+                "additionalOptions": {"batching": dict(DEFAULT_BATCHING),
+                                      "retention": dict(DEFAULT_RETENTION)}}
         # drop every kiosk connection, and ours even if someone renamed it
         kept = [c for c in connections if not _name(c).startswith(PAIR_PREFIX)
                 and not token_matches(c, serial, token)]

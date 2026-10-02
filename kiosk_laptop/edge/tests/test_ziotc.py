@@ -8,7 +8,7 @@ import respx
 
 from edge.rfid import ziotc
 from edge.rfid.ziotc import PASSWORDS, ReaderError, ZiotcClient, probe
-from fake_reader import TOO_MANY_ENDPOINTS, FakeReader
+from fake_reader import TOO_MANY_ENDPOINTS, BATCHING_MISMATCH, FakeReader
 
 IP = "10.10.48.200"
 
@@ -136,7 +136,7 @@ async def test_put_config_round_trips():
                                      "authenticationType": "NONE"}}}
     gateway = config["READER-GATEWAY"]
     gateway["endpointConfig"]["data"]["event"]["connections"].append(conn)
-    assert await client.put_config({"READER-GATEWAY": gateway}) is None
+    assert await client.put_config({"READER-GATEWAY": in_step(gateway)}) is None
     again = await client.get_config()
     assert again["READER-GATEWAY"]["endpointConfig"]["data"]["event"]["connections"] == [conn]
     await client.aclose()
@@ -149,9 +149,29 @@ async def test_put_config_over_the_endpoint_limit_is_reader_error_with_its_messa
     gateway["endpointConfig"]["data"]["event"]["connections"] = [
         {"type": "httpPost", "name": f"c{i}", "options": {}} for i in range(3)]
     with pytest.raises(ReaderError) as err:
-        await client.put_config({"READER-GATEWAY": gateway})
+        await client.put_config({"READER-GATEWAY": in_step(gateway)})
     assert err.value.code == "reader_error"
     assert err.value.message == TOO_MANY_ENDPOINTS
+    await client.aclose()
+
+
+def in_step(gateway):
+    """One global batching/retention entry per connection, as the reader requires."""
+    count = len(gateway["endpointConfig"]["data"]["event"]["connections"])
+    gateway["batching"] = [{"maxPayloadSizePerReport": 256000, "reportingInterval": 2000}] * count
+    gateway["retention"] = [{"maxNumEvents": 150000}] * count
+    return gateway
+
+
+async def test_put_config_with_too_few_batching_entries_is_refused():
+    reader = FakeReader()
+    client = make(reader)
+    gateway = (await client.get_config())["READER-GATEWAY"]
+    gateway["endpointConfig"]["data"]["event"]["connections"] = [
+        {"type": "httpPost", "name": "x", "options": SECURE}]
+    with pytest.raises(ReaderError) as err:
+        await client.put_config({"READER-GATEWAY": gateway})
+    assert err.value.message == BATCHING_MISMATCH
     await client.aclose()
 
 
@@ -161,7 +181,7 @@ async def test_verify_mismatch_mode_keeps_the_old_config():
     gateway = (await client.get_config())["READER-GATEWAY"]
     gateway["endpointConfig"]["data"]["event"]["connections"] = [{"type": "httpPost",
                                                                  "name": "x", "options": SECURE}]
-    await client.put_config({"READER-GATEWAY": gateway})
+    await client.put_config({"READER-GATEWAY": in_step(gateway)})
     assert len(reader.puts) == 1
     again = await client.get_config()
     assert again["READER-GATEWAY"]["endpointConfig"]["data"]["event"]["connections"] == []
@@ -328,7 +348,7 @@ async def test_fake_reader_requires_the_full_http_post_security(field):
     gateway["endpointConfig"]["data"]["event"]["connections"] = [
         {"type": "httpPost", "name": "x", "options": {**SECURE, "security": security}}]
     with pytest.raises(ReaderError) as err:
-        await client.put_config({"READER-GATEWAY": gateway})
+        await client.put_config({"READER-GATEWAY": in_step(gateway)})
     assert err.value.code == "reader_error" and field in err.value.message
     assert get_conns(reader) == []
     await client.aclose()

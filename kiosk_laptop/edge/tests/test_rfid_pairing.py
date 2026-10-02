@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from edge.rfid import pairing
+from edge.rfid.pairing import with_connections
 from tests.conftest import make_session
 from tests.fake_reader import FakeReader
 
@@ -24,8 +25,17 @@ def use_reader(app, **kw) -> FakeReader:
     return reader
 
 
-def set_connections(reader, conns):
-    reader.config["READER-GATEWAY"]["endpointConfig"]["data"]["event"]["connections"] = conns
+BATCHING = {"maxPayloadSizePerReport": 256000, "reportingInterval": 2000}
+RETENTION = {"maxEventRetentionTimeInMin": 500, "maxNumEvents": 150000, "throttle": 100}
+
+
+def set_connections(reader, conns, batching=None):
+    """Put `conns` on the fake, with one global batching/retention entry each
+    (`batching`: explicit entries, to tell them apart)."""
+    gateway = reader.config["READER-GATEWAY"]
+    gateway["endpointConfig"]["data"]["event"]["connections"] = conns
+    gateway["batching"] = batching if batching is not None else [dict(BATCHING) for _ in conns]
+    gateway["retention"] = [dict(RETENTION) for _ in conns]
 
 
 def reader_connections(reader):
@@ -136,7 +146,10 @@ async def test_pair_adds_our_connection(app, client):
         "description": f"ServerSherpa kiosk {app.state.identity.serial}",
         "options": {"URL": f"http://10.0.0.5:8091/rfid/{SERIAL}/{token}",
                     "security": {"verifyPeer": False, "verifyHost": False,
-                                 "authenticationType": "NONE"}}}]
+                                 "authenticationType": "NONE"}},
+        "additionalOptions": {"batching": BATCHING, "retention": RETENTION}}]
+    gateway = reader.config["READER-GATEWAY"]
+    assert gateway["batching"] == [BATCHING] and gateway["retention"] == [RETENTION]
     assert list(reader.puts[-1]) == ["READER-GATEWAY"]
 
 
@@ -320,8 +333,9 @@ async def test_pair_leaves_the_rest_of_the_config_alone(app, client):
     gw_before, gw_after = before["READER-GATEWAY"], after["READER-GATEWAY"]
     for key in ("management", "control"):
         assert gw_after["endpointConfig"][key] == gw_before["endpointConfig"][key]
-    assert gw_after["endpointConfig"]["data"]["batching"] == \
-        gw_before["endpointConfig"]["data"]["batching"]
+    skip = ("endpointConfig", "batching", "retention")
+    assert {k: v for k, v in gw_after.items() if k not in skip} == \
+        {k: v for k, v in gw_before.items() if k not in skip}
     assert {k: v for k, v in after.items() if k != "READER-GATEWAY"} == \
         {k: v for k, v in before.items() if k != "READER-GATEWAY"}
 
@@ -565,3 +579,54 @@ async def test_connect_logs_the_http_fallback(app, client, caplog):
     app.state.store.run("UPDATE rfid_readers SET scheme = NULL, port = NULL")
     assert (await pair(client, app, laptop_ip="10.0.0.5")).status_code == 200
     assert f"falling back from https:443 to http:80 for {READER_IP}" in caplog.text
+
+
+# ── global batching/retention stay in step with the connections ──
+
+STACKPI = {"type": "httpPost", "name": "StackPI", "description": "Local StackPI",
+           "options": {"URL": "http://10.10.48.187:8000/rfid-tags",
+                       "security": {**SECURITY, "CACertificateFileLocation": ""}},
+           "additionalOptions": {"batching": {"maxPayloadSizePerReport": 128000,
+                                              "reportingInterval": 500},
+                                 "retention": RETENTION}}
+STACKPI_BATCHING = {"maxPayloadSizePerReport": 128000, "reportingInterval": 500}
+
+
+async def test_pair_next_to_a_foreign_connection_adds_a_batching_entry(app, client):
+    # the real FX9600 refused our first try: "Incorrect number of batching
+    # objects for the given endpoints"
+    reader = use_reader(app)
+    set_connections(reader, [STACKPI], batching=[STACKPI_BATCHING])
+    r = await pair(client, app, laptop_ip="10.0.0.5")
+    assert r.status_code == 200, r.text
+    gateway = reader.config["READER-GATEWAY"]
+    assert [c["name"] for c in reader_connections(reader)] == ["StackPI", own_name(app)]
+    assert gateway["batching"] == [STACKPI_BATCHING, BATCHING]
+    assert gateway["retention"] == [RETENTION, RETENTION]
+
+
+async def test_repair_keeps_the_foreign_entry_in_its_slot(app, client):
+    reader = use_reader(app)
+    set_connections(reader, [STACKPI], batching=[STACKPI_BATCHING])
+    assert (await pair(client, app, laptop_ip="10.0.0.5")).status_code == 200
+    # ours first now, StackPI second: re-pairing must carry StackPI's entry along
+    conns = reader_connections(reader)
+    set_connections(reader, [conns[1], conns[0]], batching=[BATCHING, STACKPI_BATCHING])
+    assert (await pair(client, app, laptop_ip="10.0.0.6")).status_code == 200
+    gateway = reader.config["READER-GATEWAY"]
+    assert [c["name"] for c in reader_connections(reader)] == ["StackPI", own_name(app)]
+    assert gateway["batching"] == [STACKPI_BATCHING, BATCHING]
+
+
+def test_with_connections_drops_the_removed_connections_entry():
+    config = {"READER-GATEWAY": {
+        "endpointConfig": {"data": {"event": {"connections": [{"name": "a"}, {"name": "b"}]}}},
+        "batching": [{"n": "a"}, {"n": "b"}], "retention": [{"r": "a"}, {"r": "b"}]}}
+    gateway = with_connections(config, [{"name": "b"}])
+    assert gateway["batching"] == [{"n": "b"}] and gateway["retention"] == [{"r": "b"}]
+
+
+def test_with_connections_leaves_absent_lists_absent():
+    config = {"READER-GATEWAY": {"endpointConfig": {"data": {"event": {"connections": []}}}}}
+    gateway = with_connections(config, [{"name": "a"}])
+    assert "batching" not in gateway and "retention" not in gateway

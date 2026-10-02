@@ -44,6 +44,8 @@ NOT_FOUND_HTML = (
 
 TOO_MANY_ENDPOINTS = ("Invalid endpoint configuration - more than 2 endpoints "
                       "cannot be mapped to data interfaces")
+BATCHING_MISMATCH = ("Invalid global batching payload fields: Batching configuration "
+                     "error: Incorrect number of batching objects for the given endpoints")
 EMPTY_PAYLOAD = "Invalid Payload expected atleast one configuration field"
 # Zebra's httpPostSecurity.v1 requires all three fields
 HTTP_POST_SECURITY = ("verifyPeer", "verifyHost", "authenticationType")
@@ -88,8 +90,7 @@ def default_config() -> dict:
         "GPIO-LED": {},
         "READER-GATEWAY": {
             "endpointConfig": {
-                "data": {"event": {"connections": []},
-                         "batching": {"reportingInterval": 0, "maxPayloadSizePerReport": 256000}},
+                "data": {"event": {"connections": []}},
                 "management": {"connection": {
                     "type": "mqtt", "name": "Fleet MQTT",
                     "options": {"endpoint": {"hostName": "mqtt.example.test", "port": 1883}}}},
@@ -97,6 +98,9 @@ def default_config() -> dict:
                     "type": "mqtt", "name": "Fleet control",
                     "options": {"endpoint": {"hostName": "mqtt.example.test", "port": 1883}}}},
             },
+            # one entry per data connection, as a real FX9600 keeps them
+            "batching": [],
+            "retention": [],
         },
     }
 
@@ -213,6 +217,10 @@ class FakeReader:
             if gateway is not None:
                 connections = (gateway.get("endpointConfig", {}).get("data", {})
                                .get("event", {}).get("connections", []))
+                batching = gateway.get("batching")
+                if isinstance(batching, list) and len(batching) != len(connections):
+                    return JSONResponse({"code": 1, "message": BATCHING_MISMATCH},
+                                        status_code=422)
                 if len(connections) > 2:
                     return JSONResponse({"code": 1, "message": TOO_MANY_ENDPOINTS},
                                         status_code=422)
