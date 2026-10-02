@@ -114,9 +114,12 @@ http://<laptop-ip>:8090
 - On Linux, ports that Docker publishes bypass ufw and firewalld, so 8090 and
   8091 are open to the network whatever those firewalls say. That is one more
   reason to use the kiosk only on a trusted network.
-- Everything works from another device except **label printing**: Chrome only
-  lets a page reach a USB printer over `localhost`, so print labels on the
-  laptop itself.
+- Another device uses **the laptop's own setup**: Kiosk Setup belongs to the
+  laptop, not to each browser. A phone that signs in starts with the move,
+  site, scan type and station the laptop was last set up for, and running
+  Kiosk Setup from a phone changes the laptop's setup (the page says so).
+- **Label printing** works only on the laptop itself: Chrome only lets a page
+  reach a USB printer over `localhost`.
 - If another device can't connect, check that the laptop's firewall allows
   incoming connections on ports 8090 and 8091 (Windows and macOS).
 - **Existing installs:** a kiosk installed before this release keeps
@@ -138,7 +141,13 @@ and the kiosk points the reader's tag data at this laptop.
   data. Handling tag data comes in a later release: nothing listens on 8091
   yet, so reads go nowhere for now. Pairing only points the reader at it.
 - The reader and the laptop must be on the same network. The kiosk scans the
-  laptop's own subnets for readers.
+  laptop's own subnets for readers, on port 443 (HTTPS) and port 80 (HTTP).
+  It sends no password to a device until that device looks like a Zebra
+  reader, and then only the password that worked there before; a reader the
+  kiosk hasn't signed in to yet shows as "Zebra reader found — select it to
+  connect", and selecting it signs in.
+- Pairing and connecting need the cloud: an offline sign-in can scan, but not
+  connect or pair.
 - The installer adds a small job that writes the laptop's current network
   addresses to `host-network.json` in the data folder every minute:
   - Windows: the scheduled task `ServerSherpa Kiosk Host Network`, as SYSTEM,
@@ -147,10 +156,14 @@ and the kiosk points the reader's tag data at this laptop.
     user, at sign-in and every minute.
   - Linux: `serversherpa-kiosk-hostnet.timer`, as root, at boot and every
     minute. Only real adapters count: ones with a device under
-    `/sys/class/net`, so not `virbr0`, `tailscale0` and the like.
+    `/sys/class/net`, so not `virbr0`, `tailscale0` and the like. That filter
+    also drops bridges, bonds and VLAN interfaces (`br0`, `bond0`,
+    `eth0.20`), even when they carry the laptop's real address. On such a
+    laptop, enter the laptop's IP by hand in Kiosk Setup's Pair step.
 
-  The installer runs the job once and waits up to 10 seconds for the file. If
-  none appears, it warns that RFID setup may not find readers. The kiosk
+  The installer runs the job once and waits for the file (up to 10 seconds,
+  30 on Windows). If none appears, it warns that RFID setup may not find
+  readers; the job keeps retrying every minute. The kiosk
   treats addresses older than 5 minutes as unknown, and then can't look for
   readers. An existing install gets the job by running the install command
   again.

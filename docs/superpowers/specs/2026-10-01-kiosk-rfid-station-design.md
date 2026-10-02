@@ -112,8 +112,9 @@ The installer adds a small job that writes `<data dir>/host-network.json`:
 ### 2.2 Discovery: `edge/rfid/discovery.py`
 
 - **Scope:** scan the subnet of each fresh interface, capped at **512** host addresses per scan. For a subnet larger than /23, scan the /24 containing the laptop.
-  - TCP connect to port **443**, at most **64** at once, **0.5 s** timeout.
-  - Every responding host is then probed with the ZIOTC client (§2.3): sign in, then `GET /cloud/version`. Hosts whose `model` starts with `FX` are kept; others are dropped silently.
+  - TCP connect to ports **443 and 80**, at most **64** connections at once, **0.5 s** timeout. One candidate per IP: **443** (HTTPS) when it is open, else 80 (plain HTTP).
+  - **Fingerprint first, no credentials (Jimmy, final review D1):** an unauthenticated `GET /cloud/localRestLogin` and `GET /cloud/version`. A host is a Zebra candidate only when (a) the `WWW-Authenticate` realm, the `Server` header or the body mentions Zebra, FX or IoT Connector, or (b) the sign-in answers 401 **and** `/cloud/version` is refused in ZIOTC's JSON error shape `{"code": <int>, "message": <str>}`. A bare 401 everywhere (a NAS, a printer) is not a candidate. Non-candidates are dropped with zero credential attempts. The signals come from Zebra's OpenAPI, not a real FX9600 capture yet; they will be refined from one.
+  - A candidate is signed in to only with the password index remembered for that IP. With none remembered, the scan sends no password and lists the host as "Zebra reader found — select it to connect" (`needs_connect: true`, model and serial unknown). Signed in, a host whose `model` starts with `FX` is kept; others are dropped. The full password list is tried only by an explicit Connect (§1.2).
 - **State:** the scan is a single background job per edge. Starting a new scan cancels a running one.
 - **Endpoints:** both require an edge session.
   - `POST /edge/rfid/scan` starts a scan and returns `{scan_id}`.
@@ -121,18 +122,18 @@ The installer adds a small job that writes `<data dir>/host-network.json`:
 
     ```
     {scan_id, state: running|done|failed, probed, total,
-     readers: [{ip, model, serial, paired_with: name|null}],
+     readers: [{ip, scheme, port, model, serial, paired_with: name|null, needs_connect}],
      host: {ips: [...], fresh: bool}}
     ```
 
 ### 2.3 ZIOTC client: `edge/rfid/ziotc.py`
 
-- **Transport:** HTTPS to `https://<ip>` with certificate verification **off** (the readers use self-signed certificates). Timeouts: 3 s connect, 10 s read.
+- **Transport:** HTTPS to `https://<ip>` (port 443) with certificate verification **off** (the readers use self-signed certificates), or plain HTTP to `http://<ip>` (port 80). Connect and pair use where the latest scan found the reader, else where it answered before, else 443 then 80 for a manually entered IP. The scheme and port are remembered per reader serial (`rfid_readers.scheme`, `port`). Timeouts: 3 s connect, 10 s read.
 - **Sign-in:** `GET /cloud/localRestLogin` with HTTP basic auth `admin:<password>`. It returns a token, which is sent as `Authorization: Bearer <token>` on later calls.
   - Passwords are tried in order: `Cumulus$G0`, `Cumulu$SG.`, `33q44w40x5`, `change`.
   - A 401/403 tries the next password.
   - Any other failure stops the attempt.
-- **Password memory:** the index of the password that worked is remembered per reader serial in SQLite (`rfid_readers.password_index`) and tried first next time. **Passwords are never sent to the browser, logged, or sent to the cloud.**
+- **Password memory:** the index of the password that worked is remembered per reader serial in SQLite (`rfid_readers.password_index`, looked up by the reader's IP) and tried first next time; a scan tries only that one (§2.2). A successful Connect remembers it without creating a pairing token. **Passwords are never sent to the browser, logged, or sent to the cloud.**
 - **Calls:**
   - `GET /cloud/status`
   - `GET /cloud/version`, which returns `model`, `serialNumber`, `readerApplication`, `radioFirmware`, `cloudAgentApplication`
@@ -160,12 +161,16 @@ The installer adds a small job that writes `<data dir>/host-network.json`:
    - If the result would hold more than **2** connections (the reader's limit), answer 409 `reader_endpoints_full` and change nothing.
 4. **Write:** `PUT /cloud/config` with only `{"READER-GATEWAY": <edited object>}`.
 5. **Verify:** `GET /cloud/config` again, and confirm our connection is present with the same URL. A mismatch is `reader_verify_failed`.
-6. **Record:** store the pairing in SQLite: `rfid_readers` holds `serial`, `ip`, `model`, `versions` JSON, `password_index`, `token`, `paired_at`, `laptop_ip`. A single `rfid_pairing` row marks which serial is current.
+6. **Record:** store the pairing in SQLite: `rfid_readers` holds `serial`, `ip`, `model`, `versions` JSON, `password_index`, `token`, `paired_at`, `laptop_ip`, `scheme`, `port`. A single `rfid_pairing` row marks which serial is current.
+7. **Release the old reader:** when the current serial changes, the edge makes a best-effort GET/PUT on the previous reader that removes only the connection(s) the "ours" rule matches. A failure is logged (never the token) and never fails the new pairing.
+
+A Label Station setup the cloud accepts deletes the `rfid_pairing` row (the `rfid_readers` row, with its password index and token, stays).
 
 **Endpoints** (edge session required):
 
 - `POST /edge/rfid/connect {ip}` → `{ip, model, serial, versions, status, paired_with}`
-- `POST /edge/rfid/pair {ip, laptop_ip?, confirm_takeover?}` → `{paired: true, reader: {...}, endpoint_url_redacted}`. The token in the URL is replaced with `…` in every response and log.
+- `POST /edge/rfid/pair {ip, laptop_ip?, confirm_takeover?}` → `{paired: true, reader: {...}, endpoint_url}`. The token in the URL is replaced with `…` in every response and log. Without `laptop_ip`: no fresh host file is 409 `host_network_unknown`; a fresh one with no address on the reader's subnet is 409 `reader_not_on_subnet`.
+- Connect and pair refuse an offline edge session with 503 `edge_offline` (Kiosk Setup can't finish without the cloud). Scanning stays open.
 - `GET /edge/rfid/reader` → the current pairing, or null.
 
 ### 2.5 UI binding and host check
@@ -173,7 +178,8 @@ The installer adds a small job that writes `<data dir>/host-network.json`:
 - **Binding:** the installers publish `0.0.0.0:8090:8090` and `0.0.0.0:8091:8091` (the runtime compose template). The repo's development compose file follows.
 - **Host check:** TrustedHostMiddleware still applies. Allowed hosts are `localhost`, `127.0.0.1`, `[::1]`, `EDGE_ALLOWED_HOSTS`, and **the laptop's fresh IPs from `host-network.json`**, re-read at most every 30 seconds.
 - **Unencrypted notice:** `/config.js` exposes `lanAccess: true` when the request's host is not localhost. The kiosk login page then shows "This connection isn't encrypted — sign in only on a trusted network."
-- **README:** the "keep 127.0.0.1" warning is replaced by a LAN-access section covering what works (everything except WebUSB) and the cleartext caveat. TLS stays future work.
+- **Shared laptop setup (Jimmy, final review D2):** Kiosk Setup belongs to the laptop, not to each browser. After the cloud accepts `/kiosk/setup`, the edge stores the result in SQLite (move, site and role, scan type and label, station type, and for RFID the reader's ip, serial, model and versions) and serves it at `GET /edge/setup` (edge session required; `null` before the first setup; cleared by Wipe). A laptop-mode browser with no complete local setup loads it and downloads the move data, so a phone on the LAN starts set up rather than blank. Kiosk Setup reached through a LAN address says it changes the laptop itself.
+- **README:** the "keep 127.0.0.1" warning is replaced by a LAN-access section covering what works (everything but WebUSB printing, with the laptop's shared setup) and the cleartext caveat. TLS stays future work.
 
 ## 3. Cloud: database, API, portal
 
