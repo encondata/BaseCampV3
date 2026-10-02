@@ -11,6 +11,8 @@
 # <env-dir> holds the environment's .env (see env.example) and backups/.
 # Sirdar's deploy pipeline runs exactly these commands over SSH.
 set -euo pipefail
+# dumps hold every secret in the database: backups/ and its files are owner-only
+umask 077
 
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STACKS=(db storage api web status)
@@ -90,11 +92,22 @@ case $cmd in
     [[ $keep =~ ^[1-9][0-9]*$ ]] || die "STACK_KEEP_DUMPS must be a whole number above 0"
     mkdir -p "$env_dir/backups"
     out="$env_dir/backups/$(date -u +%Y%m%dT%H%M%SZ).dump"
-    if ! dc db exec -T postgres pg_dump -U serversherpa -d serversherpa -Fc > "$out"; then
-      rm -f "$out"
+    # pg_dump writes to a .partial that becomes the .dump only once it
+    # succeeds, so an error, Ctrl-C or dropped SSH session never leaves a
+    # truncated file that looks like a backup. The signal traps turn a
+    # signal into an exit so the EXIT trap removes the partial.
+    partial="$out.partial"
+    trap 'rm -f "$partial"' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    if ! dc db exec -T postgres pg_dump -U serversherpa -d serversherpa -Fc > "$partial"; then
       die "pg_dump failed"
     fi
-    # names are UTC timestamps, so name order is age order (newest first)
+    mv "$partial" "$out"
+    # names are UTC timestamps, so name order is age order (newest first).
+    # Only *.dump counts: a stray .partial (maybe a dump still running) is
+    # never counted and never deleted here.
     printf '%s\n' "$env_dir/backups"/*.dump | sort -r | tail -n +"$((keep + 1))" | while IFS= read -r old; do
       rm -f "$old"
     done

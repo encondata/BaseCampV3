@@ -3,7 +3,9 @@ on PATH records every call, so these tests need no daemon."""
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -14,7 +16,11 @@ FAKE_DOCKER = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_LOG"
 case "$*" in
   "network inspect "*) [[ -n "${FAKE_NETWORK_EXISTS:-}" ]] && exit 0 || exit 1 ;;
-  *pg_dump*) [[ -n "${FAKE_FAIL_PG_DUMP:-}" ]] && exit 1; printf 'PGDMP-fake' ;;
+  *pg_dump*)
+    [[ -n "${FAKE_FAIL_PG_DUMP:-}" ]] && { printf 'PGDMP-cut'; exit 1; }
+    # a dump that hangs halfway, so a test can kill ss-stack mid-dump
+    [[ -n "${FAKE_SLOW_PG_DUMP:-}" ]] && { printf 'PGDMP-part'; sleep 30; exit 0; }
+    printf 'PGDMP-fake' ;;
 esac
 exit 0
 """
@@ -157,3 +163,50 @@ def test_failed_dump_leaves_no_partial_file(env_dir: Path, fake: dict[str, str])
     assert out.returncode != 0
     assert "pg_dump failed" in out.stderr
     assert list((env_dir / "backups").glob("*.dump")) == []
+    assert list((env_dir / "backups").glob("*.partial")) == []
+
+
+def test_dump_is_owner_only_and_leaves_no_partial(env_dir: Path, fake: dict[str, str]) -> None:
+    out = run(fake, "dump", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    new = Path(out.stdout.strip())
+    assert new.stat().st_mode & 0o777 == 0o600
+    assert (env_dir / "backups").stat().st_mode & 0o777 == 0o700
+    assert list((env_dir / "backups").glob("*.partial")) == []
+
+
+def test_rotation_ignores_a_stray_partial(env_dir: Path, fake: dict[str, str]) -> None:
+    # a .partial may belong to a dump still running, so rotation never
+    # counts it and never deletes it
+    backups = env_dir / "backups"
+    backups.mkdir()
+    for i in range(6):
+        (backups / f"20200101T00000{i}Z.dump").write_text("old")
+    stray = backups / "20200101T000009Z.dump.partial"
+    stray.write_text("half")
+    out = run(fake, "dump", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert len(list(backups.glob("*.dump"))) == 5
+    assert stray.read_text() == "half"
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
+def test_interrupted_dump_leaves_no_partial(env_dir: Path, fake: dict[str, str],
+                                            sig: signal.Signals) -> None:
+    backups = env_dir / "backups"
+    proc = subprocess.Popen(["bash", str(SS_STACK), "dump", str(env_dir)],
+                            env={**fake, "FAKE_SLOW_PG_DUMP": "1"}, start_new_session=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        deadline = time.monotonic() + 10
+        while not list(backups.glob("*.partial")):
+            assert time.monotonic() < deadline, "no partial file appeared"
+            time.sleep(0.05)
+        os.killpg(proc.pid, sig)   # what Ctrl-C or a dropped SSH session does
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+    assert proc.returncode != 0
+    assert list(backups.iterdir()) == []
