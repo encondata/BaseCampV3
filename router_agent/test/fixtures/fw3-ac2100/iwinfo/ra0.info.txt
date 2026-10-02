@@ -1,0 +1,2 @@
+ra0       ESSID: "Dock WiFi"
+          Mode: Master  Channel: 11 (2.462 GHz)

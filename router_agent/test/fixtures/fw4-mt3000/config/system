@@ -1,0 +1,2 @@
+config system
+	option hostname 'GL-MT3000-1a2'

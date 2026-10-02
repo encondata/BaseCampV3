@@ -1,0 +1,5 @@
+{"mt798111": {"up": true, "interfaces": [
+   {"section": "wifi2g", "ifname": "phy0-ap0", "config": {"ssid": "Site-WiFi"}},
+   {"section": "guest2g", "ifname": "phy0-ap1", "config": {"ssid": "Guest"}}]},
+ "mt798112": {"up": true, "interfaces": [
+   {"section": "wifi5g", "ifname": "phy1-ap0", "config": {"ssid": "Site-WiFi-5G"}}]}}

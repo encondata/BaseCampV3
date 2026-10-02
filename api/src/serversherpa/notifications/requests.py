@@ -40,22 +40,27 @@ def _display_name(person: Person) -> str:
     return f"{person.first_name} {person.last_name}"
 
 
-async def approver_ids(db: AsyncSession, *, exclude: uuid.UUID) -> list[uuid.UUID]:
+async def approver_ids(db: AsyncSession, *, exclude: uuid.UUID | None = None,
+                       resource: str = "notifications",
+                       action: str = "change") -> list[uuid.UUID]:
     """Distinct people who can decide a request: a non-revoked PersonRole
-    whose role has RolePermission('notifications', 'change'), and who have
-    a UserAccount (so there's someone to receive the notification), minus
-    the requester."""
-    rows = await db.scalars(
+    whose role has RolePermission(resource, action), and who have a
+    UserAccount (so there's someone to receive the notification), minus
+    `exclude` (the requester) when given. Membership requests use the
+    notifications:change default; router approvals ask for
+    scanning_hardware:change."""
+    query = (
         select(PersonRole.person_id).distinct()
         .join(RolePermission, RolePermission.role == PersonRole.role)
         .join(UserAccount, UserAccount.person_id == PersonRole.person_id)
         .where(
             PersonRole.revoked_at.is_(None),
-            RolePermission.resource == "notifications",
-            RolePermission.action == "change",
-            PersonRole.person_id != exclude,
+            RolePermission.resource == resource,
+            RolePermission.action == action,
         ))
-    return list(rows.all())
+    if exclude is not None:
+        query = query.where(PersonRole.person_id != exclude)
+    return list((await db.scalars(query)).all())
 
 
 async def is_member(db: AsyncSession, group_id: uuid.UUID,

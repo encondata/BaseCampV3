@@ -1,0 +1,3 @@
+config agent 'agent'
+	option api_url 'https://api.example.test'
+	option interval '300'

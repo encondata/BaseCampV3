@@ -1,0 +1,2 @@
+phy1-ap0  ESSID: "Site-WiFi-5G"
+          Mode: Master  Channel: 44 (5.220 GHz)  HT Mode: HE80

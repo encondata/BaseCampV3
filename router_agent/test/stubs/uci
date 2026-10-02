@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /sbin/uci -c "$FIXTURE/config" "$@"

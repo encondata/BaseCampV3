@@ -1,0 +1,3 @@
+{"up": true, "proto": "dhcp", "device": "eth0", "l3_device": "eth0",
+ "ipv4-address": [{"address": "203.0.113.7", "mask": 24}],
+ "route": [{"target": "0.0.0.0", "mask": 0, "nexthop": "203.0.113.1", "source": "203.0.113.7/32"}]}

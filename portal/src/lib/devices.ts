@@ -13,11 +13,24 @@ export function formatUptime(seconds: number | null | undefined): string {
   return `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
+/** Both vocabularies: the router agent's summary (up/down/partial/none)
+ *  and the older sample data's connected/disconnected. Unknown values
+ *  render as-is (the column is deliberately free text). */
+const VPN_LABELS: Record<string, string> = {
+  up: 'Up', down: 'Down', partial: 'Partial', none: 'None',
+  connected: 'Connected', disconnected: 'Disconnected',
+};
+
 export function vpnLabel(status: string | null): string {
   if (status == null) return '—';
-  if (status === 'connected') return 'Connected';
-  if (status === 'disconnected') return 'Disconnected';
-  return status;
+  return VPN_LABELS[status] ?? status;
+}
+
+export function vpnChipClass(status: string | null): string {
+  if (status === 'up' || status === 'connected') return ' c-green';
+  if (status === 'down' || status === 'disconnected') return ' c-red';
+  if (status === 'partial') return ' c-amber';
+  return '';
 }
 
 export function connectionLabel(type: string | null): string {
@@ -67,6 +80,67 @@ export function loginMethodLabel(m: string | null): string {
   return m;
 }
 
+export function approvalLabel(state: string | null | undefined): string {
+  if (state === 'pending') return 'Pending';
+  if (state === 'approved') return 'Approved';
+  if (state === 'revoked') return 'Revoked';
+  return '—';
+}
+
+/** Three missed 5-minute reports plus jitter. */
+export const ROUTER_ONLINE_MS = 16 * 60 * 1000;
+
+export function routerStatus(
+  iso: string | null | undefined, now: Date = new Date(),
+): 'online' | 'offline' | 'never' {
+  if (!iso) return 'never';
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return 'never';
+  return now.getTime() - t <= ROUTER_ONLINE_MS ? 'online' : 'offline';
+}
+
+export function routerStatusLabel(state: ReturnType<typeof routerStatus>): string {
+  return state === 'online' ? 'Online' : state === 'offline' ? 'Offline' : 'Never';
+}
+
+export interface RouterWifi {
+  radio?: string; band?: string; ssid?: string; channel?: number | null;
+  enabled?: boolean; clients?: number;
+}
+
+export interface RouterVpn {
+  name?: string; type?: string; role?: string; enabled?: boolean; up?: boolean;
+  endpoint?: string | null; last_handshake_seconds?: number | null;
+}
+
+function rawList<T>(d: DeviceItem, key: string): T[] {
+  const v = (d.raw_info ?? {})[key];
+  return Array.isArray(v) ? (v as T[]) : [];
+}
+
+export const routerWifi = (d: DeviceItem): RouterWifi[] => rawList<RouterWifi>(d, 'wifi');
+export const routerVpn = (d: DeviceItem): RouterVpn[] => rawList<RouterVpn>(d, 'vpn');
+
+/** The agent's own count when it reported one, else the up-lease count. */
+export function routerClientTotal(d: DeviceItem): number {
+  const c = (d.raw_info ?? {}).clients as { total?: unknown } | null | undefined;
+  return typeof c?.total === 'number' ? c.total : d.connected_count;
+}
+
+const BAND_LABELS: Record<string, string> = { '2g': '2.4 GHz', '5g': '5 GHz', '6g': '6 GHz', '60g': '60 GHz' };
+
+export function bandLabel(band: string | null | undefined): string {
+  if (!band) return '—';
+  return BAND_LABELS[band] ?? band;
+}
+
+export const ROUTER_INSTALL_URL =
+  'https://raw.githubusercontent.com/encondata/BaseCampV3/main/router_agent/install.sh';
+
+export function routerInstallCommand(api: string): string {
+  return `curl -fsSL ${ROUTER_INSTALL_URL} | sh -s -- --api ${api.replace(/\/+$/, '')}`;
+}
+
 export function deviceCellText(d: DeviceItem, key: string): string {
   switch (key) {
     case 'name': return d.name;
@@ -79,7 +153,8 @@ export function deviceCellText(d: DeviceItem, key: string): string {
       return d.last_seen_at ? new Date(d.last_seen_at).toLocaleString() : 'never';
     case 'site': return d.site_name ?? '—';
     case 'vpn': return vpnLabel(d.vpn_status);
-    case 'connected': return String(d.connected_count);
+    case 'connected':
+      return String(d.device_type === 'router' ? routerClientTotal(d) : d.connected_count);
     case 'token_expires':
       return d.token_expires_at ? new Date(d.token_expires_at).toLocaleDateString() : '—';
     case 'model': return d.model ?? '—';
@@ -96,6 +171,9 @@ export function deviceCellText(d: DeviceItem, key: string): string {
       return d.token_expires_at ? new Date(d.token_expires_at).toLocaleDateString() : '—';
     case 'signed_in': return d.session_person_name ?? '—';
     case 'login_method': return loginMethodLabel(d.session_login_method);
+    case 'approval':
+      return approvalLabel(d.approval_state) + (d.secret_mismatch ? ' · Secret changed' : '');
+    case 'status': return routerStatusLabel(routerStatus(d.last_seen_at));
     default: return '';
   }
 }
@@ -117,7 +195,8 @@ export function deviceSortValue(d: DeviceItem, key: string): string | number {
   switch (key) {
     case 'uptime': return d.uptime_seconds ?? -1;
     case 'last_seen': return timeValue(d.last_seen_at);
-    case 'connected': return d.connected_count;
+    case 'connected': return d.device_type === 'router' ? routerClientTotal(d) : d.connected_count;
+    case 'status': return timeValue(d.last_seen_at);
     case 'token_expires': return timeValue(d.token_expires_at);
     case 'tags_24h': return d.tags_read_24h;
     case 'antennas': return d.antennas_connected ?? -1;
