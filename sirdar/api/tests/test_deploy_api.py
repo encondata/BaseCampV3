@@ -19,8 +19,13 @@ DEPLOY_ENV = ("DO_TOKEN", "DO_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_K
 
 
 @pytest.fixture
-def deploy_env(monkeypatch):
-    """Set SIRDAR_DEPLOY_* (everything else blank) and re-read settings."""
+def deploy_env(monkeypatch, tmp_path):
+    """Set SIRDAR_DEPLOY_* (everything else blank) and re-read settings. The
+    saved-targets file defaults to a missing folder under tmp_path, so a
+    developer's own deploy-targets.env never leaks in."""
+    monkeypatch.setenv("SIRDAR_DEPLOY_TARGETS_FILE",
+                       str(tmp_path / "no-config" / "deploy-targets.env"))
+
     def apply(**values):
         for name in DEPLOY_ENV:
             monkeypatch.setenv(f"SIRDAR_DEPLOY_{name}", "")
@@ -76,10 +81,13 @@ async def test_targets_for_admin(client, db, deploy_env, bodies):
     assert resp.status_code == 200
     body = resp.json()
     assert body["targets"] == [
-        {"id": "aws", "label": "AWS", "available": False, "configured": True},
-        {"id": "gcp", "label": "Google Cloud", "available": False, "configured": False},
-        {"id": "digitalocean", "label": "DigitalOcean", "available": True, "configured": True},
-        {"id": "ssh", "label": "Custom (SSH)", "available": True, "configured": True},
+        {"id": "aws", "label": "AWS", "kind": "aws", "available": False, "configured": True},
+        {"id": "gcp", "label": "Google Cloud", "kind": "gcp", "available": False,
+         "configured": False},
+        {"id": "digitalocean", "label": "DigitalOcean", "kind": "digitalocean",
+         "available": True, "configured": True},
+        {"id": "ssh", "label": "Custom (SSH) · Installer", "kind": "ssh", "source": "installer",
+         "available": True, "configured": True},
     ]
     assert all("summary" not in t for t in body["targets"])
     # product owner decision: cards show no connection details, secret or not
@@ -280,7 +288,7 @@ async def test_unexpected_connect_error_is_audited(client, db, deploy_env, ssh_s
                                                    monkeypatch):
     from sirdar_api.deploy import ssh as ssh_mod
 
-    async def boom(settings, db):
+    async def boom(config, db, **kw):
         raise RuntimeError("kaboom")
 
     _ssh_env(deploy_env, ssh_server)

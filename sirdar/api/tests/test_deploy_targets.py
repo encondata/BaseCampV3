@@ -22,17 +22,26 @@ def test_deploy_types():
         {"id": "custom", "label": "Custom", "description": "Your own named environment"}]
 
 
-def test_nothing_configured_by_default():
-    out = _by_id(_settings())
+def test_nothing_configured_by_default(tmp_path):
+    out = _by_id(_settings(deploy_targets_file=str(tmp_path / "none.env")))
     assert {k: v["configured"] for k, v in out.items()} == {
-        "aws": False, "gcp": False, "digitalocean": False, "ssh": False}
-    assert set(out["ssh"]) == {"id", "label", "available", "configured"}
+        "aws": False, "gcp": False, "digitalocean": False}     # no installer SSH target
+
+
+def test_installer_target_listed_when_any_ssh_value_set(tmp_path):
+    f = str(tmp_path / "none.env")
+    for over in ({"deploy_ssh_host": "h"}, {"deploy_ssh_user": "u"},
+                 {"deploy_ssh_password": "pw"}, {"deploy_ssh_key_path": "k"},
+                 {"deploy_ssh_key_passphrase": "pp"}, {"deploy_ssh_port": 2222}):
+        ssh = _by_id(_settings(deploy_targets_file=f, **over))["ssh"]
+        assert ssh == {"id": "ssh", "label": "Custom (SSH) · Installer", "kind": "ssh",
+                       "source": "installer", "available": True, "configured": False}
 
 
 def test_digitalocean_configured():
     t = _by_id(_settings(deploy_do_token="dop_v1_SECRET", deploy_do_region="nyc3"))
-    assert t["digitalocean"] == {
-        "id": "digitalocean", "label": "DigitalOcean", "available": True, "configured": True}
+    assert t["digitalocean"] == {"id": "digitalocean", "label": "DigitalOcean",
+                                 "kind": "digitalocean", "available": True, "configured": True}
     assert not _by_id(_settings(deploy_do_region="nyc3"))["digitalocean"]["configured"]
 
 
@@ -49,7 +58,8 @@ def test_ssh_configured_rules():
 def test_aws_and_gcp_configured_rules():
     aws = _by_id(_settings(deploy_aws_access_key_id="AKIA", deploy_aws_secret_access_key="SECRET",
                            deploy_aws_region="us-east-1"))["aws"]
-    assert aws == {"id": "aws", "label": "AWS", "available": False, "configured": True}
+    assert aws == {"id": "aws", "label": "AWS", "kind": "aws", "available": False,
+                   "configured": True}
     assert not _by_id(_settings(deploy_aws_access_key_id="AKIA"))["aws"]["configured"]
     gcp = _by_id(_settings(deploy_gcp_project_id="proj-1",
                            deploy_gcp_credentials_file="/app/gcp.json"))["gcp"]

@@ -3,6 +3,7 @@ trusted (known_hosts); the connect step pins that stored key. Error
 reasons are our own copy — asyncssh messages never reach the caller."""
 
 import asyncio
+from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
 import asyncssh
@@ -10,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
 from sirdar_api.deploy import Check, ConnectFailed, ConnectResult, known_hosts
-from sirdar_api.deploy.targets import ssh_auth_label
 
 CONNECT_TIMEOUT = 15
 COMMAND_TIMEOUT = 10
@@ -37,19 +37,50 @@ class HostKeyMismatch(Exception):
         self.expected, self.actual, self.key_type = expected, actual, key_type
 
 
-async def _load_client_key(s: Settings) -> asyncssh.SSHKey | None:
-    raw = s.deploy_ssh_key_path.strip()
+@dataclass(frozen=True)
+class SshTargetConfig:
+    """What a connection test needs. `key_file` is the resolved path (None
+    when no key, or when the configured name would escape deploy-keys);
+    `key_name` is what the user configured, for messages. Secrets are kept
+    out of repr()."""
+
+    host: str
+    port: int
+    user: str
+    password: str | None = field(default=None, repr=False)
+    key_file: str | None = None
+    key_name: str = ""
+    passphrase: str | None = field(default=None, repr=False)
+
+    @property
+    def auth_label(self) -> str:
+        key, password = bool(self.key_name), self.password is not None
+        return "key + password" if key and password else "key" if key else "password"
+
+    @classmethod
+    def from_settings(cls, s: Settings) -> "SshTargetConfig":
+        """The installer target (SIRDAR_DEPLOY_SSH_* in .env)."""
+        return cls(
+            host=s.deploy_ssh_host.strip(), port=s.deploy_ssh_port,
+            user=s.deploy_ssh_user.strip(),
+            password=(s.deploy_ssh_password.get_secret_value()
+                      if s.deploy_ssh_password is not None else None),
+            key_file=s.deploy_ssh_key_file, key_name=s.deploy_ssh_key_path.strip(),
+            passphrase=(s.deploy_ssh_key_passphrase.get_secret_value()
+                        if s.deploy_ssh_key_passphrase is not None else None))
+
+
+async def _load_client_key(cfg: SshTargetConfig) -> asyncssh.SSHKey | None:
+    raw = cfg.key_name
     if not raw:
         return None
     name = PurePosixPath(raw).name or raw          # never the folder path
     not_found = ConnectFailed(f"The SSH key file {name} wasn't found in deploy-keys.")
-    path = s.deploy_ssh_key_file
+    path = cfg.key_file
     if path is None:                               # a relative name that would escape the folder
         raise not_found
-    passphrase = (s.deploy_ssh_key_passphrase.get_secret_value()
-                  if s.deploy_ssh_key_passphrase is not None else None)
     try:
-        return await asyncio.to_thread(asyncssh.read_private_key, path, passphrase)
+        return await asyncio.to_thread(asyncssh.read_private_key, path, cfg.passphrase)
     except OSError:
         raise not_found from None
     except asyncssh.KeyEncryptionError:
@@ -134,9 +165,9 @@ async def _checks(conn: asyncssh.SSHClientConnection) -> list[Check]:
     return done
 
 
-async def test_connection(settings: Settings, db: AsyncSession) -> ConnectResult:
-    host, port = settings.deploy_ssh_host.strip(), settings.deploy_ssh_port
-    user = settings.deploy_ssh_user.strip()
+async def test_connection(cfg: SshTargetConfig, db: AsyncSession, *,
+                          target_id: str = "ssh") -> ConnectResult:
+    host, port, user = cfg.host, cfg.port, cfg.user
 
     live = await known_hosts.fetch_host_key(host, port)
     actual, key_type = known_hosts.fingerprint(live), live.get_algorithm()
@@ -151,9 +182,8 @@ async def test_connection(settings: Settings, db: AsyncSession) -> ConnectResult
         raise ConnectFailed("Sirdar's saved key for this host is unreadable. "
                             "Forget the host and trust it again.") from None
 
-    client_key = await _load_client_key(settings)
-    password = (settings.deploy_ssh_password.get_secret_value()
-                if settings.deploy_ssh_password is not None else None)
+    client_key = await _load_client_key(cfg)
+    password = cfg.password
     try:
         conn = await asyncio.wait_for(asyncssh.connect(
             host, port=port, username=user, password=password,
@@ -172,9 +202,9 @@ async def test_connection(settings: Settings, db: AsyncSession) -> ConnectResult
 
     async with conn:
         checks = await _checks(conn)
-    facts = {"host": host, "port": port, "user": user, "auth": ssh_auth_label(settings),
+    facts = {"host": host, "port": port, "user": user, "auth": cfg.auth_label,
              "key_type": key_type, "fingerprint": actual}
-    return ConnectResult(ok=not any(c.status == "fail" for c in checks), target="ssh",
+    return ConnectResult(ok=not any(c.status == "fail" for c in checks), target=target_id,
                          checks=checks, facts=facts)
 
 
