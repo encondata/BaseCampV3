@@ -466,3 +466,37 @@ it('a clear landing while the summary is open opens the wizard and loads the mov
   expect(screen.queryByText('Loading moves…')).toBeNull();
   expect(screen.getByText(BANNER)).toBeTruthy();
 });
+
+it('a clear landing while the wizard is already open restarts it at step 1 and reloads the options', async () => {
+  writeKioskSetup({
+    initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
+    siteId: 's-2', siteName: 'NAP22 Hall', siteRole: 'destination',
+    scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
+  });
+  writeSetupState('complete');
+  const user = userEvent.setup();
+  renderPage();
+  await user.click(await screen.findByRole('button', { name: 'Change setup' }));
+  await user.click(await screen.findByRole('option', { name: /NAP11 Hall Migration/ }));
+  expect(screen.getByText('Step 2 of 3 · Site')).toBeTruthy();
+  await user.click(cardFor('NAP22 Hall'));
+  expect(screen.getByText('Step 3 of 3 · Scan type')).toBeTruthy();
+  expect(apiMock.getSetupOptions).toHaveBeenCalledTimes(1);
+
+  localStorage.setItem('ss.kiosk.setupClear', JSON.stringify({ id: 'z', acked: false, notice: true }));
+  act(() => { clearKioskSetup(); writeSetupState('incomplete'); });
+
+  expect(await screen.findByText('Step 1 of 3 · Move')).toBeTruthy();
+  await waitFor(() => expect(apiMock.getSetupOptions).toHaveBeenCalledTimes(2));
+  expect(await screen.findByText('NAP11 Hall Migration (demo)')).toBeTruthy();
+  expect(screen.queryAllByRole('option', { selected: true })).toHaveLength(0);
+  expect(screen.getByText(BANNER)).toBeTruthy();
+});
+
+it('first-time setup (no saved selection) is not reset by the wizard\'s own progress', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await goToSiteStep(user);
+  expect(screen.getByText('Step 2 of 3 · Site')).toBeTruthy();
+  expect(apiMock.getSetupOptions).toHaveBeenCalledTimes(1);
+});

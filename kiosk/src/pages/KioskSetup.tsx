@@ -12,7 +12,7 @@
  * `.sync-status` block reports it.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import {
@@ -76,6 +76,26 @@ export default function KioskSetup() {
   useEffect(() => {
     if (!selection && !wizardOpen) setWizardOpen(true);
   }, [selection, wizardOpen]);
+
+  // ...and when it lands with the wizard ALREADY open (e.g. "Change setup"
+  // at step 2 or 3), restart at step 1 with the choices cleared and the
+  // options reloaded — the same as Android's KioskSetupViewModel. Only the
+  // non-null -> null transition counts: the wizard's own finish writes go
+  // null/old -> new, and first-time setup starts null.
+  const prevSelection = useRef(selection);
+  useEffect(() => {
+    const hadSelection = prevSelection.current !== null;
+    prevSelection.current = selection;
+    if (!hadSelection || selection !== null) return;
+    setInitiativeId('');
+    setSiteId('');
+    setScanStatus('');
+    setSubmitError('');
+    setStep(1);
+    // Wizard closed: the effect above opens it and the one below loads.
+    if (wizardOpen) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection]);
 
   useEffect(() => {
     if (wizardOpen) load();

@@ -178,3 +178,55 @@ it('with storage refusing writes, a repeated clear_setup re-beats only once and 
     spy.mockRestore();
   }
 });
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+const reply = (clear: string | null) =>
+  ({ device_id: 'd', name: 'K', registration: 'ok', token_expires_at: null, clear_setup: clear });
+
+it('a stopped handle never applies a clear: no storage write, no callback, no further beats', async () => {
+  const d = deferred<ReturnType<typeof reply>>();
+  api.heartbeatRequest.mockReset();
+  api.heartbeatRequest.mockReturnValueOnce(d.promise);
+  const onClear = vi.fn();
+  const onState = vi.fn();
+  const handle = startHeartbeat(onState, 60_000, undefined, onClear);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(api.heartbeatRequest).toHaveBeenCalledTimes(1);
+  handle.stop();
+  d.resolve(reply('xs'));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(localStorage.getItem('ss.kiosk.setupClear')).toBeNull();
+  expect(onClear).not.toHaveBeenCalled();
+  expect(onState).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(api.heartbeatRequest).toHaveBeenCalledTimes(1);
+});
+
+it('overlapping handles: the stopped one landing first cannot steal the clear from the live one', async () => {
+  const a = deferred<ReturnType<typeof reply>>();
+  const b = deferred<ReturnType<typeof reply>>();
+  api.heartbeatRequest.mockReset();
+  api.heartbeatRequest.mockReturnValueOnce(a.promise).mockReturnValueOnce(b.promise)
+    .mockResolvedValue(reply(null));
+  const onClearA = vi.fn();
+  const onClearB = vi.fn();
+  const handleA = startHeartbeat(vi.fn(), 60_000, undefined, onClearA);
+  await vi.advanceTimersByTimeAsync(0);
+  handleA.stop();
+  const handleB = startHeartbeat(vi.fn(), 60_000, undefined, onClearB);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(api.heartbeatRequest).toHaveBeenCalledTimes(2);
+  a.resolve(reply('xo'));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(onClearA).not.toHaveBeenCalled();
+  b.resolve(reply('xo'));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(onClearB).toHaveBeenCalledTimes(1);
+  expect(onClearB).toHaveBeenCalledWith('xo');
+  expect(onClearA).not.toHaveBeenCalled();
+  handleB.stop();
+});

@@ -45,17 +45,22 @@ export function startHeartbeat(
         ...(ack ? { setup_cleared: ack } : {}),
       });
       if (asSignIn) pendingSignIn = undefined;
+      // A stopped handle applies nothing. Handles overlap on logout->login
+      // with a beat in flight and on every mount under StrictMode; if the
+      // stopped one applied the id first, the live handle's applySetupClear
+      // would return false and its onClearSetup (the redirect) would never
+      // fire. The server repeats `clear_setup` every beat until acked, so
+      // nothing is lost: the live handle's own beat applies and acks it.
+      if (stopped) return;
       // Settle and apply before onState, so a throwing onState can't defer
-      // the clear. The clear is applied even when stopped (the admin asked
-      // for it; the ack goes out on the next session's beats), but the
-      // callback and the immediate re-beat only run while we're live.
+      // the clear.
       const asked = result.clear_setup ?? null;
       settleAck(ack, asked);
-      if (asked !== null && applySetupClear(asked) && !stopped) {
+      if (asked !== null && applySetupClear(asked)) {
         onClearSetup?.(asked);
         void beat();                        // acknowledge right away
       }
-      if (!stopped) onState(result.registration);
+      onState(result.registration);
     } catch {
       /* keep the last known state (and any pending sign-in); next tick retries */
     }
