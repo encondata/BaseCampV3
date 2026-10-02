@@ -18,6 +18,8 @@ Use the Google Drive connector's `read_file_content` with the Drive id above.
 - The result is too large to show inline, so it is saved to a file. Extract it with `jq -r .fileContent <file> > sheet.txt`, then `grep` it.
 - The export is markdown tables in tab order: Summary, Feature Parity, Gaps, New in V3, To-Do, Future Features.
 - **Export line numbers are not sheet row numbers.** Use them only to estimate a row, then confirm it in the sheet.
+- `read_file_content` sometimes returns only a few sample rows. For a full, cell-exact copy use `download_file_content` with `exportMimeType` `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, then `jq -r .content <file> | base64 -d > sheet.xlsx` and read it with openpyxl (`api/.venv/bin/python`). Recount the Summary from it, and re-download after writing to verify every cell.
+- **Jimmy edits the sheet too, often on the Gaps tab** (retiring items or marking them Complete without touching Feature Parity). Before recounting, diff Gaps status against Feature Parity by (Area, Feature) and carry his changes into Feature Parity column E, so the Summary counts include them.
 
 ## How to write it
 
@@ -35,26 +37,31 @@ The connector can't write cells, so write through **Claude in Chrome**, in the t
 ## Tabs and columns
 
 ### Summary
-- **Headline** (column B):
+- **Headline** (column B), refactored 2026-09-29:
   - B5: V2 features carried forward
   - B6: built in V3
   - B7: partially built
   - B8: not built yet
-  - B9: deliberately retired
-  - B10: new capabilities in V3
-  - B11: parity, as text
-- **By area table:** the header is row 15 and areas start at row 16. Columns: A Area, B Complete, C Partial, D Not built, E Retired, F New in V3, G Parity (text).
-  - Known rows: 23 Time tracking, 29 Bulk imports.
-  - Confirm any other area's row with the name box.
+  - B9: pending (testing, a later phase, or a decision)
+  - B10: deliberately retired
+  - B11: new capabilities in V3
+  - B12: parity, as text
+- **By area table:** the header is row 16 and areas run from row 17 (Dashboards) to row 38 (Legacy). Columns: A Area, B Complete, C Partial, D Not built, E Retired, F Pending, G New in V3, H Parity (text), I Priority, J Expected Date, K Notes.
+  - **Columns I to K are Jimmy's.** He fills them in and edits them live; never write to them.
+  - A zero count is a blank cell (select it and press Delete), not `0`.
+  - G (New in V3) is counted from the **New In V3 tab**, not from Feature Parity rows.
+- **Legend** rows 42 to 52 explain every status, including how each one counts.
+- **Status buckets** (count from Feature Parity column E):
+  - Complete → B. Partial → C. Not built → D.
+  - Retired and Abandoned → E.
+  - Pending Testing, Pending Future Testing, Pending Future and Pending CSG Decision → F.
+  - New in V3 and Future Enhancement Beyond V2 are not counted in this table.
 - **Math:**
-  - carried forward = built + partial + not built
-  - parity = (built + partial / 2) / carried forward, rounded half-up
-  - Area parity uses the same formula on that area's Complete, Partial and Not built. Retired and New in V3 are excluded.
-- **When one row changes:**
-  - Not built → Complete: built +1, not built −1.
-  - Partial → Complete: built +1, partial −1.
-  - Anything → Retired: carried forward −1, retired +1, and take 1 off the old status count.
-  - Adjust the area row the same way, then recompute both percentages.
+  - carried forward = built + partial + not built + pending
+  - parity = (built + (partial + Pending Testing + Pending Future Testing) / 2) / carried forward, rounded half-up
+  - Pending Future and Pending CSG Decision count as zero toward parity.
+  - Area parity uses the same formula on that area's row.
+- **When one row changes,** move 1 between the buckets above in the headline and the area row, then recompute both percentages. Easiest is to recount everything from a fresh xlsx download.
 
 ### Weekly Summary
 One row per week:
@@ -81,6 +88,11 @@ One row per week:
   - 156: Bulk approve
   - 166: Bulk import of time punches
 
+### Status dropdown (Feature Parity and Gaps column E)
+- Both tabs share one validation rule (Feature Parity E5:E449, Gaps E2:E106) with these options: Complete, Partial, Not built, Retired, New in V3, Abandoned, Pending Testing, Pending Future Testing, Pending Future, Pending CSG Decision, Future Enhancement Beyond V2. The Pending chips are orange and Future Enhancement is purple.
+- To add a status, edit the Feature Parity rule (Data › Data validation), then copy a Feature Parity status cell and paste it onto Gaps E2:E106 with Edit › Paste special › Data validation only.
+- **Typing a status that is a prefix of another autocompletes.** "Pending Future" becomes "Pending Future Testing" in a plain cell. Press Delete before Return, then read the cell back.
+
 ### Gaps
 - Columns: A Area, B Feature, C What it does, D In V2, E V3 status, F Notes / gap.
 - It lists only some features, so check whether a feature is listed before writing.
@@ -94,7 +106,7 @@ One row per week:
 
 ### To-Do
 - Columns: A #, B Priority, C Time estimate, D Area, E What to build, F Why it matters, G Features it closes, H Rows, I Status.
-- **Row map:** items #1–#12 sit on row N+1. From #14 on, the row equals N (there is no #13).
+- **Row map:** items #1–#12 sit on row N+1. #14–#39 sit on row N (there is no #13). There is no #40 or #44, so #41–#43 sit on rows 40–42 and #45–#50 on rows 43–48. Always confirm by reading column A.
 - **Status (column I) is free text:**
   - `Done — YYYY-MM-DD (merged to main <sha>): …`
   - `In progress — …`
