@@ -12,7 +12,7 @@
  * `.sync-status` block reports it.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import {
@@ -21,6 +21,7 @@ import {
 } from '../lib/api';
 import { getIdentity } from '../lib/identity';
 import { useKioskSetup } from '../lib/kioskSetup';
+import { dismissSetupClearNotice, useSetupClearNotice } from '../lib/setupClear';
 import {
   isSetupComplete, readSetupState, useKioskSetupState, writeSetupState,
 } from '../lib/setupState';
@@ -62,12 +63,39 @@ export default function KioskSetup() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const sync = useSyncStatus();
+  const clearNotice = useSetupClearNotice();
 
   const load = () => {
     setLoadError(false);
     setOptions(null);
     getSetupOptions().then(setOptions).catch(() => setLoadError(true));
   };
+
+  // A Clear Setup can land while the summary is open: the selection goes
+  // away under it, so open the wizard (which also triggers the options load).
+  useEffect(() => {
+    if (!selection && !wizardOpen) setWizardOpen(true);
+  }, [selection, wizardOpen]);
+
+  // ...and when it lands with the wizard ALREADY open (e.g. "Change setup"
+  // at step 2 or 3), restart at step 1 with the choices cleared and the
+  // options reloaded — the same as Android's KioskSetupViewModel. Only the
+  // non-null -> null transition counts: the wizard's own finish writes go
+  // null/old -> new, and first-time setup starts null.
+  const prevSelection = useRef(selection);
+  useEffect(() => {
+    const hadSelection = prevSelection.current !== null;
+    prevSelection.current = selection;
+    if (!hadSelection || selection !== null) return;
+    setInitiativeId('');
+    setSiteId('');
+    setScanStatus('');
+    setSubmitError('');
+    setStep(1);
+    // Wizard closed: the effect above opens it and the one below loads.
+    if (wizardOpen) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection]);
 
   useEffect(() => {
     if (wizardOpen) load();
@@ -146,6 +174,7 @@ export default function KioskSetup() {
         scanStatus: result.scan_status, scanLabel: result.scan_status_label,
       });
       writeSetupState('complete');
+      dismissSetupClearNotice();
       setWizardOpen(false);
       // Fire-and-forget: the summary appears immediately and the
       // download reports itself through `.sync-status`. A sync outcome
@@ -168,6 +197,11 @@ export default function KioskSetup() {
       <div className="portal-page">
         <div className="eyebrow">Kiosk · Setup</div>
         <h1 className="page-title">Kiosk setup</h1>
+        {clearNotice && (
+          <div className="sys-banner sys-banner-broadcast" role="status">
+            An administrator cleared this kiosk&apos;s setup. Run Kiosk Setup to continue.
+          </div>
+        )}
         <div className="setup-summary">
           <p>
             This kiosk is set up for <b>{selection.initiativeName}</b> at{' '}
@@ -225,6 +259,11 @@ export default function KioskSetup() {
     <div className="portal-page">
       <div className="eyebrow">Kiosk · Setup</div>
       <h1 className="page-title">Kiosk setup</h1>
+      {clearNotice && (
+        <div className="sys-banner sys-banner-broadcast" role="status">
+          An administrator cleared this kiosk&apos;s setup. Run Kiosk Setup to continue.
+        </div>
+      )}
       <div className="setup-wizard">
         <div className="setup-steps">{stepLabel}</div>
 

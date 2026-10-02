@@ -420,7 +420,8 @@ async def heartbeat(
     by /kiosk/sign-out) and also auto-registers the kiosk for
     KIOSK_AUTO_REGISTER_DAYS when its registration is none, expired, or
     within REGISTRATION_SOON of expiring; Register/Renew in the portal
-    remain available for admins."""
+    remain available for admins. A pending Clear Setup id is returned as
+    `clear_setup` until a beat sends it back as `setup_cleared`."""
     now = datetime.now(UTC)
     device = await db.scalar(select(Device).where(Device.serial == body.serial))
     if device is None:
@@ -457,10 +458,32 @@ async def heartbeat(
                   changes={"days": KIOSK_AUTO_REGISTER_DAYS,
                            "token_expires_at": device.token_expires_at.isoformat(),
                            "source": "kiosk_sign_in"})
+    # Clear Setup: an acknowledgment of exactly the pending id closes it. A
+    # stale id (re-requested since) or one after a cancel is ignored. The
+    # close is a guarded UPDATE so an admin's re-request that lands after
+    # this row was read can never be wiped by the old acknowledgment.
+    if body.setup_cleared is not None and device.setup_clear_id == body.setup_cleared:
+        requested_by = device.setup_clear_requested_by
+        closed = await db.execute(
+            update(Device)
+            .where(Device.id == device.id, Device.setup_clear_id == body.setup_cleared)
+            .values(setup_clear_id=None, setup_clear_requested_at=None,
+                    setup_clear_requested_by=None)
+            .execution_options(synchronize_session=False))
+        # Reload what the database now holds, so the reply (and the ORM's
+        # later flush) reflect the real state, never the stale read.
+        await db.refresh(device, ["setup_clear_id", "setup_clear_requested_at",
+                                  "setup_clear_requested_by"])
+        if closed.rowcount:
+            audit(db, actor_id=actor.person.id, entity_type="device",
+                  entity_id=str(device.id), action="setup_cleared",
+                  changes={"request_id": str(body.setup_cleared),
+                           "requested_by": str(requested_by) if requested_by else None})
     await db.commit()
     return HeartbeatOut(device_id=device.id, name=device.name,
                         registration=registration_state(device.token_expires_at, now),
-                        token_expires_at=device.token_expires_at)
+                        token_expires_at=device.token_expires_at,
+                        clear_setup=device.setup_clear_id)
 
 
 @router.post("/sign-out", status_code=204)

@@ -3,6 +3,7 @@ package com.serversherpa.kiosk.ui
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
@@ -28,6 +29,7 @@ import com.serversherpa.kiosk.ui.screens.setup.KioskSetupScreen
 import com.serversherpa.kiosk.ui.screens.timeclock.TimeclockScreen
 import com.serversherpa.kiosk.ui.shell.KioskShell
 import com.serversherpa.kiosk.ui.theme.KioskTheme
+import kotlinx.coroutines.flow.Flow
 
 @Composable
 fun KioskApp() {
@@ -52,6 +54,23 @@ fun KioskApp() {
                 gated(nav, Routes.LABELS, FeatureId.LABELS) { FeaturePlaceholderScreen(feature(FeatureId.LABELS), nav) }
             }
             ScanFlash(container.flash)
+            SetupClearedRedirect(nav, container.heartbeat.setupCleared)
+        }
+    }
+}
+
+/**
+ * Clear Setup from the portal: whoever is signed in goes to Kiosk Setup, once. It lives
+ * beside the NavHost, outside every route, so no route's guard or gate can drop the
+ * collector before it sees the emission; [cleared] never replays, so a clear already
+ * honored can't send anyone again. popUpTo(HOME) makes Back from Setup land on Home rather
+ * than bouncing through the gated screen the person was on (same as SetupGate's redirect).
+ */
+@Composable
+internal fun SetupClearedRedirect(nav: NavHostController, cleared: Flow<String>) {
+    LaunchedEffect(nav, cleared) {
+        cleared.collect {
+            if (nav.currentDestination?.route != Routes.SETUP) nav.navigate(Routes.SETUP) { popUpTo(Routes.HOME); launchSingleTop = true }
         }
     }
 }

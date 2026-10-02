@@ -57,7 +57,10 @@ function sessionTitle(expiresAt: string | null): string | undefined {
 }
 
 export default function KioskShell({ children }: { children: ReactNode }) {
-  const { status, person, registration, preferences, sessionExpiresAt, kioskMove, logout } = useKioskAuth();
+  const {
+    status, person, registration, preferences, sessionExpiresAt, kioskMove, logout,
+    setupRedirectPending, consumeSetupRedirect,
+  } = useKioskAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const authed = status === 'authed';
@@ -65,6 +68,17 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   const [kioskSetup] = useKioskSetup();
   const sync = useSyncStatus();
   const { status: edge } = useEdgeStatus();
+
+  // Clear Setup from the portal: whoever is signed in goes to Kiosk Setup,
+  // once. The flag lives above the router and the shell remounts as routes
+  // change shape, so it is consumed here — a later mount sees false.
+  useEffect(() => {
+    if (!setupRedirectPending) return;
+    consumeSetupRedirect();
+    if (location.pathname !== '/setup') navigate('/setup', { replace: true });
+    // only a newly raised flag acts — not every route change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setupRedirectPending]);
 
   useEffect(() => {
     applyPreferences(preferences ?? DEFAULT_PREFERENCES);

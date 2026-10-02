@@ -43,9 +43,12 @@ fun KioskSetupScreen(nav: NavHostController) {
     val selection by vm.selection.collectAsStateWithLifecycle()
     val setupState by vm.setupState.collectAsStateWithLifecycle()
     val sync by container.sync.status.collectAsStateWithLifecycle()
+    val setupClear by container.prefs.setupClear.collectAsStateWithLifecycle(initialValue = null)
 
     Column {
         PageHeader("Kiosk · Setup", "Kiosk setup")
+        // Raised when a Clear Setup from the portal is applied; dismissed when setup completes.
+        if (setupClear?.notice == true) KioskToast("An administrator cleared this kiosk's setup. Run Kiosk Setup to continue.")
         // Nothing until the stored setup has been read, so an already-configured
         // kiosk never flashes step 1 of the wizard on the way to its summary.
         val wizardOpen = ui.wizardOpen ?: return@Column

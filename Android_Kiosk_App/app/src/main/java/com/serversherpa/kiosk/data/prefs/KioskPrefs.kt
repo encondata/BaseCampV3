@@ -19,7 +19,12 @@ import com.serversherpa.kiosk.core.setup.SetupState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+
+/** Clear Setup memory — same JSON shape and key as the web kiosk's setupClear.ts. */
+@Serializable
+data class SetupClearRecord(val id: String, val acked: Boolean = false, val notice: Boolean = false)
 
 /**
  * Every kiosk-local value the web kiosk kept in localStorage, in one
@@ -40,6 +45,7 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
         val portalUrl = stringPreferencesKey("ss.kiosk.portalUrl")
         val serial = stringPreferencesKey("ss.kiosk.serial")
         val name = stringPreferencesKey("ss.kiosk.name")
+        val setupClear = stringPreferencesKey("ss.kiosk.setupClear")
     }
 
     val setupState: Flow<SetupState> = store.data.map { SetupState.fromWire(it[Keys.setupState]) }
@@ -47,6 +53,59 @@ class KioskPrefs(private val store: DataStore<Preferences>) {
 
     /** Drops the saved setup and marks setup incomplete in one write, so a crash between can't leave a half-cleared setup. */
     suspend fun clearSetup() { store.edit { it.remove(Keys.setupSelection); it[Keys.setupState] = SetupState.INCOMPLETE.wire } }
+
+    /** Writes all three fields, defaults included, so the stored shape matches the web's; reads tolerantly. */
+    private val clearJson = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    private fun decodeSetupClear(raw: String?): SetupClearRecord? =
+        raw?.let { try { clearJson.decodeFromString<SetupClearRecord>(it) } catch (e: Exception) { null } }
+
+    private fun encodeSetupClear(r: SetupClearRecord): String = clearJson.encodeToString(SetupClearRecord.serializer(), r)
+
+    val setupClear: Flow<SetupClearRecord?> = store.data.map { decodeSetupClear(it[Keys.setupClear]) }
+
+    /** The setup state and whether the Clear Setup notice is up, from one snapshot, so a
+     *  reader never sees the INCOMPLETE a clear wrote without the notice it wrote with it. */
+    val setupStateWithClearNotice: Flow<Pair<SetupState, Boolean>> = store.data.map { p ->
+        SetupState.fromWire(p[Keys.setupState]) to (decodeSetupClear(p[Keys.setupClear])?.notice == true)
+    }
+
+    /**
+     * Applies a Clear Setup id not applied before: drops the saved setup, marks setup
+     * incomplete and raises the notice, all in one write. True only the first time for
+     * an id. A failed write throws to the caller (it is never swallowed here).
+     */
+    suspend fun applySetupClear(id: String): Boolean {
+        var applied = false
+        store.edit { p ->
+            if (decodeSetupClear(p[Keys.setupClear])?.id != id) {
+                p.remove(Keys.setupSelection)
+                p[Keys.setupState] = SetupState.INCOMPLETE.wire
+                p[Keys.setupClear] = encodeSetupClear(SetupClearRecord(id, acked = false, notice = true))
+                applied = true
+            }
+        }
+        return applied
+    }
+
+    /** The applied id the next beat should acknowledge, or null. */
+    suspend fun pendingSetupClearAck(): String? = setupClear.first()?.takeIf { !it.acked }?.id
+
+    /** The ack has landed only when THIS beat carried it and the reply stopped asking for it. */
+    suspend fun settleSetupClearAck(sentAck: String?, replyId: String?) {
+        store.edit { p ->
+            val cur = decodeSetupClear(p[Keys.setupClear]) ?: return@edit
+            if (!cur.acked && sentAck == cur.id && replyId != cur.id) p[Keys.setupClear] = encodeSetupClear(cur.copy(acked = true))
+        }
+    }
+
+    /** Kiosk Setup completed: the "an administrator cleared…" banner goes away. */
+    suspend fun dismissSetupClearNotice() {
+        store.edit { p ->
+            val cur = decodeSetupClear(p[Keys.setupClear]) ?: return@edit
+            if (cur.notice) p[Keys.setupClear] = encodeSetupClear(cur.copy(notice = false))
+        }
+    }
 
     val setupSelection: Flow<KioskSetupSelection?> = store.data.map { p ->
         p[Keys.setupSelection]?.let { raw -> try { json.decodeFromString<KioskSetupSelection>(raw) } catch (e: Exception) { null } }

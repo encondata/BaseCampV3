@@ -1089,6 +1089,13 @@ class Device(Base):
         ForeignKey("people.id", ondelete="SET NULL"))
     session_login_method: Mapped[str | None]
     session_started_at: Mapped[datetime | None]
+    # Clear Setup: a pending request for this kiosk to drop its Kiosk Setup.
+    # Repeated on every heartbeat reply until the kiosk acknowledges this
+    # exact id (migration 0086). All NULL = nothing pending.
+    setup_clear_id: Mapped[uuid.UUID | None]
+    setup_clear_requested_at: Mapped[datetime | None]
+    setup_clear_requested_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
 
 
 class DeviceDhcpLease(Base):

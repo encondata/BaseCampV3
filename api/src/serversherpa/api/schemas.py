@@ -290,6 +290,8 @@ class HeartbeatIn(BaseModel):
     raw_info: dict[str, Any] = Field(default_factory=dict)
     sign_in: bool = False
     login_method: Literal["password", "link"] | None = None
+    # Clear Setup acknowledgment: the request id this kiosk has just applied.
+    setup_cleared: uuid.UUID | None = None
 
     @field_validator("serial", "name")
     @classmethod
@@ -312,6 +314,8 @@ class HeartbeatOut(BaseModel):
     name: str
     registration: Literal["ok", "soon", "expired", "none"]
     token_expires_at: datetime | None
+    # Clear Setup: the pending request id, repeated until acknowledged.
+    clear_setup: uuid.UUID | None = None
 
 
 class KioskSignOutIn(BaseModel):
@@ -2767,6 +2771,8 @@ class DeviceItem(BaseModel):
     session_person_name: str | None
     session_login_method: str | None
     session_started_at: datetime | None
+    setup_clear_requested_at: datetime | None = None
+    setup_clear_requested_by_name: str | None = None
 
 
 class DevicePatch(BaseModel):

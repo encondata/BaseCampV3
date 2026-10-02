@@ -79,7 +79,7 @@ class AppContainer(
     val outbox = Outbox(RoomOutboxStore(db.outbox()), api, identity, scope)
     val hasDataWedge: Boolean = DataWedge.isPresent(app)
     val hasCamera: Boolean = hasCamera(app)
-    val heartbeat = Heartbeat(api, identity, config, deviceInfo = {
+    val heartbeat = Heartbeat(api, identity, config, prefs, deviceInfo = {
         mapOf(
             "manufacturer" to Build.MANUFACTURER, "model" to Build.MODEL,
             "android_version" to Build.VERSION.RELEASE, "sdk_int" to Build.VERSION.SDK_INT.toString(),

@@ -13,6 +13,8 @@
  *  row Actions → Edit opens it prefilled; Register/Renew opens
  *  RegisterDaysModal → registerDevice; De-Register confirms then
  *  deregisterDevice. Row actions live behind the shared RowActionsMenu.
+ *  Clear Setup queues a setup reset the kiosk applies on its next check-in;
+ *  while pending, the row shows a chip and Actions offers Cancel.
  *  Row action gating mirrors the API's permission split — 'add' for
  *  create, 'change' for edit/register/deregister, 'delete' for delete.
  *
@@ -28,7 +30,8 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { ADMIN_RANK } from '../lib/access';
 import {
-  ApiError, clearOfflineKiosks, deleteDevice, deregisterDevice, listDevices, registerDevice,
+  ApiError, cancelClearSetup, clearOfflineKiosks, deleteDevice, deregisterDevice, listDevices, registerDevice,
+  requestClearSetup,
   type ClearOfflineKioskItem, type ClearOfflineKiosksOut, type DeviceItem,
 } from '../lib/api';
 import {
@@ -139,6 +142,15 @@ function clearOfflineNotice(res: ClearOfflineKiosksOut): string {
 interface ClearOfflinePreview {
   matches: ClearOfflineKioskItem[];
   total: number;
+}
+
+/** Hover text for the pending Clear Setup chip. */
+function clearChipTitle(d: DeviceItem): string {
+  const when = d.setup_clear_requested_at
+    ? new Date(d.setup_clear_requested_at).toLocaleString() : '';
+  return d.setup_clear_requested_by_name
+    ? `Requested by ${d.setup_clear_requested_by_name}, ${when}`
+    : `Requested ${when}`;
 }
 
 export default function KioskDevices() {
@@ -287,6 +299,30 @@ export default function KioskDevices() {
     }
   };
 
+  const clearSetup = async (d: DeviceItem) => {
+    if (!window.confirm(`Clear Setup on "${d.name}"? The next time it checks in, its move, site and checkpoint are cleared and whoever is signed in is sent to Kiosk Setup. Queued scans are kept.`)) return;
+    setError('');
+    setNotice('');
+    try {
+      await requestClearSetup(d.id);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError && err.code === 'not_a_kiosk'
+        ? 'Only kiosks can have their setup cleared.' : msgFor(err));
+    }
+  };
+
+  const cancelClear = async (d: DeviceItem) => {
+    setError('');
+    setNotice('');
+    try {
+      await cancelClearSetup(d.id);
+      await load();
+    } catch (err) {
+      setError(msgFor(err));
+    }
+  };
+
   /** The preview is a POST too, so read-only maintenance mode rejects it with
    *  423 just like the delete. Report that instead of opening a modal whose
    *  empty list would read as "nothing to clear". Guarded against
@@ -337,6 +373,22 @@ export default function KioskDevices() {
       case 'mac': {
         const text = deviceCellText(d, key);
         return <span className="mono cell-line" title={titleFor(text)}>{text}</span>;
+      }
+      case 'name': {
+        const text = deviceCellText(d, key);
+        const nameLine = <span className="cell-line" title={titleFor(text)}>{text}</span>;
+        if (!d.setup_clear_requested_at) return nameLine;
+        // The chip is a SIBLING of the ellipsizing name: inside .cell-line
+        // (nowrap + overflow hidden) a long name or the narrow Name floor
+        // would clip it away. The name shrinks; the chip keeps its size.
+        return (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <span className="cell-line" style={{ minWidth: 0 }} title={titleFor(text)}>{text}</span>
+            <span className="chip c-amber" style={{ flexShrink: 0 }} title={clearChipTitle(d)}>
+              Setup clear pending
+            </span>
+          </div>
+        );
       }
       case 'sub_type':
         return d.sub_type == null
@@ -476,6 +528,11 @@ export default function KioskDevices() {
                     <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}>
                       <RowActionsMenu actions={[
                         ...(canChange ? [{ key: 'edit', label: 'Edit', onSelect: () => setEditing(d) }] : []),
+                        ...(canChange ? [d.setup_clear_requested_at
+                          ? { key: 'cancel-clear-setup', label: 'Cancel clear setup',
+                              onSelect: () => void cancelClear(d) }
+                          : { key: 'clear-setup', label: 'Clear Setup',
+                              onSelect: () => void clearSetup(d) }] : []),
                         ...(canChange ? [state === 'none'
                           ? { key: 'register', label: 'Register', onSelect: () => setRegistering(d) }
                           : { key: 'renew', label: 'Renew', onSelect: () => setRegistering(d) }] : []),

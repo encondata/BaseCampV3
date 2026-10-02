@@ -4452,6 +4452,8 @@ export interface DeviceItem {
   current_initiative_id: string | null; current_initiative_name: string | null;
   session_person_id: string | null; session_person_name: string | null;
   session_login_method: string | null; session_started_at: string | null;
+  /** Clear Setup pending since (null = nothing pending) and who asked. */
+  setup_clear_requested_at: string | null; setup_clear_requested_by_name: string | null;
 }
 
 export async function listDevices(deviceType?: string): Promise<DeviceItem[]> {
@@ -4503,6 +4505,20 @@ export async function registerDevice(id: string, days: number): Promise<DeviceIt
 
 export async function deregisterDevice(id: string): Promise<DeviceItem> {
   const resp = await apiFetch(`/devices/${id}/deregister`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Queue a Clear Setup for a kiosk; it applies on the kiosk's next check-in. */
+export async function requestClearSetup(id: string): Promise<DeviceItem> {
+  const resp = await apiFetch(`/devices/${id}/clear-setup`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Withdraw a pending Clear Setup (a no-op when none is pending). */
+export async function cancelClearSetup(id: string): Promise<DeviceItem> {
+  const resp = await apiFetch(`/devices/${id}/clear-setup/cancel`, { method: 'POST' });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

@@ -31,6 +31,7 @@ def _err(status: int, code: str) -> HTTPException:
 
 
 SessionPerson = aliased(Person)
+ClearRequester = aliased(Person)
 
 
 def _device_query():
@@ -49,7 +50,9 @@ def _device_query():
                    StatusValue.label, StatusValue.color,
                    raw_24h.c.n, proc_24h.c.n, Initiative.name,
                    SessionPerson.preferred_name, SessionPerson.first_name,
-                   SessionPerson.last_name)
+                   SessionPerson.last_name,
+                   ClearRequester.preferred_name, ClearRequester.first_name,
+                   ClearRequester.last_name)
             .outerjoin(Site, Device.site_id == Site.id)
             .outerjoin(up_counts, up_counts.c.device_id == Device.id)
             .outerjoin(StatusValue,
@@ -60,12 +63,15 @@ def _device_query():
             .outerjoin(Initiative,
                        Device.current_initiative_id == Initiative.id)
             .outerjoin(SessionPerson,
-                       SessionPerson.id == Device.session_person_id))
+                       SessionPerson.id == Device.session_person_id)
+            .outerjoin(ClearRequester,
+                       ClearRequester.id == Device.setup_clear_requested_by))
 
 
 def _row_to_item(row) -> dict:
     (d, site_name, connected, ss_label, ss_color, raw_n, proc_n,
-     initiative_name, session_preferred, session_first, session_last) = row
+     initiative_name, session_preferred, session_first, session_last,
+     clear_preferred, clear_first, clear_last) = row
     session_person_name = (
         f"{session_preferred or session_first} {session_last}"
         if session_last is not None else None)
@@ -93,6 +99,10 @@ def _row_to_item(row) -> dict:
         "session_person_name": session_person_name,
         "session_login_method": d.session_login_method,
         "session_started_at": d.session_started_at,
+        "setup_clear_requested_at": d.setup_clear_requested_at,
+        "setup_clear_requested_by_name": (
+            f"{clear_preferred or clear_first} {clear_last}"
+            if clear_last is not None else None),
     }
 
 
@@ -335,6 +345,55 @@ async def deregister_device(
     audit(db, actor_id=actor.person.id, entity_type="device",
           entity_id=str(device.id), action="deregister", changes={})
     await db.commit()
+    return await _item_for(db, device.id)
+
+
+async def _kiosk_or_error(db: DbSession, device_id: uuid.UUID) -> Device:
+    device = await db.get(Device, device_id)
+    if device is None:
+        raise _err(404, "device_not_found")
+    if device.device_type != "kiosk":
+        raise _err(409, "not_a_kiosk")
+    return device
+
+
+@router.post("/{device_id}/clear-setup", response_model=DeviceItem)
+async def request_clear_setup(
+    device_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "change"),
+) -> dict:
+    """Queue a Clear Setup for this kiosk. A fresh id every time, so an
+    acknowledgment of an older request can never close this one."""
+    device = await _kiosk_or_error(db, device_id)
+    now = datetime.now(UTC)
+    device.setup_clear_id = uuid.uuid4()
+    device.setup_clear_requested_at = now
+    device.setup_clear_requested_by = actor.person.id
+    device.updated_at = now
+    audit(db, actor_id=actor.person.id, entity_type="device",
+          entity_id=str(device.id), action="clear_setup_requested",
+          changes={"request_id": str(device.setup_clear_id)})
+    await db.commit()
+    return await _item_for(db, device.id)
+
+
+@router.post("/{device_id}/clear-setup/cancel", response_model=DeviceItem)
+async def cancel_clear_setup(
+    device_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "change"),
+) -> dict:
+    """Withdraw a pending Clear Setup. Cancelling nothing is a quiet 200."""
+    device = await _kiosk_or_error(db, device_id)
+    if device.setup_clear_id is not None:
+        request_id = str(device.setup_clear_id)
+        device.setup_clear_id = None
+        device.setup_clear_requested_at = None
+        device.setup_clear_requested_by = None
+        device.updated_at = datetime.now(UTC)
+        audit(db, actor_id=actor.person.id, entity_type="device",
+              entity_id=str(device.id), action="clear_setup_cancelled",
+              changes={"request_id": request_id})
+        await db.commit()
     return await _item_for(db, device.id)
 
 

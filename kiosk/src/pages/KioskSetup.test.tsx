@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -32,7 +32,7 @@ vi.mock('../lib/sync', async (importOriginal) => {
 
 import { ApiError } from '../lib/api';
 import { getIdentity } from '../lib/identity';
-import { readKioskSetup, writeKioskSetup } from '../lib/kioskSetup';
+import { clearKioskSetup, readKioskSetup, writeKioskSetup } from '../lib/kioskSetup';
 import { readSetupState, writeSetupState } from '../lib/setupState';
 import KioskSetup from './KioskSetup';
 
@@ -407,4 +407,96 @@ it('an idle summary offers "Sync now" (e.g. after Clear local data)', async () =
   expect(await screen.findByText('No move data on this kiosk yet.')).toBeTruthy();
   await user.click(screen.getByRole('button', { name: 'Sync now' }));
   expect(syncMock.runSync).toHaveBeenCalledWith('i-1', 'NAP11 Hall Migration (demo)');
+});
+
+const BANNER = "An administrator cleared this kiosk's setup. Run Kiosk Setup to continue.";
+
+it('shows the administrator banner while the clear notice is up, and drops it once setup completes', async () => {
+  localStorage.setItem('ss.kiosk.setupClear', JSON.stringify({ id: 'x', acked: true, notice: true }));
+  const user = userEvent.setup();
+  renderPage();
+  expect(await screen.findByText(BANNER)).toBeTruthy();
+
+  await goToScanStep(user);
+  expect(screen.getByText(BANNER)).toBeTruthy();   // still up mid-wizard
+  await user.click(cardFor('RFID 1 - Cage Exit'));
+
+  expect(await screen.findByText(/This kiosk is set up for/)).toBeTruthy();
+  await waitFor(() => expect(screen.queryByText(BANNER)).toBeNull());
+  expect(JSON.parse(localStorage.getItem('ss.kiosk.setupClear')!).notice).toBe(false);
+});
+
+it('shows the banner on the summary view too, when a clear arrives over a completed setup', async () => {
+  writeKioskSetup({
+    initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
+    siteId: 's-2', siteName: 'NAP22 Hall', siteRole: 'destination',
+    scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
+  });
+  writeSetupState('complete');
+  localStorage.setItem('ss.kiosk.setupClear', JSON.stringify({ id: 'x', acked: true, notice: true }));
+  renderPage();
+  expect(await screen.findByText(/This kiosk is set up for/)).toBeTruthy();
+  expect(screen.getByText(BANNER)).toBeTruthy();
+});
+
+it('shows no banner without a clear notice', async () => {
+  renderPage();
+  await screen.findByText('Kiosk setup');
+  expect(screen.queryByText(/administrator cleared this kiosk's setup/)).toBeNull();
+});
+
+it('a clear landing while the summary is open opens the wizard and loads the moves', async () => {
+  writeKioskSetup({
+    initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
+    siteId: 's-2', siteName: 'NAP22 Hall', siteRole: 'destination',
+    scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
+  });
+  writeSetupState('complete');
+  renderPage();
+  expect(await screen.findByText(/This kiosk is set up for/)).toBeTruthy();
+  expect(apiMock.getSetupOptions).not.toHaveBeenCalled();
+
+  // What applySetupClear does when a heartbeat delivers a Clear Setup.
+  localStorage.setItem('ss.kiosk.setupClear', JSON.stringify({ id: 'y', acked: false, notice: true }));
+  act(() => { clearKioskSetup(); writeSetupState('incomplete'); });
+
+  expect(await screen.findByText('Step 1 of 3 · Move')).toBeTruthy();
+  await waitFor(() => expect(apiMock.getSetupOptions).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText('NAP11 Hall Migration (demo)')).toBeTruthy();
+  expect(screen.queryByText('Loading moves…')).toBeNull();
+  expect(screen.getByText(BANNER)).toBeTruthy();
+});
+
+it('a clear landing while the wizard is already open restarts it at step 1 and reloads the options', async () => {
+  writeKioskSetup({
+    initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
+    siteId: 's-2', siteName: 'NAP22 Hall', siteRole: 'destination',
+    scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
+  });
+  writeSetupState('complete');
+  const user = userEvent.setup();
+  renderPage();
+  await user.click(await screen.findByRole('button', { name: 'Change setup' }));
+  await user.click(await screen.findByRole('option', { name: /NAP11 Hall Migration/ }));
+  expect(screen.getByText('Step 2 of 3 · Site')).toBeTruthy();
+  await user.click(cardFor('NAP22 Hall'));
+  expect(screen.getByText('Step 3 of 3 · Scan type')).toBeTruthy();
+  expect(apiMock.getSetupOptions).toHaveBeenCalledTimes(1);
+
+  localStorage.setItem('ss.kiosk.setupClear', JSON.stringify({ id: 'z', acked: false, notice: true }));
+  act(() => { clearKioskSetup(); writeSetupState('incomplete'); });
+
+  expect(await screen.findByText('Step 1 of 3 · Move')).toBeTruthy();
+  await waitFor(() => expect(apiMock.getSetupOptions).toHaveBeenCalledTimes(2));
+  expect(await screen.findByText('NAP11 Hall Migration (demo)')).toBeTruthy();
+  expect(screen.queryAllByRole('option', { selected: true })).toHaveLength(0);
+  expect(screen.getByText(BANNER)).toBeTruthy();
+});
+
+it('first-time setup (no saved selection) is not reset by the wizard\'s own progress', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await goToSiteStep(user);
+  expect(screen.getByText('Step 2 of 3 · Site')).toBeTruthy();
+  expect(apiMock.getSetupOptions).toHaveBeenCalledTimes(1);
 });

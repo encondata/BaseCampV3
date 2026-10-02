@@ -243,11 +243,12 @@ export interface HeartbeatResult {
   name: string;
   registration: RegistrationState;
   token_expires_at: string | null;
+  clear_setup?: string | null;
 }
 
 export async function heartbeatRequest(body: {
   serial: string; name: string; mode: string; version: string | null; sign_in?: boolean;
-  login_method?: 'password' | 'link';
+  login_method?: 'password' | 'link'; setup_cleared?: string;
 }): Promise<HeartbeatResult> {
   const { sign_in, ...rest } = body;
   const resp = await apiFetch('/kiosk/heartbeat', {
