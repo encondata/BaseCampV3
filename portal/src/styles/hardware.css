@@ -34,3 +34,6 @@
 .pop-item:disabled:hover { background: transparent; }
 .pop-item.danger:disabled { color: var(--c-red); }
 .pop-item.danger:disabled:hover { background: transparent; }
+
+/* Router expansion: the held-router warning line. Color only. */
+.router-warn { color: var(--c-amber); }
