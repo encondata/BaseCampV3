@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# ss-stack — run one ServerSherpa environment's five Compose stacks
+# (db, storage, api, web, status) on this host, in dependency order.
+#
+#   ss-stack build <env-dir>              build every image at STACK_IMAGE_TAG
+#   ss-stack up    <env-dir>              start or update everything, waiting on health
+#   ss-stack down  <env-dir> [--volumes]  stop everything; --volumes also deletes the data
+#   ss-stack ps    <env-dir>              list every stack's containers
+#   ss-stack dump  <env-dir>              pg_dump into <env-dir>/backups (keeps STACK_KEEP_DUMPS)
+#
+# <env-dir> holds the environment's .env (see env.example) and backups/.
+# Sirdar's deploy pipeline runs exactly these commands over SSH.
+set -euo pipefail
+
+STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STACKS=(db storage api web status)
+WAIT=(--wait --wait-timeout 300 --remove-orphans)
+
+die() { echo "ss-stack: $*" >&2; exit 1; }
+usage() { sed -n '4,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+
+[[ $# -ge 2 ]] || usage
+cmd=$1
+env_dir=$(cd "$2" 2>/dev/null && pwd) || die "no such environment directory: $2"
+shift 2
+env_file="$env_dir/.env"
+[[ -f $env_file ]] || die "missing $env_file (copy deploy/stack/env.example)"
+
+# One value from the env file: last assignment wins, surrounding quotes dropped.
+env_value() {
+  local v
+  v=$(sed -n "s/^$1=//p" "$env_file" | tail -n 1)
+  v=${v%\"}; v=${v#\"}; v=${v%\'}; v=${v#\'}
+  printf '%s' "$v"
+}
+
+STACK_ENV=$(env_value STACK_ENV)
+[[ $STACK_ENV =~ ^[a-z][a-z0-9-]{0,30}[a-z0-9]$ ]] \
+  || die "STACK_ENV must be 2-32 lowercase letters, digits and hyphens (got '$STACK_ENV')"
+NETWORK="ss-$STACK_ENV"
+
+dc() {  # dc <stack> <compose args…>
+  local stack=$1; shift
+  docker compose --env-file "$env_file" -f "$STACK_DIR/$stack/compose.yml" "$@"
+}
+
+refuse_placeholders() {
+  local left
+  left=$(grep -oE '^[A-Z0-9_]+=CHANGEME' "$env_file" | cut -d= -f1 | tr '\n' ' ' || true)
+  [[ -z $left ]] || die "replace the CHANGEME values in $env_file: $left"
+}
+
+case $cmd in
+  build)
+    [[ $# -eq 0 ]] || usage
+    refuse_placeholders
+    docker compose --env-file "$env_file" -f "$STACK_DIR/build.yml" build
+    ;;
+  up)
+    [[ $# -eq 0 ]] || usage
+    refuse_placeholders
+    docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK" >/dev/null
+    dc db up -d "${WAIT[@]}"
+    dc storage up -d "${WAIT[@]}"
+    dc storage run --rm minio-init
+    dc api run --rm migrate
+    dc api up -d "${WAIT[@]}"
+    dc web up -d "${WAIT[@]}"
+    dc status up -d "${WAIT[@]}"
+    ;;
+  down)
+    volumes=""
+    if [[ ${1:-} == --volumes ]]; then volumes="--volumes"; shift; fi
+    [[ $# -eq 0 ]] || usage
+    for (( i=${#STACKS[@]}-1; i>=0; i-- )); do
+      # $volumes is deliberately unquoted: empty means no argument at all
+      # shellcheck disable=SC2086
+      dc "${STACKS[i]}" down $volumes
+    done
+    if [[ -n $volumes ]]; then docker network rm "$NETWORK" >/dev/null 2>&1 || true; fi
+    ;;
+  ps)
+    [[ $# -eq 0 ]] || usage
+    for s in "${STACKS[@]}"; do dc "$s" ps; done
+    ;;
+  dump)
+    [[ $# -eq 0 ]] || usage
+    keep=$(env_value STACK_KEEP_DUMPS)
+    keep=${keep:-5}
+    [[ $keep =~ ^[1-9][0-9]*$ ]] || die "STACK_KEEP_DUMPS must be a whole number above 0"
+    mkdir -p "$env_dir/backups"
+    out="$env_dir/backups/$(date -u +%Y%m%dT%H%M%SZ).dump"
+    if ! dc db exec -T postgres pg_dump -U serversherpa -d serversherpa -Fc > "$out"; then
+      rm -f "$out"
+      die "pg_dump failed"
+    fi
+    # names are UTC timestamps, so name order is age order (newest first)
+    printf '%s\n' "$env_dir/backups"/*.dump | sort -r | tail -n +"$((keep + 1))" | while IFS= read -r old; do
+      rm -f "$old"
+    done
+    echo "$out"
+    ;;
+  *)
+    usage
+    ;;
+esac
