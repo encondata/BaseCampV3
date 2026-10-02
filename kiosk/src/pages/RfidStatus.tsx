@@ -2,8 +2,9 @@
  * The RFID Reader Dashboard (/rfid_status) — where Kiosk Setup's Start
  * Reader lands on a laptop RFID station. Six status tiles, the live tag
  * reads table (empty until a tag source is connected), the edge's event
- * log, and one big START / STOP pair. Reader status and events poll every
- * 5 s; the clock ticks every second. Web mode, or a laptop with no paired
+ * log, and one big START / STOP pair. Reader status and events refresh 5 s
+ * after the previous refresh settles (never overlapping); the clock ticks
+ * every second. Web mode, or a laptop with no paired
  * reader, goes home.
  */
 
@@ -128,16 +129,23 @@ export default function RfidStatus() {
   const [busy, setBusy] = useState<'start' | 'stop' | null>(null);
   const [actionError, setActionError] = useState<{ action: 'start' | 'stop'; err: unknown } | null>(null);
   const alive = useRef(true);
+  const seq = useRef(0);
 
   const refresh = useCallback(async () => {
+    // Only the newest request may write: a slow older answer is dropped.
+    const id = ++seq.current;
+    const latest = () => alive.current && id === seq.current;
     await Promise.all([
       getReaderStatus().then(
-        (s) => { if (alive.current) { setStatus(s); setStatusFailed(false); } },
-        () => { if (alive.current) setStatusFailed(true); },
+        (s) => {
+          // Busy: the edge is mid-call; keep what's on screen.
+          if (latest() && !s.busy) { setStatus(s); setStatusFailed(false); }
+        },
+        () => { if (latest()) setStatusFailed(true); },
       ),
       // A failed events fetch keeps the last list on screen.
       getRfidEvents().then(
-        (r) => { if (alive.current) setEvents(r.events); },
+        (r) => { if (latest()) setEvents(r.events); },
         () => {},
       ),
     ]);
@@ -146,12 +154,16 @@ export default function RfidStatus() {
   useEffect(() => {
     if (!laptop) return undefined;
     alive.current = true;
-    void refresh();
-    const poll = window.setInterval(() => { void refresh(); }, POLL_MS);
+    let timer: number | undefined;
+    const tick = async () => {
+      await refresh();
+      if (alive.current) timer = window.setTimeout(() => { void tick(); }, POLL_MS);
+    };
+    void tick();
     const clock = window.setInterval(() => setNow(new Date()), CLOCK_MS);
     return () => {
       alive.current = false;
-      window.clearInterval(poll);
+      window.clearTimeout(timer);
       window.clearInterval(clock);
     };
   }, [laptop, refresh]);

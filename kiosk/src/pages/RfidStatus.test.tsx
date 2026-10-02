@@ -220,6 +220,68 @@ describe('RfidStatus', () => {
     expect(api.getRfidEvents).toHaveBeenCalledTimes(2);
   });
 
+  it('never overlaps polls while the status call hangs', async () => {
+    api.getReaderStatus.mockReturnValue(new Promise(() => {}));
+    await renderPage();
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('schedules the next poll 5000 ms after the previous one settles', async () => {
+    let release: (s: ReaderStatus) => void = () => {};
+    api.getReaderStatus.mockResolvedValueOnce(status())
+      .mockReturnValueOnce(new Promise<ReaderStatus>((r) => { release = r; }));
+    await renderPage();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(7000); });
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(2);
+    await act(async () => { release(status()); await vi.advanceTimersByTimeAsync(4000); });
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(3);
+  });
+
+  it('a stale poll answer does not overwrite a newer post-click refresh', async () => {
+    await renderPage();
+    let release: (s: ReaderStatus) => void = () => {};
+    api.getReaderStatus.mockReturnValueOnce(new Promise<ReaderStatus>((r) => { release = r; }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    api.getReaderStatus.mockResolvedValue(status({ reading: false }));
+    fireEvent.click(stopBtn());
+    await flush();
+    expect(screen.getByTestId('rfid-dash-pill').textContent).toBe('Stopped');
+    await act(async () => { release(status({ reading: true })); await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByTestId('rfid-dash-pill').textContent).toBe('Stopped');
+  });
+
+  it('a busy answer keeps the last known state', async () => {
+    await renderPage();
+    api.getReaderStatus.mockResolvedValue(
+      status({ reachable: false, reading: false, radio: null, antennas: [], busy: true }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.getByTestId('rfid-dash-pill').textContent).toBe('Reading');
+  });
+
+  it('a busy answer before any status shows Checking…', async () => {
+    api.getReaderStatus.mockResolvedValue(
+      status({ reachable: false, reading: false, radio: null, antennas: [], busy: true }));
+    await renderPage();
+    expect(screen.getByTestId('rfid-dash-pill').textContent).toBe('Checking…');
+  });
+
+  it('stops polling on unmount', async () => {
+    const { unmount } = render(
+      <MemoryRouter initialEntries={['/rfid_status']}>
+        <Routes><Route path="/rfid_status" element={<RfidStatus />} /></Routes>
+      </MemoryRouter>,
+    );
+    await flush();
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(20000); });
+    expect(api.getReaderStatus).toHaveBeenCalledTimes(1);
+  });
+
   it('redirects home when no reader is paired', async () => {
     api.getReaderStatus.mockResolvedValue({ reader: null });
     await renderPage();

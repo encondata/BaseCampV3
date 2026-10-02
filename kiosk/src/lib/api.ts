@@ -947,6 +947,8 @@ export interface ReaderStatus {
   radio?: string | null;
   /** Antenna ports reported connected, sorted; empty when unknown. */
   antennas?: string[];
+  /** The edge was busy with another reader call and didn't ask the reader. */
+  busy?: boolean;
 }
 
 /** One line of the edge's RFID event log, newest first. */
