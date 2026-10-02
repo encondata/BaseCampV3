@@ -5,7 +5,7 @@ import {
   connectionLabel, deviceCellText, deviceSearchText, deviceSortValue, formatUptime,
   loginMethodLabel, registrationLabel, subTypeLabel, tokenExpiryState, vpnLabel,
   approvalLabel, bandLabel, routerClientTotal, routerInstallCommand,
-  routerStatus, routerVpn, routerWifi, vpnChipClass,
+  routerStatus, routerVpn, routerWifi, vpnChipClass, routerDisplayName,
 } from './devices';
 
 const R: DeviceItem = {
@@ -273,5 +273,24 @@ describe('router helpers', () => {
       'curl -fsSL https://raw.githubusercontent.com/encondata/BaseCampV3/main/router_agent/install.sh'
       + ' | sh -s -- --api https://api.example.com',
     );
+  });
+});
+
+describe('routerDisplayName', () => {
+  it.each([
+    ['csg_router_kit_19', 'CSG Router Kit 19'],
+    ['GL-MT3000', 'GL MT3000'],
+    ['dock__router--2', 'Dock Router 2'],
+    ['CSG_ROUTER_KIT', 'CSG Router Kit'],
+    ['nap.14 vpn  gateway', 'NAP 14 VPN Gateway'],
+    ['Csg_Lan_ap_1', 'CSG LAN AP 1'],
+    ['kit19_mt3000', 'kit19 mt3000'],
+  ])('%s → %s', (raw, shown) => {
+    expect(routerDisplayName(raw)).toBe(shown);
+  });
+
+  it('returns the input when nothing readable is left', () => {
+    expect(routerDisplayName('')).toBe('');
+    expect(routerDisplayName('__--')).toBe('__--');
   });
 });

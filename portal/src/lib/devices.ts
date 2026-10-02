@@ -96,6 +96,25 @@ export function approvalLabel(state: string | null | undefined): string {
   return '—';
 }
 
+/** Words a router hostname spells in capitals ("csg" → "CSG"). */
+export const ROUTER_ACRONYMS: readonly string[] = [
+  'csg', 'gl', 'vpn', 'lte', 'nap', 'dc', 'ups', 'lan', 'wan', 'ap',
+];
+
+/** A router's hostname made readable for the Routers page:
+ *  `csg_router_kit_19` → "CSG Router Kit 19". Display only — the stored
+ *  name stays the real hostname. Acronyms in ROUTER_ACRONYMS go to
+ *  capitals; a word with any digit in it (19, MT3000) is kept as typed;
+ *  every other word gets a capital first letter. */
+export function routerDisplayName(name: string): string {
+  const words = name.split(/[\s_.-]+/).filter(Boolean).map((w) => {
+    if (ROUTER_ACRONYMS.includes(w.toLowerCase())) return w.toUpperCase();
+    if (/\d/.test(w)) return w;
+    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+  });
+  return words.length ? words.join(' ') : name;
+}
+
 /** About three missed reports at the 65 s default (plus up to 10 s jitter each). */
 export const ROUTER_ONLINE_MS = 4 * 60 * 1000;
 
