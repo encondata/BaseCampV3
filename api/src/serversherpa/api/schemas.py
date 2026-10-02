@@ -2797,6 +2797,49 @@ class DeviceRegisterIn(BaseModel):
     days: int | None = None
 
 
+_ROUTER_MAC = re.compile(r"[0-9a-f]{2}(:[0-9a-f]{2}){5}")
+
+
+class RouterDhcpClientIn(BaseModel):
+    """One DHCP client in a router report. `mac` is validated by the
+    service (a bad lease is skipped, never fatal to the whole report)."""
+    mac: str = Field(max_length=64)
+    ip: str | None = Field(default=None, max_length=64)
+    hostname: str | None = Field(default=None, max_length=255)
+    reserved: bool = False
+    up: bool = False
+
+
+class RouterReportIn(BaseModel):
+    """POST /router-agent/report — the GL.iNet agent's status report
+    (router_agent/basecamp-router.sh, schema_version 1). wan/lan/wifi/
+    clients/vpn are stored as reported in raw_info; only the fields the
+    API reads are typed. A section the agent failed to collect is null."""
+    schema_version: int = Field(ge=1)
+    agent_version: str | None = Field(default=None, max_length=32)
+    wan_mac: str
+    secret: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model: str | None = Field(default=None, max_length=64)
+    firmware: str | None = Field(default=None, max_length=64)
+    hostname: str | None = Field(default=None, max_length=255)
+    uptime_seconds: int | None = Field(default=None, ge=0)
+    wan: dict | None = None
+    lan: dict | None = None
+    wifi: list[dict] | None = None
+    clients: dict | None = None
+    dhcp_clients: list[RouterDhcpClientIn] | None = None
+    vpn: list[dict] | None = None
+
+    @field_validator("wan_mac")
+    @classmethod
+    def _unicast_mac(cls, v: str) -> str:
+        mac = v.strip().lower().replace("-", ":")
+        if (not _ROUTER_MAC.fullmatch(mac) or int(mac[:2], 16) & 1
+                or mac == "00:00:00:00:00:00"):
+            raise ValueError("bad_mac")
+        return mac
+
+
 class DeviceLeaseItem(BaseModel):
     id: uuid.UUID
     mac: str
