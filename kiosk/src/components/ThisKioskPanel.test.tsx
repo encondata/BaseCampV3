@@ -16,6 +16,7 @@ vi.mock('../lib/api', async (orig) => ({ ...(await orig<object>()), ...api }));
 
 import { ApiError } from '../lib/api';
 import { getIdentity } from '../lib/identity';
+import { writeKioskSetup } from '../lib/kioskSetup';
 import ThisKioskPanel from './ThisKioskPanel';
 
 beforeEach(() => localStorage.clear());
@@ -52,6 +53,11 @@ it('does not save or re-beat when signed out', async () => {
   expect(await screen.findByText('Kiosk name saved.')).toBeTruthy();
   expect(auth.heartbeatNow).not.toHaveBeenCalled();
   auth.status = 'authed';
+});
+
+it('web mode shows no station type', () => {
+  render(<ThisKioskPanel />);
+  expect(screen.queryByLabelText('Station type')).toBeNull();
 });
 
 it('renders no Back button — the Settings tabs replace it', () => {
@@ -103,5 +109,28 @@ describe('laptop mode', () => {
       expect(await screen.findByRole('alert')).toHaveProperty('textContent', text);
       cleanup();
     }
+  });
+
+  it('shows the station type and the paired reader once setup saved them', () => {
+    writeKioskSetup({
+      initiativeId: 'i-1', initiativeName: 'NAP11', siteId: 's-1', siteName: 'Hall',
+      siteRole: 'source', scanStatus: 'k', scanLabel: 'Dock',
+      stationType: 'rfid', reader: { ip: '10.0.0.5', serial: '1234ABCD', model: 'FX9600' },
+    });
+    render(<ThisKioskPanel />);
+    expect((screen.getByLabelText('Station type') as HTMLInputElement).value).toBe('RFID · Laptop');
+    expect((screen.getByLabelText('RFID reader') as HTMLInputElement).value)
+      .toBe('FX9600 1234ABCD at 10.0.0.5');
+  });
+
+  it('a Label Station shows its type and no reader', () => {
+    writeKioskSetup({
+      initiativeId: 'i-1', initiativeName: 'NAP11', siteId: 's-1', siteName: 'Hall',
+      siteRole: 'source', scanStatus: 'k', scanLabel: 'Dock', stationType: 'label',
+    });
+    render(<ThisKioskPanel />);
+    expect((screen.getByLabelText('Station type') as HTMLInputElement).value)
+      .toBe('Label Station · Laptop');
+    expect(screen.queryByLabelText('RFID reader')).toBeNull();
   });
 });

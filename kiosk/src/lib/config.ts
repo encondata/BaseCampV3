@@ -17,6 +17,9 @@ declare global {
       mode?: string;
       /** The laptop's fixed identity, owned by the edge (/data/identity.json). */
       identity?: { serial: string; name: string };
+      /** The laptop edge serves this true when the page was reached through
+       *  a LAN address rather than localhost (plain HTTP on the network). */
+      lanAccess?: boolean;
     };
   }
 }

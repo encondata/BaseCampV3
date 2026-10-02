@@ -1,5 +1,9 @@
 /**
- * Kiosk Setup wizard: pick a move, then which of that move's sites this
+ * Kiosk Setup wizard. On a laptop it starts by asking what the station is
+ * (StationTypeStep): a Label Station goes straight on; an RFID Station
+ * first finds, connects to, and pairs a Zebra FX reader (ReaderStep,
+ * ConnectStep, PairStep — under components/setup/), then a placeholder
+ * settings page. Every path then continues the same way: pick a move, then which of that move's sites this
  * kiosk is at ("step 1A" — the move's source or destination site), then
  * a scan type, and stamp this kiosk's Device row (POST /kiosk/setup).
  * Tap-to-select card pickers (`.setup-card`, mirroring `.kiosk-tile`) —
@@ -15,18 +19,39 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import ConnectStep from '../components/setup/ConnectStep';
+import PairStep from '../components/setup/PairStep';
+import ReaderStep from '../components/setup/ReaderStep';
+import RfidPlaceholderStep from '../components/setup/RfidPlaceholderStep';
+import StationTypeStep from '../components/setup/StationTypeStep';
 import {
-  ApiError, CLOUD_SIGN_IN_TEXT, getSetupOptions, submitKioskSetup, type SetupOptionInitiative,
-  type SetupOptions, type SetupOptionSite,
+  ApiError, CLOUD_SIGN_IN_TEXT, getSetupOptions, submitKioskSetup, type PairResult,
+  type ReaderInfo, type SetupOptionInitiative, type SetupOptions, type SetupOptionSite,
 } from '../lib/api';
 import { getIdentity } from '../lib/identity';
-import { useKioskSetup } from '../lib/kioskSetup';
+import {
+  readerLabel, stationLabel, useKioskSetup, type KioskSetupSelection, type StationType,
+} from '../lib/kioskSetup';
+import { isLaptop, platform } from '../lib/platform';
 import {
   isSetupComplete, readSetupState, useKioskSetupState, writeSetupState,
 } from '../lib/setupState';
 import { formatSyncedAt, runSync, useSyncStatus } from '../lib/sync';
 
-type Step = 1 | 2 | 3;
+type Step = 'type' | 'reader' | 'connect' | 'pair' | 'rfid' | 'move' | 'site' | 'scan';
+
+const STEP_LABEL: Record<Step, string> = {
+  type: 'Station type', reader: 'Select reader', connect: 'Connect', pair: 'Pair',
+  rfid: 'RFID settings', move: 'Move', site: 'Site', scan: 'Scan type',
+};
+
+/** The steps this kiosk walks. Web mode skips the station type: RFID
+ *  needs the laptop edge, and a web kiosk behaves exactly as before. */
+function pathFor(laptop: boolean, stationType: StationType | ''): Step[] {
+  if (!laptop) return ['move', 'site', 'scan'];
+  if (stationType === 'rfid') return ['type', 'reader', 'connect', 'pair', 'rfid', 'move', 'site', 'scan'];
+  return ['type', 'move', 'site', 'scan'];
+}
 
 /** scheduled_start/scheduled_end are date-only fields (midnight UTC for a
  *  plain YYYY-MM-DD input) — read the Y-M-D digits into a local Date
@@ -55,7 +80,15 @@ export default function KioskSetup() {
   const [wizardOpen, setWizardOpen] = useState(!(selection && isSetupComplete(setupState)));
   const [options, setOptions] = useState<SetupOptions | null>(null);
   const [loadError, setLoadError] = useState(false);
-  const [step, setStep] = useState<Step>(1);
+  const laptop = isLaptop();
+  const [stationType, setStationType] = useState<StationType | ''>(
+    laptop ? selection?.stationType ?? '' : '');
+  const path = pathFor(laptop, stationType);
+  const [step, setStep] = useState<Step>(path[0]);
+  const [readerIp, setReaderIp] = useState('');
+  const [laptopIp, setLaptopIp] = useState('');
+  const [connected, setConnected] = useState<ReaderInfo | null>(null);
+  const [paired, setPaired] = useState<PairResult | null>(null);
   const [initiativeId, setInitiativeId] = useState('');
   const [siteId, setSiteId] = useState('');
   const [scanStatus, setScanStatus] = useState('');
@@ -100,14 +133,40 @@ export default function KioskSetup() {
       setInitiativeId(selection.initiativeId);
       setSiteId(selection.siteId);
       setScanStatus(selection.scanStatus);
+      setStationType(laptop ? selection.stationType ?? '' : '');
+      setReaderIp(selection.reader?.ip ?? '');
     } else {
       setInitiativeId('');
       setSiteId('');
       setScanStatus('');
+      setStationType('');
+      setReaderIp('');
     }
+    setLaptopIp('');
+    setConnected(null);
+    setPaired(null);
     setSubmitError('');
-    setStep(1);
+    setStep(laptop ? 'type' : 'move');
     setWizardOpen(true);
+  };
+
+  const stepIndex = Math.max(0, path.indexOf(step));
+  const back = () => setStep(path[Math.max(0, stepIndex - 1)]);
+  const next = () => setStep(path[Math.min(path.length - 1, stepIndex + 1)]);
+
+  const selectStationType = (type: StationType) => {
+    setStationType(type);
+    setStep(pathFor(laptop, type)[1]);
+  };
+
+  /** A reader picked from the scan or typed in; a different reader (or
+   *  laptop address) means connecting and pairing again. */
+  const pickReader = (ip: string, laptop_ip?: string) => {
+    if (ip !== readerIp) setConnected(null);
+    setPaired(null);
+    setReaderIp(ip);
+    setLaptopIp(laptop_ip ?? '');
+    setStep('connect');
   };
 
   const selectedInitiative = options?.initiatives.find((i) => i.id === initiativeId) ?? null;
@@ -122,12 +181,12 @@ export default function KioskSetup() {
   const selectMove = (id: string) => {
     if (id !== initiativeId) setSiteId('');
     setInitiativeId(id);
-    setStep(2);
+    setStep('site');
   };
 
   const selectSite = (id: string) => {
     setSiteId(id);
-    setStep(3);
+    setStep('scan');
   };
 
   const finish = async (scanKey: string) => {
@@ -136,15 +195,23 @@ export default function KioskSetup() {
     setSubmitError('');
     try {
       const identity = getIdentity();
+      // The edge adds the paired reader itself for an RFID station.
+      const station = laptop && stationType ? stationType : undefined;
       const result = await submitKioskSetup({
         serial: identity.serial, initiative_id: initiativeId, site_id: siteId,
-        scan_status: scanKey,
+        scan_status: scanKey, ...(station ? { station_type: station } : {}),
       });
-      setSelection({
+      const saved: KioskSetupSelection = {
         initiativeId: result.initiative_id, initiativeName: result.initiative_name,
         siteId: result.site_id, siteName: result.site_name, siteRole: result.site_role,
         scanStatus: result.scan_status, scanLabel: result.scan_status_label,
-      });
+      };
+      if (station) saved.stationType = station;
+      if (station === 'rfid') {
+        const reader = paired?.reader ?? connected ?? selection?.reader;
+        if (reader) saved.reader = { ip: reader.ip, serial: reader.serial, model: reader.model };
+      }
+      setSelection(saved);
       writeSetupState('complete');
       setWizardOpen(false);
       // Fire-and-forget: the summary appears immediately and the
@@ -174,6 +241,14 @@ export default function KioskSetup() {
             <b>{selection.siteName}</b> ({selection.siteRole}) · scan type{' '}
             <b>{selection.scanLabel}</b>
           </p>
+          {laptop && selection.stationType && (
+            <p>
+              Station: <b>{stationLabel(selection.stationType, platform().label)}</b>
+              {selection.stationType === 'rfid' && selection.reader && (
+                <> · reader <b>{readerLabel(selection.reader)}</b></>
+              )}
+            </p>
+          )}
           <div className="sync-status">
             {/* idle only happens before a first sync, or after the
                 Developer tab's "Clear local data" — without this branch
@@ -218,8 +293,12 @@ export default function KioskSetup() {
     );
   }
 
-  const stepLabel = step === 1 ? 'Step 1 of 3 · Move'
-    : step === 2 ? 'Step 2 of 3 · Site' : 'Step 3 of 3 · Scan type';
+  // Before a station type is picked the path's length isn't known yet.
+  const stepLabel = step === 'type' && !stationType
+    ? `Step 1 · ${STEP_LABEL.type}`
+    : `Step ${stepIndex + 1} of ${path.length} · ${STEP_LABEL[step]}`;
+  const moveStep = step === 'move' || step === 'site' || step === 'scan';
+  const canCancel = Boolean(selection) && setupState === 'complete';
 
   return (
     <div className="portal-page">
@@ -228,16 +307,49 @@ export default function KioskSetup() {
       <div className="setup-wizard">
         <div className="setup-steps">{stepLabel}</div>
 
-        {loadError && (
+        {step === 'type' && (
+          <div>
+            <StationTypeStep selected={stationType} onSelect={selectStationType} />
+            {canCancel && (
+              <div className="pf-form-actions">
+                <button type="button" className="mini-btn" onClick={() => setWizardOpen(false)}>
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {step === 'reader' && (
+          <div><ReaderStep selectedIp={readerIp} onPick={pickReader} onBack={back} /></div>
+        )}
+
+        {step === 'connect' && (
+          <div>
+            <ConnectStep ip={readerIp} info={connected} onInfo={setConnected}
+                         onPair={next} onBack={back} />
+          </div>
+        )}
+
+        {step === 'pair' && (
+          <div>
+            <PairStep ip={readerIp} laptopIp={laptopIp} result={paired} onResult={setPaired}
+                      onContinue={next} onBack={back} onCancel={back} onManual={pickReader} />
+          </div>
+        )}
+
+        {step === 'rfid' && <div><RfidPlaceholderStep onContinue={next} onBack={back} /></div>}
+
+        {moveStep && loadError && (
           <>
             <p className="form-error" role="alert">Couldn&apos;t load setup options.</p>
             <button type="button" className="mini-btn" onClick={load}>Retry</button>
           </>
         )}
 
-        {!loadError && options === null && <p className="page-hint">Loading moves…</p>}
+        {moveStep && !loadError && options === null && <p className="page-hint">Loading moves…</p>}
 
-        {!loadError && options !== null && step === 1 && (
+        {!loadError && options !== null && step === 'move' && (
           <div>
             <h2>Which move?</h2>
             <div className="setup-cards" role="listbox" aria-label="Moves">
@@ -263,17 +375,23 @@ export default function KioskSetup() {
             {options.initiatives.length === 0 && (
               <p className="page-hint">No active moves. Ask a coordinator to plan one.</p>
             )}
-            {selection && setupState === 'complete' && (
+            {path[0] === 'move' ? (
+              canCancel && (
+                <div className="pf-form-actions">
+                  <button type="button" className="mini-btn" onClick={() => setWizardOpen(false)}>
+                    Cancel
+                  </button>
+                </div>
+              )
+            ) : (
               <div className="pf-form-actions">
-                <button type="button" className="mini-btn" onClick={() => setWizardOpen(false)}>
-                  Cancel
-                </button>
+                <button type="button" className="mini-btn" onClick={back}>Back</button>
               </div>
             )}
           </div>
         )}
 
-        {!loadError && options !== null && step === 2 && (
+        {!loadError && options !== null && step === 'site' && (
           <div>
             <h2>Which site is this kiosk at?</h2>
             <div className="setup-cards" role="listbox" aria-label="Sites">
@@ -292,12 +410,12 @@ export default function KioskSetup() {
               </p>
             )}
             <div className="pf-form-actions">
-              <button type="button" className="mini-btn" onClick={() => setStep(1)}>Back</button>
+              <button type="button" className="mini-btn" onClick={back}>Back</button>
             </div>
           </div>
         )}
 
-        {!loadError && options !== null && step === 3 && (
+        {!loadError && options !== null && step === 'scan' && (
           <div>
             <h2>Which scan type?</h2>
             <div className="setup-cards" role="listbox" aria-label="Scan types">
@@ -322,7 +440,7 @@ export default function KioskSetup() {
               </p>
             )}
             <div className="pf-form-actions">
-              <button type="button" className="mini-btn" onClick={() => setStep(2)}
+              <button type="button" className="mini-btn" onClick={back}
                       disabled={submitting}>
                 Back
               </button>

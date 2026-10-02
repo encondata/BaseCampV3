@@ -6,6 +6,7 @@ import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 
 import {
   clearKioskSetup,
+  stationLabel,
   readKioskSetup,
   useKioskSetup,
   writeKioskSetup,
@@ -81,4 +82,26 @@ it('the hook reflects an external write and its setter persists', async () => {
 
   await user.click(screen.getByRole('button', { name: 'save' }));
   expect(screen.getByTestId('state').textContent).toBe(SELECTION.initiativeName);
+});
+
+it('a selection with a station type and reader round-trips; an old one without them stays valid', () => {
+  const rfid = {
+    ...SELECTION, stationType: 'rfid' as const,
+    reader: { ip: '10.0.0.5', serial: '1234ABCD', model: 'FX9600' },
+  };
+  writeKioskSetup(rfid);
+  expect(readKioskSetup()).toEqual(rfid);
+  localStorage.setItem('ss.kiosk.setup', JSON.stringify(SELECTION));
+  expect(readKioskSetup()).toEqual(SELECTION);
+});
+
+it('an unknown station type reads as no station type', () => {
+  localStorage.setItem('ss.kiosk.setup', JSON.stringify({ ...SELECTION, stationType: 'bogus' }));
+  expect(readKioskSetup()?.stationType).toBeUndefined();
+});
+
+it('stationLabel names the station and the mode', () => {
+  expect(stationLabel('rfid', 'Laptop')).toBe('RFID · Laptop');
+  expect(stationLabel('label', 'Laptop')).toBe('Label Station · Laptop');
+  expect(stationLabel(undefined, 'Laptop')).toBe('Laptop');
 });

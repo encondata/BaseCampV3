@@ -390,3 +390,33 @@ it('web mode (no edge status): no Cloud or Sign-in item', () => {
   expect(screen.queryByText('Cloud')).toBeNull();
   expect(screen.queryByText('Sign-in')).toBeNull();
 });
+
+const SAVED = {
+  initiativeId: 'i-1', initiativeName: 'NAP11', siteId: 's-1', siteName: 'Hall',
+  siteRole: 'source' as const, scanStatus: 'k', scanLabel: 'Dock',
+};
+
+it('laptop mode: the footer mode names the station type once setup saved one', () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
+  try {
+    writeKioskSetup({ ...SAVED, stationType: 'rfid',
+                      reader: { ip: '10.0.0.5', serial: '1234ABCD', model: 'FX9600' } });
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    const mode = screen.getByText('Mode').closest('.kiosk-foot-item') as HTMLElement;
+    expect(mode.textContent).toBe('ModeRFID · Laptop');
+    cleanup();
+
+    writeKioskSetup({ ...SAVED, stationType: 'label' });
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    expect((screen.getByText('Mode').closest('.kiosk-foot-item') as HTMLElement).textContent)
+      .toBe('ModeLabel Station · Laptop');
+    cleanup();
+
+    writeKioskSetup(SAVED);
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    expect((screen.getByText('Mode').closest('.kiosk-foot-item') as HTMLElement).textContent)
+      .toBe('ModeLaptop');
+  } finally {
+    delete window.__KIOSK_CONFIG__;
+  }
+});

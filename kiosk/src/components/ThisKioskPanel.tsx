@@ -10,6 +10,7 @@ import { useKioskAuth } from '../auth/KioskAuthContext';
 import { apiUrl, kioskVersion, portalUrl } from '../lib/config';
 import { ApiError, renameLaptopKiosk } from '../lib/api';
 import { getIdentity, setKioskName, setLaptopName } from '../lib/identity';
+import { readerLabel, stationLabel, useKioskSetup } from '../lib/kioskSetup';
 import { isLaptop, platform } from '../lib/platform';
 
 /** What a refused laptop rename says. */
@@ -28,6 +29,8 @@ function renameErrorText(err: unknown): string {
 export default function ThisKioskPanel() {
   const { status, heartbeatNow, isAdmin } = useKioskAuth();
   const laptop = isLaptop();
+  const [setup] = useKioskSetup();
+  const stationType = laptop ? setup?.stationType : undefined;
   const canRename = !laptop || (status === 'authed' && isAdmin);
   const [identity, setIdentity] = useState(getIdentity);
   const [name, setName] = useState(identity.name);
@@ -87,6 +90,18 @@ export default function ThisKioskPanel() {
           <label htmlFor="ks-mode">Mode</label>
           <input id="ks-mode" value={platform().label} readOnly />
         </div>
+        {stationType && (
+          <div>
+            <label htmlFor="ks-station">Station type</label>
+            <input id="ks-station" value={stationLabel(stationType, platform().label)} readOnly />
+          </div>
+        )}
+        {stationType === 'rfid' && setup?.reader && (
+          <div>
+            <label htmlFor="ks-reader">RFID reader</label>
+            <input id="ks-reader" value={readerLabel(setup.reader)} readOnly />
+          </div>
+        )}
         <div>
           <label htmlFor="ks-api">API URL</label>
           <input id="ks-api" value={apiUrl()} readOnly />

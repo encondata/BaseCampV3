@@ -20,7 +20,7 @@ import { kioskVersion } from '../lib/config';
 import { useDevMode } from '../lib/devMode';
 import { FEATURES } from '../lib/features';
 import { getIdentity } from '../lib/identity';
-import { useKioskSetup } from '../lib/kioskSetup';
+import { stationLabel, useKioskSetup } from '../lib/kioskSetup';
 import { platform } from '../lib/platform';
 import { useEdgeStatus } from '../lib/edgeStatus';
 import { useSyncStatus } from '../lib/sync';
@@ -71,7 +71,7 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   }, [preferences]);
 
   const identity = getIdentity();
-  const { label: modeLabel } = platform();
+  const { mode, label: modeLabel } = platform();
   const feature = FEATURES.find(
     (f) => location.pathname === f.path || location.pathname.startsWith(`${f.path}/`),
   );
@@ -81,7 +81,8 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   // moved to a hover on that person. What's left is context (mode,
   // version, what this kiosk is set up for) plus one status word.
   const footItems: FootItem[] = [
-    { label: 'Mode', value: modeLabel },
+    // A laptop names what kind of station setup made it: "RFID · Laptop".
+    { label: 'Mode', value: mode === 'laptop' ? stationLabel(kioskSetup?.stationType, modeLabel) : modeLabel },
     { label: 'Version', value: kioskVersion() },
   ];
   const moveName = kioskSetup?.initiativeName ?? kioskMove?.name;

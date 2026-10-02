@@ -204,3 +204,24 @@ it('laptop mode online: both alternate methods show', async () => {
   expect(screen.getByRole('button', { name: 'Link with phone' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Move password' })).toBeTruthy();
 });
+
+it('reached over the LAN, the sign-in page warns the connection is not encrypted', () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop', lanAccess: true };
+  try {
+    renderLogin();
+    expect(screen.getByText("This connection isn't encrypted — sign in only on a trusted network."))
+      .toBeTruthy();
+  } finally {
+    delete window.__KIOSK_CONFIG__;
+  }
+});
+
+it('on the laptop itself there is no encryption notice', () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop', lanAccess: false };
+  try {
+    renderLogin();
+    expect(screen.queryByText(/isn't encrypted/)).toBeNull();
+  } finally {
+    delete window.__KIOSK_CONFIG__;
+  }
+});

@@ -151,3 +151,57 @@ it('maps the edge_offline code to the network error the screens already handle',
     JSON.stringify({ detail: { code: 'edge_offline' } }), { status: 503 })));
   await expect(api.getSetupOptions()).rejects.toMatchObject({ status: 0, code: 'network' });
 });
+
+// ── RFID reader setup (laptop edge) ─────────────────────────────────
+
+it('the RFID helpers call the edge reader endpoints with the session token', async () => {
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    const u = String(url);
+    if (u.endsWith('/auth/login')) return json(SESSION);
+    if (u.endsWith('/edge/rfid/scan') && init?.method === 'POST') return json({ scan_id: 'sc1' });
+    if (u.endsWith('/edge/rfid/scan')) {
+      return json({ scan_id: 'sc1', state: 'done', probed: 3, total: 3, readers: [],
+                    host: { ips: ['10.0.0.9'], fresh: true } });
+    }
+    if (u.endsWith('/edge/rfid/connect')) return json({ ip: '10.0.0.5', serial: 'S1' });
+    if (u.endsWith('/edge/rfid/pair')) return json({ paired: true, reader: {}, endpoint_url: 'http://x/…' });
+    if (u.endsWith('/edge/rfid/reader')) return json(null);
+    return json({}, 404);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  await api.loginRequest('a@x', 'pw');
+
+  expect(await api.startReaderScan()).toEqual({ scan_id: 'sc1' });
+  expect((await api.getReaderScan()).state).toBe('done');
+  expect((await api.connectReader('10.0.0.5')).serial).toBe('S1');
+  expect((await api.pairReader({ ip: '10.0.0.5', laptop_ip: '10.0.0.9', confirm_takeover: true })).paired)
+    .toBe(true);
+  expect(await api.getPairedReader()).toBeNull();
+
+  const calls = fetchMock.mock.calls as unknown as Call[];
+  const connect = calls.find(([u]) => String(u).endsWith('/edge/rfid/connect'))!;
+  expect(connect[1]?.method).toBe('POST');
+  expect(JSON.parse(String(connect[1]?.body))).toEqual({ ip: '10.0.0.5' });
+  expect((connect[1]?.headers as Record<string, string>).Authorization).toBe('Bearer tok1');
+  const pair = calls.find(([u]) => String(u).endsWith('/edge/rfid/pair'))!;
+  expect(JSON.parse(String(pair[1]?.body)))
+    .toEqual({ ip: '10.0.0.5', laptop_ip: '10.0.0.9', confirm_takeover: true });
+});
+
+it('a reader error keeps its code and the detail (name, message)', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => json(
+    { detail: { code: 'reader_paired_elsewhere', name: 'Kiosk ABCD' } }, 409)));
+  await expect(api.pairReader({ ip: '10.0.0.5' })).rejects.toMatchObject({
+    status: 409, code: 'reader_paired_elsewhere', detail: { name: 'Kiosk ABCD' },
+  });
+});
+
+it('submitKioskSetup passes station_type through', async () => {
+  const fetchMock = vi.fn(async () => json({}));
+  vi.stubGlobal('fetch', fetchMock);
+  await api.submitKioskSetup({
+    serial: 's', initiative_id: 'i', site_id: 'x', scan_status: 'k', station_type: 'rfid',
+  });
+  const [, init] = (fetchMock.mock.calls as unknown as Call[]).at(-1)!;
+  expect(JSON.parse(String(init?.body)).station_type).toBe('rfid');
+});

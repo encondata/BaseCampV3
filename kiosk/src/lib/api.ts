@@ -311,8 +311,12 @@ export async function getSetupOptions(): Promise<SetupOptions> {
   return jsonFrom<SetupOptions>(resp);
 }
 
+/** `station_type` is sent only by a laptop (Kiosk Setup's first step); for
+ *  `rfid` the edge adds the paired reader itself — the browser never sends
+ *  reader details. */
 export async function submitKioskSetup(body: {
   serial: string; initiative_id: string; site_id: string; scan_status: string;
+  station_type?: 'label' | 'rfid';
 }): Promise<KioskSetupResult> {
   const resp = await apiFetch('/kiosk/setup', {
     method: 'POST',
@@ -804,4 +808,88 @@ export async function renameLaptopKiosk(name: string): Promise<{ serial: string;
     body: JSON.stringify({ name }),
   });
   return jsonFrom<{ serial: string; name: string }>(resp);
+}
+
+// ── RFID reader setup (laptop edge, Kiosk Setup's RFID steps) ───────
+// Errors carry `detail.code`: reader_unreachable, reader_auth_failed,
+// reader_not_iotc, reader_error (with detail.message), reader_verify_failed
+// (502); reader_paired_elsewhere (409, with detail.name),
+// reader_endpoints_full and host_network_unknown (409); bad_ip (422).
+
+export interface ReaderVersions {
+  readerApplication: string | null;
+  radioFirmware: string | null;
+  cloudAgentApplication: string | null;
+}
+
+/** One reader a scan found. `paired_with` names another kiosk holding it. */
+export interface FoundReader { ip: string; model: string; serial: string; paired_with: string | null }
+
+export interface ReaderScan {
+  scan_id: string | null;
+  state: 'running' | 'done' | 'failed';
+  probed: number;
+  total: number;
+  readers: FoundReader[];
+  /** `fresh` is false when the laptop's own address isn't known. */
+  host: { ips: string[]; fresh: boolean };
+}
+
+export interface ReaderInfo {
+  ip: string;
+  model: string;
+  serial: string;
+  versions: ReaderVersions;
+  /** The reader's own /cloud/status body, passed through as-is. */
+  status: Record<string, unknown> | null;
+  paired_with: string | null;
+}
+
+export interface PairedReader {
+  ip: string;
+  serial: string;
+  model: string;
+  versions: ReaderVersions | null;
+  paired_at: string;
+  laptop_ip?: string | null;
+  endpoint_url?: string | null;
+}
+
+export interface PairResult {
+  paired: true;
+  reader: Pick<PairedReader, 'ip' | 'serial' | 'model' | 'versions' | 'paired_at'>;
+  /** Already redacted by the edge (the token shows as …). */
+  endpoint_url: string;
+}
+
+function postJson(path: string, body: unknown): Promise<Response> {
+  return apiFetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Starts a subnet scan (cancelling a running one). */
+export async function startReaderScan(): Promise<{ scan_id: string }> {
+  return jsonFrom<{ scan_id: string }>(await apiFetch('/edge/rfid/scan', { method: 'POST' }));
+}
+
+export async function getReaderScan(): Promise<ReaderScan> {
+  return jsonFrom<ReaderScan>(await apiFetch('/edge/rfid/scan'));
+}
+
+export async function connectReader(ip: string): Promise<ReaderInfo> {
+  return jsonFrom<ReaderInfo>(await postJson('/edge/rfid/connect', { ip }));
+}
+
+export async function pairReader(body: {
+  ip: string; laptop_ip?: string; confirm_takeover?: boolean;
+}): Promise<PairResult> {
+  return jsonFrom<PairResult>(await postJson('/edge/rfid/pair', body));
+}
+
+/** The laptop's current pairing, or null when no reader is paired. */
+export async function getPairedReader(): Promise<PairedReader | null> {
+  return jsonFrom<PairedReader | null>(await apiFetch('/edge/rfid/reader'));
 }
