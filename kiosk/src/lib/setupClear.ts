@@ -34,13 +34,16 @@ let memory: SetupClearRecord | null = null;
 let storageFailed = false;
 
 function read(): SetupClearRecord | null {
+  // A failed write leaves any older record in storage; memory is newer.
+  // A later successful write clears the flag, so working storage wins again.
+  if (storageFailed) return memory;
   let raw: string | null;
   try {
     raw = localStorage.getItem(KEY);
   } catch {
     return memory;
   }
-  if (!raw) return storageFailed ? memory : null;
+  if (!raw) return null;
   try {
     const v = JSON.parse(raw) as Partial<SetupClearRecord>;
     return typeof v.id === 'string'

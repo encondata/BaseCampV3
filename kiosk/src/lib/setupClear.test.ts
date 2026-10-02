@@ -77,3 +77,19 @@ it('with storage refusing writes, once-only, the ack and the notice hold in memo
     spy.mockRestore();
   }
 });
+
+it('a full store still holding an older record does not shadow the newer in-memory one', async () => {
+  vi.resetModules();
+  const m = await import('./setupClear');
+  localStorage.setItem('ss.kiosk.setupClear', JSON.stringify({ id: 'a', acked: true, notice: false }));
+  const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new Error('quota');
+  });
+  try {
+    expect(m.applySetupClear('b')).toBe(true);
+    expect(m.applySetupClear('b')).toBe(false);
+    expect(m.pendingAck()).toBe('b');
+  } finally {
+    spy.mockRestore();
+  }
+});
