@@ -423,3 +423,45 @@ Decided with the product owner:
 - **Installer:** the first install asks "Configure deployment targets now? [y/N]". Answering yes prompts for DigitalOcean (token hidden) and then Custom SSH (host, port, user, password hidden, key file name). AWS and GCP stay blank for now. On re-runs, the deploy keys are asked once as a group through the same yes/no; a "no" writes them blank so the question isn't repeated.
 - **Region picker (DigitalOcean):** `GET /api/deploy/digitalocean/regions` (deploy:view) lists the account's `available` regions from DigitalOcean's live `/v2/regions`, sorted by name, as `{regions: [{slug, name}], default}`. `default` is `SIRDAR_DEPLOY_DO_REGION` when that region is in the list, else null. `POST /api/deploy/connect` takes an optional `region` slug (`^[a-z0-9-]{2,20}$`, else 422); for DigitalOcean it replaces the env default in the region check, and it is ignored for SSH. The audit entry includes `region` when given. The Deploy page shows a Region ComboBox once DigitalOcean is selected and configured, preselects `default`, and shows the chosen region in the result header. The installer no longer asks for a region: `SIRDAR_DEPLOY_DO_REGION` stays in `.env` (written blank) as an optional default.
 - **Custom type and its name:** Custom is the fifth type. It needs an environment name: `POST /api/deploy/connect` takes an optional `name`, required when `type` is `custom` and ignored otherwise. The name must match `^[a-z][a-z0-9-]{1,31}$` (lowercase letters, numbers and hyphens; starts with a letter; 2-32 characters), must not end with a hyphen, and must not be `blue`, `green`, `dev`, `beta` or `custom`. Failures answer 422 `custom_name_required`, `custom_name_invalid` or `custom_name_reserved`. The 200 result includes `name` (null unless custom) and the `deploy.connect` audit entry records it for custom. The Deploy page reveals a required "Environment name" field when Custom is selected, validates it with the same rules, keeps the test button disabled until it is valid, and shows the name in the result header (for example "Custom (SSH) · Custom: demo-acme").
+
+## Addendum (2026-10-01): saved Custom (SSH) targets
+
+Product owner request: add Custom (SSH) targets on the fly from the Deploy page, store them in an env file, and recall them later.
+
+- **Store:** `sirdar/config/deploy-targets.env` on the host, mounted read-write at `/app/config` (`SIRDAR_DEPLOY_TARGETS_FILE`, default `/app/config/deploy-targets.env`; the compose file pins it).
+  - The directory and the file are owned by the container uid 10001, with modes 700 and 600.
+  - Sirdar reads the file on every use, so changes apply immediately with no restart.
+  - The main `sirdar/.env` stays read-only to the app.
+- **File format** (dotenv; values single-quoted; newlines and NUL rejected):
+  - `SIRDAR_SSH_TARGETS=<slug>,<slug>,…` lists the targets in order.
+  - Each target has its own block: `SIRDAR_SSH_<KEY>_NAME`, `_HOST`, `_PORT`, `_USER`, `_PASSWORD`, `_KEY_PATH`, `_KEY_PASSPHRASE`.
+  - `<KEY>` is the slug uppercased with `-` → `_`. The slug is derived from the name (`a-z0-9-`, ≤32) and made unique with `-2`, `-3`, and so on.
+- **Writes:** every write takes an exclusive file lock, writes a temp file in the same directory and renames it into place.
+- **Targets on the Deploy page:** AWS and GCP (coming soon), DigitalOcean, the existing installer SSH target (read-only, label "Custom (SSH) · Installer", id `ssh`, still configured in `.env`), each saved target (id `ssh:<slug>`, label = its name), and an **Add SSH target** card. Cards still show no connection details.
+- **Add/edit form** (modal), deploy:change:
+
+  | Field | Required? | Rules |
+  |---|---|---|
+  | Name | required | 2–40 characters |
+  | Host | required | hostname, IPv4 or IPv6 |
+  | Port | default 22 | 1–65535 |
+  | User | required | |
+  | Password | optional, write-only | shows "set"; Replace / Clear |
+  | Key file | optional | picked from the files in `deploy-keys/` (names only) |
+  | Key passphrase | optional, write-only | |
+
+  At least a password or a key file is required. The installer target can't be edited or removed here.
+- **API** (deploy:change unless noted):
+
+  | Route | Notes |
+  |---|---|
+  | `GET /api/deploy/ssh-targets/{slug}` | editable fields; booleans `password_set` / `passphrase_set`; never secrets |
+  | `POST /api/deploy/ssh-targets` | 201 |
+  | `PUT /api/deploy/ssh-targets/{slug}` | secret fields: omitted = keep, `""` = clear, value = set |
+  | `DELETE /api/deploy/ssh-targets/{slug}` | 204 |
+  | `GET /api/deploy/key-files` | file names only |
+  | `GET /api/deploy/targets` (deploy:view) | now lists every SSH target |
+
+  - `POST /api/deploy/connect` accepts `ssh` or `ssh:<slug>`.
+  - Trusting a host key is allowed for the host:port of any configured SSH target.
+  - Audit actions: `deploy.target_add`, `deploy.target_update`, `deploy.target_remove`. They record non-secret fields only (name, host, port, user, key file name, password_set, passphrase_set).
