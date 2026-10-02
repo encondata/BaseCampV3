@@ -57,7 +57,7 @@ it('uploads, polls the check every 1.5 s, and unlocks Next once it completes', a
   await user.upload(document.querySelector('input[type=file]') as HTMLInputElement, file);
   await user.click(screen.getByRole('button', { name: 'Check file' }));
   await waitFor(() => expect(api.uploadMoveSetupAssets).toHaveBeenCalledWith(
-    'd1', file, { makeModelMode: 'fuzzy', generateSerials: false }));
+    'd1', file, { makeModelMode: 'fuzzy', generateSerials: true }));
   expect(await screen.findByText('Checking the file…')).toBeTruthy();
   await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
   expect(await screen.findByText('1 of 2 rows')).toBeTruthy();
@@ -150,4 +150,20 @@ it('offers no report download: the .xlsx report belongs to the move import page'
   await user.click(screen.getByRole('button', { name: 'Check file' }));
   await screen.findByText('2 rows will be imported when the move is created');
   expect(screen.queryByRole('button', { name: 'Download report (.xlsx)' })).toBeNull();
+});
+
+const SERIAL_COPY = 'Rows with a blank serial number get one generated (gnrtd-xxxxxx), unique across every asset.';
+
+it('Generate serial numbers is on by default, with the gnrtd copy, and the check sends it', async () => {
+  const user = userEvent.setup();
+  api.uploadMoveSetupAssets.mockResolvedValue(DONE);
+  render(<Harness />);
+  const box = screen.getByRole('checkbox', { name: /Generate serial numbers/ }) as HTMLInputElement;
+  expect(box.checked).toBe(true);
+  expect(screen.getByText(SERIAL_COPY)).toBeTruthy();
+  const file = new File(['x'], 'ft.csv', { type: 'text/csv' });
+  await user.upload(document.querySelector('input[type=file]') as HTMLInputElement, file);
+  await user.click(screen.getByRole('button', { name: 'Check file' }));
+  await waitFor(() => expect(api.uploadMoveSetupAssets).toHaveBeenCalledWith(
+    'd1', file, { makeModelMode: 'fuzzy', generateSerials: true }));
 });

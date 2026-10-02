@@ -33,7 +33,7 @@ export default function AssetsStep({ draft, job, setJob, onBack, onSkip, onNext 
   const { can } = useAuth();
   const [file, setFile] = useState<File | null>(null);
   const [mode, setMode] = useState('fuzzy');
-  const [generateSerials, setGenerateSerials] = useState(false);
+  const [generateSerials, setGenerateSerials] = useState(true);
   const [replacing, setReplacing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');

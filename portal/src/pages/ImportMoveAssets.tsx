@@ -84,7 +84,7 @@ export default function ImportMoveAssets() {
   const [initiative, setInitiative] = useState<InitiativeDetail | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [mode, setMode] = useState('fuzzy');
-  const [generateSerials, setGenerateSerials] = useState(false);
+  const [generateSerials, setGenerateSerials] = useState(true);
   const [job, setJob] = useState<ImportJobOut | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
