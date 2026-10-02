@@ -56,7 +56,7 @@ There is one edge endpoint per check. The kiosk calls them one at a time so that
 **Reader access and token rules:**
 
 - Reader calls go through the same `pair_lock` as pairing, so a check never interleaves with a rewrite.
-- The reader is opened by stored index only. The check never runs the password list.
+- The reader is opened with `pairing.open_reader`, so the stored password index is tried first. The reader was already fingerprinted and paired.
 - The token never appears in any `detail` or `info`. `redact_url` covers this.
 
 ## 3. Reader start, stop and status (edge)
@@ -85,6 +85,7 @@ There is one edge endpoint per check. The kiosk calls them one at a time so that
 
 ## 5. Cloud API
 
+- **The heartbeat no longer clears `version`** when a beat omits it (`device.version` is updated only when `body.version` is not None), so the edge's registration check can beat without knowing the kiosk app version.
 - **`HeartbeatOut` gains `client_ip: str | None`.** It is the caller's public address from the existing `deps.client_ip` (the Caddy X-Forwarded-For rule), and becomes the WAN IP. It is not stored. No migration.
 - **`GET /kiosk/setup?serial=…`** (`kiosk:view`) returns the device's current setup:
   - fields: `device_id`, `initiative_id`, `initiative_name`, `site_id`, `site_name`, `scan_status`, `scan_status_label`, `station_type`, `reader` (`{ip, serial, model}` or null);
