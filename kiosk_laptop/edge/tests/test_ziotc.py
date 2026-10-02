@@ -122,13 +122,18 @@ async def test_version_status_and_config_sign_in_on_demand():
     await client.aclose()
 
 
+SECURE = {"URL": "http://10.0.0.5:8091/rfid/x/y",
+          "security": {"verifyPeer": False, "verifyHost": False, "authenticationType": "NONE"}}
+
+
 async def test_put_config_round_trips():
     reader = FakeReader()
     client = make(reader)
     config = await client.get_config()
     conn = {"type": "httpPost", "name": "ServerSherpa Kiosk 1234 (Dock)",
             "options": {"URL": "http://10.0.0.5:8091/rfid/x/y",
-                        "security": {"verifyPeer": False, "verifyHost": False}}}
+                        "security": {"verifyPeer": False, "verifyHost": False,
+                                     "authenticationType": "NONE"}}}
     gateway = config["READER-GATEWAY"]
     gateway["endpointConfig"]["data"]["event"]["connections"].append(conn)
     assert await client.put_config({"READER-GATEWAY": gateway}) is None
@@ -155,7 +160,7 @@ async def test_verify_mismatch_mode_keeps_the_old_config():
     client = make(reader)
     gateway = (await client.get_config())["READER-GATEWAY"]
     gateway["endpointConfig"]["data"]["event"]["connections"] = [{"type": "httpPost",
-                                                                 "name": "x", "options": {}}]
+                                                                 "name": "x", "options": SECURE}]
     await client.put_config({"READER-GATEWAY": gateway})
     assert len(reader.puts) == 1
     again = await client.get_config()
@@ -322,3 +327,22 @@ async def test_no_password_in_any_log_exception_or_repr(caplog):
     for password in PASSWORDS:
         assert password not in blob
     assert ziotc.USERNAME == "admin"
+
+
+@pytest.mark.parametrize("field", ["verifyPeer", "verifyHost", "authenticationType"])
+async def test_fake_reader_requires_the_full_http_post_security(field):
+    reader = FakeReader()
+    client = make(reader)
+    gateway = (await client.get_config())["READER-GATEWAY"]
+    security = {k: v for k, v in SECURE["security"].items() if k != field}
+    gateway["endpointConfig"]["data"]["event"]["connections"] = [
+        {"type": "httpPost", "name": "x", "options": {**SECURE, "security": security}}]
+    with pytest.raises(ReaderError) as err:
+        await client.put_config({"READER-GATEWAY": gateway})
+    assert err.value.code == "reader_error" and field in err.value.message
+    assert get_conns(reader) == []
+    await client.aclose()
+
+
+def get_conns(reader):
+    return reader.config["READER-GATEWAY"]["endpointConfig"]["data"]["event"]["connections"]

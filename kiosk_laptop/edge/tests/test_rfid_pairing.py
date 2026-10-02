@@ -32,8 +32,11 @@ def reader_connections(reader):
     return reader.config["READER-GATEWAY"]["endpointConfig"]["data"]["event"]["connections"]
 
 
+SECURITY = {"verifyPeer": False, "verifyHost": False, "authenticationType": "NONE"}
+
+
 def other(name="Warehouse MQTT", url="http://10.0.0.9/x"):
-    return {"type": "httpPost", "name": name, "options": {"URL": url}}
+    return {"type": "httpPost", "name": name, "options": {"URL": url, "security": SECURITY}}
 
 
 def own_name(app):
@@ -132,7 +135,8 @@ async def test_pair_adds_our_connection(app, client):
         "type": "httpPost", "name": own_name(app),
         "description": f"ServerSherpa kiosk {app.state.identity.serial}",
         "options": {"URL": f"http://10.0.0.5:8091/rfid/{SERIAL}/{token}",
-                    "security": {"verifyPeer": False, "verifyHost": False}}}]
+                    "security": {"verifyPeer": False, "verifyHost": False,
+                                 "authenticationType": "NONE"}}}]
     assert list(reader.puts[-1]) == ["READER-GATEWAY"]
 
 
@@ -255,7 +259,7 @@ def test_connection_helpers_shared_with_discovery():
     edited = pairing.with_connections({"READER-GATEWAY": {"other": 1}}, [{"name": "y"}])
     assert edited == {"other": 1, "endpointConfig": {"data": {"event": {
         "connections": [{"name": "y"}]}}}}
-    assert discovery.PAIR_PREFIX == pairing.PAIR_PREFIX
+    assert discovery.pairing is pairing  # discovery reads connections through the same helpers
     assert pairing.redact_url("http://1.2.3.4:8091/rfid/S/tok") == "http://1.2.3.4:8091/rfid/S/…"
 
 
@@ -300,3 +304,62 @@ async def test_setup_label_forwards_station_type_only(app, client, cloud):
                       json={**SETUP, "station_type": "label", "reader": {"ip": "6.6.6.6"}})
     sent = json.loads(route.calls[0].request.content)
     assert sent["station_type"] == "label" and "reader" not in sent
+
+
+# ── fix round 1 ──
+
+async def test_pair_leaves_the_rest_of_the_config_alone(app, client):
+    import copy
+    reader = use_reader(app)
+    before = copy.deepcopy(reader.config)
+    assert before["READER-GATEWAY"]["endpointConfig"]["management"]  # non-empty in the fake
+    assert (await pair(client, app, laptop_ip="10.0.0.5")).status_code == 200
+    after = reader.config
+    gw_before, gw_after = before["READER-GATEWAY"], after["READER-GATEWAY"]
+    for key in ("management", "control"):
+        assert gw_after["endpointConfig"][key] == gw_before["endpointConfig"][key]
+    assert gw_after["endpointConfig"]["data"]["batching"] == \
+        gw_before["endpointConfig"]["data"]["batching"]
+    assert {k: v for k, v in after.items() if k != "READER-GATEWAY"} == \
+        {k: v for k, v in before.items() if k != "READER-GATEWAY"}
+
+
+async def test_reader_message_never_carries_the_token(app, client):
+    reader = use_reader(app)
+    token = "secret-token-" + "x" * 30
+    pairing.remember(app.state.store, serial=SERIAL, ip=READER_IP, model="FX9600",
+                     versions={}, password_index=3, token=token)
+    reader.fail_next["PUT /cloud/config"] = (
+        422, {"code": 1, "message": f"Bad URL http://10.0.0.5:8091/rfid/{SERIAL}/{token}"})
+    r = await pair(client, app, laptop_ip="10.0.0.5")
+    assert code(r) == "reader_error" and token not in r.text
+    assert r.json()["detail"]["message"] == f"Bad URL http://10.0.0.5:8091/rfid/{SERIAL}/…"
+
+
+async def test_a_renamed_own_connection_is_replaced_not_duplicated(app, client):
+    reader = use_reader(app)
+    assert (await pair(client, app, laptop_ip="10.0.0.5")).status_code == 200
+    reader_connections(reader)[0]["name"] = "Someone renamed it"
+    r = await pair(client, app, laptop_ip="10.0.0.5")
+    assert r.status_code == 200, r.text
+    assert [c["name"] for c in reader_connections(reader)] == [own_name(app)]
+
+
+async def test_connect_and_pair_treat_a_stale_own_connection_as_foreign(app, client):
+    # our name prefix, but no stored token for this reader: another kiosk may hold it
+    reader = use_reader(app)
+    set_connections(reader, [other(own_name(app), f"http://10.0.0.5:8091/rfid/{SERIAL}/lost")])
+    r = await client.post("/edge/rfid/connect", headers=make_session(app), json={"ip": READER_IP})
+    assert r.json()["paired_with"] == own_name(app)
+    assert code(await pair(client, app, laptop_ip="10.0.0.5")) == "reader_paired_elsewhere"
+
+
+async def test_our_token_under_another_kiosks_name_is_not_ours(app, client):
+    # ours needs BOTH our name prefix and our token
+    reader = use_reader(app)
+    pairing.remember(app.state.store, serial=SERIAL, ip=READER_IP, model="FX9600",
+                     versions={}, password_index=3, token="ourtoken")
+    set_connections(reader, [other("ServerSherpa Kiosk 9999 (Dock)",
+                                   f"http://10.0.0.5:8091/rfid/{SERIAL}/ourtoken")])
+    r = await client.post("/edge/rfid/connect", headers=make_session(app), json={"ip": READER_IP})
+    assert r.json()["paired_with"] == "ServerSherpa Kiosk 9999 (Dock)"

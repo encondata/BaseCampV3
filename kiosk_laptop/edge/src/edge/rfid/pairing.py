@@ -3,10 +3,13 @@ ZIOTC tag-data endpoint (`READER-GATEWAY.endpointConfig.data.event.connections`)
 at `http://<laptop-ip>:8091/rfid/<reader-serial>/<token>`, read it back to
 verify, and record the pairing in SQLite.
 
-A connection is ours when its URL carries this laptop's stored token for that
-reader; any other connection named `ServerSherpa Kiosk…` belongs to another
-kiosk (two kiosks can share the last 4 serial characters, so the name alone
-proves nothing). The token is a secret: it is redacted as `…` in every
+A connection is ours when its name carries our prefix (`ServerSherpa Kiosk
+<last4> `) AND its URL carries this laptop's stored token for that reader;
+any other connection named `ServerSherpa Kiosk…` belongs to another kiosk
+(two kiosks can share the last 4 serial characters, so the name alone proves
+nothing). Discovery, connect and pair all use this rule via `paired_with`.
+When pairing, every `ServerSherpa Kiosk…` connection and any connection
+carrying our token (one somebody renamed) is replaced by ours. The token is a secret: it is redacted as `…` in every
 response and log line."""
 
 import copy
@@ -60,13 +63,8 @@ def with_connections(config: dict, connections: list[dict]) -> dict:
     return gateway
 
 
-def foreign_connection(connections: list[dict], is_ours) -> str | None:
-    """The name of the first `ServerSherpa Kiosk…` connection that isn't ours."""
-    for conn in connections:
-        name = str(conn.get("name") or "")
-        if name.startswith(PAIR_PREFIX) and not is_ours(conn):
-            return name
-    return None
+def _name(conn: dict) -> str:
+    return str(conn.get("name") or "")
 
 
 def connection_url(conn: dict) -> str:
@@ -95,6 +93,25 @@ def redact_url(url: str) -> str:
 
 def token_matches(conn: dict, serial: str, token: str | None) -> bool:
     return bool(token) and connection_url(conn).endswith(f"/rfid/{serial}/{token}")
+
+
+def is_ours(conn: dict, identity: Identity, serial: str, token: str | None) -> bool:
+    return _name(conn).startswith(own_prefix(identity)) and token_matches(conn, serial, token)
+
+
+def paired_with(config, identity: Identity | None, serial: str,
+                token: str | None) -> str | None:
+    """The name of another kiosk's connection on the reader (the first
+    `ServerSherpa Kiosk…` connection that isn't ours), or None."""
+    for conn in get_connections(config):
+        if _name(conn).startswith(PAIR_PREFIX) and not (
+                identity is not None and is_ours(conn, identity, serial, token)):
+            return _name(conn)
+    return None
+
+
+def redact_token(text: str, token: str | None) -> str:
+    return text.replace(token, REDACTED) if token else text
 
 
 def valid_ipv4(value) -> str:
@@ -174,20 +191,19 @@ def _versions(version: dict) -> dict:
     return {key: version.get(key) for key in VERSION_KEYS}
 
 
-async def connect(store: Store, ip: str, *, transport=None, probe=ziotc.probe) -> dict:
+async def connect(store: Store, identity: Identity, ip: str, *, transport=None,
+                  probe=ziotc.probe) -> dict:
     found = await probe(ip, transport, password_first(store, ip), with_config=True)
     if not found or not found.get("serial"):
         raise ReaderError("reader_not_iotc", "This isn't an FX reader in IoT Connector mode.")
     serial = str(found["serial"])
     remember(store, serial=serial, ip=ip, model=found["model"], versions=found["versions"],
              password_index=found.get("password_index"))
-    token = stored_token(store, serial)
-    paired_with = foreign_connection(get_connections(found.get("config")),
-                                     lambda c: token_matches(c, serial, token))
-    log.debug("connected to reader %s at %s (paired with: %s)", serial, ip, paired_with)
+    elsewhere = paired_with(found.get("config"), identity, serial, stored_token(store, serial))
+    log.debug("connected to reader %s at %s (paired with: %s)", serial, ip, elsewhere)
     return {"ip": ip, "model": found["model"], "serial": serial,
             "versions": found["versions"], "status": found["status"],
-            "paired_with": paired_with}
+            "paired_with": elsewhere}
 
 
 def laptop_address(data_dir, reader_ip: str, given: str | None) -> str:
@@ -202,6 +218,21 @@ def laptop_address(data_dir, reader_ip: str, given: str | None) -> str:
 
 async def pair(store: Store, identity: Identity, ip: str, laptop_ip: str, *,
                confirm_takeover: bool = False, transport=None) -> dict:
+    tokens: list[str] = []  # the token once known, for redacting reader messages
+    try:
+        return await _pair(store, identity, ip, laptop_ip, confirm_takeover, transport, tokens)
+    except ReaderError as exc:
+        # a reader may echo the endpoint URL back in its error message
+        message = exc.message
+        for token in tokens:
+            message = redact_token(message, token)
+        if message != exc.message:
+            raise ReaderError(exc.code, message) from None
+        raise
+
+
+async def _pair(store: Store, identity: Identity, ip: str, laptop_ip: str,
+                confirm_takeover: bool, transport, tokens: list[str]) -> dict:
     async with ziotc.ZiotcClient(ip, transport=transport,
                                  password_first=password_first(store, ip)) as client:
         version = await client.version()
@@ -212,6 +243,7 @@ async def pair(store: Store, identity: Identity, ip: str, laptop_ip: str, *,
         versions = _versions(version)
         # keep the token before writing, so a failed verify can't orphan our connection
         token = stored_token(store, serial) or secrets.token_urlsafe(32)
+        tokens.append(token)
         remember(store, serial=serial, ip=ip, model=model, versions=versions,
                  password_index=client.password_index, token=token)
 
@@ -219,15 +251,17 @@ async def pair(store: Store, identity: Identity, ip: str, laptop_ip: str, *,
         if not isinstance(config.get("READER-GATEWAY"), dict):
             raise ReaderError("reader_error", "The reader's config has no READER-GATEWAY.")
         connections = get_connections(config)
-        ours = lambda c: token_matches(c, serial, token)  # noqa: E731
-        foreign = foreign_connection(connections, ours)
+        foreign = paired_with(config, identity, serial, token)
         if foreign and not confirm_takeover:
             raise err(409, "reader_paired_elsewhere", name=foreign)
         url = endpoint_url(laptop_ip, serial, token)
         mine = {"type": "httpPost", "name": connection_name(identity),
                 "description": f"ServerSherpa kiosk {identity.serial}",
-                "options": {"URL": url, "security": {"verifyPeer": False, "verifyHost": False}}}
-        kept = [c for c in connections if not str(c.get("name") or "").startswith(PAIR_PREFIX)]
+                "options": {"URL": url, "security": {"verifyPeer": False, "verifyHost": False,
+                                                     "authenticationType": "NONE"}}}
+        # drop every kiosk connection, and ours even if someone renamed it
+        kept = [c for c in connections if not _name(c).startswith(PAIR_PREFIX)
+                and not token_matches(c, serial, token)]
         edited = [*kept, mine]
         if len(edited) > MAX_CONNECTIONS:
             raise err(409, "reader_endpoints_full")

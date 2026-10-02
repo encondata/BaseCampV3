@@ -34,6 +34,22 @@ NOT_FOUND_HTML = (
 TOO_MANY_ENDPOINTS = ("Invalid endpoint configuration - more than 2 endpoints "
                       "cannot be mapped to data interfaces")
 EMPTY_PAYLOAD = "Invalid Payload expected atleast one configuration field"
+# Zebra's httpPostSecurity.v1 requires all three fields
+HTTP_POST_SECURITY = ("verifyPeer", "verifyHost", "authenticationType")
+
+
+def missing_security(conn) -> str | None:
+    """The Zebra-style error for an httpPost connection whose security block
+    lacks a required field, or None when it is complete."""
+    if not isinstance(conn, dict) or conn.get("type") != "httpPost":
+        return None
+    options = conn.get("options") if isinstance(conn.get("options"), dict) else {}
+    security = options.get("security") if isinstance(options.get("security"), dict) else {}
+    for field in HTTP_POST_SECURITY:
+        if field not in security:
+            return (f"Invalid endpoint configuration - httpPost security: "
+                    f"'{field}' is a required property")
+    return None
 
 VERSION = {
     "readerApplication": "2.7.19.0", "radioFirmware": "2.1.14.0",
@@ -61,9 +77,14 @@ def default_config() -> dict:
         "GPIO-LED": {},
         "READER-GATEWAY": {
             "endpointConfig": {
-                "data": {"event": {"connections": []}},
-                "management": {},
-                "control": {},
+                "data": {"event": {"connections": []},
+                         "batching": {"reportingInterval": 0, "maxPayloadSizePerReport": 256000}},
+                "management": {"connection": {
+                    "type": "mqtt", "name": "Fleet MQTT",
+                    "options": {"endpoint": {"hostName": "mqtt.example.test", "port": 1883}}}},
+                "control": {"connection": {
+                    "type": "mqtt", "name": "Fleet control",
+                    "options": {"endpoint": {"hostName": "mqtt.example.test", "port": 1883}}}},
             },
         },
     }
@@ -84,7 +105,7 @@ class FakeReader:
         self.login_attempts: list[int | None] = []  # index of each password tried
         self.puts: list[dict] = []
         self.tokens: set[str] = set()
-        # path -> (status, body); the next request to it answers this, once
+        # path or "METHOD path" -> (status, body); the next matching request answers this, once
         self.fail_next: dict[str, tuple[int, object]] = {}
         self.app = self._build()
 
@@ -102,7 +123,9 @@ class FakeReader:
         async def gate(request: Request, call_next):
             if reader.mode == "not_iotc":
                 return HTMLResponse(NOT_FOUND_HTML, status_code=404)
-            failure = reader.fail_next.pop(request.url.path, None)
+            failure = reader.fail_next.pop(f"{request.method} {request.url.path}", None)
+            if failure is None:
+                failure = reader.fail_next.pop(request.url.path, None)
             if failure is not None:
                 status, body = failure
                 if isinstance(body, str):
@@ -165,6 +188,10 @@ class FakeReader:
                 if len(connections) > 2:
                     return JSONResponse({"code": 1, "message": TOO_MANY_ENDPOINTS},
                                         status_code=422)
+                for conn in connections:
+                    problem = missing_security(conn)
+                    if problem:
+                        return JSONResponse({"code": 1, "message": problem}, status_code=422)
             if reader.mode != "verify_mismatch":
                 reader.config = {**reader.config, **copy.deepcopy(payload)}
             return HTMLResponse("Command Successful")

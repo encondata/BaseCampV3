@@ -11,7 +11,7 @@ import httpx
 
 from edge import hostnet
 from edge.rfid import ziotc
-from edge.rfid.pairing import PAIR_PREFIX, foreign_connection, get_connections  # noqa: F401
+from edge.rfid import pairing
 
 PORT = 443
 CONCURRENCY = 64
@@ -33,21 +33,14 @@ async def tcp_connect(ip: str, port: int = PORT, timeout: float = TIMEOUT_S) -> 
     return True
 
 
-def paired_with(config, own_name: str | None) -> str | None:
-    """The name of another kiosk's connection on the reader, if any."""
-    return foreign_connection(get_connections(config),
-                              lambda c: bool(own_name)
-                              and str(c.get("name") or "").startswith(own_name))
-
-
 class Discovery:
     def __init__(self, store, data_dir, *, connect=tcp_connect, probe=ziotc.probe,
-                 own_connection=lambda: None) -> None:
+                 identity=lambda: None) -> None:
         self.store = store
         self.data_dir = data_dir
         self._connect = connect
         self._probe = probe
-        self._own = own_connection  # this kiosk's connection prefix (…<last4>), to skip our own pairing
+        self._identity = identity  # this kiosk's Identity, to tell our own pairing apart
         self._task: asyncio.Task | None = None
         self._snap = {"scan_id": None, "state": "done", "probed": 0, "total": 0,
                       "readers": [], "host": {"ips": [], "fresh": False}}
@@ -93,9 +86,13 @@ class Discovery:
                         log.debug("probe of %s failed: %s", ip, type(exc).__name__)
                         found = None
                     if found and found.get("serial"):
+                        serial = str(found["serial"])
+                        elsewhere = pairing.paired_with(
+                            found.get("config"), self._identity(), serial,
+                            pairing.stored_token(self.store, serial))
                         snap["readers"].append({
-                            "ip": ip, "model": found.get("model"), "serial": found["serial"],
-                            "paired_with": paired_with(found.get("config"), self._own())})
+                            "ip": ip, "model": found.get("model"), "serial": serial,
+                            "paired_with": elsewhere})
         finally:
             snap["probed"] += 1
 

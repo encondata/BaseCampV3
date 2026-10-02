@@ -36,7 +36,8 @@ async def connect(request: Request) -> dict:
     ip = pairing.valid_ipv4(body.get("ip"))
     st = request.app.state
     try:
-        return await pairing.connect(st.store, ip, transport=st.reader_transport)
+        return await pairing.connect(st.store, st.identity, ip,
+                                     transport=st.reader_transport)
     except ReaderError as exc:
         raise pairing.reader_http_error(exc) from None
 

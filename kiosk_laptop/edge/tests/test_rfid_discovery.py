@@ -2,6 +2,7 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
+from edge.rfid import pairing
 from edge.rfid.discovery import Discovery
 from tests.conftest import make_session
 
@@ -13,9 +14,18 @@ def write_host(app, ips=("10.0.0.5",), prefix=29, stamp=None):
                                               for i in ips]}))
 
 
-def conn(name):
+def conn(name, url="http://10.0.0.7:8091/rfid/x/theirs"):
     return {"READER-GATEWAY": {"endpointConfig": {"data": {"event": {
-        "connections": [{"name": name}]}}}}}
+        "connections": [{"name": name, "options": {"URL": url}}]}}}}}
+
+
+def own(app):
+    return pairing.own_prefix(app.state.identity) + "(Me)"
+
+
+def store_token(app, serial, token):
+    pairing.remember(app.state.store, serial=serial, ip="10.0.0.2", model="FX7500",
+                     versions={}, password_index=0, token=token)
 
 
 async def wait_done(disc):
@@ -39,11 +49,12 @@ def make(app, up=None, found=None):
         assert kw["quiet"] is True
         return found(ip) if found else None
     return Discovery(app.state.store, app.state.settings.data_dir, connect=connect, probe=probe,
-                     own_connection=lambda: "ServerSherpa Kiosk 0001 ")
+                     identity=lambda: app.state.identity)
 
 
 async def test_progress_fx_kept_non_fx_dropped(app):
     write_host(app)  # 10.0.0.5/29 -> 6 hosts, minus own = 5
+    store_token(app, "S2", "ourtoken")
     seen = []
 
     def found(ip):
@@ -52,7 +63,7 @@ async def test_progress_fx_kept_non_fx_dropped(app):
             return {"ip": ip, "model": "FX9600", "serial": "S1",
                     "config": conn("ServerSherpa Kiosk 9999 (Dock)")}
         if ip == "10.0.0.2":
-            return {"ip": ip, "model": "FX7500", "serial": "S2", "config": conn("ServerSherpa Kiosk 0001 (Me)")}
+            return {"ip": ip, "model": "FX7500", "serial": "S2", "config": conn(own(app), "http://10.0.0.5:8091/rfid/S2/ourtoken")}
         if ip == "10.0.0.3":
             return {"ip": ip, "model": "FX9600", "serial": None}
         return None  # not FX
@@ -188,3 +199,21 @@ async def test_rescan_does_not_leak_old_results(app):
     await asyncio.sleep(0.05)
     snap = disc.snapshot()
     assert snap["readers"] == [] and snap["probed"] == snap["total"] == 5
+
+
+async def test_scan_uses_the_same_ours_rule_as_pairing(app):
+    """Ours = our name prefix AND a URL carrying our stored token for that serial."""
+    write_host(app)
+    store_token(app, "TWIN", "ourtoken")
+    configs = {
+        # a twin kiosk sharing our last 4, with its own token
+        "10.0.0.1": ("TWIN", conn(own(app), "http://10.0.0.8:8091/rfid/TWIN/theirtoken")),
+        # our own stale connection, but this laptop has no token for the reader
+        "10.0.0.2": ("STALE", conn(own(app), "http://10.0.0.5:8091/rfid/STALE/lost")),
+    }
+    disc = make(app, found=lambda ip: {"ip": ip, "model": "FX9600", "serial": configs[ip][0],
+                                       "config": configs[ip][1]} if ip in configs else None)
+    disc.start()
+    snap = await wait_done(disc)
+    assert {r["ip"]: r["paired_with"] for r in snap["readers"]} == {
+        "10.0.0.1": own(app), "10.0.0.2": own(app)}
