@@ -37,3 +37,13 @@
 
 /* Router expansion: the held-router warning line. Color only. */
 .router-warn { color: var(--c-amber); }
+
+/* "Add a router" modal: sized to the one-line command, which wraps. */
+.modal-card.reports-modal-card.rgm-card.add-router-card { width: min(760px, 96vw); max-width: 96vw; }
+.add-router-steps { margin: 0 0 10px; padding-left: 20px; display: grid; gap: 6px; }
+.add-router-cmd {
+  display: flex; gap: 10px; align-items: flex-start;
+  margin: 0 0 12px; padding: 10px 12px;
+  border: 1px solid var(--paper-line); border-radius: 8px; background: var(--paper-2, var(--paper));
+}
+.add-router-cmd code { flex: 1; word-break: break-all; white-space: pre-wrap; }
