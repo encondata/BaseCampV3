@@ -11,6 +11,7 @@ import json
 import logging
 import secrets
 import uuid
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -228,11 +229,18 @@ def _apply_row(assoc: InitiativeAsset, r: dict, now: datetime) -> None:
 
 async def assign_generated_serials(
     db: AsyncSession, rows: list[dict], *,
+    initiative_id: uuid.UUID | None = None,
     draw: Callable[[], str] = new_generated_serial,
 ) -> None:
     """Give every ok row flagged serial_generated (and still blank) a serial
     unique among the file's serials and every assets.serial_number
-    (archived included). One batched lookup per round; collisions redraw."""
+    (archived included). One batched lookup per round; collisions redraw.
+
+    With initiative_id, a pending row first tries to reuse the serial of the
+    move's roster asset that has the same (case-insensitive) name and a
+    gnrtd- serial, so re-uploading a sheet updates instead of duplicating.
+    Reuse needs exactly one such roster asset, no other pending row with
+    that name, and a serial no other row in the file already carries."""
     pending = [r for r in rows
                if r["status"] == "ok" and r.get("serial_generated")
                and not r["serial_number"]]
@@ -240,6 +248,32 @@ async def assign_generated_serials(
         return
     taken = {r["serial_number"].lower() for r in rows
              if r["status"] == "ok" and r["serial_number"]}
+    if initiative_id is not None:
+        by_name: dict[str, list[str]] = {}
+        for name, serial in await db.execute(
+                select(Asset.name, Asset.serial_number)
+                .join(InitiativeAsset, InitiativeAsset.asset_id == Asset.id)
+                .where(InitiativeAsset.initiative_id == initiative_id,
+                       Asset.serial_number.ilike(f"{GENERATED_SERIAL_PREFIX}%"))):
+            if name:
+                by_name.setdefault(name.lower(), []).append(serial.lower())
+        pending_names = Counter(r["asset_name"] for r in pending
+                                if r["asset_name"])
+        still_pending = []
+        for r in pending:
+            name = r["asset_name"]
+            owners = by_name.get(name, []) if name else []
+            if (name and len(owners) == 1 and pending_names[name] == 1
+                    and owners[0] not in taken):
+                serial = owners[0]
+                taken.add(serial)
+                r["serial_number"] = serial
+                r["serial_generated"] = False
+                r["notes"].append(f"Serial {serial} reused from the existing "
+                                  "asset with the same name")
+            else:
+                still_pending.append(r)
+        pending = still_pending
     while pending:
         candidates: dict[str, dict] = {}
         for r in pending:
@@ -286,7 +320,7 @@ async def run_import(
     boundary. progress_every overrides BATCH_SIZE as that boundary."""
     from serversherpa.services.audit import audit
 
-    await assign_generated_serials(db, rows)
+    await assign_generated_serials(db, rows, initiative_id=initiative_id)
     ok_rows = [r for r in rows if r["status"] == "ok"]
     assets, rfid_map, literal_map, model_map, roster = await _lookups(
         db, initiative_id, ok_rows)

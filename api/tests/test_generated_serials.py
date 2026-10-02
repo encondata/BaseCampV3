@@ -119,3 +119,93 @@ async def test_run_import_writes_generated_serials(db):
     assert names[by_row[2]["serial_number"]] == "web-01"
     blank_name = names[by_row[3]["serial_number"]]
     assert blank_name == by_row[3]["serial_number"]
+
+
+async def _roster(db, ini, *specs):
+    """specs: (serial, name) -> assets on the move's roster."""
+    from serversherpa.db.models import InitiativeAsset
+    assets = []
+    for serial, name in specs:
+        a = Asset(serial_number=serial, name=name)
+        db.add(a)
+        await db.flush()
+        db.add(InitiativeAsset(initiative_id=ini.id, asset_id=a.id))
+        assets.append(a)
+    await db.commit()
+    return assets
+
+
+async def test_reuse_by_name_takes_the_roster_assets_gnrtd_serial(db):
+    ini = await _move(db)
+    await _roster(db, ini, ("gnrtd-111111", "web-01"))
+    rows = _rows(("", "Web-01"))
+    await assign_generated_serials(db, rows, initiative_id=ini.id)
+    r = rows[0]
+    assert r["serial_number"] == "gnrtd-111111"
+    assert r["serial_generated"] is False
+    assert ("Serial gnrtd-111111 reused from the existing asset with the "
+            "same name") in r["notes"]
+
+
+async def test_reupload_updates_the_existing_asset_instead_of_duplicating(db):
+    ini = await _move(db)
+    await _roster(db, ini, ("gnrtd-111111", "web-01"))
+    rows = _rows(("", "Web-01"))
+    result = await run_import(db, initiative_id=ini.id, added_by=None,
+                              rows=rows, write=True)
+    assert result["summary"]["created"] == 0
+    assert result["summary"]["updated"] == 1
+    assert result["details"][0]["serial_number"] == "gnrtd-111111"
+    assert result["details"][0]["serial_generated"] is False
+    named = (await db.scalars(select(Asset).where(Asset.name == "web-01"))).all()
+    assert len(named) == 1
+
+
+async def test_two_roster_assets_with_the_name_draw_fresh(db):
+    ini = await _move(db)
+    await _roster(db, ini, ("gnrtd-111111", "web-01"),
+                  ("gnrtd-222222", "web-01"))
+    rows = _rows(("", "web-01"))
+    await assign_generated_serials(db, rows, initiative_id=ini.id)
+    assert GEN.fullmatch(rows[0]["serial_number"])
+    assert rows[0]["serial_number"] not in ("gnrtd-111111", "gnrtd-222222")
+    assert rows[0]["serial_generated"] is True
+
+
+async def test_two_file_rows_with_the_name_both_draw_fresh(db):
+    ini = await _move(db)
+    await _roster(db, ini, ("gnrtd-111111", "web-01"))
+    rows = _rows(("", "web-01"), ("", "Web-01"))
+    await assign_generated_serials(db, rows, initiative_id=ini.id)
+    got = [r["serial_number"] for r in rows]
+    assert all(GEN.fullmatch(s) and s != "gnrtd-111111" for s in got)
+    assert got[0] != got[1]
+    assert all(r["serial_generated"] is True for r in rows)
+
+
+async def test_a_non_gnrtd_roster_serial_is_not_reused(db):
+    ini = await _move(db)
+    await _roster(db, ini, ("sn-9", "web-01"))
+    rows = _rows(("", "web-01"))
+    await assign_generated_serials(db, rows, initiative_id=ini.id)
+    assert GEN.fullmatch(rows[0]["serial_number"])
+    assert rows[0]["serial_generated"] is True
+
+
+async def test_no_initiative_id_means_no_reuse(db):
+    ini = await _move(db)
+    await _roster(db, ini, ("gnrtd-111111", "web-01"))
+    rows = _rows(("", "web-01"))
+    await assign_generated_serials(db, rows)
+    assert rows[0]["serial_number"] != "gnrtd-111111"
+    assert GEN.fullmatch(rows[0]["serial_number"])
+    assert rows[0]["serial_generated"] is True
+
+
+async def test_reuse_skips_a_serial_another_row_already_carries(db):
+    ini = await _move(db)
+    await _roster(db, ini, ("gnrtd-111111", "web-01"))
+    rows = _rows(("GNRTD-111111", "other"), ("", "web-01"))
+    await assign_generated_serials(db, rows, initiative_id=ini.id)
+    assert rows[1]["serial_number"] != "gnrtd-111111"
+    assert rows[1]["serial_generated"] is True
