@@ -40,15 +40,18 @@ class TrustIn(BaseModel):
 
 
 # Store validation (TargetError codes) answers 422, so no Field limits on the
-# validated fields here; secrets get a size cap only.
+# validated fields beyond a size cap. Secrets carry no pydantic constraint at
+# all: the store checks their length (password_too_long / passphrase_too_long)
+# so no constraint error can ever describe them. (The app-wide validation
+# handler also drops "input" and "ctx" from every 422 item.)
 class SshTargetIn(BaseModel):
     name: str = Field(max_length=200)
     host: str = Field(max_length=300)
     port: int = 22
     user: str = Field(max_length=200)
-    password: str | None = Field(default=None, max_length=1024)
+    password: str | None = None
     key_path: str | None = Field(default=None, max_length=255)
-    key_passphrase: str | None = Field(default=None, max_length=1024)
+    key_passphrase: str | None = None
 
 
 class SshTargetPatch(BaseModel):
@@ -56,9 +59,9 @@ class SshTargetPatch(BaseModel):
     host: str | None = Field(default=None, max_length=300)
     port: int | None = None
     user: str | None = Field(default=None, max_length=200)
-    password: str | None = Field(default=None, max_length=1024)
+    password: str | None = None
     key_path: str | None = Field(default=None, max_length=255)
-    key_passphrase: str | None = Field(default=None, max_length=1024)
+    key_passphrase: str | None = None
 
 
 class KnownHostOut(BaseModel):
@@ -89,6 +92,9 @@ async def list_targets(actor: AuthContext = require_permission("deploy", "view")
 _UNWRITABLE = {"code": "targets_file_unwritable",
                "message": "Sirdar couldn't save deploy-targets.env. "
                           "Check that it's writable; see the README."}
+_UNREADABLE = {"code": "targets_file_unreadable",
+               "message": "Sirdar couldn't read deploy-targets.env. "
+                          "Check that it's valid UTF-8; see the README."}
 _NOT_FOUND = {"code": "target_not_found"}
 
 
@@ -106,7 +112,9 @@ async def _store_call(fn, *args):
         raise HTTPException(status_code=404, detail=_NOT_FOUND) from None
     except TargetError as e:
         raise HTTPException(status_code=422, detail={"code": e.code}) from None
-    except ValueError:                 # newline / NUL in a value
+    except UnicodeDecodeError:         # the file itself isn't UTF-8 (a ValueError)
+        raise HTTPException(status_code=500, detail=_UNREADABLE) from None
+    except ValueError:                 # control / line-separator character in a value
         raise HTTPException(status_code=422, detail={"code": "value_invalid"}) from None
     except OSError:
         raise HTTPException(status_code=500, detail=_UNWRITABLE) from None
@@ -114,7 +122,7 @@ async def _store_call(fn, *args):
 
 @router.get("/ssh-targets/{slug}")
 async def get_ssh_target(slug: str, actor: AuthContext = require_permission("deploy", "change")):
-    t = await asyncio.to_thread(targets.ssh_store(get_settings()).get, slug)
+    t = await _store_call(targets.ssh_store(get_settings()).get, slug)
     if t is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return t.public()
@@ -138,12 +146,9 @@ _PATCH_ORDER = ("name", "host", "port", "user", "password", "key_path", "key_pas
 async def update_ssh_target(slug: str, body: SshTargetPatch, request: Request, db: DbSession,
                             actor: AuthContext = require_permission("deploy", "change")):
     store = targets.ssh_store(get_settings())
-    before = await asyncio.to_thread(store.get, slug)
-    if before is None:
-        raise HTTPException(status_code=404, detail=_NOT_FOUND)
     fields = body.model_dump(exclude_unset=True)
-    t = await _store_call(store.update, slug, fields)
-    old, new = (before, t)
+    old, new = await _store_call(store.update, slug, fields)   # both read under the lock
+    t = new
     current = {"name": (old.name, new.name), "host": (old.host, new.host),
                "port": (old.port, new.port), "user": (old.user, new.user),
                "password": (old.password, new.password),
@@ -171,7 +176,8 @@ async def remove_ssh_target(slug: str, request: Request, db: DbSession,
 def _key_file_names(folder: str) -> list[str]:
     try:
         with os.scandir(folder) as it:
-            return sorted(e.name for e in it if not e.name.startswith(".") and e.is_file())
+            return sorted(e.name for e in it
+                          if not e.name.startswith(".") and e.is_file(follow_symlinks=False))
     except OSError:
         return []
 

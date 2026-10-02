@@ -181,6 +181,12 @@ async def test_key_files(client, db, store_env, secret_bodies):
     resp = await client.get("/api/deploy/key-files", headers=h)
     assert resp.status_code == 200
     assert resp.json() == {"files": ["b_key", "id_ed25519"]}
+    outside = store_env["path"].parent / "outside"
+    outside.write_text("x\n")
+    (store_env["keys"] / "linked").symlink_to(outside)
+    (store_env["keys"] / "linked_dir").symlink_to(store_env["keys"] / "sub")
+    resp = await client.get("/api/deploy/key-files", headers=h)
+    assert resp.json() == {"files": ["b_key", "id_ed25519"]}
     store_env["apply"](keys_dir=store_env["keys"] / "missing")
     assert (await client.get("/api/deploy/key-files", headers=h)).json() == {"files": []}
 
@@ -301,3 +307,91 @@ async def test_targets_file_change_applies_without_restart(client, db, store_env
     ids = [t["id"] for t in (await client.get("/api/deploy/targets", headers=h)).json()["targets"]]
     assert ids[-1] == "ssh:x1"
     assert get_settings().deploy_targets_file == str(store_env["path"])
+
+
+# ---- security fix round ------------------------------------------------------
+
+SEPARATORS = ["\n", "\r", "\x00", "\t", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85",
+              "\u2028", "\u2029"]
+
+
+@pytest.mark.parametrize("sep", SEPARATORS, ids=[f"U+{ord(c):04X}" for c in SEPARATORS])
+async def test_separator_injection_rejected(client, db, store_env, secret_bodies, sep):
+    h = await auth_headers(client, db)
+    resp = await client.post("/api/deploy/ssh-targets", headers=h,
+                             json=_new(name="Victim", host="10.1.1.1"))
+    assert resp.status_code == 201, resp.text
+    evil = f"x{sep}SIRDAR_SSH_VICTIM_HOST=6.6.6.6{sep}"
+    resp = await client.post("/api/deploy/ssh-targets", headers=h,
+                             json=_new(name="Evil", password=evil))
+    assert resp.status_code == 422
+    assert resp.json() == {"detail": {"code": "value_invalid"}}
+    resp = await client.put("/api/deploy/ssh-targets/victim", headers=h,
+                            json={"key_passphrase": evil, "key_path": "id_ed25519"})
+    assert resp.status_code == 422
+    assert resp.json() == {"detail": {"code": "value_invalid"}}
+    resp = await client.get("/api/deploy/ssh-targets/victim", headers=h)
+    assert resp.json()["host"] == "10.1.1.1"
+    assert [t.slug for t in SshTargetStore(store_env["path"], store_env["keys"]).load()] \
+        == ["victim"]
+    assert "6.6.6.6" not in store_env["path"].read_text()
+
+
+async def test_ipv6_zone_id_rejected(client, db, store_env, secret_bodies):
+    h = await auth_headers(client, db)
+    resp = await client.post("/api/deploy/ssh-targets", headers=h,
+                             json=_new(host="fe80::1%x' y"))
+    assert resp.status_code == 422 and resp.json() == {"detail": {"code": "host_invalid"}}
+
+
+async def test_422_bodies_never_echo_secrets(client, db, store_env, secret_bodies):
+    h = await auth_headers(client, db)
+    long_pw = SAVED_PW + "L" * 1100
+    resp = await client.post("/api/deploy/ssh-targets", headers=h, json=_new(password=long_pw))
+    assert resp.status_code == 422
+    assert resp.json() == {"detail": {"code": "password_too_long"}}
+    resp = await client.post("/api/deploy/ssh-targets", headers=h,
+                             json=_new(key_path="id_ed25519", key_passphrase=SAVED_PP * 100))
+    assert resp.status_code == 422
+    assert resp.json() == {"detail": {"code": "passphrase_too_long"}}
+    assert (await client.post("/api/deploy/ssh-targets", headers=h, json=_new())).status_code \
+        == 201
+    resp = await client.put("/api/deploy/ssh-targets/edge-box", headers=h,
+                            json={"password": long_pw})
+    assert resp.status_code == 422 and SAVED_PW not in resp.text
+
+    # wrong types: pydantic errors, but no "input" / "ctx" in the body
+    for body in (_new(password={"pw": SAVED_PW}), _new(password=[SAVED_PW]),
+                 _new(key_passphrase={"pp": SAVED_PP}), _new(port=SAVED_PW)):
+        resp = await client.post("/api/deploy/ssh-targets", headers=h, json=body)
+        assert resp.status_code == 422, body
+        for item in resp.json()["detail"]:
+            assert "input" not in item and "ctx" not in item
+        assert SAVED_PW not in resp.text and SAVED_PP not in resp.text
+    resp = await client.put("/api/deploy/ssh-targets/edge-box", headers=h,
+                            json={"key_passphrase": {"x": SAVED_PP}})
+    assert resp.status_code == 422 and SAVED_PP not in resp.text
+
+
+async def test_put_audit_changed_comes_from_locked_read(client, db, store_env, secret_bodies):
+    h = await auth_headers(client, db)
+    assert (await client.post("/api/deploy/ssh-targets", headers=h, json=_new())).status_code \
+        == 201
+    resp = await client.put("/api/deploy/ssh-targets/edge-box", headers=h,
+                            json={"name": "Edge Box", "port": 2200, "password": "other-pw"})
+    assert resp.status_code == 200
+    assert (await _audits(db))[-1][2]["changed"] == ["port", "password"]
+    resp = await client.put("/api/deploy/ssh-targets/nope", headers=h, json={"port": 22})
+    assert resp.status_code == 404 and resp.json() == {"detail": {"code": "target_not_found"}}
+
+
+async def test_invalid_utf8_file_is_500_unreadable(client, db, store_env, secret_bodies):
+    h = await auth_headers(client, db)
+    store_env["path"].write_bytes(b"SIRDAR_SSH_TARGETS='a'\n\xff\xfe\n")
+    for method, url, body in (("POST", "/api/deploy/ssh-targets", _new()),
+                              ("PUT", "/api/deploy/ssh-targets/a", {"port": 22}),
+                              ("GET", "/api/deploy/ssh-targets/a", None)):
+        resp = await client.request(method, url, headers=h, json=body)
+        assert resp.status_code == 500, (method, resp.text)
+        assert resp.json()["detail"]["code"] == "targets_file_unreadable"
+        assert str(store_env["path"]) not in resp.text

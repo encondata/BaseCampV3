@@ -4,7 +4,9 @@ SIRDAR_STATIC_DIR is set) is served from / — see _mount_spa."""
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
@@ -41,6 +43,14 @@ def _mount_spa(app: FastAPI, static_dir: str) -> None:
         return FileResponse(root / "index.html")
 
 
+async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI's default 422, minus each item's "input" and "ctx": those echo
+    what the client sent (passwords included) back into the response."""
+    errors = [{k: v for k, v in err.items() if k not in ("input", "ctx")}
+              for err in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     prod = settings.env == "production"
@@ -51,6 +61,8 @@ def create_app() -> FastAPI:
         redoc_url=None,
         openapi_url=None if prod else "/api/openapi.json",
     )
+
+    app.add_exception_handler(RequestValidationError, _validation_error)
 
     if settings.allowed_origin_list:
         app.add_middleware(

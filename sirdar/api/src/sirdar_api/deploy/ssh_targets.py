@@ -16,6 +16,7 @@ import os
 import re
 import shlex
 import tempfile
+import unicodedata
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -27,6 +28,27 @@ _LINE_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
 _LABEL_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 _USER_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _SUFFIXES = ("NAME", "HOST", "PORT", "USER", "PASSWORD", "KEY_PATH", "KEY_PASSPHRASE")
+SECRET_MAX = 1024
+# Control characters (Cc: \n \r \t \v \f NUL \x1c-\x1e \x85 ...) and the
+# Unicode line/paragraph separators (Zl U+2028, Zp U+2029) are never allowed in
+# a value: some of them are line breaks to str.splitlines() or other dotenv
+# readers, so letting them through would let one value inject another line.
+_BAD_CATEGORIES = frozenset({"Cc", "Zl", "Zp"})
+
+
+def has_bad_chars(value: str) -> bool:
+    return any(unicodedata.category(ch) in _BAD_CATEGORIES for ch in value)
+
+
+def _lines(text: str) -> list[str]:
+    """Split on "\n" only (dropping one trailing "\r" per line) -- never on the
+    other characters str.splitlines() treats as line breaks."""
+    if not text:
+        return []
+    parts = text.split("\n")
+    if parts[-1] == "":
+        parts.pop()
+    return [p[:-1] if p.endswith("\r") else p for p in parts]
 
 
 class TargetError(Exception):
@@ -116,7 +138,7 @@ def _key_of(line: str) -> str | None:
 
 def _parse(text: str) -> dict[str, str]:
     values: dict[str, str] = {}
-    for line in text.splitlines():
+    for line in _lines(text):
         m = _LINE_RE.match(line)
         if m:
             values[m.group(1)] = _unquote(m.group(2))
@@ -124,6 +146,8 @@ def _parse(text: str) -> dict[str, str]:
 
 
 def _valid_host(host: str) -> bool:
+    if "%" in host:                            # no IPv6 zone ids ("fe80::1%eth0")
+        return False
     try:
         ipaddress.ip_address(host)
         return True
@@ -191,14 +215,15 @@ class SshTargetStore:
             return [*current, t], t
         return self._write(mutate)
 
-    def update(self, slug: str, fields: dict) -> SavedSshTarget:
+    def update(self, slug: str, fields: dict) -> tuple[SavedSshTarget, SavedSshTarget]:
+        """Returns (before, after), both read under the lock."""
         def mutate(current: list[SavedSshTarget]):
             i = next((i for i, c in enumerate(current) if c.slug == slug), None)
             if i is None:
                 raise KeyError(slug)
             t = self._apply(current[i], fields)
             self._validate(t, current[:i] + current[i + 1:])
-            return [*current[:i], t, *current[i + 1:]], t
+            return [*current[:i], t, *current[i + 1:]], (current[i], t)
         return self._write(mutate)
 
     def remove(self, slug: str) -> SavedSshTarget:
@@ -212,9 +237,16 @@ class SshTargetStore:
     @staticmethod
     def _apply(t: SavedSshTarget, fields: dict) -> SavedSshTarget:
         """Absent or None = keep; "" clears the optional fields."""
+        for key in ("password", "key_passphrase"):
+            value = fields.get(key)
+            if value is not None and not isinstance(value, str):
+                raise ValueError("secret values must be strings")
+            if isinstance(value, str) and len(value) > SECRET_MAX:
+                raise TargetError("password_too_long" if key == "password"
+                                  else "passphrase_too_long")
         for value in fields.values():
-            if isinstance(value, str) and ("\n" in value or "\r" in value or "\x00" in value):
-                raise ValueError("values can't contain newlines or NUL")
+            if isinstance(value, str) and has_bad_chars(value):
+                raise ValueError("values can't contain control or line-separator characters")
         changes: dict = {}
         for key in ("name", "host", "user"):
             if fields.get(key) is not None:
@@ -241,7 +273,10 @@ class SshTargetStore:
         if t.key_path:
             if not valid_key_name(t.key_path):
                 raise TargetError("key_file_invalid")
-            if not (self.keys_dir / t.key_path).is_file():
+            key = self.keys_dir / t.key_path
+            if key.is_symlink():               # must be a real file in deploy-keys
+                raise TargetError("key_file_invalid")
+            if not key.is_file():
                 raise TargetError("key_file_not_found")
         if t.password is None and not t.key_path:
             raise TargetError("auth_required")
@@ -249,7 +284,8 @@ class SshTargetStore:
             raise TargetError("name_taken")
 
     def _write(self, mutate):
-        fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        fd = os.open(self.lock_path,
+                     os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             text = self._read_text()
@@ -275,11 +311,11 @@ class SshTargetStore:
                 if t.passphrase is not None:
                     block.append(f"{k}KEY_PASSPHRASE={_quote(t.passphrase)}")
         for line in block:
-            if "\n" in line or "\r" in line or "\x00" in line:
-                raise ValueError("values can't contain newlines or NUL")
+            if has_bad_chars(line):
+                raise ValueError("values can't contain control or line-separator characters")
         out: list[str] = []
         placed = False
-        for line in old_text.splitlines():
+        for line in _lines(old_text):
             key = _key_of(line)
             if key is not None and key.startswith(PREFIX):
                 if not placed:                 # our block goes where it was
@@ -307,3 +343,17 @@ class SshTargetStore:
             except FileNotFoundError:
                 pass
             raise
+        self._fsync_dir()
+
+    def _fsync_dir(self) -> None:
+        """Make the rename durable."""
+        try:
+            dfd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        except OSError:
+            return
+        try:
+            os.fsync(dfd)
+        except OSError:
+            pass
+        finally:
+            os.close(dfd)

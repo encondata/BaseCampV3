@@ -107,16 +107,18 @@ def test_slug_rules_and_collisions(store):
 
 def test_rename_keeps_slug(store):
     store.add(_fields())
-    t = store.update("edge-box", {"name": "Renamed"})
+    before, t = store.update("edge-box", {"name": "Renamed"})
+    assert before.name == "Edge Box"
     assert (t.slug, t.name) == ("edge-box", "Renamed")
     assert store.get("edge-box").name == "Renamed"
 
 
 def test_update_secret_semantics(store):
     store.add(_fields(key_path="id_ed25519", key_passphrase="pp"))
-    t = store.update("edge-box", {"host": "h.example.com"})
+    _, t = store.update("edge-box", {"host": "h.example.com"})
     assert (t.password, t.passphrase) == ("pw-1", "pp")
-    t = store.update("edge-box", {"password": "", "key_passphrase": "new"})
+    before, t = store.update("edge-box", {"password": "", "key_passphrase": "new"})
+    assert (before.password, before.passphrase) == ("pw-1", "pp")
     assert (t.password, t.passphrase) == (None, "new")
     with pytest.raises(TargetError) as exc:
         store.update("edge-box", {"key_path": ""})
@@ -164,7 +166,7 @@ def test_auth_required_and_name_taken(store):
     with pytest.raises(TargetError) as exc:
         store.update("other", {"name": "edge box"})
     assert exc.value.code == "name_taken"
-    assert store.update("other", {"name": "OTHER"}).name == "OTHER"   # own name, new case
+    assert store.update("other", {"name": "OTHER"})[1].name == "OTHER"   # own name, new case
 
 
 @pytest.mark.parametrize("bad", ["a\nb", "a\rb", "a\x00b"])
@@ -228,3 +230,103 @@ def test_hand_edited_junk_is_tolerated(store):
                           "SIRDAR_SSH_OK_PORT=abc\nnot a line\n")
     [t] = store.load()
     assert (t.slug, t.name, t.port) == ("ok", "ok", 22)
+
+
+# ---- security fix round ------------------------------------------------------
+
+# Every character str.splitlines() breaks on, plus tab: none may reach the file.
+SEPARATORS = ["\n", "\r", "\x00", "\t", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85",
+              "\u2028", "\u2029"]
+
+
+@pytest.mark.parametrize("sep", SEPARATORS, ids=[f"U+{ord(c):04X}" for c in SEPARATORS])
+@pytest.mark.parametrize("field", ["name", "host", "user", "key_path", "password",
+                                   "key_passphrase"])
+def test_separator_chars_rejected_in_every_field(store, field, sep):
+    store.add(_fields(name="Victim", host="10.0.0.9"))
+    before = store.path.read_text()
+    with pytest.raises(ValueError):
+        store.add({**_fields(name="Evil"),
+                   field: f"x{sep}SIRDAR_SSH_VICTIM_HOST=6.6.6.6{sep}"})
+    with pytest.raises(ValueError):
+        store.update("victim", {field: f"x{sep}y"})
+    assert store.path.read_text() == before
+    assert store.get("victim").host == "10.0.0.9"
+
+
+@pytest.mark.parametrize("sep", ["\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028",
+                                 "\u2029"])
+def test_parser_splits_on_newline_only(store, sep):
+    # A hand-written value holding a non-\n line break stays one line on read
+    # and on rewrite, so it can't become a second key.
+    store.path.write_text(
+        "SIRDAR_SSH_TARGETS='victim'\n"
+        "SIRDAR_SSH_VICTIM_NAME='Victim'\nSIRDAR_SSH_VICTIM_HOST='10.0.0.9'\n"
+        "SIRDAR_SSH_VICTIM_USER='u'\n"
+        f"SIRDAR_SSH_VICTIM_PASSWORD='x{sep}SIRDAR_SSH_VICTIM_HOST=6.6.6.6'\n"
+        "FOREIGN=1\r\n")
+    [t] = store.load()
+    assert t.host == "10.0.0.9"
+    assert t.password == f"x{sep}SIRDAR_SSH_VICTIM_HOST=6.6.6.6"
+
+
+def test_crlf_file_still_parses(store):
+    store.path.write_text("SIRDAR_SSH_TARGETS='a'\r\nSIRDAR_SSH_A_HOST='h1'\r\n"
+                          "SIRDAR_SSH_A_USER='u'\r\nSIRDAR_SSH_A_PASSWORD='p'\r\n# c\r\n")
+    [t] = store.load()
+    assert (t.host, t.user, t.password) == ("h1", "u", "p")
+    store.update("a", {"name": "Alpha"})
+    text = store.path.read_text()
+    assert "\r" not in text and "# c\n" in text
+
+
+@pytest.mark.parametrize("host", ["fe80::1%eth0", "fe80::1%x' y", "fe80::1%25eth0", "%"])
+def test_ipv6_zone_ids_rejected(store, host):
+    with pytest.raises(TargetError) as exc:
+        store.add(_fields(host=host))
+    assert exc.value.code == "host_invalid"
+
+
+def test_secret_length_capped(store):
+    with pytest.raises(TargetError) as exc:
+        store.add(_fields(password="p" * 1025))
+    assert exc.value.code == "password_too_long"
+    with pytest.raises(TargetError) as exc:
+        store.add(_fields(key_path="id_ed25519", key_passphrase="p" * 1025))
+    assert exc.value.code == "passphrase_too_long"
+    assert store.add(_fields(password="p" * 1024)).password == "p" * 1024
+
+
+def test_symlinked_key_file_rejected(store, keys_dir, tmp_path):
+    outside = tmp_path / "outside_key"
+    outside.write_text("secret\n")
+    (keys_dir / "link_key").symlink_to(outside)
+    with pytest.raises(TargetError) as exc:
+        store.add(_fields(key_path="link_key"))
+    assert exc.value.code == "key_file_invalid"
+
+
+def test_lock_file_symlink_not_followed(store, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    store.lock_path.symlink_to(elsewhere)
+    with pytest.raises(OSError):
+        store.add(_fields())
+    assert not elsewhere.exists()
+
+
+def test_directory_fsynced_after_replace(store, monkeypatch):
+    synced = []
+    real = ssh_targets.os.fsync
+
+    def spy(fd):
+        synced.append(stat.S_ISDIR(os.fstat(fd).st_mode))
+        return real(fd)
+    monkeypatch.setattr(ssh_targets.os, "fsync", spy)
+    store.add(_fields())
+    assert synced == [False, True]
+
+
+def test_invalid_utf8_raises_unicode_error(store):
+    store.path.write_bytes(b"SIRDAR_SSH_TARGETS='a'\n\xff\xfe\n")
+    with pytest.raises(UnicodeDecodeError):
+        store.add(_fields())
