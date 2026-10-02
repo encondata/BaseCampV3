@@ -403,6 +403,29 @@ const SAVED = {
   siteRole: 'source' as const, scanStatus: 'k', scanLabel: 'Dock',
 };
 
+it('laptop mode: the top bar chip names the station type once setup saved one', () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
+  const chip = () => (document.querySelector('.kiosk-mode') as HTMLElement).textContent;
+  try {
+    writeKioskSetup({ ...SAVED, stationType: 'rfid',
+                      reader: { ip: '10.0.0.5', serial: '1234ABCD', model: 'FX9600' } });
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    expect(chip()).toBe('RFID · Laptop');
+    cleanup();
+
+    writeKioskSetup({ ...SAVED, stationType: 'label' });
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    expect(chip()).toBe('Label Station · Laptop');
+    cleanup();
+
+    writeKioskSetup(SAVED);
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    expect(chip()).toBe('Kiosk · Laptop');
+  } finally {
+    delete window.__KIOSK_CONFIG__;
+  }
+});
+
 it('laptop mode: the footer mode names the station type once setup saved one', () => {
   window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
   try {

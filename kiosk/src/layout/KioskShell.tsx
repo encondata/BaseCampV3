@@ -134,7 +134,12 @@ export default function KioskShell({ children }: { children: ReactNode }) {
         <div className="kiosk-brand">
           <img className="kiosk-logo" src="/images/serversherpa-logo.png" alt="" />
           <span className="kiosk-wordmark">Server<em>Sherpa</em></span>
-          <span className="kiosk-mode">Kiosk · {modeLabel}</span>
+          {/* A laptop shows what setup made it ("RFID · Laptop"); until then, "Kiosk · Laptop". */}
+          <span className="kiosk-mode">
+            {mode === 'laptop' && kioskSetup?.stationType
+              ? stationLabel(kioskSetup.stationType, modeLabel)
+              : `Kiosk · ${modeLabel}`}
+          </span>
           {feature && <span className="kiosk-section">{feature.title}</span>}
         </div>
         <button type="button" className="kiosk-name" title="This kiosk"
