@@ -51,7 +51,7 @@ async def connect(request: Request) -> dict:
     except ReaderError as exc:
         raise pairing.reader_http_error(exc) from None
     events.record(st.store, "reader_connected", "Reader connected",
-                  f"{found.get('model')} · {ip}")
+                  f"{found.get('model') or 'Reader'} · {ip}")
     return found
 
 
@@ -70,7 +70,8 @@ async def pair(request: Request) -> dict:
         except ReaderError as exc:
             raise pairing.reader_http_error(exc) from None
     events.record(st.store, "reader_paired", "Reader paired",
-                  f"{(paired.get('reader') or paired).get('model')} · sends to {laptop_ip}")
+                  f"{(paired.get('reader') or paired).get('model') or 'Reader'} "
+                  f"· sends to {laptop_ip}")
     return paired
 
 
@@ -79,17 +80,29 @@ async def reader(request: Request) -> dict | None:
     return pairing.current(request.app.state.store)
 
 
+def _token(st) -> str | None:
+    row = pairing.current_row(st.store)
+    return row["token"] if row is not None else None
+
+
+def _redacted_error(exc: ReaderError, token: str | None):
+    """The reader's own message can carry the endpoint URL, and with it the token."""
+    return pairing.reader_http_error(
+        ReaderError(exc.code, pairing.redact_token(exc.message, token)))
+
+
 @router.post("/start", dependencies=[Depends(online)])
 async def start(request: Request, session: EdgeSession = Depends(require_session)) -> dict:
     st = request.app.state
     async with st.pair_lock:
+        token = _token(st)
         try:
             client, version, row = await pairing.open_current(
                 st.store, transport=st.reader_transport)
             async with client:
                 await client.start()
         except ReaderError as exc:
-            raise pairing.reader_http_error(exc) from None
+            raise _redacted_error(exc, token) from None
     events.record(st.store, "reader_started", "Reader started",
                   f"{version.get('model') or row['model']} · Started by {session.person_name}")
     return {"reading": True}
@@ -99,13 +112,14 @@ async def start(request: Request, session: EdgeSession = Depends(require_session
 async def stop(request: Request, session: EdgeSession = Depends(require_session)) -> dict:
     st = request.app.state
     async with st.pair_lock:
+        token = _token(st)
         try:
             client, _version, _row = await pairing.open_current(
                 st.store, transport=st.reader_transport)
             async with client:
                 await client.stop()
         except ReaderError as exc:
-            raise pairing.reader_http_error(exc) from None
+            raise _redacted_error(exc, token) from None
     events.record(st.store, "reader_stopped", "Reader stopped",
                   f"Stopped by {session.person_name}")
     return {"reading": False}
@@ -125,6 +139,14 @@ async def recent_events(request: Request, limit: int = 50) -> dict:
 @router.get("/status")
 async def status(request: Request) -> dict:
     st = request.app.state
+    if st.pair_lock.locked():
+        # A start, stop, pair or check holds the reader: answer now instead of
+        # queueing polls behind a hung reader.
+        reader = pairing.current(st.store)
+        if reader is None:
+            return {"reader": None}
+        return {"reader": reader, "reachable": False, "reading": False, "radio": None,
+                "antennas": [], "busy": True}
     async with st.pair_lock:
         reader = pairing.current(st.store)
         if reader is None:

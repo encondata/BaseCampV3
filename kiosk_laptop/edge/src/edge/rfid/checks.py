@@ -3,17 +3,23 @@ kiosk can tick them off in order. Every answer is HTTP 200 with
 {"name", "ok", "state", "detail", "info"?}; the pairing token never appears."""
 
 import asyncio
+import logging
 from urllib.parse import urlparse
+
+from fastapi import HTTPException
 
 from edge import hostnet, laptop_setup
 from edge.rfid import events, pairing
 from edge.rfid.ziotc import ReaderError
 from edge.upstream import CloudOffline
 
+log = logging.getLogger(__name__)
+
 CHECK_NAMES = ("reader", "router", "portal", "registration", "setup")
 GATEWAY_PORTS = (53, 80, 443)
 GATEWAY_TIMEOUT_S = 1.5
 OFFLINE = "Can't reach the portal"
+UNEXPECTED = "The portal sent an unexpected answer"
 
 
 def result(name: str, state: str, detail: str, info: dict | None = None) -> dict:
@@ -37,7 +43,16 @@ async def knock(ip: str, port: int) -> bool:
 
 
 async def run(name: str, st, session) -> dict:
-    out = await CHECKS[name](name, st, session)
+    try:
+        out = await CHECKS[name](name, st, session)
+    except HTTPException as exc:
+        # e.g. 409 reader_required when the reader was unpaired mid-check
+        out = result(name, "fail", "Pair a reader first" if exc.status_code == 409
+                     else "Check failed — try again")
+    except Exception as exc:  # noqa: BLE001 — the answer is always a 200
+        # type only: reader text can carry the pairing token
+        log.warning("check %s failed: %s", name, type(exc).__name__)
+        out = result(name, "fail", "Check failed — try again")
     if name == "registration":
         ok = out["ok"]
         events.record(st.store, "portal_check_in",
@@ -83,10 +98,12 @@ async def _router(name, st, session) -> dict:
     gateway = hostnet.read_gateway(data_dir)
     interfaces, fresh = hostnet.read_host_network(data_dir)
     row = pairing.current_row(st.store)
-    if row is not None:
+    if not fresh:
+        lan_ip = None
+    elif row is not None:
         lan_ip = hostnet.laptop_ip_for(row["ip"], interfaces)
     else:
-        lan_ip = interfaces[0].ipv4 if fresh and interfaces else None
+        lan_ip = interfaces[0].ipv4 if interfaces else None
     if gateway is None:
         return result(name, "unknown", "Re-run the install command to update the network helper",
                       {"lan_ip": lan_ip})
@@ -124,7 +141,12 @@ async def _registration(name, st, session) -> dict:
         return failed
     if resp.status_code != 200:
         return result(name, "fail", f"Portal answered {resp.status_code}")
-    body = resp.json()
+    try:
+        body = resp.json()
+    except ValueError:
+        return result(name, "fail", UNEXPECTED)
+    if not isinstance(body, dict):
+        return result(name, "fail", UNEXPECTED)
     registration = body.get("registration")
     device = body.get("name")
     info = {"wan_ip": body.get("client_ip"), "registration": registration,
@@ -151,7 +173,12 @@ async def _setup(name, st, session) -> dict:
         return result(name, "fail", "The portal has no setup for this kiosk")
     if resp.status_code != 200:
         return result(name, "fail", f"Portal answered {resp.status_code}")
-    portal = resp.json()
+    try:
+        portal = resp.json()
+    except ValueError:
+        return result(name, "fail", UNEXPECTED)
+    if not isinstance(portal, dict):
+        return result(name, "fail", UNEXPECTED)
     row = pairing.current_row(st.store)
     portal_reader = portal.get("reader") or {}
     reader_serial = portal_reader.get("serial")

@@ -1,3 +1,5 @@
+import asyncio
+
 from tests.conftest import make_session
 from tests.test_rfid_pairing import READER_IP, code, pair, stored, use_reader, write_host
 
@@ -64,3 +66,48 @@ async def test_status_when_unreachable(app, client):
     assert r.status_code == 200
     assert (body["reachable"], body["reading"], body["radio"]) == (False, False, None)
     assert body["reader"]["ip"] == READER_IP and stored(app)["token"] not in r.text
+
+
+async def test_status_while_the_lock_is_held_answers_busy(app, client):
+    await paired(app, client)
+    transport = app.state.reader_transport
+    seen = len(transport.requests)
+    async with app.state.pair_lock:
+        r = await asyncio.wait_for(client.get("/edge/rfid/status", headers=make_session(app)), 2)
+    body = r.json()
+    assert r.status_code == 200
+    assert body["busy"] is True and body["reachable"] is False
+    assert (body["reading"], body["radio"], body["antennas"]) == (False, None, [])
+    assert body["reader"]["ip"] == READER_IP and stored(app)["token"] not in r.text
+    assert len(transport.requests) == seen
+    free = (await client.get("/edge/rfid/status", headers=make_session(app))).json()
+    assert free["reachable"] is True and "busy" not in free
+
+
+async def test_start_and_stop_redact_the_token_in_reader_errors(app, client):
+    reader = await paired(app, client)
+    h = make_session(app)
+    token = stored(app)["token"]
+    leak = f"bad endpoint http://10.0.0.5:8091/rfid/SER/{token}"
+    for method, path in (("PUT /cloud/start", "/edge/rfid/start"),
+                         ("PUT /cloud/stop", "/edge/rfid/stop")):
+        reader.fail_next[method] = (500, {"code": 1, "message": leak})
+        r = await client.post(path, headers=h)
+        assert r.status_code >= 400, path
+        assert token not in r.text, path
+
+
+async def test_start_and_checks_wait_for_the_pair_lock(app, client):
+    await paired(app, client)
+    transport = app.state.reader_transport
+    h = make_session(app)
+    seen = len(transport.requests)
+    async with app.state.pair_lock:
+        tasks = [asyncio.create_task(client.get("/edge/rfid/checks/reader", headers=h)),
+                 asyncio.create_task(client.post("/edge/rfid/start", headers=h))]
+        await asyncio.sleep(0.1)
+        assert len(transport.requests) == seen
+        assert not any(t.done() for t in tasks)
+    results = await asyncio.wait_for(asyncio.gather(*tasks), 5)
+    assert [r.status_code for r in results] == [200, 200]
+    assert len(transport.requests) > seen

@@ -259,3 +259,55 @@ async def test_setup_none_saved(app, client):
 async def test_setup_offline(app, client):
     body = await run(client, app, "setup", headers=make_session(app, offline=True))
     assert body["detail"] == "Can't reach the portal"
+
+
+# ── always HTTP 200 ──
+
+async def test_reader_unpair_race_is_a_fail_not_a_409(app, client, monkeypatch):
+    await paired(app, client)
+
+    async def gone(*a, **kw):
+        raise pairing.err(409, "reader_required")
+    monkeypatch.setattr(pairing, "open_current", gone)
+    body = await run(client, app, "reader")
+    assert (body["state"], body["detail"]) == ("fail", "Pair a reader first")
+
+
+async def test_unexpected_exception_is_a_generic_fail(app, client, monkeypatch, caplog):
+    await paired(app, client)
+    token = stored(app)["token"]
+
+    async def boom(*a, **kw):
+        raise RuntimeError(f"secret {token}")
+    monkeypatch.setattr(pairing, "open_current", boom)
+    body = await run(client, app, "reader")
+    assert (body["state"], body["detail"]) == ("fail", "Check failed — try again")
+    assert token not in json.dumps(body) and token not in caplog.text
+
+
+async def test_registration_non_json_200_is_a_fail(app, client, cloud):
+    h = await sign_in(app)
+    cloud.post("/kiosk/heartbeat").respond(200, content=b"<html>proxy</html>")
+    body = await run(client, app, "registration", headers=h)
+    assert (body["state"], body["detail"]) == ("fail", "The portal sent an unexpected answer")
+
+
+async def test_setup_non_json_200_is_a_fail(app, client, cloud):
+    await seed_setup(app)
+    h = await sign_in(app)
+    cloud.get("/kiosk/setup").respond(200, content=b"<html>proxy</html>")
+    body = await run(client, app, "setup", headers=h)
+    assert (body["state"], body["detail"]) == ("fail", "The portal sent an unexpected answer")
+
+
+async def test_router_lan_ip_ignores_stale_interfaces_when_paired(app, client):
+    use_reader(app)
+    write_host(app)
+    assert (await pair(client, app)).status_code == 200
+    write_gateway(app, ips=("10.0.0.5",))
+    path = app.state.settings.data_dir / "host-network.json"
+    data = json.loads(path.read_text())
+    data["updated_at"] = "2020-01-01T00:00:00+00:00"
+    path.write_text(json.dumps(data))
+    fake_knock(app, open_ports=(80,))
+    assert (await run(client, app, "router"))["info"]["lan_ip"] is None
