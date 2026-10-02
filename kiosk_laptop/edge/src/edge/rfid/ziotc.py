@@ -165,7 +165,8 @@ class ZiotcClient:
 
 
 async def probe(ip: str, transport=None, password_first: int | None = None, *,
-                quiet: bool = False, timeout: httpx.Timeout = TIMEOUT) -> dict | None:
+                quiet: bool = False, with_config: bool = False,
+                timeout: httpx.Timeout = TIMEOUT) -> dict | None:
     """Sign in and read version + status. None when the host isn't an FX
     reader (no IoT Connector API, or a model not starting with FX). Auth,
     unreachable and reader errors raise ReaderError — unless `quiet`
@@ -178,11 +179,12 @@ async def probe(ip: str, transport=None, password_first: int | None = None, *,
             if not model.startswith("FX"):
                 return None
             status = await client.status()
+            config = await client.get_config() if with_config else None
         except ReaderError as exc:
             if quiet or exc.code == "reader_not_iotc":
                 return None
             raise
-        return {
+        found = {
             "ip": ip,
             "model": model,
             "serial": version.get("serialNumber"),
@@ -191,3 +193,6 @@ async def probe(ip: str, transport=None, password_first: int | None = None, *,
             "status": status,
             "password_index": client.password_index,
         }
+        if with_config:
+            found["config"] = config
+        return found

@@ -29,6 +29,8 @@ from edge.routes import auth as auth_routes
 from edge.routes import edge as edge_routes
 from edge.routes import kiosk as kiosk_routes
 from edge.routes import proxy
+from edge.routes import rfid as rfid_routes
+from edge.rfid.discovery import Discovery
 from edge.sync import Syncer
 from edge.upstream import Upstream
 
@@ -66,6 +68,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
                     await runner.stop()
             finally:
                 try:
+                    await app.state.discovery.aclose()
                     await app.state.upstream.aclose()
                 finally:
                     app.state.store.close()
@@ -83,12 +86,16 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
                                     lambda: app.state.identity.serial)
     app.state.outbox_wake = asyncio.Event()
     outbox.requeue_sending(app.state.store)
+    app.state.discovery = Discovery(
+        app.state.store, settings.data_dir,
+        own_connection=lambda: f"ServerSherpa Kiosk {app.state.identity.serial[-4:]} ")
     app.state.syncer = Syncer(app.state.store, app.state.upstream,
                               lambda: app.state.identity.serial)
 
     app.include_router(auth_routes.router)
     app.include_router(edge_routes.router)
     app.include_router(kiosk_routes.router)
+    app.include_router(rfid_routes.router)
 
     @app.get("/config.js")
     async def config_js(request: Request) -> Response:

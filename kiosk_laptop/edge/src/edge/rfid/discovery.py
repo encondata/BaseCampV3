@@ -1,0 +1,110 @@
+"""FX reader discovery on the laptop's subnets (spec §2.2): a TCP connect to
+port 443 (64 at once, 0.5 s), then a quiet ZIOTC probe of each responder.
+One scan at a time per edge; starting a new one cancels the running one."""
+
+import asyncio
+import uuid
+
+import httpx
+
+from edge import hostnet
+from edge.rfid import ziotc
+
+PORT = 443
+CONCURRENCY = 64
+TIMEOUT_S = 0.5
+PAIR_PREFIX = "ServerSherpa Kiosk"
+
+
+async def tcp_connect(ip: str, port: int = PORT, timeout: float = TIMEOUT_S) -> bool:
+    try:
+        _r, writer = await asyncio.wait_for(asyncio.open_connection(ip, port), timeout)
+    except (OSError, asyncio.TimeoutError):
+        return False
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except OSError:
+        pass
+    return True
+
+
+def paired_with(config, own_name: str | None) -> str | None:
+    """The name of another kiosk's connection on the reader, if any."""
+    try:
+        connections = config["READER-GATEWAY"]["endpointConfig"]["data"]["event"]["connections"]
+        for conn in connections:
+            name = str(conn.get("name") or "")
+            if name.startswith(PAIR_PREFIX) and not (own_name and name.startswith(own_name)):
+                return name
+    except (KeyError, TypeError, AttributeError):
+        pass
+    return None
+
+
+class Discovery:
+    def __init__(self, store, data_dir, *, connect=tcp_connect, probe=ziotc.probe,
+                 own_connection=lambda: None) -> None:
+        self.store = store
+        self.data_dir = data_dir
+        self._connect = connect
+        self._probe = probe
+        self._own = own_connection  # this kiosk's connection prefix (…<last4>), to skip our own pairing
+        self._task: asyncio.Task | None = None
+        self._snap = {"scan_id": None, "state": "done", "probed": 0, "total": 0,
+                      "readers": [], "host": {"ips": [], "fresh": False}}
+
+    def start(self) -> str:
+        if self._task and not self._task.done():
+            self._task.cancel()
+        interfaces, fresh = hostnet.read_host_network(self.data_dir)
+        scan_id = uuid.uuid4().hex
+        targets = hostnet.scan_targets(interfaces) if fresh else []
+        snap = {"scan_id": scan_id, "state": "running" if targets else "failed", "probed": 0,
+                "total": len(targets), "readers": [],
+                "host": {"ips": [i.ipv4 for i in interfaces] if fresh else [], "fresh": fresh}}
+        self._snap = snap  # each scan writes only its own dict, so a cancelled one can't leak in
+        self._task = asyncio.create_task(self._run(snap, targets)) if targets else None
+        return scan_id
+
+    def snapshot(self) -> dict:
+        s = self._snap
+        return {**s, "readers": [dict(r) for r in s["readers"]], "host": dict(s["host"])}
+
+    async def aclose(self) -> None:
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+
+    async def _check(self, ip: str, sem: asyncio.Semaphore, snap: dict) -> None:
+        try:
+            async with sem:
+                try:
+                    up = await asyncio.wait_for(self._connect(ip), TIMEOUT_S)
+                except (asyncio.TimeoutError, OSError):
+                    up = False
+                if up:
+                    try:
+                        found = await self._probe(ip, quiet=True, with_config=True,
+                                                  timeout=httpx.Timeout(TIMEOUT_S))
+                    except Exception:
+                        found = None
+                    if found and found.get("serial"):
+                        snap["readers"].append({
+                            "ip": ip, "model": found.get("model"), "serial": found["serial"],
+                            "paired_with": paired_with(found.get("config"), self._own())})
+        finally:
+            snap["probed"] += 1
+
+    async def _run(self, snap: dict, targets: list[str]) -> None:
+        sem = asyncio.Semaphore(CONCURRENCY)
+        try:
+            await asyncio.gather(*(self._check(ip, sem, snap) for ip in targets))
+            snap["state"] = "done"
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            snap["state"] = "failed"
