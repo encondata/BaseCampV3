@@ -17,7 +17,13 @@ under **Scanning Hardware › Routers** as **Pending**. Everyone who manages
 scanning hardware gets an approval notification. Nothing the router sends
 is stored until someone approves it; approval lasts until it's revoked.
 
-Options: `--interval SECONDS` (60 or more, default 300), `--ref BRANCH`
+The installer asks for the router's hostname (Enter keeps the current
+one). The portal names a new router after its hostname, so the name is set
+before the first report. Without a terminal it keeps the current name.
+
+Options: `--hostname NAME` (set the hostname without asking: letters,
+digits and hyphens, up to 63 characters, not starting or ending with a
+hyphen), `--interval SECONDS` (60 or more, default 300), `--ref BRANCH`
 (install from a branch or tag instead of `main`).
 
 ## Identity

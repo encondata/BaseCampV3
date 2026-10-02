@@ -7,6 +7,9 @@ bad() { echo "FAIL $1"; FAIL=1; }
 check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 mkdir -p /tmp/lock /tmp/run
 touch /etc/sysupgrade.conf
+# the rootfs image ships no system section; a router always has one
+printf "config system\n\toption hostname 'OpenWrt'\n" > /etc/config/system
+hostname_is() { [ "$(uci -q get system.@system[0].hostname)" = "$1" ]; }
 export PATH="/src/test/install-stubs:$PATH"
 SRC=file:///src
 INSTALL="sh /src/install.sh --source $SRC"
@@ -36,6 +39,8 @@ check "first line says the installer started" '[ "$(head -n 1 /tmp/out)" = "base
 check "a fresh secret isn't reported as damaged" '! grep -q damaged /tmp/out'
 first=$(cat /etc/basecamp/secret)
 check "never prints the secret" '[ -n "$first" ] && ! grep -qF "$first" /tmp/out'
+check "no terminal and no --hostname keeps the hostname" 'hostname_is OpenWrt'
+check "says the hostname was kept" 'grep -qxF "basecamp: no terminal; kept the hostname OpenWrt (use --hostname to set one)" /tmp/out'
 
 $INSTALL --api https://api2.example.test --interval 600 >/tmp/out 2>&1
 check "re-install keeps the secret" '[ "$(cat /etc/basecamp/secret)" = "$first" ]'
@@ -57,6 +62,59 @@ $INSTALL --uninstall >/tmp/out 2>&1
 check "full uninstall removes the secret" '[ ! -e /etc/basecamp ]'
 check "full uninstall cleans the keep-list" '! grep -q basecamp /etc/sysupgrade.conf'
 check "full uninstall drops the boot link from the keep-list" '! grep -qF S99basecamp-router /etc/sysupgrade.conf'
+
+# --hostname sets the router's name before the first report
+$INSTALL --api https://api.example.test --hostname dock-router-7 >/tmp/out 2>&1
+rc=$?
+check "--hostname installs" '[ $rc -eq 0 ]'
+check "--hostname sets the hostname" 'hostname_is dock-router-7'
+check "says the hostname was set" 'grep -qxF "basecamp: hostname set to dock-router-7" /tmp/out'
+check "hostname is set before the first report" '[ "$(grep -n "hostname set to" /tmp/out | cut -d: -f1)" -lt "$(grep -n "sending a first report" /tmp/out | cut -d: -f1)" ]'
+check "--hostname never prints the secret" '! grep -qF "$(cat /etc/basecamp/secret)" /tmp/out'
+$INSTALL --uninstall >/tmp/out 2>&1
+check "uninstall leaves the hostname alone" 'hostname_is dock-router-7'
+$INSTALL --api https://api.example.test --hostname -bad- >/tmp/out 2>&1
+rc=$?
+check "an invalid --hostname fails" '[ $rc -ne 0 ]'
+check "an invalid --hostname installs nothing" '[ ! -e /usr/bin/basecamp-router ] && [ ! -e /etc/config/basecamp ] && [ ! -e /etc/basecamp ]'
+check "an invalid --hostname leaves the hostname" 'hostname_is dock-router-7'
+$INSTALL --api https://api.example.test --hostname aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/tmp/out 2>&1
+check "a 64-character --hostname fails" '[ $? -ne 0 ] && [ ! -e /usr/bin/basecamp-router ]'
+uci set system.@system[0].hostname=OpenWrt && uci commit system
+
+# the prompt: BASECAMP_TTY stands in for /dev/tty, a file holding the
+# answers (the installer appends its prompts to the same file)
+prompt_install() {  # answers...
+  printf '%s\n' "$@" > /tmp/tty
+  BASECAMP_TTY=/tmp/tty $INSTALL --api https://api.example.test >/tmp/out 2>&1
+}
+prompt_install dock-router-8
+rc=$?
+check "prompt: installs" '[ $rc -eq 0 ]'
+check "prompt: shows the current hostname" 'grep -qF "basecamp: router hostname [OpenWrt]: " /tmp/tty'
+check "prompt: a valid answer sets the hostname" 'hostname_is dock-router-8'
+check "prompt: says the hostname was set" 'grep -qxF "basecamp: hostname set to dock-router-8" /tmp/out'
+check "prompt: never prints the secret" '! grep -qF "$(cat /etc/basecamp/secret)" /tmp/out /tmp/tty'
+prompt_install ""
+check "prompt: an empty answer keeps the hostname" 'hostname_is dock-router-8'
+check "prompt: says it kept the hostname" 'grep -qF "kept the hostname dock-router-8" /tmp/out /tmp/tty'
+prompt_install -bad- dock-router-9
+check "prompt: an invalid answer then a valid one sets the valid one" 'hostname_is dock-router-9'
+check "prompt: explains the invalid answer" 'grep -q "can.t start or end with a hyphen" /tmp/tty'
+check "prompt: asks again after an invalid answer" '[ "$(grep -o "router hostname \[" /tmp/tty | wc -l)" -eq 2 ]'
+prompt_install bad_name "" "" ""
+check "prompt: an empty answer after an invalid one keeps the hostname" 'hostname_is dock-router-9'
+prompt_install bad_1 bad_2 bad_3 dock-router-10
+check "prompt: three invalid answers keep the hostname" 'hostname_is dock-router-9'
+check "prompt: asks only three times" '[ "$(grep -o "router hostname \[" /tmp/tty | wc -l)" -eq 3 ]'
+check "prompt: says it gave up and kept the hostname" 'grep -qF "kept the hostname dock-router-9" /tmp/out /tmp/tty'
+: > /tmp/tty
+BASECAMP_TTY=/tmp/tty $INSTALL --api https://api.example.test --hostname dock-router-11 >/tmp/out 2>&1
+check "prompt: --hostname skips the prompt" 'hostname_is dock-router-11 && [ ! -s /tmp/tty ]'
+printf 'dock-router-12\n' > /tmp/tty
+BASECAMP_TTY=/tmp/tty $INSTALL --uninstall >/tmp/out 2>&1
+check "prompt: never asked on --uninstall" 'hostname_is dock-router-11 && [ "$(cat /tmp/tty)" = dock-router-12 ]'
+uci set system.@system[0].hostname=OpenWrt && uci commit system
 
 # a BusyBox built without hexdump: the sha256sum fallback still makes a secret
 mkdir -p /tmp/nohex && printf '#!/bin/sh\nexit 1\n' > /tmp/nohex/hexdump && chmod +x /tmp/nohex/hexdump
