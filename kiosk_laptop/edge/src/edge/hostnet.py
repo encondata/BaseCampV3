@@ -66,6 +66,27 @@ def read_host_network(data_dir, *, now: datetime | None = None) -> tuple[list[Ho
         return [], False
 
 
+def read_gateway(data_dir, *, now: datetime | None = None) -> str | None:
+    """The default gateway from a fresh host-network.json, or None. Never raises."""
+    try:
+        data = json.loads((Path(data_dir) / FILE_NAME).read_text())
+        stamp = _parse_time(data["updated_at"])
+        if stamp is None:
+            return None
+        now = now or datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        if abs((now - stamp).total_seconds()) > STALE_AFTER_S:
+            return None
+        value = data["gateway"]
+        if not isinstance(value, str):
+            return None
+        ip = ipaddress.IPv4Address(value)
+        return str(ip) if _usable(ip) else None
+    except Exception:
+        return None
+
+
 def parse_host(host: str) -> str | None:
     """The Host header without its port, lowercased (an IPv6 literal keeps its
     brackets). None when it is malformed."""

@@ -71,3 +71,51 @@ async def pair(request: Request) -> dict:
 @router.get("/reader")
 async def reader(request: Request) -> dict | None:
     return pairing.current(request.app.state.store)
+
+
+@router.post("/start", dependencies=[Depends(online)])
+async def start(request: Request) -> dict:
+    st = request.app.state
+    async with st.pair_lock:
+        try:
+            client, _version, _row = await pairing.open_current(
+                st.store, transport=st.reader_transport)
+            async with client:
+                await client.start()
+        except ReaderError as exc:
+            raise pairing.reader_http_error(exc) from None
+    return {"reading": True}
+
+
+@router.post("/stop")
+async def stop(request: Request) -> dict:
+    st = request.app.state
+    async with st.pair_lock:
+        try:
+            client, _version, _row = await pairing.open_current(
+                st.store, transport=st.reader_transport)
+            async with client:
+                await client.stop()
+        except ReaderError as exc:
+            raise pairing.reader_http_error(exc) from None
+    return {"reading": False}
+
+
+@router.get("/status")
+async def status(request: Request) -> dict:
+    st = request.app.state
+    async with st.pair_lock:
+        reader = pairing.current(st.store)
+        if reader is None:
+            return {"reader": None}
+        out = {"reader": reader, "reachable": False, "reading": False, "radio": None}
+        try:
+            client, _version, _row = await pairing.open_current(
+                st.store, transport=st.reader_transport)
+            async with client:
+                reported = await client.status()
+            out.update(reachable=True, reading=reported.get("radioActivitiy") == "active",
+                       radio=reported.get("radioConnection"))
+        except ReaderError:
+            pass
+    return out

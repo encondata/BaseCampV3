@@ -17,7 +17,8 @@ Modes:
 
 `reading=True` starts the fake reading tags: it then refuses a READER-GATEWAY
 change until `PUT /cloud/stop` (the real reader's exact refusal isn't known;
-the edge case is from field experience). `stops` counts stop calls.
+the edge case is from field experience). `stops` and `starts` record stop and start calls
+(`starts` keeps each JSON body); `/cloud/status` reports `radioActivitiy` from `reading`.
 
 Unauthenticated, the fake answers like ZIOTC does in the OpenAPI examples:
 `/cloud/localRestLogin` and every `/cloud/*` call are 401 with the JSON error
@@ -118,6 +119,7 @@ class FakeReader:
                  realm: str | None = None, reading: bool = False) -> None:
         self.reading = reading
         self.stops = 0
+        self.starts: list = []
         self.password_index = password_index
         self.ports = ports
         self.server = server
@@ -206,7 +208,10 @@ class FakeReader:
 
         @app.get("/cloud/status")
         async def status(request: Request):
-            return reader.status if bearer_ok(request) else unauthorized()
+            if not bearer_ok(request):
+                return unauthorized()
+            return {**reader.status,
+                    "radioActivitiy": "active" if reader.reading else "inactive"}
 
         @app.get("/cloud/config")
         async def get_config(request: Request):
@@ -218,6 +223,17 @@ class FakeReader:
                 return unauthorized()
             reader.stops += 1
             reader.reading = False
+            return HTMLResponse("")
+
+        @app.put("/cloud/start")
+        async def start(request: Request):
+            if not bearer_ok(request):
+                return unauthorized()
+            try:
+                reader.starts.append(await request.json())
+            except ValueError:
+                reader.starts.append(None)
+            reader.reading = True
             return HTMLResponse("")
 
         @app.put("/cloud/config")

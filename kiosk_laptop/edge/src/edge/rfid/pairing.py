@@ -381,6 +381,17 @@ async def pair(store: Store, identity: Identity, ip: str, laptop_ip: str, *,
         raise
 
 
+async def open_current(store: Store, *, transport=None
+                       ) -> tuple[ziotc.ZiotcClient, dict, "object"]:
+    """The paired reader opened like `open_reader`: (client, version, row).
+    No pairing is 409 reader_required. The caller closes the client."""
+    row = current_row(store)
+    if row is None:
+        raise err(409, "reader_required")
+    client, version = await open_reader(store, row["ip"], transport=transport)
+    return client, version, row
+
+
 async def open_reader(store: Store, ip: str, *, transport=None,
                       found_at: tuple[str, int] | None = None
                       ) -> tuple[ziotc.ZiotcClient, dict]:

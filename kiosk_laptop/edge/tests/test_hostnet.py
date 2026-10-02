@@ -133,3 +133,25 @@ async def test_host_check_covers_websocket(settings, cloud):
     assert sent == [{"type": "websocket.close", "code": 1008}]
     await run({**base, "headers": [(b"host", b"localhost:8090")]})
     assert {"type": "websocket.close", "code": 1008} not in sent
+
+
+def test_read_gateway(tmp_path):
+    from edge.hostnet import read_gateway
+    assert read_gateway(tmp_path, now=NOW) is None  # no file
+    path = tmp_path / "host-network.json"
+
+    def put(extra, updated_at=NOW):
+        path.write_text(json.dumps({"updated_at": updated_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                    "interfaces": [], **extra}))
+
+    put({"gateway": "10.10.48.1"})
+    assert read_gateway(tmp_path, now=NOW) == "10.10.48.1"
+    put({})
+    assert read_gateway(tmp_path, now=NOW) is None
+    put({"gateway": "10.10.48.1"}, NOW - timedelta(seconds=301))
+    assert read_gateway(tmp_path, now=NOW) is None
+    for bad in ("x", "127.0.0.1", None, 5):
+        put({"gateway": bad})
+        assert read_gateway(tmp_path, now=NOW) is None
+    path.write_text("{nope")
+    assert read_gateway(tmp_path, now=NOW) is None

@@ -303,6 +303,11 @@ class ZiotcClient:
         await self._call("PUT", "/cloud/stop")
 
 
+    async def start(self, persist: bool = True) -> None:
+        """Start reading tags (`PUT /cloud/start`)."""
+        await self._call("PUT", "/cloud/start", json={"doNotPersistState": not persist})
+
+
 async def probe(ip: str, transport=None, password_first: int | None = None, *,
                 scheme: str = "https", port: int | None = None,
                 passwords: Sequence[int] | None = None,
