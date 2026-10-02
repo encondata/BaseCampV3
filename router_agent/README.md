@@ -19,7 +19,11 @@ is stored until someone approves it; approval lasts until it's revoked.
 
 The installer asks for the router's hostname (Enter keeps the current
 one). The portal names a new router after its hostname, so the name is set
-before the first report. Without a terminal it keeps the current name.
+before the first report. Without a terminal, or with no answer within 60
+seconds, it keeps the current name. Unattended or background installs
+(scripts, Ansible, `ssh -tt`) should pass `--hostname`:
+
+    curl -fsSL https://raw.githubusercontent.com/encondata/BaseCampV3/main/router_agent/install.sh | sh -s -- --api https://<api-host> --hostname dock-router-7
 
 Options: `--hostname NAME` (set the hostname without asking: letters,
 digits and hyphens, up to 63 characters, not starting or ending with a

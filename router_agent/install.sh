@@ -8,7 +8,10 @@
 #   --hostname NAME      set the router's hostname without asking (letters,
 #                        digits and hyphens, up to 63; the portal names a new
 #                        router after it). Without it, the installer asks on
-#                        the terminal, or keeps the current name if there's none
+#                        the terminal (60 s per answer), or keeps the current
+#                        name if there's none. Unattended or background
+#                        installs should pass --hostname, e.g.
+#   curl -fsSL .../install.sh | sh -s -- --api https://<api-host> --hostname dock-router-7
 #   --ref REF            git branch or tag to install from (default main)
 #   --source BASEURL     install from another location (testing)
 #   --uninstall          remove the agent (add --keep-secret to keep its identity)
@@ -39,6 +42,11 @@ HEX64='^[0-9a-f]{64}$'
 # this script under `curl ... | sh`). BASECAMP_TTY is a test-only override:
 # the tests point it at a file holding the answers.
 TTY=${BASECAMP_TTY:-/dev/tty}
+# Seconds to wait for each answer, so an unattended run with a forced pty
+# (ssh -tt, Ansible raw) never hangs. BASECAMP_TTY_TIMEOUT is a test-only
+# override.
+TTY_TIMEOUT=${BASECAMP_TTY_TIMEOUT:-60}
+CR=$(printf '\r')
 
 say() { echo "basecamp: $*"; }
 die() { echo "basecamp: error: $*" >&2; exit 1; }
@@ -112,7 +120,8 @@ current_hostname() {
 }
 
 tty_usable() {
-  [ -r "$TTY" ] && [ -w "$TTY" ] && ( : <"$TTY" ) 2>/dev/null
+  # read-write, so opening a FIFO (tests) never blocks
+  [ -r "$TTY" ] && [ -w "$TTY" ] && ( : <>"$TTY" ) 2>/dev/null
 }
 
 # Decide NEW_HOSTNAME: from --hostname, else by asking on the terminal (Enter
@@ -127,16 +136,20 @@ choose_hostname() {
     say "no terminal; kept the hostname $current (use --hostname to set one)"
     return 0
   fi
-  exec 3<"$TTY"
+  exec 3<>"$TTY"
   tries=0
   while [ $tries -lt 3 ]; do
     tries=$((tries + 1))
     printf 'basecamp: router hostname [%s]: ' "$current" >>"$TTY"
     answer=""
-    if ! IFS= read -r answer <&3; then
+    # a timeout (or end of input) counts as Enter
+    if ! IFS= read -r -t "$TTY_TIMEOUT" answer <&3; then
       echo >>"$TTY"
-      break
+      exec 3<&-
+      say "no answer; kept the hostname $current"
+      return 0
     fi
+    answer=${answer%"$CR"}
     [ -n "$answer" ] || break
     problem=$(hostname_problem "$answer")
     if [ -z "$problem" ]; then

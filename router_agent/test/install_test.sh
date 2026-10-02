@@ -79,7 +79,8 @@ check "an invalid --hostname fails" '[ $rc -ne 0 ]'
 check "an invalid --hostname installs nothing" '[ ! -e /usr/bin/basecamp-router ] && [ ! -e /etc/config/basecamp ] && [ ! -e /etc/basecamp ]'
 check "an invalid --hostname leaves the hostname" 'hostname_is dock-router-7'
 $INSTALL --api https://api.example.test --hostname aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >/tmp/out 2>&1
-check "a 64-character --hostname fails" '[ $? -ne 0 ] && [ ! -e /usr/bin/basecamp-router ]'
+rc=$?
+check "a 64-character --hostname fails" '[ $rc -ne 0 ] && [ ! -e /usr/bin/basecamp-router ]'
 uci set system.@system[0].hostname=OpenWrt && uci commit system
 
 # the prompt: BASECAMP_TTY stands in for /dev/tty, a file holding the
@@ -102,12 +103,15 @@ prompt_install -bad- dock-router-9
 check "prompt: an invalid answer then a valid one sets the valid one" 'hostname_is dock-router-9'
 check "prompt: explains the invalid answer" 'grep -q "can.t start or end with a hyphen" /tmp/tty'
 check "prompt: asks again after an invalid answer" '[ "$(grep -o "router hostname \[" /tmp/tty | wc -l)" -eq 2 ]'
+printf 'dock-router-13\r\n' > /tmp/tty
+BASECAMP_TTY=/tmp/tty $INSTALL --api https://api.example.test >/tmp/out 2>&1
+check "prompt: strips a CRLF terminal's carriage return" 'hostname_is dock-router-13'
 prompt_install bad_name "" "" ""
-check "prompt: an empty answer after an invalid one keeps the hostname" 'hostname_is dock-router-9'
+check "prompt: an empty answer after an invalid one keeps the hostname" 'hostname_is dock-router-13'
 prompt_install bad_1 bad_2 bad_3 dock-router-10
-check "prompt: three invalid answers keep the hostname" 'hostname_is dock-router-9'
+check "prompt: three invalid answers keep the hostname" 'hostname_is dock-router-13'
 check "prompt: asks only three times" '[ "$(grep -o "router hostname \[" /tmp/tty | wc -l)" -eq 3 ]'
-check "prompt: says it gave up and kept the hostname" 'grep -qF "kept the hostname dock-router-9" /tmp/out /tmp/tty'
+check "prompt: says it gave up and kept the hostname" 'grep -qF "kept the hostname dock-router-13" /tmp/out /tmp/tty'
 : > /tmp/tty
 BASECAMP_TTY=/tmp/tty $INSTALL --api https://api.example.test --hostname dock-router-11 >/tmp/out 2>&1
 check "prompt: --hostname skips the prompt" 'hostname_is dock-router-11 && [ ! -s /tmp/tty ]'
@@ -115,6 +119,24 @@ printf 'dock-router-12\n' > /tmp/tty
 BASECAMP_TTY=/tmp/tty $INSTALL --uninstall >/tmp/out 2>&1
 check "prompt: never asked on --uninstall" 'hostname_is dock-router-11 && [ "$(cat /tmp/tty)" = dock-router-12 ]'
 uci set system.@system[0].hostname=OpenWrt && uci commit system
+
+# a forced pty nobody answers (ssh -tt from automation): the prompt times
+# out and keeps the name. A FIFO with no writer never delivers a line; a
+# watchdog kills the install so a regression can't hang the suite.
+rm -f /tmp/ttyfifo && mkfifo /tmp/ttyfifo
+start=$(date +%s)
+BASECAMP_TTY=/tmp/ttyfifo BASECAMP_TTY_TIMEOUT=1 $INSTALL --api https://api.example.test >/tmp/out 2>&1 &
+pid=$!
+( sleep 20; kill $pid 2>/dev/null ) &
+dog=$!
+wait $pid
+rc=$?
+kill $dog 2>/dev/null
+check "prompt: an unanswered prompt times out and the install finishes" '[ $rc -eq 0 ] && [ $(( $(date +%s) - start )) -lt 20 ] && [ -x /usr/bin/basecamp-router ]'
+check "prompt: a timeout keeps the hostname" 'hostname_is OpenWrt'
+check "prompt: says there was no answer" 'grep -qxF "basecamp: no answer; kept the hostname OpenWrt" /tmp/out'
+$INSTALL --uninstall >/dev/null 2>&1
+rm -f /tmp/ttyfifo
 
 # a BusyBox built without hexdump: the sha256sum fallback still makes a secret
 mkdir -p /tmp/nohex && printf '#!/bin/sh\nexit 1\n' > /tmp/nohex/hexdump && chmod +x /tmp/nohex/hexdump
