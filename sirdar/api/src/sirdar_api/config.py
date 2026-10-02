@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     deploy_ssh_key_path: str = ""
     deploy_ssh_key_passphrase: SecretStr | None = None
     deploy_keys_dir: str = "/app/deploy-keys"
+    # Saved Custom (SSH) targets; written by the app (see deploy/ssh_targets.py).
+    deploy_targets_file: str = "/app/config/deploy-targets.env"
 
     @field_validator("deploy_do_token", "deploy_aws_secret_access_key",
                      "deploy_ssh_password", "deploy_ssh_key_passphrase", mode="before")
