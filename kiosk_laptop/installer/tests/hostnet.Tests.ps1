@@ -19,6 +19,7 @@ BeforeAll {
     $stubs = @{
         'Get-NetIPAddress' = 'param([string]$AddressFamily)'
         'Get-NetAdapter'   = 'param([switch]$Physical)'
+        'Get-NetRoute'     = 'param([string]$AddressFamily, [string]$DestinationPrefix)'
     }
     foreach ($name in $stubs.Keys) {
         if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
@@ -29,6 +30,10 @@ BeforeAll {
     function Get-FakeAddress {
         param([string]$Alias, [int]$Index, [string]$Ip, [int]$Prefix, [string]$State = 'Preferred')
         [pscustomobject]@{ InterfaceAlias = $Alias; InterfaceIndex = $Index; IPAddress = $Ip; PrefixLength = [byte]$Prefix; AddressFamily = 'IPv4'; AddressState = $State }
+    }
+    function Get-FakeRoute {
+        param([string]$NextHop, [int]$RouteMetric, [int]$InterfaceMetric)
+        [pscustomobject]@{ NextHop = $NextHop; RouteMetric = $RouteMetric; InterfaceMetric = $InterfaceMetric; DestinationPrefix = '0.0.0.0/0' }
     }
     function Get-FakeAdapter {
         param([string]$Name, [int]$Index, [string]$Status = 'Up')
@@ -119,10 +124,39 @@ Describe 'ConvertTo-HostNetworkJson' {
         ($t1 | ConvertFrom-Json).interfaces[0].name | Should -Be 'Wi-Fi "5G"'
         ConvertTo-HostNetworkJson -Interfaces @() -Now $now | Should -BeLike '*"interfaces":`[`]}'
     }
+    It 'adds the gateway after the interfaces when there is one, and omits it otherwise' {
+        $now = [datetime]::UtcNow
+        $with = ConvertTo-HostNetworkJson -Interfaces @() -Now $now -Gateway '10.10.48.1'
+        $with | Should -BeLike '*"interfaces":`[`],"gateway":"10.10.48.1"}'
+        ($with | ConvertFrom-Json).gateway | Should -Be '10.10.48.1'
+        ConvertTo-HostNetworkJson -Interfaces @() -Now $now | Should -Not -BeLike '*gateway*'
+        ConvertTo-HostNetworkJson -Interfaces @() -Now $now -Gateway '' | Should -Not -BeLike '*gateway*'
+    }
     It 'converts a local time to UTC' {
         $local = [datetime]::SpecifyKind([datetime]'2026-10-01T12:00:00', [DateTimeKind]::Local)
         $expected = $local.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture)
         (ConvertTo-HostNetworkJson -Interfaces @() -Now $local) | Should -BeLike "*`"updated_at`":`"$expected`"*"
+    }
+}
+
+Describe 'Get-HostnetGateway' {
+    It 'takes the route with the lowest route plus interface metric' {
+        $routes = @((Get-FakeRoute '192.168.1.1' 0 50), (Get-FakeRoute '10.10.48.1' 5 10), (Get-FakeRoute '172.16.0.1' 0 25))
+        Get-HostnetGateway -Routes $routes | Should -Be '10.10.48.1'
+    }
+    It 'skips 0.0.0.0 (an on-link default route)' {
+        $routes = @((Get-FakeRoute '0.0.0.0' 0 1), (Get-FakeRoute '10.10.48.1' 5 10))
+        Get-HostnetGateway -Routes $routes | Should -Be '10.10.48.1'
+    }
+    It 'returns $null with no routes, or no usable next hop' {
+        Get-HostnetGateway -Routes @() | Should -BeNullOrEmpty
+        Get-HostnetGateway | Should -BeNullOrEmpty
+        Get-HostnetGateway -Routes @((Get-FakeRoute '0.0.0.0' 0 1), (Get-FakeRoute '169.254.1.1' 0 1)) | Should -BeNullOrEmpty
+    }
+    It 'rejects loopback, multicast, broadcast and non-IPv4 next hops' {
+        foreach ($bad in '127.0.0.1', '224.0.0.1', '255.255.255.255', 'fe80::1', '10.0.0', '10.0.0.256') {
+            Get-HostnetGateway -Routes @(Get-FakeRoute $bad 0 1) | Should -BeNullOrEmpty
+        }
     }
 }
 
@@ -172,6 +206,7 @@ Describe 'Invoke-HostNetwork' {
         $env:KIOSK_DATA_DIR = $script:data
         Mock Get-NetIPAddress { $script:Addresses } -ParameterFilter { $AddressFamily -eq 'IPv4' }
         Mock Get-NetAdapter { $script:Adapters } -ParameterFilter { $Physical }
+        Mock Get-NetRoute { [pscustomobject]@{ NextHop = '10.10.48.1'; RouteMetric = 0; InterfaceMetric = 25 } }
     }
     AfterEach { $env:KIOSK_DATA_DIR = $null }
     It 'writes the file from the two cmdlets and returns 0, printing nothing' {
@@ -181,6 +216,17 @@ Describe 'Invoke-HostNetwork' {
         @($o.interfaces | ForEach-Object { $_.ipv4 }) -join ',' | Should -Be '10.10.48.57,10.10.50.9,172.20.10.3'
         $age = ([datetime]::UtcNow - [datetime]::Parse($o.updated_at, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal)).TotalSeconds
         [math]::Abs($age) | Should -BeLessThan 60
+    }
+    It 'records the default gateway' {
+        Invoke-HostNetwork | Should -Be 0
+        ([IO.File]::ReadAllText((Join-Path $script:data 'host-network.json')) | ConvertFrom-Json).gateway | Should -Be '10.10.48.1'
+    }
+    It 'still writes the interfaces, without a gateway, when Get-NetRoute fails' {
+        Mock Get-NetRoute { throw 'no route table' }
+        Invoke-HostNetwork | Should -Be 0
+        $o = [IO.File]::ReadAllText((Join-Path $script:data 'host-network.json')) | ConvertFrom-Json
+        @($o.interfaces).Count | Should -Be 3
+        $o.PSObject.Properties.Name | Should -Not -Contain 'gateway'
     }
     It 'keeps the old file and returns 1 when a cmdlet fails' {
         Mock Get-NetAdapter { throw 'no CIM' } -ParameterFilter { $Physical }

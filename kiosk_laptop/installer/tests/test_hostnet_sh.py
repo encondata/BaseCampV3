@@ -244,6 +244,87 @@ def test_to_json_with_no_interfaces(tmp_path):
         {"updated_at": "2026-10-01T18:00:00Z", "interfaces": []}
 
 
+# ── Default gateway ───────────────────────────────────────────────────
+ROUTE_GET = ("   route to: default\ndestination: default\n       mask: default\n"
+             "    gateway: 10.10.48.1\n  interface: en0\n      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,GLOBAL>\n")
+IP_ROUTE = ('[{"dst":"default","gateway":"10.10.48.1","dev":"eth0","protocol":"dhcp",'
+            '"prefsrc":"10.10.48.57","metric":100,"flags":[]}]')
+
+
+def test_parse_gateway_macos(tmp_path):
+    assert hn(tmp_path, "parse_gateway_macos", stdin=ROUTE_GET).stdout == "10.10.48.1\n"
+    assert hn(tmp_path, "parse_gateway_macos", stdin="route: not in table\n").stdout == ""
+
+
+def test_parse_gateway_linux(tmp_path):
+    assert hn(tmp_path, "parse_gateway_linux", stdin=IP_ROUTE).stdout == "10.10.48.1\n"
+    assert hn(tmp_path, "parse_gateway_linux", stdin="[]").stdout == ""
+
+
+@pytest.mark.parametrize("ip", ["10.10.48.1", "192.168.1.254"])
+def test_usable_gateway_accepts(tmp_path, ip):
+    r = hn(tmp_path, f'usable_gateway "{ip}"; echo rc=$?')
+    assert r.stdout == f"{ip}\nrc=0\n"
+
+
+@pytest.mark.parametrize("ip", ["0.0.0.0", "127.0.0.1", "169.254.1.1", "224.0.0.1", "255.255.255.255",
+                                "10.0.0", "10.0.0.256", "fe80::1", "", "10.0.0.1.5", "a.b.c.d"])
+def test_usable_gateway_rejects(tmp_path, ip):
+    r = hn(tmp_path, f'usable_gateway "{ip}"; echo rc=$?')
+    assert r.stdout == "rc=1\n"
+
+
+def test_to_json_with_a_gateway(tmp_path):
+    r = hn(tmp_path, 'to_json 2026-10-01T18:00:00Z 10.10.48.1', stdin="en0\t10.10.48.57\t24\n")
+    data = json.loads(r.stdout)
+    assert data["gateway"] == "10.10.48.1" and data["interfaces"][0]["ipv4"] == "10.10.48.57"
+    assert list(data) == ["updated_at", "interfaces", "gateway"]
+
+
+def test_to_json_without_a_gateway(tmp_path):
+    assert "gateway" not in json.loads(hn(tmp_path, 'to_json 2026-10-01T18:00:00Z', stdin="").stdout)
+    assert "gateway" not in json.loads(hn(tmp_path, 'to_json 2026-10-01T18:00:00Z ""', stdin="").stdout)
+
+
+def test_main_on_linux_records_the_gateway(tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    ipj = tmp_path / "ip.json"; ipj.write_text(IP_JSON)
+    rt = tmp_path / "route.json"; rt.write_text(IP_ROUTE)
+    r = hn(tmp_path, f'OS=Linux; ip() {{ case "$*" in "-j -4 addr") cat "{ipj}";; '
+                     f'"-j -4 route show default") cat "{rt}";; esac; }}; main; echo rc=$?',
+           env={"KIOSK_DATA_DIR": str(data), "KIOSK_SYSFS_NET": str(fake_sysfs(tmp_path))})
+    assert r.stdout == "rc=0\n", r.stderr
+    assert json.loads((data / "host-network.json").read_text())["gateway"] == "10.10.48.1"
+
+
+def test_main_on_macos_records_the_gateway(tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    ifc = tmp_path / "ifconfig.txt"; ifc.write_text(IFCONFIG)
+    ports = tmp_path / "ports.txt"; ports.write_text(PORTS)
+    rt = tmp_path / "route.txt"; rt.write_text(ROUTE_GET)
+    r = hn(tmp_path, f'OS=Darwin; ifconfig() {{ cat "{ifc}"; }}; '
+                     f'networksetup() {{ cat "{ports}"; }}; '
+                     f'route() {{ [ "$*" = "-n get default" ] && cat "{rt}"; }}; main; echo rc=$?',
+           env={"KIOSK_DATA_DIR": str(data)})
+    assert r.stdout == "rc=0\n", r.stderr
+    assert json.loads((data / "host-network.json").read_text())["gateway"] == "10.10.48.1"
+
+
+@pytest.mark.parametrize("os_name,stubs", [
+    ("Linux", 'ip() {{ case "$*" in "-j -4 addr") cat "{ipj}";; *) return 1;; esac; }}'),
+    ("Darwin", 'ifconfig() {{ cat "{ifc}"; }}; networksetup() {{ return 1; }}; route() {{ return 1; }}'),
+])
+def test_main_still_writes_interfaces_when_the_route_tool_fails(tmp_path, os_name, stubs):
+    data = tmp_path / "data"; data.mkdir()
+    ipj = tmp_path / "ip.json"; ipj.write_text(IP_JSON)
+    ifc = tmp_path / "ifconfig.txt"; ifc.write_text(IFCONFIG)
+    r = hn(tmp_path, f'OS={os_name}; ' + stubs.format(ipj=ipj, ifc=ifc) + '; main; echo rc=$?',
+           env={"KIOSK_DATA_DIR": str(data), "KIOSK_SYSFS_NET": str(fake_sysfs(tmp_path))})
+    assert r.stdout == "rc=0\n", r.stderr
+    out = json.loads((data / "host-network.json").read_text())
+    assert out["interfaces"] and "gateway" not in out
+
+
 def test_write_is_atomic_and_mode_644(tmp_path):
     data = tmp_path / "data"; data.mkdir()
     (data / "host-network.json").write_text("old")

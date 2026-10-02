@@ -11,9 +11,13 @@ shows. The Windows port of hostnet.sh.
 Writes <data folder>\host-network.json, the laptop's LAN addresses, for the
 edge (edge/hostnet.py), atomically:
   {"updated_at":"2026-10-01T18:00:00Z",
-   "interfaces":[{"name":"Ethernet","ipv4":"10.10.48.57","prefix":24}]}
+   "interfaces":[{"name":"Ethernet","ipv4":"10.10.48.57","prefix":24}],
+   "gateway":"10.10.48.1"}
 Built-in cmdlets only: Get-NetIPAddress -AddressFamily IPv4 (AddressState
 Preferred) joined with Get-NetAdapter -Physical (adapters that are up).
+"gateway" is the next hop of the best default route (Get-NetRoute, lowest
+RouteMetric + InterfaceMetric), omitted when there is none or it isn't a
+usable IPv4 address.
 Skips loopback, link-local,
 multicast, and Docker/WSL/Hyper-V/VPN/bridge adapters. Prints nothing; exits
 1 (keeping the old file, which then goes stale) when it can't read or write.
@@ -83,14 +87,33 @@ function ConvertTo-HostInterfaceList {
     }
 }
 
-# ConvertTo-HostNetworkJson INTERFACES NOW: the file's JSON (updated_at in UTC).
+# Get-HostnetGateway ROUTES: the NextHop of the default route with the lowest
+# RouteMetric + InterfaceMetric, skipping 0.0.0.0 (on-link) and any next hop
+# the edge won't use; $null when nothing qualifies.
+function Get-HostnetGateway {
+    param([object[]]$Routes = @())
+    $best = $null
+    $bestMetric = [long]::MaxValue
+    foreach ($r in $Routes) {
+        $hop = [string]$r.NextHop
+        if (-not (Test-HostnetAddress -IPAddress $hop -PrefixLength 32)) { continue }
+        $metric = [long]$r.RouteMetric + [long]$r.InterfaceMetric
+        if ($metric -lt $bestMetric) { $best = $hop; $bestMetric = $metric }
+    }
+    $best
+}
+
+# ConvertTo-HostNetworkJson INTERFACES NOW [GATEWAY]: the file's JSON
+# (updated_at in UTC; "gateway" after the interfaces when GATEWAY is set).
 function ConvertTo-HostNetworkJson {
-    param([object[]]$Interfaces = @(), [Parameter(Mandatory = $true)][datetime]$Now)
+    param([object[]]$Interfaces = @(), [Parameter(Mandatory = $true)][datetime]$Now, [string]$Gateway)
     $stamp = $Now.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture)
     # Each entry on its own and the list joined by hand: Windows PowerShell 5.1
     # can serialize a wrapped array as {"value": [...], "Count": n}.
     $items = @(foreach ($i in $Interfaces) { ConvertTo-Json -InputObject $i -Compress })
-    '{"updated_at":' + (ConvertTo-Json -InputObject $stamp -Compress) + ',"interfaces":[' + ($items -join ',') + ']}'
+    $extra = ''
+    if ($Gateway) { $extra = ',"gateway":' + (ConvertTo-Json -InputObject $Gateway -Compress) }
+    '{"updated_at":' + (ConvertTo-Json -InputObject $stamp -Compress) + ',"interfaces":[' + ($items -join ',') + ']' + $extra + '}'
 }
 
 # Write-HostNetworkFile DIR TEXT: a temp file in DIR (UTF-8, no byte-order
@@ -125,7 +148,15 @@ function Invoke-HostNetwork {
         return 1
     }
     $list = @(ConvertTo-HostInterfaceList -Addresses $addresses -Adapters $adapters)
-    $json = ConvertTo-HostNetworkJson -Interfaces $list -Now ([datetime]::UtcNow)
+    # No default route, or a failing cmdlet, only means no gateway.
+    $gateway = $null
+    try {
+        $routes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)
+        $gateway = Get-HostnetGateway -Routes $routes
+    } catch {
+        $gateway = $null
+    }
+    $json = ConvertTo-HostNetworkJson -Interfaces $list -Now ([datetime]::UtcNow) -Gateway $gateway
     if (Write-HostNetworkFile -DataDir (Get-HostnetDataDir) -Text $json) { return 0 }
     1
 }

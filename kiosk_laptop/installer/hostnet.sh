@@ -10,12 +10,16 @@
 # Writes <data folder>/host-network.json, the laptop's LAN addresses, for the
 # edge (edge/hostnet.py), atomically:
 #   {"updated_at": "2026-10-01T18:00:00Z",
-#    "interfaces": [{"name": "en0", "ipv4": "10.10.48.57", "prefix": 24}]}
+#    "interfaces": [{"name": "en0", "ipv4": "10.10.48.57", "prefix": 24}],
+#    "gateway": "10.10.48.1"}
 # Built-in tools only: `ip -j -4 addr` plus /sys/class/net/<name>/device for
 # the real adapters (Linux); `ifconfig` plus `networksetup
 # -listallhardwareports` (macOS). Skips loopback, link-local, multicast,
-# adapters that are down, and Docker/VPN/bridge adapters. Prints nothing; exits
-# 1 (keeping the old file, which then goes stale) when it can't read or write.
+# adapters that are down, and Docker/VPN/bridge adapters. "gateway" is the
+# default route's next hop (`route -n get default` / `ip -j -4 route show
+# default`), omitted when there is none or it isn't a usable IPv4 address.
+# Prints nothing; exits 1 (keeping the old file, which then goes stale) when it
+# can't read or write.
 #
 # The data folder: KIOSK_DATA_DIR, else config.env's KIOSK_DATA_DIR, else the
 # OS default. Testing hooks: KIOSK_HOSTNET_LIB=1 defines the functions without
@@ -168,13 +172,47 @@ usable_only() {
   '
 }
 
-# to_json STAMP: "name<TAB>ipv4<TAB>prefix" lines on stdin -> the file's JSON.
+# to_json STAMP [GATEWAY]: "name<TAB>ipv4<TAB>prefix" lines on stdin -> the
+# file's JSON, with a "gateway" key after the interfaces when GATEWAY isn't empty.
 to_json() {
-  awk -F '\t' -v stamp="$1" '
+  awk -F '\t' -v stamp="$1" -v gw="${2:-}" '
     function esc(v) { gsub(/\\/, "\\\\", v); gsub(/"/, "\\\"", v); return v }
     { items = items (NR > 1 ? ", " : "") sprintf("{\"name\": \"%s\", \"ipv4\": \"%s\", \"prefix\": %d}", esc($1), $2, $3) }
-    END { printf "{\"updated_at\": \"%s\", \"interfaces\": [%s]}\n", stamp, items }
+    END {
+      extra = (gw != "") ? sprintf(", \"gateway\": \"%s\"", esc(gw)) : ""
+      printf "{\"updated_at\": \"%s\", \"interfaces\": [%s]%s}\n", stamp, items, extra
+    }
   '
+}
+
+# parse_gateway_macos: `route -n get default` on stdin -> the gateway address.
+parse_gateway_macos() { awk '$1 == "gateway:" { print $2; exit }'; }
+
+# parse_gateway_linux: `ip -j -4 route show default` on stdin -> the first gateway.
+parse_gateway_linux() {
+  tr ',' '\n' | awk -F '"' '$2 == "gateway" { print $4; exit }'
+}
+
+# usable_gateway IP: IP when it is a dotted-quad unicast IPv4 address that is
+# not unspecified, loopback, link-local, multicast or broadcast (as the edge).
+usable_gateway() {
+  printf '%s\n' "${1:-}" | awk -F . '
+    NF != 4 { exit 1 }
+    { for (i = 1; i <= 4; i++) if ($i !~ /^[0-9]+$/ || $i + 0 > 255) exit 1 }
+    $1 + 0 == 0 || $1 + 0 == 127 || $1 + 0 >= 224 || ($1 + 0 == 169 && $2 + 0 == 254) { exit 1 }
+    { print; exit 0 }'
+}
+
+# gateway: this OS's default gateway, or nothing (a failing tool is ignored).
+gateway() {
+  local raw=''
+  if [ "$OS" = Darwin ]; then
+    raw=$(route -n get default 2>/dev/null | parse_gateway_macos) || raw=''
+  else
+    raw=$(ip -j -4 route show default 2>/dev/null | parse_gateway_linux) || raw=''
+  fi
+  if [ -n "$raw" ]; then usable_gateway "$raw" || true; fi
+  return 0
 }
 
 # write_host_network DIR JSON: a temp file in DIR (mode 644) renamed over
@@ -208,7 +246,7 @@ collect() {
 main() {
   local found
   found=$(collect) || return 1
-  write_host_network "$(data_dir)" "$(printf '%s' "$found" | usable_only | to_json "$(utc_now)")"
+  write_host_network "$(data_dir)" "$(printf '%s' "$found" | usable_only | to_json "$(utc_now)" "$(gateway)")"
 }
 
 # Called on the last line so a partially written script runs nothing.
