@@ -28,9 +28,6 @@ type ReaderState = 'loading' | 'reading' | 'stopped' | 'unreachable';
 const STATE_TEXT: Record<ReaderState, string> = {
   loading: 'Checking…', reading: 'Reading', stopped: 'Stopped', unreachable: 'Unreachable',
 };
-const STATE_CHIP: Record<ReaderState, string> = {
-  loading: 'c-slate', reading: 'c-green', stopped: 'c-slate', unreachable: 'c-red',
-};
 
 /** "Antennas 1 – 4" for a contiguous run, "Antennas 1, 3" otherwise. */
 export function antennasLabel(antennas: string[]): string {
@@ -203,21 +200,10 @@ export default function RfidStatus() {
     ? `${reader.model} · ${antennasLabel(antennas)}`
     : antennasLabel(antennas);
 
-  const pill = (testId?: string) => (
-    <span className={`chip ${STATE_CHIP[state]}`} data-testid={testId}>
-      <span className="dot" />{STATE_TEXT[state]}
-    </span>
-  );
-
   return (
     <div className="portal-page rfid-dash">
-      <div className="rfid-dash-head">
-        <div>
-          <h1 className="page-title">RFID Reader Dashboard</h1>
-          <p className="page-hint">Live asset reads and reader activity.</p>
-        </div>
-        <div className="rfid-dash-pill">{pill('rfid-dash-pill')}</div>
-      </div>
+      {/* No visible title: the room goes to the tag history (Jimmy, 2026-10-02). */}
+      <h1 className="sr-only">RFID reader</h1>
 
       <div className="rfid-dash-tiles">
         <Tile icon={ICON.tag} label="Tags read today" value="—" sub="Waiting for tag data" />
@@ -235,7 +221,7 @@ export default function RfidStatus() {
         <Tile icon={ICON.document} label="Scan type" value={setup?.scanLabel ?? '—'}
               sub="Station: RFID · Laptop" />
         <Tile icon={ICON.broadcast} label="Reader status"
-              value={<span className={`rfid-dash-state is-${state}`}><span className="rfid-dash-dot" />{STATE_TEXT[state]}</span>}
+              value={<span className={`rfid-dash-state is-${state}`} data-testid="rfid-dash-state"><span className="rfid-dash-dot" />{STATE_TEXT[state]}</span>}
               sub={readerSub} />
       </div>
 

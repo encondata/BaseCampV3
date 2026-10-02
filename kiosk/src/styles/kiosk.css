@@ -745,9 +745,6 @@
    light-theme green — hence var(--paper) for the button text). Six tiles
    in a row, 3 + 3 on a laptop-width screen, 2 across on a phone; the two
    panels stack below 900px. */
-.rfid-dash-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.rfid-dash-head .page-hint { margin-top: 4px; }
-.rfid-dash-pill .chip { font-size: 13px; padding: 6px 12px; }
 .rfid-dash-tiles {
   display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 14px; margin: 20px 0 0;
@@ -845,7 +842,7 @@
    scroll inside, START / STOP stay pinned at the bottom. A short screen
    scrolls the main column instead of squeezing the page below its floor. */
 .rfid-dash { display: flex; flex-direction: column; height: 100%; min-height: 560px; box-sizing: border-box; }
-.rfid-dash-head, .rfid-dash-tiles { flex: none; }
+.rfid-dash-tiles { flex: none; }
 @media (max-width: 900px) { .rfid-dash { height: auto; } }
 
 /* Always dark (KioskShell forces data-theme="dark" on this route): the

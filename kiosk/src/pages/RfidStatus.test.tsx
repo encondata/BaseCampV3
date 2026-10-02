@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-/** The RFID Reader Dashboard: tiles, status pill, the START/STOP pair,
+/** The RFID Reader Dashboard: tiles, status state, the START/STOP pair,
  *  the System Events feed, and its 5 s poll and 1 s clock. */
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -82,8 +82,8 @@ afterEach(() => {
 describe('RfidStatus', () => {
   it('renders the title and the six tile labels', async () => {
     await renderPage();
-    expect(screen.getByRole('heading', { name: 'RFID Reader Dashboard' })).toBeTruthy();
-    expect(screen.getByText('Live asset reads and reader activity.')).toBeTruthy();
+    expect(screen.queryByText('RFID Reader Dashboard')).toBeNull();
+    expect(screen.queryByText('Live asset reads and reader activity.')).toBeNull();
     for (const label of ['Tags read today', 'Move progress', 'Local time', 'Active move',
       'Scan type', 'Reader status']) {
       expect(screen.getByText(label)).toBeTruthy();
@@ -111,9 +111,9 @@ describe('RfidStatus', () => {
     expect(within(tile('Move progress')).getByText('— / —')).toBeTruthy();
   });
 
-  it('Reading: green pill, START disabled with Already reading, STOP enabled', async () => {
+  it('Reading: green state, START disabled with Already reading, STOP enabled', async () => {
     await renderPage();
-    expect(screen.getByTestId('rfid-dash-pill').textContent).toBe('Reading');
+    expect(screen.getByTestId('rfid-dash-state').textContent).toBe('Reading');
     expect(within(tile('Reader status')).getByText('Reading')).toBeTruthy();
     expect(startBtn().disabled).toBe(true);
     expect(startBtn().textContent).toContain('Already reading');
@@ -121,10 +121,10 @@ describe('RfidStatus', () => {
     expect(stopBtn().textContent).toContain('Stop RFID reader');
   });
 
-  it('Stopped: gray pill, START enabled, STOP stays enabled so a stuck reader can be stopped', async () => {
+  it('Stopped: gray state, START enabled, STOP stays enabled so a stuck reader can be stopped', async () => {
     api.getReaderStatus.mockResolvedValue(status({ reading: false }));
     await renderPage();
-    expect(screen.getByTestId('rfid-dash-pill').textContent).toBe('Stopped');
+    expect(screen.getByTestId('rfid-dash-state').textContent).toBe('Stopped');
     expect(within(tile('Reader status')).getByText('Stopped')).toBeTruthy();
     expect(startBtn().disabled).toBe(false);
     expect(startBtn().textContent).toContain('Start RFID reader');
@@ -133,10 +133,10 @@ describe('RfidStatus', () => {
     expect(stopBtn().textContent).not.toContain('Already stopped');
   });
 
-  it('Unreachable: red pill, START disabled, STOP still enabled', async () => {
+  it('Unreachable: red state, START disabled, STOP still enabled', async () => {
     api.getReaderStatus.mockResolvedValue(status({ reachable: false, reading: false }));
     await renderPage();
-    expect(screen.getByTestId('rfid-dash-pill').textContent).toBe('Unreachable');
+    expect(screen.getByTestId('rfid-dash-state').textContent).toBe('Unreachable');
     expect(within(tile('Reader status')).getByText('Unreachable')).toBeTruthy();
     expect(startBtn().disabled).toBe(true);
     expect(stopBtn().disabled).toBe(false);
@@ -154,7 +154,7 @@ describe('RfidStatus', () => {
     expect(api.stopReader).toHaveBeenCalledTimes(1);
     expect(api.getReaderStatus).toHaveBeenCalledTimes(2);
     expect(api.getRfidEvents).toHaveBeenCalledTimes(2);
-    expect(screen.getByTestId('rfid-dash-pill').textContent).toBe('Stopped');
+    expect(screen.getByTestId('rfid-dash-state').textContent).toBe('Stopped');
   });
 
   it('START calls startReader', async () => {
@@ -251,9 +251,9 @@ describe('RfidStatus', () => {
     api.getReaderStatus.mockResolvedValue(status({ reading: false }));
     fireEvent.click(stopBtn());
     await flush();
-    expect(screen.getByTestId('rfid-dash-pill').textContent).toBe('Stopped');
+    expect(screen.getByTestId('rfid-dash-state').textContent).toBe('Stopped');
     await act(async () => { release(status({ reading: true })); await vi.advanceTimersByTimeAsync(0); });
-    expect(screen.getByTestId('rfid-dash-pill').textContent).toBe('Stopped');
+    expect(screen.getByTestId('rfid-dash-state').textContent).toBe('Stopped');
   });
 
   it('a busy answer keeps the last known state', async () => {
@@ -261,14 +261,14 @@ describe('RfidStatus', () => {
     api.getReaderStatus.mockResolvedValue(
       status({ reachable: false, reading: false, radio: null, antennas: [], busy: true }));
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
-    expect(screen.getByTestId('rfid-dash-pill').textContent).toBe('Reading');
+    expect(screen.getByTestId('rfid-dash-state').textContent).toBe('Reading');
   });
 
   it('a busy answer before any status shows Checking…', async () => {
     api.getReaderStatus.mockResolvedValue(
       status({ reachable: false, reading: false, radio: null, antennas: [], busy: true }));
     await renderPage();
-    expect(screen.getByTestId('rfid-dash-pill').textContent).toBe('Checking…');
+    expect(screen.getByTestId('rfid-dash-state').textContent).toBe('Checking…');
   });
 
   it('stops polling on unmount', async () => {
