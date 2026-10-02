@@ -48,7 +48,9 @@ vi.mock('../lib/edgeStatus', () => ({
   useEdgeStatus: () => ({ status: edgeMock.status, refresh: async () => {} }),
 }));
 
-const laptopSetupMock = vi.hoisted(() => ({ hydrateLaptopSetup: vi.fn(() => Promise.resolve(false)) }));
+const laptopSetupMock = vi.hoisted(() => ({
+  hydrateLaptopSetup: vi.fn((_lockedMove?: string | null) => Promise.resolve(false)),
+}));
 vi.mock('../lib/laptopSetup', () => laptopSetupMock);
 
 import { clearFlash, flash } from '../lib/flash';
@@ -428,6 +430,13 @@ it('laptop mode: the footer mode names the station type once setup saved one', (
 it('signed in, the shell loads the laptop\'s shared setup; signed out it does not', () => {
   render(<MemoryRouter><KioskShell><div /></KioskShell></MemoryRouter>);
   expect(laptopSetupMock.hydrateLaptopSetup).toHaveBeenCalledTimes(1);
+  expect(laptopSetupMock.hydrateLaptopSetup).toHaveBeenLastCalledWith(null);
+  cleanup();
+  laptopSetupMock.hydrateLaptopSetup.mockClear();
+  // a move-password session passes its locked move
+  auth.kioskMove = { initiative_id: 'i-7', name: 'Move 7' };
+  render(<MemoryRouter><KioskShell><div /></KioskShell></MemoryRouter>);
+  expect(laptopSetupMock.hydrateLaptopSetup).toHaveBeenLastCalledWith('i-7');
   cleanup();
   laptopSetupMock.hydrateLaptopSetup.mockClear();
   auth.status = 'anon';

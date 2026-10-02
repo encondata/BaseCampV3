@@ -482,3 +482,86 @@ async def test_re_pairing_the_same_reader_touches_no_other(app, client):
     puts = len(reader.puts)
     assert (await pair(client, app, laptop_ip="10.0.0.6")).status_code == 200
     assert len(reader.puts) == puts + 1  # just the new pairing's write
+
+
+# ── fix round 2: release never sends the password list ──
+
+from tests.fake_reader import FakeNas  # noqa: E402
+
+
+async def test_release_sends_no_credentials_to_a_non_reader_at_the_old_ip(app, client):
+    old, new = FakeReader(serial="OLD1"), FakeReader(serial="NEW2")
+    routing = RoutingTransport({OLD_IP: old, NEW_IP: new})
+    app.state.reader_transport = routing
+    assert (await pair_at(client, app, OLD_IP)).status_code == 200
+    nas = FakeNas()
+    routing.hosts[OLD_IP] = nas.transport()  # the old address now belongs to a NAS
+    r = await pair_at(client, app, NEW_IP)
+    assert r.status_code == 200, r.text
+    assert nas.requests >= 1 and nas.credential_attempts == 0
+
+
+async def test_release_tries_only_the_stored_password(app, client):
+    old, new = FakeReader(serial="OLD1", password_index=3), FakeReader(serial="NEW2")
+    app.state.reader_transport = RoutingTransport({OLD_IP: old, NEW_IP: new})
+    assert (await pair_at(client, app, OLD_IP)).status_code == 200
+    old.password_index = 1  # somebody changed the old reader's password
+    old.login_attempts.clear()
+    assert (await pair_at(client, app, NEW_IP)).status_code == 200
+    assert old.login_attempts == [3]
+    assert len(reader_connections(old)) == 1  # left alone
+
+
+async def test_release_skips_without_a_stored_password(app, client, caplog):
+    caplog.set_level(logging.INFO)
+    old, new = FakeReader(serial="OLD1"), FakeReader(serial="NEW2")
+    app.state.reader_transport = RoutingTransport({OLD_IP: old, NEW_IP: new})
+    assert (await pair_at(client, app, OLD_IP)).status_code == 200
+    app.state.store.run("UPDATE rfid_readers SET password_index = NULL WHERE serial = 'OLD1'")
+    old.login_attempts.clear()
+    assert (await pair_at(client, app, NEW_IP)).status_code == 200
+    assert old.login_attempts == [] and len(reader_connections(old)) == 1
+    assert "no stored password" in caplog.text
+
+
+async def test_release_skips_a_different_reader_at_the_old_ip(app, client):
+    old, new = FakeReader(serial="OLD1"), FakeReader(serial="NEW2")
+    routing = RoutingTransport({OLD_IP: old, NEW_IP: new})
+    app.state.reader_transport = routing
+    assert (await pair_at(client, app, OLD_IP)).status_code == 200
+    swapped = FakeReader(serial="SWAP9")
+    swapped.config = old.config
+    routing.hosts[OLD_IP] = swapped.transport()
+    assert (await pair_at(client, app, NEW_IP)).status_code == 200
+    assert swapped.puts == []
+
+
+async def test_switching_to_label_releases_the_paired_reader(app, client, cloud):
+    reader = use_reader(app)
+    assert (await pair(client, app, laptop_ip="10.0.0.5")).status_code == 200
+    assert len(reader_connections(reader)) == 1
+    app.state.upstream.save_session("p-1", refresh_token="r1", access_token="a1", expires_in=900)
+
+    async def no_sync():
+        return {}
+    app.state.syncer.run = no_sync
+    cloud.post("/kiosk/setup").respond(200, json={
+        "initiative_id": "m-1", "initiative_name": "M", "site_id": "s", "site_name": "S",
+        "site_role": "source", "scan_status": "x", "scan_status_label": "X"})
+    r = await client.post("/kiosk/setup", headers=make_session(app),
+                          json={**SETUP, "station_type": "label"})
+    assert r.status_code == 200
+    assert reader_connections(reader) == []
+    assert app.state.store.one("SELECT * FROM rfid_pairing") is None
+
+
+async def test_connect_logs_the_http_fallback(app, client, caplog):
+    caplog.set_level(logging.DEBUG, logger="edge.rfid.pairing")
+    use_reader(app, ports=(80,))
+    r = await client.post("/edge/rfid/connect", headers=make_session(app), json={"ip": READER_IP})
+    assert r.status_code == 200
+    assert f"falling back from https:443 to http:80 for {READER_IP}" in caplog.text
+    caplog.clear()
+    app.state.store.run("UPDATE rfid_readers SET scheme = NULL, port = NULL")
+    assert (await pair(client, app, laptop_ip="10.0.0.5")).status_code == 200
+    assert f"falling back from https:443 to http:80 for {READER_IP}" in caplog.text

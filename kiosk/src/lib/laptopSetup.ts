@@ -42,26 +42,30 @@ export function selectionFromEdge(setup: EdgeSetup | null): KioskSetupSelection 
   return selection;
 }
 
-let inFlight: Promise<boolean> | null = null;
+let inFlight: Promise<EdgeSetup | null> | null = null;
+
+/** One GET /edge/setup shared by concurrent callers; null on any failure. */
+function fetchShared(): Promise<EdgeSetup | null> {
+  inFlight ??= getEdgeSetup().catch(() => null).finally(() => { inFlight = null; });
+  return inFlight;
+}
 
 /** Loads the laptop's setup when this browser has none (or an incomplete
- *  one). True when it did. Never throws; concurrent calls share one fetch. */
-export function hydrateLaptopSetup(): Promise<boolean> {
-  if (!isLaptop() || hasLocalSetup()) return Promise.resolve(false);
-  inFlight ??= (async () => {
-    let shared: EdgeSetup | null;
-    try {
-      shared = await getEdgeSetup();
-    } catch {
-      return false;
-    }
-    const selection = selectionFromEdge(shared);
-    // a setup finished in this browser while the edge answered wins
-    if (!selection || hasLocalSetup()) return false;
-    writeKioskSetup(selection);
-    writeSetupState('complete');
-    void runSync(selection.initiativeId, selection.initiativeName);
-    return true;
-  })().finally(() => { inFlight = null; });
-  return inFlight;
+ *  one). True when it did. Never throws.
+ *
+ *  `lockedMove` is a move-password session's move: such a session is
+ *  limited to that move, so the laptop's setup for any other move is never
+ *  taken (checked once the edge has answered). */
+export async function hydrateLaptopSetup(lockedMove: string | null = null): Promise<boolean> {
+  if (!isLaptop() || hasLocalSetup()) return false;
+  const shared = await fetchShared();
+  const selection = selectionFromEdge(shared);
+  if (!selection) return false;
+  if (lockedMove && selection.initiativeId !== lockedMove) return false;
+  // a setup finished in this browser while the edge answered wins
+  if (hasLocalSetup()) return false;
+  writeKioskSetup(selection);
+  writeSetupState('complete');
+  void runSync(selection.initiativeId, selection.initiativeName);
+  return true;
 }

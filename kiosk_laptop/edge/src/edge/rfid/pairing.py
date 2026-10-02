@@ -233,6 +233,7 @@ async def connect(store: Store, identity: Identity, ip: str, *, transport=None,
         except ReaderError as exc:
             if exc.code != "reader_unreachable" or i == len(order) - 1:
                 raise
+            _log_fallback(ip, order[i], order[i + 1])
     if not found or not found.get("serial"):
         raise ReaderError("reader_not_iotc", "This isn't an FX reader in IoT Connector mode.")
     serial = str(found["serial"])
@@ -266,29 +267,57 @@ RELEASE_TIMEOUT = httpx.Timeout(5.0, connect=3.0)
 
 
 async def release(row, identity: Identity, *, transport=None) -> None:
-    """Best effort, after pairing a different reader: take our connection off
-    the reader this laptop was paired with before. Only connections
-    `is_ours` matches are removed. Any failure is logged (never the token)
-    and swallowed — it never fails the new pairing."""
-    serial, token = row["serial"], row["token"]
+    """Best effort: take our connection off a reader this laptop is leaving
+    (a different reader was paired, or the station became a Label Station).
+
+    It never sends the password list: the address must still pass the
+    unauthenticated fingerprint, only the stored password index is tried
+    (none stored: skipped), and the reader's serial must still be the one we
+    paired. Only connections `is_ours` matches are removed. Any failure is
+    logged (never the token) and swallowed — it never fails the caller."""
+    serial, token, ip = row["serial"], row["token"], row["ip"]
     scheme = row["scheme"] or "https"
+    port = row["port"]
+    index = row["password_index"]
+    if index is None:
+        log.info("not releasing reader %s: no stored password index", serial)
+        return
     try:
-        async with ziotc.ZiotcClient(row["ip"], scheme=scheme, port=row["port"],
-                                     transport=transport, password_first=row["password_index"],
-                                     timeout=RELEASE_TIMEOUT) as client:
+        if not await ziotc.fingerprint(ip, scheme=scheme, port=port, transport=transport,
+                                       timeout=RELEASE_TIMEOUT):
+            log.info("not releasing reader %s: %s no longer looks like a Zebra reader",
+                     serial, ip)
+            return
+        async with ziotc.ZiotcClient(ip, scheme=scheme, port=port, transport=transport,
+                                     passwords=[index], timeout=RELEASE_TIMEOUT) as client:
+            found = str((await client.version()).get("serialNumber") or "")
+            if found != serial:
+                log.info("not releasing reader %s: %s is now another reader", serial, ip)
+                return
             config = await client.get_config()
             connections = get_connections(config)
             kept = [c for c in connections if not is_ours(c, identity, serial, token)]
             if len(kept) == len(connections):
-                log.info("old reader %s holds no connection of ours", serial)
+                log.info("reader %s holds no connection of ours", serial)
                 return
             await client.put_config({"READER-GATEWAY": with_connections(config, kept)})
-        log.info("removed our connection from old reader %s", serial)
+        log.info("removed our connection from reader %s", serial)
     except ReaderError as exc:
-        log.warning("couldn't remove our connection from old reader %s (%s)", serial, exc.code)
-    except Exception as exc:  # never fail the new pairing
-        log.warning("couldn't remove our connection from old reader %s (%s)", serial,
+        log.warning("couldn't remove our connection from reader %s (%s)", serial, exc.code)
+    except Exception as exc:  # never fail the caller
+        log.warning("couldn't remove our connection from reader %s (%s)", serial,
                     type(exc).__name__)
+
+
+def current_row(store: Store):
+    """The raw rfid_readers row of the paired reader (token included), or None."""
+    return store.one("SELECT r.* FROM rfid_pairing p JOIN rfid_readers r "
+                     "ON r.serial = p.serial WHERE p.id = 1")
+
+
+def _log_fallback(ip: str, tried: tuple[str, int], following: tuple[str, int]) -> None:
+    log.debug("unreachable: falling back from %s:%d to %s:%d for %s",
+              tried[0], tried[1], following[0], following[1], ip)
 
 
 async def pair(store: Store, identity: Identity, ip: str, laptop_ip: str, *,
@@ -323,6 +352,7 @@ async def open_reader(store: Store, ip: str, *, transport=None,
             await client.aclose()
             if exc.code != "reader_unreachable" or i == len(order) - 1:
                 raise
+            _log_fallback(ip, order[i], order[i + 1])
     raise ReaderError("reader_unreachable", f"Can't reach {ip}.")  # no endpoints: unreachable
 
 
@@ -372,8 +402,7 @@ async def _pair(store: Store, identity: Identity, ip: str, laptop_ip: str,
     finally:
         await client.aclose()
 
-    previous = store.one("SELECT r.* FROM rfid_pairing p JOIN rfid_readers r "
-                         "ON r.serial = p.serial WHERE p.id = 1")
+    previous = current_row(store)
     paired_at = now_iso()
     with store.tx() as c:
         c.execute("UPDATE rfid_readers SET laptop_ip = ?, paired_at = ? WHERE serial = ?",

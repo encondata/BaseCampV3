@@ -102,3 +102,21 @@ it('a setup finished locally while the edge answered wins', async () => {
   expect(await pending).toBe(false);
   expect(readKioskSetup()?.initiativeId).toBe('i-9');
 });
+
+it('a move-password session never takes another move\'s setup', async () => {
+  expect(await hydrateLaptopSetup('i-other')).toBe(false);
+  expect(apiMock.getEdgeSetup).toHaveBeenCalledTimes(1);
+  expect(readKioskSetup()).toBeNull();
+  expect(readSetupState()).toBe('incomplete');
+  expect(syncMock.runSync).not.toHaveBeenCalled();
+});
+
+it('a move-password session takes its own move\'s setup', async () => {
+  expect(await hydrateLaptopSetup('i-1')).toBe(true);
+  expect(readKioskSetup()?.initiativeId).toBe('i-1');
+  expect(syncMock.runSync).toHaveBeenCalledWith('i-1', 'NAP11 Hall Migration');
+});
+
+it('a session that is unlocked hydrates as before', async () => {
+  expect(await hydrateLaptopSetup(null)).toBe(true);
+});

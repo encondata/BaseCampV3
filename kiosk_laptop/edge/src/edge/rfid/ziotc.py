@@ -94,18 +94,24 @@ def base_url(ip: str, scheme: str = "https", port: int | None = None) -> str:
 # ── fingerprint: is this a Zebra reader? (no credentials sent) ──
 
 # Text a Zebra reader is known or expected to put in its WWW-Authenticate
-# realm, its Server header or its body. Word boundaries keep "fx" inside
-# another word ("firefox", base64 noise) from counting.
-ZEBRA_TEXT = re.compile(r"\bzebra\b|\bfx\d{0,4}\b|\biot\s*connector\b", re.IGNORECASE)
+# realm or Server header. Word boundaries keep "fx" inside another word
+# ("firefox") and "ZebraNet" (Zebra's label-printer servers) from counting.
+HEADER_TEXT = re.compile(r"\bzebra\b|\bfx\d{0,4}\b|\biot\s*connector\b", re.IGNORECASE)
+# Body text alone proves nothing (a Zebra label printer's page says "Zebra
+# Technologies"); it counts only alongside a /cloud/*-specific answer.
+BODY_TEXT = re.compile(r"\bzebra\b|\biot\s*connector\b", re.IGNORECASE)
 _BODY_SNIFF = 4096  # characters of a body the text signal looks at
 
 
-def _names_zebra(resp: httpx.Response | None) -> bool:
+def _header_names_zebra(resp: httpx.Response | None) -> bool:
     if resp is None:
         return False
-    texts = (resp.headers.get("www-authenticate", ""), resp.headers.get("server", ""),
-             resp.text[:_BODY_SNIFF])
-    return any(ZEBRA_TEXT.search(text) for text in texts)
+    return any(HEADER_TEXT.search(resp.headers.get(name, ""))
+               for name in ("www-authenticate", "server"))
+
+
+def _body_names_zebra(resp: httpx.Response | None) -> bool:
+    return resp is not None and bool(BODY_TEXT.search(resp.text[:_BODY_SNIFF]))
 
 
 def _ziotc_error_shape(resp: httpx.Response | None) -> bool:
@@ -121,8 +127,12 @@ def _ziotc_error_shape(resp: httpx.Response | None) -> bool:
 
 
 def _signal_names_zebra(login, version) -> bool:
-    """(a) the realm, Server header or body mentions Zebra, FX or IoT Connector."""
-    return _names_zebra(login) or _names_zebra(version)
+    """(a) the WWW-Authenticate realm or Server header names Zebra, FX or IoT
+    Connector; or a body mentions Zebra or IoT Connector AND /cloud/version
+    answered in ZIOTC's own JSON error shape."""
+    if _header_names_zebra(login) or _header_names_zebra(version):
+        return True
+    return (_body_names_zebra(login) or _body_names_zebra(version)) and _ziotc_error_shape(version)
 
 
 def _signal_ziotc_refusal(login, version) -> bool:
@@ -134,7 +144,8 @@ def _signal_ziotc_refusal(login, version) -> bool:
 
 # A device is a Zebra candidate when any signal fires. These come from Zebra's
 # ZIOTC OpenAPI and support articles, not from a real FX9600 capture yet —
-# refine the list (and its tests) once one is captured.
+# a capture will refine the list (and its tests); keep Zebra's label printers
+# (ZebraNet, "Zebra Technologies" pages) out.
 ZEBRA_SIGNALS = (_signal_names_zebra, _signal_ziotc_refusal)
 
 

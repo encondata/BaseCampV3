@@ -412,7 +412,16 @@ def _resp(status, *, json=None, text=None, headers=None):
     # (a) the box names itself
     (_resp(401, headers={"www-authenticate": 'Basic realm="Zebra Reader"'}), None, True),
     (_resp(200, headers={"server": "IoT Connector"}), _resp(404, text="x"), True),
-    (_resp(404, text="<title>FX7500 web console</title>"), None, True),
+    # body text counts only alongside a /cloud/*-specific answer
+    (_resp(403, text="Zebra IoT Connector"), _resp(403, json={"code": 2, "message": "Forbidden"}), True),
+    (_resp(404, text="<title>FX7500 web console</title>"), None, False),
+    (_resp(200, text="IoT Connector"), _resp(404, text="Not Found"), False),
+    # Zebra label printers aren't readers
+    (_resp(200, text="<title>Zebra Technologies ZT410</title>"),
+     _resp(404, text="<p>Zebra Technologies</p>"), False),
+    (_resp(401, text="Zebra Technologies", headers={"www-authenticate": 'Basic realm="ZebraNet"'}),
+     _resp(401, text="Zebra Technologies", headers={"www-authenticate": 'Basic realm="ZebraNet"'}),
+     False),
     # generic hosts
     (_resp(401, text="<h1>401</h1>", headers={"www-authenticate": 'Basic realm="NAS"'}),
      _resp(401, text="<h1>401</h1>", headers={"www-authenticate": 'Basic realm="NAS"'}), False),

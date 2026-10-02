@@ -74,9 +74,11 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   // A laptop's browsers share its finished setup (GET /edge/setup needs a
   // signed-in edge session): a phone on the LAN starts set up, not blank.
   // A no-op in web mode and once this browser has a complete setup.
+  // A move-password session only ever takes its own move's setup.
+  const lockedMove = kioskMove?.initiative_id ?? null;
   useEffect(() => {
-    if (authed) void hydrateLaptopSetup();
-  }, [authed]);
+    if (authed) void hydrateLaptopSetup(lockedMove);
+  }, [authed, lockedMove]);
 
   const identity = getIdentity();
   const { mode, label: modeLabel } = platform();

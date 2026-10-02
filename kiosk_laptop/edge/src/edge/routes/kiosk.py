@@ -108,6 +108,10 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
     if resp.status_code == 200:
         result = resp.json()
         if station == "label":
+            previous = pairing.current_row(st.store)
+            if previous is not None:  # best effort: the reader stops sending here
+                async with st.pair_lock:
+                    await pairing.release(previous, st.identity, transport=st.reader_transport)
             st.store.run("DELETE FROM rfid_pairing")
         if isinstance(result, dict):
             laptop_setup.save(st.store, result, station)
