@@ -18,9 +18,11 @@ session ended" and signs them out. The heartbeat in that state answers 503
 import json
 from urllib.parse import parse_qs
 
+import httpx
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
+from edge import laptop_setup
 from edge.db import Store, now_iso
 from edge.deps import current_session, err
 from edge.identity import Identity
@@ -98,6 +100,19 @@ def _offline_answer(store, session, method, path, query, cacheable) -> Response:
     raise err(503, "edge_offline")
 
 
+def _apply_clear_setup(store: Store, resp: httpx.Response) -> None:
+    """Clear Setup from the portal arrives on a heartbeat reply. The browser
+    drops its own setup; the edge drops the laptop's shared copy too, or the
+    shell would load it straight back (GET /edge/setup). The reader pairing
+    stays: Kiosk Setup reuses it."""
+    try:
+        data = resp.json()
+    except ValueError:
+        return
+    if isinstance(data, dict) and data.get("clear_setup"):
+        laptop_setup.clear(store)
+
+
 async def forward(request: Request, path: str) -> Response:
     st = request.app.state
     session = current_session(request)
@@ -132,5 +147,7 @@ async def forward(request: Request, path: str) -> Response:
         return _offline_answer(st.store, session, method, path, query, cacheable)
     if cacheable and resp.status_code == 200:
         store_cache(st.store, target, 200, resp.text)
+    if path == HEARTBEAT and resp.status_code == 200:
+        _apply_clear_setup(st.store, resp)
     out_headers = {k: v for k, v in resp.headers.items() if k.lower() not in DROP_HEADERS}
     return Response(content=resp.content, status_code=resp.status_code, headers=out_headers)

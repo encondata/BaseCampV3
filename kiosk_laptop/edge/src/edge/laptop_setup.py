@@ -29,3 +29,8 @@ def save(store: Store, result: dict, station_type: str | None) -> dict:
 def load(store: Store) -> dict | None:
     row = store.one("SELECT setup_json FROM laptop_setup WHERE id = 1")
     return json.loads(row["setup_json"]) if row else None
+
+
+def clear(store: Store) -> None:
+    """Forget the shared setup (Clear Setup from the portal, or Wipe)."""
+    store.run("DELETE FROM laptop_setup")
