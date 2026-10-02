@@ -35,6 +35,9 @@ LAN environment is `uat`.
    git -C /opt/serversherpa/uat/repo checkout <branch-or-sha>
    ```
 
+   If the repo is private, clone over SSH with a read-only GitHub deploy
+   key (repo Settings › Deploy keys), or run `gh auth login` first.
+
 3. **Settings**:
 
    ```bash
@@ -46,7 +49,7 @@ LAN environment is `uat`.
    - `STACK_IMAGE_TAG` = `git -C /opt/serversherpa/uat/repo rev-parse --short HEAD`
    - `STACK_PROXY_IP` = NPM's LAN IP
    - every `CHANGEME`: hex values from `openssl rand -hex 32`; the
-     Fernet key from
+     Fernet key (goes in `SS_TOTP_ENCRYPTION_KEY`) from
      `python3 -c 'import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())'`.
      To sign in with existing accounts later, `SS_PASSWORD_PEPPER` and
      `SS_TOTP_ENCRYPTION_KEY` must instead equal the values of the
@@ -64,6 +67,10 @@ LAN environment is `uat`.
 5. **DNS (Cloudflare, DNS only / grey cloud)** — A records to the WAN IP
    (`curl -fsS https://api.ipify.org` on the host):
    `api.uat`, `portal.uat`, `kiosk.uat`, `wiki.uat`, `spaces.uat`, `status.uat`.
+
+   LAN browsers need the router to support hairpin NAT for the `*.uat`
+   names. If it doesn't, add the six names to local DNS pointing at NPM's
+   LAN IP. The containers themselves already go straight to NPM.
 
 6. **Nginx Proxy Manager** — one proxy host per name, scheme `http`,
    forward to the host's LAN IP, Websockets Support ON, then SSL tab:
@@ -84,6 +91,7 @@ LAN environment is `uat`.
 7. **First admin** (an empty database has no users):
 
    ```bash
+   cd /opt/serversherpa/uat/repo/deploy/stack
    docker compose --env-file /opt/serversherpa/uat/.env -f api/compose.yml \
      exec api serversherpa bootstrap-admin \
        --email you@example.com --first-name First --last-name Last
@@ -94,14 +102,18 @@ LAN environment is `uat`.
 ## Updating
 
 ```bash
+cd /opt/serversherpa/uat/repo/deploy/stack
 git -C /opt/serversherpa/uat/repo fetch && git -C /opt/serversherpa/uat/repo checkout <sha>
 # set STACK_IMAGE_TAG to the new short SHA in /opt/serversherpa/uat/.env
-./ss-stack dump  /opt/serversherpa/uat     # pre-deploy dump
+./ss-stack dump  /opt/serversherpa/uat     # pre-deploy dump; note the path it prints
 ./ss-stack build /opt/serversherpa/uat
 ./ss-stack up    /opt/serversherpa/uat     # migrate runs before the API restarts
 ```
 
-Roll back: its images are still on the host. From
+Roll back: its images are still on the host. Warning: `pg_restore --clean`
+discards everything written after the dump, and files in MinIO are not
+rolled back. Use the dump `ss-stack dump` printed just before the deploy, or
+the newest from `ls -t /opt/serversherpa/uat/backups`. From
 `/opt/serversherpa/uat/repo/deploy/stack`:
 
 1. Stop everything that writes to the database:
