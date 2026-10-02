@@ -24,6 +24,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import ConfirmStep from '../components/setup/ConfirmStep';
 import ConnectStep from '../components/setup/ConnectStep';
 import NetworkCheckStep from '../components/setup/NetworkCheckStep';
 import PairStep from '../components/setup/PairStep';
@@ -50,7 +51,7 @@ type Step = 'type' | 'reader' | 'connect' | 'pair' | 'network' | 'move' | 'site'
 
 const STEP_LABEL: Record<Step, string> = {
   type: 'Station type', reader: 'Select reader', connect: 'Connect', pair: 'Pair',
-  network: 'Network check', move: 'Move', site: 'Site', scan: 'Scan type', confirm: 'Confirm',
+  network: 'Network check', move: 'Move', site: 'Site', scan: 'Scan type', confirm: 'Confirm & verify',
 };
 
 /** The steps this kiosk walks. Web mode skips the station type: RFID
@@ -241,7 +242,8 @@ export default function KioskSetup() {
       }
       setSelection(saved);
       writeSetupState('complete');
-      setWizardOpen(false);
+      // An RFID station still has to verify and start its reader.
+      if (station === 'rfid') setStep('confirm'); else setWizardOpen(false);
       // Fire-and-forget: the summary appears immediately and the
       // download reports itself through `.sync-status`. A sync outcome
       // never changes the setup state — the kiosk IS set up either way.
@@ -369,6 +371,20 @@ export default function KioskSetup() {
         )}
 
         {step === 'network' && <div><NetworkCheckStep onContinue={next} onBack={back} /></div>}
+
+        {step === 'confirm' && selection && (
+          <div>
+            <ConfirmStep
+              setup={selection}
+              reader={paired?.reader
+                ? { ip: paired.reader.ip, serial: paired.reader.serial,
+                    model: paired.reader.model, endpoint_url: paired.endpoint_url }
+                : null}
+              onBack={() => setStep('scan')}
+              onPairAgain={() => setStep('reader')}
+              onStarted={() => { setWizardOpen(false); navigate('/rfid_status'); }} />
+          </div>
+        )}
 
         {moveStep && loadError && (
           <>

@@ -20,6 +20,7 @@ const apiMock = vi.hoisted(() => ({
   connectReader: vi.fn(),
   pairReader: vi.fn(),
   runCheck: vi.fn(),
+  startReader: vi.fn(),
 }));
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
@@ -90,6 +91,7 @@ function renderPage() {
       <Routes>
         <Route path="/setup" element={<KioskSetup />} />
         <Route path="/" element={<div>Home</div>} />
+        <Route path="/rfid_status" element={<div>RFID status page</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -538,11 +540,44 @@ describe('laptop mode', () => {
       serial: 'kiosk-laptop-1', initiative_id: 'i-1', site_id: 's-2',
       scan_status: 'rfid_1_cage_exit', station_type: 'rfid',
     }));
-    expect(await screen.findByText('RFID · Laptop')).toBeTruthy();
-    expect(screen.getByText('FX9600 1234ABCD at 10.0.0.5')).toBeTruthy();
+    expect(await screen.findByText('Step 9 of 9 · Confirm & verify')).toBeTruthy();
+    expect(screen.queryByText('RFID · Laptop')).toBeNull();
     expect(readKioskSetup()).toMatchObject({
       stationType: 'rfid', reader: { ip: '10.0.0.5', serial: '1234ABCD', model: 'FX9600' },
     });
+  });
+
+  async function toConfirm(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(await screen.findByRole('option', { name: /RFID Station/ }));
+    await user.click(await screen.findByText('10.0.0.5'));
+    await user.click(await screen.findByRole('button', { name: 'Pair this reader' }));
+    await user.click(await screen.findByRole('button', { name: 'Continue' }));
+    await user.click(await screen.findByText('NAP11 Hall Migration (demo)', {}, { timeout: 4000 }));
+    await user.click(cardFor('NAP22 Hall'));
+    await user.click(cardFor('RFID 1 - Cage Exit'));
+    await screen.findByText('Step 9 of 9 · Confirm & verify');
+  }
+
+  it('Confirm & verify runs the three checks and Start Reader goes to /rfid_status', async () => {
+    apiMock.startReader.mockReset().mockResolvedValue({ reading: true });
+    const user = userEvent.setup();
+    renderPage();
+    await toConfirm(user);
+    expect(screen.getByText('http://10.0.0.9:8091/rfid/1234ABCD/…')).toBeTruthy();
+    expect(syncMock.runSync).toHaveBeenCalled();
+    const start = await screen.findByRole('button', { name: 'Start Reader' });
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
+    await user.click(start);
+    expect(apiMock.startReader).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText('RFID status page')).toBeTruthy();
+  });
+
+  it('Back from Confirm & verify returns to the scan step', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await toConfirm(user);
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByText('Step 8 of 9 · Scan type')).toBeTruthy();
   });
 
   describe('scan types on the RFID path', () => {

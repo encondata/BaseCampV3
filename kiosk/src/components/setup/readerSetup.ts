@@ -29,7 +29,7 @@ export function isIPv4(value: string): boolean {
     && parts.every((p) => /^(0|[1-9]\d{0,2})$/.test(p) && Number(p) <= 255);
 }
 
-function codeOf(err: unknown): string {
+export function codeOf(err: unknown): string {
   return err instanceof ApiError ? err.code : 'network';
 }
 
@@ -40,7 +40,7 @@ function readerMessage(err: unknown): string | null {
 }
 
 /** The messages Connect and Pair share. */
-function readerErrorText(err: unknown, ip: string): string | null {
+export function readerErrorText(err: unknown, ip: string): string | null {
   const code = codeOf(err);
   if (code === 'reader_auth_failed') return "Couldn't sign in to this reader.";
   if (code === 'reader_not_iotc') {

@@ -945,6 +945,21 @@ export interface ReaderStatus {
   reachable?: boolean;
   reading?: boolean;
   radio?: string | null;
+  /** Antenna ports reported connected, sorted; empty when unknown. */
+  antennas?: string[];
+}
+
+/** One line of the edge's RFID event log, newest first. */
+export interface RfidEvent {
+  id: number;
+  at: string;
+  kind: string;
+  title: string;
+  detail: string;
+}
+
+export async function getRfidEvents(limit = 50): Promise<{ events: RfidEvent[] }> {
+  return jsonFrom<{ events: RfidEvent[] }>(await apiFetch(`/edge/rfid/events?limit=${limit}`));
 }
 
 export async function startReader(): Promise<{ reading: boolean }> {
