@@ -3,7 +3,6 @@ Responses never carry secrets; error reasons are our own copy."""
 
 import asyncio
 import os
-import re
 from datetime import datetime
 from typing import Literal
 
@@ -13,7 +12,7 @@ from pydantic import BaseModel, Field
 from sirdar_api.api.deps import AuthContext, DbSession, client_ip, require_permission
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import SshKnownHost
-from sirdar_api.deploy import ConnectFailed, digitalocean, known_hosts, ssh, targets
+from sirdar_api.deploy import ConnectFailed, digitalocean, known_hosts, names, ssh, targets
 from sirdar_api.deploy.ssh_targets import SavedSshTarget, TargetError
 from sirdar_api.services.audit import audit
 
@@ -21,7 +20,6 @@ router = APIRouter(prefix="/deploy", tags=["deploy"])
 
 TARGET_ID_PATTERN = r"^(aws|gcp|digitalocean|ssh|ssh:[a-z0-9]+(-[a-z0-9]+)*)$"
 DeployType = Literal["blue", "green", "dev", "beta", "custom"]
-CUSTOM_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,31}$")
 
 
 class ConnectIn(BaseModel):
@@ -208,9 +206,9 @@ async def connect(body: ConnectIn, request: Request, db: DbSession,
         name = (body.name or "").strip()
         if not name:
             raise HTTPException(status_code=422, detail={"code": "custom_name_required"})
-        if not CUSTOM_NAME_RE.fullmatch(name) or name.endswith("-"):
+        if not names.is_valid_custom_name(name):
             raise HTTPException(status_code=422, detail={"code": "custom_name_invalid"})
-        if name in targets.DEPLOY_TYPE_IDS:
+        if names.is_reserved_name(name):
             raise HTTPException(status_code=422, detail={"code": "custom_name_reserved"})
 
     async def record(ok: bool, code: str | None = None) -> None:

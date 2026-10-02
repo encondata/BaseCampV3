@@ -126,3 +126,25 @@ async def test_permission(client, db):
     for i, role in enumerate(("admin", "founder", "super_admin", "developer")):
         h = await auth_headers(client, db, email=f"u{i}@test.example.com", roles=(role,))
         assert (await client.get("/api/dashboard", headers=h)).status_code == 200
+
+
+async def test_cache_keyed_by_token_hash(client, db, with_token, monkeypatch):
+    h = await auth_headers(client, db)
+    await client.get("/api/dashboard", headers=h)
+    assert TOKEN not in service._cache
+    assert all(TOKEN not in k for k in service._cache)
+    monkeypatch.setenv("SIRDAR_DEPLOY_DO_TOKEN", TOKEN + "-other")
+    get_settings.cache_clear()
+    await client.get("/api/dashboard", headers=h)
+    assert with_token["calls"] == 2
+
+
+async def test_failure_negative_cache(client, db, with_token):
+    with_token["transport"] = do_transport(status=401)
+    h = await auth_headers(client, db)
+    r1 = await client.get("/api/dashboard", headers=h)
+    r2 = await client.get("/api/dashboard", headers=h)
+    assert with_token["calls"] == 1
+    assert r2.json()["infrastructure"]["error"] == r1.json()["infrastructure"]["error"]
+    await client.get("/api/dashboard?refresh=1", headers=h)
+    assert with_token["calls"] == 2

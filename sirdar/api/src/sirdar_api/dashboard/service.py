@@ -2,15 +2,17 @@
 production and the environments are derived: everything is empty, and only the
 DigitalOcean inventory (grouped by sirdar-* tags) is real."""
 
+import hashlib
 import time
 from datetime import UTC, datetime
 
 from sirdar_api.config import Settings
 from sirdar_api.dashboard.demo import demo_dashboard, node
-from sirdar_api.deploy import ConnectFailed, digitalocean, targets
+from sirdar_api.deploy import ConnectFailed, digitalocean, names, targets
 
 CACHE_SECONDS = 30
-_cache: dict[str, tuple[float, dict]] = {}
+FAILURE_SECONDS = 10
+_cache: dict[str, tuple[float, dict | str]] = {}
 _FIXED = ("production", "dev", "beta")
 _LABELS = {"production": "Production", "dev": "Development", "beta": "Beta"}
 _DROPLET = {"active": ("running", "Running"), "off": ("stopped", "Stopped"),
@@ -34,7 +36,11 @@ def _tags(resource: dict) -> list[str]:
 
 def _env_of(resource: dict) -> str | None:
     envs = [t[len("sirdar-env:"):] for t in _tags(resource) if t.startswith("sirdar-env:")]
-    return envs[0] if envs and envs[0] else None
+    env = envs[0] if envs else None
+    if env and (env in _FIXED or (names.is_valid_custom_name(env)
+                                  and not names.is_reserved_name(env))):
+        return env
+    return None
 
 
 def _slot_of(resource: dict) -> str | None:
@@ -126,11 +132,19 @@ def build_tree(inv: dict) -> list[dict]:
 
 
 async def _inventory(settings: Settings, refresh: bool, transport=None) -> dict:
-    key = settings.deploy_do_token.get_secret_value()
+    key = hashlib.sha256(settings.deploy_do_token.get_secret_value().encode()).hexdigest()
     hit = _cache.get(key)
-    if hit and not refresh and time.monotonic() - hit[0] < CACHE_SECONDS:
-        return hit[1]
-    inv = await digitalocean.inventory(settings, transport=transport)
+    if hit and not refresh:
+        age = time.monotonic() - hit[0]
+        if isinstance(hit[1], str) and age < FAILURE_SECONDS:
+            raise ConnectFailed(hit[1])
+        if isinstance(hit[1], dict) and age < CACHE_SECONDS:
+            return hit[1]
+    try:
+        inv = await digitalocean.inventory(settings, transport=transport)
+    except ConnectFailed as e:
+        _cache[key] = (time.monotonic(), e.reason)
+        raise
     _cache[key] = (time.monotonic(), inv)
     return inv
 
