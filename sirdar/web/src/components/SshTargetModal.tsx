@@ -95,7 +95,7 @@ export default function SshTargetModal({ mode, slug, onSaved, onClose }: {
 
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !savingRef.current) onCloseRef.current(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !e.defaultPrevented && !savingRef.current) onCloseRef.current(); };
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('keydown', onKey);
@@ -166,6 +166,17 @@ export default function SshTargetModal({ mode, slug, onSaved, onClose }: {
     }
   };
 
+  // The saved passphrase belongs to the saved key: picking a different key (or
+  // none) defaults it to Clear; picking the saved key again restores Keep.
+  const changeKey = (v: string) => {
+    const next = v === NONE ? '' : v;
+    setKeyFile(next);
+    if (adding || !ppIsSet) return;
+    if (next !== (saved?.key_path ?? '')) { if (ppAction === 'keep') setPpAction('clear'); }
+    else if (ppAction === 'clear') setPpAction('keep');
+  };
+  const keyChanged = !adding && ppIsSet && keyFile !== '' && keyFile !== (saved?.key_path ?? '');
+
   const options = [{ value: NONE, label: 'None' },
     ...[...new Set([...files, ...(keyFile ? [keyFile] : [])])].map((f) => ({ value: f, label: f }))];
 
@@ -227,7 +238,7 @@ export default function SshTargetModal({ mode, slug, onSaved, onClose }: {
                 <label className="field-label" htmlFor="ssh-key">Key file</label>
                 <ComboBox inputId="ssh-key" ariaLabel="Key file" portal value={keyFile || NONE}
                           options={options} placeholder="None"
-                          onChange={(v) => setKeyFile(v === NONE ? '' : v)} />
+                          onChange={changeKey} />
                 <p className="page-hint">Put key files in sirdar/deploy-keys/ on the Sirdar host (chmod 600).</p>
                 {errors.key && <p className="form-error" role="alert">{errors.key}</p>}
               </div>
@@ -235,6 +246,9 @@ export default function SshTargetModal({ mode, slug, onSaved, onClose }: {
                 <SecretField id="ssh-passphrase" label="Key passphrase" isSet={ppIsSet} adding={adding}
                              action={ppAction} value={pp} error={errors.passphrase}
                              onAction={setPpAction} onValue={setPp} />
+              )}
+              {keyFile && keyChanged && ppAction === 'clear' && (
+                <p className="page-hint">The saved passphrase belonged to the previous key, so it will be cleared. Choose Replace to enter a new one.</p>
               )}
               {errors.auth && <p className="form-error" role="alert">{errors.auth}</p>}
               {errors.form && <p className="form-error" role="alert">{errors.form}</p>}

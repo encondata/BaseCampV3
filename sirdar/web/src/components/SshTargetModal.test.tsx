@@ -155,3 +155,26 @@ it('Escape and Cancel close, but not while saving', async () => {
   await userEvent.keyboard('{Escape}');
   expect(again.onClose).toHaveBeenCalledTimes(1);
 });
+
+it('Escape closes an open key-file list without closing the modal', async () => {
+  const { onClose } = await openAdd();
+  await userEvent.click(screen.getByLabelText('Key file'));
+  await screen.findByText('id_ed25519');
+  await userEvent.keyboard('{Escape}');
+  expect(onClose).not.toHaveBeenCalled();
+  await userEvent.keyboard('{Escape}');
+  expect(onClose).toHaveBeenCalledTimes(1);
+});
+
+it('changing the key on edit defaults the passphrase to Clear, with a note', async () => {
+  api.getSshTarget.mockResolvedValue({ ...SAVED, key_path: 'id_ed25519', passphrase_set: true });
+  render(<SshTargetModal mode="edit" slug="edge-box" onSaved={vi.fn()} onClose={vi.fn()} />);
+  await screen.findByText('Key passphrase: set');
+  await userEvent.click(screen.getByLabelText('Key file'));
+  await userEvent.click(await screen.findByText('b_key'));
+  expect(screen.getByText('Key passphrase: will be cleared')).toBeTruthy();
+  expect(screen.getByText(/belonged to the previous key/)).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateSshTarget).toHaveBeenCalled());
+  expect(api.updateSshTarget.mock.calls[0][1]).toMatchObject({ key_path: 'b_key', key_passphrase: '' });
+});

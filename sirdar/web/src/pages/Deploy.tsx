@@ -218,7 +218,7 @@ export default function Deploy() {
       <section className="sirdar-section">
         <h2>Target</h2>
         <div className="sirdar-cards">
-          <div role="radiogroup" aria-label="Deployment target" style={{ display: 'contents' }}>
+          <div role="radiogroup" aria-label="Deployment target" className="sirdar-contents">
           {targets.map((t) => (
             <button key={t.id} type="button" role="radio" className={`sirdar-card sirdar-target${t.id === target ? ' on' : ''}`}
                     aria-checked={t.id === target} aria-disabled={!t.available}

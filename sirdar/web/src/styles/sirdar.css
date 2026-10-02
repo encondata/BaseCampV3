@@ -57,3 +57,6 @@
 .sirdar-secret-row input { flex: 1; }
 .sirdar-add-target { border-style: dashed; align-items: center; justify-content: center; }
 .sirdar-target-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+
+/* A wrapper that adds semantics (radiogroup) but no box of its own. */
+.sirdar-contents { display: contents; }
