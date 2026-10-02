@@ -56,7 +56,7 @@ done
 # --- interval parsing (the agent sourced as a library)
 FW4=/src/test/fixtures/fw4-mt3000
 rm -rf /tmp/ivfx && mkdir -p /tmp/ivfx && cp -r "$FW4/config" /tmp/ivfx/
-for pair in 090:90 0300:300 600:600 30:60 000:60 abc:300 empty:300; do
+for pair in 090:90 0300:300 600:600 30:60 000:60 abc:65 empty:65; do
   v=${pair%%:*}; want=${pair#*:}
   if [ "$v" = empty ]; then uci -c /tmp/ivfx/config -q delete basecamp.agent.interval
   else uci -c /tmp/ivfx/config set basecamp.agent.interval="$v"; fi

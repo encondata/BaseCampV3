@@ -4,7 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/encondata/BaseCampV3/main/router_agent/install.sh | sh -s -- --api https://<api-host>
 #
 #   --api URL            BaseCamp API address (https:// only; kept on re-install)
-#   --interval SECONDS   report interval, 60 or more (default 300)
+#   --interval SECONDS   report interval, 60 or more (default 65)
 #   --hostname NAME      set the router's hostname without asking (letters,
 #                        digits and hyphens, up to 63; the portal names a new
 #                        router after it). Without it, the installer asks on
@@ -181,7 +181,7 @@ write_config() {
   if [ -n "$INTERVAL" ]; then
     uci set basecamp.agent.interval="$INTERVAL"
   elif [ -z "$(uci -q get basecamp.agent.interval)" ]; then
-    uci set basecamp.agent.interval=300
+    uci set basecamp.agent.interval=65
   fi
   uci set basecamp.agent.enabled=1
   uci commit basecamp || die "couldn't save $CONFIG"

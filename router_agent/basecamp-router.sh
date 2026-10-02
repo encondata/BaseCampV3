@@ -352,10 +352,10 @@ describe() {
 }
 
 # uci basecamp.agent.interval in seconds: digits only (leading zeros
-# stripped, so 090 isn't a bad octal number), at least 60, default 300.
+# stripped, so 090 isn't a bad octal number), at least 60, default 65.
 interval_seconds() {
   v=$(cfg interval)
-  case "$v" in ''|*[!0-9]*) echo 300; return ;; esac
+  case "$v" in ''|*[!0-9]*) echo 65; return ;; esac
   v=${v#"${v%%[!0]*}"}
   v=${v:-0}
   [ "$v" -ge 60 ] || v=60
@@ -380,7 +380,7 @@ run_loop() {
     code=$(send_report)
     case "$code" in 200|202) ;; *) log "report not accepted: $(describe "$code")" ;; esac
     extra=0; [ "$code" = 429 ] && extra=$interval
-    pause $((interval + extra + $(jitter 30)))
+    pause $((interval + extra + $(jitter 10)))
   done
 }
 

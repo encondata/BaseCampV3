@@ -27,7 +27,7 @@ check "service installed" '[ -x /etc/init.d/basecamp-router ]'
 check "service enabled at boot" '[ -e /etc/rc.d/S99basecamp-router ]'
 check "service lets a report in flight finish before SIGKILL" 'grep -q "procd_set_param term_timeout 30" /etc/init.d/basecamp-router'
 check "api_url saved without trailing slash" '[ "$(uci -q get basecamp.agent.api_url)" = https://api.example.test ]'
-check "interval defaults to 300" '[ "$(uci -q get basecamp.agent.interval)" = 300 ]'
+check "interval defaults to 65" '[ "$(uci -q get basecamp.agent.interval)" = 65 ]'
 check "secret is 64 hex chars" 'grep -qE "^[0-9a-f]{64}$" /etc/basecamp/secret'
 check "secret is owner-only" '[ "$(ls -l /etc/basecamp/secret | cut -c1-10)" = "-rw-------" ]'
 for f in /etc/basecamp/ /etc/config/basecamp /usr/bin/basecamp-router /etc/init.d/basecamp-router; do

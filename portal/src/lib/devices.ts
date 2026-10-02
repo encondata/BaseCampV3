@@ -96,8 +96,8 @@ export function approvalLabel(state: string | null | undefined): string {
   return '—';
 }
 
-/** Three missed 5-minute reports plus jitter. */
-export const ROUTER_ONLINE_MS = 16 * 60 * 1000;
+/** About three missed reports at the 65 s default (plus up to 10 s jitter each). */
+export const ROUTER_ONLINE_MS = 4 * 60 * 1000;
 
 export function routerStatus(
   iso: string | null | undefined, now: Date = new Date(),

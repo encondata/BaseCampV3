@@ -1,6 +1,6 @@
 # BaseCamp router agent (GL.iNet)
 
-Sends a GL.iNet router's status to BaseCamp every 5 minutes: WAN and LAN
+Sends a GL.iNet router's status to BaseCamp about once a minute (every 65 seconds by default): WAN and LAN
 IPs, uptime, WiFi networks, DHCP clients, connected-client counts, and
 VPN tunnels. Tested against GL-AC2100 (firmware 3.x) and GL-MT3000
 (firmware 4.x) layouts. Send-only: the router never takes commands from
@@ -27,7 +27,7 @@ seconds, it keeps the current name. Unattended or background installs
 
 Options: `--hostname NAME` (set the hostname without asking: letters,
 digits and hyphens, up to 63 characters, not starting or ending with a
-hyphen), `--interval SECONDS` (60 or more, default 300), `--ref BRANCH`
+hyphen), `--interval SECONDS` (60 or more, default 65), `--ref BRANCH`
 (install from a branch or tag instead of `main`).
 
 ## Identity
