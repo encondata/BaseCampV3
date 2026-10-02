@@ -71,6 +71,12 @@ export default function KioskSetup() {
     getSetupOptions().then(setOptions).catch(() => setLoadError(true));
   };
 
+  // A Clear Setup can land while the summary is open: the selection goes
+  // away under it, so open the wizard (which also triggers the options load).
+  useEffect(() => {
+    if (!selection && !wizardOpen) setWizardOpen(true);
+  }, [selection, wizardOpen]);
+
   useEffect(() => {
     if (wizardOpen) load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -171,11 +177,11 @@ export default function KioskSetup() {
       <div className="portal-page">
         <div className="eyebrow">Kiosk · Setup</div>
         <h1 className="page-title">Kiosk setup</h1>
-      {clearNotice && (
-        <div className="sys-banner sys-banner-broadcast" role="status">
-          An administrator cleared this kiosk&apos;s setup. Run Kiosk Setup to continue.
-        </div>
-      )}
+        {clearNotice && (
+          <div className="sys-banner sys-banner-broadcast" role="status">
+            An administrator cleared this kiosk&apos;s setup. Run Kiosk Setup to continue.
+          </div>
+        )}
         <div className="setup-summary">
           <p>
             This kiosk is set up for <b>{selection.initiativeName}</b> at{' '}

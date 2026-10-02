@@ -40,7 +40,8 @@ function Probe() {
       <span data-testid="kiosk-move">{a.kioskMove?.name ?? 'none'}</span>
       <span data-testid="is-admin">{String(a.isAdmin)}</span>
       <span data-testid="is-developer">{String(a.isDeveloper)}</span>
-      <span data-testid="clear-signal">{a.setupClearedSignal}</span>
+      <span data-testid="redirect-pending">{String(a.setupRedirectPending)}</span>
+      <button onClick={() => a.consumeSetupRedirect()}>consume</button>
       <button onClick={() => void a.login('a@x', 'pw')}>login</button>
       <button onClick={() => void a.loginWithMovePassword('Crew-2026!')}>move login</button>
       <button onClick={() => a.completePair(SESSION as unknown as Parameters<typeof a.completePair>[0])}>
@@ -212,16 +213,31 @@ it('a person sign-in leaves any saved setup alone', async () => {
   expect(readSetupState()).toBe('complete');
 });
 
-it('exposes setupClearedSignal: 0 until the heartbeat reports an applied clear, then +1 each time', async () => {
+it('an applied clear sets setupRedirectPending; consuming it resets it', async () => {
   api.refreshSession.mockResolvedValue(SESSION);
   render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
   await act(async () => {});
-  expect(screen.getByTestId('clear-signal').textContent).toBe('0');
+  expect(screen.getByTestId('redirect-pending').textContent).toBe('false');
 
   const onClear = hb.startHeartbeat.mock.calls[0][3] as (id: string) => void;
   expect(typeof onClear).toBe('function');
   await act(async () => { onClear('req-1'); });
-  expect(screen.getByTestId('clear-signal').textContent).toBe('1');
-  await act(async () => { onClear('req-2'); });
-  expect(screen.getByTestId('clear-signal').textContent).toBe('2');
+  expect(screen.getByTestId('redirect-pending').textContent).toBe('true');
+  await act(async () => { screen.getByText('consume').click(); });
+  expect(screen.getByTestId('redirect-pending').textContent).toBe('false');
+
+  await act(async () => { onClear('req-2'); });   // a second clear redirects again
+  expect(screen.getByTestId('redirect-pending').textContent).toBe('true');
+});
+
+it('logout clears a pending redirect so it cannot reach the next sign-in', async () => {
+  api.refreshSession.mockResolvedValue(SESSION);
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  const onClear = hb.startHeartbeat.mock.calls[0][3] as (id: string) => void;
+  await act(async () => { onClear('req-1'); });
+  expect(screen.getByTestId('redirect-pending').textContent).toBe('true');
+  await act(async () => { screen.getByText('logout').click(); });
+  expect(screen.getByTestId('status').textContent).toBe('anon');
+  expect(screen.getByTestId('redirect-pending').textContent).toBe('false');
 });

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -32,7 +32,7 @@ vi.mock('../lib/sync', async (importOriginal) => {
 
 import { ApiError } from '../lib/api';
 import { getIdentity } from '../lib/identity';
-import { readKioskSetup, writeKioskSetup } from '../lib/kioskSetup';
+import { clearKioskSetup, readKioskSetup, writeKioskSetup } from '../lib/kioskSetup';
 import { readSetupState, writeSetupState } from '../lib/setupState';
 import KioskSetup from './KioskSetup';
 
@@ -443,4 +443,26 @@ it('shows no banner without a clear notice', async () => {
   renderPage();
   await screen.findByText('Kiosk setup');
   expect(screen.queryByText(/administrator cleared this kiosk's setup/)).toBeNull();
+});
+
+it('a clear landing while the summary is open opens the wizard and loads the moves', async () => {
+  writeKioskSetup({
+    initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
+    siteId: 's-2', siteName: 'NAP22 Hall', siteRole: 'destination',
+    scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
+  });
+  writeSetupState('complete');
+  renderPage();
+  expect(await screen.findByText(/This kiosk is set up for/)).toBeTruthy();
+  expect(apiMock.getSetupOptions).not.toHaveBeenCalled();
+
+  // What applySetupClear does when a heartbeat delivers a Clear Setup.
+  localStorage.setItem('ss.kiosk.setupClear', JSON.stringify({ id: 'y', acked: false, notice: true }));
+  act(() => { clearKioskSetup(); writeSetupState('incomplete'); });
+
+  expect(await screen.findByText('Step 1 of 3 · Move')).toBeTruthy();
+  await waitFor(() => expect(apiMock.getSetupOptions).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText('NAP11 Hall Migration (demo)')).toBeTruthy();
+  expect(screen.queryByText('Loading moves…')).toBeNull();
+  expect(screen.getByText(BANNER)).toBeTruthy();
 });
