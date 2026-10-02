@@ -215,6 +215,20 @@ Describe 'Config file contents' {
         (Read-KioskConfig -Path $p).KIOSK_CHANNEL | Should -Be 'edge'
         Test-Path "$p.kiosk-tmp" | Should -BeFalse
     }
+    It 'records the installer ref for the nightly update (env, else saved, else main)' {
+        $saved = $env:KIOSK_INSTALLER_REF
+        try {
+            $env:KIOSK_INSTALLER_REF = $null
+            (Merge-KioskConfig -Saved @{} -Options @{}).KIOSK_INSTALLER_REF | Should -Be 'main'
+            (Merge-KioskConfig -Saved @{ KIOSK_INSTALLER_REF = 'feature-x' } -Options @{}).KIOSK_INSTALLER_REF | Should -Be 'feature-x'
+            $env:KIOSK_INSTALLER_REF = 'feature-y'
+            $c = Merge-KioskConfig -Saved @{ KIOSK_INSTALLER_REF = 'feature-x' } -Options @{}
+            $c.KIOSK_INSTALLER_REF | Should -Be 'feature-y'
+            $p = Join-Path $TestDrive 'c4.env'
+            Write-KioskConfig -Path $p -Config $c -SkipAcl
+            (Read-KioskConfig -Path $p).KIOSK_INSTALLER_REF | Should -Be 'feature-y'
+        } finally { $env:KIOSK_INSTALLER_REF = $saved }
+    }
     It 'reads a missing file as empty' {
         (Read-KioskConfig -Path (Join-Path $TestDrive 'nope.env')).Count | Should -Be 0
     }

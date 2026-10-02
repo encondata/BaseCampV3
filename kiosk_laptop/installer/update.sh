@@ -9,6 +9,9 @@
 # scans are uploading; pull the channel image; if it changed (and isn't one
 # that already failed), restart on it and wait for healthy; if it doesn't get
 # healthy, put the previous image back and remember the bad one.
+# Then, whatever happened above, hostnet.sh and launch.sh are refreshed from
+# the ref the laptop was installed from (never update.sh itself); a failure
+# there never changes the exit code.
 # Logged to update.log (last 1 MB kept).
 #
 # Exit codes: 0 updated, unchanged or skipped; 1 rolled back; 2 other failure.
@@ -325,9 +328,82 @@ trim_log() {
   rm -f "$tmp"
 }
 
-run_update() {
+# ── Helper scripts ────────────────────────────────────────────────────
+# installer_ref: the git ref this laptop was installed from (config.env's
+# KIOSK_INSTALLER_REF, written by install.sh), else main.
+installer_ref() {
+  local line='' ref=''
+  if [ -f "$KIOSK_DIR/config.env" ]; then
+    line=$(grep -E '^KIOSK_INSTALLER_REF=' "$KIOSK_DIR/config.env" | head -n 1 || true)
+    ref="${line#*=}"
+  fi
+  printf '%s' "${ref:-main}"
+}
+
+# file_mode FILE: its octal permission bits (755 when they can't be read).
+file_mode() {
+  local m
+  m=$(stat -f '%Lp' "$1" 2>/dev/null) || m=$(stat -c '%a' "$1" 2>/dev/null) || m=''
+  case "$m" in ''|*[!0-7]*) m=755 ;; esac
+  printf '%s' "$m"
+}
+
+# fetch_helper NAME DEST: KIOSK_TEMPLATE_DIR's copy (tests), else download.
+fetch_helper() {
+  local name="$1" dest="$2"
+  if [ -n "${KIOSK_TEMPLATE_DIR:-}" ]; then
+    cp "$KIOSK_TEMPLATE_DIR/$name" "$dest"
+  else
+    curl -fsSL --max-time 30 \
+      "https://raw.githubusercontent.com/encondata/BaseCampV3/$(installer_ref)/kiosk_laptop/installer/$name" -o "$dest"
+  fi
+}
+
+# refresh_helper NAME: replace $KIOSK_DIR/NAME with the published copy when it
+# is a sound script that differs. 0 = replaced; 1 = unchanged or failed (the
+# old file stays; one log line says which).
+refresh_helper() {
+  local name="$1" cur="$KIOSK_DIR/$1" tmp
+  tmp=$(mktemp "$KIOSK_DIR/.$name.XXXXXX" 2>/dev/null) || { log "$name: failed (can't write to $KIOSK_DIR)"; return 1; }
+  if ! fetch_helper "$name" "$tmp" 2>/dev/null; then
+    rm -f "$tmp"; log "$name: failed (download)"; return 1
+  fi
+  if [ ! -s "$tmp" ]; then
+    rm -f "$tmp"; log "$name: failed (empty)"; return 1
+  fi
+  if [ "$(head -n 1 "$tmp")" != '#!/usr/bin/env bash' ]; then
+    rm -f "$tmp"; log "$name: failed (no bash shebang)"; return 1
+  fi
+  if ! bash -n "$tmp" 2>/dev/null; then
+    rm -f "$tmp"; log "$name: failed (syntax error)"; return 1
+  fi
+  if [ -f "$cur" ] && cmp -s "$tmp" "$cur"; then
+    rm -f "$tmp"; log "$name: unchanged"; return 1
+  fi
+  if { [ ! -f "$cur" ] && chmod 755 "$tmp"; } || { [ -f "$cur" ] && chmod "$(file_mode "$cur")" "$tmp"; }; then :; else
+    rm -f "$tmp"; log "$name: failed (chmod)"; return 1
+  fi
+  if ! mv -f "$tmp" "$cur"; then
+    rm -f "$tmp"; log "$name: failed (replace)"; return 1
+  fi
+  log "$name: refreshed"
+  return 0
+}
+
+# refresh_helpers: hostnet.sh and launch.sh (never update.sh itself). A
+# refreshed hostnet.sh runs once now, so what it reports shows up without
+# waiting for its next run. Nothing here changes the updater's exit code.
+refresh_helpers() {
+  log "Refreshing helper scripts (ref $(installer_ref))"
+  refresh_helper launch.sh || true
+  if refresh_helper hostnet.sh; then
+    "$KIOSK_DIR/hostnet.sh" >/dev/null 2>&1 || log "hostnet.sh: the run after the refresh failed (continuing)"
+  fi
+  return 0
+}
+
+update_image() {
   local rc
-  log "---- update.sh ----"
   load_state
   recover_interrupted; rc=$?
   [ "$rc" = 0 ] || return "$rc"
@@ -341,6 +417,14 @@ run_update() {
     1) return 0 ;;
     *) return 2 ;;
   esac
+}
+
+run_update() {
+  local rc
+  log "---- update.sh ----"
+  update_image; rc=$?
+  refresh_helpers || true
+  return "$rc"
 }
 
 main() {

@@ -11,7 +11,12 @@ the same steps, exit codes and log.
 Each run: finish off an update a crash or reboot interrupted; skip while
 scans are uploading; pull the channel image; if it changed (and isn't one
 that already failed), restart on it and wait for healthy; if it doesn't get
-healthy, put the previous image back and remember the bad one.
+healthy, put the previous image back and remember the bad one. Then, whatever
+happened above, hostnet.ps1 and launch.ps1 are refreshed from the ref the
+laptop was installed from (never update.ps1 itself); a failure there never
+changes the exit code. (The install folder is read-only for the signed-in
+user, so on a laptop where that is still so, the refresh is logged as failed
+and the installer, re-run, updates the scripts.)
 Logged to update.log (last 1 MB kept).
 
 Exit codes: 0 updated, unchanged or skipped; 1 rolled back; 2 other failure.
@@ -456,8 +461,96 @@ function Invoke-ApplyUpdate {
     0
 }
 
+# -- Helper scripts -----------------------------------------------------------
+$HostnetTaskName = 'ServerSherpa Kiosk Host Network'
+
+# Get-InstallerRef: the git ref this laptop was installed from (config.env's
+# KIOSK_INSTALLER_REF, written by install.ps1), else main.
+function Get-InstallerRef {
+    $p = Join-KioskPath $Upd.Dir 'config.env'
+    if (Test-Path -LiteralPath $p -PathType Leaf) {
+        foreach ($line in [IO.File]::ReadAllLines($p)) {
+            if ($line.TrimEnd("`r") -match '^KIOSK_INSTALLER_REF=(.+)$') { return $Matches[1] }
+        }
+    }
+    'main'
+}
+
+# Get-HelperText NAME: KIOSK_TEMPLATE_DIR's copy (tests), else downloaded.
+function Get-HelperText {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if ($env:KIOSK_TEMPLATE_DIR) { return [IO.File]::ReadAllText((Join-KioskPath $env:KIOSK_TEMPLATE_DIR $Name)) }
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    } catch { Write-Verbose 'TLS 1.2 is already the default here.' }
+    $url = "https://raw.githubusercontent.com/encondata/BaseCampV3/$(Get-InstallerRef)/kiosk_laptop/installer/$Name"
+    $c = (Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 30).Content
+    if ($c -is [byte[]]) { $c = [Text.Encoding]::UTF8.GetString($c) }
+    [string]$c
+}
+
+# Get-HelperProblem TEXT: why a downloaded script can't be used, or $null.
+function Get-HelperProblem {
+    param([AllowEmptyString()][string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return 'empty' }
+    if ($Text -match '[^\x00-\x7F]') { return 'not plain ASCII' }
+    $tokens = $null; $errors = $null
+    [void][Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$errors)
+    if ($errors -and $errors.Count -gt 0) { return 'syntax error' }
+    if ($Text -notmatch '(?s)^\s*(<#.*?#>|(#[^\n]*\n\s*)+)' -or $Matches[1] -notlike '*ServerSherpa*') { return 'not a ServerSherpa script' }
+    $null
+}
+
+# Update-HelperScript NAME: $true when replaced; $false when unchanged or
+# failed (the old file stays; one log line says which).
+function Update-HelperScript {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $cur = Join-KioskPath $Upd.Dir $Name
+    $tmp = "$cur.kiosk-tmp"
+    try {
+        try { $text = Get-HelperText -Name $Name } catch { Write-UpdateLog "${Name}: failed (download)"; return $false }
+        $why = Get-HelperProblem -Text $text
+        if ($why) { Write-UpdateLog "${Name}: failed ($why)"; return $false }
+        if ((Test-Path -LiteralPath $cur -PathType Leaf) -and ([IO.File]::ReadAllText($cur) -ceq $text)) {
+            Write-UpdateLog "${Name}: unchanged"
+            return $false
+        }
+        try { [IO.File]::WriteAllText($tmp, $text, $Utf8) }
+        catch { Write-UpdateLog "${Name}: failed (can't write to $($Upd.Dir); re-run the installer to update it)"; return $false }
+        try {
+            if (Test-Path -LiteralPath $cur -PathType Leaf) { [IO.File]::Replace($tmp, $cur, [NullString]::Value) }
+            else { [IO.File]::Move($tmp, $cur) }
+        } catch { Write-UpdateLog "${Name}: failed (replace: $($_.Exception.Message))"; return $false }
+        Write-UpdateLog "${Name}: refreshed"
+        return $true
+    } finally {
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# Invoke-HelperRefresh: hostnet.ps1 and launch.ps1 (never update.ps1). A
+# refreshed hostnet.ps1 runs once now, so what it reports shows up without
+# waiting for its next run. Nothing here changes the updater's exit code.
+function Invoke-HelperRefresh {
+    try {
+        Write-UpdateLog "Refreshing helper scripts (ref $(Get-InstallerRef))"
+        [void](Update-HelperScript -Name 'launch.ps1')
+        if (Update-HelperScript -Name 'hostnet.ps1') {
+            try { Start-ScheduledTask -TaskName $HostnetTaskName -ErrorAction Stop }
+            catch { Write-UpdateLog "hostnet.ps1: the run after the refresh didn't start (continuing)" }
+        }
+    } catch {
+        Write-UpdateLog "Couldn't refresh the helper scripts ($($_.Exception.Message))."
+    }
+}
+
 function Invoke-UpdateRun {
     Write-UpdateLog '---- update.ps1 ----'
+    try { $rc = Invoke-ImageStep } finally { Invoke-HelperRefresh }
+    $rc
+}
+
+function Invoke-ImageStep {
     Read-UpdateState
     $rc = Invoke-InterruptedRecovery
     if ($rc -ne 0) { return $rc }

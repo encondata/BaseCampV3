@@ -1194,3 +1194,15 @@ def test_wait_for_host_network_gives_up_after_10_seconds(sh, tmp_path):
     r = sh(f'KIOSK_DATA_DIR="{data}"; HOSTNET_POLL_S=0; n=0; sleep() {{ n=$((n+1)); }}; '
            f'wait_for_host_network "$(date +%s)" || echo "gave up after $n"')
     assert "gave up after 10" in r.stdout
+
+
+def test_config_records_installer_ref_for_the_nightly_update(sh, tmp_path):
+    cfg = tmp_path / "config.env"
+    base = 'CFG_API_URL=https://api.a.com CFG_PORTAL_URL= CFG_CHANNEL=edge CFG_DATA_DIR=/d'
+    sh(f'{base}; write_config "{cfg}"')
+    assert "KIOSK_INSTALLER_REF=main\n" in cfg.read_text()          # default
+    sh(f'{base}; write_config "{cfg}"', env={"KIOSK_INSTALLER_REF": "feature-x"})
+    assert "KIOSK_INSTALLER_REF=feature-x\n" in cfg.read_text()     # from the environment
+    out = sh(f'load_config "{cfg}"; echo "$CFG_INSTALLER_REF"; {base}; write_config "{cfg}"').stdout.strip()
+    assert out == "feature-x"                                       # a re-run without the env keeps it
+    assert "KIOSK_INSTALLER_REF=feature-x\n" in cfg.read_text()

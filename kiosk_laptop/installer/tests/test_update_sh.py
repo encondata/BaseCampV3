@@ -12,7 +12,9 @@ LAUNCH_SH = Path(__file__).resolve().parents[1] / "launch.sh"
 def _upd(tmp_path, body, docker_script, status_json, extra_env=None):
     fake = tmp_path / "docker"; fake.write_text(docker_script); fake.chmod(0o755)
     st = tmp_path / "status.json"; st.write_text(status_json)
-    env = {**os.environ, "KIOSK_UPDATE_LIB": "1", "KIOSK_DIR": str(tmp_path), **(extra_env or {})}
+    # An empty template folder: the helper-script refresh finds nothing (and never downloads).
+    env = {**os.environ, "KIOSK_UPDATE_LIB": "1", "KIOSK_DIR": str(tmp_path),
+           "KIOSK_TEMPLATE_DIR": str(tmp_path / "no-templates"), **(extra_env or {})}
     return subprocess.run([BASH, "-c", f'source "{UPDATE_SH}"; DOCKER=("{fake}"); '
                            f'status_json() {{ cat "{st}"; }}; HEALTH_POLL_S=0; {body}'],
                           capture_output=True, text=True, env=env)
@@ -489,3 +491,103 @@ def test_launch_detects_browser_when_none_configured_macos(tmp_path):
             f'MAC_APPS_DIR="{apps}"; OS=Darwin; main')
     _launch(tmp_path, body, config="KIOSK_BROWSER=\n")
     assert calls.read_text().strip() == f"-na {apps}/Google Chrome.app --args --app=http://localhost:8090"
+
+
+# ── helper-script refresh ─────────────────────────────────────────────
+
+OLD_HOSTNET = "#!/usr/bin/env bash\necho old-hostnet\n"
+NEW_HOSTNET = "#!/usr/bin/env bash\necho new-hostnet\n"
+
+
+def _helpers(tmp_path, installed, published, body='refresh_helpers; echo rc=$?', extra_env=None):
+    """KIOSK_DIR = tmp_path/k (the installed scripts); KIOSK_TEMPLATE_DIR = tmp_path/t."""
+    k = tmp_path / "k"; t = tmp_path / "t"
+    k.mkdir(); t.mkdir()
+    for name, text in installed.items():
+        (k / name).write_text(text); (k / name).chmod(0o755)
+    for name, text in published.items():
+        (t / name).write_text(text)
+    fake = tmp_path / "docker"; fake.write_text("#!/bin/sh\n"); fake.chmod(0o755)
+    env = {**os.environ, "KIOSK_UPDATE_LIB": "1", "KIOSK_DIR": str(k),
+           "KIOSK_TEMPLATE_DIR": str(t), **(extra_env or {})}
+    r = subprocess.run([BASH, "-c", f'source "{UPDATE_SH}"; DOCKER=("{fake}"); {body}'],
+                       capture_output=True, text=True, env=env)
+    return r, k
+
+
+def test_helper_changed_file_is_replaced_keeps_mode_and_runs_hostnet(tmp_path):
+    # the published hostnet.sh records that it ran (it is the stub)
+    published = "#!/usr/bin/env bash\necho ran >> \"$(dirname \"$0\")/ran.txt\"\n"
+    r, k = _helpers(tmp_path, {"hostnet.sh": OLD_HOSTNET, "launch.sh": OLD_HOSTNET, "update.sh": "u"},
+                    {"hostnet.sh": published, "launch.sh": NEW_HOSTNET},
+                    body='chmod 750 "$KIOSK_DIR/hostnet.sh"; refresh_helpers; echo rc=$?')
+    assert "rc=0" in r.stdout
+    assert (k / "hostnet.sh").read_text() == published
+    assert oct((k / "hostnet.sh").stat().st_mode & 0o777) == "0o750"
+    assert (k / "launch.sh").read_text() == NEW_HOSTNET
+    assert (k / "ran.txt").read_text() == "ran\n"   # exactly once
+    assert not [p for p in k.iterdir() if p.name.startswith(".")]  # no temp files left
+    assert "hostnet.sh: refreshed" in r.stdout and "launch.sh: refreshed" in r.stdout
+
+
+def test_helper_identical_file_is_left_alone(tmp_path):
+    r, k = _helpers(tmp_path, {"hostnet.sh": NEW_HOSTNET, "launch.sh": NEW_HOSTNET},
+                    {"hostnet.sh": NEW_HOSTNET, "launch.sh": NEW_HOSTNET},
+                    body='touch -t 200001010000 "$KIOSK_DIR/hostnet.sh"; refresh_helpers; echo rc=$?')
+    assert (k / "hostnet.sh").stat().st_mtime < 1e9   # year 2000, untouched
+    assert "hostnet.sh: unchanged" in r.stdout and "refreshed" not in r.stdout
+    assert not (k / "ran.txt").exists()
+
+
+def test_helper_bad_files_are_rejected_and_old_kept(tmp_path):
+    for bad, why in (("#!/usr/bin/env bash\nif then fi (\n", "syntax"), ("echo hi\n", "shebang"), ("", "empty")):
+        sub = tmp_path / why; sub.mkdir()
+        r, k = _helpers(sub, {"hostnet.sh": OLD_HOSTNET, "launch.sh": OLD_HOSTNET},
+                        {"hostnet.sh": bad, "launch.sh": bad})
+        assert "rc=0" in r.stdout
+        assert (k / "hostnet.sh").read_text() == OLD_HOSTNET and (k / "launch.sh").read_text() == OLD_HOSTNET
+        assert "hostnet.sh: failed" in r.stdout and why in r.stdout
+
+
+def test_helper_download_failure_is_logged_and_exit_code_unaffected(tmp_path):
+    # no KIOSK_TEMPLATE_DIR: curl is a stub that always fails
+    k = tmp_path / "k"; k.mkdir()
+    (k / "hostnet.sh").write_text(OLD_HOSTNET); (k / "launch.sh").write_text(OLD_HOSTNET)
+    (k / "update.sh").write_text("u")
+    (k / "config.env").write_text("KIOSK_INSTALLER_REF=feature-x\n")
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    (bindir / "curl").write_text('#!/bin/sh\necho "$@" >> "$0.log"\nexit 22\n'); (bindir / "curl").chmod(0o755)
+    fake = tmp_path / "docker"; fake.write_text("#!/bin/sh\n"); fake.chmod(0o755)
+    env = {**os.environ, "KIOSK_UPDATE_LIB": "1", "KIOSK_DIR": str(k),
+           "PATH": f"{bindir}:{os.environ['PATH']}"}
+    env.pop("KIOSK_TEMPLATE_DIR", None)
+    # the image step fails (2); the refresh must not change that, nor block it
+    r = subprocess.run([BASH, "-c", f'source "{UPDATE_SH}"; DOCKER=("{fake}"); '
+                        f'status_json() {{ echo "{{}}"; }}; pull_changed() {{ return 2; }}; '
+                        f'run_update; echo rc=$?'], capture_output=True, text=True, env=env)
+    assert "rc=2" in r.stdout
+    assert "hostnet.sh: failed (download)" in r.stdout and "launch.sh: failed (download)" in r.stdout
+    assert (k / "hostnet.sh").read_text() == OLD_HOSTNET
+    calls = (bindir / "curl.log").read_text()
+    assert "--max-time 30" in calls and "/feature-x/kiosk_laptop/installer/hostnet.sh" in calls
+
+
+def test_helper_ref_defaults_to_main(tmp_path):
+    r, _ = _helpers(tmp_path, {}, {}, body='installer_ref')
+    assert r.stdout == "main"
+
+
+def test_helper_refresh_runs_after_image_step_and_never_touches_update_sh(tmp_path):
+    k = tmp_path / "k"; k.mkdir(); t = tmp_path / "t"; t.mkdir()
+    (k / "update.sh").write_text("#!/usr/bin/env bash\n# original\n")
+    (t / "update.sh").write_text("#!/usr/bin/env bash\n# replaced\n")
+    (t / "hostnet.sh").write_text(NEW_HOSTNET); (t / "launch.sh").write_text(NEW_HOSTNET)
+    fake = tmp_path / "docker"; fake.write_text("#!/bin/sh\n"); fake.chmod(0o755)
+    st = tmp_path / "status.json"; st.write_text('{"outbox": {"queued": 2, "sending": 0}}')
+    env = {**os.environ, "KIOSK_UPDATE_LIB": "1", "KIOSK_DIR": str(k), "KIOSK_TEMPLATE_DIR": str(t)}
+    r = subprocess.run([BASH, "-c", f'source "{UPDATE_SH}"; DOCKER=("{fake}"); status_json() {{ cat "{st}"; }}; '
+                        f'main; echo rc=$?'], capture_output=True, text=True, env=env)
+    log = (k / "update.log").read_text()
+    assert "rc=0" in r.stdout
+    assert log.index("skipped") < log.index("hostnet.sh: refreshed")   # even when the image step skipped
+    assert (k / "update.sh").read_text() == "#!/usr/bin/env bash\n# original\n"

@@ -65,6 +65,7 @@ Describe 'update.ps1' {
         Mock Invoke-Docker { Invoke-FakeDocker -Arguments $Arguments }
         Mock Get-EdgeStatusJson { $script:status }
         Mock Start-Sleep {}
+        Mock Invoke-HelperRefresh {}   # no downloads in the image tests; see 'update.ps1 helper scripts'
     }
     AfterEach { $env:KIOSK_DIR = $null }
 
@@ -565,5 +566,94 @@ Describe 'Invoke-Docker with a fake docker.cmd' -Skip:($IsWindows -eq $false) {
         $env:FAKE_DOCKER_EXIT = '1'
         Test-DockerCall -Arguments @('tag', 'a', 'b') | Should -BeFalse
         [IO.File]::ReadAllText((Join-Path $script:dir 'update.log')) | Should -BeLike '*docker tag a b failed (exit 1)*'
+    }
+}
+
+
+Describe 'update.ps1 helper scripts' {
+    BeforeAll {
+        $script:OldText = "<#`n.SYNOPSIS`nServerSherpa old helper`n#>`nWrite-Output 'old'`n"
+        $script:NewText = "<#`n.SYNOPSIS`nServerSherpa new helper`n#>`nWrite-Output 'new'`n"
+        $script:SavedTpl = $env:KIOSK_TEMPLATE_DIR
+    }
+    AfterAll { $env:KIOSK_TEMPLATE_DIR = $script:SavedTpl }
+    BeforeEach {
+        $script:dir = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $script:tpl = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory $script:dir, $script:tpl | Out-Null
+        $env:KIOSK_DIR = $script:dir
+        $env:KIOSK_TEMPLATE_DIR = $script:tpl
+        $script:started = 0
+        Mock Start-ScheduledTask { $script:started++ }
+        Reset-UpdateContext
+        foreach ($n in 'hostnet.ps1', 'launch.ps1', 'update.ps1') { [IO.File]::WriteAllText((Join-Path $script:dir $n), $script:OldText) }
+    }
+    AfterEach { $env:KIOSK_DIR = $null; $env:KIOSK_TEMPLATE_DIR = $script:SavedTpl }
+
+    It 'replaces a changed file, logs it, runs the hostnet task once, and never touches update.ps1' {
+        foreach ($n in 'hostnet.ps1', 'launch.ps1', 'update.ps1') { [IO.File]::WriteAllText((Join-Path $script:tpl $n), $script:NewText) }
+        Invoke-HelperRefresh
+        [IO.File]::ReadAllText((Join-Path $script:dir 'hostnet.ps1')) | Should -Be $script:NewText
+        [IO.File]::ReadAllText((Join-Path $script:dir 'launch.ps1')) | Should -Be $script:NewText
+        [IO.File]::ReadAllText((Join-Path $script:dir 'update.ps1')) | Should -Be $script:OldText
+        $script:started | Should -Be 1
+        Should -Invoke Start-ScheduledTask -Times 1 -ParameterFilter { $TaskName -eq 'ServerSherpa Kiosk Host Network' }
+        Get-ChildItem -LiteralPath $script:dir -Filter '*.kiosk-tmp' | Should -BeNullOrEmpty
+        $log = Get-UpdateLogText
+        $log | Should -BeLike '*hostnet.ps1: refreshed*'
+        $log | Should -BeLike '*launch.ps1: refreshed*'
+    }
+    It 'leaves an identical file alone (mtime unchanged) and does not run the task' {
+        foreach ($n in 'hostnet.ps1', 'launch.ps1') { [IO.File]::WriteAllText((Join-Path $script:tpl $n), $script:OldText) }
+        $f = Join-Path $script:dir 'hostnet.ps1'
+        (Get-Item $f).LastWriteTimeUtc = [datetime]'2000-01-01'
+        Invoke-HelperRefresh
+        (Get-Item $f).LastWriteTimeUtc | Should -Be ([datetime]'2000-01-01')
+        $script:started | Should -Be 0
+        Get-UpdateLogText | Should -BeLike '*hostnet.ps1: unchanged*'
+    }
+    It 'rejects <why> and keeps the old file' -ForEach @(
+        @{ why = 'empty'; text = '' }
+        @{ why = 'a syntax error'; text = "<#`nServerSherpa`n#>`nif ( { " }
+        @{ why = 'a script that is not ServerSherpa''s'; text = "<#`n.SYNOPSIS`nSomething else`n#>`nWrite-Output 1`n" }
+        @{ why = 'non-ASCII text'; text = "<#`nServerSherpa`n#>`nWrite-Output '$([char]0x00E9)'`n" }
+    ) {
+        foreach ($n in 'hostnet.ps1', 'launch.ps1') { [IO.File]::WriteAllText((Join-Path $script:tpl $n), $text) }
+        Invoke-HelperRefresh
+        [IO.File]::ReadAllText((Join-Path $script:dir 'hostnet.ps1')) | Should -Be $script:OldText
+        $script:started | Should -Be 0
+        Get-UpdateLogText | Should -BeLike '*hostnet.ps1: failed (*'
+    }
+    It 'logs a download failure and keeps the old file' {
+        # no files in the template folder: reading them throws
+        Invoke-HelperRefresh
+        [IO.File]::ReadAllText((Join-Path $script:dir 'hostnet.ps1')) | Should -Be $script:OldText
+        Get-UpdateLogText | Should -BeLike '*hostnet.ps1: failed (download)*'
+        $script:started | Should -Be 0
+    }
+    It 'downloads from the ref in config.env (main when none) with a 30-second timeout' {
+        $env:KIOSK_TEMPLATE_DIR = $null
+        Get-InstallerRef | Should -Be 'main'
+        [IO.File]::WriteAllText((Join-Path $script:dir 'config.env'), "KIOSK_CHANNEL=edge`nKIOSK_INSTALLER_REF=feature-x`n")
+        Get-InstallerRef | Should -Be 'feature-x'
+        Mock Invoke-WebRequest { [pscustomobject]@{ Content = $script:NewText } }
+        Invoke-HelperRefresh
+        Should -Invoke Invoke-WebRequest -ParameterFilter { $Uri -eq 'https://raw.githubusercontent.com/encondata/BaseCampV3/feature-x/kiosk_laptop/installer/hostnet.ps1' -and $TimeoutSec -eq 30 }
+    }
+    It 'a failed replace logs and keeps the old file' {
+        [IO.File]::WriteAllText((Join-Path $script:tpl 'hostnet.ps1'), $script:NewText)
+        [IO.File]::WriteAllText((Join-Path $script:tpl 'launch.ps1'), $script:NewText)
+        # a read-only install folder: make the temp path unwritable by occupying it with a directory
+        New-Item -ItemType Directory (Join-Path $script:dir 'hostnet.ps1.kiosk-tmp') | Out-Null
+        Invoke-HelperRefresh
+        [IO.File]::ReadAllText((Join-Path $script:dir 'hostnet.ps1')) | Should -Be $script:OldText
+        Get-UpdateLogText | Should -BeLike '*hostnet.ps1: failed (*'
+        $script:started | Should -Be 0
+    }
+    It 'runs after the image step, even when it fails, and leaves the exit code alone' {
+        Mock Invoke-ImageStep { 2 }
+        Mock Invoke-HelperRefresh {}
+        Invoke-UpdateRun | Should -Be 2
+        Should -Invoke Invoke-HelperRefresh -Times 1
     }
 }

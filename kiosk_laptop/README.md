@@ -124,8 +124,8 @@ http://<laptop-ip>:8090
   incoming connections on ports 8090 and 8091 (Windows and macOS).
 - **Existing installs:** a kiosk installed before this release keeps
   `127.0.0.1:8090` (this laptop only) and doesn't publish 8091 until you run
-  the install command again. The nightly update changes only the kiosk image,
-  not the ports or the jobs.
+  the install command again. The nightly update changes only the kiosk image
+  and the helper scripts (see Updates), not the ports or the jobs.
 
 ## RFID station
 
@@ -195,6 +195,13 @@ and the kiosk points the reader's tag data at this laptop.
 - It waits up to 2 minutes for the new version to be healthy. If it isn't, the
   previous version is put back. A version that failed its health check isn't
   tried again until a newer one is published.
+- The nightly update also refreshes the helper scripts (`hostnet` and
+  `launch`, `.sh` or `.ps1`) from the version of the installer the laptop was
+  installed from (recorded as `KIOSK_INSTALLER_REF` in `config.env`, `main`
+  by default). A download that isn't a sound script is skipped and logged, and
+  never changes the update's result. On Windows the install folder is
+  read-only for the signed-in user, so the refresh may be logged as failed
+  there; running the install command again updates the scripts.
 - It logs to `update.log` in the install folder.
 - Windows: the job (the scheduled task `ServerSherpa Kiosk Update`) runs only
   while the user is signed in, hidden, and also on battery. A run that was

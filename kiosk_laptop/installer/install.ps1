@@ -418,6 +418,10 @@ function Merge-KioskConfig {
     if (-not $data) { $data = $Saved.KIOSK_DATA_DIR }
     if (-not $data) { $data = (Get-KioskPaths).Data }
 
+    $ref = $env:KIOSK_INSTALLER_REF
+    if (-not $ref) { $ref = $Saved.KIOSK_INSTALLER_REF }
+    if (-not $ref) { $ref = 'main' }
+
     $browser = $Options.Browser
     if ($null -eq $browser) { $browser = $Saved.KIOSK_BROWSER }
     if ($null -eq $browser) { $browser = '' }
@@ -428,6 +432,8 @@ function Merge-KioskConfig {
         KIOSK_CHANNEL      = $ch
         KIOSK_DATA_DIR     = $data
         KIOSK_BROWSER      = $browser
+        # Where the nightly update refreshes the helper scripts from.
+        KIOSK_INSTALLER_REF = $ref
     }
 }
 
@@ -511,9 +517,12 @@ function Write-KioskConfig {
     Test-ConfigValue -Name 'Portal URL' -Value $Config.EDGE_PORTAL_URL
     Test-ConfigValue -Name 'Channel' -Value $Config.KIOSK_CHANNEL
     Test-ConfigValue -Name 'Browser' -Value $Config.KIOSK_BROWSER
+    Test-ConfigValue -Name 'Installer ref' -Value $Config.KIOSK_INSTALLER_REF
     Test-KioskDataDir -Path $Config.KIOSK_DATA_DIR
     $text = ''
-    foreach ($k in @('EDGE_CLOUD_API_URL', 'EDGE_PORTAL_URL', 'KIOSK_CHANNEL', 'KIOSK_DATA_DIR', 'KIOSK_BROWSER')) {
+    $keys = @('EDGE_CLOUD_API_URL', 'EDGE_PORTAL_URL', 'KIOSK_CHANNEL', 'KIOSK_DATA_DIR', 'KIOSK_BROWSER')
+    if ($Config.KIOSK_INSTALLER_REF) { $keys += 'KIOSK_INSTALLER_REF' }
+    foreach ($k in $keys) {
         $text += "$k=$($Config[$k])`n"
     }
     Write-TextFile -Path $Path -Text $text

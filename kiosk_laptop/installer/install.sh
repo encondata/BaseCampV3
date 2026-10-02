@@ -57,6 +57,7 @@ CFG_API_URL=''
 CFG_PORTAL_URL=''
 CFG_CHANNEL=''
 CFG_DATA_DIR=''
+CFG_INSTALLER_REF=''
 OPT_API_URL="${OPT_API_URL:-}"
 OPT_PORTAL_URL="${OPT_PORTAL_URL:-}"
 OPT_CHANNEL="${OPT_CHANNEL:-}"
@@ -219,15 +220,16 @@ derive_portal_url() {
   printf '%sportal.%s' "$scheme" "$rest"
 }
 
-# load_config FILE: read the four keys without executing the file.
+# load_config FILE: read the keys without executing the file.
 load_config() {
   local file="$1"
-  CFG_API_URL=''; CFG_PORTAL_URL=''; CFG_CHANNEL=''; CFG_DATA_DIR=''
+  CFG_API_URL=''; CFG_PORTAL_URL=''; CFG_CHANNEL=''; CFG_DATA_DIR=''; CFG_INSTALLER_REF=''
   [ -f "$file" ] || return 0
   CFG_API_URL=$(config_value "$file" EDGE_CLOUD_API_URL)
   CFG_PORTAL_URL=$(config_value "$file" EDGE_PORTAL_URL)
   CFG_CHANNEL=$(config_value "$file" KIOSK_CHANNEL)
   CFG_DATA_DIR=$(config_value "$file" KIOSK_DATA_DIR)
+  CFG_INSTALLER_REF=$(config_value "$file" KIOSK_INSTALLER_REF)
 }
 
 config_value() {  # config_value FILE KEY -> value of the first KEY= line
@@ -306,7 +308,8 @@ check_data_dir() {
 # write_config FILE: the settings plus the browser launch.sh opens, KEY=value,
 # mode 644 (no secrets in it).
 write_config() {
-  local file="$1" tmp
+  local file="$1" tmp ref="${KIOSK_INSTALLER_REF:-${CFG_INSTALLER_REF:-main}}"
+  check_config_value "Installer ref" "$ref"
   check_config_value "API URL" "$CFG_API_URL"
   check_config_value "Portal URL" "$CFG_PORTAL_URL"
   check_config_value "Channel" "$CFG_CHANNEL"
@@ -321,6 +324,7 @@ write_config() {
     printf 'KIOSK_CHANNEL=%s\n' "$CFG_CHANNEL"
     printf 'KIOSK_DATA_DIR=%s\n' "$CFG_DATA_DIR"
     printf 'KIOSK_BROWSER=%s\n' "$BROWSER_BIN"
+    printf 'KIOSK_INSTALLER_REF=%s\n' "$ref"   # where update.sh refreshes the helper scripts from
   } >"$tmp"
   mv "$tmp" "$file"
 }
