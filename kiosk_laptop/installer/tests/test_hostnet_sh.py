@@ -30,6 +30,17 @@ def hn(tmp_path, body, env=None, stdin=None):
                           capture_output=True, text=True, env=full, cwd=tmp_path)
 
 
+def fake_sysfs(tmp_path, physical=("enp0s31f6", "usb0", "wlp2s0", "eth1")):
+    """A /sys/class/net stand-in: physical adapters have a device entry."""
+    root = tmp_path / "sysnet"
+    for name in physical:
+        (root / name / "device").mkdir(parents=True)
+    for name in ("lo", "docker0", "virbr0", "vmnet1", "vboxnet0", "lxcbr0", "cni0", "podman0",
+                 "tailscale0", "ztabcdef12", "enx00e04c"):
+        (root / name).mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def rows(text):
     return [tuple(line.split("\t")) for line in text.splitlines() if line]
 
@@ -276,7 +287,7 @@ def test_main_on_linux_writes_a_file_the_edge_accepts(tmp_path):
     data = tmp_path / "data"; data.mkdir()
     ipj = tmp_path / "ip.json"; ipj.write_text(IP_JSON)
     r = hn(tmp_path, f'OS=Linux; ip() {{ [ "$*" = "-j -4 addr" ] && cat "{ipj}"; }}; main; echo rc=$?',
-           env={"KIOSK_DATA_DIR": str(data)})
+           env={"KIOSK_DATA_DIR": str(data), "KIOSK_SYSFS_NET": str(fake_sysfs(tmp_path))})
     assert r.stdout == "rc=0\n" and r.stderr == ""   # prints nothing itself
     edge = _edge_reader()
     found, fresh = edge.read_host_network(data, now=datetime.now(timezone.utc))
@@ -324,7 +335,42 @@ def test_runs_as_a_script_and_prints_nothing(tmp_path):
     (tmp_path / "ip.json").write_text(IP_JSON)
     (bindir / "uname").write_text("#!/bin/sh\necho Linux\n"); (bindir / "uname").chmod(0o755)
     env = {**os.environ, "KIOSK_DIR": str(tmp_path), "KIOSK_DATA_DIR": str(data),
-           "PATH": f"{bindir}:{os.environ['PATH']}"}
+           "KIOSK_SYSFS_NET": str(fake_sysfs(tmp_path)), "PATH": f"{bindir}:{os.environ['PATH']}"}
     r = subprocess.run([BASH, str(HOSTNET_SH)], capture_output=True, text=True, env=env)
     assert r.returncode == 0 and r.stdout == "" and r.stderr == ""
     assert json.loads((data / "host-network.json").read_text())["interfaces"][0]["ipv4"] == "10.10.48.57"
+
+
+# ── Fix round 1: Linux physical-adapter filter ────────────────────────
+VIRTUAL = "".join(f"{n}\t10.{i}.0.1\t24\n" for i, n in enumerate(
+    ["virbr0", "vmnet1", "vboxnet0", "lxcbr0", "cni0", "podman0", "tailscale0", "ztabcdef12", "nosuchif"]))
+
+
+def test_physical_only_keeps_interfaces_with_a_sysfs_device(tmp_path):
+    root = fake_sysfs(tmp_path)
+    text = "enp0s31f6\t10.10.48.57\t24\nusb0\t192.168.42.10\t24\n" + VIRTUAL
+    r = hn(tmp_path, "physical_only", stdin=text, env={"KIOSK_SYSFS_NET": str(root)})
+    assert rows(r.stdout) == [("enp0s31f6", "10.10.48.57", "24"), ("usb0", "192.168.42.10", "24")]
+
+
+def test_physical_only_refuses_path_tricks_in_names(tmp_path):
+    root = fake_sysfs(tmp_path)
+    r = hn(tmp_path, "physical_only", stdin="../sysnet/usb0\t10.0.0.1\t24\n.\t10.0.0.2\t24\n",
+           env={"KIOSK_SYSFS_NET": str(root)})
+    assert r.stdout == ""
+
+
+def test_main_on_linux_drops_virtual_adapters_without_a_device(tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    ipj = tmp_path / "ip.json"
+    ipj.write_text('[{"ifname":"virbr0","flags":["UP"],"operstate":"UP","addr_info":[{"local":"192.168.122.1","prefixlen":24}]},'
+                   '{"ifname":"tailscale0","flags":["UP"],"operstate":"UNKNOWN","addr_info":[{"local":"100.64.1.2","prefixlen":32}]},'
+                   '{"ifname":"enp0s31f6","flags":["UP"],"operstate":"UP","addr_info":[{"local":"10.10.48.57","prefixlen":24}]}]')
+    hn(tmp_path, f'OS=Linux; ip() {{ cat "{ipj}"; }}; main',
+       env={"KIOSK_DATA_DIR": str(data), "KIOSK_SYSFS_NET": str(fake_sysfs(tmp_path))})
+    got = json.loads((data / "host-network.json").read_text())["interfaces"]
+    assert [i["name"] for i in got] == ["enp0s31f6"]
+
+
+def test_sysfs_root_defaults_to_sys_class_net(tmp_path):
+    assert hn(tmp_path, 'printf %s "$SYSFS_NET"', env={"KIOSK_SYSFS_NET": ""}).stdout == "/sys/class/net"

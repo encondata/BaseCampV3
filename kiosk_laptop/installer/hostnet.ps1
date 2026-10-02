@@ -4,16 +4,17 @@ ServerSherpa kiosk host-network helper (laptop edition), Windows.
 
 .DESCRIPTION
 Installed by install.ps1 next to update.ps1 and run by the scheduled task
-"ServerSherpa Kiosk Host Network" (hidden, at sign-in and every minute) as the
-signed-in user, whom the data folder's permissions give full control. The
-Windows port of hostnet.sh.
+"ServerSherpa Kiosk Host Network" (at startup and every minute) as SYSTEM,
+which has full control of the data folder; in session 0, so no window ever
+shows. The Windows port of hostnet.sh.
 
 Writes <data folder>\host-network.json, the laptop's LAN addresses, for the
 edge (edge/hostnet.py), atomically:
   {"updated_at":"2026-10-01T18:00:00Z",
    "interfaces":[{"name":"Ethernet","ipv4":"10.10.48.57","prefix":24}]}
-Built-in cmdlets only: Get-NetIPAddress -AddressFamily IPv4 joined with
-Get-NetAdapter -Physical (adapters that are up). Skips loopback, link-local,
+Built-in cmdlets only: Get-NetIPAddress -AddressFamily IPv4 (AddressState
+Preferred) joined with Get-NetAdapter -Physical (adapters that are up).
+Skips loopback, link-local,
 multicast, and Docker/WSL/Hyper-V/VPN/bridge adapters. Prints nothing; exits
 1 (keeping the old file, which then goes stale) when it can't read or write.
 
@@ -63,13 +64,16 @@ function Test-HostnetAddress {
 }
 
 # ConvertTo-HostInterfaceList ADDRESSES ADAPTERS: the usable IPv4 addresses
-# of the physical adapters that are up, as name/ipv4/prefix entries.
+# of the physical adapters that are up, as name/ipv4/prefix entries. Only
+# Preferred addresses: not Tentative (still being checked), Duplicate,
+# Deprecated or Invalid.
 function ConvertTo-HostInterfaceList {
     param([object[]]$Addresses = @(), [object[]]$Adapters = @())
     $up = @{}
     foreach ($a in $Adapters) { if ("$($a.Status)" -eq 'Up') { $up[[int]$a.ifIndex] = $true } }
     foreach ($addr in $Addresses) {
         if (-not $up.ContainsKey([int]$addr.InterfaceIndex)) { continue }
+        if ("$($addr.AddressState)" -ne 'Preferred') { continue }
         $name = [string]$addr.InterfaceAlias
         if ($name -match $HostnetExcludedNames) { continue }
         $ip = [string]$addr.IPAddress

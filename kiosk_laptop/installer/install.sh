@@ -934,6 +934,8 @@ Description=ServerSherpa kiosk host network addresses (host-network.json)
 [Service]
 Type=oneshot
 ExecStart=$(exec_path "$KIOSK_DIR/hostnet.sh")
+# Every minute: keep systemd's Starting/Finished lines out of the journal.
+LogLevelMax=notice
 EOF
   cat >"$dir/$HOSTNET_UNIT.timer" <<'EOF'
 [Unit]
@@ -948,6 +950,34 @@ AccuracySec=1s
 WantedBy=timers.target
 EOF
   chmod 644 "$dir/$UPDATE_UNIT.service" "$dir/$UPDATE_UNIT.timer" "$dir/$HOSTNET_UNIT.service" "$dir/$HOSTNET_UNIT.timer"
+}
+
+# The host-network helper's first run is confirmed by a host-network.json
+# written after it was started: HOSTNET_WAIT_TRIES polls, HOSTNET_POLL_S apart.
+HOSTNET_WAIT_TRIES="${HOSTNET_WAIT_TRIES:-10}"
+HOSTNET_POLL_S="${HOSTNET_POLL_S:-1}"
+
+host_network_fresh() {  # host_network_fresh SINCE: written at or after SINCE (epoch s)
+  local f="$KIOSK_DATA_DIR/host-network.json" m
+  [ -f "$f" ] || return 1
+  m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null) || return 1
+  [ -n "$m" ] && [ "$m" -ge "$1" ]
+}
+
+# wait_for_host_network SINCE: until a fresh file appears (about 10 s at most).
+wait_for_host_network() {
+  local i=0
+  while ! host_network_fresh "$1"; do
+    [ "$i" -lt "$HOSTNET_WAIT_TRIES" ] || return 1
+    i=$((i + 1))
+    sleep "$HOSTNET_POLL_S"
+  done
+}
+
+confirm_host_network() {  # confirm_host_network SINCE
+  wait_for_host_network "$1" \
+    || warn "Couldn't confirm the network helper is running — RFID setup may not find readers."
+  return 0
 }
 
 # render_desktop_entry FILE: runs launch.sh (autostart and the app menu).
@@ -1055,7 +1085,7 @@ install_launch_agent() {  # USER UID LABEL FILE MODE PROGRAM
 }
 
 install_login_items_macos() {
-  local user uid home agents f
+  local user uid home agents f since
   user=$(desktop_user)
   if [ -z "$user" ]; then
     warn "No signed-in user found, so the nightly update and the kiosk opening at sign-in weren't set up. Re-run the installer from your own account."
@@ -1074,22 +1104,27 @@ install_login_items_macos() {
   install_launch_agent "$user" "$uid" "$UPDATE_LABEL" "$agents/$UPDATE_LABEL.plist" calendar "$KIOSK_DIR/update.sh"
   install_launch_agent "$user" "$uid" "$LAUNCH_LABEL" "$agents/$LAUNCH_LABEL.plist" runatload "$KIOSK_DIR/launch.sh"
   # As $user, who owns the data folder on macOS (create_data_dir), so it can
-  # write host-network.json there.
+  # write host-network.json there. RunAtLoad runs it as soon as it loads.
+  since=$(date +%s)
   install_launch_agent "$user" "$uid" "$HOSTNET_LABEL" "$agents/$HOSTNET_LABEL.plist" interval "$KIOSK_DIR/hostnet.sh"
+  confirm_host_network "$since"
   render_app_bundle "$MAC_APP_DIR"
   info "Nightly update scheduled (03:00); the kiosk opens when $user signs in, or from Applications › ServerSherpa Kiosk."
 }
 
 install_login_items_linux() {
-  local user home d tmp
+  local user home d tmp since
   render_systemd_units "$SYSTEMD_UNIT_DIR"
   if systemctl daemon-reload && systemctl enable --now "$UPDATE_UNIT.timer"; then
     info "Nightly update scheduled (03:00, $UPDATE_UNIT.timer)."
   else
     warn "Couldn't schedule the nightly update; check: systemctl status $UPDATE_UNIT.timer"
   fi
+  since=$(date +%s)
   systemctl enable --now "$HOSTNET_UNIT.timer" \
     || warn "Couldn't start the host network job (RFID reader setup needs it); check: systemctl status $HOSTNET_UNIT.timer"
+  systemctl start "$HOSTNET_UNIT.service" >/dev/null 2>&1 || true   # one run now
+  confirm_host_network "$since"
   user=$(desktop_user)
   if [ -z "$user" ]; then
     warn "No desktop user found (run the installer with sudo from your own account), so the kiosk won't open at sign-in. Run $KIOSK_DIR/launch.sh to open it."

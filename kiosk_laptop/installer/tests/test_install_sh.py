@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from conftest import INSTALL_SH as _INSTALL_SH
@@ -492,6 +494,7 @@ def test_render_app_bundle(sh, tmp_path):
 
 def _login_env(tmp_path):
     inst = tmp_path / "inst"; inst.mkdir()
+    (tmp_path / "data").mkdir()
     home = tmp_path / "uhome"; home.mkdir()
     calls = tmp_path / "calls"
     stubs = (f'KIOSK_DIR="{inst}"; desktop_user() {{ printf alice; }}; '
@@ -499,7 +502,8 @@ def _login_env(tmp_path):
              f'id() {{ echo 501; }}; chown() {{ echo "chown $*" >> "{calls}"; }}; '
              f'systemctl() {{ echo "systemctl $*" >> "{calls}"; }}; '
              f'launchctl() {{ echo "launchctl $*" >> "{calls}"; }}; '
-             f'SYSTEMD_UNIT_DIR="{tmp_path / "units"}"; MAC_APP_DIR="{tmp_path / "ServerSherpa Kiosk.app"}"; ')
+             f'SYSTEMD_UNIT_DIR="{tmp_path / "units"}"; MAC_APP_DIR="{tmp_path / "ServerSherpa Kiosk.app"}"; '
+             f'KIOSK_DATA_DIR="{tmp_path / "data"}"; HOSTNET_POLL_S=0; ')
     (tmp_path / "units").mkdir()
     return inst, home, calls, stubs
 
@@ -1051,6 +1055,8 @@ def test_render_systemd_units_include_the_hostnet_timer(sh, tmp_path):
     assert 'ExecStart="/opt/serversherpa kiosk/hostnet.sh"' in svc and "Type=oneshot" in svc
     assert "User=" not in svc   # runs as root, like the data folder's owner on Linux
     assert "OnBootSec=10s" in tmr and "OnUnitActiveSec=60s" in tmr and "WantedBy=timers.target" in tmr
+    # no per-minute "Starting"/"Finished" lines in the journal
+    assert "LogLevelMax=notice" in svc.split("[Service]", 1)[1]
     for f in ("hostnet.service", "hostnet.timer"):
         assert (tmp_path / f"serversherpa-kiosk-{f}").stat().st_mode & 0o777 == 0o644
 
@@ -1123,3 +1129,65 @@ def test_dev_compose_publishes_both_ports_on_all_interfaces():
 def test_runtime_compose_template_publishes_both_ports_on_all_interfaces():
     text = (INSTALL_SH_DIR / "docker-compose.yml").read_text()
     assert '- "0.0.0.0:8090:8090"' in text and '- "0.0.0.0:8091:8091"' in text
+
+
+# ── Fix round 1: confirm the host-network job ran ─────────────────────
+HOSTNET_WARNING = "Couldn't confirm the network helper is running — RFID setup may not find readers."
+
+
+def test_linux_starts_the_hostnet_service_once_and_confirms_a_fresh_file(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    data = tmp_path / "data"
+    run = (f'systemctl() {{ echo "systemctl $*" >> "{calls}"; '
+           f'[ "$*" != "start serversherpa-kiosk-hostnet.service" ] || echo "{{}}" > "{data}/host-network.json"; }}; ')
+    r = sh(stubs + run + 'OS=Linux; install_login_items')
+    log = calls.read_text().splitlines()
+    assert log.index("systemctl enable --now serversherpa-kiosk-hostnet.timer") < \
+        log.index("systemctl start serversherpa-kiosk-hostnet.service")
+    assert HOSTNET_WARNING not in r.stderr
+
+
+def test_linux_warns_when_no_fresh_file_appears(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    r = sh(stubs + 'OS=Linux; install_login_items')
+    assert HOSTNET_WARNING in r.stderr
+
+
+def test_a_stale_file_from_before_does_not_count(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    old = tmp_path / "data" / "host-network.json"
+    old.write_text("{}")
+    os.utime(old, (1_000_000_000, 1_000_000_000))
+    r = sh(stubs + 'OS=Linux; install_login_items')
+    assert HOSTNET_WARNING in r.stderr
+
+
+def test_macos_relies_on_run_at_load_and_confirms_a_fresh_file(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    data = tmp_path / "data"
+    run = (f'launchctl() {{ echo "launchctl $*" >> "{calls}"; case "$*" in '
+           f'"bootstrap "*hostnet*) echo "{{}}" > "{data}/host-network.json" ;; esac; }}; ')
+    r = sh(stubs + run + 'OS=Darwin; install_login_items')
+    assert HOSTNET_WARNING not in r.stderr
+    assert "kickstart" not in calls.read_text()
+
+
+def test_macos_warns_when_no_fresh_file_appears(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    r = sh(stubs + 'OS=Darwin; install_login_items')
+    assert HOSTNET_WARNING in r.stderr
+
+
+def test_wait_for_host_network_polls_until_the_deadline(sh, tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    r = sh(f'KIOSK_DATA_DIR="{data}"; HOSTNET_POLL_S=0; n=0; '
+           f'sleep() {{ n=$((n+1)); [ $n -lt 3 ] || echo "{{}}" > "{data}/host-network.json"; }}; '
+           f'wait_for_host_network "$(date +%s)" && echo "ok after $n"')
+    assert "ok after 3" in r.stdout
+
+
+def test_wait_for_host_network_gives_up_after_10_seconds(sh, tmp_path):
+    data = tmp_path / "data"; data.mkdir()
+    r = sh(f'KIOSK_DATA_DIR="{data}"; HOSTNET_POLL_S=0; n=0; sleep() {{ n=$((n+1)); }}; '
+           f'wait_for_host_network "$(date +%s)" || echo "gave up after $n"')
+    assert "gave up after 10" in r.stdout

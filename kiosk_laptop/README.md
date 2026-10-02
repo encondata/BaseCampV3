@@ -111,11 +111,18 @@ http://<laptop-ip>:8090
 - The connection is **not encrypted** (plain HTTP). Passwords and scans cross
   the network as readable text, and the sign-in page says so. Use it only on a
   network you trust. TLS is planned.
+- On Linux, ports that Docker publishes bypass ufw and firewalld, so 8090 and
+  8091 are open to the network whatever those firewalls say. That is one more
+  reason to use the kiosk only on a trusted network.
 - Everything works from another device except **label printing**: Chrome only
   lets a page reach a USB printer over `localhost`, so print labels on the
   laptop itself.
 - If another device can't connect, check that the laptop's firewall allows
-  incoming connections on ports 8090 and 8091.
+  incoming connections on ports 8090 and 8091 (Windows and macOS).
+- **Existing installs:** a kiosk installed before this release keeps
+  `127.0.0.1:8090` (this laptop only) and doesn't publish 8091 until you run
+  the install command again. The nightly update changes only the kiosk image,
+  not the ports or the jobs.
 
 ## RFID station
 
@@ -127,22 +134,26 @@ and the kiosk points the reader's tag data at this laptop.
 - The reader must run its **IoT Connector (ZIOTC) in Local REST mode**. Set
   that in the reader's web console before pairing. The kiosk signs in to it
   with the reader's admin account.
-- The reader sends its tag data to the laptop on port **8091**, which the kiosk
-  publishes on every network interface. Keep it open in the laptop's firewall.
+- Port **8091** is published on every network interface for the reader's tag
+  data. Handling tag data comes in a later release: nothing listens on 8091
+  yet, so reads go nowhere for now. Pairing only points the reader at it.
 - The reader and the laptop must be on the same network. The kiosk scans the
   laptop's own subnets for readers.
 - The installer adds a small job that writes the laptop's current network
-  addresses to `host-network.json` in the data folder, at sign-in (Linux: at
-  boot) and every minute:
-  - Windows: the scheduled task `ServerSherpa Kiosk Host Network`, as the
-    signed-in user.
+  addresses to `host-network.json` in the data folder every minute:
+  - Windows: the scheduled task `ServerSherpa Kiosk Host Network`, as SYSTEM,
+    at startup and every minute.
   - macOS: the launch agent `com.serversherpa.kiosk.hostnet`, as the signed-in
-    user.
-  - Linux: `serversherpa-kiosk-hostnet.timer`, as root.
+    user, at sign-in and every minute.
+  - Linux: `serversherpa-kiosk-hostnet.timer`, as root, at boot and every
+    minute. Only real adapters count: ones with a device under
+    `/sys/class/net`, so not `virbr0`, `tailscale0` and the like.
 
-  The kiosk treats addresses older than 5 minutes as unknown, and then can't
-  look for readers. An existing install gets the job by running the install
-  command again.
+  The installer runs the job once and waits up to 10 seconds for the file. If
+  none appears, it warns that RFID setup may not find readers. The kiosk
+  treats addresses older than 5 minutes as unknown, and then can't look for
+  readers. An existing install gets the job by running the install command
+  again.
 
 ## Unattended stations
 

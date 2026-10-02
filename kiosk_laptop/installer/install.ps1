@@ -1352,18 +1352,18 @@ function Get-UpdateTaskSpec {
 }
 
 # Get-HostnetTaskSpec: the host-network helper task (hostnet.ps1), as plain
-# values. As the signed-in user, whom the data folder grants full control
-# (New-KioskDataDir), at sign-in and every minute. conhost --headless gives
-# it no console window at all: -WindowStyle Hidden alone still flashes one
-# every minute, which could take focus from the kiosk's browser.
+# values. As SYSTEM (full control of the data folder and the script, and no
+# dependence on who is signed in), at startup and every minute. It runs in
+# session 0, so it never shows a window.
 function Get-HostnetTaskSpec {
-    param([Parameter(Mandatory = $true)][string]$InstallDir, [Parameter(Mandatory = $true)][string]$User)
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
     @{
         Name                      = $HostnetTaskName
-        Execute                   = 'conhost.exe'
-        Argument                  = "--headless powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$(Join-WindowsPath $InstallDir 'hostnet.ps1')`""
-        User                      = $User
-        LogonType                 = 'Interactive'
+        Execute                   = 'powershell.exe'
+        Argument                  = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-WindowsPath $InstallDir 'hostnet.ps1')`""
+        User                      = 'NT AUTHORITY\SYSTEM'
+        LogonType                 = 'ServiceAccount'
+        RunLevel                  = 'Highest'
         RepeatMinutes             = 1
         ExecutionTimeLimitMinutes = 2
     }
@@ -1438,27 +1438,53 @@ function Register-UpdateTask {
 }
 
 # Register-HostnetTask SPEC: the host network task (replaced if it exists):
-# hidden, at the user's sign-in and then every minute indefinitely, on battery
-# too; run once now so host-network.json is there for Kiosk Setup.
+# at startup, and every minute from now on (a -Once trigger's repetition
+# without a duration repeats indefinitely); on battery too, one run at a time.
 function Register-HostnetTask {
     param([Parameter(Mandatory = $true)][hashtable]$Spec)
     $action = New-ScheduledTaskAction -Execute $Spec.Execute -Argument $Spec.Argument
-    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $Spec.User
-    # A -Once trigger's repetition without a duration repeats indefinitely.
-    $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At ([datetime]::Today) -RepetitionInterval (New-TimeSpan -Minutes $Spec.RepeatMinutes)).Repetition
-    $principal = New-ScheduledTaskPrincipal -UserId $Spec.User -LogonType $Spec.LogonType
-    $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes $Spec.ExecutionTimeLimitMinutes)
-    Register-ScheduledTask -TaskName $Spec.Name -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
+    $triggers = @(
+        (New-ScheduledTaskTrigger -AtStartup),
+        (New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $Spec.RepeatMinutes))
+    )
+    $principal = New-ScheduledTaskPrincipal -UserId $Spec.User -LogonType $Spec.LogonType -RunLevel $Spec.RunLevel
+    $settings = New-ScheduledTaskSettingsSet -Hidden -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+        -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes $Spec.ExecutionTimeLimitMinutes)
+    Register-ScheduledTask -TaskName $Spec.Name -Action $action -Trigger $triggers -Principal $principal -Settings $settings `
         -Description 'ServerSherpa kiosk host network addresses (hostnet.ps1 writes host-network.json in the data folder).' -Force | Out-Null
-    try { Start-ScheduledTask -TaskName $Spec.Name -ErrorAction Stop }
-    catch { Write-Verbose 'The host network task did not start now; it runs within the minute.' }
+}
+
+# Wait-HostNetworkFile DATADIR SINCE: $true once host-network.json was written
+# at or after SINCE (UTC), checked every second for about 10 seconds.
+function Wait-HostNetworkFile {
+    param([Parameter(Mandatory = $true)][string]$DataDir, [Parameter(Mandatory = $true)][datetime]$Since, [int]$Tries = 10)
+    $path = Join-KioskPath $DataDir 'host-network.json'
+    $floor = $Since.AddSeconds(-1)   # file times can round down
+    for ($i = 0; ; $i++) {
+        if ((Test-Path -LiteralPath $path -PathType Leaf) -and (Get-Item -LiteralPath $path).LastWriteTimeUtc -ge $floor) { return $true }
+        if ($i -ge $Tries) { return $false }
+        Start-Sleep -Seconds 1
+    }
+}
+
+# Start-HostnetTask DATADIR: one run now, then a fresh host-network.json
+# within about 10 seconds, or a warning (Kiosk Setup needs the file).
+function Start-HostnetTask {
+    param([string]$DataDir)
+    $since = [datetime]::UtcNow
+    try { Start-ScheduledTask -TaskName $HostnetTaskName -ErrorAction Stop }
+    catch { Write-Verbose "The host network task didn't start now ($($_.Exception.Message))." }
+    if (-not $DataDir) { return }
+    if (-not (Wait-HostNetworkFile -DataDir $DataDir -Since $since)) {
+        Write-Warn "Couldn't confirm the network helper is running $Dash RFID setup may not find readers."
+    }
 }
 
 # Install-LoginItems: update.ps1/launch.ps1/hostnet.ps1, the nightly update
 # and host network tasks, and the ServerSherpa Kiosk shortcuts (Public
 # Desktop, Start menu, StartUp).
 function Install-LoginItems {
-    param([Parameter(Mandatory = $true)][string]$InstallDir, $DesktopUser)
+    param([Parameter(Mandatory = $true)][string]$InstallDir, $DesktopUser, [string]$DataDir)
     foreach ($name in @('update.ps1', 'launch.ps1', 'hostnet.ps1')) {
         $dest = Join-KioskPath $InstallDir $name
         Write-TextFile -Path $dest -Text (Get-CompanionText -Name $name)
@@ -1478,14 +1504,18 @@ function Install-LoginItems {
         } catch {
             Write-Warn "Couldn't schedule the nightly update ($($_.Exception.Message)). Re-run the installer to try again."
         }
-        try {
-            Register-HostnetTask -Spec (Get-HostnetTaskSpec -InstallDir $InstallDir -User $DesktopUser.Name)
-        } catch {
-            Write-Warn "Couldn't schedule the host network task, which RFID reader setup needs ($($_.Exception.Message)). Re-run the installer to try again."
-        }
     } else {
-        Write-Warn "No signed-in user found, so the nightly update and the host network task weren't scheduled. Re-run the installer from the kiosk's account."
+        Write-Warn "No signed-in user found, so the nightly update wasn't scheduled. Re-run the installer from the kiosk's account."
     }
+    # As SYSTEM, so it doesn't depend on who is signed in.
+    $hostnet = $false
+    try {
+        Register-HostnetTask -Spec (Get-HostnetTaskSpec -InstallDir $InstallDir)
+        $hostnet = $true
+    } catch {
+        Write-Warn "Couldn't schedule the host network task, which RFID reader setup needs ($($_.Exception.Message)). Re-run the installer to try again."
+    }
+    if ($hostnet) { Start-HostnetTask -DataDir $DataDir }
     $spec = Get-ShortcutSpec -InstallDir $InstallDir
     foreach ($lnk in Get-ShortcutPaths) {
         try { New-KioskShortcut -Path $lnk -Spec $spec }
@@ -1799,7 +1829,7 @@ function Invoke-KioskInstaller {
         Set-KioskFileAcl -Path $compose
         Invoke-LegacyMigration -UserProfile $profilePath -DataDir $cfg.KIOSK_DATA_DIR -StartFresh:([bool]$Parameters.StartFresh) | Out-Null
         $identity = Start-Kiosk -InstallDir $installDir -ImageRef $imageRef -Channel $cfg.KIOSK_CHANNEL
-        Install-LoginItems -InstallDir $installDir -DesktopUser $desktopUser
+        Install-LoginItems -InstallDir $installDir -DesktopUser $desktopUser -DataDir $cfg.KIOSK_DATA_DIR
         Remove-ResumeRegistration -InstallDir $installDir
         Write-Summary -Identity $identity -Config $cfg -InstallDir $installDir -DesktopUser $desktopUser
         return 0

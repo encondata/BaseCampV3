@@ -11,18 +11,21 @@
 # edge (edge/hostnet.py), atomically:
 #   {"updated_at": "2026-10-01T18:00:00Z",
 #    "interfaces": [{"name": "en0", "ipv4": "10.10.48.57", "prefix": 24}]}
-# Built-in tools only: `ip -j -4 addr` (Linux); `ifconfig` plus `networksetup
+# Built-in tools only: `ip -j -4 addr` plus /sys/class/net/<name>/device for
+# the real adapters (Linux); `ifconfig` plus `networksetup
 # -listallhardwareports` (macOS). Skips loopback, link-local, multicast,
 # adapters that are down, and Docker/VPN/bridge adapters. Prints nothing; exits
 # 1 (keeping the old file, which then goes stale) when it can't read or write.
 #
 # The data folder: KIOSK_DATA_DIR, else config.env's KIOSK_DATA_DIR, else the
 # OS default. Testing hooks: KIOSK_HOSTNET_LIB=1 defines the functions without
-# running main. Written for bash 3.2 (macOS's bash).
+# running main; KIOSK_SYSFS_NET replaces /sys/class/net. Written for bash 3.2
+# (macOS's bash).
 set -uo pipefail
 
 KIOSK_DIR="${KIOSK_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 HOST_NETWORK_FILE='host-network.json'
+SYSFS_NET="${KIOSK_SYSFS_NET:-/sys/class/net}"
 OS=$(uname -s)
 # launchd and systemd start jobs with a bare PATH.
 PATH="$PATH:/usr/sbin:/sbin:/usr/bin:/bin"
@@ -95,6 +98,18 @@ parse_linux() {
       }
     }
   '
+}
+
+# physical_only: "name<TAB>..." lines on stdin whose interface is backed by a
+# device (SYSFS_NET/<name>/device exists), which drops virtual ones the name
+# rules miss: virbr0, vmnet*, vboxnet*, lxcbr0, cni0, podman*, tailscale0, zt*.
+physical_only() {
+  local name rest
+  while IFS="$(printf '\t')" read -r name rest; do
+    case "$name" in ''|.|..|*/*) continue ;; esac
+    [ -e "$SYSFS_NET/$name/device" ] || continue
+    printf '%s\t%s\n' "$name" "$rest"
+  done
 }
 
 # hardware_devices: `networksetup -listallhardwareports` on stdin -> the
@@ -186,7 +201,7 @@ collect() {
     printf '%s\n' "$raw" | parse_macos "$devices"
   else
     raw=$(ip -j -4 addr 2>/dev/null) || return 1
-    printf '%s\n' "$raw" | parse_linux
+    printf '%s\n' "$raw" | parse_linux | physical_only
   fi
 }
 

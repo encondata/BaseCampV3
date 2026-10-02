@@ -27,8 +27,8 @@ BeforeAll {
     }
 
     function Get-FakeAddress {
-        param([string]$Alias, [int]$Index, [string]$Ip, [int]$Prefix)
-        [pscustomobject]@{ InterfaceAlias = $Alias; InterfaceIndex = $Index; IPAddress = $Ip; PrefixLength = [byte]$Prefix; AddressFamily = 'IPv4' }
+        param([string]$Alias, [int]$Index, [string]$Ip, [int]$Prefix, [string]$State = 'Preferred')
+        [pscustomobject]@{ InterfaceAlias = $Alias; InterfaceIndex = $Index; IPAddress = $Ip; PrefixLength = [byte]$Prefix; AddressFamily = 'IPv4'; AddressState = $State }
     }
     function Get-FakeAdapter {
         param([string]$Name, [int]$Index, [string]$Status = 'Up')
@@ -46,7 +46,10 @@ BeforeAll {
         (Get-FakeAddress 'vEthernet (Default Switch)' 41 '172.30.0.1' 20),
         (Get-FakeAddress 'WireGuard Tunnel' 50 '10.8.0.2' 24),
         (Get-FakeAddress 'Ethernet 2' 16 '169.254.33.4' 16),
-        (Get-FakeAddress 'Ethernet 3' 18 '172.20.10.3' 28)
+        (Get-FakeAddress 'Ethernet 3' 18 '172.20.10.3' 28),
+        (Get-FakeAddress 'Ethernet 3' 18 '172.20.10.9' 28 'Tentative'),
+        (Get-FakeAddress 'Ethernet 3' 18 '172.20.10.10' 28 'Duplicate'),
+        (Get-FakeAddress 'Ethernet' 12 '10.10.48.99' 24 'Deprecated')
     )
     $script:Adapters = @(
         (Get-FakeAdapter 'Ethernet' 12),
@@ -66,6 +69,10 @@ Describe 'ConvertTo-HostInterfaceList' {
         ($list | ForEach-Object { "$($_.name)|$($_.ipv4)|$($_.prefix)" }) -join ';' |
             Should -Be 'Ethernet|10.10.48.57|24;Ethernet|10.10.50.9|23;Ethernet 3|172.20.10.3|28'
         $list[0].prefix | Should -BeOfType [int]
+    }
+    It 'keeps only addresses whose AddressState is Preferred: <_>' -ForEach @('Tentative', 'Duplicate', 'Deprecated', 'Invalid', '') {
+        $a = @(Get-FakeAddress 'Ethernet' 12 '10.10.48.57' 24 $_)
+        @(ConvertTo-HostInterfaceList -Addresses $a -Adapters @(Get-FakeAdapter 'Ethernet' 12)).Count | Should -Be 0
     }
     It 'returns nothing when no adapter is up' {
         @(ConvertTo-HostInterfaceList -Addresses $script:Addresses -Adapters @()).Count | Should -Be 0

@@ -22,8 +22,8 @@ BeforeAll {
         'Get-AuthenticodeSignature'     = 'param([string]$FilePath)'
         'New-ScheduledTaskAction'       = 'param([string]$Execute, [string]$Argument)'
         'New-ScheduledTaskPrincipal'    = 'param([string]$UserId, [string]$LogonType, [string]$RunLevel)'
-        'New-ScheduledTaskTrigger'      = 'param([switch]$Daily, [switch]$AtLogOn, [switch]$Once, $At, [string]$User, $RepetitionInterval)'
-        'New-ScheduledTaskSettingsSet'  = 'param([switch]$StartWhenAvailable, [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [switch]$Hidden, $ExecutionTimeLimit)'
+        'New-ScheduledTaskTrigger'      = 'param([switch]$Daily, [switch]$AtStartup, [switch]$Once, $At, $RepetitionInterval)'
+        'New-ScheduledTaskSettingsSet'  = 'param([switch]$StartWhenAvailable, [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [switch]$Hidden, $MultipleInstances, $ExecutionTimeLimit)'
         'Register-ScheduledTask'        = 'param([string]$TaskName, $Action, $Principal, $Trigger, $Settings, [string]$Description, [switch]$Force)'
         'Start-ScheduledTask'           = 'param([string]$TaskName)'
         'Stop-ScheduledTask'            = 'param([string]$TaskName)'
@@ -610,6 +610,11 @@ Describe 'Installer flow' {
         Invoke-KioskInstaller -Parameters @{ Resume = $true } | Should -Be 0
         Should -Invoke Invoke-LegacyMigration -Times 2 -Exactly -ParameterFilter { $StartFresh }
     }
+    It 'passes the data folder to Install-LoginItems (it confirms host-network.json there)' {
+        $env:KIOSK_DATA_DIR = 'D:\kioskdata'
+        try { Invoke-KioskInstaller -Parameters @{ Yes = $true } | Should -Be 0 } finally { $env:KIOSK_DATA_DIR = $null }
+        Should -Invoke Install-LoginItems -Times 1 -Exactly -ParameterFilter { $DataDir -eq 'D:\kioskdata' }
+    }
     It 'passes the channel and image to Start-Kiosk' {
         Invoke-KioskInstaller -Parameters @{ Yes = $true; Channel = 'edge' } | Should -Be 0
         Should -Invoke Start-Kiosk -Times 1 -ParameterFilter { $Channel -eq 'edge' -and $ImageRef -like '*:edge' }
@@ -721,14 +726,15 @@ Describe 'Login item specs' {
         $s.Arguments | Should -Be '-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\ServerSherpaKiosk\launch.ps1"'
         $s.WorkingDirectory | Should -Be 'C:\ProgramData\ServerSherpaKiosk'
     }
-    It 'the host network task: name, conhost --headless (no window every minute), hostnet.ps1, every minute, the signed-in user' {
-        $t = Get-HostnetTaskSpec -InstallDir 'C:\ProgramData\ServerSherpaKiosk' -User 'PC\tech'
+    It 'the host network task: name, hostnet.ps1 through Windows PowerShell, SYSTEM as a service account, every minute' {
+        $t = Get-HostnetTaskSpec -InstallDir 'C:\ProgramData\ServerSherpaKiosk'
         $t.Name | Should -Be 'ServerSherpa Kiosk Host Network'
-        $t.Execute | Should -Be 'conhost.exe'
-        $t.Argument | Should -Be '--headless powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\ServerSherpaKiosk\hostnet.ps1"'
+        $t.Execute | Should -Be 'powershell.exe'
+        $t.Argument | Should -Be '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "C:\ProgramData\ServerSherpaKiosk\hostnet.ps1"'
+        $t.User | Should -Be 'NT AUTHORITY\SYSTEM'
+        $t.LogonType | Should -Be 'ServiceAccount'
+        $t.RunLevel | Should -Be 'Highest'
         $t.RepeatMinutes | Should -Be 1
-        $t.LogonType | Should -Be 'Interactive'
-        $t.User | Should -Be 'PC\tech'
         $t.ExecutionTimeLimitMinutes | Should -Be 2
     }
     It 'shortcuts go on the Public Desktop, the all-users Start menu and all-users StartUp' {
@@ -749,11 +755,10 @@ Describe 'Install-LoginItems' {
         Mock Set-KioskUserWritableFileAcl {}
         Mock New-KioskShortcut {}
         Mock New-ScheduledTaskAction { 'action' }
-        # Trigger objects: Register-HostnetTask copies the -Once trigger's Repetition onto the logon trigger.
-        Mock New-ScheduledTaskTrigger { [pscustomobject]@{ Kind = 'daily'; Repetition = $null } }
-        Mock New-ScheduledTaskTrigger { [pscustomobject]@{ Kind = 'logon'; Repetition = $null } } -ParameterFilter { $AtLogOn }
-        Mock New-ScheduledTaskTrigger { [pscustomobject]@{ Kind = 'once'; Repetition = 'every-minute' } } -ParameterFilter { $Once }
-        Mock New-ScheduledTaskPrincipal { 'principal' }
+        Mock New-ScheduledTaskTrigger { 'daily' }
+        Mock New-ScheduledTaskTrigger { 'startup' } -ParameterFilter { $AtStartup }
+        Mock New-ScheduledTaskTrigger { 'every-minute' } -ParameterFilter { $Once }
+        Mock New-ScheduledTaskPrincipal { "principal:$UserId" }
         Mock New-ScheduledTaskSettingsSet { 'settings' }
         Mock Register-ScheduledTask {}
         Mock Start-ScheduledTask {}
@@ -793,24 +798,27 @@ Describe 'Install-LoginItems' {
         Should -Invoke New-KioskShortcut -Times 3 -Exactly
         Should -Invoke New-KioskShortcut -ParameterFilter { $Path -like '*StartUp\ServerSherpa Kiosk.lnk' -and $Spec.Arguments -like '*launch.ps1*' }
     }
-    It 'without a signed-in user: warns, skips the task, still makes the shortcuts' {
+    It 'without a signed-in user: warns, skips the nightly task, still registers the host network task and makes the shortcuts' {
         Mock Write-Warn {}
         Install-LoginItems -InstallDir $inst -DesktopUser $null
-        Should -Invoke Register-ScheduledTask -Times 0
+        Should -Invoke Register-ScheduledTask -Times 0 -ParameterFilter { $TaskName -eq 'ServerSherpa Kiosk Update' }
+        Should -Invoke Register-ScheduledTask -Times 1 -Exactly -ParameterFilter { $TaskName -eq 'ServerSherpa Kiosk Host Network' }
         Should -Invoke Set-KioskUserWritableFileAcl -Times 0
         Should -Invoke New-KioskShortcut -Times 3 -Exactly
-        Should -Invoke Write-Warn -ParameterFilter { $Message -like '*nightly update*' -and $Message -like '*host network*' }
+        Should -Invoke Write-Warn -ParameterFilter { $Message -like '*nightly update*' }
     }
-    It 'registers the host network task: at sign-in and every minute, hidden, on battery, for the signed-in user' {
+    It 'registers the host network task as SYSTEM: at startup plus every minute, on battery, one at a time' {
         Install-LoginItems -InstallDir $inst -DesktopUser $script:user
-        Should -Invoke New-ScheduledTaskAction -ParameterFilter { $Execute -eq 'conhost.exe' -and $Argument -eq "--headless powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$inst\hostnet.ps1`"" }
-        Should -Invoke New-ScheduledTaskTrigger -ParameterFilter { $AtLogOn -and $User -eq 'PC\tech' }
-        Should -Invoke New-ScheduledTaskTrigger -ParameterFilter { $Once -and $RepetitionInterval -eq (New-TimeSpan -Minutes 1) }
-        Should -Invoke New-ScheduledTaskSettingsSet -ParameterFilter { $Hidden -and $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and -not $StartWhenAvailable }
-        Should -Invoke Register-ScheduledTask -Times 1 -Exactly -ParameterFilter {
-            $TaskName -eq 'ServerSherpa Kiosk Host Network' -and $Force -and $Trigger.Kind -eq 'logon' -and $Trigger.Repetition -eq 'every-minute'
+        Should -Invoke New-ScheduledTaskAction -ParameterFilter { $Execute -eq 'powershell.exe' -and $Argument -eq "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$inst\hostnet.ps1`"" }
+        Should -Invoke New-ScheduledTaskTrigger -Times 1 -Exactly -ParameterFilter { $AtStartup }
+        Should -Invoke New-ScheduledTaskTrigger -Times 1 -Exactly -ParameterFilter { $Once -and $RepetitionInterval -eq (New-TimeSpan -Minutes 1) -and $At -is [datetime] }
+        Should -Invoke New-ScheduledTaskPrincipal -Times 1 -Exactly -ParameterFilter { $UserId -eq 'NT AUTHORITY\SYSTEM' -and $LogonType -eq 'ServiceAccount' -and $RunLevel -eq 'Highest' }
+        Should -Invoke New-ScheduledTaskSettingsSet -ParameterFilter {
+            $StartWhenAvailable -and $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and "$MultipleInstances" -eq 'IgnoreNew' -and $ExecutionTimeLimit -eq (New-TimeSpan -Minutes 2)
         }
-        Should -Invoke New-ScheduledTaskPrincipal -ParameterFilter { $UserId -eq 'PC\tech' -and $LogonType -eq 'Interactive' }
+        Should -Invoke Register-ScheduledTask -Times 1 -Exactly -ParameterFilter {
+            $TaskName -eq 'ServerSherpa Kiosk Host Network' -and $Force -and (@($Trigger) -join ',') -eq 'startup,every-minute' -and $Principal -eq 'principal:NT AUTHORITY\SYSTEM'
+        }
         Should -Invoke Start-ScheduledTask -Times 1 -Exactly -ParameterFilter { $TaskName -eq 'ServerSherpa Kiosk Host Network' }
     }
     It 'warns but finishes when the host network task cannot be registered' {
@@ -820,19 +828,44 @@ Describe 'Install-LoginItems' {
         Should -Invoke Write-Warn -ParameterFilter { $Message -like '*host network*' }
         Should -Invoke Register-ScheduledTask -ParameterFilter { $TaskName -eq 'ServerSherpa Kiosk Update' }
     }
-    It 'a first run that fails to start is not an error (the next minute runs it)' {
-        Mock Start-ScheduledTask { throw 'not signed in' }
-        Mock Write-Warn {}
-        { Install-LoginItems -InstallDir $inst -DesktopUser $script:user } | Should -Not -Throw
-        Should -Invoke Write-Warn -Times 0
-    }
-    It 'runs as the same account the data folder grants full control (so the helper can write there)' {
-        Mock Set-KioskDirAcl {}
+    It 'confirms the first run by a fresh host-network.json in the data folder' {
         $data = Join-Path $TestDrive ([guid]::NewGuid().ToString())
-        New-KioskDataDir -DataDir $data -DesktopUser $script:user
-        Install-LoginItems -InstallDir $inst -DesktopUser $script:user
-        Should -Invoke Set-KioskDirAcl -ParameterFilter { $Path -eq $data -and $UserSid -eq $script:user.Sid }
-        Should -Invoke New-ScheduledTaskPrincipal -ParameterFilter { $UserId -eq $script:user.Name }
+        New-Item -ItemType Directory $data | Out-Null
+        Mock Start-ScheduledTask { [IO.File]::WriteAllText((Join-Path $data 'host-network.json'), '{}') }
+        Mock Start-Sleep {}
+        Mock Write-Warn {}
+        Install-LoginItems -InstallDir $inst -DesktopUser $script:user -DataDir $data
+        Should -Invoke Write-Warn -Times 0
+        Should -Invoke Start-Sleep -Times 0
+    }
+    It 'warns when no fresh file appears within about 10 seconds (a stale one does not count)' {
+        $data = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory $data | Out-Null
+        $old = Join-Path $data 'host-network.json'
+        [IO.File]::WriteAllText($old, '{}')
+        [IO.File]::SetLastWriteTimeUtc($old, [datetime]::UtcNow.AddHours(-1))
+        Mock Start-Sleep {}
+        Mock Write-Warn {}
+        Install-LoginItems -InstallDir $inst -DesktopUser $script:user -DataDir $data
+        Should -Invoke Start-Sleep -Times 10 -Exactly
+        Should -Invoke Write-Warn -Times 1 -Exactly -ParameterFilter { $Message -eq "Couldn't confirm the network helper is running $([char]0x2014) RFID setup may not find readers." }
+    }
+    It 'warns (and does not throw) when the first run cannot be started' {
+        $data = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory $data | Out-Null
+        Mock Start-ScheduledTask { throw 'task disabled' }
+        Mock Start-Sleep {}
+        Mock Write-Warn {}
+        { Install-LoginItems -InstallDir $inst -DesktopUser $script:user -DataDir $data } | Should -Not -Throw
+        Should -Invoke Write-Warn -ParameterFilter { $Message -like "Couldn't confirm the network helper*" }
+    }
+    It 'Wait-HostNetworkFile returns as soon as the file is fresh' {
+        $data = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory $data | Out-Null
+        $script:sleeps = 0
+        Mock Start-Sleep { $script:sleeps++; if ($script:sleeps -eq 3) { [IO.File]::WriteAllText((Join-Path $data 'host-network.json'), '{}') } }
+        Wait-HostNetworkFile -DataDir $data -Since ([datetime]::UtcNow) | Should -BeTrue
+        $script:sleeps | Should -Be 3
     }
     It 'warns but finishes when the task cannot be registered' {
         Mock Register-ScheduledTask { throw 'access denied' }

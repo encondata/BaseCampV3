@@ -91,14 +91,15 @@ The installer adds a small job that writes `<data dir>/host-network.json`:
  "interfaces": [{"name": "en0", "ipv4": "10.10.48.57", "prefix": 24}]}
 ```
 
-- **Schedule:** it runs at sign-in and every 60 seconds.
-  - Linux: systemd timer `serversherpa-kiosk-hostnet.timer`.
-  - macOS: launch agent `com.serversherpa.kiosk.hostnet`.
-  - Windows: scheduled task `ServerSherpa Kiosk Host Network`, hidden, at logon and repeating every minute.
+- **Schedule:** it runs at startup or sign-in, and every 60 seconds.
+  - Linux: systemd timer `serversherpa-kiosk-hostnet.timer`, as root, 10 s after boot and every 60 s.
+  - macOS: launch agent `com.serversherpa.kiosk.hostnet`, as the desktop user (who owns the data folder there), at load and every 60 s.
+  - Windows: scheduled task `ServerSherpa Kiosk Host Network`, as **SYSTEM** (`NT AUTHORITY\SYSTEM`, service account, highest run level). It has two triggers: at startup, and every minute indefinitely. It runs `powershell.exe -NoProfile -NonInteractive -File hostnet.ps1`, in session 0, so no window ever shows. It is allowed on battery, starts when available and runs one instance at a time. SYSTEM already has full control of the data folder and the script.
+  - The installer runs the job once after registering it and waits up to 10 s for a fresh file. If none appears, it warns: "Couldn't confirm the network helper is running — RFID setup may not find readers."
 - **Tools:** only built-in ones.
-  - Linux: `ip -j -4 addr`.
+  - Linux: `ip -j -4 addr`, keeping only interfaces with a `/sys/class/net/<name>/device` entry (real adapters).
   - macOS: `ifconfig`, plus `networksetup -listallhardwareports` to know the real adapters.
-  - Windows: `Get-NetIPAddress -AddressFamily IPv4` joined with `Get-NetAdapter -Physical`.
+  - Windows: `Get-NetIPAddress -AddressFamily IPv4` (only `AddressState` `Preferred`) joined with `Get-NetAdapter -Physical`.
 - **Exclusions:**
   - loopback
   - link-local `169.254.0.0/16`
