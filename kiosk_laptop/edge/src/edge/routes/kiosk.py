@@ -1,5 +1,6 @@
 """Kiosk endpoints the edge answers itself rather than proxying."""
 
+import json
 import uuid
 from datetime import datetime
 
@@ -7,6 +8,7 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from edge import outbox
 from edge.deps import err, require_session
+from edge.rfid import pairing
 from edge.routes.auth import passthrough
 from edge.routes.proxy import rewrite_body
 from edge.sessions import EdgeSession
@@ -63,13 +65,32 @@ async def printer_events(request: Request,
     return Response(status_code=204)
 
 
+def with_station(body: bytes, store) -> bytes:
+    """The browser picks the station type; the edge alone supplies the reader
+    (from its current pairing), whatever the browser sent."""
+    try:
+        data = json.loads(body) if body else None
+    except ValueError:
+        return body
+    if not isinstance(data, dict):
+        return body
+    data.pop("reader", None)
+    if data.get("station_type") == "rfid":
+        reader = pairing.cloud_reader(store)
+        if reader is None:
+            raise err(409, "reader_required")
+        data["reader"] = reader
+    return json.dumps(data).encode()
+
+
 @router.post("/setup")
 async def setup(request: Request, session: EdgeSession = Depends(require_session)) -> Response:
     """Kiosk Setup needs the cloud. On success the laptop is now set up for
     that move, so pull it down before answering — the browser's own download
     that follows then reads what the edge just stored."""
     st = request.app.state
-    body = rewrite_body("/kiosk/setup", await request.body(), st.identity)
+    body = with_station(await request.body(), st.store)
+    body = rewrite_body("/kiosk/setup", body, st.identity)
     try:
         resp = await st.upstream.as_person(session.person_id, "POST", "/kiosk/setup",
                                            content=body,

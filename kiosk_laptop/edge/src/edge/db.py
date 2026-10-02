@@ -44,6 +44,16 @@ SCHEMA_STEPS: list[str] = [
     """,
     # the cloud's move-password version, sent back as `have=` (unchanged → no rehash)
     "ALTER TABLE move_passwords ADD COLUMN version TEXT",
+    # RFID station: readers this laptop has signed in to (only the winning
+    # password's index, never a password) and the one it is paired with
+    """
+    CREATE TABLE rfid_readers (
+        serial TEXT PRIMARY KEY, ip TEXT NOT NULL, model TEXT, versions TEXT,
+        password_index INTEGER, token TEXT, laptop_ip TEXT, paired_at TEXT);
+    CREATE TABLE rfid_pairing (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        serial TEXT NOT NULL REFERENCES rfid_readers (serial));
+    """,
 ]
 
 

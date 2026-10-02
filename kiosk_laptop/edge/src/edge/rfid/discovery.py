@@ -11,13 +11,13 @@ import httpx
 
 from edge import hostnet
 from edge.rfid import ziotc
+from edge.rfid.pairing import PAIR_PREFIX, foreign_connection, get_connections  # noqa: F401
 
 PORT = 443
 CONCURRENCY = 64
 TIMEOUT_S = 0.5  # the TCP connect sweep only
 PROBE_TIMEOUT = httpx.Timeout(5.0, connect=3.0)  # TLS + login + API calls
 log = logging.getLogger("edge.rfid.discovery")
-PAIR_PREFIX = "ServerSherpa Kiosk"
 
 
 async def tcp_connect(ip: str, port: int = PORT, timeout: float = TIMEOUT_S) -> bool:
@@ -35,15 +35,9 @@ async def tcp_connect(ip: str, port: int = PORT, timeout: float = TIMEOUT_S) -> 
 
 def paired_with(config, own_name: str | None) -> str | None:
     """The name of another kiosk's connection on the reader, if any."""
-    try:
-        connections = config["READER-GATEWAY"]["endpointConfig"]["data"]["event"]["connections"]
-        for conn in connections:
-            name = str(conn.get("name") or "")
-            if name.startswith(PAIR_PREFIX) and not (own_name and name.startswith(own_name)):
-                return name
-    except (KeyError, TypeError, AttributeError):
-        pass
-    return None
+    return foreign_connection(get_connections(config),
+                              lambda c: bool(own_name)
+                              and str(c.get("name") or "").startswith(own_name))
 
 
 class Discovery:
