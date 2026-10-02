@@ -131,7 +131,7 @@ The installer adds a small job that writes `<data dir>/host-network.json`:
 - **Transport:** HTTPS to `https://<ip>` (port 443) with certificate verification **off** (the readers use self-signed certificates), or plain HTTP to `http://<ip>` (port 80). Connect and pair use where the latest scan found the reader, else where it answered before, else 443 then 80 for a manually entered IP. The scheme and port are remembered per reader serial (`rfid_readers.scheme`, `port`). Timeouts: 3 s connect, 10 s read.
 - **Sign-in:** `GET /cloud/localRestLogin` with HTTP basic auth `admin:<password>`. It returns a token, which is sent as `Authorization: Bearer <token>` on later calls.
   - Passwords are tried in order: `Cumulu$SG0`, `Cumulus$G0`, `Cumulu$SG.`, `33q44w40x5`, `change`.
-  - A 401/403 tries the next password.
+  - A 401/403 tries the next password, and so does a 500 in ZIOTC's JSON error shape: a real FX9600 (captured 2026-10-02) refuses a missing Authorization header with `500 {"code":-1, "message":"Authorization header missing!"}`, not 401. Discovery recognizes that exact answer on both `/cloud/localRestLogin` and `/cloud/version` as a reader (signal c). The reader answers HTTPS on 443 only.
   - Any other failure stops the attempt.
 - **Password memory:** the index of the password that worked is remembered per reader serial in SQLite (`rfid_readers.password_index`, looked up by the reader's IP) and tried first next time; a scan tries only that one (§2.2). A successful Connect remembers it without creating a pairing token. **Passwords are never sent to the browser, logged, or sent to the cloud.**
 - **Calls:**

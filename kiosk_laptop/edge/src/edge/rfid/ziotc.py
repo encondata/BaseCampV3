@@ -142,11 +142,25 @@ def _signal_ziotc_refusal(login, version) -> bool:
     return login is not None and login.status_code == 401 and _ziotc_error_shape(version)
 
 
-# A device is a Zebra candidate when any signal fires. These come from Zebra's
-# ZIOTC OpenAPI and support articles, not from a real FX9600 capture yet —
-# a capture will refine the list (and its tests); keep Zebra's label printers
-# (ZebraNet, "Zebra Technologies" pages) out.
-ZEBRA_SIGNALS = (_signal_names_zebra, _signal_ziotc_refusal)
+# Captured from a real FX9600 (ZIOTC, firmware at 10.10.48.119, 2026-10-02):
+# an unauthenticated GET of /cloud/localRestLogin or /cloud/version answers
+# HTTP 500, "Server: Apache", body {"code":-1, "message":"Authorization header
+# missing!"} — no 401 and no WWW-Authenticate. Port 80 doesn't answer.
+_MISSING_AUTH = re.compile(r"authorization header missing", re.IGNORECASE)
+
+
+def _signal_fx_missing_auth(login, version) -> bool:
+    """(c) the real FX9600 refusal: both paths answer in ZIOTC's JSON error
+    shape and say the Authorization header is missing."""
+    return all(resp is not None and _ziotc_error_shape(resp)
+               and bool(_MISSING_AUTH.search(json.loads(resp.text)["message"]))
+               for resp in (login, version))
+
+
+# A device is a Zebra candidate when any signal fires. (a) and (b) come from
+# Zebra's ZIOTC OpenAPI and support articles; (c) is a real FX9600 capture.
+# Keep Zebra's label printers (ZebraNet, "Zebra Technologies" pages) out.
+ZEBRA_SIGNALS = (_signal_names_zebra, _signal_ziotc_refusal, _signal_fx_missing_auth)
 
 
 def looks_like_ziotc(login: httpx.Response | None, version: httpx.Response | None) -> bool:
@@ -229,7 +243,12 @@ class ZiotcClient:
         for index in order:
             resp = await self._send("GET", LOGIN_PATH,
                                     auth=httpx.BasicAuth(USERNAME, PASSWORDS[index]))
-            if resp.status_code in (401, 403):
+            # A real FX9600 refuses a missing Authorization header with a JSON
+            # 500 rather than 401, so a JSON-shaped 500 on sign-in is treated
+            # as "this password didn't work" too (a wrong password's exact
+            # answer is still unconfirmed on hardware).
+            if resp.status_code in (401, 403) or (
+                    resp.status_code == 500 and _ziotc_error_shape(resp)):
                 log.debug("reader %s refused password #%d", self.ip, index)
                 continue
             self._check(resp)

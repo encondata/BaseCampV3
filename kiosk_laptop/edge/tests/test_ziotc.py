@@ -244,16 +244,6 @@ async def test_500_html_is_reader_error_with_a_generic_message():
     assert "<html>" not in err.value.message
 
 
-async def test_500_on_login_stops_the_attempt():
-    reader = FakeReader(password_index=3)
-    reader.fail_next["/cloud/localRestLogin"] = (500, {"code": 1, "message": "busy"})
-    with pytest.raises(ReaderError) as err:
-        await make(reader).login()
-    assert err.value.code == "reader_error"
-    assert err.value.message == "busy"
-    assert reader.login_attempts == []  # the middleware answered before the handler
-
-
 # ── probe ───────────────────────────────────────────────────────────
 
 async def test_probe_returns_the_reader():
@@ -462,3 +452,43 @@ async def test_discover_drops_non_candidates_with_zero_credentials():
     assert nas.credential_attempts == 0
     assert await ziotc.discover(IP, transport=FakeReader(model="ATR7000").transport(),
                                 password_index=3) is None
+
+
+# Captured from a real FX9600 (10.10.48.119, 2026-10-02): unauthenticated
+# answers are HTTP 500 with ZIOTC's JSON error, not 401.
+_FX9600_MISSING_AUTH = {"code": -1, "message": "Authorization header missing!"}
+
+
+def test_real_fx9600_unauthenticated_answer_is_a_candidate():
+    login = _resp(500, json=_FX9600_MISSING_AUTH, headers={"server": "Apache"})
+    version = _resp(500, json=_FX9600_MISSING_AUTH, headers={"server": "Apache"})
+    assert ziotc.looks_like_ziotc(login, version) is True
+
+
+@pytest.mark.parametrize("login, version", [
+    # one path only, or a different message, isn't enough
+    (_resp(500, json=_FX9600_MISSING_AUTH), None),
+    (_resp(500, json=_FX9600_MISSING_AUTH), _resp(404, text="<html>Not Found</html>")),
+    (_resp(500, json={"code": -1, "message": "Internal error"}),
+     _resp(500, json={"code": -1, "message": "Internal error"})),
+    # a generic server error page
+    (_resp(500, text="Internal Server Error", headers={"server": "Apache"}),
+     _resp(500, text="Internal Server Error", headers={"server": "Apache"})),
+])
+def test_other_500s_are_not_candidates(login, version):
+    assert ziotc.looks_like_ziotc(login, version) is False
+
+
+async def test_json_500_on_sign_in_tries_the_next_password():
+    reader = FakeReader(password_index=1)
+    reader.fail_next["GET /cloud/localRestLogin"] = (500, {"code": -1, "message": "Unauthorized"})
+    client = make(reader)
+    assert await client.login() == 1
+
+
+async def test_html_500_on_sign_in_still_stops():
+    reader = FakeReader(password_index=1)
+    reader.fail_next["GET /cloud/localRestLogin"] = (500, "<html>Internal Server Error</html>")
+    with pytest.raises(ReaderError) as err:
+        await make(reader).login()
+    assert err.value.code == "reader_error"
