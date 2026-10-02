@@ -838,7 +838,7 @@ Describe 'Install-LoginItems' {
         Should -Invoke Write-Warn -Times 0
         Should -Invoke Start-Sleep -Times 0
     }
-    It 'warns when no fresh file appears within about 10 seconds (a stale one does not count)' {
+    It 'warns when no fresh file appears within about 30 seconds (a stale one does not count)' {
         $data = Join-Path $TestDrive ([guid]::NewGuid().ToString())
         New-Item -ItemType Directory $data | Out-Null
         $old = Join-Path $data 'host-network.json'
@@ -847,8 +847,8 @@ Describe 'Install-LoginItems' {
         Mock Start-Sleep {}
         Mock Write-Warn {}
         Install-LoginItems -InstallDir $inst -DesktopUser $script:user -DataDir $data
-        Should -Invoke Start-Sleep -Times 10 -Exactly
-        Should -Invoke Write-Warn -Times 1 -Exactly -ParameterFilter { $Message -eq "Couldn't confirm the network helper is running $([char]0x2014) RFID setup may not find readers." }
+        Should -Invoke Start-Sleep -Times 30 -Exactly
+        Should -Invoke Write-Warn -Times 1 -Exactly -ParameterFilter { $Message -eq "Couldn't confirm the network helper is running (it retries every minute) $([char]0x2014) RFID setup may not find readers." }
     }
     It 'warns (and does not throw) when the first run cannot be started' {
         $data = Join-Path $TestDrive ([guid]::NewGuid().ToString())

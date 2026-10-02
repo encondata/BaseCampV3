@@ -934,6 +934,8 @@ Description=ServerSherpa kiosk host network addresses (host-network.json)
 [Service]
 Type=oneshot
 ExecStart=$(exec_path "$KIOSK_DIR/hostnet.sh")
+# A hung run is stopped well before the next one is due (every 60 s).
+TimeoutStartSec=30
 # Every minute: keep systemd's Starting/Finished lines out of the journal.
 LogLevelMax=notice
 EOF
@@ -976,7 +978,7 @@ wait_for_host_network() {
 
 confirm_host_network() {  # confirm_host_network SINCE
   wait_for_host_network "$1" \
-    || warn "Couldn't confirm the network helper is running — RFID setup may not find readers."
+    || warn "Couldn't confirm the network helper is running (it retries every minute) — RFID setup may not find readers."
   return 0
 }
 

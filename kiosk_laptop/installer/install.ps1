@@ -1455,9 +1455,10 @@ function Register-HostnetTask {
 }
 
 # Wait-HostNetworkFile DATADIR SINCE: $true once host-network.json was written
-# at or after SINCE (UTC), checked every second for about 10 seconds.
+# at or after SINCE (UTC), checked every second for about 30 seconds (Task
+# Scheduler can take a while to start a SYSTEM task's first run).
 function Wait-HostNetworkFile {
-    param([Parameter(Mandatory = $true)][string]$DataDir, [Parameter(Mandatory = $true)][datetime]$Since, [int]$Tries = 10)
+    param([Parameter(Mandatory = $true)][string]$DataDir, [Parameter(Mandatory = $true)][datetime]$Since, [int]$Tries = 30)
     $path = Join-KioskPath $DataDir 'host-network.json'
     $floor = $Since.AddSeconds(-1)   # file times can round down
     for ($i = 0; ; $i++) {
@@ -1468,7 +1469,7 @@ function Wait-HostNetworkFile {
 }
 
 # Start-HostnetTask DATADIR: one run now, then a fresh host-network.json
-# within about 10 seconds, or a warning (Kiosk Setup needs the file).
+# within about 30 seconds, or a warning (Kiosk Setup needs the file).
 function Start-HostnetTask {
     param([string]$DataDir)
     $since = [datetime]::UtcNow
@@ -1476,7 +1477,7 @@ function Start-HostnetTask {
     catch { Write-Verbose "The host network task didn't start now ($($_.Exception.Message))." }
     if (-not $DataDir) { return }
     if (-not (Wait-HostNetworkFile -DataDir $DataDir -Since $since)) {
-        Write-Warn "Couldn't confirm the network helper is running $Dash RFID setup may not find readers."
+        Write-Warn "Couldn't confirm the network helper is running (it retries every minute) $Dash RFID setup may not find readers."
     }
 }
 

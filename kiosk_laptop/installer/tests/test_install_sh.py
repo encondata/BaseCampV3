@@ -1057,6 +1057,8 @@ def test_render_systemd_units_include_the_hostnet_timer(sh, tmp_path):
     assert "OnBootSec=10s" in tmr and "OnUnitActiveSec=60s" in tmr and "WantedBy=timers.target" in tmr
     # no per-minute "Starting"/"Finished" lines in the journal
     assert "LogLevelMax=notice" in svc.split("[Service]", 1)[1]
+    # a hung helper is stopped well before the next run is due
+    assert "TimeoutStartSec=30\n" in svc.split("[Service]", 1)[1]
     for f in ("hostnet.service", "hostnet.timer"):
         assert (tmp_path / f"serversherpa-kiosk-{f}").stat().st_mode & 0o777 == 0o644
 
@@ -1132,7 +1134,8 @@ def test_runtime_compose_template_publishes_both_ports_on_all_interfaces():
 
 
 # ── Fix round 1: confirm the host-network job ran ─────────────────────
-HOSTNET_WARNING = "Couldn't confirm the network helper is running — RFID setup may not find readers."
+HOSTNET_WARNING = ("Couldn't confirm the network helper is running (it retries every minute)"
+                   " — RFID setup may not find readers.")
 
 
 def test_linux_starts_the_hostnet_service_once_and_confirms_a_fresh_file(sh, tmp_path):
