@@ -24,6 +24,19 @@ const CHECK_CHIP: Record<DeployCheck['status'], { cls: string; text: string }> =
   pass: { cls: 'c-green', text: 'Pass' }, warn: { cls: 'c-amber', text: 'Warning' }, fail: { cls: 'c-red', text: 'Fail' },
 };
 
+const RESERVED_NAMES = ['blue', 'green', 'dev', 'beta', 'custom'];
+const NAME_HELP = 'Lowercase letters, numbers and hyphens; starts with a letter; 2–32 characters.';
+
+/** Mirrors the API's custom-name rule; returns an inline message or ''. */
+function nameProblem(raw: string): string {
+  const n = raw.trim();
+  if (!n) return '';
+  if (!/^[a-z][a-z0-9-]{1,31}$/.test(n) || n.endsWith('-'))
+    return 'Use lowercase letters, numbers and hyphens, starting with a letter (2–32 characters, no trailing hyphen).';
+  if (RESERVED_NAMES.includes(n)) return 'That name is reserved. Choose a different one.';
+  return '';
+}
+
 interface KeyInfo { host: string; port: number; key_type: string; fingerprint?: string; expected?: string; actual?: string }
 
 function statusChip(t: DeployTarget) {
@@ -55,7 +68,7 @@ export default function Deploy() {
   const [type, setType] = useState('');
   const [loadError, setLoadError] = useState('');
   const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<(ConnectResult & { at: string; region?: string }) | null>(null);
+  const [result, setResult] = useState<(ConnectResult & { at: string; region?: string; sentName?: string }) | null>(null);
   const [error, setError] = useState('');
   const [hostsError, setHostsError] = useState('');
   const inFlight = useRef(false);
@@ -67,6 +80,7 @@ export default function Deploy() {
   const [regionsLoading, setRegionsLoading] = useState(false);
   const [regionsError, setRegionsError] = useState('');
   const [region, setRegion] = useState('');
+  const [envName, setEnvName] = useState('');
 
   const loadHosts = useCallback(() =>
     listKnownHosts().then((h) => { setHosts(h); setHostsError(''); })
@@ -98,7 +112,11 @@ export default function Deploy() {
     else loadRegions();
   }, [doReady, doRegions, loadRegions]);
 
-  const canRun = !!selected && selected.available && selected.configured && !!type && canAdd && !running;
+  const isCustom = type === 'custom';
+  const trimmedName = envName.trim();
+  const nameError = isCustom ? nameProblem(envName) : '';
+  const nameOk = !isCustom || (!!trimmedName && !nameError);
+  const canRun = !!selected && selected.available && selected.configured && !!type && nameOk && canAdd && !running;
 
   const clearOutcome = () => { setResult(null); setMismatch(null); setError(''); };
   const pick = (set: (v: string) => void, v: string, current: string) => {
@@ -113,7 +131,9 @@ export default function Deploy() {
     setError(''); setResult(null); setMismatch(null);
     try {
       const sent = doReady && region ? region : undefined;
-      const r = sent ? await connectDeploy(target, type, sent) : await connectDeploy(target, type);
+      const sentName = isCustom ? trimmedName : undefined;
+      const r = sentName ? await connectDeploy(target, type, sent, sentName)
+        : sent ? await connectDeploy(target, type, sent) : await connectDeploy(target, type);
       setResult({ ...r, region: sent, at: new Date().toISOString() });
     } catch (e) {
       const d = errorDetail<KeyInfo>(e);
@@ -209,6 +229,17 @@ export default function Deploy() {
             </button>
           ))}
         </div>
+        {isCustom && (
+          <div className="pf-form sirdar-envname">
+            <label className="field-label" htmlFor="env-name">Environment name</label>
+            <input id="env-name" type="text" value={envName} maxLength={64} autoComplete="off"
+                   spellCheck={false} aria-required="true" aria-invalid={!!nameError}
+                   aria-describedby="env-name-help"
+                   onChange={(e) => { setEnvName(e.target.value); clearOutcome(); }} />
+            <p id="env-name-help" className="page-hint">{NAME_HELP}</p>
+            {nameError && <p className="form-error" role="alert">{nameError}</p>}
+          </div>
+        )}
       </section>
 
       <section className="sirdar-section">
@@ -259,7 +290,8 @@ export default function Deploy() {
             <p className="page-hint">
               {targets.find((t) => t.id === result.target)?.label ?? result.target} ·{' '}
               {result.region && <>{result.region} · </>}
-              {types.find((t) => t.id === result.type)?.label ?? result.type} ·{' '}
+              {types.find((t) => t.id === result.type)?.label ?? result.type}
+              {result.type === 'custom' && result.name && <>: {result.name}</>} ·{' '}
               <span className="mono">{new Date(result.at).toLocaleString()}</span>
             </p>
             <ul className="sirdar-checks">

@@ -18,7 +18,8 @@ def test_deploy_types():
         {"id": "blue", "label": "Blue", "description": "Production slot"},
         {"id": "green", "label": "Green", "description": "Production slot"},
         {"id": "dev", "label": "Dev", "description": "Development"},
-        {"id": "beta", "label": "Beta", "description": "External testing"}]
+        {"id": "beta", "label": "Beta", "description": "External testing"},
+        {"id": "custom", "label": "Custom", "description": "Your own named environment"}]
 
 
 def test_nothing_configured_by_default():

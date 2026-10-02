@@ -32,6 +32,7 @@ const TARGETS = {
     { id: 'green', label: 'Green', description: 'Production slot' },
     { id: 'dev', label: 'Dev', description: 'Development' },
     { id: 'beta', label: 'Beta', description: 'External testing' },
+    { id: 'custom', label: 'Custom', description: 'Your own named environment' },
   ],
 };
 const OK = { ok: true, target: 'ssh', type: 'dev', facts: { host: 'srv.example.com' },
@@ -291,4 +292,59 @@ it('DigitalOcean: a region load error shows inline with Retry', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
   await screen.findByRole('combobox', { name: 'Region' });
   expect(api.getDoRegions).toHaveBeenCalledTimes(2);
+});
+
+async function pickSsh() {
+  await ready();
+  await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
+}
+
+it('shows Custom as the fifth type with its description', async () => {
+  await ready();
+  const radios = screen.getAllByRole('radio', { name: /Blue|Green|Dev|Beta|Custom$|Your own/ });
+  const custom = screen.getByRole('radio', { name: /^Custom\s*Your own named environment/ });
+  expect(custom.textContent).toContain('Your own named environment');
+  expect(radios.length).toBeGreaterThanOrEqual(5);
+});
+
+it('shows the name field only for Custom, validates it and gates the button', async () => {
+  await pickSsh();
+  expect(screen.queryByLabelText('Environment name')).toBeNull();
+  await userEvent.click(screen.getByRole('radio', { name: /^Custom\s*Your own/ }));
+  const input = screen.getByLabelText('Environment name');
+  expect(screen.getByText('Lowercase letters, numbers and hyphens; starts with a letter; 2–32 characters.')).toBeTruthy();
+  expect(testBtn().disabled).toBe(true);
+  await userEvent.type(input, 'Demo');
+  expect(screen.getByText(/Use lowercase letters, numbers and hyphens, starting with a letter/)).toBeTruthy();
+  expect(testBtn().disabled).toBe(true);
+  await userEvent.clear(input);
+  await userEvent.type(input, 'beta');
+  expect(screen.getByText(/reserved/i)).toBeTruthy();
+  expect(testBtn().disabled).toBe(true);
+  await userEvent.clear(input);
+  await userEvent.type(input, 'demo-');
+  expect(testBtn().disabled).toBe(true);
+  await userEvent.type(input, 'acme');
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(testBtn().disabled).toBe(false);
+});
+
+it('sends the name and shows it in the results header; other types do not send it', async () => {
+  api.connectDeploy.mockResolvedValue({ ...OK, type: 'custom', name: 'demo-acme' });
+  await pickSsh();
+  await userEvent.click(screen.getByRole('radio', { name: /^Custom\s*Your own/ }));
+  await userEvent.type(screen.getByLabelText('Environment name'), 'demo-acme');
+  await userEvent.click(testBtn());
+  await waitFor(() => expect(api.connectDeploy).toHaveBeenCalledWith('ssh', 'custom', undefined, 'demo-acme'));
+  expect(await screen.findByText(/Custom \(SSH\) · Custom: demo-acme/)).toBeTruthy();
+  // switching away clears results, hides the field, and does not send the name
+  api.connectDeploy.mockResolvedValue(OK);
+  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  expect(screen.queryByText(/demo-acme/)).toBeNull();
+  expect(screen.queryByLabelText('Environment name')).toBeNull();
+  await userEvent.click(testBtn());
+  await waitFor(() => expect(api.connectDeploy).toHaveBeenLastCalledWith('ssh', 'dev'));
+  // the typed name is kept when switching back
+  await userEvent.click(screen.getByRole('radio', { name: /^Custom\s*Your own/ }));
+  expect((screen.getByLabelText('Environment name') as HTMLInputElement).value).toBe('demo-acme');
 });

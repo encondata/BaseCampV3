@@ -60,10 +60,10 @@ export interface DeployTarget {
   id: 'aws' | 'gcp' | 'digitalocean' | 'ssh'; label: string; available: boolean;
   configured: boolean;
 }
-export interface DeployType { id: 'blue' | 'green' | 'dev' | 'beta'; label: string; description: string }
+export interface DeployType { id: 'blue' | 'green' | 'dev' | 'beta' | 'custom'; label: string; description: string }
 export interface DeployCheck { label: string; status: 'pass' | 'warn' | 'fail'; value: string }
 export interface ConnectResult {
-  ok: boolean; target: string; type: string; checks: DeployCheck[]; facts: Record<string, unknown>;
+  ok: boolean; target: string; type: string; name?: string | null; checks: DeployCheck[]; facts: Record<string, unknown>;
 }
 export interface DoRegions { regions: { slug: string; name: string }[]; default: string | null }
 export interface KnownHost {
@@ -113,6 +113,9 @@ const MESSAGES: Record<string, string> = {
   source_not_configured: 'The portal database is not configured for this Sirdar.',
   target_unavailable: "That target isn't available yet.",
   target_not_configured: "That target isn't configured. Set its keys in the .env file and re-run the installer.",
+  custom_name_required: 'Enter a name for the custom environment.',
+  custom_name_invalid: 'Use lowercase letters, numbers and hyphens, starting with a letter (2–32 characters, no trailing hyphen).',
+  custom_name_reserved: 'That name is reserved. Choose a different one.',
   connect_failed: "Couldn't connect.",
   host_key_changed: "The server's key changed while you were looking. Try again.",
   not_configured_host: "Only the configured SSH host can be trusted.",
@@ -158,8 +161,9 @@ export const getSettings = () => getJson<SirdarSettings>('/settings');
 
 export const getDeployTargets = () =>
   getJson<{ targets: DeployTarget[]; types: DeployType[] }>('/deploy/targets');
-export const connectDeploy = (target: string, type: string, region?: string) =>
-  sendJson<ConnectResult>('POST', '/deploy/connect', region ? { target, type, region } : { target, type });
+export const connectDeploy = (target: string, type: string, region?: string, name?: string) =>
+  sendJson<ConnectResult>('POST', '/deploy/connect',
+    { target, type, ...(region ? { region } : {}), ...(name ? { name } : {}) });
 export const getDoRegions = () => getJson<DoRegions>('/deploy/digitalocean/regions');
 export const listKnownHosts = () => getJson<KnownHost[]>('/deploy/known-hosts');
 export const trustKnownHost = (host: string, port: number, fingerprint: string) =>

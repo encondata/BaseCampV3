@@ -26,6 +26,7 @@ DEPLOY_TYPES: list[dict] = [
     {"id": "green", "label": "Green", "description": "Production slot"},
     {"id": "dev", "label": "Dev", "description": "Development"},
     {"id": "beta", "label": "Beta", "description": "External testing"},
+    {"id": "custom", "label": "Custom", "description": "Your own named environment"},
 ]
 DEPLOY_TYPE_IDS = tuple(t["id"] for t in DEPLOY_TYPES)
 

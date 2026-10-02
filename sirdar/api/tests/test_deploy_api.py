@@ -85,7 +85,7 @@ async def test_targets_for_admin(client, db, deploy_env, bodies):
     # product owner decision: cards show no connection details, secret or not
     for detail in ("10.10.48.20", "root", "nyc3", "us-east-1", ":22"):
         assert detail not in resp.text
-    assert [t["id"] for t in body["types"]] == ["blue", "green", "dev", "beta"]
+    assert [t["id"] for t in body["types"]] == ["blue", "green", "dev", "beta", "custom"]
     assert body["types"][0] == {"id": "blue", "label": "Blue", "description": "Production slot"}
 
 
@@ -368,3 +368,69 @@ async def test_connect_region_ignored_for_ssh(client, db, deploy_env, bodies, ss
                              json={"target": "ssh", "type": "dev", "region": "nyc3"})
     assert resp.status_code in (200, 409)
     assert "region" not in resp.json().get("facts", {})
+
+
+async def test_custom_type_listed_last(client, db, deploy_env, bodies):
+    h = await auth_headers(client, db, email="admin@test.example.com", roles=("admin",))
+    types = (await client.get("/api/deploy/targets", headers=h)).json()["types"]
+    assert types[-1] == {"id": "custom", "label": "Custom",
+                         "description": "Your own named environment"}
+
+
+async def test_custom_name_valid_returns_and_audits_name(client, db, deploy_env, bodies,
+                                                         ssh_server):
+    _ssh_env(deploy_env, ssh_server)
+    h = await auth_headers(client, db)
+    resp = await client.post("/api/deploy/connect", headers=h,
+                             json={"target": "ssh", "type": "custom", "name": "demo-acme"})
+    assert resp.status_code in (200, 409)
+    # unknown host key answers 409 before success; trust it and retry
+    if resp.status_code == 409:
+        d = resp.json()["detail"]
+        await client.post("/api/deploy/known-hosts", headers=h,
+                          json={"host": d["host"], "port": d["port"],
+                                "fingerprint": d["fingerprint"]})
+        resp = await client.post("/api/deploy/connect", headers=h,
+                                 json={"target": "ssh", "type": "custom", "name": "demo-acme"})
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "demo-acme" and resp.json()["type"] == "custom"
+    audits = await _connect_audits(db)
+    assert audits[-1]["name"] == "demo-acme" and audits[-1]["ok"] is True
+
+
+@pytest.mark.parametrize("payload_name", [None, "", "   "])
+async def test_custom_name_required(client, db, deploy_env, bodies, payload_name):
+    h = await auth_headers(client, db)
+    payload = {"target": "ssh", "type": "custom"}
+    if payload_name is not None:
+        payload["name"] = payload_name
+    resp = await client.post("/api/deploy/connect", headers=h, json=payload)
+    assert resp.status_code == 422
+    assert resp.json() == {"detail": {"code": "custom_name_required"}}
+
+
+@pytest.mark.parametrize("bad", ["Demo", "1abc", "my_env", "demo-", "a" * 33, "a"])
+async def test_custom_name_invalid(client, db, deploy_env, bodies, bad):
+    h = await auth_headers(client, db)
+    resp = await client.post("/api/deploy/connect", headers=h,
+                             json={"target": "ssh", "type": "custom", "name": bad})
+    assert resp.status_code == 422
+    assert resp.json() == {"detail": {"code": "custom_name_invalid"}}
+
+
+@pytest.mark.parametrize("reserved", ["blue", "green", "dev", "beta", "custom"])
+async def test_custom_name_reserved(client, db, deploy_env, bodies, reserved):
+    h = await auth_headers(client, db)
+    resp = await client.post("/api/deploy/connect", headers=h,
+                             json={"target": "ssh", "type": "custom", "name": reserved})
+    assert resp.status_code == 422
+    assert resp.json() == {"detail": {"code": "custom_name_reserved"}}
+
+
+async def test_name_ignored_for_non_custom(client, db, deploy_env, bodies):
+    h = await auth_headers(client, db)
+    resp = await client.post("/api/deploy/connect", headers=h,
+                             json={"target": "ssh", "type": "dev", "name": "Bad Name!"})
+    assert resp.status_code == 400 and resp.json() == {"detail": {"code": "target_not_configured"}}
+    assert (await _connect_audits(db))[-1] == {"target": "ssh", "type": "dev", "ok": False,
+                                              "code": "target_not_configured"}
