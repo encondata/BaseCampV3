@@ -1,0 +1,1 @@
+AA:BB:CC:00:00:01  -48 dBm / -95 dBm (SNR 47)  0 ms ago

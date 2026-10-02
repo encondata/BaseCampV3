@@ -1,0 +1,17 @@
+config interface 'lan'
+	option ifname 'lan1 lan2'
+	option type 'bridge'
+	option proto 'static'
+	option ipaddr '192.168.8.1'
+	option netmask '255.255.255.0'
+
+config interface 'wan'
+	option ifname 'wan'
+	option proto 'dhcp'
+
+config interface 'wwan'
+	option proto 'dhcp'
+
+config interface 'wg0'
+	option proto 'wireguard'
+	option private_key 'x'

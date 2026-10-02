@@ -1,0 +1,27 @@
+@.wan_mac	94:83:c4:11:22:33
+@.model	GL.iNet GL-AC2100
+@.firmware	3.216
+@.hostname	GL-AC2100
+@.uptime_seconds	3600
+@.wan.interface	wwan
+@.wan.ip	10.0.0.50
+@.wan.gateway	10.0.0.1
+@.lan.netmask	255.255.255.0
+@.wifi[0].ssid	Dock WiFi
+@.wifi[0].band	2g
+@.wifi[0].channel	11
+@.wifi[0].clients	1
+@.wifi[1].band	5g
+@.wifi[1].enabled	false
+@.wifi[1].channel	149
+@.clients.wireless	1
+@.clients.wired	1
+@.clients.total	2
+@.vpn[@.name="wg0"].type	wireguard
+@.vpn[@.name="wg0"].up	false
+@.vpn[@.name="wg0"].endpoint	203.0.113.50:51820
+@.vpn[@.name="office"].type	openvpn
+@.vpn[@.name="office"].role	client
+@.vpn[@.name="office"].up	true
+@.vpn[@.name="office"].endpoint	vpn.office.example:1194
+@.vpn[@.name="sample_server"].name	

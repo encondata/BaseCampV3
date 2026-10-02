@@ -1,0 +1,8 @@
+config openvpn 'office'
+	option enabled '1'
+	option client '1'
+	list remote 'vpn.office.example 1194'
+
+config openvpn 'sample_server'
+	option enabled '0'
+	option server '10.8.0.0 255.255.255.0'

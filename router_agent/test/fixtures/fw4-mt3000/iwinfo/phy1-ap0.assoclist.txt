@@ -1,0 +1,2 @@
+AA:BB:CC:DD:EE:04  -60 dBm / -95 dBm (SNR 35)  20 ms ago
+	RX: 600.4 MBit/s, HE-MCS 9, 80MHz, HE-NSS 2         99 Pkts.

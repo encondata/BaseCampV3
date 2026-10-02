@@ -1,0 +1,6 @@
+#!/bin/sh
+# ubus call <object> <method> -> fixtures/<fx>/ubus/<object>.<method>.json
+[ "$1" = call ] || exit 1
+f="$FIXTURE/ubus/$2.$3.json"
+[ -r "$f" ] || exit 4
+cat "$f"
