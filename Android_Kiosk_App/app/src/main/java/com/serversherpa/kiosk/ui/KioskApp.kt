@@ -63,13 +63,14 @@ fun KioskApp() {
  * Clear Setup from the portal: whoever is signed in goes to Kiosk Setup, once. It lives
  * beside the NavHost, outside every route, so no route's guard or gate can drop the
  * collector before it sees the emission; [cleared] never replays, so a clear already
- * honored can't send anyone again.
+ * honored can't send anyone again. popUpTo(HOME) makes Back from Setup land on Home rather
+ * than bouncing through the gated screen the person was on (same as SetupGate's redirect).
  */
 @Composable
 internal fun SetupClearedRedirect(nav: NavHostController, cleared: Flow<String>) {
     LaunchedEffect(nav, cleared) {
         cleared.collect {
-            if (nav.currentDestination?.route != Routes.SETUP) nav.navigate(Routes.SETUP) { launchSingleTop = true }
+            if (nav.currentDestination?.route != Routes.SETUP) nav.navigate(Routes.SETUP) { popUpTo(Routes.HOME); launchSingleTop = true }
         }
     }
 }

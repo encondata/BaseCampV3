@@ -47,6 +47,8 @@ class SetupClearedRedirectTest {
         compose.waitUntil(5_000) { compose.onAllNodesWithText("setup page").fetchSemanticsNodes().isNotEmpty() }
         compose.waitForIdle()
         assertEquals(Routes.SETUP, nav.currentDestination?.route)
+        // Back from Setup goes Home, not through the gated screen they were on.
+        assertEquals(Routes.HOME, nav.previousBackStackEntry?.destination?.route)
     }
 
     @Test fun aClearAnnouncedBeforeTheRedirectExistedIsNotReplayed() {
