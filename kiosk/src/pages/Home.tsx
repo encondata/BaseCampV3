@@ -4,10 +4,23 @@
 import { Link } from 'react-router-dom';
 
 import { useDevMode } from '../lib/devMode';
-import { featureAvailable, FEATURES, type KioskFeature } from '../lib/features';
+import { featureAvailable, FEATURES, RFID_READER_FEATURE, type KioskFeature } from '../lib/features';
+import { useKioskSetup } from '../lib/kioskSetup';
+import { isLaptop } from '../lib/platform';
 import { useKioskSetupState } from '../lib/setupState';
 
 const ICONS: Record<KioskFeature['id'], JSX.Element> = {
+  // A reader's antenna: a small base with signal waves going out both sides.
+  rfid: (
+    <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <circle cx="20" cy="17" r="3" fill="currentColor" />
+      <path d="M20 20v14M14 34h12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+      <path
+        d="M13 10a10 10 0 0 0 0 14M7.5 6a17 17 0 0 0 0 22M27 10a10 10 0 0 1 0 14M32.5 6a17 17 0 0 1 0 22"
+        stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
+      />
+    </svg>
+  ),
   setup: (
     <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <circle cx="20" cy="20" r="4.5" stroke="currentColor" strokeWidth="2.5" />
@@ -105,8 +118,12 @@ const ICONS: Record<KioskFeature['id'], JSX.Element> = {
 export default function Home() {
   const [setupState] = useKioskSetupState();
   const [devMode] = useDevMode();
+  const [kioskSetup] = useKioskSetup();
   const complete = setupState === 'complete';
   const failed = setupState === 'failed';
+  const tiles = isLaptop() && kioskSetup?.stationType === 'rfid'
+    ? [RFID_READER_FEATURE, ...FEATURES]
+    : FEATURES;
 
   return (
     <div className="portal-page">
@@ -125,7 +142,7 @@ export default function Home() {
         </div>
       )}
       <nav className="kiosk-launcher" aria-label="Kiosk features">
-        {FEATURES.map((f) => {
+        {tiles.map((f) => {
           const available = featureAvailable(f, setupState, devMode);
           const tile = (
             <>

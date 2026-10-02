@@ -7,7 +7,7 @@
 import { isSetupComplete, type KioskSetupState } from './setupState';
 
 export interface KioskFeature {
-  id: 'setup' | 'scan' | 'enroll' | 'containers' | 'trucks' | 'labels' | 'timeclock'
+  id: 'setup' | 'rfid' | 'scan' | 'enroll' | 'containers' | 'trucks' | 'labels' | 'timeclock'
   | 'settings';
   path: string;
   title: string;
@@ -45,3 +45,10 @@ export function featureAvailable(
 ): boolean {
   return devMode || feature.alwaysAvailable || isSetupComplete(setupState);
 }
+
+/** The RFID Reader Dashboard's Home tile. Not in FEATURES: Home shows it
+ *  only on a laptop whose saved setup is an RFID station, and it is first
+ *  when shown (the station's main screen). Gated like the other tiles. */
+export const RFID_READER_FEATURE: KioskFeature = {
+  id: 'rfid', path: '/rfid_status', title: 'RFID Reader', blurb: 'Start or stop the reader and watch live activity.',
+};

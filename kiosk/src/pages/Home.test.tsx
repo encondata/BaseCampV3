@@ -14,12 +14,13 @@ vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
 
 import { writeDevMode } from '../lib/devMode';
 import { FEATURES } from '../lib/features';
+import { writeKioskSetup, type StationType } from '../lib/kioskSetup';
 import { writeSetupState } from '../lib/setupState';
 import FeaturePage from './FeaturePage';
 import Home from './Home';
 
 beforeEach(() => localStorage.clear());
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); delete window.__KIOSK_CONFIG__; });
 
 function renderRouted() {
   return render(
@@ -142,4 +143,56 @@ it('when setup is complete and developer mode is on, no dev note is shown', () =
   writeDevMode(true);
   renderRouted();
   expect(screen.queryByText(/Developer mode: all features are available/)).toBeNull();
+});
+
+// -- the RFID Reader tile (laptop + RFID station only) --------------------
+
+function saveSetup(stationType?: StationType) {
+  writeKioskSetup({
+    initiativeId: 'i1', initiativeName: 'Move', siteId: 's1', siteName: 'Site', siteRole: 'source',
+    scanStatus: 'staged', scanLabel: 'RFID 1', ...(stationType ? { stationType } : {}),
+  });
+}
+
+it('shows an RFID Reader tile first, linking to /rfid_status, for a laptop with an RFID setup', () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop' };
+  writeSetupState('complete');
+  saveSetup('rfid');
+  renderRouted();
+  const links = screen.getAllByRole('link');
+  expect(links).toHaveLength(9);
+  expect(links[0].textContent).toContain('RFID Reader');
+  expect(links[0].textContent).toContain('Start or stop the reader and watch live activity.');
+  expect(links[0].getAttribute('href')).toBe('/rfid_status');
+  expect(links[1].textContent).toContain('Kiosk Setup');
+});
+
+it('hides the RFID Reader tile for a Label Station', () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop' };
+  writeSetupState('complete');
+  saveSetup('label');
+  renderRouted();
+  expect(screen.queryByRole('link', { name: /RFID Reader/ })).toBeNull();
+  expect(screen.getAllByRole('link')).toHaveLength(8);
+});
+
+it('hides the RFID Reader tile in web mode, even with an RFID setup saved', () => {
+  writeSetupState('complete');
+  saveSetup('rfid');
+  renderRouted();
+  expect(screen.queryByRole('link', { name: /RFID Reader/ })).toBeNull();
+});
+
+it('hides the RFID Reader tile on a laptop with no saved setup', () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop' };
+  writeSetupState('complete');
+  renderRouted();
+  expect(screen.queryByRole('link', { name: /RFID Reader/ })).toBeNull();
+});
+
+it('greys out the RFID Reader tile while setup is incomplete, like the other tiles', () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop' };
+  saveSetup('rfid');
+  renderRouted();
+  expect(screen.getByRole('link', { name: /RFID Reader/ }).getAttribute('aria-disabled')).toBe('true');
 });
