@@ -98,11 +98,23 @@ exposed to the portal.
   Every beat sends `setup_cleared` while `acked` is false; `acked` flips once a
   reply returns `clear_setup` ≠ that id (null or a newer id). A newer id is
   applied normally.
-- `KioskAuthContext` exposes `setupClearedSignal` (increments per applied
-  clear); `KioskShell` (inside the router) navigates to `/setup` on a new signal.
+- A stopped heartbeat handle never applies a clear. Handles overlap on
+  logout -> login with a beat in flight and on every mount under StrictMode;
+  if the stopped one applied the id, the live handle would see it as already
+  applied and never fire `onClearSetup`. The server repeats `clear_setup` every
+  beat until acked, so the live handle's own beat applies it.
+- `KioskAuthContext` exposes a one-shot `setupRedirectPending` plus
+  `consumeSetupRedirect()`: the heartbeat's `onClearSetup` raises it, `KioskShell`
+  (inside the router) consumes it once and navigates to `/setup` unless already
+  there, and it is cleared when the session becomes unusable (so a stale clear
+  can't redirect the next sign-in).
+- The stored `ss.kiosk.setupClear` record keeps all three fields (`id`,
+  `acked`, `notice`) on both apps.
 - Kiosk Setup page shows the banner "An administrator cleared this kiosk's
   setup. Run Kiosk Setup to continue." while `notice` is true; completing setup
-  sets `notice` false.
+  sets `notice` false. A wizard that is already open (e.g. "Change setup" at
+  step 2 or 3) when a clear lands restarts at step 1 with its choices cleared
+  and the options reloaded (saved selection non-null -> null only).
 - Not touched: outbox / offline scan queue, IndexedDB move caches, sign-in.
 
 ## Android app (`Android_Kiosk_App/`)
@@ -114,8 +126,13 @@ exposed to the portal.
   clear the setup and store the same `ss.kiosk.setupClear` record in one
   DataStore write, beat again (carrying the ack), emit the id on a
   `SharedFlow<String>` (`setupCleared`).
-- `KioskApp` collects `setupCleared` → navigate to `Routes.SETUP`; the Setup
-  screen shows the same banner text until setup completes.
+- The redirect collector lives at the `KioskApp` root, beside the NavHost
+  (`SetupClearedRedirect`): it collects `setupCleared` and navigates to
+  `Routes.SETUP` with `popUpTo(Routes.HOME)` and `launchSingleTop`, skipping
+  when already on Setup, so Back from Setup goes Home. `SetupGate` also sends a
+  cleared kiosk to Setup (same `popUpTo(HOME)`) whenever the notice is up. The
+  Setup screen shows the same banner text until setup completes, and an open
+  wizard restarts at step 1 when a clear lands (`KioskSetupViewModel`).
 
 ## Tests
 
@@ -125,7 +142,7 @@ exposed to the portal.
   device list exposes requested_at + requester name.
 - Portal: menu shows Clear Setup vs Cancel; confirm text; chip + title; row
   replaced from the response.
-- Web kiosk: heartbeat applies once, acks on the next beat, drops the ack once
+- Web kiosk: a stopped handle applies nothing (alone, and overlapping a live handle); an open wizard restarts on a clear; heartbeat applies once, acks on the next beat, drops the ack once
   the server stops asking, applies a newer id, survives reload (no re-apply);
   context navigates to /setup; banner shows on Setup.
 - Android: `HeartbeatTest` cases mirroring the web heartbeat tests.
