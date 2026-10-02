@@ -273,7 +273,7 @@ async def test_probe_returns_the_reader():
         "ip": IP, "scheme": "https", "port": 443, "model": "FX7500", "serial": "SER123",
         "versions": {"readerApplication": "2.7.19.0", "radioFirmware": "2.1.14.0",
                      "cloudAgentApplication": "1.0.0"},
-        "status": {**reader.status, "radioActivitiy": "inactive"}, "password_index": 1,
+        "status": {**reader.status, "radioActivity": "inactive"}, "password_index": 1,
     }
 
 
@@ -518,6 +518,7 @@ async def test_start_sends_do_not_persist_state():
     reader = FakeReader()
     async with make(reader) as client:
         await client.start()
+        await client.stop()
         await client.start(persist=False)
     assert reader.starts == [{"doNotPersistState": False}, {"doNotPersistState": True}]
     assert reader.reading is True

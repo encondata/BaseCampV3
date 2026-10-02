@@ -41,6 +41,13 @@ SCHEME_PORTS = {"https": 443, "http": 80}
 DEFAULT_ENDPOINTS: tuple[tuple[str, int], ...] = (("https", 443), ("http", 80))
 
 
+def is_reading(status: dict) -> bool:
+    """Whether a /cloud/status answer says the radio is reading. The real FX9600
+    spells the field `radioActivity`; Zebra's OpenAPI example misspells it
+    `radioActivitiy`, so either one counts."""
+    return "active" in (status.get("radioActivity"), status.get("radioActivitiy"))
+
+
 class ReaderError(Exception):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(f"{code}: {message}")

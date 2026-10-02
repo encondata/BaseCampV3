@@ -3,10 +3,12 @@ Kiosk Setup. Connect and pair need an online session: Kiosk Setup can't
 finish without the cloud, so an offline sign-in mustn't change a reader
 (503 edge_offline). Scanning stays open."""
 
+import re
+
 from fastapi import APIRouter, Depends, Request
 
 from edge.deps import err, require_session
-from edge.rfid import checks, events, pairing
+from edge.rfid import checks, events, pairing, ziotc
 from edge.rfid.ziotc import ReaderError
 from edge.sessions import EdgeSession
 
@@ -91,6 +93,9 @@ def _redacted_error(exc: ReaderError, token: str | None):
         ReaderError(exc.code, pairing.redact_token(exc.message, token)))
 
 
+START_ONGOING = re.compile(r"start currently ongoing", re.I)
+
+
 @router.post("/start", dependencies=[Depends(online)])
 async def start(request: Request, session: EdgeSession = Depends(require_session)) -> dict:
     st = request.app.state
@@ -102,7 +107,12 @@ async def start(request: Request, session: EdgeSession = Depends(require_session
             async with client:
                 await client.start()
         except ReaderError as exc:
-            raise _redacted_error(exc, token) from None
+            if not START_ONGOING.search(exc.message):
+                raise _redacted_error(exc, token) from None
+            # the reader is already reading: that's what the caller wanted
+            events.record(st.store, "reader_started", "Reader started",
+                          f"{version.get('model') or row['model']} · already reading")
+            return {"reading": True}
     events.record(st.store, "reader_started", "Reader started",
                   f"{version.get('model') or row['model']} · Started by {session.person_name}")
     return {"reading": True}
@@ -158,7 +168,7 @@ async def status(request: Request) -> dict:
                 st.store, transport=st.reader_transport)
             async with client:
                 reported = await client.status()
-            out.update(reachable=True, reading=reported.get("radioActivitiy") == "active",
+            out.update(reachable=True, reading=ziotc.is_reading(reported),
                        radio=reported.get("radioConnection"),
                        antennas=connected_antennas(reported.get("antennas")))
         except ReaderError:

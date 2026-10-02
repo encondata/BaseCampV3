@@ -111,3 +111,40 @@ async def test_start_and_checks_wait_for_the_pair_lock(app, client):
     results = await asyncio.wait_for(asyncio.gather(*tasks), 5)
     assert [r.status_code for r in results] == [200, 200]
     assert len(transport.requests) > seen
+
+
+async def test_start_on_a_reader_that_is_already_reading_is_not_an_error(app, client):
+    reader = await paired(app, client)
+    reader.reading = True
+    h = make_session(app)
+    r = await client.post("/edge/rfid/start", headers=h)
+    assert r.status_code == 200 and r.json() == {"reading": True}
+    assert reader.starts == []
+    latest = (await client.get("/edge/rfid/events", headers=h)).json()["events"]
+    started = [e for e in latest if e["kind"] == "reader_started"]
+    assert started and started[0]["detail"].endswith("· already reading")
+    assert "Started by" not in started[0]["detail"]
+
+
+async def test_stop_on_an_idle_reader_works(app, client):
+    reader = await paired(app, client)
+    h = make_session(app)
+    before = reader.stops
+    r = await client.post("/edge/rfid/stop", headers=h)
+    assert r.status_code == 200 and r.json() == {"reading": False}
+    assert reader.stops == before + 1
+
+
+async def test_a_status_with_only_the_old_misspelling_still_reads():
+    from edge.rfid.ziotc import is_reading
+    assert is_reading({"radioActivitiy": "active"}) is True
+    assert is_reading({"radioActivity": "active"}) is True
+    assert is_reading({"radioActivity": "inactive"}) is False
+    assert is_reading({}) is False
+
+
+async def test_status_reports_reading_from_the_real_field(app, client):
+    reader = await paired(app, client)
+    reader.reading = True
+    h = make_session(app)
+    assert (await client.get("/edge/rfid/status", headers=h)).json()["reading"] is True

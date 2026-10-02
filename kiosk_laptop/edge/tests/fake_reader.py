@@ -18,7 +18,10 @@ Modes:
 `reading=True` starts the fake reading tags: it then refuses a READER-GATEWAY
 change until `PUT /cloud/stop` (the real reader's exact refusal isn't known;
 the edge case is from field experience). `stops` and `starts` record stop and start calls
-(`starts` keeps each JSON body); `/cloud/status` reports `radioActivitiy` from `reading`.
+(`starts` keeps each JSON body); `/cloud/status` reports `radioActivity` (the real FX9600's
+spelling; Zebra's OpenAPI example misspells it `radioActivitiy`) from `reading`.
+`PUT /cloud/start` while reading answers the real reader's 422, "Start currently
+ongoing. Issue a stop prior to issuing a start."
 
 Unauthenticated, the fake answers like ZIOTC does in the OpenAPI examples:
 `/cloud/localRestLogin` and every `/cloud/*` call are 401 with the JSON error
@@ -51,6 +54,8 @@ TOO_MANY_ENDPOINTS = ("Invalid endpoint configuration - more than 2 endpoints "
                       "cannot be mapped to data interfaces")
 BATCHING_MISMATCH = ("Invalid global batching payload fields: Batching configuration "
                      "error: Incorrect number of batching objects for the given endpoints")
+START_ONGOING = ("'\"start\" Failed to apply. Description: unsuccessful rc response: "
+                 "Failure: Start currently ongoing. Issue a stop prior to issuing a start.'")
 BUSY_READING = "Fake reader: stop reading before changing the data endpoints"
 EMPTY_PAYLOAD = "Invalid Payload expected atleast one configuration field"
 # Zebra's httpPostSecurity.v1 requires all three fields
@@ -84,7 +89,7 @@ STATUS = {
     "radioConnection": "connected",
     "antennas": {"1": "connected", "2": "connected", "3": "disconnected",
                  "4": "disconnected"},
-    "temperature": 31, "radioActivitiy": "active", "powerSource": "DC",
+    "temperature": 31, "radioActivity": "active", "powerSource": "DC",
     "powerNegotiation": "DISABLED", "ntp": {"offset": 120, "reach": 377},
     "interfaceConnectionStatus": {"data": []},
 }
@@ -211,7 +216,7 @@ class FakeReader:
             if not bearer_ok(request):
                 return unauthorized()
             return {**reader.status,
-                    "radioActivitiy": "active" if reader.reading else "inactive"}
+                    "radioActivity": "active" if reader.reading else "inactive"}
 
         @app.get("/cloud/config")
         async def get_config(request: Request):
@@ -229,6 +234,8 @@ class FakeReader:
         async def start(request: Request):
             if not bearer_ok(request):
                 return unauthorized()
+            if reader.reading:
+                return JSONResponse({"code": 3, "message": START_ONGOING}, status_code=422)
             try:
                 reader.starts.append(await request.json())
             except ValueError:

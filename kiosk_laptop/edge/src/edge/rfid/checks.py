@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from fastapi import HTTPException
 
 from edge import hostnet, laptop_setup
-from edge.rfid import events, pairing
+from edge.rfid import events, pairing, ziotc
 from edge.rfid.ziotc import ReaderError
 from edge.upstream import CloudOffline
 
@@ -78,7 +78,7 @@ async def _reader(name, st, session) -> dict:
     ours = next((c for c in pairing.get_connections(config)
                  if pairing.is_ours(c, st.identity, row["serial"], token)), None)
     info = {"reader_ip": row["ip"],
-            "reading": status.get("radioActivitiy") == "active"}
+            "reading": ziotc.is_reading(status)}
     if ours is not None:
         url = pairing.connection_url(ours)
         info["endpoint_ip"] = urlparse(url).hostname
