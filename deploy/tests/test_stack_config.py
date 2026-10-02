@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from conftest import ENV_EXAMPLE, STACK_DIR, docker_cli_ok
+from conftest import ENV_EXAMPLE, STACK_DIR, docker_cli_ok, readme_restore_commands
 
 pytestmark = pytest.mark.skipif(not docker_cli_ok(), reason="docker CLI not available")
 
@@ -195,3 +195,13 @@ def test_env_example_secrets_are_placeholders() -> None:
     for key in ("POSTGRES_PASSWORD", "MINIO_ROOT_PASSWORD", "SS_JWT_SECRET",
                 "SS_TOTP_ENCRYPTION_KEY", "SS_PASSWORD_PEPPER", "SS_WIKI_SERVICE_TOKEN"):
         assert lines[key] == "CHANGEME", key
+
+
+def test_readme_rollback_restores_into_a_clean_schema() -> None:
+    # pg_restore --clean drops only what the dump holds: tables from the
+    # rolled-back migration would survive and break the next migrate
+    drop, restore = readme_restore_commands()
+    assert "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" in drop
+    assert "ON_ERROR_STOP=1" in drop
+    assert "pg_restore --exit-on-error -U serversherpa -d serversherpa" in restore
+    assert "--clean" not in restore

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO, SS_STACK, docker_daemon_ok, wait_http
+from conftest import REPO, SS_STACK, STACK_DIR, docker_daemon_ok, readme_restore_commands, wait_http
 
 OPTED_IN = os.environ.get("SS_STACK_E2E") == "1"
 
@@ -141,3 +141,39 @@ def test_dump_produces_a_postgres_archive(env_dir: Path) -> None:
     data = dump.read_bytes()
     assert data[:5] == b"PGDMP"
     assert len(data) > MIN_DUMP_BYTES, f"dump is only {len(data)} bytes; schema missing?"
+
+
+def psql(env_dir: Path, sql: str) -> subprocess.CompletedProcess[str]:
+    return compose(env_dir, "db", "exec", "-T", "postgres", "psql", "-U", "serversherpa",
+                   "-d", "serversherpa", "-v", "ON_ERROR_STOP=1", "-tAc", sql)
+
+
+# last in the file: it stops and restarts the api, web and status stacks
+def test_readme_rollback_restores_the_dump_cleanly(env_dir: Path) -> None:
+    """The runbook's rollback, end to end: dump, let a "newer migration"
+    create a table, then stop, restore with the README's own commands and
+    `ss-stack up` again. The table must be gone (or the next forward
+    migrate fails with "relation already exists") and migrate at head."""
+    dumped = ss("dump", str(env_dir))
+    assert dumped.returncode == 0, dumped.stderr
+    dump = Path(dumped.stdout.strip())
+    made = psql(env_dir, "CREATE TABLE rollback_probe (id int)")
+    assert made.returncode == 0, made.stderr
+
+    for stack in ("api", "web", "status"):
+        stopped = compose(env_dir, stack, "stop")
+        assert stopped.returncode == 0, stopped.stderr
+    for command in readme_restore_commands():
+        command = (command.replace("/opt/serversherpa/uat/.env", str(env_dir / ".env"))
+                          .replace("/opt/serversherpa/uat/backups/<file>.dump", str(dump)))
+        out = subprocess.run(["bash", "-c", command], cwd=STACK_DIR,
+                             capture_output=True, text=True, timeout=600)
+        assert out.returncode == 0, f"{command}\n{out.stdout}{out.stderr}"
+
+    probe = psql(env_dir, "SELECT to_regclass('public.rollback_probe') IS NULL")
+    assert probe.stdout.strip() == "t", "a table the dump never held survived the restore"
+    up = ss("up", str(env_dir))
+    assert up.returncode == 0, up.stdout[-4000:] + up.stderr[-4000:]
+    current = compose(env_dir, "api", "exec", "-T", "-w", "/app/api", "api", "alembic", "current")
+    assert current.returncode == 0, current.stderr
+    assert "(head)" in current.stdout

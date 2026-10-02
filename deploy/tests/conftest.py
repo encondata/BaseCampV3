@@ -20,6 +20,7 @@ REPO = Path(__file__).resolve().parents[2]
 STACK_DIR = REPO / "deploy" / "stack"
 ENV_EXAMPLE = STACK_DIR / "env.example"
 SS_STACK = STACK_DIR / "ss-stack"
+README = STACK_DIR / "README.md"
 
 sys.path.insert(0, str(REPO / "api" / "src"))
 
@@ -63,3 +64,23 @@ def wait_http(url: str, timeout: float = 60.0) -> int:
             last = exc
             time.sleep(1)
     raise TimeoutError(f"{url} not answering after {timeout}s: {last}")
+
+
+def readme_restore_commands() -> list[str]:
+    """The README's rollback restore step, one shell command per entry
+    (continuation lines joined), exactly as an operator would paste it."""
+    lines = README.read_text().splitlines()
+    start = next(i for i, line in enumerate(lines) if "Restore the pre-deploy dump" in line)
+    fence = next(i for i in range(start, len(lines)) if lines[i].strip().startswith("```"))
+    end = next(i for i in range(fence + 1, len(lines)) if lines[i].strip().startswith("```"))
+    commands: list[str] = []
+    current = ""
+    for raw in lines[fence + 1:end]:
+        line = raw.strip()
+        if not line:
+            continue
+        current += line[:-1].rstrip() + " " if line.endswith("\\") else line
+        if not line.endswith("\\"):
+            commands.append(current)
+            current = ""
+    return commands

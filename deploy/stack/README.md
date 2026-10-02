@@ -114,7 +114,7 @@ git -C /opt/serversherpa/uat/repo fetch && git -C /opt/serversherpa/uat/repo che
 ./ss-stack up    /opt/serversherpa/uat     # migrate runs before the API restarts
 ```
 
-Roll back: its images are still on the host. Warning: `pg_restore --clean`
+Roll back: its images are still on the host. Warning: the restore
 discards everything written after the dump, and files in MinIO are not
 rolled back. Use the dump `ss-stack dump` printed just before the deploy, or
 the newest from `ls -t /opt/serversherpa/uat/backups`. From
@@ -128,11 +128,18 @@ the newest from `ls -t /opt/serversherpa/uat/backups`. From
    done
    ```
 
-2. Restore the pre-deploy dump (pick the file from `/opt/serversherpa/uat/backups`):
+2. Restore the pre-deploy dump (pick the file from `/opt/serversherpa/uat/backups`)
+   into an empty schema. Emptying it first matters: tables the rolled-back
+   migration created are not in the dump, so `pg_restore --clean` would
+   leave them behind and the next deploy's migrate would fail with
+   "relation already exists".
 
    ```bash
    docker compose --env-file /opt/serversherpa/uat/.env -f db/compose.yml \
-     exec -T postgres pg_restore --clean --if-exists -U serversherpa -d serversherpa \
+     exec -T postgres psql -U serversherpa -d serversherpa -v ON_ERROR_STOP=1 \
+     -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;'
+   docker compose --env-file /opt/serversherpa/uat/.env -f db/compose.yml \
+     exec -T postgres pg_restore --exit-on-error -U serversherpa -d serversherpa \
      < /opt/serversherpa/uat/backups/<file>.dump
    ```
 
