@@ -20,10 +20,20 @@ MAX_VPN=32
 HANDSHAKE_FRESH=180
 HEX='[0-9A-Fa-f][0-9A-Fa-f]'
 MAC_RE="^$HEX:$HEX:$HEX:$HEX:$HEX:$HEX\$"
-TMP="${TMPDIR:-/tmp}/basecamp.$$"
-
 umask 077
 . "${JSHN:-/usr/share/libubox/jshn.sh}"
+
+# One private temp dir per process ($(...) subshells share it); $TMP.* are
+# the scratch files. The EXIT trap removes it and stops a pending sleep.
+TMPD=$(mktemp -d "${TMPDIR:-/tmp}/basecamp.XXXXXX") || { echo "basecamp: can't create a temp dir" >&2; exit 1; }
+TMP="$TMPD/r"
+SLEEP_PID=""
+cleanup() {
+  [ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null
+  rm -rf "$TMPD"
+}
+trap cleanup EXIT
+trap 'exit 0' INT TERM
 
 log() { logger -t basecamp "$*"; }
 cfg() { uci -q get "basecamp.agent.$1"; }
@@ -68,12 +78,18 @@ firmware() {
   fi
 }
 
+# The active uplink: the first of wan, wwan (repeater), tethering, then any
+# modem* interface that is up; wan when none is.
+uplink() {
+  for n in wan wwan tethering \
+      $(uci -q show network | sed -n 's/^network\.\(modem[^.=]*\)=interface$/\1/p'); do
+    [ "$(iface_status "$n" | jget '@.up')" = true ] && { echo "$n"; return; }
+  done
+  echo wan
+}
+
 add_wan() {
-  name=wan
-  if [ "$(iface_status wan | jget '@.up')" != true ] \
-     && [ "$(iface_status wwan | jget '@.up')" = true ]; then
-    name=wwan
-  fi
+  name=$(uplink)
   s=$(iface_status "$name")
   if [ -z "$s" ]; then json_add_null wan; return; fi
   json_add_object wan
@@ -101,6 +117,8 @@ add_wifi() {
   : > "$TMP.assoc"
   status=$(ubus call network.wireless status 2>/dev/null)
   json_add_array wifi
+  # anonymous sections are named @wifi-iface[N]: no globbing on the list
+  set -f
   for s in $(uci -q show wireless | sed -n "s/^wireless\.\([^.=]*\)=wifi-iface$/\1/p"); do
     radio=$(uci -q get "wireless.$s.device")
     band=$(uci -q get "wireless.$radio.band")
@@ -110,7 +128,10 @@ add_wifi() {
     enabled=1
     [ "$(uci -q get "wireless.$radio.disabled")" = 1 ] && enabled=0
     [ "$(uci -q get "wireless.$s.disabled")" = 1 ] && enabled=0
-    ifname=$(echo "$status" | jget "@.$radio.interfaces[@.section='$s'].ifname")
+    # netifd names anonymous sections cfgXXXXXX, so this can miss: fall
+    # back to the uci ifname, else channel from uci and no clients.
+    ifname=""
+    [ -n "$radio" ] && ifname=$(echo "$status" | jget "@[\"$radio\"].interfaces[@.section=\"$s\"].ifname")
     [ -n "$ifname" ] || ifname=$(uci -q get "wireless.$s.ifname")
     channel=""; clients=0
     if [ "$enabled" = 1 ] && [ -n "$ifname" ]; then
@@ -132,17 +153,21 @@ add_wifi() {
     json_add_int clients "$clients"
     json_close_object
   done
+  set +f
   json_close_array
 }
 
 # Leases + static reservations, merged per MAC; up = in the neighbor table.
 add_dhcp() {
   : > "$TMP.raw"
+  have_src=0  # neither leases nor reservations readable -> dhcp_clients null
   if [ -r "$ROOT/tmp/dhcp.leases" ]; then
+    have_src=1
     awk '{ h = ($4 == "*" ? "-" : $4); print "L", tolower($2), $3, h }' "$ROOT/tmp/dhcp.leases" >> "$TMP.raw"
   fi
   i=0
   while uci -q get "dhcp.@host[$i]" >/dev/null; do
+    have_src=1
     hip=$(uci -q get "dhcp.@host[$i].ip"); hname=$(uci -q get "dhcp.@host[$i].name")
     for m in $(uci -q get "dhcp.@host[$i].mac"); do
       echo "R $(echo "$m" | lower) ${hip:--} ${hname:--}" >> "$TMP.raw"
@@ -162,6 +187,9 @@ add_dhcp() {
   ' "$TMP.raw" | head -n "$MAX_DHCP" > "$TMP.dhcp"
 
   wired=0
+  if [ "$have_src" = 0 ]; then
+    json_add_null dhcp_clients
+  else
   json_add_array dhcp_clients
   while read -r mac cip chost reserved isup; do
     json_add_object ""
@@ -174,6 +202,7 @@ add_dhcp() {
     if [ "$isup" = 1 ] && ! grep -qx "$mac" "$TMP.assoc"; then wired=$((wired + 1)); fi
   done < "$TMP.dhcp"
   json_close_array
+  fi
 
   wireless=$(sort -u "$TMP.assoc" | grep -c .)
   json_add_object clients
@@ -181,6 +210,15 @@ add_dhcp() {
   json_add_int wired "$wired"
   json_add_int wireless "$wireless"
   json_close_object
+}
+
+# Does an OpenVPN instance's tun/tap device exist? A generic `dev` (tun,
+# tap; the default is tun) means the kernel numbered it: tun0, tun1, ...
+tun_exists() {
+  [ -e "$ROOT/sys/class/net/$1" ] && return 0
+  case "$1" in *[0-9]) return 1 ;; esac
+  for d in "$ROOT/sys/class/net/$1"[0-9]*; do [ -e "$d" ] && return 0; done
+  return 1
 }
 
 add_tunnel() {  # name type role enabled up endpoint handshake_age
@@ -231,15 +269,21 @@ add_vpn() {
   done < "$TMP.vpnifs"
 
   # Stock OpenVPN instances (/etc/config/openvpn). The package ships
-  # disabled samples, so only enabled instances are reported.
+  # disabled samples, so only enabled instances are reported. procd runs
+  # them without a pid file: up = the procd instance is running AND its
+  # tun device exists.
+  ovpn_svc=""
   for s in $(uci -q show openvpn | sed -nE "s/^openvpn\.([^.=]+)=openvpn$/\1/p"); do
     [ "$(uci -q get "openvpn.$s.enabled")" = 1 ] || continue
     role=client
     if [ -n "$(uci -q get "openvpn.$s.server")" ] || [ "$(uci -q get "openvpn.$s.mode")" = server ]; then
       role=server
     fi
-    up=0; pidf="$ROOT/var/run/openvpn.$s.pid"
-    if [ -r "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null; then up=1; fi
+    [ -n "$ovpn_svc" ] || ovpn_svc=$(ubus call service list '{"name":"openvpn"}' 2>/dev/null)
+    running=$(echo "$ovpn_svc" | jget "@.openvpn.instances[\"$s\"].running")
+    dev=$(uci -q get "openvpn.$s.dev")
+    up=0
+    if [ "$running" = true ] && tun_exists "${dev:-tun}"; then up=1; fi
     endpoint=""
     # `uci get` quotes list items holding a space ('host 1194' 'b 443');
     # older uci and `option remote` print them bare. First remote wins.
@@ -305,24 +349,41 @@ describe() {
   esac
 }
 
+# uci basecamp.agent.interval in seconds: digits only (leading zeros
+# stripped, so 090 isn't a bad octal number), at least 60, default 300.
+interval_seconds() {
+  v=$(cfg interval)
+  case "$v" in ''|*[!0-9]*) echo 300; return ;; esac
+  v=${v#"${v%%[!0]*}"}
+  v=${v:-0}
+  [ "$v" -ge 60 ] || v=60
+  echo "$v"
+}
+
+# sleep in the background so procd's TERM is handled at once
+pause() {
+  sleep "$1" &
+  SLEEP_PID=$!
+  wait "$SLEEP_PID"
+  SLEEP_PID=""
+}
+
 jitter() { awk -v max="$1" 'BEGIN { srand(); print int(rand() * (max + 1)) }'; }
 
 run_loop() {
   # let the WAN come up after a boot, and stay clear of the installer's report
-  sleep $((30 + $(jitter 30)))
+  pause $((30 + $(jitter 30)))
   while :; do
-    interval=$(cfg interval)
-    case "$interval" in ''|*[!0-9]*) interval=300 ;; esac
-    [ "$interval" -ge 60 ] || interval=60
+    interval=$(interval_seconds)
     code=$(send_report)
     case "$code" in 200|202) ;; *) log "report not accepted: $(describe "$code")" ;; esac
     extra=0; [ "$code" = 429 ] && extra=$interval
-    sleep $((interval + extra + $(jitter 30)))
+    pause $((interval + extra + $(jitter 30)))
   done
 }
 
-trap 'rm -f "$TMP".*' EXIT
-trap 'exit 0' INT TERM
+# BASECAMP_LIB=1: sourced by the tests for its functions; run nothing.
+[ -n "${BASECAMP_LIB:-}" ] && return 0
 
 case "${1:-}" in
   run) run_loop ;;

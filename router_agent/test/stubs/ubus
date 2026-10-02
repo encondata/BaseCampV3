@@ -1,6 +1,10 @@
 #!/bin/sh
-# ubus call <object> <method> -> fixtures/<fx>/ubus/<object>.<method>.json
+# ubus call <object> <method> [message] ->
+#   fixtures/<fx>/ubus/<object>.<method>.<name>.json when the message names
+#   one ({"name":"openvpn"}), else fixtures/<fx>/ubus/<object>.<method>.json
 [ "$1" = call ] || exit 1
+name=$(printf '%s' "${4:-}" | sed -n 's/.*"name" *: *"\([^"]*\)".*/\1/p')
 f="$FIXTURE/ubus/$2.$3.json"
+[ -n "$name" ] && f="$FIXTURE/ubus/$2.$3.$name.json"
 [ -r "$f" ] || exit 4
 cat "$f"

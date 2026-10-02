@@ -1,7 +1,20 @@
 config openvpn 'office'
 	option enabled '1'
 	option client '1'
+	option dev 'tun0'
 	list remote 'vpn.office.example 1194'
+
+config openvpn 'branch'
+	option enabled '1'
+	option client '1'
+	option dev 'tun1'
+	option remote 'vpn.branch.example 1194'
+
+config openvpn 'backup'
+	option enabled '1'
+	option client '1'
+	option dev 'tun'
+	option remote 'vpn.backup.example'
 
 config openvpn 'sample_server'
 	option enabled '0'

@@ -39,3 +39,5 @@
 @.vpn[@.name="wgserver"].role	server
 @.vpn[@.name="wgserver"].enabled	false
 @.vpn[@.name="wgserver"].up	false
+@.dhcp_clients[@.mac="aa:bb:cc:dd:ee:05"].hostname	we"ird\host
+@.dhcp_clients[@.mac="aa:bb:cc:dd:ee:05"].up	false

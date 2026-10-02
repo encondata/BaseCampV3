@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs the router agent tests inside an OpenWrt rootfs container (real
 # BusyBox ash, uci, jsonfilter, jshn). Needs Docker.
-#   router_agent/test/run.sh            agent + installer tests
+#   router_agent/test/run.sh            every suite present (agent, install)
 #   router_agent/test/run.sh agent      agent only
 set -e
 HERE=$(cd "$(dirname "$0")/.." && pwd)
@@ -14,6 +14,10 @@ case "$(uname -m)" in
 esac
 suites="${1:-agent install}"
 for s in $suites; do
+  if [ ! -f "$HERE/test/${s}_test.sh" ]; then
+    echo "== $s tests skipped (not present)"
+    continue
+  fi
   echo "== $s tests ($IMAGE)"
   docker run --rm -v "$HERE:/src:ro" "$IMAGE" /bin/sh "/src/test/${s}_test.sh"
 done

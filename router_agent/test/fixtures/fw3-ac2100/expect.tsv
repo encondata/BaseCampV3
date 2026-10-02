@@ -25,3 +25,8 @@
 @.vpn[@.name="office"].up	true
 @.vpn[@.name="office"].endpoint	vpn.office.example:1194
 @.vpn[@.name="sample_server"].name	
+@.vpn[@.name="branch"].up	false
+@.vpn[@.name="branch"].enabled	true
+@.vpn[@.name="backup"].up	false
+@.vpn[@.name="backup"].endpoint	vpn.backup.example
+type:@.dhcp_clients	array

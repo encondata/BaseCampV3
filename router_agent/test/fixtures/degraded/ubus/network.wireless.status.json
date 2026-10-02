@@ -1,0 +1,2 @@
+{"radio0": {"up": true, "interfaces": [
+   {"section": "cfg023579", "ifname": "wlan0"}, {"section": "cfg033579", "ifname": "wlan1"}]}}

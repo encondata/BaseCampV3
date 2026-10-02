@@ -1,0 +1,21 @@
+@.wan_mac	94:83:c4:77:88:99
+@.hostname	GL-Degraded
+@.wan.interface	modem_1_1_2
+!@.wan.interface	wan
+@.wan.ip	100.64.1.2
+@.wan.gateway	100.64.1.1
+@.wan.up	true
+type:@.dhcp_clients	null
+@.clients.wired	0
+@.clients.wireless	1
+@.clients.total	1
+@.wifi[0].ssid	Dock "Q" \ WiFi
+@.wifi[0].channel	1
+@.wifi[0].clients	0
+@.wifi[0].enabled	true
+@.wifi[1].ssid	Second
+@.wifi[1].channel	11
+@.wifi[1].clients	1
+@.vpn[@.name="roam"].type	openvpn
+@.vpn[@.name="roam"].up	true
+@.vpn[@.name="roam"].endpoint	roam.example:443
