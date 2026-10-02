@@ -395,3 +395,11 @@ async def test_invalid_utf8_file_is_500_unreadable(client, db, store_env, secret
         assert resp.status_code == 500, (method, resp.text)
         assert resp.json()["detail"]["code"] == "targets_file_unreadable"
         assert str(store_env["path"]) not in resp.text
+
+
+async def test_invalid_utf8_file_lists_no_saved_targets(client, db, store_env, secret_bodies):
+    h = await auth_headers(client, db)
+    store_env["path"].write_bytes(b"SIRDAR_SSH_TARGETS='a'\n\xff\xfe\n")
+    resp = await client.get("/api/deploy/targets", headers=h)
+    assert resp.status_code == 200
+    assert not [t for t in resp.json()["targets"] if t.get("source") == "saved"]

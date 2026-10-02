@@ -80,7 +80,7 @@ def installer_present(s: Settings) -> bool:
 def saved_targets(s: Settings) -> list[SavedSshTarget]:
     try:
         return ssh_store(s).load()
-    except OSError:                    # unreadable file: list nothing rather than fail
+    except (OSError, UnicodeDecodeError):   # unreadable file: list nothing rather than fail
         return []
 
 
