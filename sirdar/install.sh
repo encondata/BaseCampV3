@@ -345,6 +345,31 @@ ensure_deploy_keys_dir() {  # ensure_deploy_keys_dir DIR
   chmod 711 "$1" 2>/dev/null || as_root chmod 711 "$1" || true
 }
 
+# Saved SSH targets live in <dir>/sirdar/config/deploy-targets.env. The API
+# writes it atomically (temp file + rename + a .lock beside it), so the WHOLE
+# folder must be writable by the container user (uid 10001). Created and
+# fixed on every run; the file itself is created by the app, never here.
+ensure_config_dir() {  # ensure_config_dir DIR
+  local d="$1" f="$1/deploy-targets.env" ok=1
+  mkdir -p "$d" 2>/dev/null || as_root mkdir -p "$d" || ok=0
+  if [ "$ok" = 1 ]; then
+    if [ "$(stat -c %u "$d" 2>/dev/null || stat -f %u "$d" 2>/dev/null || echo '')" != 10001 ]; then
+      as_root chown 10001:10001 "$d" || ok=0
+    fi
+    chmod 700 "$d" 2>/dev/null || as_root chmod 700 "$d" || ok=0
+    if [ -f "$f" ]; then
+      if [ "$(stat -c %u "$f" 2>/dev/null || stat -f %u "$f" 2>/dev/null || echo '')" != 10001 ]; then
+        as_root chown 10001:10001 "$f" || ok=0
+      fi
+      chmod 600 "$f" 2>/dev/null || as_root chmod 600 "$f" || ok=0
+    fi
+  fi
+  if [ "$ok" != 1 ]; then
+    echo "     Warning: couldn't make $d writable by uid 10001, so adding SSH targets on the Deploy page won't work until it is. Run: sudo chown 10001:10001 '$d' && sudo chmod 700 '$d'" >&4
+  fi
+  return 0
+}
+
 # check_key_file KEYSDIR NAME: warn (never fail) when the key file is missing
 # or the container user (uid 10001) could not read it.
 check_key_file() {
@@ -1643,6 +1668,7 @@ summary() {
   URL:          http://$url_host:$port   ($scope)
   Install dir:  $DIR   (override with SIRDAR_DIR)
   Settings:     $DIR/sirdar/.env
+  Saved SSH targets: $DIR/sirdar/config/deploy-targets.env
   Update:       re-run this script to update
 
   Logs:            $p logs -f sirdar
@@ -1699,6 +1725,7 @@ main() {
 
   fetch_code
   ensure_deploy_keys_dir "$DIR/sirdar/deploy-keys"
+  ensure_config_dir "$DIR/sirdar/config"
 
   if [ -f "$DIR/sirdar/.env" ]; then
     info "Keeping existing $DIR/sirdar/.env"

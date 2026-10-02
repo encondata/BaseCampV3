@@ -168,6 +168,19 @@ answering no writes them blank. All are `SIRDAR_DEPLOY_*` keys in `.env`:
 The installer prompts for DigitalOcean and the SSH host (and for the key
 passphrase, hidden, when you name a key file); edit `.env` for AWS and GCP.
 
+**Saved SSH targets.** Custom (SSH) targets added on the Deploy page are saved
+to `sirdar/config/deploy-targets.env` (git-ignored; the installer creates the
+folder, mounted read-write at `/app/config`, and the app creates the file).
+The format is plain `KEY=value` lines, one group per target. Passwords and key
+passphrases are write-only: you can set, replace or clear them, but Sirdar
+never shows them again. Back up `config/` together with `.env`. The container
+runs as uid 10001, so the folder must be owned by it (the installer runs
+`chown 10001:10001` and sets mode 700; the file is 600). The whole folder has to
+be writable, not just the file: Sirdar saves by writing a temp file and a
+`.lock` beside it and renaming over `deploy-targets.env`, which is why the
+compose file mounts the folder and a single-file bind mount would break. You may
+edit the file by hand; Sirdar re-reads it on each use.
+
 **Key files.** Put private keys in `sirdar/deploy-keys/` (git-ignored; created
 by the installer, mode 711) and give the bare file name in `SSH_KEY_PATH` or
 `GCP_CREDENTIALS_FILE` (no `/` or `..`). The folder is mounted read-only at
