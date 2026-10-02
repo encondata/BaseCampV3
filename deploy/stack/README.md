@@ -88,6 +88,10 @@ LAN environment is `uat`.
    For `spaces`, add to the Advanced tab: `client_max_body_size 0;`
    (large uploads go straight to MinIO).
 
+   The API trusts forwarded client IPs only from `STACK_PROXY_IP`. If NPM
+   ever runs on the same host as the stack, its connections arrive from a
+   Docker gateway address, and `STACK_PROXY_IP` must be that address instead.
+
 7. **First admin** (an empty database has no users):
 
    ```bash

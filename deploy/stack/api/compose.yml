@@ -32,6 +32,9 @@ x-ss-env: &ss-env
   SS_WIKI_RENDER_URL: http://wiki:8080
   SS_ANTHROPIC_API_KEY: ${SS_ANTHROPIC_API_KEY:-}
   SS_DB_TESTING_PASSWORD: ${SS_DB_TESTING_PASSWORD:-}
+  # uvicorn honors X-Forwarded-For only from NPM, so callers can't spoof
+  # their client IP past the per-IP rate limits
+  FORWARDED_ALLOW_IPS: ${STACK_PROXY_IP:?set STACK_PROXY_IP}
 
 x-ss-service: &ss-service
   image: ${STACK_API_IMAGE:-serversherpa-api}:${STACK_IMAGE_TAG:?set STACK_IMAGE_TAG}

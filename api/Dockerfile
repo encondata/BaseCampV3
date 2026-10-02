@@ -53,6 +53,8 @@ COPY --from=renderers /app/portal/dist-node /app/renderers
 RUN useradd --system --create-home --uid 10001 --home-dir /home/serversherpa serversherpa
 USER serversherpa
 EXPOSE 8000
+# No --forwarded-allow-ips: trusting "*" would let any caller pick its client
+# IP (and dodge per-IP rate limits) via X-Forwarded-For; uvicorn reads
+# FORWARDED_ALLOW_IPS instead, which the stack sets to the proxy's IP.
 CMD ["uvicorn", "serversherpa.api.app:create_app", "--factory", \
-     "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers", "--forwarded-allow-ips", "*"]
+     "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]

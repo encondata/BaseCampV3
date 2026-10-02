@@ -166,6 +166,13 @@ def test_api_environment_points_at_the_stack() -> None:
         f"https://{n}.{DOMAIN}" for n in ("portal", "kiosk", "wiki")}
 
 
+def test_api_trusts_forwarded_headers_only_from_the_proxy() -> None:
+    # uvicorn reads FORWARDED_ALLOW_IPS when --forwarded-allow-ips is absent
+    env = rendered("api")["services"]["api"]["environment"]
+    assert env["FORWARDED_ALLOW_IPS"] == PROXY_IP
+    assert "--forwarded-allow-ips" not in (rendered("api")["services"]["api"].get("command") or [])
+
+
 def test_every_worker_shares_the_api_environment() -> None:
     services = rendered("api")["services"]
     for name in ("migrate", *WORKERS):

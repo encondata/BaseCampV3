@@ -2,6 +2,9 @@
 migrate job need — one image, many commands."""
 from __future__ import annotations
 
+import json
+import subprocess
+
 import pytest
 
 from conftest import build_image, docker_daemon_ok, docker_run
@@ -58,3 +61,15 @@ def test_migrations_ship_with_the_image() -> None:
     out = docker_run(TAG, "sh", "-c", "cd /app/api && alembic heads")
     assert out.returncode == 0, out.stderr
     assert "(head)" in out.stdout
+
+
+def test_default_command_does_not_trust_every_proxy() -> None:
+    # trusting "*" lets any caller pick its client IP via X-Forwarded-For
+    out = subprocess.run(["docker", "image", "inspect", "-f", "{{json .Config.Cmd}}", TAG],
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    cmd = json.loads(out.stdout)
+    assert "--proxy-headers" in cmd
+    assert "--forwarded-allow-ips" not in cmd
+    assert "*" not in cmd
+
