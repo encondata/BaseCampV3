@@ -65,6 +65,11 @@ SCHEMA_STEPS: list[str] = [
         id INTEGER PRIMARY KEY CHECK (id = 1), setup_json TEXT NOT NULL,
         updated_at TEXT NOT NULL)
     """,
+    # the RFID station's event log, newest 200 kept (the /rfid_status panel)
+    """
+    CREATE TABLE rfid_events (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
+        kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '')
+    """,
 ]
 
 

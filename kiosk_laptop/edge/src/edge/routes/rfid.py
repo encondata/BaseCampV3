@@ -6,7 +6,7 @@ finish without the cloud, so an offline sign-in mustn't change a reader
 from fastapi import APIRouter, Depends, Request
 
 from edge.deps import err, require_session
-from edge.rfid import checks, pairing
+from edge.rfid import checks, events, pairing
 from edge.rfid.ziotc import ReaderError
 from edge.sessions import EdgeSession
 
@@ -45,11 +45,14 @@ async def connect(request: Request) -> dict:
     ip = pairing.valid_ipv4(body.get("ip"))
     st = request.app.state
     try:
-        return await pairing.connect(st.store, st.identity, ip,
-                                     transport=st.reader_transport,
-                                     found_at=st.discovery.endpoint_for(ip))
+        found = await pairing.connect(st.store, st.identity, ip,
+                                      transport=st.reader_transport,
+                                      found_at=st.discovery.endpoint_for(ip))
     except ReaderError as exc:
         raise pairing.reader_http_error(exc) from None
+    events.record(st.store, "reader_connected", "Reader connected",
+                  f"{found.get('model')} · {ip}")
+    return found
 
 
 @router.post("/pair", dependencies=[Depends(online)])
@@ -60,12 +63,15 @@ async def pair(request: Request) -> dict:
     laptop_ip = pairing.laptop_address(st.settings.data_dir, ip, body.get("laptop_ip"))
     async with st.pair_lock:  # one rewrite of a reader's endpoints at a time
         try:
-            return await pairing.pair(st.store, st.identity, ip, laptop_ip,
-                                      confirm_takeover=body.get("confirm_takeover") is True,
-                                      transport=st.reader_transport,
-                                      found_at=st.discovery.endpoint_for(ip))
+            paired = await pairing.pair(st.store, st.identity, ip, laptop_ip,
+                                        confirm_takeover=body.get("confirm_takeover") is True,
+                                        transport=st.reader_transport,
+                                        found_at=st.discovery.endpoint_for(ip))
         except ReaderError as exc:
             raise pairing.reader_http_error(exc) from None
+    events.record(st.store, "reader_paired", "Reader paired",
+                  f"{(paired.get('reader') or paired).get('model')} · sends to {laptop_ip}")
+    return paired
 
 
 @router.get("/reader")
@@ -74,21 +80,23 @@ async def reader(request: Request) -> dict | None:
 
 
 @router.post("/start", dependencies=[Depends(online)])
-async def start(request: Request) -> dict:
+async def start(request: Request, session: EdgeSession = Depends(require_session)) -> dict:
     st = request.app.state
     async with st.pair_lock:
         try:
-            client, _version, _row = await pairing.open_current(
+            client, version, row = await pairing.open_current(
                 st.store, transport=st.reader_transport)
             async with client:
                 await client.start()
         except ReaderError as exc:
             raise pairing.reader_http_error(exc) from None
+    events.record(st.store, "reader_started", "Reader started",
+                  f"{version.get('model') or row['model']} · Started by {session.person_name}")
     return {"reading": True}
 
 
 @router.post("/stop")
-async def stop(request: Request) -> dict:
+async def stop(request: Request, session: EdgeSession = Depends(require_session)) -> dict:
     st = request.app.state
     async with st.pair_lock:
         try:
@@ -98,7 +106,20 @@ async def stop(request: Request) -> dict:
                 await client.stop()
         except ReaderError as exc:
             raise pairing.reader_http_error(exc) from None
+    events.record(st.store, "reader_stopped", "Reader stopped",
+                  f"Stopped by {session.person_name}")
     return {"reading": False}
+
+
+def connected_antennas(antennas) -> list[str]:
+    if not isinstance(antennas, dict):
+        return []
+    return sorted(str(port) for port, state in antennas.items() if state == "connected")
+
+
+@router.get("/events")
+async def recent_events(request: Request, limit: int = 50) -> dict:
+    return {"events": events.recent(request.app.state.store, limit)}
 
 
 @router.get("/status")
@@ -108,14 +129,16 @@ async def status(request: Request) -> dict:
         reader = pairing.current(st.store)
         if reader is None:
             return {"reader": None}
-        out = {"reader": reader, "reachable": False, "reading": False, "radio": None}
+        out = {"reader": reader, "reachable": False, "reading": False, "radio": None,
+               "antennas": []}
         try:
             client, _version, _row = await pairing.open_current(
                 st.store, transport=st.reader_transport)
             async with client:
                 reported = await client.status()
             out.update(reachable=True, reading=reported.get("radioActivitiy") == "active",
-                       radio=reported.get("radioConnection"))
+                       radio=reported.get("radioConnection"),
+                       antennas=connected_antennas(reported.get("antennas")))
         except ReaderError:
             pass
     return out

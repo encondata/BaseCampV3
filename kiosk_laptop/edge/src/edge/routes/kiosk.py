@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Request, Response
 
 from edge import laptop_setup, outbox
 from edge.deps import err, require_session
-from edge.rfid import pairing
+from edge.rfid import events, pairing
 from edge.routes.auth import passthrough
 from edge.routes.proxy import rewrite_body
 from edge.sessions import EdgeSession
@@ -115,6 +115,11 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
             st.store.run("DELETE FROM rfid_pairing")
         if isinstance(result, dict):
             laptop_setup.save(st.store, result, station)
+            events.record(st.store, "move_loaded", "Move loaded",
+                          str(result.get("initiative_name") or ""))
+            events.record(st.store, "scan_type_selected", "Scan type selected",
+                          f"{result.get('scan_status_label') or ''} · "
+                          f"{'RFID Station' if station == 'rfid' else 'Label Station'}")
         st.syncer.set_target(str(result["initiative_id"]), session.person_id)
         await st.syncer.run()
     return passthrough(resp)

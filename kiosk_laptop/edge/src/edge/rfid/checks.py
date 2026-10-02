@@ -6,7 +6,7 @@ import asyncio
 from urllib.parse import urlparse
 
 from edge import hostnet, laptop_setup
-from edge.rfid import pairing
+from edge.rfid import events, pairing
 from edge.rfid.ziotc import ReaderError
 from edge.upstream import CloudOffline
 
@@ -37,7 +37,13 @@ async def knock(ip: str, port: int) -> bool:
 
 
 async def run(name: str, st, session) -> dict:
-    return await CHECKS[name](name, st, session)
+    out = await CHECKS[name](name, st, session)
+    if name == "registration":
+        ok = out["ok"]
+        events.record(st.store, "portal_check_in",
+                      "Portal check-in successful" if ok else "Portal check-in failed",
+                      "Connected to ServerSherpa" if ok else out["detail"])
+    return out
 
 
 async def _reader(name, st, session) -> dict:
