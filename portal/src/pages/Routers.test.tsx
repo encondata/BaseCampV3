@@ -257,7 +257,8 @@ it('clicking a row toggles the expansion; opening the Actions menu does not open
   expect(row.className).not.toContain('open');
 });
 
-it('sorts the Name column naturally: numbers by value, case ignored, both directions', async () => {
+// Names show title-cased (routerDisplayName), so 'rack 1' renders as 'Rack 1'; the numeric order is what this pins.
+it('sorts the Name column naturally: numbers by value, both directions', async () => {
   const named = (id: string, name: string): DeviceItem => ({ ...DEVICES[0], id, name, serial: id, mac: id });
   api.listDevices.mockResolvedValue([named('n10', 'Rack 10'), named('n2', 'Rack 2'), named('n1', 'rack 1')]);
   const user = userEvent.setup();
@@ -458,14 +459,53 @@ it('confirm dialogs name the router readably', async () => {
   confirmSpy.mockRestore();
 });
 
-it('sorts by the readable name in natural order', async () => {
+it('sorts by the readable name, not the raw hostname', async () => {
+  // Raw hostnames sort dock_router_10 first ('_' before '.'); readable names sort
+  // Dock Router 2 first. Only sorting by the readable name passes.
   api.listDevices.mockResolvedValue([
-    routerNamed('k10', 'csg_router_kit_10'), routerNamed('k2', 'csg_router_kit_2')]);
+    routerNamed('r10', 'dock_router_10'), routerNamed('r2', 'dock.router.2')]);
   renderRouters();
-  const ten = await screen.findByText('CSG Router Kit 10');
-  const two = screen.getByText('CSG Router Kit 2');
-  // Kit 2 precedes Kit 10 in document order (default sort is name ascending).
+  const ten = await screen.findByText('Dock Router 10');
+  const two = screen.getByText('Dock Router 2');
+  // Dock Router 2 precedes Dock Router 10 in document order (default sort is name ascending).
   expect(two.compareDocumentPosition(ten) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+it('the Name column filter lists and matches the readable name', async () => {
+  api.listDevices.mockResolvedValue([
+    routerNamed('k19', 'csg_router_kit_19'), routerNamed('dr2', 'dock_router_2')]);
+  const user = userEvent.setup();
+  renderRouters();
+  await screen.findByText('CSG Router Kit 19');
+  await user.click(screen.getByRole('button', { name: 'Name column menu' }));
+  // The checklist offers readable values; the raw hostname appears nowhere as text.
+  expect(screen.getAllByText('CSG Router Kit 19').length).toBeGreaterThan(1);
+  expect(screen.getAllByText('Dock Router 2').length).toBeGreaterThan(1);
+  expect(screen.queryByText('csg_router_kit_19')).toBeNull();
+  // A text filter matches against the readable name ("router kit" has no underscores).
+  await user.type(screen.getByPlaceholderText('Filter Name'), 'router kit');
+  expect(screen.getAllByText('CSG Router Kit 19').length).toBeGreaterThan(0);
+  expect(screen.queryByText('Dock Router 2')).toBeNull();
+});
+
+it('Revoke and plain Approve confirms start with the readable name', async () => {
+  api.listDevices.mockResolvedValue([
+    routerNamed('k19', 'csg_router_kit_19'),
+    { ...DEVICES[0], id: 'p1', name: 'dock_router_2', serial: 'p1', mac: 'p1' },
+  ]);
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  const user = userEvent.setup();
+  renderRouters();
+  const approved = (await screen.findByText('CSG Router Kit 19')).closest('.dir-row') as HTMLElement;
+  await user.click(within(approved).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Revoke' }));
+  expect(confirmSpy.mock.calls[0][0]).toMatch(/^Revoke "CSG Router Kit 19"\?/);
+
+  const pending = screen.getByText('Dock Router 2').closest('.dir-row') as HTMLElement;
+  await user.click(within(pending).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Approve' }));
+  expect(confirmSpy.mock.calls[1][0]).toMatch(/^Approve "Dock Router 2"\?/);
+  confirmSpy.mockRestore();
 });
 
 it('exports the readable name plus a Hostname column', async () => {
