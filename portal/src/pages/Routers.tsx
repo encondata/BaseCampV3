@@ -10,7 +10,9 @@
  *  stay Pending — reports held — until approved here or from the inbox.
  *  "How to add a router" shows the one-line installer. Row actions
  *  (Approve / Revoke / Delete) live behind the shared RowActionsMenu;
- *  ?focus=<id> (the approval notification's link) opens that row. */
+ *  ?focus=<id> (the approval notification's link) opens that row.
+ *  Names show readable (routerDisplayName: csg_router_kit_19 → CSG Router Kit 19);
+ *  the stored name stays the hostname, shown on hover and in the CSV's Hostname column. */
 
 import { compareValues, naturalCompare } from '../lib/naturalSort';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -25,8 +27,8 @@ import {
   usePersistentListState, type CellText,
 } from '../lib/columnMenu';
 import {
-  approvalLabel, deviceCellText, deviceSearchText, deviceSortValue, routerStatus,
-  routerStatusLabel, vpnChipClass, vpnLabel,
+  approvalLabel, deviceCellText, deviceSearchText, deviceSortValue, routerDisplayName,
+  routerStatus, routerStatusLabel, vpnChipClass, vpnLabel,
 } from '../lib/devices';
 import {
   ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
@@ -63,11 +65,16 @@ const COLUMNS: ColumnDef[] = [
 const ALL_COLUMN_KEYS = new Set<string>(COLUMNS.map((c) => c.key));
 const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c) => c.key));
 
-const deviceCellTextTyped: CellText<DeviceItem> = (d, key) => deviceCellText(d, key);
+/** The Routers page's cell text: the Name column is the readable name. */
+const routerCellText = (d: DeviceItem, key: string): string =>
+  key === 'name' ? routerDisplayName(d.name) : deviceCellText(d, key);
+
+const deviceCellTextTyped: CellText<DeviceItem> = (d, key) => routerCellText(d, key);
 
 const CSV_COLUMNS: [string, (d: DeviceItem) => string][] = [
   ['ID', (d) => d.id],
-  ['Name', (d) => d.name],
+  ['Name', (d) => routerDisplayName(d.name)],
+  ['Hostname', (d) => d.name],
   ['Approval', (d) => deviceCellText(d, 'approval')],
   ['Status', (d) => deviceCellText(d, 'status')],
   ['WAN IP', (d) => deviceCellText(d, 'wan_ip')],
@@ -136,7 +143,8 @@ export default function Routers() {
       ?.scrollIntoView?.({ block: 'center' });
   }, [focusId, devices]);
 
-  const searchText = (d: DeviceItem) => deviceSearchText(d).toLowerCase();
+  const searchText = (d: DeviceItem) =>
+    `${routerDisplayName(d.name)} ${deviceSearchText(d)}`.toLowerCase();
   const haystack = useSearchHaystacks(devices, searchText);
 
   const facetGroups = useMemo<FacetGroup[]>(() => {
@@ -178,7 +186,9 @@ export default function Routers() {
       return haystack(d).includes(q);
     });
     return rows.sort((a, b) => {
-      const va = deviceSortValue(a, sortKey), vb = deviceSortValue(b, sortKey);
+      const sortValue = (d: DeviceItem) =>
+        sortKey === 'name' ? routerDisplayName(d.name).toLowerCase() : deviceSortValue(d, sortKey);
+      const va = sortValue(a), vb = sortValue(b);
       return compareValues(va, vb) * sortDir;
     });
   }, [devices, facets, filters, query, sortKey, sortDir, haystack]);
@@ -203,7 +213,7 @@ export default function Routers() {
   };
 
   const remove = (d: DeviceItem) => {
-    if (!window.confirm(`Delete "${d.name}"? This cannot be undone.`)) return;
+    if (!window.confirm(`Delete "${routerDisplayName(d.name)}"? This cannot be undone.`)) return;
     void act(() => deleteDevice(d.id), 'delete');
   };
 
@@ -211,11 +221,11 @@ export default function Routers() {
     const knockedDown = d.approval_state === 'pending' && d.approved_at != null
       && d.secret_mismatch;
     if (!window.confirm(knockedDown
-      ? `"${d.name}" was approved, then reported with a different secret. `
+      ? `"${routerDisplayName(d.name)}" was approved, then reported with a different secret. `
         + 'Approving now trusts that new secret. If the router itself wasn\'t reset or '
         + 'reinstalled, don\'t approve: it restores itself the next time it checks in '
         + 'with its approved secret. Approve anyway?'
-      : `Approve "${d.name}"? MAC ${d.mac ?? '—'} · ${d.model ?? 'unknown model'} · `
+      : `Approve "${routerDisplayName(d.name)}"? MAC ${d.mac ?? '—'} · ${d.model ?? 'unknown model'} · `
       + `reporting from ${d.agent_source_ip ?? 'an unknown address'}. `
       + 'Its reports are stored from its next check-in.',
     )) return;
@@ -224,7 +234,7 @@ export default function Routers() {
 
   const dismissWarning = (d: DeviceItem) => {
     if (!window.confirm(
-      `Dismiss the "Secret changed" warning on "${d.name}"? `
+      `Dismiss the "Secret changed" warning on "${routerDisplayName(d.name)}"? `
       + 'It is reporting with its approved secret again.',
     )) return;
     void act(() => approveRouter(d.id), 'dismiss the warning');
@@ -232,7 +242,7 @@ export default function Routers() {
 
   const revoke = (d: DeviceItem) => {
     if (!window.confirm(
-      `Revoke "${d.name}"? Its reports stop being stored right away; `
+      `Revoke "${routerDisplayName(d.name)}"? Its reports stop being stored right away; `
       + 'it shows as pending again the next time it checks in.',
     )) return;
     void act(() => revokeRouter(d.id), 'revoke');
@@ -288,6 +298,10 @@ export default function Routers() {
             {routerStatusLabel(state)}
           </span>
         );
+      }
+      case 'name': {
+        const text = routerDisplayName(d.name);
+        return <span className="cell-line" title={d.name}>{text}</span>;
       }
       default: {
         const text = deviceCellText(d, key);
