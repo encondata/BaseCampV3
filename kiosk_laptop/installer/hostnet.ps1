@@ -189,7 +189,7 @@ function Get-HostnetInstallerRef {
         foreach ($line in [IO.File]::ReadAllLines($config)) {
             if ($line.TrimEnd("`r") -match '^KIOSK_INSTALLER_REF=(.+)$') {
                 $ref = $Matches[1].Trim()
-                if ($ref -match '^[A-Za-z0-9._/-]+$' -and $ref -notlike '*..*') { return $ref }
+                if ($ref -match '^[A-Za-z0-9._/-]+\z' -and $ref -notlike '*..*') { return $ref }
                 return 'main'
             }
         }

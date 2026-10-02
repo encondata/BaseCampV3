@@ -123,7 +123,7 @@ function Request-Restart {
 # ".."), else main (it goes into a download URL and config.env).
 function Get-SafeRef {
     param([string]$Ref)
-    if ($Ref -and $Ref -match '^[A-Za-z0-9._/-]+$' -and $Ref -notlike '*..*') { return $Ref }
+    if ($Ref -and $Ref -match '^[A-Za-z0-9._/-]+\z' -and $Ref -notlike '*..*') { return $Ref }
     if ($Ref) { Write-Warn "Ignoring the installer ref '$Ref' (letters, digits, . _ / - only); using main." }
     'main'
 }
