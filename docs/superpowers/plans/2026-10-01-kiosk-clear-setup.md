@@ -1070,7 +1070,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: reply `clear_setup` / request `setup_cleared` (Task 2).
-- Produces: `HeartbeatIn.setup_cleared: String?`, `HeartbeatResult.clear_setup: String?`; `KioskPrefs.setupClear: Flow<SetupClearRecord?>`, `suspend fun applySetupClear(id: String): Boolean`, `suspend fun settleSetupClearAck(replyId: String?)`, `suspend fun pendingSetupClearAck(): String?`, `suspend fun dismissSetupClearNotice()`; `@Serializable data class SetupClearRecord(val id: String, val acked: Boolean = false, val notice: Boolean = false)`; `Heartbeat(api, identity, config, prefs, deviceInfo, intervalMs)` and `Heartbeat.setupCleared: SharedFlow<String>`.
+- Produces: `HeartbeatIn.setup_cleared: String?`, `HeartbeatResult.clear_setup: String?`; `KioskPrefs.setupClear: Flow<SetupClearRecord?>`, `suspend fun applySetupClear(id: String): Boolean`, `suspend fun settleSetupClearAck(sentAck: String?, replyId: String?)`, `suspend fun pendingSetupClearAck(): String?`, `suspend fun dismissSetupClearNotice()`; `@Serializable data class SetupClearRecord(val id: String, val acked: Boolean = false, val notice: Boolean = false)`; `Heartbeat(api, identity, config, prefs, deviceInfo, intervalMs)` and `Heartbeat.setupCleared: SharedFlow<String>`.
 
 - [ ] **Step 1: Write the failing tests** — in `HeartbeatTest.kt` change the harness to pass prefs and return both:
 
@@ -1115,6 +1115,17 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
         hb.start(backgroundScope, signIn = null)
         settle(); advanceTimeBy(60_001); settle()
         assertEquals("x2", api.heartbeats.last().setup_cleared)
+    }
+
+    @Test fun aNullReplyToABeatWithoutTheAckDoesNotSettleIt() = runTest {
+        val api = FakeKioskApi()
+        api.heartbeatResult = { HeartbeatResult("d", it.name, "ok", null, clear_setup = null) }
+        val (_, prefs) = harness(backgroundScope, api)
+        prefs.applySetupClear("x4")
+        prefs.settleSetupClearAck(sentAck = null, replyId = null)     // a beat that didn't carry it
+        assertEquals("x4", prefs.pendingSetupClearAck())
+        prefs.settleSetupClearAck(sentAck = "x4", replyId = null)     // the beat that did
+        assertNull(prefs.pendingSetupClearAck())
     }
 
     @Test fun anUnackedIdFromBeforeARestartIsAckedNotReapplied() = runTest {
@@ -1171,9 +1182,10 @@ Key: `val setupClear = stringPreferencesKey("ss.kiosk.setupClear")` in `Keys`. M
 
     suspend fun pendingSetupClearAck(): String? = setupClear.first()?.takeIf { !it.acked }?.id
 
-    suspend fun settleSetupClearAck(replyId: String?) {
+    /** The ack has landed only when THIS beat carried it and the reply stopped asking for it. */
+    suspend fun settleSetupClearAck(sentAck: String?, replyId: String?) {
         val cur = setupClear.first() ?: return
-        if (!cur.acked && replyId != cur.id) {
+        if (!cur.acked && sentAck == cur.id && replyId != cur.id) {
             store.edit { it[Keys.setupClear] = json.encodeToString(SetupClearRecord.serializer(), cur.copy(acked = true)) }
         }
     }
@@ -1208,12 +1220,14 @@ and `beat()` becomes:
                 setup_cleared = ack,
             ))
             if (asSignIn != null && pendingSignIn === asSignIn) pendingSignIn = null
-            _registration.value = RegistrationState.fromWire(result.registration)
-            prefs.settleSetupClearAck(result.clear_setup)
+            // settle/apply before anything else can throw, so a clear is never deferred
+            prefs.settleSetupClearAck(ack, result.clear_setup)
             val asked = result.clear_setup
-            if (asked != null && prefs.applySetupClear(asked)) {
-                _setupCleared.tryEmit(asked)
-                beat()                                   // acknowledge right away
+            val applied = asked != null && prefs.applySetupClear(asked)
+            _registration.value = RegistrationState.fromWire(result.registration)
+            if (applied) {
+                _setupCleared.tryEmit(asked!!)
+                if (job?.isActive == true) beat()      // acknowledge right away (not after stop())
             }
         } catch (e: CancellationException) {
             throw e
