@@ -30,10 +30,12 @@ the API except the HTTP status code.
 | `test/` | fixture tests (canned `ubus`/`uci`/`iwinfo` output) |
 
 **Language:** BusyBox `ash` using only tools present on stock GL.iNet
-firmware: `ubus`, `uci`, `jsonfilter`, `iwinfo`, `ip`, `curl`
-(falling back to `uclient-fetch` if `curl` is missing). JSON is built
-with `jshn.sh` (`/usr/share/libubox/jshn.sh`), which is part of OpenWrt.
-No packages are installed.
+firmware: `ubus`, `uci`, `jsonfilter`, `iwinfo`, `ip`, `wg`, `curl`.
+`curl` is required. Stock GL.iNet firmware ships it; the installer stops
+with an `opkg install curl` hint if it is missing, because
+`uclient-fetch` can't set a JSON content type. JSON is built with
+`jshn.sh` (`/usr/share/libubox/jshn.sh`), which is part of OpenWrt, and
+read with `jsonfilter`. No packages are installed.
 
 ### Install
 
@@ -70,8 +72,10 @@ the files and the sysupgrade entries. It leaves the secret only if
 
 ### Report loop
 
-The procd service runs `basecamp-router run`. It sends a report, then
-sleeps for `interval` plus a random jitter of 0-30 seconds. It retries
+The procd service runs `basecamp-router run`. It first waits 30-60
+seconds, so the WAN is up after a boot and the installer's own report is
+past the API's 20-second spacing. Then it sends a report and sleeps for
+`interval` plus a random jitter of 0-30 seconds, and repeats. It retries
 on the next tick and never backs up a queue. Errors go to `logread`
 with the tag `basecamp`. `basecamp-router once` sends a single report
 and prints the response; this is for troubleshooting.
@@ -154,10 +158,14 @@ address; the secret must be 64 hex characters; the body must be 256 KB
 or less.
 
 **Rate limit:** counted in the database like kiosk pairing, using
-`rate_limit_ip()`.
-- At most 60 reports per IP per 5 minutes.
-- At most 10 new-router registrations per IP per hour (counted from
-  `devices.created_at` and the source IP).
+`rate_limit_ip()`, with no new table.
+- Per router: a report that arrives within 20 seconds of that router's
+  previous `last_seen_at` gets 429 and is not stored. A per-IP report
+  count would need a hit log; per-router spacing gives the same
+  protection, because an unknown MAC can only get in through the
+  registration cap.
+- At most 10 new-router registrations per IP per hour, counted from
+  `devices.created_at` and `agent_source_ip`.
 - Going over either limit returns 429.
 
 **Decision table** (rows keyed by MAC, `device_type = 'router'`):
@@ -165,7 +173,7 @@ or less.
 | situation | effect | response |
 |---|---|---|
 | unknown MAC | create router row: `approval_state='pending'`, `agent_secret_hash`, identity only (mac, model, firmware, hostname, `last_seen_at`, `agent_source_ip`); audit `router_register`; notify approvers | 202 `{"state":"pending"}` |
-| MAC belongs to a non-router device | nothing stored; audit once per hour | 409 |
+| MAC belongs to a non-router device | nothing stored | 409 |
 | pending or revoked, secret matches | refresh identity fields + `last_seen_at` + `agent_source_ip`; discard the rest; no notification | 202 `{"state":"pending"}` |
 | pending or revoked, secret differs | same as above, and store the new hash as `pending_secret_hash` with `secret_mismatch = true` (approving accepts the newest secret) | 202 |
 | approved, secret matches | store the full snapshot (below) | 200 `{"state":"approved"}` |
@@ -212,8 +220,8 @@ held, so a caller can't use it to test MACs.
     approvals are no-ops.
 - **`POST /devices/{id}/revoke`** → `approval_state='revoked'`; the
   snapshot is kept for reference; audited; copies resolved.
-- **`POST /devices/{id}/reject`** (popover "Reject" for a pending
-  router) → same as revoke.
+- The popover's **Reject** button for a pending router calls
+  `revoke`. There is no separate reject endpoint.
 - `DELETE /devices/{id}`: already exists. A deleted router that reports
   again registers as new and notifies again.
 
@@ -262,9 +270,10 @@ may take 0087 when it is re-pointed.
 - **Status column:** derived from `last_seen_at`. It is Online when the
   router was seen within 3 × 300 s plus jitter (16 minutes), Offline
   otherwise, and Never for pending routers that were never seen.
-- **Row Actions menu:** Approve (pending or revoked), Revoke (approved),
-  Delete. Approve and Revoke go through the existing confirm-modal
-  idiom. The modal header shows the MAC, model and source IP.
+- **Row Actions menu** (the shared `RowActionsMenu`): Approve (pending
+  or revoked), Revoke (approved), Delete. Approve and Revoke confirm with
+  `window.confirm`, the Kiosk Devices idiom, and the message names the
+  MAC, model and source IP.
 - **Expanded row tabs:** DHCP clients (existing `RouterLeases`), WiFi
   (radio, band, SSID, channel, enabled, clients) and VPN (name, type,
   role, up/down chip, endpoint, last handshake). For pending or revoked
@@ -294,6 +303,10 @@ may take 0087 when it is re-pointed.
   - Malformed payloads return 422 and store nothing.
   - Unexpected `vpn`/`wifi` shapes are stored as reported inside
     `raw_info`; only the summary fields are validated strictly.
+  - Read-only maintenance mode does not block router reports. They are
+    telemetry with no user session, which is the same reasoning as
+    `/kiosk/printer-events`; approvals are still frozen, because they
+    are signed-in admin writes.
 
 ## Testing
 
