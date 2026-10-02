@@ -13,13 +13,13 @@ import re
 import uuid
 from datetime import datetime, timedelta
 
-from sqlalchemy import delete, func, select, text, update  # noqa: F401 (Task 3)
-from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: F401 (Task 3)
+from sqlalchemy import delete, func, select, text, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from serversherpa.api.schemas import RouterDhcpClientIn, RouterReportIn  # noqa: F401 (Task 3)
-from serversherpa.db.models import AuditLog, Device, DeviceDhcpLease  # noqa: F401 (Task 3)
+from serversherpa.api.schemas import RouterDhcpClientIn, RouterReportIn
+from serversherpa.db.models import AuditLog, Device, DeviceDhcpLease
 from serversherpa.notifications.inbox import notify
 from serversherpa.notifications.requests import approver_ids
 from serversherpa.services.audit import audit
@@ -53,7 +53,19 @@ def secret_matches(secret: str, hashed: str | None) -> bool:
 
 
 def vpn_summary(vpn: list[dict] | None) -> str | None:
-    return None  # Task 3
+    """'up' every enabled tunnel is up, 'down' none is, 'partial' some are,
+    'none' nothing enabled is configured. None = the agent couldn't tell
+    (the column stays free text so an unexpected value never breaks a
+    report; the portal maps these four to chips)."""
+    if vpn is None:
+        return None
+    enabled = [t for t in vpn if isinstance(t, dict) and t.get("enabled", True) is not False]
+    if not enabled:
+        return "none"
+    up = sum(1 for t in enabled if t.get("up") is True)
+    if up == len(enabled):
+        return "up"
+    return "down" if up == 0 else "partial"
 
 
 def _text(value: object, limit: int = 64) -> str | None:
@@ -140,9 +152,52 @@ async def _adopt(db: AsyncSession, device: Device, report: RouterReportIn, ip: s
     return "pending"
 
 
+async def _sync_leases(db: AsyncSession, device_id: uuid.UUID,
+                       clients: list[RouterDhcpClientIn], now: datetime) -> None:
+    """Upsert by (device_id, mac); a client absent from this report goes
+    down; one absent for LEASE_RETENTION is deleted. `now` is the
+    transaction's now(), so every row this report touched has
+    updated_at == now and everything older was not reported."""
+    by_mac: dict[str, RouterDhcpClientIn] = {}
+    for c in clients:
+        mac = c.mac.strip().lower().replace("-", ":")
+        if _MAC.fullmatch(mac):
+            by_mac[mac] = c  # ON CONFLICT can't touch one row twice: last wins
+    if by_mac:
+        stmt = pg_insert(DeviceDhcpLease).values([
+            {"device_id": device_id, "mac": mac, "ip": _text(c.ip),
+             "hostname": _text(c.hostname, 255), "reserved": c.reserved, "up": c.up,
+             "last_seen_at": now if c.up else None, "updated_at": now}
+            for mac, c in by_mac.items()])
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[DeviceDhcpLease.device_id, DeviceDhcpLease.mac],
+            set_={"ip": stmt.excluded.ip, "hostname": stmt.excluded.hostname,
+                  "reserved": stmt.excluded.reserved, "up": stmt.excluded.up,
+                  "last_seen_at": func.coalesce(stmt.excluded.last_seen_at,
+                                                DeviceDhcpLease.last_seen_at),
+                  "updated_at": now})
+        await db.execute(stmt)
+    await db.execute(update(DeviceDhcpLease).where(
+        DeviceDhcpLease.device_id == device_id,
+        DeviceDhcpLease.updated_at < now).values(up=False))
+    await db.execute(delete(DeviceDhcpLease).where(
+        DeviceDhcpLease.device_id == device_id,
+        DeviceDhcpLease.updated_at < now - LEASE_RETENTION))
+
+
 async def _store_snapshot(db: AsyncSession, device: Device, report: RouterReportIn,
                           ip: str, now: datetime) -> None:
-    pass  # Task 3
+    wan = report.wan or {}
+    lan = report.lan or {}
+    _touch_identity(device, report, ip, now)
+    device.wan_ip = _text(wan.get("ip"))
+    device.lan_ip = _text(lan.get("ip"))
+    device.uptime_seconds = report.uptime_seconds
+    device.vpn_status = vpn_summary(report.vpn)
+    device.raw_info = {**_identity(report), "wan": report.wan, "lan": report.lan,
+                       "wifi": report.wifi, "clients": report.clients, "vpn": report.vpn}
+    if report.dhcp_clients is not None:
+        await _sync_leases(db, device.id, report.dhcp_clients, now)
 
 
 async def handle_report(db: AsyncSession, report: RouterReportIn, ip: str) -> str:

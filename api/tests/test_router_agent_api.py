@@ -7,6 +7,7 @@ import hashlib
 from sqlalchemy import select, text
 
 from serversherpa.db.models import AuditLog, Device, Notification
+from serversherpa.services.router_agent import vpn_summary
 
 SECRET = "0123456789abcdef" * 4
 OTHER_SECRET = "fedcba9876543210" * 4
@@ -279,3 +280,93 @@ async def test_devices_has_the_router_agent_columns(db):
     bad = await db.scalar(text(
         "SELECT count(*) FROM pg_constraint WHERE conname = 'devices_approval_state_check'"))
     assert bad == 1
+
+
+async def _approved(client, db) -> Device:
+    await client.post("/router-agent/report", json=report())
+    await db.execute(text("UPDATE devices SET approval_state = 'approved' WHERE mac = :m"),
+                     {"m": MAC})
+    await db.commit()
+    await _age(db)
+    return await _router(db)
+
+
+def test_vpn_summary():
+    assert vpn_summary(None) is None
+    assert vpn_summary([]) == "none"
+    assert vpn_summary([{"enabled": False, "up": False}]) == "none"
+    assert vpn_summary([{"enabled": True, "up": True}]) == "up"
+    assert vpn_summary([{"up": True}, {"enabled": False, "up": False}]) == "up"
+    assert vpn_summary([{"enabled": True, "up": False}]) == "down"
+    assert vpn_summary([{"enabled": True, "up": True}, {"enabled": True, "up": False}]) == "partial"
+
+
+async def test_approved_report_stores_the_snapshot(client, db):
+    await _approved(client, db)
+    resp = await client.post("/router-agent/report", json=report())
+    assert resp.status_code == 200 and resp.json() == {"state": "approved"}
+    d = await _router(db)
+    await db.refresh(d)
+    assert (d.wan_ip, d.lan_ip, d.uptime_seconds) == ("203.0.113.7", "192.168.8.1", 86400)
+    assert d.vpn_status == "up"
+    assert d.raw_info["wifi"][0]["ssid"] == "Site-WiFi"
+    assert d.raw_info["clients"] == {"total": 3, "wired": 1, "wireless": 2}
+    assert d.raw_info["vpn"][0]["endpoint"] == "198.51.100.10:51820"
+    assert d.raw_info["hostname"] == "GL-MT3000-1a2"
+
+
+async def test_lease_sync_upserts_marks_missing_down_and_purges_after_7_days(client, db):
+    d = await _approved(client, db)
+    await client.post("/router-agent/report", json=report())
+    rows = (await db.execute(text(
+        "SELECT mac, ip, hostname, reserved, up, last_seen_at IS NOT NULL "
+        "FROM device_dhcp_leases WHERE device_id = :d ORDER BY mac"), {"d": d.id})).all()
+    assert [tuple(r) for r in rows] == [
+        ("aa:bb:cc:dd:ee:01", "192.168.8.120", "kiosk-01", True, True, True),
+        ("aa:bb:cc:dd:ee:02", "192.168.8.121", None, False, True, True),
+    ]
+    # an old, long-gone lease is purged; ee:02 vanishes from the report -> down, kept
+    await db.execute(text(
+        "INSERT INTO device_dhcp_leases (device_id, mac, up, updated_at) "
+        "VALUES (:d, 'aa:bb:cc:dd:ee:99', false, now() - interval '8 days')"), {"d": d.id})
+    await db.commit()
+    await _age(db)
+    only_one = report(dhcp_clients=[{"mac": "aa:bb:cc:dd:ee:01", "ip": "192.168.8.120",
+                                     "hostname": "kiosk-01", "reserved": True, "up": True}])
+    await client.post("/router-agent/report", json=only_one)
+    rows = dict((await db.execute(text(
+        "SELECT mac, up FROM device_dhcp_leases WHERE device_id = :d"), {"d": d.id})).all())
+    assert rows == {"aa:bb:cc:dd:ee:01": True, "aa:bb:cc:dd:ee:02": False}
+
+
+async def test_a_down_client_keeps_its_last_seen_time(client, db):
+    await _approved(client, db)
+    await client.post("/router-agent/report", json=report())
+    first = await db.scalar(text(
+        "SELECT last_seen_at FROM device_dhcp_leases WHERE mac = 'aa:bb:cc:dd:ee:02'"))
+    await _age(db)
+    down = report(dhcp_clients=[{"mac": "aa:bb:cc:dd:ee:02", "up": False}])
+    await client.post("/router-agent/report", json=down)
+    again = await db.scalar(text(
+        "SELECT last_seen_at FROM device_dhcp_leases WHERE mac = 'aa:bb:cc:dd:ee:02'"))
+    assert again == first
+
+
+async def test_null_dhcp_section_leaves_leases_untouched_and_bad_macs_are_skipped(client, db):
+    d = await _approved(client, db)
+    await client.post("/router-agent/report", json=report())
+    await _age(db)
+    await client.post("/router-agent/report", json=report(dhcp_clients=None, vpn=None))
+    n = await db.scalar(text(
+        "SELECT count(*) FROM device_dhcp_leases WHERE device_id = :d AND up"), {"d": d.id})
+    assert n == 2
+    await db.refresh(d)
+    assert d.vpn_status is None
+    await _age(db)
+    weird = report(dhcp_clients=[{"mac": "garbage", "up": True},
+                                 {"mac": "aa:bb:cc:dd:ee:01", "up": True},
+                                 {"mac": "AA:BB:CC:DD:EE:01", "up": True, "hostname": "dup"}])
+    assert (await client.post("/router-agent/report", json=weird)).status_code == 200
+    host = await db.scalar(text(
+        "SELECT hostname FROM device_dhcp_leases WHERE mac = 'aa:bb:cc:dd:ee:01'"))
+    assert host == "dup"  # duplicate MACs in one report: the last one wins
