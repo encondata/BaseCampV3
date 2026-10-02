@@ -42,16 +42,22 @@ describe('NetworkCheckStep', () => {
     expect(screen.getByText('192.168.8.20')).toBeTruthy();
     expect(screen.getByText('203.0.113.7')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Run again' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Continue' }).className).toContain('btn-solid');
   });
 
-  it('continues after 1500 ms and not before', async () => {
+  it('waits for Continue: never advances on its own, then calls onContinue once clicked', async () => {
     const onContinue = vi.fn();
-    render(<NetworkCheckStep onContinue={onContinue} onBack={vi.fn()} />);
+    const onBack = vi.fn();
+    render(<NetworkCheckStep onContinue={onContinue} onBack={onBack} />);
     await settle();
-    await act(async () => { await vi.advanceTimersByTimeAsync(1400); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
     expect(onContinue).not.toHaveBeenCalled();
-    await act(async () => { await vi.advanceTimersByTimeAsync(150); });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    expect(screen.getByRole('button', { name: 'Back' }).className).toContain('mini-btn');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
     expect(onContinue).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    expect(onBack).toHaveBeenCalledTimes(1);
   });
 
   it('a failure keeps the rest running and offers Back and Run again', async () => {

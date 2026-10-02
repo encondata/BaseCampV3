@@ -528,8 +528,9 @@ describe('laptop mode', () => {
     expect(apiMock.runCheck.mock.calls.map((c) => c[0]))
       .toEqual(['reader', 'router', 'portal', 'registration']);
 
-    // All four pass, so the step moves on by itself.
-    expect(await screen.findByText('Step 6 of 9 · Move', {}, { timeout: 4000 })).toBeTruthy();
+    // All four pass; the step waits for the operator to click Continue.
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(await screen.findByText('Step 6 of 9 · Move')).toBeTruthy();
     await user.click(await screen.findByText('NAP11 Hall Migration (demo)'));
     expect(screen.getByText('Step 7 of 9 · Site')).toBeTruthy();
     await user.click(cardFor('NAP22 Hall'));
@@ -552,7 +553,8 @@ describe('laptop mode', () => {
     await user.click(await screen.findByText('10.0.0.5'));
     await user.click(await screen.findByRole('button', { name: 'Pair this reader' }));
     await user.click(await screen.findByRole('button', { name: 'Continue' }));
-    await user.click(await screen.findByText('NAP11 Hall Migration (demo)', {}, { timeout: 4000 }));
+    await user.click(await screen.findByRole('button', { name: 'Continue' }));
+    await user.click(await screen.findByText('NAP11 Hall Migration (demo)'));
     await user.click(cardFor('NAP22 Hall'));
     await user.click(cardFor('RFID 1 - Cage Exit'));
     await screen.findByText('Step 9 of 9 · Confirm & verify');
@@ -595,7 +597,8 @@ describe('laptop mode', () => {
       await user.click(await screen.findByText('10.0.0.5'));
       await user.click(await screen.findByRole('button', { name: 'Pair this reader' }));
       await user.click(await screen.findByRole('button', { name: 'Continue' }));
-      await user.click(await screen.findByText('NAP11 Hall Migration (demo)', {}, { timeout: 4000 }));
+      await user.click(await screen.findByRole('button', { name: 'Continue' }));
+      await user.click(await screen.findByText('NAP11 Hall Migration (demo)'));
       await user.click(cardFor('NAP22 Hall'));
     }
 
@@ -660,7 +663,8 @@ describe('laptop mode', () => {
     apiMock.runCheck.mockImplementation((name: string) => Promise.resolve(
       { name, ok: true, state: 'ok', detail: '' }));
     await user.click(await screen.findByRole('button', { name: 'Continue' }));
-    expect(await screen.findByText('Step 6 of 9 · Move', {}, { timeout: 4000 })).toBeTruthy();
+    await user.click(await screen.findByRole('button', { name: 'Continue' }));
+    expect(await screen.findByText('Step 6 of 9 · Move')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Back' }));
     expect(screen.getByText('Step 5 of 9 · Network check')).toBeTruthy();
   });
@@ -975,7 +979,8 @@ describe('laptop mode: final fix round', () => {
     await toConnect(user);
     await user.click(screen.getByRole('button', { name: 'Pair this reader' }));
     await user.click(await screen.findByRole('button', { name: 'Continue' }));
-    await user.click(await screen.findByText('NAP11 Hall Migration (demo)', {}, { timeout: 4000 }));
+    await user.click(await screen.findByRole('button', { name: 'Continue' }));
+    await user.click(await screen.findByText('NAP11 Hall Migration (demo)'));
     await user.click(cardFor('NAP22 Hall'));
     await user.click(cardFor('RFID 1 - Cage Exit'));
     expect(await screen.findByText('Pair a reader first')).toBeTruthy();
