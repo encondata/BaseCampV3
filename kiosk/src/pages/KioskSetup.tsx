@@ -208,7 +208,9 @@ export default function KioskSetup() {
       };
       if (station) saved.stationType = station;
       if (station === 'rfid') {
-        const reader = paired?.reader ?? connected ?? selection?.reader;
+        // Only a reader this run actually paired; the Pair step can't be
+        // passed without one.
+        const reader = paired?.reader;
         if (reader) saved.reader = { ip: reader.ip, serial: reader.serial, model: reader.model };
       }
       setSelection(saved);

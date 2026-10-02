@@ -8,13 +8,16 @@
  * for both the reader's and the laptop's IP instead.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { getReaderScan, startReaderScan, type ReaderScan } from '../../lib/api';
 import ManualAddressForm from './ManualAddressForm';
-import { scanErrorText } from './readerSetup';
+import { pairedWithName, scanErrorText } from './readerSetup';
 
 export const SCAN_POLL_MS = 1000;
+/** A failed poll is retried this many times (a second apart) before the
+ *  step shows the error. */
+export const SCAN_POLL_RETRIES = 2;
 
 interface Props {
   selectedIp: string;
@@ -28,26 +31,58 @@ export default function ReaderStep({ selectedIp, onPick, onBack }: Props) {
   const [run, setRun] = useState(0);
   const [manual, setManual] = useState(false);
 
+  // Set on mount as well as cleared on unmount, so StrictMode's dev-mode
+  // remount keeps the one scan it started alive. Leaving the step (Back,
+  // or picking a reader) unmounts it and stops the poll.
+  const alive = useRef(true);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    alive.current = true;
+    return () => { alive.current = false; clearTimeout(timer.current); };
+  }, []);
+
+  /** The scan this step started; snapshots of any other scan are ignored,
+   *  and a newer run (Scan again) retires the older run's poll. */
+  const scanId = useRef<string | null>(null);
+  const startedRun = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (startedRun.current === run) return; // StrictMode's second effect pass
+    startedRun.current = run;
+    clearTimeout(timer.current);
+    scanId.current = null;
     setScan(null);
     setError('');
-    const poll = async () => {
+    let failures = 0;
+    const current = (id: string) => alive.current && scanId.current === id;
+
+    const poll = async (id: string) => {
       try {
         const next = await getReaderScan();
-        if (cancelled) return;
+        if (!current(id)) return;
+        if (next.scan_id !== id) return; // another scan's snapshot: not ours
+        failures = 0;
         setScan(next);
-        if (next.state === 'running') timer = setTimeout(() => void poll(), SCAN_POLL_MS);
+        if (next.state === 'running') timer.current = setTimeout(() => void poll(id), SCAN_POLL_MS);
       } catch (err) {
-        if (!cancelled) setError(scanErrorText(err));
+        if (!current(id)) return;
+        failures += 1;
+        if (failures <= SCAN_POLL_RETRIES) {
+          timer.current = setTimeout(() => void poll(id), SCAN_POLL_MS);
+        } else {
+          setError(scanErrorText(err));
+        }
       }
     };
+
     startReaderScan().then(
-      () => { if (!cancelled) void poll(); },
-      (err) => { if (!cancelled) setError(scanErrorText(err)); },
+      ({ scan_id: id }) => {
+        if (!alive.current || startedRun.current !== run) return;
+        scanId.current = id;
+        void poll(id);
+      },
+      (err) => { if (alive.current && startedRun.current === run) setError(scanErrorText(err)); },
     );
-    return () => { cancelled = true; clearTimeout(timer); };
   }, [run]);
 
   const hostUnknown = scan !== null && !scan.host.fresh;
@@ -100,7 +135,7 @@ export default function ReaderStep({ selectedIp, onPick, onBack }: Props) {
               <div className="setup-card-title">{r.ip}</div>
               <div className="setup-card-meta">Serial {r.serial}</div>
               {r.paired_with && (
-                <div className="setup-card-meta">{`Already paired with ${r.paired_with}`}</div>
+                <div className="setup-card-meta">{`Already paired with ${pairedWithName(r.paired_with)}`}</div>
               )}
             </button>
           ))}

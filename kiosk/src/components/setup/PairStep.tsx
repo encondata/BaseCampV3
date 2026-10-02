@@ -86,7 +86,7 @@ export default function PairStep({
       {error && <p className="form-error" role="alert">{error}</p>}
       {hostUnknown && <ManualAddressForm initialReaderIp={ip} withLaptopIp onSubmit={onManual} />}
       <div className="pf-form-actions">
-        <button type="button" className="mini-btn" onClick={onBack}>Back</button>
+        <button type="button" className="mini-btn" onClick={onBack} disabled={busy}>Back</button>
         {error && !busy && (
           <button type="button" className="mini-btn" onClick={() => void pair(false)}>Try again</button>
         )}

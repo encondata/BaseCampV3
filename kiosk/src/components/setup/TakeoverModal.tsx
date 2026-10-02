@@ -3,6 +3,8 @@
 
 import { Fragment, useEffect } from 'react';
 
+import { pairedWithName } from './readerSetup';
+
 const STEPS = ['Confirm', 'Pair'];
 
 interface Props {
@@ -20,14 +22,14 @@ export default function TakeoverModal({ otherKiosk, onConfirm, onCancel }: Props
 
   return (
     <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
-      <div className="modal-card reports-modal-card rgm-card zp-reset-card" role="dialog"
+      <div className="modal-card reports-modal-card rgm-card confirm-card" role="dialog"
            aria-label="Pair this reader">
         <div className="modal-head">
           <div className="rgm-head-text">
             <div className="eyebrow">RFID reader</div>
             <h3>Take over this reader?</h3>
             <p className="page-hint">
-              This reader is paired with <b>{otherKiosk}</b>. Pair it with this kiosk instead?
+              This reader is paired with <b>{pairedWithName(otherKiosk)}</b>. Pair it with this kiosk instead?
             </p>
           </div>
           <button type="button" className="modal-close" aria-label="Close" onClick={onCancel}>
@@ -45,7 +47,7 @@ export default function TakeoverModal({ otherKiosk, onConfirm, onCancel }: Props
           ))}
         </div>
         <div className="modal-body">
-          <div className="zp-col">
+          <div>
             <p className="page-hint">
               The other kiosk stops getting this reader&apos;s tag data.
               If that name is this laptop (for example after a reset), choose Pair anyway.

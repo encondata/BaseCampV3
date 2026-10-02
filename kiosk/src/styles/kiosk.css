@@ -572,20 +572,27 @@
 .kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-align-card > .modal-foot,
 .kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-setup-card > .modal-foot { flex: none; }
 
-/* ── factory reset modal ───────────────────────────────────────────
+/* ── factory reset modal (and other kiosk confirm modals) ──────────
    Its own card class (not zp-setup-card) so printers.css's
    `max-height: none` — there so the setup card's dropdowns can escape —
    never applies: this card has no dropdowns and must stay inside a
-   tablet's viewport. Same cap as the other two, kept for the kiosk. */
-.modal-card.reports-modal-card.rgm-card.zp-reset-card { width: min(620px, 96vw); max-width: 96vw; }
-.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-reset-card {
+   tablet's viewport. Same cap as the other two, kept for the kiosk.
+   `.confirm-card` is the generic name for any small confirm modal
+   (Kiosk Setup's reader takeover) that wants the same content-sized card. */
+.modal-card.reports-modal-card.rgm-card.zp-reset-card,
+.modal-card.reports-modal-card.rgm-card.confirm-card { width: min(620px, 96vw); max-width: 96vw; }
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-reset-card,
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.confirm-card {
   max-height: 92dvh;
   display: flex;
   flex-direction: column;
 }
-.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-reset-card > .modal-body { overflow: auto; min-height: 0; }
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-reset-card > .modal-body,
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.confirm-card > .modal-body { overflow: auto; min-height: 0; }
 .kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-reset-card > .modal-head,
-.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-reset-card > .modal-foot { flex: none; }
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.zp-reset-card > .modal-foot,
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.confirm-card > .modal-head,
+.kiosk-shell .modal-card.reports-modal-card.rgm-card.confirm-card > .modal-foot { flex: none; }
 
 .zp-check { display: flex; align-items: center; gap: 10px; font-size: 15px; }
 .zp-check input { width: 18px; height: 18px; }

@@ -418,7 +418,7 @@ it('an idle summary offers "Sync now" (e.g. after Clear local data)', async () =
 
 const READERS = [
   { ip: '10.0.0.5', model: 'FX9600', serial: '1234ABCD', paired_with: null },
-  { ip: '10.0.0.6', model: 'FX9600', serial: '9999ZZZZ', paired_with: 'Kiosk ABCD' },
+  { ip: '10.0.0.6', model: 'FX9600', serial: '9999ZZZZ', paired_with: 'ServerSherpa Kiosk ABCD (Front desk)' },
 ];
 const SCAN_DONE = {
   scan_id: 'sc1', state: 'done', probed: 254, total: 254, readers: READERS,
@@ -498,7 +498,7 @@ describe('laptop mode', () => {
     expect(screen.getByText('Step 2 of 8 · Select reader')).toBeTruthy();
     expect(await screen.findByText('10.0.0.5')).toBeTruthy();
     expect(apiMock.startReaderScan).toHaveBeenCalledTimes(1);
-    expect(within(cardFor('10.0.0.6')).getByText('Already paired with Kiosk ABCD')).toBeTruthy();
+    expect(within(cardFor('10.0.0.6')).getByText('Already paired with Kiosk ABCD (Front desk)')).toBeTruthy();
     expect(within(cardFor('10.0.0.5')).queryByText(/Already paired/)).toBeNull();
 
     await user.click(cardFor('10.0.0.5'));
@@ -658,7 +658,7 @@ describe('laptop mode', () => {
   it('a reader held by another kiosk asks before taking it over', async () => {
     apiMock.pairReader.mockReset()
       .mockRejectedValueOnce(new ApiError(409, 'reader_paired_elsewhere',
-        { code: 'reader_paired_elsewhere', name: 'Kiosk ABCD' }))
+        { code: 'reader_paired_elsewhere', name: 'ServerSherpa Kiosk ABCD (Front desk)' }))
       .mockResolvedValue(PAIRED);
     const user = userEvent.setup();
     renderPage();
@@ -666,8 +666,8 @@ describe('laptop mode', () => {
     await user.click(screen.getByRole('button', { name: 'Pair this reader' }));
 
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText('Kiosk ABCD')).toBeTruthy();
-    expect(dialog.textContent).toContain('This reader is paired with Kiosk ABCD. Pair it with this kiosk instead?');
+    expect(within(dialog).getByText('Kiosk ABCD (Front desk)')).toBeTruthy();
+    expect(dialog.textContent).toContain('This reader is paired with Kiosk ABCD (Front desk). Pair it with this kiosk instead?');
     expect(dialog.textContent).toContain(
       'If that name is this laptop (for example after a reset), choose Pair anyway.');
     await user.click(within(dialog).getByRole('button', { name: 'Pair anyway' }));
@@ -679,7 +679,7 @@ describe('laptop mode', () => {
 
   it('Cancel on the takeover confirm returns to Connect without pairing', async () => {
     apiMock.pairReader.mockReset().mockRejectedValue(new ApiError(409, 'reader_paired_elsewhere',
-      { code: 'reader_paired_elsewhere', name: 'Kiosk ABCD' }));
+      { code: 'reader_paired_elsewhere', name: 'ServerSherpa Kiosk ABCD (Front desk)' }));
     const user = userEvent.setup();
     renderPage();
     await toConnectStep(user);
@@ -687,6 +687,7 @@ describe('laptop mode', () => {
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByText('Step 3 of 8 · Connect')).toBeTruthy();
+    expect(screen.queryByText(/ServerSherpa Kiosk/)).toBeNull();
     expect(apiMock.pairReader).toHaveBeenCalledTimes(1);
   });
 
@@ -701,6 +702,39 @@ describe('laptop mode', () => {
     expect(await screen.findByText('Config locked')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Try again' }));
     expect(await screen.findByText('Paired with FX9600 1234ABCD at 10.0.0.5')).toBeTruthy();
+  });
+
+  it.each([
+    ['reader_endpoints_full',
+      "This reader already has two data connections. Remove one in the reader's web console, then try again."],
+    ['reader_verify_failed', "The reader didn't keep the new data endpoint. Try again."],
+  ])('a %s pair error shows its message', async (code, text) => {
+    apiMock.pairReader.mockReset().mockRejectedValue(new ApiError(code === 'reader_endpoints_full' ? 409 : 502,
+      code, { code }));
+    const user = userEvent.setup();
+    renderPage();
+    await toConnectStep(user);
+    await user.click(screen.getByRole('button', { name: 'Pair this reader' }));
+    expect(await screen.findByText(text)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+  });
+
+  it('Back is disabled while Connect or Pair is waiting on the edge', async () => {
+    let resolveConnect: (v: unknown) => void = () => {};
+    apiMock.connectReader.mockReset().mockReturnValue(new Promise((r) => { resolveConnect = r; }));
+    let resolvePair: (v: unknown) => void = () => {};
+    apiMock.pairReader.mockReset().mockReturnValue(new Promise((r) => { resolvePair = r; }));
+    const user = userEvent.setup();
+    renderPage();
+    await toReaderStep(user);
+    await user.click(cardFor('10.0.0.5'));
+    expect((screen.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled).toBe(true);
+    resolveConnect(CONNECTED);
+    await user.click(await screen.findByRole('button', { name: 'Pair this reader' }));
+    expect((screen.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled).toBe(true);
+    resolvePair(PAIRED);
+    await screen.findByText(/Paired with FX9600/);
+    expect((screen.getByRole('button', { name: 'Back' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('pairing with no known laptop address offers the reader and laptop IP fields', async () => {
@@ -743,7 +777,14 @@ describe('laptop mode', () => {
 });
 
 it('web mode has no station-type step and sends no station_type', async () => {
+  const user = userEvent.setup();
   renderPage();
   expect(await screen.findByText('Step 1 of 3 · Move')).toBeTruthy();
   expect(screen.queryByText('What is this station?')).toBeNull();
+  await goToScanStep(user);
+  await user.click(cardFor('RFID 1 - Cage Exit'));
+  await waitFor(() => expect(apiMock.submitKioskSetup).toHaveBeenCalledTimes(1));
+  const payload = apiMock.submitKioskSetup.mock.calls[0][0] as Record<string, unknown>;
+  expect(Object.prototype.hasOwnProperty.call(payload, 'station_type')).toBe(false);
+  expect(readKioskSetup()?.stationType).toBeUndefined();
 });

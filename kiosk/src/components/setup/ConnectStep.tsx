@@ -8,7 +8,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import { connectReader, type ReaderInfo } from '../../lib/api';
-import { connectErrorText, statusSummary } from './readerSetup';
+import { connectErrorText, pairedWithName, statusSummary } from './readerSetup';
 
 interface Props {
   ip: string;
@@ -65,13 +65,13 @@ export default function ConnectStep({ ip, info, onInfo, onPair, onBack }: Props)
           </dl>
           {info.paired_with && (
             <p className="page-hint">
-              Already paired with <b>{info.paired_with}</b>. Pairing moves it to this kiosk.
+              Already paired with <b>{pairedWithName(info.paired_with)}</b>. Pairing moves it to this kiosk.
             </p>
           )}
         </div>
       )}
       <div className="pf-form-actions">
-        <button type="button" className="mini-btn" onClick={onBack}>Back</button>
+        <button type="button" className="mini-btn" onClick={onBack} disabled={busy}>Back</button>
         {error && !busy && (
           <button type="button" className="mini-btn" onClick={() => void connect()}>Try again</button>
         )}

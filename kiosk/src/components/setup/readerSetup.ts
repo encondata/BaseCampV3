@@ -82,3 +82,10 @@ export function statusSummary(status: Record<string, unknown> | null | undefined
   if (typeof status.uptime === 'string') parts.push(`up ${status.uptime}`);
   return parts.length ? parts.join(' · ') : '—';
 }
+
+/** The edge names another kiosk's hold on a reader by its full ZIOTC
+ *  connection name, "ServerSherpa Kiosk ABCD (Front desk)"; people read
+ *  it as "Kiosk ABCD (Front desk)". */
+export function pairedWithName(connectionName: string): string {
+  return connectionName.replace(/^ServerSherpa\s+/, '');
+}
