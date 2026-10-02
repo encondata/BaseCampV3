@@ -8,7 +8,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import {
-  ApiError, approveMembershipRequest, rejectMembershipRequest, type InboxItem,
+  ApiError, approveMembershipRequest, approveRouter, rejectMembershipRequest, revokeRouter,
+  type InboxItem,
 } from '../lib/api';
 import { leaveFor, resolveInboxLink } from '../lib/inboxLinks';
 import { GROUP_ERRORS } from '../lib/notificationGroups';
@@ -124,6 +125,66 @@ export function relativeTime(iso: string): string {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+const ROUTER_ERRORS: Record<string, string> = {
+  device_not_found: 'That router was deleted.',
+  not_an_agent_router: 'That router no longer reports through the agent.',
+  forbidden: "You can't approve routers.",
+};
+
+const routerErrorMsg = (err: unknown): string =>
+  err instanceof ApiError ? (ROUTER_ERRORS[err.code] ?? `Request failed (${err.code}).`) : 'Network error — try again.';
+
+interface RouterApprovalPayload {
+  device_id: string;
+  state: string;
+  decided_by?: string | null;
+}
+
+/** The inline strip under a `router_approval` row: Approve / Reject while
+ *  pending (Reject revokes — a router has no note to keep), otherwise the
+ *  outcome. Stops propagation so the row click (which opens the Routers
+ *  page focused on this router) never fires from inside it. */
+function RouterApprovalStrip({ payload, refresh }: {
+  payload: RouterApprovalPayload; refresh: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  if (payload.state !== 'pending') {
+    const who = payload.decided_by ?? '';
+    const label = payload.state === 'approved' ? `Approved by ${who}` : `Rejected by ${who}`;
+    return <span className="notif-body notif-outcome">{label}</span>;
+  }
+
+  const decide = async (fn: (id: string) => Promise<unknown>) => {
+    setBusy(true);
+    setError('');
+    try {
+      await fn(payload.device_id);
+      await refresh();
+    } catch (err) {
+      setError(routerErrorMsg(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <span className="notif-strip" onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => { if (e.key.startsWith('Arrow') || e.key === 'Enter') e.stopPropagation(); }}>
+      <button type="button" className="mini-btn sm" disabled={busy}
+              onClick={() => void decide(approveRouter)}>
+        Approve
+      </button>
+      <button type="button" className="mini-btn sm danger" disabled={busy}
+              onClick={() => void decide(revokeRouter)}>
+        Reject
+      </button>
+      {error && <span className="pf-error">{error}</span>}
+    </span>
+  );
+}
+
 function KindIcon({ kind }: { kind: string }) {
   const cls = `notif-icon notif-icon-${kind}`;
   if (kind === 'report_ready') {
@@ -148,6 +209,15 @@ function KindIcon({ kind }: { kind: string }) {
            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <circle cx="9" cy="8" r="3.2" /><path d="M3.5 19c0-3.4 2.6-5.6 5.5-5.6s5.5 2.2 5.5 5.6" />
         <path d="M18.5 8v6M15.5 11h6" />
+      </svg>
+    );
+  }
+  if (kind === 'router_approval') {
+    return (
+      <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="3" y="13" width="18" height="7" rx="2" /><path d="M7 16.5h.01M11 16.5h.01" />
+        <path d="M15 13V9M9 7.5a4.2 4.2 0 0 1 6 0M6.5 5a7.8 7.8 0 0 1 11 0" />
       </svg>
     );
   }
@@ -246,6 +316,9 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
                 <span className="notif-time">{relativeTime(n.created_at)}</span>
                 {n.kind === 'membership_request' && (
                   <MembershipRequestStrip payload={n.payload as unknown as MembershipRequestPayload} refresh={refresh} />
+                )}
+                {n.kind === 'router_approval' && (
+                  <RouterApprovalStrip payload={n.payload as unknown as RouterApprovalPayload} refresh={refresh} />
                 )}
               </span>
               <span className="notif-actions" onClick={(e) => e.stopPropagation()}

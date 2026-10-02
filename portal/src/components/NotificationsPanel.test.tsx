@@ -18,6 +18,8 @@ vi.mock('../lib/notificationsContext', () => ({ useNotifications: () => ctx }));
 const api = vi.hoisted(() => ({
   approveMembershipRequest: vi.fn(() => Promise.resolve()),
   rejectMembershipRequest: vi.fn(() => Promise.resolve()),
+  approveRouter: vi.fn(() => Promise.resolve()),
+  revokeRouter: vi.fn(() => Promise.resolve()),
 }));
 vi.mock('../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../lib/api')>()),
@@ -254,4 +256,52 @@ it('a totp_enrolled row renders its title and icon', () => {
   renderPanel();
   expect(screen.getByText('Two-factor authentication is on')).toBeTruthy();
   expect(document.querySelector('.notif-icon-totp_enrolled')).toBeTruthy();
+});
+
+const routerItem = (id: string, payload: Record<string, unknown>): InboxItem => item(id, {
+  kind: 'router_approval',
+  title: 'Router waiting for approval',
+  body: 'GL.iNet GL-MT3000 · GL-MT3000-1a2 · 94:83:c4:aa:bb:cc · from 203.0.113.7',
+  link: '/hardware/routers?focus=r1',
+  payload,
+});
+
+it('a pending router_approval row approves the router and refreshes without navigating', async () => {
+  const user = userEvent.setup();
+  ctx.items = [routerItem('n1', { device_id: 'r1', mac: '94:83:c4:aa:bb:cc', state: 'pending' })];
+  const onClose = renderPanel();
+  await user.click(screen.getByRole('button', { name: 'Approve' }));
+  expect(api.approveRouter).toHaveBeenCalledWith('r1');
+  expect(ctx.refresh).toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+it('Reject on a router row revokes it (no note field)', async () => {
+  const user = userEvent.setup();
+  ctx.items = [routerItem('n1', { device_id: 'r1', mac: '94:83:c4:aa:bb:cc', state: 'pending' })];
+  renderPanel();
+  await user.click(screen.getByRole('button', { name: 'Reject' }));
+  expect(api.revokeRouter).toHaveBeenCalledWith('r1');
+  expect(screen.queryByPlaceholderText('Reason (optional)')).toBeNull();
+});
+
+it('a decided router row shows the outcome and no buttons', () => {
+  ctx.items = [
+    routerItem('n1', { device_id: 'r1', state: 'approved', decided_by: 'Ada' }),
+    routerItem('n2', { device_id: 'r2', state: 'revoked', decided_by: 'Bo' }),
+  ];
+  renderPanel();
+  expect(screen.getByText('Approved by Ada')).toBeTruthy();
+  expect(screen.getByText('Rejected by Bo')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+});
+
+it('a router decision error shows inline', async () => {
+  const { ApiError } = await import('../lib/api');
+  api.approveRouter.mockRejectedValueOnce(new ApiError(404, 'device_not_found'));
+  const user = userEvent.setup();
+  ctx.items = [routerItem('n1', { device_id: 'r1', state: 'pending' })];
+  renderPanel();
+  await user.click(screen.getByRole('button', { name: 'Approve' }));
+  expect(await screen.findByText('That router was deleted.')).toBeTruthy();
 });
