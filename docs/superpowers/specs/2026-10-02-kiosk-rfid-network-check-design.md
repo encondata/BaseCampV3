@@ -4,7 +4,7 @@ Status: approved 2026-10-02. Builds on `2026-10-01-kiosk-rfid-station-design.md`
 
 ## 1. Goal
 
-The RFID Station path of Kiosk Setup (laptop edition) replaces the step 5 placeholder with a **Network check**. It also limits step 8 to RFID scan types and adds a step 9, **Confirm & verify**, which ends with **Start Reader**. Start Reader opens a new placeholder page, `/rfid_status`.
+The RFID Station path of Kiosk Setup (laptop edition) replaces the step 5 placeholder with a **Network check**. It also limits step 8 to RFID scan types and adds a step 9, **Confirm & verify**, which ends with **Start Reader**. Start Reader opens the RFID Reader Dashboard at `/rfid_status` (§6).
 
 The RFID path becomes:
 
@@ -204,5 +204,5 @@ There is one edge endpoint per check. The kiosk calls them one at a time so that
 
 - Receiving or storing tag data on 8091.
 - Reader antenna and power settings.
-- A real `/rfid_status` dashboard.
+- Live tag data on the `/rfid_status` dashboard (the dashboard itself is built; its tag reads stay empty until tag data is connected).
 - iOS and Android.
