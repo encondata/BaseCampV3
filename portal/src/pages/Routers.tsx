@@ -6,23 +6,27 @@
  *  ColumnMenu filters + persisted visible/sort/order state
  *  (usePersistentListState) + CSV export + virtualized rows.
  *
- *  Routers self-register via the device agent — there is no create flow
- *  here yet, hence the disabled "Register router" affordance. Row action
- *  is Delete only, gated on can('scanning_hardware', 'delete'). */
+ *  Routers self-register through the GL.iNet agent (router_agent/) and
+ *  stay Pending — reports held — until approved here or from the inbox.
+ *  "How to add a router" shows the one-line installer. Row actions
+ *  (Approve / Revoke / Delete) live behind the shared RowActionsMenu;
+ *  ?focus=<id> (the approval notification's link) opens that row. */
 
 import { compareValues, naturalCompare } from '../lib/naturalSort';
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
 import {
-  ApiError, deleteDevice, listDevices, type DeviceItem,
+  ApiError, apiUrl, approveRouter, deleteDevice, listDevices, revokeRouter, type DeviceItem,
 } from '../lib/api';
 import {
   ColumnMenu, EmptyClearFilters, FilterSummaryChip, passesColumnFilters,
   usePersistentListState, type CellText,
 } from '../lib/columnMenu';
 import {
-  deviceCellText, deviceSearchText, deviceSortValue, tokenExpiryState, vpnLabel,
+  approvalLabel, deviceCellText, deviceSearchText, deviceSortValue, routerStatus,
+  routerStatusLabel, vpnChipClass, vpnLabel,
 } from '../lib/devices';
 import {
   ColHead, ColumnsButton, ExportButton, FilterButton, applyColumnOrder, exportCsv,
@@ -30,27 +34,28 @@ import {
   visibleColumnsFor, type ColumnDef, type FacetGroup, type FacetState,
 } from '../lib/listTools';
 import { VirtualRows } from '../lib/virtualRows';
-import RouterLeases from '../components/hardware/RouterLeases';
+import AddRouterModal from '../components/hardware/AddRouterModal';
+import RouterDetail from '../components/hardware/RouterDetail';
+import { RowActionsMenu } from '../components/hardware/RowActionsMenu';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/settings.css';  /* .set-note */
 import '../styles/hardware.css';
 
-// Fit: default columns + trailing compute to 1171px, under LIST_FIT.page
+// Fit: default columns + trailing compute to well under LIST_FIT.page
 // (1172px — measured 1174px in the browser at a 1512px window, nav expanded).
 const COLUMNS: ColumnDef[] = [
   { key: 'name', label: 'Name', width: '1.4fr', default: true, min: 140 },
+  { key: 'approval', label: 'Approval', width: '1fr', default: true, min: 110 },
+  { key: 'status', label: 'Status', width: '80px', default: true },
   { key: 'wan_ip', label: 'WAN IP', width: '1fr', default: true, min: 100 },
   { key: 'lan_ip', label: 'LAN IP', width: '1fr', default: true, min: 100 },
   { key: 'mac', label: 'MAC', width: '1fr', default: true, min: 116 },
-  { key: 'serial', label: 'Serial', width: '1fr', default: true, min: 110 },
   { key: 'vpn', label: 'VPN', width: '72px', default: true },
-  { key: 'connected', label: 'Devices', width: '82px', default: true },
-  {
-    key: 'token_expires', label: 'Token expires', short: 'Expires',
-    width: '1fr', default: true, min: 96,
-  },
+  { key: 'connected', label: 'Clients', width: '72px', default: true },
   { key: 'uptime', label: 'Uptime', width: '75px', default: true },
+  { key: 'model', label: 'Model', width: '1fr', default: false, min: 110 },
+  { key: 'serial', label: 'Serial', width: '1fr', default: false, min: 110 },
   { key: 'last_seen', label: 'Last seen', width: '1fr', default: false, min: 96 },
   { key: 'site', label: 'Site', width: '1fr', default: false },
 ];
@@ -63,24 +68,28 @@ const deviceCellTextTyped: CellText<DeviceItem> = (d, key) => deviceCellText(d, 
 const CSV_COLUMNS: [string, (d: DeviceItem) => string][] = [
   ['ID', (d) => d.id],
   ['Name', (d) => d.name],
+  ['Approval', (d) => deviceCellText(d, 'approval')],
+  ['Status', (d) => deviceCellText(d, 'status')],
   ['WAN IP', (d) => deviceCellText(d, 'wan_ip')],
   ['LAN IP', (d) => deviceCellText(d, 'lan_ip')],
   ['MAC', (d) => deviceCellText(d, 'mac')],
-  ['Serial', (d) => deviceCellText(d, 'serial')],
   ['VPN', (d) => deviceCellText(d, 'vpn')],
-  ['Devices', (d) => deviceCellText(d, 'connected')],
-  ['Token expires', (d) => deviceCellText(d, 'token_expires')],
+  ['Clients', (d) => deviceCellText(d, 'connected')],
   ['Uptime', (d) => deviceCellText(d, 'uptime')],
+  ['Model', (d) => deviceCellText(d, 'model')],
+  ['Serial', (d) => deviceCellText(d, 'serial')],
   ['Last seen', (d) => deviceCellText(d, 'last_seen')],
   ['Site', (d) => deviceCellText(d, 'site')],
+  ['Reporting from', (d) => d.agent_source_ip ?? ''],
 ];
 
-const msgFor = (err: unknown): string =>
-  err instanceof ApiError ? `Request failed (${err.code}).` : "Couldn't delete the router.";
+const msgFor = (err: unknown, what: string): string =>
+  err instanceof ApiError ? `Request failed (${err.code}).` : `Couldn't ${what} the router.`;
 
 export default function Routers() {
   const { can, preferences } = useAuth();
   const canDelete = can('scanning_hardware', 'delete');
+  const canChange = can('scanning_hardware', 'change');
   const listGridScale = listScale(preferences?.list_size);
 
   const [devices, setDevices] = useState<DeviceItem[] | null>(null);
@@ -88,6 +97,9 @@ export default function Routers() {
   const [query, setQuery] = useState('');
   const [facets, setFacets] = useState<FacetState>({});
   const [openId, setOpenId] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [searchParams] = useSearchParams();
+  const focusId = searchParams.get('focus');
 
   const {
     visibleCols, setVisibleCols,
@@ -111,18 +123,33 @@ export default function Routers() {
 
   useEffect(() => { void load(); }, []);
 
+  // The approval notification links here with ?focus=<id>: open that row
+  // once the list has it, and bring it into view.
+  useEffect(() => {
+    if (!focusId || !devices?.some((d) => d.id === focusId)) return;
+    setOpenId(focusId);
+    const esc = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(focusId) : focusId;
+    document.querySelector(`[data-device-id="${esc}"]`)
+      ?.scrollIntoView?.({ block: 'center' });
+  }, [focusId, devices]);
+
   const searchText = (d: DeviceItem) => deviceSearchText(d).toLowerCase();
   const haystack = useSearchHaystacks(devices, searchText);
 
   const facetGroups = useMemo<FacetGroup[]>(() => {
     const sites = new Set<string>();
     const vpns = new Set<string>();
+    const approvals = new Set<string>();
     for (const d of devices ?? []) {
       sites.add(d.site_name ?? '—');
       vpns.add(vpnLabel(d.vpn_status));
+      approvals.add(approvalLabel(d.approval_state));
     }
     return [
       { key: 'site', title: 'Site', options: Array.from(sites).sort(naturalCompare).map((v) => (
+        { value: v, label: v }
+      )) },
+      { key: 'approval', title: 'Approval', options: Array.from(approvals).sort(naturalCompare).map((v) => (
         { value: v, label: v }
       )) },
       { key: 'vpn', title: 'VPN', options: Array.from(vpns).sort(naturalCompare).map((v) => (
@@ -134,6 +161,7 @@ export default function Routers() {
   const facetValues = (d: DeviceItem) => (groupKey: string): string[] => {
     if (groupKey === 'site') return [d.site_name ?? '—'];
     if (groupKey === 'vpn') return [vpnLabel(d.vpn_status)];
+    if (groupKey === 'approval') return [approvalLabel(d.approval_state)];
     return [];
   };
 
@@ -161,15 +189,48 @@ export default function Routers() {
   const grid = listGridStyle(shownCols, ['90px', '30px'], undefined, listGridScale);
   const rowStyle = { gridTemplateColumns: grid.gridTemplateColumns, minWidth: grid.minWidth };
 
-  const remove = async (d: DeviceItem) => {
-    if (!window.confirm(`Delete "${d.name}"? This cannot be undone.`)) return;
+  const act = async (fn: () => Promise<unknown>, what: string) => {
     setError('');
     try {
-      await deleteDevice(d.id);
+      await fn();
       await load();
     } catch (err) {
-      setError(msgFor(err));
+      setError(msgFor(err, what));
     }
+  };
+
+  const remove = (d: DeviceItem) => {
+    if (!window.confirm(`Delete "${d.name}"? This cannot be undone.`)) return;
+    void act(() => deleteDevice(d.id), 'delete');
+  };
+
+  const approve = (d: DeviceItem) => {
+    if (!window.confirm(
+      `Approve "${d.name}"? MAC ${d.mac ?? '—'} · ${d.model ?? 'unknown model'} · `
+      + `reporting from ${d.agent_source_ip ?? 'an unknown address'}. `
+      + 'Its reports are stored from its next check-in.',
+    )) return;
+    void act(() => approveRouter(d.id), 'approve');
+  };
+
+  const revoke = (d: DeviceItem) => {
+    if (!window.confirm(
+      `Revoke "${d.name}"? Its reports stop being stored right away; `
+      + 'it shows as pending again the next time it checks in.',
+    )) return;
+    void act(() => revokeRouter(d.id), 'revoke');
+  };
+
+  const actionsFor = (d: DeviceItem) => {
+    const agent = d.approval_state != null;
+    return [
+      ...(canChange && agent && d.approval_state !== 'approved'
+        ? [{ key: 'approve', label: 'Approve', onSelect: () => approve(d) }] : []),
+      ...(canChange && d.approval_state === 'approved'
+        ? [{ key: 'revoke', label: 'Revoke', onSelect: () => revoke(d) }] : []),
+      ...(canDelete
+        ? [{ key: 'delete', label: 'Delete', destructive: true, onSelect: () => remove(d) }] : []),
+    ];
   };
 
   const cellFor = (d: DeviceItem, key: string) => {
@@ -182,18 +243,30 @@ export default function Routers() {
       case 'vpn':
         return d.vpn_status == null
           ? <span>—</span>
-          : (
-            <span className={'chip' + (d.vpn_status === 'connected' ? ' c-green'
-              : d.vpn_status === 'disconnected' ? ' c-red' : '')}>
-              {vpnLabel(d.vpn_status)}
-            </span>
-          );
-      case 'token_expires': {
-        const state = tokenExpiryState(d.token_expires_at);
-        const text = deviceCellText(d, 'token_expires');
-        if (state === 'expired') return <span className="chip c-red">expired</span>;
-        if (state === 'soon') return <span className="chip c-amber">{text}</span>;
-        return <span className="cell-line" title={titleFor(text)}>{text}</span>;
+          : <span className={'chip' + vpnChipClass(d.vpn_status)}>{vpnLabel(d.vpn_status)}</span>;
+      case 'approval': {
+        if (d.approval_state == null) return <span>—</span>;
+        const tone = d.approval_state === 'approved' ? ' c-green'
+          : d.approval_state === 'pending' ? ' c-amber' : '';
+        return (
+          <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+            <span className={'chip' + tone}>{approvalLabel(d.approval_state)}</span>
+            {d.secret_mismatch && (
+              <span className="chip c-red"
+                    title="This MAC reported with a different secret — the router was reset, reinstalled, or is being impersonated.">
+                Secret changed
+              </span>
+            )}
+          </span>
+        );
+      }
+      case 'status': {
+        const state = routerStatus(d.last_seen_at);
+        return (
+          <span className={'chip' + (state === 'online' ? ' c-green' : '')}>
+            {routerStatusLabel(state)}
+          </span>
+        );
       }
       default: {
         const text = deviceCellText(d, key);
@@ -229,9 +302,8 @@ export default function Routers() {
           <ColumnsButton columns={orderedCols} visible={visibleCols} onChange={setVisibleCols}
                          onReorder={setColOrder} />
           <ExportButton onExport={() => exportCsv('routers', CSV_COLUMNS, visible)} />
-          <button type="button" className="btn-solid" disabled
-                  title="Routers self-register — the registration endpoint arrives with the device agent.">
-            Register router
+          <button type="button" className="btn-solid" onClick={() => setAdding(true)}>
+            How to add a router
           </button>
         </div>
       </div>
@@ -264,7 +336,7 @@ export default function Routers() {
           {visible.length === 0 && (
             devices.length === 0 ? (
               <div className="dir-empty">
-                No routers registered yet.
+                No routers yet. Use “How to add a router” to install the agent on a GL.iNet router.
               </div>
             ) : (
               <div className="dir-empty">
@@ -279,7 +351,7 @@ export default function Routers() {
             renderRow={(d, vp) => {
               const open = openId === d.id;
               return (
-                <div key={d.id} className={`dir-row ${open ? 'open' : ''}`} {...vp}
+                <div key={d.id} data-device-id={d.id} className={`dir-row ${open ? 'open' : ''}`} {...vp}
                      style={{ ...vp?.style, minWidth: rowStyle.minWidth }}>
                   <div className="row-main" style={rowStyle}
                        onClick={() => setOpenId(open ? null : d.id)}>
@@ -287,12 +359,7 @@ export default function Routers() {
                       <div className="cell" key={c.key}>{cellFor(d, c.key)}</div>
                     ))}
                     <div className="cell" style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                      {canDelete && (
-                        <button className="mini-btn danger"
-                                onClick={(e) => { e.stopPropagation(); void remove(d); }}>
-                          Delete
-                        </button>
-                      )}
+                      <RowActionsMenu actions={actionsFor(d)} />
                     </div>
                     <div className="cell chevron-cell">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
@@ -303,7 +370,7 @@ export default function Routers() {
                   <div className="detail">
                     <div className="detail-clip">
                       <div className="detail-inner">
-                        {open && <RouterLeases deviceId={d.id} />}
+                        {open && <RouterDetail device={d} />}
                       </div>
                     </div>
                   </div>
@@ -312,6 +379,8 @@ export default function Routers() {
             }} />
         </div>
       )}
+
+      {adding && <AddRouterModal apiBase={apiUrl()} onClose={() => setAdding(false)} />}
     </div>
   );
 }
