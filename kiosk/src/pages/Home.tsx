@@ -4,7 +4,7 @@
 import { Link } from 'react-router-dom';
 
 import { useDevMode } from '../lib/devMode';
-import { featureAvailable, FEATURES, RFID_READER_FEATURE, type KioskFeature } from '../lib/features';
+import { featureAvailable, homeFeatures, type KioskFeature } from '../lib/features';
 import { useKioskSetup } from '../lib/kioskSetup';
 import { isLaptop } from '../lib/platform';
 import { useKioskSetupState } from '../lib/setupState';
@@ -121,9 +121,7 @@ export default function Home() {
   const [kioskSetup] = useKioskSetup();
   const complete = setupState === 'complete';
   const failed = setupState === 'failed';
-  const tiles = isLaptop() && kioskSetup?.stationType === 'rfid'
-    ? [RFID_READER_FEATURE, ...FEATURES]
-    : FEATURES;
+  const tiles = homeFeatures(isLaptop(), kioskSetup?.stationType);
 
   return (
     <div className="portal-page">

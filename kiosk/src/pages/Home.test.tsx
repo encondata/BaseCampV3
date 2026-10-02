@@ -160,11 +160,40 @@ it('shows an RFID Reader tile first, linking to /rfid_status, for a laptop with 
   saveSetup('rfid');
   renderRouted();
   const links = screen.getAllByRole('link');
-  expect(links).toHaveLength(9);
   expect(links[0].textContent).toContain('RFID Reader');
   expect(links[0].textContent).toContain('Start or stop the reader and watch live activity.');
   expect(links[0].getAttribute('href')).toBe('/rfid_status');
   expect(links[1].textContent).toContain('Kiosk Setup');
+});
+
+const tileTitles = () => Array.from(document.querySelectorAll('.kiosk-tile-title')).map((n) => n.textContent);
+
+it('an RFID Station shows only RFID Reader, Kiosk Setup and Settings', () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop' };
+  writeSetupState('complete');
+  saveSetup('rfid');
+  renderRouted();
+  expect(tileTitles()).toEqual(['RFID Reader', 'Kiosk Setup', 'Settings']);
+});
+
+it('a Label Station shows only Kiosk Setup, Label Printing and Settings', () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop' };
+  writeSetupState('complete');
+  saveSetup('label');
+  renderRouted();
+  expect(tileTitles()).toEqual(['Kiosk Setup', 'Label Printing', 'Settings']);
+});
+
+it('web mode and an unset laptop still show every feature', () => {
+  writeSetupState('complete');
+  saveSetup('rfid');
+  renderRouted();
+  expect(tileTitles()).toHaveLength(8);
+  cleanup();
+  window.__KIOSK_CONFIG__ = { mode: 'laptop' };
+  saveSetup();
+  renderRouted();
+  expect(tileTitles()).toHaveLength(8);
 });
 
 it('hides the RFID Reader tile for a Label Station', () => {
@@ -173,7 +202,6 @@ it('hides the RFID Reader tile for a Label Station', () => {
   saveSetup('label');
   renderRouted();
   expect(screen.queryByRole('link', { name: /RFID Reader/ })).toBeNull();
-  expect(screen.getAllByRole('link')).toHaveLength(8);
 });
 
 it('hides the RFID Reader tile in web mode, even with an RFID setup saved', () => {
