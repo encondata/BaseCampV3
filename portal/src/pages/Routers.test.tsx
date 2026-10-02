@@ -346,3 +346,22 @@ it('?focus=<id> opens that row', async () => {
   renderRouters('/hardware/routers?focus=d2');
   expect(await screen.findByText('Reports are held until this router is approved.')).toBeTruthy();
 });
+
+it('?focus applies once: a later reload does not re-open a collapsed row', async () => {
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  api.listDevices.mockImplementation(async () => DEVICES.map((d) => ({ ...d }))); // new array per load
+  const user = userEvent.setup();
+  renderRouters('/hardware/routers?focus=d2');
+  const held = 'Reports are held until this router is approved.';
+  expect(await screen.findByText(held)).toBeTruthy();
+  const d2 = screen.getByText('zebra-router-2').closest('.dir-row') as HTMLElement;
+  await user.click(d2.querySelector('.row-main') as HTMLElement);
+  expect(screen.queryByText(held)).toBeNull();
+  const d1 = screen.getByText('dock-router-1').closest('.dir-row') as HTMLElement;
+  await user.click(within(d1).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Revoke' }));
+  await waitFor(() => expect(api.listDevices).toHaveBeenCalledTimes(2));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(screen.queryByText(held)).toBeNull();
+  confirmSpy.mockRestore();
+});

@@ -13,7 +13,7 @@
  *  ?focus=<id> (the approval notification's link) opens that row. */
 
 import { compareValues, naturalCompare } from '../lib/naturalSort';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -100,6 +100,7 @@ export default function Routers() {
   const [adding, setAdding] = useState(false);
   const [searchParams] = useSearchParams();
   const focusId = searchParams.get('focus');
+  const focusedRef = useRef<string | null>(null);
 
   const {
     visibleCols, setVisibleCols,
@@ -126,7 +127,9 @@ export default function Routers() {
   // The approval notification links here with ?focus=<id>: open that row
   // once the list has it, and bring it into view.
   useEffect(() => {
-    if (!focusId || !devices?.some((d) => d.id === focusId)) return;
+    if (!focusId || focusedRef.current === focusId) return;
+    if (!devices?.some((d) => d.id === focusId)) return;
+    focusedRef.current = focusId;
     setOpenId(focusId);
     const esc = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(focusId) : focusId;
     document.querySelector(`[data-device-id="${esc}"]`)
