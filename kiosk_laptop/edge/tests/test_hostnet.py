@@ -88,3 +88,48 @@ async def test_lan_access_flag(settings, cloud):
         for host in ("localhost:8090", "127.0.0.1:8090", "[::1]:8090"):
             r = await c.get("/config.js", headers={"host": host})
             assert '"lanAccess": false' in r.text
+
+
+def test_read_never_raises_and_skips_bad_entries(tmp_path):
+    good = {"name": "en0", "ipv4": "10.1.2.3", "prefix": 24}
+    bad = [{"ipv4": "10.1.2.4", "prefix": float("inf")}, {"ipv4": 5, "prefix": 24},
+           {"ipv4": "0.0.0.0", "prefix": 24}, {"ipv4": "127.0.0.1", "prefix": 8},
+           {"ipv4": "224.0.0.1", "prefix": 24}, {"ipv4": "169.254.1.1", "prefix": 16},
+           {"ipv4": "255.255.255.255", "prefix": 24}, {"ipv4": "10.9.9.9", "prefix": 33},
+           {"ipv4": "10.9.9.9", "prefix": -1}, "junk"]
+    write(tmp_path, NOW, [*bad, good])
+    assert read_host_network(tmp_path, now=NOW) == ([HostInterface("en0", "10.1.2.3", 24)], True)
+    (tmp_path / "host-network.json").write_text(
+        '{"updated_at": "%s", "interfaces": [{"ipv4": "10.1.2.3", "prefix": Infinity}]}'
+        % NOW.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    assert read_host_network(tmp_path, now=NOW) == ([], True)
+    (tmp_path / "host-network.json").write_text("[1]")
+    assert read_host_network(tmp_path, now=NOW) == ([], False)
+
+
+async def test_malformed_bracket_host_is_400(client):
+    assert (await client.get("/edge/identity", headers={"host": "[::1]garbage:80"})).status_code == 400
+    assert (await client.get("/edge/identity", headers={"host": "[::1]:80"})).status_code == 200
+
+
+def test_allowed_hosts_lowercased(tmp_path):
+    assert "kiosk.lan" in DynamicHosts(tmp_path, ["Kiosk.LAN"]).allowed()
+
+
+async def test_host_check_covers_websocket(settings, cloud):
+    app = create_app(settings)
+    sent = []
+
+    async def run(scope):
+        sent.clear()
+        async def receive():
+            return {"type": "websocket.connect"}
+        async def send(m):
+            sent.append(m)
+        await app(scope, receive, send)
+
+    base = {"type": "websocket", "path": "/ws", "headers": [(b"host", b"evil.example")]}
+    await run(base)
+    assert sent == [{"type": "websocket.close", "code": 1008}]
+    await run({**base, "headers": [(b"host", b"localhost:8090")]})
+    assert {"type": "websocket.close", "code": 1008} not in sent

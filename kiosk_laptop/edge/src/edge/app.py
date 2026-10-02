@@ -22,7 +22,7 @@ from edge.background import Background
 from edge.config import Settings, load_settings
 from edge.crypto import load_or_create_keys
 from edge.db import Store
-from edge.hostnet import DynamicHosts
+from edge.hostnet import DynamicHosts, HostCheckMiddleware, parse_host
 from edge.identity import load_or_create
 from edge.outbox import OutboxWorker
 from edge.routes import auth as auth_routes
@@ -34,14 +34,6 @@ from edge.upstream import Upstream
 
 API_PREFIXES = ("/auth/", "/kiosk/", "/system/", "/edge/")
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "[::1]", "edge.test")  # edge.test: the test client
-
-
-def host_name(request: Request) -> str:
-    """The request's Host without its port (an IPv6 literal keeps its brackets)."""
-    host = request.headers.get("host", "")
-    if host.startswith("[") and "]" in host:
-        return host[:host.index("]") + 1]
-    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
 
 
 def escapes(request: Request) -> bool:
@@ -81,15 +73,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     app = FastAPI(lifespan=lifespan, title="ServerSherpa Kiosk Edge", docs_url=None, redoc_url=None,
                   openapi_url=None)
     app.state.hosts = DynamicHosts(settings.data_dir, [*LOCAL_HOSTS, *settings.allowed_hosts])
-
-    @app.middleware("http")
-    async def host_check(request: Request, call_next):
-        # Host names only (the port is dropped); an IPv6 literal keeps its brackets.
-        name = host_name(request)
-        if name.lower() not in request.app.state.hosts.allowed():
-            return PlainTextResponse("Invalid host header", status_code=400)
-        return await call_next(request)
-
+    app.add_middleware(HostCheckMiddleware, hosts=app.state.hosts)
     app.state.settings = settings
     app.state.identity = load_or_create(settings.data_dir)
     app.state.store = Store(settings.data_dir / "edge.db")
@@ -109,8 +93,8 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
     @app.get("/config.js")
     async def config_js(request: Request) -> Response:
         ident = request.app.state.identity
-        name = host_name(request)
-        lan = name.lower() not in ("localhost", "127.0.0.1", "[::1]")
+        name = parse_host(request.headers.get("host", "")) or ""
+        lan = name not in ("localhost", "127.0.0.1", "[::1]")
         body = (
             "window.__KIOSK_CONFIG__ = { apiUrl: window.location.origin, "
             f"portalUrl: {json.dumps(settings.portal_url)}, "

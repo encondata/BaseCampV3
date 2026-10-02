@@ -31,26 +31,84 @@ def _parse_time(value) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
+def _usable(ip: ipaddress.IPv4Address) -> bool:
+    return not (ip.is_unspecified or ip.is_loopback or ip.is_multicast or ip.is_link_local
+                or ip == ipaddress.IPv4Address("255.255.255.255"))
+
+
 def read_host_network(data_dir, *, now: datetime | None = None) -> tuple[list[HostInterface], bool]:
-    """(interfaces, fresh). Missing or unparseable file -> ([], False)."""
+    """(interfaces, fresh). Never raises: a missing or unparseable file is
+    ([], False); a bad entry is skipped on its own."""
     try:
         data = json.loads((Path(data_dir) / FILE_NAME).read_text())
         stamp = _parse_time(data["updated_at"])
+        if stamp is None:
+            return [], False
         found = []
         for item in data["interfaces"]:
-            ip = ipaddress.IPv4Address(item["ipv4"])
-            prefix = int(item["prefix"])
-            if not 0 <= prefix <= 32:
+            try:
+                if not isinstance(item["ipv4"], str):
+                    continue
+                ip = ipaddress.IPv4Address(item["ipv4"])
+                prefix = item["prefix"]
+                if isinstance(prefix, bool) or not isinstance(prefix, int) or not 0 <= prefix <= 32:
+                    continue
+                if not _usable(ip):
+                    continue
+                found.append(HostInterface(str(item.get("name", "")), str(ip), prefix))
+            except Exception:
                 continue
-            found.append(HostInterface(str(item.get("name", "")), str(ip), prefix))
-    except (OSError, ValueError, KeyError, TypeError):
+        now = now or datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        return found, abs((now - stamp).total_seconds()) <= STALE_AFTER_S
+    except Exception:
         return [], False
-    if stamp is None:
-        return [], False
-    now = now or datetime.now(timezone.utc)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
-    return found, abs((now - stamp).total_seconds()) <= STALE_AFTER_S
+
+
+def parse_host(host: str) -> str | None:
+    """The Host header without its port, lowercased (an IPv6 literal keeps its
+    brackets). None when it is malformed."""
+    host = host.strip().lower()
+    if host.startswith("["):
+        end = host.find("]")
+        if end < 0:
+            return None
+        rest = host[end + 1:]
+        if rest and not (rest.startswith(":") and rest[1:].isdigit()):
+            return None
+        return host[:end + 1]
+    if host.count(":") > 1:
+        return None
+    if ":" in host:
+        host, port = host.split(":")
+        if not port.isdigit():
+            return None
+    return host or None
+
+
+class HostCheckMiddleware:
+    """Pure ASGI host check for http and websocket scopes."""
+
+    def __init__(self, app, hosts: "DynamicHosts"):
+        self.app = app
+        self.hosts = hosts
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+        raw = dict(scope.get("headers") or []).get(b"host", b"").decode("latin-1")
+        name = parse_host(raw)
+        if name is not None and name in self.hosts.allowed():
+            return await self.app(scope, receive, send)
+        if scope["type"] == "websocket":
+            await receive()
+            return await send({"type": "websocket.close", "code": 1008})
+        body = b"Invalid host header"
+        await send({"type": "http.response.start", "status": 400,
+                    "headers": [(b"content-type", b"text/plain; charset=utf-8"),
+                                (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
 
 
 def laptop_ip_for(reader_ip: str, interfaces: list[HostInterface]) -> str | None:
@@ -94,7 +152,7 @@ class DynamicHosts:
 
     def __init__(self, data_dir, extra=(), *, clock=time.time):
         self._dir = Path(data_dir)
-        self._base = {*BASE_HOSTS, *extra}
+        self._base = {*BASE_HOSTS, *(h.lower() for h in extra)}
         self._clock = clock
         self._checked: float | None = None
         self._ips: set[str] = set()
