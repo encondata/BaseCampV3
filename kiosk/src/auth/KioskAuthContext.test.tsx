@@ -40,6 +40,7 @@ function Probe() {
       <span data-testid="kiosk-move">{a.kioskMove?.name ?? 'none'}</span>
       <span data-testid="is-admin">{String(a.isAdmin)}</span>
       <span data-testid="is-developer">{String(a.isDeveloper)}</span>
+      <span data-testid="clear-signal">{a.setupClearedSignal}</span>
       <button onClick={() => void a.login('a@x', 'pw')}>login</button>
       <button onClick={() => void a.loginWithMovePassword('Crew-2026!')}>move login</button>
       <button onClick={() => a.completePair(SESSION as unknown as Parameters<typeof a.completePair>[0])}>
@@ -209,4 +210,18 @@ it('a person sign-in leaves any saved setup alone', async () => {
   await act(async () => { screen.getByText('login').click(); });
   expect(readKioskSetup()?.initiativeId).toBe('x-move');
   expect(readSetupState()).toBe('complete');
+});
+
+it('exposes setupClearedSignal: 0 until the heartbeat reports an applied clear, then +1 each time', async () => {
+  api.refreshSession.mockResolvedValue(SESSION);
+  render(<KioskAuthProvider><Probe /></KioskAuthProvider>);
+  await act(async () => {});
+  expect(screen.getByTestId('clear-signal').textContent).toBe('0');
+
+  const onClear = hb.startHeartbeat.mock.calls[0][3] as (id: string) => void;
+  expect(typeof onClear).toBe('function');
+  await act(async () => { onClear('req-1'); });
+  expect(screen.getByTestId('clear-signal').textContent).toBe('1');
+  await act(async () => { onClear('req-2'); });
+  expect(screen.getByTestId('clear-signal').textContent).toBe('2');
 });

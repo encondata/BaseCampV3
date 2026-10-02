@@ -57,7 +57,9 @@ function sessionTitle(expiresAt: string | null): string | undefined {
 }
 
 export default function KioskShell({ children }: { children: ReactNode }) {
-  const { status, person, registration, preferences, sessionExpiresAt, kioskMove, logout } = useKioskAuth();
+  const {
+    status, person, registration, preferences, sessionExpiresAt, kioskMove, logout, setupClearedSignal,
+  } = useKioskAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const authed = status === 'authed';
@@ -65,6 +67,15 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   const [kioskSetup] = useKioskSetup();
   const sync = useSyncStatus();
   const { status: edge } = useEdgeStatus();
+
+  // Clear Setup from the portal: whoever is signed in goes to Kiosk Setup.
+  useEffect(() => {
+    if (setupClearedSignal > 0 && location.pathname !== '/setup') {
+      navigate('/setup', { replace: true });
+    }
+    // only a NEW signal navigates — not every route change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setupClearedSignal]);
 
   useEffect(() => {
     applyPreferences(preferences ?? DEFAULT_PREFERENCES);

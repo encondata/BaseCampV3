@@ -33,6 +33,7 @@ const auth = vi.hoisted(() => ({
   sessionExpiresAt: '2026-09-14T19:00:42.000Z' as string | null,
   kioskMove: null as { initiative_id: string; name: string } | null,
   logout: vi.fn(() => Promise.resolve()),
+  setupClearedSignal: 0,
   can: (_resource: string, _action: string) => true as boolean,
 }));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
@@ -64,6 +65,7 @@ afterEach(() => {
   auth.sessionExpiresAt = '2026-09-14T19:00:42.000Z';
   auth.can = () => true;
   auth.kioskMove = null;
+  auth.setupClearedSignal = 0;
   syncMock.status = { phase: 'idle' };
   localStorage.clear();
 });
@@ -389,4 +391,37 @@ it('web mode (no edge status): no Cloud or Sign-in item', () => {
   render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
   expect(screen.queryByText('Cloud')).toBeNull();
   expect(screen.queryByText('Sign-in')).toBeNull();
+});
+
+function clearSetupUi(initial: string) {
+  return (
+    <MemoryRouter initialEntries={[initial]}>
+      <Routes>
+        <Route path="/scan" element={<KioskShell><div>Scan page</div></KioskShell>} />
+        <Route path="/setup" element={<KioskShell><div>Setup page</div></KioskShell>} />
+      </Routes>
+    </MemoryRouter>
+  );
+}
+
+it('a new Clear Setup signal sends the signed-in person to /setup', async () => {
+  const { rerender } = render(clearSetupUi('/scan'));
+  expect(await screen.findByText('Scan page')).toBeTruthy();
+  auth.setupClearedSignal = 1;
+  rerender(clearSetupUi('/scan'));   // a fresh element: the mocked hook isn't a context, so re-render explicitly
+  expect(await screen.findByText('Setup page')).toBeTruthy();
+  expect(screen.queryByText('Scan page')).toBeNull();
+});
+
+it('no Clear Setup signal leaves the person where they are', async () => {
+  const { rerender } = render(clearSetupUi('/scan'));
+  rerender(clearSetupUi('/scan'));
+  expect(await screen.findByText('Scan page')).toBeTruthy();
+  expect(screen.queryByText('Setup page')).toBeNull();
+});
+
+it('a signal already carried on mount (a past clear) does not navigate away from /setup', async () => {
+  auth.setupClearedSignal = 1;
+  render(clearSetupUi('/setup'));
+  expect(await screen.findByText('Setup page')).toBeTruthy();
 });

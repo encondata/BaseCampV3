@@ -47,6 +47,8 @@ export interface KioskAuthValue extends State {
   logout: () => Promise<void>;
   can: (resource: string, action: Action) => boolean;
   heartbeatNow: () => Promise<void>;
+  /** 0 until a Clear Setup is applied this session; +1 for each one applied. */
+  setupClearedSignal: number;
 }
 
 const ANON: State = {
@@ -70,6 +72,7 @@ const Ctx = createContext<KioskAuthValue | null>(null);
 export function KioskAuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<State>(LOADING);
   const [registration, setRegistration] = useState<RegistrationState | null>(null);
+  const [setupClearedSignal, setSetupClearedSignal] = useState(0);
   const heartbeat = useRef<HeartbeatHandle | null>(null);
   // Set only for the beat right after login()/completePair() — never for a
   // cookie restore — so the API can auto-register the kiosk on sign-in and
@@ -110,7 +113,8 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
       setRegistration(null);
       return;
     }
-    const handle = startHeartbeat(setRegistration, HEARTBEAT_MS, signInRef.current);
+    const handle = startHeartbeat(setRegistration, HEARTBEAT_MS, signInRef.current,
+      () => setSetupClearedSignal((n) => n + 1));
     signInRef.current = undefined;
     heartbeat.current = handle;
     return () => {
@@ -158,8 +162,9 @@ export function KioskAuthProvider({ children }: { children: ReactNode }) {
   const isDeveloper = state.roles.includes('developer');
 
   const value = useMemo<KioskAuthValue>(
-    () => ({ ...state, registration, isAdmin, isDeveloper, login, loginWithMovePassword, completePair, logout, can, heartbeatNow }),
-    [state, registration, isAdmin, isDeveloper, login, loginWithMovePassword, completePair, logout, can, heartbeatNow],
+    () => ({ ...state, registration, isAdmin, isDeveloper, login, loginWithMovePassword, completePair, logout, can, heartbeatNow, setupClearedSignal }),
+    [state, registration, isAdmin, isDeveloper, login, loginWithMovePassword, completePair, logout, can, heartbeatNow,
+      setupClearedSignal],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

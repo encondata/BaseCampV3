@@ -21,6 +21,7 @@ import {
 } from '../lib/api';
 import { getIdentity } from '../lib/identity';
 import { useKioskSetup } from '../lib/kioskSetup';
+import { dismissSetupClearNotice, useSetupClearNotice } from '../lib/setupClear';
 import {
   isSetupComplete, readSetupState, useKioskSetupState, writeSetupState,
 } from '../lib/setupState';
@@ -62,6 +63,7 @@ export default function KioskSetup() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const sync = useSyncStatus();
+  const clearNotice = useSetupClearNotice();
 
   const load = () => {
     setLoadError(false);
@@ -146,6 +148,7 @@ export default function KioskSetup() {
         scanStatus: result.scan_status, scanLabel: result.scan_status_label,
       });
       writeSetupState('complete');
+      dismissSetupClearNotice();
       setWizardOpen(false);
       // Fire-and-forget: the summary appears immediately and the
       // download reports itself through `.sync-status`. A sync outcome
@@ -168,6 +171,11 @@ export default function KioskSetup() {
       <div className="portal-page">
         <div className="eyebrow">Kiosk · Setup</div>
         <h1 className="page-title">Kiosk setup</h1>
+      {clearNotice && (
+        <div className="sys-banner sys-banner-broadcast" role="status">
+          An administrator cleared this kiosk&apos;s setup. Run Kiosk Setup to continue.
+        </div>
+      )}
         <div className="setup-summary">
           <p>
             This kiosk is set up for <b>{selection.initiativeName}</b> at{' '}
@@ -225,6 +233,11 @@ export default function KioskSetup() {
     <div className="portal-page">
       <div className="eyebrow">Kiosk · Setup</div>
       <h1 className="page-title">Kiosk setup</h1>
+      {clearNotice && (
+        <div className="sys-banner sys-banner-broadcast" role="status">
+          An administrator cleared this kiosk&apos;s setup. Run Kiosk Setup to continue.
+        </div>
+      )}
       <div className="setup-wizard">
         <div className="setup-steps">{stepLabel}</div>
 

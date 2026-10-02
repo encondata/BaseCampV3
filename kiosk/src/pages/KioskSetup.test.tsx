@@ -408,3 +408,39 @@ it('an idle summary offers "Sync now" (e.g. after Clear local data)', async () =
   await user.click(screen.getByRole('button', { name: 'Sync now' }));
   expect(syncMock.runSync).toHaveBeenCalledWith('i-1', 'NAP11 Hall Migration (demo)');
 });
+
+const BANNER = "An administrator cleared this kiosk's setup. Run Kiosk Setup to continue.";
+
+it('shows the administrator banner while the clear notice is up, and drops it once setup completes', async () => {
+  localStorage.setItem('ss.kiosk.setupClear', JSON.stringify({ id: 'x', acked: true, notice: true }));
+  const user = userEvent.setup();
+  renderPage();
+  expect(await screen.findByText(BANNER)).toBeTruthy();
+
+  await goToScanStep(user);
+  expect(screen.getByText(BANNER)).toBeTruthy();   // still up mid-wizard
+  await user.click(cardFor('RFID 1 - Cage Exit'));
+
+  expect(await screen.findByText(/This kiosk is set up for/)).toBeTruthy();
+  await waitFor(() => expect(screen.queryByText(BANNER)).toBeNull());
+  expect(JSON.parse(localStorage.getItem('ss.kiosk.setupClear')!).notice).toBe(false);
+});
+
+it('shows the banner on the summary view too, when a clear arrives over a completed setup', async () => {
+  writeKioskSetup({
+    initiativeId: 'i-1', initiativeName: 'NAP11 Hall Migration (demo)',
+    siteId: 's-2', siteName: 'NAP22 Hall', siteRole: 'destination',
+    scanStatus: 'rfid_1_cage_exit', scanLabel: 'RFID 1 - Cage Exit',
+  });
+  writeSetupState('complete');
+  localStorage.setItem('ss.kiosk.setupClear', JSON.stringify({ id: 'x', acked: true, notice: true }));
+  renderPage();
+  expect(await screen.findByText(/This kiosk is set up for/)).toBeTruthy();
+  expect(screen.getByText(BANNER)).toBeTruthy();
+});
+
+it('shows no banner without a clear notice', async () => {
+  renderPage();
+  await screen.findByText('Kiosk setup');
+  expect(screen.queryByText(/administrator cleared this kiosk's setup/)).toBeNull();
+});
