@@ -108,6 +108,7 @@ struct KioskShell<Content: View>: View {
             footer
         }
         .background(palette.paper2)
+        .statusBarHidden(true)
         .alert("Sign out of this kiosk?", isPresented: $confirmSignOut) {
             Button("Sign out", role: .destructive) { Task { await auth.logout() } }
             Button("Cancel", role: .cancel) {}
@@ -126,12 +127,12 @@ struct KioskShell<Content: View>: View {
                     HStack(spacing: 10) { kioskName; Spacer(minLength: 0); userItems }
                 }
             } else {
-                HStack(spacing: 12) {
-                    brand
-                    backButton
-                    Spacer(minLength: 8)
-                    kioskName
-                    userItems
+                // Drops the mode chip, then the screen title, before anything else gives way;
+                // the last fallback lets the person's name truncate.
+                ViewThatFits(in: .horizontal) {
+                    regularRow(showChip: true, showTitle: true)
+                    regularRow(showChip: false, showTitle: true)
+                    regularRow(showChip: false, showTitle: false)
                 }
             }
         }
@@ -140,24 +141,38 @@ struct KioskShell<Content: View>: View {
         .background(palette.ink.ignoresSafeArea(edges: .top))
     }
 
-    private var brand: some View {
+    private func regularRow(showChip: Bool, showTitle: Bool) -> some View {
+        HStack(spacing: 12) {
+            brand(showChip: showChip, showTitle: showTitle)
+            backButton
+            Spacer(minLength: 8)
+            kioskName
+            userItems
+        }
+    }
+
+    private var brand: some View { brand(showChip: true, showTitle: true) }
+
+    private func brand(showChip: Bool, showTitle: Bool) -> some View {
         HStack(spacing: 8) {
             Image("Logo").resizable().scaledToFit().frame(width: 26, height: 26).accessibilityHidden(true)
             (Text("Server").foregroundStyle(palette.snow) + Text("Sherpa").foregroundStyle(palette.accent))
                 .font(KioskType.sans(17, .semibold))
                 .lineLimit(1)
-            Text(modeChipText(isPad: UIDevice.current.userInterfaceIdiom == .pad))
+                .fixedSize()
+            if showChip { Text(modeChipText(isPad: UIDevice.current.userInterfaceIdiom == .pad))
                 .font(KioskType.mono(10)).tracking(1)
                 .foregroundStyle(palette.snow.opacity(0.7))
                 .padding(.horizontal, 7).padding(.vertical, 2)
                 .overlay(Capsule().stroke(palette.inkLine, lineWidth: 1))
                 .lineLimit(1)
-                .fixedSize()
-            if let route = path.last {
+                .fixedSize() }
+            if showTitle, let route = path.last {
                 Text(feature(route.featureId).title)
                     .font(KioskType.sans(15, .medium))
                     .foregroundStyle(palette.snow)
                     .lineLimit(1)
+                    .fixedSize()
             }
         }
     }
