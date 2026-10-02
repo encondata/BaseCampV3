@@ -71,7 +71,7 @@ async def test_revoke_and_its_audit(client, db, seeded_user):
         AuditLog.action == "router_revoke", AuditLog.entity_id == str(d.id))) is not None
 
 
-async def test_revoke_resets_the_secret_mismatch_flag(client, db, seeded_user):
+async def test_revoke_resets_the_mismatch_flag_and_drops_the_candidate(client, db, seeded_user):
     hdrs = await login_admin(client, db, seeded_user)
     d = await _router(db, approval_state="pending", secret_mismatch=True,
                       pending_secret_hash=NEW)
@@ -79,6 +79,8 @@ async def test_revoke_resets_the_secret_mismatch_flag(client, db, seeded_user):
     assert resp.status_code == 200 and resp.json()["secret_mismatch"] is False
     await db.refresh(d)
     assert d.secret_mismatch is False
+    # a later Approve must never promote a secret nobody vetted
+    assert d.pending_secret_hash is None and d.agent_secret_hash == OLD
 
 
 async def test_decisions_resolve_every_approver_copy(client, db, seeded_user):

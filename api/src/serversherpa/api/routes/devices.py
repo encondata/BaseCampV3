@@ -467,7 +467,8 @@ async def revoke_router(
     result = await db.execute(
         update(Device)
         .where(Device.id == device.id, Device.approval_state != "revoked")
-        .values(approval_state="revoked", secret_mismatch=False, updated_at=now)
+        .values(approval_state="revoked", secret_mismatch=False,
+                pending_secret_hash=None, updated_at=now)
         .execution_options(synchronize_session=False))
     if result.rowcount:
         audit(db, actor_id=actor.person.id, entity_type="device",
