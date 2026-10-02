@@ -197,3 +197,40 @@ export async function forgetKnownHost(host: string, port: number): Promise<void>
                               { method: 'DELETE' });
   if (!resp.ok) throw await errorOf(resp);
 }
+
+/* ---- Dashboard (GET /api/dashboard) ---- */
+export interface DashHealth { status: 'healthy' | 'degraded' | 'unknown' | string; label: string }
+export interface DashSlot {
+  id: 'blue' | 'green' | string; label: string;
+  state: 'active' | 'standby' | 'empty' | string;
+  health: 'healthy' | 'degraded' | 'unknown' | string;
+  version: string | null; instances: { running: number; total: number }; traffic_pct: number;
+}
+export interface DashProduction {
+  status: 'active' | 'inactive' | string; active_slot: string | null;
+  traffic: { label: string; sub: string };
+  load_balancer: { label: string; sub: string; present: boolean };
+  slots: DashSlot[];
+}
+export interface DashEnvironment {
+  id: string; label: string; state: 'active' | 'empty' | string; version: string | null;
+  last_release: string | null; action_label: string;
+}
+export interface DashNode {
+  id: string; name: string;
+  kind: 'environment' | 'deployment' | 'group' | 'droplet' | 'database' | 'spaces' | 'load_balancer' | string;
+  type_label: string; status: string; status_label: string; region: string; endpoint: string;
+  badge: string | null; dot: 'green' | 'gray' | 'blue' | string | null; children: DashNode[];
+}
+export interface DashboardData {
+  demo: boolean; generated_at: string; health: DashHealth; production: DashProduction;
+  environments: DashEnvironment[];
+  infrastructure: { source: 'none' | 'digitalocean' | 'demo' | string; error: string | null; tree: DashNode[] };
+}
+export function getDashboard(opts: { demo?: boolean; refresh?: boolean } = {}) {
+  const params = new URLSearchParams();
+  if (opts.demo) params.set('demo', '1');
+  if (opts.refresh) params.set('refresh', '1');
+  const qs = params.toString();
+  return getJson<DashboardData>(`/dashboard${qs ? `?${qs}` : ''}`);
+}
