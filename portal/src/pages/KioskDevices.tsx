@@ -376,16 +376,18 @@ export default function KioskDevices() {
       }
       case 'name': {
         const text = deviceCellText(d, key);
+        const nameLine = <span className="cell-line" title={titleFor(text)}>{text}</span>;
+        if (!d.setup_clear_requested_at) return nameLine;
+        // The chip is a SIBLING of the ellipsizing name: inside .cell-line
+        // (nowrap + overflow hidden) a long name or the narrow Name floor
+        // would clip it away. The name shrinks; the chip keeps its size.
         return (
-          <span className="cell-line" title={titleFor(text)}>
-            {text}
-            {d.setup_clear_requested_at && (
-              <>
-                {' '}
-                <span className="chip c-amber" title={clearChipTitle(d)}>Setup clear pending</span>
-              </>
-            )}
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <span className="cell-line" style={{ minWidth: 0 }} title={titleFor(text)}>{text}</span>
+            <span className="chip c-amber" style={{ flexShrink: 0 }} title={clearChipTitle(d)}>
+              Setup clear pending
+            </span>
+          </div>
         );
       }
       case 'sub_type':

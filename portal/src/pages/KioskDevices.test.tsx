@@ -625,6 +625,11 @@ it('a pending clear shows the chip with who/when and offers Cancel instead', asy
   const chip = await screen.findByText('Setup clear pending');
   expect(chip.className).toContain('c-amber');
   expect(chip.getAttribute('title')).toMatch(/^Requested by Jimmy Henderson, /);
+  // A sibling of the ellipsizing name, never inside it (it would be clipped).
+  const nameLine = screen.getByText('kiosk-dock-1', { selector: '.cell-line' });
+  expect(nameLine.contains(chip)).toBe(false);
+  expect(chip.closest('.cell-line')).toBeNull();
+  expect(chip.parentElement).toBe(nameLine.parentElement);
   const { user } = await openActions('kiosk-dock-1');
   expect(screen.queryByRole('menuitem', { name: 'Clear Setup' })).toBeNull();
   await user.click(screen.getByRole('menuitem', { name: 'Cancel clear setup' }));
