@@ -17,6 +17,8 @@ class RfidSettingsTest {
         assertEquals(true, d.ledOnRead)
         assertEquals(true, d.dpo)
         assertEquals(null, d.region)
+        assertEquals(RfidTriggerPersonality.RFID, d.triggerPersonality)
+        assertEquals(ScannerPluginMode.AUTO, d.scannerPluginMode)
     }
 
     @Test fun roundTripsThroughJson() {
@@ -24,6 +26,7 @@ class RfidSettingsTest {
             enabled = true, triggerMode = RfidTriggerMode.TOGGLE, repeatPolicy = RepeatSweepPolicy.SKIP_AND_COUNT,
             beeper = SledBeeper.OFF, powerDbm = 12, session = RfidSession.S2, tagPopulation = 200,
             uniqueTagReport = false, ledOnRead = false, dpo = false, region = "USA",
+            triggerPersonality = RfidTriggerPersonality.BARCODE, scannerPluginMode = ScannerPluginMode.ON,
         )
         assertEquals(s, parseRfidSettings(s.toJson()))
     }
@@ -33,10 +36,15 @@ class RfidSettingsTest {
         assertEquals(DEFAULT_RFID_SETTINGS, parseRfidSettings("not json"))
         assertEquals(DEFAULT_RFID_SETTINGS, parseRfidSettings("{}"))
         // An unknown enum value is not a reason to lose the rest of the settings.
-        val partial = parseRfidSettings("""{"enabled":true,"triggerMode":"nonsense","powerDbm":19}""")
+        val partial = parseRfidSettings(
+            """{"enabled":true,"triggerMode":"nonsense","powerDbm":19,""" +
+                """"triggerPersonality":"nonsense","scannerPluginMode":"nonsense"}""",
+        )
         assertEquals(true, partial.enabled)
         assertEquals(RfidTriggerMode.HOLD, partial.triggerMode)
         assertEquals(19, partial.powerDbm)
+        assertEquals(RfidTriggerPersonality.RFID, partial.triggerPersonality)
+        assertEquals(ScannerPluginMode.AUTO, partial.scannerPluginMode)
     }
 
     /** A saved file from an older build, or a slider bug, must not ask the

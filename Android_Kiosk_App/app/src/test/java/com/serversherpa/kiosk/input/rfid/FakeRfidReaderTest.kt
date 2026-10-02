@@ -2,6 +2,8 @@ package com.serversherpa.kiosk.input.rfid
 
 import com.serversherpa.kiosk.core.rfid.DEFAULT_RFID_SETTINGS
 import com.serversherpa.kiosk.core.rfid.RfidConnection
+import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
+import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
@@ -42,7 +44,7 @@ class FakeRfidReaderTest {
     @Test fun startInventoryAndApplySucceedAfterConnecting() = runTest {
         val reader = FakeRfidReader()
 
-        val connected = reader.connect()
+        val connected = reader.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
         assertTrue(connected.isSuccess)
 
         val started = reader.startInventory()
@@ -58,7 +60,7 @@ class FakeRfidReaderTest {
         val reader = FakeRfidReader()
         reader.connectResult = Result.failure(IllegalStateException("No sled paired."))
 
-        val connected = reader.connect()
+        val connected = reader.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
         assertTrue(connected.isFailure)
         assertTrue(reader.connection.value is RfidConnection.Failed)
 
@@ -85,7 +87,7 @@ class FakeRfidReaderTest {
 
     @Test fun setConnectionToDisconnectedClearsInventoryRunning() = runTest {
         val reader = FakeRfidReader()
-        reader.connect()
+        reader.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
         reader.startInventory()
         assertTrue(reader.inventoryRunning)
 
@@ -96,7 +98,7 @@ class FakeRfidReaderTest {
 
     @Test fun setConnectionToFailedClearsInventoryRunning() = runTest {
         val reader = FakeRfidReader()
-        reader.connect()
+        reader.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
         reader.startInventory()
         assertTrue(reader.inventoryRunning)
 
@@ -107,11 +109,11 @@ class FakeRfidReaderTest {
 
     @Test fun connectAgainWhileInventoryIsRunningClearsInventoryRunning() = runTest {
         val reader = FakeRfidReader()
-        reader.connect()
+        reader.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
         reader.startInventory()
         assertTrue(reader.inventoryRunning)
 
-        reader.connect()
+        reader.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
 
         assertFalse(reader.inventoryRunning)
     }

@@ -17,6 +17,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.serversherpa.kiosk.LocalAppContainer
+import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
+import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import com.serversherpa.kiosk.core.scan.displayRfid
 import com.serversherpa.kiosk.core.setup.SetupState
@@ -74,7 +76,7 @@ fun DeveloperPanel() {
                             // .start() collects reader.connection itself, so it sees this
                             // Connected transition and fires the push regardless of who called
                             // connect().
-                            fakeReader.connect()
+                            fakeReader.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
                             fakeReader.emitTrigger(TriggerEvent.PRESSED)
                             for (tag in listOf("100348", "100349", "100350", "100348")) {
                                 fakeReader.emitTag(tag)

@@ -5,6 +5,8 @@ import com.serversherpa.kiosk.core.rfid.RepeatSweepPolicy
 import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.RfidTriggerMode
+import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
+import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
 import com.serversherpa.kiosk.core.rfid.TriggerEvent
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CompletableDeferred
@@ -173,7 +175,7 @@ class RfidControllerTest {
      */
     @Test fun aControllerStartedAgainstAnAlreadyConnectedReaderPushesSettingsWithoutWaitingForAChange() = runTest {
         val reader = FakeRfidReader()
-        reader.connect()
+        reader.connect(RfidTriggerPersonality.RFID, ScannerPluginMode.AUTO)
         val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS)
         val controller = RfidController(reader, settings, backgroundScope)
 
@@ -249,6 +251,81 @@ class RfidControllerTest {
         assertTrue("nothing was open, so nothing should have been emitted", bursts.isEmpty())
     }
 
+    /**
+     * Wraps a real `FakeRfidReader`, delegating everything except
+     * `stopInventory()`/`disconnect()`, which each append their own tag to
+     * [callOrder] before delegating. A bare `assertEquals(false,
+     * reader.inventoryRunning)` after a disconnect proves nothing about
+     * *order* — `FakeRfidReader.disconnect()` unconditionally clears
+     * `inventoryRunning` itself (see its own comment: "a sled that has just
+     * dropped no longer has an inventory to stop... this is a harmless
+     * no-op"), so that assertion would pass even if `disconnect()` ran
+     * before `stopInventory()`. This class exists so a test can tell the
+     * two orderings apart.
+     */
+    private class OrderRecordingReader(private val inner: FakeRfidReader) : RfidReader {
+        override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val connectNote: StateFlow<String?> get() = inner.connectNote
+        override val tags: Flow<String> get() = inner.tags
+        override val triggers: Flow<TriggerEvent> get() = inner.triggers
+
+        /** The order `stopInventory()` and `disconnect()` were actually
+         *  called in — what this class exists to prove. */
+        val callOrder = CopyOnWriteArrayList<String>()
+
+        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
+            inner.connect(triggerPersonality, scannerPluginMode)
+        override suspend fun disconnect() {
+            callOrder += "disconnect"
+            inner.disconnect()
+        }
+        override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
+        override suspend fun startInventory() = inner.startInventory()
+        override suspend fun stopInventory(): Result<Unit> {
+            callOrder += "stopInventory"
+            return inner.stopInventory()
+        }
+        override suspend fun regions() = inner.regions()
+        override suspend fun setRegion(code: String, hopping: Boolean?) = inner.setRegion(code, hopping)
+    }
+
+    /**
+     * Regression test for the guarantee this task's `ZebraRfidReader.kt`
+     * teardown fix leans on: `RfidController` itself already stops the
+     * inventory before disconnecting the reader —
+     * `disconnectNowImpl()` calls `endBurst(stopReader = true, queue =
+     * true)`, which calls `reader.stopInventory()`, before
+     * `disconnectWithTimeout()`, which calls `reader.disconnect()`.
+     * `ZebraRfidReader.disconnectBlocking()`'s own stop-inventory-then-
+     * disable-batch-mode sequence is the second, independent line of
+     * defense, for the paths that don't go through this controller at all
+     * (a stale connection `connect()` tears down, or the
+     * `DISCONNECTION_EVENT` path that calls `endBurst(stopReader = false,
+     * ...)` because the reader is already gone — see that class's doc).
+     * This test locks in the guarantee the controller side already
+     * provides, so a future change here can't silently reorder it; it does
+     * not, and should not, need any change to `RfidController.kt` to pass.
+     * Same burst-open setup as [disconnectNowQueuesWhatWasReadAndStopsTheReader].
+     */
+    @Test fun disconnectNowStopsInventoryBeforeDisconnectingTheReader() = runTest {
+        val inner = FakeRfidReader()
+        val recorder = OrderRecordingReader(inner)
+        val settings = MutableStateFlow(DEFAULT_RFID_SETTINGS.copy(enabled = true))
+        val controller = RfidController(recorder, settings, backgroundScope)
+        controller.start(); controller.arm(); settle()
+        controller.connectNow(); settle()
+        inner.emitTrigger(TriggerEvent.PRESSED); inner.emitTag("100700"); settle()
+
+        controller.disconnectNow(); settle()
+
+        assertEquals(
+            "stopInventory() must run before disconnect() so the sled is never left running an " +
+                "inventory across a disconnect",
+            listOf("stopInventory", "disconnect"),
+            recorder.callOrder,
+        )
+    }
+
     /** Exercises `pressedAtMs`/`heldMs` end to end: a quick click latches a
      *  HOLD_OR_LATCH read instead of stopping it, and a later press (not a
      *  release) is what ends it. An implementation that always passed
@@ -290,6 +367,7 @@ class RfidControllerTest {
      */
     private class SlowStopReader(private val inner: FakeRfidReader) : RfidReader {
         override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val connectNote: StateFlow<String?> get() = inner.connectNote
         private val _tags = MutableSharedFlow<String>(extraBufferCapacity = 16)
         override val tags: Flow<String> = _tags
         override val triggers: Flow<TriggerEvent> get() = inner.triggers
@@ -310,7 +388,8 @@ class RfidControllerTest {
         var startInventoryCalls = 0
             private set
 
-        override suspend fun connect() = inner.connect()
+        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
+            inner.connect(triggerPersonality, scannerPluginMode)
         override suspend fun disconnect() = inner.disconnect()
         override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
         override suspend fun startInventory(): Result<Unit> {
@@ -519,9 +598,11 @@ class RfidControllerTest {
      *  no reason to support. Everything else delegates straight to [inner]. */
     private class ThrowingStopReader(private val inner: FakeRfidReader) : RfidReader {
         override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val connectNote: StateFlow<String?> get() = inner.connectNote
         override val tags: Flow<String> get() = inner.tags
         override val triggers: Flow<TriggerEvent> get() = inner.triggers
-        override suspend fun connect() = inner.connect()
+        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
+            inner.connect(triggerPersonality, scannerPluginMode)
         override suspend fun disconnect() = inner.disconnect()
         override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
         override suspend fun startInventory() = inner.startInventory()
@@ -599,9 +680,11 @@ class RfidControllerTest {
     private class ThrowingStartReader(private val inner: FakeRfidReader) : RfidReader {
         private var starts = 0
         override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val connectNote: StateFlow<String?> get() = inner.connectNote
         override val tags: Flow<String> get() = inner.tags
         override val triggers: Flow<TriggerEvent> get() = inner.triggers
-        override suspend fun connect() = inner.connect()
+        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
+            inner.connect(triggerPersonality, scannerPluginMode)
         override suspend fun disconnect() = inner.disconnect()
         override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
         override suspend fun startInventory(): Result<Unit> {
@@ -681,6 +764,7 @@ class RfidControllerTest {
      */
     private class SlowConnectReader(private val inner: FakeRfidReader) : RfidReader {
         override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val connectNote: StateFlow<String?> get() = inner.connectNote
         override val tags: Flow<String> get() = inner.tags
         override val triggers: Flow<TriggerEvent> get() = inner.triggers
 
@@ -691,10 +775,10 @@ class RfidControllerTest {
          *  return. */
         val proceedConnect = CompletableDeferred<Unit>()
 
-        override suspend fun connect(): Result<Unit> {
+        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode): Result<Unit> {
             connectStarted.complete(Unit)
             proceedConnect.await()
-            return inner.connect()
+            return inner.connect(triggerPersonality, scannerPluginMode)
         }
         override suspend fun disconnect() = inner.disconnect()
         override suspend fun apply(settings: RfidSettings) = inner.apply(settings)
@@ -714,6 +798,7 @@ class RfidControllerTest {
      */
     private class SlowApplyReader(private val inner: FakeRfidReader) : RfidReader {
         override val connection: StateFlow<RfidConnection> get() = inner.connection
+        override val connectNote: StateFlow<String?> get() = inner.connectNote
         override val tags: Flow<String> get() = inner.tags
         override val triggers: Flow<TriggerEvent> get() = inner.triggers
 
@@ -724,7 +809,8 @@ class RfidControllerTest {
          *  return. */
         val proceedApply = CompletableDeferred<Unit>()
 
-        override suspend fun connect() = inner.connect()
+        override suspend fun connect(triggerPersonality: RfidTriggerPersonality, scannerPluginMode: ScannerPluginMode) =
+            inner.connect(triggerPersonality, scannerPluginMode)
         override suspend fun disconnect() = inner.disconnect()
         override suspend fun apply(settings: RfidSettings): Result<Unit> {
             applyStarted.complete(Unit)
@@ -1321,5 +1407,90 @@ class RfidControllerTest {
             12,
             r.reader.applied?.powerDbm,
         )
+    }
+
+    /**
+     * The trigger-toggle brief's hard requirement, mirroring the `enabled`/
+     * `region` exclusions above: `triggerPersonality`/`scannerPluginMode` are
+     * applied only at connect time — [RfidController.connectWithTimeout]
+     * reads them fresh off `current` right before every `reader.connect()`
+     * — never through `apply()`, which never reads either field. Without
+     * excluding them from the settings-collector's diff the same way
+     * `enabled`/`region` already are, flipping either row on the RFID tab
+     * would also fire a full eight-round-trip settings push for nothing.
+     */
+    @Test fun togglingOnlyTriggerPersonalityOrScannerPluginModeDoesNotPushSettingsToTheReader() = runTest {
+        val r = Rig(backgroundScope)
+        r.controller.start(); settle()
+        r.controller.connectNow(); settle()
+        val appliedAfterConnect = r.reader.applied
+        assertEquals(27, appliedAfterConnect?.powerDbm)
+
+        r.settings.value = r.settings.value.copy(triggerPersonality = RfidTriggerPersonality.BARCODE); settle()
+        assertEquals(
+            "flipping only `triggerPersonality` must not push a new settings block",
+            appliedAfterConnect,
+            r.reader.applied,
+        )
+
+        r.settings.value = r.settings.value.copy(scannerPluginMode = ScannerPluginMode.ON); settle()
+        assertEquals(
+            "flipping only `scannerPluginMode` must not push a new settings block",
+            appliedAfterConnect,
+            r.reader.applied,
+        )
+
+        r.settings.value = r.settings.value.copy(powerDbm = 12); settle()
+        assertEquals(
+            "a real settings change must still push",
+            12,
+            r.reader.applied?.powerDbm,
+        )
+    }
+
+    /**
+     * Task 1 (batch-mode recovery): `RfidController.connectNote` is
+     * documented as a plain read-through of `reader.connectNote`, added the
+     * same way `connection` already is. This proves it actually is one —
+     * starts null, and reflects whatever the reader reports — rather than a
+     * dead property nothing wires up. The real batch-mode recovery sequence
+     * inside `ZebraRfidReader.openVendorConnection()` can't be driven from a
+     * unit test (see that class's doc), so this uses `FakeRfidReader`'s
+     * `setConnectNote` test hook to simulate "the reader reported a note"
+     * without needing real vendor plumbing.
+     */
+    @Test fun connectNoteIsALivePassthroughOfTheReadersConnectNote() = runTest {
+        val r = Rig(backgroundScope)
+        r.controller.start(); settle()
+        assertNull(r.controller.connectNote.value)
+
+        val note = "The reader was holding tags from earlier offline use. They were discarded and batch mode is now off."
+        r.reader.setConnectNote(note)
+        settle()
+        assertEquals(note, r.controller.connectNote.value)
+
+        r.reader.setConnectNote(null)
+        settle()
+        assertNull(r.controller.connectNote.value)
+    }
+
+    /**
+     * Fix-review follow-up (batch-mode recovery, Minor #4): `FakeRfidReader.
+     * connect()` clears any note left over from a previous attempt, mirroring
+     * `ZebraRfidReader.connect()`'s own "a note set by a previous attempt
+     * must never linger into this one" rule (see that class's `connect()`
+     * doc). Nothing previously asserted this, even though the fake already
+     * did it — this closes that coverage gap rather than fixing a bug.
+     */
+    @Test fun connectNowClearsAConnectNoteLeftOverFromAnEarlierAttempt() = runTest {
+        val r = Rig(backgroundScope)
+        r.controller.start(); settle()
+
+        r.reader.setConnectNote("The reader was holding tags from earlier offline use. They were discarded and batch mode is now off.")
+        settle()
+        assertTrue("the note must be set before this test can prove connect() clears it", r.reader.connectNote.value != null)
+
+        r.controller.connectNow(); settle()
+        assertNull("a stale note from an earlier attempt must not survive a new connect", r.controller.connectNote.value)
     }
 }

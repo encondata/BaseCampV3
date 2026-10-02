@@ -38,6 +38,35 @@ enum class RfidSession(val wire: String, val label: String) {
     companion object { fun fromWire(s: String?) = entries.firstOrNull { it.wire == s } }
 }
 
+/** Which physical engine the sled's trigger drives once connected — the RFID
+ *  radio, or its barcode imager. A field an operator can flip on the device to
+ *  diagnose a sled that connects but keeps firing its imager instead of the
+ *  radio (see `ZebraRfidReader.configureTriggerMode`'s doc for the story).
+ *  Applied only at connect time, never by the live settings push — see
+ *  `RfidController`'s settings collector, which excludes this field from the
+ *  push comparison the same way it already excludes `enabled`/`region`. */
+enum class RfidTriggerPersonality(val wire: String, val label: String, val hint: String) {
+    RFID("rfid", "RFID", "The trigger drives the RFID radio. Takes effect on the next connect."),
+    BARCODE("barcode", "Barcode", "The trigger drives the sled's barcode imager instead of the radio. Takes effect on the next connect."),
+    ;
+    companion object { fun fromWire(s: String?) = entries.firstOrNull { it.wire == s } }
+}
+
+/** Whether connecting also asks the SDK to stand down the host's barcode
+ *  scanner plugin — Zebra's `updateScannerPlugin` flag on `setTriggerMode`.
+ *  AUTOMATIC is today's behavior (follow whether DataWedge is installed) and
+ *  the default, so nothing regresses; YES/NO let an operator override that
+ *  guess on a host — like a bare Pixel — where the guess might be wrong.
+ *  Applied only at connect time; see [RfidTriggerPersonality]'s doc for why
+ *  it is excluded from the live settings push the same way. */
+enum class ScannerPluginMode(val wire: String, val label: String, val hint: String) {
+    AUTO("auto", "Automatic", "Follows whether DataWedge is installed on this device. Takes effect on the next connect."),
+    ON("on", "Yes", "Also asks the reader to stand down the host's barcode scanner plugin. Takes effect on the next connect."),
+    OFF("off", "No", "Leaves the host's barcode scanner plugin alone. Takes effect on the next connect."),
+    ;
+    companion object { fun fromWire(s: String?) = entries.firstOrNull { it.wire == s } }
+}
+
 const val RFID_POWER_MIN = 5
 const val RFID_POWER_MAX = 30
 const val RFID_POPULATION_MIN = 1
@@ -60,6 +89,8 @@ data class RfidSettings(
     val ledOnRead: Boolean = true,
     val dpo: Boolean = true,
     val region: String? = null,
+    val triggerPersonality: RfidTriggerPersonality = RfidTriggerPersonality.RFID,
+    val scannerPluginMode: ScannerPluginMode = ScannerPluginMode.AUTO,
 )
 
 val DEFAULT_RFID_SETTINGS = RfidSettings()
@@ -86,6 +117,8 @@ fun RfidSettings.toJson(): String = buildJsonObject {
     put("ledOnRead", ledOnRead)
     put("dpo", dpo)
     if (region != null) put("region", region)
+    put("triggerPersonality", triggerPersonality.wire)
+    put("scannerPluginMode", scannerPluginMode.wire)
 }.toString()
 
 /** A bad field falls back to its default; a bad document falls back to all of them. */
@@ -112,5 +145,7 @@ fun parseRfidSettings(raw: String?): RfidSettings {
         ledOnRead = bool("ledOnRead") ?: d.ledOnRead,
         dpo = bool("dpo") ?: d.dpo,
         region = str("region"),
+        triggerPersonality = RfidTriggerPersonality.fromWire(str("triggerPersonality")) ?: d.triggerPersonality,
+        scannerPluginMode = ScannerPluginMode.fromWire(str("scannerPluginMode")) ?: d.scannerPluginMode,
     ).clamped()
 }

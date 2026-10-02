@@ -37,6 +37,8 @@ import com.serversherpa.kiosk.core.rfid.RfidConnection
 import com.serversherpa.kiosk.core.rfid.RfidSession
 import com.serversherpa.kiosk.core.rfid.RfidSettings
 import com.serversherpa.kiosk.core.rfid.RfidTriggerMode
+import com.serversherpa.kiosk.core.rfid.RfidTriggerPersonality
+import com.serversherpa.kiosk.core.rfid.ScannerPluginMode
 import com.serversherpa.kiosk.core.rfid.SledBeeper
 import com.serversherpa.kiosk.core.rfid.connectionLine
 import com.serversherpa.kiosk.input.rfid.RfidPermissions
@@ -57,6 +59,7 @@ fun RfidPanel() {
     val scope = rememberCoroutineScope()
     val s by container.prefs.rfid.collectAsStateWithLifecycle(initialValue = DEFAULT_RFID_SETTINGS)
     val connection by container.rfid.connection.collectAsStateWithLifecycle()
+    val connectNote by container.rfid.connectNote.collectAsStateWithLifecycle()
     val applyError by container.rfid.applyError.collectAsStateWithLifecycle()
     // connection is a plain read-through of the reader's own state, and the
     // reader can never write it on a connect/disconnect the controller gave
@@ -110,12 +113,28 @@ fun RfidPanel() {
                     })
                 }
                 Text(if (s.enabled) connectionLine(connection) else connectionLine(RfidConnection.Disabled), color = c.textMute)
+                // Not an error — a factual note about something unusual the last
+                // connect attempt handled on its own (e.g. discarding a stale
+                // batch of stored tags), so it renders in the same plain tone as
+                // the connection line above, never ChipTone.RED.
+                connectNote?.let { Text(it, color = c.textMute) }
                 // While a connect or disconnect attempt is in flight, suppress the error line
                 // to avoid showing a stale error from a previous attempt. Once the attempt
                 // completes, the controller's own connectionError will be repopulated if the
                 // new attempt failed, or cleared if it succeeded.
+                // Show the error line only when it actually adds something new: when
+                // its text differs from the line already displayed above. When a connection
+                // fails, both connectionLine() and connectionError carry the same reason,
+                // producing a duplicate sentence. But when a connect attempt times out,
+                // the reader stays in Connecting state (so connectionLine shows "Connecting…"),
+                // and only connectionError carries the actual reason, so both must appear.
                 if (!connectAttemptInFlight && !disconnectAttemptInFlight) {
-                    connectionError?.let { Text(it, color = ChipTone.RED.text) }
+                    connectionError?.let { error ->
+                        val statusLine = if (s.enabled) connectionLine(connection) else connectionLine(RfidConnection.Disabled)
+                        if (error != statusLine) {
+                            Text(error, color = ChipTone.RED.text)
+                        }
+                    }
                 }
                 if (s.enabled && missingPermissions.isNotEmpty()) {
                     Text("Android needs Bluetooth and location permission before the sled can connect. Grant them in this app's settings.", color = c.textMute)
@@ -152,6 +171,25 @@ fun RfidPanel() {
                         }
                     })
                 }
+            }
+        }
+        // These two are about the sled's physical trigger personality — a
+        // hardware-diagnostic pair, not an ordinary radio setting — so they
+        // sit right after the connection row rather than among the
+        // session/power/beeper settings below. Neither reaches the reader
+        // live: both are excluded from RfidController's settings push (see
+        // its settings collector) and are only read at connect time (see
+        // ZebraRfidReader.configureTriggerMode), which is why their hints —
+        // not this row — say so, rather than the rows pretending to apply
+        // immediately the way the Switch-backed rows below actually do.
+        SettingsRow("Trigger drives", s.triggerPersonality.hint) {
+            Segmented(RfidTriggerPersonality.entries.map { it.wire to it.label }, s.triggerPersonality.wire) { w ->
+                RfidTriggerPersonality.fromWire(w)?.let { save(s.copy(triggerPersonality = it)) }
+            }
+        }
+        SettingsRow("Scanner plugin on connect", s.scannerPluginMode.hint) {
+            Segmented(ScannerPluginMode.entries.map { it.wire to it.label }, s.scannerPluginMode.wire) { w ->
+                ScannerPluginMode.fromWire(w)?.let { save(s.copy(scannerPluginMode = it)) }
             }
         }
         SettingsRow("Trigger", s.triggerMode.hint) {

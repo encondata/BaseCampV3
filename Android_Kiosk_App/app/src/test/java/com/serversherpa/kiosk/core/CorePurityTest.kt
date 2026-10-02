@@ -18,14 +18,23 @@ class CorePurityTest {
         assertTrue("Android imports in core/:\n${offenders.joinToString("\n")}", offenders.isEmpty())
     }
 
-    @Test fun onlyZebraRfidReaderImportsTheZebraSdk() {
+    /** The two files this app deliberately lets import `com.zebra`: the RFID
+     *  radio (`com.zebra.rfid.api3`) and the sled's separate barcode imager
+     *  (`com.zebra.scannercontrol`) — two different vendor SDKs for two
+     *  different physical devices inside one RFD40 housing; see
+     *  `ZebraBarcodeEngine`'s class doc for why the second one exists at
+     *  all. Any other file importing `com.zebra` is this rule quietly
+     *  breaking, which is exactly what this test exists to catch. */
+    private val filesAllowedToImportTheZebraSdk = setOf("ZebraRfidReader.kt", "ZebraBarcodeEngine.kt")
+
+    @Test fun onlyDesignatedFilesImportTheZebraSdk() {
         val root = File("src/main/java/com/serversherpa/kiosk")
         assertTrue("main source root missing at ${root.absolutePath}", root.isDirectory)
         val offenders = root.walkTopDown().filter { it.extension == "kt" }.filter { file ->
             file.readLines().any { it.trim().startsWith("import com.zebra") }
-        }.map { it.name }.filter { it != "ZebraRfidReader.kt" }.toList()
+        }.map { it.name }.filter { it !in filesAllowedToImportTheZebraSdk }.toList()
         assertTrue(
-            "Files other than ZebraRfidReader.kt import com.zebra:\n${offenders.joinToString("\n")}",
+            "Files other than $filesAllowedToImportTheZebraSdk import com.zebra:\n${offenders.joinToString("\n")}",
             offenders.isEmpty()
         )
     }
