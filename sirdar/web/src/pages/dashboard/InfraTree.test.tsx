@@ -103,3 +103,10 @@ it('an inventory error shows the reason inline', () => {
   show({ source: 'digitalocean', tree: [], error: 'DigitalOcean rejected the token.' });
   expect(screen.getByRole('alert').textContent).toMatch(/DigitalOcean rejected the token\./);
 });
+
+it('the shared group folder is green by node.tone, other folders blue', () => {
+  show();
+  const folder = (name: RegExp) => screen.getByRole('row', { name }).querySelector('.sd-ico')!.getAttribute('class')!;
+  expect(folder(/^Shared production resources/)).toMatch(/is-green/);
+  expect(folder(/^Blue/)).toMatch(/is-blue/);
+});

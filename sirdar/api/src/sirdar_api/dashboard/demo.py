@@ -7,10 +7,10 @@ _DOT = {"active": "green", "running": "green", "healthy": "green", "available": 
 
 
 def node(id_, name, kind, type_label, status, status_label, *, region="NYC3", endpoint="—",
-         badge=None, children=None) -> dict:
+         badge=None, children=None, tone=None) -> dict:
     return {"id": id_, "name": name, "kind": kind, "type_label": type_label, "status": status,
             "status_label": status_label, "region": region, "endpoint": endpoint, "badge": badge,
-            "dot": _DOT.get(status, "gray"), "children": children or []}
+            "dot": _DOT.get(status, "gray"), "tone": tone, "children": children or []}
 
 
 def _droplets(prefix: str, first_ip: int, status: str, label: str) -> list[dict]:
@@ -36,7 +36,7 @@ def demo_dashboard() -> dict:
                  node("prod-green", "Green", "deployment", "Deployment", "standby", "Standby",
                       children=_droplets("prod-green", 20, "standby", "Standby")),
                  node("prod-shared", "Shared production resources", "group", "Shared resources",
-                      "healthy", "Healthy", badge="Blue + Green", children=[
+                      "healthy", "Healthy", badge="Blue + Green", tone="shared", children=[
                           node("prod-db", "prod-db", "database", "Managed PostgreSQL", "healthy",
                                "Healthy", endpoint="prod-db.internal"),
                           node("prod-spaces", "prod-spaces", "spaces", "Spaces", "available",

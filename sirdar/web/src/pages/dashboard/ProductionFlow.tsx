@@ -41,9 +41,25 @@ function onCurve({ a, c1, c2, b }: Curve, t: number): Pt {
   };
 }
 
+const REDUCED_QUERY = '(prefers-reduced-motion: reduce)';
+
 function prefersReducedMotion(): boolean {
   return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
-    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    && window.matchMedia(REDUCED_QUERY).matches;
+}
+
+/** Tracks the OS reduced-motion setting, re-rendering when it is toggled. */
+function useReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(prefersReducedMotion);
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
+    const mq = window.matchMedia(REDUCED_QUERY);
+    const onChange = () => setReduced(mq.matches);
+    onChange();
+    mq.addEventListener?.('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, []);
+  return reduced;
 }
 
 function title(id: string) {
@@ -107,6 +123,7 @@ export default function ProductionFlow({ production, motion }: { production: Das
   const dotRefs = useRef<(SVGCircleElement | null)[]>([]);
   const [geo, setGeo] = useState<Geo>(EMPTY_GEO);
   const geoKey = useRef('');
+  const reducedMotion = useReducedMotion();
 
   const measure = useCallback(() => {
     const root = diagramRef.current, t = trafficRef.current, lb = lbRef.current;
@@ -156,13 +173,14 @@ export default function ProductionFlow({ production, motion }: { production: Das
 
   useEffect(() => {
     const root = diagramRef.current;
-    if (!root || !showDots || !motion || !geo.curves.length || prefersReducedMotion()) return undefined;
+    if (!root || !showDots || !motion || !geo.curves.length || reducedMotion) return undefined;
     if (root.closest('.portal-shell')?.getAttribute('data-motion') === 'off') return undefined;
     const seg = segPathRef.current, curve = curvePathRefs.current[activeIdx];
     // jsdom (and very old engines) have no SVG geometry; keep the static dots
     if (!seg || !curve || typeof (seg as { getTotalLength?: unknown }).getTotalLength !== 'function') {
       return undefined;
     }
+    const dots = dotRefs.current.slice();
     const ctx = gsap.context(() => {
       dotRefs.current.forEach((dot, i) => {
         if (!dot) return;
@@ -180,8 +198,12 @@ export default function ProductionFlow({ production, motion }: { production: Das
         }).progress((i % DOTS_PER_PATH) / DOTS_PER_PATH);
       });
     }, root);
-    return () => ctx.revert();
-  }, [showDots, motion, activeIdx, geo]);
+    return () => {
+      ctx.revert();
+      // onUpdate writes inline opacity, which ctx.revert() does not know about
+      dots.forEach((d) => { if (d) d.style.opacity = ''; });
+    };
+  }, [showDots, motion, reducedMotion, activeIdx, geo]);
 
   const markerBlue = `${uid}-ab`, markerGray = `${uid}-ag`;
 

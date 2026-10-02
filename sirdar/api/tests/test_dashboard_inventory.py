@@ -80,6 +80,7 @@ async def test_tree_grouping_and_mappings():
         ("running", "Running", "10.0.0.1", "NYC3", "green")
     assert green["children"][0]["status"] == "stopped"
     assert (shared["kind"], shared["badge"], shared["status"]) == ("group", "Blue + Green", "active")
+    assert shared["tone"] == "shared" and blue["tone"] is None and prod["tone"] is None
     db = by(shared["children"], "prod-db")
     assert (db["status"], db["status_label"], db["endpoint"]) == ("healthy", "Healthy", "prv.db")
     assert by(shared["children"], "prod-lb")["kind"] == "load_balancer"

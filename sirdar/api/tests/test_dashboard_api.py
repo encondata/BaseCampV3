@@ -104,6 +104,7 @@ async def test_demo(client, db):
     assert [c["endpoint"] for c in blue_n["children"]] == [f"10.20.0.{i}" for i in range(10, 14)]
     assert [c["endpoint"] for c in green_n["children"]] == [f"10.20.0.{i}" for i in range(20, 24)]
     assert green_n["status_label"] == "Standby" and shared["badge"] == "Blue + Green"
+    assert shared["tone"] == "shared" and blue_n["tone"] is None
     assert [c["name"] for c in tree[1]["children"]] == ["dev-web", "dev-db", "dev-spaces"]
 
 
@@ -114,7 +115,7 @@ def test_demo_shape_is_stable():
 
     def walk(n):
         assert set(n) == {"id", "name", "kind", "type_label", "status", "status_label", "region",
-                          "endpoint", "badge", "dot", "children"}
+                          "endpoint", "badge", "dot", "tone", "children"}
         for c in n["children"]:
             walk(c)
     for n in d["infrastructure"]["tree"]:

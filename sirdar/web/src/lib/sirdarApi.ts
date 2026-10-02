@@ -220,7 +220,8 @@ export interface DashNode {
   id: string; name: string;
   kind: 'environment' | 'deployment' | 'group' | 'droplet' | 'database' | 'spaces' | 'load_balancer' | string;
   type_label: string; status: string; status_label: string; region: string; endpoint: string;
-  badge: string | null; dot: 'green' | 'gray' | 'blue' | string | null; children: DashNode[];
+  badge: string | null; dot: 'green' | 'gray' | 'blue' | string | null;
+  tone: 'shared' | null; children: DashNode[];
 }
 export interface DashboardData {
   demo: boolean; generated_at: string; health: DashHealth; production: DashProduction;

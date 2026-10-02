@@ -120,7 +120,7 @@ def build_tree(inv: dict) -> list[dict]:
                 status, label = _rollup(b["shared"])
                 children.append(node("prod-shared", "Shared production resources", "group",
                                      "Shared resources", status, label, badge="Blue + Green",
-                                     children=b["shared"]))
+                                     tone="shared", children=b["shared"]))
         children += b["rest"]
         status, label = _rollup(children)
         tree.append(node(f"env-{env}", _label(env), "environment", "Environment", status, label,

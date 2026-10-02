@@ -6,7 +6,7 @@ export function n(id: string, name: string, kind: string, status: string, childr
   return {
     id, name, kind, type_label: kind === 'droplet' ? 'Droplet' : kind, status,
     status_label: status[0].toUpperCase() + status.slice(1), region: 'NYC3', endpoint: '—',
-    badge: null, dot: 'green', children, ...extra,
+    badge: null, dot: 'green', tone: null, children, ...extra,
   };
 }
 
@@ -21,7 +21,7 @@ export const DEMO_TREE: DashNode[] = [
     n('prod-shared', 'Shared production resources', 'group', 'healthy', [
       n('prod-db', 'prod-db', 'database', 'healthy', [], { endpoint: 'prod-db.internal' }),
       n('prod-spaces', 'prod-spaces', 'spaces', 'available'),
-    ], { badge: 'Blue + Green' }),
+    ], { badge: 'Blue + Green', tone: 'shared' }),
   ]),
   n('env-dev', 'Development', 'environment', 'inactive', [
     n('dev-web', 'dev-web', 'droplet', 'stopped', [], { dot: 'gray' }),

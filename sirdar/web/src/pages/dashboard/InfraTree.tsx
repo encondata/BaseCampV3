@@ -49,7 +49,7 @@ function KindIcon({ node }: { node: DashNode }) {
       return <BranchIcon size={15} className="sd-ico is-blue" />;
     default:
       return <FolderIcon size={15}
-                         className={`sd-ico ${node.id.includes('shared') ? 'is-green' : 'is-blue'}`} />;
+                         className={`sd-ico ${node.tone === 'shared' ? 'is-green' : 'is-blue'}`} />;
   }
 }
 
