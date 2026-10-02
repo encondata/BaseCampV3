@@ -164,8 +164,10 @@ or less.
   count would need a hit log; per-router spacing gives the same
   protection, because an unknown MAC can only get in through the
   registration cap.
-- At most 10 new-router registrations per IP per hour, counted from
-  `devices.created_at` and `agent_source_ip`.
+- At most 10 new-router registrations per IP per hour, counted from the
+  `router_register` audit rows' `ip`. Audit rows can't be changed, so a
+  router that moves to another address can't launder the count. A per-IP
+  advisory lock serializes concurrent first reports.
 - Going over either limit returns 429.
 
 **Decision table** (rows keyed by MAC, `device_type = 'router'`):
@@ -253,8 +255,8 @@ idea for routers.
 | `secret_mismatch` | BOOL NOT NULL default false | |
 | `agent_source_ip` | TEXT NULL | last report's source IP |
 
-There is also a partial index on `(agent_source_ip, created_at)` where
-`device_type = 'router'`, used by the registration rate limit.
+There is also a partial index on `audit_log (ip, at)` where
+`action = 'router_register'`, used by the registration rate limit.
 
 **Migration numbering:** before merging, check every worktree and the
 dev DB for 0087. The `rfid-station` branch already collides at 0086 and

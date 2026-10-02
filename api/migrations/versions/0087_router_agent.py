@@ -32,15 +32,15 @@ def upgrade() -> None:
     op.add_column("devices", sa.Column(
         "secret_mismatch", sa.Boolean(), nullable=False, server_default=sa.text("false")))
     op.add_column("devices", sa.Column("agent_source_ip", sa.Text(), nullable=True))
-    # the per-IP registration cap counts recent router rows from one address
+    # the per-IP registration cap counts recent router_register audit rows
+    # (immutable, so moving a router to another address can't launder it)
     op.create_index(
-        "devices_router_source_ip_created_idx", "devices",
-        ["agent_source_ip", "created_at"],
-        postgresql_where=sa.text("device_type = 'router'"))
+        "audit_log_router_register_ip_at_idx", "audit_log", ["ip", "at"],
+        postgresql_where=sa.text("action = 'router_register'"))
 
 
 def downgrade() -> None:
-    op.drop_index("devices_router_source_ip_created_idx", table_name="devices")
+    op.drop_index("audit_log_router_register_ip_at_idx", table_name="audit_log")
     op.drop_column("devices", "agent_source_ip")
     op.drop_column("devices", "secret_mismatch")
     op.drop_column("devices", "pending_secret_hash")
