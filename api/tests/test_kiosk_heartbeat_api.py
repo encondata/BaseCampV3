@@ -310,3 +310,23 @@ async def test_sign_in_renews_an_expired_registration(client, db, seeded_user):
     assert len(audits) == 1
     assert audits[0].changes["source"] == "kiosk_sign_in"
     assert audits[0].changes["days"] == 30
+
+
+async def test_heartbeat_returns_client_ip(client, db, seeded_user):
+    hdrs = await login(client)
+    got = (await client.post("/kiosk/heartbeat", headers=hdrs, json=BODY)).json()
+    assert got["client_ip"] == "127.0.0.1"  # the ASGI test client's host, no proxy
+    got = (await client.post("/kiosk/heartbeat", json=BODY, headers={
+        **hdrs, "X-Forwarded-For": "203.0.113.7"})).json()
+    assert got["client_ip"] == "203.0.113.7"
+
+
+async def test_heartbeat_without_version_keeps_the_stored_version(client, db, seeded_user):
+    hdrs = await login(client)
+    await client.post("/kiosk/heartbeat", headers=hdrs, json=BODY)
+    body = {k: v for k, v in BODY.items() if k != "version"}
+    resp = await client.post("/kiosk/heartbeat", headers=hdrs, json=body)
+    assert resp.status_code == 200, resp.text
+    db.expire_all()
+    d = await db.scalar(select(Device).where(Device.serial == "kiosk-web-aaaa"))
+    assert d.version == "0.1.0"

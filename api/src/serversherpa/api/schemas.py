@@ -313,6 +313,7 @@ class HeartbeatOut(BaseModel):
     name: str
     registration: Literal["ok", "soon", "expired", "none"]
     token_expires_at: datetime | None
+    client_ip: str | None = None  # the caller's public address as the API sees it
 
 
 class KioskSignOutIn(BaseModel):
@@ -3983,3 +3984,23 @@ class SpecSuggestionBulkIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ids: list[uuid.UUID] = Field(min_length=1, max_length=1000)
     action: Literal["approve", "reject"]
+
+
+class KioskSetupReaderOut(BaseModel):
+    ip: str | None
+    serial: str
+    model: str | None
+
+
+class KioskSetupReadOut(BaseModel):
+    """What the portal holds for one kiosk's setup (GET /kiosk/setup)."""
+
+    device_id: uuid.UUID
+    initiative_id: uuid.UUID | None
+    initiative_name: str | None
+    site_id: uuid.UUID | None
+    site_name: str | None
+    scan_status: str | None
+    scan_status_label: str | None
+    station_type: Literal["label", "rfid"] | None
+    reader: KioskSetupReaderOut | None

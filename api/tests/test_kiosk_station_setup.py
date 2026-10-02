@@ -287,3 +287,72 @@ def test_0086_downgrades_and_upgrades_again():
     finally:
         with psycopg.connect(admin, autocommit=True) as conn:
             conn.execute(f'DROP DATABASE IF EXISTS "{THROWAWAY_DB}" WITH (FORCE)')
+
+
+async def test_get_setup_reads_back_the_stamped_setup(client, db, seeded_user):
+    hdrs = await login(client)
+    body, device_id = await _setup_body(db)
+    r = await client.post("/kiosk/setup", headers=hdrs,
+                          json={**body, "station_type": "rfid", "reader": READER})
+    assert r.status_code == 200, r.text
+    posted = r.json()
+    r = await client.get("/kiosk/setup", headers=hdrs, params={"serial": SERIAL})
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["device_id"] == str(device_id)
+    assert got["initiative_id"] == body["initiative_id"]
+    assert got["initiative_name"] == posted["initiative_name"]
+    assert got["site_id"] == body["site_id"] and got["site_name"] == posted["site_name"]
+    assert got["scan_status"] == body["scan_status"]
+    assert got["scan_status_label"] == posted["scan_status_label"]
+    assert got["station_type"] == "rfid"
+    assert got["reader"] == {"ip": "10.20.30.40", "serial": "FX9600-AB12",
+                             "model": "FX9600"}
+    assert "token" not in str(got).lower()
+
+
+async def test_get_setup_unset_device_is_empty(client, db, seeded_user):
+    hdrs = await login(client)
+    await _setup_body(db)
+    got = (await client.get("/kiosk/setup", headers=hdrs, params={"serial": SERIAL})).json()
+    assert got["initiative_id"] is None and got["site_id"] is None
+    assert got["station_type"] is None and got["reader"] is None
+
+
+async def test_get_setup_unknown_serial_is_404(client, db, seeded_user):
+    hdrs = await login(client)
+    r = await client.get("/kiosk/setup", headers=hdrs, params={"serial": "nope"})
+    assert r.status_code == 404 and _code(r) == "device_not_found"
+
+
+async def test_get_setup_move_session_for_another_move_is_404(client, db, seeded_user):
+    admin = await _make(db, client, "admin", "station-admin2@test.example.com")
+    body, device_id = await _setup_body(db)
+    other = Initiative(name="Other move", initiative_type="move", status="in_progress")
+    db.add(other)
+    await db.commit()
+    mine = await db.get(Initiative, uuid.UUID(body["initiative_id"]))
+    assert (await client.patch(f"/initiatives/{mine.id}", headers=admin,
+                               json={"kiosk_password": PW})).status_code == 200
+    r = await client.post("/kiosk/move-login", json={"password": PW})
+    hdrs = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    # Device not yet stamped with this move: not visible to this session.
+    r = await client.get("/kiosk/setup", headers=hdrs, params={"serial": SERIAL})
+    assert r.status_code == 404 and _code(r) == "device_not_found"
+    r = await client.post("/kiosk/setup", headers=hdrs, json=body)
+    assert r.status_code == 200, r.text
+    assert (await client.get("/kiosk/setup", headers=hdrs,
+                             params={"serial": SERIAL})).status_code == 200
+    (await _device(db, device_id)).current_initiative_id = other.id
+    await db.commit()
+    r = await client.get("/kiosk/setup", headers=hdrs, params={"serial": SERIAL})
+    assert r.status_code == 404 and _code(r) == "device_not_found"
+
+
+async def test_get_setup_needs_kiosk_view(client, db, seeded_user):
+    from tests.test_auth_kiosk_login import _client_viewer
+    await _setup_body(db)
+    cv = await _client_viewer(db, client, "cv-setup@test.example.com")
+    r = await client.get("/kiosk/setup", headers=cv, params={"serial": SERIAL})
+    assert r.status_code == 403
+    assert (await client.get("/kiosk/setup", params={"serial": SERIAL})).status_code == 401
