@@ -26,10 +26,22 @@ export interface SetupClearRecord { id: string; acked: boolean; notice: boolean 
 type Listener = () => void;
 const listeners = new Set<Listener>();
 
+// In-memory copy of the record, so once-only / ack / notice still hold for
+// this session when storage is blocked or full (otherwise the same id would
+// re-apply on every beat and the re-beats would loop). Storage stays the
+// source of truth whenever it works.
+let memory: SetupClearRecord | null = null;
+let storageFailed = false;
+
 function read(): SetupClearRecord | null {
+  let raw: string | null;
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return null;
+    raw = localStorage.getItem(KEY);
+  } catch {
+    return memory;
+  }
+  if (!raw) return storageFailed ? memory : null;
+  try {
     const v = JSON.parse(raw) as Partial<SetupClearRecord>;
     return typeof v.id === 'string'
       ? { id: v.id, acked: v.acked === true, notice: v.notice === true } : null;
@@ -39,10 +51,12 @@ function read(): SetupClearRecord | null {
 }
 
 function write(rec: SetupClearRecord): void {
+  memory = rec;
   try {
     localStorage.setItem(KEY, JSON.stringify(rec));
+    storageFailed = false;
   } catch {
-    /* blocked storage: the clear still happened; it may re-apply after a reload */
+    storageFailed = true;   // blocked storage: reads fall back to `memory`
   }
   listeners.forEach((fn) => fn());
 }
@@ -66,11 +80,15 @@ export function pendingAck(): string | null {
   return rec && !rec.acked ? rec.id : null;
 }
 
-/** Called with each reply's `clear_setup`: once the server stops asking
- *  for our id (null or a different id), our acknowledgment has landed. */
-export function settleAck(replyId: string | null): void {
+/** Called after each beat with the ack that beat carried (`sentAck`) and the
+ *  reply's `clear_setup`. Only a beat that actually sent our id can show it
+ *  landed: once such a beat's reply no longer asks for it (null or a
+ *  different id), the acknowledgment is done. */
+export function settleAck(sentAck: string | null, replyId: string | null): void {
   const rec = read();
-  if (rec && !rec.acked && replyId !== rec.id) write({ ...rec, acked: true });
+  if (rec && !rec.acked && sentAck === rec.id && replyId !== rec.id) {
+    write({ ...rec, acked: true });
+  }
 }
 
 export function dismissSetupClearNotice(): void {

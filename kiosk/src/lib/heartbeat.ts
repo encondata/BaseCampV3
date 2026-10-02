@@ -45,13 +45,17 @@ export function startHeartbeat(
         ...(ack ? { setup_cleared: ack } : {}),
       });
       if (asSignIn) pendingSignIn = undefined;
-      if (!stopped) onState(result.registration);
+      // Settle and apply before onState, so a throwing onState can't defer
+      // the clear. The clear is applied even when stopped (the admin asked
+      // for it; the ack goes out on the next session's beats), but the
+      // callback and the immediate re-beat only run while we're live.
       const asked = result.clear_setup ?? null;
-      settleAck(asked);
-      if (asked && applySetupClear(asked)) {
+      settleAck(ack, asked);
+      if (asked !== null && applySetupClear(asked) && !stopped) {
         onClearSetup?.(asked);
-        if (!stopped) void beat();          // acknowledge right away
+        void beat();                        // acknowledge right away
       }
+      if (!stopped) onState(result.registration);
     } catch {
       /* keep the last known state (and any pending sign-in); next tick retries */
     }

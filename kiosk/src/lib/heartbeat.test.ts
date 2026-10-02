@@ -105,6 +105,7 @@ it('applies a clear_setup once, acks on an immediate re-beat, then stops acking'
   await vi.advanceTimersByTimeAsync(60_000);
   expect(api.heartbeatRequest.mock.calls[2][0].setup_cleared).toBeUndefined();
   expect(onClear).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(localStorage.getItem('ss.kiosk.setupClear')!).acked).toBe(true);
   handle.stop();
 });
 
@@ -128,5 +129,52 @@ it('a reload with an unacked id resumes acking without re-applying', async () =>
   await vi.advanceTimersByTimeAsync(0);
   expect(api.heartbeatRequest.mock.calls[0][0].setup_cleared).toBe('x3');
   expect(onClear).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(api.heartbeatRequest.mock.calls[1][0].setup_cleared).toBeUndefined();   // settled
   handle.stop();
+});
+
+it('applies a newer id that arrives while the older one is still unacked, then acks it', async () => {
+  localStorage.setItem('ss.kiosk.setupClear', JSON.stringify({ id: 'old', acked: false, notice: true }));
+  api.heartbeatRequest
+    .mockResolvedValueOnce({ device_id: 'd', name: 'K', registration: 'ok', token_expires_at: null, clear_setup: 'new' })
+    .mockResolvedValue({ device_id: 'd', name: 'K', registration: 'ok', token_expires_at: null, clear_setup: null });
+  const onClear = vi.fn();
+  const handle = startHeartbeat(vi.fn(), 60_000, undefined, onClear);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(api.heartbeatRequest.mock.calls[0][0].setup_cleared).toBe('old');
+  expect(onClear).toHaveBeenCalledWith('new');
+  expect(api.heartbeatRequest.mock.calls[1][0].setup_cleared).toBe('new');
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(api.heartbeatRequest.mock.calls[2][0].setup_cleared).toBeUndefined();
+  handle.stop();
+});
+
+it('a throwing onState cannot defer the clear', async () => {
+  api.heartbeatRequest.mockResolvedValue({ device_id: 'd', name: 'K', registration: 'ok', token_expires_at: null, clear_setup: 'x4' });
+  const onClear = vi.fn();
+  const handle = startHeartbeat(() => { throw new Error('boom'); }, 60_000, undefined, onClear);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(onClear).toHaveBeenCalledWith('x4');
+  handle.stop();
+});
+
+it('with storage refusing writes, a repeated clear_setup re-beats only once and carries the ack', async () => {
+  vi.resetModules();
+  const { startHeartbeat: start } = await import('./heartbeat');
+  const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new Error('quota');
+  });
+  try {
+    api.heartbeatRequest.mockResolvedValue({ device_id: 'd', name: 'K', registration: 'ok', token_expires_at: null, clear_setup: 'x5' });
+    const onClear = vi.fn();
+    const handle = start(vi.fn(), 60_000, undefined, onClear);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.heartbeatRequest).toHaveBeenCalledTimes(2);
+    expect(api.heartbeatRequest.mock.calls[1][0].setup_cleared).toBe('x5');
+    expect(onClear).toHaveBeenCalledTimes(1);
+    handle.stop();
+  } finally {
+    spy.mockRestore();
+  }
 });
