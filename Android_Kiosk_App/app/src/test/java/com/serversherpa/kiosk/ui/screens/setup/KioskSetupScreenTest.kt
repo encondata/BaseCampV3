@@ -3,6 +3,7 @@ package com.serversherpa.kiosk.ui.screens.setup
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.navigation.compose.rememberNavController
 import com.serversherpa.kiosk.LocalAppContainer
@@ -32,5 +33,21 @@ class KioskSetupScreenTest {
         compose.onNodeWithText("Move A", substring = true).assertIsDisplayed()
         compose.onNodeWithText("Change setup").assertIsDisplayed()
         compose.onNodeWithText("No move data on this kiosk yet.").assertIsDisplayed()
+    }
+
+    @Test fun clearNoticeBannerShowsUntilDismissed() {
+        val c = testContainer()
+        runBlocking { c.prefs.applySetupClear("c1") }
+        compose.setContent { CompositionLocalProvider(LocalAppContainer provides c) { KioskTheme { KioskSetupScreen(rememberNavController()) } } }
+        compose.onNodeWithText("An administrator cleared this kiosk's setup. Run Kiosk Setup to continue.").assertIsDisplayed()
+        runBlocking { c.prefs.dismissSetupClearNotice() }
+        compose.waitUntil(5_000) { compose.onAllNodesWithText("An administrator cleared", substring = true).fetchSemanticsNodes().isEmpty() }
+    }
+
+    @Test fun noBannerWithoutAClearNotice() {
+        val c = testContainer()
+        compose.setContent { CompositionLocalProvider(LocalAppContainer provides c) { KioskTheme { KioskSetupScreen(rememberNavController()) } } }
+        compose.onNodeWithText("Kiosk setup").assertIsDisplayed()
+        compose.onNodeWithText("An administrator cleared", substring = true).assertDoesNotExist()
     }
 }

@@ -3,7 +3,9 @@
  *  divider and an "Other ways to sign in" button expand to Link with
  *  phone / Move password. Password sign-in carries the kiosk-specific
  *  error copy; move password signs in through the move endpoint.
- *  The terrain scene and PairPanel are mocked. */
+ *  The page renders the SHARED sign-in scene the portal and wiki use;
+ *  it is real here (static markup, no effects) so this file also proves
+ *  the kiosk can mount a portal React module. PairPanel is mocked. */
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -11,7 +13,6 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const auth = vi.hoisted(() => ({ login: vi.fn(), loginWithMovePassword: vi.fn(), completePair: vi.fn() }));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
-vi.mock('@portal/lib/brandScene', () => ({ buildBrandScene: () => () => {} }));
 // Records the `onApproved` prop identity on every render, so a test can
 // confirm Login hands PairPanel the SAME callback across re-renders
 // (an unstable one would tear down and restart PairPanel's poll/clock).
@@ -56,6 +57,37 @@ beforeEach(() => {
   auth.loginWithMovePassword.mockResolvedValue({});
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); edgeMock.status = null; });
+
+it('renders the shared light sign-in scene around its own form', () => {
+  const { container } = renderLogin();
+  // the same shell class and scene the portal and wiki render, so
+  // login-light.css styles all three identically
+  expect(container.querySelector('.login-shell.login-light')).not.toBeNull();
+  expect(container.querySelector('.lx-topo')).not.toBeNull();
+  expect(container.querySelector('.lx-map')).not.toBeNull();
+  expect(container.querySelector('.lx-mountains')?.getAttribute('src'))
+    .toBe('/images/login-mountains-light.webp');
+  // and the form column is the kiosk's own
+  expect(container.querySelector('.lx-form-col')).not.toBeNull();
+  expect(screen.getByText('ServerSherpa Kiosk')).toBeTruthy();
+});
+
+it('keeps the kiosk headline in the shared scene', () => {
+  const { container } = renderLogin();
+  // the single accent word the retired brand panel carried, not the
+  // portal's two-line "Migration Control." hero
+  expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Kiosk');
+  expect(container.querySelector('.lx-hero .accent')?.textContent).toBe('Kiosk');
+  expect(container.querySelector('.lx-sub')?.textContent)
+    .toBe('Sign in to start scanning. Link this kiosk with your phone or use your ServerSherpa credentials.');
+});
+
+it('keeps the old brand panel out — nothing renders the retired terrain', () => {
+  const { container } = renderLogin();
+  expect(container.querySelector('.brand')).toBeNull();
+  expect(container.querySelector('.terrain')).toBeNull();
+  expect(container.querySelector('.pane')).toBeNull();
+});
 
 it('opens on the email & password form by default', async () => {
   renderLogin();

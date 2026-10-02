@@ -1,0 +1,2 @@
+wlan1     ESSID: "Second"
+          Mode: Master  Channel: 11 (2.462 GHz)

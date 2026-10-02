@@ -1,0 +1,4 @@
+192.168.8.120 dev br-lan lladdr aa:bb:cc:dd:ee:01 REACHABLE
+192.168.8.121 dev br-lan lladdr aa:bb:cc:dd:ee:02 STALE
+192.168.8.122 dev br-lan lladdr aa:bb:cc:dd:ee:03 FAILED
+203.0.113.1 dev eth0 lladdr 00:11:22:33:44:55 REACHABLE

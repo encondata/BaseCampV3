@@ -4454,6 +4454,13 @@ export interface DeviceItem {
   session_login_method: string | null; session_started_at: string | null;
   station_type?: 'label' | 'rfid' | null;
   rfid_reader?: DeviceRfidReader | null;
+  /** Clear Setup pending since (null = nothing pending) and who asked. */
+  setup_clear_requested_at: string | null; setup_clear_requested_by_name: string | null;
+  /** Router agent (optional so non-router fixtures stay valid): NULL/absent
+   *  approval_state = not an agent router. */
+  approval_state?: 'pending' | 'approved' | 'revoked' | null;
+  approved_at?: string | null; approved_by_name?: string | null;
+  secret_mismatch?: boolean; agent_source_ip?: string | null;
 }
 
 export interface DeviceRfidReader {
@@ -4510,6 +4517,34 @@ export async function registerDevice(id: string, days: number): Promise<DeviceIt
 
 export async function deregisterDevice(id: string): Promise<DeviceItem> {
   const resp = await apiFetch(`/devices/${id}/deregister`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Queue a Clear Setup for a kiosk; it applies on the kiosk's next check-in. */
+export async function requestClearSetup(id: string): Promise<DeviceItem> {
+  const resp = await apiFetch(`/devices/${id}/clear-setup`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Withdraw a pending Clear Setup (a no-op when none is pending). */
+export async function cancelClearSetup(id: string): Promise<DeviceItem> {
+  const resp = await apiFetch(`/devices/${id}/clear-setup/cancel`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Start storing an agent router's reports (also promotes a changed secret). */
+export async function approveRouter(id: string): Promise<DeviceItem> {
+  const resp = await apiFetch(`/devices/${id}/approve`, { method: 'POST' });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
+/** Stop storing an agent router's reports (the inbox's Reject, too). */
+export async function revokeRouter(id: string): Promise<DeviceItem> {
+  const resp = await apiFetch(`/devices/${id}/revoke`, { method: 'POST' });
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();
 }

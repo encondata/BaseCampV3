@@ -6,7 +6,7 @@
 
 **Architecture:**
 
-- **Cloud:** migration 0086 adds `devices.station_type` and the reader columns. `/kiosk/setup` accepts them. The portal shows them.
+- **Cloud:** migration 0088 adds `devices.station_type` and the reader columns. `/kiosk/setup` accepts them. The portal shows them.
 - **Edge:** a new `edge/rfid/` package:
   - a ZIOTC client (password list);
   - subnet discovery driven by the laptop-written `host-network.json`;
@@ -45,7 +45,7 @@
 - Ports: UI `0.0.0.0:8090:8090`, reader `0.0.0.0:8091:8091`.
 
 **Cloud data**
-- Migration **0086**. Before creating it, confirm 0086 is still free in every worktree (`git worktree list`, then each `api/migrations/versions`) and in the dev DB `alembic_version`.
+- Migration **0088**. Before creating it, confirm 0088 is still free in every worktree (`git worktree list`, then each `api/migrations/versions`) and in the dev DB `alembic_version`.
 - New `devices` columns: `station_type` (`label` | `rfid`, check constraint), `rfid_reader_ip inet`, `rfid_reader_serial text`, `rfid_reader_model text`, `rfid_reader_versions jsonb`, `rfid_paired_at timestamptz`.
 - Error codes: `reader_required`, `rfid_needs_laptop` (422, cloud); `reader_unreachable`, `reader_auth_failed`, `reader_not_iotc`, `reader_error`, `reader_paired_elsewhere` (409), `reader_endpoints_full` (409), `reader_verify_failed`, `host_network_unknown` (edge).
 - Portal labels: "RFID · Laptop" and "Label Station · Laptop". When `station_type` is null, keep the existing sub-type label.
@@ -65,12 +65,12 @@
 
 ---
 
-### Task 1: Cloud — migration 0086, setup API, device payloads
+### Task 1: Cloud — migration 0088, setup API, device payloads
 
 **Files:**
-- Create: `api/migrations/versions/0086_device_station_type.py`
+- Create: `api/migrations/versions/0088_device_station_type.py`
 - Modify: `api/src/serversherpa/db/models.py` (`Device`), `api/src/serversherpa/api/schemas.py` (`KioskSetupIn`, new `KioskReaderIn`, `DeviceItem` and the detail schema the devices routes return), `api/src/serversherpa/api/routes/kiosk.py` (`kiosk_setup`), `api/src/serversherpa/api/routes/devices.py` (list/detail mapping)
-- Test: `api/tests/test_kiosk_station_setup.py`, and extend the migration-chain test that exists for 0085 (grep `0085` in `api/tests`) to cover 0086
+- Test: `api/tests/test_kiosk_station_setup.py`, and extend the migration-chain test that exists for 0085 (grep `0085` in `api/tests`) to cover 0088
 
 **Interfaces (produced):**
 - `KioskReaderIn {ip: IPvAnyAddress (IPv4), serial: str ≤64, model: str ≤64, versions: dict[str, str ≤64] ≤10 keys}`
@@ -100,7 +100,7 @@
   Use the existing helpers in `tests/test_kiosk_setup_api.py`: `_seed_initiatives`, the `Device(device_type="kiosk", serial=…, sub_type="laptop")` setup, `login`.
 - [ ] Implement.
 - [ ] Run: `tests/test_kiosk_station_setup.py tests/test_kiosk_setup_api.py tests/test_kiosk_heartbeat_api.py tests/test_devices*.py` plus the migration chain test.
-- [ ] Commit: `feat(kiosk): devices.station_type and paired RFID reader (migration 0086); /kiosk/setup accepts them`
+- [ ] Commit: `feat(kiosk): devices.station_type and paired RFID reader (migration 0088); /kiosk/setup accepts them`
 
 ### Task 2: Portal — Kiosk Devices type label, filter, Reader panel
 

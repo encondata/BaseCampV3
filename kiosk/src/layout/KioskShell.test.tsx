@@ -33,6 +33,8 @@ const auth = vi.hoisted(() => ({
   sessionExpiresAt: '2026-09-14T19:00:42.000Z' as string | null,
   kioskMove: null as { initiative_id: string; name: string } | null,
   logout: vi.fn(() => Promise.resolve()),
+  setupRedirectPending: false,
+  consumeSetupRedirect: vi.fn(),
   can: (_resource: string, _action: string) => true as boolean,
 }));
 vi.mock('../auth/KioskAuthContext', () => ({ useKioskAuth: () => auth }));
@@ -71,6 +73,7 @@ afterEach(() => {
   auth.sessionExpiresAt = '2026-09-14T19:00:42.000Z';
   auth.can = () => true;
   auth.kioskMove = null;
+  auth.setupRedirectPending = false;
   syncMock.status = { phase: 'idle' };
   localStorage.clear();
 });
@@ -497,4 +500,42 @@ it('other routes keep the person\'s theme', () => {
   );
   expect(document.querySelector('.portal-shell')?.getAttribute('data-theme')).toBe('light');
   auth.preferences = null;
+});
+
+function clearSetupUi(initial: string) {
+  return (
+    <MemoryRouter initialEntries={[initial]}>
+      <Routes>
+        <Route path="/scan" element={<KioskShell><div>Scan page</div></KioskShell>} />
+        <Route path="/setup" element={<KioskShell><div>Setup page</div></KioskShell>} />
+      </Routes>
+    </MemoryRouter>
+  );
+}
+
+it('a pending Clear Setup redirect sends the signed-in person to /setup, once', async () => {
+  const { rerender } = render(clearSetupUi('/scan'));
+  expect(await screen.findByText('Scan page')).toBeTruthy();
+  expect(auth.consumeSetupRedirect).not.toHaveBeenCalled();
+  auth.setupRedirectPending = true;
+  rerender(clearSetupUi('/scan'));   // a fresh element: the mocked hook isn't a context, so re-render explicitly
+  expect(await screen.findByText('Setup page')).toBeTruthy();
+  expect(screen.queryByText('Scan page')).toBeNull();
+  expect(auth.consumeSetupRedirect).toHaveBeenCalledTimes(1);
+});
+
+it('a shell mounted after the redirect was consumed (pending false) stays put', async () => {
+  // KioskShell remounts when the route tree changes shape; the redirect
+  // must not fire again for a clear that was already honored.
+  render(clearSetupUi('/scan'));
+  expect(await screen.findByText('Scan page')).toBeTruthy();
+  expect(screen.queryByText('Setup page')).toBeNull();
+  expect(auth.consumeSetupRedirect).not.toHaveBeenCalled();
+});
+
+it('a pending redirect while already on /setup is consumed without navigating', async () => {
+  auth.setupRedirectPending = true;
+  render(clearSetupUi('/setup'));
+  expect(await screen.findByText('Setup page')).toBeTruthy();
+  expect(auth.consumeSetupRedirect).toHaveBeenCalledTimes(1);
 });

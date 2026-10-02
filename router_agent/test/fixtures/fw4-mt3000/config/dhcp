@@ -1,0 +1,9 @@
+config host
+	option name 'kiosk-01'
+	option mac 'AA:BB:CC:DD:EE:01'
+	option ip '192.168.8.120'
+
+config host
+	option name 'printer'
+	option mac 'aa:bb:cc:dd:ee:09'
+	option ip '192.168.8.200'

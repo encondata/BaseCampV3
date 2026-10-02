@@ -13,9 +13,6 @@ from sirdar_api.db.models import Role, User, UserRole
 from sirdar_api.security.passwords import hash_password
 from sirdar_api.services.audit import audit
 
-MIN_PASSWORD_LENGTH = 12
-
-
 class LocalUserError(Exception):
     def __init__(self, code: str):
         self.code = code
@@ -32,7 +29,7 @@ def _normalize_email(email: str) -> str:
 
 
 def _hash(password: str) -> str:
-    if len(password) < MIN_PASSWORD_LENGTH:
+    if len(password) < get_settings().password_min_length:
         raise LocalUserError("password_too_short")
     return hash_password(password, pepper=get_settings().password_pepper.get_secret_value())
 

@@ -18,5 +18,6 @@ REGISTRY: dict[str, Resource] = {r.id: r for r in (
     Resource("access", "Roles & access"),
     Resource("audit", "Audit log"),
     Resource("settings", "Settings"),
+    Resource("deploy", "Deploy"),
     Resource("devtools", "Developer tools", developer_only=True),
 )}

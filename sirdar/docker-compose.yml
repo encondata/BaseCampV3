@@ -6,6 +6,10 @@
 #   docker compose -f sirdar/docker-compose.yml --env-file sirdar/.env exec sirdar sirdar create-admin --email … --first-name … --last-name …
 #   docker compose -f sirdar/docker-compose.yml --env-file sirdar/.env exec sirdar sirdar import-users
 
+# Listen address: SIRDAR_BIND (default 127.0.0.1 = this machine only). Set it to
+# 0.0.0.0 (all interfaces) or a host IP when the reverse proxy runs elsewhere;
+# the app serves plain HTTP, so keep an HTTPS proxy in front.
+
 name: sirdar
 
 services:
@@ -16,8 +20,19 @@ services:
     env_file: .env
     environment:
       SIRDAR_DATABASE_URL: postgresql+asyncpg://sirdar:${SIRDAR_DB_PASSWORD:?set SIRDAR_DB_PASSWORD in sirdar/.env}@sirdar-db:5432/sirdar
+      # In the container the keys always live at the mount point, even when
+      # SIRDAR_DEPLOY_KEYS_DIR in .env names the host folder.
+      SIRDAR_DEPLOY_KEYS_DIR: /app/deploy-keys
+      # Saved SSH targets (written by the Deploy page).
+      SIRDAR_DEPLOY_TARGETS_FILE: /app/config/deploy-targets.env
+    volumes:
+      # Deploy-page SSH/GCP key files; the container runs as uid 10001.
+      - ${SIRDAR_DEPLOY_KEYS_DIR:-./deploy-keys}:/app/deploy-keys:ro
+      # Saved SSH targets: the whole folder is writable by uid 10001 (the app
+      # renames a temp file over deploy-targets.env, so a file mount won't do).
+      - ./config:/app/config
     ports:
-      - "127.0.0.1:${SIRDAR_PORT:-8098}:8080"   # put the reverse proxy in front
+      - "${SIRDAR_BIND:-127.0.0.1}:${SIRDAR_PORT:-8098}:8080"   # put the reverse proxy in front
     depends_on:
       sirdar-db:
         condition: service_healthy

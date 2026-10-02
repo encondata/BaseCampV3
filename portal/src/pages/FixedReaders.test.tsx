@@ -64,6 +64,7 @@ const DEVICES: DeviceItem[] = [
     current_initiative_id: null, current_initiative_name: null,
     session_person_id: null, session_person_name: null,
     session_login_method: null, session_started_at: null,
+    setup_clear_requested_at: null, setup_clear_requested_by_name: null,
   },
   {
     id: 'd1', device_type: 'fixed_reader', name: 'dock-reader-1',
@@ -80,6 +81,7 @@ const DEVICES: DeviceItem[] = [
     current_initiative_id: null, current_initiative_name: null,
     session_person_id: null, session_person_name: null,
     session_login_method: null, session_started_at: null,
+    setup_clear_requested_at: null, setup_clear_requested_by_name: null,
   },
 ];
 

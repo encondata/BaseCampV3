@@ -5,3 +5,7 @@ api/src/*.egg-info/
 web/node_modules/
 web/dist/
 __pycache__/
+deploy-keys/*
+!deploy-keys/.gitkeep
+config/*
+!config/.gitkeep

@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-/** The static scene behind the portal sign-in form: real logo, the
- *  Dallas → Las Vegas route map, headline, features and status line. */
+/** The static scene behind the sign-in form, shared by the portal, the
+ *  wiki and the kiosk: real logo, the Dallas → Las Vegas route map,
+ *  headline, features and status line. Only the headline and the line
+ *  under it are per-app; everything else is fixed. */
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, expect, it } from 'vitest';
 
@@ -41,6 +43,30 @@ it('keeps the headline, description, features and status as readable text', () =
     .toEqual(['Track assets', 'Monitor progress', 'Verify work', 'Complete on time']);
   const status = screen.getByText('ALL SYSTEMS OPERATIONAL');
   expect(status.closest('.lx-status')?.textContent).toContain('STATUS.SERVERSHERPA.COM');
+});
+
+it('takes a per-app headline and description', () => {
+  render(
+    <LoginScene
+      lead={null}
+      accent="Kiosk"
+      sub="Sign in to start scanning."
+    />,
+  );
+  // lead={null} is how an app asks for a one-line hero; OMITTING lead
+  // keeps the portal's default, which is what the wiki relies on
+  expect(screen.getByRole('heading', { level: 1 }).textContent)
+    .toBe('Kiosk');
+  expect(screen.getByText('Sign in to start scanning.')).toBeTruthy();
+  // and the rest of the scene is the same page
+  expect(screen.getAllByRole('listitem')).toHaveLength(4);
+  expect(screen.getByText('ALL SYSTEMS OPERATIONAL')).toBeTruthy();
+});
+
+it('renders a two-line hero when a lead is given', () => {
+  const { container } = render(<LoginScene lead="One." accent="Two." />);
+  expect(container.querySelectorAll('.lx-hero span')).toHaveLength(2);
+  expect(container.querySelector('.lx-hero .accent')?.textContent).toBe('Two.');
 });
 
 it('hides the decorative layers from screen readers and uses the light art', () => {

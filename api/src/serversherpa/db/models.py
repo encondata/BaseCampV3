@@ -1090,13 +1090,33 @@ class Device(Base):
     session_login_method: Mapped[str | None]
     session_started_at: Mapped[datetime | None]
     # kiosk station type ('label' | 'rfid') and the paired RFID reader;
-    # set by POST /kiosk/setup, never by the heartbeat (migration 0086)
+    # set by POST /kiosk/setup, never by the heartbeat (migration 0088)
     station_type: Mapped[str | None]
     rfid_reader_ip: Mapped[str | None] = mapped_column(INET)
     rfid_reader_serial: Mapped[str | None]
     rfid_reader_model: Mapped[str | None]
     rfid_reader_versions: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
     rfid_paired_at: Mapped[datetime | None]
+    # Clear Setup: a pending request for this kiosk to drop its Kiosk Setup.
+    # Repeated on every heartbeat reply until the kiosk acknowledges this
+    # exact id (migration 0086). All NULL = nothing pending.
+    setup_clear_id: Mapped[uuid.UUID | None]
+    setup_clear_requested_at: Mapped[datetime | None]
+    setup_clear_requested_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    # GL.iNet router agent (migration 0087). approval_state NULL = not an
+    # agent router. Reports are stored only while 'approved' AND the
+    # report's secret matches agent_secret_hash; pending_secret_hash is a
+    # newer secret seen since (reinstall/reset/impersonation) that an
+    # approval promotes. Hashes are sha256 hex of the router's 256-bit secret.
+    approval_state: Mapped[str | None]
+    approved_at: Mapped[datetime | None]
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    agent_secret_hash: Mapped[str | None]
+    pending_secret_hash: Mapped[str | None]
+    secret_mismatch: Mapped[bool] = mapped_column(server_default=text("false"))
+    agent_source_ip: Mapped[str | None]
 
 
 class DeviceDhcpLease(Base):

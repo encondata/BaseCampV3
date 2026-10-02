@@ -6,7 +6,8 @@ import SirdarShell from './layout/SirdarShell';
 import Access from './pages/Access';
 import Audit from './pages/Audit';
 import Dashboard from './pages/Dashboard';
-import Me from './pages/Me';
+import Deploy from './pages/Deploy';
+import MeLayout from './pages/me/MeLayout';
 import Settings from './pages/Settings';
 import SirdarLogin from './pages/SirdarLogin';
 import UserDetail from './pages/UserDetail';
@@ -21,12 +22,15 @@ export default function App() {
           <SirdarShell>
             <Routes>
               <Route path="/" element={<Gate resource="dashboard"><Dashboard /></Gate>} />
+              <Route path="/deploy" element={<Gate resource="deploy"><Deploy /></Gate>} />
               <Route path="/admin/users" element={<Gate resource="users"><Users /></Gate>} />
               <Route path="/admin/users/:personId" element={<Gate resource="users"><UserDetail /></Gate>} />
               <Route path="/admin/access" element={<Gate resource="access"><Access /></Gate>} />
               <Route path="/admin/audit" element={<Gate resource="audit"><Audit /></Gate>} />
               <Route path="/settings" element={<Gate resource="settings"><Settings /></Gate>} />
-              <Route path="/me" element={<Me />} />
+              <Route path="/me" element={<MeLayout />} />
+              <Route path="/me/preferences" element={<MeLayout />} />
+              <Route path="/me/history" element={<MeLayout />} />
               <Route path="*" element={
                 <div className="portal-page">
                   <p className="page-hint">Page not found. <Link to="/">Back to the dashboard</Link></p>

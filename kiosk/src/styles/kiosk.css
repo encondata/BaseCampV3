@@ -195,35 +195,60 @@
 .kiosk-section { font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; color: var(--snow); opacity: .85; white-space: nowrap; }
 @media (max-width: 900px) { .kiosk-section { display: none; } }
 
-/* ── login pane additions ──────────────────────────────────────── */
-.login-shell .pane { position: relative; }
-.login-shell .pane-gear {
+/* ── login page additions ─────────────────────────────────────────
+   The kiosk shows the SAME sign-in page as the portal and the wiki
+   (@portal/components/login/LoginScene + login-light.css). Only the form
+   column differs, so only its kiosk-specific parts live here, all scoped
+   to .login-shell.login-light so nothing leaks into the signed-in app. */
+/* The settings gear sits above the form, clear of its first field. It
+   anchors to .lx-form-col, which login-light.css already positions in
+   BOTH layouts (absolute on wide screens, relative under 900px) — so
+   nothing here may set `position` on that element: doing so drops the
+   column out of its wide-screen placement and into the top-left. */
+.login-shell.login-light .kiosk-login-gear {
   position: absolute;
-  top: 18px;
-  right: 18px;
+  top: clamp(8px, 2vh, 20px);
+  right: 0;
   width: 36px;
   height: 36px;
   border-radius: 10px;
-  border: 1px solid var(--paper-line);
-  background: transparent;
-  color: var(--text-dark);
-  opacity: .7;
+  border: 1px solid var(--lx-line);
+  background: #fffc;
+  color: var(--lx-slate);
   cursor: pointer;
+  opacity: .8;
+  transition: opacity .2s, border-color .2s, color .2s;
   display: grid;
   place-items: center;
 }
-.login-shell .pane-gear:hover { opacity: 1; border-color: var(--amber); }
-.login-shell .pane-gear svg { width: 18px; height: 18px; }
-.login-shell .eyebrow-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.login-shell .eyebrow-kiosk {
+.login-shell.login-light .kiosk-login-gear:hover {
+  opacity: 1; border-color: var(--lx-orange); color: var(--lx-ink);
+}
+.login-shell.login-light .kiosk-login-gear svg { width: 18px; height: 18px }
+
+/* The scene's story block carries this line already; it is repeated in
+   the form only for the narrow layout, where login-light.css hides the
+   story (the same 899px breakpoint it uses). */
+@media (min-width: 900px) {
+  .login-shell.login-light .kiosk-login-sub { display: none }
+}
+
+/* which kiosk this is, beside the eyebrow */
+.login-shell.login-light .eyebrow-row {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+}
+.login-shell.login-light .eyebrow-kiosk {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: .08em;
-  color: var(--text-mute);
+  color: var(--lx-slate);
   white-space: nowrap;
 }
-/* .btn-alt: same visual rules as the portal's .btn-sso (auth-theme.css),
-   kept as a separate class name since .btn-sso is SSO-specific there. */
+
+/* .btn-alt is the kiosk's own class for what the portal calls .btn-sso
+   (that name is SSO-specific there). auth-theme.css gives it its shape
+   and the re-pointed tokens make it light; these are the same size
+   adjustments login-light.css makes to .btn-sso. */
 .login-shell .btn-alt {
   width: 100%;
   border: 1.5px solid var(--paper-line);
@@ -244,6 +269,12 @@
 .login-shell .btn-alt:hover { border-color: var(--ink); background: #fff9; }
 .login-shell .btn-alt:active { transform: scale(.985); }
 .login-shell .btn-alt svg { width: 17px; height: 17px; color: var(--amber); flex: none; }
+.login-shell.login-light .btn-alt {
+  border-width: 1px; border-radius: 8px; padding: 15px;
+  background: rgba(255, 255, 255, .85); font-size: 17px;
+}
+.login-shell.login-light .btn-alt:hover { border-color: var(--lx-ink); background: #fff }
+.login-shell.login-light .btn-alt svg { width: 22px; height: 22px }
 .login-shell .alt-methods { display: grid; gap: 10px; }
 .login-shell .form-error { font-size: 13px; margin: 0; }
 

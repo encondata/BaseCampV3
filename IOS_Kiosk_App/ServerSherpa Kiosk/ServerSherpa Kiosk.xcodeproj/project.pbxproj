@@ -1,0 +1,604 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXContainerItemProxy section */
+		5A3B35773059CBEC00D542EA /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5A3B355F3059CBEA00D542EA /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5A3B35663059CBEA00D542EA;
+			remoteInfo = "ServerSherpa Kiosk";
+		};
+		5A3B35813059CBEC00D542EA /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5A3B355F3059CBEA00D542EA /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5A3B35663059CBEA00D542EA;
+			remoteInfo = "ServerSherpa Kiosk";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		5A3B35673059CBEA00D542EA /* ServerSherpa Kiosk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "ServerSherpa Kiosk.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		5A3B35763059CBEC00D542EA /* ServerSherpa KioskTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "ServerSherpa KioskTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		5A3B35803059CBEC00D542EA /* ServerSherpa KioskUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "ServerSherpa KioskUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		5A3B35A03059CBEC00D542EA /* Exceptions for "ServerSherpa Kiosk" folder in "ServerSherpa Kiosk" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 5A3B35663059CBEA00D542EA /* ServerSherpa Kiosk */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		5A3B35693059CBEA00D542EA /* ServerSherpa Kiosk */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				5A3B35A03059CBEC00D542EA /* Exceptions for "ServerSherpa Kiosk" folder in "ServerSherpa Kiosk" target */,
+			);
+			path = "ServerSherpa Kiosk";
+			sourceTree = "<group>";
+		};
+		5A3B35793059CBEC00D542EA /* ServerSherpa KioskTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "ServerSherpa KioskTests";
+			sourceTree = "<group>";
+		};
+		5A3B35833059CBEC00D542EA /* ServerSherpa KioskUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "ServerSherpa KioskUITests";
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		5A3B35643059CBEA00D542EA /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5A3B35733059CBEC00D542EA /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5A3B357D3059CBEC00D542EA /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		5A3B355E3059CBEA00D542EA = {
+			isa = PBXGroup;
+			children = (
+				5A3B35693059CBEA00D542EA /* ServerSherpa Kiosk */,
+				5A3B35793059CBEC00D542EA /* ServerSherpa KioskTests */,
+				5A3B35833059CBEC00D542EA /* ServerSherpa KioskUITests */,
+				5A3B35683059CBEA00D542EA /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		5A3B35683059CBEA00D542EA /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				5A3B35673059CBEA00D542EA /* ServerSherpa Kiosk.app */,
+				5A3B35763059CBEC00D542EA /* ServerSherpa KioskTests.xctest */,
+				5A3B35803059CBEC00D542EA /* ServerSherpa KioskUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5A3B35663059CBEA00D542EA /* ServerSherpa Kiosk */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5A3B358A3059CBEC00D542EA /* Build configuration list for PBXNativeTarget "ServerSherpa Kiosk" */;
+			buildPhases = (
+				5A3B35633059CBEA00D542EA /* Sources */,
+				5A3B35643059CBEA00D542EA /* Frameworks */,
+				5A3B35653059CBEA00D542EA /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				5A3B35693059CBEA00D542EA /* ServerSherpa Kiosk */,
+			);
+			name = "ServerSherpa Kiosk";
+			packageProductDependencies = (
+			);
+			productName = "ServerSherpa Kiosk";
+			productReference = 5A3B35673059CBEA00D542EA /* ServerSherpa Kiosk.app */;
+			productType = "com.apple.product-type.application";
+		};
+		5A3B35753059CBEC00D542EA /* ServerSherpa KioskTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5A3B358D3059CBEC00D542EA /* Build configuration list for PBXNativeTarget "ServerSherpa KioskTests" */;
+			buildPhases = (
+				5A3B35723059CBEC00D542EA /* Sources */,
+				5A3B35733059CBEC00D542EA /* Frameworks */,
+				5A3B35743059CBEC00D542EA /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5A3B35783059CBEC00D542EA /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				5A3B35793059CBEC00D542EA /* ServerSherpa KioskTests */,
+			);
+			name = "ServerSherpa KioskTests";
+			packageProductDependencies = (
+			);
+			productName = "ServerSherpa KioskTests";
+			productReference = 5A3B35763059CBEC00D542EA /* ServerSherpa KioskTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		5A3B357F3059CBEC00D542EA /* ServerSherpa KioskUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5A3B35903059CBEC00D542EA /* Build configuration list for PBXNativeTarget "ServerSherpa KioskUITests" */;
+			buildPhases = (
+				5A3B357C3059CBEC00D542EA /* Sources */,
+				5A3B357D3059CBEC00D542EA /* Frameworks */,
+				5A3B357E3059CBEC00D542EA /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5A3B35823059CBEC00D542EA /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				5A3B35833059CBEC00D542EA /* ServerSherpa KioskUITests */,
+			);
+			name = "ServerSherpa KioskUITests";
+			packageProductDependencies = (
+			);
+			productName = "ServerSherpa KioskUITests";
+			productReference = 5A3B35803059CBEC00D542EA /* ServerSherpa KioskUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		5A3B355F3059CBEA00D542EA /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2610;
+				LastUpgradeCheck = 2610;
+				TargetAttributes = {
+					5A3B35663059CBEA00D542EA = {
+						CreatedOnToolsVersion = 26.1.1;
+					};
+					5A3B35753059CBEC00D542EA = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = 5A3B35663059CBEA00D542EA;
+					};
+					5A3B357F3059CBEC00D542EA = {
+						CreatedOnToolsVersion = 26.1.1;
+						TestTargetID = 5A3B35663059CBEA00D542EA;
+					};
+				};
+			};
+			buildConfigurationList = 5A3B35623059CBEA00D542EA /* Build configuration list for PBXProject "ServerSherpa Kiosk" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 5A3B355E3059CBEA00D542EA;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 5A3B35683059CBEA00D542EA /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				5A3B35663059CBEA00D542EA /* ServerSherpa Kiosk */,
+				5A3B35753059CBEC00D542EA /* ServerSherpa KioskTests */,
+				5A3B357F3059CBEC00D542EA /* ServerSherpa KioskUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		5A3B35653059CBEA00D542EA /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5A3B35743059CBEC00D542EA /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5A3B357E3059CBEC00D542EA /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		5A3B35633059CBEA00D542EA /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5A3B35723059CBEC00D542EA /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5A3B357C3059CBEC00D542EA /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		5A3B35783059CBEC00D542EA /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5A3B35663059CBEA00D542EA /* ServerSherpa Kiosk */;
+			targetProxy = 5A3B35773059CBEC00D542EA /* PBXContainerItemProxy */;
+		};
+		5A3B35823059CBEC00D542EA /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5A3B35663059CBEA00D542EA /* ServerSherpa Kiosk */;
+			targetProxy = 5A3B35813059CBEC00D542EA /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		5A3B35883059CBEC00D542EA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = Y2QYBG96U4;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		5A3B35893059CBEC00D542EA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = Y2QYBG96U4;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		5A3B358B3059CBEC00D542EA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Y2QYBG96U4;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ServerSherpa Kiosk/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "ServerSherpa Kiosk";
+				INFOPLIST_KEY_NSCameraUsageDescription = "The camera reads barcodes and QR codes when you tap the camera button.";
+				INFOPLIST_KEY_UIRequiresFullScreen = NO;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "Server-Sherpas.ServerSherpa-Kiosk";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		5A3B358C3059CBEC00D542EA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Y2QYBG96U4;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "ServerSherpa Kiosk/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "ServerSherpa Kiosk";
+				INFOPLIST_KEY_NSCameraUsageDescription = "The camera reads barcodes and QR codes when you tap the camera button.";
+				INFOPLIST_KEY_UIRequiresFullScreen = NO;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "Server-Sherpas.ServerSherpa-Kiosk";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = nonisolated;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		5A3B358E3059CBEC00D542EA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Y2QYBG96U4;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "Server-Sherpas.ServerSherpa-KioskTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ServerSherpa Kiosk.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ServerSherpa Kiosk";
+			};
+			name = Debug;
+		};
+		5A3B358F3059CBEC00D542EA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Y2QYBG96U4;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "Server-Sherpas.ServerSherpa-KioskTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ServerSherpa Kiosk.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ServerSherpa Kiosk";
+			};
+			name = Release;
+		};
+		5A3B35913059CBEC00D542EA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Y2QYBG96U4;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "Server-Sherpas.ServerSherpa-KioskUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "ServerSherpa Kiosk";
+			};
+			name = Debug;
+		};
+		5A3B35923059CBEC00D542EA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = Y2QYBG96U4;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "Server-Sherpas.ServerSherpa-KioskUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "ServerSherpa Kiosk";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5A3B35623059CBEA00D542EA /* Build configuration list for PBXProject "ServerSherpa Kiosk" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5A3B35883059CBEC00D542EA /* Debug */,
+				5A3B35893059CBEC00D542EA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5A3B358A3059CBEC00D542EA /* Build configuration list for PBXNativeTarget "ServerSherpa Kiosk" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5A3B358B3059CBEC00D542EA /* Debug */,
+				5A3B358C3059CBEC00D542EA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5A3B358D3059CBEC00D542EA /* Build configuration list for PBXNativeTarget "ServerSherpa KioskTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5A3B358E3059CBEC00D542EA /* Debug */,
+				5A3B358F3059CBEC00D542EA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5A3B35903059CBEC00D542EA /* Build configuration list for PBXNativeTarget "ServerSherpa KioskUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5A3B35913059CBEC00D542EA /* Debug */,
+				5A3B35923059CBEC00D542EA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 5A3B355F3059CBEA00D542EA /* Project object */;
+}

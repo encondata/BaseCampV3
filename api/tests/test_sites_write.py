@@ -164,3 +164,31 @@ async def test_non_global_actor_cannot_create(client, db, seeded_user):
     resp = await client.post("/sites", headers=hdrs, json={"name": "Sneaky"})
     assert resp.status_code == 403
     assert resp.json()["detail"]["code"] == "forbidden"
+
+
+async def test_patch_explicit_null_clears_optional_fields(client, db, seeded_user):
+    """The site editor sends a cleared optional field as an explicit null
+    (leaving it out kept the old value — clearing Notes did nothing)."""
+    hdrs = await login(client)
+    resp = await client.post("/sites", headers=hdrs, json={
+        "name": "Clearable DC", "code": "CLR1", "city": "Reno",
+        "timezone": "America/Los_Angeles", "dc_provider": "Switch",
+        "notes": "Gate code 1234"})
+    assert resp.status_code == 201, resp.text
+    site_id = resp.json()["id"]
+
+    resp = await client.patch(f"/sites/{site_id}", headers=hdrs, json={
+        "notes": None, "timezone": None, "dc_provider": None,
+        "code": None, "city": None, "partner_id": None})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    for field in ("notes", "timezone", "dc_provider", "code", "city", "partner_id"):
+        assert body[field] is None, field
+
+    site = await db.get(Site, site_id)
+    await db.refresh(site)
+    assert site.notes is None and site.timezone is None
+    upd = await db.scalar(select(AuditLog).where(
+        AuditLog.action == "update", AuditLog.entity_type == "site",
+        AuditLog.entity_id == site_id))
+    assert upd.changes["notes"] == {"from": "Gate code 1234", "to": None}

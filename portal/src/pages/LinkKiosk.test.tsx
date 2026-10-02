@@ -7,9 +7,9 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-const auth = vi.hoisted(() => ({ can: vi.fn(() => true) }));
+const auth = vi.hoisted(() => ({ can: vi.fn(() => true), logout: vi.fn() }));
 vi.mock('../auth/AuthContext', () => ({
-  useAuth: () => ({ can: auth.can, person: { display_name: 'Jimmy Henderson' } }),
+  useAuth: () => ({ can: auth.can, logout: auth.logout, person: { display_name: 'Jimmy Henderson' } }),
 }));
 
 const api = vi.hoisted(() => ({
@@ -32,6 +32,7 @@ function renderAt(path: string) {
       <Routes>
         <Route path="/link" element={<LinkKiosk />} />
         <Route path="/link/:code" element={<LinkKiosk />} />
+        <Route path="/login" element={<div>Login page</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -42,8 +43,9 @@ beforeEach(() => {
   api.getPairInfo.mockResolvedValue(INFO);
   api.approvePair.mockResolvedValue(undefined);
   api.denyPair.mockResolvedValue(undefined);
+  auth.logout.mockResolvedValue(undefined);
 });
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
 
 it('code entry normalizes and navigates to /link/:code', async () => {
   renderAt('/link');
@@ -125,4 +127,65 @@ it('refuses accounts without kiosk access', async () => {
   renderAt('/link/ABCD2345');
   expect(await screen.findByText(/isn't allowed to sign in to kiosks/)).toBeTruthy();
   expect(api.getPairInfo).not.toHaveBeenCalled();
+});
+
+/* ── after approving: sign this phone out, or stay signed in ──────── */
+
+async function approveWithFakeClock() {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  renderAt('/link/ABCD2345');
+  await user.click(await screen.findByRole('button', { name: 'Approve' }));
+  await screen.findByText(/Dock 3 is signing in/);
+  return user;
+}
+
+it('after approving, offers to sign this phone out with a 15-second countdown', async () => {
+  await approveWithFakeClock();
+  expect(screen.getByText('Stay signed in on this phone?')).toBeTruthy();
+  expect(screen.getByText(/signed out in 15 seconds/)).toBeTruthy();
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(screen.getByText(/signed out in 10 seconds/)).toBeTruthy();
+  expect(auth.logout).not.toHaveBeenCalled();
+});
+
+it('signs this phone out automatically when the 15 seconds run out', async () => {
+  await approveWithFakeClock();
+  await vi.advanceTimersByTimeAsync(14_000);
+  expect(auth.logout).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1_500);
+  await waitFor(() => expect(auth.logout).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText('Login page')).toBeTruthy();
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(auth.logout).toHaveBeenCalledTimes(1);
+});
+
+it('Stay signed in cancels the countdown', async () => {
+  const user = await approveWithFakeClock();
+  await user.click(screen.getByRole('button', { name: 'Stay signed in' }));
+  expect(screen.getByText(/still signed in on this phone/)).toBeTruthy();
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(auth.logout).not.toHaveBeenCalled();
+  expect(screen.queryByText('Login page')).toBeNull();
+});
+
+it('Sign out now signs this phone out straight away', async () => {
+  const user = await approveWithFakeClock();
+  await user.click(screen.getByRole('button', { name: 'Sign out now' }));
+  await waitFor(() => expect(auth.logout).toHaveBeenCalledTimes(1));
+  expect(await screen.findByText('Login page')).toBeTruthy();
+});
+
+it('opening a code that was already approved shows no sign-out prompt', async () => {
+  api.getPairInfo.mockResolvedValue({ ...INFO, status: 'approved' });
+  renderAt('/link/ABCD2345');
+  expect(await screen.findByText(/Dock 3 is signing in/)).toBeTruthy();
+  expect(screen.queryByText('Stay signed in on this phone?')).toBeNull();
+});
+
+it('denying shows no sign-out prompt', async () => {
+  renderAt('/link/ABCD2345');
+  await userEvent.click(await screen.findByRole('button', { name: 'Deny' }));
+  expect(await screen.findByText('Declined.')).toBeTruthy();
+  expect(screen.queryByText('Stay signed in on this phone?')).toBeNull();
 });

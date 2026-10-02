@@ -4,6 +4,8 @@ import type { DeviceItem } from './api';
 import {
   connectionLabel, deviceCellText, deviceSearchText, deviceSortValue, formatUptime,
   loginMethodLabel, registrationLabel, subTypeLabel, tokenExpiryState, vpnLabel,
+  approvalLabel, bandLabel, routerClientTotal, routerInstallCommand,
+  routerStatus, routerVpn, routerWifi, vpnChipClass,
 } from './devices';
 
 const R: DeviceItem = {
@@ -21,6 +23,7 @@ const R: DeviceItem = {
   current_initiative_id: null, current_initiative_name: null,
   session_person_id: null, session_person_name: null,
   session_login_method: null, session_started_at: null,
+    setup_clear_requested_at: null, setup_clear_requested_by_name: null,
 };
 
 describe('formatUptime', () => {
@@ -214,5 +217,60 @@ describe('kiosk session accessors', () => {
     expect(deviceSearchText(signedIn).toLowerCase()).toContain('claude dev');
     expect(deviceSearchText({ ...R, session_person_name: null }).toLowerCase())
       .not.toContain('claude dev');
+  });
+});
+
+const base: DeviceItem = { ...R, id: 'r1', site_id: null, site_name: null, wan_ip: null,
+  lan_ip: null, uptime_seconds: null, last_seen_at: null, connected_count: 2 };
+
+describe('router helpers', () => {
+  it('labels approval states and adds the secret-changed note to the cell text', () => {
+    expect(approvalLabel('pending')).toBe('Pending');
+    expect(approvalLabel('approved')).toBe('Approved');
+    expect(approvalLabel('revoked')).toBe('Revoked');
+    expect(approvalLabel(null)).toBe('—');
+    expect(deviceCellText({ ...base, approval_state: 'pending', secret_mismatch: true }, 'approval'))
+      .toBe('Pending · Secret changed');
+  });
+
+  it('online within 16 minutes, offline after, never without a check-in', () => {
+    const now = new Date('2026-10-01T12:00:00Z');
+    expect(routerStatus('2026-10-01T11:45:00Z', now)).toBe('online');
+    expect(routerStatus('2026-10-01T11:43:00Z', now)).toBe('offline');
+    expect(routerStatus(null, now)).toBe('never');
+  });
+
+  it('maps both VPN vocabularies to labels and chips', () => {
+    expect(vpnLabel('up')).toBe('Up');
+    expect(vpnLabel('partial')).toBe('Partial');
+    expect(vpnLabel('none')).toBe('None');
+    expect(vpnLabel('connected')).toBe('Connected');
+    expect(vpnChipClass('up')).toBe(' c-green');
+    expect(vpnChipClass('connected')).toBe(' c-green');
+    expect(vpnChipClass('down')).toBe(' c-red');
+    expect(vpnChipClass('partial')).toBe(' c-amber');
+    expect(vpnChipClass('none')).toBe('');
+  });
+
+  it('reads wifi/vpn/clients out of raw_info defensively', () => {
+    const d = { ...base, raw_info: {
+      wifi: [{ ssid: 'Site', band: '5g' }], vpn: [{ name: 'wg' }], clients: { total: 7 },
+    } };
+    expect(routerWifi(d)).toEqual([{ ssid: 'Site', band: '5g' }]);
+    expect(routerVpn(d)).toEqual([{ name: 'wg' }]);
+    expect(routerClientTotal(d)).toBe(7);
+    expect(deviceCellText(d, 'connected')).toBe('7');
+    expect(routerWifi({ ...base, raw_info: { wifi: 'nope' } })).toEqual([]);
+    expect(routerClientTotal(base)).toBe(2); // falls back to the lease count
+    expect(bandLabel('2g')).toBe('2.4 GHz');
+    expect(bandLabel('6g')).toBe('6 GHz');
+    expect(bandLabel(undefined)).toBe('—');
+  });
+
+  it('builds the one-line install command', () => {
+    expect(routerInstallCommand('https://api.example.com/')).toBe(
+      'curl -fsSL https://raw.githubusercontent.com/encondata/BaseCampV3/main/router_agent/install.sh'
+      + ' | sh -s -- --api https://api.example.com',
+    );
   });
 });

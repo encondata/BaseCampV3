@@ -1,0 +1,4 @@
+1759400000 aa:bb:cc:dd:ee:01 192.168.8.120 kiosk-01 01:aa:bb:cc:dd:ee:01
+1759400000 aa:bb:cc:dd:ee:02 192.168.8.121 * 01:aa:bb:cc:dd:ee:02
+1759400000 aa:bb:cc:dd:ee:03 192.168.8.122 phone-3 *
+1759400000 aa:bb:cc:dd:ee:05 192.168.8.125 we"ird\host *

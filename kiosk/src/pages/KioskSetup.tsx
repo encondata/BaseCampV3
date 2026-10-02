@@ -39,6 +39,7 @@ import {
   readerLabel, stationLabel, useKioskSetup, type KioskSetupSelection, type StationType,
 } from '../lib/kioskSetup';
 import { isLaptop, platform } from '../lib/platform';
+import { dismissSetupClearNotice, useSetupClearNotice } from '../lib/setupClear';
 import {
   isSetupComplete, readSetupState, useKioskSetupState, writeSetupState,
 } from '../lib/setupState';
@@ -119,12 +120,44 @@ export default function KioskSetup() {
   useEffect(() => {
     if (setupComplete && !touched.current) setWizardOpen(false);
   }, [setupComplete]);
+  const clearNotice = useSetupClearNotice();
 
   const load = () => {
     setLoadError(false);
     setOptions(null);
     getSetupOptions().then(setOptions).catch(() => setLoadError(true));
   };
+
+  // A Clear Setup can land while the summary is open: the selection goes
+  // away under it, so open the wizard (which also triggers the options load).
+  useEffect(() => {
+    if (!selection && !wizardOpen) setWizardOpen(true);
+  }, [selection, wizardOpen]);
+
+  // ...and when it lands with the wizard ALREADY open (e.g. "Change setup"
+  // at step 2 or 3), restart at the first step with the choices cleared and the
+  // options reloaded — the same as Android's KioskSetupViewModel. Only the
+  // non-null -> null transition counts: the wizard's own finish writes go
+  // null/old -> new, and first-time setup starts null.
+  const prevSelection = useRef(selection);
+  useEffect(() => {
+    const hadSelection = prevSelection.current !== null;
+    prevSelection.current = selection;
+    if (!hadSelection || selection !== null) return;
+    setInitiativeId('');
+    setSiteId('');
+    setScanStatus('');
+    setStationType('');
+    setReaderIp('');
+    setLaptopIp('');
+    setConnected(null);
+    setPaired(null);
+    setSubmitError('');
+    setStep(laptop ? 'type' : 'move');
+    // Wizard closed: the effect above opens it and the one below loads.
+    if (wizardOpen) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selection]);
 
   useEffect(() => {
     if (wizardOpen) load();
@@ -242,6 +275,7 @@ export default function KioskSetup() {
       }
       setSelection(saved);
       writeSetupState('complete');
+      dismissSetupClearNotice();
       // An RFID station still has to verify and start its reader.
       if (station === 'rfid') setStep('confirm'); else setWizardOpen(false);
       // Fire-and-forget: the summary appears immediately and the
@@ -266,6 +300,11 @@ export default function KioskSetup() {
         <div className="eyebrow">Kiosk · Setup</div>
         <h1 className="page-title">Kiosk setup</h1>
         {lanAccess && <p className="sys-banner sys-banner-readonly" role="status">{LAN_NOTICE}</p>}
+        {clearNotice && (
+          <div className="sys-banner sys-banner-broadcast" role="status">
+            An administrator cleared this kiosk&apos;s setup. Run Kiosk Setup to continue.
+          </div>
+        )}
         <div className="setup-summary">
           <p>
             This kiosk is set up for <b>{selection.initiativeName}</b> at{' '}
@@ -336,6 +375,11 @@ export default function KioskSetup() {
       <div className="eyebrow">Kiosk · Setup</div>
       <h1 className="page-title">Kiosk setup</h1>
       {lanAccess && <p className="sys-banner sys-banner-readonly" role="status">{LAN_NOTICE}</p>}
+      {clearNotice && (
+        <div className="sys-banner sys-banner-broadcast" role="status">
+          An administrator cleared this kiosk&apos;s setup. Run Kiosk Setup to continue.
+        </div>
+      )}
       <div className="setup-wizard">
         <div className="setup-steps">{stepLabel}</div>
 

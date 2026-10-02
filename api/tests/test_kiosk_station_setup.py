@@ -1,4 +1,4 @@
-"""Kiosk station type + paired RFID reader (migration 0086): POST /kiosk/setup
+"""Kiosk station type + paired RFID reader (migration 0088): POST /kiosk/setup
 accepts `station_type` ('label' | 'rfid') and `reader`; the device list and
 detail payloads return `station_type` and `rfid_reader`. Spec §3."""
 
@@ -221,10 +221,10 @@ async def test_heartbeat_leaves_them_unchanged(client, db, seeded_user):
     assert d.rfid_reader_serial == "FX9600-AB12" and d.rfid_paired_at == paired
 
 
-async def test_migration_0086_chain_columns_and_check(db):
+async def test_migration_0088_chain_columns_and_check(db):
     script = ScriptDirectory.from_config(Config(str(API_DIR / "alembic.ini")))
     assert len(script.get_heads()) == 1
-    assert script.get_revision("0086").down_revision == "0085"
+    assert script.get_revision("0088").down_revision == "0087"
     cols = {r[0]: r[1] for r in (await db.execute(text(
         "select column_name, data_type from information_schema.columns "
         "where table_name='devices' and column_name like any "
@@ -242,7 +242,7 @@ async def test_migration_0086_chain_columns_and_check(db):
         await db.rollback()
 
 
-THROWAWAY_DB = os.environ.get("SS_TEST_DB", "serversherpa_test") + "_downgrade_0086"
+THROWAWAY_DB = os.environ.get("SS_TEST_DB", "serversherpa_test") + "_downgrade_0088"
 _COLS = ("station_type", "rfid_reader_ip", "rfid_reader_serial", "rfid_reader_model",
          "rfid_reader_versions", "rfid_paired_at")
 
@@ -254,7 +254,7 @@ def _alembic(url, *args):
     assert result.returncode == 0, result.stderr[-2000:]
 
 
-def test_0086_downgrades_and_upgrades_again():
+def test_0088_downgrades_and_upgrades_again():
     """Runs on a throwaway database (never the shared test DB, whose schema
     must stay at head), same pattern as test_wiki_migration_downgrade."""
     assert THROWAWAY_DB.startswith("serversherpa_test")
@@ -278,11 +278,11 @@ def test_0086_downgrades_and_upgrades_again():
         conn.execute(f'DROP DATABASE IF EXISTS "{THROWAWAY_DB}" WITH (FORCE)')
         conn.execute(f'CREATE DATABASE "{THROWAWAY_DB}"')
     try:
-        _alembic(url, "upgrade", "0086")
+        _alembic(url, "upgrade", "0088")
         assert state() == (set(_COLS), 1)
-        _alembic(url, "downgrade", "0085")
+        _alembic(url, "downgrade", "0087")
         assert state() == (set(), 0)
-        _alembic(url, "upgrade", "0086")
+        _alembic(url, "upgrade", "0088")
         assert state() == (set(_COLS), 1)
     finally:
         with psycopg.connect(admin, autocommit=True) as conn:

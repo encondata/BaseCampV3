@@ -1,13 +1,13 @@
-"""Devices — the scanning-hardware fleet registry's read + delete
-surface. The self-registration endpoint (pre-shared-token auth, upsert
-by serial, doubles as the heartbeat) is deferred; nothing here may
-block that shape. Hard delete, audited."""
+"""Devices — the scanning-hardware fleet registry's admin surface: read,
+register, delete, and approve/revoke for agent routers. Hard delete,
+audited. The router agent's own report endpoint lives in
+routes/router_agent.py."""
 
 import uuid
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.orm import aliased
 
 from serversherpa.access.defaults import GATE_BYPASS_RANK
@@ -22,6 +22,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.db.ordering import natural
 from serversherpa.services.audit import audit, diff, snapshot
+from serversherpa.services.router_agent import resolve_router_copies
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
@@ -31,6 +32,8 @@ def _err(status: int, code: str) -> HTTPException:
 
 
 SessionPerson = aliased(Person)
+ClearRequester = aliased(Person)
+Approver = aliased(Person)
 
 
 def _device_query():
@@ -49,7 +52,11 @@ def _device_query():
                    StatusValue.label, StatusValue.color,
                    raw_24h.c.n, proc_24h.c.n, Initiative.name,
                    SessionPerson.preferred_name, SessionPerson.first_name,
-                   SessionPerson.last_name)
+                   SessionPerson.last_name,
+                   ClearRequester.preferred_name, ClearRequester.first_name,
+                   ClearRequester.last_name,
+                   Approver.preferred_name, Approver.first_name,
+                   Approver.last_name)
             .outerjoin(Site, Device.site_id == Site.id)
             .outerjoin(up_counts, up_counts.c.device_id == Device.id)
             .outerjoin(StatusValue,
@@ -60,12 +67,17 @@ def _device_query():
             .outerjoin(Initiative,
                        Device.current_initiative_id == Initiative.id)
             .outerjoin(SessionPerson,
-                       SessionPerson.id == Device.session_person_id))
+                       SessionPerson.id == Device.session_person_id)
+            .outerjoin(ClearRequester,
+                       ClearRequester.id == Device.setup_clear_requested_by)
+            .outerjoin(Approver, Approver.id == Device.approved_by))
 
 
 def _row_to_item(row) -> dict:
     (d, site_name, connected, ss_label, ss_color, raw_n, proc_n,
-     initiative_name, session_preferred, session_first, session_last) = row
+     initiative_name, session_preferred, session_first, session_last,
+     clear_preferred, clear_first, clear_last,
+     approver_preferred, approver_first, approver_last) = row
     session_person_name = (
         f"{session_preferred or session_first} {session_last}"
         if session_last is not None else None)
@@ -99,6 +111,17 @@ def _row_to_item(row) -> dict:
              "model": d.rfid_reader_model, "versions": d.rfid_reader_versions,
              "paired_at": d.rfid_paired_at}
             if d.rfid_reader_ip is not None else None),
+        "setup_clear_requested_at": d.setup_clear_requested_at,
+        "setup_clear_requested_by_name": (
+            f"{clear_preferred or clear_first} {clear_last}"
+            if clear_last is not None else None),
+        "approval_state": d.approval_state,
+        "approved_at": d.approved_at,
+        "approved_by_name": (
+            f"{approver_preferred or approver_first} {approver_last}"
+            if approver_last is not None else None),
+        "secret_mismatch": d.secret_mismatch,
+        "agent_source_ip": d.agent_source_ip,
     }
 
 
@@ -341,6 +364,142 @@ async def deregister_device(
     audit(db, actor_id=actor.person.id, entity_type="device",
           entity_id=str(device.id), action="deregister", changes={})
     await db.commit()
+    return await _item_for(db, device.id)
+
+
+async def _kiosk_or_error(db: DbSession, device_id: uuid.UUID) -> Device:
+    device = await db.get(Device, device_id)
+    if device is None:
+        raise _err(404, "device_not_found")
+    if device.device_type != "kiosk":
+        raise _err(409, "not_a_kiosk")
+    return device
+
+
+@router.post("/{device_id}/clear-setup", response_model=DeviceItem)
+async def request_clear_setup(
+    device_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "change"),
+) -> dict:
+    """Queue a Clear Setup for this kiosk. A fresh id every time, so an
+    acknowledgment of an older request can never close this one."""
+    device = await _kiosk_or_error(db, device_id)
+    now = datetime.now(UTC)
+    device.setup_clear_id = uuid.uuid4()
+    device.setup_clear_requested_at = now
+    device.setup_clear_requested_by = actor.person.id
+    device.updated_at = now
+    audit(db, actor_id=actor.person.id, entity_type="device",
+          entity_id=str(device.id), action="clear_setup_requested",
+          changes={"request_id": str(device.setup_clear_id)})
+    await db.commit()
+    return await _item_for(db, device.id)
+
+
+@router.post("/{device_id}/clear-setup/cancel", response_model=DeviceItem)
+async def cancel_clear_setup(
+    device_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "change"),
+) -> dict:
+    """Withdraw a pending Clear Setup. Cancelling nothing is a quiet 200."""
+    device = await _kiosk_or_error(db, device_id)
+    if device.setup_clear_id is not None:
+        request_id = str(device.setup_clear_id)
+        device.setup_clear_id = None
+        device.setup_clear_requested_at = None
+        device.setup_clear_requested_by = None
+        device.updated_at = datetime.now(UTC)
+        audit(db, actor_id=actor.person.id, entity_type="device",
+              entity_id=str(device.id), action="clear_setup_cancelled",
+              changes={"request_id": request_id})
+        await db.commit()
+    return await _item_for(db, device.id)
+
+
+def _display(person: Person) -> str:
+    return f"{person.preferred_name or person.first_name} {person.last_name}"
+
+
+async def _agent_router_or_error(db: DbSession, device_id: uuid.UUID) -> Device:
+    device = await db.get(Device, device_id)
+    if device is None:
+        raise _err(404, "device_not_found")
+    if device.device_type != "router":
+        raise _err(409, "not_a_router")
+    if device.approval_state is None:
+        # made by hand / sample data: no agent has registered, no secret to pin
+        raise _err(409, "not_an_agent_router")
+    return device
+
+
+@router.post("/{device_id}/approve", response_model=DeviceItem)
+async def approve_router(
+    device_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "change"),
+) -> dict:
+    """Start storing this router's reports. A candidate secret seen since
+    registration (reinstall/reset) is promoted — approving trusts the
+    newest. Guarded on state, so a double approval changes nothing; on an
+    approved router with the mismatch warning up it just dismisses it."""
+    device = await _agent_router_or_error(db, device_id)
+    now = datetime.now(UTC)
+    result = await db.execute(
+        update(Device)
+        .where(Device.id == device.id, Device.approval_state != "approved")
+        .values(approval_state="approved", approved_at=now, approved_by=actor.person.id,
+                agent_secret_hash=func.coalesce(Device.pending_secret_hash,
+                                                Device.agent_secret_hash),
+                pending_secret_hash=None, secret_mismatch=False, updated_at=now)
+        .execution_options(synchronize_session=False))
+    if result.rowcount:
+        audit(db, actor_id=actor.person.id, entity_type="device",
+              entity_id=str(device.id), action="router_approve",
+              changes={"mac": device.mac})
+        await resolve_router_copies(db, device.id, "approved", _display(actor.person))
+    else:
+        # Already approved: with the "Secret changed" warning up this is a
+        # dismissal. The pinned secret was proven by the auto-restore, so no
+        # candidate is promoted. Guarded, so a second call changes nothing.
+        dismissed = await db.execute(
+            update(Device)
+            .where(Device.id == device.id, Device.approval_state == "approved",
+                   Device.secret_mismatch.is_(True))
+            .values(secret_mismatch=False, pending_secret_hash=None, updated_at=now)
+            .execution_options(synchronize_session=False))
+        if dismissed.rowcount:
+            audit(db, actor_id=actor.person.id, entity_type="device",
+                  entity_id=str(device.id), action="router_mismatch_dismissed",
+                  changes={"mac": device.mac})
+    await db.commit()
+    await db.refresh(device)
+    return await _item_for(db, device.id)
+
+
+@router.post("/{device_id}/revoke", response_model=DeviceItem)
+async def revoke_router(
+    device_id: uuid.UUID, db: DbSession,
+    actor: AuthContext = require_permission("scanning_hardware", "change"),
+) -> dict:
+    """Stop storing reports (the inbox's Reject calls this too). The last
+    snapshot stays for reference; if the router keeps reporting it shows
+    as pending again, without a new notification. The prior approval is
+    cleared so a revoked router never auto-restores."""
+    device = await _agent_router_or_error(db, device_id)
+    now = datetime.now(UTC)
+    result = await db.execute(
+        update(Device)
+        .where(Device.id == device.id, Device.approval_state != "revoked")
+        .values(approval_state="revoked", secret_mismatch=False,
+                pending_secret_hash=None, approved_at=None, approved_by=None,
+                updated_at=now)
+        .execution_options(synchronize_session=False))
+    if result.rowcount:
+        audit(db, actor_id=actor.person.id, entity_type="device",
+              entity_id=str(device.id), action="router_revoke",
+              changes={"mac": device.mac})
+        await resolve_router_copies(db, device.id, "revoked", _display(actor.person))
+    await db.commit()
+    await db.refresh(device)
     return await _item_for(db, device.id)
 
 

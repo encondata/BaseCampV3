@@ -183,9 +183,11 @@ A Label Station setup the cloud accepts deletes the `rfid_pairing` row (the `rfi
 
 ## 3. Cloud: database, API, portal
 
-### 3.1 Migration (0086)
+### 3.1 Migration (0088)
 
-Before numbering, confirm 0086 is still free in every worktree and the dev DB. On `devices`:
+(Renumbered from 0086 when main was merged in: main took 0086 for Clear Setup and 0087 for the router agent, so this is `down_revision = "0087"`.)
+
+Before numbering, confirm 0088 is still free in every worktree and the dev DB. On `devices`:
 
 - `station_type text NULL` with `CHECK (station_type IN ('label','rfid'))`
 - `rfid_reader_ip inet NULL`

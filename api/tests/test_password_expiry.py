@@ -131,8 +131,19 @@ async def test_load_policy_reads_the_section(client, db, seeded_user):
     assert policy.since is not None and policy.since.tzinfo is not None
 
 
+async def _account_set_before_now(db, person_id) -> UserAccount:
+    """The seeded user's account with its password dated before NOW. The
+    fixture stamps password_updated_at with the wall clock, and the first
+    apply_password files the replaced password under that stamp; left as
+    is, it sorts after every NOW-based rotation once the clock passes NOW."""
+    account = await db.get(UserAccount, person_id)
+    account.password_updated_at = NOW - timedelta(days=1)
+    await db.flush()
+    return account
+
+
 async def test_apply_password_records_history_and_trims(db, seeded_user):
-    account = await db.get(UserAccount, seeded_user.id)
+    account = await _account_set_before_now(db, seeded_user.id)
     pepper = get_settings().password_pepper.get_secret_value()
     for i in range(HISTORY_KEEP + 3):
         await apply_password(db, account, f"Rotation-{i:02d}-pw", must_change=False,
@@ -149,7 +160,7 @@ async def test_apply_password_records_history_and_trims(db, seeded_user):
 
 
 async def test_first_change_keeps_the_password_being_replaced(db, seeded_user):
-    account = await db.get(UserAccount, seeded_user.id)
+    account = await _account_set_before_now(db, seeded_user.id)
     pepper = get_settings().password_pepper.get_secret_value()
     await apply_password(db, account, "Second-pw-22", must_change=False, now=NOW)
     await db.commit()
@@ -171,7 +182,7 @@ async def test_first_change_keeps_the_password_being_replaced(db, seeded_user):
 
 
 async def test_assert_not_reused_checks_only_the_last_n(db, seeded_user):
-    account = await db.get(UserAccount, seeded_user.id)
+    account = await _account_set_before_now(db, seeded_user.id)
     for i in range(4):
         await apply_password(db, account, f"Old-pw-{i}", must_change=False,
                              now=NOW + timedelta(minutes=i))

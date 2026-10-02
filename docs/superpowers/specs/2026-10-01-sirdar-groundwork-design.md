@@ -348,3 +348,120 @@ log); Settings. The account menu in the topbar opens `/me` and Sign out.
 Building or installing environments, scheduled sync, access groups,
 trusted devices, 2FA enrollment for local users, and app/environment
 pages.
+
+## Addendum (2026-10-01): /me — profile, preferences, history
+
+Decided with the product owner after the first real install.
+
+- **Tabs** (segmented, like the portal): Profile `/me`, Preferences `/me/preferences`, History `/me/history`. The user menu's single item stays "My profile & preferences" → `/me`.
+- **Profile tab** (fork of portal `pages/Profile.tsx`; same layout and copy, Sirdar wording):
+  - **Hero:** initials avatar (Sirdar has no file storage), display name, job title, roles, contact line.
+  - **Profile panel:** editable by **every** user: first_name*, last_name*, preferred_name, job_title, contact_email (EmailStr, not unique), phone, address_line1, address_line2, city, region, postal_code, country* (2 letters, default US). Sign-in email is shown, not editable.
+    - For portal users, a note says "The next import from the portal overwrites these until two-way sync exists."
+    - New `users` columns come from migration 0002. The import copies them from portal `people` (`email`→contact_email, phone, address_*, city, region, postal_code, country).
+  - **Security panel:**
+    - **Local users:**
+      - Change password, using the portal `ChangePasswordForm`: current + new + confirm, min length = `SIRDAR_PASSWORD_MIN_LENGTH`. Errors: wrong current → 403 `invalid_current_password`; same as current → 422 `same_as_current`; too short → 422 `password_too_short`. Success revokes every other session family.
+      - 2FA enroll / regenerate backup codes, using the portal `TotpEnrollModal` / `RegenerateCodesModal`. Enrolling sets `totp_confirmed_at` and `totp_enabled = true`, so later sign-ins challenge.
+    - **Portal users:** password and 2FA status shown read-only with "Managed in the portal". The password and TOTP endpoints answer 403 `managed_in_portal` for them.
+  - **Active sessions:** every live session family (current marked) with "Sign out" on others.
+- **Preferences tab:** the portal `pages/me/MePreferences` component reused as-is. Its "portal" wording takes an optional app-name prop: accent (swatches + custom), theme, density, list size, sidebar mode / background (swatches + custom) / text size, motion.
+- **History tab:** Sirdar's own list of audit rows where the actor or the target is me, newest first, with action and record-type filters and CSV export.
+- **API** (portal paths and shapes):
+
+  | Method + path | Who | Returns |
+  |---|---|---|
+  | GET /api/auth/me/profile | any signed-in user | PersonDetail-like |
+  | PATCH /api/auth/me/profile | any signed-in user | updated profile |
+  | POST /api/auth/me/password | local users only | 204 |
+  | GET /api/auth/me/sessions | any signed-in user | `[{family_id, started_at, last_active_at, expires_at, ip_address, user_agent, current}]` |
+  | DELETE /api/auth/me/sessions/{family_id} | own sessions only | 204 |
+  | GET /api/auth/me/activity | any signed-in user | audit items |
+  | POST /api/auth/totp/enroll/start | local users only | `{secret, otpauth_uri}` |
+  | POST /api/auth/totp/enroll/confirm | local users only | body `{code, remember}`; returns `{backup_codes}` (8 codes, portal format) |
+  | POST /api/auth/totp/backup-codes/regenerate | local users only | body `{code}`; returns `{backup_codes}` |
+
+  The issuer name in the otpauth URI is "Sirdar".
+
+## Addendum (2026-10-01): Deploy page, step 1 — targets and connection
+
+Sirdar will deploy the ServerSherpa apps (api, portal, kiosk, wiki, spaces, db) from GitHub to a target. This step builds only the Deploy page, the target settings and a **connection test**. Actual deployment comes next.
+
+Decided with the product owner:
+
+- **Targets:** AWS, GCP, DigitalOcean and Custom (direct SSH). Only DigitalOcean and Custom are built now. AWS and GCP appear as "Coming soon" cards, and their settings already exist in `.env`. Target cards show only the icon, label and a status chip (Ready, Not configured, Coming soon), never connection details such as host, user, port or region (product owner decision 2026-10-01).
+- **Deployment types:** Blue (prod), Green (prod), Dev (development), Beta (external testing) and Custom (your own named environment, added at the product owner's request 2026-10-01). For now the type is a label carried with the connection test and recorded in the audit log. All types use the same per-provider credentials.
+- **Credentials (one set per provider, all in the "Target deployment" section of `.env`):**
+
+  | Provider | Settings |
+  |---|---|
+  | DigitalOcean | `SIRDAR_DEPLOY_DO_TOKEN`, `SIRDAR_DEPLOY_DO_REGION` (optional, e.g. `nyc3`) |
+  | AWS | `SIRDAR_DEPLOY_AWS_ACCESS_KEY_ID`, `SIRDAR_DEPLOY_AWS_SECRET_ACCESS_KEY`, `SIRDAR_DEPLOY_AWS_REGION` |
+  | GCP | `SIRDAR_DEPLOY_GCP_PROJECT_ID`, `SIRDAR_DEPLOY_GCP_CREDENTIALS_FILE` (path inside the container), `SIRDAR_DEPLOY_GCP_REGION` |
+  | Custom SSH | `SIRDAR_DEPLOY_SSH_HOST`, `SIRDAR_DEPLOY_SSH_PORT` (default 22), `SIRDAR_DEPLOY_SSH_USER`, `SIRDAR_DEPLOY_SSH_PASSWORD`, `SIRDAR_DEPLOY_SSH_KEY_PATH`, `SIRDAR_DEPLOY_SSH_KEY_PASSPHRASE` |
+
+  - **SSH auth:** password and/or private key. The key wins when both are set.
+  - **Key files:** live in `sirdar/deploy-keys/` on the host (mode 700), mounted read-only into the container at `/app/deploy-keys`. `SIRDAR_DEPLOY_SSH_KEY_PATH` may be a bare file name in that folder or an absolute container path.
+  - Secrets are never returned by the API or shown in the UI.
+- **Permissions:** a new resource `deploy` ("Deploy"):
+
+  | Action | Allows |
+  |---|---|
+  | view | see the page and targets |
+  | add | run a connection test |
+  | change | trust or forget SSH host keys |
+
+  Defaults: developer, founder and super_admin get view, add and change; admin gets view only. It is seeded by migration 0003 and editable on Roles & access.
+- **SSH host keys (trust on first use):**
+  - **First connection** to an unknown host:port answers 409 `host_key_unknown` with the key type and SHA256 fingerprint. The page shows them, and **Trust this host** (deploy:change) stores the key. The server re-reads the key and confirms the fingerprint still matches before storing.
+  - **Later connections** require the stored key. A different key answers 409 `host_key_mismatch` with both fingerprints and the connection is refused.
+  - **Forgetting a host** (deploy:change) lets a legitimately rebuilt server be trusted again.
+- **Connection test results:**
+  - **DigitalOcean:** account email and status, droplet limit and count, and whether the configured region is available.
+  - **SSH:** OS (`/etc/os-release` PRETTY_NAME), kernel (`uname -srm`), Docker version, Docker Compose version, free disk on `/`, and memory. Each check is shown as pass, warn or fail. Missing Docker is a warning, because a later step can install it.
+- **Audit:** `deploy.connect` (target, type, ok or error), `deploy.host_trust` and `deploy.host_forget`.
+- **Installer:** the first install asks "Configure deployment targets now? [y/N]". Answering yes prompts for DigitalOcean (token hidden) and then Custom SSH (host, port, user, password hidden, key file name). AWS and GCP stay blank for now. On re-runs, the deploy keys are asked once as a group through the same yes/no; a "no" writes them blank so the question isn't repeated.
+- **Region picker (DigitalOcean):** `GET /api/deploy/digitalocean/regions` (deploy:view) lists the account's `available` regions from DigitalOcean's live `/v2/regions`, sorted by name, as `{regions: [{slug, name}], default}`. `default` is `SIRDAR_DEPLOY_DO_REGION` when that region is in the list, else null. `POST /api/deploy/connect` takes an optional `region` slug (`^[a-z0-9-]{2,20}$`, else 422); for DigitalOcean it replaces the env default in the region check, and it is ignored for SSH. The audit entry includes `region` when given. The Deploy page shows a Region ComboBox once DigitalOcean is selected and configured, preselects `default`, and shows the chosen region in the result header. The installer no longer asks for a region: `SIRDAR_DEPLOY_DO_REGION` stays in `.env` (written blank) as an optional default.
+- **Custom type and its name:** Custom is the fifth type. It needs an environment name: `POST /api/deploy/connect` takes an optional `name`, required when `type` is `custom` and ignored otherwise. The name must match `^[a-z][a-z0-9-]{1,31}$` (lowercase letters, numbers and hyphens; starts with a letter; 2-32 characters), must not end with a hyphen, and must not be `blue`, `green`, `dev`, `beta` or `custom`. Failures answer 422 `custom_name_required`, `custom_name_invalid` or `custom_name_reserved`. The 200 result includes `name` (null unless custom) and the `deploy.connect` audit entry records it for custom. The Deploy page reveals a required "Environment name" field when Custom is selected, validates it with the same rules, keeps the test button disabled until it is valid, and shows the name in the result header (for example "Custom (SSH) · Custom: demo-acme").
+
+## Addendum (2026-10-01): saved Custom (SSH) targets
+
+Product owner request: add Custom (SSH) targets on the fly from the Deploy page, store them in an env file, and recall them later.
+
+- **Store:** `sirdar/config/deploy-targets.env` on the host, mounted read-write at `/app/config` (`SIRDAR_DEPLOY_TARGETS_FILE`, default `/app/config/deploy-targets.env`; the compose file pins it).
+  - The directory and the file are owned by the container uid 10001, with modes 700 and 600.
+  - Sirdar reads the file on every use, so changes apply immediately with no restart.
+  - The main `sirdar/.env` stays read-only to the app.
+- **File format** (dotenv; values single-quoted; newlines and NUL rejected):
+  - `SIRDAR_SSH_TARGETS=<slug>,<slug>,…` lists the targets in order.
+  - Each target has its own block: `SIRDAR_SSH_<KEY>_NAME`, `_HOST`, `_PORT`, `_USER`, `_PASSWORD`, `_KEY_PATH`, `_KEY_PASSPHRASE`.
+  - `<KEY>` is the slug uppercased with `-` → `_`. The slug is derived from the name (`a-z0-9-`, ≤32) and made unique with `-2`, `-3`, and so on.
+- **Writes:** every write takes an exclusive file lock, writes a temp file in the same directory and renames it into place.
+- **Targets on the Deploy page:** AWS and GCP (coming soon), DigitalOcean, the existing installer SSH target (read-only, label "Custom (SSH) · Installer", id `ssh`, still configured in `.env`), each saved target (id `ssh:<slug>`, label = its name), and an **Add SSH target** card. Cards still show no connection details.
+- **Add/edit form** (modal), deploy:change:
+
+  | Field | Required? | Rules |
+  |---|---|---|
+  | Name | required | 2–40 characters |
+  | Host | required | hostname, IPv4 or IPv6 |
+  | Port | default 22 | 1–65535 |
+  | User | required | |
+  | Password | optional, write-only | shows "set"; Replace / Clear |
+  | Key file | optional | picked from the files in `deploy-keys/` (names only) |
+  | Key passphrase | optional, write-only | |
+
+  At least a password or a key file is required. The installer target can't be edited or removed here.
+- **API** (deploy:change unless noted):
+
+  | Route | Notes |
+  |---|---|
+  | `GET /api/deploy/ssh-targets/{slug}` | editable fields; booleans `password_set` / `passphrase_set`; never secrets |
+  | `POST /api/deploy/ssh-targets` | 201 |
+  | `PUT /api/deploy/ssh-targets/{slug}` | secret fields: omitted = keep, `""` = clear, value = set |
+  | `DELETE /api/deploy/ssh-targets/{slug}` | 204 |
+  | `GET /api/deploy/key-files` | file names only |
+  | `GET /api/deploy/targets` (deploy:view) | now lists every SSH target |
+
+  - `POST /api/deploy/connect` accepts `ssh` or `ssh:<slug>`.
+  - Trusting a host key is allowed for the host:port of any configured SSH target.
+  - Audit actions: `deploy.target_add`, `deploy.target_update`, `deploy.target_remove`. They record non-secret fields only (name, host, port, user, key file name, password_set, passphrase_set).

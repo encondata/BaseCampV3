@@ -35,6 +35,7 @@ import {
   SITE_CREATED_UNLINKED_MESSAGE,
   SITE_ERRORS,
   sitePayload,
+  siteTimezoneOptions,
   surveySaveOps,
   type SiteFormState,
 } from '../../lib/sites';
@@ -137,7 +138,7 @@ export default function SiteEditModal({
       }
 
       const id = editingId as string;
-      await updateSite(id, sitePayload(form));
+      await updateSite(id, sitePayload(form, 'update'));
 
       try {
         if (!sameClientSet(clientBaseline, clientIds)) {
@@ -245,7 +246,7 @@ export default function SiteEditModal({
               <div><label>City</label>
                 <input value={form.city} disabled={locked}
                        onChange={(e) => setField('city', e.target.value)} /></div>
-              <div><label>Region</label>
+              <div><label>Region / State</label>
                 <input value={form.region} disabled={locked}
                        onChange={(e) => setField('region', e.target.value)} /></div>
               <div><label>Postal code</label>
@@ -270,8 +271,14 @@ export default function SiteEditModal({
                 </p>
               </div>
               <div><label>Timezone</label>
-                <input value={form.timezone} disabled={locked}
-                       onChange={(e) => setField('timezone', e.target.value)} /></div>
+                <ComboBox
+                  placeholder="Type to search timezones…"
+                  value={form.timezone}
+                  clearable
+                  disabled={locked}
+                  onChange={(v) => setField('timezone', v)}
+                  options={siteTimezoneOptions(form.timezone)}
+                /></div>
               <div><label>DC provider</label>
                 <input value={form.dc_provider} disabled={locked}
                        onChange={(e) => setField('dc_provider', e.target.value)} /></div>

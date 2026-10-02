@@ -1,0 +1,5 @@
+AA:BB:CC:DD:EE:02  -52 dBm / -95 dBm (SNR 43)  10 ms ago
+	RX: 144.4 MBit/s, HE-MCS 7, 20MHz, HE-NSS 2         1234 Pkts.
+	TX: 144.4 MBit/s, HE-MCS 7, 20MHz, HE-NSS 2          567 Pkts.
+	expected throughput: 98.1 MBit/s
+

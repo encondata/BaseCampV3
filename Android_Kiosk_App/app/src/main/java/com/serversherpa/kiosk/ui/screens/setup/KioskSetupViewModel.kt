@@ -20,6 +20,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -62,12 +64,35 @@ class KioskSetupViewModel(
     private val _state = MutableStateFlow(SetupUi())
     val state: StateFlow<SetupUi> = _state
 
+    private data class Saved(val hasSelection: Boolean, val setUp: Boolean)
+
     init {
         scope.launch {
-            val sel = prefs.setupSelection.first(); val st = prefs.setupState.first()
-            _state.update { it.copy(wizardOpen = !(sel != null && st.isComplete)) }
-            if (_state.value.wizardOpen == true) load()
+            // Not just the first read: the saved setup can be dropped while the screen is
+            // open (a Clear Setup from the portal, a move-password sign-in for another
+            // move). On the summary there is then nothing to show; in "Change setup" the
+            // choices belong to a setup that no longer exists. Either way the wizard
+            // starts over and loads the moves, never sitting on "Loading moves…".
+            var wasSetUp: Boolean? = null
+            combine(prefs.setupSelection, prefs.setupState) { sel, st -> Saved(sel != null, sel != null && st.isComplete) }
+                .distinctUntilChanged()
+                .collect { saved ->
+                    val dropped = wasSetUp == true && !saved.setUp && !saved.hasSelection
+                    wasSetUp = saved.setUp
+                    when (_state.value.wizardOpen) {
+                        null -> { _state.update { it.copy(wizardOpen = !saved.setUp) }; if (!saved.setUp) load() }
+                        false -> if (!saved.setUp) restartWizard()
+                        // finish() only ever writes a selection and then COMPLETE, so it never
+                        // looks like a drop: only a cleared selection restarts an open wizard.
+                        true -> if (dropped) restartWizard()
+                    }
+                }
         }
+    }
+
+    private fun restartWizard() {
+        _state.update { it.copy(wizardOpen = true, step = 1, submitError = null, initiativeId = "", siteId = "", scanStatus = "") }
+        load()
     }
 
     fun load() {
@@ -116,6 +141,7 @@ class KioskSetupViewModel(
                 val result = api.submitSetup(KioskSetupIn(identity.get().serial, ui.initiativeId, ui.siteId, scanKey))
                 prefs.setSetupSelection(KioskSetupSelection(result.initiative_id, result.initiative_name, result.site_id, result.site_name, result.site_role, result.scan_status, result.scan_status_label))
                 prefs.setSetupState(SetupState.COMPLETE)
+                prefs.dismissSetupClearNotice()   // set up again: the "administrator cleared" banner goes
                 _state.update { it.copy(submitting = false, wizardOpen = false) }
                 sync.run(result.initiative_id, result.initiative_name)
             } catch (e: Exception) {

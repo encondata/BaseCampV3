@@ -28,7 +28,7 @@ def test_create_admin_rejects_short_password_and_unknown_role():
     short = runner.invoke(app, ["create-admin", "--email", "a@test.example.com",
                                 "--first-name", "A", "--last-name", "B"],
                           input="short\nshort\n")
-    assert short.exit_code == 1 and "at least 12" in short.output
+    assert short.exit_code == 1 and "at least 8" in short.output
     bad = runner.invoke(app, ["create-admin", "--email", "a@test.example.com",
                               "--first-name", "A", "--last-name", "B", "--role", "staff"],
                         input="LongEnoughPass1\nLongEnoughPass1\n")
@@ -74,3 +74,10 @@ async def test_created_admin_can_log_in(client):
     resp = await client.post("/api/auth/login", json={"email": "root@test.example.com",
                                                       "password": "LongEnoughPass1"})
     assert resp.status_code == 200, resp.text
+
+
+def test_create_admin_accepts_portal_minimum_of_eight():
+    ok = runner.invoke(app, ["create-admin", "--email", "eight@test.example.com",
+                             "--first-name", "Ei", "--last-name", "Ght"],
+                       input="Eight8ch\nEight8ch\n")
+    assert ok.exit_code == 0, ok.output

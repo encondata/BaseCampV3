@@ -33,7 +33,7 @@ class SessionCoordinatorTest {
         val identity = Identity(prefs)
         val config = KioskConfig(prefs, "https://api", "https://portal", "0.1.0")
         val auth = KioskAuth(api, FakeRefresher(), identity, backgroundScope)
-        val hb = Heartbeat(api, identity, config, { emptyMap() }, 60_000)
+        val hb = Heartbeat(api, identity, config, prefs, { emptyMap() }, 60_000)
         val foreground = MutableStateFlow(true)
         SessionCoordinator(auth, hb, foreground, backgroundScope).start()
         runCurrent()

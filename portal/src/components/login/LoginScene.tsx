@@ -1,13 +1,19 @@
 /**
- * LoginScene — everything on the portal sign-in page except the form: faint
- * topo lines, the real logo, the static Dallas → Las Vegas route map, the
+ * LoginScene — everything on the sign-in page except the form: faint topo
+ * lines, the real logo, the static Dallas → Las Vegas route map, the
  * headline and feature row, the status line and the mountain art (light
  * mockup, 2026-09-28). Pure markup, no effects. Map positions are the
  * mockup's pixel positions inside a 1040×560 map box, set as percentages so
  * the map scales as one piece (login-light.css sizes the box and scales its
  * text with container units).
+ *
+ * Shared by the portal, the wiki, the kiosk and Sirdar — one sign-in page
+ * for all of them. Everything is fixed except the words that name the app:
+ * the tagline under the logo, the headline and the line under it. Every
+ * prop defaults to the portal's wording, so an app that passes nothing
+ * renders exactly the portal's page.
  */
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 
 import { IconBarChart, IconBox, IconShield, IconTarget } from './loginIcons';
 
@@ -54,7 +60,28 @@ function contour(i: number): string {
 }
 const CONTOURS = Array.from({ length: 17 }, (_, i) => contour(i));
 
-export default function LoginScene({ tag = 'Datacenter Relocation Tools' }: { tag?: string } = {}) {
+export interface LoginSceneProps {
+  /** The line under the logo name. Sirdar names itself here. */
+  tag?: string;
+  /** The hero's first line, in ink. Pass `null` for a one-line hero —
+   *  the kiosk's headline is the single accent word "Kiosk". OMITTING it
+   *  keeps the portal's default, which is what the wiki relies on. */
+  lead?: ReactNode;
+  /** The hero's second line, in orange. */
+  accent?: ReactNode;
+  /** The paragraph under the hero. */
+  sub?: ReactNode;
+}
+
+const DEFAULT_TAG = 'Datacenter Relocation Tools';
+const DEFAULT_LEAD = 'Migration Control.';
+const DEFAULT_ACCENT = 'From First Scan to Final Rack.';
+const DEFAULT_SUB = 'Track relocation progress, review manifests, verify assets, '
+  + 'and access complete migration records.';
+
+export default function LoginScene({
+  tag = DEFAULT_TAG, lead = DEFAULT_LEAD, accent = DEFAULT_ACCENT, sub = DEFAULT_SUB,
+}: LoginSceneProps = {}) {
   return (
     <>
       <svg className="lx-topo" viewBox="0 0 1672 941" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
@@ -112,13 +139,10 @@ export default function LoginScene({ tag = 'Datacenter Relocation Tools' }: { ta
 
       <div className="lx-story">
         <h1 className="lx-hero">
-          <span>Migration Control.</span>{' '}
-          <span className="accent">From First Scan to Final Rack.</span>
+          {lead ? <><span>{lead}</span>{' '}</> : null}
+          <span className="accent">{accent}</span>
         </h1>
-        <p className="lx-sub">
-          Track relocation progress, review manifests, verify assets,
-          and access complete migration records.
-        </p>
+        <p className="lx-sub">{sub}</p>
         <ul className="lx-features">
           {FEATURES.map(({ label, Icon }) => (
             <li key={label}>

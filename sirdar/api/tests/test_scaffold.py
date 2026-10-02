@@ -42,3 +42,30 @@ def test_settings_reject_weak_secrets():
     for bad in ({"jwt_secret": "short"}, {"SIRDAR_PASSWORD_PEPPER": ""}, {"SIRDAR_TOTP_ENCRYPTION_KEY": ""}):
         with pytest.raises(ValidationError):
             _settings(**bad)
+
+
+def test_deploy_settings_defaults_and_key_file():
+    s = _settings()
+    assert s.deploy_do_token is None and s.deploy_ssh_port == 22
+    assert s.deploy_keys_dir == "/app/deploy-keys" and s.deploy_ssh_key_file is None
+    assert _settings(deploy_ssh_key_path="id_ed25519").deploy_ssh_key_file == \
+        "/app/deploy-keys/id_ed25519"
+    assert _settings(deploy_ssh_key_path="/k/id", deploy_keys_dir="/x").deploy_ssh_key_file == "/k/id"
+    assert _settings(deploy_keys_dir="/x", deploy_ssh_key_path="a").deploy_ssh_key_file == "/x/a"
+
+
+def test_deploy_empty_secrets_are_none(monkeypatch):
+    monkeypatch.setenv("SIRDAR_DEPLOY_DO_TOKEN", "")
+    monkeypatch.setenv("SIRDAR_DEPLOY_SSH_PASSWORD", "")
+    s = _settings()
+    assert s.deploy_do_token is None and s.deploy_ssh_password is None
+    monkeypatch.setenv("SIRDAR_DEPLOY_DO_TOKEN", "tok")
+    assert _settings().deploy_do_token.get_secret_value() == "tok"
+
+
+def test_deploy_key_file_bare_name_cannot_escape_keys_dir():
+    for bad in ("../etc/shadow", "sub/id_ed25519", "..", "a/../b", "."):
+        assert _settings(deploy_keys_dir="/x", deploy_ssh_key_path=bad).deploy_ssh_key_file is None
+    assert _settings(deploy_ssh_key_path="/abs/../id").deploy_ssh_key_file == "/abs/../id"
+    assert _settings(deploy_keys_dir="/x", deploy_ssh_key_path="id..bak").deploy_ssh_key_file == \
+        "/x/id..bak"

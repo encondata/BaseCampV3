@@ -1,0 +1,4 @@
+{"openvpn": {"instances": {
+  "office": {"running": true, "pid": 2210, "command": ["/usr/sbin/openvpn", "--syslog", "openvpn(office)", "--status", "/var/run/openvpn.office.status", "--cd", "/var/etc", "--config", "/var/etc/openvpn-office.conf"]},
+  "branch": {"running": true, "pid": 2211, "command": ["/usr/sbin/openvpn", "--syslog", "openvpn(branch)", "--cd", "/var/etc", "--config", "/var/etc/openvpn-branch.conf"]},
+  "backup": {"running": false, "command": ["/usr/sbin/openvpn", "--syslog", "openvpn(backup)", "--cd", "/var/etc", "--config", "/var/etc/openvpn-backup.conf"]}}}}

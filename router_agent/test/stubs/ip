@@ -1,0 +1,3 @@
+#!/bin/sh
+[ "$1" = neigh ] || exit 1
+cat "$FIXTURE/ip-neigh.txt"

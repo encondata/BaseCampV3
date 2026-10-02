@@ -5,6 +5,7 @@ import type { ComboOption } from '../components/ComboBox';
 import type { SiteItem, SurveySchema } from './api';
 import { numberToPatch, type GodField } from './godEdit';
 import type { ColumnDef } from './listTools';
+import { timezoneOptions } from './notifications';
 
 // The always-shown name+code cell — a fixed leading track outside the
 // column registry (same shape as the page's header markup), so it needs
@@ -33,7 +34,7 @@ export const SITE_COLUMNS: ColumnDef[] = [
     key: 'address_line2', label: 'Address line 2', short: 'Address 2',
     width: '1.4fr', default: false, godOnly: true,
   },
-  { key: 'region', label: 'Region', width: '1fr', default: false, godOnly: true },
+  { key: 'region', label: 'Region / State', short: 'Region', width: '1fr', default: false, godOnly: true },
   { key: 'postal_code', label: 'Postal code', width: '1fr', default: false, godOnly: true },
   { key: 'timezone', label: 'Timezone', width: '1.2fr', default: false, godOnly: true },
   { key: 'notes', label: 'Notes', width: '1.6fr', default: false, godOnly: true },
@@ -133,11 +134,21 @@ const TEXT_FIELDS: (keyof SiteFormState)[] = [
   'partner_id', 'notes',
 ];
 
-export function sitePayload(form: SiteFormState): Record<string, unknown> {
+/** Fields the server requires — never sent as null (a blank one is left
+ *  out and the form's own validation catches it). */
+const REQUIRED_FIELDS: ReadonlySet<keyof SiteFormState> = new Set(['name', 'status', 'country']);
+
+/** Create leaves blank fields out. Update sends a blank optional field as an
+ *  explicit null: the PATCH only touches the fields it names, so leaving a
+ *  cleared field out would keep the old value (clearing Notes did nothing). */
+export function sitePayload(
+  form: SiteFormState, mode: 'create' | 'update' = 'create',
+): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const key of TEXT_FIELDS) {
     const value = form[key].trim();
     if (value) out[key] = value;
+    else if (mode === 'update' && !REQUIRED_FIELDS.has(key)) out[key] = null;
   }
   // Coordinates travel together: both set, or both explicitly cleared.
   const lat = form.latitude.trim();
@@ -312,4 +323,16 @@ export function SITE_GOD_FIELDS(lookups: SiteGodLookups): GodField<SiteItem>[] {
     { column: 'longitude', field: 'longitude', kind: 'number',
       fromRow: (s) => numStr(s.longitude), toPatch: numberToPatch },
   ];
+}
+
+/** Options for the site editor's timezone picker: every standard zone with
+ *  its UTC offset (the notification pickers' list). A site's timezone is
+ *  free text on the server, so a saved value that isn't a standard zone
+ *  (an import like "Eastern") is kept as its own first option — otherwise
+ *  the picker would show it as blank and the value would look lost. */
+export function siteTimezoneOptions(current: string): ComboOption[] {
+  const zones = timezoneOptions();
+  const value = current.trim();
+  if (!value || zones.some((z) => z.value === value)) return zones;
+  return [{ value, label: value, sub: 'Not a standard time zone' }, ...zones];
 }

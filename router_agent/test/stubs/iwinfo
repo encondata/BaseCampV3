@@ -1,0 +1,5 @@
+#!/bin/sh
+# iwinfo <ifname> <info|assoclist> -> fixtures/<fx>/iwinfo/<ifname>.<cmd>.txt
+f="$FIXTURE/iwinfo/$1.$2.txt"
+[ -r "$f" ] || exit 1
+cat "$f"

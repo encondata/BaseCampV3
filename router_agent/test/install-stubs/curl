@@ -1,0 +1,19 @@
+#!/bin/sh
+# Test stand-in for curl: `curl -fsSL file:///path -o out` copies the
+# file; anything else (the agent's report POST) fails like an
+# unreachable API and prints 000.
+out=""; url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out=$2; shift ;;
+    file://*|http://*|https://*) url=$1 ;;
+  esac
+  shift
+done
+case "$url" in
+  file://*)
+    p=${url#file://}
+    [ -r "$p" ] || exit 22
+    if [ -n "$out" ]; then cat "$p" > "$out"; else cat "$p"; fi ;;
+  *) printf 000; exit 7 ;;
+esac

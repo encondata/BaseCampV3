@@ -1,0 +1,5 @@
+config openvpn 'roam'
+	option enabled '1'
+	option client '1'
+	option dev 'tun'
+	option remote 'roam.example 443'

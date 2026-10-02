@@ -1,0 +1,11 @@
+#!/bin/sh
+# wg show <if> <latest-handshakes|endpoints>. Fixture handshakes hold an
+# AGE in seconds (0 = never); turn it into the epoch wg would print.
+f="$FIXTURE/wg/$2.$3.txt"
+[ -r "$f" ] || exit 1
+if [ "$3" = latest-handshakes ]; then
+  now=$(date +%s)
+  awk -v now="$now" '{ print $1 "\t" ($2 == 0 ? 0 : now - $2) }' "$f"
+else
+  cat "$f"
+fi

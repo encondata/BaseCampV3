@@ -262,3 +262,24 @@ async def test_skipped_person_not_also_disabled(db, source):
     ua = await db.get(User, a)
     await db.refresh(ua)
     assert ua.disabled_at is None and ua.email == "a@test.example.com"
+
+
+async def test_import_copies_contact_fields_and_reports_changes(db, source):
+    _std_roles(source)
+    pid = add_portal_person(source, email="admin@test.example.com", person={
+        "email": "pat.contact@example.com", "phone": "555-0100", "city": "Austin",
+        "region": "TX", "postal_code": "78701", "address_line1": "1 Main St",
+        "country": "CA"})
+    await import_users(db, actor_id=None, trigger="cli")
+    user = await db.get(User, pid)
+    assert (user.contact_email, user.phone, user.city, user.country) == (
+        "pat.contact@example.com", "555-0100", "Austin", "CA")
+    assert user.address_line1 == "1 Main St" and user.postal_code == "78701"
+
+    source.execute("UPDATE people SET phone = '555-0199' WHERE id = %s", (pid,))
+    again = await import_users(db, actor_id=None, trigger="cli")
+    assert again.updated == 1
+    row = next(r for r in again.rows if r["person_id"] == str(pid))
+    assert "phone" in row["changes"]
+    await db.refresh(user)
+    assert user.phone == "555-0199"
