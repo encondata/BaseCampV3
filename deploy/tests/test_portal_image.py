@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import urllib.error
 import urllib.request
 from collections.abc import Iterator
 
@@ -58,3 +59,16 @@ def test_hashed_assets_are_cached_forever(base_url: str) -> None:
     status, headers, _ = _get(base_url + asset.group(1))
     assert status == 200
     assert "immutable" in headers.get("Cache-Control", "")
+
+
+def test_missing_assets_are_a_real_404(base_url: str) -> None:
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(base_url + "/assets/does-not-exist.js")
+    assert exc.value.code == 404
+    assert "immutable" not in exc.value.headers.get("Cache-Control", "")
+
+
+def test_index_html_is_never_cached(base_url: str) -> None:
+    for path in ("/", "/people/users/abc"):
+        _, headers, _ = _get(base_url + path)
+        assert headers.get("Cache-Control") == "no-cache", path
