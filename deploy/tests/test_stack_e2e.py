@@ -13,6 +13,7 @@ import base64
 import os
 import secrets
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -21,22 +22,44 @@ import pytest
 
 from conftest import REPO, SS_STACK, docker_daemon_ok, wait_http
 
+OPTED_IN = os.environ.get("SS_STACK_E2E") == "1"
+
 pytestmark = [
     pytest.mark.e2e,
-    pytest.mark.skipif(os.environ.get("SS_STACK_E2E") != "1", reason="set SS_STACK_E2E=1"),
-    pytest.mark.skipif(not docker_daemon_ok(), reason="Docker daemon not available"),
+    pytest.mark.skipif(not OPTED_IN, reason="set SS_STACK_E2E=1"),
+    # only probe the daemon when opted in, so plain collection stays fast
+    pytest.mark.skipif(OPTED_IN and not docker_daemon_ok(), reason="Docker daemon not available"),
 ]
 
 PORTS = {"API": 18000, "PORTAL": 18091, "KIOSK": 18090, "WIKI": 18096,
          "SPACES": 19000, "STATUS": 18095, "MAILPIT": 18025}
+# which stack and Compose service answers on each published port
+OWNERS = {"API": ("api", "api"), "PORTAL": ("web", "portal"), "KIOSK": ("web", "kiosk"),
+          "WIKI": ("web", "wiki"), "SPACES": ("storage", "minio"),
+          "STATUS": ("status", "status"), "MAILPIT": ("storage", "mailpit")}
 SERVICES = {"api", "import-worker", "log-service", "notification-worker",
             "scan-matching-worker", "report-worker", "label-worker",
             "spec-lookup-worker", "db-testing-worker", "wiki-worker", "wiki-export-worker"}
+# a migrated schema dumps to hundreds of KB; an empty database is ~1 KB
+MIN_DUMP_BYTES = 10_000
 
 
 def ss(*args: str, timeout: int = 900) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["bash", str(SS_STACK), *args], capture_output=True,
                           text=True, timeout=timeout)
+
+
+def compose(env_dir: Path, stack: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["docker", "compose", "--env-file", str(env_dir / ".env"),
+         "-f", str(REPO / f"deploy/stack/{stack}/compose.yml"), *args],
+        capture_output=True, text=True)
+
+
+def service_logs(env_dir: Path, stack: str, service: str, lines: int = 40) -> str:
+    """The last few log lines of one service, for failure messages."""
+    out = compose(env_dir, stack, "logs", "--no-color", "--tail", str(lines), service)
+    return f"--- {stack}/{service} logs ---\n{out.stdout}{out.stderr}"
 
 
 @pytest.fixture(scope="module")
@@ -58,12 +81,21 @@ def env_dir(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     (d / ".env").write_text("\n".join(lines) + "\n")
     build = ss("build", str(d), timeout=3600)
     assert build.returncode == 0, build.stdout[-4000:] + build.stderr[-4000:]
-    up = ss("up", str(d))
     try:
+        # inside the try: a hung `up --wait` (TimeoutExpired) must still tear down
+        up = ss("up", str(d))
         assert up.returncode == 0, up.stdout[-4000:] + up.stderr[-4000:]
         yield d
     finally:
-        ss("down", str(d), "--volumes")
+        # report a failed teardown loudly, but never mask the original failure
+        try:
+            down = ss("down", str(d), "--volumes")
+            if down.returncode != 0:
+                print(f"\nss-stack down --volumes FAILED (rc {down.returncode}); "
+                      f"ss-e2e containers/volumes may be left behind:\n"
+                      f"{down.stdout[-2000:]}{down.stderr[-2000:]}", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001 - teardown must not raise
+            print(f"\nss-stack down --volumes did not finish: {exc!r}", file=sys.stderr)
 
 
 @pytest.mark.parametrize("name,path", [
@@ -71,15 +103,16 @@ def env_dir(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     ("SPACES", "/minio/health/live"), ("STATUS", "/healthz"), ("MAILPIT", "/"),
 ])
 def test_every_service_answers(env_dir: Path, name: str, path: str) -> None:
-    assert wait_http(f"http://127.0.0.1:{PORTS[name]}{path}", timeout=60) == 200
+    url = f"http://127.0.0.1:{PORTS[name]}{path}"
+    try:
+        status = wait_http(url, timeout=60)
+    except TimeoutError as exc:
+        pytest.fail(f"{exc}\n{service_logs(env_dir, *OWNERS[name])}")
+    assert status == 200, f"{url} answered {status}\n{service_logs(env_dir, *OWNERS[name])}"
 
 
 def test_migrations_reached_head(env_dir: Path) -> None:
-    out = subprocess.run(
-        ["docker", "compose", "--env-file", str(env_dir / ".env"),
-         "-f", str(REPO / "deploy/stack/api/compose.yml"),
-         "exec", "-T", "-w", "/app/api", "api", "alembic", "current"],
-        capture_output=True, text=True)
+    out = compose(env_dir, "api", "exec", "-T", "-w", "/app/api", "api", "alembic", "current")
     assert out.returncode == 0, out.stderr
     assert "(head)" in out.stdout
 
@@ -93,13 +126,18 @@ def test_every_worker_stays_up(env_dir: Path) -> None:
     rows = dict(line.split() for line in out.stdout.splitlines())
     assert set(rows) == SERVICES
     for service, cid in rows.items():
-        restarts = subprocess.run(["docker", "inspect", "-f", "{{.RestartCount}}", cid],
-                                  capture_output=True, text=True, check=True).stdout.strip()
-        assert restarts == "0", f"{service} restarted {restarts} times"
+        state, restarts = subprocess.run(
+            ["docker", "inspect", "-f", "{{.State.Status}} {{.RestartCount}}", cid],
+            capture_output=True, text=True, check=True).stdout.split()
+        assert state == "running" and restarts == "0", (
+            f"{service} is {state}, restarted {restarts} times\n"
+            f"{service_logs(env_dir, 'api', service)}")
 
 
 def test_dump_produces_a_postgres_archive(env_dir: Path) -> None:
     out = ss("dump", str(env_dir))
     assert out.returncode == 0, out.stderr
     dump = Path(out.stdout.strip())
-    assert dump.read_bytes()[:5] == b"PGDMP"
+    data = dump.read_bytes()
+    assert data[:5] == b"PGDMP"
+    assert len(data) > MIN_DUMP_BYTES, f"dump is only {len(data)} bytes; schema missing?"
