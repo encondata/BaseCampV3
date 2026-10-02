@@ -85,7 +85,9 @@ Five Compose projects under `/opt/serversherpa/<env>/`, all on Docker network
 `ss-<env>`; every container, network and volume name is prefixed with the env
 so one host can hold several environments.
 
-1. **db** — Postgres 17, named volume, `backups/` bind mount for dumps.
+1. **db** — Postgres 16 (matches the dev stack, so dev snapshots restore), named
+   volume. Dumps stream out through `docker compose exec` into the env's
+   `backups/` directory on the host.
 2. **storage** — MinIO, one-shot `minio-init` (creates buckets), mailpit.
 3. **api** — `api` (uvicorn) plus one container per worker, same image,
    different `command:`: import, log, notification, scan-match, report, label,
@@ -120,8 +122,14 @@ only (Postgres may be bound to 127.0.0.1 for debugging).
   (path-style) so presigned URLs work in browsers.
 - SMTP always points at mailpit in dev environments; ntfy/outbound
   notifications are off.
-- Every service has a healthcheck; start order is db → storage → migrate →
-  api + workers → web → status.
+- Every service with a published port has a healthcheck; workers rely on
+  `restart: unless-stopped` and the API's worker-health summary. Start order
+  is db → storage → migrate → api + workers → web → status.
+- Containers that call the public names (api, workers, status) map every
+  `<service>.<env>.serversherpa.com` to the NPM LAN IP (`extra_hosts`) so
+  they never depend on the router's hairpin NAT.
+- `*.dev.serversherpa.com` already serves the Mac dev stack, so the first LAN
+  environment is named `uat` (`*.uat.serversherpa.com`).
 
 ## Section 2 — Deploy pipeline
 
