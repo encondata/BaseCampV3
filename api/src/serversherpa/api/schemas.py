@@ -2773,6 +2773,12 @@ class DeviceItem(BaseModel):
     session_started_at: datetime | None
     setup_clear_requested_at: datetime | None = None
     setup_clear_requested_by_name: str | None = None
+    # router agent (migration 0087); NULL/False for every other device
+    approval_state: str | None = None
+    approved_at: datetime | None = None
+    approved_by_name: str | None = None
+    secret_mismatch: bool = False
+    agent_source_ip: str | None = None
 
 
 class DevicePatch(BaseModel):
