@@ -36,7 +36,7 @@
 - **Stop sends** `PUT /cloud/stop` with no body; this already exists as `ZiotcClient.stop()`.
 - **Token rule:** the pairing token never appears in any response or log. Use `pairing.redact_url`.
 - **RFID scan-type filter:** `label.toLowerCase().includes('rfid')`, RFID path only.
-- **Network check auto-advance** delay: `1500` ms.
+- **Network check:** waits for the operator to click Continue; it never auto-advances.
 - **`/rfid_status` poll interval:** `5000` ms.
 - **No migration.**
 
@@ -129,7 +129,7 @@ gateway() {
 - Modify: `kiosk_laptop/edge/src/edge/rfid/ziotc.py` (add `start`)
 - Modify: `kiosk_laptop/edge/src/edge/rfid/pairing.py` (add `current_client` helper)
 - Modify: `kiosk_laptop/edge/src/edge/routes/rfid.py` (add start/stop/status routes)
-- Modify: `kiosk_laptop/edge/tests/fake_reader.py` (`/cloud/start`; `radioActivitiy` follows `reading`)
+- Modify: `kiosk_laptop/edge/tests/fake_reader.py` (`/cloud/start`; `radioActivity` follows `reading`)
 - Test: `kiosk_laptop/edge/tests/test_hostnet.py`, `kiosk_laptop/edge/tests/test_rfid_reader_control.py` (new), `kiosk_laptop/edge/tests/test_ziotc.py`
 
 **Interfaces:**
@@ -142,12 +142,12 @@ gateway() {
   - `GET /status`: holds `pair_lock`.
     - No pairing: `{"reader": null}`.
     - Otherwise: `{"reader": pairing.current(store), "reachable": bool, "reading": bool, "radio": str|None}`.
-    - `reading` is `status.get("radioActivitiy") == "active"` (Zebra's spelling). `radio` is `status.get("radioConnection")`.
+    - `reading` is `ziotc.is_reading(status)` (the real field is `radioActivity`; the old `radioActivitiy` also counts). `radio` is `status.get("radioConnection")`.
     - Any `ReaderError` gives `reachable: false, reading: false, radio: null`, still HTTP 200.
 
 **Fake reader:**
 - `PUT /cloud/start` (bearer required): appends the JSON body to `reader.starts`, sets `reader.reading = True`, and answers `HTMLResponse("")`.
-- `/cloud/status` returns `{**reader.status, "radioActivitiy": "active" if reader.reading else "inactive"}`.
+- `/cloud/status` returns `{**reader.status, "radioActivity": "active" if reader.reading else "inactive"}`.
 - Initialize `self.starts: list = []`.
 
 ```python
@@ -322,7 +322,7 @@ async def knock(ip: str, port: int) -> bool:
   - `reader_ip`: `row["ip"]`
   - `endpoint_ip`: `urlparse(connection_url(ours)).hostname` when ours exists
   - `endpoint_url`: `redact_url(connection_url(ours))`
-  - `reading`: `status.get("radioActivitiy") == "active"`
+  - `reading`: `ziotc.is_reading(status)`
 - **States:**
   - `ok` when `status.get("radioConnection") == "connected"` and ours exists. Detail: `f"{model} {serial} — radio connected"`, where model comes from the version.
   - `fail` when ours is missing: "The reader no longer sends to this laptop — pair it again".
@@ -477,7 +477,7 @@ Match the existing reader helpers in `api.ts` (`connectReader`, `getEdgeSetup`) 
   - Laptop LAN IP: `results.router?.info?.lan_ip`
   - WAN IP: `results.registration?.info?.wan_ip`
   - A value not known yet shows `—`.
-- **All ok:** show "All checks passed" and call `onContinue` after 1500 ms. Clear the timer on unmount and on Run again.
+- **All ok:** show "All checks passed" with **Back** (`mini-btn`) and **Continue** (`btn-solid`); Continue calls `onContinue`. Nothing advances on a timer.
 - **Any not ok:** show **Back** (`mini-btn`) and **Run again** (`btn-solid`) once the run finishes. Neither shows while a run is in progress.
 - Guard against a stale run: a run id ref, so results from an earlier run are ignored.
 
@@ -488,11 +488,11 @@ Match the existing reader helpers in `api.ts` (`connectReader`, `getEdgeSetup`) 
 - The revalidation effect that clears a stale `scanStatus` also uses the filtered list in the RFID path.
 
 **Tests:**
-- **`NetworkCheckStep.test.tsx`** (mock `runCheck`; use fake timers for the 1500 ms):
+- **`NetworkCheckStep.test.tsx`** (mock `runCheck`):
   - the checks are called in order `reader, router, portal, registration`;
   - each row shows passed;
   - the info panel shows the three IPs;
-  - `onContinue` is called after 1500 ms and not before;
+  - `onContinue` is not called after any amount of time until Continue is clicked;
   - with one fail, the other three still run, Run again and Back show, and `onContinue` is never called;
   - Run again re-runs all four;
   - an unknown router state shows its detail.

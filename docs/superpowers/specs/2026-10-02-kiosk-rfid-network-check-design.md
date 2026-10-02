@@ -40,7 +40,7 @@ There is one edge endpoint per check. The kiosk calls them one at a time so that
 
 | name | What it does | ok when | info |
 |------|--------------|---------|------|
-| `reader` | Opens the current paired reader (`pairing.open_reader`, stored password, stored scheme/port), then `GET /cloud/status` and `GET /cloud/config`. | `radioConnection == "connected"` **and** the config still holds our connection (`is_ours`). | `reader_ip`, `endpoint_ip` (host from our connection's URL), `endpoint_url` (redacted, `…` for the token), `reading` (bool, from `radioActivitiy == "active"`) |
+| `reader` | Opens the current paired reader (`pairing.open_reader`, stored password, stored scheme/port), then `GET /cloud/status` and `GET /cloud/config`. | `radioConnection == "connected"` **and** the config still holds our connection (`is_ours`). | `reader_ip`, `endpoint_ip` (host from our connection's URL), `endpoint_url` (redacted, `…` for the token), `reading` (bool, from `radioActivity == "active"`; the old misspelling `radioActivitiy` also counts, see `ziotc.is_reading`) |
 | `router` | Reads `gateway` from `host-network.json`, then TCP-connects to it on 53, 80 and 443, concurrently with a 1.5 s timeout each. | Any port connects **or** is refused (a refusal means the host is up). | `gateway`, `lan_ip` (the laptop address on the reader's subnet, `pairing.laptop_address` rules) |
 | `portal` | `upstream.probe()` (`GET /system/status`). | The cloud answers. | — |
 | `registration` | `POST /kiosk/heartbeat` as the session person, with the edge identity (`serial`, `name`, `mode: "laptop"`). | `registration` is `ok` or `soon`. | `wan_ip` (the heartbeat's new `client_ip`), `registration`, `device_name` |
@@ -71,7 +71,7 @@ There is one edge endpoint per check. The kiosk calls them one at a time so that
   - no pairing gives 409 `reader_required`;
   - an offline session on start gives 503 `edge_offline`.
 - `ZiotcClient` gains `start(persist: bool = True)`.
-- The fake reader gains `PUT /cloud/start`. It sets `reading = True`, records the body in `starts`, and reports `radioActivitiy` `active`/`inactive` in `/cloud/status`.
+- The fake reader gains `PUT /cloud/start`. It sets `reading = True`, records the body in `starts`, and reports `radioActivity` `active`/`inactive` in `/cloud/status` (the real FX9600 spelling). `PUT /cloud/start` while reading answers the real 422, "Start currently ongoing. Issue a stop prior to issuing a start."; the edge treats that as already reading (200 `{"reading": true}`, event detail "<model> · already reading").
 
 ## 4. Gateway in host-network.json (installer helpers)
 
@@ -107,9 +107,8 @@ There is one edge endpoint per check. The kiosk calls them one at a time so that
   - **WAN IP:** `wan_ip`
   - A value not known yet shows `—`.
 - **Moving on:**
-  - When all four are ok, a "All checks passed" line shows and the step advances to step 6 after 1.5 s.
+  - When all four are ok, an "All checks passed" line shows with **Back** and **Continue**; the step waits for Continue and never advances on its own.
   - With any failure: **Run again** and **Back** buttons. Back goes to the Pair step.
-  - The auto-advance timer is cleared on unmount.
 
 ### Step 8 — Scan type
 
@@ -145,7 +144,7 @@ There is one edge endpoint per check. The kiosk calls them one at a time so that
      - Scan type
      - Reader status (model + connected antennas)
   3. A Live Tag Reads table (Tag ID, Serial Number, Computer Name, Make / Model) beside a System Events feed.
-  4. Big START (green) and STOP (red) buttons. The one that doesn't apply is dimmed ("Already reading" / "Already stopped").
+  4. Big START (green) and STOP (red) buttons. START is dimmed while reading ("Already reading") or unreachable. STOP is never disabled (a stuck reader needs it) except during a start or stop call: "Stop RFID reader" when reading, "Send stop to the reader" otherwise. The page always renders in the dark theme and fills the height between the top bar and footer.
 - **What's real today:**
   - reading state and antennas (`GET /edge/rfid/status`);
   - move and scan type (the kiosk's setup);
@@ -194,7 +193,7 @@ There is one edge endpoint per check. The kiosk calls them one at a time so that
   - `GET /kiosk/setup`: the shape, 404s, and the move-password scope.
 - **Kiosk (vitest):**
   - step order and the 9-step labels;
-  - Network check: ticking order, info panel, auto-advance, Run again;
+  - Network check: ticking order, info panel, waits for Continue, Run again;
   - the RFID filter and its empty state;
   - Confirm: rows, Start Reader enabled only when green, navigation;
   - `/rfid_status`: chip states, Stop/Start, redirect when unpaired or in web mode.
