@@ -31,6 +31,8 @@ for f in /etc/basecamp/ /etc/config/basecamp /usr/bin/basecamp-router /etc/init.
   check "sysupgrade keeps $f" 'grep -qxF "$f" /etc/sysupgrade.conf'
 done
 check "tells the user it is waiting on the portal" 'grep -q "Scanning Hardware" /tmp/out'
+check "first line says the installer started" '[ "$(head -n 1 /tmp/out)" = "basecamp: installer starting" ]'
+check "a fresh secret isn't reported as damaged" '! grep -q damaged /tmp/out'
 first=$(cat /etc/basecamp/secret)
 check "never prints the secret" '[ -n "$first" ] && ! grep -qF "$first" /tmp/out'
 
@@ -60,6 +62,46 @@ PATH="/tmp/nohex:$PATH" $INSTALL --api https://api.example.test >/tmp/out 2>&1
 check "makes a secret without hexdump" 'grep -qE "^[0-9a-f]{64}$" /etc/basecamp/secret'
 check "the fallback secret is new" '[ "$(cat /etc/basecamp/secret)" != "$first" ]'
 $INSTALL --uninstall >/tmp/out 2>&1
+
+# a damaged secret is replaced, and the user is told the router needs approving again
+mkdir -p /etc/basecamp && echo not-a-secret > /etc/basecamp/secret
+$INSTALL --api https://api.example.test >/tmp/out 2>&1
+check "replaces a damaged secret" 'grep -qE "^[0-9a-f]{64}$" /etc/basecamp/secret'
+check "says the damaged secret was replaced" 'grep -qxF "basecamp: the existing secret was damaged; generated a new one — this router will need approving again" /tmp/out'
+$INSTALL --uninstall >/tmp/out 2>&1
+
+# no `id` command: the root check falls back instead of "id: not found"
+mkdir -p /tmp/noid
+for d in /bin /sbin /usr/bin /usr/sbin; do
+  for f in "$d"/*; do [ "${f##*/}" = id ] || ln -sf "$f" "/tmp/noid/${f##*/}"; done
+done
+PATH="/src/test/install-stubs:/tmp/noid" $INSTALL --api https://api.example.test >/tmp/out 2>&1
+rc=$?
+check "installs as root without an id command" '[ $rc -eq 0 ] && [ -x /usr/bin/basecamp-router ]'
+check "no 'not found' noise without id" '! grep -q "not found" /tmp/out'
+$INSTALL --uninstall >/tmp/out 2>&1
+
+# a keep list saved without a trailing newline (LuCI does this)
+printf '/etc/userline\n/etc/mykeep' > /etc/sysupgrade.conf
+$INSTALL --api https://api.example.test >/tmp/out 2>&1
+for f in /etc/userline /etc/mykeep /etc/basecamp/ /etc/config/basecamp /usr/bin/basecamp-router /etc/init.d/basecamp-router; do
+  check "no-newline keep list has $f on its own line" 'grep -qxF "$f" /etc/sysupgrade.conf'
+done
+$INSTALL --uninstall >/tmp/out 2>&1
+check "uninstall leaves exactly the user's keep lines" '[ "$(cat /etc/sysupgrade.conf)" = "$(printf "/etc/userline\n/etc/mykeep")" ]'
+
+# piped like the README's `curl ... | sh -s --`, from a clean state
+$INSTALL --uninstall >/dev/null 2>&1
+cat /src/install.sh | sh -s -- --source $SRC --api https://api.example.test >/tmp/out 2>&1
+rc=$?
+check "piped install succeeds" '[ $rc -eq 0 ] && [ -x /usr/bin/basecamp-router ] && grep -q "installer starting" /tmp/out'
+$INSTALL --uninstall >/dev/null 2>&1
+size=$(wc -c < /src/install.sh)
+head -c $((size * 6 / 10)) /src/install.sh | sh -s -- --source $SRC --api https://api.example.test >/tmp/out 2>&1
+rc=$?
+check "a truncated piped script installs nothing" '[ ! -e /usr/bin/basecamp-router ] && [ ! -e /etc/init.d/basecamp-router ] && [ ! -e /etc/basecamp ]'
+check "a truncated piped script doesn't exit 0" '[ $rc -ne 0 ]'
+check "a truncated piped script never says it started" '! grep -q "installer starting" /tmp/out'
 
 [ "$FAIL" = 0 ] && echo "ALL INSTALL TESTS PASSED"
 exit $FAIL

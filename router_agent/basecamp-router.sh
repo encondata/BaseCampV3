@@ -117,9 +117,10 @@ add_wifi() {
   : > "$TMP.assoc"
   status=$(ubus call network.wireless status 2>/dev/null)
   json_add_array wifi
-  # anonymous sections are named @wifi-iface[N]: no globbing on the list
+  # -X names anonymous sections cfgXXXXXX like netifd does, so the live
+  # ifname lookup below matches them; set -f in case a name ever globs
   set -f
-  for s in $(uci -q show wireless | sed -n "s/^wireless\.\([^.=]*\)=wifi-iface$/\1/p"); do
+  for s in $(uci -q -X show wireless | sed -n "s/^wireless\.\([^.=]*\)=wifi-iface$/\1/p"); do
     radio=$(uci -q get "wireless.$s.device")
     band=$(uci -q get "wireless.$radio.band")
     if [ -z "$band" ]; then
@@ -128,8 +129,8 @@ add_wifi() {
     enabled=1
     [ "$(uci -q get "wireless.$radio.disabled")" = 1 ] && enabled=0
     [ "$(uci -q get "wireless.$s.disabled")" = 1 ] && enabled=0
-    # netifd names anonymous sections cfgXXXXXX, so this can miss: fall
-    # back to the uci ifname, else channel from uci and no clients.
+    # if the radio isn't up this misses: fall back to the uci ifname,
+    # else channel from uci and no clients.
     ifname=""
     [ -n "$radio" ] && ifname=$(echo "$status" | jget "@[\"$radio\"].interfaces[@.section=\"$s\"].ifname")
     [ -n "$ifname" ] || ifname=$(uci -q get "wireless.$s.ifname")

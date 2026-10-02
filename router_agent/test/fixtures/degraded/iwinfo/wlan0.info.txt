@@ -1,0 +1,2 @@
+wlan0     ESSID: "Dock \"Q\" \\ WiFi"
+          Mode: Master  Channel: 6 (2.437 GHz)

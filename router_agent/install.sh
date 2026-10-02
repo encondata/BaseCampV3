@@ -106,6 +106,7 @@ make_secret() {
   umask 077
   mkdir -p "$SECRET_DIR" && chmod 700 "$SECRET_DIR" || die "couldn't create $SECRET_DIR"
   if ! grep -qE "$HEX64" "$SECRET" 2>/dev/null; then
+    damaged=0; [ -e "$SECRET" ] && damaged=1
     # BusyBox hexdump on stock firmware; sha256sum of 64 random bytes if a
     # build leaves hexdump out (OpenWrt's BusyBox has no od)
     hexdump -v -n 32 -e '/1 "%02x"' /dev/urandom > "$SECRET.new" 2>/dev/null
@@ -113,7 +114,11 @@ make_secret() {
       || head -c 64 /dev/urandom | sha256sum | cut -c1-64 > "$SECRET.new"
     grep -qE "$HEX64" "$SECRET.new" || { rm -f "$SECRET.new"; die "couldn't generate a secret"; }
     chmod 600 "$SECRET.new" && mv "$SECRET.new" "$SECRET" || die "couldn't save $SECRET"
-    say "generated this router's secret ($SECRET)"
+    if [ "$damaged" = 1 ]; then
+      say "the existing secret was damaged; generated a new one — this router will need approving again"
+    else
+      say "generated this router's secret ($SECRET)"
+    fi
   fi
   chmod 600 "$SECRET"
   umask "$old_umask"
@@ -121,6 +126,11 @@ make_secret() {
 
 add_keep_lines() {
   touch "$KEEP_LIST"
+  # LuCI can save the file without a final newline: don't glue our first
+  # line onto the user's last one
+  if [ -s "$KEEP_LIST" ] && [ -n "$(tail -c 1 "$KEEP_LIST")" ]; then
+    echo >> "$KEEP_LIST"
+  fi
   for f in $KEEP_FILES; do
     grep -qxF "$f" "$KEEP_LIST" || echo "$f" >> "$KEEP_LIST"
   done
@@ -160,9 +170,14 @@ install_agent() {
 }
 
 main() {
+  say "installer starting"
   parse_args "$@"
   [ -f /etc/openwrt_release ] || die "this doesn't look like an OpenWrt / GL.iNet router"
-  [ "$(id -u)" = 0 ] || die "run this as root"
+  if command -v id >/dev/null 2>&1; then
+    [ "$(id -u)" = 0 ] || die "run this as root"
+  else
+    [ -w /etc ] || die "run this as root"
+  fi
   if [ "$UNINSTALL" = 1 ]; then uninstall; else install_agent; fi
 }
 
