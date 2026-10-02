@@ -5,6 +5,7 @@ import re
 import urllib.parse
 import uuid
 from datetime import date, datetime, time
+from ipaddress import IPv4Address
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -314,6 +315,7 @@ class HeartbeatOut(BaseModel):
     name: str
     registration: Literal["ok", "soon", "expired", "none"]
     token_expires_at: datetime | None
+    client_ip: str | None = None  # the caller's public address as the API sees it
     # Clear Setup: the pending request id, repeated until acknowledged.
     clear_setup: uuid.UUID | None = None
 
@@ -2739,6 +2741,14 @@ class StatusRuleExecStat(BaseModel):
 
 # ── devices ──────────────────────────────────────────────────────────
 
+class DeviceRfidReader(BaseModel):
+    ip: str
+    serial: str | None
+    model: str | None
+    versions: dict | None
+    paired_at: datetime | None
+
+
 class DeviceItem(BaseModel):
     id: uuid.UUID
     device_type: str
@@ -2771,6 +2781,8 @@ class DeviceItem(BaseModel):
     session_person_name: str | None
     session_login_method: str | None
     session_started_at: datetime | None
+    station_type: str | None = None
+    rfid_reader: DeviceRfidReader | None = None
     setup_clear_requested_at: datetime | None = None
     setup_clear_requested_by_name: str | None = None
     # router agent (migration 0087); NULL/False for every other device
@@ -2920,11 +2932,20 @@ class SetupOptionsOut(BaseModel):
     scan_types: list[SetupOptionScanType]
 
 
+class KioskReaderIn(BaseModel):
+    ip: IPv4Address
+    serial: str = Field(min_length=1, max_length=64)
+    model: str = Field(min_length=1, max_length=64)
+    versions: dict[str, Annotated[str, Field(max_length=64)]] = Field(max_length=10)
+
+
 class KioskSetupIn(BaseModel):
     serial: str = Field(min_length=1, max_length=120)
     initiative_id: uuid.UUID
     site_id: uuid.UUID
     scan_status: str = Field(min_length=1)
+    station_type: Literal["label", "rfid"] | None = None
+    reader: KioskReaderIn | None = None
 
 
 class KioskSetupOut(BaseModel):
@@ -4018,3 +4039,23 @@ class SpecSuggestionBulkIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     ids: list[uuid.UUID] = Field(min_length=1, max_length=1000)
     action: Literal["approve", "reject"]
+
+
+class KioskSetupReaderOut(BaseModel):
+    ip: str | None
+    serial: str
+    model: str | None
+
+
+class KioskSetupReadOut(BaseModel):
+    """What the portal holds for one kiosk's setup (GET /kiosk/setup)."""
+
+    device_id: uuid.UUID
+    initiative_id: uuid.UUID | None
+    initiative_name: str | None
+    site_id: uuid.UUID | None
+    site_name: str | None
+    scan_status: str | None
+    scan_status_label: str | None
+    station_type: Literal["label", "rfid"] | None
+    reader: KioskSetupReaderOut | None

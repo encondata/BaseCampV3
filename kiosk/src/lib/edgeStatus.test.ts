@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useEdgeStatus } from './edgeStatus';
 
 const STATUS = {
+  version: 'dev',
   cloud: { online: false, last_contact: null },
   sync: { initiative_id: null, synced_at: null, last_error: null },
   outbox: { queued: 2, sending: 0, sent: 0, rejected: 0, failed: 0, needs_sign_in: 0 },

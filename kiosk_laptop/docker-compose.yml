@@ -12,8 +12,10 @@ services:
       dockerfile: kiosk_laptop/Dockerfile
     restart: unless-stopped
     ports:
-      # keep 127.0.0.1 until the edge serves TLS (see README)
-      - "${EDGE_BIND:-127.0.0.1}:8090:8090"
+      # As the installed kiosk: the UI on the LAN over plain HTTP and the RFID
+      # reader's data port (see README). EDGE_BIND binds both to one address.
+      - "${EDGE_BIND:-0.0.0.0}:8090:8090"
+      - "${EDGE_BIND:-0.0.0.0}:8091:8091"
     environment:
       EDGE_CLOUD_API_URL: ${EDGE_CLOUD_API_URL:?set EDGE_CLOUD_API_URL to the ServerSherpa API}
       EDGE_PORTAL_URL: ${EDGE_PORTAL_URL:-}

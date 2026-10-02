@@ -19,6 +19,7 @@ class Settings:
     # Host names the edge answers besides localhost/127.0.0.1/[::1]
     # (TrustedHostMiddleware: a DNS-rebinding page gets 400).
     allowed_hosts: tuple[str, ...] = ()
+    version: str = "dev"
 
 
 def load_settings() -> Settings:
@@ -36,4 +37,5 @@ def load_settings() -> Settings:
         secure_cookies=os.environ.get("EDGE_SECURE_COOKIES", "0") == "1",
         allowed_hosts=tuple(h.strip() for h in os.environ.get("EDGE_ALLOWED_HOSTS", "").split(",")
                             if h.strip()),
+        version=os.environ.get("EDGE_VERSION", "dev").strip() or "dev",
     )

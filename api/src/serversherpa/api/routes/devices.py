@@ -105,6 +105,12 @@ def _row_to_item(row) -> dict:
         "session_person_name": session_person_name,
         "session_login_method": d.session_login_method,
         "session_started_at": d.session_started_at,
+        "station_type": d.station_type,
+        "rfid_reader": (
+            {"ip": str(d.rfid_reader_ip), "serial": d.rfid_reader_serial,
+             "model": d.rfid_reader_model, "versions": d.rfid_reader_versions,
+             "paired_at": d.rfid_paired_at}
+            if d.rfid_reader_ip is not None else None),
         "setup_clear_requested_at": d.setup_clear_requested_at,
         "setup_clear_requested_by_name": (
             f"{clear_preferred or clear_first} {clear_last}"

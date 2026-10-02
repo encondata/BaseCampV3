@@ -10,6 +10,10 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+# Steps must be additive (new tables, new nullable columns). After a
+# rollback an older image keeps running on a database a newer image already
+# migrated, so nothing an older image reads or writes may be renamed,
+# dropped or tightened, and `schema_version` never goes down.
 SCHEMA_STEPS: list[str] = [
     """
     CREATE TABLE edge_sessions (
@@ -40,6 +44,32 @@ SCHEMA_STEPS: list[str] = [
     """,
     # the cloud's move-password version, sent back as `have=` (unchanged → no rehash)
     "ALTER TABLE move_passwords ADD COLUMN version TEXT",
+    # RFID station: readers this laptop has signed in to (only the winning
+    # password's index, never a password) and the one it is paired with
+    """
+    CREATE TABLE rfid_readers (
+        serial TEXT PRIMARY KEY, ip TEXT NOT NULL, model TEXT, versions TEXT,
+        password_index INTEGER, token TEXT, laptop_ip TEXT, paired_at TEXT);
+    CREATE TABLE rfid_pairing (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        serial TEXT NOT NULL REFERENCES rfid_readers (serial));
+    """,
+    # where each reader answers: https 443 or http 80 (reused by connect and pair)
+    """
+    ALTER TABLE rfid_readers ADD COLUMN scheme TEXT;
+    ALTER TABLE rfid_readers ADD COLUMN port INTEGER
+    """,
+    # the laptop's finished Kiosk Setup, shared with every browser (JSON)
+    """
+    CREATE TABLE laptop_setup (
+        id INTEGER PRIMARY KEY CHECK (id = 1), setup_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL)
+    """,
+    # the RFID station's event log, newest 200 kept (the /rfid_status panel)
+    """
+    CREATE TABLE rfid_events (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL,
+        kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '')
+    """,
 ]
 
 
@@ -61,6 +91,12 @@ class Store:
         self.conn = sqlite3.connect(str(path), check_same_thread=False,
                                     isolation_level=None, timeout=5.0)
         self.conn.row_factory = sqlite3.Row
+        # Only the edge process opens edge.db. Exclusive locking makes WAL
+        # keep its index in process memory instead of the -shm file, which
+        # is what breaks on Docker Desktop's shared folders (Windows WSL
+        # file sharing, macOS VirtioFS). Nothing else may open the file
+        # while the edge runs — backups stop the kiosk first.
+        self.conn.execute("PRAGMA locking_mode=EXCLUSIVE")
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
         self._migrate()
@@ -77,7 +113,8 @@ class Store:
                         c.execute(stmt)
             if row is None:
                 c.execute("INSERT INTO schema_version (version) VALUES (?)", (len(SCHEMA_STEPS),))
-            else:
+            elif current < len(SCHEMA_STEPS):
+                # an older image (fewer steps) leaves a newer record alone
                 c.execute("UPDATE schema_version SET version = ?", (len(SCHEMA_STEPS),))
 
     @contextmanager

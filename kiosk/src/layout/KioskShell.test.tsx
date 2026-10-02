@@ -3,7 +3,7 @@
  *  route and nothing for /. */
 import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 // applyPreferences reads prefers-reduced-motion; jsdom has no matchMedia.
@@ -29,7 +29,7 @@ const auth = vi.hoisted(() => ({
   status: 'authed' as 'authed' | 'anon',
   person: { display_name: 'Alex Worker' } as { display_name: string } | null,
   registration: 'ok' as 'ok' | 'soon' | 'expired' | 'none' | null,
-  preferences: null,
+  preferences: null as unknown,
   sessionExpiresAt: '2026-09-14T19:00:42.000Z' as string | null,
   kioskMove: null as { initiative_id: string; name: string } | null,
   logout: vi.fn(() => Promise.resolve()),
@@ -50,10 +50,17 @@ vi.mock('../lib/edgeStatus', () => ({
   useEdgeStatus: () => ({ status: edgeMock.status, refresh: async () => {} }),
 }));
 
+const laptopSetupMock = vi.hoisted(() => ({
+  hydrateLaptopSetup: vi.fn((_lockedMove?: string | null) => Promise.resolve(false)),
+}));
+vi.mock('../lib/laptopSetup', () => laptopSetupMock);
+
 import { clearFlash, flash } from '../lib/flash';
 import { getIdentity } from '../lib/identity';
 import { writeKioskSetup } from '../lib/kioskSetup';
 import { writeSetupState } from '../lib/setupState';
+import { DEFAULT_PREFERENCES } from '@portal/lib/settings';
+
 import KioskShell from './KioskShell';
 
 afterEach(() => {
@@ -392,6 +399,107 @@ it('web mode (no edge status): no Cloud or Sign-in item', () => {
   render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
   expect(screen.queryByText('Cloud')).toBeNull();
   expect(screen.queryByText('Sign-in')).toBeNull();
+});
+
+const SAVED = {
+  initiativeId: 'i-1', initiativeName: 'NAP11', siteId: 's-1', siteName: 'Hall',
+  siteRole: 'source' as const, scanStatus: 'k', scanLabel: 'Dock',
+};
+
+it('laptop mode: the top bar chip names the station type once setup saved one', () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
+  const chip = () => (document.querySelector('.kiosk-mode') as HTMLElement).textContent;
+  try {
+    writeKioskSetup({ ...SAVED, stationType: 'rfid',
+                      reader: { ip: '10.0.0.5', serial: '1234ABCD', model: 'FX9600' } });
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    expect(chip()).toBe('RFID · Laptop');
+    cleanup();
+
+    writeKioskSetup({ ...SAVED, stationType: 'label' });
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    expect(chip()).toBe('Label Station · Laptop');
+    cleanup();
+
+    writeKioskSetup(SAVED);
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    expect(chip()).toBe('Kiosk · Laptop');
+  } finally {
+    delete window.__KIOSK_CONFIG__;
+  }
+});
+
+it('laptop mode: the footer mode names the station type once setup saved one', () => {
+  window.__KIOSK_CONFIG__ = { mode: 'laptop', identity: { serial: 'kiosk-laptop-1', name: 'Kiosk 0001' } };
+  try {
+    writeKioskSetup({ ...SAVED, stationType: 'rfid',
+                      reader: { ip: '10.0.0.5', serial: '1234ABCD', model: 'FX9600' } });
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    const mode = screen.getByText('Mode').closest('.kiosk-foot-item') as HTMLElement;
+    expect(mode.textContent).toBe('ModeRFID · Laptop');
+    cleanup();
+
+    writeKioskSetup({ ...SAVED, stationType: 'label' });
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    expect((screen.getByText('Mode').closest('.kiosk-foot-item') as HTMLElement).textContent)
+      .toBe('ModeLabel Station · Laptop');
+    cleanup();
+
+    writeKioskSetup(SAVED);
+    render(<MemoryRouter><KioskShell><p>body</p></KioskShell></MemoryRouter>);
+    expect((screen.getByText('Mode').closest('.kiosk-foot-item') as HTMLElement).textContent)
+      .toBe('ModeLaptop');
+  } finally {
+    delete window.__KIOSK_CONFIG__;
+  }
+});
+
+
+it('signed in, the shell loads the laptop\'s shared setup; signed out it does not', () => {
+  render(<MemoryRouter><KioskShell><div /></KioskShell></MemoryRouter>);
+  expect(laptopSetupMock.hydrateLaptopSetup).toHaveBeenCalledTimes(1);
+  expect(laptopSetupMock.hydrateLaptopSetup).toHaveBeenLastCalledWith(null);
+  cleanup();
+  laptopSetupMock.hydrateLaptopSetup.mockClear();
+  // a move-password session passes its locked move
+  auth.kioskMove = { initiative_id: 'i-7', name: 'Move 7' };
+  render(<MemoryRouter><KioskShell><div /></KioskShell></MemoryRouter>);
+  expect(laptopSetupMock.hydrateLaptopSetup).toHaveBeenLastCalledWith('i-7');
+  cleanup();
+  laptopSetupMock.hydrateLaptopSetup.mockClear();
+  auth.status = 'anon';
+  render(<MemoryRouter><KioskShell><div /></KioskShell></MemoryRouter>);
+  expect(laptopSetupMock.hydrateLaptopSetup).not.toHaveBeenCalled();
+});
+
+function GoHome() {
+  const navigate = useNavigate();
+  return <button type="button" onClick={() => navigate('/')}>go home</button>;
+}
+
+it('/rfid_status renders dark even when the person prefers light, and restores on leaving', async () => {
+  auth.preferences = { ...DEFAULT_PREFERENCES, theme: 'light' };
+  render(
+    <MemoryRouter initialEntries={['/rfid_status']}>
+      <KioskShell><GoHome /></KioskShell>
+    </MemoryRouter>,
+  );
+  const shell = document.querySelector('.portal-shell') as HTMLElement;
+  expect(shell.getAttribute('data-theme')).toBe('dark');
+  await userEvent.setup().click(screen.getByRole('button', { name: 'go home' }));
+  expect(shell.getAttribute('data-theme')).toBe('light');
+  auth.preferences = null;
+});
+
+it('other routes keep the person\'s theme', () => {
+  auth.preferences = { ...DEFAULT_PREFERENCES, theme: 'light' };
+  render(
+    <MemoryRouter initialEntries={['/timeclock']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  expect(document.querySelector('.portal-shell')?.getAttribute('data-theme')).toBe('light');
+  auth.preferences = null;
 });
 
 function clearSetupUi(initial: string) {

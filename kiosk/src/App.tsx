@@ -15,6 +15,7 @@ import LabelSectionPage from './pages/LabelSectionPage';
 import Labels from './pages/Labels';
 import Login from './pages/Login';
 import PrinterTools from './pages/PrinterTools';
+import RfidStatus from './pages/RfidStatus';
 import Scan from './pages/Scan';
 import Settings from './pages/Settings';
 import Timeclock from './pages/Timeclock';
@@ -38,6 +39,10 @@ export default function App() {
               their behalf), so it sits behind KioskGuard like the launcher
               features, but stays alwaysAvailable in featureAvailable. */}
           <Route path="/setup" element={<KioskGuard><KioskShell><KioskSetup /></KioskShell></KioskGuard>} />
+          {/* The RFID Reader Dashboard — where Kiosk Setup's Start Reader lands
+              on a laptop RFID station. The page itself sends web mode, or a
+              laptop with no paired reader, home. */}
+          <Route path="/rfid_status" element={<KioskGuard><KioskShell><RfidStatus /></KioskShell></KioskGuard>} />
           <Route path="/settings" element={<KioskShell><Settings /></KioskShell>} />
           <Route path="/" element={<KioskGuard><KioskShell><Home /></KioskShell></KioskGuard>} />
           {/* Scanning is a real screen now, so it gets its own route

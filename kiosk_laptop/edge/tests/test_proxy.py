@@ -167,3 +167,24 @@ async def test_unhealthy_cloud_serves_cache(app, client, cloud):
     cloud.get(ASSETS).respond(504, text="Gateway Timeout")
     r = await client.get(ASSETS, headers=hdrs)
     assert r.status_code == 200 and r.headers["x-edge-cache"] == "hit"
+
+
+async def test_heartbeat_clear_setup_drops_the_laptops_shared_setup(app, client, cloud):
+    # Clear Setup from the portal: the browser drops its own setup, and the
+    # edge must drop the shared copy too, or the shell would load it right back.
+    from edge import laptop_setup
+    _online_as(app)
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1", "initiative_name": "Move"}, "label")
+    cloud.post("/kiosk/heartbeat").respond(200, json={"registration": "ok", "clear_setup": "c-1"})
+    r = await client.post("/kiosk/heartbeat", headers=make_session(app), json={"serial": "x"})
+    assert r.status_code == 200 and r.json()["clear_setup"] == "c-1"
+    assert laptop_setup.load(app.state.store) is None
+
+
+async def test_heartbeat_without_clear_setup_keeps_the_shared_setup(app, client, cloud):
+    from edge import laptop_setup
+    _online_as(app)
+    laptop_setup.save(app.state.store, {"initiative_id": "m-1", "initiative_name": "Move"}, "label")
+    cloud.post("/kiosk/heartbeat").respond(200, json={"registration": "ok", "clear_setup": None})
+    await client.post("/kiosk/heartbeat", headers=make_session(app), json={"serial": "x"})
+    assert laptop_setup.load(app.state.store)["initiative_name"] == "Move"

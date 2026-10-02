@@ -6,7 +6,7 @@ import json
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-from edge import outbox
+from edge import laptop_setup, outbox
 from edge.deps import current_session, err, require_admin, require_session
 from edge.identity import rename
 from edge.sessions import EdgeSession
@@ -15,7 +15,7 @@ router = APIRouter(prefix="/edge")
 
 AUTH_TABLES = ("cloud_sessions", "offline_logins", "edge_sessions", "login_failures",
                "move_passwords")
-MOVE_TABLES = ("cache", "outbox")
+MOVE_TABLES = ("cache", "outbox", "laptop_setup", "rfid_events")
 
 
 async def _json_object(request: Request, *, empty_ok: bool = False) -> dict:
@@ -36,6 +36,7 @@ def _status(request: Request, session: EdgeSession | None) -> dict:
     st = request.app.state
     meta = st.syncer.meta()
     return {
+        "version": st.settings.version,
         "cloud": {"online": st.upstream.online, "last_contact": st.upstream.last_contact},
         "sync": {"initiative_id": meta["initiative_id"], "synced_at": meta["synced_at"],
                  "last_error": meta["last_error"]},
@@ -72,6 +73,13 @@ async def status(request: Request) -> dict:
 async def sync_now(request: Request, session: EdgeSession = Depends(require_session)) -> dict:
     await request.app.state.syncer.run()
     return _status(request, session)
+
+
+@router.get("/setup")
+async def shared_setup(request: Request, _: EdgeSession = Depends(require_session)) -> dict | None:
+    """The laptop's finished Kiosk Setup, for any browser; null before the
+    first one (or after Wipe)."""
+    return laptop_setup.load(request.app.state.store)
 
 
 @router.post("/outbox/retry")

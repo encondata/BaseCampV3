@@ -1,5 +1,9 @@
 /**
- * Kiosk Setup wizard: pick a move, then which of that move's sites this
+ * Kiosk Setup wizard. On a laptop it starts by asking what the station is
+ * (StationTypeStep): a Label Station goes straight on; an RFID Station
+ * first finds, connects to, and pairs a Zebra FX reader (ReaderStep,
+ * ConnectStep, PairStep — under components/setup/), then a Network check
+ * (NetworkCheckStep). Every path then continues the same way: pick a move, then which of that move's sites this
  * kiosk is at ("step 1A" — the move's source or destination site), then
  * a scan type, and stamp this kiosk's Device row (POST /kiosk/setup).
  * Tap-to-select card pickers (`.setup-card`, mirroring `.kiosk-tile`) —
@@ -10,24 +14,54 @@
  * the wizard pre-selected. A successful save also kicks off the move's
  * local-data download (`runSync`, not awaited) and the summary's
  * `.sync-status` block reports it.
+ *
+ * A laptop shares its finished setup with every browser (KioskShell loads
+ * it from the edge, `lib/laptopSetup.ts`); when it lands after this page
+ * opened, an untouched wizard gives way to the summary. Reached through a
+ * LAN address, the page says it changes the laptop itself.
  */
 
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
+import ConfirmStep from '../components/setup/ConfirmStep';
+import ConnectStep from '../components/setup/ConnectStep';
+import NetworkCheckStep from '../components/setup/NetworkCheckStep';
+import PairStep from '../components/setup/PairStep';
+import ReaderStep from '../components/setup/ReaderStep';
+import StationTypeStep from '../components/setup/StationTypeStep';
 import {
-  ApiError, CLOUD_SIGN_IN_TEXT, getSetupOptions, submitKioskSetup, type SetupOptionInitiative,
-  type SetupOptions, type SetupOptionSite,
+  ApiError, CLOUD_SIGN_IN_TEXT, getSetupOptions, submitKioskSetup, type PairResult,
+  type ReaderInfo, type SetupOptionInitiative, type SetupOptions, type SetupOptionSite,
 } from '../lib/api';
 import { getIdentity } from '../lib/identity';
-import { useKioskSetup } from '../lib/kioskSetup';
+import {
+  readerLabel, stationLabel, useKioskSetup, type KioskSetupSelection, type StationType,
+} from '../lib/kioskSetup';
+import { isLaptop, platform } from '../lib/platform';
 import { dismissSetupClearNotice, useSetupClearNotice } from '../lib/setupClear';
 import {
   isSetupComplete, readSetupState, useKioskSetupState, writeSetupState,
 } from '../lib/setupState';
 import { formatSyncedAt, runSync, useSyncStatus } from '../lib/sync';
 
-type Step = 1 | 2 | 3;
+/** Shown when Kiosk Setup is reached from another device on the LAN. */
+const LAN_NOTICE = "You're changing the setup of the laptop itself.";
+
+type Step = 'type' | 'reader' | 'connect' | 'pair' | 'network' | 'move' | 'site' | 'scan' | 'confirm';
+
+const STEP_LABEL: Record<Step, string> = {
+  type: 'Station type', reader: 'Select reader', connect: 'Connect', pair: 'Pair',
+  network: 'Network check', move: 'Move', site: 'Site', scan: 'Scan type', confirm: 'Confirm & verify',
+};
+
+/** The steps this kiosk walks. Web mode skips the station type: RFID
+ *  needs the laptop edge, and a web kiosk behaves exactly as before. */
+function pathFor(laptop: boolean, stationType: StationType | ''): Step[] {
+  if (!laptop) return ['move', 'site', 'scan'];
+  if (stationType === 'rfid') return ['type', 'reader', 'connect', 'pair', 'network', 'move', 'site', 'scan', 'confirm'];
+  return ['type', 'move', 'site', 'scan'];
+}
 
 /** scheduled_start/scheduled_end are date-only fields (midnight UTC for a
  *  plain YYYY-MM-DD input) — read the Y-M-D digits into a local Date
@@ -56,13 +90,36 @@ export default function KioskSetup() {
   const [wizardOpen, setWizardOpen] = useState(!(selection && isSetupComplete(setupState)));
   const [options, setOptions] = useState<SetupOptions | null>(null);
   const [loadError, setLoadError] = useState(false);
-  const [step, setStep] = useState<Step>(1);
+  const laptop = isLaptop();
+  const [stationType, setStationType] = useState<StationType | ''>(
+    laptop ? selection?.stationType ?? '' : '');
+  const path = pathFor(laptop, stationType);
+  const [step, setStep] = useState<Step>(path[0]);
+  const [readerIp, setReaderIp] = useState('');
+  const [laptopIp, setLaptopIp] = useState('');
+  const [connected, setConnected] = useState<ReaderInfo | null>(null);
+  const [paired, setPaired] = useState<PairResult | null>(null);
   const [initiativeId, setInitiativeId] = useState('');
   const [siteId, setSiteId] = useState('');
   const [scanStatus, setScanStatus] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const sync = useSyncStatus();
+  // An RFID station only offers scan types with RFID in the name.
+  const scanTypes = options
+    ? (stationType === 'rfid' && laptop
+      ? options.scan_types.filter((t) => t.label.toLowerCase().includes('rfid'))
+      : options.scan_types)
+    : [];
+  // A phone on the LAN changes the laptop's own setup, which every browser shares.
+  const lanAccess = laptop && window.__KIOSK_CONFIG__?.lanAccess === true;
+  // Set once someone acts on the wizard: a setup shared after that never
+  // closes it under them.
+  const touched = useRef(false);
+  const setupComplete = Boolean(selection) && isSetupComplete(setupState);
+  useEffect(() => {
+    if (setupComplete && !touched.current) setWizardOpen(false);
+  }, [setupComplete]);
   const clearNotice = useSetupClearNotice();
 
   const load = () => {
@@ -78,7 +135,7 @@ export default function KioskSetup() {
   }, [selection, wizardOpen]);
 
   // ...and when it lands with the wizard ALREADY open (e.g. "Change setup"
-  // at step 2 or 3), restart at step 1 with the choices cleared and the
+  // at step 2 or 3), restart at the first step with the choices cleared and the
   // options reloaded — the same as Android's KioskSetupViewModel. Only the
   // non-null -> null transition counts: the wizard's own finish writes go
   // null/old -> new, and first-time setup starts null.
@@ -90,8 +147,13 @@ export default function KioskSetup() {
     setInitiativeId('');
     setSiteId('');
     setScanStatus('');
+    setStationType('');
+    setReaderIp('');
+    setLaptopIp('');
+    setConnected(null);
+    setPaired(null);
     setSubmitError('');
-    setStep(1);
+    setStep(laptop ? 'type' : 'move');
     // Wizard closed: the effect above opens it and the one below loads.
     if (wizardOpen) load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -119,23 +181,51 @@ export default function KioskSetup() {
     const validSiteIds = [initiative?.source_site?.id, initiative?.destination_site?.id]
       .filter((id): id is string => Boolean(id));
     if (siteId && !validSiteIds.includes(siteId)) setSiteId('');
-    if (scanStatus && !options.scan_types.some((s) => s.key === scanStatus)) setScanStatus('');
+    if (scanStatus && !scanTypes.some((s) => s.key === scanStatus)) setScanStatus('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options]);
 
   const openWizard = (preselect: boolean) => {
+    touched.current = true;
     if (preselect && selection) {
       setInitiativeId(selection.initiativeId);
       setSiteId(selection.siteId);
       setScanStatus(selection.scanStatus);
+      setStationType(laptop ? selection.stationType ?? '' : '');
+      setReaderIp(selection.reader?.ip ?? '');
     } else {
       setInitiativeId('');
       setSiteId('');
       setScanStatus('');
+      setStationType('');
+      setReaderIp('');
     }
+    setLaptopIp('');
+    setConnected(null);
+    setPaired(null);
     setSubmitError('');
-    setStep(1);
+    setStep(laptop ? 'type' : 'move');
     setWizardOpen(true);
+  };
+
+  const stepIndex = Math.max(0, path.indexOf(step));
+  const back = () => setStep(path[Math.max(0, stepIndex - 1)]);
+  const next = () => setStep(path[Math.min(path.length - 1, stepIndex + 1)]);
+
+  const selectStationType = (type: StationType) => {
+    touched.current = true;
+    setStationType(type);
+    setStep(pathFor(laptop, type)[1]);
+  };
+
+  /** A reader picked from the scan or typed in; a different reader (or
+   *  laptop address) means connecting and pairing again. */
+  const pickReader = (ip: string, laptop_ip?: string) => {
+    if (ip !== readerIp) setConnected(null);
+    setPaired(null);
+    setReaderIp(ip);
+    setLaptopIp(laptop_ip ?? '');
+    setStep('connect');
   };
 
   const selectedInitiative = options?.initiatives.find((i) => i.id === initiativeId) ?? null;
@@ -148,14 +238,15 @@ export default function KioskSetup() {
   }
 
   const selectMove = (id: string) => {
+    touched.current = true;
     if (id !== initiativeId) setSiteId('');
     setInitiativeId(id);
-    setStep(2);
+    setStep('site');
   };
 
   const selectSite = (id: string) => {
     setSiteId(id);
-    setStep(3);
+    setStep('scan');
   };
 
   const finish = async (scanKey: string) => {
@@ -164,18 +255,29 @@ export default function KioskSetup() {
     setSubmitError('');
     try {
       const identity = getIdentity();
+      // The edge adds the paired reader itself for an RFID station.
+      const station = laptop && stationType ? stationType : undefined;
       const result = await submitKioskSetup({
         serial: identity.serial, initiative_id: initiativeId, site_id: siteId,
-        scan_status: scanKey,
+        scan_status: scanKey, ...(station ? { station_type: station } : {}),
       });
-      setSelection({
+      const saved: KioskSetupSelection = {
         initiativeId: result.initiative_id, initiativeName: result.initiative_name,
         siteId: result.site_id, siteName: result.site_name, siteRole: result.site_role,
         scanStatus: result.scan_status, scanLabel: result.scan_status_label,
-      });
+      };
+      if (station) saved.stationType = station;
+      if (station === 'rfid') {
+        // Only a reader this run actually paired; the Pair step can't be
+        // passed without one.
+        const reader = paired?.reader;
+        if (reader) saved.reader = { ip: reader.ip, serial: reader.serial, model: reader.model };
+      }
+      setSelection(saved);
       writeSetupState('complete');
       dismissSetupClearNotice();
-      setWizardOpen(false);
+      // An RFID station still has to verify and start its reader.
+      if (station === 'rfid') setStep('confirm'); else setWizardOpen(false);
       // Fire-and-forget: the summary appears immediately and the
       // download reports itself through `.sync-status`. A sync outcome
       // never changes the setup state — the kiosk IS set up either way.
@@ -197,6 +299,7 @@ export default function KioskSetup() {
       <div className="portal-page">
         <div className="eyebrow">Kiosk · Setup</div>
         <h1 className="page-title">Kiosk setup</h1>
+        {lanAccess && <p className="sys-banner sys-banner-readonly" role="status">{LAN_NOTICE}</p>}
         {clearNotice && (
           <div className="sys-banner sys-banner-broadcast" role="status">
             An administrator cleared this kiosk&apos;s setup. Run Kiosk Setup to continue.
@@ -208,6 +311,14 @@ export default function KioskSetup() {
             <b>{selection.siteName}</b> ({selection.siteRole}) · scan type{' '}
             <b>{selection.scanLabel}</b>
           </p>
+          {laptop && selection.stationType && (
+            <p>
+              Station: <b>{stationLabel(selection.stationType, platform().label)}</b>
+              {selection.stationType === 'rfid' && selection.reader && (
+                <> · reader <b>{readerLabel(selection.reader)}</b></>
+              )}
+            </p>
+          )}
           <div className="sync-status">
             {/* idle only happens before a first sync, or after the
                 Developer tab's "Clear local data" — without this branch
@@ -252,13 +363,18 @@ export default function KioskSetup() {
     );
   }
 
-  const stepLabel = step === 1 ? 'Step 1 of 3 · Move'
-    : step === 2 ? 'Step 2 of 3 · Site' : 'Step 3 of 3 · Scan type';
+  // Before a station type is picked the path's length isn't known yet.
+  const stepLabel = step === 'type' && !stationType
+    ? `Step 1 · ${STEP_LABEL.type}`
+    : `Step ${stepIndex + 1} of ${path.length} · ${STEP_LABEL[step]}`;
+  const moveStep = step === 'move' || step === 'site' || step === 'scan';
+  const canCancel = Boolean(selection) && setupState === 'complete';
 
   return (
     <div className="portal-page">
       <div className="eyebrow">Kiosk · Setup</div>
       <h1 className="page-title">Kiosk setup</h1>
+      {lanAccess && <p className="sys-banner sys-banner-readonly" role="status">{LAN_NOTICE}</p>}
       {clearNotice && (
         <div className="sys-banner sys-banner-broadcast" role="status">
           An administrator cleared this kiosk&apos;s setup. Run Kiosk Setup to continue.
@@ -267,16 +383,63 @@ export default function KioskSetup() {
       <div className="setup-wizard">
         <div className="setup-steps">{stepLabel}</div>
 
-        {loadError && (
+        {step === 'type' && (
+          <div>
+            <StationTypeStep selected={stationType} onSelect={selectStationType} />
+            {canCancel && (
+              <div className="pf-form-actions">
+                <button type="button" className="mini-btn" onClick={() => setWizardOpen(false)}>
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {step === 'reader' && (
+          <div><ReaderStep selectedIp={readerIp} onPick={pickReader} onBack={back} /></div>
+        )}
+
+        {step === 'connect' && (
+          <div>
+            <ConnectStep ip={readerIp} info={connected} onInfo={setConnected}
+                         onPair={next} onBack={back} />
+          </div>
+        )}
+
+        {step === 'pair' && (
+          <div>
+            <PairStep ip={readerIp} laptopIp={laptopIp} result={paired} onResult={setPaired}
+                      onContinue={next} onBack={back} onCancel={back} onManual={pickReader} />
+          </div>
+        )}
+
+        {step === 'network' && <div><NetworkCheckStep onContinue={next} onBack={back} /></div>}
+
+        {step === 'confirm' && selection && (
+          <div>
+            <ConfirmStep
+              setup={selection}
+              reader={paired?.reader
+                ? { ip: paired.reader.ip, serial: paired.reader.serial,
+                    model: paired.reader.model, endpoint_url: paired.endpoint_url }
+                : null}
+              onBack={() => setStep('scan')}
+              onPairAgain={() => setStep('reader')}
+              onStarted={() => { setWizardOpen(false); navigate('/rfid_status'); }} />
+          </div>
+        )}
+
+        {moveStep && loadError && (
           <>
             <p className="form-error" role="alert">Couldn&apos;t load setup options.</p>
             <button type="button" className="mini-btn" onClick={load}>Retry</button>
           </>
         )}
 
-        {!loadError && options === null && <p className="page-hint">Loading moves…</p>}
+        {moveStep && !loadError && options === null && <p className="page-hint">Loading moves…</p>}
 
-        {!loadError && options !== null && step === 1 && (
+        {!loadError && options !== null && step === 'move' && (
           <div>
             <h2>Which move?</h2>
             <div className="setup-cards" role="listbox" aria-label="Moves">
@@ -302,17 +465,23 @@ export default function KioskSetup() {
             {options.initiatives.length === 0 && (
               <p className="page-hint">No active moves. Ask a coordinator to plan one.</p>
             )}
-            {selection && setupState === 'complete' && (
+            {path[0] === 'move' ? (
+              canCancel && (
+                <div className="pf-form-actions">
+                  <button type="button" className="mini-btn" onClick={() => setWizardOpen(false)}>
+                    Cancel
+                  </button>
+                </div>
+              )
+            ) : (
               <div className="pf-form-actions">
-                <button type="button" className="mini-btn" onClick={() => setWizardOpen(false)}>
-                  Cancel
-                </button>
+                <button type="button" className="mini-btn" onClick={back}>Back</button>
               </div>
             )}
           </div>
         )}
 
-        {!loadError && options !== null && step === 2 && (
+        {!loadError && options !== null && step === 'site' && (
           <div>
             <h2>Which site is this kiosk at?</h2>
             <div className="setup-cards" role="listbox" aria-label="Sites">
@@ -331,16 +500,16 @@ export default function KioskSetup() {
               </p>
             )}
             <div className="pf-form-actions">
-              <button type="button" className="mini-btn" onClick={() => setStep(1)}>Back</button>
+              <button type="button" className="mini-btn" onClick={back}>Back</button>
             </div>
           </div>
         )}
 
-        {!loadError && options !== null && step === 3 && (
+        {!loadError && options !== null && step === 'scan' && (
           <div>
             <h2>Which scan type?</h2>
             <div className="setup-cards" role="listbox" aria-label="Scan types">
-              {options.scan_types.map((s) => {
+              {scanTypes.map((s) => {
                 const saving = submitting && scanStatus === s.key;
                 return (
                   <button key={s.key} type="button" role="option"
@@ -353,15 +522,33 @@ export default function KioskSetup() {
                 );
               })}
             </div>
-            {submitError && (
+            {scanTypes.length === 0 && stationType === 'rfid' && laptop && (
+              <p className="page-hint">
+                No RFID scan types are set up. Add an active status value with RFID in its name
+                on the portal&apos;s Variables page.
+              </p>
+            )}
+            {submitError && submitError !== 'reader_required' && (
               <p className="form-error" role="alert">
                 {submitError === 'cloud_sign_in_required'
                   ? CLOUD_SIGN_IN_TEXT
                   : <>Couldn&apos;t save the kiosk setup ({submitError}). Try again.</>}
               </p>
             )}
+            {/* The edge had no paired reader for an RFID station. */}
+            {submitError === 'reader_required' && (
+              <div className="form-error" role="alert">
+                <p>Pair a reader first</p>
+                {path.includes('reader') && (
+                  <button type="button" className="mini-btn"
+                          onClick={() => { setSubmitError(''); setStep('reader'); }}>
+                    Back to the reader step
+                  </button>
+                )}
+              </div>
+            )}
             <div className="pf-form-actions">
-              <button type="button" className="mini-btn" onClick={() => setStep(2)}
+              <button type="button" className="mini-btn" onClick={back}
                       disabled={submitting}>
                 Back
               </button>

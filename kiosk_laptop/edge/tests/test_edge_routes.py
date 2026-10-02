@@ -102,3 +102,15 @@ async def test_unknown_edge_path_is_404_not_proxied(client, cloud):
     assert (await client.get("/edge/nope")).status_code == 404
     assert (await client.post("/edge/nope")).status_code == 404
     assert not route.called
+
+
+async def test_status_reports_version(client):
+    r = await client.get("/edge/status")
+    assert r.json()["version"] == "dev"
+
+
+def test_version_from_env(monkeypatch):
+    from edge.config import load_settings
+    monkeypatch.setenv("EDGE_CLOUD_API_URL", "http://cloud.test")
+    monkeypatch.setenv("EDGE_VERSION", "1.2.3")
+    assert load_settings().version == "1.2.3"

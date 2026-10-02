@@ -181,6 +181,8 @@ export default function Login() {
   }, [completePair, navigate, from]);
 
   const identity = getIdentity();
+  // The laptop edge serves the UI on the LAN over plain HTTP too.
+  const lanAccess = typeof window !== 'undefined' && window.__KIOSK_CONFIG__?.lanAccess === true;
 
   return (
     <div className="login-shell login-light">
@@ -206,7 +208,14 @@ export default function Login() {
             <div className="eyebrow">ServerSherpa Kiosk</div>
             <div className="eyebrow-kiosk">{identity.name}</div>
           </div>
-          <div className="login-banners"><KioskBanners /></div>
+          <div className="login-banners">
+            {lanAccess && (
+              <div className="sys-banner sys-banner-readonly" role="status">
+                This connection isn&apos;t encrypted — sign in only on a trusted network.
+              </div>
+            )}
+            <KioskBanners />
+          </div>
           <h2 className="form-title">Sign in</h2>
 
           {(view === 'password' || view === 'chooser') && (

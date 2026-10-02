@@ -32,7 +32,7 @@ from serversherpa.api.schemas import (
     KioskEdgeMovePasswordsOut, KioskMoveOut,
     KioskPeopleSyncOut, KioskPersonOut, KioskPrinterEventIn,
     KioskRfidEnrollIn, KioskRfidEnrollOut, KioskScanBatchIn,
-    KioskScanBatchOut, KioskScanRejected, KioskSetupIn, KioskSetupOut,
+    KioskScanBatchOut, KioskScanRejected, KioskSetupIn, KioskSetupOut, KioskSetupReadOut, KioskSetupReaderOut,
     KioskSignOutIn, KioskTimeclockEntry, KioskTimeclockLastEntry,
     KioskTimeclockPerson, KioskTimeclockStatusOut, KioskTruckContainerIn,
     KioskTruckContainerOut, KioskTruckContainerRow, KioskTruckOut,
@@ -410,7 +410,7 @@ def kiosk_sub_type(mode: str, raw_info: dict) -> str:
 
 @router.post("/heartbeat", response_model=HeartbeatOut)
 async def heartbeat(
-    body: HeartbeatIn, db: DbSession,
+    body: HeartbeatIn, request: Request, db: DbSession,
     actor: AuthContext = require_permission("kiosk", "view"),
 ) -> HeartbeatOut:
     """Upsert this kiosk's Device row by serial and stamp last_seen_at.
@@ -438,7 +438,8 @@ async def heartbeat(
         raise _err(409, "serial_conflict")
     else:
         device.name = body.name
-        device.version = body.version
+        if body.version is not None:
+            device.version = body.version
         # Merge first, then derive from the accumulated raw_info: a beat that
         # omits `manufacturer`/`datawedge` must not demote a known Zebra back
         # to plain `android` when the stored payload still identifies it.
@@ -483,7 +484,8 @@ async def heartbeat(
     return HeartbeatOut(device_id=device.id, name=device.name,
                         registration=registration_state(device.token_expires_at, now),
                         token_expires_at=device.token_expires_at,
-                        clear_setup=device.setup_clear_id)
+                        clear_setup=device.setup_clear_id,
+                        client_ip=client_ip(request))
 
 
 @router.post("/sign-out", status_code=204)
@@ -630,6 +632,36 @@ async def kiosk_setup(
     site = await db.get(Site, body.site_id)
     if site is None:
         raise _err(422, "bad_site")
+    if body.station_type == "rfid":
+        if body.reader is None:
+            raise _err(422, "reader_required")
+        if device.sub_type != "laptop":
+            raise _err(422, "rfid_needs_laptop")
+
+    now = datetime.now(UTC)
+    station_changes: dict[str, dict] = {}
+
+    def _stamp(field: str, new) -> None:
+        old = getattr(device, field)
+        old_cmp = old if old is None or isinstance(old, dict) else str(old)
+        if old_cmp != new:
+            station_changes[field] = {"from": old_cmp, "to": new}
+            setattr(device, field, new)
+
+    if body.station_type == "rfid":
+        reader = body.reader
+        _stamp("station_type", "rfid")
+        _stamp("rfid_reader_ip", str(reader.ip))
+        _stamp("rfid_reader_serial", reader.serial)
+        _stamp("rfid_reader_model", reader.model)
+        _stamp("rfid_reader_versions", dict(reader.versions))
+        device.rfid_paired_at = now
+    elif body.station_type == "label":
+        _stamp("station_type", "label")
+        for field in ("rfid_reader_ip", "rfid_reader_serial",
+                      "rfid_reader_model", "rfid_reader_versions"):
+            _stamp(field, None)
+        device.rfid_paired_at = None
 
     device.current_initiative_id = initiative.id
     device.site_id = site.id
@@ -639,11 +671,52 @@ async def kiosk_setup(
           entity_id=str(device.id), action="kiosk_setup",
           changes={"initiative_id": str(initiative.id), "site_id": str(site.id),
                    "scan_status": scan_type.key})
+    if station_changes:
+        audit(db, actor_id=actor.person.id, entity_type="device",
+              entity_id=str(device.id), action="kiosk_station_setup",
+              changes=station_changes)
     await db.commit()
     return KioskSetupOut(device_id=device.id, initiative_id=initiative.id,
                          initiative_name=initiative.name,
                          site_id=site.id, site_name=site.name, site_role=site_role,
                          scan_status=scan_type.key, scan_status_label=scan_type.label)
+
+
+@router.get("/setup", response_model=KioskSetupReadOut)
+async def kiosk_setup_read(
+    db: DbSession,
+    serial: str = Query(min_length=1, max_length=120),
+    actor: AuthContext = require_permission("kiosk", "view"),
+) -> KioskSetupReadOut:
+    """Read-back of what the portal holds for this kiosk's setup: move,
+    site, scan type, station type and paired reader. A move-password
+    session sees only a kiosk set up for its own move (404 otherwise, so
+    other kiosks' serials are not revealed)."""
+    device = await db.scalar(select(Device).where(
+        Device.serial == serial, Device.device_type == "kiosk"))
+    if device is None:
+        raise _err(404, "device_not_found")
+    locked_to = actor.session.initiative_id
+    if locked_to is not None and device.current_initiative_id != locked_to:
+        raise _err(404, "device_not_found")
+    initiative = (await db.get(Initiative, device.current_initiative_id)
+                  if device.current_initiative_id else None)
+    site = await db.get(Site, device.site_id) if device.site_id else None
+    scan_type = (await db.get(StatusValue, ("asset", device.scan_status))
+                 if device.scan_status else None)
+    reader = None
+    if device.rfid_reader_serial:
+        reader = KioskSetupReaderOut(
+            ip=str(device.rfid_reader_ip) if device.rfid_reader_ip else None,
+            serial=device.rfid_reader_serial, model=device.rfid_reader_model)
+    return KioskSetupReadOut(
+        device_id=device.id,
+        initiative_id=device.current_initiative_id,
+        initiative_name=initiative.name if initiative else None,
+        site_id=device.site_id, site_name=site.name if site else None,
+        scan_status=device.scan_status,
+        scan_status_label=scan_type.label if scan_type else None,
+        station_type=device.station_type, reader=reader)
 
 
 # ── local-data sync (kiosk:view) ─────────────────────────────────────

@@ -1,0 +1,221 @@
+# Kiosk laptop edition: test everything the image and installers are made of,
+# build the image, smoke-test it, run the Linux installer end to end, then
+# publish amd64 + arm64 to GHCR.
+#
+#   push to main               -> :edge, :sha-<sha7>
+#   tag kiosk-laptop-vX.Y.Z    -> :X.Y.Z, :stable
+#   pull request               -> tests, build, smoke and e2e only (nothing pushed)
+#
+# Release notes for maintainers:
+#   - The encondata org must allow GitHub Actions to create packages
+#     (Organization settings > Packages), or the first push to GHCR fails.
+#   - After the first publish, make the serversherpa-kiosk-laptop package
+#     public: the installers pull it without logging in.
+#   - Only a kiosk-laptop-vX.Y.Z tag moves :stable (the installers' default
+#     channel); every push to main moves :edge only.
+name: kiosk-laptop-image
+
+on:
+  push:
+    branches: [main]
+    paths: ['kiosk/**', 'kiosk_laptop/**', 'portal/src/**', '.github/workflows/kiosk-laptop-image.yml']
+    tags: ['kiosk-laptop-v*']
+  pull_request:
+    paths: ['kiosk/**', 'kiosk_laptop/**', 'portal/src/**', '.github/workflows/kiosk-laptop-image.yml']
+  workflow_dispatch:
+
+# Least privilege: only the publish job can write packages.
+permissions:
+  contents: read
+
+concurrency:
+  group: kiosk-laptop-image-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/encondata/serversherpa-kiosk-laptop
+
+jobs:
+  edge-tests:
+    name: Edge + installer tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install shellcheck
+        run: sudo apt-get update -q && sudo apt-get install -y -q shellcheck
+      - name: Install the edge package
+        run: pip install -e 'kiosk_laptop/edge[dev]'
+      # Two runs: the edge tests import `tests.conftest` relative to
+      # kiosk_laptop/edge (its pyproject holds their pytest config), and the
+      # two conftest.py files clash when collected together from the repo root.
+      - name: pytest (edge suite)
+        working-directory: kiosk_laptop/edge
+        run: pytest -q
+      - name: pytest (installer shell tests on Linux bash)
+        run: pytest -q kiosk_laptop/installer/tests
+
+  installer-macos:
+    name: Installer tests (macOS /bin/bash 3.2)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # The runner's own python3 is externally managed (PEP 668); pip needs a setup-python one.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install pytest
+        run: python3 -m pip install pytest
+      - name: pytest (conftest runs install.sh/update.sh with /bin/bash)
+        run: |
+          /bin/bash --version | head -n 1
+          python3 -m pytest -q kiosk_laptop/installer/tests
+
+  installer-windows:
+    name: Installer tests (Windows PowerShell 5.1 + pwsh)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Versions pinned to the ones the suites were verified with locally.
+      # Analyzer and Pester are separate steps: -EnableExit exits the shell
+      # right after the analysis, so nothing after it in the same step would run.
+      - name: Pester under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser | Out-Null
+          # -SkipPublisherCheck: the inbox Pester 3.4 is signed by a different publisher.
+          Install-Module Pester -RequiredVersion 6.2.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Import-Module Pester -RequiredVersion 6.2.0
+          $PSVersionTable.PSVersion.ToString()
+          Invoke-Pester kiosk_laptop/installer/tests -CI
+      - name: PSScriptAnalyzer (pwsh)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force -Scope CurrentUser
+          Import-Module PSScriptAnalyzer -RequiredVersion 1.25.0
+          Invoke-ScriptAnalyzer kiosk_laptop/installer -Recurse -Severity Warning,Error -EnableExit
+      - name: Pester under pwsh
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Install-Module Pester -RequiredVersion 6.2.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Import-Module Pester -RequiredVersion 6.2.0
+          $PSVersionTable.PSVersion.ToString()
+          Invoke-Pester kiosk_laptop/installer/tests -CI
+
+  kiosk-tests:
+    name: Kiosk app tests + bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: kiosk/package-lock.json
+      - run: npm ci --prefix kiosk
+      - run: npm --prefix kiosk test
+      # vite build only, as the Dockerfile does: the full `tsc -b` build needs
+      # portal's node_modules, and `npm ci --prefix portal` fails on its lockfile.
+      - run: npm --prefix kiosk run build:bundle
+
+  image:
+    name: Build, smoke, Linux installer end to end
+    needs: [edge-tests, installer-macos, installer-windows, kiosk-tests]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tags: ${{ steps.version.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compute the version and publish tags
+        id: version
+        run: |
+          sha7="${GITHUB_SHA::7}"
+          case "$GITHUB_REF" in
+            refs/tags/kiosk-laptop-v*)
+              version="${GITHUB_REF#refs/tags/kiosk-laptop-v}"
+              [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+                || { echo "::error::Tag ${GITHUB_REF#refs/tags/} isn't kiosk-laptop-vX.Y.Z"; exit 1; }
+              tags="$IMAGE:$version,$IMAGE:stable"
+              ;;
+            refs/heads/main)
+              version="0.0.0-$sha7"
+              tags="$IMAGE:edge,$IMAGE:sha-$sha7"
+              ;;
+            *)
+              version="0.0.0-$sha7"
+              tags=''   # pull requests and other branches: nothing to publish
+              ;;
+          esac
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "tags=$tags" >>"$GITHUB_OUTPUT"
+          echo "Version $version; publish tags: ${tags:-none}"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build linux/amd64 into the local image store
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: kiosk_laptop/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: kiosk-laptop:ci
+          build-args: KIOSK_VERSION=${{ steps.version.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/encondata/BaseCampV3
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test
+        run: SMOKE_IMAGE=kiosk-laptop:ci kiosk_laptop/scripts/smoke.sh
+      - name: Linux installer end to end
+        run: kiosk_laptop/installer/tests/test_linux_e2e.sh kiosk-laptop:ci
+
+  publish:
+    name: Publish amd64 + arm64 to GHCR
+    needs: image
+    if: github.event_name != 'pull_request' && needs.image.outputs.tags != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: kiosk_laptop/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ needs.image.outputs.tags }}
+          build-args: KIOSK_VERSION=${{ needs.image.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/encondata/BaseCampV3
+            org.opencontainers.image.version=${{ needs.image.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -20,7 +20,8 @@ import { kioskVersion } from '../lib/config';
 import { useDevMode } from '../lib/devMode';
 import { FEATURES } from '../lib/features';
 import { getIdentity } from '../lib/identity';
-import { useKioskSetup } from '../lib/kioskSetup';
+import { stationLabel, useKioskSetup } from '../lib/kioskSetup';
+import { hydrateLaptopSetup } from '../lib/laptopSetup';
 import { platform } from '../lib/platform';
 import { useEdgeStatus } from '../lib/edgeStatus';
 import { useSyncStatus } from '../lib/sync';
@@ -69,6 +70,11 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   const sync = useSyncStatus();
   const { status: edge } = useEdgeStatus();
 
+  // The RFID dashboard is always dark, like its mockup, whatever the
+  // person's theme: applyPreferences runs first (it sets data-theme from
+  // the preference), then the forced theme overrides it. Leaving the route
+  // re-runs the effect, so the preference is applied again.
+  const forceDark = location.pathname === '/rfid_status';
   // Clear Setup from the portal: whoever is signed in goes to Kiosk Setup,
   // once. The flag lives above the router and the shell remounts as routes
   // change shape, so it is consumed here — a later mount sees false.
@@ -82,10 +88,22 @@ export default function KioskShell({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     applyPreferences(preferences ?? DEFAULT_PREFERENCES);
-  }, [preferences]);
+    if (forceDark) {
+      document.querySelector<HTMLElement>('.portal-shell')?.setAttribute('data-theme', 'dark');
+    }
+  }, [preferences, forceDark]);
+
+  // A laptop's browsers share its finished setup (GET /edge/setup needs a
+  // signed-in edge session): a phone on the LAN starts set up, not blank.
+  // A no-op in web mode and once this browser has a complete setup.
+  // A move-password session only ever takes its own move's setup.
+  const lockedMove = kioskMove?.initiative_id ?? null;
+  useEffect(() => {
+    if (authed) void hydrateLaptopSetup(lockedMove);
+  }, [authed, lockedMove]);
 
   const identity = getIdentity();
-  const { label: modeLabel } = platform();
+  const { mode, label: modeLabel } = platform();
   const feature = FEATURES.find(
     (f) => location.pathname === f.path || location.pathname.startsWith(`${f.path}/`),
   );
@@ -95,7 +113,8 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   // moved to a hover on that person. What's left is context (mode,
   // version, what this kiosk is set up for) plus one status word.
   const footItems: FootItem[] = [
-    { label: 'Mode', value: modeLabel },
+    // A laptop names what kind of station setup made it: "RFID · Laptop".
+    { label: 'Mode', value: mode === 'laptop' ? stationLabel(kioskSetup?.stationType, modeLabel) : modeLabel },
     { label: 'Version', value: kioskVersion() },
   ];
   const moveName = kioskSetup?.initiativeName ?? kioskMove?.name;
@@ -129,7 +148,12 @@ export default function KioskShell({ children }: { children: ReactNode }) {
         <div className="kiosk-brand">
           <img className="kiosk-logo" src="/images/serversherpa-logo.png" alt="" />
           <span className="kiosk-wordmark">Server<em>Sherpa</em></span>
-          <span className="kiosk-mode">Kiosk · {modeLabel}</span>
+          {/* A laptop shows what setup made it ("RFID · Laptop"); until then, "Kiosk · Laptop". */}
+          <span className="kiosk-mode">
+            {mode === 'laptop' && kioskSetup?.stationType
+              ? stationLabel(kioskSetup.stationType, modeLabel)
+              : `Kiosk · ${modeLabel}`}
+          </span>
           {feature && <span className="kiosk-section">{feature.title}</span>}
         </div>
         <button type="button" className="kiosk-name" title="This kiosk"

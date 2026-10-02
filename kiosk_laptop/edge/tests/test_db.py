@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from edge.db import SCHEMA_STEPS, Store, iso
@@ -40,3 +42,30 @@ def test_a_version_one_database_upgrades_in_place(tmp_path, monkeypatch):
     row = store.one("SELECT initiative_id, version FROM move_passwords")
     assert (row["initiative_id"], row["version"]) == ("m-1", None)
     assert store.one("SELECT version FROM schema_version")["version"] == len(SCHEMA_STEPS)
+
+
+def test_store_holds_an_exclusive_lock(tmp_path):
+    store = Store(tmp_path / "edge.db")
+    store.run("INSERT INTO cache(key, status, body, stored_at) VALUES ('k', 200, 'b', 'now')")
+    other = sqlite3.connect(tmp_path / "edge.db", timeout=0.1)
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        other.execute("INSERT INTO cache(key, status, body, stored_at) VALUES ('j', 200, 'b', 'now')")
+    other.close()
+    assert not (tmp_path / "edge.db-shm").exists()   # WAL index kept in process memory
+    store.close()
+
+
+def test_an_older_image_never_lowers_the_schema_version(tmp_path, monkeypatch):
+    # rollback: the newer image migrated to N+1; the older image (N steps)
+    # must keep the record at N+1 so the newer image never re-runs a step
+    from edge import db
+    newer = Store(tmp_path / "edge.db")
+    newer.close()
+    monkeypatch.setattr(db, "SCHEMA_STEPS", SCHEMA_STEPS[:-1])
+    older = Store(tmp_path / "edge.db")
+    assert older.one("SELECT version FROM schema_version")["version"] == len(SCHEMA_STEPS)
+    older.close()
+    monkeypatch.setattr(db, "SCHEMA_STEPS", SCHEMA_STEPS)
+    again = Store(tmp_path / "edge.db")   # would fail on a duplicate column if re-run
+    assert again.one("SELECT version FROM schema_version")["version"] == len(SCHEMA_STEPS)
+    again.close()

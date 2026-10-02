@@ -4452,6 +4452,8 @@ export interface DeviceItem {
   current_initiative_id: string | null; current_initiative_name: string | null;
   session_person_id: string | null; session_person_name: string | null;
   session_login_method: string | null; session_started_at: string | null;
+  station_type?: 'label' | 'rfid' | null;
+  rfid_reader?: DeviceRfidReader | null;
   /** Clear Setup pending since (null = nothing pending) and who asked. */
   setup_clear_requested_at: string | null; setup_clear_requested_by_name: string | null;
   /** Router agent (optional so non-router fixtures stay valid): NULL/absent
@@ -4459,6 +4461,11 @@ export interface DeviceItem {
   approval_state?: 'pending' | 'approved' | 'revoked' | null;
   approved_at?: string | null; approved_by_name?: string | null;
   secret_mismatch?: boolean; agent_source_ip?: string | null;
+}
+
+export interface DeviceRfidReader {
+  ip: string; serial: string | null; model: string | null;
+  versions: Record<string, string> | null; paired_at: string | null;
 }
 
 export async function listDevices(deviceType?: string): Promise<DeviceItem[]> {

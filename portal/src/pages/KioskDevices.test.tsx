@@ -88,6 +88,7 @@ function kiosk(overrides: Partial<DeviceItem>): DeviceItem {
     current_initiative_id: 'i1', current_initiative_name: 'NAP11 Hall Migration (demo)',
     session_person_id: null, session_person_name: null,
     session_login_method: null, session_started_at: null,
+    station_type: null, rfid_reader: null,
     setup_clear_requested_at: null, setup_clear_requested_by_name: null,
     ...overrides,
   };
@@ -577,6 +578,98 @@ it('clears a lingering clear-offline notice once another action runs', async () 
   expect(screen.queryByText(/Deleted 1 kiosk/)).toBeNull();
 
   confirmSpy.mockRestore();
+});
+
+const READER = {
+  ip: '192.168.8.77', serial: '23001010101010', model: 'FX9600',
+  versions: { readerApplication: '3.4.2', radioFirmware: '2.1.0', cloudAgentApplication: '1.9.9' },
+  paired_at: '2026-10-01T15:30:00Z',
+};
+
+const STATION_DEVICES: DeviceItem[] = [
+  kiosk({ id: 's1', name: 'station-rfid', sub_type: 'laptop', station_type: 'rfid', rfid_reader: READER }),
+  kiosk({ id: 's2', name: 'station-label', sub_type: 'laptop', station_type: 'label' }),
+  kiosk({ id: 's3', name: 'plain-pi', sub_type: 'pi' }),
+];
+
+it('stationTypeLabel maps station and sub type', async () => {
+  const { stationTypeLabel } = await import('../lib/devices');
+  expect(stationTypeLabel(STATION_DEVICES[0])).toBe('RFID \u00b7 Laptop');
+  expect(stationTypeLabel(STATION_DEVICES[1])).toBe('Label Station \u00b7 Laptop');
+  expect(stationTypeLabel(kiosk({ station_type: 'rfid', sub_type: 'pi' }))).toBe('RFID \u00b7 Pi');
+  expect(stationTypeLabel(STATION_DEVICES[2])).toBe('Pi');
+});
+
+it('Type column and filter options use the station labels', async () => {
+  api.listDevices.mockResolvedValue(STATION_DEVICES);
+  render(<KioskDevices />);
+  await screen.findByText('station-rfid');
+  expect(screen.getByText('RFID \u00b7 Laptop')).not.toBeNull();
+  expect(screen.getByText('Label Station \u00b7 Laptop')).not.toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: /filter/i }));
+  const rfid = await screen.findAllByText('RFID \u00b7 Laptop');
+  expect(rfid.length).toBeGreaterThan(1);
+  expect(screen.getAllByText('Label Station \u00b7 Laptop').length).toBeGreaterThan(1);
+});
+
+const open = async (name: string) => {
+  const row = (await screen.findByText(name)).closest('.dir-row') as HTMLElement;
+  await userEvent.click(row.querySelector('.row-main') as HTMLElement);
+  return row;
+};
+
+it('every kiosk row has a chevron and a Station table; no switcher without a reader', async () => {
+  api.listDevices.mockResolvedValue(STATION_DEVICES);
+  render(<KioskDevices />);
+  const row = await open('station-label');
+  expect(row.querySelector('.chevron-cell')).not.toBeNull();
+  const t = within(row).getByRole('table', { name: 'Station' });
+  expect(within(t).getByText('Station type')).not.toBeNull();
+  expect(within(t).getByText('Label Station \u00b7 Laptop')).not.toBeNull();
+  expect(within(row).queryByRole('tablist')).toBeNull();
+  const pi = await open('plain-pi');
+  expect(within(pi).getByRole('table', { name: 'Station' })).not.toBeNull();
+  expect(within(pi).queryByRole('tablist')).toBeNull();
+});
+
+it('RFID kiosk gets a Station/Reader switcher and a Reader table with the paired time', async () => {
+  api.listDevices.mockResolvedValue(STATION_DEVICES);
+  render(<KioskDevices />);
+  const row = await open('station-rfid');
+  expect(within(row).getByRole('tablist')).not.toBeNull();
+  expect(within(row).getByRole('table', { name: 'Station' })).not.toBeNull();
+  await userEvent.click(within(row).getByRole('tab', { name: 'Reader' }));
+  const t = within(row).getByRole('table', { name: 'Paired reader' });
+  for (const h of ['IP', 'Model', 'Serial', 'Reader app', 'Radio', 'Cloud agent', 'Paired']) {
+    expect(within(t).getByText(h)).not.toBeNull();
+  }
+  for (const v of ['192.168.8.77', 'FX9600', '23001010101010', '3.4.2', '2.1.0', '1.9.9']) {
+    expect(within(t).getByText(v)).not.toBeNull();
+  }
+  expect(within(t).getByText(new Date(READER.paired_at).toLocaleString())).not.toBeNull();
+});
+
+it('Reader table falls back to dashes for missing versions and paired time', async () => {
+  api.listDevices.mockResolvedValue([kiosk({
+    id: 's9', name: 'station-bare', sub_type: 'laptop', station_type: 'rfid',
+    rfid_reader: { ip: '10.0.0.5', serial: null, model: null, versions: null, paired_at: null },
+  })]);
+  render(<KioskDevices />);
+  const row = await open('station-bare');
+  await userEvent.click(within(row).getByRole('tab', { name: 'Reader' }));
+  const t = within(row).getByRole('table', { name: 'Paired reader' });
+  expect(within(t).getAllByText('\u2014')).toHaveLength(6);
+});
+
+it('Type cell, filter and search agree for a null sub_type', async () => {
+  api.listDevices.mockResolvedValue([kiosk({ id: 'n1', name: 'no-type', sub_type: null })]);
+  render(<KioskDevices />);
+  const row = (await screen.findByText('no-type')).closest('.dir-row') as HTMLElement;
+  const { stationTypeLabel, deviceCellText } = await import('../lib/devices');
+  expect(stationTypeLabel({ station_type: null, sub_type: null })).toBe('\u2014');
+  expect(deviceCellText(DEVICES[0], 'sub_type')).toBe('Pi');
+  expect(row.querySelector('.chip.tag.cell-line')).toBeNull();
+  expect(deviceCellText(kiosk({ sub_type: null }), 'sub_type')).toBe('\u2014');
 });
 
 /* ── Clear Setup ───────────────────────────────────────────────────── */

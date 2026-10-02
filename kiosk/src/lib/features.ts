@@ -7,7 +7,7 @@
 import { isSetupComplete, type KioskSetupState } from './setupState';
 
 export interface KioskFeature {
-  id: 'setup' | 'scan' | 'enroll' | 'containers' | 'trucks' | 'labels' | 'timeclock'
+  id: 'setup' | 'rfid' | 'scan' | 'enroll' | 'containers' | 'trucks' | 'labels' | 'timeclock'
   | 'settings';
   path: string;
   title: string;
@@ -44,4 +44,28 @@ export function featureAvailable(
   devMode = false,
 ): boolean {
   return devMode || feature.alwaysAvailable || isSetupComplete(setupState);
+}
+
+/** The RFID Reader Dashboard's Home tile. Not in FEATURES: Home shows it
+ *  only on a laptop whose saved setup is an RFID station, and it is first
+ *  when shown (the station's main screen). Gated like the other tiles. */
+export const RFID_READER_FEATURE: KioskFeature = {
+  id: 'rfid', path: '/rfid_status', title: 'RFID Reader', blurb: 'Start or stop the reader and watch live activity.',
+};
+
+/** What a laptop station's Home shows (Jimmy, 2026-10-02): an RFID Station
+ *  only RFID Reader, Kiosk Setup and Settings; a Label Station only Kiosk
+ *  Setup, Label Printing and Settings. Anything else (web mode, or a laptop
+ *  not set up yet) shows every feature. */
+const STATION_TILES: Record<'rfid' | 'label', KioskFeature['id'][]> = {
+  rfid: ['rfid', 'setup', 'settings'],
+  label: ['setup', 'labels', 'settings'],
+};
+
+export function homeFeatures(laptop: boolean, stationType: 'rfid' | 'label' | undefined): KioskFeature[] {
+  if (!laptop || !stationType) return FEATURES;
+  const all = [RFID_READER_FEATURE, ...FEATURES];
+  return STATION_TILES[stationType]
+    .map((id) => all.find((f) => f.id === id))
+    .filter((f): f is KioskFeature => f !== undefined);
 }

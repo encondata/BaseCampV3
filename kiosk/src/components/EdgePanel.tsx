@@ -64,6 +64,12 @@ export default function EdgePanel() {
     <>
       <div className="settings-row">
         <div>
+          <span className="settings-row-label">Version</span>
+          <p className="page-hint">{status.version}</p>
+        </div>
+      </div>
+      <div className="settings-row">
+        <div>
           <span className="settings-row-label">Cloud</span>
           <p className="page-hint">Last contact {when(status.cloud.last_contact)}</p>
         </div>

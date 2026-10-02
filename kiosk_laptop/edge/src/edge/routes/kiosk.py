@@ -1,12 +1,14 @@
 """Kiosk endpoints the edge answers itself rather than proxying."""
 
+import json
 import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Request, Response
 
-from edge import outbox
+from edge import laptop_setup, outbox
 from edge.deps import err, require_session
+from edge.rfid import events, pairing
 from edge.routes.auth import passthrough
 from edge.routes.proxy import rewrite_body
 from edge.sessions import EdgeSession
@@ -63,13 +65,38 @@ async def printer_events(request: Request,
     return Response(status_code=204)
 
 
+def with_station(body: bytes, store) -> tuple[bytes, str | None]:
+    """The browser picks the station type; the edge alone supplies the reader
+    (from its current pairing), whatever the browser sent. Returns the body
+    and the station type. No pairing for `rfid` is 422 `reader_required`,
+    as the cloud answers it."""
+    try:
+        data = json.loads(body) if body else None
+    except ValueError:
+        return body, None
+    if not isinstance(data, dict):
+        return body, None
+    data.pop("reader", None)
+    station = data.get("station_type")
+    if station == "rfid":
+        reader = pairing.cloud_reader(store)
+        if reader is None:
+            raise err(422, "reader_required")
+        data["reader"] = reader
+    return json.dumps(data).encode(), station if isinstance(station, str) else None
+
+
 @router.post("/setup")
 async def setup(request: Request, session: EdgeSession = Depends(require_session)) -> Response:
     """Kiosk Setup needs the cloud. On success the laptop is now set up for
     that move, so pull it down before answering — the browser's own download
-    that follows then reads what the edge just stored."""
+    that follows then reads what the edge just stored. The result is also
+    kept for every browser (GET /edge/setup), and a Label Station drops the
+    reader pairing — the reader row (password index, token) stays, so
+    pairing it again later reuses them."""
     st = request.app.state
-    body = rewrite_body("/kiosk/setup", await request.body(), st.identity)
+    body, station = with_station(await request.body(), st.store)
+    body = rewrite_body("/kiosk/setup", body, st.identity)
     try:
         resp = await st.upstream.as_person(session.person_id, "POST", "/kiosk/setup",
                                            content=body,
@@ -79,6 +106,20 @@ async def setup(request: Request, session: EdgeSession = Depends(require_session
     if resp is None:
         raise err(403, "cloud_sign_in_required")  # not 401: the edge session is still good
     if resp.status_code == 200:
-        st.syncer.set_target(str(resp.json()["initiative_id"]), session.person_id)
+        result = resp.json()
+        if station == "label":
+            previous = pairing.current_row(st.store)
+            if previous is not None:  # best effort: the reader stops sending here
+                async with st.pair_lock:
+                    await pairing.release(previous, st.identity, transport=st.reader_transport)
+            st.store.run("DELETE FROM rfid_pairing")
+        if isinstance(result, dict):
+            laptop_setup.save(st.store, result, station)
+            events.record(st.store, "move_loaded", "Move loaded",
+                          str(result.get("initiative_name") or ""))
+            events.record(st.store, "scan_type_selected", "Scan type selected",
+                          f"{result.get('scan_status_label') or ''} · "
+                          f"{'RFID Station' if station == 'rfid' else 'Label Station'}")
+        st.syncer.set_target(str(result["initiative_id"]), session.person_id)
         await st.syncer.run()
     return passthrough(resp)
