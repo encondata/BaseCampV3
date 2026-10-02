@@ -230,13 +230,14 @@ def _apply_row(assoc: InitiativeAsset, r: dict, now: datetime) -> None:
 async def assign_generated_serials(
     db: AsyncSession, rows: list[dict], *,
     initiative_id: uuid.UUID | None = None,
+    reuse_by_name: bool = True,
     draw: Callable[[], str] = new_generated_serial,
 ) -> None:
     """Give every ok row flagged serial_generated (and still blank) a serial
     unique among the file's serials and every assets.serial_number
     (archived included). One batched lookup per round; collisions redraw.
 
-    With initiative_id, a pending row first tries to reuse the serial of the
+    With initiative_id (and reuse_by_name), a pending row first tries to reuse the serial of the
     move's roster asset that has the same (case-insensitive) name and a
     gnrtd- serial, so re-uploading a sheet updates instead of duplicating.
     Reuse needs exactly one such roster asset, no other pending row with
@@ -248,7 +249,7 @@ async def assign_generated_serials(
         return
     taken = {r["serial_number"].lower() for r in rows
              if r["status"] == "ok" and r["serial_number"]}
-    if initiative_id is not None:
+    if initiative_id is not None and reuse_by_name:
         by_name: dict[str, list[str]] = {}
         for name, serial in await db.execute(
                 select(Asset.name, Asset.serial_number)
@@ -307,6 +308,7 @@ async def run_import(
     is_cancelled: CancelledFn | None = None,
     commit: bool = True,
     progress_every: int | None = None,
+    reuse_by_name: bool = True,
 ) -> dict:
     """The shared pipeline. write=False (validate) runs the identical
     decision path with every DB write suppressed — created assets/models
@@ -317,10 +319,15 @@ async def run_import(
 
     commit=False leaves every commit to the caller (the move-setup worker
     runs the whole create in one transaction); progress still fires at each
-    boundary. progress_every overrides BATCH_SIZE as that boundary."""
+    boundary. progress_every overrides BATCH_SIZE as that boundary.
+
+    reuse_by_name=False stops blank-serial rows from reusing a roster
+    asset's gnrtd- serial (a review-rows reprocess passes only a subset of
+    the file, so a name that was ambiguous in the whole file looks unique)."""
     from serversherpa.services.audit import audit
 
-    await assign_generated_serials(db, rows, initiative_id=initiative_id)
+    await assign_generated_serials(db, rows, initiative_id=initiative_id,
+                                   reuse_by_name=reuse_by_name)
     ok_rows = [r for r in rows if r["status"] == "ok"]
     assets, rfid_map, literal_map, model_map, roster = await _lookups(
         db, initiative_id, ok_rows)

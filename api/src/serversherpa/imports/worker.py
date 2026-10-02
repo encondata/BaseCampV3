@@ -148,6 +148,9 @@ async def process_job(db: AsyncSession, job: ImportJob) -> None:
         rows=parsed,
         make_model_mode=str(opts.get("make_model_mode") or "fuzzy"),
         write=write,
+        # a review-rows reprocess only sees a subset of the file; its rows
+        # were already headed for a new asset, so never reuse by name
+        reuse_by_name=not only_rows,
         source_label=f"import-job {job.id} ({job.filename})",
         progress=_progress if write else None,
         is_cancelled=_cancelled if write else None)
