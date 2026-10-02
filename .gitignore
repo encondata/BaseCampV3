@@ -44,3 +44,9 @@ api/backups/
 
 # Detached dev-server logs (nohup), so the preview manager cannot reap them
 .devlogs/
+
+# Xcode per-user state and build output
+xcuserdata/
+*.xcuserstate
+IOS_Kiosk_App/**/DerivedData/
+IOS_Kiosk_App/.derived/
