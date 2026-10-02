@@ -3,7 +3,7 @@
 import re
 
 from serversherpa.imports.move_assets import (
-    PRIORITY_MAX, generate_serial, parse_row,
+    PRIORITY_MAX, new_generated_serial, parse_row,
     resolve_make_model_for_creation,
 )
 
@@ -29,26 +29,29 @@ def test_resolve_make_model_split_and_dedup():
     assert resolve_make_model_for_creation("Dell", "Dell") == ("Dell", "Dell")
 
 
-def test_generate_serial_format():
-    serial = generate_serial(" Web-01 ")
-    assert re.fullmatch(r"web-01\.\d{13}", serial)
+def test_new_generated_serial_format():
+    for _ in range(50):
+        assert re.fullmatch(r"gnrtd-[0-9a-f]{6}", new_generated_serial())
 
 
-def test_missing_serial_is_an_error():
+def test_missing_serial_is_an_error_when_generation_is_off():
     out = parse_row(2, _canonical(), {}, generate_serials=False)
     assert out["status"] == "error"
     assert out["message"] == "Missing required field: Serial Number"
+
+
+def test_missing_serial_is_flagged_for_generation_even_without_a_name():
     out = parse_row(2, _canonical(), {}, generate_serials=True)
-    assert out["status"] == "error"
-    assert "Asset Name is also blank" in out["message"]
-
-
-def test_serial_generation_path():
-    out = parse_row(2, _canonical(asset_name="Web-01"), {},
-                    generate_serials=True)
     assert out["status"] == "ok"
     assert out["serial_generated"] is True
-    assert re.fullmatch(r"web-01\.\d{13}", out["serial_number"])
+    assert out["serial_number"] == ""
+    assert out["asset_name"] == ""
+
+
+def test_generation_keeps_the_name():
+    out = parse_row(2, _canonical(asset_name="Web-01"), {}, generate_serials=True)
+    assert out["status"] == "ok" and out["serial_generated"] is True
+    assert out["asset_name"] == "web-01"
 
 
 def test_typed_fields_and_lowering():

@@ -9,8 +9,9 @@ pipeline (run_import), and the post-commit placement re-check
 
 import json
 import logging
-import random
+import secrets
 import uuid
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -58,10 +59,12 @@ def resolve_make_model_for_creation(asset_make: str,
     return make, model
 
 
-def generate_serial(asset_name: str) -> str:
-    """V2 format: lowercase_name.13_random_digits."""
-    digits = "".join(str(random.randint(0, 9)) for _ in range(13))
-    return f"{asset_name.strip().lower()}.{digits}"
+GENERATED_SERIAL_PREFIX = "gnrtd-"
+
+
+def new_generated_serial() -> str:
+    """gnrtd- + 6 random lowercase hex characters (16.7 million values)."""
+    return GENERATED_SERIAL_PREFIX + secrets.token_hex(3)
 
 
 def _float(text: str) -> float | None:
@@ -78,15 +81,10 @@ def parse_row(n: int, canonical: dict, raw: dict, *,
     name_raw = canonical["asset_name"].strip()
     serial_generated = False
     if not serial:
-        if generate_serials and name_raw:
-            serial = generate_serial(name_raw)
-            serial_generated = True
-        else:
-            message = ("Missing required field: Serial Number"
-                       if not generate_serials
-                       else "Cannot generate serial: Asset Name is also blank")
+        if not generate_serials:
             return {"row": n, "serial_number": "", "status": "error",
-                    "message": message}
+                    "message": "Missing required field: Serial Number"}
+        serial_generated = True     # assigned by assign_generated_serials
     serial = serial.lower()
 
     make = canonical["asset_make"].strip()
@@ -229,6 +227,75 @@ def _apply_row(assoc: InitiativeAsset, r: dict, now: datetime) -> None:
     assoc.updated_at = now
 
 
+async def assign_generated_serials(
+    db: AsyncSession, rows: list[dict], *,
+    initiative_id: uuid.UUID | None = None,
+    reuse_by_name: bool = True,
+    draw: Callable[[], str] = new_generated_serial,
+) -> None:
+    """Give every ok row flagged serial_generated (and still blank) a serial
+    unique among the file's serials and every assets.serial_number
+    (archived included). One batched lookup per round; collisions redraw.
+
+    With initiative_id (and reuse_by_name), a pending row first tries to reuse the serial of the
+    move's roster asset that has the same (case-insensitive) name and a
+    gnrtd- serial, so re-uploading a sheet updates instead of duplicating.
+    Reuse needs exactly one such roster asset, no other pending row with
+    that name, and a serial no other row in the file already carries."""
+    pending = [r for r in rows
+               if r["status"] == "ok" and r.get("serial_generated")
+               and not r["serial_number"]]
+    if not pending:
+        return
+    taken = {r["serial_number"].lower() for r in rows
+             if r["status"] == "ok" and r["serial_number"]}
+    if initiative_id is not None and reuse_by_name:
+        by_name: dict[str, list[str]] = {}
+        for name, serial in await db.execute(
+                select(Asset.name, Asset.serial_number)
+                .join(InitiativeAsset, InitiativeAsset.asset_id == Asset.id)
+                .where(InitiativeAsset.initiative_id == initiative_id,
+                       Asset.serial_number.ilike(f"{GENERATED_SERIAL_PREFIX}%"))):
+            if name:
+                by_name.setdefault(name.lower(), []).append(serial.lower())
+        pending_names = Counter(r["asset_name"] for r in pending
+                                if r["asset_name"])
+        still_pending = []
+        for r in pending:
+            name = r["asset_name"]
+            owners = by_name.get(name, []) if name else []
+            if (name and len(owners) == 1 and pending_names[name] == 1
+                    and owners[0] not in taken):
+                serial = owners[0]
+                taken.add(serial)
+                r["serial_number"] = serial
+                r["serial_generated"] = False
+                r["notes"].append(f"Serial {serial} reused from the existing "
+                                  "asset with the same name")
+            else:
+                still_pending.append(r)
+        pending = still_pending
+    while pending:
+        candidates: dict[str, dict] = {}
+        for r in pending:
+            s = draw().lower()
+            while s in taken or s in candidates:
+                s = draw().lower()
+            candidates[s] = r
+        existing = {(v or "").lower() for v in await db.scalars(
+            select(Asset.serial_number).where(
+                Asset.serial_number.in_(list(candidates))))}
+        pending = []
+        for s, r in candidates.items():
+            taken.add(s)
+            if s in existing:
+                pending.append(r)
+                continue
+            r["serial_number"] = s
+            if not r["asset_name"]:
+                r["asset_name"] = s
+
+
 async def run_import(
     db: AsyncSession, *,
     initiative_id: uuid.UUID,
@@ -241,6 +308,7 @@ async def run_import(
     is_cancelled: CancelledFn | None = None,
     commit: bool = True,
     progress_every: int | None = None,
+    reuse_by_name: bool = True,
 ) -> dict:
     """The shared pipeline. write=False (validate) runs the identical
     decision path with every DB write suppressed — created assets/models
@@ -251,9 +319,15 @@ async def run_import(
 
     commit=False leaves every commit to the caller (the move-setup worker
     runs the whole create in one transaction); progress still fires at each
-    boundary. progress_every overrides BATCH_SIZE as that boundary."""
+    boundary. progress_every overrides BATCH_SIZE as that boundary.
+
+    reuse_by_name=False stops blank-serial rows from reusing a roster
+    asset's gnrtd- serial (a review-rows reprocess passes only a subset of
+    the file, so a name that was ambiguous in the whole file looks unique)."""
     from serversherpa.services.audit import audit
 
+    await assign_generated_serials(db, rows, initiative_id=initiative_id,
+                                   reuse_by_name=reuse_by_name)
     ok_rows = [r for r in rows if r["status"] == "ok"]
     assets, rfid_map, literal_map, model_map, roster = await _lookups(
         db, initiative_id, ok_rows)

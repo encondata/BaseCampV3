@@ -146,7 +146,7 @@ export default function ImportUploadFields({
             <span className="imp-radio-body">
               <span className="imp-radio-title">Generate serial numbers</span>
               <span className="imp-radio-desc">
-                Blank serial-number rows get one generated automatically.
+                Rows with a blank serial number get one generated (gnrtd-xxxxxx), unique across every asset.
               </span>
             </span>
           </label>

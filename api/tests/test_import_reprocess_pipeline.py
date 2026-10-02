@@ -101,3 +101,55 @@ async def test_only_rows_filters_both_phases(db):
     # rows 2 and 4 (S1/S3) were never touched by either phase
     assert await db.scalar(select(func.count()).select_from(Asset)
                            .where(Asset.serial_number.in_(["s1", "s3"]))) == 0
+
+
+async def test_review_reprocess_never_reuses_a_same_name_asset(db):
+    """Two blank-serial rows share a name; row 3 goes to review. Reprocessing
+    only row 3 sees a lone "patch panel" in its subset, but it must still get
+    its OWN asset instead of reusing row 2's and overwriting its placement."""
+    from serversherpa.db.models import InitiativeAsset
+    csv = (b"Serial Number,Asset Name,Asset Make,Asset Model,Source Rack\n"
+           b",patch panel,,,R1\n"
+           b",patch panel,Zzz,Nope 9,R2\n")
+    job_id, ini_id = await _job(
+        db, phase="commit", content=csv,
+        options={"generate_serials": True, "make_model_mode": "fuzzy"})
+    assert await run_once(get_sessionmaker()) is True
+    first = await db.get(ImportJob, job_id)
+    assert first.results["summary"]["created"] == 1
+    assert first.results["summary"]["review"] == 1
+    row2 = next(d for d in first.results["details"] if d["row"] == 2)
+    assert row2["status"] == "created" and row2["serial_number"].startswith("gnrtd-")
+
+    key = f"import-jobs/{ini_id}/reprocess/ft.csv"
+    await put_object(key, csv, "text/csv")
+    child = ImportJob(kind="move_assets", initiative_id=ini_id,
+                      filename="ft.csv", phase="commit", status="queued",
+                      file_key=key,
+                      options={"generate_serials": True,
+                               "make_model_mode": "force", "only_rows": [3]})
+    db.add(child)
+    await db.commit()
+    child_id = child.id
+
+    assert await run_once(get_sessionmaker()) is True
+    child = await db.get(ImportJob, child_id)
+    await db.refresh(child)
+    assert child.status == "completed"
+    detail = child.results["details"][0]
+    assert detail["row"] == 3
+    assert detail["status"] == "created"             # not "updated"
+    assert detail["asset_created"] is True
+    assert detail["serial_generated"] is True
+    assert detail["serial_number"] != row2["serial_number"]
+    assert detail["match_method"] == "force_created"  # model matching ran as normal
+
+    assets = (await db.scalars(select(Asset).where(
+        Asset.name == "patch panel"))).all()
+    assert len(assets) == 2
+    racks = {a.serial_number: assoc.source_rack for a, assoc in (await db.execute(
+        select(Asset, InitiativeAsset)
+        .join(InitiativeAsset, InitiativeAsset.asset_id == Asset.id)
+        .where(InitiativeAsset.initiative_id == ini_id))).all()}
+    assert racks[row2["serial_number"]] == "R1"      # row 2's placement untouched
+    assert racks[detail["serial_number"]] == "R2"
