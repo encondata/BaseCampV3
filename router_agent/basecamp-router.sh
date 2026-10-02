@@ -170,6 +170,7 @@ add_dhcp() {
   while uci -q get "dhcp.@host[$i]" >/dev/null; do
     have_src=1
     hip=$(uci -q get "dhcp.@host[$i].ip"); hname=$(uci -q get "dhcp.@host[$i].name")
+    hname=$(echo "$hname" | tr -s ' \t' '--')  # a space would shift the awk fields
     for m in $(uci -q get "dhcp.@host[$i].mac"); do
       echo "R $(echo "$m" | lower) ${hip:--} ${hname:--}" >> "$TMP.raw"
     done

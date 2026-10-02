@@ -128,7 +128,7 @@ async def test_pending_report_with_a_new_secret_records_a_candidate(client, db):
     assert d.secret_mismatch is True
 
 
-async def test_a_matching_report_clears_a_stale_candidate_secret(client, db):
+async def test_a_matching_report_clears_the_candidate_but_keeps_the_mismatch_flag(client, db):
     await client.post("/router-agent/report", json=report())
     await _age(db)
     await client.post("/router-agent/report", json=report(secret=OTHER_SECRET))
@@ -138,8 +138,52 @@ async def test_a_matching_report_clears_a_stale_candidate_secret(client, db):
     await _age(db)
     await client.post("/router-agent/report", json=report())
     await db.refresh(d)
-    assert d.pending_secret_hash is None and d.secret_mismatch is False
+    # the flag means "a different secret was seen since the last admin decision"
+    assert d.pending_secret_hash is None and d.secret_mismatch is True
     assert d.approval_state == "pending"
+
+
+async def test_forged_then_genuine_report_on_an_approved_router_stays_flagged(client, db):
+    await client.post("/router-agent/report", json=report())
+    await db.execute(text("UPDATE devices SET approval_state = 'approved' WHERE mac = :m"),
+                     {"m": MAC})
+    await db.commit()
+    await _age(db)
+    await client.post("/router-agent/report", json=report(secret=OTHER_SECRET, firmware="9.9.9"))
+    d = await _router(db)
+    await db.refresh(d)
+    assert d.approval_state == "pending" and d.version == "4.5.0"
+    await _age(db)
+    resp = await client.post("/router-agent/report", json=report(firmware="4.6.0"))
+    assert resp.status_code == 202
+    await db.refresh(d)
+    assert d.approval_state == "pending"
+    assert d.secret_mismatch is True and d.pending_secret_hash is None
+
+
+async def test_forged_report_on_a_pending_router_leaves_no_trace_and_does_not_starve(client, db):
+    await client.post("/router-agent/report", json=report())
+    await _age(db)
+    await db.execute(text("UPDATE devices SET agent_source_ip = '203.0.113.50' WHERE mac = :m"),
+                     {"m": MAC})
+    await db.commit()
+    before = await _router(db)
+    await db.refresh(before)
+    seen = (before.agent_source_ip, before.version, before.last_seen_at, before.raw_info,
+            before.model, before.agent_secret_hash)
+    resp = await client.post("/router-agent/report",
+                             json=report(secret=OTHER_SECRET, firmware="9.9.9"))
+    assert resp.status_code == 202
+    d = await _router(db)
+    await db.refresh(d)
+    assert (d.agent_source_ip, d.version, d.last_seen_at, d.raw_info,
+            d.model, d.agent_secret_hash) == seen
+    assert d.secret_mismatch is True and d.pending_secret_hash is not None
+    # the genuine router's next report is not rate limited by the forgery
+    resp = await client.post("/router-agent/report", json=report(firmware="4.6.0"))
+    assert resp.status_code == 202
+    await db.refresh(d)
+    assert d.version == "4.6.0" and d.pending_secret_hash is None
 
 
 async def test_approved_router_with_a_different_secret_goes_back_to_pending(client, db):

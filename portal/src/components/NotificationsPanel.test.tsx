@@ -285,6 +285,17 @@ it('Reject on a router row revokes it (no note field)', async () => {
   expect(screen.queryByPlaceholderText('Reason (optional)')).toBeNull();
 });
 
+it('a decided router row without a decider omits the "by" and an odd state reads Decided', () => {
+  ctx.items = [
+    routerItem('n1', { device_id: 'r1', state: 'approved', decided_by: '' }),
+    routerItem('n2', { device_id: 'r2', state: 'pending-ish' as never, decided_by: null as never }),
+  ];
+  renderPanel();
+  expect(screen.getByText('Approved')).toBeTruthy();
+  expect(screen.getByText('Decided')).toBeTruthy();
+  expect(screen.queryByText(/ by /)).toBeNull();
+});
+
 it('a decided router row shows the outcome and no buttons', () => {
   ctx.items = [
     routerItem('n1', { device_id: 'r1', state: 'approved', decided_by: 'Ada' }),

@@ -71,6 +71,16 @@ async def test_revoke_and_its_audit(client, db, seeded_user):
         AuditLog.action == "router_revoke", AuditLog.entity_id == str(d.id))) is not None
 
 
+async def test_revoke_resets_the_secret_mismatch_flag(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    d = await _router(db, approval_state="pending", secret_mismatch=True,
+                      pending_secret_hash=NEW)
+    resp = await client.post(f"/devices/{d.id}/revoke", headers=hdrs)
+    assert resp.status_code == 200 and resp.json()["secret_mismatch"] is False
+    await db.refresh(d)
+    assert d.secret_mismatch is False
+
+
 async def test_decisions_resolve_every_approver_copy(client, db, seeded_user):
     hdrs = await login_admin(client, db, seeded_user)
     d = await _router(db)

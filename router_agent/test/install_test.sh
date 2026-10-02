@@ -30,6 +30,7 @@ check "secret is owner-only" '[ "$(ls -l /etc/basecamp/secret | cut -c1-10)" = "
 for f in /etc/basecamp/ /etc/config/basecamp /usr/bin/basecamp-router /etc/init.d/basecamp-router; do
   check "sysupgrade keeps $f" 'grep -qxF "$f" /etc/sysupgrade.conf'
 done
+check "sysupgrade keeps the boot link" 'grep -qxF /etc/rc.d/S99basecamp-router /etc/sysupgrade.conf'
 check "tells the user it is waiting on the portal" 'grep -q "Scanning Hardware" /tmp/out'
 check "first line says the installer started" '[ "$(head -n 1 /tmp/out)" = "basecamp: installer starting" ]'
 check "a fresh secret isn't reported as damaged" '! grep -q damaged /tmp/out'
@@ -55,6 +56,7 @@ check "install after --keep-secret reuses it" '[ "$(cat /etc/basecamp/secret)" =
 $INSTALL --uninstall >/tmp/out 2>&1
 check "full uninstall removes the secret" '[ ! -e /etc/basecamp ]'
 check "full uninstall cleans the keep-list" '! grep -q basecamp /etc/sysupgrade.conf'
+check "full uninstall drops the boot link from the keep-list" '! grep -qF S99basecamp-router /etc/sysupgrade.conf'
 
 # a BusyBox built without hexdump: the sha256sum fallback still makes a secret
 mkdir -p /tmp/nohex && printf '#!/bin/sh\nexit 1\n' > /tmp/nohex/hexdump && chmod +x /tmp/nohex/hexdump

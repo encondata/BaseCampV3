@@ -26,7 +26,8 @@ CONFIG=/etc/config/basecamp
 SECRET_DIR=/etc/basecamp
 SECRET=$SECRET_DIR/secret
 KEEP_LIST=/etc/sysupgrade.conf
-KEEP_FILES="/etc/basecamp/ $CONFIG $BIN $INIT"
+BOOT_LINK=/etc/rc.d/S99basecamp-router
+KEEP_FILES="/etc/basecamp/ $CONFIG $BIN $INIT $BOOT_LINK"
 HEX64='^[0-9a-f]{64}$'
 
 say() { echo "basecamp: $*"; }

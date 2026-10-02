@@ -179,7 +179,8 @@ async def _sync_leases(db: AsyncSession, device_id: uuid.UUID,
         await db.execute(stmt)
     await db.execute(update(DeviceDhcpLease).where(
         DeviceDhcpLease.device_id == device_id,
-        DeviceDhcpLease.updated_at < now).values(up=False))
+        DeviceDhcpLease.updated_at < now,
+        DeviceDhcpLease.up.is_(True)).values(up=False))
     await db.execute(delete(DeviceDhcpLease).where(
         DeviceDhcpLease.device_id == device_id,
         DeviceDhcpLease.updated_at < now - LEASE_RETENTION))
@@ -214,30 +215,32 @@ async def handle_report(db: AsyncSession, report: RouterReportIn, ip: str) -> st
     if device.last_seen_at is not None and now - device.last_seen_at < REPORT_MIN_SPACING:
         raise AgentError("report_too_soon", 429)
 
-    matches = secret_matches(report.secret, device.agent_secret_hash)
-    if device.approval_state == "approved":
-        if matches:
-            await _store_snapshot(db, device, report, ip, now)
-            await db.commit()
-            return "approved"
-        device.approval_state = "pending"
+    was_approved = device.approval_state == "approved"
+    if not secret_matches(report.secret, device.agent_secret_hash):
+        # A report that isn't signed with the pinned secret leaves no trace
+        # but the candidate hash and the flag: it must not overwrite identity,
+        # source IP or raw_info, nor move last_seen_at (which would 429 the
+        # genuine router's next report).
         device.pending_secret_hash = hash_secret(report.secret)
         device.secret_mismatch = True
+        device.approval_state = "pending"  # approved -> pending; revoked -> pending
         device.updated_at = now
-        audit(db, actor_id=None, entity_type="device", entity_id=str(device.id),
-              action="router_secret_mismatch", changes={"mac": device.mac}, ip=ip)
+        if was_approved:
+            audit(db, actor_id=None, entity_type="device", entity_id=str(device.id),
+                  action="router_secret_mismatch", changes={"mac": device.mac}, ip=ip)
         await db.commit()
         return "pending"
 
-    # pending or revoked: identity only. A revoked router that keeps
-    # reporting goes back to pending, quietly (no new notification).
-    if matches:
-        # the newest report decides which secret an approval would promote
-        device.pending_secret_hash = None
-        device.secret_mismatch = False
-    else:
-        device.pending_secret_hash = hash_secret(report.secret)
-        device.secret_mismatch = True
+    if was_approved:
+        await _store_snapshot(db, device, report, ip, now)
+        await db.commit()
+        return "approved"
+
+    # pending or revoked, genuine secret: identity only. A revoked router
+    # that keeps reporting goes back to pending, quietly (no notification).
+    # The candidate is dropped so an attacker's can't be promoted by a later
+    # approval; secret_mismatch stays until an admin approves or revokes.
+    device.pending_secret_hash = None
     device.approval_state = "pending"
     _touch_identity(device, report, ip, now)
     await db.commit()

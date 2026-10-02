@@ -176,10 +176,13 @@ or less.
 |---|---|---|
 | unknown MAC | create router row: `approval_state='pending'`, `agent_secret_hash`, identity only (mac, model, firmware, hostname, `last_seen_at`, `agent_source_ip`); audit `router_register`; notify approvers | 202 `{"state":"pending"}` |
 | MAC belongs to a non-router device | nothing stored | 409 |
-| pending or revoked, secret matches | refresh identity fields + `last_seen_at` + `agent_source_ip`; discard the rest; no notification | 202 `{"state":"pending"}` |
-| pending or revoked, secret differs | same as above, and store the new hash as `pending_secret_hash` with `secret_mismatch = true` (approving accepts the newest secret) | 202 |
+| pending or revoked, secret matches | refresh identity fields + `last_seen_at` + `agent_source_ip`; discard the rest; revoked moves to pending; clear `pending_secret_hash` (so an attacker's candidate can't be promoted by a later approval); `secret_mismatch` is **not** cleared; no notification | 202 `{"state":"pending"}` |
+| pending or revoked, secret differs | set only `pending_secret_hash` (the newest non-pinned secret), `secret_mismatch = true` and `updated_at`; revoked moves to pending. Identity fields, `agent_source_ip`, `raw_info` and `last_seen_at` are untouched, so a forgery can't erase evidence or rate-limit the real router (approving accepts the newest secret) | 202 |
 | approved, secret matches | store the full snapshot (below) | 200 `{"state":"approved"}` |
-| approved, secret differs | **discard data**; set `approval_state='pending'`, `pending_secret_hash` = new hash, `secret_mismatch = true`; audit `router_secret_mismatch`; no notification | 202 `{"state":"pending"}` |
+| approved, secret differs | **discard data**; set `approval_state='pending'`, `pending_secret_hash` = new hash, `secret_mismatch = true`, `updated_at` and nothing else (no identity, `agent_source_ip`, `raw_info` or `last_seen_at` change); audit `router_secret_mismatch`; no notification | 202 `{"state":"pending"}` |
+
+`secret_mismatch` means "a different secret was seen since the last admin
+decision". Only approve and revoke reset it; a genuine report never does.
 
 Secrets are stored only as SHA-256 hashes. Because they are 256-bit
 random values, a salted KDF adds nothing. Hashes are compared with

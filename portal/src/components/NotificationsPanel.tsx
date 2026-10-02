@@ -151,8 +151,9 @@ function RouterApprovalStrip({ payload, refresh }: {
   const [error, setError] = useState('');
 
   if (payload.state !== 'pending') {
-    const who = payload.decided_by ?? '';
-    const label = payload.state === 'approved' ? `Approved by ${who}` : `Rejected by ${who}`;
+    const verb = payload.state === 'approved' ? 'Approved'
+      : payload.state === 'revoked' ? 'Rejected' : 'Decided';
+    const label = payload.decided_by ? `${verb} by ${payload.decided_by}` : verb;
     return <span className="notif-body notif-outcome">{label}</span>;
   }
 

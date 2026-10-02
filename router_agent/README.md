@@ -26,7 +26,8 @@ On install the router generates a random secret (`/etc/basecamp/secret`)
 and sends it with every report. Approval pins that MAC + secret pair, so
 another device can't report as this router just by copying its MAC.
 Re-running the installer keeps the secret; so do firmware upgrades (the
-installer adds the agent to `/etc/sysupgrade.conf`). A factory reset
+installer adds the agent, its secret and its boot link to
+`/etc/sysupgrade.conf`). A factory reset
 creates a new secret: the router shows as **Pending** with a "Secret
 changed" badge and needs approving again.
 
