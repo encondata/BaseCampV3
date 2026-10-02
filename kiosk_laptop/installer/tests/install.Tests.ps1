@@ -14,6 +14,9 @@ BeforeAll {
     . "$PSScriptRoot/../install.ps1" -LibraryOnly
 
     # Windows-only cmdlets: stubs where they don't exist (macOS/Linux pwsh), so Pester can mock them.
+    # On real Windows the mocks keep the cmdlets' typed parameters (CimInstance task
+    # actions/triggers, LocalGroup/LocalPrincipal), so the Mocks of Register-ScheduledTask
+    # and Add-LocalGroupMember pass -RemoveParameterType: the tests hand in plain values.
     $stubs = @{
         'Get-WindowsOptionalFeature'    = 'param([switch]$Online, [string]$FeatureName)'
         'Enable-WindowsOptionalFeature' = 'param([switch]$Online, [string]$FeatureName, [switch]$All, [switch]$NoRestart)'
@@ -567,12 +570,12 @@ Describe 'docker-users membership' {
 Describe 'Adding to docker-users' {
     It 'Add-DockerUsersMember treats "already a member" as success and adds by SID' {
         Mock ConvertTo-SecurityIdentifier { $Sid }   # SecurityIdentifier is Windows-only
-        Mock Add-LocalGroupMember { throw 'S-1-5-21-1-2-3-1001 is already a member of group docker-users.' }
+        Mock Add-LocalGroupMember { throw 'S-1-5-21-1-2-3-1001 is already a member of group docker-users.' } -RemoveParameterType Group, Member
         Add-DockerUsersMember -Sid 'S-1-5-21-1-2-3-1001' | Should -BeFalse
-        Mock Add-LocalGroupMember {}
+        Mock Add-LocalGroupMember {} -RemoveParameterType Group, Member
         Add-DockerUsersMember -Sid 'S-1-5-21-1-2-3-1001' | Should -BeTrue
         Should -Invoke Add-LocalGroupMember -ParameterFilter { "$Member" -eq 'S-1-5-21-1-2-3-1001' -and $Group -eq 'docker-users' }
-        Mock Add-LocalGroupMember { throw 'Access denied.' }
+        Mock Add-LocalGroupMember { throw 'Access denied.' } -RemoveParameterType Group, Member
         { Add-DockerUsersMember -Sid 'S-1-5-21-1-2-3-1001' } | Should -Throw '*docker-users*'
     }
 }
@@ -691,7 +694,7 @@ Describe 'Starting Docker Desktop as the user' {
         Mock Test-Path { $true } -ParameterFilter { $LiteralPath -like '*Docker Desktop.exe' }
         Mock New-ScheduledTaskAction { 'action' }
         Mock New-ScheduledTaskPrincipal { 'principal' }
-        Mock Register-ScheduledTask {}
+        Mock Register-ScheduledTask {} -RemoveParameterType Action, Principal, Trigger, Settings
         Mock Start-ScheduledTask {}
         Mock Unregister-ScheduledTask {}
         Mock Start-Sleep {}
@@ -791,7 +794,7 @@ Describe 'Install-LoginItems' {
         Mock New-ScheduledTaskTrigger { 'every-minute' } -ParameterFilter { $Once }
         Mock New-ScheduledTaskPrincipal { "principal:$UserId" }
         Mock New-ScheduledTaskSettingsSet { 'settings' }
-        Mock Register-ScheduledTask {}
+        Mock Register-ScheduledTask {} -RemoveParameterType Action, Principal, Trigger, Settings
         Mock Start-ScheduledTask {}
     }
     It 'copies update.ps1, launch.ps1 and hostnet.ps1 into the install folder' {
@@ -853,7 +856,7 @@ Describe 'Install-LoginItems' {
         Should -Invoke Start-ScheduledTask -Times 1 -Exactly -ParameterFilter { $TaskName -eq 'ServerSherpa Kiosk Host Network' }
     }
     It 'warns but finishes when the host network task cannot be registered' {
-        Mock Register-ScheduledTask { throw 'access denied' } -ParameterFilter { $TaskName -eq 'ServerSherpa Kiosk Host Network' }
+        Mock Register-ScheduledTask { throw 'access denied' } -ParameterFilter { $TaskName -eq 'ServerSherpa Kiosk Host Network' } -RemoveParameterType Action, Principal, Trigger, Settings
         Mock Write-Warn {}
         { Install-LoginItems -InstallDir $inst -DesktopUser $script:user } | Should -Not -Throw
         Should -Invoke Write-Warn -ParameterFilter { $Message -like '*host network*' }
@@ -899,7 +902,7 @@ Describe 'Install-LoginItems' {
         $script:sleeps | Should -Be 3
     }
     It 'warns but finishes when the task cannot be registered' {
-        Mock Register-ScheduledTask { throw 'access denied' }
+        Mock Register-ScheduledTask { throw 'access denied' } -RemoveParameterType Action, Principal, Trigger, Settings
         Mock Write-Warn {}
         { Install-LoginItems -InstallDir $inst -DesktopUser $script:user } | Should -Not -Throw
         Should -Invoke Write-Warn -ParameterFilter { $Message -like '*nightly update*' }

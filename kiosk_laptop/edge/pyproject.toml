@@ -25,6 +25,9 @@ where = ["src"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# tests import their helpers as `tests.*`; `pytest` (unlike `python -m pytest`)
+# does not put this folder on sys.path by itself
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 100
