@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.schemas import RouterDhcpClientIn, RouterReportIn  # noqa: F401 (Task 3)
-from serversherpa.db.models import Device, DeviceDhcpLease  # noqa: F401 (Task 3)
+from serversherpa.db.models import AuditLog, Device, DeviceDhcpLease  # noqa: F401 (Task 3)
 from serversherpa.notifications.inbox import notify
 from serversherpa.notifications.requests import approver_ids
 from serversherpa.services.audit import audit
@@ -89,10 +89,16 @@ async def _notify_approvers(db: AsyncSession, device: Device, report: RouterRepo
 
 async def _register(db: AsyncSession, report: RouterReportIn, ip: str,
                     now: datetime) -> str:
+    # Serialize concurrent first reports from one IP so the cap count below
+    # can't be raced past; released at commit/rollback.
+    await db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+                     {"k": f"router-register:{ip}"})
+    # Count from the audit trail, not devices.agent_source_ip (mutable, so a
+    # second IP could launder the count).
     recent = await db.scalar(
-        select(func.count()).select_from(Device).where(
-            Device.device_type == "router", Device.agent_source_ip == ip,
-            Device.created_at >= now - REGISTER_IP_WINDOW))
+        select(func.count()).select_from(AuditLog).where(
+            AuditLog.entity_type == "device", AuditLog.action == "router_register",
+            AuditLog.ip == ip, AuditLog.at >= now - REGISTER_IP_WINDOW))
     if (recent or 0) >= REGISTER_IP_LIMIT:
         raise AgentError("register_rate_limited", 429)
     name = _text(report.hostname, 255) or f"router-{report.wan_mac[-8:].replace(':', '')}"
@@ -102,9 +108,11 @@ async def _register(db: AsyncSession, report: RouterReportIn, ip: str,
     db.add(device)
     try:
         await db.flush()
-    except IntegrityError:
-        # a concurrent first report from the same router won the insert
+    except IntegrityError as exc:
         await db.rollback()
+        if "devices_mac_uniq" not in str(exc.orig):
+            raise
+        # a concurrent first report from the same router won the insert
         return "pending"
     audit(db, actor_id=None, entity_type="device", entity_id=str(device.id),
           action="router_register",
@@ -160,7 +168,7 @@ async def handle_report(db: AsyncSession, report: RouterReportIn, ip: str) -> st
         device.approval_state = "pending"
         device.pending_secret_hash = hash_secret(report.secret)
         device.secret_mismatch = True
-        _touch_identity(device, report, ip, now)
+        device.updated_at = now
         audit(db, actor_id=None, entity_type="device", entity_id=str(device.id),
               action="router_secret_mismatch", changes={"mac": device.mac}, ip=ip)
         await db.commit()
@@ -168,7 +176,11 @@ async def handle_report(db: AsyncSession, report: RouterReportIn, ip: str) -> st
 
     # pending or revoked: identity only. A revoked router that keeps
     # reporting goes back to pending, quietly (no new notification).
-    if not matches:
+    if matches:
+        # the newest report decides which secret an approval would promote
+        device.pending_secret_hash = None
+        device.secret_mismatch = False
+    else:
         device.pending_secret_hash = hash_secret(report.secret)
         device.secret_mismatch = True
     device.approval_state = "pending"

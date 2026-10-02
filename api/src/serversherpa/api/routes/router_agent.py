@@ -12,7 +12,11 @@ from pydantic import ValidationError
 from serversherpa.api.deps import DbSession, rate_limit_ip
 from serversherpa.api.schemas import RouterReportIn
 from serversherpa.services.router_agent import (
-    MAX_BODY_BYTES, MAX_DHCP_CLIENTS, MAX_VPN, AgentError, handle_report,
+    MAX_BODY_BYTES,
+    MAX_DHCP_CLIENTS,
+    MAX_VPN,
+    AgentError,
+    handle_report,
 )
 
 router = APIRouter(prefix="/router-agent", tags=["router-agent"])
@@ -27,9 +31,14 @@ async def post_report(request: Request, db: DbSession) -> JSONResponse:
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
         raise _err(413, "payload_too_large")
-    raw = await request.body()
-    if len(raw) > MAX_BODY_BYTES:
-        raise _err(413, "payload_too_large")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > MAX_BODY_BYTES:
+            raise _err(413, "payload_too_large")
+        chunks.append(chunk)
+    raw = b"".join(chunks)
     try:
         body = RouterReportIn.model_validate_json(raw)
     except ValidationError:

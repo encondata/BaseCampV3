@@ -127,17 +127,41 @@ async def test_pending_report_with_a_new_secret_records_a_candidate(client, db):
     assert d.secret_mismatch is True
 
 
+async def test_a_matching_report_clears_a_stale_candidate_secret(client, db):
+    await client.post("/router-agent/report", json=report())
+    await _age(db)
+    await client.post("/router-agent/report", json=report(secret=OTHER_SECRET))
+    d = await _router(db)
+    await db.refresh(d)
+    assert d.pending_secret_hash and d.secret_mismatch is True
+    await _age(db)
+    await client.post("/router-agent/report", json=report())
+    await db.refresh(d)
+    assert d.pending_secret_hash is None and d.secret_mismatch is False
+    assert d.approval_state == "pending"
+
+
 async def test_approved_router_with_a_different_secret_goes_back_to_pending(client, db):
     await client.post("/router-agent/report", json=report())
     await db.execute(text("UPDATE devices SET approval_state = 'approved' WHERE mac = :m"),
                      {"m": MAC})
     await _age(db)
-    resp = await client.post("/router-agent/report", json=report(secret=OTHER_SECRET))
+    await db.execute(text("UPDATE devices SET agent_source_ip = '203.0.113.50' WHERE mac = :m"),
+                     {"m": MAC})
+    await db.commit()
+    before = await _router(db)
+    await db.refresh(before)
+    seen = (before.agent_source_ip, before.version, before.last_seen_at, before.raw_info)
+    resp = await client.post("/router-agent/report",
+                             json=report(secret=OTHER_SECRET, firmware="9.9.9"))
     assert resp.status_code == 202 and resp.json() == {"state": "pending"}
     d = await _router(db)
     await db.refresh(d)
     assert d.approval_state == "pending" and d.secret_mismatch is True
     assert d.wan_ip is None  # data discarded
+    # a forged report touches nothing but the mismatch flags
+    assert (d.agent_source_ip, d.version, d.last_seen_at, d.raw_info) == seen
+    assert d.version == "4.5.0"
     assert await db.scalar(select(AuditLog).where(
         AuditLog.action == "router_secret_mismatch", AuditLog.entity_id == str(d.id))) is not None
     assert await db.scalar(text(
@@ -195,6 +219,18 @@ async def test_registrations_are_capped_per_ip(client, db):
     assert resp.status_code == 429 and resp.json()["detail"]["code"] == "register_rate_limited"
 
 
+async def test_registration_cap_survives_moving_rows_to_another_ip(client, db):
+    for i in range(10):
+        resp = await client.post("/router-agent/report",
+                                 json=report(wan_mac=f"94:83:c4:00:00:{i:02x}"))
+        assert resp.status_code == 202, resp.text
+    await db.execute(text("UPDATE devices SET agent_source_ip = '198.51.100.9' "
+                          "WHERE device_type = 'router'"))
+    await db.commit()
+    resp = await client.post("/router-agent/report", json=report(wan_mac="94:83:c4:00:00:ff"))
+    assert resp.status_code == 429 and resp.json()["detail"]["code"] == "register_rate_limited"
+
+
 async def test_bad_reports_are_422(client):
     for bad in (report(wan_mac="not-a-mac"), report(wan_mac="01:00:5e:00:00:01"),
                 report(wan_mac="00:00:00:00:00:00"), report(secret="short"),
@@ -216,6 +252,15 @@ async def test_oversized_reports_are_413(client):
     resp = await client.post("/router-agent/report", content=b" " * (256 * 1024 + 1),
                              headers={"Content-Type": "application/json"})
     assert resp.status_code == 413
+
+
+async def test_oversized_chunked_body_without_content_length_is_413(client):
+    async def _chunks():
+        yield b" " * 200_000
+        yield b" " * 100_000
+    resp = await client.post("/router-agent/report", content=_chunks(),
+                             headers={"Content-Type": "application/json"})
+    assert resp.status_code == 413 and resp.json()["detail"]["code"] == "payload_too_large"
 
 
 async def test_response_never_explains_a_held_report(client, db):
