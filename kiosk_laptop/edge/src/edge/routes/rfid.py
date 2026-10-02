@@ -6,7 +6,7 @@ finish without the cloud, so an offline sign-in mustn't change a reader
 from fastapi import APIRouter, Depends, Request
 
 from edge.deps import err, require_session
-from edge.rfid import pairing
+from edge.rfid import checks, pairing
 from edge.rfid.ziotc import ReaderError
 from edge.sessions import EdgeSession
 
@@ -119,3 +119,11 @@ async def status(request: Request) -> dict:
         except ReaderError:
             pass
     return out
+
+
+@router.get("/checks/{name}")
+async def check(name: str, request: Request,
+                session: EdgeSession = Depends(require_session)) -> dict:
+    if name not in checks.CHECK_NAMES:
+        raise err(404, "unknown_check")
+    return await checks.run(name, request.app.state, session)

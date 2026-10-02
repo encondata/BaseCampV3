@@ -30,6 +30,7 @@ from edge.routes import edge as edge_routes
 from edge.routes import kiosk as kiosk_routes
 from edge.routes import proxy
 from edge.routes import rfid as rfid_routes
+from edge.rfid import checks
 from edge.rfid.discovery import Discovery
 from edge.sync import Syncer
 from edge.upstream import Upstream
@@ -92,6 +93,7 @@ def create_app(settings: Settings | None = None, *, transport=None) -> FastAPI:
         transport=lambda ip: app.state.reader_transport)
     app.state.reader_transport = None  # tests hand in a fake reader's transport
     app.state.pair_lock = asyncio.Lock()
+    app.state.gateway_knock = checks.knock
     app.state.syncer = Syncer(app.state.store, app.state.upstream,
                               lambda: app.state.identity.serial)
 
