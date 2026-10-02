@@ -542,6 +542,41 @@ def test_install_login_items_macos(sh, tmp_path):
     assert (tmp_path / "ServerSherpa Kiosk.app" / "Contents" / "Info.plist").exists()
 
 
+def test_install_login_items_macos_chowns_only_the_two_helpers(sh, tmp_path):
+    # hostnet.sh and launch.sh run as the desktop user, so the nightly update can
+    # refresh them in place; the folder and every other file stay root's.
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + 'OS=Darwin; install_login_items')
+    chowns = [l for l in calls.read_text().splitlines() if l.startswith("chown ")]
+    assert f"chown alice {inst}/hostnet.sh" in chowns and f"chown alice {inst}/launch.sh" in chowns
+    owned = {l.split(" ", 2)[2] for l in chowns}
+    assert f"{inst}/update.sh" not in owned and str(inst) not in owned
+    assert f"{inst}/docker-compose.yml" not in owned and f"{inst}/config.env" not in owned
+
+
+def test_install_login_items_linux_chowns_nothing_to_the_user(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + 'OS=Linux; install_login_items')
+    assert f"chown alice {inst}/hostnet.sh" not in calls.read_text()
+
+
+@pytest.mark.parametrize("ref,expect", [
+    ("feature-x", "feature-x"), ("release/1.2_a", "release/1.2_a"),
+    ("a..b", "main"), ("../x", "main"), ("x y", "main"), ("x;rm", "main"), ("x$(id)", "main"), ("", "main"),
+])
+def test_safe_ref(sh, ref, expect):
+    r = sh('safe_ref "$REF_IN"', env={"REF_IN": ref})
+    assert r.stdout == expect
+
+
+def test_unsafe_ref_is_not_used_in_the_download_url_or_config(sh, tmp_path):
+    cfg = tmp_path / "config.env"
+    base = 'CFG_API_URL=https://api.x.test; CFG_PORTAL_URL=https://portal.x.test; CFG_CHANNEL=stable; CFG_DATA_DIR=/d; BROWSER_BIN=""'
+    r = sh(f'{base}; write_config "{cfg}"; echo "$BASE_URL"', env={"KIOSK_INSTALLER_REF": "../evil"})
+    assert "KIOSK_INSTALLER_REF=main\n" in cfg.read_text()
+    assert "evil" not in cfg.read_text() and "/main/kiosk_laptop/installer" in r.stdout
+
+
 def test_install_login_items_macos_reload_boots_out_first(sh, tmp_path):
     inst, home, calls, stubs = _login_env(tmp_path)
     sh(stubs + 'OS=Darwin; install_login_items')

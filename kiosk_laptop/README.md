@@ -198,10 +198,21 @@ and the kiosk points the reader's tag data at this laptop.
 - The nightly update also refreshes the helper scripts (`hostnet` and
   `launch`, `.sh` or `.ps1`) from the version of the installer the laptop was
   installed from (recorded as `KIOSK_INSTALLER_REF` in `config.env`, `main`
-  by default). A download that isn't a sound script is skipped and logged, and
-  never changes the update's result. On Windows the install folder is
-  read-only for the signed-in user, so the refresh may be logged as failed
-  there; running the install command again updates the scripts.
+  by default; only a plain git ref is accepted, else `main`). A download that
+  isn't a sound script is skipped and logged, and never changes the update's
+  result.
+  - Linux: the update job (root) does it, each night.
+  - macOS: the update job runs as the desktop user, who owns only `hostnet.sh`
+    and `launch.sh` in the install folder; the installer sets that, so it
+    works from the next installer run on. Where it isn't set up, the log says
+    to re-run the install command.
+  - Windows: the install folder is read-only for the signed-in user, so the
+    host-network task (which runs as SYSTEM) does it, at most once a day
+    (`helpers-refresh.json` in the install folder records the last attempt),
+    from the next installer run on. A refreshed `hostnet.ps1` takes effect on
+    its next run, within a minute.
+  - Laptops installed before this change need one run of the install command
+    on macOS and Windows.
 - It logs to `update.log` in the install folder.
 - Windows: the job (the scheduled task `ServerSherpa Kiosk Update`) runs only
   while the user is signed in, hidden, and also on battery. A run that was

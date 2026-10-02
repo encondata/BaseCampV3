@@ -18,6 +18,10 @@ Preferred) joined with Get-NetAdapter -Physical (adapters that are up).
 "gateway" is the next hop of the best default route (Get-NetRoute, lowest
 RouteMetric + InterfaceMetric), omitted when there is none or it isn't a
 usable IPv4 address.
+Once a day it also refreshes hostnet.ps1 and launch.ps1 from the installer
+ref (config.env's KIOSK_INSTALLER_REF), since the nightly update job runs as
+the user and can't write this folder; the last result is in
+helpers-refresh.json.
 Skips loopback, link-local,
 multicast, and Docker/WSL/Hyper-V/VPN/bridge adapters. Prints nothing; exits
 1 (keeping the old file, which then goes stale) when it can't read or write.
@@ -161,6 +165,132 @@ function Invoke-HostNetwork {
     1
 }
 
+# -- Helper-script refresh ----------------------------------------------------
+# The nightly update job runs as the signed-in user, who can't write the
+# install folder (and must not be able to: SYSTEM runs these scripts). This
+# task is SYSTEM, so it refreshes hostnet.ps1 and launch.ps1 itself, at most
+# once every 24 hours, from the ref the laptop was installed from. The result
+# of the last attempt is in helpers-refresh.json next to the scripts.
+$HelperScripts = @('hostnet.ps1', 'launch.ps1')
+$HelperRefreshFile = 'helpers-refresh.json'
+$HelperRefreshHours = 24
+
+function Get-HostnetInstallDir {
+    $dir = $env:KIOSK_DIR
+    if (-not $dir) { $dir = $HostnetScriptDir }
+    $dir
+}
+
+# Get-HostnetInstallerRef: config.env's KIOSK_INSTALLER_REF when it is a plain
+# git ref (letters, digits, . _ / -, no ".."), else main.
+function Get-HostnetInstallerRef {
+    $config = [IO.Path]::Combine((Get-HostnetInstallDir), 'config.env')
+    if (Test-Path -LiteralPath $config -PathType Leaf) {
+        foreach ($line in [IO.File]::ReadAllLines($config)) {
+            if ($line.TrimEnd("`r") -match '^KIOSK_INSTALLER_REF=(.+)$') {
+                $ref = $Matches[1].Trim()
+                if ($ref -match '^[A-Za-z0-9._/-]+$' -and $ref -notlike '*..*') { return $ref }
+                return 'main'
+            }
+        }
+    }
+    'main'
+}
+
+# Get-HostnetHelperText NAME: KIOSK_TEMPLATE_DIR's copy (tests), else downloaded
+# (30-second timeout, so a dead network can't hold up this every-minute task).
+function Get-HostnetHelperText {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if ($env:KIOSK_TEMPLATE_DIR) { return [IO.File]::ReadAllText([IO.Path]::Combine($env:KIOSK_TEMPLATE_DIR, $Name)) }
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    } catch { Write-Verbose 'TLS 1.2 is already the default here.' }
+    $url = "https://raw.githubusercontent.com/encondata/BaseCampV3/$(Get-HostnetInstallerRef)/kiosk_laptop/installer/$Name"
+    $c = (Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 30).Content
+    if ($c -is [byte[]]) { $c = [Text.Encoding]::UTF8.GetString($c) }
+    [string]$c
+}
+
+# Get-HostnetHelperProblem TEXT: why a downloaded script can't be used, or $null.
+function Get-HostnetHelperProblem {
+    param([AllowEmptyString()][string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return 'empty' }
+    if ($Text -match '[^\x00-\x7F]') { return 'not plain ASCII' }
+    $tokens = $null; $errors = $null
+    [void][Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$errors)
+    if ($errors -and $errors.Count -gt 0) { return 'syntax error' }
+    if ($Text -notmatch '(?s)^\s*(<#.*?#>|(#[^\n]*\n\s*)+)' -or $Matches[1] -notlike '*ServerSherpa*') { return 'not a ServerSherpa script' }
+    $null
+}
+
+# Sync-HostnetHelper NAME: "refreshed", "unchanged" or "failed (why)". The
+# old file stays on any failure; a temp file is moved over it, so nothing
+# reads half a script.
+function Sync-HostnetHelper {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $cur = [IO.Path]::Combine((Get-HostnetInstallDir), $Name)
+    $tmp = "$cur.kiosk-tmp"
+    try {
+        try { $text = Get-HostnetHelperText -Name $Name } catch { return 'failed (download)' }
+        $why = Get-HostnetHelperProblem -Text $text
+        if ($why) { return "failed ($why)" }
+        if ((Test-Path -LiteralPath $cur -PathType Leaf) -and ([IO.File]::ReadAllText($cur) -ceq $text)) { return 'unchanged' }
+        try { [IO.File]::WriteAllText($tmp, $text, (New-Object Text.UTF8Encoding $false)) }
+        catch { return 'failed (write)' }
+        try {
+            if (Test-Path -LiteralPath $cur -PathType Leaf) { [IO.File]::Replace($tmp, $cur, [NullString]::Value) }
+            else { [IO.File]::Move($tmp, $cur) }
+        } catch { return 'failed (replace)' }
+        'refreshed'
+    } finally {
+        if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+# Test-HelperRefreshDue MARKER: $true unless the marker's checked_at is
+# less than 24 hours old (missing, unreadable or in the future counts as due).
+function Test-HelperRefreshDue {
+    param([Parameter(Mandatory = $true)][string]$MarkerPath)
+    try {
+        $m = [IO.File]::ReadAllText($MarkerPath) | ConvertFrom-Json
+        $at = [datetime]::Parse([string]$m.checked_at, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal)
+        $age = [datetime]::UtcNow - $at
+        return ($age.TotalHours -ge $HelperRefreshHours -or $age.TotalSeconds -lt 0)
+    } catch { return $true }
+}
+
+# Invoke-HelperRefresh: once a day, hostnet.ps1 and launch.ps1 (never
+# update.ps1). The marker is written first, so a run that stalls or dies
+# isn't retried every minute, and again with the results. A refreshed
+# hostnet.ps1 takes effect on the next minute's run. Never throws.
+function Invoke-HelperRefresh {
+    try {
+        $marker = [IO.Path]::Combine((Get-HostnetInstallDir), $HelperRefreshFile)
+        if (-not (Test-HelperRefreshDue -MarkerPath $marker)) { return }
+        $stamp = [datetime]::UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture)
+        $utf8 = New-Object Text.UTF8Encoding $false
+        [IO.File]::WriteAllText($marker, '{"checked_at":"' + $stamp + '"}', $utf8)
+        $results = @()
+        foreach ($name in $HelperScripts) {
+            $r = 'failed (error)'
+            try { $r = Sync-HostnetHelper -Name $name } catch { $r = 'failed (error)' }
+            $results += ConvertTo-Json -InputObject $name -Compress
+            $results[-1] += ':' + (ConvertTo-Json -InputObject ([string]$r) -Compress)
+        }
+        [IO.File]::WriteAllText($marker, '{"checked_at":"' + $stamp + '","ref":' + (ConvertTo-Json -InputObject (Get-HostnetInstallerRef) -Compress) + ',"results":{' + ($results -join ',') + '}}', $utf8)
+    } catch {
+        Write-Verbose "Helper refresh skipped: $($_.Exception.Message)"
+    }
+}
+
+# Invoke-HostnetMain: the network file first; then the daily refresh, which
+# can't change the exit code.
+function Invoke-HostnetMain {
+    $rc = Invoke-HostNetwork
+    try { Invoke-HelperRefresh } catch { Write-Verbose 'Helper refresh failed.' }
+    $rc
+}
+
 # Run only as the last statement, so a partly downloaded script runs nothing.
 if ($LibraryOnly -or $env:KIOSK_HOSTNET_LIB -eq '1') { return }
-exit (Invoke-HostNetwork)
+exit (Invoke-HostnetMain)

@@ -240,6 +240,117 @@ Describe 'Invoke-HostNetwork' {
     }
 }
 
+Describe 'hostnet.ps1 helper-script refresh' {
+    BeforeAll {
+        $script:OldText = "<#`n.SYNOPSIS`nServerSherpa old helper`n#>`nWrite-Output 'old'`n"
+        $script:NewText = "<#`n.SYNOPSIS`nServerSherpa new helper`n#>`nWrite-Output 'new'`n"
+        $script:SavedTpl = $env:KIOSK_TEMPLATE_DIR
+    }
+    AfterAll { $env:KIOSK_TEMPLATE_DIR = $script:SavedTpl; $env:KIOSK_DIR = $null }
+    BeforeEach {
+        $script:dir = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        $script:tpl = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-Item -ItemType Directory $script:dir, $script:tpl | Out-Null
+        $env:KIOSK_DIR = $script:dir
+        $env:KIOSK_TEMPLATE_DIR = $script:tpl
+        $script:marker = Join-Path $script:dir 'helpers-refresh.json'
+        foreach ($n in 'hostnet.ps1', 'launch.ps1', 'update.ps1') { [IO.File]::WriteAllText((Join-Path $script:dir $n), $script:OldText) }
+        foreach ($n in 'hostnet.ps1', 'launch.ps1', 'update.ps1') { [IO.File]::WriteAllText((Join-Path $script:tpl $n), $script:NewText) }
+    }
+    AfterEach { $env:KIOSK_DIR = $null; $env:KIOSK_TEMPLATE_DIR = $script:SavedTpl }
+
+    It 'runs when there is no marker: replaces both helpers, never update.ps1, and writes the marker' {
+        Invoke-HelperRefresh
+        [IO.File]::ReadAllText((Join-Path $script:dir 'hostnet.ps1')) | Should -Be $script:NewText
+        [IO.File]::ReadAllText((Join-Path $script:dir 'launch.ps1')) | Should -Be $script:NewText
+        [IO.File]::ReadAllText((Join-Path $script:dir 'update.ps1')) | Should -Be $script:OldText
+        Get-ChildItem -LiteralPath $script:dir -Filter '*.kiosk-tmp' | Should -BeNullOrEmpty
+        $m = [IO.File]::ReadAllText($script:marker) | ConvertFrom-Json
+        ([datetime]::UtcNow - [datetime]::Parse($m.checked_at, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal)).TotalSeconds | Should -BeLessThan 60
+        $m.results.'hostnet.ps1' | Should -Be 'refreshed'
+    }
+    It 'is skipped when the marker is younger than 24 hours' {
+        $stamp = [datetime]::UtcNow.AddHours(-23).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture)
+        [IO.File]::WriteAllText($script:marker, "{`"checked_at`":`"$stamp`"}")
+        Mock Sync-HostnetHelper {}
+        Invoke-HelperRefresh
+        Should -Invoke Sync-HostnetHelper -Times 0
+        [IO.File]::ReadAllText((Join-Path $script:dir 'hostnet.ps1')) | Should -Be $script:OldText
+        [IO.File]::ReadAllText($script:marker) | Should -BeLike "*$stamp*"
+    }
+    It 'runs again and rewrites the marker when it is older than 24 hours' {
+        $stamp = [datetime]::UtcNow.AddHours(-25).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [Globalization.CultureInfo]::InvariantCulture)
+        [IO.File]::WriteAllText($script:marker, "{`"checked_at`":`"$stamp`"}")
+        Invoke-HelperRefresh
+        [IO.File]::ReadAllText((Join-Path $script:dir 'hostnet.ps1')) | Should -Be $script:NewText
+        [IO.File]::ReadAllText($script:marker) | Should -Not -BeLike "*$stamp*"
+    }
+    It 'runs when the marker is unreadable' {
+        [IO.File]::WriteAllText($script:marker, 'not json')
+        Invoke-HelperRefresh
+        [IO.File]::ReadAllText((Join-Path $script:dir 'hostnet.ps1')) | Should -Be $script:NewText
+    }
+    It 'leaves an identical file alone (mtime unchanged)' {
+        [IO.File]::WriteAllText((Join-Path $script:tpl 'hostnet.ps1'), $script:OldText)
+        $f = Join-Path $script:dir 'hostnet.ps1'
+        (Get-Item $f).LastWriteTimeUtc = [datetime]'2000-01-01'
+        Invoke-HelperRefresh
+        (Get-Item $f).LastWriteTimeUtc | Should -Be ([datetime]'2000-01-01')
+        ([IO.File]::ReadAllText($script:marker) | ConvertFrom-Json).results.'hostnet.ps1' | Should -Be 'unchanged'
+    }
+    It 'rejects <why> and keeps the old file' -ForEach @(
+        @{ why = 'empty'; text = '' }
+        @{ why = 'a syntax error'; text = "<#`nServerSherpa`n#>`nif ( { " }
+        @{ why = 'a script that is not ServerSherpa''s'; text = "<#`n.SYNOPSIS`nSomething else`n#>`nWrite-Output 1`n" }
+        @{ why = 'non-ASCII text'; text = "<#`nServerSherpa`n#>`nWrite-Output '$([char]0x00E9)'`n" }
+    ) {
+        foreach ($n in 'hostnet.ps1', 'launch.ps1') { [IO.File]::WriteAllText((Join-Path $script:tpl $n), $text) }
+        Invoke-HelperRefresh
+        [IO.File]::ReadAllText((Join-Path $script:dir 'hostnet.ps1')) | Should -Be $script:OldText
+        [IO.File]::ReadAllText((Join-Path $script:dir 'launch.ps1')) | Should -Be $script:OldText
+        ([IO.File]::ReadAllText($script:marker) | ConvertFrom-Json).results.'hostnet.ps1' | Should -BeLike 'failed (*'
+    }
+    It 'keeps the old file when the download fails' {
+        Remove-Item (Join-Path $script:tpl 'hostnet.ps1')
+        Invoke-HelperRefresh
+        [IO.File]::ReadAllText((Join-Path $script:dir 'hostnet.ps1')) | Should -Be $script:OldText
+        ([IO.File]::ReadAllText($script:marker) | ConvertFrom-Json).results.'hostnet.ps1' | Should -Be 'failed (download)'
+    }
+    It 'downloads from the ref in config.env with a 30-second timeout, and only a plain ref' {
+        $env:KIOSK_TEMPLATE_DIR = $null
+        Get-HostnetInstallerRef | Should -Be 'main'
+        [IO.File]::WriteAllText((Join-Path $script:dir 'config.env'), "KIOSK_CHANNEL=edge`nKIOSK_INSTALLER_REF=feature-x`n")
+        Get-HostnetInstallerRef | Should -Be 'feature-x'
+        foreach ($bad in 'a..b', '../x', 'x y', 'x;id', 'x$(id)') {
+            [IO.File]::WriteAllText((Join-Path $script:dir 'config.env'), "KIOSK_INSTALLER_REF=$bad`n")
+            Get-HostnetInstallerRef | Should -Be 'main'
+        }
+        [IO.File]::WriteAllText((Join-Path $script:dir 'config.env'), "KIOSK_INSTALLER_REF=feature-x`n")
+        Mock Invoke-WebRequest { [pscustomobject]@{ Content = $script:NewText } }
+        Invoke-HelperRefresh
+        Should -Invoke Invoke-WebRequest -ParameterFilter { $Uri -eq 'https://raw.githubusercontent.com/encondata/BaseCampV3/feature-x/kiosk_laptop/installer/hostnet.ps1' -and $TimeoutSec -eq 30 }
+    }
+    It 'a failed replace logs it in the marker and keeps the old file' {
+        # occupy the temp path with a directory so the write fails
+        New-Item -ItemType Directory (Join-Path $script:dir 'hostnet.ps1.kiosk-tmp') | Out-Null
+        Invoke-HelperRefresh
+        [IO.File]::ReadAllText((Join-Path $script:dir 'hostnet.ps1')) | Should -Be $script:OldText
+        ([IO.File]::ReadAllText($script:marker) | ConvertFrom-Json).results.'hostnet.ps1' | Should -BeLike 'failed (*'
+    }
+    It 'Invoke-HostnetMain keeps Invoke-HostNetwork''s exit code when the refresh throws' {
+        Mock Invoke-HostNetwork { 1 }
+        Mock Invoke-HelperRefresh { throw 'boom' }
+        Invoke-HostnetMain | Should -Be 1
+        Mock Invoke-HostNetwork { 0 }
+        Invoke-HostnetMain | Should -Be 0
+        Should -Invoke Invoke-HelperRefresh -Times 2
+    }
+    It 'Invoke-HelperRefresh itself never throws, even when a helper update does' {
+        Mock Sync-HostnetHelper { throw 'boom' }
+        { Invoke-HelperRefresh } | Should -Not -Throw
+    }
+}
+
 Describe 'hostnet.ps1 hygiene' {
     It 'is plain ASCII, so Windows PowerShell 5.1 reads it correctly without a byte-order mark' {
         $bytes = [System.IO.File]::ReadAllBytes((Join-Path $PSScriptRoot '../hostnet.ps1'))

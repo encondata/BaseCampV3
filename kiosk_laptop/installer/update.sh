@@ -11,7 +11,10 @@
 # healthy, put the previous image back and remember the bad one.
 # Then, whatever happened above, hostnet.sh and launch.sh are refreshed from
 # the ref the laptop was installed from (never update.sh itself); a failure
-# there never changes the exit code.
+# there never changes the exit code. On macOS the folder is root's and only
+# those two files belong to the desktop user (install.sh), so they are
+# overwritten in place; where even that isn't possible the log says to re-run
+# the install command.
 # Logged to update.log (last 1 MB kept).
 #
 # Exit codes: 0 updated, unchanged or skipped; 1 rolled back; 2 other failure.
@@ -330,14 +333,20 @@ trim_log() {
 
 # ── Helper scripts ────────────────────────────────────────────────────
 # installer_ref: the git ref this laptop was installed from (config.env's
-# KIOSK_INSTALLER_REF, written by install.sh), else main.
+# KIOSK_INSTALLER_REF, written by install.sh), else main. Only a plain ref is
+# used (letters, digits, . _ / -, no ".."); anything else is logged and main
+# is used. The log line goes to stderr so $(installer_ref) stays the ref.
 installer_ref() {
   local line='' ref=''
   if [ -f "$KIOSK_DIR/config.env" ]; then
     line=$(grep -E '^KIOSK_INSTALLER_REF=' "$KIOSK_DIR/config.env" | head -n 1 || true)
     ref="${line#*=}"
   fi
-  printf '%s' "${ref:-main}"
+  case "$ref" in
+    '') ref=main ;;
+    *[!A-Za-z0-9._/-]*|*..*) log "Ignoring the installer ref in config.env (not a plain git ref); using main." >&2; ref=main ;;
+  esac
+  printf '%s' "$ref"
 }
 
 # file_mode FILE: its octal permission bits (755 when they can't be read).
@@ -349,22 +358,37 @@ file_mode() {
 }
 
 # fetch_helper NAME DEST: KIOSK_TEMPLATE_DIR's copy (tests), else download.
+# HELPER_REF is the ref refresh_helpers settled on.
 fetch_helper() {
   local name="$1" dest="$2"
   if [ -n "${KIOSK_TEMPLATE_DIR:-}" ]; then
     cp "$KIOSK_TEMPLATE_DIR/$name" "$dest"
   else
     curl -fsSL --max-time 30 \
-      "https://raw.githubusercontent.com/encondata/BaseCampV3/$(installer_ref)/kiosk_laptop/installer/$name" -o "$dest"
+      "https://raw.githubusercontent.com/encondata/BaseCampV3/$HELPER_REF/kiosk_laptop/installer/$name" -o "$dest"
   fi
 }
 
 # refresh_helper NAME: replace $KIOSK_DIR/NAME with the published copy when it
 # is a sound script that differs. 0 = replaced; 1 = unchanged or failed (the
 # old file stays; one log line says which).
+# Where it can write decides how:
+#   the folder is writable (Linux, root): a temp file in it, mv over the file;
+#   only the file is writable (macOS: the folder is root's, install.sh gave the
+#   desktop user these two files): a temp file in TMPDIR, then overwritten in
+#   place, so its mode and owner stay;
+#   neither: say so, before downloading anything.
 refresh_helper() {
-  local name="$1" cur="$KIOSK_DIR/$1" tmp
-  tmp=$(mktemp "$KIOSK_DIR/.$name.XXXXXX" 2>/dev/null) || { log "$name: failed (can't write to $KIOSK_DIR)"; return 1; }
+  local name="$1" cur="$KIOSK_DIR/$1" tmp inplace=0
+  if [ -w "$KIOSK_DIR" ]; then
+    tmp=$(mktemp "$KIOSK_DIR/.$name.XXXXXX" 2>/dev/null) || { log "$name: failed (can't write to $KIOSK_DIR)"; return 1; }
+  elif [ -f "$cur" ] && [ -w "$cur" ]; then
+    inplace=1
+    tmp=$(mktemp "${TMPDIR:-/tmp}/kiosk-helper.XXXXXX" 2>/dev/null) || { log "$name: failed (no temp file)"; return 1; }
+  else
+    log "can't update $name: re-run the install command"
+    return 1
+  fi
   if ! fetch_helper "$name" "$tmp" 2>/dev/null; then
     rm -f "$tmp"; log "$name: failed (download)"; return 1
   fi
@@ -380,24 +404,53 @@ refresh_helper() {
   if [ -f "$cur" ] && cmp -s "$tmp" "$cur"; then
     rm -f "$tmp"; log "$name: unchanged"; return 1
   fi
-  if { [ ! -f "$cur" ] && chmod 755 "$tmp"; } || { [ -f "$cur" ] && chmod "$(file_mode "$cur")" "$tmp"; }; then :; else
-    rm -f "$tmp"; log "$name: failed (chmod)"; return 1
-  fi
-  if ! mv -f "$tmp" "$cur"; then
-    rm -f "$tmp"; log "$name: failed (replace)"; return 1
+  if [ "$inplace" = 1 ]; then
+    if ! cat "$tmp" >"$cur" 2>/dev/null; then
+      rm -f "$tmp"; log "$name: failed (write)"; return 1
+    fi
+    rm -f "$tmp"
+  else
+    if { [ ! -f "$cur" ] && chmod 755 "$tmp"; } || { [ -f "$cur" ] && chmod "$(file_mode "$cur")" "$tmp"; }; then :; else
+      rm -f "$tmp"; log "$name: failed (chmod)"; return 1
+    fi
+    if ! mv -f "$tmp" "$cur"; then
+      rm -f "$tmp"; log "$name: failed (replace)"; return 1
+    fi
   fi
   log "$name: refreshed"
   return 0
+}
+
+# run_hostnet_limited: hostnet.sh once, killed after HOSTNET_LIMIT_S (30)
+# seconds (macOS has no timeout). 0 = it exited 0.
+run_hostnet_limited() {
+  local pid n=0 limit="${HOSTNET_LIMIT_S:-30}" rc=0
+  "$KIOSK_DIR/hostnet.sh" >/dev/null 2>&1 &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$n" -ge "$limit" ]; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      log "hostnet.sh: the run after the refresh didn't finish in ${limit}s; stopped it (continuing)"
+      return 1
+    fi
+    sleep 1
+    n=$((n + 1))
+  done
+  wait "$pid" || rc=$?
+  [ "$rc" = 0 ] || log "hostnet.sh: the run after the refresh failed (continuing)"
+  return "$rc"
 }
 
 # refresh_helpers: hostnet.sh and launch.sh (never update.sh itself). A
 # refreshed hostnet.sh runs once now, so what it reports shows up without
 # waiting for its next run. Nothing here changes the updater's exit code.
 refresh_helpers() {
-  log "Refreshing helper scripts (ref $(installer_ref))"
+  HELPER_REF=$(installer_ref)
+  log "Refreshing helper scripts (ref $HELPER_REF)"
   refresh_helper launch.sh || true
   if refresh_helper hostnet.sh; then
-    "$KIOSK_DIR/hostnet.sh" >/dev/null 2>&1 || log "hostnet.sh: the run after the refresh failed (continuing)"
+    run_hostnet_limited || true
   fi
   return 0
 }

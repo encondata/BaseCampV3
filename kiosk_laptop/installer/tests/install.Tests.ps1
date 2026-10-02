@@ -229,6 +229,23 @@ Describe 'Config file contents' {
             (Read-KioskConfig -Path $p).KIOSK_INSTALLER_REF | Should -Be 'feature-y'
         } finally { $env:KIOSK_INSTALLER_REF = $saved }
     }
+    It 'accepts only a plain git ref (letters, digits, . _ / -, no "..") and otherwise uses main' {
+        $saved = $env:KIOSK_INSTALLER_REF
+        try {
+            foreach ($ok in 'feature-x', 'release/1.2_a') {
+                $env:KIOSK_INSTALLER_REF = $ok
+                (Merge-KioskConfig -Saved @{} -Options @{}).KIOSK_INSTALLER_REF | Should -Be $ok
+                Get-BaseUrl | Should -Be "https://raw.githubusercontent.com/encondata/BaseCampV3/$ok/kiosk_laptop/installer"
+            }
+            foreach ($bad in 'a..b', '../x', 'x y', 'x;id', 'x$(id)') {
+                $env:KIOSK_INSTALLER_REF = $bad
+                (Merge-KioskConfig -Saved @{} -Options @{}).KIOSK_INSTALLER_REF | Should -Be 'main'
+                Get-BaseUrl | Should -Be 'https://raw.githubusercontent.com/encondata/BaseCampV3/main/kiosk_laptop/installer'
+            }
+            $env:KIOSK_INSTALLER_REF = $null
+            (Merge-KioskConfig -Saved @{ KIOSK_INSTALLER_REF = '../evil' } -Options @{}).KIOSK_INSTALLER_REF | Should -Be 'main'
+        } finally { $env:KIOSK_INSTALLER_REF = $saved }
+    }
     It 'reads a missing file as empty' {
         (Read-KioskConfig -Path (Join-Path $TestDrive 'nope.env')).Count | Should -Be 0
     }

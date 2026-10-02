@@ -119,9 +119,17 @@ function Request-Restart {
 }
 
 # -- Companion files ----------------------------------------------------------
+# Get-SafeRef REF: REF when it is a plain git ref (letters, digits, . _ / -, no
+# ".."), else main (it goes into a download URL and config.env).
+function Get-SafeRef {
+    param([string]$Ref)
+    if ($Ref -and $Ref -match '^[A-Za-z0-9._/-]+$' -and $Ref -notlike '*..*') { return $Ref }
+    if ($Ref) { Write-Warn "Ignoring the installer ref '$Ref' (letters, digits, . _ / - only); using main." }
+    'main'
+}
+
 function Get-BaseUrl {
-    $ref = $env:KIOSK_INSTALLER_REF
-    if (-not $ref) { $ref = 'main' }
+    $ref = Get-SafeRef $env:KIOSK_INSTALLER_REF
     "https://raw.githubusercontent.com/encondata/BaseCampV3/$ref/kiosk_laptop/installer"
 }
 
@@ -420,7 +428,7 @@ function Merge-KioskConfig {
 
     $ref = $env:KIOSK_INSTALLER_REF
     if (-not $ref) { $ref = $Saved.KIOSK_INSTALLER_REF }
-    if (-not $ref) { $ref = 'main' }
+    $ref = Get-SafeRef $ref
 
     $browser = $Options.Browser
     if ($null -eq $browser) { $browser = $Saved.KIOSK_BROWSER }
@@ -1710,7 +1718,7 @@ function Uninstall-Kiosk {
     if (Test-Path -LiteralPath $compose -PathType Leaf) {
         Stop-KioskForUninstall -ComposeFile $compose
     }
-    foreach ($f in @('docker-compose.yml', 'config.env', 'install.ps1', 'update.ps1', 'launch.ps1', 'hostnet.ps1', 'install-state.json', 'update-state.json')) {
+    foreach ($f in @('docker-compose.yml', 'config.env', 'install.ps1', 'update.ps1', 'launch.ps1', 'hostnet.ps1', 'install-state.json', 'update-state.json', 'helpers-refresh.json')) {
         $p = Join-KioskPath $InstallDir $f
         if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
     }

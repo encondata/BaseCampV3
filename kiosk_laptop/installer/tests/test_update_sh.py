@@ -591,3 +591,116 @@ def test_helper_refresh_runs_after_image_step_and_never_touches_update_sh(tmp_pa
     assert "rc=0" in r.stdout
     assert log.index("skipped") < log.index("hostnet.sh: refreshed")   # even when the image step skipped
     assert (k / "update.sh").read_text() == "#!/usr/bin/env bash\n# original\n"
+
+
+# ── round 3b: macOS (folder root's, file the desktop user's), ref safety, time limit ──
+
+def _curl_stub(tmp_path, body_text=NEW_HOSTNET):
+    bindir = tmp_path / "bin"; bindir.mkdir()
+    (bindir / "curl").write_text(
+        '#!/bin/sh\necho "$@" >> "$0.log"\nwhile [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done\n'
+        f'printf %s \'{body_text}\' > "$out"\n')
+    (bindir / "curl").chmod(0o755)
+    return bindir
+
+
+def _run_refresh(tmp_path, k, bindir, extra=''):
+    fake = tmp_path / "docker"; fake.write_text("#!/bin/sh\n"); fake.chmod(0o755)
+    env = {**os.environ, "KIOSK_UPDATE_LIB": "1", "KIOSK_DIR": str(k), "TMPDIR": str(tmp_path),
+           "PATH": f"{bindir}:{os.environ['PATH']}"}
+    env.pop("KIOSK_TEMPLATE_DIR", None)
+    return subprocess.run([BASH, "-c", f'source "{UPDATE_SH}"; DOCKER=("{fake}"); {extra} refresh_helpers; echo rc=$?'],
+                          capture_output=True, text=True, env=env)
+
+
+def test_helper_in_place_when_folder_is_not_writable_but_file_is(tmp_path):
+    k = tmp_path / "k"; k.mkdir()
+    (k / "hostnet.sh").write_text(OLD_HOSTNET); (k / "hostnet.sh").chmod(0o750)
+    (k / "launch.sh").write_text(OLD_HOSTNET); (k / "launch.sh").chmod(0o755)
+    inode = (k / "hostnet.sh").stat().st_ino
+    k.chmod(0o555)
+    try:
+        bindir = _curl_stub(tmp_path)
+        r = _run_refresh(tmp_path, k, bindir)
+    finally:
+        k.chmod(0o755)
+    assert "rc=0" in r.stdout, r.stderr
+    assert (k / "hostnet.sh").read_text() == NEW_HOSTNET and (k / "launch.sh").read_text() == NEW_HOSTNET
+    assert (k / "hostnet.sh").stat().st_ino == inode          # overwritten in place, not replaced
+    assert oct((k / "hostnet.sh").stat().st_mode & 0o777) == "0o750"
+    assert "hostnet.sh: refreshed" in r.stdout
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith("kiosk-helper")]   # temp file removed
+    assert not [p for p in k.iterdir() if p.name.startswith(".")]
+
+
+def test_helper_skips_before_download_when_neither_folder_nor_file_is_writable(tmp_path):
+    k = tmp_path / "k"; k.mkdir()
+    for n in ("hostnet.sh", "launch.sh"):
+        (k / n).write_text(OLD_HOSTNET); (k / n).chmod(0o555)
+    k.chmod(0o555)
+    try:
+        bindir = _curl_stub(tmp_path)
+        r = _run_refresh(tmp_path, k, bindir)
+    finally:
+        k.chmod(0o755)
+    assert "rc=0" in r.stdout
+    assert "can't update hostnet.sh: re-run the install command" in r.stdout
+    assert "can't update launch.sh: re-run the install command" in r.stdout
+    assert not (bindir / "curl.log").exists()                 # never downloaded
+    assert (k / "hostnet.sh").read_text() == OLD_HOSTNET
+
+
+def test_helper_in_place_rejects_a_bad_download_and_keeps_the_file(tmp_path):
+    k = tmp_path / "k"; k.mkdir()
+    for n in ("hostnet.sh", "launch.sh"):
+        (k / n).write_text(OLD_HOSTNET); (k / n).chmod(0o755)
+    k.chmod(0o555)
+    try:
+        bindir = _curl_stub(tmp_path, "echo no shebang")
+        r = _run_refresh(tmp_path, k, bindir)
+    finally:
+        k.chmod(0o755)
+    assert (k / "hostnet.sh").read_text() == OLD_HOSTNET and "no bash shebang" in r.stdout
+
+
+@pytest.mark.parametrize("ref,expect", [
+    ("feature-x", "feature-x"), ("release/1.2", "release/1.2"),
+    ("a..b", "main"), ("../x", "main"), ("x y", "main"), ("x;id", "main"), ("x$(id)", "main"),
+])
+def test_helper_ref_is_validated(tmp_path, ref, expect):
+    k = tmp_path / "k"; k.mkdir()
+    (k / "config.env").write_text(f"KIOSK_INSTALLER_REF={ref}\n")
+    fake = tmp_path / "docker"; fake.write_text("#!/bin/sh\n"); fake.chmod(0o755)
+    env = {**os.environ, "KIOSK_UPDATE_LIB": "1", "KIOSK_DIR": str(k)}
+    out = subprocess.run([BASH, "-c", f'source "{UPDATE_SH}"; installer_ref'], capture_output=True, text=True, env=env)
+    assert out.stdout == expect
+    if expect == "main" and ref != "main":
+        assert "ignoring" in out.stderr.lower() or "ignoring" in out.stdout.lower()
+
+
+def test_helper_bad_ref_is_logged_by_refresh(tmp_path):
+    k = tmp_path / "k"; k.mkdir()
+    (k / "config.env").write_text("KIOSK_INSTALLER_REF=../evil\n")
+    (k / "hostnet.sh").write_text(OLD_HOSTNET); (k / "launch.sh").write_text(OLD_HOSTNET)
+    bindir = _curl_stub(tmp_path)
+    r = _run_refresh(tmp_path, k, bindir)
+    assert "evil" not in (bindir / "curl.log").read_text()
+    assert "/main/kiosk_laptop/installer/hostnet.sh" in (bindir / "curl.log").read_text()
+    assert "ignoring" in (r.stdout + r.stderr).lower()
+
+
+def test_helper_hostnet_run_is_time_limited(tmp_path):
+    k = tmp_path / "k"; k.mkdir(); t = tmp_path / "t"; t.mkdir()
+    (k / "hostnet.sh").write_text(OLD_HOSTNET); (k / "launch.sh").write_text(NEW_HOSTNET)
+    (k / "hostnet.sh").chmod(0o755)
+    # the published hostnet.sh hangs far past the shortened limit
+    (t / "hostnet.sh").write_text("#!/usr/bin/env bash\nsleep 20\n"); (t / "launch.sh").write_text(NEW_HOSTNET)
+    fake = tmp_path / "docker"; fake.write_text("#!/bin/sh\n"); fake.chmod(0o755)
+    env = {**os.environ, "KIOSK_UPDATE_LIB": "1", "KIOSK_DIR": str(k), "KIOSK_TEMPLATE_DIR": str(t)}
+    import time
+    t0 = time.time()
+    r = subprocess.run([BASH, "-c", f'source "{UPDATE_SH}"; DOCKER=("{fake}"); HOSTNET_LIMIT_S=1; refresh_helpers; echo rc=$?'],
+                       capture_output=True, text=True, env=env, timeout=15)
+    assert time.time() - t0 < 10
+    assert "rc=0" in r.stdout and "hostnet.sh: refreshed" in r.stdout
+    assert "didn't finish" in r.stdout

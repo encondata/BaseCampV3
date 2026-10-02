@@ -158,7 +158,18 @@ EOF
 }
 
 # ── Companion files ───────────────────────────────────────────────────
-BASE_URL="https://raw.githubusercontent.com/encondata/BaseCampV3/${KIOSK_INSTALLER_REF:-main}/kiosk_laptop/installer"
+# safe_ref REF: REF when it is a plain git ref (letters, digits, . _ / -, no
+# ".."), else main with a warning. A ref goes into a download URL and config.env.
+safe_ref() {
+  case "$1" in
+    ''|*[!A-Za-z0-9._/-]*|*..*)
+      [ -z "$1" ] || warn "Ignoring the installer ref '$1' (letters, digits, . _ / - only); using main."
+      printf 'main' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+BASE_URL="https://raw.githubusercontent.com/encondata/BaseCampV3/$(safe_ref "${KIOSK_INSTALLER_REF:-main}")/kiosk_laptop/installer"
 
 # fetch_companion NAME DEST: copy from KIOSK_TEMPLATE_DIR, else download.
 fetch_companion() {
@@ -308,7 +319,8 @@ check_data_dir() {
 # write_config FILE: the settings plus the browser launch.sh opens, KEY=value,
 # mode 644 (no secrets in it).
 write_config() {
-  local file="$1" tmp ref="${KIOSK_INSTALLER_REF:-${CFG_INSTALLER_REF:-main}}"
+  local file="$1" tmp ref
+  ref=$(safe_ref "${KIOSK_INSTALLER_REF:-${CFG_INSTALLER_REF:-main}}")
   check_config_value "Installer ref" "$ref"
   check_config_value "API URL" "$CFG_API_URL"
   check_config_value "Portal URL" "$CFG_PORTAL_URL"
@@ -1104,6 +1116,11 @@ install_login_items_macos() {
     [ -e "$KIOSK_DIR/$f" ] || : >"$KIOSK_DIR/$f"
     chown "$user" "$KIOSK_DIR/$f" || warn "Couldn't make $user the owner of $KIOSK_DIR/$f."
     chmod 644 "$KIOSK_DIR/$f"
+  done
+  # hostnet.sh and launch.sh run as $user too, so the nightly update (also
+  # $user) can refresh them in place. The folder and every other file stay root's.
+  for f in hostnet.sh launch.sh; do
+    chown "$user" "$KIOSK_DIR/$f" || warn "Couldn't make $user the owner of $KIOSK_DIR/$f."
   done
   agents="$home/Library/LaunchAgents"
   as_user "$user" mkdir -p "$agents" || warn "Couldn't create $agents."
