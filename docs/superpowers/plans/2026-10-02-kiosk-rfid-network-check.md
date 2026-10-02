@@ -510,18 +510,69 @@ Match the existing reader helpers in `api.ts` (`connectReader`, `getEdgeSetup`) 
 
 ---
 
-### Task 6: Kiosk — Confirm & verify step, Start Reader, `/rfid_status`
+### Task 6: Confirm & verify step, Start Reader, and the edge event log
 
 **Files:**
-- Create: `kiosk/src/components/setup/ConfirmStep.tsx`, `kiosk/src/pages/RfidStatus.tsx`
+- Create: `kiosk/src/components/setup/ConfirmStep.tsx`
+- Create: `kiosk_laptop/edge/src/edge/rfid/events.py`
 - Modify: `kiosk/src/pages/KioskSetup.tsx`:
   - in the RFID path, `finish()` saves as today and then `setStep('confirm')` **instead of** closing the wizard. The sync still starts.
   - render `ConfirmStep` for `'confirm'`.
-- Modify: `kiosk/src/App.tsx`: add the route `/rfid_status`, wrapped `<KioskGuard><KioskShell><RfidStatus /></KioskShell></KioskGuard>`, next to `/setup`.
-- Test: `kiosk/src/components/setup/ConfirmStep.test.tsx`, `kiosk/src/pages/RfidStatus.test.tsx`, `kiosk/src/pages/KioskSetup.test.tsx`
+- Modify: `kiosk/src/lib/api.ts`. Add `RfidEvent`, `getRfidEvents()`, and `antennas` on `ReaderStatus`.
+- Modify: `kiosk_laptop/edge/src/edge/db.py`: append one SCHEMA_STEP. Never edit earlier steps.
+- Modify: `kiosk_laptop/edge/src/edge/routes/rfid.py` (record events; `GET /edge/rfid/events`; `antennas` on status)
+- Modify: `kiosk_laptop/edge/src/edge/routes/kiosk.py` (record setup events)
+- Modify: `kiosk_laptop/edge/src/edge/rfid/checks.py` (record the portal check-in)
+- Test: `kiosk/src/components/setup/ConfirmStep.test.tsx`, `kiosk/src/pages/KioskSetup.test.tsx`, `kiosk_laptop/edge/tests/test_rfid_events.py` (new)
+
+**Edge event log (feeds the dashboard's System Events panel, Task 7):**
+- **SCHEMA_STEP:**
+  ```sql
+  CREATE TABLE rfid_events (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '')
+  ```
+- **`events.record(store, kind, title, detail="")`:**
+  - inserts a row with `at = now_iso()`;
+  - then keeps only the newest 200 rows (`DELETE FROM rfid_events WHERE id <= (SELECT MAX(id) FROM rfid_events) - 200`);
+  - never raises (it logs and swallows).
+- **`events.recent(store, limit=50) -> list[dict]`:** newest first, `{id, at, kind, title, detail}`, with `limit` clamped to 1..200.
+- **Kinds and copy** (American English; never the token):
+
+  | Kind | Title | Detail |
+  |---|---|---|
+  | `reader_connected` | "Reader connected" | `"{model} · {ip}"` |
+  | `reader_paired` | "Reader paired" | `"{model} · sends to {laptop_ip}"` |
+  | `reader_started` | "Reader started" | `"{model} · Started by {person name}"` |
+  | `reader_stopped` | "Reader stopped" | `"Stopped by {person name}"` |
+  | `move_loaded` | "Move loaded" | `initiative_name` |
+  | `scan_type_selected` | "Scan type selected" | `"{scan_status_label} · {Label Station or RFID Station}"` |
+  | `portal_check_in` | "Portal check-in successful", or "Portal check-in failed" on a fail | "Connected to ServerSherpa", or the failure detail |
+
+  The person name comes from the edge session: `session.person_name`, as the outbox uses it.
+- **Recorded after success:**
+  - connect: `reader_connected`;
+  - pair: `reader_paired`;
+  - start: `reader_started`;
+  - stop: `reader_stopped`;
+  - edge `/kiosk/setup` on a 200: `move_loaded` + `scan_type_selected`;
+  - the `registration` check: `portal_check_in`, on ok and on fail.
+- **`GET /edge/rfid/events?limit=N`** (edge session): `{"events": [...]}`.
+- **`GET /edge/rfid/status`** also returns `antennas`: the sorted list of antenna port names whose value is `"connected"` in the reader's `/cloud/status` `antennas` object, `[]` when unknown.
+- Wipe (the edge's existing wipe path; grep `laptop_setup` in the wipe code) also clears `rfid_events`.
+- **Tests (`test_rfid_events.py`):**
+  - record/recent order and limit clamp;
+  - the 200-row cap;
+  - `record` never raises on a closed or broken store (monkeypatch `store.run` to raise);
+  - each route writes its event with the right title and detail;
+  - the person name is in start/stop;
+  - the token is never in any event (pair, then check every row);
+  - `/events` needs a session;
+  - status `antennas` comes from the fake's `STATUS` (`["1", "2"]`);
+  - wipe clears the events.
+
+**ConfirmStep:** as below.
 
 **Interfaces:**
-- Consumes `runCheck`, `startReader`, `stopReader`, `getReaderStatus` and `CheckList` from Task 5. It also consumes the existing `readerErrorText` / `codeOf` in `components/setup/readerSetup.ts`.
+- Consumes `runCheck`, `startReader` and `CheckList` from Task 5. It also consumes the existing `readerErrorText` / `codeOf` in `components/setup/readerSetup.ts`.
 - `ConfirmStep` props:
 
 ```ts
@@ -530,7 +581,6 @@ Match the existing reader helpers in `api.ts` (`connectReader`, `getEdgeSetup`) 
   onBack: () => void; onStarted: () => void; onPairAgain: () => void }
 ```
 
-**`ConfirmStep`:**
 - **Summary card** (`.setup-summary`):
   - Move: `initiativeName`
   - Site: `siteName` (role)
@@ -553,21 +603,7 @@ Match the existing reader helpers in `api.ts` (`connectReader`, `getEdgeSetup`) 
   - `onStarted = () => { setWizardOpen(false); navigate('/rfid_status'); }`
   - `onPairAgain = () => setStep('reader')`
   - The reader prop comes from `paired?.reader`, and `endpoint_url` from `paired`. Read `PairResult` in `api.ts` for exact field names.
-
-**`RfidStatus` page:**
-- **Guard:** if `!isLaptop()`, `<Navigate to="/" replace />`.
-- **Loading:** on mount and every 5000 ms (clear on unmount), call `getReaderStatus()`. A `reader: null` answer gives `<Navigate to="/" replace />`.
-- **Layout:**
-  - `eyebrow` "Kiosk · RFID"
-  - `page-title` "RFID reader"
-  - reader line: `model serial at ip`
-  - a chip: `chip c-green` "Reading" when `reading`, `chip tag` "Stopped" when reachable and not reading, `chip c-red` "Unreachable" when `reachable === false`. Grep for the red chip class name in kiosk CSS; if none exists, use `chip tag` plus `form-error` text.
-- **Button:**
-  - **Stop Reader** when reading, **Start Reader** when stopped, disabled when unreachable.
-  - Busy text while waiting ("Stopping…" / "Starting…").
-  - After a click, re-fetch the status.
-  - Errors show with `readerErrorText` as `role="alert"`.
-- **Hint:** `<p className="page-hint">Live tag reads will show here in a later release.</p>`
+- `/rfid_status` itself is Task 7. Until then the App's catch-all redirects it; tests assert the navigation call.
 
 **Tests:**
 - **`ConfirmStep.test.tsx`:**
@@ -578,22 +614,99 @@ Match the existing reader helpers in `api.ts` (`connectReader`, `getEdgeSetup`) 
   - a `reader_required` error shows the pair-again button, which calls `onPairAgain`;
   - a failed check shows Run again;
   - the summary card shows move, site (role), scan type, reader and endpoint.
-- **`RfidStatus.test.tsx`:**
-  - Reading, Stopped and Unreachable chips;
-  - Stop calls `stopReader` and re-fetches;
-  - Start calls `startReader`;
-  - `reader: null` redirects to `/`;
-  - web mode redirects;
-  - the poll fires again after 5000 ms (fake timers).
 - **`KioskSetup.test.tsx`:**
   - in the RFID path, picking a scan type submits and shows "Step 9 of 9 · Confirm & verify" instead of the summary;
   - Start Reader navigates to `/rfid_status`;
   - the Label path still closes to the summary after the scan type.
 
+- [ ] Write the failing tests (edge and kiosk); run them; they fail.
+- [ ] Implement.
+- [ ] Run the edge suite, `npm --prefix kiosk test -- --run` and `npm --prefix kiosk run build`; all pass.
+- [ ] Commit (two commits are fine): `feat(edge): RFID event log and connected antennas` and `feat(kiosk): Confirm & verify step and Start Reader`
+
+---
+
+### Task 7: `/rfid_status` — the RFID Reader Dashboard (from Jimmy's mockup)
+
+**Files:**
+- Create: `kiosk/src/pages/RfidStatus.tsx`, `kiosk/src/pages/RfidStatus.test.tsx`
+- Modify: `kiosk/src/App.tsx`: add the route `/rfid_status`, wrapped `<KioskGuard><KioskShell><RfidStatus /></KioskShell></KioskGuard>`, next to `/setup`.
+- Modify: the kiosk stylesheet (`kiosk/src/styles/kiosk.css` or wherever `.setup-*` lives). Add an `.rfid-dash-*` block using **existing color tokens only**.
+
+**What the mockup shows.** The KioskShell already supplies the top bar (ServerSherpa · KIOSK · LAPTOP, kiosk name, Registered chip, person, Sign out) and the footer (MODE / VERSION / MOVE / SITE / SCAN / Data Sync / Cloud). The page body is:
+
+1. **Title row:**
+   - `h1` "RFID Reader Dashboard";
+   - sub-line "Live asset reads and reader activity.";
+   - on the right, a status pill: green dot + "Reading", gray "Stopped", or red "Unreachable".
+2. **Six tiles in one row.** They wrap to 3 + 3 and then 2 columns on narrow screens. Each tile has an icon, an uppercase small label, a big value and a sub-line. Icons are inline SVGs: tag, barcode, clock, sliders, document, broadcast.
+
+   | Tile | Value | Sub-line |
+   |---|---|---|
+   | TAGS READ TODAY | `—` | "Waiting for tag data" (no tag source yet) |
+   | MOVE PROGRESS | `— / {assets}` | "Waiting for tag data", with an empty progress bar |
+   | LOCAL TIME | live `HH:MM:SS` (24-hour, ticking every second) | `Fri, Oct 2, 2026 · CDT`, via `toLocaleDateString(undefined, {weekday:'short', month:'short', day:'numeric', year:'numeric'})` + `Intl.DateTimeFormat(undefined, {timeZoneName:'short'})` |
+   | ACTIVE MOVE | `selection.initiativeName` | `{siteName} ({siteRole})` |
+   | SCAN TYPE | `selection.scanLabel` | "Station: RFID · Laptop" |
+   | READER STATUS | dot + Reading/Stopped/Unreachable | `{model} · Antennas {list}`, e.g. "Antennas 1 – 4" when contiguous, else "Antennas 1, 3"; "No antennas connected" when the list is empty |
+
+   - MOVE PROGRESS takes `{assets}` from the kiosk's local sync summary (`useSyncStatus().assets`). When unknown, it shows `—`.
+   - ACTIVE MOVE and SCAN TYPE come from `useKioskSetup()`.
+3. **Two panels side by side:** Live Tag Reads takes about 2/3 of the width, System Events about 1/3. They stack on narrow screens.
+   - **Live Tag Reads:**
+     - title, sub-line "Newest first.";
+     - a table with headers Tag ID · Serial Number · Computer Name · Make / Model;
+     - an empty state row "No tag reads yet — live reads arrive when tag data is connected.";
+     - the footnote "Live view only · Older rows leave this screen.";
+     - monospace for Tag ID and Serial, as in the mockup.
+     - The table is the existing list primitive the kiosk uses, if there is one (grep `list-scroll` / `data-table` in `kiosk/src`). Otherwise use a plain `<table className="rfid-dash-table">`.
+   - **System Events:**
+     - title, sub-line "Live activity.";
+     - rows from `getRfidEvents()`, newest first: icon by kind, `HH:MM:SS` time, bold title, muted detail.
+     - **Icons by kind:**
+       - `portal_check_in`: green dot when the title says successful, red dot when failed;
+       - `reader_started`: gear;
+       - `scan_type_selected`: document;
+       - `move_loaded`: sliders;
+       - `reader_connected` and `reader_paired`: wifi;
+       - `reader_stopped`: red dot.
+     - Empty state: "No activity yet."
+4. **Two big buttons in one row**, full width, about 50/50:
+   - **START:** green, play icon, title "START", sub-line "Start RFID reader". While reading it is disabled and dimmed, with sub-line "Already reading".
+   - **STOP:** red, square icon, title "STOP", sub-line "Stop RFID reader". While stopped it is disabled and dimmed, with sub-line "Already stopped".
+   - Both are disabled when unreachable, with sub-line "Reader unreachable".
+   - While a call runs, the clicked button shows "Starting…" or "Stopping…".
+   - After a click, re-fetch status and events.
+   - Errors use `readerErrorText` in a `role="alert"` line under the buttons.
+
+**Behavior:**
+- **Guards:**
+  - `!isLaptop()`: `<Navigate to="/" replace />`.
+  - `getReaderStatus()` returns `reader: null`: `<Navigate to="/" replace />`.
+- **Polling:**
+  - `getReaderStatus()` and `getRfidEvents()` on mount and every 5000 ms;
+  - the clock ticks every 1000 ms;
+  - clear all intervals on unmount.
+- **Colors:** use existing tokens, such as the chip green/red and the accent. The page must read well in the kiosk's dark theme (the mockup) and its light theme. Check how other kiosk pages handle both.
+
+**Tests (`RfidStatus.test.tsx`)** (mock the API; fake timers):
+- the title and the six tile labels render;
+- Reading / Stopped / Unreachable change the pill, the READER STATUS tile and the button states;
+- START is disabled with "Already reading" while reading;
+- STOP calls `stopReader`, then re-fetches status and events;
+- START calls `startReader`;
+- an antennas label formats `["1","2","3","4"]` as "Antennas 1 – 4" and `["1","3"]` as "Antennas 1, 3";
+- events render newest first with their titles and details, and the empty state shows when there are none;
+- the Live Tag Reads empty state shows;
+- MOVE PROGRESS shows `— / 500` when the sync summary has 500 assets;
+- the clock advances after 1000 ms;
+- `reader: null` and web mode redirect to `/`;
+- the poll fires again after 5000 ms.
+
 - [ ] Write the failing tests; run them; they fail.
 - [ ] Implement.
 - [ ] Run `npm --prefix kiosk test -- --run` and `npm --prefix kiosk run build`; all pass.
-- [ ] Commit: `feat(kiosk): Confirm & verify step, Start Reader, and the /rfid_status placeholder`
+- [ ] Commit: `feat(kiosk): RFID Reader Dashboard at /rfid_status`
 
 ---
 

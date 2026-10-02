@@ -130,19 +130,44 @@ There is one edge endpoint per check. The kiosk calls them one at a time so that
     - On success it navigates to `/rfid_status`.
     - On failure it shows the error text, using the existing `readerErrorText` mapping, and stays on the page.
 
-### `/rfid_status` (placeholder page, `RfidStatus`)
+### `/rfid_status` — RFID Reader Dashboard (Jimmy's mockup, 2026-10-02)
 
-- **Route:** `/rfid_status`, inside `KioskGuard` + `KioskShell`.
-  - Laptop mode only.
-  - Web mode, or a laptop with no pairing, redirects to `/`.
-- **Content:**
-  - Heading "RFID reader".
-  - Reader summary: model, serial, IP.
-  - A state chip: Reading (green) / Stopped / Unreachable.
-  - Polls `GET /edge/rfid/status` every 5 s while visible.
-- **Buttons:** **Stop Reader** when reading, **Start Reader** when stopped, busy while waiting.
-- **Hint:** "Live tag reads will show here in a later release."
-- No other links. The kiosk shell's normal navigation applies.
+- **Shell and route:**
+  - The KioskShell top bar and footer stay as they are.
+  - Route `/rfid_status`, inside `KioskGuard` + `KioskShell`. Laptop mode only. Web mode, or no pairing, redirects to `/`.
+- **The page body:**
+  1. A title ("RFID Reader Dashboard" / "Live asset reads and reader activity.") with a Reading/Stopped/Unreachable pill.
+  2. Six tiles:
+     - Tags read today
+     - Move progress
+     - Local time (live clock)
+     - Active move
+     - Scan type
+     - Reader status (model + connected antennas)
+  3. A Live Tag Reads table (Tag ID, Serial Number, Computer Name, Make / Model) beside a System Events feed.
+  4. Big START (green) and STOP (red) buttons. The one that doesn't apply is dimmed ("Already reading" / "Already stopped").
+- **What's real today:**
+  - reading state and antennas (`GET /edge/rfid/status`);
+  - move and scan type (the kiosk's setup);
+  - the local clock;
+  - the move's asset total (the local sync summary);
+  - System Events from a new edge event log (`GET /edge/rfid/events`).
+- **Waiting on the tag-data work:** tags read today, move progress and the tag table show "Waiting for tag data" or an empty state.
+- **Polling:** status and events poll every 5 s.
+
+**Edge event log:**
+- `rfid_events` (new SCHEMA_STEP), capped at 200 rows.
+- Recorded for:
+  - reader connected
+  - reader paired
+  - reader started (with who)
+  - reader stopped (with who)
+  - move loaded
+  - scan type selected
+  - each portal check-in (the `registration` check)
+- `GET /edge/rfid/events?limit=` returns newest first.
+- Wipe clears it.
+- No token is ever stored in it.
 
 ## 7. Errors and copy
 
