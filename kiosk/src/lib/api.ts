@@ -814,7 +814,7 @@ export async function renameLaptopKiosk(name: string): Promise<{ serial: string;
 // Errors carry `detail.code`: reader_unreachable, reader_auth_failed,
 // reader_not_iotc, reader_error (with detail.message), reader_verify_failed
 // (502); reader_paired_elsewhere (409, with detail.name),
-// reader_endpoints_full, host_network_unknown and reader_not_on_subnet (409);
+// host_network_unknown and reader_not_on_subnet (409);
 // bad_ip (422); edge_offline (503: connect and pair need an online sign-in).
 
 export interface ReaderVersions {

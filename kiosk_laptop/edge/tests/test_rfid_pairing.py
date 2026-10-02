@@ -153,33 +153,39 @@ async def test_pair_adds_our_connection(app, client):
     assert list(reader.puts[-1]) == ["READER-GATEWAY"]
 
 
-async def test_pair_keeps_other_connections(app, client):
+async def test_pair_replaces_every_other_connection(app, client):
+    # V3 replaces V2: StackPI and anything else on the reader goes
     reader = use_reader(app)
-    set_connections(reader, [other()])
+    set_connections(reader, [other("A"), other("B")])
     assert (await pair(client, app, laptop_ip="10.0.0.5")).status_code == 200
-    names = [c["name"] for c in reader_connections(reader)]
-    assert names == ["Warehouse MQTT", own_name(app)]
+    assert [c["name"] for c in reader_connections(reader)] == [own_name(app)]
 
 
 async def test_pair_replaces_our_earlier_connection(app, client):
     reader = use_reader(app)
-    set_connections(reader, [other()])
     assert (await pair(client, app, laptop_ip="10.0.0.5")).status_code == 200
     # the laptop moved to another address: our own connection is replaced, no takeover
     r = await pair(client, app, laptop_ip="10.0.0.6")
     assert r.status_code == 200, r.text
     conns = reader_connections(reader)
-    assert [c["name"] for c in conns] == ["Warehouse MQTT", own_name(app)]
-    assert conns[1]["options"]["URL"].startswith("http://10.0.0.6:8091/")
+    assert [c["name"] for c in conns] == [own_name(app)]
+    assert conns[0]["options"]["URL"].startswith("http://10.0.0.6:8091/")
 
 
-async def test_pair_refuses_a_third_connection(app, client):
-    reader = use_reader(app)
-    set_connections(reader, [other("A"), other("B")])
+async def test_pair_stops_a_reading_reader_first(app, client):
+    reader = use_reader(app, reading=True)
     r = await pair(client, app, laptop_ip="10.0.0.5")
-    assert r.status_code == 409 and code(r) == "reader_endpoints_full"
-    assert reader.puts == []
-    assert app.state.store.one("SELECT * FROM rfid_pairing") is None
+    assert r.status_code == 200, r.text
+    assert reader.stops == 1 and not reader.reading
+    assert [c["name"] for c in reader_connections(reader)] == [own_name(app)]
+
+
+async def test_a_refused_stop_still_writes_the_config(app, client):
+    reader = use_reader(app)
+    reader.fail_next["PUT /cloud/stop"] = (422, {"code": 1, "message": "already stopped"})
+    r = await pair(client, app, laptop_ip="10.0.0.5")
+    assert r.status_code == 200, r.text
+    assert [c["name"] for c in reader_connections(reader)] == [own_name(app)]
 
 
 async def test_takeover_needs_confirmation(app, client):
@@ -592,30 +598,16 @@ STACKPI = {"type": "httpPost", "name": "StackPI", "description": "Local StackPI"
 STACKPI_BATCHING = {"maxPayloadSizePerReport": 128000, "reportingInterval": 500}
 
 
-async def test_pair_next_to_a_foreign_connection_adds_a_batching_entry(app, client):
-    # the real FX9600 refused our first try: "Incorrect number of batching
-    # objects for the given endpoints"
-    reader = use_reader(app)
+async def test_pair_over_stackpi_leaves_one_batching_entry(app, client):
+    # the real FX9600 refused a PUT whose global batching list didn't match
+    # its connections: "Incorrect number of batching objects for the given endpoints"
+    reader = use_reader(app, reading=True)
     set_connections(reader, [STACKPI], batching=[STACKPI_BATCHING])
     r = await pair(client, app, laptop_ip="10.0.0.5")
     assert r.status_code == 200, r.text
     gateway = reader.config["READER-GATEWAY"]
-    assert [c["name"] for c in reader_connections(reader)] == ["StackPI", own_name(app)]
-    assert gateway["batching"] == [STACKPI_BATCHING, BATCHING]
-    assert gateway["retention"] == [RETENTION, RETENTION]
-
-
-async def test_repair_keeps_the_foreign_entry_in_its_slot(app, client):
-    reader = use_reader(app)
-    set_connections(reader, [STACKPI], batching=[STACKPI_BATCHING])
-    assert (await pair(client, app, laptop_ip="10.0.0.5")).status_code == 200
-    # ours first now, StackPI second: re-pairing must carry StackPI's entry along
-    conns = reader_connections(reader)
-    set_connections(reader, [conns[1], conns[0]], batching=[BATCHING, STACKPI_BATCHING])
-    assert (await pair(client, app, laptop_ip="10.0.0.6")).status_code == 200
-    gateway = reader.config["READER-GATEWAY"]
-    assert [c["name"] for c in reader_connections(reader)] == ["StackPI", own_name(app)]
-    assert gateway["batching"] == [STACKPI_BATCHING, BATCHING]
+    assert [c["name"] for c in reader_connections(reader)] == [own_name(app)]
+    assert gateway["batching"] == [BATCHING] and gateway["retention"] == [RETENTION]
 
 
 def test_with_connections_drops_the_removed_connections_entry():

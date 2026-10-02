@@ -156,10 +156,10 @@ The installer adds a small job that writes `<data dir>/host-network.json`:
    - `<laptop-ip>` is the fresh laptop address on the same subnet as the reader, or the manual laptop IP.
    - `<token>` is 32 random URL-safe bytes, kept per reader in SQLite.
 3. **Edit `endpointConfig.data.event.connections`:**
-   - Drop any connection whose `name` starts with `ServerSherpa Kiosk`. If it belongs to another kiosk serial and the request lacks `confirm_takeover: true`, answer 409 `reader_paired_elsewhere` with that kiosk's name.
-   - Then append ours.
-   - If the result would hold more than **2** connections (the reader's limit), answer 409 `reader_endpoints_full` and change nothing.
-4. **Write:** `PUT /cloud/config` with only `{"READER-GATEWAY": <edited object>}`.
+   - If another kiosk's connection is there and the request lacks `confirm_takeover: true`, answer 409 `reader_paired_elsewhere` with that kiosk's name.
+   - Otherwise ours becomes the **only** connection. V3 replaces V2, so V2's StackPI endpoint (or anything else) is overwritten.
+   - `READER-GATEWAY.batching` and `READER-GATEWAY.retention` hold one entry per connection, index for index. A real FX9600 refuses a mismatch ("Incorrect number of batching objects for the given endpoints"), so every edit keeps them in step. Ours gets batching 256000 / 2000 ms and retention 500 min / 150000 / throttle 100, also in its `additionalOptions`.
+4. **Write:** `PUT /cloud/stop` first (a reader that is reading can refuse an endpoint change; a refused stop is logged and the write goes ahead), then `PUT /cloud/config` with only `{"READER-GATEWAY": <edited object>}`. Reading stays stopped until the tag-data phase.
 5. **Verify:** `GET /cloud/config` again, and confirm our connection is present with the same URL. A mismatch is `reader_verify_failed`.
 6. **Record:** store the pairing in SQLite: `rfid_readers` holds `serial`, `ip`, `model`, `versions` JSON, `password_index`, `token`, `paired_at`, `laptop_ip`, `scheme`, `port`. A single `rfid_pairing` row marks which serial is current.
 7. **Release the old reader:** when the current serial changes, the edge makes a best-effort GET/PUT on the previous reader that removes only the connection(s) the "ours" rule matches. A failure is logged (never the token) and never fails the new pairing.
@@ -276,7 +276,7 @@ All of these reuse the existing list, chip and detail idioms.
 - each password path
 - pairing, then confirming the endpoint in the reader's web console
 - re-pairing to a second laptop (takeover)
-- the "endpoints full" message
+- pairing over V2's StackPI endpoint (it is replaced)
 - LAN access to the kiosk UI from a phone, showing the unencrypted notice
 
 ## Out of scope

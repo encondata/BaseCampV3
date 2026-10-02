@@ -15,6 +15,10 @@ Modes:
 - `unreachable`: every request raises a transport error
 - `verify_mismatch`: PUT /cloud/config succeeds, GET keeps returning the old config
 
+`reading=True` starts the fake reading tags: it then refuses a READER-GATEWAY
+change until `PUT /cloud/stop` (the real reader's exact refusal isn't known;
+the edge case is from field experience). `stops` counts stop calls.
+
 Unauthenticated, the fake answers like ZIOTC does in the OpenAPI examples:
 `/cloud/localRestLogin` and every `/cloud/*` call are 401 with the JSON error
 shape `{"code": 2, "message": "Unauthorized"}` (the edge's fingerprint, spec
@@ -46,6 +50,7 @@ TOO_MANY_ENDPOINTS = ("Invalid endpoint configuration - more than 2 endpoints "
                       "cannot be mapped to data interfaces")
 BATCHING_MISMATCH = ("Invalid global batching payload fields: Batching configuration "
                      "error: Incorrect number of batching objects for the given endpoints")
+BUSY_READING = "Fake reader: stop reading before changing the data endpoints"
 EMPTY_PAYLOAD = "Invalid Payload expected atleast one configuration field"
 # Zebra's httpPostSecurity.v1 requires all three fields
 HTTP_POST_SECURITY = ("verifyPeer", "verifyHost", "authenticationType")
@@ -110,7 +115,9 @@ class FakeReader:
                  model: str = "FX9600", serial: str = "84248dee5721",
                  login_style: str = "json_message", password: str | None = None,
                  ports: tuple[int, ...] = (443,), server: str | None = None,
-                 realm: str | None = None) -> None:
+                 realm: str | None = None, reading: bool = False) -> None:
+        self.reading = reading
+        self.stops = 0
         self.password_index = password_index
         self.ports = ports
         self.server = server
@@ -205,6 +212,14 @@ class FakeReader:
         async def get_config(request: Request):
             return reader.config if bearer_ok(request) else unauthorized()
 
+        @app.put("/cloud/stop")
+        async def stop(request: Request):
+            if not bearer_ok(request):
+                return unauthorized()
+            reader.stops += 1
+            reader.reading = False
+            return HTMLResponse("")
+
         @app.put("/cloud/config")
         async def put_config(request: Request):
             if not bearer_ok(request):
@@ -214,6 +229,8 @@ class FakeReader:
             if not isinstance(payload, dict) or not payload:
                 return JSONResponse({"code": 1, "message": EMPTY_PAYLOAD}, status_code=422)
             gateway = payload.get("READER-GATEWAY")
+            if gateway is not None and reader.reading:
+                return JSONResponse({"code": 3, "message": BUSY_READING}, status_code=422)
             if gateway is not None:
                 connections = (gateway.get("endpointConfig", {}).get("data", {})
                                .get("event", {}).get("connections", []))

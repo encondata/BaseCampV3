@@ -705,11 +705,9 @@ describe('laptop mode', () => {
   });
 
   it.each([
-    ['reader_endpoints_full',
-      "This reader already has two data connections. Remove one in the reader's web console, then try again."],
     ['reader_verify_failed', "The reader didn't keep the new data endpoint. Try again."],
   ])('a %s pair error shows its message', async (code, text) => {
-    apiMock.pairReader.mockReset().mockRejectedValue(new ApiError(code === 'reader_endpoints_full' ? 409 : 502,
+    apiMock.pairReader.mockReset().mockRejectedValue(new ApiError(502,
       code, { code }));
     const user = userEvent.setup();
     renderPage();

@@ -8,8 +8,11 @@ A connection is ours when its name carries our prefix (`ServerSherpa Kiosk
 any other connection named `ServerSherpa Kiosk…` belongs to another kiosk
 (two kiosks can share the last 4 serial characters, so the name alone proves
 nothing). Discovery, connect and pair all use this rule via `paired_with`.
-When pairing, every `ServerSherpa Kiosk…` connection and any connection
-carrying our token (one somebody renamed) is replaced by ours. The token is a secret: it is redacted as `…` in every
+When pairing, ours becomes the reader's only data connection: V3 replaces
+whatever V2 (StackPI) or anyone else pointed the reader at. Another kiosk's
+connection still needs `confirm_takeover`. Reading is stopped first
+(`PUT /cloud/stop`), since a reader that is reading can refuse an endpoint
+change; it stays stopped until the tag-data phase starts it. The token is a secret: it is redacted as `…` in every
 response and log line.
 
 A reader answers on https 443 or http 80; connect and pair use where the
@@ -37,7 +40,6 @@ log = logging.getLogger("edge.rfid.pairing")
 PAIR_PREFIX = "ServerSherpa Kiosk"
 READER_PORT = 8091
 REDACTED = "…"
-MAX_CONNECTIONS = 2  # the reader maps at most 2 data endpoints
 CONNECTIONS_PATH = ("endpointConfig", "data", "event", "connections")
 VERSION_KEYS = ("readerApplication", "radioFirmware", "cloudAgentApplication")
 
@@ -97,6 +99,18 @@ def with_connections(config: dict, connections: list[dict]) -> dict:
         node = node[key]
     node[CONNECTIONS_PATH[-1]] = connections
     return gateway
+
+
+async def stop_reading(client: ziotc.ZiotcClient, serial: str) -> None:
+    """Stop the reader before an endpoint change. A refusal (one that was
+    already idle, say) is logged and the config write goes ahead; the write
+    itself reports anything that really blocks it."""
+    try:
+        await client.stop()
+    except ReaderError as exc:
+        if exc.code in ("reader_unreachable", "reader_auth_failed"):
+            raise
+        log.info("reader %s refused stop (%s); writing the config anyway", serial, exc.code)
 
 
 def _name(conn: dict) -> str:
@@ -238,7 +252,7 @@ def cloud_reader(store: Store) -> dict | None:
 # ── connect and pair ──
 
 def _reader_status(code: str) -> int:
-    return 409 if code in ("reader_paired_elsewhere", "reader_endpoints_full") else 502
+    return 409 if code == "reader_paired_elsewhere" else 502
 
 
 def reader_http_error(exc: ReaderError):
@@ -329,6 +343,7 @@ async def release(row, identity: Identity, *, transport=None) -> None:
             if len(kept) == len(connections):
                 log.info("reader %s holds no connection of ours", serial)
                 return
+            await stop_reading(client, serial)
             await client.put_config({"READER-GATEWAY": with_connections(config, kept)})
         log.info("removed our connection from reader %s", serial)
     except ReaderError as exc:
@@ -405,7 +420,6 @@ async def _pair(store: Store, identity: Identity, ip: str, laptop_ip: str,
         config = await client.get_config()
         if not isinstance(config.get("READER-GATEWAY"), dict):
             raise ReaderError("reader_error", "The reader's config has no READER-GATEWAY.")
-        connections = get_connections(config)
         foreign = paired_with(config, identity, serial, token)
         if foreign and not confirm_takeover:
             raise err(409, "reader_paired_elsewhere", name=foreign)
@@ -416,14 +430,11 @@ async def _pair(store: Store, identity: Identity, ip: str, laptop_ip: str,
                                                      "authenticationType": "NONE"}},
                 "additionalOptions": {"batching": dict(DEFAULT_BATCHING),
                                       "retention": dict(DEFAULT_RETENTION)}}
-        # drop every kiosk connection, and ours even if someone renamed it
-        kept = [c for c in connections if not _name(c).startswith(PAIR_PREFIX)
-                and not token_matches(c, serial, token)]
-        edited = [*kept, mine]
-        if len(edited) > MAX_CONNECTIONS:
-            raise err(409, "reader_endpoints_full")
+        # ours replaces every data connection (V2's StackPI included)
+        edited = [mine]
 
         log.debug("pairing reader %s at %s -> %s", serial, ip, redact_url(url))
+        await stop_reading(client, serial)
         await client.put_config({"READER-GATEWAY": with_connections(config, edited)})
         check = get_connections(await client.get_config())
         if not any(c.get("name") == mine["name"] and connection_url(c) == url for c in check):

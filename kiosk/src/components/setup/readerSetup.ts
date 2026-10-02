@@ -62,9 +62,6 @@ export function pairErrorText(err: unknown, ip: string): string {
   const code = codeOf(err);
   if (code === 'host_network_unknown') return HOST_UNKNOWN_TEXT;
   if (code === 'reader_not_on_subnet') return NOT_ON_SUBNET_TEXT;
-  if (code === 'reader_endpoints_full') {
-    return 'This reader already has two data connections. Remove one in the reader\'s web console, then try again.';
-  }
   if (code === 'reader_verify_failed') {
     return "The reader didn't keep the new data endpoint. Try again.";
   }

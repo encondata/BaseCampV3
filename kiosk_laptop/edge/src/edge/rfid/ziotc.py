@@ -297,6 +297,11 @@ class ZiotcClient:
     async def put_config(self, payload: dict) -> None:
         await self._call("PUT", "/cloud/config", json=payload)
 
+    async def stop(self) -> None:
+        """Stop reading tags (`PUT /cloud/stop`, empty body). A reader that is
+        reading can refuse an endpoint change, so pairing stops it first."""
+        await self._call("PUT", "/cloud/stop")
+
 
 async def probe(ip: str, transport=None, password_first: int | None = None, *,
                 scheme: str = "https", port: int | None = None,
