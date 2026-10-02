@@ -8,6 +8,7 @@ from sqlalchemy import select, text
 
 from serversherpa.db.models import AuditLog, Device, Notification
 from serversherpa.services.router_agent import vpn_summary
+from tests.test_access_roles_api import login_admin
 
 SECRET = "0123456789abcdef" * 4
 OTHER_SECRET = "fedcba9876543210" * 4
@@ -159,6 +160,61 @@ async def test_forged_then_genuine_report_on_an_approved_router_stays_flagged(cl
     await db.refresh(d)
     assert d.approval_state == "pending"
     assert d.secret_mismatch is True and d.pending_secret_hash is None
+
+
+async def _previously_approved(client, db) -> Device:
+    """A router an admin approved (approved_at set), pinned to SECRET."""
+    await client.post("/router-agent/report", json=report())
+    await db.execute(text(
+        "UPDATE devices SET approval_state = 'approved', approved_at = now() "
+        "WHERE mac = :m"), {"m": MAC})
+    await db.commit()
+    await _age(db)
+    return await _router(db)
+
+
+async def test_approved_router_knocked_to_pending_by_a_forgery_restores_on_a_genuine_report(client, db):
+    d = await _previously_approved(client, db)
+    resp = await client.post("/router-agent/report",
+                             json=report(secret=OTHER_SECRET, firmware="9.9.9"))
+    assert resp.status_code == 202 and resp.json() == {"state": "pending"}
+    await _age(db)
+    resp = await client.post("/router-agent/report", json=report(firmware="4.6.0"))
+    assert resp.status_code == 200 and resp.json() == {"state": "approved"}
+    await db.refresh(d)
+    assert d.approval_state == "approved"
+    assert d.version == "4.6.0" and d.wan_ip == "203.0.113.7"
+    assert d.raw_info["wifi"][0]["ssid"] == "Site-WiFi"
+    assert d.secret_mismatch is True and d.pending_secret_hash is None
+    assert await db.scalar(select(AuditLog).where(
+        AuditLog.action == "router_auto_restore", AuditLog.entity_id == str(d.id),
+        AuditLog.actor_person_id.is_(None))) is not None
+    assert await db.scalar(text("SELECT count(*) FROM notifications")) == 0
+
+
+async def test_revoked_router_never_auto_restores(client, db, seeded_user):
+    d = await _previously_approved(client, db)
+    hdrs = await login_admin(client, db, seeded_user)
+    assert (await client.post(f"/devices/{d.id}/revoke", headers=hdrs)).status_code == 200
+    await db.refresh(d)
+    assert d.approved_at is None and d.approved_by is None
+    await _age(db)
+    resp = await client.post("/router-agent/report", json=report())
+    assert resp.status_code == 202 and resp.json() == {"state": "pending"}
+    await db.refresh(d)
+    assert d.approval_state == "pending"
+
+
+async def test_never_approved_pending_router_stays_pending_on_a_genuine_report(client, db):
+    await client.post("/router-agent/report", json=report())
+    await _age(db)
+    resp = await client.post("/router-agent/report", json=report())
+    assert resp.status_code == 202
+    d = await _router(db)
+    await db.refresh(d)
+    assert d.approval_state == "pending" and d.approved_at is None
+    assert await db.scalar(select(AuditLog).where(
+        AuditLog.action == "router_auto_restore")) is None
 
 
 async def test_forged_report_on_a_pending_router_leaves_no_trace_and_does_not_starve(client, db):

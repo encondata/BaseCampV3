@@ -176,13 +176,15 @@ or less.
 |---|---|---|
 | unknown MAC | create router row: `approval_state='pending'`, `agent_secret_hash`, identity only (mac, model, firmware, hostname, `last_seen_at`, `agent_source_ip`); audit `router_register`; notify approvers | 202 `{"state":"pending"}` |
 | MAC belongs to a non-router device | nothing stored | 409 |
-| pending or revoked, secret matches | refresh identity fields + `last_seen_at` + `agent_source_ip`; discard the rest; revoked moves to pending; clear `pending_secret_hash` (so an attacker's candidate can't be promoted by a later approval); `secret_mismatch` is **not** cleared; no notification | 202 `{"state":"pending"}` |
+| pending, previously approved (`approved_at` set), secret matches | **auto-restore**: `approval_state='approved'`, store the full snapshot, clear `pending_secret_hash`, keep `secret_mismatch = true`; audit `router_auto_restore` (no actor); no notification. This undoes a forged report's knock-down; revoke clears `approved_at`, so a revoked router never takes this row | 200 `{"state":"approved"}` |
+| pending (never approved) or revoked, secret matches | refresh identity fields + `last_seen_at` + `agent_source_ip`; discard the rest; revoked moves to pending; clear `pending_secret_hash` (so an attacker's candidate can't be promoted by a later approval); `secret_mismatch` is **not** cleared; no notification | 202 `{"state":"pending"}` |
 | pending or revoked, secret differs | set only `pending_secret_hash` (the newest non-pinned secret), `secret_mismatch = true` and `updated_at`; revoked moves to pending. Identity fields, `agent_source_ip`, `raw_info` and `last_seen_at` are untouched, so a forgery can't erase evidence or rate-limit the real router (approving accepts the newest secret) | 202 |
 | approved, secret matches | store the full snapshot (below) | 200 `{"state":"approved"}` |
 | approved, secret differs | **discard data**; set `approval_state='pending'`, `pending_secret_hash` = new hash, `secret_mismatch = true`, `updated_at` and nothing else (no identity, `agent_source_ip`, `raw_info` or `last_seen_at` change); audit `router_secret_mismatch`; no notification | 202 `{"state":"pending"}` |
 
 `secret_mismatch` means "a different secret was seen since the last admin
-decision". Only approve and revoke reset it; a genuine report never does.
+decision". Only approve and revoke reset it; a genuine report never does,
+not even an auto-restore: the evidence stays until an admin dismisses it.
 
 Secrets are stored only as SHA-256 hashes. Because they are 256-bit
 random values, a salted KDF adds nothing. Hashes are compared with
@@ -223,8 +225,15 @@ held, so a caller can't use it to test MACs.
   - The action is audited and notification copies are resolved.
   - It is a guarded UPDATE on `approval_state <> 'approved'`, so double
     approvals are no-ops.
-- **`POST /devices/{id}/revoke`** → `approval_state='revoked'`; the
-  snapshot is kept for reference; audited; copies resolved.
+  - On a router that is already approved and has `secret_mismatch`, it
+    **dismisses the warning**: `secret_mismatch = false`,
+    `pending_secret_hash = NULL`, no candidate promoted, `approved_at` and
+    `approved_by` unchanged; audited `router_mismatch_dismissed`; no
+    copies resolved. A second call is a no-op (guarded UPDATE).
+- **`POST /devices/{id}/revoke`** → `approval_state='revoked'`;
+  `approved_at` and `approved_by` are cleared (the audit row keeps who
+  approved it), which is what stops an auto-restore; the snapshot is
+  kept for reference; audited; copies resolved.
 - The popover's **Reject** button for a pending router calls
   `revoke`. There is no separate reject endpoint.
 - `DELETE /devices/{id}`: already exists. A deleted router that reports
@@ -271,7 +280,10 @@ may take 0087 when it is re-pointed.
   or Revoked (grey), plus a "Secret changed" warning badge when
   `secret_mismatch` is true. Its tooltip reads "This MAC reported with a
   different secret — the router was reset, reinstalled, or is being
-  impersonated."
+  impersonated." On an approved row it reads "A report with a different
+  secret was seen; the router has since proved itself with its approved
+  secret." An approved row with the badge also gets a **Dismiss warning**
+  action (confirm, then `approve`).
 - **Status column:** derived from `last_seen_at`. It is Online when the
   router was seen within 3 × 300 s plus jitter (16 minutes), Offline
   otherwise, and Never for pending routers that were never seen.

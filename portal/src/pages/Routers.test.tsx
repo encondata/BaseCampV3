@@ -313,6 +313,33 @@ it('Revoke on an approved row', async () => {
   confirmSpy.mockRestore();
 });
 
+it('an approved row with a mismatch offers Dismiss warning, which confirms and approves', async () => {
+  api.listDevices.mockResolvedValue([DEVICES[0], { ...DEVICES[1], secret_mismatch: true }]);
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const user = userEvent.setup();
+  renderRouters();
+  const row = (await screen.findByText('dock-router-1')).closest('.dir-row') as HTMLElement;
+  expect(within(row).getByText('Secret changed').getAttribute('title')).toBe(
+    'A report with a different secret was seen; the router has since proved itself with its approved secret.');
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  expect(screen.getByRole('menuitem', { name: 'Revoke' })).toBeTruthy();
+  await user.click(screen.getByRole('menuitem', { name: 'Dismiss warning' }));
+  expect(confirmSpy).toHaveBeenCalledWith(
+    'Dismiss the "Secret changed" warning on "dock-router-1"? '
+    + 'It is reporting with its approved secret again.');
+  await waitFor(() => expect(api.approveRouter).toHaveBeenCalledWith('d1'));
+  confirmSpy.mockRestore();
+});
+
+it('an approved row without a mismatch has no Dismiss warning', async () => {
+  const user = userEvent.setup();
+  renderRouters();
+  const row = (await screen.findByText('dock-router-1')).closest('.dir-row') as HTMLElement;
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  expect(screen.getByRole('menuitem', { name: 'Revoke' })).toBeTruthy();
+  expect(screen.queryByRole('menuitem', { name: 'Dismiss warning' })).toBeNull();
+});
+
 it('cancelling the confirm does nothing', async () => {
   const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
   const user = userEvent.setup();

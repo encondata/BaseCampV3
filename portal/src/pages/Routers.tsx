@@ -216,6 +216,14 @@ export default function Routers() {
     void act(() => approveRouter(d.id), 'approve');
   };
 
+  const dismissWarning = (d: DeviceItem) => {
+    if (!window.confirm(
+      `Dismiss the "Secret changed" warning on "${d.name}"? `
+      + 'It is reporting with its approved secret again.',
+    )) return;
+    void act(() => approveRouter(d.id), 'dismiss the warning');
+  };
+
   const revoke = (d: DeviceItem) => {
     if (!window.confirm(
       `Revoke "${d.name}"? Its reports stop being stored right away; `
@@ -229,6 +237,8 @@ export default function Routers() {
     return [
       ...(canChange && agent && d.approval_state !== 'approved'
         ? [{ key: 'approve', label: 'Approve', onSelect: () => approve(d) }] : []),
+      ...(canChange && d.approval_state === 'approved' && d.secret_mismatch
+        ? [{ key: 'dismiss', label: 'Dismiss warning', onSelect: () => dismissWarning(d) }] : []),
       ...(canChange && d.approval_state === 'approved'
         ? [{ key: 'revoke', label: 'Revoke', onSelect: () => revoke(d) }] : []),
       ...(canDelete
@@ -256,7 +266,9 @@ export default function Routers() {
             <span className={'chip' + tone}>{approvalLabel(d.approval_state)}</span>
             {d.secret_mismatch && (
               <span className="chip c-red"
-                    title="This MAC reported with a different secret — the router was reset, reinstalled, or is being impersonated.">
+                    title={d.approval_state === 'approved'
+                      ? 'A report with a different secret was seen; the router has since proved itself with its approved secret.'
+                      : 'This MAC reported with a different secret — the router was reset, reinstalled, or is being impersonated.'}>
                 Secret changed
               </span>
             )}

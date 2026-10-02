@@ -433,7 +433,8 @@ async def approve_router(
 ) -> dict:
     """Start storing this router's reports. A candidate secret seen since
     registration (reinstall/reset) is promoted — approving trusts the
-    newest. Guarded on state, so a double approval changes nothing."""
+    newest. Guarded on state, so a double approval changes nothing; on an
+    approved router with the mismatch warning up it just dismisses it."""
     device = await _agent_router_or_error(db, device_id)
     now = datetime.now(UTC)
     result = await db.execute(
@@ -449,6 +450,20 @@ async def approve_router(
               entity_id=str(device.id), action="router_approve",
               changes={"mac": device.mac})
         await resolve_router_copies(db, device.id, "approved", _display(actor.person))
+    else:
+        # Already approved: with the "Secret changed" warning up this is a
+        # dismissal. The pinned secret was proven by the auto-restore, so no
+        # candidate is promoted. Guarded, so a second call changes nothing.
+        dismissed = await db.execute(
+            update(Device)
+            .where(Device.id == device.id, Device.approval_state == "approved",
+                   Device.secret_mismatch.is_(True))
+            .values(secret_mismatch=False, pending_secret_hash=None, updated_at=now)
+            .execution_options(synchronize_session=False))
+        if dismissed.rowcount:
+            audit(db, actor_id=actor.person.id, entity_type="device",
+                  entity_id=str(device.id), action="router_mismatch_dismissed",
+                  changes={"mac": device.mac})
     await db.commit()
     await db.refresh(device)
     return await _item_for(db, device.id)
@@ -461,14 +476,16 @@ async def revoke_router(
 ) -> dict:
     """Stop storing reports (the inbox's Reject calls this too). The last
     snapshot stays for reference; if the router keeps reporting it shows
-    as pending again, without a new notification."""
+    as pending again, without a new notification. The prior approval is
+    cleared so a revoked router never auto-restores."""
     device = await _agent_router_or_error(db, device_id)
     now = datetime.now(UTC)
     result = await db.execute(
         update(Device)
         .where(Device.id == device.id, Device.approval_state != "revoked")
         .values(approval_state="revoked", secret_mismatch=False,
-                pending_secret_hash=None, updated_at=now)
+                pending_secret_hash=None, approved_at=None, approved_by=None,
+                updated_at=now)
         .execution_options(synchronize_session=False))
     if result.rowcount:
         audit(db, actor_id=actor.person.id, entity_type="device",

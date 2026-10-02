@@ -4,7 +4,7 @@ docs/superpowers/specs/2026-10-01-router-agent-design.md."""
 
 import hashlib
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from serversherpa.db.models import AuditLog, Device, Notification
 from serversherpa.notifications.inbox import notify
@@ -133,3 +133,31 @@ async def test_list_exposes_approval_fields_but_never_hashes(client, db, seeded_
     await db.commit()
     rows = (await client.get("/devices?device_type=kiosk", headers=hdrs)).json()
     assert rows[0]["approval_state"] is None and rows[0]["secret_mismatch"] is False
+
+
+async def test_approve_on_an_approved_router_with_a_mismatch_dismisses_the_warning(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    d = await _router(db, pending_secret_hash=NEW, secret_mismatch=True)
+    await client.post(f"/devices/{d.id}/approve", headers=hdrs)
+    await db.refresh(d)
+    # the router auto-restored: approved again, flag still up, forger's candidate gone
+    await db.execute(text(
+        "UPDATE devices SET secret_mismatch = true, pending_secret_hash = :n WHERE id = :i"),
+        {"n": NEW, "i": d.id})
+    await db.commit()
+    await db.refresh(d)
+    approved_at, approved_by, pinned = d.approved_at, d.approved_by, d.agent_secret_hash
+    resp = await client.post(f"/devices/{d.id}/approve", headers=hdrs)
+    assert resp.status_code == 200 and resp.json()["secret_mismatch"] is False
+    await db.refresh(d)
+    assert d.secret_mismatch is False and d.pending_secret_hash is None
+    assert d.agent_secret_hash == pinned  # no candidate promoted
+    assert d.approved_at == approved_at and d.approved_by == approved_by
+    assert d.approval_state == "approved"
+    def dismissed():
+        return select(AuditLog).where(AuditLog.action == "router_mismatch_dismissed",
+                                      AuditLog.entity_id == str(d.id))
+    assert len((await db.scalars(dismissed())).all()) == 1
+    resp = await client.post(f"/devices/{d.id}/approve", headers=hdrs)
+    assert resp.status_code == 200
+    assert len((await db.scalars(dismissed())).all()) == 1
