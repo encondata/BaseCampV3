@@ -787,21 +787,28 @@
 
 .rfid-dash-panels {
   display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
-  gap: 14px; margin-top: 14px;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 14px; margin-top: 14px; flex: 1 1 auto; min-height: 0;
 }
-@media (max-width: 900px) { .rfid-dash-panels { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 900px) {
+  .rfid-dash-panels { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+  .rfid-dash-panel { min-height: 260px; }
+  .rfid-dash-event-list { max-height: 360px; }
+}
 .rfid-dash-panel {
+  display: flex; flex-direction: column; min-height: 0;
   min-width: 0; padding: 18px 20px; background: var(--paper);
   border: 1px solid var(--paper-line); border-radius: 14px; color: var(--text-dark);
 }
 .rfid-dash-panel-title { margin: 0; font-size: 16px; font-weight: 600; }
 .rfid-dash-panel-sub { margin: 2px 0 12px; font-size: 12.5px; color: var(--text-mute); }
+.rfid-dash-panel .local-table-wrap { flex: 1 1 auto; min-height: 0; overflow: auto; }
 .rfid-dash-table { width: 100%; }
 .rfid-dash-table td:nth-child(1), .rfid-dash-table td:nth-child(2) { font-family: var(--font-mono); font-size: 12px; }
 .rfid-dash-empty { margin: 0; padding: 18px 10px; color: var(--text-mute); font-size: 13px; text-align: center; }
 .rfid-dash-foot { margin: 10px 0 0; font-family: var(--font-mono); font-size: 11px; color: var(--text-mute); }
 
-.rfid-dash-event-list { list-style: none; margin: 0; padding: 0; max-height: 360px; overflow-y: auto; }
+.rfid-dash-event-list { list-style: none; margin: 0; padding: 0; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .rfid-dash-event {
   display: grid; grid-template-columns: 18px max-content minmax(0, 1fr);
   align-items: start; gap: 10px; padding: 10px 0; border-top: 1px solid var(--paper-line);
@@ -813,7 +820,7 @@
 .rfid-dash-event-body { display: grid; gap: 2px; min-width: 0; font-size: 13px; }
 .rfid-dash-event-detail { color: var(--text-mute); font-size: 12.5px; overflow-wrap: anywhere; }
 
-.rfid-dash-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+.rfid-dash-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; flex: none; }
 @media (max-width: 480px) { .rfid-dash-actions { grid-template-columns: 1fr; } }
 .rfid-dash-btn {
   display: flex; align-items: center; justify-content: center; gap: 18px;
@@ -832,3 +839,20 @@
 .rfid-dash-btn-title { font-size: 30px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; line-height: 1; }
 .rfid-dash-btn-sub { font-size: 14px; opacity: .9; }
 .rfid-dash .form-error { margin-top: 10px; }
+
+/* Fill the main column between the top bar and footer: a flex column of
+   the main's height; tiles keep their height, the two panels grow and
+   scroll inside, START / STOP stay pinned at the bottom. A short screen
+   scrolls the main column instead of squeezing the page below its floor. */
+.rfid-dash { display: flex; flex-direction: column; height: 100%; min-height: 560px; box-sizing: border-box; }
+.rfid-dash-head, .rfid-dash-tiles { flex: none; }
+@media (max-width: 900px) { .rfid-dash { height: auto; } }
+
+/* Always dark (KioskShell forces data-theme="dark" on this route): the
+   page is the near-black --paper-2, cards a step lighter (--surface) with
+   the theme's subtle border, tile icons in the accent, and big saturated
+   START / STOP. The dimmed button stays readable. */
+.portal-shell[data-theme='dark'] .rfid-dash-tile,
+.portal-shell[data-theme='dark'] .rfid-dash-panel { background: var(--surface); }
+.portal-shell[data-theme='dark'] .rfid-dash-btn { color: var(--paper-2); }
+.portal-shell[data-theme='dark'] .rfid-dash-btn:disabled { opacity: .5; filter: saturate(.6); }

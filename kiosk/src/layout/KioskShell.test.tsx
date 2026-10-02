@@ -3,7 +3,7 @@
  *  route and nothing for /. */
 import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes, useSearchParams } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 // applyPreferences reads prefers-reduced-motion; jsdom has no matchMedia.
@@ -29,7 +29,7 @@ const auth = vi.hoisted(() => ({
   status: 'authed' as 'authed' | 'anon',
   person: { display_name: 'Alex Worker' } as { display_name: string } | null,
   registration: 'ok' as 'ok' | 'soon' | 'expired' | 'none' | null,
-  preferences: null,
+  preferences: null as unknown,
   sessionExpiresAt: '2026-09-14T19:00:42.000Z' as string | null,
   kioskMove: null as { initiative_id: string; name: string } | null,
   logout: vi.fn(() => Promise.resolve()),
@@ -57,6 +57,8 @@ import { clearFlash, flash } from '../lib/flash';
 import { getIdentity } from '../lib/identity';
 import { writeKioskSetup } from '../lib/kioskSetup';
 import { writeSetupState } from '../lib/setupState';
+import { DEFAULT_PREFERENCES } from '@portal/lib/settings';
+
 import KioskShell from './KioskShell';
 
 afterEach(() => {
@@ -442,4 +444,34 @@ it('signed in, the shell loads the laptop\'s shared setup; signed out it does no
   auth.status = 'anon';
   render(<MemoryRouter><KioskShell><div /></KioskShell></MemoryRouter>);
   expect(laptopSetupMock.hydrateLaptopSetup).not.toHaveBeenCalled();
+});
+
+function GoHome() {
+  const navigate = useNavigate();
+  return <button type="button" onClick={() => navigate('/')}>go home</button>;
+}
+
+it('/rfid_status renders dark even when the person prefers light, and restores on leaving', async () => {
+  auth.preferences = { ...DEFAULT_PREFERENCES, theme: 'light' };
+  render(
+    <MemoryRouter initialEntries={['/rfid_status']}>
+      <KioskShell><GoHome /></KioskShell>
+    </MemoryRouter>,
+  );
+  const shell = document.querySelector('.portal-shell') as HTMLElement;
+  expect(shell.getAttribute('data-theme')).toBe('dark');
+  await userEvent.setup().click(screen.getByRole('button', { name: 'go home' }));
+  expect(shell.getAttribute('data-theme')).toBe('light');
+  auth.preferences = null;
+});
+
+it('other routes keep the person\'s theme', () => {
+  auth.preferences = { ...DEFAULT_PREFERENCES, theme: 'light' };
+  render(
+    <MemoryRouter initialEntries={['/timeclock']}>
+      <KioskShell><div /></KioskShell>
+    </MemoryRouter>,
+  );
+  expect(document.querySelector('.portal-shell')?.getAttribute('data-theme')).toBe('light');
+  auth.preferences = null;
 });

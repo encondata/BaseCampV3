@@ -121,26 +121,27 @@ describe('RfidStatus', () => {
     expect(stopBtn().textContent).toContain('Stop RFID reader');
   });
 
-  it('Stopped: gray pill, START enabled, STOP disabled with Already stopped', async () => {
+  it('Stopped: gray pill, START enabled, STOP stays enabled so a stuck reader can be stopped', async () => {
     api.getReaderStatus.mockResolvedValue(status({ reading: false }));
     await renderPage();
     expect(screen.getByTestId('rfid-dash-pill').textContent).toBe('Stopped');
     expect(within(tile('Reader status')).getByText('Stopped')).toBeTruthy();
     expect(startBtn().disabled).toBe(false);
     expect(startBtn().textContent).toContain('Start RFID reader');
-    expect(stopBtn().disabled).toBe(true);
-    expect(stopBtn().textContent).toContain('Already stopped');
+    expect(stopBtn().disabled).toBe(false);
+    expect(stopBtn().textContent).toContain('Send stop to the reader');
+    expect(stopBtn().textContent).not.toContain('Already stopped');
   });
 
-  it('Unreachable: red pill, both buttons disabled', async () => {
+  it('Unreachable: red pill, START disabled, STOP still enabled', async () => {
     api.getReaderStatus.mockResolvedValue(status({ reachable: false, reading: false }));
     await renderPage();
     expect(screen.getByTestId('rfid-dash-pill').textContent).toBe('Unreachable');
     expect(within(tile('Reader status')).getByText('Unreachable')).toBeTruthy();
     expect(startBtn().disabled).toBe(true);
-    expect(stopBtn().disabled).toBe(true);
+    expect(stopBtn().disabled).toBe(false);
     expect(startBtn().textContent).toContain('Reader unreachable');
-    expect(stopBtn().textContent).toContain('Reader unreachable');
+    expect(stopBtn().textContent).toContain('Send stop to the reader');
   });
 
   it('STOP calls stopReader, then re-fetches status and events', async () => {

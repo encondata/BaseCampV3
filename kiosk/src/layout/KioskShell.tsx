@@ -67,9 +67,17 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   const sync = useSyncStatus();
   const { status: edge } = useEdgeStatus();
 
+  // The RFID dashboard is always dark, like its mockup, whatever the
+  // person's theme: applyPreferences runs first (it sets data-theme from
+  // the preference), then the forced theme overrides it. Leaving the route
+  // re-runs the effect, so the preference is applied again.
+  const forceDark = location.pathname === '/rfid_status';
   useEffect(() => {
     applyPreferences(preferences ?? DEFAULT_PREFERENCES);
-  }, [preferences]);
+    if (forceDark) {
+      document.querySelector<HTMLElement>('.portal-shell')?.setAttribute('data-theme', 'dark');
+    }
+  }, [preferences, forceDark]);
 
   // A laptop's browsers share its finished setup (GET /edge/setup needs a
   // signed-in edge session): a phone on the LAN starts set up, not blank.

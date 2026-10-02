@@ -191,11 +191,11 @@ export default function RfidStatus() {
   const startSub = busy === 'start' ? 'Starting…'
     : unreachable ? 'Reader unreachable'
       : reading ? 'Already reading' : 'Start RFID reader';
+  // STOP is never disabled outside a start/stop call: a stuck reader needs it.
   const stopSub = busy === 'stop' ? 'Stopping…'
-    : unreachable ? 'Reader unreachable'
-      : state === 'stopped' ? 'Already stopped' : 'Stop RFID reader';
+      : reading ? 'Stop RFID reader' : 'Send stop to the reader';
   const startDisabled = busy !== null || state === 'loading' || unreachable || reading;
-  const stopDisabled = busy !== null || state === 'loading' || unreachable || !reading;
+  const stopDisabled = busy !== null;
 
   const assets = sync.assets;
   const antennas = status?.antennas ?? [];
