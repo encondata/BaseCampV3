@@ -18,7 +18,7 @@ def make(reader: FakeReader, **kw) -> ZiotcClient:
 
 
 def test_passwords_are_the_global_list_in_order():
-    assert PASSWORDS == ("Cumulus$G0", "Cumulu$SG.", "33q44w40x5", "change")
+    assert PASSWORDS == ("Cumulu$SG0", "Cumulus$G0", "Cumulu$SG.", "33q44w40x5", "change")
 
 
 def test_client_uses_https_no_verify_and_the_timeouts():
@@ -68,7 +68,7 @@ async def test_all_passwords_fail_is_reader_auth_failed():
     with pytest.raises(ReaderError) as err:
         await make(reader).login()
     assert err.value.code == "reader_auth_failed"
-    assert reader.login_attempts == [0, 1, 2, 3]
+    assert reader.login_attempts == list(range(len(PASSWORDS)))
 
 
 async def test_403_also_tries_the_next_password():

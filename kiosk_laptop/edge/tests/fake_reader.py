@@ -35,7 +35,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
-PASSWORDS = ("Cumulus$G0", "Cumulu$SG.", "33q44w40x5", "change")
+PASSWORDS = ("Cumulu$SG0", "Cumulus$G0", "Cumulu$SG.", "33q44w40x5", "change")
 
 NOT_FOUND_HTML = (
     '<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">\n<html><head>\n'

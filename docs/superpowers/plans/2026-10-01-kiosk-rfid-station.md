@@ -24,7 +24,7 @@
 - American English in all copy and comments.
 
 **Reader access (the ZIOTC client)**
-- Username `admin`. Try passwords in this exact order: `Cumulus$G0`, `Cumulu$SG.`, `33q44w40x5`, `change`.
+- Username `admin`. Try passwords in this exact order: `Cumulu$SG0`, `Cumulus$G0`, `Cumulu$SG.`, `33q44w40x5`, `change`.
 - Passwords are never returned to the browser, never logged and never sent to the cloud. Only the winning index is stored, per reader serial.
 - Reader HTTPS runs with verify off. Timeouts: 3 s connect, 10 s read.
 - Sign-in: `GET https://<ip>/cloud/localRestLogin` with basic auth. The response carries a token, sent afterwards as `Authorization: Bearer <token>`. Accept the token from a JSON body field `message` or `token`, or from a plain-text body.

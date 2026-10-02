@@ -31,7 +31,7 @@ import httpx
 log = logging.getLogger("edge.rfid.ziotc")
 
 USERNAME = "admin"
-PASSWORDS: tuple[str, ...] = ("Cumulus$G0", "Cumulu$SG.", "33q44w40x5", "change")
+PASSWORDS: tuple[str, ...] = ("Cumulu$SG0", "Cumulus$G0", "Cumulu$SG.", "33q44w40x5", "change")
 TIMEOUT = httpx.Timeout(10.0, connect=3.0)
 LOGIN_PATH = "/cloud/localRestLogin"
 TOKEN_PREFIX = "JWT Token:"

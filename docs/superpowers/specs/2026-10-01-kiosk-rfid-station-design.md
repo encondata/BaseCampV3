@@ -23,7 +23,7 @@ Tag data itself is **out of scope**. Nothing receives or processes reads yet. A 
 | Laptop network address | A **host helper** on the laptop writes its current addresses to the data folder. The edge reads them to choose subnets to scan and the pairing address. |
 | Reader → laptop path | Port **8091** published on all interfaces for future tag data; nothing listens in this phase. |
 | Kiosk UI exposure | The UI listens on **`0.0.0.0:8090`** (was `127.0.0.1`) so other devices on the LAN can use it over plain HTTP. Sign-in pages reached through a LAN address show an "unencrypted connection" notice. WebUSB printing works only on the laptop itself (localhost). |
-| Reader credentials | Username `admin`. Passwords tried in order: `Cumulus$G0`, `Cumulu$SG.`, `33q44w40x5`, then Zebra's default `change`. Hard-coded in the edge; these readers hold nothing sensitive. |
+| Reader credentials | Username `admin`. Passwords tried in order: `Cumulu$SG0`, `Cumulus$G0`, `Cumulu$SG.`, `33q44w40x5`, then Zebra's default `change`. Hard-coded in the edge; these readers hold nothing sensitive. |
 | Tag data | Not handled now. Pairing succeeds when the reader accepts the endpoint and a read-back of its config shows it. |
 | Station type in the portal | A new `devices.station_type` (`label` \| `rfid`). `sub_type` stays `laptop`. The device row also stores the paired reader's details. |
 
@@ -130,7 +130,7 @@ The installer adds a small job that writes `<data dir>/host-network.json`:
 
 - **Transport:** HTTPS to `https://<ip>` (port 443) with certificate verification **off** (the readers use self-signed certificates), or plain HTTP to `http://<ip>` (port 80). Connect and pair use where the latest scan found the reader, else where it answered before, else 443 then 80 for a manually entered IP. The scheme and port are remembered per reader serial (`rfid_readers.scheme`, `port`). Timeouts: 3 s connect, 10 s read.
 - **Sign-in:** `GET /cloud/localRestLogin` with HTTP basic auth `admin:<password>`. It returns a token, which is sent as `Authorization: Bearer <token>` on later calls.
-  - Passwords are tried in order: `Cumulus$G0`, `Cumulu$SG.`, `33q44w40x5`, `change`.
+  - Passwords are tried in order: `Cumulu$SG0`, `Cumulus$G0`, `Cumulu$SG.`, `33q44w40x5`, `change`.
   - A 401/403 tries the next password.
   - Any other failure stops the attempt.
 - **Password memory:** the index of the password that worked is remembered per reader serial in SQLite (`rfid_readers.password_index`, looked up by the reader's IP) and tried first next time; a scan tries only that one (§2.2). A successful Connect remembers it without creating a pairing token. **Passwords are never sent to the browser, logged, or sent to the cloud.**
