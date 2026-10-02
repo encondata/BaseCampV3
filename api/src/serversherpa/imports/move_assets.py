@@ -9,7 +9,7 @@ pipeline (run_import), and the post-commit placement re-check
 
 import json
 import logging
-import random
+import secrets
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -58,10 +58,12 @@ def resolve_make_model_for_creation(asset_make: str,
     return make, model
 
 
-def generate_serial(asset_name: str) -> str:
-    """V2 format: lowercase_name.13_random_digits."""
-    digits = "".join(str(random.randint(0, 9)) for _ in range(13))
-    return f"{asset_name.strip().lower()}.{digits}"
+GENERATED_SERIAL_PREFIX = "gnrtd-"
+
+
+def new_generated_serial() -> str:
+    """gnrtd- + 6 random lowercase hex characters (16.7 million values)."""
+    return GENERATED_SERIAL_PREFIX + secrets.token_hex(3)
 
 
 def _float(text: str) -> float | None:
@@ -78,15 +80,10 @@ def parse_row(n: int, canonical: dict, raw: dict, *,
     name_raw = canonical["asset_name"].strip()
     serial_generated = False
     if not serial:
-        if generate_serials and name_raw:
-            serial = generate_serial(name_raw)
-            serial_generated = True
-        else:
-            message = ("Missing required field: Serial Number"
-                       if not generate_serials
-                       else "Cannot generate serial: Asset Name is also blank")
+        if not generate_serials:
             return {"row": n, "serial_number": "", "status": "error",
-                    "message": message}
+                    "message": "Missing required field: Serial Number"}
+        serial_generated = True     # assigned by assign_generated_serials
     serial = serial.lower()
 
     make = canonical["asset_make"].strip()
@@ -229,6 +226,41 @@ def _apply_row(assoc: InitiativeAsset, r: dict, now: datetime) -> None:
     assoc.updated_at = now
 
 
+async def assign_generated_serials(
+    db: AsyncSession, rows: list[dict], *,
+    draw: Callable[[], str] = new_generated_serial,
+) -> None:
+    """Give every ok row flagged serial_generated (and still blank) a serial
+    unique among the file's serials and every assets.serial_number
+    (archived included). One batched lookup per round; collisions redraw."""
+    pending = [r for r in rows
+               if r["status"] == "ok" and r.get("serial_generated")
+               and not r["serial_number"]]
+    if not pending:
+        return
+    taken = {r["serial_number"].lower() for r in rows
+             if r["status"] == "ok" and r["serial_number"]}
+    while pending:
+        candidates: dict[str, dict] = {}
+        for r in pending:
+            s = draw().lower()
+            while s in taken or s in candidates:
+                s = draw().lower()
+            candidates[s] = r
+        existing = {(v or "").lower() for v in await db.scalars(
+            select(Asset.serial_number).where(
+                Asset.serial_number.in_(list(candidates))))}
+        pending = []
+        for s, r in candidates.items():
+            taken.add(s)
+            if s in existing:
+                pending.append(r)
+                continue
+            r["serial_number"] = s
+            if not r["asset_name"]:
+                r["asset_name"] = s
+
+
 async def run_import(
     db: AsyncSession, *,
     initiative_id: uuid.UUID,
@@ -254,6 +286,7 @@ async def run_import(
     boundary. progress_every overrides BATCH_SIZE as that boundary."""
     from serversherpa.services.audit import audit
 
+    await assign_generated_serials(db, rows)
     ok_rows = [r for r in rows if r["status"] == "ok"]
     assets, rfid_map, literal_map, model_map, roster = await _lookups(
         db, initiative_id, ok_rows)
