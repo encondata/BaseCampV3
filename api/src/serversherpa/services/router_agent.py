@@ -237,18 +237,27 @@ async def handle_report(db: AsyncSession, report: RouterReportIn, ip: str) -> st
         return "approved"
 
     if device.approval_state == "pending" and device.approved_at is not None:
-        # Approved, then knocked to pending by a forged report (revoke clears
-        # approved_at, so a revoked router never lands here): the pinned
-        # secret just proved itself, so the approval comes back. The
-        # forger's candidate goes; secret_mismatch stays as evidence until an
-        # admin dismisses it. No notification.
-        device.approval_state = "approved"
-        device.pending_secret_hash = None
-        await _store_snapshot(db, device, report, ip, now)
-        audit(db, actor_id=None, entity_type="device", entity_id=str(device.id),
-              action="router_auto_restore", changes={"mac": device.mac}, ip=ip)
-        await db.commit()
-        return "approved"
+        # Approved, then knocked to pending by a forged report: the pinned
+        # secret just proved itself, so the approval comes back. Guarded, so
+        # a revoke that committed since the row was read (it clears
+        # approved_at) wins and the router falls through to the pending path.
+        # The forger's candidate goes; secret_mismatch stays as evidence until
+        # an admin dismisses it. No notification.
+        restored = await db.execute(
+            update(Device)
+            .where(Device.id == device.id, Device.approval_state == "pending",
+                   Device.approved_at.is_not(None))
+            .values(approval_state="approved", pending_secret_hash=None, updated_at=now)
+            .execution_options(synchronize_session=False))
+        if restored.rowcount == 1:
+            device.approval_state = "approved"
+            device.pending_secret_hash = None
+            await _store_snapshot(db, device, report, ip, now)
+            audit(db, actor_id=None, entity_type="device", entity_id=str(device.id),
+                  action="router_auto_restore", changes={"mac": device.mac}, ip=ip)
+            await db.commit()
+            return "approved"
+        await db.refresh(device)
 
     # pending or revoked, genuine secret: identity only. A revoked router
     # that keeps reporting goes back to pending, quietly (no notification).

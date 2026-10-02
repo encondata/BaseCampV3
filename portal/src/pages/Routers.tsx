@@ -208,8 +208,14 @@ export default function Routers() {
   };
 
   const approve = (d: DeviceItem) => {
-    if (!window.confirm(
-      `Approve "${d.name}"? MAC ${d.mac ?? '—'} · ${d.model ?? 'unknown model'} · `
+    const knockedDown = d.approval_state === 'pending' && d.approved_at != null
+      && d.secret_mismatch;
+    if (!window.confirm(knockedDown
+      ? `"${d.name}" was approved, then reported with a different secret. `
+        + 'Approving now trusts that new secret. If the router itself wasn\'t reset or '
+        + 'reinstalled, don\'t approve: it restores itself the next time it checks in '
+        + 'with its approved secret. Approve anyway?'
+      : `Approve "${d.name}"? MAC ${d.mac ?? '—'} · ${d.model ?? 'unknown model'} · `
       + `reporting from ${d.agent_source_ip ?? 'an unknown address'}. `
       + 'Its reports are stored from its next check-in.',
     )) return;

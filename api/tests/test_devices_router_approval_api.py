@@ -141,9 +141,10 @@ async def test_approve_on_an_approved_router_with_a_mismatch_dismisses_the_warni
     await client.post(f"/devices/{d.id}/approve", headers=hdrs)
     await db.refresh(d)
     # the router auto-restored: approved again, flag still up, forger's candidate gone
+    third = hashlib.sha256(b"c" * 64).hexdigest()
     await db.execute(text(
         "UPDATE devices SET secret_mismatch = true, pending_secret_hash = :n WHERE id = :i"),
-        {"n": NEW, "i": d.id})
+        {"n": third, "i": d.id})
     await db.commit()
     await db.refresh(d)
     approved_at, approved_by, pinned = d.approved_at, d.approved_by, d.agent_secret_hash
@@ -151,7 +152,7 @@ async def test_approve_on_an_approved_router_with_a_mismatch_dismisses_the_warni
     assert resp.status_code == 200 and resp.json()["secret_mismatch"] is False
     await db.refresh(d)
     assert d.secret_mismatch is False and d.pending_secret_hash is None
-    assert d.agent_secret_hash == pinned  # no candidate promoted
+    assert pinned == NEW and d.agent_secret_hash == pinned != third  # no candidate promoted
     assert d.approved_at == approved_at and d.approved_by == approved_by
     assert d.approval_state == "approved"
     def dismissed():

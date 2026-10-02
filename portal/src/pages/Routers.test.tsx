@@ -301,6 +301,24 @@ it('Approve on a pending row confirms with MAC/model/IP and calls approveRouter'
   confirmSpy.mockRestore();
 });
 
+it('Approve on a knocked-down router (approved before, now pending with a mismatch) warns first', async () => {
+  api.listDevices.mockResolvedValue([
+    { ...DEVICES[0], approved_at: '2026-08-20T10:00:00Z' }, DEVICES[1]]);
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  const user = userEvent.setup();
+  renderRouters();
+  const row = (await screen.findByText('zebra-router-2')).closest('.dir-row') as HTMLElement;
+  await user.click(within(row).getByRole('button', { name: /Actions/ }));
+  await user.click(screen.getByRole('menuitem', { name: 'Approve' }));
+  expect(confirmSpy).toHaveBeenCalledWith(
+    '"zebra-router-2" was approved, then reported with a different secret. '
+    + 'Approving now trusts that new secret. If the router itself wasn\'t reset or '
+    + 'reinstalled, don\'t approve: it restores itself the next time it checks in '
+    + 'with its approved secret. Approve anyway?');
+  expect(api.approveRouter).not.toHaveBeenCalled();
+  confirmSpy.mockRestore();
+});
+
 it('Revoke on an approved row', async () => {
   const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
   const user = userEvent.setup();

@@ -173,8 +173,11 @@ async def _previously_approved(client, db) -> Device:
     return await _router(db)
 
 
-async def test_approved_router_knocked_to_pending_by_a_forgery_restores_on_a_genuine_report(client, db):
+async def test_approved_router_knocked_to_pending_by_a_forgery_restores_on_a_genuine_report(client, db, seeded_user):
+    await _make_admin(db, seeded_user.id)
     d = await _previously_approved(client, db)
+    notes = "SELECT count(*) FROM notifications WHERE kind = 'router_approval'"
+    assert await db.scalar(text(notes)) == 1  # the registration notified the approver
     resp = await client.post("/router-agent/report",
                              json=report(secret=OTHER_SECRET, firmware="9.9.9"))
     assert resp.status_code == 202 and resp.json() == {"state": "pending"}
@@ -189,7 +192,53 @@ async def test_approved_router_knocked_to_pending_by_a_forgery_restores_on_a_gen
     assert await db.scalar(select(AuditLog).where(
         AuditLog.action == "router_auto_restore", AuditLog.entity_id == str(d.id),
         AuditLog.actor_person_id.is_(None))) is not None
-    assert await db.scalar(text("SELECT count(*) FROM notifications")) == 0
+    assert await db.scalar(text(notes)) == 1  # forged + genuine reports notified no one
+
+
+async def test_a_revoke_that_lands_mid_report_beats_the_auto_restore(client, db, monkeypatch):
+    import asyncio
+    import threading
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from serversherpa.db.engine import get_engine
+    from serversherpa.services import router_agent
+
+    d = await _previously_approved(client, db)
+    await client.post("/router-agent/report", json=report(secret=OTHER_SECRET))
+    await _age(db)
+    await db.refresh(d)
+    assert d.approval_state == "pending" and d.wan_ip is None
+    url = get_engine().url
+    real = router_agent.secret_matches
+    fired: list[int] = []
+
+    async def revoke_elsewhere():
+        engine = create_async_engine(url)
+        async with engine.begin() as conn:
+            await conn.execute(text(
+                "UPDATE devices SET approval_state = 'revoked', approved_at = NULL, "
+                "approved_by = NULL WHERE mac = :m"), {"m": MAC})
+        await engine.dispose()
+
+    def hooked(secret, hashed):
+        # runs after the device row was loaded as "pending + approved_at set"
+        if not fired:
+            fired.append(1)
+            t = threading.Thread(target=lambda: asyncio.run(revoke_elsewhere()))
+            t.start()
+            t.join()  # the revoke commits from a second connection
+        return real(secret, hashed)
+
+    monkeypatch.setattr(router_agent, "secret_matches", hooked)
+    resp = await client.post("/router-agent/report", json=report(firmware="4.6.0"))
+    assert fired
+    assert resp.status_code == 202 and resp.json() == {"state": "pending"}
+    await db.refresh(d)
+    assert d.approval_state == "pending" and d.approved_at is None
+    assert d.wan_ip is None
+    assert await db.scalar(select(AuditLog).where(
+        AuditLog.action == "router_auto_restore")) is None
 
 
 async def test_revoked_router_never_auto_restores(client, db, seeded_user):
