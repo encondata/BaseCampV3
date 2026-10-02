@@ -233,10 +233,11 @@ describe('router helpers', () => {
       .toBe('Pending · Secret changed');
   });
 
-  it('online within 16 minutes, offline after, never without a check-in', () => {
+  it('online within 4 minutes, offline after, never without a check-in', () => {
     const now = new Date('2026-10-01T12:00:00Z');
-    expect(routerStatus('2026-10-01T11:45:00Z', now)).toBe('online');
-    expect(routerStatus('2026-10-01T11:43:00Z', now)).toBe('offline');
+    expect(routerStatus('2026-10-01T11:57:00Z', now)).toBe('online');
+    expect(routerStatus('2026-10-01T11:56:00Z', now)).toBe('online');
+    expect(routerStatus('2026-10-01T11:55:59Z', now)).toBe('offline');
     expect(routerStatus(null, now)).toBe('never');
   });
 

@@ -1,6 +1,6 @@
 # BaseCamp router agent (GL.iNet)
 
-Sends a GL.iNet router's status to BaseCamp every 5 minutes: WAN and LAN
+Sends a GL.iNet router's status to BaseCamp about once a minute (every 65 seconds by default): WAN and LAN
 IPs, uptime, WiFi networks, DHCP clients, connected-client counts, and
 VPN tunnels. Tested against GL-AC2100 (firmware 3.x) and GL-MT3000
 (firmware 4.x) layouts. Send-only: the router never takes commands from
@@ -17,7 +17,17 @@ under **Scanning Hardware › Routers** as **Pending**. Everyone who manages
 scanning hardware gets an approval notification. Nothing the router sends
 is stored until someone approves it; approval lasts until it's revoked.
 
-Options: `--interval SECONDS` (60 or more, default 300), `--ref BRANCH`
+The installer asks for the router's hostname (Enter keeps the current
+one). The portal names a new router after its hostname, so the name is set
+before the first report. Without a terminal, or with no answer within 60
+seconds, it keeps the current name. Unattended or background installs
+(scripts, Ansible, `ssh -tt`) should pass `--hostname`:
+
+    curl -fsSL https://raw.githubusercontent.com/encondata/BaseCampV3/main/router_agent/install.sh | sh -s -- --api https://<api-host> --hostname dock-router-7
+
+Options: `--hostname NAME` (set the hostname without asking: letters,
+digits and hyphens, up to 63 characters, not starting or ending with a
+hyphen), `--interval SECONDS` (60 or more, default 65), `--ref BRANCH`
 (install from a branch or tag instead of `main`).
 
 ## Identity

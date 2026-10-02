@@ -10,7 +10,7 @@ self-registration endpoint this spec delivers).
 
 A small shell agent installed on GL.iNet routers (GL-AC2100 and
 GL-MT3000, OpenWrt-based firmware 3.x/4.x) sends a status report to the
-API every 5 minutes. A router identifies itself by its **WAN MAC
+API every 65 seconds. A router identifies itself by its **WAN MAC
 address** plus a **router-generated secret**. The first report from an
 unknown MAC registers the router as **pending** and sends an approval
 notification to every scanning-hardware admin. Nothing in a report is
@@ -54,7 +54,7 @@ curl -fsSL https://raw.githubusercontent.com/encondata/BaseCampV3/main/router_ag
    init script to `/etc/init.d/basecamp-router` from the same raw
    GitHub ref. `--ref <branch|tag>` overrides `main`.
 3. Writes the UCI config `/etc/config/basecamp` (`api_url`,
-   `interval` = 300 seconds, `enabled` = 1). On a re-install, existing
+   `interval` = 65 seconds, `enabled` = 1). On a re-install, existing
    values are kept unless flags override them.
 4. Generates `/etc/basecamp/secret` only if it does not already exist:
    32 bytes from `/dev/urandom`, hex-encoded, mode 600. A re-install
@@ -75,7 +75,7 @@ the files and the sysupgrade entries. It leaves the secret only if
 The procd service runs `basecamp-router run`. It first waits 30-60
 seconds, so the WAN is up after a boot and the installer's own report is
 past the API's 20-second spacing. Then it sends a report and sleeps for
-`interval` plus a random jitter of 0-30 seconds, and repeats. It retries
+`interval` plus a random jitter of 0-10 seconds, and repeats. It retries
 on the next tick and never backs up a queue. Errors go to `logread`
 with the tag `basecamp`. `basecamp-router once` sends a single report
 and prints the response; this is for troubleshooting.
@@ -285,7 +285,8 @@ may take 0087 when it is re-pointed.
   secret." An approved row with the badge also gets a **Dismiss warning**
   action (confirm, then `approve`).
 - **Status column:** derived from `last_seen_at`. It is Online when the
-  router was seen within 3 × 300 s plus jitter (16 minutes), Offline
+  router was seen within 4 minutes (about three missed 65 s reports plus
+  jitter), Offline
   otherwise, and Never for pending routers that were never seen.
 - **Row Actions menu** (the shared `RowActionsMenu`): Approve (pending
   or revoked), Revoke (approved), Delete. Approve and Revoke confirm with

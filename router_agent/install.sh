@@ -4,7 +4,14 @@
 #   curl -fsSL https://raw.githubusercontent.com/encondata/BaseCampV3/main/router_agent/install.sh | sh -s -- --api https://<api-host>
 #
 #   --api URL            BaseCamp API address (https:// only; kept on re-install)
-#   --interval SECONDS   report interval, 60 or more (default 300)
+#   --interval SECONDS   report interval, 60 or more (default 65)
+#   --hostname NAME      set the router's hostname without asking (letters,
+#                        digits and hyphens, up to 63; the portal names a new
+#                        router after it). Without it, the installer asks on
+#                        the terminal (60 s per answer), or keeps the current
+#                        name if there's none. Unattended or background
+#                        installs should pass --hostname, e.g.
+#   curl -fsSL .../install.sh | sh -s -- --api https://<api-host> --hostname dock-router-7
 #   --ref REF            git branch or tag to install from (default main)
 #   --source BASEURL     install from another location (testing)
 #   --uninstall          remove the agent (add --keep-secret to keep its identity)
@@ -18,6 +25,8 @@ REF=main
 SOURCE=""
 API=""
 INTERVAL=""
+HOSTNAME_ARG=""
+NEW_HOSTNAME=""
 UNINSTALL=0
 KEEP_SECRET=0
 BIN=/usr/bin/basecamp-router
@@ -29,6 +38,15 @@ KEEP_LIST=/etc/sysupgrade.conf
 BOOT_LINK=/etc/rc.d/S99basecamp-router
 KEEP_FILES="/etc/basecamp/ $CONFIG $BIN $INIT $BOOT_LINK"
 HEX64='^[0-9a-f]{64}$'
+# The hostname prompt reads and writes the terminal, never stdin (stdin is
+# this script under `curl ... | sh`). BASECAMP_TTY is a test-only override:
+# the tests point it at a file holding the answers.
+TTY=${BASECAMP_TTY:-/dev/tty}
+# Seconds to wait for each answer, so an unattended run with a forced pty
+# (ssh -tt, Ansible raw) never hangs. BASECAMP_TTY_TIMEOUT is a test-only
+# override.
+TTY_TIMEOUT=${BASECAMP_TTY_TIMEOUT:-60}
+CR=$(printf '\r')
 
 say() { echo "basecamp: $*"; }
 die() { echo "basecamp: error: $*" >&2; exit 1; }
@@ -36,11 +54,12 @@ die() { echo "basecamp: error: $*" >&2; exit 1; }
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      --api|--interval|--ref|--source)
+      --api|--interval|--hostname|--ref|--source)
         [ $# -ge 2 ] || die "$1 needs a value"
         case "$1" in
           --api) API=$2 ;;
           --interval) INTERVAL=$2 ;;
+          --hostname) HOSTNAME_ARG=$2; [ -n "$2" ] || die "--hostname needs a value" ;;
           --ref) REF=$2 ;;
           --source) SOURCE=$2 ;;
         esac
@@ -86,6 +105,75 @@ fetch() {  # url dest
   chmod 755 "$2.new" && mv "$2.new" "$2" || die "couldn't install $2"
 }
 
+# Why NAME isn't a valid hostname (one RFC 1123 label), or nothing if it is.
+hostname_problem() {
+  case "$1" in
+    '') echo "the hostname can't be empty" ;;
+    *[!A-Za-z0-9-]*) echo "use only letters, digits and hyphens" ;;
+    -*|*-) echo "the hostname can't start or end with a hyphen" ;;
+    *) [ ${#1} -le 63 ] || echo "the hostname can be at most 63 characters" ;;
+  esac
+}
+
+current_hostname() {
+  uci -q get system.@system[0].hostname || cat /proc/sys/kernel/hostname 2>/dev/null
+}
+
+tty_usable() {
+  # read-write, so opening a FIFO (tests) never blocks
+  [ -r "$TTY" ] && [ -w "$TTY" ] && ( : <>"$TTY" ) 2>/dev/null
+}
+
+# Decide NEW_HOSTNAME: from --hostname, else by asking on the terminal (Enter
+# keeps the current name; three invalid answers keep it too), else keep it.
+choose_hostname() {
+  current=$(current_hostname)
+  if [ -n "$HOSTNAME_ARG" ]; then
+    NEW_HOSTNAME=$HOSTNAME_ARG
+    return 0
+  fi
+  if ! tty_usable; then
+    say "no terminal; kept the hostname $current (use --hostname to set one)"
+    return 0
+  fi
+  exec 3<>"$TTY"
+  tries=0
+  while [ $tries -lt 3 ]; do
+    tries=$((tries + 1))
+    printf 'basecamp: router hostname [%s]: ' "$current" >>"$TTY"
+    answer=""
+    # a timeout (or end of input) counts as Enter
+    if ! IFS= read -r -t "$TTY_TIMEOUT" answer <&3; then
+      echo >>"$TTY"
+      exec 3<&-
+      say "no answer; kept the hostname $current"
+      return 0
+    fi
+    answer=${answer%"$CR"}
+    [ -n "$answer" ] || break
+    problem=$(hostname_problem "$answer")
+    if [ -z "$problem" ]; then
+      NEW_HOSTNAME=$answer
+      break
+    fi
+    echo "basecamp: $problem" >>"$TTY"
+  done
+  exec 3<&-
+  [ -n "$NEW_HOSTNAME" ] || say "kept the hostname $current"
+}
+
+apply_hostname() {
+  [ -n "$NEW_HOSTNAME" ] || return 0
+  [ "$NEW_HOSTNAME" != "$(current_hostname)" ] || { say "hostname is already $NEW_HOSTNAME"; return 0; }
+  uci -q get system.@system[0] >/dev/null || uci add system system >/dev/null
+  uci set system.@system[0].hostname="$NEW_HOSTNAME" && uci commit system \
+    || { say "warning: couldn't save the hostname $NEW_HOSTNAME"; return 0; }
+  # the live name; the reload below sets it too, but don't depend on procd
+  { echo "$NEW_HOSTNAME" > /proc/sys/kernel/hostname; } 2>/dev/null
+  /etc/init.d/system reload </dev/null >/dev/null 2>&1 || true
+  say "hostname set to $NEW_HOSTNAME"
+}
+
 write_config() {
   [ -f "$CONFIG" ] || : > "$CONFIG"
   uci -q get basecamp.agent >/dev/null || uci set basecamp.agent=agent
@@ -93,7 +181,7 @@ write_config() {
   if [ -n "$INTERVAL" ]; then
     uci set basecamp.agent.interval="$INTERVAL"
   elif [ -z "$(uci -q get basecamp.agent.interval)" ]; then
-    uci set basecamp.agent.interval=300
+    uci set basecamp.agent.interval=65
   fi
   uci set basecamp.agent.enabled=1
   uci commit basecamp || die "couldn't save $CONFIG"
@@ -152,6 +240,11 @@ install_agent() {
     INTERVAL=${INTERVAL#"${INTERVAL%%[!0]*}"}
     [ "${INTERVAL:-0}" -ge 60 ] || die "--interval must be at least 60 seconds"
   fi
+  if [ -n "$HOSTNAME_ARG" ]; then
+    problem=$(hostname_problem "$HOSTNAME_ARG")
+    [ -z "$problem" ] || die "--hostname $HOSTNAME_ARG: $problem"
+  fi
+  choose_hostname
 
   say "downloading the agent from $SOURCE"
   fetch "$SOURCE/basecamp-router.sh" "$BIN"
@@ -161,6 +254,8 @@ install_agent() {
   add_keep_lines
 
   "$INIT" stop >/dev/null 2>&1 </dev/null
+  # before the first report: the portal names a new router after its hostname
+  apply_hostname
   say "sending a first report to $API"
   "$BIN" once </dev/null || say "the first report didn't go through; the service keeps retrying (logread -e basecamp)"
   "$INIT" enable </dev/null || say "warning: couldn't enable the service at boot"
