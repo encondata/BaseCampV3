@@ -3,13 +3,15 @@
  * immediate beat, then one every minute. Each beat upserts the kiosk's
  * Device row and returns the registration state for the shell chip.
  * Failures (offline, read-only mode's 423, a 403) keep the last state
- * and are retried on the next tick.
+ * and are retried on the next tick. A reply's `clear_setup` id is applied
+ * once via setupClear.ts and acknowledged on an immediate re-beat.
  */
 
 import { heartbeatRequest, type RegistrationState } from './api';
 import { kioskVersion } from './config';
 import { getIdentity } from './identity';
 import { platform } from './platform';
+import { applySetupClear, pendingAck, settleAck } from './setupClear';
 
 export const HEARTBEAT_MS = 60_000;
 
@@ -23,6 +25,7 @@ export function startHeartbeat(
   onState: (state: RegistrationState) => void,
   intervalMs: number = HEARTBEAT_MS,
   signIn?: { method: 'password' | 'link' },
+  onClearSetup?: (id: string) => void,
 ): HeartbeatHandle {
   let stopped = false;
   // Seeded from the sign-in that started this heartbeat; every beat sends
@@ -34,13 +37,21 @@ export function startHeartbeat(
     if (stopped) return;
     const { serial, name } = getIdentity();
     const asSignIn = pendingSignIn;
+    const ack = pendingAck();
     try {
       const result = await heartbeatRequest({
         serial, name, mode: platform().mode, version: kioskVersion(),
         ...(asSignIn ? { sign_in: true, login_method: asSignIn.method } : {}),
+        ...(ack ? { setup_cleared: ack } : {}),
       });
       if (asSignIn) pendingSignIn = undefined;
       if (!stopped) onState(result.registration);
+      const asked = result.clear_setup ?? null;
+      settleAck(asked);
+      if (asked && applySetupClear(asked)) {
+        onClearSetup?.(asked);
+        if (!stopped) void beat();          // acknowledge right away
+      }
     } catch {
       /* keep the last known state (and any pending sign-in); next tick retries */
     }

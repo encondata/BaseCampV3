@@ -89,3 +89,44 @@ it('now() after a failed first beat still carries the sign-in flag', async () =>
   expect(api.heartbeatRequest.mock.calls[1][0].login_method).toBe('link');
   handle.stop();
 });
+
+it('applies a clear_setup once, acks on an immediate re-beat, then stops acking', async () => {
+  const onClear = vi.fn();
+  api.heartbeatRequest
+    .mockResolvedValueOnce({ device_id: 'd', name: 'K', registration: 'ok', token_expires_at: null, clear_setup: 'x1' })
+    .mockResolvedValueOnce({ device_id: 'd', name: 'K', registration: 'ok', token_expires_at: null, clear_setup: null })
+    .mockResolvedValue({ device_id: 'd', name: 'K', registration: 'ok', token_expires_at: null, clear_setup: null });
+  const handle = startHeartbeat(vi.fn(), 60_000, undefined, onClear);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(onClear).toHaveBeenCalledWith('x1');
+  expect(api.heartbeatRequest).toHaveBeenCalledTimes(2);            // immediate re-beat
+  expect(api.heartbeatRequest.mock.calls[0][0].setup_cleared).toBeUndefined();
+  expect(api.heartbeatRequest.mock.calls[1][0].setup_cleared).toBe('x1');
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(api.heartbeatRequest.mock.calls[2][0].setup_cleared).toBeUndefined();
+  expect(onClear).toHaveBeenCalledTimes(1);
+  handle.stop();
+});
+
+it('keeps sending the ack while the server still repeats the same id', async () => {
+  api.heartbeatRequest.mockResolvedValue({ device_id: 'd', name: 'K', registration: 'ok', token_expires_at: null, clear_setup: 'x2' });
+  const onClear = vi.fn();
+  const handle = startHeartbeat(vi.fn(), 60_000, undefined, onClear);
+  await vi.advanceTimersByTimeAsync(0);
+  await vi.advanceTimersByTimeAsync(60_000);
+  const calls = api.heartbeatRequest.mock.calls;
+  expect(calls[calls.length - 1][0].setup_cleared).toBe('x2');
+  expect(onClear).toHaveBeenCalledTimes(1);
+  handle.stop();
+});
+
+it('a reload with an unacked id resumes acking without re-applying', async () => {
+  localStorage.setItem('ss.kiosk.setupClear', JSON.stringify({ id: 'x3', acked: false, notice: true }));
+  api.heartbeatRequest.mockResolvedValue({ device_id: 'd', name: 'K', registration: 'ok', token_expires_at: null, clear_setup: null });
+  const onClear = vi.fn();
+  const handle = startHeartbeat(vi.fn(), 60_000, undefined, onClear);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(api.heartbeatRequest.mock.calls[0][0].setup_cleared).toBe('x3');
+  expect(onClear).not.toHaveBeenCalled();
+  handle.stop();
+});
