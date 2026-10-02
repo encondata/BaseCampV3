@@ -15,7 +15,8 @@
 # closed port.
 #
 # Checks, in order (exits non-zero with a message on the first failure):
-#   1. install: exit 0, kiosk-laptop-* serial, laptop config.js, timer enabled
+#   1. install: exit 0, kiosk-laptop-* serial, laptop config.js, timer enabled,
+#      host-network timer enabled and host-network.json written
 #   2. re-install: same serial
 #   3. update with an unchanged image: exit 0, container not recreated
 #   3b. update to a newer good image: exit 0, running it, :previous = the old
@@ -23,8 +24,8 @@
 #   4. update to a broken image: exit 1, rolled back to the (3b) image and
 #      healthy; the next run skips the rejected image and exits 0; a
 #      re-install keeps the running image too (warns, no recreate)
-#   5. uninstall keeps the data folder; uninstall --purge-data (DELETE typed
-#      on the KIOSK_TTY file) deletes it
+#   5. uninstall keeps the data folder and removes both timers; uninstall
+#      --purge-data (DELETE typed on the KIOSK_TTY file) deletes it
 set -euo pipefail
 
 SRC_IMAGE="${1:-}"
@@ -50,6 +51,7 @@ INSTALL_DIR=/opt/serversherpa-kiosk
 DATA_DIR=/var/lib/serversherpa-kiosk
 CONTAINER=serversherpa-kiosk-edge-1
 TIMER=serversherpa-kiosk-update.timer
+HOSTNET_TIMER=serversherpa-kiosk-hostnet.timer
 EDGE=http://127.0.0.1:8090
 
 step() { printf '\n==== %s\n' "$*"; }
@@ -140,6 +142,11 @@ curl -fsS --max-time 5 "$EDGE/config.js" | grep -q '"mode": "laptop"' || fail "c
 pass "config.js says laptop"
 systemctl is-enabled "$TIMER" >/dev/null 2>&1 || fail "$TIMER isn't enabled"
 pass "$TIMER enabled"
+systemctl is-enabled "$HOSTNET_TIMER" >/dev/null 2>&1 || fail "$HOSTNET_TIMER isn't enabled"
+# The timer fires at once (OnBootSec has long passed); give the run a moment.
+for _ in $(seq 1 20); do sudo test -s "$DATA_DIR/host-network.json" && break; sleep 1; done
+sudo grep -q '"updated_at"' "$DATA_DIR/host-network.json" || fail "host-network.json wasn't written"
+pass "$HOSTNET_TIMER enabled, host-network.json written"
 [ "$(container_field '{{.State.Health.Status}}')" = healthy ] || fail "container isn't healthy after install"
 sudo grep -qx "EDGE_CLOUD_API_URL=http://127.0.0.1:9" "$INSTALL_DIR/config.env" || fail "config.env has the wrong API URL"
 [ -f "$HOME/.config/autostart/serversherpa-kiosk.desktop" ] || fail "autostart entry missing for $(id -un)"
@@ -242,10 +249,13 @@ rc=0; sudo env KIOSK_TEMPLATE_DIR="$INSTALLER_DIR" KIOSK_NONINTERACTIVE=1 \
 sudo test -f "$DATA_DIR/identity.json" || fail "$DATA_DIR/identity.json is gone after a plain uninstall"
 ! systemctl is-enabled "$TIMER" >/dev/null 2>&1 || fail "$TIMER is still enabled"
 [ ! -e "/etc/systemd/system/$TIMER" ] || fail "/etc/systemd/system/$TIMER is still there"
+! systemctl is-enabled "$HOSTNET_TIMER" >/dev/null 2>&1 || fail "$HOSTNET_TIMER is still enabled"
+[ ! -e "/etc/systemd/system/$HOSTNET_TIMER" ] || fail "/etc/systemd/system/$HOSTNET_TIMER is still there"
+[ ! -e "$INSTALL_DIR/hostnet.sh" ] || fail "$INSTALL_DIR/hostnet.sh is still there"
 ! docker inspect "$CONTAINER" >/dev/null 2>&1 || fail "container $CONTAINER is still there"
 [ ! -e "$INSTALL_DIR/docker-compose.yml" ] || fail "$INSTALL_DIR/docker-compose.yml is still there"
 [ ! -e "$HOME/.config/autostart/serversherpa-kiosk.desktop" ] || fail "autostart entry is still there"
-pass "kiosk removed, identity.json kept, timer gone"
+pass "kiosk removed, identity.json kept, both timers gone"
 
 step "5b. Uninstall --purge-data"
 # The confirmation is typed on the "terminal": KIOSK_TTY is a file holding DELETE.

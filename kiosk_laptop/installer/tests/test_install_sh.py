@@ -1,5 +1,9 @@
 import pytest
 
+from conftest import INSTALL_SH as _INSTALL_SH
+
+INSTALL_SH_DIR = _INSTALL_SH.parent
+
 
 def test_detect_os_sets_os_and_arch(sh):
     out = sh('detect_os; echo "$OS $ARCH"').stdout.split()
@@ -69,7 +73,8 @@ def test_render_compose(sh, tmp_path):
     text = out.read_text()
     assert "image: ghcr.io/encondata/serversherpa-kiosk-laptop:stable" in text
     assert '"/var/lib/serversherpa-kiosk:/data"' in text
-    assert '"127.0.0.1:8090:8090"' in text and "restart: unless-stopped" in text
+    assert '"0.0.0.0:8090:8090"' in text and '"0.0.0.0:8091:8091"' in text
+    assert "127.0.0.1" not in text and "restart: unless-stopped" in text
     out2 = tmp_path / "c2.yml"
     sh(f'CFG_CHANNEL=stable; KIOSK_DATA_DIR=/d; render_compose "{out2}"', env={"KIOSK_IMAGE": "local/kiosk:test"})
     assert "image: local/kiosk:test" in out2.read_text()
@@ -146,7 +151,7 @@ def test_shellcheck_clean():
     if sc is None:
         pytest.skip("shellcheck not installed")
     for script in (INSTALL_SH, INSTALL_SH.parent / "update.sh", INSTALL_SH.parent / "launch.sh",
-                   INSTALL_SH.parent / "tests" / "test_linux_e2e.sh"):
+                   INSTALL_SH.parent / "hostnet.sh", INSTALL_SH.parent / "tests" / "test_linux_e2e.sh"):
         r = subprocess.run([sc, "-s", "bash", str(script)], capture_output=True, text=True)
         assert r.returncode == 0, (script.name, r.stdout)
 
@@ -225,12 +230,13 @@ def test_start_kiosk_stops_phase1_container_by_label_first(sh, tmp_path):
 def test_uninstall_keeps_data_without_purge(sh, tmp_path):
     inst, data = tmp_path / "inst", tmp_path / "data"
     inst.mkdir(); data.mkdir(); (data / "identity.json").write_text("{}")
-    for f in ("docker-compose.yml", "config.env", "update.sh", "launch.sh"):
+    for f in ("docker-compose.yml", "config.env", "update.sh", "launch.sh", "hostnet.sh"):
         (inst / f).write_text("x")
     (inst / "install.log").write_text("log")
     r = sh(f'DOCKER=(true); KIOSK_DIR="{inst}"; KIOSK_DATA_DIR="{data}"; '
            f'remove_login_items() {{ :; }}; uninstall')
     assert (data / "identity.json").exists() and not (inst / "config.env").exists()
+    assert not (inst / "hostnet.sh").exists()
     assert (inst / "install.log").exists()
     assert "identity" in r.stdout.lower()
 
@@ -1034,3 +1040,86 @@ def test_store_installer_no_container_rejected_uses_previous(sh, tmp_path, mode)
     assert r.returncode == 0, r.stderr
     tags, running = store()
     assert running == "sha256:old"
+
+
+# ── RFID station Task 7: host-network helper job ──────────────────────
+
+def test_render_systemd_units_include_the_hostnet_timer(sh, tmp_path):
+    sh(f'KIOSK_DIR="/opt/serversherpa kiosk"; render_systemd_units "{tmp_path}"')
+    svc = (tmp_path / "serversherpa-kiosk-hostnet.service").read_text()
+    tmr = (tmp_path / "serversherpa-kiosk-hostnet.timer").read_text()
+    assert 'ExecStart="/opt/serversherpa kiosk/hostnet.sh"' in svc and "Type=oneshot" in svc
+    assert "User=" not in svc   # runs as root, like the data folder's owner on Linux
+    assert "OnBootSec=10s" in tmr and "OnUnitActiveSec=60s" in tmr and "WantedBy=timers.target" in tmr
+    for f in ("hostnet.service", "hostnet.timer"):
+        assert (tmp_path / f"serversherpa-kiosk-{f}").stat().st_mode & 0o777 == 0o644
+
+
+def test_render_launch_agent_interval_mode(sh, tmp_path):
+    f = tmp_path / "h.plist"
+    sh(f'render_launch_agent com.serversherpa.kiosk.hostnet "{f}" interval /k/hostnet.sh')
+    a = plistlib.loads(f.read_bytes())
+    assert a["Label"] == "com.serversherpa.kiosk.hostnet" and a["ProgramArguments"] == ["/k/hostnet.sh"]
+    assert a["StartInterval"] == 60 and a["RunAtLoad"] is True
+
+
+def test_install_login_items_linux_registers_the_hostnet_timer(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + 'OS=Linux; install_login_items')
+    assert (inst / "hostnet.sh").stat().st_mode & 0o777 == 0o755
+    assert (inst / "hostnet.sh").read_text() == (INSTALL_SH_DIR / "hostnet.sh").read_text()
+    assert (tmp_path / "units" / "serversherpa-kiosk-hostnet.timer").exists()
+    assert "systemctl enable --now serversherpa-kiosk-hostnet.timer" in calls.read_text().splitlines()
+
+
+def test_install_login_items_linux_without_desktop_user_still_registers_hostnet(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + 'desktop_user() { :; }; OS=Linux; install_login_items')
+    assert "systemctl enable --now serversherpa-kiosk-hostnet.timer" in calls.read_text()
+
+
+def test_install_login_items_macos_registers_the_hostnet_agent(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + 'OS=Darwin; install_login_items')
+    agents = home / "Library" / "LaunchAgents"
+    h = plistlib.loads((agents / "com.serversherpa.kiosk.hostnet.plist").read_bytes())
+    assert h["ProgramArguments"] == [f"{inst}/hostnet.sh"] and h["StartInterval"] == 60 and h["RunAtLoad"] is True
+    log = calls.read_text().splitlines()
+    i_out = log.index("launchctl bootout gui/501/com.serversherpa.kiosk.hostnet")
+    i_in = log.index(f"launchctl bootstrap gui/501 {agents}/com.serversherpa.kiosk.hostnet.plist")
+    assert i_out < i_in
+    assert (inst / "hostnet.sh").stat().st_mode & 0o777 == 0o755
+
+
+def test_remove_login_items_linux_removes_the_hostnet_timer(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + 'OS=Linux; install_login_items; remove_login_items')
+    assert not (tmp_path / "units" / "serversherpa-kiosk-hostnet.timer").exists()
+    assert not (tmp_path / "units" / "serversherpa-kiosk-hostnet.service").exists()
+    log = calls.read_text()
+    assert "systemctl disable --now serversherpa-kiosk-hostnet.timer" in log
+    assert "systemctl stop serversherpa-kiosk-hostnet.service" in log
+
+
+def test_remove_login_items_macos_removes_the_hostnet_agent(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    sh(stubs + 'OS=Darwin; install_login_items; : > "' + str(calls) + '"; remove_login_items')
+    assert not (home / "Library" / "LaunchAgents" / "com.serversherpa.kiosk.hostnet.plist").exists()
+    assert "launchctl bootout gui/501/com.serversherpa.kiosk.hostnet" in calls.read_text()
+
+
+def test_remove_login_items_macos_without_user_names_the_hostnet_agent(sh, tmp_path):
+    inst, home, calls, stubs = _login_env(tmp_path)
+    r = sh(stubs + 'desktop_user() { :; }; OS=Darwin; remove_login_items')
+    assert "com.serversherpa.kiosk.hostnet.plist" in r.stderr
+
+
+def test_dev_compose_publishes_both_ports_on_all_interfaces():
+    text = (INSTALL_SH_DIR.parent / "docker-compose.yml").read_text()
+    assert '"${EDGE_BIND:-0.0.0.0}:8090:8090"' in text and '"${EDGE_BIND:-0.0.0.0}:8091:8091"' in text
+    assert "127.0.0.1" not in text
+
+
+def test_runtime_compose_template_publishes_both_ports_on_all_interfaces():
+    text = (INSTALL_SH_DIR / "docker-compose.yml").read_text()
+    assert '- "0.0.0.0:8090:8090"' in text and '- "0.0.0.0:8091:8091"' in text

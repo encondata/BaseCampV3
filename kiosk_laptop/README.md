@@ -96,6 +96,54 @@ Windows notes:
 Open it at `http://localhost:8090`, or from the ServerSherpa Kiosk shortcut or
 menu entry.
 
+## Using the kiosk from other devices
+
+The kiosk also answers on the laptop's network address, so a phone, tablet or
+another computer on the same network can use it:
+
+```
+http://<laptop-ip>:8090
+```
+
+- `<laptop-ip>` is the laptop's address on the local network, for example
+  `10.10.48.57`. The kiosk only answers on the laptop's own current addresses
+  (it learns them from `host-network.json`, below), plus `localhost`.
+- The connection is **not encrypted** (plain HTTP). Passwords and scans cross
+  the network as readable text, and the sign-in page says so. Use it only on a
+  network you trust. TLS is planned.
+- Everything works from another device except **label printing**: Chrome only
+  lets a page reach a USB printer over `localhost`, so print labels on the
+  laptop itself.
+- If another device can't connect, check that the laptop's firewall allows
+  incoming connections on ports 8090 and 8091.
+
+## RFID station
+
+A kiosk can be an **RFID station** with a Zebra FX9600 reader instead of a
+label station. Pair the reader from **Kiosk Setup**: choose RFID Station, then
+pick the reader the kiosk finds on the laptop's network (or type its address),
+and the kiosk points the reader's tag data at this laptop.
+
+- The reader must run its **IoT Connector (ZIOTC) in Local REST mode**. Set
+  that in the reader's web console before pairing. The kiosk signs in to it
+  with the reader's admin account.
+- The reader sends its tag data to the laptop on port **8091**, which the kiosk
+  publishes on every network interface. Keep it open in the laptop's firewall.
+- The reader and the laptop must be on the same network. The kiosk scans the
+  laptop's own subnets for readers.
+- The installer adds a small job that writes the laptop's current network
+  addresses to `host-network.json` in the data folder, at sign-in (Linux: at
+  boot) and every minute:
+  - Windows: the scheduled task `ServerSherpa Kiosk Host Network`, as the
+    signed-in user.
+  - macOS: the launch agent `com.serversherpa.kiosk.hostnet`, as the signed-in
+    user.
+  - Linux: `serversherpa-kiosk-hostnet.timer`, as root.
+
+  The kiosk treats addresses older than 5 minutes as unknown, and then can't
+  look for readers. An existing install gets the job by running the install
+  command again.
+
 ## Unattended stations
 
 - Windows and macOS start the kiosk only after someone signs in. For a station
@@ -179,6 +227,8 @@ on the laptop, not a Docker volume. It holds:
 - `identity.json` — the kiosk's permanent serial and name.
 - `edge.key` — the key that protects cached sign-in data.
 - `edge.db` — settings, cached data and scans waiting to upload.
+- `host-network.json` — the laptop's network addresses, rewritten every minute
+  (see [RFID station](#rfid-station)); nothing to back up.
 
 Back this folder up. Deleting it creates a brand-new kiosk, and any scans that
 had not uploaded are lost. Stop the kiosk first so the copy of `edge.db` is
@@ -209,7 +259,8 @@ Windows:
 
 (Or run `install.ps1 -Uninstall` from a checkout.)
 
-It removes the update job and the launcher first, then stops the kiosk. If
+It removes the update job, the host network job and the launcher first, then
+stops the kiosk. If
 Docker isn't running, it stops and asks you to start Docker and run the
 command again. It keeps the data folder, `install.log` and `update.log`, and
 it never uninstalls Docker.
@@ -250,13 +301,22 @@ EDGE_CLOUD_API_URL=https://api.serversherpa.com \
 Optional settings: `EDGE_PORTAL_URL`, `EDGE_DATA_HOST_DIR` (default
 `~/ServerSherpaKiosk`), `EDGE_OFFLINE_LOGIN_DAYS` (default `14`),
 `EDGE_SYNC_INTERVAL_S` (default `300`), and `EDGE_ALLOWED_HOSTS` (extra host
-names, comma separated; `localhost`, `127.0.0.1` and `[::1]` are always
-allowed, any other `Host` gets 400).
+names, comma separated; `localhost`, `127.0.0.1`, `[::1]` and the laptop's
+fresh addresses from `host-network.json` are always allowed, any other `Host`
+gets 400).
 
-`EDGE_BIND` (default `127.0.0.1`) must stay `127.0.0.1` until the edge supports
-TLS. WebUSB label printing needs a secure context, which a browser only grants
-to `localhost` over plain HTTP, and sign-ins would cross the network in clear
-text. Do not expose the kiosk to the LAN or a VPN.
+Like the installed kiosk, it publishes the UI (8090) and the reader port
+(8091) on every interface; set `EDGE_BIND=127.0.0.1` to keep both on this
+machine. See [Using the kiosk from other devices](#using-the-kiosk-from-other-devices)
+for what that means (plain HTTP, label printing on the laptop only).
+
+No job writes `host-network.json` in a development setup. To use LAN access or
+RFID reader setup, write it yourself (it goes stale after 5 minutes, so loop
+it while you work):
+
+```
+KIOSK_DATA_DIR=~/ServerSherpaKiosk bash kiosk_laptop/installer/hostnet.sh
+```
 
 ## Maintainers
 

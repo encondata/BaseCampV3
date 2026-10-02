@@ -868,13 +868,16 @@ start_kiosk() {
 }
 
 # ── Login items ───────────────────────────────────────────────────────
-# Linux: a root systemd timer runs update.sh; an autostart entry (and a menu
-# entry) runs launch.sh at sign-in. macOS: two launch agents in the desktop
-# user's account (the update job runs as that user, like Docker Desktop) and
-# a small app in /Applications.
+# Linux: root systemd timers run update.sh (nightly) and hostnet.sh (every
+# 60 s); an autostart entry (and a menu entry) runs launch.sh at sign-in.
+# macOS: three launch agents in the desktop user's account (the update and
+# host-network jobs run as that user, like Docker Desktop, who owns the data
+# folder there) and a small app in /Applications.
 UPDATE_LABEL='com.serversherpa.kiosk.update'
 LAUNCH_LABEL='com.serversherpa.kiosk.launch'
+HOSTNET_LABEL='com.serversherpa.kiosk.hostnet'
 UPDATE_UNIT='serversherpa-kiosk-update'
+HOSTNET_UNIT='serversherpa-kiosk-hostnet'
 DESKTOP_FILE='serversherpa-kiosk.desktop'
 SYSTEMD_UNIT_DIR='/etc/systemd/system'
 MAC_APP_DIR='/Applications/ServerSherpa Kiosk.app'
@@ -897,7 +900,9 @@ exec_path() {
   case "$p" in *[[:space:]]*) printf '"%s"' "$p" ;; *) printf '%s' "$p" ;; esac
 }
 
-# render_systemd_units DIR: the nightly update service and its 03:00 timer.
+# render_systemd_units DIR: the nightly update service and its 03:00 timer,
+# and the host-network helper (as root, which owns the data folder on Linux)
+# 10 s after boot and every 60 s.
 render_systemd_units() {
   local dir="$1"
   cat >"$dir/$UPDATE_UNIT.service" <<EOF
@@ -922,7 +927,27 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-  chmod 644 "$dir/$UPDATE_UNIT.service" "$dir/$UPDATE_UNIT.timer"
+  cat >"$dir/$HOSTNET_UNIT.service" <<EOF
+[Unit]
+Description=ServerSherpa kiosk host network addresses (host-network.json)
+
+[Service]
+Type=oneshot
+ExecStart=$(exec_path "$KIOSK_DIR/hostnet.sh")
+EOF
+  cat >"$dir/$HOSTNET_UNIT.timer" <<'EOF'
+[Unit]
+Description=ServerSherpa kiosk host network addresses, every 60 seconds
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=60s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
+EOF
+  chmod 644 "$dir/$UPDATE_UNIT.service" "$dir/$UPDATE_UNIT.timer" "$dir/$HOSTNET_UNIT.service" "$dir/$HOSTNET_UNIT.timer"
 }
 
 # render_desktop_entry FILE: runs launch.sh (autostart and the app menu).
@@ -939,7 +964,8 @@ X-GNOME-Autostart-enabled=true
 EOF
 }
 
-# render_launch_agent LABEL FILE calendar|runatload PROGRAM
+# render_launch_agent LABEL FILE calendar|runatload|interval PROGRAM
+# (interval: at load and every 60 seconds)
 render_launch_agent() {
   local label="$1" file="$2" mode="$3" program="$4" when
   case "$mode" in
@@ -951,6 +977,10 @@ render_launch_agent() {
     <integer>0</integer>
   </dict>' ;;
     runatload) when='  <key>RunAtLoad</key>
+  <true/>' ;;
+    interval)  when='  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>RunAtLoad</key>
   <true/>' ;;
     *) die "render_launch_agent: unknown mode '$mode'" ;;
   esac
@@ -1043,6 +1073,9 @@ install_login_items_macos() {
   as_user "$user" mkdir -p "$agents" || warn "Couldn't create $agents."
   install_launch_agent "$user" "$uid" "$UPDATE_LABEL" "$agents/$UPDATE_LABEL.plist" calendar "$KIOSK_DIR/update.sh"
   install_launch_agent "$user" "$uid" "$LAUNCH_LABEL" "$agents/$LAUNCH_LABEL.plist" runatload "$KIOSK_DIR/launch.sh"
+  # As $user, who owns the data folder on macOS (create_data_dir), so it can
+  # write host-network.json there.
+  install_launch_agent "$user" "$uid" "$HOSTNET_LABEL" "$agents/$HOSTNET_LABEL.plist" interval "$KIOSK_DIR/hostnet.sh"
   render_app_bundle "$MAC_APP_DIR"
   info "Nightly update scheduled (03:00); the kiosk opens when $user signs in, or from Applications › ServerSherpa Kiosk."
 }
@@ -1055,6 +1088,8 @@ install_login_items_linux() {
   else
     warn "Couldn't schedule the nightly update; check: systemctl status $UPDATE_UNIT.timer"
   fi
+  systemctl enable --now "$HOSTNET_UNIT.timer" \
+    || warn "Couldn't start the host network job (RFID reader setup needs it); check: systemctl status $HOSTNET_UNIT.timer"
   user=$(desktop_user)
   if [ -z "$user" ]; then
     warn "No desktop user found (run the installer with sudo from your own account), so the kiosk won't open at sign-in. Run $KIOSK_DIR/launch.sh to open it."
@@ -1072,10 +1107,10 @@ install_login_items_linux() {
   info "The kiosk opens when $user signs in, or from the app menu (ServerSherpa Kiosk)."
 }
 
-# install_login_items: copy update.sh/launch.sh in, then schedule them.
+# install_login_items: copy update.sh/launch.sh/hostnet.sh in, then schedule them.
 install_login_items() {
   local f
-  for f in update.sh launch.sh; do
+  for f in update.sh launch.sh hostnet.sh; do
     fetch_companion "$f" "$KIOSK_DIR/$f"
     chmod 755 "$KIOSK_DIR/$f"
   done
@@ -1084,26 +1119,28 @@ install_login_items() {
 
 # remove_login_items: undo install_login_items; anything missing is skipped.
 remove_login_items() {
-  local user home uid label
+  local user home uid label unit
   user=$(desktop_user)
   if [ "$OS" = Darwin ]; then
     if [ -n "$user" ]; then
       uid=$(id -u "$user" 2>/dev/null || true)
       home=$(user_home "$user")
-      for label in "$UPDATE_LABEL" "$LAUNCH_LABEL"; do
+      for label in "$UPDATE_LABEL" "$LAUNCH_LABEL" "$HOSTNET_LABEL"; do
         [ -z "$uid" ] || launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
         rm -f "$home/Library/LaunchAgents/$label.plist"
       done
     else
-      warn "No signed-in user found; remove ~/Library/LaunchAgents/$UPDATE_LABEL.plist and $LAUNCH_LABEL.plist from that account yourself."
+      warn "No signed-in user found; remove ~/Library/LaunchAgents/$UPDATE_LABEL.plist, $LAUNCH_LABEL.plist and $HOSTNET_LABEL.plist from that account yourself."
     fi
     case "$MAC_APP_DIR" in
       /*.app) rm -rf "${MAC_APP_DIR:?}" ;;
     esac
   else
-    systemctl disable --now "$UPDATE_UNIT.timer" >/dev/null 2>&1 || true
-    systemctl stop "$UPDATE_UNIT.service" >/dev/null 2>&1 || true   # a run in progress
-    rm -f "$SYSTEMD_UNIT_DIR/$UPDATE_UNIT.service" "$SYSTEMD_UNIT_DIR/$UPDATE_UNIT.timer"
+    for unit in "$UPDATE_UNIT" "$HOSTNET_UNIT"; do
+      systemctl disable --now "$unit.timer" >/dev/null 2>&1 || true
+      systemctl stop "$unit.service" >/dev/null 2>&1 || true   # a run in progress
+      rm -f "$SYSTEMD_UNIT_DIR/$unit.service" "$SYSTEMD_UNIT_DIR/$unit.timer"
+    done
     systemctl daemon-reload >/dev/null 2>&1 || true
     if [ -n "$user" ]; then
       home=$(user_home "$user")
@@ -1207,7 +1244,7 @@ stop_kiosk_for_uninstall() {
     warn "Docker isn't installed, so there is no kiosk container to stop; continuing."
     return 0
   fi
-  local removed="The nightly update and the launcher were already removed; re-running the installer puts them back."
+  local removed="The nightly update, the host network job and the launcher were already removed; re-running the installer puts them back."
   compose down >/dev/null 2>&1 && return 0
   if ! docker_answers; then
     if [ "$OS" = Darwin ]; then
@@ -1236,7 +1273,7 @@ uninstall() {
   if [ -f "$KIOSK_DIR/docker-compose.yml" ]; then
     stop_kiosk_for_uninstall
   fi
-  for f in docker-compose.yml config.env update.sh launch.sh install-state.json update-state.json; do
+  for f in docker-compose.yml config.env update.sh launch.sh hostnet.sh install-state.json update-state.json; do
     rm -f "${KIOSK_DIR:?}/$f"
   done
   info "Removed the kiosk from $KIOSK_DIR (install.log and update.log were kept). Docker stays installed."

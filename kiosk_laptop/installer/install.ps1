@@ -1325,6 +1325,7 @@ function Start-Kiosk {
 
 # -- Login items ------------------------------------------------------------------
 $UpdateTaskName = 'ServerSherpa Kiosk Update'
+$HostnetTaskName = 'ServerSherpa Kiosk Host Network'
 $ShortcutName = 'ServerSherpa Kiosk.lnk'
 
 # Join-WindowsPath DIR NAME: DIR\NAME for a Windows command line (the same on
@@ -1347,6 +1348,24 @@ function Get-UpdateTaskSpec {
         User                      = $User
         LogonType                 = 'Interactive'
         ExecutionTimeLimitMinutes = 30     # as update.sh's TimeoutStartSec
+    }
+}
+
+# Get-HostnetTaskSpec: the host-network helper task (hostnet.ps1), as plain
+# values. As the signed-in user, whom the data folder grants full control
+# (New-KioskDataDir), at sign-in and every minute. conhost --headless gives
+# it no console window at all: -WindowStyle Hidden alone still flashes one
+# every minute, which could take focus from the kiosk's browser.
+function Get-HostnetTaskSpec {
+    param([Parameter(Mandatory = $true)][string]$InstallDir, [Parameter(Mandatory = $true)][string]$User)
+    @{
+        Name                      = $HostnetTaskName
+        Execute                   = 'conhost.exe'
+        Argument                  = "--headless powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$(Join-WindowsPath $InstallDir 'hostnet.ps1')`""
+        User                      = $User
+        LogonType                 = 'Interactive'
+        RepeatMinutes             = 1
+        ExecutionTimeLimitMinutes = 2
     }
 }
 
@@ -1418,11 +1437,29 @@ function Register-UpdateTask {
         -Description 'ServerSherpa kiosk nightly update (update.ps1; log in update.log).' -Force | Out-Null
 }
 
-# Install-LoginItems: update.ps1/launch.ps1, the nightly update task, and the
-# ServerSherpa Kiosk shortcuts (Public Desktop, Start menu, StartUp).
+# Register-HostnetTask SPEC: the host network task (replaced if it exists):
+# hidden, at the user's sign-in and then every minute indefinitely, on battery
+# too; run once now so host-network.json is there for Kiosk Setup.
+function Register-HostnetTask {
+    param([Parameter(Mandatory = $true)][hashtable]$Spec)
+    $action = New-ScheduledTaskAction -Execute $Spec.Execute -Argument $Spec.Argument
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $Spec.User
+    # A -Once trigger's repetition without a duration repeats indefinitely.
+    $trigger.Repetition = (New-ScheduledTaskTrigger -Once -At ([datetime]::Today) -RepetitionInterval (New-TimeSpan -Minutes $Spec.RepeatMinutes)).Repetition
+    $principal = New-ScheduledTaskPrincipal -UserId $Spec.User -LogonType $Spec.LogonType
+    $settings = New-ScheduledTaskSettingsSet -Hidden -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes $Spec.ExecutionTimeLimitMinutes)
+    Register-ScheduledTask -TaskName $Spec.Name -Action $action -Trigger $trigger -Principal $principal -Settings $settings `
+        -Description 'ServerSherpa kiosk host network addresses (hostnet.ps1 writes host-network.json in the data folder).' -Force | Out-Null
+    try { Start-ScheduledTask -TaskName $Spec.Name -ErrorAction Stop }
+    catch { Write-Verbose 'The host network task did not start now; it runs within the minute.' }
+}
+
+# Install-LoginItems: update.ps1/launch.ps1/hostnet.ps1, the nightly update
+# and host network tasks, and the ServerSherpa Kiosk shortcuts (Public
+# Desktop, Start menu, StartUp).
 function Install-LoginItems {
     param([Parameter(Mandatory = $true)][string]$InstallDir, $DesktopUser)
-    foreach ($name in @('update.ps1', 'launch.ps1')) {
+    foreach ($name in @('update.ps1', 'launch.ps1', 'hostnet.ps1')) {
         $dest = Join-KioskPath $InstallDir $name
         Write-TextFile -Path $dest -Text (Get-CompanionText -Name $name)
         Set-KioskFileAcl -Path $dest
@@ -1441,8 +1478,13 @@ function Install-LoginItems {
         } catch {
             Write-Warn "Couldn't schedule the nightly update ($($_.Exception.Message)). Re-run the installer to try again."
         }
+        try {
+            Register-HostnetTask -Spec (Get-HostnetTaskSpec -InstallDir $InstallDir -User $DesktopUser.Name)
+        } catch {
+            Write-Warn "Couldn't schedule the host network task, which RFID reader setup needs ($($_.Exception.Message)). Re-run the installer to try again."
+        }
     } else {
-        Write-Warn "No signed-in user found, so the nightly update wasn't scheduled. Re-run the installer from the kiosk's account."
+        Write-Warn "No signed-in user found, so the nightly update and the host network task weren't scheduled. Re-run the installer from the kiosk's account."
     }
     $spec = Get-ShortcutSpec -InstallDir $InstallDir
     foreach ($lnk in Get-ShortcutPaths) {
@@ -1456,12 +1498,14 @@ function Install-LoginItems {
 # (so it can't restart the container while uninstall stops it).
 function Remove-LoginItems {
     param([string]$InstallDir, $DesktopUser)
-    $task = $null
-    try { $task = Get-ScheduledTask -TaskName $UpdateTaskName -ErrorAction Stop } catch { $task = $null }
-    if ($task) {
-        try { Stop-ScheduledTask -TaskName $UpdateTaskName -ErrorAction Stop } catch { Write-Verbose 'The update task was not running.' }
-        try { Unregister-ScheduledTask -TaskName $UpdateTaskName -Confirm:$false -ErrorAction Stop }
-        catch { Write-Warn "Couldn't remove the scheduled task '$UpdateTaskName'; delete it in Task Scheduler." }
+    foreach ($name in @($UpdateTaskName, $HostnetTaskName)) {
+        $task = $null
+        try { $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop } catch { $task = $null }
+        if ($task) {
+            try { Stop-ScheduledTask -TaskName $name -ErrorAction Stop } catch { Write-Verbose "The task '$name' was not running." }
+            try { Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction Stop }
+            catch { Write-Warn "Couldn't remove the scheduled task '$name'; delete it in Task Scheduler." }
+        }
     }
     foreach ($lnk in Get-ShortcutPaths) {
         if (Test-Path -LiteralPath $lnk) {
@@ -1593,7 +1637,7 @@ function Stop-KioskForUninstall {
         return
     }
     Add-DockerToPath
-    $removed = 'the update task and launcher were already removed; re-running the installer puts them back'
+    $removed = 'the update task, the host network task and the launcher were already removed; re-running the installer puts them back'
     try { Invoke-Docker -Arguments @('compose', '-f', $ComposeFile, 'down') | Out-Null; return } catch { Write-Verbose 'compose down failed.' }
     if (-not (Test-DockerEngine)) {
         throw "Docker isn't running $Dash start Docker Desktop and re-run -Uninstall ($removed)"
@@ -1626,7 +1670,7 @@ function Uninstall-Kiosk {
     if (Test-Path -LiteralPath $compose -PathType Leaf) {
         Stop-KioskForUninstall -ComposeFile $compose
     }
-    foreach ($f in @('docker-compose.yml', 'config.env', 'install.ps1', 'update.ps1', 'launch.ps1', 'install-state.json', 'update-state.json')) {
+    foreach ($f in @('docker-compose.yml', 'config.env', 'install.ps1', 'update.ps1', 'launch.ps1', 'hostnet.ps1', 'install-state.json', 'update-state.json')) {
         $p = Join-KioskPath $InstallDir $f
         if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force }
     }

@@ -6,7 +6,10 @@ services:
     image: __IMAGE__
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8090:8090"
+      # The kiosk UI on every interface (other devices on the LAN use it over
+      # plain HTTP) and the RFID reader's data port (spec section 2.5).
+      - "0.0.0.0:8090:8090"
+      - "0.0.0.0:8091:8091"
     env_file: config.env
     volumes:
       - "__DATA_DIR__:/data"

@@ -22,8 +22,8 @@ BeforeAll {
         'Get-AuthenticodeSignature'     = 'param([string]$FilePath)'
         'New-ScheduledTaskAction'       = 'param([string]$Execute, [string]$Argument)'
         'New-ScheduledTaskPrincipal'    = 'param([string]$UserId, [string]$LogonType, [string]$RunLevel)'
-        'New-ScheduledTaskTrigger'      = 'param([switch]$Daily, $At)'
-        'New-ScheduledTaskSettingsSet'  = 'param([switch]$StartWhenAvailable, [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, $ExecutionTimeLimit)'
+        'New-ScheduledTaskTrigger'      = 'param([switch]$Daily, [switch]$AtLogOn, [switch]$Once, $At, [string]$User, $RepetitionInterval)'
+        'New-ScheduledTaskSettingsSet'  = 'param([switch]$StartWhenAvailable, [switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, [switch]$Hidden, $ExecutionTimeLimit)'
         'Register-ScheduledTask'        = 'param([string]$TaskName, $Action, $Principal, $Trigger, $Settings, [string]$Description, [switch]$Force)'
         'Start-ScheduledTask'           = 'param([string]$TaskName)'
         'Stop-ScheduledTask'            = 'param([string]$TaskName)'
@@ -94,11 +94,13 @@ Describe 'Config' {
 }
 
 Describe 'Compose file' {
-    It 'renders image, loopback port and a forward-slash data path' {
+    It 'renders image, the UI and reader ports on all interfaces, and a forward-slash data path' {
         $t = Get-ComposeText -ImageRef 'ghcr.io/encondata/serversherpa-kiosk-laptop:stable' -DataDir 'C:\ProgramData\ServerSherpaKiosk\data'
         $t | Should -Match 'image: ghcr.io/encondata/serversherpa-kiosk-laptop:stable'
         $t | Should -Match '"C:/ProgramData/ServerSherpaKiosk/data:/data"'
-        $t | Should -Match '"127.0.0.1:8090:8090"'
+        $t | Should -Match '- "0\.0\.0\.0:8090:8090"'
+        $t | Should -Match '- "0\.0\.0\.0:8091:8091"'
+        $t | Should -Not -Match '127\.0\.0\.1'
     }
     It 'uses KIOSK_IMAGE when set' {
         $env:KIOSK_IMAGE = 'local/kiosk:test'
@@ -124,11 +126,13 @@ Describe 'Uninstall' {
         $inst = Join-Path $TestDrive 'inst'; $data = Join-Path $TestDrive 'data'
         New-Item -ItemType Directory $inst, $data | Out-Null
         'x' | Set-Content (Join-Path $inst 'config.env'); '{}' | Set-Content (Join-Path $data 'identity.json')
+        'x' | Set-Content (Join-Path $inst 'hostnet.ps1')
         Mock Invoke-Docker {}
         Mock Remove-LoginItems {}
         Uninstall-Kiosk -InstallDir $inst -DataDir $data
         Test-Path (Join-Path $data 'identity.json') | Should -BeTrue
         Test-Path (Join-Path $inst 'config.env') | Should -BeFalse
+        Test-Path (Join-Path $inst 'hostnet.ps1') | Should -BeFalse
         { Uninstall-Kiosk -InstallDir $inst -DataDir $data -PurgeData } | Should -Throw
         $env:KIOSK_CONFIRM_PURGE = 'DELETE'
         Uninstall-Kiosk -InstallDir $inst -DataDir $data -PurgeData
@@ -717,6 +721,16 @@ Describe 'Login item specs' {
         $s.Arguments | Should -Be '-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\ServerSherpaKiosk\launch.ps1"'
         $s.WorkingDirectory | Should -Be 'C:\ProgramData\ServerSherpaKiosk'
     }
+    It 'the host network task: name, conhost --headless (no window every minute), hostnet.ps1, every minute, the signed-in user' {
+        $t = Get-HostnetTaskSpec -InstallDir 'C:\ProgramData\ServerSherpaKiosk' -User 'PC\tech'
+        $t.Name | Should -Be 'ServerSherpa Kiosk Host Network'
+        $t.Execute | Should -Be 'conhost.exe'
+        $t.Argument | Should -Be '--headless powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\ServerSherpaKiosk\hostnet.ps1"'
+        $t.RepeatMinutes | Should -Be 1
+        $t.LogonType | Should -Be 'Interactive'
+        $t.User | Should -Be 'PC\tech'
+        $t.ExecutionTimeLimitMinutes | Should -Be 2
+    }
     It 'shortcuts go on the Public Desktop, the all-users Start menu and all-users StartUp' {
         $p = @(Get-ShortcutPaths)
         $p.Count | Should -Be 3
@@ -735,17 +749,21 @@ Describe 'Install-LoginItems' {
         Mock Set-KioskUserWritableFileAcl {}
         Mock New-KioskShortcut {}
         Mock New-ScheduledTaskAction { 'action' }
-        Mock New-ScheduledTaskTrigger { 'trigger' }
+        # Trigger objects: Register-HostnetTask copies the -Once trigger's Repetition onto the logon trigger.
+        Mock New-ScheduledTaskTrigger { [pscustomobject]@{ Kind = 'daily'; Repetition = $null } }
+        Mock New-ScheduledTaskTrigger { [pscustomobject]@{ Kind = 'logon'; Repetition = $null } } -ParameterFilter { $AtLogOn }
+        Mock New-ScheduledTaskTrigger { [pscustomobject]@{ Kind = 'once'; Repetition = 'every-minute' } } -ParameterFilter { $Once }
         Mock New-ScheduledTaskPrincipal { 'principal' }
         Mock New-ScheduledTaskSettingsSet { 'settings' }
         Mock Register-ScheduledTask {}
+        Mock Start-ScheduledTask {}
     }
-    It 'copies update.ps1 and launch.ps1 into the install folder' {
+    It 'copies update.ps1, launch.ps1 and hostnet.ps1 into the install folder' {
         Install-LoginItems -InstallDir $inst -DesktopUser $script:user
-        [IO.File]::ReadAllText((Join-Path $inst 'update.ps1')) | Should -Be ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../update.ps1')))
-        [IO.File]::ReadAllText((Join-Path $inst 'launch.ps1')) | Should -Be ([IO.File]::ReadAllText((Join-Path $PSScriptRoot '../launch.ps1')))
-        Should -Invoke Set-KioskFileAcl -ParameterFilter { $Path -like '*update.ps1' }
-        Should -Invoke Set-KioskFileAcl -ParameterFilter { $Path -like '*launch.ps1' }
+        foreach ($n in @('update.ps1', 'launch.ps1', 'hostnet.ps1')) {
+            [IO.File]::ReadAllText((Join-Path $inst $n)) | Should -Be ([IO.File]::ReadAllText((Join-Path $PSScriptRoot "../$n")))
+            Should -Invoke Set-KioskFileAcl -ParameterFilter { $Path -like "*$n" }
+        }
     }
     It 'makes update.log and update-state.json (only those) writable by the signed-in user' {
         Install-LoginItems -InstallDir $inst -DesktopUser $script:user
@@ -781,7 +799,40 @@ Describe 'Install-LoginItems' {
         Should -Invoke Register-ScheduledTask -Times 0
         Should -Invoke Set-KioskUserWritableFileAcl -Times 0
         Should -Invoke New-KioskShortcut -Times 3 -Exactly
-        Should -Invoke Write-Warn -ParameterFilter { $Message -like '*nightly update*' }
+        Should -Invoke Write-Warn -ParameterFilter { $Message -like '*nightly update*' -and $Message -like '*host network*' }
+    }
+    It 'registers the host network task: at sign-in and every minute, hidden, on battery, for the signed-in user' {
+        Install-LoginItems -InstallDir $inst -DesktopUser $script:user
+        Should -Invoke New-ScheduledTaskAction -ParameterFilter { $Execute -eq 'conhost.exe' -and $Argument -eq "--headless powershell.exe -WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass -File `"$inst\hostnet.ps1`"" }
+        Should -Invoke New-ScheduledTaskTrigger -ParameterFilter { $AtLogOn -and $User -eq 'PC\tech' }
+        Should -Invoke New-ScheduledTaskTrigger -ParameterFilter { $Once -and $RepetitionInterval -eq (New-TimeSpan -Minutes 1) }
+        Should -Invoke New-ScheduledTaskSettingsSet -ParameterFilter { $Hidden -and $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and -not $StartWhenAvailable }
+        Should -Invoke Register-ScheduledTask -Times 1 -Exactly -ParameterFilter {
+            $TaskName -eq 'ServerSherpa Kiosk Host Network' -and $Force -and $Trigger.Kind -eq 'logon' -and $Trigger.Repetition -eq 'every-minute'
+        }
+        Should -Invoke New-ScheduledTaskPrincipal -ParameterFilter { $UserId -eq 'PC\tech' -and $LogonType -eq 'Interactive' }
+        Should -Invoke Start-ScheduledTask -Times 1 -Exactly -ParameterFilter { $TaskName -eq 'ServerSherpa Kiosk Host Network' }
+    }
+    It 'warns but finishes when the host network task cannot be registered' {
+        Mock Register-ScheduledTask { throw 'access denied' } -ParameterFilter { $TaskName -eq 'ServerSherpa Kiosk Host Network' }
+        Mock Write-Warn {}
+        { Install-LoginItems -InstallDir $inst -DesktopUser $script:user } | Should -Not -Throw
+        Should -Invoke Write-Warn -ParameterFilter { $Message -like '*host network*' }
+        Should -Invoke Register-ScheduledTask -ParameterFilter { $TaskName -eq 'ServerSherpa Kiosk Update' }
+    }
+    It 'a first run that fails to start is not an error (the next minute runs it)' {
+        Mock Start-ScheduledTask { throw 'not signed in' }
+        Mock Write-Warn {}
+        { Install-LoginItems -InstallDir $inst -DesktopUser $script:user } | Should -Not -Throw
+        Should -Invoke Write-Warn -Times 0
+    }
+    It 'runs as the same account the data folder grants full control (so the helper can write there)' {
+        Mock Set-KioskDirAcl {}
+        $data = Join-Path $TestDrive ([guid]::NewGuid().ToString())
+        New-KioskDataDir -DataDir $data -DesktopUser $script:user
+        Install-LoginItems -InstallDir $inst -DesktopUser $script:user
+        Should -Invoke Set-KioskDirAcl -ParameterFilter { $Path -eq $data -and $UserSid -eq $script:user.Sid }
+        Should -Invoke New-ScheduledTaskPrincipal -ParameterFilter { $UserId -eq $script:user.Name }
     }
     It 'warns but finishes when the task cannot be registered' {
         Mock Register-ScheduledTask { throw 'access denied' }
@@ -793,19 +844,19 @@ Describe 'Install-LoginItems' {
 }
 
 Describe 'Remove-LoginItems' {
-    It 'stops a running update, removes the task and all three shortcuts' {
+    It 'stops a running update, removes both tasks and all three shortcuts' {
         $dir = Join-Path $TestDrive ([guid]::NewGuid().ToString())
         New-Item -ItemType Directory $dir | Out-Null
         $paths = @('a.lnk', 'b.lnk', 'c.lnk') | ForEach-Object { Join-Path $dir $_ }
         foreach ($p in $paths) { 'x' | Set-Content $p }
         Mock Get-ShortcutPaths { $paths }
-        Mock Get-ScheduledTask { [pscustomobject]@{ TaskName = 'ServerSherpa Kiosk Update'; State = 'Running' } }
+        Mock Get-ScheduledTask { [pscustomobject]@{ TaskName = $TaskName; State = 'Running' } }
         $script:order = @()
-        Mock Stop-ScheduledTask { $script:order += 'stop' }
-        Mock Unregister-ScheduledTask { $script:order += 'unregister' }
+        Mock Stop-ScheduledTask { $script:order += "stop $TaskName" }
+        Mock Unregister-ScheduledTask { $script:order += "unregister $TaskName" }
         Remove-LoginItems -InstallDir 'C:\K'
-        ($script:order -join ',') | Should -Be 'stop,unregister'
-        Should -Invoke Unregister-ScheduledTask -ParameterFilter { $TaskName -eq 'ServerSherpa Kiosk Update' }
+        ($script:order -join ',') | Should -Be ('stop ServerSherpa Kiosk Update,unregister ServerSherpa Kiosk Update,' +
+            'stop ServerSherpa Kiosk Host Network,unregister ServerSherpa Kiosk Host Network')
         foreach ($p in $paths) { Test-Path $p | Should -BeFalse }
     }
     It 'is fine when nothing is there' {
