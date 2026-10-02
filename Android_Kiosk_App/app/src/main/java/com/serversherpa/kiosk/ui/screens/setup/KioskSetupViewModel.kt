@@ -19,6 +19,8 @@ import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
@@ -64,9 +66,22 @@ class KioskSetupViewModel(
 
     init {
         scope.launch {
-            val sel = prefs.setupSelection.first(); val st = prefs.setupState.first()
-            _state.update { it.copy(wizardOpen = !(sel != null && st.isComplete)) }
-            if (_state.value.wizardOpen == true) load()
+            // Not just the first read: the saved setup can be dropped while the summary
+            // shows (a Clear Setup from the portal, a move-password sign-in for another
+            // move). The summary then has nothing to show, so the wizard opens fresh and
+            // loads the moves, instead of sitting on "Loading moves…" with no load running.
+            combine(prefs.setupSelection, prefs.setupState) { sel, st -> sel != null && st.isComplete }
+                .distinctUntilChanged()
+                .collect { setUp ->
+                    when (_state.value.wizardOpen) {
+                        null -> { _state.update { it.copy(wizardOpen = !setUp) }; if (!setUp) load() }
+                        false -> if (!setUp) {
+                            _state.update { it.copy(wizardOpen = true, step = 1, submitError = null, initiativeId = "", siteId = "", scanStatus = "") }
+                            load()
+                        }
+                        true -> Unit   // the wizard is already open (and loads its own options)
+                    }
+                }
         }
     }
 
@@ -116,6 +131,7 @@ class KioskSetupViewModel(
                 val result = api.submitSetup(KioskSetupIn(identity.get().serial, ui.initiativeId, ui.siteId, scanKey))
                 prefs.setSetupSelection(KioskSetupSelection(result.initiative_id, result.initiative_name, result.site_id, result.site_name, result.site_role, result.scan_status, result.scan_status_label))
                 prefs.setSetupState(SetupState.COMPLETE)
+                prefs.dismissSetupClearNotice()   // set up again: the "administrator cleared" banner goes
                 _state.update { it.copy(submitting = false, wizardOpen = false) }
                 sync.run(result.initiative_id, result.initiative_name)
             } catch (e: Exception) {

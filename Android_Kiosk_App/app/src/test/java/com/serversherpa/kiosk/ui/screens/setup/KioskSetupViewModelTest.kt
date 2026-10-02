@@ -4,6 +4,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.test.core.app.ApplicationProvider
 import com.serversherpa.kiosk.core.ApiError
 import com.serversherpa.kiosk.core.model.KioskSetupResult
+import com.serversherpa.kiosk.core.model.KioskSetupSelection
 import com.serversherpa.kiosk.core.model.SetupOptionInitiative
 import com.serversherpa.kiosk.core.model.SetupOptionScanType
 import com.serversherpa.kiosk.core.model.SetupOptionSite
@@ -68,6 +69,45 @@ class KioskSetupViewModelTest {
         assertEquals("bad_site", vm.state.value.submitError)
         assertEquals(SetupState.FAILED, prefs.setupState.first())
         assertNull(prefs.setupSelection.first())
+    }
+
+    /** A Clear Setup (or any drop of the saved setup) landing while the summary shows must
+     *  open the wizard and load the moves, not leave the screen stuck on "Loading moves…". */
+    @Test fun aClearLandingOnTheSummaryOpensTheWizardAndLoadsTheMoves() = runTest {
+        val api = FakeKioskApi().apply { setupOptionsResult = { options } }
+        val prefs = KioskPrefs(PreferenceDataStoreFactory.create(scope = backgroundScope) { File(tmp.root, "c.preferences_pb") })
+        prefs.setSetupSelection(KioskSetupSelection("i1", "Move A", "s2", "Dest", "destination", "pre_stage", "Pre-stage"))
+        prefs.setSetupState(SetupState.COMPLETE)
+        val sync = Sync(api, KioskDatabase.inMemory(ApplicationProvider.getApplicationContext()), backgroundScope)
+        val vm = KioskSetupViewModel(api, prefs, Identity(prefs), sync, backgroundScope)
+        repeat(5) { runCurrent() }
+        assertEquals(false, vm.state.value.wizardOpen)                 // the summary
+        assertEquals(false, "setupOptions" in api.calls)
+        prefs.applySetupClear("c1"); repeat(5) { runCurrent() }
+        assertEquals(true, vm.state.value.wizardOpen)
+        assertEquals(1, vm.state.value.step)
+        assertEquals("", vm.state.value.initiativeId)
+        assertEquals(options, vm.state.value.options)
+        assertEquals(1, api.calls.count { it == "setupOptions" })
+    }
+
+    @Test fun finishingSetupDismissesTheClearNotice() = runTest {
+        val api = FakeKioskApi().apply {
+            setupOptionsResult = { options }
+            submitSetupResult = { KioskSetupResult("d", it.initiative_id, "Move A", it.site_id, "Dest", "destination", it.scan_status, "Pre-stage") }
+        }
+        val prefs = KioskPrefs(PreferenceDataStoreFactory.create(scope = backgroundScope) { File(tmp.root, "n.preferences_pb") })
+        prefs.applySetupClear("c2")
+        assertEquals(true, prefs.setupClear.first()?.notice)
+        val sync = Sync(api, KioskDatabase.inMemory(ApplicationProvider.getApplicationContext()), backgroundScope)
+        val vm = KioskSetupViewModel(api, prefs, Identity(prefs), sync, backgroundScope)
+        repeat(5) { runCurrent() }
+        assertEquals(true, vm.state.value.wizardOpen)
+        assertEquals(1, api.calls.count { it == "setupOptions" })   // opening on the wizard loads once, not twice
+        vm.selectMove("i1"); vm.selectSite("s2"); vm.finish("pre_stage"); repeat(5) { runCurrent() }
+        assertEquals(SetupState.COMPLETE, prefs.setupState.first())
+        assertEquals(false, prefs.setupClear.first()?.notice)
+        assertEquals(false, vm.state.value.wizardOpen)                 // the fresh setup's summary, not reopened
     }
 
     @Test fun dates() {

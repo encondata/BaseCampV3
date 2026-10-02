@@ -24,6 +24,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,6 +78,15 @@ fun KioskShell(nav: NavHostController, content: @Composable () -> Unit) {
     // Signing out ends the shift's session from a button anyone can brush past, so
     // it asks first — and says so when scans are still waiting to be sent.
     var confirmSignOut by remember { mutableStateOf(false) }
+
+    // Clear Setup from the portal: whoever is signed in goes to Kiosk Setup, once.
+    // setupCleared never replays, so a shell composed later (each route builds its
+    // own) can't re-send anyone for a clear that was already honored.
+    LaunchedEffect(Unit) {
+        container.heartbeat.setupCleared.collect {
+            if (nav.currentDestination?.route != Routes.SETUP) nav.navigate(Routes.SETUP) { launchSingleTop = true }
+        }
+    }
 
     Column(Modifier.fillMaxSize().background(c.paper2)) {
         // ── top bar ──

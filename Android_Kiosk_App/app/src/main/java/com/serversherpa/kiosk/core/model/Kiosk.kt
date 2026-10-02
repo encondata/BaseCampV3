@@ -26,6 +26,8 @@ data class HeartbeatIn(
     val raw_info: Map<String, String> = emptyMap(),
     val sign_in: Boolean = false,
     val login_method: String? = null,
+    /** A Clear Setup id this kiosk applied and is acknowledging (repeated until the reply stops asking). */
+    val setup_cleared: String? = null,
 )
 
 @Serializable
@@ -34,6 +36,8 @@ data class HeartbeatResult(
     val name: String,
     val registration: String,
     val token_expires_at: String? = null,
+    /** A pending Clear Setup id from the portal; repeats every beat until acknowledged. */
+    val clear_setup: String? = null,
 )
 
 @Serializable data class KioskSignOutIn(val serial: String)
