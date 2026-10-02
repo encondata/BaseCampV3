@@ -1,0 +1,41 @@
+# The status page. It checks the PUBLIC names (what users see), which
+# resolve to NPM on the LAN via extra_hosts. Its own volume, so it can
+# move to its own host later untouched. Outage alerts (ntfy) stay off
+# for UAT environments.
+name: ss-${STACK_ENV:?set STACK_ENV}-status
+
+services:
+  status:
+    image: ${STACK_STATUS_IMAGE:-serversherpa-status}:${STACK_IMAGE_TAG:?set STACK_IMAGE_TAG}
+    environment:
+      STATUS_API_URL: https://api.${STACK_DOMAIN:?set STACK_DOMAIN}
+      STATUS_PORTAL_URL: https://portal.${STACK_DOMAIN}
+      STATUS_KIOSK_URL: https://kiosk.${STACK_DOMAIN}
+      STATUS_WIKI_URL: https://wiki.${STACK_DOMAIN}
+      STATUS_PUBLIC_URL: https://status.${STACK_DOMAIN}
+    extra_hosts:
+      - "api.${STACK_DOMAIN}:${STACK_PROXY_IP:?set STACK_PROXY_IP}"
+      - "portal.${STACK_DOMAIN}:${STACK_PROXY_IP}"
+      - "kiosk.${STACK_DOMAIN}:${STACK_PROXY_IP}"
+      - "wiki.${STACK_DOMAIN}:${STACK_PROXY_IP}"
+      - "spaces.${STACK_DOMAIN}:${STACK_PROXY_IP}"
+      - "status.${STACK_DOMAIN}:${STACK_PROXY_IP}"
+    ports:
+      - "${STACK_BIND_IP:-0.0.0.0}:${STACK_STATUS_PORT:-8095}:8080"
+    volumes:
+      - status-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  status-data:
+
+networks:
+  default:
+    name: ss-${STACK_ENV}
+    external: true

@@ -1,0 +1,106 @@
+# The API, every worker, and the one-shot migrate job — one image, many
+# commands. All of them share one environment (x-ss-env) so a setting
+# can never differ between the API and a worker. URLs derive from
+# STACK_DOMAIN; secrets come from the env file.
+name: ss-${STACK_ENV:?set STACK_ENV}-api
+
+x-ss-env: &ss-env
+  SS_ENV: staging
+  SS_LOG_LEVEL: ${SS_LOG_LEVEL:-INFO}
+  SS_API_BASE_URL: https://api.${STACK_DOMAIN:?set STACK_DOMAIN}
+  SS_PORTAL_ORIGIN: https://portal.${STACK_DOMAIN}
+  SS_WIKI_ORIGIN: https://wiki.${STACK_DOMAIN}
+  SS_ALLOWED_ORIGINS: https://portal.${STACK_DOMAIN},https://kiosk.${STACK_DOMAIN},https://wiki.${STACK_DOMAIN}
+  SS_COOKIE_DOMAIN: ""
+  SS_DATABASE_URL: postgresql+asyncpg://serversherpa:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/serversherpa
+  SS_DATABASE_SSL: disable
+  SS_JWT_SECRET: ${SS_JWT_SECRET:?set SS_JWT_SECRET}
+  SS_TOTP_ENCRYPTION_KEY: ${SS_TOTP_ENCRYPTION_KEY:?set SS_TOTP_ENCRYPTION_KEY}
+  SS_PASSWORD_PEPPER: ${SS_PASSWORD_PEPPER:?set SS_PASSWORD_PEPPER}
+  # presigned URLs are signed for this host, so it must be the public name
+  SS_SPACES_ENDPOINT: https://spaces.${STACK_DOMAIN}
+  SS_SPACES_REGION: us-east-1
+  SS_SPACES_BUCKET: ${SS_SPACES_BUCKET:-serversherpa}
+  SS_SPACES_ACCESS_KEY: serversherpa
+  SS_SPACES_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+  SS_SPACES_USE_PATH_STYLE: "true"
+  SS_SMTP_HOST: mailpit
+  SS_SMTP_PORT: "1025"
+  SS_SMTP_STARTTLS: "false"
+  SS_SMTP_FROM: noreply@${STACK_DOMAIN}
+  SS_WIKI_SERVICE_TOKEN: ${SS_WIKI_SERVICE_TOKEN:?set SS_WIKI_SERVICE_TOKEN}
+  SS_WIKI_RENDER_URL: http://wiki:8080
+  SS_ANTHROPIC_API_KEY: ${SS_ANTHROPIC_API_KEY:-}
+  SS_DB_TESTING_PASSWORD: ${SS_DB_TESTING_PASSWORD:-}
+
+x-ss-service: &ss-service
+  image: ${STACK_API_IMAGE:-serversherpa-api}:${STACK_IMAGE_TAG:?set STACK_IMAGE_TAG}
+  environment: *ss-env
+  # the public names go straight to NPM on the LAN, never out and back
+  # through the router (hairpin NAT is not a given)
+  extra_hosts:
+    - "api.${STACK_DOMAIN}:${STACK_PROXY_IP:?set STACK_PROXY_IP}"
+    - "portal.${STACK_DOMAIN}:${STACK_PROXY_IP}"
+    - "kiosk.${STACK_DOMAIN}:${STACK_PROXY_IP}"
+    - "wiki.${STACK_DOMAIN}:${STACK_PROXY_IP}"
+    - "spaces.${STACK_DOMAIN}:${STACK_PROXY_IP}"
+    - "status.${STACK_DOMAIN}:${STACK_PROXY_IP}"
+  restart: unless-stopped
+
+services:
+  # one-shot, run by `ss-stack up` before the API starts
+  migrate:
+    <<: *ss-service
+    profiles: ["jobs"]
+    working_dir: /app/api
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    <<: *ss-service
+    ports:
+      - "${STACK_BIND_IP:-0.0.0.0}:${STACK_API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=4).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6
+
+  import-worker:
+    <<: *ss-service
+    command: ["serversherpa", "import-worker"]
+  log-service:
+    <<: *ss-service
+    command: ["serversherpa", "log-service"]
+  notification-worker:
+    <<: *ss-service
+    command: ["serversherpa", "notification-worker"]
+  scan-matching-worker:
+    <<: *ss-service
+    command: ["serversherpa", "scan-matching-worker"]
+  report-worker:
+    <<: *ss-service
+    command: ["serversherpa", "report-worker"]
+  label-worker:
+    <<: *ss-service
+    command: ["serversherpa", "label-worker"]
+  spec-lookup-worker:
+    <<: *ss-service
+    command: ["serversherpa", "spec-lookup-worker"]
+  db-testing-worker:
+    <<: *ss-service
+    command: ["serversherpa", "db-testing-worker"]
+  # two wiki workers so a long export never holds up previews and search
+  # text (same split as wiki/docker-compose.yml)
+  wiki-worker:
+    <<: *ss-service
+    command: ["serversherpa", "wiki-worker", "--exclude-kinds", "export"]
+  wiki-export-worker:
+    <<: *ss-service
+    command: ["serversherpa", "wiki-worker", "--kinds", "export"]
+
+networks:
+  default:
+    name: ss-${STACK_ENV}
+    external: true

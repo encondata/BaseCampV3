@@ -1,0 +1,59 @@
+# Object storage ("spaces") and the environment's mail catcher. MinIO's
+# S3 port is published for NPM (spaces.<domain>); the console is not.
+# SMTP never leaves the box: the API sends to mailpit:1025 and testers
+# read mail at the mailpit UI.
+name: ss-${STACK_ENV:?set STACK_ENV}-storage
+
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: serversherpa
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+    ports:
+      - "${STACK_BIND_IP:-0.0.0.0}:${STACK_SPACES_PORT:-9000}:9000"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # one-shot, run by `ss-stack up` after minio is healthy
+  minio-init:
+    image: minio/mc:latest
+    profiles: ["jobs"]
+    environment:
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      BUCKET: ${SS_SPACES_BUCKET:-serversherpa}
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 serversherpa "$$MINIO_ROOT_PASSWORD" &&
+      mc mb --ignore-existing "local/$$BUCKET"
+      "
+    restart: "no"
+
+  mailpit:
+    image: axllent/mailpit:latest
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    ports:
+      - "${STACK_BIND_IP:-0.0.0.0}:${STACK_MAILPIT_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  miniodata:
+
+networks:
+  default:
+    name: ss-${STACK_ENV}
+    external: true

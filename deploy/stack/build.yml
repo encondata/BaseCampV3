@@ -1,0 +1,36 @@
+# Builds every image one environment runs, tagged STACK_IMAGE_TAG — the
+# only file in deploy/stack with `build:`. The runtime stacks reference
+# the same image names, so moving to a registry later means skipping
+# this file and pulling STACK_*_IMAGE instead.
+#
+#   ss-stack build <env-dir>
+name: ss-${STACK_ENV:?set STACK_ENV}-build
+
+services:
+  api:
+    image: ${STACK_API_IMAGE:-serversherpa-api}:${STACK_IMAGE_TAG:?set STACK_IMAGE_TAG}
+    build:
+      context: ${STACK_REPO_DIR:?set STACK_REPO_DIR}
+      dockerfile: api/Dockerfile
+  portal:
+    image: ${STACK_PORTAL_IMAGE:-serversherpa-portal}:${STACK_IMAGE_TAG}
+    build:
+      context: ${STACK_REPO_DIR}
+      dockerfile: portal/Dockerfile
+  kiosk:
+    image: ${STACK_KIOSK_IMAGE:-serversherpa-kiosk}:${STACK_IMAGE_TAG}
+    build:
+      context: ${STACK_REPO_DIR}
+      dockerfile: kiosk/Dockerfile
+      args:
+        KIOSK_VERSION: ${STACK_IMAGE_TAG}
+  wiki:
+    image: ${STACK_WIKI_IMAGE:-serversherpa-wiki}:${STACK_IMAGE_TAG}
+    build:
+      context: ${STACK_REPO_DIR}
+      dockerfile: wiki/Dockerfile
+  status:
+    image: ${STACK_STATUS_IMAGE:-serversherpa-status}:${STACK_IMAGE_TAG}
+    build:
+      context: ${STACK_REPO_DIR}
+      dockerfile: status/Dockerfile

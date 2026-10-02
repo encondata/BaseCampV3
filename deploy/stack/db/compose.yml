@@ -1,0 +1,28 @@
+# Postgres for one environment. Never published: the API reaches it as
+# postgres:5432 on the ss-<env> network, and `ss-stack dump` streams
+# pg_dump out through `docker compose exec`.
+name: ss-${STACK_ENV:?set STACK_ENV}-db
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: serversherpa
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: serversherpa
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U serversherpa -d serversherpa"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+
+networks:
+  default:
+    name: ss-${STACK_ENV}
+    external: true
