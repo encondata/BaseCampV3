@@ -3,6 +3,8 @@ port 443 (64 at once, 0.5 s), then a quiet ZIOTC probe of each responder.
 One scan at a time per edge; starting a new one cancels the running one."""
 
 import asyncio
+import ipaddress
+import logging
 import uuid
 
 import httpx
@@ -12,7 +14,9 @@ from edge.rfid import ziotc
 
 PORT = 443
 CONCURRENCY = 64
-TIMEOUT_S = 0.5
+TIMEOUT_S = 0.5  # the TCP connect sweep only
+PROBE_TIMEOUT = httpx.Timeout(5.0, connect=3.0)  # TLS + login + API calls
+log = logging.getLogger("edge.rfid.discovery")
 PAIR_PREFIX = "ServerSherpa Kiosk"
 
 
@@ -69,7 +73,8 @@ class Discovery:
 
     def snapshot(self) -> dict:
         s = self._snap
-        return {**s, "readers": [dict(r) for r in s["readers"]], "host": dict(s["host"])}
+        readers = sorted(s["readers"], key=lambda r: ipaddress.ip_address(r["ip"]))
+        return {**s, "readers": [dict(r) for r in readers], "host": dict(s["host"])}
 
     async def aclose(self) -> None:
         if self._task and not self._task.done():
@@ -89,8 +94,9 @@ class Discovery:
                 if up:
                     try:
                         found = await self._probe(ip, quiet=True, with_config=True,
-                                                  timeout=httpx.Timeout(TIMEOUT_S))
-                    except Exception:
+                                                  timeout=PROBE_TIMEOUT)
+                    except Exception as exc:
+                        log.debug("probe of %s failed: %s", ip, type(exc).__name__)
                         found = None
                     if found and found.get("serial"):
                         snap["readers"].append({
@@ -102,8 +108,13 @@ class Discovery:
     async def _run(self, snap: dict, targets: list[str]) -> None:
         sem = asyncio.Semaphore(CONCURRENCY)
         try:
-            await asyncio.gather(*(self._check(ip, sem, snap) for ip in targets))
-            snap["state"] = "done"
+            # return_exceptions: a failing child never leaves its siblings running
+            results = await asyncio.gather(*(self._check(ip, sem, snap) for ip in targets),
+                                           return_exceptions=True)
+            failed = [r for r in results if isinstance(r, Exception)]
+            if failed:
+                log.debug("scan failed: %s", type(failed[0]).__name__)
+            snap["state"] = "failed" if failed else "done"
         except asyncio.CancelledError:
             raise
         except Exception:

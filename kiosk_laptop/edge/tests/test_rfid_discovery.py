@@ -123,3 +123,68 @@ async def test_endpoints_run_a_scan(app, client):
     await wait_done(app.state.discovery)
     body = (await client.get("/edge/rfid/scan", headers=h)).json()
     assert body["scan_id"] == sid and body["state"] == "done"
+
+
+async def test_probe_uses_the_long_timeout(app):
+    import httpx
+    write_host(app)
+    timeouts = []
+
+    async def probe(ip, **kw):
+        timeouts.append(kw["timeout"])
+    disc = Discovery(app.state.store, app.state.settings.data_dir,
+                     connect=lambda ip: asyncio.sleep(0, True), probe=probe)
+    disc.start()
+    await wait_done(disc)
+    assert timeouts and all(t == httpx.Timeout(5.0, connect=3.0) for t in timeouts)
+
+
+async def test_a_failure_leaves_no_child_running(app):
+    write_host(app)
+    running = 0
+
+    async def connect(ip):
+        nonlocal running
+        if ip.endswith(".1"):
+            raise ValueError("boom")
+        running += 1
+        await asyncio.sleep(0.05)
+        running -= 1
+        return False
+    disc = Discovery(app.state.store, app.state.settings.data_dir, connect=connect, probe=None)
+    disc.start()
+    snap = await wait_done(disc)
+    assert snap["state"] == "failed" and snap["probed"] == snap["total"]
+    assert running == 0 and all(t.done() for t in asyncio.all_tasks() if t is not asyncio.current_task()
+                                and "_check" in repr(t))
+
+
+async def test_readers_sorted_numerically_by_ip(app):
+    write_host(app, ips=("10.0.0.200",), prefix=24)
+    disc = make(app, found=lambda ip: {"ip": ip, "model": "FX9600", "serial": "S" + ip}
+                if ip in ("10.0.0.9", "10.0.0.100", "10.0.0.20") else None)
+    disc.start()
+    snap = await wait_done(disc)
+    assert [r["ip"] for r in snap["readers"]] == ["10.0.0.9", "10.0.0.20", "10.0.0.100"]
+
+
+async def test_rescan_does_not_leak_old_results(app):
+    write_host(app)
+    gate = asyncio.Event()
+
+    async def probe(ip, **kw):
+        await gate.wait()
+        return {"ip": ip, "model": "FX9600", "serial": "OLD"}
+    disc = Discovery(app.state.store, app.state.settings.data_dir,
+                     connect=lambda ip: asyncio.sleep(0, True), probe=probe)
+    disc.start()
+    await asyncio.sleep(0.02)  # old scan is parked inside probe
+    async def quiet(ip, **kw):
+        return None
+    disc._probe = quiet
+    disc.start()
+    gate.set()
+    snap = await wait_done(disc)
+    await asyncio.sleep(0.05)
+    snap = disc.snapshot()
+    assert snap["readers"] == [] and snap["probed"] == snap["total"] == 5
