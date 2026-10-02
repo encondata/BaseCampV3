@@ -814,7 +814,8 @@ export async function renameLaptopKiosk(name: string): Promise<{ serial: string;
 // Errors carry `detail.code`: reader_unreachable, reader_auth_failed,
 // reader_not_iotc, reader_error (with detail.message), reader_verify_failed
 // (502); reader_paired_elsewhere (409, with detail.name),
-// reader_endpoints_full and host_network_unknown (409); bad_ip (422).
+// reader_endpoints_full, host_network_unknown and reader_not_on_subnet (409);
+// bad_ip (422); edge_offline (503: connect and pair need an online sign-in).
 
 export interface ReaderVersions {
   readerApplication: string | null;
@@ -822,8 +823,18 @@ export interface ReaderVersions {
   cloudAgentApplication: string | null;
 }
 
-/** One reader a scan found. `paired_with` names another kiosk holding it. */
-export interface FoundReader { ip: string; model: string; serial: string; paired_with: string | null }
+/** One reader a scan found. `paired_with` names another kiosk holding it.
+ *  A Zebra reader the scan didn't sign in to (no remembered password) has
+ *  `needs_connect` and no model or serial yet: picking it goes to Connect. */
+export interface FoundReader {
+  ip: string;
+  model: string | null;
+  serial: string | null;
+  paired_with: string | null;
+  needs_connect?: boolean;
+  scheme?: 'https' | 'http';
+  port?: number;
+}
 
 export interface ReaderScan {
   scan_id: string | null;
@@ -889,7 +900,23 @@ export async function pairReader(body: {
   return jsonFrom<PairResult>(await postJson('/edge/rfid/pair', body));
 }
 
-/** The laptop's current pairing, or null when no reader is paired. */
-export async function getPairedReader(): Promise<PairedReader | null> {
-  return jsonFrom<PairedReader | null>(await apiFetch('/edge/rfid/reader'));
+/** The laptop's finished Kiosk Setup as the edge keeps it for every
+ *  browser (D2): the setup answer's names plus, for an RFID station, the
+ *  paired reader's summary. */
+export interface EdgeSetup {
+  initiative_id: string;
+  initiative_name: string;
+  site_id: string;
+  site_name: string;
+  site_role: 'source' | 'destination';
+  scan_status: string;
+  scan_status_label: string;
+  station_type: 'label' | 'rfid' | null;
+  reader: { ip: string; serial: string; model: string; versions: Partial<ReaderVersions> } | null;
+  updated_at: string;
+}
+
+/** The laptop's shared setup, or null when it has never been set up. */
+export async function getEdgeSetup(): Promise<EdgeSetup | null> {
+  return jsonFrom<EdgeSetup | null>(await apiFetch('/edge/setup'));
 }

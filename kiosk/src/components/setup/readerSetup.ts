@@ -8,8 +8,17 @@ import { ApiError } from '../../lib/api';
 
 export const BAD_IP_TEXT = 'Enter a valid IPv4 address, like 192.168.1.20.';
 
-export const HOST_UNKNOWN_TEXT = "This laptop's network address isn't known yet. Re-run the installer"
-  + " (or wait a minute), or enter the reader's and this laptop's IP below.";
+export const HOST_UNKNOWN_TEXT = "This laptop's network address isn't known yet. Re-run the install"
+  + ' command, or enter the IPs below.';
+
+/** The laptop has fresh addresses, but none on the reader's subnet. */
+export const NOT_ON_SUBNET_TEXT = 'Enter the IP address of this laptop that the reader should send to.';
+
+/** Connect and pair change a reader for a setup only the cloud can finish. */
+export const EDGE_OFFLINE_TEXT = 'Kiosk Setup needs the cloud — try again when online.';
+
+/** The pair errors that ask for the laptop IP by hand. */
+export const LAPTOP_IP_CODES = ['host_network_unknown', 'reader_not_on_subnet'];
 
 const EDGE_UNREACHABLE_TEXT = "Can't reach this laptop's edge service. Try again.";
 
@@ -40,6 +49,7 @@ function readerErrorText(err: unknown, ip: string): string | null {
   if (code === 'reader_unreachable') return `Can't reach ${ip}.`;
   if (code === 'reader_error') return readerMessage(err) ?? 'The reader reported an error.';
   if (code === 'bad_ip') return BAD_IP_TEXT;
+  if (code === 'edge_offline') return EDGE_OFFLINE_TEXT;
   if (code === 'network') return EDGE_UNREACHABLE_TEXT;
   return null;
 }
@@ -51,6 +61,7 @@ export function connectErrorText(err: unknown, ip: string): string {
 export function pairErrorText(err: unknown, ip: string): string {
   const code = codeOf(err);
   if (code === 'host_network_unknown') return HOST_UNKNOWN_TEXT;
+  if (code === 'reader_not_on_subnet') return NOT_ON_SUBNET_TEXT;
   if (code === 'reader_endpoints_full') {
     return 'This reader already has two data connections. Remove one in the reader\'s web console, then try again.';
   }

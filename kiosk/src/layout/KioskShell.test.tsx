@@ -48,6 +48,9 @@ vi.mock('../lib/edgeStatus', () => ({
   useEdgeStatus: () => ({ status: edgeMock.status, refresh: async () => {} }),
 }));
 
+const laptopSetupMock = vi.hoisted(() => ({ hydrateLaptopSetup: vi.fn(() => Promise.resolve(false)) }));
+vi.mock('../lib/laptopSetup', () => laptopSetupMock);
+
 import { clearFlash, flash } from '../lib/flash';
 import { getIdentity } from '../lib/identity';
 import { writeKioskSetup } from '../lib/kioskSetup';
@@ -419,4 +422,15 @@ it('laptop mode: the footer mode names the station type once setup saved one', (
   } finally {
     delete window.__KIOSK_CONFIG__;
   }
+});
+
+
+it('signed in, the shell loads the laptop\'s shared setup; signed out it does not', () => {
+  render(<MemoryRouter><KioskShell><div /></KioskShell></MemoryRouter>);
+  expect(laptopSetupMock.hydrateLaptopSetup).toHaveBeenCalledTimes(1);
+  cleanup();
+  laptopSetupMock.hydrateLaptopSetup.mockClear();
+  auth.status = 'anon';
+  render(<MemoryRouter><KioskShell><div /></KioskShell></MemoryRouter>);
+  expect(laptopSetupMock.hydrateLaptopSetup).not.toHaveBeenCalled();
 });

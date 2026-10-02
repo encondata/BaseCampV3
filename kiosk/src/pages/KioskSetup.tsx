@@ -14,9 +14,14 @@
  * the wizard pre-selected. A successful save also kicks off the move's
  * local-data download (`runSync`, not awaited) and the summary's
  * `.sync-status` block reports it.
+ *
+ * A laptop shares its finished setup with every browser (KioskShell loads
+ * it from the edge, `lib/laptopSetup.ts`); when it lands after this page
+ * opened, an untouched wizard gives way to the summary. Reached through a
+ * LAN address, the page says it changes the laptop itself.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import ConnectStep from '../components/setup/ConnectStep';
@@ -37,6 +42,9 @@ import {
   isSetupComplete, readSetupState, useKioskSetupState, writeSetupState,
 } from '../lib/setupState';
 import { formatSyncedAt, runSync, useSyncStatus } from '../lib/sync';
+
+/** Shown when Kiosk Setup is reached from another device on the LAN. */
+const LAN_NOTICE = "You're changing the setup of the laptop itself.";
 
 type Step = 'type' | 'reader' | 'connect' | 'pair' | 'rfid' | 'move' | 'site' | 'scan';
 
@@ -95,6 +103,15 @@ export default function KioskSetup() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const sync = useSyncStatus();
+  // A phone on the LAN changes the laptop's own setup, which every browser shares.
+  const lanAccess = laptop && window.__KIOSK_CONFIG__?.lanAccess === true;
+  // Set once someone acts on the wizard: a setup shared after that never
+  // closes it under them.
+  const touched = useRef(false);
+  const setupComplete = Boolean(selection) && isSetupComplete(setupState);
+  useEffect(() => {
+    if (setupComplete && !touched.current) setWizardOpen(false);
+  }, [setupComplete]);
 
   const load = () => {
     setLoadError(false);
@@ -129,6 +146,7 @@ export default function KioskSetup() {
   }, [options]);
 
   const openWizard = (preselect: boolean) => {
+    touched.current = true;
     if (preselect && selection) {
       setInitiativeId(selection.initiativeId);
       setSiteId(selection.siteId);
@@ -155,6 +173,7 @@ export default function KioskSetup() {
   const next = () => setStep(path[Math.min(path.length - 1, stepIndex + 1)]);
 
   const selectStationType = (type: StationType) => {
+    touched.current = true;
     setStationType(type);
     setStep(pathFor(laptop, type)[1]);
   };
@@ -179,6 +198,7 @@ export default function KioskSetup() {
   }
 
   const selectMove = (id: string) => {
+    touched.current = true;
     if (id !== initiativeId) setSiteId('');
     setInitiativeId(id);
     setStep('site');
@@ -237,6 +257,7 @@ export default function KioskSetup() {
       <div className="portal-page">
         <div className="eyebrow">Kiosk · Setup</div>
         <h1 className="page-title">Kiosk setup</h1>
+        {lanAccess && <p className="sys-banner sys-banner-readonly" role="status">{LAN_NOTICE}</p>}
         <div className="setup-summary">
           <p>
             This kiosk is set up for <b>{selection.initiativeName}</b> at{' '}
@@ -306,6 +327,7 @@ export default function KioskSetup() {
     <div className="portal-page">
       <div className="eyebrow">Kiosk · Setup</div>
       <h1 className="page-title">Kiosk setup</h1>
+      {lanAccess && <p className="sys-banner sys-banner-readonly" role="status">{LAN_NOTICE}</p>}
       <div className="setup-wizard">
         <div className="setup-steps">{stepLabel}</div>
 
@@ -434,12 +456,24 @@ export default function KioskSetup() {
                 );
               })}
             </div>
-            {submitError && (
+            {submitError && submitError !== 'reader_required' && (
               <p className="form-error" role="alert">
                 {submitError === 'cloud_sign_in_required'
                   ? CLOUD_SIGN_IN_TEXT
                   : <>Couldn&apos;t save the kiosk setup ({submitError}). Try again.</>}
               </p>
+            )}
+            {/* The edge had no paired reader for an RFID station. */}
+            {submitError === 'reader_required' && (
+              <div className="form-error" role="alert">
+                <p>Pair a reader first</p>
+                {path.includes('reader') && (
+                  <button type="button" className="mini-btn"
+                          onClick={() => { setSubmitError(''); setStep('reader'); }}>
+                    Back to the reader step
+                  </button>
+                )}
+              </div>
             )}
             <div className="pf-form-actions">
               <button type="button" className="mini-btn" onClick={back}

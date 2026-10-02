@@ -2,8 +2,9 @@
  * Pair: the edge points the reader's IoT Connector data endpoint at this
  * laptop and reads the config back to confirm it. A reader another kiosk
  * holds asks first (TakeoverModal); Cancel there goes back to Connect.
- * When the laptop's own address isn't known, the step asks for the
- * reader's and the laptop's IP (that goes back through Connect). The
+ * When the laptop's own address isn't known, or none is on the reader's
+ * subnet, the step asks for the reader's and the laptop's IP (that goes
+ * back through Connect). The
  * result is held by the wizard, so coming Back here doesn't pair again.
  */
 
@@ -12,7 +13,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ApiError, pairReader, type PairResult } from '../../lib/api';
 import ManualAddressForm from './ManualAddressForm';
 import TakeoverModal from './TakeoverModal';
-import { pairErrorText } from './readerSetup';
+import { LAPTOP_IP_CODES, pairErrorText } from './readerSetup';
 
 interface Props {
   ip: string;
@@ -23,7 +24,7 @@ interface Props {
   onBack: () => void;
   /** Takeover declined: back to Connect. */
   onCancel: () => void;
-  /** Addresses typed in after `host_network_unknown`. */
+  /** Addresses typed in after `host_network_unknown` / `reader_not_on_subnet`. */
   onManual: (readerIp: string, laptopIp?: string) => void;
 }
 
@@ -55,7 +56,7 @@ export default function PairStep({
         const name = (err.detail as { name?: unknown } | undefined)?.name;
         setTakeover(typeof name === 'string' && name ? name : 'another kiosk');
       } else {
-        setHostUnknown(err instanceof ApiError && err.code === 'host_network_unknown');
+        setHostUnknown(err instanceof ApiError && LAPTOP_IP_CODES.includes(err.code));
         setError(pairErrorText(err, ip));
       }
     } finally {

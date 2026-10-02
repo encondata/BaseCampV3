@@ -21,6 +21,7 @@ import { useDevMode } from '../lib/devMode';
 import { FEATURES } from '../lib/features';
 import { getIdentity } from '../lib/identity';
 import { stationLabel, useKioskSetup } from '../lib/kioskSetup';
+import { hydrateLaptopSetup } from '../lib/laptopSetup';
 import { platform } from '../lib/platform';
 import { useEdgeStatus } from '../lib/edgeStatus';
 import { useSyncStatus } from '../lib/sync';
@@ -69,6 +70,13 @@ export default function KioskShell({ children }: { children: ReactNode }) {
   useEffect(() => {
     applyPreferences(preferences ?? DEFAULT_PREFERENCES);
   }, [preferences]);
+
+  // A laptop's browsers share its finished setup (GET /edge/setup needs a
+  // signed-in edge session): a phone on the LAN starts set up, not blank.
+  // A no-op in web mode and once this browser has a complete setup.
+  useEffect(() => {
+    if (authed) void hydrateLaptopSetup();
+  }, [authed]);
 
   const identity = getIdentity();
   const { mode, label: modeLabel } = platform();

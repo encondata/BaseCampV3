@@ -100,8 +100,7 @@ export default function ReaderStep({ selectedIp, onPick, onBack }: Props) {
         <>
           <p className="page-hint">
             This laptop&apos;s network address isn&apos;t known yet, so this network can&apos;t
-            be scanned. Re-run the installer (or wait a minute), or enter the reader&apos;s and
-            this laptop&apos;s IP below.
+            be scanned. Re-run the install command, or enter the IPs below.
           </p>
           <ManualAddressForm initialReaderIp={selectedIp} withLaptopIp onSubmit={onPick} />
         </>
@@ -131,9 +130,19 @@ export default function ReaderStep({ selectedIp, onPick, onBack }: Props) {
           {readers.map((r) => (
             <button key={r.ip} type="button" role="option" aria-selected={selectedIp === r.ip}
                     className="setup-card" onClick={() => onPick(r.ip)}>
-              <div className="setup-card-role">{r.model}</div>
-              <div className="setup-card-title">{r.ip}</div>
-              <div className="setup-card-meta">Serial {r.serial}</div>
+              {r.needs_connect ? (
+                <>
+                  <div className="setup-card-role">Zebra</div>
+                  <div className="setup-card-title">{r.ip}</div>
+                  <div className="setup-card-meta">Zebra reader found — select it to connect</div>
+                </>
+              ) : (
+                <>
+                  <div className="setup-card-role">{r.model}</div>
+                  <div className="setup-card-title">{r.ip}</div>
+                  <div className="setup-card-meta">Serial {r.serial}</div>
+                </>
+              )}
               {r.paired_with && (
                 <div className="setup-card-meta">{`Already paired with ${pairedWithName(r.paired_with)}`}</div>
               )}

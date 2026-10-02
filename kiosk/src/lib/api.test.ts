@@ -165,7 +165,7 @@ it('the RFID helpers call the edge reader endpoints with the session token', asy
     }
     if (u.endsWith('/edge/rfid/connect')) return json({ ip: '10.0.0.5', serial: 'S1' });
     if (u.endsWith('/edge/rfid/pair')) return json({ paired: true, reader: {}, endpoint_url: 'http://x/…' });
-    if (u.endsWith('/edge/rfid/reader')) return json(null);
+    if (u.endsWith('/edge/setup')) return json(null);
     return json({}, 404);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -176,7 +176,7 @@ it('the RFID helpers call the edge reader endpoints with the session token', asy
   expect((await api.connectReader('10.0.0.5')).serial).toBe('S1');
   expect((await api.pairReader({ ip: '10.0.0.5', laptop_ip: '10.0.0.9', confirm_takeover: true })).paired)
     .toBe(true);
-  expect(await api.getPairedReader()).toBeNull();
+  expect(await api.getEdgeSetup()).toBeNull();
 
   const calls = fetchMock.mock.calls as unknown as Call[];
   const connect = calls.find(([u]) => String(u).endsWith('/edge/rfid/connect'))!;
