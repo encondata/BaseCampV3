@@ -73,3 +73,14 @@ def test_default_command_does_not_trust_every_proxy() -> None:
     assert "--forwarded-allow-ips" not in cmd
     assert "*" not in cmd
 
+
+def test_home_belongs_to_the_runtime_user() -> None:
+    # LibreOffice and fontconfig write caches under HOME; a root-owned
+    # HOME breaks them ("Fontconfig error: No writable cache directories")
+    out = docker_run(TAG, "sh", "-c",
+                     'test -w "$HOME" && touch "$HOME/.probe" && stat -c %u "$HOME"'
+                     ' && find "$HOME" ! -user 10001 | head -n 5')
+    assert out.returncode == 0, out.stderr
+    lines = out.stdout.split()
+    assert lines[0] == "10001"
+    assert lines[1:] == [], f"not owned by 10001: {lines[1:]}"

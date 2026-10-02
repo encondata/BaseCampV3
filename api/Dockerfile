@@ -34,7 +34,7 @@ RUN npm --prefix portal run build:rack-renderer \
 # trixie, pinned: its nodejs is 20.x (bookworm's is 18, too old for the
 # renderers' node20 target)
 FROM python:3.13-slim-trixie
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/home/serversherpa \
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     SS_REPORT_RACK_RENDERER=/app/renderers/render-rack.js \
     SS_REPORT_CONTAINER_LABEL_RENDERER=/app/renderers/render-container-labels.js
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -49,8 +49,11 @@ RUN pip install --no-cache-dir ./api-src \
  && cp -r api-src/alembic.ini api-src/migrations /app/api/ \
  && rm -rf api-src
 COPY --from=renderers /app/portal/dist-node /app/renderers
-# LibreOffice needs a writable HOME for its per-run profile
+# LibreOffice (per-run profile) and fontconfig (cache) need a writable
+# HOME. HOME is set only after every root RUN, so nothing (pip's cache)
+# creates a root-owned /home/serversherpa before useradd does.
 RUN useradd --system --create-home --uid 10001 --home-dir /home/serversherpa serversherpa
+ENV HOME=/home/serversherpa
 USER serversherpa
 EXPOSE 8000
 # No --forwarded-allow-ips: trusting "*" would let any caller pick its client
