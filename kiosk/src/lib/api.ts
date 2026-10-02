@@ -243,6 +243,8 @@ export interface HeartbeatResult {
   name: string;
   registration: RegistrationState;
   token_expires_at: string | null;
+  /** The address the cloud saw this kiosk's request come from (its WAN IP). */
+  client_ip?: string | null;
 }
 
 export async function heartbeatRequest(body: {
@@ -919,4 +921,40 @@ export interface EdgeSetup {
 /** The laptop's shared setup, or null when it has never been set up. */
 export async function getEdgeSetup(): Promise<EdgeSetup | null> {
   return jsonFrom<EdgeSetup | null>(await apiFetch('/edge/setup'));
+}
+
+// ── RFID Network check and reader reading (laptop edge) ─────────────
+
+export type CheckName = 'reader' | 'router' | 'portal' | 'registration' | 'setup';
+
+export interface CheckResult {
+  name: CheckName;
+  ok: boolean;
+  state: 'ok' | 'fail' | 'unknown';
+  detail: string;
+  info?: Record<string, string | boolean | null>;
+}
+
+/** One connectivity check. Always answers 200; a failing check says so in `state`. */
+export async function runCheck(name: CheckName): Promise<CheckResult> {
+  return jsonFrom<CheckResult>(await apiFetch(`/edge/rfid/checks/${name}`));
+}
+
+export interface ReaderStatus {
+  reader: { ip: string; serial: string; model: string; endpoint_url: string | null } | null;
+  reachable?: boolean;
+  reading?: boolean;
+  radio?: string | null;
+}
+
+export async function startReader(): Promise<{ reading: boolean }> {
+  return jsonFrom<{ reading: boolean }>(await apiFetch('/edge/rfid/start', { method: 'POST' }));
+}
+
+export async function stopReader(): Promise<{ reading: boolean }> {
+  return jsonFrom<{ reading: boolean }>(await apiFetch('/edge/rfid/stop', { method: 'POST' }));
+}
+
+export async function getReaderStatus(): Promise<ReaderStatus> {
+  return jsonFrom<ReaderStatus>(await apiFetch('/edge/rfid/status'));
 }

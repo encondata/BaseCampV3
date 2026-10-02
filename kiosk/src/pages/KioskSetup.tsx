@@ -2,8 +2,8 @@
  * Kiosk Setup wizard. On a laptop it starts by asking what the station is
  * (StationTypeStep): a Label Station goes straight on; an RFID Station
  * first finds, connects to, and pairs a Zebra FX reader (ReaderStep,
- * ConnectStep, PairStep — under components/setup/), then a placeholder
- * settings page. Every path then continues the same way: pick a move, then which of that move's sites this
+ * ConnectStep, PairStep — under components/setup/), then a Network check
+ * (NetworkCheckStep). Every path then continues the same way: pick a move, then which of that move's sites this
  * kiosk is at ("step 1A" — the move's source or destination site), then
  * a scan type, and stamp this kiosk's Device row (POST /kiosk/setup).
  * Tap-to-select card pickers (`.setup-card`, mirroring `.kiosk-tile`) —
@@ -25,9 +25,9 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import ConnectStep from '../components/setup/ConnectStep';
+import NetworkCheckStep from '../components/setup/NetworkCheckStep';
 import PairStep from '../components/setup/PairStep';
 import ReaderStep from '../components/setup/ReaderStep';
-import RfidPlaceholderStep from '../components/setup/RfidPlaceholderStep';
 import StationTypeStep from '../components/setup/StationTypeStep';
 import {
   ApiError, CLOUD_SIGN_IN_TEXT, getSetupOptions, submitKioskSetup, type PairResult,
@@ -46,18 +46,18 @@ import { formatSyncedAt, runSync, useSyncStatus } from '../lib/sync';
 /** Shown when Kiosk Setup is reached from another device on the LAN. */
 const LAN_NOTICE = "You're changing the setup of the laptop itself.";
 
-type Step = 'type' | 'reader' | 'connect' | 'pair' | 'rfid' | 'move' | 'site' | 'scan';
+type Step = 'type' | 'reader' | 'connect' | 'pair' | 'network' | 'move' | 'site' | 'scan' | 'confirm';
 
 const STEP_LABEL: Record<Step, string> = {
   type: 'Station type', reader: 'Select reader', connect: 'Connect', pair: 'Pair',
-  rfid: 'RFID settings', move: 'Move', site: 'Site', scan: 'Scan type',
+  network: 'Network check', move: 'Move', site: 'Site', scan: 'Scan type', confirm: 'Confirm',
 };
 
 /** The steps this kiosk walks. Web mode skips the station type: RFID
  *  needs the laptop edge, and a web kiosk behaves exactly as before. */
 function pathFor(laptop: boolean, stationType: StationType | ''): Step[] {
   if (!laptop) return ['move', 'site', 'scan'];
-  if (stationType === 'rfid') return ['type', 'reader', 'connect', 'pair', 'rfid', 'move', 'site', 'scan'];
+  if (stationType === 'rfid') return ['type', 'reader', 'connect', 'pair', 'network', 'move', 'site', 'scan', 'confirm'];
   return ['type', 'move', 'site', 'scan'];
 }
 
@@ -103,6 +103,12 @@ export default function KioskSetup() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const sync = useSyncStatus();
+  // An RFID station only offers scan types with RFID in the name.
+  const scanTypes = options
+    ? (stationType === 'rfid' && laptop
+      ? options.scan_types.filter((t) => t.label.toLowerCase().includes('rfid'))
+      : options.scan_types)
+    : [];
   // A phone on the LAN changes the laptop's own setup, which every browser shares.
   const lanAccess = laptop && window.__KIOSK_CONFIG__?.lanAccess === true;
   // Set once someone acts on the wizard: a setup shared after that never
@@ -141,7 +147,7 @@ export default function KioskSetup() {
     const validSiteIds = [initiative?.source_site?.id, initiative?.destination_site?.id]
       .filter((id): id is string => Boolean(id));
     if (siteId && !validSiteIds.includes(siteId)) setSiteId('');
-    if (scanStatus && !options.scan_types.some((s) => s.key === scanStatus)) setScanStatus('');
+    if (scanStatus && !scanTypes.some((s) => s.key === scanStatus)) setScanStatus('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options]);
 
@@ -362,7 +368,7 @@ export default function KioskSetup() {
           </div>
         )}
 
-        {step === 'rfid' && <div><RfidPlaceholderStep onContinue={next} onBack={back} /></div>}
+        {step === 'network' && <div><NetworkCheckStep onContinue={next} onBack={back} /></div>}
 
         {moveStep && loadError && (
           <>
@@ -443,7 +449,7 @@ export default function KioskSetup() {
           <div>
             <h2>Which scan type?</h2>
             <div className="setup-cards" role="listbox" aria-label="Scan types">
-              {options.scan_types.map((s) => {
+              {scanTypes.map((s) => {
                 const saving = submitting && scanStatus === s.key;
                 return (
                   <button key={s.key} type="button" role="option"
@@ -456,6 +462,12 @@ export default function KioskSetup() {
                 );
               })}
             </div>
+            {scanTypes.length === 0 && stationType === 'rfid' && laptop && (
+              <p className="page-hint">
+                No RFID scan types are set up. Add an active status value with RFID in its name
+                on the portal&apos;s Variables page.
+              </p>
+            )}
             {submitError && submitError !== 'reader_required' && (
               <p className="form-error" role="alert">
                 {submitError === 'cloud_sign_in_required'

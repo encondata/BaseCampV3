@@ -279,6 +279,24 @@
   text-transform: uppercase; color: var(--text-mute); margin: 8px 0 14px;
 }
 .setup-wizard { max-width: none; }
+
+/* Network check / final check rows (CheckList). */
+.check-list { list-style: none; margin: 12px 0; padding: 0; display: grid; gap: 8px; }
+.check-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 14px; color: var(--text-dark); }
+.check-row .check-mark { flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; }
+.check-row svg { width: 18px; height: 18px; }
+.check-ok { color: var(--c-green); }
+.check-fail { color: var(--c-red); }
+.check-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-mute); opacity: .5; }
+.check-spinner {
+  width: 14px; height: 14px; border-radius: 50%; box-sizing: border-box;
+  border: 2px solid var(--paper-line); border-top-color: var(--text-mute);
+  animation: check-spin .8s linear infinite;
+}
+@keyframes check-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .check-spinner { animation-duration: 3s; } }
+.check-row .form-error { margin: 0; flex-basis: 100%; padding-left: 28px; }
+.check-info { margin: 12px 0; }
 .setup-wizard .form-error { max-width: clamp(20rem, 62vw, 62rem); }
 .setup-summary {
   max-width: clamp(20rem, 62vw, 62rem); margin-top: 18px; padding: 22px 24px;

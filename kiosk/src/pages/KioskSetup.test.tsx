@@ -19,6 +19,7 @@ const apiMock = vi.hoisted(() => ({
   getReaderScan: vi.fn(),
   connectReader: vi.fn(),
   pairReader: vi.fn(),
+  runCheck: vi.fn(),
 }));
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
@@ -447,6 +448,8 @@ describe('laptop mode', () => {
     apiMock.getReaderScan.mockReset().mockResolvedValue(SCAN_DONE);
     apiMock.connectReader.mockReset().mockResolvedValue(CONNECTED);
     apiMock.pairReader.mockReset().mockResolvedValue(PAIRED);
+    apiMock.runCheck.mockReset().mockImplementation((name: string) => Promise.resolve(
+      { name, ok: true, state: 'ok', detail: '' }));
   });
   afterEach(() => { delete window.__KIOSK_CONFIG__; });
 
@@ -490,19 +493,19 @@ describe('laptop mode', () => {
     expect(apiMock.startReaderScan).not.toHaveBeenCalled();
   });
 
-  it('the RFID path runs reader → connect → pair → placeholder → move → site → scan type', async () => {
+  it('the RFID path runs reader → connect → pair → network check → move → site → scan type', async () => {
     const user = userEvent.setup();
     renderPage();
     await user.click(await screen.findByRole('option', { name: /RFID Station/ }));
 
-    expect(screen.getByText('Step 2 of 8 · Select reader')).toBeTruthy();
+    expect(screen.getByText('Step 2 of 9 · Select reader')).toBeTruthy();
     expect(await screen.findByText('10.0.0.5')).toBeTruthy();
     expect(apiMock.startReaderScan).toHaveBeenCalledTimes(1);
     expect(within(cardFor('10.0.0.6')).getByText('Already paired with Kiosk ABCD (Front desk)')).toBeTruthy();
     expect(within(cardFor('10.0.0.5')).queryByText(/Already paired/)).toBeNull();
 
     await user.click(cardFor('10.0.0.5'));
-    expect(screen.getByText('Step 3 of 8 · Connect')).toBeTruthy();
+    expect(screen.getByText('Step 3 of 9 · Connect')).toBeTruthy();
     expect(apiMock.connectReader).toHaveBeenCalledWith('10.0.0.5');
     expect(await screen.findByText('1234ABCD')).toBeTruthy();
     expect(screen.getByText('FX9600')).toBeTruthy();
@@ -513,20 +516,22 @@ describe('laptop mode', () => {
       .toBeTruthy();
 
     await user.click(screen.getByRole('button', { name: 'Pair this reader' }));
-    expect(screen.getByText('Step 4 of 8 · Pair')).toBeTruthy();
+    expect(screen.getByText('Step 4 of 9 · Pair')).toBeTruthy();
     expect(await screen.findByText('Paired with FX9600 1234ABCD at 10.0.0.5')).toBeTruthy();
     expect(apiMock.pairReader).toHaveBeenCalledWith({ ip: '10.0.0.5' });
 
     await user.click(screen.getByRole('button', { name: 'Continue' }));
-    expect(screen.getByText('Step 5 of 8 · RFID settings')).toBeTruthy();
-    expect(screen.getByText('RFID settings — coming soon')).toBeTruthy();
+    expect(screen.getByText('Step 5 of 9 · Network check')).toBeTruthy();
+    expect(await screen.findByText('All checks passed')).toBeTruthy();
+    expect(apiMock.runCheck.mock.calls.map((c) => c[0]))
+      .toEqual(['reader', 'router', 'portal', 'registration']);
 
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
-    expect(screen.getByText('Step 6 of 8 · Move')).toBeTruthy();
+    // All four pass, so the step moves on by itself.
+    expect(await screen.findByText('Step 6 of 9 · Move', {}, { timeout: 4000 })).toBeTruthy();
     await user.click(await screen.findByText('NAP11 Hall Migration (demo)'));
-    expect(screen.getByText('Step 7 of 8 · Site')).toBeTruthy();
+    expect(screen.getByText('Step 7 of 9 · Site')).toBeTruthy();
     await user.click(cardFor('NAP22 Hall'));
-    expect(screen.getByText('Step 8 of 8 · Scan type')).toBeTruthy();
+    expect(screen.getByText('Step 8 of 9 · Scan type')).toBeTruthy();
     await user.click(cardFor('RFID 1 - Cage Exit'));
 
     await waitFor(() => expect(apiMock.submitKioskSetup).toHaveBeenCalledWith({
@@ -540,30 +545,89 @@ describe('laptop mode', () => {
     });
   });
 
+  describe('scan types on the RFID path', () => {
+    const MIXED = {
+      ...OPTIONS,
+      scan_types: [
+        { key: 'rfid_received', label: 'RFID Received', color: '#111' },
+        { key: 'rfid_out', label: 'rfid out', color: '#222' },
+        { key: 'received', label: 'Received', color: '#333' },
+      ],
+    };
+
+    async function toScanOnRfid(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(await screen.findByRole('option', { name: /RFID Station/ }));
+      await user.click(await screen.findByText('10.0.0.5'));
+      await user.click(await screen.findByRole('button', { name: 'Pair this reader' }));
+      await user.click(await screen.findByRole('button', { name: 'Continue' }));
+      await user.click(await screen.findByText('NAP11 Hall Migration (demo)', {}, { timeout: 4000 }));
+      await user.click(cardFor('NAP22 Hall'));
+    }
+
+    it('shows only scan types with RFID in the label', async () => {
+      apiMock.getSetupOptions.mockResolvedValue(MIXED);
+      const user = userEvent.setup();
+      renderPage();
+      await toScanOnRfid(user);
+      expect(screen.getByRole('option', { name: 'RFID Received' })).toBeTruthy();
+      expect(screen.getByRole('option', { name: 'rfid out' })).toBeTruthy();
+      expect(screen.queryByRole('option', { name: 'Received' })).toBeNull();
+    });
+
+    it('says so when no scan type mentions RFID', async () => {
+      apiMock.getSetupOptions.mockResolvedValue({
+        ...OPTIONS, scan_types: [{ key: 'received', label: 'Received', color: '#333' }],
+      });
+      const user = userEvent.setup();
+      renderPage();
+      await toScanOnRfid(user);
+      expect(screen.getByText(
+        "No RFID scan types are set up. Add an active status value with RFID in its name on the portal's Variables page.",
+      )).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Back' })).toBeTruthy();
+    });
+
+    it('the Label path still shows every scan type', async () => {
+      apiMock.getSetupOptions.mockResolvedValue(MIXED);
+      const user = userEvent.setup();
+      renderPage();
+      await user.click(await screen.findByRole('option', { name: /Label Station/ }));
+      await user.click(await screen.findByText('NAP11 Hall Migration (demo)'));
+      await user.click(cardFor('NAP22 Hall'));
+      expect(screen.getByRole('option', { name: 'Received' })).toBeTruthy();
+      expect(screen.getByRole('option', { name: 'RFID Received' })).toBeTruthy();
+      expect(screen.getByRole('option', { name: 'rfid out' })).toBeTruthy();
+    });
+  });
+
   it('Back works on every RFID step', async () => {
     const user = userEvent.setup();
     renderPage();
     await toConnectStep(user);
     await user.click(screen.getByRole('button', { name: 'Back' }));
-    expect(screen.getByText('Step 2 of 8 · Select reader')).toBeTruthy();
+    expect(screen.getByText('Step 2 of 9 · Select reader')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Back' }));
-    expect(screen.getByText('Step 1 of 8 · Station type')).toBeTruthy();
+    expect(screen.getByText('Step 1 of 9 · Station type')).toBeTruthy();
     expect(cardFor('RFID Station').getAttribute('aria-selected')).toBe('true');
 
     await toConnectStep(user);
     await user.click(screen.getByRole('button', { name: 'Pair this reader' }));
     await screen.findByText(/Paired with FX9600/);
     await user.click(screen.getByRole('button', { name: 'Back' }));
-    expect(screen.getByText('Step 3 of 8 · Connect')).toBeTruthy();
+    expect(screen.getByText('Step 3 of 9 · Connect')).toBeTruthy();
     await user.click(await screen.findByRole('button', { name: 'Pair this reader' }));
+    // A failing check leaves Back on the Network check.
+    apiMock.runCheck.mockImplementation((name: string) => Promise.resolve(
+      { name, ok: false, state: 'fail', detail: 'down' }));
     await user.click(await screen.findByRole('button', { name: 'Continue' }));
-    await user.click(screen.getByRole('button', { name: 'Back' }));
-    expect(screen.getByText('Step 4 of 8 · Pair')).toBeTruthy();
+    await user.click(await screen.findByRole('button', { name: 'Back' }));
+    expect(screen.getByText('Step 4 of 9 · Pair')).toBeTruthy();
+    apiMock.runCheck.mockImplementation((name: string) => Promise.resolve(
+      { name, ok: true, state: 'ok', detail: '' }));
     await user.click(await screen.findByRole('button', { name: 'Continue' }));
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
-    expect(screen.getByText('Step 6 of 8 · Move')).toBeTruthy();
+    expect(await screen.findByText('Step 6 of 9 · Move', {}, { timeout: 4000 })).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Back' }));
-    expect(screen.getByText('Step 5 of 8 · RFID settings')).toBeTruthy();
+    expect(screen.getByText('Step 5 of 9 · Network check')).toBeTruthy();
   });
 
   it('a running scan shows its progress', async () => {
@@ -609,7 +673,7 @@ describe('laptop mode', () => {
     await user.clear(field);
     await user.type(field, '10.0.0.77');
     await user.click(screen.getByRole('button', { name: 'Connect' }));
-    expect(screen.getByText('Step 3 of 8 · Connect')).toBeTruthy();
+    expect(screen.getByText('Step 3 of 9 · Connect')).toBeTruthy();
     expect(apiMock.connectReader).toHaveBeenCalledWith('10.0.0.77');
   });
 
@@ -686,7 +750,7 @@ describe('laptop mode', () => {
     await user.click(screen.getByRole('button', { name: 'Pair this reader' }));
     await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.getByText('Step 3 of 8 · Connect')).toBeTruthy();
+    expect(screen.getByText('Step 3 of 9 · Connect')).toBeTruthy();
     expect(screen.queryByText(/ServerSherpa Kiosk/)).toBeNull();
     expect(apiMock.pairReader).toHaveBeenCalledTimes(1);
   });
@@ -765,7 +829,7 @@ describe('laptop mode', () => {
     renderPage();
     expect(await screen.findByText('RFID · Laptop')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Change setup' }));
-    expect(screen.getByText('Step 1 of 8 · Station type')).toBeTruthy();
+    expect(screen.getByText('Step 1 of 9 · Station type')).toBeTruthy();
     expect(cardFor('RFID Station').getAttribute('aria-selected')).toBe('true');
     expect(cardFor('Label Station').getAttribute('aria-selected')).toBe('false');
     // Cancel returns to the summary from the first step
@@ -820,7 +884,7 @@ describe('laptop mode: final fix round', () => {
     expect(within(card).queryByText(/Serial/)).toBeNull();
     expect(card.textContent).not.toContain('null');
     await user.click(card);
-    expect(screen.getByText('Step 3 of 8 · Connect')).toBeTruthy();
+    expect(screen.getByText('Step 3 of 9 · Connect')).toBeTruthy();
     expect(apiMock.connectReader).toHaveBeenCalledWith('10.0.0.7');
   });
 
@@ -876,14 +940,13 @@ describe('laptop mode: final fix round', () => {
     await toConnect(user);
     await user.click(screen.getByRole('button', { name: 'Pair this reader' }));
     await user.click(await screen.findByRole('button', { name: 'Continue' }));
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
-    await user.click(await screen.findByText('NAP11 Hall Migration (demo)'));
+    await user.click(await screen.findByText('NAP11 Hall Migration (demo)', {}, { timeout: 4000 }));
     await user.click(cardFor('NAP22 Hall'));
     await user.click(cardFor('RFID 1 - Cage Exit'));
     expect(await screen.findByText('Pair a reader first')).toBeTruthy();
     expect(screen.queryByText(/reader_required/)).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Back to the reader step' }));
-    expect(screen.getByText('Step 2 of 8 · Select reader')).toBeTruthy();
+    expect(screen.getByText('Step 2 of 9 · Select reader')).toBeTruthy();
   });
 
   it('reached through a LAN address, Kiosk Setup says it changes the laptop itself', async () => {
