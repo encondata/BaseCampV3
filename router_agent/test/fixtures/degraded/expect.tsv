@@ -5,9 +5,7 @@
 @.wan.ip	100.64.1.2
 @.wan.gateway	100.64.1.1
 @.wan.up	true
-type:@.dhcp_clients	array
-@.dhcp_clients[@.mac="aa:bb:cc:dd:ee:77"].hostname	front-desk
-@.dhcp_clients[@.mac="aa:bb:cc:dd:ee:77"].reserved	true
+type:@.dhcp_clients	null
 @.clients.wired	0
 @.clients.wireless	2
 @.clients.total	2

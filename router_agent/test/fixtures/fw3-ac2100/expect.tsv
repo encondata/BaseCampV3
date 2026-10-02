@@ -30,3 +30,6 @@
 @.vpn[@.name="backup"].up	false
 @.vpn[@.name="backup"].endpoint	vpn.backup.example
 type:@.dhcp_clients	array
+@.dhcp_clients[@.mac="aa:bb:cc:dd:ee:77"].hostname	front-desk
+@.dhcp_clients[@.mac="aa:bb:cc:dd:ee:77"].reserved	true
+@.dhcp_clients[@.mac="aa:bb:cc:dd:ee:77"].up	false
