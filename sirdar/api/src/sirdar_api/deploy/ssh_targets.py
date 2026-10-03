@@ -54,7 +54,7 @@ def _lines(text: str) -> list[str]:
     parts = text.split("\n")
     if parts[-1] == "":
         parts.pop()
-    return [p[:-1] if p.endswith("\r") else p for p in parts]
+    return [p.removesuffix("\r") for p in parts]
 
 
 class TargetError(Exception):

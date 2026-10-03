@@ -24,7 +24,7 @@ def store(tmp_path, keys_dir):
 
 
 def _fields(**over):
-    f = dict(name="Edge Box", host="10.0.0.5", port=22, user="deployer", password="pw-1")
+    f = {"name": "Edge Box", "host": "10.0.0.5", "port": 22, "user": "deployer", "password": "pw-1"}
     f.update(over)
     return f
 
@@ -213,7 +213,7 @@ def test_concurrent_adds_under_lock(store):
     def worker(i):
         try:
             SshTargetStore(store.path, store.keys_dir).add(_fields(name=f"Box {i:02d}"))
-        except Exception as e:  # pragma: no cover - surfaced below
+        except Exception as e:  # noqa: BLE001  # pragma: no cover - surfaced below
             errors.append(e)
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(20)]

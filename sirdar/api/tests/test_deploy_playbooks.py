@@ -72,5 +72,5 @@ def test_syntax_check(step, tmp_path):
     result = subprocess.run(
         [str(ANSIBLE_PLAYBOOK), "--syntax-check", "-i", "target,",
          str(PLAYBOOK_DIR / step.playbook)],
-        capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+        capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, check=False)
     assert result.returncode == 0, result.stdout + result.stderr

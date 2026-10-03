@@ -3,7 +3,11 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from sirdar_api.db.models import (
-    Deployment, DeploymentStep, Environment, EnvironmentSecret, EnvironmentService,
+    Deployment,
+    DeploymentStep,
+    Environment,
+    EnvironmentSecret,
+    EnvironmentService,
 )
 
 SHA = "a" * 40

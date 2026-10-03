@@ -71,8 +71,8 @@ async def trust(db: AsyncSession, host: str, port: int, expected_fingerprint: st
         raise HostKeyChanged(host, port, expected_fingerprint, actual, key_type)
     previous = await lookup(db, host, port)
     previous_fingerprint = previous.fingerprint_sha256 if previous else None
-    values = dict(key_type=key_type, fingerprint_sha256=actual,
-                  public_key=public_key_text(live), trusted_by=actor_id)
+    values = {"key_type": key_type, "fingerprint_sha256": actual,
+                  "public_key": public_key_text(live), "trusted_by": actor_id}
     await db.execute(
         insert(SshKnownHost).values(host=host, port=port, **values)
         .on_conflict_do_update(index_elements=["host", "port"],

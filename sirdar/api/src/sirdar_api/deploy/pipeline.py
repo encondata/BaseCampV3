@@ -37,12 +37,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sirdar_api.config import Settings, get_settings
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import (
-    Deployment, DeploymentStep, Environment, EnvironmentSecret, EnvironmentService,
+    Deployment,
+    DeploymentStep,
+    Environment,
+    EnvironmentSecret,
+    EnvironmentService,
 )
 from sirdar_api.deploy import ConnectFailed, envfile, known_hosts, ssh, targets, vault
 from sirdar_api.deploy.redact import Redactor
 from sirdar_api.deploy.runner import (
-    CANCEL_GRACE_SECONDS, AnsibleRunner, Runner, RunRequest, RunResult, RunTarget,
+    CANCEL_GRACE_SECONDS,
+    AnsibleRunner,
+    Runner,
+    RunRequest,
+    RunResult,
+    RunTarget,
 )
 from sirdar_api.deploy.steps import STEPS_BY_KEY, plan_for
 
@@ -298,7 +307,7 @@ async def _flush_loop(step_id: uuid.UUID, buffer: _LogBuffer) -> None:
             seen = buffer.version
             try:
                 await _save_log(step_id, buffer.text())
-            except Exception as e:  # noqa: BLE001 — the next flush (or the final save) retries
+            except Exception as e:  # noqa: BLE001
                 log.warning("couldn't save a running step's log: %s", type(e).__name__)
                 seen = -1
 
@@ -405,7 +414,7 @@ async def _run_step(runner: Runner, ctx: _Context, step: DeploymentStep) -> RunR
             buffer.append)
     except asyncio.CancelledError:
         raise
-    except Exception as e:  # noqa: BLE001 — a failed step, never the exception text
+    except Exception as e:  # noqa: BLE001
         log.error("deploy step %s couldn't run: %s", step.key, type(e).__name__)
         buffer.append(UNEXPECTED + "\n")
         return RunResult(status="failed", rc=-1)
@@ -471,7 +480,7 @@ async def _run(deployment_id: uuid.UUID) -> None:
                              dep_status=status,
                              error=CANCELLED if status == "cancelled" else INTERRUPTED)
             raise
-        except Exception as e:  # noqa: BLE001 — record the failure, never its text
+        except Exception as e:  # noqa: BLE001
             log.error("deployment %s stopped by %s", deployment_id, type(e).__name__)
             with suppress(Exception):
                 await db.rollback()

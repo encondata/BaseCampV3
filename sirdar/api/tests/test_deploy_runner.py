@@ -22,17 +22,17 @@ B64 = "c2VjcmV0LWVudi1maWxl"
 
 
 def _target(**over) -> RunTarget:
-    kw = dict(host="10.0.0.5", port=2222, user="deployer",
-              known_hosts_line="[10.0.0.5]:2222 ssh-ed25519 AAAAC3",
-              host_key_algorithms="ssh-ed25519", password=PW, private_key=KEY_TEXT,
-              become_password=SUDO)
+    kw = {"host": "10.0.0.5", "port": 2222, "user": "deployer",
+              "known_hosts_line": "[10.0.0.5]:2222 ssh-ed25519 AAAAC3",
+              "host_key_algorithms": "ssh-ed25519", "password": PW, "private_key": KEY_TEXT,
+              "become_password": SUDO}
     kw.update(over)
     return RunTarget(**kw)
 
 
 def _request(**over) -> RunRequest:
-    kw = dict(step="render", playbook="render.yml", target=_target(), timeout=300,
-              extravars={"env_name": "uat", "env_file_b64": B64})
+    kw = {"step": "render", "playbook": "render.yml", "target": _target(), "timeout": 300,
+              "extravars": {"env_name": "uat", "env_file_b64": B64}}
     kw.update(over)
     return RunRequest(**kw)
 

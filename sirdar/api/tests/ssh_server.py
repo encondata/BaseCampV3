@@ -111,8 +111,8 @@ async def ssh_server(tmp_path):
 def ssh_settings(fake: FakeSshServer, **over):
     """Settings pointing at the fake server; password auth unless overridden."""
     from .test_scaffold import _settings
-    kw = dict(deploy_ssh_host=fake.host, deploy_ssh_port=fake.port, deploy_ssh_user=SSH_USER,
-              deploy_ssh_password=SSH_PASSWORD, deploy_keys_dir=str(fake.keys_dir))
+    kw = {"deploy_ssh_host": fake.host, "deploy_ssh_port": fake.port, "deploy_ssh_user": SSH_USER,
+              "deploy_ssh_password": SSH_PASSWORD, "deploy_keys_dir": str(fake.keys_dir)}
     kw.update(over)
     return _settings(**kw)
 

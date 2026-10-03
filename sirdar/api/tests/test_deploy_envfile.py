@@ -17,10 +17,10 @@ SECRETS = {
 
 
 def _cfg(**over) -> EnvConfig:
-    kw = dict(name="uat", domain="uat.serversherpa.com", image_tag="e73b99ca",
-              proxy_ip="10.10.48.6", bind_ip="0.0.0.0", ports=dict(envfile.DEFAULT_PORTS),
-              keep_dumps=5, spaces_bucket="serversherpa", log_level="INFO",
-              secrets=dict(SECRETS))
+    kw = {"name": "uat", "domain": "uat.serversherpa.com", "image_tag": "e73b99ca",
+              "proxy_ip": "10.10.48.6", "bind_ip": "0.0.0.0", "ports": dict(envfile.DEFAULT_PORTS),
+              "keep_dumps": 5, "spaces_bucket": "serversherpa", "log_level": "INFO",
+              "secrets": dict(SECRETS)}
     kw.update(over)
     return EnvConfig(**kw)
 

@@ -11,9 +11,13 @@ from sirdar_api.deploy import environments, pipeline, steps
 from sirdar_api.deploy.runner import RunResult
 
 from .api_helpers import auth_headers
-
 from .deploy_factories import (  # noqa: F401
-    ENV_SECRETS, fake_runner, leak_guard, make_environment, secrets_key, stop_pipeline,
+    ENV_SECRETS,
+    fake_runner,
+    leak_guard,
+    make_environment,
+    secrets_key,
+    stop_pipeline,
     trust_fake,
 )
 from .ssh_server import SSH_PASSWORD, ssh_server  # noqa: F401

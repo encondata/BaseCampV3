@@ -7,8 +7,16 @@ from sirdar_api.deploy import envfile, environments, ssh, vault
 from sirdar_api.deploy.environments import AdoptReport, EnvError
 
 from .deploy_factories import (  # noqa: F401
-    ADOPT_SHA, CAT_ENV, ENV_SECRETS, REPO_HEAD, make_environment, remote_env_text,
-    secrets_key, serve_remote_env, stop_pipeline, trust_fake,
+    ADOPT_SHA,
+    CAT_ENV,
+    ENV_SECRETS,
+    REPO_HEAD,
+    make_environment,
+    remote_env_text,
+    secrets_key,
+    serve_remote_env,
+    stop_pipeline,
+    trust_fake,
 )
 from .ssh_server import ssh_server  # noqa: F401
 from .test_deploy_api import _ssh_env, deploy_env  # noqa: F401
@@ -27,7 +35,7 @@ async def _secrets(db, env_id) -> dict[str, str]:
 
 
 def _new(**over) -> dict:
-    kw = dict(name="qa", type_="custom", target_id="ssh", proxy_ip="10.10.48.6")
+    kw = {"name": "qa", "type_": "custom", "target_id": "ssh", "proxy_ip": "10.10.48.6"}
     kw.update(over)
     return kw
 

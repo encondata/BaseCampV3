@@ -16,12 +16,21 @@ from sirdar_api.api.deps import AuthContext, DbSession, client_ip, require_permi
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import Deployment, DeploymentStep, Environment, SshKnownHost
 from sirdar_api.deploy import (
-    ConnectFailed, digitalocean, environments, gitref, known_hosts, names, pipeline, serialize,
-    ssh, targets, vault,
+    ConnectFailed,
+    digitalocean,
+    environments,
+    gitref,
+    known_hosts,
+    names,
+    pipeline,
+    serialize,
+    ssh,
+    targets,
+    vault,
 )
 from sirdar_api.deploy.ssh import SshTargetConfig
-from sirdar_api.deploy.steps import plan_for
 from sirdar_api.deploy.ssh_targets import SavedSshTarget, TargetError
+from sirdar_api.deploy.steps import plan_for
 from sirdar_api.services.audit import audit
 
 router = APIRouter(prefix="/deploy", tags=["deploy"])

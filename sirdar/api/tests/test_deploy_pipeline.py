@@ -15,7 +15,12 @@ from sirdar_api.deploy.runner import CANCEL_GRACE_SECONDS, RunResult
 from sirdar_api.deploy.steps import STEPS_BY_KEY
 
 from .deploy_factories import (  # noqa: F401
-    ENV_SECRETS, fake_runner, make_environment, secrets_key, stop_pipeline, trust_fake,
+    ENV_SECRETS,
+    fake_runner,
+    make_environment,
+    secrets_key,
+    stop_pipeline,
+    trust_fake,
 )
 from .ssh_server import SSH_PASSWORD, ssh_server  # noqa: F401
 from .test_deploy_api import _ssh_env, deploy_env  # noqa: F401

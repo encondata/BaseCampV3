@@ -201,8 +201,6 @@ class AnsibleRunner:
 
     def _run_sync(self, run_dir: Path, request: RunRequest,
                   on_output: Callable[[str], None], cancel: threading.Event) -> RunResult:
-        import ansible_runner   # imported here: heavy, and only a real run needs it
-
         stats: dict = {}
 
         def event_handler(event: dict) -> bool:
