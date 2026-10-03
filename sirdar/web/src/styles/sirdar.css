@@ -76,3 +76,20 @@
 
 .sirdar-env-head { align-items: flex-start; }
 .sirdar-env-tabs { margin-bottom: 4px; }
+
+.sirdar-deployment { margin-top: 16px; }
+.sirdar-steps { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.sirdar-step-btn {
+  display: grid; grid-template-columns: 28px minmax(0, 1fr) auto 72px; align-items: center; gap: 10px;
+  width: 100%; padding: 8px 12px; border: 1px solid var(--paper-line, #e5e7eb); border-radius: 8px;
+  background: var(--surface, #fff); color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.sirdar-step-btn[aria-expanded="true"] { border-color: var(--sirdar-accent); }
+.sirdar-step-btn > span:last-child { text-align: right; }
+.sirdar-log {
+  margin: 6px 0 4px; max-height: 420px; overflow: auto; padding: 12px 14px; border-radius: 8px;
+  border: 1px solid var(--paper-line, #e5e7eb); background: var(--surface-2, #f5f7fa); color: var(--text-dark);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+}
+.sirdar-retry { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-top: 16px; }
+.sirdar-retry > div { min-width: 240px; }

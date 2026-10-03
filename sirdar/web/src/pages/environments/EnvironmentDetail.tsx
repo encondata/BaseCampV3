@@ -1,36 +1,66 @@
-/** /deploy/environments/:name — one environment, in tabs. */
-import { useCallback, useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+/** /deploy/environments/:name — one environment, in tabs. `?deployment=<id>`
+ *  opens the Deployments tab on that deployment (the Dashboard links here). */
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '@portal/auth/AuthContext';
 
-import { errorText, getDeployTargets, getEnvironment, type DeployTarget, type Environment } from '../../lib/sirdarApi';
+import {
+  errorText, getDeployTargets, getEnvironment, type DeployTarget, type Deployment, type Environment,
+} from '../../lib/sirdarApi';
 
+import DeploymentsTab from './DeploymentsTab';
 import DeployModal from './DeployModal';
 import EnvOverview from './EnvOverview';
 import { ENV_STATUS, StatusChip, TYPE_LABEL, targetLabel } from './labels';
 
-type Tab = 'overview';
-const TABS: [Tab, string][] = [['overview', 'Overview']];
+type Tab = 'overview' | 'deployments';
+const TABS: [Tab, string][] = [['overview', 'Overview'], ['deployments', 'Deployments']];
 
+/** Keyed by name: moving to another environment starts from a clean page
+ *  (no stale environment, tab or open deployment). */
 export default function EnvironmentDetail() {
   const { name = '' } = useParams();
+  return <EnvironmentPage key={name} name={name} />;
+}
+
+function EnvironmentPage({ name }: { name: string }) {
+  const [params] = useSearchParams();
   const { can } = useAuth();
   const [env, setEnv] = useState<Environment | null>(null);
   const [targets, setTargets] = useState<DeployTarget[]>([]);
   const [error, setError] = useState('');
-  const [tab, setTab] = useState<Tab>('overview');
+  const linked = params.get('deployment');
+  const [selected, setSelected] = useState<string | null>(linked);
+  const [tab, setTab] = useState<Tab>(linked ? 'deployments' : 'overview');
   const [deploying, setDeploying] = useState(false);
+  const seq = useRef(0);
 
-  const load = useCallback(() => getEnvironment(name)
-    .then((e) => { setEnv(e); setError(''); })
-    .catch((e) => setError(errorText(e, "Couldn't load this environment."))), [name]);
+  // A new ?deployment= link on the same environment opens that deployment.
+  useEffect(() => { if (linked) { setSelected(linked); setTab('deployments'); } }, [linked]);
+
+  // Only the newest request's answer lands; nothing lands after unmount.
+  const load = useCallback(() => {
+    const n = ++seq.current;
+    return getEnvironment(name)
+      .then((e) => { if (n === seq.current) { setEnv(e); setError(''); } })
+      .catch((e) => { if (n === seq.current) setError(errorText(e, "Couldn't load this environment.")); });
+  }, [name]);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => () => { seq.current += 1; }, []);
   useEffect(() => {
-    getDeployTargets().then((r) => setTargets(r.targets)).catch(() => { /* target ids stand in for labels */ });
+    let live = true;
+    getDeployTargets().then((r) => { if (live) setTargets(r.targets); })
+      .catch(() => { /* target ids stand in for labels */ });
+    return () => { live = false; };
   }, []);
 
-  const started = () => { setDeploying(false); void load(); };
+  const started = (dep: Deployment) => {
+    setDeploying(false);
+    setSelected(dep.id);
+    setTab('deployments');
+    void load();
+  };
 
   const crumb = <div className="eyebrow"><Link to="/deploy">Deploy</Link></div>;
   if (!env) {
@@ -65,6 +95,9 @@ export default function EnvironmentDetail() {
         ))}
       </div>
       {tab === 'overview' && <EnvOverview env={env} />}
+      {tab === 'deployments' && (
+        <DeploymentsTab env={env} selected={selected} onSelect={setSelected} onChanged={() => void load()} />
+      )}
       {deploying && <DeployModal env={env} onStarted={started} onClose={() => setDeploying(false)} />}
     </div>
   );

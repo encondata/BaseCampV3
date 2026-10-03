@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const perms = vi.hoisted(() => ({ add: true, change: true }));
@@ -12,19 +12,22 @@ vi.mock('@portal/auth/AuthContext', () => ({
 }));
 const api = vi.hoisted(() => ({
   getEnvironment: vi.fn(), getDeployTargets: vi.fn(), startDeployment: vi.fn(), trustKnownHost: vi.fn(),
+  listDeployments: vi.fn(),
 }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
+vi.mock('./DeploymentView', () => ({ default: ({ id }: { id: string }) => <div>deployment view {id}</div> }));
 
 import { ApiError } from '@portal/lib/api';
 
 import EnvironmentDetail from './EnvironmentDetail';
-import { ENV, RUNNING, TARGETS } from './testData';
+import { ADOPTED, ENV, RUNNING, TARGETS, summary } from './testData';
 
 beforeEach(() => {
   perms.add = true; perms.change = true;
   Object.values(api).forEach((f) => f.mockReset());
   api.getEnvironment.mockResolvedValue(ENV);
   api.getDeployTargets.mockResolvedValue(TARGETS);
+  api.listDeployments.mockResolvedValue({ deployments: [summary(RUNNING), ADOPTED] });
 });
 afterEach(cleanup);
 
@@ -32,7 +35,7 @@ function show(path = '/deploy/environments/uat') {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
-        <Route path="/deploy/environments/:name" element={<EnvironmentDetail />} />
+        <Route path="/deploy/environments/:name" element={<><EnvironmentDetail /><Link to="/deploy/environments/beta">Go to beta</Link></>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -81,4 +84,59 @@ it('an unknown environment shows the error', async () => {
   api.getEnvironment.mockRejectedValue(new ApiError(404, 'environment_not_found', { code: 'environment_not_found' }));
   show('/deploy/environments/gone');
   expect((await screen.findByRole('alert')).textContent).toBe('That environment no longer exists.');
+});
+
+it('?deployment= opens the Deployments tab on that deployment', async () => {
+  show('/deploy/environments/uat?deployment=d1');
+  expect(await screen.findByText('deployment view d1')).toBeTruthy();
+  expect(screen.getByRole('tab', { name: 'Deployments' }).getAttribute('aria-selected')).toBe('true');
+});
+
+it('a started deployment opens on the Deployments tab', async () => {
+  api.startDeployment.mockResolvedValue(RUNNING);
+  show();
+  await userEvent.click(await screen.findByRole('button', { name: 'Deploy' }));
+  await userEvent.click(within(await screen.findByRole('dialog', { name: 'Deploy uat' })).getByRole('button', { name: 'Deploy' }));
+  expect(await screen.findByText('deployment view d1')).toBeTruthy();
+  expect(screen.getByRole('tab', { name: 'Deployments' }).getAttribute('aria-selected')).toBe('true');
+});
+
+it('switching tabs closes the deployment view (and so stops its polling)', async () => {
+  show('/deploy/environments/uat?deployment=d1');
+  await screen.findByText('deployment view d1');
+  await userEvent.click(screen.getByRole('tab', { name: 'Overview' }));
+  expect(screen.queryByText('deployment view d1')).toBeNull();
+  expect(screen.getByRole('tab', { name: 'Overview' }).getAttribute('aria-selected')).toBe('true');
+});
+
+it('moving to another environment resets the page and ignores late answers for the old one', async () => {
+  const BETA = { ...ENV, id: 'e2', name: 'beta', base_domain: 'beta.serversherpa.com' };
+  let lateUat: (e: typeof ENV) => void = () => {};
+  api.getEnvironment.mockResolvedValueOnce(ENV)
+    .mockImplementationOnce(() => new Promise((r) => { lateUat = r; }))   // a reload still out for uat
+    .mockResolvedValueOnce(BETA);
+  api.startDeployment.mockResolvedValue(RUNNING);
+  show('/deploy/environments/uat?deployment=d1');
+  await screen.findByText('deployment view d1');
+  // A deploy reloads uat; that answer is held back while we move to beta.
+  await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+  await userEvent.click(within(await screen.findByRole('dialog', { name: 'Deploy uat' })).getByRole('button', { name: 'Deploy' }));
+  await waitFor(() => expect(api.getEnvironment).toHaveBeenCalledTimes(2));
+  await userEvent.click(screen.getByRole('link', { name: 'Go to beta' }));
+  expect(await screen.findByRole('heading', { level: 1, name: 'beta' })).toBeTruthy();
+  expect(api.getEnvironment).toHaveBeenLastCalledWith('beta');
+  expect(screen.getByRole('tab', { name: 'Overview' }).getAttribute('aria-selected')).toBe('true');
+  expect(screen.queryByText(/deployment view/)).toBeNull();
+  await act(async () => { lateUat(ENV); });
+  expect(screen.getByRole('heading', { level: 1, name: 'beta' })).toBeTruthy();
+  expect(screen.queryByRole('heading', { level: 1, name: 'uat' })).toBeNull();
+});
+
+it('shows Loading, not the old environment, while the new one loads', async () => {
+  api.getEnvironment.mockResolvedValueOnce(ENV).mockImplementationOnce(() => new Promise(() => {}));
+  show();
+  await screen.findByRole('heading', { level: 1, name: 'uat' });
+  await userEvent.click(screen.getByRole('link', { name: 'Go to beta' }));
+  expect(await screen.findByText('Loading…')).toBeTruthy();
+  expect(screen.queryByRole('heading', { level: 1, name: 'uat' })).toBeNull();
 });
