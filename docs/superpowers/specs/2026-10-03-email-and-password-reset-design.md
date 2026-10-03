@@ -49,7 +49,7 @@ Developer › System config › **Environment** automatically (that tab lists
 
 Existing `SS_SMTP_HOST/PORT/USERNAME/PASSWORD/STARTTLS/FROM` are used as is.
 **Email is enabled** iff `smtp_host` and `smtp_from` are both non-empty
-(`email.email_enabled()`).
+(`mail.email_enabled()`).
 
 ## Part 1 — Email service and outbox
 
@@ -78,7 +78,9 @@ would have been) sent. Rows are kept indefinitely for now. The token
 inside a reset email body is single-use and short-lived; `html_body` and
 `text_body` are never returned by any API.
 
-### Package `api/src/serversherpa/email/`
+### Package `api/src/serversherpa/mail/`
+
+(Named `mail`, not `email`, so it never shadows the stdlib `email` package.)
 
 - `templates/` — Jinja2 (already a dependency), autoescape on for HTML.
   Shared `_base.html` (plain inline-styled layout: ServerSherpa name,
@@ -108,8 +110,8 @@ inside a reset email body is single-use and short-lived; `html_body` and
 ### Worker
 
 `notifications/worker.py` loop calls `deliver_once` every poll (default
-5 s) besides the hourly reminders, skips both while `poll_workers_paused`,
-and adds outbox counts to its heartbeat meta. No new process, Procfile
+5 s) besides the hourly reminders, skips both while `poll_workers_paused`;
+its 15-minute idle line reports whether email delivery is on. No new process, Procfile
 line, or compose service.
 
 ## Part 2 — Password-reset API
@@ -129,8 +131,9 @@ the admin routes and the reset flow both call it.
 
 ### Endpoints (in `api/routes/auth.py`, all public)
 
-**`GET /auth/options`** → `{email_enabled, password_min_length,
-password_reset_ttl_minutes}`.
+**`GET /system/status`** (already public, already read by the login
+page) gains `email_enabled`, `password_reset_ttl_minutes` and
+`password_min_length`. No new options endpoint.
 
 **`POST /auth/password-reset/request {email}`** → always `202 {"status":
 "accepted"}` (429 `rate_limited` when the IP is over
@@ -150,7 +153,10 @@ password_reset_ttl_minutes}`.
    `audit(action="password.reset_requested", changes={"via": "admin"})`.
 
 Locked-out accounts (`locked_until` in the future) are treated like
-active ones; a completed reset clears the lock.
+active ones; a completed reset clears the lock. Known residual: a request
+for a real account does a few more DB writes than one for an unknown
+email, so response *timing* differs by milliseconds; the body and status
+never do.
 
 **`POST /auth/password-reset/check {token}`** → `{valid: bool}`. Counts
 against the confirm limiter.
@@ -168,8 +174,9 @@ Invalid → 400 `reset_token_invalid` (one code for every reason). Then:
 4. `revoke_all_sessions(db, person_id, "password_reset")`.
 5. `totp_service.revoke_trust(db, person_id)`, so the next sign-in
    requires 2FA.
-6. Resolve open admin request cards for the person.
-7. `audit(entity_type="user_account", entity_id=person_id, actor_id=None,
+6. Resolve open admin request cards for the person (`resolved_by` = the
+   person's own name).
+7. `audit(entity_type="user_account", entity_id=person_id, actor_id=person_id,
    action="password.reset_self", ip=…)`.
 8. `enqueue(..., "password_changed", ...)`: "Your ServerSherpa password
    was changed. If this wasn't you, contact your administrator."
@@ -199,7 +206,8 @@ They are per process and in memory, the same as the existing users.
 
 ## Part 3 — Portal
 
-- **`Login.tsx`** fetches `/auth/options` on mount. **Forgot password**
+- **`Login.tsx`** reads the new fields from `/system/status` (it already
+  fetches it on mount). **Forgot password**
   opens a modal (modal-header pattern: eyebrow, title, description; login
   `.auth-scrim` styling; sized to content) with one email field,
   pre-filled from the sign-in email box. After submit, one fixed message
