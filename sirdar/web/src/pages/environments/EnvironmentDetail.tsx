@@ -16,6 +16,10 @@ import EnvSettings from './EnvSettings';
 
 import { ENV_STATUS, StatusChip, TYPE_LABEL, targetLabel } from './labels';
 
+/** While the environment is deploying it is reloaded this often, on every tab, so
+ *  the header, Deploy and Settings notice when the run ends. */
+export const ENV_POLL_MS = 5000;
+
 type Tab = 'overview' | 'deployments' | 'settings';
 const TABS: [Tab, string][] = [['overview', 'Overview'], ['deployments', 'Deployments'], ['settings', 'Settings']];
 
@@ -50,6 +54,18 @@ function EnvironmentPage({ name }: { name: string }) {
   }, [name]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => () => { seq.current += 1; }, []);
+  // One reload at a time: the next is scheduled only after the last settles.
+  const status = env?.status;
+  useEffect(() => {
+    if (status !== 'deploying') return undefined;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      timer = setTimeout(() => { void load().finally(() => { if (live) schedule(); }); }, ENV_POLL_MS);
+    };
+    schedule();
+    return () => { live = false; if (timer) clearTimeout(timer); };
+  }, [status, load]);
   useEffect(() => {
     let live = true;
     getDeployTargets().then((r) => { if (live) setTargets(r.targets); })

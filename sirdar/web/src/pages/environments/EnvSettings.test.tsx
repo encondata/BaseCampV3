@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -20,7 +21,8 @@ beforeEach(() => {
   perms.change = true;
   Object.values(api).forEach((f) => f.mockReset());
   api.getEnvironmentDefaults.mockResolvedValue(DEFAULTS);
-  api.updateEnvironment.mockImplementation(async (_name: string, patch: object) => ({ ...ENV, ...patch }));
+  // The saved record: plain fields applied (services / secrets keep the fixture's shape).
+  api.updateEnvironment.mockImplementation(async (_name: string, { services: _s, secrets: _x, ...patch }: Record<string, unknown>) => ({ ...ENV, ...patch }));
 });
 afterEach(cleanup);
 
@@ -100,4 +102,40 @@ it("settings can't be saved while a deployment runs", () => {
   open({ ...ENV, status: 'deploying' });
   expect(screen.getByText("Settings can't change while a deployment is running.")).toBeTruthy();
   expect((screen.getByRole('button', { name: 'Save settings' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('a reloaded environment (new updated_at) keeps unsaved edits and typed secrets', async () => {
+  const { rerender } = render(<EnvSettings env={ENV} targets={TARGETS.targets} onSaved={vi.fn()} />);
+  await userEvent.clear(screen.getByLabelText('Proxy IP'));
+  await userEvent.type(screen.getByLabelText('Proxy IP'), '10.10.48.7');
+  await userEvent.click(within(secret('Anthropic API key: set')).getByRole('button', { name: 'Replace' }));
+  await userEvent.type(screen.getByLabelText('Anthropic API key'), 'sk-typed');
+  rerender(<EnvSettings env={{ ...ENV, updated_at: '2026-10-03T14:00:00Z' }} targets={TARGETS.targets} onSaved={vi.fn()} />);
+  expect((screen.getByLabelText('Proxy IP') as HTMLInputElement).value).toBe('10.10.48.7');
+  expect((screen.getByLabelText('Anthropic API key') as HTMLInputElement).value).toBe('sk-typed');
+});
+
+it('after a successful save the form shows the saved values', async () => {
+  // The server normalizes the address; the form shows what it stored.
+  api.updateEnvironment.mockResolvedValue({ ...ENV, proxy_ip: '10.10.48.8', updated_at: '2026-10-03T14:00:00Z' });
+  function Host() {
+    const [env, setEnv] = useState(ENV);
+    return <EnvSettings env={env} targets={TARGETS.targets} onSaved={setEnv} />;
+  }
+  render(<Host />);
+  await userEvent.clear(screen.getByLabelText('Proxy IP'));
+  await userEvent.type(screen.getByLabelText('Proxy IP'), '10.10.48.7');
+  await save();
+  await screen.findByText('Saved. The next deploy applies these settings.');
+  expect((screen.getByLabelText('Proxy IP') as HTMLInputElement).value).toBe('10.10.48.8');
+});
+
+it('the fields are disabled while a deployment runs, not just Save', () => {
+  open({ ...ENV, status: 'deploying' });
+  expect((screen.getByLabelText('Proxy IP') as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByLabelText('Default git ref') as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByLabelText('api port') as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByLabelText('api address') as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByRole('combobox', { name: 'Target' }) as HTMLInputElement).disabled).toBe(true);
+  expect(screen.queryByRole('button', { name: 'Replace' })).toBeNull();
 });

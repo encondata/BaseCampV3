@@ -1,18 +1,20 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 vi.mock('./DeploymentView', () => ({
-  default: ({ id, isLatest }: { id: string; isLatest: boolean | null }) => (
-    <div>view {id} {isLatest === null ? 'unknown' : isLatest ? 'latest' : 'older'}</div>
+  default: ({ id, isLatest, onClose }: { id: string; isLatest: boolean | null; onClose: () => void }) => (
+    <div>view {id} {isLatest === null ? 'unknown' : isLatest ? 'latest' : 'older'}
+      <button type="button" onClick={onClose}>fake close</button></div>
   ),
 }));
 const api = vi.hoisted(() => ({ listDeployments: vi.fn() }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 
 import DeploymentsTab from './DeploymentsTab';
-import { ADOPTED, ENV, FAILED, summary } from './testData';
+import { ADOPTED, ENV, FAILED, RUNNING, summary } from './testData';
 
 beforeEach(() => {
   api.listDeployments.mockReset();
@@ -55,4 +57,33 @@ it('the open deployment is neither latest nor older until the list loads, or if 
   await act(async () => { fail(new Error('down')); });
   expect(await screen.findByRole('alert')).toBeTruthy();
   expect(screen.getByText('view d1 unknown')).toBeTruthy();
+});
+
+it('closing a running deployment reloads the history, so its row is not left Running', async () => {
+  api.listDeployments.mockResolvedValueOnce({ deployments: [summary(RUNNING), ADOPTED] })
+    .mockResolvedValue({ deployments: [summary(FAILED), ADOPTED] });
+  function Host() {
+    const [selected, setSelected] = useState<string | null>('d1');
+    return <DeploymentsTab env={ENV} selected={selected} onSelect={setSelected} onChanged={vi.fn()} />;
+  }
+  render(<Host />);
+  const table = await screen.findByRole('table', { name: 'Deployments' });
+  expect(await within(table).findByText('Running')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'fake close' }));
+  expect(await within(table).findByText('Failed')).toBeTruthy();
+  expect(api.listDeployments).toHaveBeenCalledTimes(2);
+});
+
+it('a reloaded environment whose deploy ended reloads the history', async () => {
+  api.listDeployments.mockResolvedValueOnce({ deployments: [summary(RUNNING), ADOPTED] })
+    .mockResolvedValue({ deployments: [summary(FAILED), ADOPTED] });
+  const props = { selected: null, onSelect: vi.fn(), onChanged: vi.fn() };
+  const { rerender } = render(<DeploymentsTab {...props} env={{ ...ENV, status: 'deploying' }} />);
+  const table = await screen.findByRole('table', { name: 'Deployments' });
+  expect(await within(table).findByText('Running')).toBeTruthy();
+  rerender(<DeploymentsTab {...props} env={{ ...ENV, status: 'deploying' }} />);   // same state: no reload
+  expect(api.listDeployments).toHaveBeenCalledTimes(1);
+  rerender(<DeploymentsTab {...props} env={{ ...ENV, status: 'failed', updated_at: '2026-10-03T14:00:00Z' }} />);
+  expect(await within(table).findByText('Failed')).toBeTruthy();
+  expect(api.listDeployments).toHaveBeenCalledTimes(2);
 });

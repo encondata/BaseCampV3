@@ -11,9 +11,10 @@ vi.mock('@portal/auth/AuthContext', () => ({
 const api = vi.hoisted(() => ({ listEnvironments: vi.fn() }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 vi.mock('./NewEnvironmentModal', () => ({
-  default: ({ onCreated }: { onCreated: (env: typeof ENV) => void }) => (
+  default: ({ onCreated, onClose }: { onCreated: (env: typeof ENV) => void; onClose: () => void }) => (
     <div role="dialog" aria-label="New environment">
       <button type="button" onClick={() => onCreated(ENV)}>fake create</button>
+      <button type="button" onClick={onClose}>fake close</button>
     </div>
   ),
 }));
@@ -77,4 +78,16 @@ it('New environment needs deploy:add; creating one opens its page', async () => 
   show();
   await screen.findByText('No environments yet.');
   expect(screen.queryByRole('button', { name: 'New environment' })).toBeNull();
+});
+
+it('closing the modal after an adopt (×, Escape or the scrim) refreshes the list', async () => {
+  api.listEnvironments.mockResolvedValueOnce({ environments: [] }).mockResolvedValue({ environments: [ENV] });
+  show();
+  await screen.findByText('No environments yet.');
+  await userEvent.click(screen.getByRole('button', { name: 'New environment' }));
+  await userEvent.click(within(screen.getByRole('dialog', { name: 'New environment' })).getByRole('button', { name: 'fake close' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  const table = await screen.findByRole('table', { name: 'Environments' });
+  expect(await within(table).findByRole('link', { name: 'uat' })).toBeTruthy();
+  expect(api.listEnvironments).toHaveBeenCalledTimes(2);
 });

@@ -22,8 +22,10 @@ export default function DeploymentsTab({ env, selected, onSelect, onChanged }: {
       .then((r) => { if (n === seq.current) { setRows(r.deployments); setError(''); } })
       .catch((e) => { if (n === seq.current) setError(errorText(e, "Couldn't load the deployments.")); });
   }, [env.name]);
-  // A newly selected deployment (just started or retried) joins the list.
-  useEffect(() => { void load(); }, [load, selected]);
+  // A newly selected deployment (just started or retried) joins the list; closing
+  // one (selected → null) refreshes its row; so does the environment's reload
+  // when a deploy starts or ends (status / updated_at change).
+  useEffect(() => { void load(); }, [load, selected, env.status, env.updated_at]);
   useEffect(() => () => { seq.current += 1; }, []);
 
   const latestId = rows?.[0]?.id ?? null;

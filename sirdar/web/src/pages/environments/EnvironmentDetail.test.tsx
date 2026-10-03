@@ -2,7 +2,7 @@
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Link, MemoryRouter, Route, Routes } from 'react-router-dom';
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const perms = vi.hoisted(() => ({ add: true, change: true }));
 vi.mock('@portal/auth/AuthContext', () => ({
@@ -19,7 +19,7 @@ vi.mock('./DeploymentView', () => ({ default: ({ id }: { id: string }) => <div>d
 
 import { ApiError } from '@portal/lib/api';
 
-import EnvironmentDetail from './EnvironmentDetail';
+import EnvironmentDetail, { ENV_POLL_MS } from './EnvironmentDetail';
 import { ADOPTED, DEFAULTS, ENV, RUNNING, TARGETS, summary } from './testData';
 
 Element.prototype.scrollIntoView = () => {};
@@ -68,6 +68,8 @@ it('Deploy opens the Deploy modal; starting reloads the environment', async () =
   await userEvent.click(within(dialog).getByRole('button', { name: 'Deploy' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   expect(api.getEnvironment).toHaveBeenCalledTimes(2);
+  expect(api.startDeployment).toHaveBeenCalledTimes(1);
+  expect(api.startDeployment).toHaveBeenCalledWith('uat', { mode: 'update', git_ref: 'main' });
 });
 
 it('a view-only reader has no Deploy button; a running deployment disables it', async () => {
@@ -152,4 +154,49 @@ it('the Settings tab edits the environment and updates the page', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Save settings' }));
   expect(await screen.findByText('Dev · Lab box · uat2.serversherpa.com')).toBeTruthy();
   expect(api.updateEnvironment).toHaveBeenCalledWith('uat', { base_domain: 'uat2.serversherpa.com' });
+});
+
+describe('while the environment is deploying', () => {
+  beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); });
+  afterEach(() => { vi.useRealTimers(); });
+  const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+
+  it('reloads it every 5 s on any tab; a later Ready re-enables Deploy', async () => {
+    api.getEnvironment.mockResolvedValueOnce({ ...ENV, status: 'deploying' })
+      .mockResolvedValueOnce({ ...ENV, status: 'deploying' })
+      .mockResolvedValue(ENV);
+    show();
+    const deploy = (await screen.findByRole('button', { name: 'Deploy' })) as HTMLButtonElement;
+    expect(deploy.disabled).toBe(true);
+    expect(screen.getByRole('tab', { name: 'Overview' }).getAttribute('aria-selected')).toBe('true');
+    expect(ENV_POLL_MS).toBe(5000);
+    await tick(ENV_POLL_MS);
+    expect(api.getEnvironment).toHaveBeenCalledTimes(2);
+    expect(deploy.disabled).toBe(true);
+    await tick(ENV_POLL_MS);
+    expect(api.getEnvironment).toHaveBeenCalledTimes(3);
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Deploy' }) as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.getByText('Ready')).toBeTruthy();
+    await tick(ENV_POLL_MS * 4);                 // ready: polling stops
+    expect(api.getEnvironment).toHaveBeenCalledTimes(3);
+  });
+
+  it('never overlaps reloads, and stops when the page goes away', async () => {
+    let release: (e: typeof ENV) => void = () => {};
+    api.getEnvironment.mockResolvedValueOnce({ ...ENV, status: 'deploying' })
+      .mockImplementationOnce(() => new Promise((r) => { release = r; }))
+      .mockResolvedValue({ ...ENV, status: 'deploying' });
+    show();
+    await screen.findByRole('heading', { level: 1, name: 'uat' });
+    await tick(ENV_POLL_MS);
+    expect(api.getEnvironment).toHaveBeenCalledTimes(2);
+    await tick(ENV_POLL_MS * 4);                 // the second request is still out
+    expect(api.getEnvironment).toHaveBeenCalledTimes(2);
+    await act(async () => { release({ ...ENV, status: 'deploying' }); });
+    await tick(ENV_POLL_MS);
+    expect(api.getEnvironment).toHaveBeenCalledTimes(3);
+    cleanup();
+    await tick(ENV_POLL_MS * 4);
+    expect(api.getEnvironment).toHaveBeenCalledTimes(3);
+  });
 });

@@ -58,7 +58,7 @@ export default function EnvironmentsSection({ targets }: { targets: DeployTarget
       />
       {creating && (
         <NewEnvironmentModal
-          onClose={() => setCreating(false)}
+          onClose={() => { setCreating(false); void load(); }}   // an adopt may have added one
           onCreated={(env) => { setCreating(false); navigate(`/deploy/environments/${encodeURIComponent(env.name)}`); }} />
       )}
     </section>

@@ -59,6 +59,7 @@ export default function EnvSettings({ env, targets, onSaved }: {
   const { can } = useAuth();
   const locked = !can('deploy', 'change');
   const deploying = env.status === 'deploying';
+  const off = locked || deploying;
   const [form, setForm] = useState<Form>(() => fromEnv(env));
   const [secretAction, setSecretAction] = useState<Record<string, SecretAction>>({});
   const [secretValue, setSecretValue] = useState<Record<string, string>>({});
@@ -68,9 +69,11 @@ export default function EnvSettings({ env, targets, onSaved }: {
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
 
-  // A saved (or reloaded) environment resets the form.
-  const stamp = `${env.name}|${env.updated_at}`;
-  useEffect(() => { setForm(fromEnv(env)); setSecretAction({}); setSecretValue({}); }, [stamp]);  // eslint-disable-line react-hooks/exhaustive-deps
+  // Another environment, or this form's own successful save, resets the form. A
+  // reload (the page polls while a deploy runs, and deploys bump updated_at) never
+  // does: it would wipe unsaved edits and typed secrets.
+  const reset = (from: Environment) => { setForm(fromEnv(from)); setSecretAction({}); setSecretValue({}); };
+  useEffect(() => { reset(env); }, [env.name]);  // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     getEnvironmentDefaults().then((d) => { setLevels(d.log_levels); setOptional(d.optional_secrets); }).catch(() => { /* only the current level is offered */ });
   }, []);
@@ -153,7 +156,9 @@ export default function EnvSettings({ env, targets, onSaved }: {
     if (Object.keys(patch).length === 0) { setNotice('Nothing to save.'); return; }
     setSaving(true);
     try {
-      onSaved(await updateEnvironment(env.name, patch));
+      const saved = await updateEnvironment(env.name, patch);
+      onSaved(saved);
+      reset(saved);
       setNotice('Saved. The next deploy applies these settings.');
     } catch (err) {
       const code = (err as { code?: string }).code ?? '';
@@ -170,27 +175,27 @@ export default function EnvSettings({ env, targets, onSaved }: {
       {locked && <p className="page-hint">You can view these settings but not change them.</p>}
       {!locked && deploying && <p className="page-hint">Settings can't change while a deployment is running.</p>}
       <div className="pf-form sirdar-env-grid">
-        <TextField id="env-set-ref" label="Default git ref" value={form.ref} error={errors.ref} disabled={locked}
+        <TextField id="env-set-ref" label="Default git ref" value={form.ref} error={errors.ref} disabled={off}
                    onChange={(v) => set('ref', v)} />
         <div>
           <label className="field-label" htmlFor="env-set-target">Target</label>
           <ComboBox inputId="env-set-target" ariaLabel="Target" portal value={form.target} options={targetOptions}
-                    disabled={locked} onChange={(v) => set('target', v)} />
+                    disabled={off} onChange={(v) => set('target', v)} />
           {errors.target && <p className="form-error" role="alert">{errors.target}</p>}
         </div>
-        <TextField id="env-set-domain" label="Base domain" value={form.domain} error={errors.domain} disabled={locked}
+        <TextField id="env-set-domain" label="Base domain" value={form.domain} error={errors.domain} disabled={off}
                    hint={'Each service is named <service>.<base domain>.'} onChange={(v) => set('domain', v)} />
-        <TextField id="env-set-proxy" label="Proxy IP" value={form.proxy} error={errors.proxy} disabled={locked}
+        <TextField id="env-set-proxy" label="Proxy IP" value={form.proxy} error={errors.proxy} disabled={off}
                    onChange={(v) => set('proxy', v)} />
-        <TextField id="env-set-bind" label="Bind IP" value={form.bind} error={errors.bind} disabled={locked}
+        <TextField id="env-set-bind" label="Bind IP" value={form.bind} error={errors.bind} disabled={off}
                    onChange={(v) => set('bind', v)} />
-        <TextField id="env-set-keep" label="Dumps to keep" value={form.keep} error={errors.keep} disabled={locked}
+        <TextField id="env-set-keep" label="Dumps to keep" value={form.keep} error={errors.keep} disabled={off}
                    hint="Pre-deploy database dumps kept on the target." onChange={(v) => set('keep', v)} />
-        <TextField id="env-set-bucket" label="Spaces bucket" value={form.bucket} error={errors.bucket} disabled={locked}
+        <TextField id="env-set-bucket" label="Spaces bucket" value={form.bucket} error={errors.bucket} disabled={off}
                    onChange={(v) => set('bucket', v)} />
         <div>
           <label className="field-label" htmlFor="env-set-level">Log level</label>
-          <ComboBox inputId="env-set-level" ariaLabel="Log level" portal value={form.level} disabled={locked}
+          <ComboBox inputId="env-set-level" ariaLabel="Log level" portal value={form.level} disabled={off}
                     options={levels.map((l) => ({ value: l, label: l }))} onChange={(v) => set('level', v)} />
           {errors.level && <p className="form-error" role="alert">{errors.level}</p>}
         </div>
@@ -207,9 +212,9 @@ export default function EnvSettings({ env, targets, onSaved }: {
             <b className="cell-top">{s.service}</b>,
             s.hostname ?? '—',
             <input type="text" aria-label={`${s.service} address`} value={form.services[s.service]?.host_ip ?? ''}
-                   disabled={locked} onChange={(e) => setSvc(s.service, 'host_ip', e.target.value)} />,
+                   disabled={off} onChange={(e) => setSvc(s.service, 'host_ip', e.target.value)} />,
             <input className="sirdar-port-input" type="text" inputMode="numeric" aria-label={`${s.service} port`}
-                   value={form.services[s.service]?.port ?? ''} disabled={locked}
+                   value={form.services[s.service]?.port ?? ''} disabled={off}
                    onChange={(e) => setSvc(s.service, 'port', e.target.value)} />,
           ],
         }))}
@@ -222,7 +227,7 @@ export default function EnvSettings({ env, targets, onSaved }: {
         {secretKeys.map((key) => (
           <SecretField key={key} id={`env-secret-${key}`} label={SECRET_LABELS[key] ?? key}
                        isSet={env.secrets_set[key]} adding={false} action={secretAction[key] ?? 'keep'}
-                       value={secretValue[key] ?? ''} error={errors[`secret:${key}`]} disabled={locked || !optional.includes(key)}
+                       value={secretValue[key] ?? ''} error={errors[`secret:${key}`]} disabled={off || !optional.includes(key)}
                        onAction={(a) => { setSecretAction((m) => ({ ...m, [key]: a })); setNotice(''); }}
                        onValue={(v) => setSecretValue((m) => ({ ...m, [key]: v }))} />
         ))}
