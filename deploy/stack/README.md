@@ -13,6 +13,19 @@ Five Compose stacks run one environment on a Docker host:
 All of them share the Docker network `ss-<env>`. `ss-stack` runs them in
 order; Sirdar's deploy pipeline (phase 2) will run the same commands.
 
+## Accepted risk: staging CORS
+
+These stacks run the API with `SS_ENV=staging`, and outside production the
+API accepts credentialed requests from **any** HTTPS origin
+(`api/src/serversherpa/api/app.py`, the dev/staging `allow_origin_regex`);
+`SS_ALLOWED_ORIGINS` is not enforced. The refresh cookie is SameSite=Lax, so
+unrelated sites can't use it, but a page on any `*.serversherpa.com` host
+could call this environment's API with a signed-in user's session.
+`/docs` and `/openapi.json` are also public. Accepted for UAT by Jimmy on
+2026-10-03. Revisit before seeding real accounts that matter, or before
+any environment faces untrusted users: make staging honor
+`SS_ALLOWED_ORIGINS`.
+
 ## Manual deploy to an Ubuntu host (phase 1)
 
 These steps assume Ubuntu 22.04/24.04 with sudo, on the same LAN as Nginx
