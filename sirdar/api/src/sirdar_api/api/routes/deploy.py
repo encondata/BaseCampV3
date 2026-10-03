@@ -18,6 +18,7 @@ from sirdar_api.db.models import Deployment, DeploymentStep, Environment, SshKno
 from sirdar_api.deploy import (
     ConnectFailed,
     digitalocean,
+    envfile,
     environments,
     gitref,
     known_hosts,
@@ -397,6 +398,20 @@ async def _environment(db, name: str) -> Environment:
     return env
 
 
+@router.get("/environment-defaults")
+async def environment_defaults(actor: AuthContext = require_permission("deploy", "view")):
+    """What the New environment form prefills: the same values create_new uses."""
+    return {
+        "services": [{"service": s, "port": envfile.DEFAULT_PORTS[s],
+                      "public": s in envfile.PUBLIC_SERVICES} for s in envfile.SERVICES],
+        "domain_suffix": environments.DEFAULT_DOMAIN_SUFFIX, "env_root": envfile.ENV_ROOT,
+        "git_ref": environments.DEFAULT_GIT_REF, "bind_ip": environments.DEFAULT_BIND_IP,
+        "keep_dumps": envfile.DEFAULT_KEEP_DUMPS, "spaces_bucket": envfile.DEFAULT_SPACES_BUCKET,
+        "log_levels": list(envfile.LOG_LEVELS),
+        "optional_secrets": list(envfile.OPTIONAL_SECRETS),
+    }
+
+
 @router.get("/environments")
 async def list_environments(db: DbSession,
                             actor: AuthContext = require_permission("deploy", "view")):
@@ -457,7 +472,9 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
     await db.refresh(env)
     out = await serialize.environment_out(db, env)
     if report is not None:
+        # Names only: what adopt read from the target's .env.
         out["ignored_keys"] = report.ignored_keys
+        out["imported_secrets"] = sorted(report.imported_secrets)
     return out
 
 
