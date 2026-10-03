@@ -42,12 +42,14 @@ def test_settings_validate_the_key_and_new_defaults():
     with pytest.raises(ValidationError) as exc:
         _settings(secrets_key="not-a-fernet-key")
     assert "SIRDAR_SECRETS_KEY must be a Fernet key" in str(exc.value)
+    assert "not-a-fernet-key" not in str(exc.value)
     s = _settings()
     assert s.runner_dir == "/app/runner"
     assert s.deploy_repo_url == "https://github.com/encondata/BaseCampV3.git"
     for bad in ("http://github.com/x.git", "https://github.com/x y.git", "git@github.com:x.git"):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as bad_exc:
             _settings(deploy_repo_url=bad)
+        assert bad not in str(bad_exc.value)
 
 
 def test_generated_env_secrets():
