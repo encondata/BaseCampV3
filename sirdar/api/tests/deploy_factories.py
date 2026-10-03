@@ -71,3 +71,32 @@ async def make_environment(db, *, name: str = "uat", target_id: str = "ssh",
                                  value_enc=vault.encrypt(settings, value)))
     await db.commit()
     return env
+
+
+# ---- a hand-built environment to adopt (shaped like uat on 10.10.48.63) ----------
+
+OLD_MINIO = "minio-SECRET-legacy-123"
+ADOPT_SHA = "e73b99ca" + "1" * 32
+CAT_ENV = "cat -- /opt/serversherpa/uat/.env"
+REPO_HEAD = "git -C /opt/serversherpa/uat/repo rev-parse HEAD"
+REMOTE_BASE = {
+    "STACK_ENV": "uat", "STACK_DOMAIN": "uat.serversherpa.com", "STACK_IMAGE_TAG": "e73b99ca",
+    "STACK_REPO_DIR": "/opt/serversherpa/uat/repo", "STACK_PROXY_IP": "10.10.48.6",
+    "STACK_BIND_IP": "0.0.0.0", "STACK_API_PORT": "8000", "STACK_PORTAL_PORT": "8091",
+    "STACK_KIOSK_PORT": "8090", "STACK_WIKI_PORT": "8096", "STACK_SPACES_PORT": "9000",
+    "STACK_STATUS_PORT": "8095", "STACK_MAILPIT_PORT": "8025", "STACK_KEEP_DUMPS": "5",
+    **ENV_SECRETS,
+    "SS_SPACES_BUCKET": "serversherpa", "SS_LOG_LEVEL": "INFO", "SS_ANTHROPIC_API_KEY": "",
+    "SS_DB_TESTING_PASSWORD": "", "MINIO_ROOT_PASSWORD": OLD_MINIO,
+}
+
+
+def remote_env_text(**over) -> str:
+    """The hand-built .env; a keyword set to None drops that key."""
+    values = {**REMOTE_BASE, **over}
+    return "# hand-made\n" + "".join(f"{k}={v}\n" for k, v in values.items() if v is not None)
+
+
+def serve_remote_env(fake, text: str | None = None, sha: str = ADOPT_SHA) -> None:
+    fake.overrides[CAT_ENV] = remote_env_text() if text is None else text
+    fake.overrides[REPO_HEAD] = sha + "\n"
