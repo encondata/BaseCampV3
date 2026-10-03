@@ -41,7 +41,9 @@ from sirdar_api.db.models import (
 )
 from sirdar_api.deploy import ConnectFailed, envfile, known_hosts, ssh, targets, vault
 from sirdar_api.deploy.redact import Redactor
-from sirdar_api.deploy.runner import AnsibleRunner, Runner, RunRequest, RunResult, RunTarget
+from sirdar_api.deploy.runner import (
+    CANCEL_GRACE_SECONDS, AnsibleRunner, Runner, RunRequest, RunResult, RunTarget,
+)
 from sirdar_api.deploy.steps import STEPS_BY_KEY, plan_for
 
 log = logging.getLogger(__name__)
@@ -50,6 +52,9 @@ LOG_LIMIT = 256 * 1024          # characters kept per step: the tail
 FLUSH_SECONDS = 2.0             # how often a running step's log is saved
 MIN_MEMORY_MB = 1800            # "2 GB" as the kernel reports it
 RETRYABLE_STATUSES = ("failed", "cancelled", "interrupted")
+# App shutdown waits this long: a cancelled runner may take its full grace
+# to stop and still write its outcome before the engine is disposed.
+SHUTDOWN_SECONDS = CANCEL_GRACE_SECONDS + 5
 INTERRUPTED = "Sirdar stopped while this deployment was running."
 CANCELLED = "Cancelled."
 UNEXPECTED = "Sirdar couldn't run this step."
@@ -92,9 +97,10 @@ def _redaction_values(values) -> list[str]:
         if not value:
             continue
         out.append(value)
-        escaped = json.dumps(value)[1:-1]
-        if escaped != value:
-            out.append(escaped)
+        for escaped in (json.dumps(value)[1:-1],
+                        json.dumps(value, ensure_ascii=False)[1:-1]):
+            if escaped not in out:
+                out.append(escaped)
     return out
 
 
@@ -108,16 +114,20 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                             sha: str, actor_id: uuid.UUID | None, start_step: int = 1,
                             retry_of: uuid.UUID | None = None) -> Deployment:
     """Add a running deployment and its step rows. The caller commits, then
-    calls launch(). Raises DeployInProgress (the session is rolled back)."""
+    calls launch(). Raises DeployInProgress (only the insert is rolled back,
+    through a savepoint: the caller's session and objects stay usable), or
+    ValueError when start_step isn't a step of this mode's plan."""
     plan = plan_for(mode)
+    if start_step not in {step.number for step in plan}:
+        raise ValueError(f"start_step {start_step} isn't a step of the {mode} plan")
     dep = Deployment(environment_id=env.id, mode=mode, git_ref=git_ref, sha=sha,
                      status="running", start_step=start_step, retry_of=retry_of,
                      previous_sha=env.current_sha, actor_id=actor_id)
-    db.add(dep)
     try:
-        await db.flush()
+        async with db.begin_nested():
+            db.add(dep)
+            await db.flush()
     except IntegrityError as e:
-        await db.rollback()
         if "deployments_one_running" in str(e.orig):
             raise DeployInProgress() from None
         raise
@@ -164,8 +174,7 @@ def request_cancel(deployment_id: uuid.UUID) -> bool:
     if task is None:
         return False
     _cancel_requested.add(deployment_id)
-    task.cancel()
-    return True
+    return task.cancel()
 
 
 async def shutdown(timeout: float = 10.0) -> None:
@@ -287,7 +296,11 @@ async def _flush_loop(step_id: uuid.UUID, buffer: _LogBuffer) -> None:
         await asyncio.sleep(FLUSH_SECONDS)
         if buffer.version != seen:
             seen = buffer.version
-            await _save_log(step_id, buffer.text())
+            try:
+                await _save_log(step_id, buffer.text())
+            except Exception as e:  # noqa: BLE001 — the next flush (or the final save) retries
+                log.warning("couldn't save a running step's log: %s", type(e).__name__)
+                seen = -1
 
 
 # ---- running -------------------------------------------------------------------

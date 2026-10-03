@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import uuid
 
 import pytest
 from sqlalchemy import select, update
@@ -10,7 +11,7 @@ from sirdar_api.config import get_settings
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import Deployment, DeploymentStep, Environment
 from sirdar_api.deploy import envfile, pipeline
-from sirdar_api.deploy.runner import RunResult
+from sirdar_api.deploy.runner import CANCEL_GRACE_SECONDS, RunResult
 from sirdar_api.deploy.steps import STEPS_BY_KEY
 
 from .deploy_factories import (  # noqa: F401
@@ -140,13 +141,45 @@ async def test_logs_redact_json_escaped_secrets(db, deploy_env, ssh_server, secr
     _ssh_env(deploy_env, ssh_server, ssh_password=ssh_pw)
     await trust_fake(db, ssh_server)
     pg = 'pg-"quoted"\\SECRET'
-    env = await make_environment(db, secrets={**ENV_SECRETS, "POSTGRES_PASSWORD": pg})
+    pepper = 'café-"pepper"-SECRET'
+    env = await make_environment(db, secrets={**ENV_SECRETS, "POSTGRES_PASSWORD": pg,
+                                              "SS_PASSWORD_PEPPER": pepper})
     escaped_pg, escaped_ssh = json.dumps(pg)[1:-1], json.dumps(ssh_pw)[1:-1]
     assert (escaped_pg, escaped_ssh) != (pg, ssh_pw)
+    pepper_ascii = json.dumps(pepper)[1:-1]                      # caf\u00e9-\"pepper\"...
+    pepper_utf8 = json.dumps(pepper, ensure_ascii=False)[1:-1]   # café-\"pepper\"...
+    assert len({pepper, pepper_ascii, pepper_utf8}) == 3
     fake_runner.output["preflight"] = [f"pg {escaped_pg}\n", f"pw {escaped_ssh}\n",
-                                       f"raw {pg}\n"]
+                                       f"raw {pg}\n", f"a {pepper_ascii}\n",
+                                       f"u {pepper_utf8}\n"]
     _, steps, _ = await _load(await _start(db, env))
-    assert steps[0].log == "pg [redacted]\npw [redacted]\nraw [redacted]\n"
+    assert steps[0].log == ("pg [redacted]\npw [redacted]\nraw [redacted]\n"
+                            "a [redacted]\nu [redacted]\n")
+
+
+async def test_a_failed_log_flush_does_not_fail_the_step(db, env, fake_runner, monkeypatch):
+    monkeypatch.setattr(pipeline, "FLUSH_SECONDS", 0.05)
+    real_save = pipeline._save_log
+    raised = asyncio.Event()
+
+    async def flaky_save(step_id, text):
+        if text == "building api\n" and not raised.is_set():
+            raised.set()
+            raise RuntimeError("database hiccup")
+        await real_save(step_id, text)
+
+    monkeypatch.setattr(pipeline, "_save_log", flaky_save)
+    fake_runner.gates["build"] = asyncio.Event()
+    fake_runner.output["build"] = ["building api\n"]
+    dep = await _create(db, env)
+    pipeline.launch(dep.id)
+    await asyncio.wait_for(raised.wait(), 5)       # the flusher hit the error mid-step
+    fake_runner.gates["build"].set()
+    await pipeline.wait(dep.id)
+    d, steps, e = await _load(dep.id)
+    assert (d.status, steps[4].status, steps[4].log) == ("succeeded", "succeeded",
+                                                         "building api\n")
+    assert e.status == "ready"
 
 
 async def test_logs_keep_only_the_tail(db, env, fake_runner, monkeypatch):
@@ -177,11 +210,12 @@ async def test_logs_flush_while_a_step_runs(db, env, fake_runner, monkeypatch):
 
 async def test_one_running_deployment_per_environment(db, env, fake_runner):
     fake_runner.gates["preflight"] = asyncio.Event()
-    first_id = (await _create(db, env)).id     # the refused insert rolls the session back
+    first_id = (await _create(db, env)).id     # the refused insert rolls back a savepoint
     pipeline.launch(first_id)
     with pytest.raises(pipeline.DeployInProgress):
         await pipeline.create_deployment(db, env, mode="update", git_ref="main", sha=SHA,
                                          actor_id=None)
+    assert env.name == "uat"                    # the caller's objects are still loaded
     fake_runner.gates["preflight"].set()
     await pipeline.wait(first_id)
 
@@ -268,6 +302,24 @@ async def test_missing_target_or_key_fails_step_one(db, env, fake_runner, monkey
     assert fake_runner.requests == []
 
 
+@pytest.mark.parametrize(("mode", "start_step"), [("update", 0), ("update", 7),
+                                                  ("reset", 6), ("reset", 9)])
+async def test_start_step_must_be_in_the_plan(db, env, mode, start_step):
+    with pytest.raises(ValueError):
+        await pipeline.create_deployment(db, env, mode=mode, git_ref="main", sha=SHA,
+                                         actor_id=None, start_step=start_step)
+
+
+async def test_request_cancel_reports_whether_it_cancelled(monkeypatch):
+    class Done:
+        def cancel(self):
+            return False
+
+    dep_id = uuid.uuid4()
+    monkeypatch.setitem(pipeline._tasks, dep_id, Done())
+    assert pipeline.request_cancel(dep_id) is False
+
+
 async def test_start_step_skips_earlier_steps(db, env, fake_runner):
     _, steps, _ = await _load(await _start(db, env, start_step=5))
     assert fake_runner.steps() == ["build", "dump", "up"]
@@ -293,8 +345,11 @@ async def test_app_lifespan_recovers_then_shuts_down(monkeypatch):
         calls.append("sweep")
         return 0
 
+    timeouts: list[float] = []
+
     async def shutdown(timeout=10.0):
         calls.append("shutdown")
+        timeouts.append(timeout)
 
     monkeypatch.setattr(pipeline, "recover_orphans", recover)
     monkeypatch.setattr(pipeline, "sweep_runs", sweep)
@@ -303,6 +358,7 @@ async def test_app_lifespan_recovers_then_shuts_down(monkeypatch):
     async with app.router.lifespan_context(app):
         assert calls == ["recover", "sweep"]
     assert calls == ["recover", "sweep", "shutdown"]
+    assert timeouts == [CANCEL_GRACE_SECONDS + 5]    # the runner's grace, plus a margin
 
 
 async def test_app_lifespan_starts_when_recovery_and_sweep_fail(monkeypatch):

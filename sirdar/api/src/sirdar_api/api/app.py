@@ -24,14 +24,14 @@ async def _lifespan(app: FastAPI):
 
     try:
         await pipeline.recover_orphans()     # runs a previous process left "running"
-    except Exception:  # noqa: BLE001 — a database hiccup must not stop the app starting
-        log.warning("couldn't mark interrupted deployments at startup")
+    except Exception as e:  # noqa: BLE001 — a database hiccup must not stop the app starting
+        log.warning("couldn't mark interrupted deployments at startup: %s", type(e).__name__)
     try:
         await pipeline.sweep_runs()          # run folders a crash left on disk
-    except Exception:  # noqa: BLE001 — a disk problem must not stop the app starting
-        log.warning("couldn't sweep stale runner folders at startup")
+    except Exception as e:  # noqa: BLE001 — a disk problem must not stop the app starting
+        log.warning("couldn't sweep stale runner folders at startup: %s", type(e).__name__)
     yield
-    await pipeline.shutdown()                # running deployments end "interrupted"
+    await pipeline.shutdown(timeout=pipeline.SHUTDOWN_SECONDS)   # runs end "interrupted"
     await dispose_engine()
 
 
