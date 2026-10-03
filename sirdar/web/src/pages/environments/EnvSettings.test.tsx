@@ -1,0 +1,103 @@
+// @vitest-environment jsdom
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+
+const perms = vi.hoisted(() => ({ change: true }));
+vi.mock('@portal/auth/AuthContext', () => ({
+  useAuth: () => ({ can: (r: string, a: string) => r === 'deploy' && (a !== 'change' || perms.change) }),
+}));
+const api = vi.hoisted(() => ({ updateEnvironment: vi.fn(), getEnvironmentDefaults: vi.fn() }));
+vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
+
+import { ApiError } from '@portal/lib/api';
+
+import EnvSettings from './EnvSettings';
+import { DEFAULTS, ENV, TARGETS } from './testData';
+
+Element.prototype.scrollIntoView = () => {};
+beforeEach(() => {
+  perms.change = true;
+  Object.values(api).forEach((f) => f.mockReset());
+  api.getEnvironmentDefaults.mockResolvedValue(DEFAULTS);
+  api.updateEnvironment.mockImplementation(async (_name: string, patch: object) => ({ ...ENV, ...patch }));
+});
+afterEach(cleanup);
+
+function open(env = ENV) {
+  const onSaved = vi.fn();
+  render(<EnvSettings env={env} targets={TARGETS.targets} onSaved={onSaved} />);
+  return { onSaved };
+}
+const save = () => userEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+const secret = (text: string) => screen.getByText(text).closest('.sirdar-secret') as HTMLElement;
+
+it('saves only what changed, a replaced secret included', async () => {
+  const { onSaved } = open();
+  expect((screen.getByLabelText('Proxy IP') as HTMLInputElement).value).toBe('10.10.48.6');
+  await userEvent.clear(screen.getByLabelText('Proxy IP'));
+  await userEvent.type(screen.getByLabelText('Proxy IP'), '10.10.48.7');
+  await userEvent.clear(screen.getByLabelText('api port'));
+  await userEvent.type(screen.getByLabelText('api port'), '8100');
+  await userEvent.click(within(secret('Anthropic API key: set')).getByRole('button', { name: 'Replace' }));
+  await userEvent.type(screen.getByLabelText('Anthropic API key'), 'sk-new-1');
+  await save();
+  await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  expect(api.updateEnvironment).toHaveBeenCalledWith('uat', {
+    proxy_ip: '10.10.48.7', services: { api: { port: 8100 } }, secrets: { SS_ANTHROPIC_API_KEY: 'sk-new-1' },
+  });
+  expect(screen.getByText('Saved. The next deploy applies these settings.')).toBeTruthy();
+});
+
+it('Clear sends an empty secret; nothing changed saves nothing', async () => {
+  open();
+  await save();
+  expect(screen.getByText('Nothing to save.')).toBeTruthy();
+  expect(api.updateEnvironment).not.toHaveBeenCalled();
+  await userEvent.click(within(secret('Anthropic API key: set')).getByRole('button', { name: 'Clear' }));
+  await save();
+  await waitFor(() => expect(api.updateEnvironment).toHaveBeenCalledWith('uat', { secrets: { SS_ANTHROPIC_API_KEY: '' } }));
+});
+
+it('checks the fields before saving', async () => {
+  open();
+  await userEvent.clear(screen.getByLabelText('Bind IP'));
+  await userEvent.type(screen.getByLabelText('Bind IP'), '1.2.3');
+  await userEvent.clear(screen.getByLabelText('Dumps to keep'));
+  await userEvent.type(screen.getByLabelText('Dumps to keep'), '0');
+  await userEvent.click(within(secret('Database testing password: not set')).getByRole('button', { name: 'Add' }));
+  await userEvent.type(screen.getByLabelText('Database testing password'), 'has space');
+  await save();
+  expect(screen.getByText('The bind IP must be an IPv4 address.')).toBeTruthy();
+  expect(screen.getByText('Keep 1 to 100 dumps.')).toBeTruthy();
+  expect(screen.getByText(/no spaces or quotes/)).toBeTruthy();
+  expect(api.updateEnvironment).not.toHaveBeenCalled();
+});
+
+it('API errors show next to their field or under the form', async () => {
+  api.updateEnvironment.mockRejectedValueOnce(new ApiError(422, 'secret_invalid', { code: 'secret_invalid', key: 'SS_ANTHROPIC_API_KEY' }));
+  open();
+  await userEvent.click(within(secret('Anthropic API key: set')).getByRole('button', { name: 'Replace' }));
+  await userEvent.type(screen.getByLabelText('Anthropic API key'), 'abc');
+  await save();
+  expect(await within(secret('Anthropic API key')).findByText(/can't be saved/)).toBeTruthy();
+  api.updateEnvironment.mockRejectedValueOnce(new ApiError(409, 'deploy_in_progress', { code: 'deploy_in_progress' }));
+  await save();
+  expect(await screen.findByText('A deployment of this environment is already running.')).toBeTruthy();
+});
+
+it('a view-only reader sees disabled fields and no Save', () => {
+  perms.change = false;
+  open();
+  expect(screen.getByText('You can view these settings but not change them.')).toBeTruthy();
+  expect((screen.getByLabelText('Proxy IP') as HTMLInputElement).disabled).toBe(true);
+  expect((screen.getByLabelText('api port') as HTMLInputElement).disabled).toBe(true);
+  expect(screen.queryByRole('button', { name: 'Save settings' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Replace' })).toBeNull();
+});
+
+it("settings can't be saved while a deployment runs", () => {
+  open({ ...ENV, status: 'deploying' });
+  expect(screen.getByText("Settings can't change while a deployment is running.")).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Save settings' }) as HTMLButtonElement).disabled).toBe(true);
+});

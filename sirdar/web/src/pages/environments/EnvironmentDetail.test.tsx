@@ -12,7 +12,7 @@ vi.mock('@portal/auth/AuthContext', () => ({
 }));
 const api = vi.hoisted(() => ({
   getEnvironment: vi.fn(), getDeployTargets: vi.fn(), startDeployment: vi.fn(), trustKnownHost: vi.fn(),
-  listDeployments: vi.fn(),
+  listDeployments: vi.fn(), updateEnvironment: vi.fn(), getEnvironmentDefaults: vi.fn(),
 }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 vi.mock('./DeploymentView', () => ({ default: ({ id }: { id: string }) => <div>deployment view {id}</div> }));
@@ -20,11 +20,13 @@ vi.mock('./DeploymentView', () => ({ default: ({ id }: { id: string }) => <div>d
 import { ApiError } from '@portal/lib/api';
 
 import EnvironmentDetail from './EnvironmentDetail';
-import { ADOPTED, ENV, RUNNING, TARGETS, summary } from './testData';
+import { ADOPTED, DEFAULTS, ENV, RUNNING, TARGETS, summary } from './testData';
 
+Element.prototype.scrollIntoView = () => {};
 beforeEach(() => {
   perms.add = true; perms.change = true;
   Object.values(api).forEach((f) => f.mockReset());
+  api.getEnvironmentDefaults.mockResolvedValue(DEFAULTS);
   api.getEnvironment.mockResolvedValue(ENV);
   api.getDeployTargets.mockResolvedValue(TARGETS);
   api.listDeployments.mockResolvedValue({ deployments: [summary(RUNNING), ADOPTED] });
@@ -139,4 +141,15 @@ it('shows Loading, not the old environment, while the new one loads', async () =
   await userEvent.click(screen.getByRole('link', { name: 'Go to beta' }));
   expect(await screen.findByText('Loading…')).toBeTruthy();
   expect(screen.queryByRole('heading', { level: 1, name: 'uat' })).toBeNull();
+});
+
+it('the Settings tab edits the environment and updates the page', async () => {
+  api.updateEnvironment.mockResolvedValue({ ...ENV, base_domain: 'uat2.serversherpa.com' });
+  show();
+  await userEvent.click(await screen.findByRole('tab', { name: 'Settings' }));
+  await userEvent.clear(screen.getByLabelText('Base domain'));
+  await userEvent.type(screen.getByLabelText('Base domain'), 'uat2.serversherpa.com');
+  await userEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+  expect(await screen.findByText('Dev · Lab box · uat2.serversherpa.com')).toBeTruthy();
+  expect(api.updateEnvironment).toHaveBeenCalledWith('uat', { base_domain: 'uat2.serversherpa.com' });
 });

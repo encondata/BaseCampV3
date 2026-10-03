@@ -12,10 +12,12 @@ import {
 import DeploymentsTab from './DeploymentsTab';
 import DeployModal from './DeployModal';
 import EnvOverview from './EnvOverview';
+import EnvSettings from './EnvSettings';
+
 import { ENV_STATUS, StatusChip, TYPE_LABEL, targetLabel } from './labels';
 
-type Tab = 'overview' | 'deployments';
-const TABS: [Tab, string][] = [['overview', 'Overview'], ['deployments', 'Deployments']];
+type Tab = 'overview' | 'deployments' | 'settings';
+const TABS: [Tab, string][] = [['overview', 'Overview'], ['deployments', 'Deployments'], ['settings', 'Settings']];
 
 /** Keyed by name: moving to another environment starts from a clean page
  *  (no stale environment, tab or open deployment). */
@@ -98,6 +100,7 @@ function EnvironmentPage({ name }: { name: string }) {
       {tab === 'deployments' && (
         <DeploymentsTab env={env} selected={selected} onSelect={setSelected} onChanged={() => void load()} />
       )}
+      {tab === 'settings' && <EnvSettings env={env} targets={targets} onSaved={setEnv} />}
       {deploying && <DeployModal env={env} onStarted={started} onClose={() => setDeploying(false)} />}
     </div>
   );
