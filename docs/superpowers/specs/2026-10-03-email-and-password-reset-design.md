@@ -171,7 +171,7 @@ Invalid → 400 `reset_token_invalid` (one code for every reason). Then:
    `password_recently_used`), `apply_password(must_change=False, now=…)`.
 2. Token `used_at = now()`.
 3. `failed_login_count = 0`, `locked_until = None`.
-4. `revoke_all_sessions(db, person_id, "password_reset")`.
+4. `revoke_all_sessions(db, person_id, "password_change")` (the `auth_sessions.revoke_reason` CHECK allows only logout/reuse_detected/admin/password_change/account_disabled; the audit action tells a reset apart).
 5. `totp_service.revoke_trust(db, person_id)`, so the next sign-in
    requires 2FA.
 6. Resolve open admin request cards for the person (`resolved_by` = the
