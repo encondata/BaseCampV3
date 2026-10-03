@@ -347,3 +347,26 @@ async def test_adopt_treats_a_changeme_optional_secret_as_unset(db, target):
     await db.commit()
     assert report.imported_secrets == sorted(envfile.REQUIRED_SECRETS)
     assert set(await environments.secret_keys_of(db, env.id)) == set(envfile.REQUIRED_SECRETS)
+
+
+# Shaped like a real Anthropic key: base64url, so "_" and "-" appear.
+ANTHROPIC_KEY = "sk-ant-api03-abc_DEF-123_xyz-" + "Q_w-" * 20 + "AA"
+
+
+async def test_adopt_imports_an_anthropic_key_with_underscores(db, target):
+    await trust_fake(db, target)
+    serve_remote_env(target, remote_env_text(SS_ANTHROPIC_API_KEY=ANTHROPIC_KEY))
+    env, _, report = await environments.adopt(db, get_settings(), name="uat", type_="dev",
+                                              target_id="ssh")
+    await db.commit()
+    assert "SS_ANTHROPIC_API_KEY" in report.imported_secrets
+    assert (await _secrets(db, env.id))["SS_ANTHROPIC_API_KEY"] == ANTHROPIC_KEY
+
+
+async def test_patch_accepts_an_anthropic_key_with_underscores(db, target):
+    env = await make_environment(db)
+    changed = await environments.update(db, get_settings(), env, {
+        "secrets": {"SS_ANTHROPIC_API_KEY": ANTHROPIC_KEY}})
+    await db.commit()
+    assert changed == ["secrets.SS_ANTHROPIC_API_KEY"]
+    assert (await _secrets(db, env.id))["SS_ANTHROPIC_API_KEY"] == ANTHROPIC_KEY

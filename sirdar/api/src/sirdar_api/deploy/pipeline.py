@@ -467,6 +467,9 @@ async def _run(deployment_id: uuid.UUID) -> None:
                                  dep_status="failed", error=e.reason, failed_step=current,
                                  append_log=e.reason + "\n")
                     return
+                # End _prepare's read transaction: step 1 must not hold a
+                # connection idle in a transaction for its whole timeout.
+                await db.commit()
                 runner = make_runner(settings)
                 for step in todo:
                     current = step.number
@@ -474,9 +477,8 @@ async def _run(deployment_id: uuid.UUID) -> None:
                         await _mark_running(db, step)
                     result = await _run_step(runner, ctx, step)
                     if result.status != "successful":
-                        # Before the rollback: it expires `step` (step 1 runs inside
-                        # _prepare's transaction), and reloading it would need a
-                        # greenlet.
+                        # Before the rollback, which may expire `step`: reloading
+                        # it would need a greenlet.
                         reason = _failure_reason(step, result)
                         await db.rollback()
                         await _close(deployment_id, env_id, current, step_status="failed",

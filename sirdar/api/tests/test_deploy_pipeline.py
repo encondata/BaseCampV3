@@ -143,8 +143,8 @@ async def test_first_failure_stops_the_deployment(db, env, fake_runner):
 
 
 async def test_a_failed_first_step_gets_its_own_message(db, env, fake_runner):
-    """Step 1 runs inside _prepare's transaction: the failure message is built
-    before the rollback expires the step row."""
+    """The failure message is built before the rollback (which can expire the
+    step row): a failed step 1 used to crash with MissingGreenlet."""
     fake_runner.results["preflight"] = RunResult(status="failed", rc=2)
     dep, steps, _ = await _load(await _start(db, env))
     assert (steps[0].status, dep.failed_step) == ("failed", 1)
