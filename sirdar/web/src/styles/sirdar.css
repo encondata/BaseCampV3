@@ -73,3 +73,6 @@
 
 .modal-card.reports-modal-card.rgm-card.sirdar-deploy-card { width: min(640px, 96vw); max-width: 96vw; }
 .sirdar-deploy-form { display: flex; flex-direction: column; gap: 14px; }
+
+.sirdar-env-head { align-items: flex-start; }
+.sirdar-env-tabs { margin-bottom: 4px; }

@@ -8,7 +8,8 @@ import { PAGE_TITLES } from './sirdarNav';
 export default function SirdarTopbar({ leading }: { leading?: ReactNode }) {
   const { pathname } = useLocation();
   const title = PAGE_TITLES[pathname]
-    ?? (pathname.startsWith('/admin/users/') ? 'User' : 'Sirdar');
+    ?? (pathname.startsWith('/admin/users/') ? 'User'
+      : pathname.startsWith('/deploy/environments/') ? 'Environment' : 'Sirdar');
   return (
     <header className="topbar">
       {leading}
