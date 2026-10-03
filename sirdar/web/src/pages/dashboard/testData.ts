@@ -45,10 +45,10 @@ export const DEMO: DashboardData = {
     ],
   },
   environments: [
-    { id: 'dev', label: 'Development', state: 'empty', version: null, last_release: 'v2.8.1-dev',
-      action_label: 'Deploy to Dev' },
-    { id: 'beta', label: 'Beta', state: 'empty', version: null, last_release: 'v2.8.1-rc.2',
-      action_label: 'Deploy to Beta' },
+    { id: 'dev', label: 'Development', sub: null, state: 'empty', version: null, last_release: 'v2.8.1-dev',
+      last_release_at: null, action_label: 'Deploy to Dev', environment: null },
+    { id: 'beta', label: 'Beta', sub: null, state: 'empty', version: null, last_release: 'v2.8.1-rc.2',
+      last_release_at: null, action_label: 'Deploy to Beta', environment: null },
   ],
   infrastructure: { source: 'demo', error: null, tree: DEMO_TREE },
 };
@@ -67,9 +67,27 @@ export const EMPTY: DashboardData = {
     })),
   },
   environments: [
-    { id: 'dev', label: 'Development', state: 'empty', version: null, last_release: null, action_label: 'Deploy to Dev' },
-    { id: 'beta', label: 'Beta', state: 'empty', version: null, last_release: null, action_label: 'Deploy to Beta' },
-    { id: 'qa-east', label: 'Qa East', state: 'empty', version: null, last_release: null, action_label: 'Deploy to Qa East' },
+    { id: 'dev', label: 'Development', sub: null, state: 'empty', version: null, last_release: null,
+      last_release_at: null, action_label: 'Set up Dev', environment: null },
+    { id: 'beta', label: 'Beta', sub: null, state: 'empty', version: null, last_release: null,
+      last_release_at: null, action_label: 'Set up Beta', environment: null },
+    { id: 'qa-east', label: 'Qa East', sub: null, state: 'empty', version: null, last_release: null,
+      last_release_at: null, action_label: 'Set up Qa East', environment: null },
   ],
   infrastructure: { source: 'none', error: null, tree: [] },
+};
+
+/** Real mode with Sirdar environments: uat (dev type, deployed), a Beta
+ *  placeholder and a custom environment whose last deploy failed. */
+export const REAL: DashboardData = {
+  ...EMPTY,
+  health: { status: 'degraded', label: 'A deployment failed' },
+  environments: [
+    { id: 'uat', label: 'uat', sub: 'Development', state: 'active', version: 'e73b99ca', last_release: 'e73b99ca',
+      last_release_at: '2026-10-03T12:00:00+00:00', action_label: 'Deploy uat', environment: 'uat' },
+    { id: 'beta', label: 'Beta', sub: null, state: 'empty', version: null, last_release: null,
+      last_release_at: null, action_label: 'Set up Beta', environment: null },
+    { id: 'qa-east', label: 'qa-east', sub: 'Custom', state: 'failed', version: null, last_release: null,
+      last_release_at: null, action_label: 'Deploy qa-east', environment: 'qa-east' },
+  ],
 };

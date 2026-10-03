@@ -4,23 +4,30 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
+const perms = vi.hoisted(() => ({ deploy: true }));
 vi.mock('@portal/auth/AuthContext', () => ({
-  useAuth: () => ({ can: () => true, preferences: { motion: false } }),
+  useAuth: () => ({
+    can: (r: string, a?: string) => r !== 'deploy' || a === 'view' || perms.deploy,
+    preferences: { motion: false },
+  }),
 }));
-const api = vi.hoisted(() => ({ getDashboard: vi.fn() }));
+const api = vi.hoisted(() => ({ getDashboard: vi.fn(), getEnvironment: vi.fn(), startDeployment: vi.fn(), trustKnownHost: vi.fn() }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 
 import { ApiError } from '@portal/lib/api';
 
+import { ENV, RUNNING } from '../environments/testData';
+
 import DashboardPage from './DashboardPage';
-import { DEMO, EMPTY } from './testData';
+import { DEMO, EMPTY, REAL } from './testData';
 
 let loc = '';
-function Where() { loc = useLocation().search; return null; }
+let path = '';
+function Where() { const l = useLocation(); loc = l.search; path = l.pathname; return null; }
 
-function show(path = '/') {
+function show(at = '/') {
   return render(
-    <MemoryRouter initialEntries={[path]}>
+    <MemoryRouter initialEntries={[at]}>
       <DashboardPage />
       <Where />
     </MemoryRouter>,
@@ -28,7 +35,8 @@ function show(path = '/') {
 }
 
 beforeEach(() => {
-  api.getDashboard.mockReset();
+  perms.deploy = true;
+  Object.values(api).forEach((f) => f.mockReset());
   api.getDashboard.mockImplementation(async (o: { demo?: boolean }) => (o?.demo ? DEMO : EMPTY));
 });
 afterEach(cleanup);
@@ -41,7 +49,7 @@ it('renders the header and the health pill from the data', async () => {
   expect(pill.closest('.sd-health')!.className).toMatch(/is-unknown/);
   const deploy = screen.getByRole('button', { name: /Deploy release/ });
   expect(deploy.getAttribute('aria-disabled')).toBe('true');
-  expect(deploy.getAttribute('title')).toBe('Coming in step 2');
+  expect(deploy.getAttribute('title')).toBe('Coming later');
   expect(api.getDashboard).toHaveBeenCalledWith({ demo: false, refresh: false });
 });
 
@@ -65,7 +73,7 @@ it('production inactive: gray pill, empty slots, no Activate button', async () =
   expect(prod.querySelector('.sd-slot-tag')).toBeNull();
 });
 
-it('production active (demo): active and standby slots, disabled Activate Green', async () => {
+it('production active (demo): active and standby slots, Activate Green coming later', async () => {
   show('/?demo=1');
   const prod = await screen.findByRole('region', { name: 'Production' });
   expect(within(prod).getByText('Deployment active').closest('.sd-pill')!.className).toMatch(/is-ok/);
@@ -81,31 +89,72 @@ it('production active (demo): active and standby slots, disabled Activate Green'
   expect(within(green).getByText('0 / 3 instances')).toBeTruthy();
   const act = within(green).getByRole('button', { name: 'Activate Green' });
   expect(act.getAttribute('aria-disabled')).toBe('true');
-  expect(act.getAttribute('title')).toBe('Coming in step 2');
+  expect(act.getAttribute('title')).toBe('Coming later');
   expect(within(prod).getByText('Blue active')).toBeTruthy();
 });
 
-it('renders one card per environment, custom ones included', async () => {
+it('cards with no environment yet offer Set up, which opens the Deploy page', async () => {
   show();
   const dev = await screen.findByRole('region', { name: 'Development' });
   expect(within(dev).getByText('No active deployment')).toBeTruthy();
   expect(within(dev).getByText('No releases yet')).toBeTruthy();
-  const btn = within(dev).getByRole('button', { name: 'Deploy to Dev' });
-  expect(btn.getAttribute('aria-disabled')).toBe('true');
-  expect(btn.getAttribute('title')).toBe('Coming in step 2');
-  const custom = screen.getByRole('region', { name: 'Qa East' });
-  expect(within(custom).getByRole('button', { name: 'Deploy to Qa East' })).toBeTruthy();
+  expect(screen.getByRole('region', { name: 'Qa East' })).toBeTruthy();
+  await userEvent.click(within(dev).getByRole('button', { name: 'Set up Dev' }));
+  expect(path).toBe('/deploy');
 });
 
-it('environment cards show the last release and the running state', async () => {
-  api.getDashboard.mockResolvedValue({
-    ...DEMO, environments: [{ ...DEMO.environments[0], state: 'active', version: 'v2.8.1-dev' }],
-  });
+it('environment cards show the type, version, state and last release', async () => {
+  api.getDashboard.mockResolvedValue(REAL);
   show();
+  const uat = await screen.findByRole('region', { name: 'uat' });
+  expect(within(uat).getByRole('link', { name: 'uat' }).getAttribute('href')).toBe('/deploy/environments/uat');
+  expect(within(uat).getByText('Development')).toBeTruthy();
+  expect(within(uat).getByText('e73b99ca')).toBeTruthy();
+  expect(within(uat).getByText('Running')).toBeTruthy();
+  expect(within(uat).getByText(/^Last release: e73b99ca · /)).toBeTruthy();
+  const qa = screen.getByRole('region', { name: 'qa-east' });
+  expect(within(qa).getByText('Last deploy failed')).toBeTruthy();
+  expect(within(qa).getByText('No releases yet')).toBeTruthy();
+  expect(screen.getByText('A deployment failed').closest('.sd-health')!.className).toMatch(/is-degraded/);
+});
+
+it("an environment card's Deploy opens the Deploy modal and follows the new deployment", async () => {
+  api.getDashboard.mockResolvedValue(REAL);
+  api.getEnvironment.mockResolvedValue(ENV);
+  api.startDeployment.mockResolvedValue(RUNNING);
+  show();
+  const uat = await screen.findByRole('region', { name: 'uat' });
+  await userEvent.click(within(uat).getByRole('button', { name: 'Deploy uat' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Deploy uat' });
+  expect(api.getEnvironment).toHaveBeenCalledWith('uat');
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Deploy' }));
+  await waitFor(() => expect(path).toBe('/deploy/environments/uat'));
+  expect(loc).toBe('?deployment=d1');
+});
+
+it('a card whose environment is deploying has an inert Deploy', async () => {
+  api.getDashboard.mockResolvedValue({ ...REAL, environments: [{ ...REAL.environments[0], state: 'deploying' }] });
+  show();
+  const uat = await screen.findByRole('region', { name: 'uat' });
+  expect(within(uat).getByText('Deploying')).toBeTruthy();
+  const btn = within(uat).getByRole('button', { name: 'Deploy uat' });
+  expect(btn.getAttribute('aria-disabled')).toBe('true');
+  expect(btn.getAttribute('title')).toBe('A deployment is running.');
+});
+
+it('demo cards are inert, and without deploy:add cards have no actions', async () => {
+  show('/?demo=1');
   const dev = await screen.findByRole('region', { name: 'Development' });
-  expect(within(dev).getByText('Running')).toBeTruthy();
-  expect(within(dev).getByText('Last release: v2.8.1-dev')).toBeTruthy();
-  expect(within(dev).queryByText('No active deployment')).toBeNull();
+  const btn = within(dev).getByRole('button', { name: 'Deploy to Dev' });
+  expect(btn.getAttribute('aria-disabled')).toBe('true');
+  expect(btn.getAttribute('title')).toBe('Demo data');
+  cleanup();
+  perms.deploy = false;
+  api.getDashboard.mockResolvedValue(REAL);
+  show();
+  const uat = await screen.findByRole('region', { name: 'uat' });
+  expect(within(uat).queryByRole('button')).toBeNull();
+  expect(within(screen.getByRole('region', { name: 'Beta' })).queryByRole('button')).toBeNull();
 });
 
 it('the demo toggle sets ?demo=1, calls the API with demo and shows the strip', async () => {

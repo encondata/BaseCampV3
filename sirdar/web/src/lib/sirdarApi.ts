@@ -353,8 +353,15 @@ export interface DashProduction {
   slots: DashSlot[];
 }
 export interface DashEnvironment {
-  id: string; label: string; state: 'active' | 'empty' | string; version: string | null;
-  last_release: string | null; action_label: string;
+  /** The Sirdar environment's name, or "dev" / "beta" / a DigitalOcean env tag for a card with no environment. */
+  id: string; label: string;
+  /** The environment's type ("Development", "Beta", "Custom"); null on placeholder cards. */
+  sub: string | null;
+  state: 'active' | 'deploying' | 'failed' | 'empty' | string;
+  version: string | null; last_release: string | null; last_release_at: string | null;
+  action_label: string;
+  /** The environment the card's action deploys; null means there's nothing to deploy yet. */
+  environment: string | null;
 }
 export interface DashNode {
   id: string; name: string;

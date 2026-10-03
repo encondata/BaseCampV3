@@ -1,13 +1,15 @@
 /** Small shared pieces of the Deployments dashboard. */
 import type { ReactNode } from 'react';
 
-export const SOON = 'Coming in step 2';
+export const SOON = 'Coming later';
 
-/** A button for an action that isn't built yet: focusable and titled (a
- *  native `disabled` button hides its tooltip), but inert. */
-export function SoonButton({ className = '', children }: { className?: string; children: ReactNode }) {
+/** A button for an action that can't run (not built yet, demo data, or busy):
+ *  focusable and titled (a native `disabled` button hides its tooltip), but inert. */
+export function SoonButton({ className = '', title = SOON, children }: {
+  className?: string; title?: string; children: ReactNode;
+}) {
   return (
-    <button type="button" className={`sd-btn ${className}`} aria-disabled="true" title={SOON}
+    <button type="button" className={`sd-btn ${className}`} aria-disabled="true" title={title}
             onClick={(e) => e.preventDefault()}>
       {children}
     </button>
