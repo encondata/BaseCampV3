@@ -56,3 +56,9 @@ it('restores focus to the opener on close', () => {
   expect(document.activeElement).toBe(opener);
   opener.remove();
 });
+
+it('the trust button can be relabeled for the action it retries', () => {
+  render(<HostKeyModal {...base} trustLabel="Trust and deploy" onTrust={vi.fn()} onCancel={vi.fn()} />);
+  expect(screen.getByRole('button', { name: 'Trust and deploy' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Trust and connect' })).toBeNull();
+});

@@ -1,7 +1,8 @@
 /** The Environments section at the top of /deploy. */
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
+import { useAuth } from '@portal/auth/AuthContext';
 import DataTable from '@portal/components/DataTable';
 
 import { errorText, listEnvironments, type DeployTarget, type Environment } from '../../lib/sirdarApi';
@@ -9,10 +10,14 @@ import { errorText, listEnvironments, type DeployTarget, type Environment } from
 import {
   DEPLOYMENT_STATUS, ENV_STATUS, StatusChip, TYPE_LABEL, shortSha, targetLabel, when,
 } from './labels';
+import NewEnvironmentModal from './NewEnvironmentModal';
 
 export default function EnvironmentsSection({ targets }: { targets: DeployTarget[] }) {
+  const { can } = useAuth();
+  const navigate = useNavigate();
   const [envs, setEnvs] = useState<Environment[] | null>(null);
   const [error, setError] = useState('');
+  const [creating, setCreating] = useState(false);
 
   const load = useCallback(() => listEnvironments()
     .then((r) => { setEnvs(r.environments); setError(''); })
@@ -23,6 +28,9 @@ export default function EnvironmentsSection({ targets }: { targets: DeployTarget
     <section className="sirdar-section">
       <div className="sirdar-section-head">
         <h2>Environments</h2>
+        {can('deploy', 'add') && (
+          <button type="button" className="btn-solid" onClick={() => setCreating(true)}>New environment</button>
+        )}
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
       <DataTable
@@ -48,6 +56,11 @@ export default function EnvironmentsSection({ targets }: { targets: DeployTarget
         }))}
         emptyText={envs === null ? 'Loading…' : 'No environments yet.'}
       />
+      {creating && (
+        <NewEnvironmentModal
+          onClose={() => setCreating(false)}
+          onCreated={(env) => { setCreating(false); navigate(`/deploy/environments/${encodeURIComponent(env.name)}`); }} />
+      )}
     </section>
   );
 }

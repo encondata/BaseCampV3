@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -9,6 +10,13 @@ vi.mock('@portal/auth/AuthContext', () => ({
 }));
 const api = vi.hoisted(() => ({ listEnvironments: vi.fn() }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
+vi.mock('./NewEnvironmentModal', () => ({
+  default: ({ onCreated }: { onCreated: (env: typeof ENV) => void }) => (
+    <div role="dialog" aria-label="New environment">
+      <button type="button" onClick={() => onCreated(ENV)}>fake create</button>
+    </div>
+  ),
+}));
 
 import { ApiError } from '@portal/lib/api';
 
@@ -57,4 +65,16 @@ it('shows the empty state, and a load error as an alert', async () => {
   api.listEnvironments.mockRejectedValue(new ApiError(500, 'http_500', null));
   show();
   expect((await screen.findByRole('alert')).textContent).toBe("Couldn't load environments.");
+});
+
+it('New environment needs deploy:add; creating one opens its page', async () => {
+  show();
+  await userEvent.click(await screen.findByRole('button', { name: 'New environment' }));
+  await userEvent.click(within(screen.getByRole('dialog', { name: 'New environment' })).getByRole('button', { name: 'fake create' }));
+  expect(await screen.findByText('detail page')).toBeTruthy();
+  cleanup();
+  perms.add = false;
+  show();
+  await screen.findByText('No environments yet.');
+  expect(screen.queryByRole('button', { name: 'New environment' })).toBeNull();
 });
