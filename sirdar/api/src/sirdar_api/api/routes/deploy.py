@@ -50,6 +50,7 @@ class SshTargetIn(BaseModel):
     password: str | None = None
     key_path: str | None = Field(default=None, max_length=255)
     key_passphrase: str | None = None
+    sudo_password: str | None = None
 
 
 class SshTargetPatch(BaseModel):
@@ -60,6 +61,7 @@ class SshTargetPatch(BaseModel):
     password: str | None = None
     key_path: str | None = Field(default=None, max_length=255)
     key_passphrase: str | None = None
+    sudo_password: str | None = None
 
 
 class KnownHostOut(BaseModel):
@@ -100,7 +102,8 @@ def _audit_fields(t: SavedSshTarget) -> dict:
     """Non-secret fields only."""
     return {"name": t.name, "host": t.host, "port": t.port, "user": t.user,
             "key_path": t.key_path or None, "password_set": t.password is not None,
-            "passphrase_set": t.passphrase is not None}
+            "passphrase_set": t.passphrase is not None,
+            "sudo_password_set": t.sudo_password is not None}
 
 
 async def _store_call(fn, *args):
@@ -137,7 +140,8 @@ async def add_ssh_target(body: SshTargetIn, request: Request, db: DbSession,
     return t.public()
 
 
-_PATCH_ORDER = ("name", "host", "port", "user", "password", "key_path", "key_passphrase")
+_PATCH_ORDER = ("name", "host", "port", "user", "password", "key_path", "key_passphrase",
+                "sudo_password")
 
 
 @router.put("/ssh-targets/{slug}")
@@ -151,7 +155,8 @@ async def update_ssh_target(slug: str, body: SshTargetPatch, request: Request, d
                "port": (old.port, new.port), "user": (old.user, new.user),
                "password": (old.password, new.password),
                "key_path": (old.key_path, new.key_path),
-               "key_passphrase": (old.passphrase, new.passphrase)}
+               "key_passphrase": (old.passphrase, new.passphrase),
+               "sudo_password": (old.sudo_password, new.sudo_password)}
     changed = [f for f in _PATCH_ORDER if current[f][0] != current[f][1]]
     audit(db, actor_id=actor.user.person_id, action="deploy.target_update",
           entity_type="deploy_target", entity_id=t.id, ip=client_ip(request),

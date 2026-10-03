@@ -5,6 +5,7 @@ from sqlalchemy import select
 
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import AuditLog
+from sirdar_api.deploy import targets
 from sirdar_api.deploy.ssh_targets import SshTargetStore
 
 from .api_helpers import auth_headers
@@ -13,7 +14,8 @@ from .test_deploy_api import SECRETS, bodies, deploy_env  # noqa: F401
 
 SAVED_PW = "saved-PW-secret-77"
 SAVED_PP = "saved-PP-secret-88"
-ALL_SECRETS = (*SECRETS, SAVED_PW, SAVED_PP)
+SAVED_SUDO = "saved-SUDO-secret-99"
+ALL_SECRETS = (*SECRETS, SAVED_PW, SAVED_PP, SAVED_SUDO)
 
 
 @pytest.fixture
@@ -40,7 +42,7 @@ def store_env(deploy_env, tmp_path, monkeypatch):
 def secret_bodies(bodies):
     yield bodies
     for text in bodies:
-        for secret in (SAVED_PW, SAVED_PP):
+        for secret in (SAVED_PW, SAVED_PP, SAVED_SUDO):
             assert secret not in text
 
 
@@ -64,7 +66,7 @@ async def test_crud_round_trip(client, db, store_env, secret_bodies):
     assert resp.status_code == 201, resp.text
     created = {"slug": "edge-box", "name": "Edge Box", "host": "10.20.30.40", "port": 2222,
                "user": "deployer", "key_path": "id_ed25519", "password_set": True,
-               "passphrase_set": True}
+               "passphrase_set": True, "sudo_password_set": False}
     assert resp.json() == created
     assert (await client.get("/api/deploy/ssh-targets/edge-box", headers=h)).json() == created
 
@@ -95,7 +97,8 @@ async def test_crud_round_trip(client, db, store_env, secret_bodies):
     assert {a[1] for a in audits} == {"ssh:edge-box"}
     assert audits[0][2] == {"name": "Edge Box", "host": "10.20.30.40", "port": 2222,
                             "user": "deployer", "key_path": "id_ed25519",
-                            "password_set": True, "passphrase_set": True}
+                            "password_set": True, "passphrase_set": True,
+                            "sudo_password_set": False}
     assert audits[1][2]["changed"] == ["name", "port"]
     assert audits[2][2]["changed"] == ["password", "key_passphrase"]
     assert audits[2][2]["password_set"] is False
@@ -403,3 +406,38 @@ async def test_invalid_utf8_file_lists_no_saved_targets(client, db, store_env, s
     resp = await client.get("/api/deploy/targets", headers=h)
     assert resp.status_code == 200
     assert not [t for t in resp.json()["targets"] if t.get("source") == "saved"]
+
+
+async def test_sudo_password_is_write_only(client, db, store_env, secret_bodies):
+    h = await auth_headers(client, db)
+    resp = await client.post("/api/deploy/ssh-targets", headers=h,
+                             json=_new(sudo_password=SAVED_SUDO))
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["sudo_password_set"] is True
+    cfg = targets.ssh_config_for("ssh:edge-box", get_settings())
+    assert cfg.sudo_password == SAVED_SUDO
+    assert SAVED_SUDO not in repr(cfg)
+
+    resp = await client.put("/api/deploy/ssh-targets/edge-box", headers=h,
+                            json={"sudo_password": ""})
+    assert resp.status_code == 200 and resp.json()["sudo_password_set"] is False
+    assert targets.ssh_config_for("ssh:edge-box", get_settings()).sudo_password is None
+
+    resp = await client.put("/api/deploy/ssh-targets/edge-box", headers=h,
+                            json={"sudo_password": SAVED_SUDO + "x" * 1100})
+    assert resp.status_code == 422
+    assert resp.json() == {"detail": {"code": "sudo_password_too_long"}}
+
+    audits = await _audits(db)
+    assert audits[0][2]["sudo_password_set"] is True
+    assert audits[1][2]["changed"] == ["sudo_password"]
+    assert audits[1][2]["sudo_password_set"] is False
+    for _, _, changes in audits:
+        assert SAVED_SUDO not in repr(changes)
+
+
+async def test_installer_target_has_no_sudo_password(client, db, store_env, secret_bodies):
+    store_env["apply"](ssh_host="10.0.0.9", ssh_user="root", ssh_password=SSH_PASSWORD)
+    h = await auth_headers(client, db)
+    assert (await client.get("/api/deploy/targets", headers=h)).status_code == 200
+    assert targets.ssh_config_for("ssh", get_settings()).sudo_password is None

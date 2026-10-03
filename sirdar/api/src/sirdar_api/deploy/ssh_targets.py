@@ -3,12 +3,17 @@
 Format:
     SIRDAR_SSH_TARGETS='<slug>,<slug>,...'      (order)
     SIRDAR_SSH_<KEY>_NAME / _HOST / _PORT / _USER / _PASSWORD / _KEY_PATH / _KEY_PASSPHRASE
+    / _SUDO_PASS
 
 <KEY> is the slug uppercased with "-" -> "_". Values are written single-quoted
 ('\\'' for an embedded quote); the parser also accepts unquoted and
 double-quoted values. The file is re-read on every use. Every write takes an
 exclusive flock on <file>.lock and atomically replaces the whole file; lines
-that aren't SIRDAR_SSH_* keys (comments included) are kept as they are."""
+that aren't SIRDAR_SSH_* keys (comments included) are kept as they are.
+
+No suffix may end with "_<another suffix>": <KEY> can itself contain "_",
+so SUDO_PASSWORD would make target "a"'s sudo password the same key as
+target "a-sudo"'s PASSWORD. Hence SUDO_PASS."""
 
 import fcntl
 import ipaddress
@@ -27,7 +32,8 @@ _SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _LINE_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)$")
 _LABEL_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 _USER_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-_SUFFIXES = ("NAME", "HOST", "PORT", "USER", "PASSWORD", "KEY_PATH", "KEY_PASSPHRASE")
+_SUFFIXES = ("NAME", "HOST", "PORT", "USER", "PASSWORD", "KEY_PATH", "KEY_PASSPHRASE",
+             "SUDO_PASS")
 SECRET_MAX = 1024
 # Control characters (Cc: \n \r \t \v \f NUL \x1c-\x1e \x85 ...) and the
 # Unicode line/paragraph separators (Zl U+2028, Zp U+2029) are never allowed in
@@ -69,12 +75,14 @@ class SavedSshTarget:
     password: str | None = None
     key_path: str = ""
     passphrase: str | None = None
+    sudo_password: str | None = None
 
     def __repr__(self) -> str:                 # never print secrets
         return (f"SavedSshTarget(slug={self.slug!r}, name={self.name!r}, host={self.host!r}, "
                 f"port={self.port}, user={self.user!r}, key_path={self.key_path!r}, "
                 f"password_set={self.password is not None}, "
-                f"passphrase_set={self.passphrase is not None})")
+                f"passphrase_set={self.passphrase is not None}, "
+                f"sudo_password_set={self.sudo_password is not None})")
 
     @property
     def id(self) -> str:
@@ -89,7 +97,8 @@ class SavedSshTarget:
         return {"slug": self.slug, "name": self.name, "host": self.host, "port": self.port,
                 "user": self.user, "key_path": self.key_path or None,
                 "password_set": self.password is not None,
-                "passphrase_set": self.passphrase is not None}
+                "passphrase_set": self.passphrase is not None,
+                "sudo_password_set": self.sudo_password is not None}
 
 
 def slugify(name: str) -> str:
@@ -192,11 +201,13 @@ class SshTargetStore:
                 port = 22
             password = v.get(k + "PASSWORD") or None
             passphrase = v.get(k + "KEY_PASSPHRASE") or None
+            sudo_password = v.get(k + "SUDO_PASS") or None
             out.append(SavedSshTarget(
                 slug=slug, name=v.get(k + "NAME", "").strip() or slug,
                 host=v.get(k + "HOST", "").strip(), port=port,
                 user=v.get(k + "USER", "").strip(), password=password,
-                key_path=v.get(k + "KEY_PATH", "").strip(), passphrase=passphrase))
+                key_path=v.get(k + "KEY_PATH", "").strip(), passphrase=passphrase,
+                sudo_password=sudo_password))
         return out
 
     def load(self) -> list[SavedSshTarget]:
@@ -237,13 +248,14 @@ class SshTargetStore:
     @staticmethod
     def _apply(t: SavedSshTarget, fields: dict) -> SavedSshTarget:
         """Absent or None = keep; "" clears the optional fields."""
-        for key in ("password", "key_passphrase"):
+        for key, code in (("password", "password_too_long"),
+                          ("key_passphrase", "passphrase_too_long"),
+                          ("sudo_password", "sudo_password_too_long")):
             value = fields.get(key)
             if value is not None and not isinstance(value, str):
                 raise ValueError("secret values must be strings")
             if isinstance(value, str) and len(value) > SECRET_MAX:
-                raise TargetError("password_too_long" if key == "password"
-                                  else "passphrase_too_long")
+                raise TargetError(code)
         for value in fields.values():
             if isinstance(value, str) and has_bad_chars(value):
                 raise ValueError("values can't contain control or line-separator characters")
@@ -259,6 +271,8 @@ class SshTargetStore:
             changes["password"] = fields["password"] or None
         if fields.get("key_passphrase") is not None:
             changes["passphrase"] = fields["key_passphrase"] or None
+        if fields.get("sudo_password") is not None:
+            changes["sudo_password"] = fields["sudo_password"] or None
         return replace(t, **changes)
 
     def _validate(self, t: SavedSshTarget, others: list[SavedSshTarget]) -> None:
@@ -310,6 +324,8 @@ class SshTargetStore:
                     block.append(f"{k}KEY_PATH={_quote(t.key_path)}")
                 if t.passphrase is not None:
                     block.append(f"{k}KEY_PASSPHRASE={_quote(t.passphrase)}")
+                if t.sudo_password is not None:
+                    block.append(f"{k}SUDO_PASS={_quote(t.sudo_password)}")
         for line in block:
             if has_bad_chars(line):
                 raise ValueError("values can't contain control or line-separator characters")

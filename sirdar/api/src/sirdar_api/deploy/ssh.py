@@ -42,7 +42,8 @@ class SshTargetConfig:
     """What a connection test needs. `key_file` is the resolved path (None
     when no key, or when the configured name would escape deploy-keys);
     `key_name` is what the user configured, for messages. Secrets are kept
-    out of repr()."""
+    out of repr(). `sudo_password` is the password for sudo when it differs
+    from the SSH password (key-only targets)."""
 
     host: str
     port: int
@@ -51,6 +52,7 @@ class SshTargetConfig:
     key_file: str | None = None
     key_name: str = ""
     passphrase: str | None = field(default=None, repr=False)
+    sudo_password: str | None = field(default=None, repr=False)
 
     @property
     def auth_label(self) -> str:
