@@ -26,7 +26,7 @@ class FakeRunner:
         if request.step in self.raises:
             raise self.raises[request.step]
         for line in self.output.get(request.step, [f"ok: [target] {request.step}\n"]):
-            on_output(line)
+            await asyncio.to_thread(on_output, line)   # a worker thread, like AnsibleRunner
         if request.step in self.gates:
             await self.gates[request.step].wait()
         return self.results.get(request.step, RunResult(status="successful", rc=0))

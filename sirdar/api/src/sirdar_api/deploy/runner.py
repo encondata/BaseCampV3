@@ -18,10 +18,12 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Literal, Protocol
 
 from sirdar_api.deploy.steps import PLAYBOOK_DIR
@@ -29,6 +31,13 @@ from sirdar_api.deploy.steps import PLAYBOOK_DIR
 RunStatus = Literal["successful", "failed", "timeout", "canceled"]
 _STATUSES = ("successful", "failed", "timeout", "canceled")
 CANCEL_GRACE_SECONDS = 30
+# Longer than the longest step timeout (the "up" step: 45 minutes) plus the
+# cancel grace, so a sweep never touches a live run.
+STALE_RUN_SECONDS = 2 * 60 * 60
+# The only variables a job inherits from the API process; everything else
+# (database URL, secrets key, ...) stays out of ansible, ssh and sshpass.
+_INHERITED_ENV = ("PATH", "HOME", "LANG", "TZ")
+_INHERITED_PREFIXES = ("LC_",)
 
 
 @dataclass(frozen=True)
@@ -82,13 +91,34 @@ def _write_private(path: Path, text: str) -> None:
         f.write(text)
 
 
+def _discard_prepared(fut: asyncio.Future) -> None:
+    if fut.cancelled() or fut.exception() is not None:
+        return
+    shutil.rmtree(fut.result(), ignore_errors=True)
+
+
 class AnsibleRunner:
     def __init__(self, runner_dir: str):
         self.runner_dir = Path(runner_dir)
 
+    def sweep_stale(self, max_age: float = STALE_RUN_SECONDS) -> int:
+        """Remove run-* folders older than max_age (left by a crash or kill)."""
+        removed = 0
+        if not self.runner_dir.is_dir():
+            return 0
+        cutoff = time.time() - max_age
+        for entry in self.runner_dir.glob("run-*"):
+            with suppress(OSError):
+                if (entry.is_dir() and not entry.is_symlink()
+                        and entry.stat().st_mtime < cutoff):
+                    shutil.rmtree(entry, ignore_errors=True)
+                    removed += 1
+        return removed
+
     def prepare(self, request: RunRequest) -> Path:
         self.runner_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.runner_dir, 0o700)
+        self.sweep_stale()
         run_dir = Path(tempfile.mkdtemp(prefix="run-", dir=self.runner_dir))   # mode 700
         try:
             for sub in ("env", "inventory", "home", "tmp"):
@@ -149,6 +179,26 @@ class AnsibleRunner:
             "ANSIBLE_DEPRECATION_WARNINGS": "False",
         }
 
+    def build_runner(self, run_dir: Path, request: RunRequest, event_handler,
+                     cancel_callback):
+        """An ansible-runner Runner whose job environment is an allowlist.
+        ansible-runner seeds the job env from os.environ and `envvars` can
+        only add to it, so the merged env is replaced here (never touching
+        the process-wide os.environ) before the run starts."""
+        import ansible_runner.interface
+
+        overrides = self.envvars(run_dir, request.target)
+        runner = ansible_runner.interface.init_runner(
+            private_data_dir=str(run_dir), playbook=request.playbook, ident="run",
+            envvars=overrides, event_handler=event_handler,
+            cancel_callback=cancel_callback, timeout=request.timeout, quiet=True)
+        runner.config.env = {
+            k: v for k, v in runner.config.env.items()
+            if k in _INHERITED_ENV or k.startswith(_INHERITED_PREFIXES)
+            or k in overrides or os.environ.get(k) != v}
+        runner.config.suppress_output_file = True   # no unredacted stdout/stderr files
+        return runner
+
     def _run_sync(self, run_dir: Path, request: RunRequest,
                   on_output: Callable[[str], None], cancel: threading.Event) -> RunResult:
         import ansible_runner   # imported here: heavy, and only a real run needs it
@@ -165,10 +215,9 @@ class AnsibleRunner:
                 stats["data"] = dict(data.get("artifact_data") or {})
             return False                          # never write event files
 
-        result = ansible_runner.run(
-            private_data_dir=str(run_dir), playbook=request.playbook, ident="run",
-            envvars=self.envvars(run_dir, request.target), event_handler=event_handler,
-            cancel_callback=cancel.is_set, timeout=request.timeout, quiet=True)
+        runner = self.build_runner(run_dir, request, event_handler, cancel.is_set)
+        status_text, code = runner.run()
+        result = SimpleNamespace(status=status_text, rc=code)
         status = result.status if result.status in _STATUSES else "failed"
         rc = result.rc if isinstance(result.rc, int) else -1
         return RunResult(status=status, rc=rc, changed=stats.get("changed", 0),
@@ -176,7 +225,13 @@ class AnsibleRunner:
 
     async def run(self, request: RunRequest,
                   on_output: Callable[[str], None]) -> RunResult:
-        run_dir = await asyncio.to_thread(self.prepare, request)
+        prepared = asyncio.ensure_future(asyncio.to_thread(self.prepare, request))
+        try:
+            run_dir = await asyncio.shield(prepared)
+        except asyncio.CancelledError:
+            # The thread keeps going and will create the folder: delete it then.
+            prepared.add_done_callback(_discard_prepared)
+            raise
         cancel = threading.Event()
         work = asyncio.ensure_future(
             asyncio.to_thread(self._run_sync, run_dir, request, on_output, cancel))
@@ -191,4 +246,8 @@ class AnsibleRunner:
             if work.done():
                 shutil.rmtree(run_dir, ignore_errors=True)
             else:                                 # still stopping: clean up when it does
-                work.add_done_callback(lambda _: shutil.rmtree(run_dir, ignore_errors=True))
+                def _late(fut: asyncio.Future) -> None:
+                    if not fut.cancelled():
+                        fut.exception()               # mark retrieved
+                    shutil.rmtree(run_dir, ignore_errors=True)
+                work.add_done_callback(_late)

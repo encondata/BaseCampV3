@@ -3,11 +3,12 @@ import json
 import os
 import shutil
 import stat
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import ansible_runner
+import ansible_runner.interface
 import pytest
 
 from sirdar_api.deploy import runner as runner_mod
@@ -117,6 +118,13 @@ def test_envvars_pin_the_host_key(tmp_path):
         Path(runner_mod.ansible_playbook_binary()).parent)
 
 
+def _fake_init(fn):
+    """init_runner stand-in: fn(**kw) plays the run; returns (status, rc)."""
+    def init(**kw):
+        return SimpleNamespace(config=SimpleNamespace(env={}), run=lambda: fn(**kw))
+    return init
+
+
 def test_ansible_playbook_binary():
     assert Path(runner_mod.ansible_playbook_binary()).is_file()
 
@@ -134,9 +142,9 @@ async def test_run_streams_output_reports_stats_and_cleans_up(tmp_path, monkeypa
                              "event_data": {"changed": {"target": 2},
                                             "artifact_data": {"dump_path": "/x.dump"}}})
         kw["event_handler"]({"event": "verbose", "stdout": ""})
-        return SimpleNamespace(status="successful", rc=0)
+        return "successful", 0
 
-    monkeypatch.setattr(ansible_runner, "run", fake_run)
+    monkeypatch.setattr(ansible_runner.interface, "init_runner", _fake_init(fake_run))
     lines: list[str] = []
     result = await AnsibleRunner(str(tmp_path / "runner")).run(_request(), lines.append)
     assert result == RunResult(status="successful", rc=0, changed=2,
@@ -154,8 +162,8 @@ async def test_run_streams_output_reports_stats_and_cleans_up(tmp_path, monkeypa
     ("failed", 2, ("failed", 2)), ("timeout", 254, ("timeout", 254)),
     ("error", None, ("failed", -1))])
 async def test_run_status_mapping(tmp_path, monkeypatch, status, rc, expected):
-    monkeypatch.setattr(ansible_runner, "run",
-                        lambda **kw: SimpleNamespace(status=status, rc=rc))
+    monkeypatch.setattr(ansible_runner.interface, "init_runner",
+                        _fake_init(lambda **kw: (status, rc)))
     result = await AnsibleRunner(str(tmp_path / "runner")).run(_request(), lambda s: None)
     assert (result.status, result.rc) == expected
 
@@ -168,9 +176,9 @@ async def test_cancel_stops_the_run_and_cleans_up(tmp_path, monkeypatch):
         while not kw["cancel_callback"]():
             time.sleep(0.01)
         state["cancelled"] = True
-        return SimpleNamespace(status="canceled", rc=254)
+        return "canceled", 254
 
-    monkeypatch.setattr(ansible_runner, "run", fake_run)
+    monkeypatch.setattr(ansible_runner.interface, "init_runner", _fake_init(fake_run))
     task = asyncio.create_task(
         AnsibleRunner(str(tmp_path / "runner")).run(_request(), lambda s: None))
     while "dir" not in state:
@@ -180,3 +188,63 @@ async def test_cancel_stops_the_run_and_cleans_up(tmp_path, monkeypatch):
         await task
     assert state["cancelled"] is True
     assert not state["dir"].exists()
+
+
+def test_job_env_is_an_allowlist(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIRDAR_SECRETS_KEY", "sentinel-secrets-key")
+    monkeypatch.setenv("SIRDAR_DATABASE_URL", "postgresql://u:sentinel-db@h/d")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("LC_ALL", "C")
+    runner = AnsibleRunner(str(tmp_path / "runner"))
+    run_dir = runner.prepare(_request())
+    try:
+        built = runner.build_runner(run_dir, _request(), lambda e: False, lambda: False)
+        env = built.config.env
+        assert "SIRDAR_SECRETS_KEY" not in env and "SIRDAR_DATABASE_URL" not in env
+        assert not any("sentinel" in v for v in env.values())
+        assert env["HOME"] == str(tmp_path) and env["LC_ALL"] == "C"
+        assert env["PATH"].split(os.pathsep)[0] == str(
+            Path(runner_mod.ansible_playbook_binary()).parent)
+        assert env["ANSIBLE_HOST_KEY_CHECKING"] == "True"
+        assert built.config.suppress_output_file is True
+        assert os.environ["SIRDAR_SECRETS_KEY"] == "sentinel-secrets-key"   # untouched
+    finally:
+        shutil.rmtree(run_dir)
+
+
+async def test_cancel_during_prepare_leaves_no_folder(tmp_path, monkeypatch):
+    runner = AnsibleRunner(str(tmp_path / "runner"))
+    real_prepare = runner.prepare
+    entered = threading.Event()
+
+    def slow_prepare(request):
+        entered.set()
+        time.sleep(0.3)
+        return real_prepare(request)
+
+    monkeypatch.setattr(runner, "prepare", slow_prepare)
+    task = asyncio.create_task(runner.run(_request(), lambda s: None))
+    while not entered.is_set():
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    for _ in range(100):
+        await asyncio.sleep(0.05)
+        if not list((tmp_path / "runner").glob("run-*")):
+            break
+    assert list((tmp_path / "runner").glob("run-*")) == []
+
+
+def test_sweep_removes_only_stale_run_folders(tmp_path):
+    runner = AnsibleRunner(str(tmp_path / "runner"))
+    root = tmp_path / "runner"
+    root.mkdir()
+    old, fresh, other = root / "run-old", root / "run-fresh", root / "keep-me"
+    for d in (old, fresh, other):
+        d.mkdir()
+    ancient = time.time() - runner_mod.STALE_RUN_SECONDS - 60
+    os.utime(old, (ancient, ancient))
+    os.utime(other, (ancient, ancient))
+    assert runner.sweep_stale() == 1
+    assert not old.exists() and fresh.exists() and other.exists()
