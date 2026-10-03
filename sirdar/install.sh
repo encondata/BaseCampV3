@@ -347,6 +347,19 @@ ensure_deploy_keys_dir() {  # ensure_deploy_keys_dir DIR
   chmod 711 "$1" 2>/dev/null || as_root chmod 711 "$1" || true
 }
 
+# Permission bits of a file or folder (e.g. 700), or nothing when unreadable.
+mode_of() {  # mode_of PATH
+  stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null || echo ''
+}
+
+# chmod only when the mode differs: once a folder belongs to uid 10001 only
+# root can chmod it, so an unconditional chmod would ask for sudo on every
+# re-run.
+ensure_mode() {  # ensure_mode MODE PATH
+  [ "$(mode_of "$2")" = "$1" ] && return 0
+  chmod "$1" "$2" 2>/dev/null || as_root chmod "$1" "$2"
+}
+
 # Saved SSH targets live in <dir>/sirdar/config/deploy-targets.env. The API
 # writes it atomically (temp file + rename + a .lock beside it), so the WHOLE
 # folder must be writable by the container user (uid 10001). Created and
@@ -358,12 +371,12 @@ ensure_config_dir() {  # ensure_config_dir DIR
     if [ "$(stat -c %u "$d" 2>/dev/null || stat -f %u "$d" 2>/dev/null || echo '')" != 10001 ]; then
       as_root chown 10001:10001 "$d" || ok=0
     fi
-    chmod 700 "$d" 2>/dev/null || as_root chmod 700 "$d" || ok=0
+    ensure_mode 700 "$d" || ok=0
     if [ -f "$f" ]; then
       if [ "$(stat -c %u "$f" 2>/dev/null || stat -f %u "$f" 2>/dev/null || echo '')" != 10001 ]; then
         as_root chown 10001:10001 "$f" || ok=0
       fi
-      chmod 600 "$f" 2>/dev/null || as_root chmod 600 "$f" || ok=0
+      ensure_mode 600 "$f" || ok=0
     fi
   fi
   if [ "$ok" != 1 ]; then
@@ -382,7 +395,7 @@ ensure_runner_dir() {  # ensure_runner_dir DIR
     if [ "$(stat -c %u "$d" 2>/dev/null || stat -f %u "$d" 2>/dev/null || echo '')" != 10001 ]; then
       as_root chown 10001:10001 "$d" || ok=0
     fi
-    chmod 700 "$d" 2>/dev/null || as_root chmod 700 "$d" || ok=0
+    ensure_mode 700 "$d" || ok=0
   fi
   if [ "$ok" != 1 ]; then
     warn "couldn't give $d to uid 10001, so deployments will fail until it is. Run: sudo chown 10001:10001 '$d' && sudo chmod 700 '$d'"
