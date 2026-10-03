@@ -242,12 +242,12 @@ def _adopted_settings(values: dict[str, str]) -> dict:
     for service in envfile.SERVICES:
         key = envfile.PORT_KEYS[service]
         raw = values.get(key) or str(envfile.DEFAULT_PORTS[service])
-        if not raw.isdigit():
+        if not (raw.isascii() and raw.isdecimal()):
             raise invalid(key)
         ports[service] = checked(key, lambda v, s=service: _check_port(int(v), s), raw)
     _check_ports_unique(ports)
     keep = values.get("STACK_KEEP_DUMPS") or str(envfile.DEFAULT_KEEP_DUMPS)
-    if not keep.isdigit():
+    if not (keep.isascii() and keep.isdecimal()):
         raise invalid("STACK_KEEP_DUMPS")
     keep_dumps = checked("STACK_KEEP_DUMPS", lambda v: _check_keep_dumps(int(v)), keep)
     bucket = checked("SS_SPACES_BUCKET", _check_bucket, envfile.DEFAULT_SPACES_BUCKET)

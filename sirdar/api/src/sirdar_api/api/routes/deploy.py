@@ -8,11 +8,14 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 
 from sirdar_api.api.deps import AuthContext, DbSession, client_ip, require_permission
 from sirdar_api.config import get_settings
-from sirdar_api.db.models import SshKnownHost
-from sirdar_api.deploy import ConnectFailed, digitalocean, known_hosts, names, ssh, targets
+from sirdar_api.db.models import Environment, SshKnownHost
+from sirdar_api.deploy import (
+    ConnectFailed, digitalocean, environments, known_hosts, names, serialize, ssh, targets,
+)
 from sirdar_api.deploy.ssh_targets import SavedSshTarget, TargetError
 from sirdar_api.services.audit import audit
 
@@ -309,3 +312,157 @@ async def forget_host(request: Request, db: DbSession,
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     await db.commit()
     return Response(status_code=204)
+
+
+# ---- environments (deploy pipeline) -------------------------------------------
+
+SSH_TARGET_PATTERN = r"^(ssh|ssh:[a-z0-9]+(-[a-z0-9]+)*)$"
+EnvType = Literal["dev", "beta", "custom"]
+_SSH_ERRORS = (ssh.HostKeyUnknown, ssh.HostKeyMismatch, ConnectFailed)
+_ENV_STATUS = {"environment_exists": 409, "deploy_in_progress": 409,
+               "secrets_key_missing": 400, "target_not_configured": 400}
+_NAME_CONSTRAINT = "environments_name_key"
+
+
+class EnvironmentIn(BaseModel):
+    mode: Literal["new", "adopt"]
+    name: str = Field(max_length=64)
+    type: EnvType
+    target: str = Field(pattern=SSH_TARGET_PATTERN, max_length=36)
+    git_ref: str = Field(default="main", max_length=200)
+    # mode "new" only; adopt reads these from the target's .env
+    base_domain: str | None = Field(default=None, max_length=253)
+    proxy_ip: str | None = Field(default=None, max_length=45)
+    bind_ip: str = Field(default="0.0.0.0", max_length=45)
+    ports: dict[str, int] = Field(default_factory=dict)
+
+
+class ServicePatch(BaseModel):
+    port: int | None = None
+    host_ip: str | None = Field(default=None, max_length=45)
+    proxied: bool | None = None
+
+
+class EnvironmentPatch(BaseModel):
+    git_ref: str | None = Field(default=None, max_length=200)
+    target: str | None = Field(default=None, pattern=SSH_TARGET_PATTERN, max_length=36)
+    base_domain: str | None = Field(default=None, max_length=253)
+    proxy_ip: str | None = Field(default=None, max_length=45)
+    bind_ip: str | None = Field(default=None, max_length=45)
+    keep_dumps: int | None = None
+    spaces_bucket: str | None = Field(default=None, max_length=63)
+    log_level: str | None = Field(default=None, max_length=10)
+    services: dict[str, ServicePatch] | None = None
+    # Write-only. No pydantic constraint on the values, so no validation error
+    # can describe one; the service answers secret_invalid / secret_not_editable.
+    secrets: dict[str, str] | None = None
+
+
+def _env_http(e: environments.EnvError) -> HTTPException:
+    return HTTPException(status_code=_ENV_STATUS.get(e.code, 422),
+                         detail={"code": e.code, **e.extra})
+
+
+def _ssh_http(e: Exception) -> HTTPException:
+    """Host-key and connection failures, in /connect's shapes."""
+    if isinstance(e, ssh.HostKeyUnknown):
+        return HTTPException(status_code=409, detail={
+            "code": "host_key_unknown", "host": e.host, "port": e.port,
+            "key_type": e.key_type, "fingerprint": e.fingerprint})
+    if isinstance(e, ssh.HostKeyMismatch):
+        return HTTPException(status_code=409, detail={
+            "code": "host_key_mismatch", "host": e.host, "port": e.port,
+            "key_type": e.key_type, "expected": e.expected, "actual": e.actual})
+    return HTTPException(status_code=502, detail={"code": "connect_failed", "reason": e.reason})
+
+
+async def _environment(db, name: str) -> Environment:
+    env = await environments.get_by_name(db, name)
+    if env is None:
+        raise HTTPException(status_code=404, detail={"code": "environment_not_found"})
+    return env
+
+
+@router.get("/environments")
+async def list_environments(db: DbSession,
+                            actor: AuthContext = require_permission("deploy", "view")):
+    return {"environments": [await serialize.environment_out(db, env)
+                             for env in await environments.list_all(db)]}
+
+
+@router.get("/environments/{name}")
+async def get_environment(name: str, db: DbSession,
+                          actor: AuthContext = require_permission("deploy", "view")):
+    return await serialize.environment_out(db, await _environment(db, name))
+
+
+@router.post("/environments", status_code=201)
+async def create_environment(body: EnvironmentIn, request: Request, db: DbSession,
+                             actor: AuthContext = require_permission("deploy", "add")):
+    settings = get_settings()
+    actor_id = actor.user.person_id
+    report = None
+    try:
+        if body.mode == "new":
+            env = await environments.create_new(
+                db, settings, name=body.name, type_=body.type, target_id=body.target,
+                git_ref=body.git_ref, base_domain=body.base_domain, proxy_ip=body.proxy_ip,
+                bind_ip=body.bind_ip, ports=body.ports, actor_id=actor_id)
+        else:
+            env, _, report = await environments.adopt(
+                db, settings, name=body.name, type_=body.type, target_id=body.target,
+                git_ref=body.git_ref, actor_id=actor_id)
+    except environments.EnvError as e:
+        await db.rollback()
+        raise _env_http(e) from None
+    except _SSH_ERRORS as e:
+        await db.rollback()
+        raise _ssh_http(e) from None
+    except IntegrityError as e:
+        # Two requests for one name both passed the exists check; the unique
+        # constraint settled it.
+        await db.rollback()
+        if _NAME_CONSTRAINT in str(e.orig):
+            raise HTTPException(status_code=409,
+                                detail={"code": "environment_exists"}) from None
+        raise
+    if report is None:
+        audit(db, actor_id=actor_id, action="deploy.environment_create",
+              entity_type="environment", entity_id=env.name, ip=client_ip(request),
+              changes={"name": env.name, "type": env.type, "target": env.target_id,
+                       "base_domain": env.base_domain, "git_ref": env.git_ref,
+                       "proxy_ip": env.proxy_ip, "bind_ip": env.bind_ip})
+    else:
+        audit(db, actor_id=actor_id, action="deploy.environment_adopt",
+              entity_type="environment", entity_id=env.name, ip=client_ip(request),
+              changes={"name": env.name, "type": env.type, "target": env.target_id,
+                       "sha": report.sha, "image_tag": env.image_tag,
+                       "imported_secrets": report.imported_secrets,
+                       "ignored_keys": report.ignored_keys})
+    await db.commit()
+    await db.refresh(env)
+    out = await serialize.environment_out(db, env)
+    if report is not None:
+        out["ignored_keys"] = report.ignored_keys
+    return out
+
+
+@router.patch("/environments/{name}")
+async def update_environment(name: str, body: EnvironmentPatch, request: Request,
+                             db: DbSession,
+                             actor: AuthContext = require_permission("deploy", "change")):
+    env = await _environment(db, name)
+    try:
+        changed = await environments.update(db, get_settings(), env,
+                                            body.model_dump(exclude_unset=True))
+    except environments.EnvError as e:
+        # update() edits the rows before every check has run: undo the lot.
+        await db.rollback()
+        raise _env_http(e) from None
+    if changed:
+        audit(db, actor_id=actor.user.person_id, action="deploy.environment_update",
+              entity_type="environment", entity_id=env.name, ip=client_ip(request),
+              changes={"changed": changed})
+        await db.commit()
+        await db.refresh(env)
+    return await serialize.environment_out(db, env)

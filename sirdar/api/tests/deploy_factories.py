@@ -2,12 +2,14 @@
 
 import pytest
 from cryptography.fernet import Fernet
+from sqlalchemy import select
 
 from sirdar_api.config import get_settings
-from sirdar_api.db.models import Environment, EnvironmentSecret, EnvironmentService
+from sirdar_api.db.models import AuditLog, Environment, EnvironmentSecret, EnvironmentService
 from sirdar_api.deploy import envfile, known_hosts, pipeline, vault
 
 from .fake_runner import FakeRunner
+from .ssh_server import SSH_PASSWORD
 
 SECRETS_KEY = Fernet.generate_key().decode()
 ENV_SECRETS = {
@@ -100,3 +102,30 @@ def remote_env_text(**over) -> str:
 def serve_remote_env(fake, text: str | None = None, sha: str = ADOPT_SHA) -> None:
     fake.overrides[CAT_ENV] = remote_env_text() if text is None else text
     fake.overrides[REPO_HEAD] = sha + "\n"
+
+
+@pytest.fixture
+async def leak_guard(client, db, secrets_key):
+    """Every response body this test saw, and every audit row, must hold no
+    secret: ENV_SECRETS, the legacy MinIO password, the fake SSH password,
+    every secret stored in the database (decrypted with SECRETS_KEY) and
+    whatever the test appends to the yielded list."""
+    seen: list[str] = []
+
+    async def record(response):
+        await response.aread()
+        seen.append(response.text)
+
+    client.event_hooks["response"].append(record)
+    extra: list[str] = []
+    yield extra
+    await db.rollback()
+    fernet = Fernet(SECRETS_KEY.encode())
+    stored = [fernet.decrypt(bytes(r.value_enc)).decode()
+              for r in await db.scalars(select(EnvironmentSecret))]
+    audits = [repr(c) for c in await db.scalars(select(AuditLog.changes))]
+    assert seen, "the response hook recorded nothing"
+    secrets = (*ENV_SECRETS.values(), OLD_MINIO, SSH_PASSWORD, *stored, *extra)
+    for text in seen + audits:
+        for secret in secrets:
+            assert secret not in text
