@@ -14,6 +14,7 @@ portal users ranked admin or higher, and the portal's permission model.
 2. Write the dev environment file: `sirdar/scripts/dev-env.sh`
 3. Create the virtualenv and migrate:
    `cd sirdar/api && python3.13 -m venv .venv && .venv/bin/pip install -e '.[dev]' && .venv/bin/alembic upgrade head`
+   Deploy runs also need sshpass for password-auth targets: brew install sshpass (ansible-playbook comes with the virtualenv).
 4. Run the API (from `sirdar/api`):
    `.venv/bin/uvicorn --factory sirdar_api.api.app:create_app --port 8097 --reload`
 5. Run the web app: `npm --prefix sirdar/web install && npm --prefix sirdar/web run dev`
@@ -25,6 +26,7 @@ Ports: database 127.0.0.1:5434, API 8097, web 5178.
 ## Tests
 
 - API (from `sirdar/api`): `.venv/bin/pytest -q`
+- Deploy runner, end to end (opt-in; needs Docker and sshpass): SIRDAR_RUNNER_E2E=1 .venv/bin/pytest -q tests/test_runner_e2e.py
 - Web: `npm --prefix sirdar/web test`
 - Portal: `npm --prefix portal test`
 
@@ -201,6 +203,60 @@ host-key fingerprint and does not log in. Compare it with the server's real
 fingerprint, then trust it on the Deploy page; later tests refuse a host whose
 key has changed until you forget the old key and trust the new one. Secrets are
 never shown or logged.
+
+### Deploy pipeline (environments)
+
+Sirdar deploys ServerSherpa environments (the five Compose stacks in
+`deploy/stack`) to a saved Custom (SSH) target. This part is the API; the
+web UI comes next.
+
+**Secrets key.** `SIRDAR_SECRETS_KEY` (a Fernet key) encrypts every
+environment's secrets in Sirdar's database. The installer generates it,
+without a prompt, when `.env` has no such line. Back it up together with
+`.env`: without it the stored secrets can't be read, and a different key
+leaves existing environments undeployable. Blank means deploying is off
+(`secrets_key_missing`).
+
+**Runner folder.** Each step runs Ansible in a private folder under
+`sirdar/runner/` (mounted at `/app/runner`, owned by uid 10001, mode 700).
+A run's folder holds its secrets only while it runs and is deleted
+afterwards. The installer creates the folder; by hand:
+`mkdir -p sirdar/runner && sudo chown 10001:10001 sirdar/runner && sudo chmod 700 sirdar/runner`.
+
+**Targets.** Ubuntu or Debian, with sudo and git. Sirdar logs in as the
+target's saved SSH user. Root steps (installing Docker, creating
+`/opt/serversherpa/<env>`) go through sudo with the saved SSH password, or
+with the target's **sudo password** for key-only targets (write-only, like
+the other target secrets). Trust the host key on the Deploy page first;
+every run pins it. Code comes from `SIRDAR_DEPLOY_REPO_URL` (default
+`https://github.com/encondata/BaseCampV3.git`); a branch or tag becomes a
+commit through `git ls-remote` on the target.
+
+**Steps.** 1 Preflight · 2 Bootstrap · 3 Fetch code · 4 Render config ·
+5 Build images · 6 Pre-deploy dump (Update) · 7 Reset data (Reset) ·
+8 Start services. The first failure stops the deployment; retry re-runs
+from the failed step. One deployment per environment at a time. Reset
+deletes the environment's data: it needs `deploy:change` and the
+environment's name typed back (`confirm_name`).
+
+**Adopting a hand-built environment** (`POST /api/deploy/environments` with
+`"mode": "adopt"`): Sirdar reads `/opt/serversherpa/<name>/.env` and the
+checkout's commit over SSH and imports them, secrets encrypted. Nothing on
+the host changes. Keys Sirdar doesn't manage come back in `ignored_keys`
+and are left out of `.env` on the next deploy.
+
+| API (under `/api/deploy`) | Needs |
+|---|---|
+| `GET /environments`, `GET /environments/{name}` | `deploy:view` |
+| `POST /environments` (`mode`: `new` or `adopt`) | `deploy:add` |
+| `PATCH /environments/{name}` | `deploy:change` |
+| `POST /environments/{name}/deployments` (`mode`: `update` or `reset`) | `deploy:add`; Reset also `deploy:change` |
+| `GET /environments/{name}/deployments`, `GET /deployments/{id}?tail=N` | `deploy:view` |
+| `POST /deployments/{id}/cancel` | `deploy:change` |
+| `POST /deployments/{id}/retry` | `deploy:add`; a Reset deployment also `deploy:change` |
+
+Deployments run inside Sirdar's single API process. Restarting Sirdar marks
+running deployments `interrupted`; retry them.
 
 ### Supported systems
 

@@ -25,17 +25,25 @@ services:
       SIRDAR_DEPLOY_KEYS_DIR: /app/deploy-keys
       # Saved SSH targets (written by the Deploy page).
       SIRDAR_DEPLOY_TARGETS_FILE: /app/config/deploy-targets.env
+      # Deploy runs: one private Ansible folder per step, deleted afterwards.
+      SIRDAR_RUNNER_DIR: /app/runner
     volumes:
       # Deploy-page SSH/GCP key files; the container runs as uid 10001.
       - ${SIRDAR_DEPLOY_KEYS_DIR:-./deploy-keys}:/app/deploy-keys:ro
       # Saved SSH targets: the whole folder is writable by uid 10001 (the app
       # renames a temp file over deploy-targets.env, so a file mount won't do).
       - ./config:/app/config
+      # Deploy run folders hold a run's secrets while it runs: owned by uid
+      # 10001, mode 700 (the installer sets that up).
+      - ./runner:/app/runner
     ports:
       - "${SIRDAR_BIND:-127.0.0.1}:${SIRDAR_PORT:-8098}:8080"   # put the reverse proxy in front
     depends_on:
       sirdar-db:
         condition: service_healthy
+    # The app waits up to 35 s for running deployments to stop on shutdown;
+    # Docker's default 10 s grace would kill it first.
+    stop_grace_period: 45s
     restart: unless-stopped
 
   sirdar-db:
