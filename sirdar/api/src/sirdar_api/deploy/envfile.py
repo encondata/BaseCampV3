@@ -1,0 +1,122 @@
+"""One environment's .env on its target: rendered from Sirdar's record
+(pure functions, no I/O) and parsed back when adopting a hand-built
+environment. Keys and their order follow deploy/stack/env.example.
+
+Values are written raw (KEY=value, no quotes), exactly as ss-stack and
+docker compose read them. Errors name keys, never values."""
+
+import re
+import unicodedata
+from dataclasses import dataclass, field
+
+ENV_ROOT = "/opt/serversherpa"
+
+SERVICES = ("api", "portal", "kiosk", "wiki", "spaces", "status", "mailpit")
+PUBLIC_SERVICES = ("api", "portal", "kiosk", "wiki", "spaces", "status")
+DEFAULT_PORTS = {"api": 8000, "portal": 8091, "kiosk": 8090, "wiki": 8096,
+                 "spaces": 9000, "status": 8095, "mailpit": 8025}
+PORT_KEYS = {s: f"STACK_{s.upper()}_PORT" for s in SERVICES}
+
+REQUIRED_SECRETS = ("POSTGRES_PASSWORD", "SPACES_SECRET_KEY", "SS_JWT_SECRET",
+                    "SS_TOTP_ENCRYPTION_KEY", "SS_PASSWORD_PEPPER", "SS_WIKI_SERVICE_TOKEN")
+OPTIONAL_SECRETS = ("SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD")
+SECRET_KEYS = REQUIRED_SECRETS + OPTIONAL_SECRETS
+FERNET_SECRETS = ("SS_TOTP_ENCRYPTION_KEY",)
+HEX_SECRETS = tuple(k for k in REQUIRED_SECRETS if k not in FERNET_SECRETS)
+
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+DEFAULT_SPACES_BUCKET = "serversherpa"
+DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_KEEP_DUMPS = 5
+PLACEHOLDER = "CHANGEME"
+
+KNOWN_KEYS = (
+    "STACK_ENV", "STACK_DOMAIN", "STACK_IMAGE_TAG", "STACK_REPO_DIR", "STACK_PROXY_IP",
+    "STACK_BIND_IP", *(PORT_KEYS[s] for s in SERVICES), "STACK_KEEP_DUMPS",
+    *REQUIRED_SECRETS, "SS_SPACES_BUCKET", "SS_LOG_LEVEL", *OPTIONAL_SECRETS,
+)
+
+_KEY_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
+# Control characters and the Unicode line/paragraph separators: any of them
+# in a value could end the line and inject another key.
+_BAD_CATEGORIES = frozenset({"Cc", "Zl", "Zp"})
+
+
+def env_dir(name: str) -> str:
+    return f"{ENV_ROOT}/{name}"
+
+
+def image_tag(sha: str) -> str:
+    """STACK_IMAGE_TAG for a commit: its first 8 hex digits."""
+    return sha[:8]
+
+
+def unsafe_value(value: str) -> bool:
+    return any(unicodedata.category(ch) in _BAD_CATEGORIES for ch in value)
+
+
+class RenderError(Exception):
+    """The record can't become a .env. `reason` names keys, never values."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class EnvConfig:
+    name: str
+    domain: str
+    image_tag: str
+    proxy_ip: str
+    bind_ip: str
+    ports: dict[str, int]
+    keep_dumps: int
+    spaces_bucket: str
+    log_level: str
+    secrets: dict[str, str] = field(repr=False)
+
+
+def render_env(cfg: EnvConfig) -> str:
+    missing = [k for k in REQUIRED_SECRETS if not cfg.secrets.get(k)]
+    if missing:
+        raise RenderError(f"missing secrets: {', '.join(missing)}")
+    values = {
+        "STACK_ENV": cfg.name,
+        "STACK_DOMAIN": cfg.domain,
+        "STACK_IMAGE_TAG": cfg.image_tag,
+        "STACK_REPO_DIR": f"{env_dir(cfg.name)}/repo",
+        "STACK_PROXY_IP": cfg.proxy_ip,
+        "STACK_BIND_IP": cfg.bind_ip,
+        **{PORT_KEYS[s]: str(cfg.ports[s]) for s in SERVICES},
+        "STACK_KEEP_DUMPS": str(cfg.keep_dumps),
+        **{k: cfg.secrets[k] for k in REQUIRED_SECRETS},
+        "SS_SPACES_BUCKET": cfg.spaces_bucket,
+        "SS_LOG_LEVEL": cfg.log_level,
+        **{k: cfg.secrets.get(k, "") for k in OPTIONAL_SECRETS},
+    }
+    for key, value in values.items():
+        if unsafe_value(value):
+            raise RenderError(f"{key} contains a control or line-break character")
+        if value == PLACEHOLDER:
+            raise RenderError(f"{key} is still {PLACEHOLDER}")
+    lines = ["# Written by Sirdar: edits here are replaced on the next deploy.",
+             f"# Environment: {cfg.name}",
+             *(f"{k}={v}" for k, v in values.items())]
+    return "\n".join(lines) + "\n"
+
+
+def parse_env(text: str) -> dict[str, str]:
+    """KEY=value lines (KEY uppercase, at the start of the line); the last
+    assignment wins and one pair of surrounding quotes is dropped, as
+    ss-stack's env_value does. Comments, blanks and other lines are ignored."""
+    values: dict[str, str] = {}
+    for line in text.split("\n"):
+        m = _KEY_RE.match(line.removesuffix("\r"))
+        if not m:
+            continue
+        value = m.group(2)
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        values[m.group(1)] = value
+    return values
