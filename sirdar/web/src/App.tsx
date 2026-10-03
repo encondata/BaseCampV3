@@ -7,6 +7,7 @@ import Access from './pages/Access';
 import Audit from './pages/Audit';
 import Dashboard from './pages/Dashboard';
 import Deploy from './pages/Deploy';
+import EnvironmentDetail from './pages/environments/EnvironmentDetail';
 import MeLayout from './pages/me/MeLayout';
 import Settings from './pages/Settings';
 import SirdarLogin from './pages/SirdarLogin';
@@ -23,6 +24,7 @@ export default function App() {
             <Routes>
               <Route path="/" element={<Gate resource="dashboard"><Dashboard /></Gate>} />
               <Route path="/deploy" element={<Gate resource="deploy"><Deploy /></Gate>} />
+              <Route path="/deploy/environments/:name" element={<Gate resource="deploy"><EnvironmentDetail /></Gate>} />
               <Route path="/admin/users" element={<Gate resource="users"><Users /></Gate>} />
               <Route path="/admin/users/:personId" element={<Gate resource="users"><UserDetail /></Gate>} />
               <Route path="/admin/access" element={<Gate resource="access"><Access /></Gate>} />

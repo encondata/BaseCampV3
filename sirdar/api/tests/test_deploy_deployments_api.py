@@ -143,7 +143,7 @@ async def test_lock_and_cancel(client, db, ready, fake_runner, leak_guard):
     assert (resp.status_code, resp.json()) == (202, {"id": first["id"], "status": "cancelling"})
     await _finish(first)
     got = (await client.get(f"/api/deploy/deployments/{first['id']}", headers=h)).json()
-    assert (got["status"], got["error"]) == ("cancelled", "Cancelled.")
+    assert (got["status"], got["error"]) == ("cancelled", "Canceled.")
     assert [s["status"] for s in got["steps"]] == ["cancelled"] + ["not_run"] * 6
     resp = await client.post(f"/api/deploy/deployments/{first['id']}/cancel", headers=h)
     assert (resp.status_code, resp.json()) == (409, {"detail": {"code": "not_running"}})

@@ -7,10 +7,10 @@ import {
   type SshTarget, type SshTargetBody,
 } from '../lib/sirdarApi';
 
-type Field = 'name' | 'host' | 'port' | 'user' | 'key' | 'auth' | 'password' | 'passphrase' | 'form';
+import SecretField, { type SecretAction } from './SecretField';
+
+type Field = 'name' | 'host' | 'port' | 'user' | 'key' | 'auth' | 'password' | 'passphrase' | 'sudo' | 'form';
 type Errors = Partial<Record<Field, string>>;
-/** keep = leave the stored secret alone (omit), clear = remove it (""), set = send a new value. */
-type SecretAction = 'keep' | 'clear' | 'set';
 
 const NONE = '__none__';
 const AUTH_MSG = 'Add a password or choose a key file.';
@@ -26,47 +26,10 @@ const CODE_FIELD: Record<string, [Field, string]> = {
   auth_required: ['auth', AUTH_MSG],
   password_too_long: ['password', 'That password is too long.'],
   passphrase_too_long: ['passphrase', 'That passphrase is too long.'],
+  sudo_password_too_long: ['sudo', 'That sudo password is too long.'],
   value_invalid: ['form', "One of the values has a character that can't be saved. Remove line breaks and control characters."],
   targets_file_unwritable: ['form', "Sirdar couldn't save deploy-targets.env. Check that it's writable; see the README."],
 };
-
-/** A write-only secret: a plain input when adding, otherwise "set / not set" with buttons. */
-function SecretField({ id, label, isSet, adding, action, value, error, onAction, onValue }: {
-  id: string; label: string; isSet: boolean; adding: boolean; action: SecretAction; value: string;
-  error?: string; onAction: (a: SecretAction) => void; onValue: (v: string) => void;
-}) {
-  const showInput = adding || action === 'set';
-  return (
-    <div className="sirdar-secret">
-      {showInput ? (
-        <>
-          <label className="field-label" htmlFor={id}>{label}</label>
-          <div className="sirdar-secret-row">
-            <input id={id} type="password" value={value} autoComplete="new-password" spellCheck={false}
-                   aria-invalid={!!error} onChange={(e) => onValue(e.target.value)} />
-            {!adding && <button type="button" className="mini-btn" onClick={() => { onValue(''); onAction('keep'); }}>Keep</button>}
-          </div>
-        </>
-      ) : (
-        <>
-          <span className="field-label">{label}</span>
-          <div className="sirdar-secret-row">
-            <span>{action === 'clear' ? `${label}: will be cleared` : `${label}: ${isSet ? 'set' : 'not set'}`}</span>
-            {action === 'clear'
-              ? <button type="button" className="mini-btn" onClick={() => onAction('keep')}>Undo</button>
-              : isSet
-                ? <>
-                    <button type="button" className="mini-btn" onClick={() => onAction('set')}>Replace</button>
-                    <button type="button" className="mini-btn" onClick={() => onAction('clear')}>Clear</button>
-                  </>
-                : <button type="button" className="mini-btn" onClick={() => onAction('set')}>Add</button>}
-          </div>
-        </>
-      )}
-      {error && <p className="form-error" role="alert">{error}</p>}
-    </div>
-  );
-}
 
 export default function SshTargetModal({ mode, slug, onSaved, onClose }: {
   mode: 'add' | 'edit'; slug?: string; onSaved: (slug: string) => void; onClose: () => void;
@@ -85,6 +48,8 @@ export default function SshTargetModal({ mode, slug, onSaved, onClose }: {
   const [pw, setPw] = useState('');
   const [ppAction, setPpAction] = useState<SecretAction>('keep');
   const [pp, setPp] = useState('');
+  const [sdAction, setSdAction] = useState<SecretAction>('keep');
+  const [sd, setSd] = useState('');
   const [errors, setErrors] = useState<Errors>({});
   const [saving, setSaving] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -120,8 +85,10 @@ export default function SshTargetModal({ mode, slug, onSaved, onClose }: {
 
   const pwIsSet = !!saved?.password_set;
   const ppIsSet = !!saved?.passphrase_set;
+  const sdIsSet = !!saved?.sudo_password_set;
   const pwNew = adding || pwAction === 'set';
   const ppNew = adding || ppAction === 'set';
+  const sdNew = adding || sdAction === 'set';
 
   const validate = (): Errors => {
     const e: Errors = {};
@@ -135,6 +102,10 @@ export default function SshTargetModal({ mode, slug, onSaved, onClose }: {
     if (pwNew && pw === '' && !adding) e.password = 'Enter a password, or choose Keep to keep the saved one.';
     if (!hasPw && !keyFile) e.auth = AUTH_MSG;
     if (keyFile && ppNew && pp === '' && !adding) e.passphrase = 'Enter a passphrase, or choose Keep to keep the saved one.';
+    if (!adding && sdAction === 'set' && sd === '') {
+      e.sudo = sdIsSet ? 'Enter a sudo password, or choose Keep to keep the saved one.'
+        : 'Enter a sudo password, or choose Keep to leave it unset.';
+    }
     return e;
   };
 
@@ -154,6 +125,8 @@ export default function SshTargetModal({ mode, slug, onSaved, onClose }: {
       body.key_path = '';
       if (ppIsSet) body.key_passphrase = '';
     }
+    if (sdNew) { if (sd) body.sudo_password = sd; }
+    else if (sdAction === 'clear') body.sudo_password = '';
     setSaving(true);
     try {
       const out = adding ? await createSshTarget(body as SshTargetBody) : await updateSshTarget(slug!, body);
@@ -250,6 +223,9 @@ export default function SshTargetModal({ mode, slug, onSaved, onClose }: {
               {keyFile && keyChanged && ppAction === 'clear' && (
                 <p className="page-hint">The saved passphrase belonged to the previous key, so it will be cleared. Choose Replace to enter a new one.</p>
               )}
+              <SecretField id="ssh-sudo" label="Sudo password" isSet={sdIsSet} adding={adding} action={sdAction}
+                           value={sd} error={errors.sudo} onAction={setSdAction} onValue={setSd} />
+              <p className="page-hint">Optional. Deploy steps that need root use it; without one they use the SSH password.</p>
               {errors.auth && <p className="form-error" role="alert">{errors.auth}</p>}
               {errors.form && <p className="form-error" role="alert">{errors.form}</p>}
               <button type="submit" hidden aria-hidden="true" tabIndex={-1} />

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const perms = vi.hoisted(() => ({ add: true, change: true }));
@@ -14,6 +15,7 @@ const api = vi.hoisted(() => ({
   getDeployTargets: vi.fn(), getDoRegions: vi.fn(), connectDeploy: vi.fn(), listKnownHosts: vi.fn(),
   trustKnownHost: vi.fn(), forgetKnownHost: vi.fn(), deleteSshTarget: vi.fn(),
   getSshTarget: vi.fn(), listKeyFiles: vi.fn(), createSshTarget: vi.fn(), updateSshTarget: vi.fn(),
+  listEnvironments: vi.fn(),
 }));
 vi.mock('../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../lib/sirdarApi')>()), ...api }));
 
@@ -50,12 +52,13 @@ beforeEach(() => {
   Object.values(api).forEach((f) => f.mockReset());
   api.getDeployTargets.mockResolvedValue(TARGETS);
   api.listKnownHosts.mockResolvedValue([]);
+  api.listEnvironments.mockResolvedValue({ environments: [] });
 });
 Element.prototype.scrollIntoView = () => {};   // jsdom lacks it (ComboBox calls it)
 afterEach(cleanup);
 
 async function ready() {
-  render(<Deploy />);
+  render(<MemoryRouter><Deploy /></MemoryRouter>);
   await waitFor(() => expect(screen.getAllByRole('radio').length).toBeGreaterThan(0));
 }
 const testBtn = () => screen.getByRole('button', { name: /test connection|connecting/i }) as HTMLButtonElement;
@@ -454,4 +457,11 @@ it('connects with the saved target id, and trusts with it', async () => {
   expect(api.connectDeploy).toHaveBeenCalledWith('ssh:edge-box', 'dev');
   await userEvent.click(await screen.findByRole('button', { name: 'Trust and connect' }));
   await waitFor(() => expect(api.trustKnownHost).toHaveBeenCalledWith('srv.example.com', 22, 'SHA256:abc', 'ssh:edge-box'));
+});
+
+it('shows the Environments section first', async () => {
+  await ready();
+  expect(await screen.findByRole('table', { name: 'Environments' })).toBeTruthy();
+  expect(screen.getAllByRole('heading', { level: 2 })[0].textContent).toBe('Environments');
+  expect(api.listEnvironments).toHaveBeenCalled();
 });

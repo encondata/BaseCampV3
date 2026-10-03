@@ -1,15 +1,20 @@
 import json
+from datetime import UTC, datetime
 
 import pytest
 
 from sirdar_api.config import get_settings
 from sirdar_api.dashboard import service
 from sirdar_api.dashboard.demo import demo_dashboard
+from sirdar_api.db.models import Deployment
 from sirdar_api.deploy import digitalocean
 
 from .api_helpers import auth_headers
+from .deploy_factories import make_environment
 from .test_dashboard_inventory import do_transport
 from .test_deploy_digitalocean import TOKEN
+
+SHA = "e73b99ca" + "1" * 32
 
 
 @pytest.fixture(autouse=True)
@@ -51,8 +56,9 @@ async def test_real_no_token(client, db):
     assert [s["id"] for s in p["slots"]] == ["blue", "green"]
     assert all(s["state"] == "empty" and s["version"] is None and s["traffic_pct"] == 0
                and s["instances"] == {"running": 0, "total": 0} for s in p["slots"])
-    assert [(e["id"], e["state"], e["last_release"]) for e in d["environments"]] == \
-        [("dev", "empty", None), ("beta", "empty", None)]
+    assert [(e["id"], e["state"], e["last_release"], e["environment"], e["action_label"])
+            for e in d["environments"]] == \
+        [("dev", "empty", None, None, "Set up Dev"), ("beta", "empty", None, None, "Set up Beta")]
 
 
 async def test_real_with_inventory(client, db, with_token):
@@ -98,6 +104,8 @@ async def test_demo(client, db):
     assert (green["state"], green["version"], green["instances"]["total"]) == ("standby", "v2.7.9", 3)
     assert [(e["id"], e["last_release"]) for e in d["environments"]] == \
         [("dev", "v2.8.1-dev"), ("beta", "v2.8.1-rc.2")]
+    assert all(e["environment"] is None and e["sub"] is None and e["last_release_at"] is None
+               for e in d["environments"])
     tree = d["infrastructure"]["tree"]
     assert [n["name"] for n in tree] == ["Production", "Development", "Beta"]
     blue_n, green_n, shared = tree[0]["children"]
@@ -149,3 +157,49 @@ async def test_failure_negative_cache(client, db, with_token):
     assert r2.json()["infrastructure"]["error"] == r1.json()["infrastructure"]["error"]
     await client.get("/api/dashboard?refresh=1", headers=h)
     assert with_token["calls"] == 2
+
+
+async def test_real_environments(client, db):
+    uat = await make_environment(db, name="uat", current_sha=SHA, secrets={})
+    qa = await make_environment(db, name="qa-east", status="failed", secrets={})
+    qa.type = "custom"
+    db.add(Deployment(environment_id=uat.id, mode="adopt", git_ref="main", sha=SHA,
+                      status="adopted", start_step=1,
+                      finished_at=datetime(2026, 10, 3, 12, 0, tzinfo=UTC)))
+    db.add(Deployment(environment_id=uat.id, mode="update", git_ref="main", sha="b" * 40,
+                      status="failed", start_step=1,
+                      finished_at=datetime(2026, 10, 3, 13, 0, tzinfo=UTC)))
+    await db.commit()
+    h = await auth_headers(client, db)
+    d = (await client.get("/api/dashboard", headers=h)).json()
+    assert d["environments"] == [
+        {"id": "uat", "label": "uat", "sub": "Development", "state": "active",
+         "version": "e73b99ca", "last_release": "e73b99ca",
+         "last_release_at": "2026-10-03T12:00:00+00:00", "action_label": "Deploy uat",
+         "environment": "uat"},
+        {"id": "beta", "label": "Beta", "sub": None, "state": "empty", "version": None,
+         "last_release": None, "last_release_at": None, "action_label": "Set up Beta",
+         "environment": None},
+        {"id": "qa-east", "label": "qa-east", "sub": "Custom", "state": "failed",
+         "version": None, "last_release": None, "last_release_at": None,
+         "action_label": "Deploy qa-east", "environment": "qa-east"}]
+    assert d["health"] == {"status": "degraded", "label": "A deployment failed"}
+
+
+async def test_health_when_an_environment_is_deployed(client, db):
+    await make_environment(db, name="uat", current_sha=SHA, secrets={})
+    h = await auth_headers(client, db)
+    d = (await client.get("/api/dashboard", headers=h)).json()
+    assert d["health"] == {"status": "healthy", "label": "Environments deployed"}
+    assert [(e["id"], e["state"]) for e in d["environments"]] == [
+        ("uat", "active"), ("beta", "empty")]
+
+
+async def test_a_tagged_droplet_with_an_environment_gets_one_card(client, db, with_token):
+    env = await make_environment(db, name="qa-team", secrets={})
+    env.type = "custom"
+    await db.commit()
+    h = await auth_headers(client, db)
+    d = (await client.get("/api/dashboard", headers=h)).json()
+    assert [(e["id"], e["environment"]) for e in d["environments"]] == [
+        ("dev", None), ("beta", None), ("qa-team", "qa-team")]

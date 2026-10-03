@@ -66,7 +66,7 @@ RETRYABLE_STATUSES = ("failed", "cancelled", "interrupted")
 # to stop and still write its outcome before the engine is disposed.
 SHUTDOWN_SECONDS = CANCEL_GRACE_SECONDS + 5
 INTERRUPTED = "Sirdar stopped while this deployment was running."
-CANCELLED = "Cancelled."
+CANCELLED = "Canceled."
 UNEXPECTED = "Sirdar couldn't run this step."
 RUNNER_DIR_UNWRITABLE = ("Sirdar can't write its runner folder (SIRDAR_RUNNER_DIR). It must "
                          "be owned by uid 10001 with mode 700.")

@@ -27,6 +27,7 @@ ENV_KEYS = {"id", "name", "type", "target", "base_domain", "env_dir", "git_ref",
             "updated_at"}
 NEW = {"mode": "new", "name": "qa", "type": "custom", "target": "ssh",
        "proxy_ip": "10.10.48.6"}
+DEFAULTS_URL = "/api/deploy/environment-defaults"
 
 
 @pytest.fixture
@@ -49,6 +50,25 @@ async def test_permissions(client, db, target, leak_guard):
         resp = await client.request(method, url, headers=admin, json=body)
         assert resp.status_code == 403, url
         assert resp.json()["detail"]["code"] == "forbidden"
+
+
+async def test_environment_defaults(client, db):
+    assert (await client.get(DEFAULTS_URL)).status_code == 401
+    admin = await auth_headers(client, db, email="admin@test.example.com", roles=("admin",))
+    resp = await client.get(DEFAULTS_URL, headers=admin)
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "services": [{"service": "api", "port": 8000, "public": True},
+                     {"service": "portal", "port": 8091, "public": True},
+                     {"service": "kiosk", "port": 8090, "public": True},
+                     {"service": "wiki", "port": 8096, "public": True},
+                     {"service": "spaces", "port": 9000, "public": True},
+                     {"service": "status", "port": 8095, "public": True},
+                     {"service": "mailpit", "port": 8025, "public": False}],
+        "domain_suffix": "serversherpa.com", "env_root": "/opt/serversherpa", "git_ref": "main",
+        "bind_ip": "0.0.0.0", "keep_dumps": 5, "spaces_bucket": "serversherpa",
+        "log_levels": ["DEBUG", "INFO", "WARNING", "ERROR"],
+        "optional_secrets": ["SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD"]}
 
 
 async def test_create_new_environment(client, db, target, leak_guard):
@@ -105,7 +125,8 @@ async def test_adopt_environment(client, db, target, leak_guard):
                                                    "type": "dev", "target": "ssh"})
     assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert set(body) == ENV_KEYS | {"ignored_keys"}
+    assert set(body) == ENV_KEYS | {"ignored_keys", "imported_secrets"}
+    assert body["imported_secrets"] == sorted(envfile.REQUIRED_SECRETS)
     assert (body["status"], body["current_sha"], body["image_tag"], body["proxy_ip"]) == (
         "ready", ADOPT_SHA, "e73b99ca", "10.10.48.6")
     assert body["ignored_keys"] == ["MINIO_ROOT_PASSWORD"]

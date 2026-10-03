@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
 import ComboBox from '@portal/components/ComboBox';
@@ -6,10 +6,14 @@ import DataTable from '@portal/components/DataTable';
 
 import HostKeyModal from '../components/HostKeyModal';
 import SshTargetModal from '../components/SshTargetModal';
+import { arrowNav } from '../lib/arrowNav';
+import { NAME_HELP, nameProblem } from '../lib/envRules';
 import {
   connectDeploy, deleteSshTarget, errorDetail, errorText, forgetKnownHost, getDeployTargets, getDoRegions, listKnownHosts,
   trustKnownHost, type ConnectResult, type DeployCheck, type DeployTarget, type DeployType, type DoRegions, type KnownHost,
 } from '../lib/sirdarApi';
+
+import EnvironmentsSection from './environments/EnvironmentsSection';
 
 /** .env keys (names only) each target needs; the API never reports which are missing.
  *  Keep in sync with sirdar/api/src/sirdar_api/config.py and the Deploy spec. */
@@ -26,19 +30,6 @@ const CHECK_CHIP: Record<DeployCheck['status'], { cls: string; text: string }> =
   pass: { cls: 'c-green', text: 'Pass' }, warn: { cls: 'c-amber', text: 'Warning' }, fail: { cls: 'c-red', text: 'Fail' },
 };
 
-const RESERVED_NAMES = ['blue', 'green', 'dev', 'beta', 'custom'];
-const NAME_HELP = 'Lowercase letters, numbers and hyphens; starts with a letter; 2–32 characters.';
-
-/** Mirrors the API's custom-name rule; returns an inline message or ''. */
-function nameProblem(raw: string): string {
-  const n = raw.trim();
-  if (!n) return '';
-  if (!/^[a-z][a-z0-9-]{1,31}$/.test(n) || n.endsWith('-'))
-    return 'Use lowercase letters, numbers and hyphens, starting with a letter (2–32 characters, no trailing hyphen).';
-  if (RESERVED_NAMES.includes(n)) return 'That name is reserved. Choose a different one.';
-  return '';
-}
-
 interface KeyInfo { host: string; port: number; key_type: string; fingerprint?: string; expected?: string; actual?: string }
 
 function statusChip(t: DeployTarget) {
@@ -46,17 +37,6 @@ function statusChip(t: DeployTarget) {
   return t.configured
     ? <span className="chip c-green">Ready</span>
     : <span className="chip c-amber">Not configured</span>;
-}
-
-/** Roving-tabindex arrow-key movement inside a radiogroup. */
-function arrowNav(e: KeyboardEvent<HTMLElement>) {
-  const dir = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1
-    : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
-  if (!dir) return;
-  const group = e.currentTarget.closest('[role="radiogroup"]');
-  const items = Array.from(group?.querySelectorAll<HTMLElement>('[role="radio"]:not([aria-disabled="true"])') ?? []);
-  const next = items[(items.indexOf(e.currentTarget) + dir + items.length) % items.length];
-  if (next) { e.preventDefault(); next.focus(); next.click(); }
 }
 
 export default function Deploy() {
@@ -210,10 +190,10 @@ export default function Deploy() {
       <div className="eyebrow">Deployments</div>
       <div className="dir-head">
         <h1>Deploy</h1>
-        <p>Pick where and what kind of environment to deploy. This step tests the connection;
-           deploying the apps comes next.</p>
+        <p>Create environments and deploy them to your targets, or test a target's connection.</p>
       </div>
       {loadError && <p className="form-error" role="alert">{loadError}</p>}
+      <EnvironmentsSection targets={targets} />
 
       <section className="sirdar-section">
         <h2>Target</h2>

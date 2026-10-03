@@ -1,13 +1,19 @@
-"""Dashboard data. There are no deployment records yet (deploy step 2), so
-production and the environments are derived: everything is empty, and only the
-DigitalOcean inventory (grouped by sirdar-* tags) is real."""
+"""Dashboard data. Environment cards come from Sirdar's environments (deploy
+step 2), with Dev / Beta placeholders until environments of those types
+exist; DigitalOcean inventory (grouped by sirdar-* tags) fills the
+infrastructure tree. Production Blue/Green has no records yet, so it stays
+empty."""
 
 import hashlib
 import time
 from datetime import UTC, datetime
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from sirdar_api.config import Settings
 from sirdar_api.dashboard.demo import demo_dashboard, node
+from sirdar_api.db.models import Deployment, Environment
 from sirdar_api.deploy import ConnectFailed, digitalocean, names, targets
 
 CACHE_SECONDS = 30
@@ -17,6 +23,8 @@ _FIXED = ("production", "dev", "beta")
 _LABELS = {"production": "Production", "dev": "Development", "beta": "Beta"}
 _DROPLET = {"active": ("running", "Running"), "off": ("stopped", "Stopped"),
             "new": ("provisioning", "Provisioning")}
+_TYPE_LABELS = {"dev": "Development", "beta": "Beta", "custom": "Custom"}
+_RELEASED = ("succeeded", "adopted")
 
 
 def clear_cache() -> None:
@@ -149,8 +157,68 @@ async def _inventory(settings: Settings, refresh: bool, transport=None) -> dict:
     return inv
 
 
-async def build_dashboard(settings: Settings, *, demo: bool = False,
-                          refresh: bool = False) -> dict:
+def _env_state(env: Environment) -> str:
+    if env.status in ("deploying", "failed"):
+        return env.status
+    return "active" if env.current_sha else "empty"
+
+
+async def _last_release(db: AsyncSession, env_id) -> Deployment | None:
+    return await db.scalar(select(Deployment)
+                           .where(Deployment.environment_id == env_id,
+                                  Deployment.status.in_(_RELEASED))
+                           .order_by(Deployment.finished_at.desc().nulls_last(),
+                                     Deployment.created_at.desc())
+                           .limit(1))
+
+
+async def _environment_card(db: AsyncSession, env: Environment) -> dict:
+    last = await _last_release(db, env.id)
+    version = env.image_tag or (env.current_sha[:8] if env.current_sha else None)
+    return {"id": env.name, "label": env.name,
+            "sub": _TYPE_LABELS.get(env.type, env.type.title()), "state": _env_state(env),
+            "version": version, "last_release": last.sha[:8] if last else None,
+            "last_release_at": (last.finished_at.isoformat()
+                                if last and last.finished_at else None),
+            "action_label": f"Deploy {env.name}", "environment": env.name}
+
+
+def _placeholder(env: str, action_label: str) -> dict:
+    return {"id": env, "label": _label(env), "sub": None, "state": "empty", "version": None,
+            "last_release": None, "last_release_at": None, "action_label": action_label,
+            "environment": None}
+
+
+async def environment_cards(db: AsyncSession | None, tagged: list[str]) -> list[dict]:
+    """Sirdar environments, a Dev / Beta placeholder while no environment has
+    that type, then DigitalOcean env tags no environment answers to."""
+    rows: list[Environment] = []
+    if db is not None:
+        rows = list(await db.scalars(select(Environment).order_by(Environment.name)))
+    cards: list[dict] = []
+    for type_, short in (("dev", "Dev"), ("beta", "Beta")):
+        typed = [e for e in rows if e.type == type_]
+        if typed:
+            cards += [await _environment_card(db, e) for e in typed]
+        else:
+            cards.append(_placeholder(type_, f"Set up {short}"))
+    cards += [await _environment_card(db, e) for e in rows if e.type not in ("dev", "beta")]
+    known = {e.name for e in rows}
+    cards += [_placeholder(e, f"Set up {_label(e)}") for e in tagged if e not in known]
+    return cards
+
+
+def _health(cards: list[dict]) -> dict:
+    states = {c["state"] for c in cards if c["environment"]}
+    if "failed" in states:
+        return {"status": "degraded", "label": "A deployment failed"}
+    if "active" in states:
+        return {"status": "healthy", "label": "Environments deployed"}
+    return {"status": "unknown", "label": "No environments deployed"}
+
+
+async def build_dashboard(settings: Settings, *, db: AsyncSession | None = None,
+                          demo: bool = False, refresh: bool = False) -> dict:
     if demo:
         return demo_dashboard()
     infra: dict = {"source": "none", "error": None, "tree": []}
@@ -163,19 +231,16 @@ async def build_dashboard(settings: Settings, *, demo: bool = False,
         except ConnectFailed as e:
             infra["error"] = e.reason
     has_lb = any(_env_of(lb) == "production" for lb in inv["load_balancers"])
-    customs = sorted({e for r in (*inv["droplets"], *inv["databases"], *inv["load_balancers"])
-                      if (e := _env_of(r)) and e not in _FIXED})
-    envs = [{"id": e, "label": _label(e), "state": "empty", "version": None,
-             "last_release": None,
-             "action_label": {"dev": "Deploy to Dev", "beta": "Deploy to Beta"}.get(
-                 e, f"Deploy to {_label(e)}")} for e in (*_FIXED[1:], *customs)]
+    tagged = sorted({e for r in (*inv["droplets"], *inv["databases"], *inv["load_balancers"])
+                     if (e := _env_of(r)) and e not in _FIXED})
+    envs = await environment_cards(db, tagged)
     slots = [{"id": s, "label": f"Production {s.title()}", "state": "empty", "health": "unknown",
               "version": None, "instances": {"running": 0, "total": 0}, "traffic_pct": 0}
              for s in ("blue", "green")]
     return {
         "demo": False,
         "generated_at": datetime.now(UTC).isoformat(),
-        "health": {"status": "unknown", "label": "No environments deployed"},
+        "health": _health(envs),
         "production": {
             "status": "inactive", "active_slot": None,
             "traffic": {"label": "Live traffic", "sub": "External users"},

@@ -246,3 +246,6 @@
   .sd-dash .sd-shimmer, .sd-dash .sd-refresh-ico { animation: none; }
   .sd-dash .sd-tree-chev { transition: none; }
 }
+.sd-dash .sd-pill.is-warn { background: var(--sd-amber-soft); color: var(--sd-amber-text); border-color: color-mix(in srgb, var(--sd-amber) 45%, transparent); }
+.sd-dash .sd-env h3 a { color: inherit; text-decoration: none; }
+.sd-dash .sd-env h3 a:hover, .sd-dash .sd-env h3 a:focus-visible { text-decoration: underline; }

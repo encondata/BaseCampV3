@@ -42,7 +42,8 @@
 .sirdar-checks li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .sirdar-result, .sirdar-mismatch { margin-top: 12px; }
 .sirdar-mismatch { border-color: var(--c-red-bd, #fca5a5); }
-.sirdar-hostkey-card { width: min(560px, calc(100vw - 48px)); }
+/* 4 classes, to out-rank the portal's `.modal-card.reports-modal-card.rgm-card` width (980px). */
+.modal-card.reports-modal-card.rgm-card.sirdar-hostkey-card { width: min(560px, calc(100vw - 48px)); max-width: 96vw; }
 .sirdar-fingerprint { word-break: break-all; }
 
 .sirdar-region { display: flex; flex-direction: column; gap: 6px; max-width: 360px; margin-bottom: 12px; }
@@ -57,6 +58,63 @@
 .sirdar-secret-row input { flex: 1; }
 .sirdar-add-target { border-style: dashed; align-items: center; justify-content: center; }
 .sirdar-target-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+/* In a section head (DeploymentView) the actions line up with the heading. */
+.sirdar-section-head .sirdar-target-actions { margin-top: 0; }
 
 /* A wrapper that adds semantics (radiogroup) but no box of its own. */
 .sirdar-contents { display: contents; }
+
+/* Environments (deploy step 2). The 4-class selectors out-rank the portal's
+   `.modal-card.reports-modal-card.rgm-card` width. */
+.modal-card.reports-modal-card.rgm-card.sirdar-envmodal-card { width: min(860px, 96vw); max-width: 96vw; }
+.sirdar-env-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; align-items: start; }
+.sirdar-env-grid .sirdar-span2 { grid-column: 1 / -1; }
+@media (max-width: 720px) { .sirdar-env-grid { grid-template-columns: 1fr; } }
+.sirdar-port-input { width: 96px; }
+.sirdar-sub { margin: 16px 0 8px; }
+.sirdar-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.modal-card.reports-modal-card.rgm-card.sirdar-deploy-card { width: min(640px, 96vw); max-width: 96vw; }
+.sirdar-deploy-form { display: flex; flex-direction: column; gap: 14px; }
+
+.sirdar-env-head { align-items: flex-start; }
+.sirdar-env-tabs { margin-bottom: 4px; }
+
+.sirdar-deployment { margin-top: 16px; }
+.sirdar-steps { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.sirdar-step-btn {
+  display: grid; grid-template-columns: 28px minmax(0, 1fr) auto 72px; align-items: center; gap: 10px;
+  width: 100%; padding: 8px 12px; border: 1px solid var(--paper-line, #e5e7eb); border-radius: 8px;
+  background: var(--surface, #fff); color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.sirdar-step-btn[aria-expanded="true"] { border-color: var(--sirdar-accent); }
+.sirdar-step-btn > span:last-child { text-align: right; }
+.sirdar-log {
+  margin: 6px 0 4px; max-height: 420px; overflow: auto; padding: 12px 14px; border-radius: 8px;
+  border: 1px solid var(--paper-line, #e5e7eb); background: var(--surface-2, #f5f7fa); color: var(--text-dark);
+  font-family: var(--font-mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+}
+.sirdar-retry { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-top: 16px; }
+.sirdar-retry > div { min-width: 240px; }
+
+/* `.pf-form label` (portal profile.css) styles real <label>s only. Captions on
+   controls that can't take a <label> (segmented radio groups, SecretField
+   rows) are <span class="field-label">, so give them the same look. */
+.pf-form .field-label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  display: block;
+  margin-bottom: 6px;
+}
+/* The New environment modal's body is a .pf-form (a 2-column grid) holding
+   whole sections — the mode switch, the field grid, the services table — so
+   each section spans the full width instead of filling one column. */
+.sirdar-envmodal-card .modal-body.pf-form > * { grid-column: 1 / -1; }
+/* A back link inside a page eyebrow (the environment page's "Deploy") keeps
+   the eyebrow's accent color instead of the browser's default link blue. */
+.eyebrow a { color: inherit; text-decoration: none; }
+.eyebrow a:hover, .eyebrow a:focus-visible { text-decoration: underline; }

@@ -62,10 +62,12 @@ def demo_dashboard() -> dict:
                  "instances": {"running": 0, "total": 3}, "traffic_pct": 0},
             ]},
         "environments": [
-            {"id": "dev", "label": "Development", "state": "empty", "version": None,
-             "last_release": "v2.8.1-dev", "action_label": "Deploy to Dev"},
-            {"id": "beta", "label": "Beta", "state": "empty", "version": None,
-             "last_release": "v2.8.1-rc.2", "action_label": "Deploy to Beta"},
+            {"id": "dev", "label": "Development", "sub": None, "state": "empty",
+             "version": None, "last_release": "v2.8.1-dev", "last_release_at": None,
+             "action_label": "Deploy to Dev", "environment": None},
+            {"id": "beta", "label": "Beta", "sub": None, "state": "empty", "version": None,
+             "last_release": "v2.8.1-rc.2", "last_release_at": None,
+             "action_label": "Deploy to Beta", "environment": None},
         ],
         "infrastructure": {"source": "demo", "error": None, "tree": tree},
     }

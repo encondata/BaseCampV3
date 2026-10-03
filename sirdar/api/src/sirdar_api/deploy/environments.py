@@ -25,6 +25,9 @@ from sirdar_api.deploy.gitref import SHA_RE, valid_ref
 from sirdar_api.deploy.ssh import SshTargetConfig
 
 ENV_TYPES = ("dev", "beta", "custom")
+DEFAULT_DOMAIN_SUFFIX = "serversherpa.com"
+DEFAULT_GIT_REF = "main"
+DEFAULT_BIND_IP = "0.0.0.0"
 SSH_TARGET_RE = re.compile(r"ssh|ssh:[a-z0-9]+(-[a-z0-9]+)*")
 _DOMAIN_RE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
 _BUCKET_RE = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
@@ -193,14 +196,15 @@ async def _insert(db: AsyncSession, settings: Settings, cfg: SshTargetConfig, *,
 
 
 async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: str,
-                     target_id: str, git_ref: str = "main", base_domain: str | None = None,
-                     proxy_ip: str | None = None, bind_ip: str = "0.0.0.0",
+                     target_id: str, git_ref: str = DEFAULT_GIT_REF,
+                     base_domain: str | None = None, proxy_ip: str | None = None,
+                     bind_ip: str = DEFAULT_BIND_IP,
                      ports: dict[str, int] | None = None, actor_id=None) -> Environment:
     """A new environment (status "new"): default ports unless given, the
     target's host for every service, freshly generated secrets."""
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
                           git_ref=git_ref)
-    domain = _check_domain(base_domain or f"{name}.serversherpa.com")
+    domain = _check_domain(base_domain or f"{name}.{DEFAULT_DOMAIN_SUFFIX}")
     if not proxy_ip:
         raise EnvError("proxy_ip_required")
     proxy = _check_ipv4(proxy_ip, "proxy_ip_invalid")

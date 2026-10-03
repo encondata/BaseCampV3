@@ -63,13 +63,13 @@ export interface DeployTarget {
 }
 export interface SshTarget {
   slug: string; name: string; host: string; port: number; user: string;
-  key_path: string | null; password_set: boolean; passphrase_set: boolean;
+  key_path: string | null; password_set: boolean; passphrase_set: boolean; sudo_password_set: boolean;
 }
 /** Create body; on update every field is optional and a secret that is omitted is kept,
  *  "" is cleared and a value is set. */
 export interface SshTargetBody {
   name: string; host: string; port: number; user: string;
-  password?: string; key_path?: string; key_passphrase?: string;
+  password?: string; key_path?: string; key_passphrase?: string; sudo_password?: string;
 }
 export interface DeployType { id: 'blue' | 'green' | 'dev' | 'beta' | 'custom'; label: string; description: string }
 export interface DeployCheck { label: string; status: 'pass' | 'warn' | 'fail'; value: string }
@@ -129,12 +129,64 @@ const MESSAGES: Record<string, string> = {
   custom_name_reserved: 'That name is reserved. Choose a different one.',
   connect_failed: "Couldn't connect.",
   host_key_changed: "The server's key changed while you were looking. Try again.",
+  host_key_unknown: "Sirdar doesn't trust this server yet.",
+  host_key_mismatch: "The server's key doesn't match the one Sirdar trusted.",
   not_configured_host: "Only the configured SSH host can be trusted.",
   not_found: 'That host is no longer trusted.',
   target_not_found: 'That target no longer exists.',
   targets_file_unwritable: "Sirdar couldn't save deploy-targets.env. Check that it's writable; see the README.",
   targets_file_unreadable: "Sirdar couldn't read deploy-targets.env. Check that it's valid UTF-8; see the README.",
+  value_invalid: "One of the values has a character that can't be saved. Remove line breaks and control characters.",
+  name_taken: 'A target with that name already exists.',
+  host_invalid: "That host isn't valid. Use a hostname or IP address.",
+  user_invalid: "That user name isn't valid.",
+  key_file_invalid: "That key file name isn't valid.",
+  key_file_not_found: "That key file isn't in sirdar/deploy-keys/ on the Sirdar host.",
+  auth_required: 'Add a password or choose a key file.',
+  password_too_long: 'That password is too long.',
+  passphrase_too_long: 'That passphrase is too long.',
+  sudo_password_too_long: 'That sudo password is too long.',
   source_unavailable: "Couldn't reach the portal database. Nothing was changed.",
+  // environments
+  environment_exists: 'An environment with that name already exists.',
+  environment_not_found: 'That environment no longer exists.',
+  name_invalid: 'Use lowercase letters, numbers and hyphens, starting with a letter (2–32 characters, no trailing hyphen).',
+  name_reserved: 'That name is reserved. Choose a different one.',
+  type_invalid: 'Choose Dev, Beta or Custom.',
+  target_invalid: 'Choose an SSH target.',
+  ref_invalid: "That isn't a valid branch, tag or commit.",
+  ref_not_found: 'The repository has no branch, tag or commit by that name.',
+  git_missing: "git isn't installed on the target.",
+  ref_lookup_failed: "The target couldn't list the repository's branches and tags.",
+  base_domain_invalid: "That domain isn't valid. Use a name like uat.serversherpa.com.",
+  proxy_ip_required: "Enter the proxy's IP address.",
+  proxy_ip_invalid: 'The proxy IP must be an IPv4 address.',
+  bind_ip_invalid: 'The bind IP must be an IPv4 address.',
+  host_ip_invalid: 'Service addresses must be IPv4 addresses.',
+  port_invalid: 'Use a port from 1 to 65535.',
+  ports_conflict: "Two services can't use the same port.",
+  service_unknown: "Sirdar doesn't know that service.",
+  keep_dumps_invalid: 'Keep 1 to 100 dumps.',
+  bucket_invalid: "That bucket name isn't valid (3–63 lowercase letters, numbers, dots and hyphens).",
+  log_level_invalid: 'Choose DEBUG, INFO, WARNING or ERROR.',
+  secret_invalid: "That value can't be saved. Use letters, numbers and ._~+/=:@%^*!?,;- only, with no spaces or quotes.",
+  secret_not_editable: 'Only the optional secrets can be changed.',
+  secrets_key_missing: "SIRDAR_SECRETS_KEY isn't set on the Sirdar host, so environments can't be created or deployed. Add it to sirdar/.env and restart Sirdar.",
+  adopt_env_missing: "There's no .env in that environment's folder on the target.",
+  adopt_env_too_large: "That environment's .env is too large to read.",
+  adopt_env_mismatch: "That .env belongs to a different environment (its STACK_ENV doesn't match the name).",
+  adopt_env_incomplete: 'That .env is missing required secrets.',
+  adopt_value_invalid: "A value in that .env isn't valid.",
+  adopt_repo_missing: "There's no git checkout in that environment's repo folder.",
+  // deployments
+  deploy_in_progress: 'A deployment of this environment is already running.',
+  confirm_name_mismatch: "Type the environment's name exactly to confirm.",
+  deployment_not_found: 'That deployment no longer exists.',
+  not_running: "That deployment isn't running any more.",
+  not_retryable: "That deployment can't be retried.",
+  retry_not_latest: 'Only the most recent deployment can be retried.',
+  from_step_invalid: 'Pick a step at or before the one where the deployment stopped.',
+  invalid_start_step: "That step isn't part of this deployment.",
 };
 
 export function errorText(err: unknown, fallback: string): string {
@@ -146,6 +198,21 @@ export function errorText(err: unknown, fallback: string): string {
 export function errorDetail<T extends object = Record<string, unknown>>(err: unknown): T | null {
   if (err instanceof ApiError && err.detail && typeof err.detail === 'object') return err.detail as T;
   return null;
+}
+
+/** errorText plus what deploy errors carry: a `reason` (connect and git
+ *  failures) replaces the message; the missing .env keys, or the key or
+ *  service a check named, are added in parentheses. */
+export function deployErrorText(err: unknown, fallback: string): string {
+  const d = errorDetail<{ reason?: unknown; missing?: unknown; key?: unknown; service?: unknown }>(err);
+  if (d && typeof d.reason === 'string' && d.reason) return d.reason;
+  const base = errorText(err, fallback);
+  let extra = '';
+  if (d && Array.isArray(d.missing) && d.missing.length) extra = d.missing.join(', ');
+  else if (d && typeof d.key === 'string') extra = d.key;
+  else if (d && typeof d.service === 'string') extra = d.service;
+  if (!extra) return base;
+  return base.endsWith('.') ? `${base.slice(0, -1)} (${extra}).` : `${base} (${extra})`;
 }
 
 export const listUsers = () => getJson<UserRow[]>('/users');
@@ -198,6 +265,79 @@ export async function forgetKnownHost(host: string, port: number): Promise<void>
   if (!resp.ok) throw await errorOf(resp);
 }
 
+/* ---- Environments and deployments (/api/deploy, deploy step 2) ---- */
+export type EnvType = 'dev' | 'beta' | 'custom';
+export type EnvStatus = 'new' | 'ready' | 'deploying' | 'failed';
+export type DeployMode = 'update' | 'reset';
+export type DeploymentStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'adopted';
+export type StepStatus =
+  'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'not_run' | 'cancelled' | 'interrupted';
+export interface EnvService { service: string; host_ip: string; port: number; hostname: string | null; proxied: boolean }
+export interface DeploymentSummary {
+  id: string; mode: DeployMode | 'adopt'; git_ref: string; sha: string; status: DeploymentStatus;
+  start_step: number; retry_of: string | null; failed_step: number | null; dump_path: string | null;
+  previous_sha: string | null; error: string | null; actor_name: string | null;
+  started_at: string; finished_at: string | null; created_at: string;
+}
+export interface DeploymentStep {
+  number: number; key: string; name: string; status: StepStatus;
+  started_at: string | null; finished_at: string | null;
+  /** Characters stored for the step; `log_tail` is its last `tail` (default 8000). */
+  log_size: number; log_tail: string;
+}
+export interface Deployment extends DeploymentSummary { environment: string; steps: DeploymentStep[] }
+export interface Environment {
+  id: string; name: string; type: EnvType; target: string; base_domain: string; env_dir: string;
+  git_ref: string; current_sha: string | null; image_tag: string | null; status: EnvStatus;
+  proxy_ip: string; bind_ip: string; keep_dumps: number; spaces_bucket: string; log_level: string;
+  services: EnvService[];
+  /** Which optional (write-only) secrets are set. */
+  secrets_set: Record<string, boolean>;
+  last_deployment: DeploymentSummary | null; created_at: string; updated_at: string;
+}
+/** Adopt's answer adds what it read from the target's .env — names only. */
+export interface AdoptedEnvironment extends Environment { ignored_keys: string[]; imported_secrets: string[] }
+export interface EnvironmentDefaults {
+  services: { service: string; port: number; public: boolean }[];
+  domain_suffix: string; env_root: string; git_ref: string; bind_ip: string; keep_dumps: number;
+  spaces_bucket: string; log_levels: string[]; optional_secrets: string[];
+}
+export interface NewEnvironmentBody {
+  name: string; type: EnvType; target: string; git_ref: string; base_domain?: string;
+  proxy_ip: string; bind_ip: string; ports: Record<string, number>;
+}
+export interface AdoptEnvironmentBody { name: string; type: EnvType; target: string; git_ref: string }
+/** PATCH body: an omitted field is kept; a secret set to "" is cleared. */
+export interface EnvironmentPatch {
+  git_ref?: string; target?: string; base_domain?: string; proxy_ip?: string; bind_ip?: string;
+  keep_dumps?: number; spaces_bucket?: string; log_level?: string;
+  services?: Record<string, { port?: number; host_ip?: string; proxied?: boolean }>;
+  secrets?: Record<string, string>;
+}
+export interface DeploymentBody { mode: DeployMode; git_ref?: string; confirm_name?: string }
+export interface RetryBody { from_step?: number; confirm_name?: string }
+
+const envPath = (name: string) => `/deploy/environments/${encodeURIComponent(name)}`;
+const depPath = (id: string) => `/deploy/deployments/${encodeURIComponent(id)}`;
+export const listEnvironments = () => getJson<{ environments: Environment[] }>('/deploy/environments');
+export const getEnvironment = (name: string) => getJson<Environment>(envPath(name));
+export const getEnvironmentDefaults = () => getJson<EnvironmentDefaults>('/deploy/environment-defaults');
+export const createEnvironment = (body: NewEnvironmentBody) =>
+  sendJson<Environment>('POST', '/deploy/environments', { mode: 'new', ...body });
+export const adoptEnvironment = (body: AdoptEnvironmentBody) =>
+  sendJson<AdoptedEnvironment>('POST', '/deploy/environments', { mode: 'adopt', ...body });
+export const updateEnvironment = (name: string, patch: EnvironmentPatch) =>
+  sendJson<Environment>('PATCH', envPath(name), patch);
+export const startDeployment = (name: string, body: DeploymentBody) =>
+  sendJson<Deployment>('POST', `${envPath(name)}/deployments`, body);
+export const listDeployments = (name: string, limit = 20) =>
+  getJson<{ deployments: DeploymentSummary[] }>(`${envPath(name)}/deployments?limit=${limit}`);
+export const getDeployment = (id: string) => getJson<Deployment>(depPath(id));
+export const cancelDeployment = (id: string) =>
+  sendJson<{ id: string; status: 'cancelling' | 'cancelled' }>('POST', `${depPath(id)}/cancel`);
+export const retryDeployment = (id: string, body: RetryBody) =>
+  sendJson<Deployment>('POST', `${depPath(id)}/retry`, body);
+
 /* ---- Dashboard (GET /api/dashboard) ---- */
 export interface DashHealth { status: 'healthy' | 'degraded' | 'unknown' | string; label: string }
 export interface DashSlot {
@@ -213,8 +353,15 @@ export interface DashProduction {
   slots: DashSlot[];
 }
 export interface DashEnvironment {
-  id: string; label: string; state: 'active' | 'empty' | string; version: string | null;
-  last_release: string | null; action_label: string;
+  /** The Sirdar environment's name, or "dev" / "beta" / a DigitalOcean env tag for a card with no environment. */
+  id: string; label: string;
+  /** The environment's type ("Development", "Beta", "Custom"); null on placeholder cards. */
+  sub: string | null;
+  state: 'active' | 'deploying' | 'failed' | 'empty' | string;
+  version: string | null; last_release: string | null; last_release_at: string | null;
+  action_label: string;
+  /** The environment the card's action deploys; null means there's nothing to deploy yet. */
+  environment: string | null;
 }
 export interface DashNode {
   id: string; name: string;

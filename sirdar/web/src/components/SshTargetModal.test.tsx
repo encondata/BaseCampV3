@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -12,7 +12,7 @@ import SshTargetModal from './SshTargetModal';
 
 Element.prototype.scrollIntoView = () => {};
 const SAVED = { slug: 'edge-box', name: 'Edge Box', host: '10.0.0.5', port: 2222, user: 'deployer',
-                key_path: null, password_set: true, passphrase_set: false };
+                key_path: null, password_set: true, passphrase_set: false, sudo_password_set: false };
 
 beforeEach(() => {
   Object.values(api).forEach((f) => f.mockReset());
@@ -177,4 +177,49 @@ it('changing the key on edit defaults the passphrase to Clear, with a note', asy
   await userEvent.click(screen.getByRole('button', { name: 'Save' }));
   await waitFor(() => expect(api.updateSshTarget).toHaveBeenCalled());
   expect(api.updateSshTarget.mock.calls[0][1]).toMatchObject({ key_path: 'b_key', key_passphrase: '' });
+});
+
+it('adding a target can set a sudo password; empty sends none', async () => {
+  const { onSaved } = await openAdd();
+  expect(screen.getByText(/without one they use the SSH password/)).toBeTruthy();
+  await userEvent.type(field('Name'), 'Key Box');
+  await userEvent.type(field('Host'), 'h');
+  await userEvent.type(field('User'), 'u');
+  await userEvent.type(field('Password'), 'pw');
+  await userEvent.type(field('Sudo password'), 'root-pw');
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  expect(api.createSshTarget).toHaveBeenCalledWith(
+    { name: 'Key Box', host: 'h', port: 22, user: 'u', password: 'pw', sudo_password: 'root-pw' });
+});
+
+it('edit shows the sudo password as set; Clear sends "" and Replace sends the value', async () => {
+  api.getSshTarget.mockResolvedValue({ ...SAVED, sudo_password_set: true });
+  render(<SshTargetModal mode="edit" slug="edge-box" onSaved={vi.fn()} onClose={vi.fn()} />);
+  const sudo = (await screen.findByText('Sudo password: set')).closest('.sirdar-secret') as HTMLElement;
+  await userEvent.click(within(sudo).getByRole('button', { name: 'Clear' }));
+  expect(screen.getByText('Sudo password: will be cleared')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateSshTarget).toHaveBeenCalled());
+  expect(api.updateSshTarget.mock.calls[0][1]).toMatchObject({ sudo_password: '' });
+  cleanup(); api.updateSshTarget.mockClear();
+
+  render(<SshTargetModal mode="edit" slug="edge-box" onSaved={vi.fn()} onClose={vi.fn()} />);
+  const again = (await screen.findByText('Sudo password: set')).closest('.sirdar-secret') as HTMLElement;
+  await userEvent.click(within(again).getByRole('button', { name: 'Replace' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  expect(screen.getByText('Enter a sudo password, or choose Keep to keep the saved one.')).toBeTruthy();
+  expect(api.updateSshTarget).not.toHaveBeenCalled();
+  await userEvent.type(field('Sudo password'), 'new-root');
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateSshTarget).toHaveBeenCalled());
+  expect(api.updateSshTarget.mock.calls[0][1]).toMatchObject({ sudo_password: 'new-root' });
+});
+
+it('an untouched sudo password is omitted, and a too-long one shows under its field', async () => {
+  api.updateSshTarget.mockRejectedValueOnce(new ApiError(422, 'sudo_password_too_long', { code: 'sudo_password_too_long' }));
+  await openEdit();
+  await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+  expect(await screen.findByText('That sudo password is too long.')).toBeTruthy();
+  expect(api.updateSshTarget.mock.calls[0][1]).not.toHaveProperty('sudo_password');
 });

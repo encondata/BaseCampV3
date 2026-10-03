@@ -1,8 +1,8 @@
 import { useEffect, useRef } from 'react';
 
-export default function HostKeyModal({ host, port, keyType, fingerprint, canTrust, busy, error, onTrust, onCancel }: {
+export default function HostKeyModal({ host, port, keyType, fingerprint, canTrust, busy, error, trustLabel = 'Trust and connect', onTrust, onCancel }: {
   host: string; port: number; keyType: string; fingerprint: string;
-  canTrust: boolean; busy: boolean; error: string;
+  canTrust: boolean; busy: boolean; error: string; trustLabel?: string;
   onTrust: () => void; onCancel: () => void;
 }) {
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -53,7 +53,7 @@ export default function HostKeyModal({ host, port, keyType, fingerprint, canTrus
         <div className="modal-foot">
           <button type="button" ref={cancelRef} className="btn-ghost" onClick={onCancel}>Cancel</button>
           <button type="button" className="btn-solid" disabled={!canTrust || busy} onClick={onTrust}>
-            Trust and connect
+            {trustLabel}
           </button>
         </div>
       </div>
