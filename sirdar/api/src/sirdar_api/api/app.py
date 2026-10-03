@@ -1,6 +1,7 @@
 """Sirdar API. Every route lives under /api; the built SPA (when
 SIRDAR_STATIC_DIR is set) is served from / — see _mount_spa."""
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,10 +15,23 @@ from sqlalchemy import text
 from sirdar_api.config import get_settings
 from sirdar_api.db.engine import dispose_engine, get_sessionmaker
 
+log = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    from sirdar_api.deploy import pipeline
+
+    try:
+        await pipeline.recover_orphans()     # runs a previous process left "running"
+    except Exception:  # noqa: BLE001 — a database hiccup must not stop the app starting
+        log.warning("couldn't mark interrupted deployments at startup")
+    try:
+        await pipeline.sweep_runs()          # run folders a crash left on disk
+    except Exception:  # noqa: BLE001 — a disk problem must not stop the app starting
+        log.warning("couldn't sweep stale runner folders at startup")
     yield
+    await pipeline.shutdown()                # running deployments end "interrupted"
     await dispose_engine()
 
 
