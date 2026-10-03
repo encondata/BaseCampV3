@@ -99,6 +99,9 @@ async def find_valid(db: AsyncSession, raw: str
 
 async def complete(db: AsyncSession, token: PasswordResetToken, account: UserAccount,
                    new_password: str, *, ip: str | None) -> None:
+    """Apply the reset. Does not commit. The caller must run
+    `require_password_length` and `raise_if_reused` first (the confirm
+    route does)."""
     now = datetime.now(UTC)
     await apply_password(db, account, new_password, must_change=False, now=now)
     await _retire_unused(db, account.person_id, now)

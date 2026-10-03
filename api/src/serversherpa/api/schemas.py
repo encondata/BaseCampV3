@@ -105,6 +105,25 @@ class LoginIn(BaseModel):
     client: Literal["portal", "kiosk"] = "portal"
 
 
+class PasswordResetRequestIn(BaseModel):
+    # a plain str, not EmailStr: a malformed address must get the same 202
+    # as everything else, never a 422 that reveals validation
+    email: str = Field(max_length=320)
+
+
+class PasswordResetCheckIn(BaseModel):
+    token: str = Field(max_length=200)
+
+
+class PasswordResetConfirmIn(BaseModel):
+    token: str = Field(max_length=200)
+    new_password: str = Field(max_length=1024)
+
+
+class PasswordResetCheckOut(BaseModel):
+    valid: bool
+
+
 class ScopeOut(BaseModel):
     global_: bool = Field(alias="global")
     client_ids: list[uuid.UUID] = []
@@ -2258,6 +2277,9 @@ class SystemStatusOut(BaseModel):
     workers_paused: bool
     banner: str | None
     totp_trust_days: int
+    email_enabled: bool = False
+    password_reset_ttl_minutes: int = 15
+    password_min_length: int = 8
     background: BackgroundStatusOut | None = None
 
 

@@ -25,6 +25,7 @@ from serversherpa.api.schemas import (
     SystemStatusOut,
 )
 from serversherpa.config import get_settings
+from serversherpa.mail import email_enabled
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
     AuthSession, LogEntry, SystemConfig, SystemProcess, TrustedDevice,
@@ -95,6 +96,9 @@ def _status_from(cfg: dict, background: BackgroundStatusOut | None = None) -> Sy
         workers_paused=bool(cfg["read_only"] and cfg["pause_workers"]),
         banner=banner or None,
         totp_trust_days=get_settings().totp_trust_days,
+        email_enabled=email_enabled(),
+        password_reset_ttl_minutes=get_settings().password_reset_ttl_minutes,
+        password_min_length=get_settings().password_min_length,
         background=background)
 
 

@@ -414,6 +414,10 @@ async def clean_db():
         await session.execute(text(LABEL_VOCAB_SEEDS))
         await session.execute(text(LABEL_PLACEHOLDER_SEEDS))
         await session.commit()
+    # per-process rate limiters would otherwise carry hits between tests
+    from serversherpa.api.routes.auth import reset_confirm_limiter, reset_request_limiter
+    reset_request_limiter.reset()
+    reset_confirm_limiter.reset()
     yield
     await dispose_engine()
 
