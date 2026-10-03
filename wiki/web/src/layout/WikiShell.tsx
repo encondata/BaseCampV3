@@ -85,7 +85,10 @@ export default function WikiShell() {
   const [sharing, setSharing] = useState<NodeOut | null>(null);
   const [exporting, setExporting] = useState<ExportTarget | null>(null);
   // Home (and New library over it) shows favorites and recent itself
-  const onHome = !!useMatch('/') || !!useMatch(NEW_LIBRARY_PATH);
+  // hooks must not sit behind ||: the count would change between routes
+  const homeMatch = useMatch('/');
+  const newLibraryMatch = useMatch(NEW_LIBRARY_PATH);
+  const onHome = !!homeMatch || !!newLibraryMatch;
 
   const reloadSpaces = useCallback(() => {
     listSpaces().then(setSpaces).catch(() => setSpaces((cur) => cur ?? []));
