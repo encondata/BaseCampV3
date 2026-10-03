@@ -2,6 +2,7 @@
 scoped to /auth — JavaScript never sees it, and it is not sent with
 ordinary API requests."""
 
+import logging
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -37,6 +38,8 @@ def person_out(person) -> PersonOut:
     out = PersonOut.model_validate(person)
     out.avatar_url = presign_get(person.avatar_key)
     return out
+
+logger = logging.getLogger("serversherpa.api.auth")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -161,7 +164,13 @@ async def password_reset_request(
 ) -> dict:
     """Same answer whether or not the account exists (no enumeration)."""
     _limit(reset_request_limiter, request)
-    await password_reset.request_reset(db, body.email, ip=client_ip(request))
+    try:
+        await password_reset.request_reset(db, body.email, ip=client_ip(request))
+    except Exception as exc:
+        # a failure for a real account must not look different from the
+        # no-op for an unknown one; log the class only (no address/token)
+        await db.rollback()
+        logger.error("password reset request failed: %s", type(exc).__name__)
     return {"status": "accepted"}
 
 

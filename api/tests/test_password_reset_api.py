@@ -107,4 +107,24 @@ async def test_status_reports_email_and_reset_settings(client, email_on):
     body = (await client.get("/system/status")).json()
     assert body["email_enabled"] is True
     assert body["password_reset_ttl_minutes"] == 15
-    assert body["password_min_length"] >= 1
+    from serversherpa.config import get_settings
+    assert body["password_min_length"] == get_settings().password_min_length
+
+
+async def test_request_failure_still_answers_202(client, seeded_user, monkeypatch, caplog):
+    from serversherpa.services import password_reset
+
+    async def boom(*a, **k):
+        raise RuntimeError("alice@test.example.com boom")
+
+    monkeypatch.setattr(password_reset, "request_reset", boom)
+    resp = await _request(client)
+    assert resp.status_code == 202
+    assert resp.content == b'{"status":"accepted"}'
+    assert "alice@test.example.com" not in caplog.text
+
+
+async def test_malformed_email_gets_the_same_202(client, seeded_user):
+    resp = await _request(client, "not-an-email")
+    assert resp.status_code == 202
+    assert resp.content == b'{"status":"accepted"}'
