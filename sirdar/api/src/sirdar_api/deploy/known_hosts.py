@@ -71,8 +71,8 @@ async def trust(db: AsyncSession, host: str, port: int, expected_fingerprint: st
         raise HostKeyChanged(host, port, expected_fingerprint, actual, key_type)
     previous = await lookup(db, host, port)
     previous_fingerprint = previous.fingerprint_sha256 if previous else None
-    values = dict(key_type=key_type, fingerprint_sha256=actual,
-                  public_key=public_key_text(live), trusted_by=actor_id)
+    values = {"key_type": key_type, "fingerprint_sha256": actual,
+                  "public_key": public_key_text(live), "trusted_by": actor_id}
     await db.execute(
         insert(SshKnownHost).values(host=host, port=port, **values)
         .on_conflict_do_update(index_elements=["host", "port"],
@@ -112,3 +112,16 @@ async def list_hosts(db: AsyncSession) -> list[tuple[SshKnownHost, str | None]]:
         .order_by(SshKnownHost.host, SshKnownHost.port))).all()
     return [(host, user.display_name if user else None) for host, user in rows]
 
+
+
+def openssh_line(host: str, port: int, public_key: str) -> str:
+    """One OpenSSH known_hosts line that pins host:port to the stored key."""
+    algorithm, blob = public_key.split()[:2]
+    name = host if port == 22 else f"[{host}]:{port}"
+    return f"{name} {algorithm} {blob}"
+
+
+def host_key_algorithms(key_type: str) -> str:
+    """ssh's HostKeyAlgorithms for a stored key. RSA keys sign with SHA-2:
+    OpenSSH 8.8+ refuses ssh-rsa (SHA-1) signatures by default."""
+    return "rsa-sha2-512,rsa-sha2-256" if key_type == "ssh-rsa" else key_type

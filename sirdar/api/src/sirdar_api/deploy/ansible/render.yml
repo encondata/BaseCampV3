@@ -1,0 +1,19 @@
+# Step 4 — Render config: the environment's .env (mode 600) from Sirdar's
+# record. It arrives base64-encoded so no value is ever read as a template,
+# and it carries every secret, so the task is no_log.
+- name: Render config
+  hosts: target
+  gather_facts: false
+  tasks:
+    - name: Backups folder
+      ansible.builtin.file:
+        path: "{{ env_dir }}/backups"
+        state: directory
+        mode: "0700"
+
+    - name: Write .env
+      ansible.builtin.copy:
+        content: "{{ env_file_b64 | b64decode }}"
+        dest: "{{ env_dir }}/.env"
+        mode: "0600"
+      no_log: true

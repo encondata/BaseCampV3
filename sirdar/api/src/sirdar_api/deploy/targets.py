@@ -90,7 +90,8 @@ def _saved_config(t: SavedSshTarget, s: Settings) -> SshTargetConfig:
     if name and "/" not in name and "\\" not in name and name not in (".", ".."):
         key_file = str(Path(s.deploy_keys_dir) / name)
     return SshTargetConfig(host=t.host, port=t.port, user=t.user, password=t.password,
-                           key_file=key_file, key_name=name, passphrase=t.passphrase)
+                           key_file=key_file, key_name=name, passphrase=t.passphrase,
+                           sudo_password=t.sudo_password)
 
 
 def ssh_configs(s: Settings) -> list[tuple[str, SshTargetConfig]]:

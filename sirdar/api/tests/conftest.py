@@ -35,7 +35,9 @@ SOURCE_URL = _asyncpg_url(SOURCE_DB)
 SOURCE_PSYCOPG_URL = _psycopg_url(SOURCE_DB)
 
 SIRDAR_TABLES = ("users, user_roles, permission_overrides, totp_backup_codes, "
-                 "auth_sessions, audit_log, import_runs, ssh_known_hosts")
+                 "auth_sessions, audit_log, import_runs, ssh_known_hosts, "
+                 "environments, environment_services, environment_secrets, deployments, "
+                 "deployment_steps")
 SOURCE_TABLES = ("people, user_accounts, roles, person_roles, access_groups, "
                  "access_group_members, totp_backup_codes, system_config")
 

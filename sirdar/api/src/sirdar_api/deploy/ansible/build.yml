@@ -1,0 +1,9 @@
+# Step 5 — Build every image at the deployment's tag. Running containers
+# keep serving the old images until Start services.
+- name: Build images
+  hosts: target
+  gather_facts: false
+  tasks:
+    - name: ss-stack build
+      ansible.builtin.command:
+        argv: ["{{ ss_stack }}", build, "{{ env_dir }}"]

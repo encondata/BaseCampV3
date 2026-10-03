@@ -254,6 +254,8 @@ has_bad_chars() {  # single quote or a line break can't go into the env file
 # existing .env asks only for the ones the file doesn't have yet. Add new
 # keys to the END of this list and give each a prompt in prompt_new_setting
 # and a default in new_setting_default.
+# (SIRDAR_SECRETS_KEY is not in this list: nobody types it, so
+# ensure_secrets_key generates it without a prompt.)
 NEW_SETTINGS=(SIRDAR_BIND SIRDAR_ALLOWED_ORIGINS SIRDAR_PASSWORD_MIN_LENGTH)
 
 # normalize_origins "a, b/" -> "a,b" (trailing slashes stripped); returns 1 and
@@ -345,6 +347,19 @@ ensure_deploy_keys_dir() {  # ensure_deploy_keys_dir DIR
   chmod 711 "$1" 2>/dev/null || as_root chmod 711 "$1" || true
 }
 
+# Permission bits of a file or folder (e.g. 700), or nothing when unreadable.
+mode_of() {  # mode_of PATH
+  stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1" 2>/dev/null || echo ''
+}
+
+# chmod only when the mode differs: once a folder belongs to uid 10001 only
+# root can chmod it, so an unconditional chmod would ask for sudo on every
+# re-run.
+ensure_mode() {  # ensure_mode MODE PATH
+  [ "$(mode_of "$2")" = "$1" ] && return 0
+  chmod "$1" "$2" 2>/dev/null || as_root chmod "$1" "$2"
+}
+
 # Saved SSH targets live in <dir>/sirdar/config/deploy-targets.env. The API
 # writes it atomically (temp file + rename + a .lock beside it), so the WHOLE
 # folder must be writable by the container user (uid 10001). Created and
@@ -356,18 +371,55 @@ ensure_config_dir() {  # ensure_config_dir DIR
     if [ "$(stat -c %u "$d" 2>/dev/null || stat -f %u "$d" 2>/dev/null || echo '')" != 10001 ]; then
       as_root chown 10001:10001 "$d" || ok=0
     fi
-    chmod 700 "$d" 2>/dev/null || as_root chmod 700 "$d" || ok=0
+    ensure_mode 700 "$d" || ok=0
     if [ -f "$f" ]; then
       if [ "$(stat -c %u "$f" 2>/dev/null || stat -f %u "$f" 2>/dev/null || echo '')" != 10001 ]; then
         as_root chown 10001:10001 "$f" || ok=0
       fi
-      chmod 600 "$f" 2>/dev/null || as_root chmod 600 "$f" || ok=0
+      ensure_mode 600 "$f" || ok=0
     fi
   fi
   if [ "$ok" != 1 ]; then
     echo "     Warning: couldn't make $d writable by uid 10001, so adding SSH targets on the Deploy page won't work until it is. Run: sudo chown 10001:10001 '$d' && sudo chmod 700 '$d'" >&4
   fi
   return 0
+}
+
+# Deploy steps run Ansible in <dir>/sirdar/runner (mounted at /app/runner):
+# one private folder per run, holding that run's secrets until it ends. The
+# folder must belong to the container user (uid 10001) and nobody else (700).
+ensure_runner_dir() {  # ensure_runner_dir DIR
+  local d="$1" ok=1
+  mkdir -p "$d" 2>/dev/null || as_root mkdir -p "$d" || ok=0
+  if [ "$ok" = 1 ]; then
+    if [ "$(stat -c %u "$d" 2>/dev/null || stat -f %u "$d" 2>/dev/null || echo '')" != 10001 ]; then
+      as_root chown 10001:10001 "$d" || ok=0
+    fi
+    ensure_mode 700 "$d" || ok=0
+  fi
+  if [ "$ok" != 1 ]; then
+    warn "couldn't give $d to uid 10001, so deployments will fail until it is. Run: sudo chown 10001:10001 '$d' && sudo chmod 700 '$d'"
+  fi
+  return 0
+}
+
+# SIRDAR_SECRETS_KEY encrypts each environment's secrets in Sirdar's database.
+# Nobody types it, so it is generated (never prompted) whenever the .env has
+# no such line, interactive or not. A present line, even a blank one, is left
+# alone: a new key would make the stored secrets unreadable.
+ensure_secrets_key() {  # ensure_secrets_key ENVFILE
+  local target="$1" tmp
+  grep -q '^SIRDAR_SECRETS_KEY=' "$target" && return 0
+  tmp=$(mktemp "$target.new.XXXXXX")
+  TMP_FILES+=("$tmp")
+  chmod 600 "$tmp"
+  cat "$target" >"$tmp"
+  # A file without a final newline would otherwise glue the key onto its last line.
+  [ ! -s "$tmp" ] || [ -z "$(tail -c 1 "$tmp")" ] || printf '\n' >>"$tmp"
+  printf 'SIRDAR_SECRETS_KEY=%s\n' "$(fernet_key)" >>"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$target"
+  info "Added SIRDAR_SECRETS_KEY (generated) to $target. Back it up with that file: without it Sirdar can't read the environments' stored secrets."
 }
 
 # check_key_file KEYSDIR NAME: warn (never fail) when the key file is missing
@@ -728,6 +780,7 @@ write_env() {
   set_env_key SIRDAR_ALLOWED_ORIGINS "$origins" "$tmp"
   set_env_key SS_PASSWORD_PEPPER "$pepper" "$tmp"
   set_env_key SS_TOTP_ENCRYPTION_KEY "$totp" "$tmp"
+  set_env_key SIRDAR_SECRETS_KEY "$(fernet_key)" "$tmp"
   for dk in "${DEPLOY_KEYS[@]}"; do set_env_key "$dk" "$(deploy_value "$dk")" "$tmp"; done
   chmod 600 "$tmp"
   mv "$tmp" "$target"
@@ -743,7 +796,8 @@ write_env() {
     SS_PASSWORD_PEPPER "$s_pepper" \
     SS_TOTP_ENCRYPTION_KEY "$s_totp" \
     SIRDAR_JWT_SECRET "$s_jwt" \
-    SIRDAR_DB_PASSWORD "$s_dbpw"
+    SIRDAR_DB_PASSWORD "$s_dbpw" \
+    SIRDAR_SECRETS_KEY "generated (back it up with this file)"
   for dk in "${DEPLOY_KEYS[@]}"; do deploy_row "$dk"; done
   echo
 
@@ -1669,6 +1723,7 @@ summary() {
   Install dir:  $DIR   (override with SIRDAR_DIR)
   Settings:     $DIR/sirdar/.env
   Saved SSH targets: $DIR/sirdar/config/deploy-targets.env
+  Deploy runs:  $DIR/sirdar/runner   (SIRDAR_SECRETS_KEY is in .env: back it up)
   Update:       re-run this script to update
 
   Logs:            $p logs -f sirdar
@@ -1726,9 +1781,11 @@ main() {
   fetch_code
   ensure_deploy_keys_dir "$DIR/sirdar/deploy-keys"
   ensure_config_dir "$DIR/sirdar/config"
+  ensure_runner_dir "$DIR/sirdar/runner"
 
   if [ -f "$DIR/sirdar/.env" ]; then
     info "Keeping existing $DIR/sirdar/.env"
+    ensure_secrets_key "$DIR/sirdar/.env"
     add_new_settings "$DIR/sirdar/.env"
   else
     write_env "$DIR/sirdar/.env.example" "$DIR/sirdar/.env"

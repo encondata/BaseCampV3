@@ -24,7 +24,7 @@ def store(tmp_path, keys_dir):
 
 
 def _fields(**over):
-    f = dict(name="Edge Box", host="10.0.0.5", port=22, user="deployer", password="pw-1")
+    f = {"name": "Edge Box", "host": "10.0.0.5", "port": 22, "user": "deployer", "password": "pw-1"}
     f.update(over)
     return f
 
@@ -213,7 +213,7 @@ def test_concurrent_adds_under_lock(store):
     def worker(i):
         try:
             SshTargetStore(store.path, store.keys_dir).add(_fields(name=f"Box {i:02d}"))
-        except Exception as e:  # pragma: no cover - surfaced below
+        except Exception as e:  # noqa: BLE001  # pragma: no cover - surfaced below
             errors.append(e)
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(20)]
@@ -330,3 +330,39 @@ def test_invalid_utf8_raises_unicode_error(store):
     store.path.write_bytes(b"SIRDAR_SSH_TARGETS='a'\n\xff\xfe\n")
     with pytest.raises(UnicodeDecodeError):
         store.add(_fields())
+
+
+def test_sudo_password_round_trip_and_write_only(store):
+    t = store.add(_fields(sudo_password="sudo-PW-1"))
+    assert t.sudo_password == "sudo-PW-1"
+    assert "SIRDAR_SSH_EDGE_BOX_SUDO_PASS='sudo-PW-1'\n" in store.path.read_text()
+    assert t.public()["sudo_password_set"] is True
+    assert "sudo-PW-1" not in repr(t)
+    _, t = store.update("edge-box", {"host": "h.example.com"})
+    assert t.sudo_password == "sudo-PW-1"
+    _, t = store.update("edge-box", {"sudo_password": ""})
+    assert t.sudo_password is None
+    assert "SUDO_PASS" not in store.path.read_text()
+    assert store.load()[0].public()["sudo_password_set"] is False
+
+
+def test_sudo_password_never_satisfies_auth(store):
+    with pytest.raises(TargetError) as exc:
+        store.add(_fields(password=None, sudo_password="sudo-only"))
+    assert exc.value.code == "auth_required"
+
+
+def test_sudo_password_length_capped(store):
+    with pytest.raises(TargetError) as exc:
+        store.add(_fields(sudo_password="p" * 1025))
+    assert exc.value.code == "sudo_password_too_long"
+    assert store.add(_fields(sudo_password="p" * 1024)).sudo_password == "p" * 1024
+
+
+def test_sudo_key_never_collides_with_another_targets_password(store):
+    store.add(_fields(name="Ab", sudo_password="sudo-of-ab"))
+    store.add(_fields(name="Ab Sudo", password="pw-of-ab-sudo"))
+    ab, ab_sudo = store.load()
+    assert (ab.slug, ab.password, ab.sudo_password) == ("ab", "pw-1", "sudo-of-ab")
+    assert (ab_sudo.slug, ab_sudo.password, ab_sudo.sudo_password) == (
+        "ab-sudo", "pw-of-ab-sudo", None)

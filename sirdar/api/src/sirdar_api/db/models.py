@@ -1,4 +1,4 @@
-"""Sirdar's own tables (migration 0001). `users` mirrors the portal's
+"""Sirdar's own tables (migrations 0001–0004). `users` mirrors the portal's
 user_accounts + people for the people it copies; Sirdar-only data
 (overrides, sessions, audit, lockout counters) never comes from the portal."""
 
@@ -177,3 +177,92 @@ class SshKnownHost(Base):
     public_key: Mapped[str]
     trusted_by: Mapped[uuid.UUID | None]
     trusted_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class Environment(Base):
+    """One ServerSherpa environment on a target (migration 0004)."""
+
+    __tablename__ = "environments"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    name: Mapped[str] = mapped_column(unique=True)
+    type: Mapped[str]                              # dev | beta | custom
+    target_id: Mapped[str]                         # "ssh" | "ssh:<slug>"
+    base_domain: Mapped[str]
+    git_ref: Mapped[str] = mapped_column(server_default=text("'main'"))
+    current_sha: Mapped[str | None]
+    image_tag: Mapped[str | None]
+    status: Mapped[str] = mapped_column(server_default=text("'new'"))
+    proxy_ip: Mapped[str]
+    bind_ip: Mapped[str] = mapped_column(server_default=text("'0.0.0.0'"))
+    keep_dumps: Mapped[int] = mapped_column(Integer, server_default=text("5"))
+    spaces_bucket: Mapped[str] = mapped_column(server_default=text("'serversherpa'"))
+    log_level: Mapped[str] = mapped_column(server_default=text("'INFO'"))
+    created_by: Mapped[uuid.UUID | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class EnvironmentService(Base):
+    __tablename__ = "environment_services"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    environment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("environments.id", ondelete="CASCADE"))
+    service: Mapped[str]
+    host_ip: Mapped[str]
+    port: Mapped[int] = mapped_column(Integer)
+    hostname: Mapped[str | None]
+    proxied: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+
+
+class EnvironmentSecret(Base):
+    __tablename__ = "environment_secrets"
+
+    environment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("environments.id", ondelete="CASCADE"), primary_key=True)
+    key: Mapped[str] = mapped_column(primary_key=True)
+    value_enc: Mapped[bytes] = mapped_column(BYTEA)
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class Deployment(Base):
+    __tablename__ = "deployments"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    environment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("environments.id", ondelete="CASCADE"))
+    mode: Mapped[str]                              # update | reset | adopt
+    git_ref: Mapped[str]
+    sha: Mapped[str]
+    status: Mapped[str]
+    start_step: Mapped[int] = mapped_column(Integer, server_default=text("1"))
+    retry_of: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("deployments.id", ondelete="SET NULL"))
+    failed_step: Mapped[int | None] = mapped_column(Integer)
+    dump_path: Mapped[str | None]
+    previous_sha: Mapped[str | None]
+    error: Mapped[str | None]
+    actor_id: Mapped[uuid.UUID | None]
+    started_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    finished_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("clock_timestamp()"))
+
+
+class DeploymentStep(Base):
+    __tablename__ = "deployment_steps"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    deployment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("deployments.id", ondelete="CASCADE"))
+    number: Mapped[int] = mapped_column(Integer)
+    key: Mapped[str]
+    name: Mapped[str]
+    status: Mapped[str] = mapped_column(server_default=text("'pending'"))
+    started_at: Mapped[datetime | None]
+    finished_at: Mapped[datetime | None]
+    log: Mapped[str] = mapped_column(server_default=text("''"))

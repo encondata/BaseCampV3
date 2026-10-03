@@ -36,6 +36,7 @@ class FakeSshServer:
     overrides: dict = field(default_factory=dict)
     commands: list = field(default_factory=list)
     delays: dict = field(default_factory=dict)   # command -> seconds to sleep first
+    exits: dict = field(default_factory=dict)    # command -> exit status for an override
 
     @property
     def fingerprint(self) -> str:
@@ -44,7 +45,7 @@ class FakeSshServer:
     def answer(self, command: str) -> tuple[str, str, int]:
         self.commands.append(command)
         if command in self.overrides:
-            return self.overrides[command], "", 0
+            return self.overrides[command], "", self.exits.get(command, 0)
         if command.startswith("docker") and not self.docker:
             return "", "bash: line 1: docker: command not found\n", 127
         if command in OUTPUTS:
@@ -110,8 +111,8 @@ async def ssh_server(tmp_path):
 def ssh_settings(fake: FakeSshServer, **over):
     """Settings pointing at the fake server; password auth unless overridden."""
     from .test_scaffold import _settings
-    kw = dict(deploy_ssh_host=fake.host, deploy_ssh_port=fake.port, deploy_ssh_user=SSH_USER,
-              deploy_ssh_password=SSH_PASSWORD, deploy_keys_dir=str(fake.keys_dir))
+    kw = {"deploy_ssh_host": fake.host, "deploy_ssh_port": fake.port, "deploy_ssh_user": SSH_USER,
+              "deploy_ssh_password": SSH_PASSWORD, "deploy_keys_dir": str(fake.keys_dir)}
     kw.update(over)
     return _settings(**kw)
 

@@ -3,17 +3,34 @@ Responses never carry secrets; error reasons are our own copy."""
 
 import asyncio
 import os
+import uuid
 from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from sirdar_api.api.deps import AuthContext, DbSession, client_ip, require_permission
 from sirdar_api.config import get_settings
-from sirdar_api.db.models import SshKnownHost
-from sirdar_api.deploy import ConnectFailed, digitalocean, known_hosts, names, ssh, targets
+from sirdar_api.db.models import Deployment, DeploymentStep, Environment, SshKnownHost
+from sirdar_api.deploy import (
+    ConnectFailed,
+    digitalocean,
+    environments,
+    gitref,
+    known_hosts,
+    names,
+    pipeline,
+    serialize,
+    ssh,
+    targets,
+    vault,
+)
+from sirdar_api.deploy.ssh import SshTargetConfig
 from sirdar_api.deploy.ssh_targets import SavedSshTarget, TargetError
+from sirdar_api.deploy.steps import plan_for
 from sirdar_api.services.audit import audit
 
 router = APIRouter(prefix="/deploy", tags=["deploy"])
@@ -50,6 +67,7 @@ class SshTargetIn(BaseModel):
     password: str | None = None
     key_path: str | None = Field(default=None, max_length=255)
     key_passphrase: str | None = None
+    sudo_password: str | None = None
 
 
 class SshTargetPatch(BaseModel):
@@ -60,6 +78,7 @@ class SshTargetPatch(BaseModel):
     password: str | None = None
     key_path: str | None = Field(default=None, max_length=255)
     key_passphrase: str | None = None
+    sudo_password: str | None = None
 
 
 class KnownHostOut(BaseModel):
@@ -100,7 +119,8 @@ def _audit_fields(t: SavedSshTarget) -> dict:
     """Non-secret fields only."""
     return {"name": t.name, "host": t.host, "port": t.port, "user": t.user,
             "key_path": t.key_path or None, "password_set": t.password is not None,
-            "passphrase_set": t.passphrase is not None}
+            "passphrase_set": t.passphrase is not None,
+            "sudo_password_set": t.sudo_password is not None}
 
 
 async def _store_call(fn, *args):
@@ -137,7 +157,8 @@ async def add_ssh_target(body: SshTargetIn, request: Request, db: DbSession,
     return t.public()
 
 
-_PATCH_ORDER = ("name", "host", "port", "user", "password", "key_path", "key_passphrase")
+_PATCH_ORDER = ("name", "host", "port", "user", "password", "key_path", "key_passphrase",
+                "sudo_password")
 
 
 @router.put("/ssh-targets/{slug}")
@@ -151,7 +172,8 @@ async def update_ssh_target(slug: str, body: SshTargetPatch, request: Request, d
                "port": (old.port, new.port), "user": (old.user, new.user),
                "password": (old.password, new.password),
                "key_path": (old.key_path, new.key_path),
-               "key_passphrase": (old.passphrase, new.passphrase)}
+               "key_passphrase": (old.passphrase, new.passphrase),
+               "sudo_password": (old.sudo_password, new.sudo_password)}
     changed = [f for f in _PATCH_ORDER if current[f][0] != current[f][1]]
     audit(db, actor_id=actor.user.person_id, action="deploy.target_update",
           entity_type="deploy_target", entity_id=t.id, ip=client_ip(request),
@@ -304,3 +326,334 @@ async def forget_host(request: Request, db: DbSession,
         raise HTTPException(status_code=404, detail={"code": "not_found"})
     await db.commit()
     return Response(status_code=204)
+
+
+# ---- environments (deploy pipeline) -------------------------------------------
+
+SSH_TARGET_PATTERN = r"^(ssh|ssh:[a-z0-9]+(-[a-z0-9]+)*)$"
+EnvType = Literal["dev", "beta", "custom"]
+_SSH_ERRORS = (ssh.HostKeyUnknown, ssh.HostKeyMismatch, ConnectFailed)
+_ENV_STATUS = {"environment_exists": 409, "deploy_in_progress": 409,
+               "secrets_key_missing": 400, "target_not_configured": 400}
+_NAME_CONSTRAINT = "environments_name_key"
+
+
+class EnvironmentIn(BaseModel):
+    mode: Literal["new", "adopt"]
+    name: str = Field(max_length=64)
+    type: EnvType
+    target: str = Field(pattern=SSH_TARGET_PATTERN, max_length=36)
+    git_ref: str = Field(default="main", max_length=200)
+    # mode "new" only; adopt reads these from the target's .env
+    base_domain: str | None = Field(default=None, max_length=253)
+    proxy_ip: str | None = Field(default=None, max_length=45)
+    bind_ip: str = Field(default="0.0.0.0", max_length=45)
+    ports: dict[str, int] = Field(default_factory=dict)
+
+
+class ServicePatch(BaseModel):
+    port: int | None = None
+    host_ip: str | None = Field(default=None, max_length=45)
+    proxied: bool | None = None
+
+
+class EnvironmentPatch(BaseModel):
+    git_ref: str | None = Field(default=None, max_length=200)
+    target: str | None = Field(default=None, pattern=SSH_TARGET_PATTERN, max_length=36)
+    base_domain: str | None = Field(default=None, max_length=253)
+    proxy_ip: str | None = Field(default=None, max_length=45)
+    bind_ip: str | None = Field(default=None, max_length=45)
+    keep_dumps: int | None = None
+    spaces_bucket: str | None = Field(default=None, max_length=63)
+    log_level: str | None = Field(default=None, max_length=10)
+    services: dict[str, ServicePatch] | None = None
+    # Write-only. No pydantic constraint on the values, so no validation error
+    # can describe one; the service answers secret_invalid / secret_not_editable.
+    secrets: dict[str, str] | None = None
+
+
+def _env_http(e: environments.EnvError) -> HTTPException:
+    return HTTPException(status_code=_ENV_STATUS.get(e.code, 422),
+                         detail={"code": e.code, **e.extra})
+
+
+def _ssh_http(e: Exception) -> HTTPException:
+    """Host-key and connection failures, in /connect's shapes."""
+    if isinstance(e, ssh.HostKeyUnknown):
+        return HTTPException(status_code=409, detail={
+            "code": "host_key_unknown", "host": e.host, "port": e.port,
+            "key_type": e.key_type, "fingerprint": e.fingerprint})
+    if isinstance(e, ssh.HostKeyMismatch):
+        return HTTPException(status_code=409, detail={
+            "code": "host_key_mismatch", "host": e.host, "port": e.port,
+            "key_type": e.key_type, "expected": e.expected, "actual": e.actual})
+    return HTTPException(status_code=502, detail={"code": "connect_failed", "reason": e.reason})
+
+
+async def _environment(db, name: str) -> Environment:
+    env = await environments.get_by_name(db, name)
+    if env is None:
+        raise HTTPException(status_code=404, detail={"code": "environment_not_found"})
+    return env
+
+
+@router.get("/environments")
+async def list_environments(db: DbSession,
+                            actor: AuthContext = require_permission("deploy", "view")):
+    return {"environments": [await serialize.environment_out(db, env)
+                             for env in await environments.list_all(db)]}
+
+
+@router.get("/environments/{name}")
+async def get_environment(name: str, db: DbSession,
+                          actor: AuthContext = require_permission("deploy", "view")):
+    return await serialize.environment_out(db, await _environment(db, name))
+
+
+@router.post("/environments", status_code=201)
+async def create_environment(body: EnvironmentIn, request: Request, db: DbSession,
+                             actor: AuthContext = require_permission("deploy", "add")):
+    settings = get_settings()
+    actor_id = actor.user.person_id
+    report = None
+    try:
+        if body.mode == "new":
+            env = await environments.create_new(
+                db, settings, name=body.name, type_=body.type, target_id=body.target,
+                git_ref=body.git_ref, base_domain=body.base_domain, proxy_ip=body.proxy_ip,
+                bind_ip=body.bind_ip, ports=body.ports, actor_id=actor_id)
+        else:
+            env, _, report = await environments.adopt(
+                db, settings, name=body.name, type_=body.type, target_id=body.target,
+                git_ref=body.git_ref, actor_id=actor_id)
+    except environments.EnvError as e:
+        await db.rollback()
+        raise _env_http(e) from None
+    except _SSH_ERRORS as e:
+        await db.rollback()
+        raise _ssh_http(e) from None
+    except IntegrityError as e:
+        # Two requests for one name both passed the exists check; the unique
+        # constraint settled it.
+        await db.rollback()
+        if _NAME_CONSTRAINT in str(e.orig):
+            raise HTTPException(status_code=409,
+                                detail={"code": "environment_exists"}) from None
+        raise
+    if report is None:
+        audit(db, actor_id=actor_id, action="deploy.environment_create",
+              entity_type="environment", entity_id=env.name, ip=client_ip(request),
+              changes={"name": env.name, "type": env.type, "target": env.target_id,
+                       "base_domain": env.base_domain, "git_ref": env.git_ref,
+                       "proxy_ip": env.proxy_ip, "bind_ip": env.bind_ip})
+    else:
+        audit(db, actor_id=actor_id, action="deploy.environment_adopt",
+              entity_type="environment", entity_id=env.name, ip=client_ip(request),
+              changes={"name": env.name, "type": env.type, "target": env.target_id,
+                       "sha": report.sha, "image_tag": env.image_tag,
+                       "imported_secrets": report.imported_secrets,
+                       "ignored_keys": report.ignored_keys})
+    await db.commit()
+    await db.refresh(env)
+    out = await serialize.environment_out(db, env)
+    if report is not None:
+        out["ignored_keys"] = report.ignored_keys
+    return out
+
+
+@router.patch("/environments/{name}")
+async def update_environment(name: str, body: EnvironmentPatch, request: Request,
+                             db: DbSession,
+                             actor: AuthContext = require_permission("deploy", "change")):
+    env = await _environment(db, name)
+    try:
+        changed = await environments.update(db, get_settings(), env,
+                                            body.model_dump(exclude_unset=True))
+    except environments.EnvError as e:
+        # update() edits the rows before every check has run: undo the lot.
+        await db.rollback()
+        raise _env_http(e) from None
+    if changed:
+        audit(db, actor_id=actor.user.person_id, action="deploy.environment_update",
+              entity_type="environment", entity_id=env.name, ip=client_ip(request),
+              changes={"changed": changed})
+        await db.commit()
+        await db.refresh(env)
+    return await serialize.environment_out(db, env)
+
+
+# ---- deployments (deploy pipeline) ---------------------------------------------
+
+_REF_STATUS = {"ref_invalid": 422, "ref_not_found": 422, "git_missing": 502,
+               "ref_lookup_failed": 502}
+_REF_REASON = {
+    "git_missing": "git isn't installed on the target. Install it "
+                   "(sudo apt-get install git) and try again.",
+    "ref_lookup_failed": "The target couldn't list the repository's branches and tags.",
+}
+
+
+class DeploymentIn(BaseModel):
+    mode: Literal["update", "reset"] = "update"
+    git_ref: str | None = Field(default=None, max_length=200)
+    # Reset only: must equal the environment's name exactly.
+    confirm_name: str | None = Field(default=None, max_length=64)
+
+
+class RetryIn(BaseModel):
+    from_step: int | None = Field(default=None, ge=1, le=99)
+    confirm_name: str | None = Field(default=None, max_length=64)
+
+
+def _forbidden() -> HTTPException:
+    return HTTPException(status_code=403, detail={"code": "forbidden"})
+
+
+def _require_mode(actor: AuthContext, mode: str) -> None:
+    """Update needs deploy:add (the route's guard); Reset also needs change."""
+    if mode == "reset" and not actor.access.can("deploy", "change"):
+        raise _forbidden()
+
+
+def _deploy_target(env: Environment) -> SshTargetConfig:
+    settings = get_settings()
+    if not vault.is_configured(settings):
+        raise HTTPException(status_code=400, detail={"code": "secrets_key_missing"})
+    cfg = targets.ssh_config_for(env.target_id, settings)
+    if cfg is None:
+        raise HTTPException(status_code=400, detail={"code": "target_not_configured"})
+    return cfg
+
+
+async def _deployment(db, deployment_id: uuid.UUID) -> Deployment:
+    dep = await db.get(Deployment, deployment_id)
+    if dep is None:
+        raise HTTPException(status_code=404, detail={"code": "deployment_not_found"})
+    return dep
+
+
+async def _stopped_step(db, deployment_id: uuid.UUID) -> int | None:
+    """Where a deployment stopped: its failed, cancelled or interrupted step, else
+    (cancelled or interrupted before any step ran) its first step that didn't run.
+    Cancelled and interrupted deployments carry no failed_step, so the step rows
+    are the record."""
+    rows = list(await db.execute(
+        select(DeploymentStep.number, DeploymentStep.status)
+        .where(DeploymentStep.deployment_id == deployment_id)
+        .order_by(DeploymentStep.number)))
+    for number, status in rows:
+        if status in pipeline.RETRYABLE_STATUSES:
+            return number
+    return next((number for number, status in rows if status == "not_run"), None)
+
+
+async def _launch(db, env: Environment, request: Request, actor: AuthContext, *, action: str,
+                  mode: str, git_ref: str, sha: str, start_step: int = 1,
+                  retry_of: uuid.UUID | None = None) -> dict:
+    env_name = env.name           # read now: a lock conflict rolls the session back
+    try:
+        dep = await pipeline.create_deployment(db, env, mode=mode, git_ref=git_ref, sha=sha,
+                                               actor_id=actor.user.person_id,
+                                               start_step=start_step, retry_of=retry_of)
+    except pipeline.DeployInProgress:
+        raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"}) from None
+    except ValueError:            # start_step isn't a step of this mode's plan
+        raise HTTPException(status_code=422, detail={"code": "invalid_start_step"}) from None
+    changes: dict = {"environment": env_name, "mode": mode, "git_ref": git_ref, "sha": sha}
+    if retry_of is not None:
+        changes |= {"retry_of": str(retry_of), "from_step": start_step}
+    audit(db, actor_id=actor.user.person_id, action=action, entity_type="deployment",
+          entity_id=str(dep.id), ip=client_ip(request), changes=changes)
+    await db.commit()
+    pipeline.launch(dep.id)
+    return await serialize.deployment_out(db, dep, environment_name=env_name)
+
+
+@router.post("/environments/{name}/deployments", status_code=201)
+async def start_deployment(name: str, body: DeploymentIn, request: Request, db: DbSession,
+                           actor: AuthContext = require_permission("deploy", "add")):
+    _require_mode(actor, body.mode)
+    env = await _environment(db, name)
+    if body.mode == "reset" and body.confirm_name != env.name:
+        raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
+    if await environments.is_deploying(db, env.id):
+        raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"})
+    cfg = _deploy_target(env)
+    ref = body.git_ref or env.git_ref
+    try:
+        sha = await gitref.resolve_ref(cfg, db, get_settings().deploy_repo_url, ref)
+    except gitref.RefError as e:
+        detail: dict = {"code": e.code}
+        if e.code in _REF_REASON:
+            detail["reason"] = _REF_REASON[e.code]
+        raise HTTPException(status_code=_REF_STATUS[e.code], detail=detail) from None
+    except _SSH_ERRORS as e:
+        raise _ssh_http(e) from None
+    return await _launch(db, env, request, actor, action="deploy.deployment_start",
+                         mode=body.mode, git_ref=ref, sha=sha)
+
+
+@router.get("/environments/{name}/deployments")
+async def list_deployments(name: str, db: DbSession,
+                           limit: int = Query(default=20, ge=1, le=100),
+                           actor: AuthContext = require_permission("deploy", "view")):
+    env = await _environment(db, name)
+    rows = await serialize.recent_deployments(db, env.id, limit)
+    return {"deployments": [await serialize.deployment_summary(db, d) for d in rows]}
+
+
+@router.get("/deployments/{deployment_id}")
+async def get_deployment(deployment_id: uuid.UUID, db: DbSession,
+                         tail: int = Query(default=serialize.LOG_TAIL_DEFAULT, ge=0,
+                                           le=pipeline.LOG_LIMIT),
+                         actor: AuthContext = require_permission("deploy", "view")):
+    dep = await _deployment(db, deployment_id)
+    env = await db.get(Environment, dep.environment_id)
+    return await serialize.deployment_out(db, dep, environment_name=env.name, tail=tail)
+
+
+@router.post("/deployments/{deployment_id}/cancel", status_code=202)
+async def cancel_deployment(deployment_id: uuid.UUID, request: Request, db: DbSession,
+                            actor: AuthContext = require_permission("deploy", "change")):
+    dep = await _deployment(db, deployment_id)
+    if dep.status != "running":
+        raise HTTPException(status_code=409, detail={"code": "not_running"})
+    env = await db.get(Environment, dep.environment_id)
+    audit(db, actor_id=actor.user.person_id, action="deploy.deployment_cancel",
+          entity_type="deployment", entity_id=str(dep.id), ip=client_ip(request),
+          changes={"environment": env.name, "mode": dep.mode, "sha": dep.sha})
+    await db.commit()
+    if pipeline.request_cancel(dep.id):
+        return {"id": str(dep.id), "status": "cancelling"}
+    await pipeline.close_orphan(dep.id)        # running record, no task in this process
+    return {"id": str(dep.id), "status": "cancelled"}
+
+
+@router.post("/deployments/{deployment_id}/retry", status_code=201)
+async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Request,
+                           db: DbSession,
+                           actor: AuthContext = require_permission("deploy", "add")):
+    dep = await _deployment(db, deployment_id)
+    _require_mode(actor, dep.mode)
+    if dep.status not in pipeline.RETRYABLE_STATUSES or dep.mode not in ("update", "reset"):
+        raise HTTPException(status_code=409, detail={"code": "not_retryable"})
+    env = await db.get(Environment, dep.environment_id)
+    if dep.mode == "reset" and body.confirm_name != env.name:
+        raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
+    latest = await serialize.latest_deployment(db, env.id)
+    if latest is None or latest.id != dep.id:
+        raise HTTPException(status_code=409, detail={"code": "retry_not_latest"})
+    stopped = await _stopped_step(db, dep.id)
+    if stopped is None:
+        raise HTTPException(status_code=409, detail={"code": "not_retryable"})
+    from_step = body.from_step or stopped
+    if from_step not in [s.number for s in plan_for(dep.mode)] or from_step > stopped:
+        raise HTTPException(status_code=422, detail={"code": "from_step_invalid"})
+    cfg = _deploy_target(env)
+    try:
+        await ssh.pinned_host_key(db, cfg.host, cfg.port)
+    except _SSH_ERRORS as e:
+        raise _ssh_http(e) from None
+    return await _launch(db, env, request, actor, action="deploy.deployment_retry",
+                         mode=dep.mode, git_ref=dep.git_ref, sha=dep.sha,
+                         start_step=from_step, retry_of=dep.id)

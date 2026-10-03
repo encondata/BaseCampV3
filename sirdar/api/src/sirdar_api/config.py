@@ -8,6 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+from cryptography.fernet import Fernet
 from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -15,6 +16,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 _SIRDAR_ROOT = Path(__file__).resolve().parents[3]
 
 _ORIGIN_RE = re.compile(r"https?://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?")
+_REPO_URL_RE = re.compile(r"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9._~/-]+")
 
 
 class Settings(BaseSettings):
@@ -23,6 +25,7 @@ class Settings(BaseSettings):
         env_file=_SIRDAR_ROOT / ".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        hide_input_in_errors=True,
         frozen=True,
     )
 
@@ -72,9 +75,18 @@ class Settings(BaseSettings):
     deploy_keys_dir: str = "/app/deploy-keys"
     # Saved Custom (SSH) targets; written by the app (see deploy/ssh_targets.py).
     deploy_targets_file: str = "/app/config/deploy-targets.env"
+    # Deploy pipeline (phase 2). Fernet key that encrypts every environment's
+    # secrets in Sirdar's database; creating, adopting and deploying need it.
+    secrets_key: SecretStr | None = None
+    # Per-run Ansible working folders (one private folder per step run,
+    # deleted when the run ends).
+    runner_dir: str = "/app/runner"
+    # What targets clone and fetch ServerSherpa from.
+    deploy_repo_url: str = "https://github.com/encondata/BaseCampV3.git"
 
     @field_validator("deploy_do_token", "deploy_aws_secret_access_key",
-                     "deploy_ssh_password", "deploy_ssh_key_passphrase", mode="before")
+                     "deploy_ssh_password", "deploy_ssh_key_passphrase", "secrets_key",
+                     mode="before")
     @classmethod
     def _blank_secret_is_none(cls, v):
         return None if isinstance(v, str) and v == "" else v
@@ -114,6 +126,25 @@ class Settings(BaseSettings):
                     "https://host[:port] (http or https, no path)")
             out.append(o)
         return ",".join(out)
+
+    @field_validator("secrets_key")
+    @classmethod
+    def _secrets_key_is_fernet(cls, v: SecretStr | None) -> SecretStr | None:
+        if v is None:
+            return v
+        try:
+            Fernet(v.get_secret_value().encode())
+        except (ValueError, TypeError):
+            raise ValueError("SIRDAR_SECRETS_KEY must be a Fernet key "
+                             "(44 characters of URL-safe base64)") from None
+        return v
+
+    @field_validator("deploy_repo_url")
+    @classmethod
+    def _repo_url_valid(cls, v: str) -> str:
+        if not _REPO_URL_RE.fullmatch(v):
+            raise ValueError("SIRDAR_DEPLOY_REPO_URL must be an https:// git URL")
+        return v
 
     @property
     def allowed_origin_list(self) -> list[str]:
