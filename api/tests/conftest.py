@@ -97,6 +97,10 @@ def _prepare_environment() -> None:
 
     os.environ["SS_TOTP_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
     os.environ.setdefault("SS_TOTP_TRUST_DAYS", "7")
+    # Tests never send real mail: email is "not configured" unless a test
+    # opts in with the `email_on` fixture (which still uses a fake sender).
+    os.environ["SS_SMTP_HOST"] = ""
+    os.environ["SS_SMTP_FROM"] = ""
     get_settings.cache_clear()
 
     subprocess.run(
@@ -132,7 +136,7 @@ async def clean_db():
                 f"refusing to TRUNCATE: connected to {connected_db!r}, "
                 "not a serversherpa_test* database")
         await session.execute(text(
-            "TRUNCATE auth_sessions, person_roles, user_accounts, clients, "
+            "TRUNCATE auth_sessions, email_outbox, password_reset_tokens, person_roles, user_accounts, clients, "
             "partners, people, access_groups, access_group_members, "
             "resource_group_gates, permission_overrides, audit_log, "
             "notification_groups, notification_group_members, "
@@ -457,3 +461,16 @@ async def seeded_user(db):
     db.add(PersonRole(person_id=person.id, role="staff"))
     await db.commit()
     return person
+
+
+@pytest.fixture
+def email_on(monkeypatch):
+    """Email 'configured' for one test. Nothing reaches a real server:
+    delivery tests pass a fake `send` to deliver_once."""
+    from serversherpa.config import get_settings
+
+    monkeypatch.setenv("SS_SMTP_HOST", "smtp.test.invalid")
+    monkeypatch.setenv("SS_SMTP_FROM", "noreply@test.example.com")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()

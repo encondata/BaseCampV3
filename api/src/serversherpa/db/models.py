@@ -106,6 +106,49 @@ class PasswordHistory(Base):
         TIMESTAMP(timezone=True), server_default=text("now()"))
 
 
+class PasswordResetToken(Base):
+    """A self-service reset link. Only the SHA-256 of the raw token is
+    stored; the raw token lives only in the email. Single use: used_at is
+    stamped on success, and on every older unused token when a newer link
+    is requested (services/password_reset.py)."""
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    person_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("user_accounts.person_id", ondelete="CASCADE"))
+    token_hash: Mapped[str] = mapped_column(unique=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    expires_at: Mapped[datetime]
+    used_at: Mapped[datetime | None]
+    requested_ip: Mapped[str | None]
+
+
+class EmailOutbox(Base):
+    """One outbound email, fully rendered at enqueue time (mail/outbox.py)
+    and delivered by notification-worker (mail/delivery.py). status:
+    queued → sending → sent | failed | skipped (no SMTP configured)."""
+    __tablename__ = "email_outbox"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    template: Mapped[str]
+    to_address: Mapped[str] = mapped_column(CITEXT)
+    person_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("people.id", ondelete="SET NULL"))
+    subject: Mapped[str]
+    html_body: Mapped[str]
+    text_body: Mapped[str]
+    status: Mapped[str] = mapped_column(server_default="queued")
+    attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    next_attempt_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    last_error: Mapped[str | None]
+    worker_id: Mapped[str | None]
+    heartbeat_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    sent_at: Mapped[datetime | None]
+
+
 class OrgColumns:
     """Shared shape for stakeholder organizations (clients, partners)."""
 
