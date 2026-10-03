@@ -10,7 +10,7 @@ targets / dashboard work already merged to main.
 From Sirdar, pick a target (a Custom SSH Ubuntu host, or a Proxmox node that
 Sirdar creates an Ubuntu VM on — both on the same LAN as
 Nginx Proxy Manager), and deploy a complete ServerSherpa environment to it: API
-and every worker, portal, kiosk web, wiki, MinIO "spaces", Postgres, mailpit and
+and every worker, portal, kiosk web, wiki, SeaweedFS "spaces", Postgres, mailpit and
 status. Seed it from a chosen data snapshot, publish it at
 `<service>.<env>.serversherpa.com` through Cloudflare DNS and the local NPM, and
 keep it updatable, resettable and roll-back-able from Sirdar.
@@ -90,7 +90,13 @@ so one host can hold several environments.
 1. **db** — Postgres 16 (matches the dev stack, so dev snapshots restore), named
    volume. Dumps stream out through `docker compose exec` into the env's
    `backups/` directory on the host.
-2. **storage** — MinIO, one-shot `minio-init` (creates buckets), mailpit.
+2. **storage** — SeaweedFS (`weed mini`, S3 gateway; creates the bucket itself
+   via `-bucket=`; fixed keys from `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`),
+   mailpit. Images pinned (`chrislusf/seaweedfs:4.48`, `axllent/mailpit:v1.31.4`).
+   MinIO was dropped on 2026-10-03: its community images are no longer
+   published (Docker Hub and quay.io both refuse pulls). Testing environments
+   never use paid storage; prod keeps DigitalOcean Spaces through the same
+   `SS_SPACES_*` settings, and AWS S3 later the same way.
 3. **api** — `api` (uvicorn) plus one container per worker, same image,
    different `command:`: import, log, notification, scan-match, report, label,
    spec-lookup, db-testing, wiki, wiki-export. One-shot `migrate` (Alembic to
@@ -108,11 +114,12 @@ Loki/Grafana are not included.
 | portal | 8091 |
 | kiosk | 8090 |
 | wiki | 8096 |
-| spaces (MinIO S3) | 9000 |
+| spaces (SeaweedFS S3) | 9000 |
 | status | 8095 |
 | mailpit UI | 8025 |
 
-Published on the target's LAN IP. Postgres and the MinIO console are internal
+Published on the target's LAN IP. Postgres and SeaweedFS's master, filer and
+admin ports are internal
 only (Postgres may be bound to 127.0.0.1 for debugging).
 
 ### Rules
@@ -192,7 +199,7 @@ Step 2 installs Sirdar's own key and later connections use it.
 
 ### Secrets
 
-- Per-environment secrets (JWT, Postgres, MinIO) are generated on first deploy
+- Per-environment secrets (JWT, Postgres, Spaces key) are generated on first deploy
   and stored encrypted (Fernet, new `SIRDAR_SECRETS_KEY`). Written to the
   target `.env` with mode 600; never shown after creation.
 - Integration credentials — Cloudflare token (DNS edit on `serversherpa.com`),
@@ -207,7 +214,8 @@ Step 2 installs Sirdar's own key and later connections use it.
 ### Snapshots
 
 Bundle = `.tar.zst` containing a `pg_dump` (custom format), one archive per
-MinIO bucket, `manifest.json` (Alembic revision, buckets, checksums) and
+Spaces bucket (copied over the plain S3 API, so the same bundle seeds
+SeaweedFS, DigitalOcean Spaces or AWS S3), `manifest.json` (Alembic revision, buckets, checksums) and
 `keys.enc` (`SS_PASSWORD_PEPPER` + `SS_TOTP_ENCRYPTION_KEY`, encrypted with
 `SIRDAR_SECRETS_KEY`). Stored on a Sirdar volume, `sirdar/snapshots/`.
 
@@ -354,3 +362,5 @@ Each phase gets its own plan and merge.
   data model allows per-service hosts; the pipeline targets one host for now).
 - Data scrubbing for snapshots.
 - Fixing the public one-liner installers for a private repo (noted follow-up).
+- Moving the Mac dev stack (`docker-compose.dev.yml`) from its cached MinIO to
+  SeaweedFS — needs its existing objects copied first (follow-up).
