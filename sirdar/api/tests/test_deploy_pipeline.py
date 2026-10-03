@@ -94,7 +94,9 @@ async def test_requests_carry_the_pinned_target_and_step_vars(db, env, fake_runn
     for request in fake_runner.requests:
         assert request.playbook == STEPS_BY_KEY[request.step].playbook
         assert request.timeout == STEPS_BY_KEY[request.step].timeout
-        if request.step == "render":
+        if request.step == "dump":
+            assert request.extravars == {**common, "dump_required": True}
+        elif request.step == "render":
             assert set(request.extravars) == {*common, "env_file_b64"}
             values = envfile.parse_env(
                 base64.b64decode(request.extravars["env_file_b64"]).decode())
@@ -103,6 +105,21 @@ async def test_requests_carry_the_pinned_target_and_step_vars(db, env, fake_runn
             assert values["STACK_PROXY_IP"] == "10.0.0.2"
         else:
             assert request.extravars == common
+
+
+@pytest.mark.parametrize("current_sha, required", [(None, False), (OLD, True)])
+async def test_dump_is_required_once_the_environment_has_deployed(
+        db, deploy_env, ssh_server, secrets_key, fake_runner, current_sha, required):
+    """A first deploy has no database to back up; an established environment
+    must not migrate without a pre-deploy dump."""
+    _ssh_env(deploy_env, ssh_server)
+    await trust_fake(db, ssh_server)
+    env = await make_environment(db, current_sha=current_sha)
+    await _start(db, env)
+    dump = next(r for r in fake_runner.requests if r.step == "dump")
+    assert dump.extravars["dump_required"] is required
+    others = [r for r in fake_runner.requests if r.step != "dump"]
+    assert others and all("dump_required" not in r.extravars for r in others)
 
 
 async def test_reset_plan(db, env, fake_runner):
@@ -123,6 +140,15 @@ async def test_first_failure_stops_the_deployment(db, env, fake_runner):
     assert (dep.status, dep.failed_step) == ("failed", 5)
     assert dep.error == "Step 5 (Build images) failed. See its log."
     assert (e.status, e.current_sha) == ("failed", OLD)
+
+
+async def test_a_failed_first_step_gets_its_own_message(db, env, fake_runner):
+    """Step 1 runs inside _prepare's transaction: the failure message is built
+    before the rollback expires the step row."""
+    fake_runner.results["preflight"] = RunResult(status="failed", rc=2)
+    dep, steps, _ = await _load(await _start(db, env))
+    assert (steps[0].status, dep.failed_step) == ("failed", 1)
+    assert dep.error == "Step 1 (Preflight) failed. See its log."
 
 
 async def test_timeout_message(db, env, fake_runner):
@@ -339,6 +365,18 @@ async def test_runner_crash_is_a_failed_step_with_our_copy(db, env, fake_runner)
     assert d.error == "Step 3 (Fetch code) failed. See its log."
 
 
+async def test_unwritable_runner_dir_gets_actionable_copy(db, env, fake_runner):
+    from sirdar_api.deploy.runner import RunnerDirUnwritable
+
+    fake_runner.raises["preflight"] = RunnerDirUnwritable()
+    d, steps, _ = await _load(await _start(db, env))
+    assert steps[0].status == "failed"
+    assert steps[0].log == (
+        "Sirdar can't write its runner folder (SIRDAR_RUNNER_DIR). It must be owned by "
+        "uid 10001 with mode 700.\n")
+    assert d.error == "Step 1 (Preflight) failed. See its log."
+
+
 async def test_app_lifespan_recovers_then_shuts_down(monkeypatch):
     calls: list[str] = []
 
@@ -384,9 +422,35 @@ async def test_app_lifespan_starts_when_recovery_and_sweep_fail(monkeypatch):
     assert calls == ["serving", "shutdown"]
 
 
+async def test_startup_sweep_removes_every_run_folder(monkeypatch, tmp_path):
+    """At startup no run is live (recover_orphans just closed them), so even a
+    fresh run folder, with its secrets, goes: no 2-hour wait after a crash."""
+    from sirdar_api.deploy.runner import AnsibleRunner
+
+    root = tmp_path / "runner"
+    fresh, other = root / "run-fresh", root / "keep-me"
+    for d in (fresh, other):
+        d.mkdir(parents=True)
+    (fresh / "id_key").write_text("secret")
+
+    async def recover():
+        return 0
+
+    async def shutdown(timeout=10.0):
+        return None
+
+    monkeypatch.setattr(pipeline, "recover_orphans", recover)
+    monkeypatch.setattr(pipeline, "shutdown", shutdown)
+    monkeypatch.setattr(pipeline, "make_runner", lambda settings: AnsibleRunner(str(root)))
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        assert not fresh.exists()
+        assert other.exists()
+
+
 async def test_sweep_runs_uses_the_runner(monkeypatch):
     class Sweeper:
-        def sweep_stale(self):
+        def sweep_stale(self, max_age=None):
             return 3
 
     monkeypatch.setattr(pipeline, "make_runner", lambda settings: Sweeper())

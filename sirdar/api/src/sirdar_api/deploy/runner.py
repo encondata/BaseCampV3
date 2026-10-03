@@ -40,6 +40,11 @@ _INHERITED_ENV = ("PATH", "HOME", "LANG", "TZ")
 _INHERITED_PREFIXES = ("LC_",)
 
 
+class RunnerDirUnwritable(PermissionError):
+    """SIRDAR_RUNNER_DIR (or a folder in it) can't be written or fixed up,
+    usually because it isn't owned by the container user (uid 10001)."""
+
+
 @dataclass(frozen=True)
 class RunTarget:
     host: str
@@ -91,6 +96,20 @@ def _write_private(path: Path, text: str) -> None:
         f.write(text)
 
 
+def _unsafe(value):
+    """Mark every string (at any depth) as unsafe, so ansible uses it
+    literally. ansible templates string extravars: a password holding
+    "{{ 7*7 }}" would become "49", "{%" fails the run (printing the line)
+    and a lookup would run commands in Sirdar."""
+    if isinstance(value, str):
+        return {"__ansible_unsafe": value}
+    if isinstance(value, list | tuple):
+        return [_unsafe(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _unsafe(v) for k, v in value.items()}
+    return value
+
+
 def _discard_prepared(fut: asyncio.Future) -> None:
     if fut.cancelled() or fut.exception() is not None:
         return
@@ -102,7 +121,8 @@ class AnsibleRunner:
         self.runner_dir = Path(runner_dir)
 
     def sweep_stale(self, max_age: float = STALE_RUN_SECONDS) -> int:
-        """Remove run-* folders older than max_age (left by a crash or kill)."""
+        """Remove run-* folders older than max_age (left by a crash or kill).
+        max_age 0 removes every one: only safe when no run is live (startup)."""
         removed = 0
         if not self.runner_dir.is_dir():
             return 0
@@ -110,12 +130,18 @@ class AnsibleRunner:
         for entry in self.runner_dir.glob("run-*"):
             with suppress(OSError):
                 if (entry.is_dir() and not entry.is_symlink()
-                        and entry.stat().st_mtime < cutoff):
+                        and (max_age <= 0 or entry.stat().st_mtime < cutoff)):
                     shutil.rmtree(entry, ignore_errors=True)
                     removed += 1
         return removed
 
     def prepare(self, request: RunRequest) -> Path:
+        try:
+            return self._prepare(request)
+        except PermissionError:
+            raise RunnerDirUnwritable() from None
+
+    def _prepare(self, request: RunRequest) -> Path:
         self.runner_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.runner_dir, 0o700)
         self.sweep_stale()
@@ -140,7 +166,7 @@ class AnsibleRunner:
                 extravars["ansible_password"] = t.password
             if t.become_password is not None:
                 extravars["ansible_become_password"] = t.become_password
-            _write_private(run_dir / "env" / "extravars", json.dumps(extravars))
+            _write_private(run_dir / "env" / "extravars", json.dumps(_unsafe(extravars)))
             # An empty config: nothing from /etc/ansible or the working folder applies.
             _write_private(run_dir / "ansible.cfg", "[defaults]\n")
         except BaseException:

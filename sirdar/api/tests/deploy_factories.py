@@ -12,13 +12,15 @@ from .fake_runner import FakeRunner
 from .ssh_server import SSH_PASSWORD
 
 SECRETS_KEY = Fernet.generate_key().decode()
+# Shaped like the values Sirdar generates (and uat holds): hex, plus a
+# Fernet key for TOTP. Each is distinct so leak checks can find it.
 ENV_SECRETS = {
-    "POSTGRES_PASSWORD": "pg-SECRET-0a1b2c3d4e5f",
-    "SPACES_SECRET_KEY": "spaces-SECRET-6a7b8c9d",
-    "SS_JWT_SECRET": "jwt-SECRET-0f1e2d3c4b5a",
+    "POSTGRES_PASSWORD": "a1" * 8 + "0a1b2c3d4e5f" * 4,
+    "SPACES_SECRET_KEY": "b2" * 8 + "6a7b8c9d" * 6,
+    "SS_JWT_SECRET": "c3" * 8 + "0f1e2d3c4b5a" * 4,
     "SS_TOTP_ENCRYPTION_KEY": Fernet.generate_key().decode(),
-    "SS_PASSWORD_PEPPER": "pepper-SECRET-99887766",
-    "SS_WIKI_SERVICE_TOKEN": "wiki-SECRET-55443322",
+    "SS_PASSWORD_PEPPER": "d4" * 8 + "99887766" * 6,
+    "SS_WIKI_SERVICE_TOKEN": "e5" * 8 + "55443322" * 6,
 }
 
 

@@ -66,13 +66,38 @@ def test_prepare_writes_private_files(tmp_path):
         assert (run_dir / "known_hosts").read_text() == "[10.0.0.5]:2222 ssh-ed25519 AAAAC3\n"
         assert (run_dir / "id_key").read_text() == KEY_TEXT + "\n"
         assert json.loads((run_dir / "env" / "extravars").read_text()) == {
-            "env_name": "uat", "env_file_b64": B64, "ansible_password": PW,
-            "ansible_become_password": SUDO}
+            "env_name": {"__ansible_unsafe": "uat"},
+            "env_file_b64": {"__ansible_unsafe": B64},
+            "ansible_password": {"__ansible_unsafe": PW},
+            "ansible_become_password": {"__ansible_unsafe": SUDO}}
         assert json.loads((run_dir / "inventory" / "hosts.json").read_text()) == {
             "all": {"hosts": {"target": {
                 "ansible_host": "10.0.0.5", "ansible_port": 2222, "ansible_user": "deployer",
                 "ansible_ssh_private_key_file": str(run_dir / "id_key")}}}}
         assert (run_dir / "project" / "render.yml").is_file()
+    finally:
+        shutil.rmtree(run_dir)
+
+
+def test_extravars_are_never_templated(tmp_path):
+    """ansible templates string extravars: "{{ 7*7 }}" in a password would
+    reach the target as "49", and a lookup would run a command in Sirdar.
+    Every string, at any depth, is written as an unsafe (literal) value."""
+    pw, sudo = "ab{{ 7*7 }}cd", "x{% raw %}y{{ lookup('pipe', 'id') }}"
+    runner = AnsibleRunner(str(tmp_path / "runner"))
+    run_dir = runner.prepare(_request(
+        target=_target(password=pw, become_password=sudo),
+        extravars={"env_name": "uat", "min_disk_gb": 10, "dump_required": True,
+                   "tags": ["a{{ x }}", 3], "nested": {"k": "{{ y }}", "n": None}}))
+    try:
+        assert json.loads((run_dir / "env" / "extravars").read_text()) == {
+            "env_name": {"__ansible_unsafe": "uat"},
+            "min_disk_gb": 10,
+            "dump_required": True,
+            "tags": [{"__ansible_unsafe": "a{{ x }}"}, 3],
+            "nested": {"k": {"__ansible_unsafe": "{{ y }}"}, "n": None},
+            "ansible_password": {"__ansible_unsafe": pw},
+            "ansible_become_password": {"__ansible_unsafe": sudo}}
     finally:
         shutil.rmtree(run_dir)
 
@@ -99,6 +124,16 @@ def test_failed_prepare_leaves_nothing(tmp_path, monkeypatch):
     with pytest.raises(OSError):
         AnsibleRunner(str(tmp_path / "runner")).prepare(_request())
     assert list((tmp_path / "runner").iterdir()) == []
+
+
+def test_prepare_reports_an_unwritable_runner_dir(tmp_path, monkeypatch):
+    """A runner dir Sirdar can't fix up (not owned by uid 10001) raises
+    RunnerDirUnwritable, which the pipeline turns into actionable copy."""
+    def denied(*a, **kw):
+        raise PermissionError(1, "Operation not permitted")
+    monkeypatch.setattr(runner_mod.os, "chmod", denied)
+    with pytest.raises(runner_mod.RunnerDirUnwritable):
+        AnsibleRunner(str(tmp_path / "runner")).prepare(_request())
 
 
 def test_envvars_pin_the_host_key(tmp_path):

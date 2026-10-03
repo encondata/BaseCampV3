@@ -206,6 +206,19 @@ async def test_adopt_rejects_non_ascii_digits(client, db, target, leak_guard):
             "code": "adopt_value_invalid", "key": code_key}}), key
 
 
+async def test_adopt_rejects_a_secret_that_wont_render_back(client, db, target, leak_guard):
+    await trust_fake(db, target)
+    h = await auth_headers(client, db)
+    bad = "ab$cd-SECRET-x"
+    leak_guard.append(bad)
+    serve_remote_env(target, remote_env_text(POSTGRES_PASSWORD=f'"{bad}"'))
+    resp = await client.post(URL, headers=h, json={"mode": "adopt", "name": "uat",
+                                                   "type": "dev", "target": "ssh"})
+    assert (resp.status_code, resp.json()) == (422, {"detail": {
+        "code": "adopt_value_invalid", "key": "POSTGRES_PASSWORD"}})
+    assert bad not in resp.text
+
+
 async def test_patch_error_rolls_back(client, db, target, leak_guard):
     await make_environment(db)
     h = await auth_headers(client, db)

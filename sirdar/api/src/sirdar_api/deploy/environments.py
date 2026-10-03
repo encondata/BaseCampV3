@@ -14,6 +14,7 @@ import shlex
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from cryptography.fernet import Fernet
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +32,9 @@ _TAG_RE = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 # Optional secrets set by hand (API keys, passwords): no whitespace, quotes,
 # "$" (compose interpolation), "#", backslash or backtick.
 _SECRET_VALUE_RE = re.compile(r"[A-Za-z0-9._~+/=:@%^*!?,;-]{1,1024}")
+# Adopted required secrets must have the shapes create generates.
+_HEX_RE = re.compile(r"[0-9a-fA-F]{1,1024}")
+_FERNET_KEY_RE = re.compile(r"[A-Za-z0-9_-]{43}=")
 _NO_ANSWER = "The target didn't answer in time."
 
 
@@ -260,6 +264,39 @@ def _adopted_settings(values: dict[str, str]) -> dict:
             "image_tag": tag}
 
 
+def _valid_fernet_key(value: str) -> bool:
+    if not _FERNET_KEY_RE.fullmatch(value):
+        return False
+    try:
+        Fernet(value.encode())
+    except ValueError:
+        return False
+    return True
+
+
+def _adopted_secrets(values: dict[str, str]) -> dict[str, str]:
+    """The secrets of an adopted .env, only in shapes that render back
+    unchanged: hex where create generates hex, a Fernet key for TOTP, and
+    the PATCH rule for optional secrets (an optional one left at CHANGEME is
+    unset). Anything else raises adopt_value_invalid naming the key, never
+    the value."""
+    secrets: dict[str, str] = {}
+    for key in envfile.SECRET_KEYS:
+        value = values.get(key, "")
+        if key in envfile.OPTIONAL_SECRETS:
+            if value in ("", envfile.PLACEHOLDER):
+                continue
+            ok = bool(_SECRET_VALUE_RE.fullmatch(value))
+        elif key in envfile.FERNET_SECRETS:
+            ok = _valid_fernet_key(value)
+        else:
+            ok = bool(_HEX_RE.fullmatch(value))
+        if not ok:
+            raise EnvError("adopt_value_invalid", key=key)
+        secrets[key] = value
+    return secrets
+
+
 async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
                 target_id: str, git_ref: str = "main",
                 actor_id=None) -> tuple[Environment, Deployment, AdoptReport]:
@@ -283,10 +320,7 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
     if missing:
         raise EnvError("adopt_env_incomplete", missing=missing)
     picked = _adopted_settings(values)
-    secrets = {k: values[k] for k in envfile.SECRET_KEYS if values.get(k)}
-    for key, value in secrets.items():
-        if envfile.unsafe_value(value):
-            raise EnvError("adopt_value_invalid", key=key)
+    secrets = _adopted_secrets(values)
 
     repo = shlex.quote(folder + "/repo")
     head = await ssh.run_command(cfg, db, f"git -C {repo} rev-parse HEAD")

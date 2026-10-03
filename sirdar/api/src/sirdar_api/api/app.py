@@ -24,10 +24,12 @@ async def _lifespan(app: FastAPI):
 
     try:
         await pipeline.recover_orphans()     # runs a previous process left "running"
+    # A database hiccup must not stop the app starting.
     except Exception as e:  # noqa: BLE001
         log.warning("couldn't mark interrupted deployments at startup: %s", type(e).__name__)
     try:
         await pipeline.sweep_runs()          # run folders a crash left on disk
+    # A disk problem must not stop the app starting.
     except Exception as e:  # noqa: BLE001
         log.warning("couldn't sweep stale runner folders at startup: %s", type(e).__name__)
     yield
@@ -40,6 +42,7 @@ async def _db_ok() -> bool:
         async with get_sessionmaker()() as session:
             await session.execute(text("SELECT 1"))
         return True
+    # Health is a yes/no answer.
     except Exception:  # noqa: BLE001
         return False
 

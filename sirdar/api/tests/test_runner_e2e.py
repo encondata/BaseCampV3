@@ -28,6 +28,10 @@ pytestmark = pytest.mark.skipif(os.environ.get("SIRDAR_RUNNER_E2E") != "1",
 IMAGE = "sirdar-e2e-runner:latest"
 USER = "deployer"
 PASSWORD = "e2e-SSH-pw-5150"
+# A second account whose password (used for SSH and for sudo) looks like
+# Jinja: ansible must pass it through literally, never template it.
+JINJA_USER = "jinja"
+JINJA_PASSWORD = "ab{{ 7*7 }}cd{% raw %}ef"
 ENV_DIR = "/opt/serversherpa/e2e"
 DOCKERFILE = f"""
 FROM ubuntu:24.04
@@ -39,6 +43,9 @@ RUN apt-get update \\
  && echo '{USER}:{PASSWORD}' | chpasswd \\
  && echo '{USER} ALL=(ALL) ALL' > /etc/sudoers.d/{USER} \\
  && chmod 440 /etc/sudoers.d/{USER} \\
+ && useradd --create-home --shell /bin/bash {JINJA_USER} \\
+ && echo '{JINJA_USER} ALL=(ALL) ALL' > /etc/sudoers.d/{JINJA_USER} \\
+ && chmod 440 /etc/sudoers.d/{JINJA_USER} \\
  && install -d -o {USER} -m 750 {ENV_DIR}
 EXPOSE 22
 CMD ["/usr/sbin/sshd", "-D", "-e"]
@@ -74,6 +81,10 @@ def target():
             if time.monotonic() > deadline:
                 pytest.fail("the SSH container didn't start")
             time.sleep(0.3)
+        # Set here, through stdin, so no shell or Dockerfile quoting touches it.
+        subprocess.run(["docker", "exec", "-i", name, "chpasswd"],
+                       input=f"{JINJA_USER}:{JINJA_PASSWORD}\n", text=True, check=True,
+                       capture_output=True)
         yield {"name": name, "port": port}
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
@@ -84,13 +95,13 @@ def _exec(target, *cmd: str, stdin: str | None = None) -> str:
                           text=True, capture_output=True, check=True).stdout
 
 
-async def _pinned(db, target, **auth) -> RunTarget:
+async def _pinned(db, target, user: str = USER, **auth) -> RunTarget:
     host, port = "127.0.0.1", target["port"]
     live = await known_hosts.fetch_host_key(host, port)
     await known_hosts.trust(db, host, port, known_hosts.fingerprint(live), actor_id=None)
     await db.commit()
     pinned = await ssh.pinned_host_key(db, host, port)
-    return RunTarget(host=host, port=port, user=USER,
+    return RunTarget(host=host, port=port, user=user,
                      known_hosts_line=known_hosts.openssh_line(host, port, pinned.public_key),
                      host_key_algorithms=known_hosts.host_key_algorithms(pinned.key_type),
                      **auth)
@@ -108,6 +119,23 @@ async def test_preflight_with_password_and_sudo(db, target, tmp_path):
     assert "Preflight passed: Ubuntu 24.04" in out
     assert "missing (Bootstrap installs it)" in out
     assert PASSWORD not in out
+    assert list((tmp_path / "runner").iterdir()) == []
+
+
+async def test_jinja_looking_passwords_are_passed_literally(db, target, tmp_path):
+    """SSH and sudo passwords holding "{{ 7*7 }}" and "{% raw %}" still log in
+    and become root: extravars are never templated."""
+    run_target = await _pinned(db, target, user=JINJA_USER, password=JINJA_PASSWORD,
+                               become_password=JINJA_PASSWORD)
+    lines: list[str] = []
+    result = await AnsibleRunner(str(tmp_path / "runner")).run(
+        RunRequest(step="preflight", playbook="preflight.yml", target=run_target, timeout=300,
+                   extravars={"min_disk_gb": 1, "min_memory_mb": 64}),
+        lines.append)
+    out = "".join(lines)
+    assert result.status == "successful", out
+    assert "Preflight passed: Ubuntu 24.04" in out
+    assert JINJA_PASSWORD not in out
     assert list((tmp_path / "runner").iterdir()) == []
 
 

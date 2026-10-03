@@ -49,6 +49,7 @@ from sirdar_api.deploy.runner import (
     CANCEL_GRACE_SECONDS,
     AnsibleRunner,
     Runner,
+    RunnerDirUnwritable,
     RunRequest,
     RunResult,
     RunTarget,
@@ -67,6 +68,8 @@ SHUTDOWN_SECONDS = CANCEL_GRACE_SECONDS + 5
 INTERRUPTED = "Sirdar stopped while this deployment was running."
 CANCELLED = "Cancelled."
 UNEXPECTED = "Sirdar couldn't run this step."
+RUNNER_DIR_UNWRITABLE = ("Sirdar can't write its runner folder (SIRDAR_RUNNER_DIR). It must "
+                         "be owned by uid 10001 with mode 700.")
 
 _tasks: dict[uuid.UUID, asyncio.Task] = {}
 _cancel_requested: set[uuid.UUID] = set()
@@ -90,12 +93,15 @@ def make_runner(settings: Settings) -> Runner:
 
 
 async def sweep_runs() -> int:
-    """Startup: remove run folders a crash or kill left behind (runners
-    without a sweep_stale have nothing on disk)."""
+    """Startup: remove every run folder a crash or kill left behind, whatever
+    its age. No run is live yet (recover_orphans has just closed them), so
+    the age cutoff that guards prepare()'s sweep isn't needed here, and the
+    secrets in those folders don't wait it out. Runners without a
+    sweep_stale have nothing on disk."""
     sweep = getattr(make_runner(get_settings()), "sweep_stale", None)
     if sweep is None:
         return 0
-    return await asyncio.to_thread(sweep)
+    return await asyncio.to_thread(sweep, 0)
 
 
 def _redaction_values(values) -> list[str]:
@@ -307,6 +313,7 @@ async def _flush_loop(step_id: uuid.UUID, buffer: _LogBuffer) -> None:
             seen = buffer.version
             try:
                 await _save_log(step_id, buffer.text())
+            # The next flush (or the final save) retries.
             except Exception as e:  # noqa: BLE001
                 log.warning("couldn't save a running step's log: %s", type(e).__name__)
                 seen = -1
@@ -320,10 +327,15 @@ class _Context:
     common: dict = field(repr=False)
     env_file_b64: str = field(repr=False)
     redactor: Redactor = field(repr=False)
+    # An environment that has deployed before has a database worth keeping:
+    # its pre-deploy dump must happen (dump.yml fails rather than skip it).
+    dump_required: bool = False
 
     def vars_for(self, step_key: str) -> dict:
         if step_key == "render":
             return {**self.common, "env_file_b64": self.env_file_b64}
+        if step_key == "dump":
+            return {**self.common, "dump_required": self.dump_required}
         return dict(self.common)
 
 
@@ -388,7 +400,8 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment,
               "min_disk_gb": ssh.MIN_DISK_GB, "min_memory_mb": MIN_MEMORY_MB}
     redactor = Redactor(_redaction_values([*secrets.values(), env_b64, cfg.password,
                                            cfg.passphrase, cfg.sudo_password, private_key]))
-    return _Context(target=target, common=common, env_file_b64=env_b64, redactor=redactor)
+    return _Context(target=target, common=common, env_file_b64=env_b64, redactor=redactor,
+                    dump_required=env.current_sha is not None)
 
 
 def _failure_reason(step: DeploymentStep, result: RunResult) -> str:
@@ -414,6 +427,11 @@ async def _run_step(runner: Runner, ctx: _Context, step: DeploymentStep) -> RunR
             buffer.append)
     except asyncio.CancelledError:
         raise
+    except RunnerDirUnwritable:
+        log.error("deploy step %s couldn't write the runner folder", step.key)
+        buffer.append(RUNNER_DIR_UNWRITABLE + "\n")
+        return RunResult(status="failed", rc=-1)
+    # A failed step, never the exception text.
     except Exception as e:  # noqa: BLE001
         log.error("deploy step %s couldn't run: %s", step.key, type(e).__name__)
         buffer.append(UNEXPECTED + "\n")
@@ -456,10 +474,13 @@ async def _run(deployment_id: uuid.UUID) -> None:
                         await _mark_running(db, step)
                     result = await _run_step(runner, ctx, step)
                     if result.status != "successful":
+                        # Before the rollback: it expires `step` (step 1 runs inside
+                        # _prepare's transaction), and reloading it would need a
+                        # greenlet.
+                        reason = _failure_reason(step, result)
                         await db.rollback()
                         await _close(deployment_id, env_id, current, step_status="failed",
-                                     dep_status="failed", error=_failure_reason(step, result),
-                                     failed_step=current)
+                                     dep_status="failed", error=reason, failed_step=current)
                         return
                     step.status, step.finished_at = "succeeded", _now()
                     if step.key == "dump":
@@ -480,6 +501,7 @@ async def _run(deployment_id: uuid.UUID) -> None:
                              dep_status=status,
                              error=CANCELLED if status == "cancelled" else INTERRUPTED)
             raise
+        # Record the failure, never its text.
         except Exception as e:  # noqa: BLE001
             log.error("deployment %s stopped by %s", deployment_id, type(e).__name__)
             with suppress(Exception):

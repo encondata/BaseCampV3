@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -74,3 +75,52 @@ def test_syntax_check(step, tmp_path):
          str(PLAYBOOK_DIR / step.playbook)],
         capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+DUMP_BLOCKED = ("The database isn't running, so the pre-deploy backup can't be taken. "
+                "Start it (or Reset) and retry.")
+
+
+def _run_dump(tmp_path, *, db_running: bool, dump_required: bool | None):
+    """dump.yml on this machine (connection local) with stand-ins for docker
+    (answers a container id only when db_running) and ss-stack."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    docker = bin_dir / "docker"
+    docker.write_text("#!/bin/sh\n" + ("echo 0123abcd\n" if db_running else "") + "exit 0\n")
+    ss_stack = bin_dir / "ss-stack"
+    ss_stack.write_text(f"#!/bin/sh\necho \"$1 $2\" > {tmp_path / 'ss-stack-called'}\n"
+                        "echo /x/backups/e2e.dump\n")
+    for f in (docker, ss_stack):
+        f.chmod(0o755)
+    cfg = tmp_path / "ansible.cfg"
+    cfg.write_text("[defaults]\n")
+    extra = {"env_name": "e2e", "env_dir": "/x", "ss_stack": str(ss_stack)}
+    if dump_required is not None:
+        extra["dump_required"] = dump_required
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+           "ANSIBLE_CONFIG": str(cfg), "ANSIBLE_HOME": str(tmp_path),
+           "ANSIBLE_LOCAL_TEMP": str(tmp_path / "tmp"), "ANSIBLE_NOCOLOR": "1"}
+    return subprocess.run(
+        [str(ANSIBLE_PLAYBOOK), "-i", "target,", "-c", "local",
+         "-e", f"ansible_python_interpreter={sys.executable}",
+         "-e", json.dumps(extra), str(PLAYBOOK_DIR / "dump.yml")],
+        capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, check=False)
+
+
+@pytest.mark.parametrize("db_running, dump_required, ok, dumped", [
+    (True, True, True, True),
+    (True, False, True, True),
+    (False, False, True, False),      # a first deploy: nothing to back up yet
+    (False, None, True, False),
+    (False, True, False, False),      # an established environment: never migrate unbacked
+])
+def test_dump_playbook_logic(tmp_path, db_running, dump_required, ok, dumped):
+    result = _run_dump(tmp_path, db_running=db_running, dump_required=dump_required)
+    out = result.stdout + result.stderr
+    assert (result.returncode == 0) is ok, out
+    called = tmp_path / "ss-stack-called"
+    assert called.exists() is dumped, out
+    if dumped:
+        assert called.read_text() == "dump /x\n"
+    assert (DUMP_BLOCKED in out) is (not ok), out

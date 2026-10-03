@@ -1,4 +1,5 @@
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import func, select
 
 from sirdar_api.config import get_settings
@@ -289,7 +290,11 @@ async def test_adopt_refuses_a_truncated_env(db, target):
 
 
 async def test_adopt_accepts_the_live_uat_shape(db, target):
-    """uat today: unquoted values, no unmanaged keys, empty optional secrets."""
+    """uat today: unquoted values, no unmanaged keys, empty optional secrets,
+    hex secrets and a Fernet TOTP key (as create generates them)."""
+    for key in envfile.HEX_SECRETS:
+        assert int(ENV_SECRETS[key], 16) >= 0
+    Fernet(ENV_SECRETS["SS_TOTP_ENCRYPTION_KEY"].encode())
     await trust_fake(db, target)
     serve_remote_env(target, remote_env_text(MINIO_ROOT_PASSWORD=None))
     env, _, report = await environments.adopt(db, get_settings(), name="uat", type_="dev",
@@ -298,3 +303,47 @@ async def test_adopt_accepts_the_live_uat_shape(db, target):
     assert report.ignored_keys == []
     assert report.imported_secrets == sorted(envfile.REQUIRED_SECRETS)
     assert "SPACES_SECRET_KEY" in await environments.secret_keys_of(db, env.id)
+
+
+async def test_adopt_accepts_secrets_create_would_generate(db, target):
+    generated = vault.generate_env_secrets()
+    await trust_fake(db, target)
+    serve_remote_env(target, remote_env_text(**generated))
+    env, _, _ = await environments.adopt(db, get_settings(), name="uat", type_="dev",
+                                         target_id="ssh")
+    await db.commit()
+    assert await _secrets(db, env.id) == generated
+
+
+@pytest.mark.parametrize("key, value", [
+    ("POSTGRES_PASSWORD", '"ab$cd"'),               # quoted: parse_env keeps the "$"
+    ("SS_JWT_SECRET", "jwt-not-hex-0f1e"),
+    ("SS_PASSWORD_PEPPER", "'0a1b$2c'"),
+    ("SS_TOTP_ENCRYPTION_KEY", "not-a-fernet-key"),
+    ("SS_TOTP_ENCRYPTION_KEY", "a1" * 32),          # hex, but not a Fernet key
+    ("SS_ANTHROPIC_API_KEY", '"sk-ant-$HOME"'),
+    ("SS_DB_TESTING_PASSWORD", "has space"),
+])
+async def test_adopt_refuses_secrets_that_wont_render_back(db, target, key, value):
+    """A secret must survive the render round-trip: hex for the hex secrets,
+    a Fernet key for TOTP, the PATCH rules for optional ones. The error
+    names the key, never the value."""
+    await trust_fake(db, target)
+    serve_remote_env(target, remote_env_text(**{key: value}))
+    with pytest.raises(EnvError) as exc:
+        await environments.adopt(db, get_settings(), name="uat", type_="dev", target_id="ssh")
+    assert (exc.value.code, exc.value.extra) == ("adopt_value_invalid", {"key": key})
+    assert value.strip("\"'") not in repr(exc.value) + repr(exc.value.extra)
+    assert target.commands == [CAT_ENV]
+    assert await db.scalar(select(func.count()).select_from(Environment)) == 0
+
+
+async def test_adopt_treats_a_changeme_optional_secret_as_unset(db, target):
+    await trust_fake(db, target)
+    serve_remote_env(target, remote_env_text(SS_ANTHROPIC_API_KEY="CHANGEME",
+                                             SS_DB_TESTING_PASSWORD='"CHANGEME"'))
+    env, _, report = await environments.adopt(db, get_settings(), name="uat", type_="dev",
+                                              target_id="ssh")
+    await db.commit()
+    assert report.imported_secrets == sorted(envfile.REQUIRED_SECRETS)
+    assert set(await environments.secret_keys_of(db, env.id)) == set(envfile.REQUIRED_SECRETS)
