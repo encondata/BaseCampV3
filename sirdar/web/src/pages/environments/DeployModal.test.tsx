@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -99,10 +99,36 @@ it('an unknown host key asks to trust it, then deploys', async () => {
   api.trustKnownHost.mockResolvedValue({});
   const { onStarted } = open({ ...ENV, target: 'ssh' });
   await userEvent.click(deployBtn());
-  await userEvent.click(await screen.findByRole('button', { name: 'Trust and deploy' }));
+  const trust = await screen.findByRole('button', { name: 'Trust and deploy' });
+  // jsdom doesn't enforce inert: change the ref behind the prompt; the replay must ignore it.
+  await userEvent.clear(screen.getByLabelText('Git ref'));
+  await userEvent.type(screen.getByLabelText('Git ref'), 'release/other');
+  await userEvent.click(trust);
   await waitFor(() => expect(onStarted).toHaveBeenCalledWith(RUNNING));
   expect(api.trustKnownHost).toHaveBeenCalledWith('10.10.48.63', 22, 'SHA256:abc');
   expect(api.startDeployment).toHaveBeenCalledTimes(2);
+  expect(api.startDeployment.mock.calls[0]).toEqual(['uat', { mode: 'update', git_ref: 'main' }]);
+  expect(api.startDeployment.mock.calls[1]).toEqual(api.startDeployment.mock.calls[0]);
+});
+
+const UNKNOWN_KEY = () => new ApiError(409, 'host_key_unknown', {
+  code: 'host_key_unknown', host: '10.10.48.63', port: 22, key_type: 'ssh-ed25519', fingerprint: 'SHA256:abc' });
+
+it('canceling the host-key prompt returns focus to the Git ref', async () => {
+  api.startDeployment.mockRejectedValueOnce(UNKNOWN_KEY());
+  open({ ...ENV, target: 'ssh' });
+  await userEvent.click(deployBtn());
+  await userEvent.click(within(await screen.findByRole('dialog', { name: 'Trust this server?' })).getByRole('button', { name: 'Cancel' }));
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Trust and deploy' })).toBeNull());
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Git ref')));
+});
+
+it('a failed start returns focus to the Git ref', async () => {
+  api.startDeployment.mockRejectedValueOnce(new ApiError(409, 'deploy_in_progress', { code: 'deploy_in_progress' }));
+  open();
+  await userEvent.click(deployBtn());
+  expect(await screen.findByText('A deployment of this environment is already running.')).toBeTruthy();
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Git ref')));
 });
 
 it('without deploy:add nothing can be started', () => {

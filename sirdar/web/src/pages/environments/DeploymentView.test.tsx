@@ -283,3 +283,48 @@ it('the log follows new output only when the reader is at the bottom', async () 
   await screen.findByText(/more/);
   expect(log.scrollTop).toBe(1000);          // follows the new output
 });
+
+it('any 4xx on load is final (no retries); other errors keep trying', async () => {
+  api.getDeployment.mockRejectedValue(new ApiError(403, 'forbidden', { code: 'forbidden' }));
+  show();
+  expect(await screen.findByRole('alert')).toBeTruthy();
+  await tick(POLL_MS * 20);
+  expect(api.getDeployment).toHaveBeenCalledTimes(1);
+  cleanup();
+  api.getDeployment.mockReset();
+  api.getDeployment.mockResolvedValueOnce(RUNNING).mockRejectedValue(new ApiError(401, 'not_authenticated', { code: 'not_authenticated' }));
+  show();
+  await screen.findByText(/Cloning the repo/);
+  await tick(POLL_MS);
+  expect(api.getDeployment).toHaveBeenCalledTimes(2);
+  await tick(POLL_MS * 20);
+  expect(api.getDeployment).toHaveBeenCalledTimes(2);   // a running deployment stops polling on a 4xx too
+});
+
+it('a step closed and opened again starts stuck to the bottom of its log', async () => {
+  // Every <pre> reports a 1000px log in a 100px box; scrollTop is remembered per element.
+  const tops = new WeakMap<Element, number>();
+  const proto = HTMLPreElement.prototype;
+  Object.defineProperty(proto, 'scrollHeight', { configurable: true, get: () => 1000 });
+  Object.defineProperty(proto, 'clientHeight', { configurable: true, get: () => 100 });
+  Object.defineProperty(proto, 'scrollTop', {
+    configurable: true, get(this: Element) { return tops.get(this) ?? 0; }, set(this: Element, v: number) { tops.set(this, v); },
+  });
+  try {
+    api.getDeployment.mockResolvedValue(RUNNING);
+    show();
+    await screen.findByText(/Cloning the repo/);
+    const first = screen.getByLabelText('Step 3 log');
+    expect(first.scrollTop).toBe(1000);
+    first.scrollTop = 200;                     // the reader scrolls up
+    fireEvent.scroll(first);
+    await user.click(screen.getByText('Fetch code'));   // close the step
+    expect(screen.queryByLabelText('Step 3 log')).toBeNull();
+    await user.click(screen.getByText('Fetch code'));   // and open it again
+    expect(screen.getByLabelText('Step 3 log').scrollTop).toBe(1000);
+  } finally {
+    delete (proto as unknown as Record<string, unknown>).scrollHeight;
+    delete (proto as unknown as Record<string, unknown>).clientHeight;
+    delete (proto as unknown as Record<string, unknown>).scrollTop;
+  }
+});

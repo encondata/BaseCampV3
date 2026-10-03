@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type UIEvent } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
 import ComboBox from '@portal/components/ComboBox';
+import { ApiError } from '@portal/lib/api';
 
 import { useHostKeyTrust } from '../../components/useHostKeyTrust';
 import {
@@ -65,9 +66,9 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
         setLoadError(errorText(e, "Couldn't load this deployment."));
         failures += 1;
         // Keep trying while it runs, or until the first load lands (a fresh deployment
-        // can blip); a deployment that doesn't exist is final.
-        const gone = (e as { code?: string }).code === 'deployment_not_found';
-        if (!gone && (sawRunning || !loaded)) timer = setTimeout(tick, Math.min(POLL_MS * 2 ** failures, MAX_BACKOFF_MS));
+        // can blip); any 4xx (gone, forbidden, signed out) is final.
+        const final = e instanceof ApiError && e.status >= 400 && e.status < 500;
+        if (!final && (sawRunning || !loaded)) timer = setTimeout(tick, Math.min(POLL_MS * 2 ** failures, MAX_BACKOFF_MS));
       }
     };
     void tick();
@@ -85,7 +86,8 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   const stuckStep = useRef<number | null>(null);
   useEffect(() => {
     const el = logRef.current;
-    if (!el) return;
+    // A closed step forgets it was followed, so reopening it starts stuck to the bottom.
+    if (!el) { stuckStep.current = null; return; }
     if (stuckStep.current !== shown?.number) { stuckStep.current = shown?.number ?? null; stick.current = true; }
     if (stick.current) el.scrollTop = el.scrollHeight;
   }, [log, shown?.number]);

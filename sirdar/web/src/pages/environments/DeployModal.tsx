@@ -48,6 +48,14 @@ export default function DeployModal({ env, onStarted, onClose }: {
   const scrimRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => { scrimRef.current?.toggleAttribute('inert', hostKey.open); }, [hostKey.open]);
 
+  // After a failed start, focus goes back to the Git ref once nothing else holds it:
+  // not while the host-key prompt is open (its cleanup refocuses its opener first,
+  // and this effect runs after that cleanup), and not while a replay is starting.
+  const refocus = useRef(false);
+  useEffect(() => {
+    if (refocus.current && !hostKey.open && !busy) { refocus.current = false; refInput.current?.focus(); }
+  });
+
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
     refInput.current?.focus();
@@ -68,6 +76,7 @@ export default function DeployModal({ env, onStarted, onClose }: {
   const run = async (attempt: Attempt) => {
     if (busyRef.current) return;
     busyRef.current = true;
+    refocus.current = false;
     setBusy(true);
     setErrors({});
     try {
@@ -75,6 +84,7 @@ export default function DeployModal({ env, onStarted, onClose }: {
         ? { mode: attempt.mode, git_ref: attempt.ref, confirm_name: attempt.confirm }
         : { mode: attempt.mode, git_ref: attempt.ref }));
     } catch (err) {
+      refocus.current = true;
       if (!hostKey.handle(err, env.target, attempt)) {
         const code = (err as { code?: string }).code ?? '';
         setErrors({ [CODE_FIELD[code] ?? 'form']: deployErrorText(err, "Couldn't start the deployment.") });

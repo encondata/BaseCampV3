@@ -205,3 +205,35 @@ it('create: an unknown host key is trusted with "Trust and create" and retries t
   expect(api.createEnvironment).toHaveBeenCalledTimes(2);
   expect(api.createEnvironment.mock.calls[1][0]).toEqual(api.createEnvironment.mock.calls[0][0]);
 });
+
+it('canceling the host-key prompt returns focus to the Name', async () => {
+  api.adoptEnvironment.mockRejectedValueOnce(UNKNOWN_KEY);
+  await open();
+  await userEvent.click(screen.getByRole('radio', { name: 'Adopt existing' }));
+  await userEvent.type(screen.getByLabelText('Name'), 'uat');
+  await userEvent.click(screen.getByRole('button', { name: 'Adopt' }));
+  await userEvent.click(within(await screen.findByRole('dialog', { name: 'Trust this server?' })).getByRole('button', { name: 'Cancel' }));
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Trust this server?' })).toBeNull());
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Name')));
+});
+
+it('a failed adopt returns focus to the Name', async () => {
+  api.adoptEnvironment.mockRejectedValueOnce(new ApiError(502, 'ssh_failed', { code: 'ssh_failed' }));
+  await open();
+  await userEvent.click(screen.getByRole('radio', { name: 'Adopt existing' }));
+  await userEvent.type(screen.getByLabelText('Name'), 'uat');
+  await userEvent.click(screen.getByRole('button', { name: 'Adopt' }));
+  expect(await screen.findByRole('alert')).toBeTruthy();
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Name')));
+});
+
+it('a create error that sends you back to Basics focuses the Name', async () => {
+  api.createEnvironment.mockRejectedValue(new ApiError(409, 'environment_exists', { code: 'environment_exists' }));
+  await open();
+  await fillBasics();
+  await next();
+  await next();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  expect(await screen.findByText('An environment with that name already exists.')).toBeTruthy();
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Name')));
+});

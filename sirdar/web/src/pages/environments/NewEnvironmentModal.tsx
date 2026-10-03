@@ -109,6 +109,17 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
     return () => { live = false; };
   }, []);
   useEffect(() => { if (defaults) nameRef.current?.focus(); }, [defaults]);
+  // After a failed create or adopt, focus goes back to the Name (or, on a step
+  // without it, the step's main button) once nothing else holds it: not while the
+  // host-key prompt is open (its cleanup refocuses its opener first, and this
+  // effect runs after that cleanup), and not while a replay is running.
+  const refocus = useRef(false);
+  const cardRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!refocus.current || hostKey.open || busy) return;
+    refocus.current = false;
+    (nameRef.current ?? cardRef.current?.querySelector<HTMLElement>('.modal-foot .btn-solid'))?.focus();
+  });
 
   const trimmed = name.trim();
   const services = defaults?.services ?? [];
@@ -151,6 +162,7 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
   const run = async (attempt: Attempt) => {
     if (busyRef.current) return;
     busyRef.current = true;
+    refocus.current = false;
     setBusy(true);
     setErrors({});
     try {
@@ -161,6 +173,7 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
       setResult(await adoptEnvironment(attempt.body));
       setStep('result');
     } catch (err) {
+      refocus.current = true;
       fail(err, attempt);
     } finally {
       busyRef.current = false;
@@ -197,7 +210,7 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
   return (
     <>
       <div className="modal-scrim" ref={scrimRef} onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-        <div className="modal-card reports-modal-card rgm-card sirdar-envmodal-card" role="dialog" aria-modal="true"
+        <div ref={cardRef} className="modal-card reports-modal-card rgm-card sirdar-envmodal-card" role="dialog" aria-modal="true"
              aria-labelledby="sirdar-envmodal-title">
           <div className="modal-head">
             <div className="rgm-head-text">
