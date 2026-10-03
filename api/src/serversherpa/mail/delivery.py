@@ -3,7 +3,9 @@ The table is the queue: due `queued` rows are claimed with FOR UPDATE
 SKIP LOCKED (→ `sending`), then each is sent in its own session. Outcomes:
 sent; a send error → back to `queued` with backoff, `failed` after
 MAX_ATTEMPTS; SMTP not configured → `skipped`. Nothing raises out of a
-row. Logs carry the row id and template — never the address."""
+row. Logs carry the row id, template, attempt count, exception class and
+SMTP code — never the address (smtplib error text embeds addresses; the
+full text lives only in the last_error column)."""
 
 import logging
 import os
@@ -73,15 +75,17 @@ async def _deliver(row: EmailOutbox, send) -> None:
                    html=row.html_body, text=row.text_body)
     except Exception as exc:
         row.last_error = f"{type(exc).__name__}: {exc}"[:ERROR_MAX]
+        code = getattr(exc, "smtp_code", None)
+        safe = type(exc).__name__ + (f" (smtp {code})" if code else "")
         if row.attempts >= MAX_ATTEMPTS:
             row.status = "failed"
             logger.error("email %s (%s) failed after %d attempts: %s",
-                         row.id, row.template, row.attempts, row.last_error)
+                         row.id, row.template, row.attempts, safe)
         else:
             row.status = "queued"
             row.next_attempt_at = now + timedelta(minutes=BACKOFF_MINUTES[row.attempts - 1])
             logger.warning("email %s (%s) attempt %d failed, retrying: %s",
-                           row.id, row.template, row.attempts, row.last_error)
+                           row.id, row.template, row.attempts, safe)
         return
     row.status = "sent"
     row.sent_at = now
@@ -96,10 +100,13 @@ async def deliver_once(maker, *, send=send_email) -> int:
         await requeue_stale(db)
         ids = await _claim(db)
     for row_id in ids:
-        async with maker() as db:
-            row = await db.get(EmailOutbox, row_id)
-            if row is None:
-                continue
-            await _deliver(row, send)
-            await db.commit()
+        try:
+            async with maker() as db:
+                row = await db.get(EmailOutbox, row_id)
+                if row is None:
+                    continue
+                await _deliver(row, send)
+                await db.commit()
+        except Exception:
+            logger.exception("could not deliver email %s", row_id)
     return len(ids)

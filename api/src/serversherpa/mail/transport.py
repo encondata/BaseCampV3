@@ -7,7 +7,7 @@ import asyncio
 import smtplib
 import ssl
 from email.message import EmailMessage
-from email.utils import formatdate, make_msgid
+from email.utils import formatdate, make_msgid, parseaddr
 
 from serversherpa.config import get_settings
 
@@ -20,7 +20,7 @@ def build_message(*, sender: str, to: str, subject: str, html: str, text: str) -
     msg["To"] = to
     msg["Subject"] = subject
     msg["Date"] = formatdate(localtime=False)
-    domain = sender.rpartition("@")[2] or None
+    domain = parseaddr(sender)[1].rpartition("@")[2] or None
     msg["Message-ID"] = make_msgid(domain=domain)
     msg.set_content(text)
     msg.add_alternative(html, subtype="html")

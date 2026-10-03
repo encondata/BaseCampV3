@@ -2,9 +2,8 @@
 up, skip when SMTP is off, stale-row sweep. Never touches a real server —
 `send` is a fake."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
-
-from sqlalchemy import select
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import EmailOutbox
@@ -48,6 +47,12 @@ def test_build_message_is_multipart_alternative():
     assert msg.get_content_type() == "multipart/alternative"
     parts = [p.get_content_type() for p in msg.iter_parts()]
     assert parts == ["text/plain", "text/html"]
+
+
+def test_message_id_domain_with_display_name_sender():
+    msg = build_message(sender="ServerSherpa <noreply@x.test>", to="a@x.test",
+                        subject="Hi", html="<p>Hello</p>", text="Hello\n")
+    assert msg["Message-ID"].endswith("@x.test>") and ">>" not in msg["Message-ID"]
 
 
 async def test_sends_and_marks_sent(db, email_on):
@@ -106,7 +111,36 @@ async def test_requeue_stale_sending_rows(db):
 
 async def test_never_logs_the_address(db, email_on, caplog):
     import logging
+    import smtplib
     caplog.set_level(logging.DEBUG, logger="serversherpa.mail")
-    await _queue(db)
-    await deliver_once(get_sessionmaker(), send=FakeSend(OSError("x")))
+    exc = smtplib.SMTPRecipientsRefused(
+        {"alice@test.example.com": (550, b"no such user")})
+    retry_id = await _queue(db)
+    giveup_id = await _queue(db, attempts=MAX_ATTEMPTS - 1)
+    await deliver_once(get_sessionmaker(), send=FakeSend(exc))
     assert "alice@test.example.com" not in caplog.text
+    for rid in (retry_id, giveup_id):
+        row = await _get(rid)
+        assert "SMTPRecipientsRefused" in row.last_error
+    assert (await _get(retry_id)).status == "queued"
+    assert (await _get(giveup_id)).status == "failed"
+
+
+async def test_one_bad_row_does_not_abort_batch(db, email_on, monkeypatch):
+    import serversherpa.mail.delivery as delivery
+    first = await _queue(db)
+    second = await _queue(db, next_attempt_at=datetime.now(UTC) + timedelta(seconds=1))
+    real = delivery._deliver
+    order: list = []
+
+    async def flaky(row, send):
+        order.append(row.id)
+        if len(order) == 1:
+            raise RuntimeError("boom")
+        await real(row, send)
+
+    monkeypatch.setattr(delivery, "_deliver", flaky)
+    await asyncio.sleep(1.1)
+    assert await deliver_once(get_sessionmaker(), send=FakeSend()) == 2
+    assert (await _get(order[1])).status == "sent"
+    assert {first, second} == set(order)
