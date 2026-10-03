@@ -96,3 +96,25 @@
 }
 .sirdar-retry { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-top: 16px; }
 .sirdar-retry > div { min-width: 240px; }
+
+/* `.pf-form label` (portal profile.css) styles real <label>s only. Captions on
+   controls that can't take a <label> (segmented radio groups, SecretField
+   rows) are <span class="field-label">, so give them the same look. */
+.pf-form .field-label {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  display: block;
+  margin-bottom: 6px;
+}
+/* The New environment modal's body is a .pf-form (a 2-column grid) holding
+   whole sections — the mode switch, the field grid, the services table — so
+   each section spans the full width instead of filling one column. */
+.sirdar-envmodal-card .modal-body.pf-form > * { grid-column: 1 / -1; }
+/* A back link inside a page eyebrow (the environment page's "Deploy") keeps
+   the eyebrow's accent color instead of the browser's default link blue. */
+.eyebrow a { color: inherit; text-decoration: none; }
+.eyebrow a:hover, .eyebrow a:focus-visible { text-decoration: underline; }
