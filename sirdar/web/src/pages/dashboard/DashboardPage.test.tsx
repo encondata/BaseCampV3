@@ -4,10 +4,10 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-const perms = vi.hoisted(() => ({ deploy: true }));
+const perms = vi.hoisted(() => ({ deploy: true, view: true }));
 vi.mock('@portal/auth/AuthContext', () => ({
   useAuth: () => ({
-    can: (r: string, a?: string) => r !== 'deploy' || a === 'view' || perms.deploy,
+    can: (r: string, a?: string) => r !== 'deploy' || (a === 'view' ? perms.view : perms.deploy),
     preferences: { motion: false },
   }),
 }));
@@ -35,7 +35,7 @@ function show(at = '/') {
 }
 
 beforeEach(() => {
-  perms.deploy = true;
+  perms.deploy = true; perms.view = true;
   Object.values(api).forEach((f) => f.mockReset());
   api.getDashboard.mockImplementation(async (o: { demo?: boolean }) => (o?.demo ? DEMO : EMPTY));
 });
@@ -186,4 +186,30 @@ it('a failed load shows an alert with Retry', async () => {
   await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
   await screen.findByText('No environments deployed');
   expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('the Deploy modal and its host-key prompt render outside .sd-dash', async () => {
+  api.getDashboard.mockResolvedValue(REAL);
+  api.getEnvironment.mockResolvedValue({ ...ENV, target: 'ssh' });
+  api.startDeployment.mockRejectedValue(new ApiError(409, 'host_key_unknown', {
+    code: 'host_key_unknown', host: '10.10.48.63', port: 22, key_type: 'ssh-ed25519', fingerprint: 'SHA256:abc' }));
+  const { container } = show();
+  const uat = await screen.findByRole('region', { name: 'uat' });
+  await userEvent.click(within(uat).getByRole('button', { name: 'Deploy uat' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Deploy uat' });
+  expect(dialog.closest('.sd-dash')).toBeNull();
+  expect(container.contains(dialog)).toBe(true);   // still inside the app (and its theme tokens), not portaled
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Deploy' }));
+  const hostKey = await screen.findByRole('dialog', { name: 'Trust this server?' });
+  expect(hostKey.closest('.sd-dash')).toBeNull();
+  expect(container.contains(hostKey)).toBe(true);
+});
+
+it("an environment card's heading links to its page only with deploy:view", async () => {
+  api.getDashboard.mockResolvedValue(REAL);
+  perms.view = false;
+  show();
+  const uat = await screen.findByRole('region', { name: 'uat' });
+  expect(within(uat).queryByRole('link')).toBeNull();
+  expect(within(uat).getByRole('heading', { name: 'uat' })).toBeTruthy();
 });

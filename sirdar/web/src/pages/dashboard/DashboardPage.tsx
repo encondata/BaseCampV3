@@ -78,60 +78,63 @@ export default function DashboardPage() {
   const motion = preferences?.motion !== false;
 
   return (
-    <div className="portal-page sd-dash">
-      <div className="sd-head">
-        <div>
-          <h1>Deployments</h1>
-          <p className="sd-sub">Independent environments. Blue/Green routing for production.</p>
-        </div>
-        <div className="sd-head-actions">
-          {health && (
-            <span className={`sd-health is-${health.status === 'healthy' || health.status === 'degraded'
-              ? health.status : 'unknown'}`}>
-              <Dot tone={healthTone} />{health.label}
-            </span>
-          )}
-          <SoonButton className="sd-btn-primary"><RocketIcon size={16} />Deploy release</SoonButton>
-          <span className="sd-demo-toggle">
-            <Switch checked={demo} onChange={setDemo} label="Demo data" />
-            <span aria-hidden="true">Demo data</span>
-          </span>
-        </div>
-      </div>
-
-      {demo && <div className="sd-demo-strip">Showing demo data — nothing here is real.</div>}
-
-      {error && (
-        <div className="sd-alert" role="alert">
-          <span>{error}</span>
-          <button type="button" className="sd-btn sd-btn-outline sd-btn-sm" onClick={() => void load(false)}>
-            Retry
-          </button>
-        </div>
-      )}
-      {deployError && <div className="sd-alert" role="alert"><span>{deployError}</span></div>}
-
-      {!data && loading && <Skeleton />}
-
-      {data && (
-        <div className="sd-stack">
-          <ProductionFlow production={data.production} motion={motion} />
-          <div className="sd-env-grid">
-            {data.environments.map((env) => (
-              <EnvCard key={env.id} env={env} demo={data.demo} canDeploy={can('deploy', 'add')}
-                       onDeploy={(name) => void openDeploy(name)} onSetUp={() => navigate('/deploy')} />
-            ))}
+    <>
+      <div className="portal-page sd-dash">
+        <div className="sd-head">
+          <div>
+            <h1>Deployments</h1>
+            <p className="sd-sub">Independent environments. Blue/Green routing for production.</p>
           </div>
-          <InfraTree source={data.infrastructure.source} error={data.infrastructure.error}
-                     tree={data.infrastructure.tree} refreshing={loading}
-                     onRefresh={() => void load(true)} />
+          <div className="sd-head-actions">
+            {health && (
+              <span className={`sd-health is-${health.status === 'healthy' || health.status === 'degraded'
+                ? health.status : 'unknown'}`}>
+                <Dot tone={healthTone} />{health.label}
+              </span>
+            )}
+            <SoonButton className="sd-btn-primary"><RocketIcon size={16} />Deploy release</SoonButton>
+            <span className="sd-demo-toggle">
+              <Switch checked={demo} onChange={setDemo} label="Demo data" />
+              <span aria-hidden="true">Demo data</span>
+            </span>
+          </div>
         </div>
-      )}
 
+        {demo && <div className="sd-demo-strip">Showing demo data — nothing here is real.</div>}
+
+        {error && (
+          <div className="sd-alert" role="alert">
+            <span>{error}</span>
+            <button type="button" className="sd-btn sd-btn-outline sd-btn-sm" onClick={() => void load(false)}>
+              Retry
+            </button>
+          </div>
+        )}
+        {deployError && <div className="sd-alert" role="alert"><span>{deployError}</span></div>}
+
+        {!data && loading && <Skeleton />}
+
+        {data && (
+          <div className="sd-stack">
+            <ProductionFlow production={data.production} motion={motion} />
+            <div className="sd-env-grid">
+              {data.environments.map((env) => (
+                <EnvCard key={env.id} env={env} demo={data.demo} canDeploy={can('deploy', 'add')}
+                         onDeploy={(name) => void openDeploy(name)} onSetUp={() => navigate('/deploy')} />
+              ))}
+            </div>
+            <InfraTree source={data.infrastructure.source} error={data.infrastructure.error}
+                       tree={data.infrastructure.tree} refreshing={loading}
+                       onRefresh={() => void load(true)} />
+          </div>
+        )}
+      </div>
+      {/* A sibling of .sd-dash, so its h3 / b rules don't restyle the modal; not portaled,
+          so it keeps the .portal-shell[data-theme] tokens. */}
       {deployEnv && (
         <DeployModal env={deployEnv} onClose={() => setDeployEnv(null)}
                      onStarted={(dep) => navigate(`/deploy/environments/${encodeURIComponent(deployEnv.name)}?deployment=${dep.id}`)} />
       )}
-    </div>
+    </>
   );
 }

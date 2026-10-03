@@ -4,6 +4,8 @@
 import { useId, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
+import { useAuth } from '@portal/auth/AuthContext';
+
 import type { DashEnvironment } from '../../lib/sirdarApi';
 
 import { ServerRackIcon } from './icons';
@@ -27,6 +29,7 @@ export default function EnvCard({ env, demo, canDeploy, onDeploy, onSetUp }: {
   env: DashEnvironment; demo: boolean; canDeploy: boolean;
   onDeploy: (name: string) => void; onSetUp: () => void;
 }) {
+  const { can } = useAuth();
   const headingId = useId();
   const lit = env.state === 'active' || env.state === 'deploying';
   const name = env.environment;
@@ -47,7 +50,7 @@ export default function EnvCard({ env, demo, canDeploy, onDeploy, onSetUp }: {
   return (
     <section className="sd-card sd-env" aria-labelledby={headingId}>
       <h3 id={headingId}>
-        {name && !demo ? <Link to={`/deploy/environments/${encodeURIComponent(name)}`}>{env.label}</Link> : env.label}
+        {name && !demo && can('deploy', 'view') ? <Link to={`/deploy/environments/${encodeURIComponent(name)}`}>{env.label}</Link> : env.label}
       </h3>
       {env.sub && <div className="sd-muted">{env.sub}</div>}
       <div className="sd-env-body">

@@ -42,7 +42,8 @@
 .sirdar-checks li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .sirdar-result, .sirdar-mismatch { margin-top: 12px; }
 .sirdar-mismatch { border-color: var(--c-red-bd, #fca5a5); }
-.sirdar-hostkey-card { width: min(560px, calc(100vw - 48px)); }
+/* 4 classes, to out-rank the portal's `.modal-card.reports-modal-card.rgm-card` width (980px). */
+.modal-card.reports-modal-card.rgm-card.sirdar-hostkey-card { width: min(560px, calc(100vw - 48px)); max-width: 96vw; }
 .sirdar-fingerprint { word-break: break-all; }
 
 .sirdar-region { display: flex; flex-direction: column; gap: 6px; max-width: 360px; margin-bottom: 12px; }
@@ -57,6 +58,8 @@
 .sirdar-secret-row input { flex: 1; }
 .sirdar-add-target { border-style: dashed; align-items: center; justify-content: center; }
 .sirdar-target-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+/* In a section head (DeploymentView) the actions line up with the heading. */
+.sirdar-section-head .sirdar-target-actions { margin-top: 0; }
 
 /* A wrapper that adds semantics (radiogroup) but no box of its own. */
 .sirdar-contents { display: contents; }
