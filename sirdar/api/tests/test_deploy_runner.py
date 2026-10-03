@@ -216,11 +216,15 @@ async def test_cancel_during_prepare_leaves_no_folder(tmp_path, monkeypatch):
     runner = AnsibleRunner(str(tmp_path / "runner"))
     real_prepare = runner.prepare
     entered = threading.Event()
+    prepared = threading.Event()
 
     def slow_prepare(request):
         entered.set()
         time.sleep(0.3)
-        return real_prepare(request)
+        try:
+            return real_prepare(request)
+        finally:
+            prepared.set()
 
     monkeypatch.setattr(runner, "prepare", slow_prepare)
     task = asyncio.create_task(runner.run(_request(), lambda s: None))
@@ -229,7 +233,9 @@ async def test_cancel_during_prepare_leaves_no_folder(tmp_path, monkeypatch):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    for _ in range(100):
+    while not prepared.is_set():          # the folder now exists (or is already gone)
+        await asyncio.sleep(0.01)
+    for _ in range(100):                  # bounded wait for the done-callback
         await asyncio.sleep(0.05)
         if not list((tmp_path / "runner").glob("run-*")):
             break
@@ -248,3 +254,9 @@ def test_sweep_removes_only_stale_run_folders(tmp_path):
     os.utime(other, (ancient, ancient))
     assert runner.sweep_stale() == 1
     assert not old.exists() and fresh.exists() and other.exists()
+
+
+def test_stale_cutoff_exceeds_every_step_timeout():
+    from sirdar_api.deploy.steps import STEPS
+    assert runner_mod.STALE_RUN_SECONDS > (
+        max(s.timeout for s in STEPS) + runner_mod.CANCEL_GRACE_SECONDS)

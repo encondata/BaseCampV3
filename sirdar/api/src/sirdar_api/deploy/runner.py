@@ -26,14 +26,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, Protocol
 
-from sirdar_api.deploy.steps import PLAYBOOK_DIR
+from sirdar_api.deploy.steps import PLAYBOOK_DIR, STEPS
 
 RunStatus = Literal["successful", "failed", "timeout", "canceled"]
 _STATUSES = ("successful", "failed", "timeout", "canceled")
 CANCEL_GRACE_SECONDS = 30
-# Longer than the longest step timeout (the "up" step: 45 minutes) plus the
-# cancel grace, so a sweep never touches a live run.
-STALE_RUN_SECONDS = 2 * 60 * 60
+# Longer than the slowest step's timeout plus the cancel grace plus a margin,
+# so a sweep never touches a live run.
+STALE_RUN_SECONDS = max(step.timeout for step in STEPS) + CANCEL_GRACE_SECONDS + 30 * 60
 # The only variables a job inherits from the API process; everything else
 # (database URL, secrets key, ...) stays out of ansible, ssh and sshpass.
 _INHERITED_ENV = ("PATH", "HOME", "LANG", "TZ")
