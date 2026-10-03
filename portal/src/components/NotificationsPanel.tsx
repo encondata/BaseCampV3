@@ -186,6 +186,28 @@ function RouterApprovalStrip({ payload, refresh }: {
   );
 }
 
+interface ResetRequestPayload {
+  state: string;
+  count?: number;
+  resolved_by?: string | null;
+}
+
+/** The outcome line under a `password_reset_request` row: who resolved it,
+ *  or how many times the person has asked while it's open. */
+function ResetRequestOutcome({ payload }: { payload: ResetRequestPayload }) {
+  if (payload.state === 'resolved') {
+    return (
+      <span className="notif-body notif-outcome">
+        {payload.resolved_by ? `Resolved by ${payload.resolved_by}` : 'Resolved'}
+      </span>
+    );
+  }
+  if ((payload.count ?? 1) > 1) {
+    return <span className="notif-body notif-outcome">Asked {payload.count} times</span>;
+  }
+  return null;
+}
+
 function KindIcon({ kind }: { kind: string }) {
   const cls = `notif-icon notif-icon-${kind}`;
   if (kind === 'report_ready') {
@@ -219,6 +241,14 @@ function KindIcon({ kind }: { kind: string }) {
            strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <rect x="3" y="13" width="18" height="7" rx="2" /><path d="M7 16.5h.01M11 16.5h.01" />
         <path d="M15 13V9M9 7.5a4.2 4.2 0 0 1 6 0M6.5 5a7.8 7.8 0 0 1 11 0" />
+      </svg>
+    );
+  }
+  if (kind === 'password_reset_request') {
+    return (
+      <svg className={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
+           strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="8" cy="15" r="4" /><path d="m11 12 9-9M17 6l3 3M15 8l2 2" />
       </svg>
     );
   }
@@ -320,6 +350,9 @@ export default function NotificationsPanel({ onClose }: { onClose: () => void })
                 )}
                 {n.kind === 'router_approval' && (
                   <RouterApprovalStrip payload={n.payload as unknown as RouterApprovalPayload} refresh={refresh} />
+                )}
+                {n.kind === 'password_reset_request' && (
+                  <ResetRequestOutcome payload={n.payload as unknown as ResetRequestPayload} />
                 )}
               </span>
               <span className="notif-actions" onClick={(e) => e.stopPropagation()}

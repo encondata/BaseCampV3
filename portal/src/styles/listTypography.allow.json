@@ -528,39 +528,39 @@
     "check": "inline"
   },
   {
-    "file": "components/ForceChangePassword.tsx",
+    "file": "components/AuthCard.tsx",
     "selector": "fontFamily: \"'Geologica', sans-serif\",",
-    "reason": "not list content: the forced-password-change screen renders INSTEAD of .portal-shell, so it has no theme/list tokens available and is styled entirely inline",
+    "reason": "not list content: the auth screens (forced password change, reset password) renders INSTEAD of .portal-shell, so it has no theme/list tokens available and is styled entirely inline",
     "check": "inline"
   },
   {
-    "file": "components/ForceChangePassword.tsx",
+    "file": "components/AuthCard.tsx",
     "selector": "fontFamily: \"'Fragment Mono', monospace\", fontSize: 10.5,",
-    "reason": "not list content: forced-password-change screen (see the file-level entry above) \u2014 the \"ServerSherpa Portal\" eyebrow",
+    "reason": "not list content: auth screens (forced password change, reset password) (see the file-level entry above) \u2014 the \"ServerSherpa Portal\" eyebrow",
     "check": "inline"
   },
   {
-    "file": "components/ForceChangePassword.tsx",
-    "selector": "<h1 style={{ margin: '10px 0 6px', fontSize: 24, color: '#1b2129' }}>",
-    "reason": "not list content: forced-password-change screen (see the file-level entry above) \u2014 the \"Set your password\" heading",
+    "file": "components/AuthCard.tsx",
+    "selector": "<h1 style={{ margin: '10px 0 6px', fontSize: 24, color: '#1b2129' }}>{title}</h1>",
+    "reason": "not list content: auth screens (forced password change, reset password) (see the file-level entry above) \u2014 the \"Set your password\" heading",
     "check": "inline"
   },
   {
-    "file": "components/ForceChangePassword.tsx",
-    "selector": "<p style={{ margin: '0 0 22px', fontSize: 14, color: '#667085', fontWeight: 300 }}>",
-    "reason": "not list content: forced-password-change screen (see the file-level entry above) \u2014 the explanatory paragraph",
+    "file": "components/AuthCard.tsx",
+    "selector": "<p style={{ margin: '0 0 22px', fontSize: 14, color: '#667085', fontWeight: 300 }}>{lead}</p>",
+    "reason": "not list content: auth screens (forced password change, reset password) (see the file-level entry above) \u2014 the explanatory paragraph",
     "check": "inline"
   },
   {
     "file": "components/ForceChangePassword.tsx",
     "selector": "<p style={{ margin: '18px 0 0', fontSize: 13, color: '#667085' }}>",
-    "reason": "not list content: forced-password-change screen (see the file-level entry above) \u2014 the \"Not you?\" footer line",
+    "reason": "not list content: auth screens (forced password change, reset password) (see the file-level entry above) \u2014 the \"Not you?\" footer line",
     "check": "inline"
   },
   {
     "file": "components/ForceChangePassword.tsx",
     "selector": "font: 'inherit', fontWeight: 500, cursor: 'pointer',",
-    "reason": "not list content: forced-password-change screen (see the file-level entry above) \u2014 the inline Sign out link",
+    "reason": "not list content: auth screens (forced password change, reset password) (see the file-level entry above) \u2014 the inline Sign out link",
     "check": "inline"
   },
   {
