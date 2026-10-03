@@ -7,7 +7,8 @@ targets / dashboard work already merged to main.
 
 ## Goal
 
-From Sirdar, pick a target (for now a Custom SSH Ubuntu host on the same LAN as
+From Sirdar, pick a target (a Custom SSH Ubuntu host, or a Proxmox node that
+Sirdar creates an Ubuntu VM on — both on the same LAN as
 Nginx Proxy Manager), and deploy a complete ServerSherpa environment to it: API
 and every worker, portal, kiosk web, wiki, MinIO "spaces", Postgres, mailpit and
 status. Seed it from a chosen data snapshot, publish it at
@@ -34,6 +35,7 @@ scope here.
 | Redeploy | Choose each time: Update (default, keeps data) or Reset data (typed-name gate); Update takes a pre-deploy DB dump |
 | Rollback | Manual button, never automatic |
 | Execution engine | Hybrid: Sirdar is the control plane; host work runs as Ansible playbooks via `ansible-runner`; Cloudflare / NPM / smoke tests are Python modules in Sirdar; Terraform is a future step 0 for cloud targets |
+| Proxmox | A **Proxmox** target type alongside Custom SSH: Sirdar provisions an Ubuntu VM (step 0, Terraform `bpg/proxmox`) and then deploys to it exactly like an SSH target (2026-10-02) |
 | CI | Out of scope; separate follow-up (test gate → GHCR images → auto-deploy dev). The deployer stays CI-ready |
 | Snapshot from the Mac | Built locally by a script and uploaded to Sirdar; Sirdar never SSHes into the Mac |
 
@@ -153,8 +155,8 @@ snapshot, actor) and runs:
 | 13 | Proxy: ensure the 6 NPM hosts + certificates | Python | when changed | when changed |
 | 14 | Smoke: `https://<service>.<env>…/healthz` and portal login page | Python | ✓ | ✓ |
 
-Step 0 (provision) is reserved for Terraform on cloud targets; it is a no-op
-for SSH targets.
+Step 0 (provision) creates the host for provisioned target types (Proxmox now,
+see Section 6; cloud providers later) and is a no-op for SSH targets.
 
 The first SSH connection uses the target's saved username/password (or key).
 Step 2 installs Sirdar's own key and later connections use it.
@@ -271,6 +273,62 @@ Every action writes an audit row.
   newer SHA keeps data and leaves a pre-deploy dump; forced failed migration →
   Roll back; tear down → managed DNS/NPM entries gone, hand-made ones untouched.
 
+## Section 6 — Proxmox targets (provisioned VMs)
+
+A **Proxmox** target sits beside **Custom SSH** on the Deploy page. An SSH
+target points at a host that already exists; a Proxmox target makes the host
+first (step 0), then hands it to the same pipeline (steps 1–14 unchanged).
+
+### Target settings
+
+- Proxmox API URL, node, resource pool, storage, network bridge, template VM
+  id, optional VLAN tag.
+- API token scoped to the pool (Sirdar can only see and change VMs in it),
+  stored write-only like the other credentials. TLS fingerprint pinned
+  trust-on-first-use, same rules as SSH host keys (mismatch refused, forget to
+  re-trust).
+- Per environment: vCPU, RAM, disk size, and either a static IP/CIDR + gateway
+  or DHCP (address read back from the QEMU guest agent).
+
+### Template
+
+An Ubuntu 24.04 cloud-image template with cloud-init and `qemu-guest-agent`.
+Sirdar can create it (**Prepare template** on the target) or use an existing
+template id. One template per Proxmox target.
+
+### Step 0 — provision (Terraform)
+
+Terraform with the `bpg/proxmox` provider, run by Sirdar with one state file
+per environment on a Sirdar volume (`sirdar/terraform/<env>/`):
+
+1. Full-clone the template into the pool as `ss-<env>`.
+2. Set CPU (type `host`), RAM, disk size (VirtIO SCSI, discard on), bridge.
+3. cloud-init: `deploy` user, Sirdar's SSH public key, hostname, IP config.
+4. Start, wait for the guest agent, read the IP, wait for SSH.
+5. Record the VM id and IP on the environment; the VM's SSH host key is
+   trusted on first contact like any SSH target.
+
+Idempotent: an existing VM matching the state is left alone; a changed size
+is applied (reboot when Proxmox requires it, shown in the deploy log).
+
+### What Proxmox adds to the pipeline
+
+- **Pre-deploy VM snapshot** before step 6 (kept: last N, default 3), offered
+  by **Roll back** as a whole-machine restore alongside the DB dump.
+- **Delete environment** also destroys the VM (`terraform destroy`), after the
+  existing typed-name gate.
+- **Fresh box** — a throwaway environment on a new clone, for testing the
+  bootstrap path (step 2) on a clean host.
+
+### Permissions and tests
+
+- Uses the existing `deploy` levels: creating/sizing a Proxmox environment is
+  `deploy:add`; VM snapshot restore and destroy are `deploy:change`.
+- Unit tests: Terraform variable rendering, state-path isolation per
+  environment, fingerprint pinning, token never in logs or plan output.
+  Integration: a real Proxmox node (Jimmy's Supermicro) — provision, deploy,
+  snapshot, roll back, destroy, and confirm nothing outside the pool changed.
+
 ## Phasing
 
 Each phase gets its own plan and merge.
@@ -284,11 +342,14 @@ Each phase gets its own plan and merge.
    Backups tab and rollback.
 4. **DNS + proxy** — Cloudflare and NPM modules, `managed_records`, smoke
    tests, teardown, Settings credential tests.
+5. **Proxmox targets** — Proxmox target type, template preparation, Terraform
+   step 0, VM snapshots in rollback, destroy on delete (Section 6).
 
 ## Out of scope
 
 - CI (test gate, GHCR publishing, auto-deploy) — separate project.
-- Terraform / cloud provisioning, DigitalOcean / GCP / AWS deploys.
+- Cloud provisioning (DigitalOcean / GCP / AWS); they reuse Section 6's
+  Terraform step 0 with their own providers later.
 - Blue/green prod, load balancers, multi-host environments in practice (the
   data model allows per-service hosts; the pipeline targets one host for now).
 - Data scrubbing for snapshots.
