@@ -9,10 +9,14 @@ export interface SystemStatus {
   workers_paused: boolean;
   banner: string | null;
   totp_trust_days: number;
+  email_enabled: boolean;
+  password_reset_ttl_minutes: number;
+  password_min_length: number;
 }
 
 export const DEFAULT_SYSTEM_STATUS: SystemStatus = {
   read_only: false, read_only_message: '', workers_paused: false, banner: null, totp_trust_days: 7,
+  email_enabled: false, password_reset_ttl_minutes: 15, password_min_length: 8,
 };
 
 export async function getSystemStatus(): Promise<SystemStatus> {

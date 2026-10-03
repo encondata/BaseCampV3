@@ -532,6 +532,32 @@ export async function changePasswordRequest(
   if (!resp.ok) throw await errorFrom(resp);
 }
 
+/* ── self-service password reset (public, no token) ────────────── */
+
+async function postPublic(path: string, body: unknown): Promise<Response> {
+  const resp = await fetch(`${apiUrl()}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp;
+}
+
+/** Same answer whether or not the account exists. */
+export async function requestPasswordReset(email: string): Promise<void> {
+  await postPublic('/auth/password-reset/request', { email });
+}
+
+export async function checkPasswordResetToken(token: string): Promise<boolean> {
+  const resp = await postPublic('/auth/password-reset/check', { token });
+  return ((await resp.json()) as { valid: boolean }).valid;
+}
+
+export async function confirmPasswordReset(token: string, newPassword: string): Promise<void> {
+  await postPublic('/auth/password-reset/confirm', { token, new_password: newPassword });
+}
+
 /* ── admin account actions (Users page) ────────────────────────── */
 
 export async function adminResetPasswordRequest(
