@@ -137,6 +137,14 @@ const MESSAGES: Record<string, string> = {
   targets_file_unwritable: "Sirdar couldn't save deploy-targets.env. Check that it's writable; see the README.",
   targets_file_unreadable: "Sirdar couldn't read deploy-targets.env. Check that it's valid UTF-8; see the README.",
   value_invalid: "One of the values has a character that can't be saved. Remove line breaks and control characters.",
+  name_taken: 'A target with that name already exists.',
+  host_invalid: "That host isn't valid. Use a hostname or IP address.",
+  user_invalid: "That user name isn't valid.",
+  key_file_invalid: "That key file name isn't valid.",
+  key_file_not_found: "That key file isn't in sirdar/deploy-keys/ on the Sirdar host.",
+  auth_required: 'Add a password or choose a key file.',
+  password_too_long: 'That password is too long.',
+  passphrase_too_long: 'That passphrase is too long.',
   sudo_password_too_long: 'That sudo password is too long.',
   source_unavailable: "Couldn't reach the portal database. Nothing was changed.",
   // environments
@@ -303,7 +311,7 @@ export interface AdoptEnvironmentBody { name: string; type: EnvType; target: str
 export interface EnvironmentPatch {
   git_ref?: string; target?: string; base_domain?: string; proxy_ip?: string; bind_ip?: string;
   keep_dumps?: number; spaces_bucket?: string; log_level?: string;
-  services?: Record<string, { port?: number; host_ip?: string }>;
+  services?: Record<string, { port?: number; host_ip?: string; proxied?: boolean }>;
   secrets?: Record<string, string>;
 }
 export interface DeploymentBody { mode: DeployMode; git_ref?: string; confirm_name?: string }

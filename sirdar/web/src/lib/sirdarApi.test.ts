@@ -53,10 +53,11 @@ function deployCodes(): string[] {
   // jsdom replaces the global URL, so resolve from the file's path as a string.
   const root = join(dirname(fileURLToPath(import.meta.url)), '../../../api/src/sirdar_api');
   const found = new Set<string>(['sudo_password_too_long']);
-  for (const file of ['api/routes/deploy.py', 'deploy/environments.py', 'deploy/gitref.py']) {
+  for (const file of ['api/routes/deploy.py', 'deploy/environments.py', 'deploy/gitref.py',
+                       'deploy/ssh_targets.py']) {
     const src = readFileSync(join(root, file), 'utf8');
-    for (const re of [/"code": "([a-z_]+)"/g, /(?:EnvError|RefError)\("([a-z_]+)"/g,
-                      /_check_ipv4\([^()]*,\s*"([a-z]+_[a-z_]+)"\)/g]) {
+    for (const re of [/"code": "([a-z_]+)"/g, /(?:EnvError|RefError|TargetError)\("([a-z_]+)"/g,
+                      /"([a-z]+_too_long)"/g, /_check_ipv4\([^()]*,\s*"([a-z]+_[a-z_]+)"\)/g]) {
       for (const m of src.matchAll(re)) found.add(m[1]);
     }
   }
