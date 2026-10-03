@@ -154,3 +154,54 @@ it('Escape and Cancel close it', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(onClose).toHaveBeenCalledTimes(2);
 });
+
+const TWO_TARGETS = {
+  ...TARGETS,
+  targets: [...TARGETS.targets,
+    { id: 'ssh:other', label: 'Other box', kind: 'ssh' as const, source: 'saved' as const, available: true, configured: true }],
+};
+const UNKNOWN_KEY = new ApiError(409, 'host_key_unknown', {
+  code: 'host_key_unknown', host: '10.10.48.63', port: 22, key_type: 'ssh-ed25519', fingerprint: 'SHA256:abc' });
+
+it('adopt: trusting replays the exact failed attempt even if the form changed behind the host-key modal', async () => {
+  api.getDeployTargets.mockResolvedValue(TWO_TARGETS);
+  api.adoptEnvironment
+    .mockRejectedValueOnce(UNKNOWN_KEY)
+    .mockResolvedValueOnce({ ...ENV, imported_secrets: [], ignored_keys: [] });
+  api.trustKnownHost.mockResolvedValue({});
+  await open();
+  await userEvent.click(screen.getByRole('radio', { name: 'Adopt existing' }));
+  await userEvent.type(screen.getByLabelText('Name'), 'uat');
+  await userEvent.click(screen.getByRole('button', { name: 'Adopt' }));
+  const trust = await screen.findByRole('button', { name: 'Trust and adopt' });
+  // The form behind the host-key modal is inert while it is open.
+  expect(screen.getByRole('dialog', { name: 'New environment', hidden: true }).closest('[inert]')).toBeTruthy();
+  // jsdom doesn't enforce inert, so change the target and name anyway.
+  await userEvent.click(screen.getByRole('combobox', { name: 'Target', hidden: true }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Other box', hidden: true }));
+  await userEvent.type(screen.getByLabelText('Name'), 'x');
+  await userEvent.click(trust);
+  expect(await screen.findByText('None. Sirdar knows every key in that .env.')).toBeTruthy();
+  expect(api.trustKnownHost).toHaveBeenCalledWith('10.10.48.63', 22, 'SHA256:abc', 'ssh:lab');
+  expect(api.adoptEnvironment).toHaveBeenCalledTimes(2);
+  expect(api.adoptEnvironment.mock.calls[1][0]).toEqual(api.adoptEnvironment.mock.calls[0][0]);
+  expect(api.adoptEnvironment.mock.calls[1][0]).toEqual({ name: 'uat', type: 'dev', target: 'ssh:lab', git_ref: 'main' });
+  expect(screen.getByRole('dialog', { name: 'New environment' }).closest('[inert]')).toBeNull();
+});
+
+it('create: an unknown host key is trusted with "Trust and create" and retries the same payload', async () => {
+  api.createEnvironment.mockReset();
+  api.createEnvironment.mockRejectedValueOnce(UNKNOWN_KEY).mockResolvedValueOnce(ENV);
+  api.trustKnownHost.mockResolvedValue({});
+  const { onCreated } = await open();
+  await fillBasics();
+  await next();
+  await next();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Trust and create' }));
+  expect(screen.queryByRole('button', { name: 'Trust and adopt' })).toBeNull();
+  await waitFor(() => expect(onCreated).toHaveBeenCalledWith(ENV));
+  expect(api.trustKnownHost).toHaveBeenCalledWith('10.10.48.63', 22, 'SHA256:abc', 'ssh:lab');
+  expect(api.createEnvironment).toHaveBeenCalledTimes(2);
+  expect(api.createEnvironment.mock.calls[1][0]).toEqual(api.createEnvironment.mock.calls[0][0]);
+});

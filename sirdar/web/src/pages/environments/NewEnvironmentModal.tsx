@@ -1,7 +1,7 @@
 /** New environment: Create (Basics › Services › Review) makes a new
  *  environment record with generated secrets; Adopt (Basics › Result) reads a
  *  hand-built environment's .env and checkout over SSH and changes nothing. */
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
 import ComboBox from '@portal/components/ComboBox';
@@ -12,7 +12,8 @@ import { arrowNav } from '../../lib/arrowNav';
 import { NAME_HELP, ipv4Problem, nameProblem, portProblem, refProblem } from '../../lib/envRules';
 import {
   adoptEnvironment, createEnvironment, deployErrorText, getDeployTargets, getEnvironmentDefaults,
-  type AdoptedEnvironment, type DeployTarget, type EnvType, type Environment, type EnvironmentDefaults,
+  type AdoptEnvironmentBody, type AdoptedEnvironment, type DeployTarget, type EnvType, type Environment,
+  type EnvironmentDefaults, type NewEnvironmentBody,
 } from '../../lib/sirdarApi';
 
 import { TYPE_LABEL, sshTargets } from './labels';
@@ -21,6 +22,8 @@ type Mode = 'new' | 'adopt';
 type Step = 'basics' | 'services' | 'review' | 'result';
 type Field = 'name' | 'target' | 'ref' | 'domain' | 'proxy' | 'bind' | 'services' | 'form';
 type Errors = Partial<Record<Field, string>>;
+/** One submission, kept whole so a host-key retry replays exactly what failed. */
+type Attempt = { mode: 'new'; body: NewEnvironmentBody } | { mode: 'adopt'; body: AdoptEnvironmentBody };
 
 const TYPES: EnvType[] = ['dev', 'beta', 'custom'];
 const MODES: [Mode, string][] = [['new', 'Create new'], ['adopt', 'Adopt existing']];
@@ -67,12 +70,17 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
-  const hostKey = useHostKeyTrust({
-    target, canTrust: can('deploy', 'change'), trustLabel: 'Trust and adopt',
-    onTrusted: () => { void submit(); }, onProblem: (message) => setErrors({ form: message }),
+  const hostKey = useHostKeyTrust<Attempt>({
+    canTrust: can('deploy', 'change'), trustLabel: mode === 'new' ? 'Trust and create' : 'Trust and adopt',
+    onTrusted: (attempt) => { void run(attempt); }, onProblem: (message) => setErrors({ form: message }),
   });
   const hostKeyOpen = useRef(false);
   hostKeyOpen.current = hostKey.open;
+  // The form is inert while the host-key modal is open. A layout effect, so inert is
+  // lifted before HostKeyModal's passive cleanup hands focus back to its opener.
+  // (@types/react 18 has no `inert` prop, hence the attribute.)
+  const scrimRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => { scrimRef.current?.toggleAttribute('inert', hostKey.open); }, [hostKey.open]);
 
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
@@ -131,43 +139,50 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
   };
   const back = () => { setErrors({}); setStep(step === 'review' ? 'services' : 'basics'); };
 
-  const fail = (err: unknown) => {
-    if (hostKey.handle(err)) return;
+  const fail = (err: unknown, attempt: Attempt) => {
+    if (hostKey.handle(err, attempt.body.target, attempt)) return;
     const code = (err as { code?: string }).code ?? '';
     const field = CODE_FIELD[code] ?? 'form';
-    setErrors({ [field]: deployErrorText(err, mode === 'new' ? "Couldn't create the environment." : "Couldn't adopt the environment.") });
+    setErrors({ [field]: deployErrorText(err, attempt.mode === 'new' ? "Couldn't create the environment." : "Couldn't adopt the environment.") });
     if (field === 'services') setStep('services');
     else if (field !== 'form') setStep('basics');
   };
 
-  const submit = async () => {
+  const run = async (attempt: Attempt) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setErrors({});
+    try {
+      if (attempt.mode === 'new') {
+        onCreated(await createEnvironment(attempt.body));
+        return;
+      }
+      setResult(await adoptEnvironment(attempt.body));
+      setStep('result');
+    } catch (err) {
+      fail(err, attempt);
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  };
+
+  const submit = () => {
     if (busyRef.current) return;
     if (mode === 'adopt') {
       const e = basicsErrors();
       setErrors(e);
       if (Object.keys(e).length) return;
+      void run({ mode, body: { name: trimmed, type, target, git_ref: ref.trim() } });
+      return;
     }
-    busyRef.current = true;
-    setBusy(true);
-    setErrors({});
-    try {
-      if (mode === 'new') {
-        onCreated(await createEnvironment({
-          name: trimmed, type, target, git_ref: ref.trim(),
-          ...(domain.trim() ? { base_domain: domain.trim() } : {}),
-          proxy_ip: proxy.trim(), bind_ip: bind.trim(),
-          ports: Object.fromEntries(services.map((s) => [s.service, Number(ports[s.service])])),
-        }));
-        return;
-      }
-      setResult(await adoptEnvironment({ name: trimmed, type, target, git_ref: ref.trim() }));
-      setStep('result');
-    } catch (err) {
-      fail(err);
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
-    }
+    void run({ mode, body: {
+      name: trimmed, type, target, git_ref: ref.trim(),
+      ...(domain.trim() ? { base_domain: domain.trim() } : {}),
+      proxy_ip: proxy.trim(), bind_ip: bind.trim(),
+      ports: Object.fromEntries(services.map((s) => [s.service, Number(ports[s.service])])),
+    } });
   };
 
   const stepList = STEPS[mode];
@@ -181,7 +196,7 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
 
   return (
     <>
-      <div className="modal-scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+      <div className="modal-scrim" ref={scrimRef} onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
         <div className="modal-card reports-modal-card rgm-card sirdar-envmodal-card" role="dialog" aria-modal="true"
              aria-labelledby="sirdar-envmodal-title">
           <div className="modal-head">
@@ -372,11 +387,11 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                   {step === 'basics' ? 'Cancel' : 'Back'}
                 </button>
                 {mode === 'adopt' ? (
-                  <button type="button" className="btn-solid" disabled={!defaults || busy} onClick={() => void submit()}>
+                  <button type="button" className="btn-solid" disabled={!defaults || busy} onClick={submit}>
                     {busy ? 'Adopting…' : 'Adopt'}
                   </button>
                 ) : step === 'review' ? (
-                  <button type="button" className="btn-solid" disabled={busy} onClick={() => void submit()}>
+                  <button type="button" className="btn-solid" disabled={busy} onClick={submit}>
                     {busy ? 'Creating…' : 'Create environment'}
                   </button>
                 ) : (
