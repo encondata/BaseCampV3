@@ -126,7 +126,7 @@ async def test_never_logs_the_address(db, email_on, caplog):
     assert (await _get(giveup_id)).status == "failed"
 
 
-async def test_one_bad_row_does_not_abort_batch(db, email_on, monkeypatch):
+async def test_one_bad_row_does_not_abort_batch(db, email_on, monkeypatch, caplog):
     import serversherpa.mail.delivery as delivery
     first = await _queue(db)
     second = await _queue(db, next_attempt_at=datetime.now(UTC) + timedelta(seconds=1))
@@ -136,7 +136,7 @@ async def test_one_bad_row_does_not_abort_batch(db, email_on, monkeypatch):
     async def flaky(row, send):
         order.append(row.id)
         if len(order) == 1:
-            raise RuntimeError("boom")
+            raise RuntimeError("bad row for alice@test.example.com")
         await real(row, send)
 
     monkeypatch.setattr(delivery, "_deliver", flaky)
@@ -144,3 +144,4 @@ async def test_one_bad_row_does_not_abort_batch(db, email_on, monkeypatch):
     assert await deliver_once(get_sessionmaker(), send=FakeSend()) == 2
     assert (await _get(order[1])).status == "sent"
     assert {first, second} == set(order)
+    assert "alice@test.example.com" not in caplog.text

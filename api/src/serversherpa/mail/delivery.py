@@ -107,6 +107,6 @@ async def deliver_once(maker, *, send=send_email) -> int:
                     continue
                 await _deliver(row, send)
                 await db.commit()
-        except Exception:
-            logger.exception("could not deliver email %s", row_id)
+        except Exception as exc:
+            logger.error("could not deliver email %s: %s", row_id, type(exc).__name__)
     return len(ids)
