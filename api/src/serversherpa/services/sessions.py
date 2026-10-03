@@ -1,10 +1,9 @@
-"""Live login families for one person — shared by /auth/me/sessions (adds
-the `current` flag) and GET /users/{id} (admin view, no current flag)."""
+"""Login families for one person — live_session_rows (shared by /auth/me/sessions and GET /users/{id}) and revoke_all_sessions (admin routes, self-service password reset)."""
 
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import AuthSession
@@ -36,3 +35,11 @@ async def live_session_rows(db: AsyncSession, person_id: uuid.UUID) -> list[dict
     } for s in live]
     rows.sort(key=lambda r: r["last_active_at"], reverse=True)
     return rows
+
+
+async def revoke_all_sessions(db: AsyncSession, person_id: uuid.UUID, reason: str) -> None:
+    """Revoke every live login family for one person. Does not commit."""
+    await db.execute(
+        update(AuthSession)
+        .where(AuthSession.person_id == person_id, AuthSession.revoked_at.is_(None))
+        .values(revoked_at=datetime.now(UTC), revoke_reason=reason))
