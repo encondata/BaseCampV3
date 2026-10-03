@@ -3,19 +3,24 @@ Responses never carry secrets; error reasons are our own copy."""
 
 import asyncio
 import os
+import uuid
 from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from sirdar_api.api.deps import AuthContext, DbSession, client_ip, require_permission
 from sirdar_api.config import get_settings
-from sirdar_api.db.models import Environment, SshKnownHost
+from sirdar_api.db.models import Deployment, DeploymentStep, Environment, SshKnownHost
 from sirdar_api.deploy import (
-    ConnectFailed, digitalocean, environments, known_hosts, names, serialize, ssh, targets,
+    ConnectFailed, digitalocean, environments, gitref, known_hosts, names, pipeline, serialize,
+    ssh, targets, vault,
 )
+from sirdar_api.deploy.ssh import SshTargetConfig
+from sirdar_api.deploy.steps import plan_for
 from sirdar_api.deploy.ssh_targets import SavedSshTarget, TargetError
 from sirdar_api.services.audit import audit
 
@@ -466,3 +471,180 @@ async def update_environment(name: str, body: EnvironmentPatch, request: Request
         await db.commit()
         await db.refresh(env)
     return await serialize.environment_out(db, env)
+
+
+# ---- deployments (deploy pipeline) ---------------------------------------------
+
+_REF_STATUS = {"ref_invalid": 422, "ref_not_found": 422, "git_missing": 502,
+               "ref_lookup_failed": 502}
+_REF_REASON = {
+    "git_missing": "git isn't installed on the target. Install it "
+                   "(sudo apt-get install git) and try again.",
+    "ref_lookup_failed": "The target couldn't list the repository's branches and tags.",
+}
+
+
+class DeploymentIn(BaseModel):
+    mode: Literal["update", "reset"] = "update"
+    git_ref: str | None = Field(default=None, max_length=200)
+    # Reset only: must equal the environment's name exactly.
+    confirm_name: str | None = Field(default=None, max_length=64)
+
+
+class RetryIn(BaseModel):
+    from_step: int | None = Field(default=None, ge=1, le=99)
+    confirm_name: str | None = Field(default=None, max_length=64)
+
+
+def _forbidden() -> HTTPException:
+    return HTTPException(status_code=403, detail={"code": "forbidden"})
+
+
+def _require_mode(actor: AuthContext, mode: str) -> None:
+    """Update needs deploy:add (the route's guard); Reset also needs change."""
+    if mode == "reset" and not actor.access.can("deploy", "change"):
+        raise _forbidden()
+
+
+def _deploy_target(env: Environment) -> SshTargetConfig:
+    settings = get_settings()
+    if not vault.is_configured(settings):
+        raise HTTPException(status_code=400, detail={"code": "secrets_key_missing"})
+    cfg = targets.ssh_config_for(env.target_id, settings)
+    if cfg is None:
+        raise HTTPException(status_code=400, detail={"code": "target_not_configured"})
+    return cfg
+
+
+async def _deployment(db, deployment_id: uuid.UUID) -> Deployment:
+    dep = await db.get(Deployment, deployment_id)
+    if dep is None:
+        raise HTTPException(status_code=404, detail={"code": "deployment_not_found"})
+    return dep
+
+
+async def _stopped_step(db, deployment_id: uuid.UUID) -> int | None:
+    """Where a deployment stopped: its failed, cancelled or interrupted step, else
+    (cancelled or interrupted before any step ran) its first step that didn't run.
+    Cancelled and interrupted deployments carry no failed_step, so the step rows
+    are the record."""
+    rows = list(await db.execute(
+        select(DeploymentStep.number, DeploymentStep.status)
+        .where(DeploymentStep.deployment_id == deployment_id)
+        .order_by(DeploymentStep.number)))
+    for number, status in rows:
+        if status in pipeline.RETRYABLE_STATUSES:
+            return number
+    return next((number for number, status in rows if status == "not_run"), None)
+
+
+async def _launch(db, env: Environment, request: Request, actor: AuthContext, *, action: str,
+                  mode: str, git_ref: str, sha: str, start_step: int = 1,
+                  retry_of: uuid.UUID | None = None) -> dict:
+    env_name = env.name           # read now: a lock conflict rolls the session back
+    try:
+        dep = await pipeline.create_deployment(db, env, mode=mode, git_ref=git_ref, sha=sha,
+                                               actor_id=actor.user.person_id,
+                                               start_step=start_step, retry_of=retry_of)
+    except pipeline.DeployInProgress:
+        raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"}) from None
+    except ValueError:            # start_step isn't a step of this mode's plan
+        raise HTTPException(status_code=422, detail={"code": "invalid_start_step"}) from None
+    changes: dict = {"environment": env_name, "mode": mode, "git_ref": git_ref, "sha": sha}
+    if retry_of is not None:
+        changes |= {"retry_of": str(retry_of), "from_step": start_step}
+    audit(db, actor_id=actor.user.person_id, action=action, entity_type="deployment",
+          entity_id=str(dep.id), ip=client_ip(request), changes=changes)
+    await db.commit()
+    pipeline.launch(dep.id)
+    return await serialize.deployment_out(db, dep, environment_name=env_name)
+
+
+@router.post("/environments/{name}/deployments", status_code=201)
+async def start_deployment(name: str, body: DeploymentIn, request: Request, db: DbSession,
+                           actor: AuthContext = require_permission("deploy", "add")):
+    _require_mode(actor, body.mode)
+    env = await _environment(db, name)
+    if body.mode == "reset" and body.confirm_name != env.name:
+        raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
+    if await environments.is_deploying(db, env.id):
+        raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"})
+    cfg = _deploy_target(env)
+    ref = body.git_ref or env.git_ref
+    try:
+        sha = await gitref.resolve_ref(cfg, db, get_settings().deploy_repo_url, ref)
+    except gitref.RefError as e:
+        detail: dict = {"code": e.code}
+        if e.code in _REF_REASON:
+            detail["reason"] = _REF_REASON[e.code]
+        raise HTTPException(status_code=_REF_STATUS[e.code], detail=detail) from None
+    except _SSH_ERRORS as e:
+        raise _ssh_http(e) from None
+    return await _launch(db, env, request, actor, action="deploy.deployment_start",
+                         mode=body.mode, git_ref=ref, sha=sha)
+
+
+@router.get("/environments/{name}/deployments")
+async def list_deployments(name: str, db: DbSession,
+                           limit: int = Query(default=20, ge=1, le=100),
+                           actor: AuthContext = require_permission("deploy", "view")):
+    env = await _environment(db, name)
+    rows = await serialize.recent_deployments(db, env.id, limit)
+    return {"deployments": [await serialize.deployment_summary(db, d) for d in rows]}
+
+
+@router.get("/deployments/{deployment_id}")
+async def get_deployment(deployment_id: uuid.UUID, db: DbSession,
+                         tail: int = Query(default=serialize.LOG_TAIL_DEFAULT, ge=0,
+                                           le=pipeline.LOG_LIMIT),
+                         actor: AuthContext = require_permission("deploy", "view")):
+    dep = await _deployment(db, deployment_id)
+    env = await db.get(Environment, dep.environment_id)
+    return await serialize.deployment_out(db, dep, environment_name=env.name, tail=tail)
+
+
+@router.post("/deployments/{deployment_id}/cancel", status_code=202)
+async def cancel_deployment(deployment_id: uuid.UUID, request: Request, db: DbSession,
+                            actor: AuthContext = require_permission("deploy", "change")):
+    dep = await _deployment(db, deployment_id)
+    if dep.status != "running":
+        raise HTTPException(status_code=409, detail={"code": "not_running"})
+    env = await db.get(Environment, dep.environment_id)
+    audit(db, actor_id=actor.user.person_id, action="deploy.deployment_cancel",
+          entity_type="deployment", entity_id=str(dep.id), ip=client_ip(request),
+          changes={"environment": env.name, "mode": dep.mode, "sha": dep.sha})
+    await db.commit()
+    if pipeline.request_cancel(dep.id):
+        return {"id": str(dep.id), "status": "cancelling"}
+    await pipeline.close_orphan(dep.id)        # running record, no task in this process
+    return {"id": str(dep.id), "status": "cancelled"}
+
+
+@router.post("/deployments/{deployment_id}/retry", status_code=201)
+async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Request,
+                           db: DbSession,
+                           actor: AuthContext = require_permission("deploy", "add")):
+    dep = await _deployment(db, deployment_id)
+    _require_mode(actor, dep.mode)
+    if dep.status not in pipeline.RETRYABLE_STATUSES or dep.mode not in ("update", "reset"):
+        raise HTTPException(status_code=409, detail={"code": "not_retryable"})
+    env = await db.get(Environment, dep.environment_id)
+    if dep.mode == "reset" and body.confirm_name != env.name:
+        raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
+    latest = await serialize.latest_deployment(db, env.id)
+    if latest is None or latest.id != dep.id:
+        raise HTTPException(status_code=409, detail={"code": "retry_not_latest"})
+    stopped = await _stopped_step(db, dep.id)
+    if stopped is None:
+        raise HTTPException(status_code=409, detail={"code": "not_retryable"})
+    from_step = body.from_step or stopped
+    if from_step not in [s.number for s in plan_for(dep.mode)] or from_step > stopped:
+        raise HTTPException(status_code=422, detail={"code": "from_step_invalid"})
+    cfg = _deploy_target(env)
+    try:
+        await ssh.pinned_host_key(db, cfg.host, cfg.port)
+    except _SSH_ERRORS as e:
+        raise _ssh_http(e) from None
+    return await _launch(db, env, request, actor, action="deploy.deployment_retry",
+                         mode=dep.mode, git_ref=dep.git_ref, sha=dep.sha,
+                         start_step=from_step, retry_of=dep.id)
