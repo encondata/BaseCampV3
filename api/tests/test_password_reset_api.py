@@ -122,9 +122,20 @@ async def test_request_failure_still_answers_202(client, seeded_user, monkeypatc
     assert resp.status_code == 202
     assert resp.content == b'{"status":"accepted"}'
     assert "alice@test.example.com" not in caplog.text
+    assert "RuntimeError" in caplog.text
 
 
 async def test_malformed_email_gets_the_same_202(client, seeded_user):
     resp = await _request(client, "not-an-email")
     assert resp.status_code == 202
     assert resp.content == b'{"status":"accepted"}'
+
+
+async def test_oversized_token_is_invalid_not_422(client, seeded_user):
+    big = "x" * 300
+    check = await client.post("/auth/password-reset/check", json={"token": big})
+    assert check.status_code == 200 and check.json() == {"valid": False}
+    confirm = await client.post("/auth/password-reset/confirm",
+                                json={"token": big, "new_password": "A-brand-new-pass-123"})
+    assert confirm.status_code == 400
+    assert confirm.json()["detail"]["code"] == "reset_token_invalid"

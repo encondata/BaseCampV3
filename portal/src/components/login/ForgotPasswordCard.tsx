@@ -11,7 +11,8 @@ import { ApiError, requestPasswordReset } from '../../lib/api';
 
 interface Props {
   initialEmail: string;
-  emailEnabled: boolean;
+  /** null while /system/status is still loading — neutral copy until it resolves. */
+  emailEnabled: boolean | null;
   ttlMinutes: number;
   onClose: () => void;
 }
@@ -49,21 +50,25 @@ export default function ForgotPasswordCard({ initialEmail, emailEnabled, ttlMinu
         <div className="eyebrow">Account recovery</div>
         {sent ? (
           <>
-            <h3 className="otp-title" id="forgot-title">{emailEnabled ? 'Check your email' : 'Request sent'}</h3>
+            <h3 className="otp-title" id="forgot-title">{emailEnabled === false ? 'Request sent' : 'Check your email'}</h3>
             <p className="otp-text" role="status">
-              {emailEnabled
-                ? `If an account exists for that email, a reset link is on its way. It expires in ${ttlMinutes} minutes.`
-                : "If an account exists for that email, your administrators have been asked to reset it. They'll be in touch."}
+              {emailEnabled === null
+                ? "If an account exists for that email, we've started a password reset."
+                : emailEnabled
+                  ? `If an account exists for that email, a reset link is on its way. It expires in ${ttlMinutes} minutes.`
+                  : "If an account exists for that email, your administrators have been asked to reset it. They'll be in touch."}
             </p>
-            <button className="btn otp-verify" type="button" onClick={onClose}><span>Done</span></button>
+            <button className="btn otp-verify" type="button" autoFocus onClick={onClose}><span>Done</span></button>
           </>
         ) : (
           <form onSubmit={submit} noValidate>
             <h3 className="otp-title" id="forgot-title">Reset your password</h3>
             <p className="otp-text">
-              {emailEnabled
-                ? "Enter your account email and we'll send you a link to choose a new password."
-                : "Enter your account email and we'll ask your administrators to reset your password."}
+              {emailEnabled === null
+                ? 'Enter your account email to reset your password.'
+                : emailEnabled
+                  ? "Enter your account email and we'll send you a link to choose a new password."
+                  : "Enter your account email and we'll ask your administrators to reset your password."}
             </p>
             <div className="field">
               <label htmlFor="forgot-email">Email</label>
@@ -75,7 +80,7 @@ export default function ForgotPasswordCard({ initialEmail, emailEnabled, ttlMinu
             </div>
             <p className={`otp-error ${error ? 'show' : ''}`} role={error ? 'alert' : undefined}>{error}</p>
             <button className={`btn otp-verify ${sending ? 'loading' : ''}`} type="submit" disabled={sending}>
-              <span>{emailEnabled ? 'Send reset link' : 'Ask for a reset'}</span>
+              <span>{emailEnabled === null ? 'Reset password' : emailEnabled ? 'Send reset link' : 'Ask for a reset'}</span>
               <span className="spinner"></span>
             </button>
           </form>

@@ -112,11 +112,11 @@ class PasswordResetRequestIn(BaseModel):
 
 
 class PasswordResetCheckIn(BaseModel):
-    token: str = Field(max_length=200)
+    token: str
 
 
 class PasswordResetConfirmIn(BaseModel):
-    token: str = Field(max_length=200)
+    token: str
     new_password: str = Field(max_length=1024)
 
 

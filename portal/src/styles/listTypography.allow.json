@@ -530,7 +530,7 @@
   {
     "file": "components/AuthCard.tsx",
     "selector": "fontFamily: \"'Geologica', sans-serif\",",
-    "reason": "not list content: the auth screens (forced password change, reset password) renders INSTEAD of .portal-shell, so it has no theme/list tokens available and is styled entirely inline",
+    "reason": "not list content: the auth screens (forced password change, reset password) render INSTEAD of .portal-shell, so it has no theme/list tokens available and is styled entirely inline",
     "check": "inline"
   },
   {
@@ -542,7 +542,7 @@
   {
     "file": "components/AuthCard.tsx",
     "selector": "<h1 style={{ margin: '10px 0 6px', fontSize: 24, color: '#1b2129' }}>{title}</h1>",
-    "reason": "not list content: auth screens (forced password change, reset password) (see the file-level entry above) \u2014 the \"Set your password\" heading",
+    "reason": "not list content: auth screens (forced password change, reset password) (see the file-level entry above) \u2014 the AuthCard heading",
     "check": "inline"
   },
   {

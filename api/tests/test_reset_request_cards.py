@@ -18,7 +18,7 @@ async def _cards(db):
 
 async def test_open_fans_out_to_users_change_holders_only(client, db, seeded_user):
     await _make(db, client, "super_admin", "sa@test.example.com")
-    await _make(db, client, "worker", "st@test.example.com")  # staff also holds users:change
+    await _make(db, client, "worker", "st@test.example.com")  # worker lacks users:change (staff holds it, so it can't be the non-holder)
     n = await reset_requests.open_or_bump(db, seeded_user)
     await db.commit()
     cards = await _cards(db)

@@ -149,6 +149,10 @@ reset_confirm_limiter = IpRateLimiter(
     limit=get_settings().password_reset_confirm_rate_limit, window_seconds=RESET_WINDOW_SECONDS)
 
 
+# Real tokens are ~43 chars; anything longer is just an invalid token.
+MAX_RESET_TOKEN_LEN = 512
+
+
 def _limit(limiter: IpRateLimiter, request: Request) -> None:
     if not limiter.hit(rate_limit_ip(request)):
         raise HTTPException(status_code=429, detail={"code": "rate_limited"})
@@ -166,6 +170,7 @@ async def password_reset_request(
     _limit(reset_request_limiter, request)
     try:
         await password_reset.request_reset(db, body.email, ip=client_ip(request))
+        await db.commit()
     except Exception as exc:
         # a failure for a real account must not look different from the
         # no-op for an unknown one; log the class only (no address/token)
@@ -179,6 +184,8 @@ async def password_reset_check(
     body: PasswordResetCheckIn, request: Request, db: DbSession,
 ) -> PasswordResetCheckOut:
     _limit(reset_confirm_limiter, request)
+    if len(body.token) > MAX_RESET_TOKEN_LEN:
+        return PasswordResetCheckOut(valid=False)
     valid = await password_reset.find_valid(db, body.token) is not None
     await db.rollback()          # release the FOR UPDATE lock
     return PasswordResetCheckOut(valid=valid)
@@ -189,6 +196,8 @@ async def password_reset_confirm(
     body: PasswordResetConfirmIn, request: Request, db: DbSession,
 ) -> None:
     _limit(reset_confirm_limiter, request)
+    if len(body.token) > MAX_RESET_TOKEN_LEN:
+        raise _invalid_reset()
     found = await password_reset.find_valid(db, body.token)
     if found is None:
         raise _invalid_reset()

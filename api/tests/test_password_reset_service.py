@@ -23,6 +23,7 @@ def _raw_from(row: EmailOutbox) -> str:
 
 async def _issue(db, ip="203.0.113.5"):
     await svc.request_reset(db, EMAIL, ip=ip)
+    await db.commit()
     db.expire_all()
     row = (await db.scalars(select(EmailOutbox).order_by(EmailOutbox.created_at.desc()))).first()
     return _raw_from(row)
@@ -48,6 +49,7 @@ async def test_unknown_and_disabled_accounts_do_nothing(db, seeded_user, email_o
     account.disabled_at = datetime.now(UTC)
     await db.commit()
     await svc.request_reset(db, EMAIL, ip=None)
+    await db.commit()
     db.expire_all()
     assert await db.scalar(select(EmailOutbox)) is None
     assert await db.scalar(select(PasswordResetToken)) is None
@@ -56,6 +58,7 @@ async def test_unknown_and_disabled_accounts_do_nothing(db, seeded_user, email_o
 async def test_email_off_opens_admin_card_instead(client, db, seeded_user):
     await _make(db, client, "super_admin", "sa@test.example.com")
     await svc.request_reset(db, EMAIL, ip=None)
+    await db.commit()
     db.expire_all()
     assert await db.scalar(select(PasswordResetToken)) is None
     card = await db.scalar(select(Notification).where(

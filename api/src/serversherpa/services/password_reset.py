@@ -3,7 +3,8 @@
 A token is valid when it exists, is unused, unexpired, its account is
 still active, and the password hasn't changed since it was issued. The
 request side never reveals whether an account exists — callers answer
-the same way whatever happens here."""
+the same way whatever happens here. Helpers here never commit; the
+routes do."""
 
 import hashlib
 import secrets
@@ -77,7 +78,6 @@ async def request_reset(db: AsyncSession, email: str, *, ip: str | None) -> None
         via = "admin"
     audit(db, actor_id=None, entity_type="auth", entity_id=account.email,
           action="password.reset_requested", changes={"via": via}, ip=ip)
-    await db.commit()
 
 
 async def find_valid(db: AsyncSession, raw: str

@@ -48,3 +48,12 @@ it('shows the rate-limit message on 429', async () => {
   await user.click(screen.getByRole('button', { name: 'Send reset link' }));
   expect(await screen.findByText('Too many requests. Try again later.')).toBeTruthy();
 });
+
+it('uses neutral copy while email status is unknown', async () => {
+  const user = userEvent.setup();
+  render(<ForgotPasswordCard initialEmail="pat@x.test" emailEnabled={null} ttlMinutes={15} onClose={() => {}} />);
+  expect(screen.getByText('Enter your account email to reset your password.')).toBeTruthy();
+  await user.click(screen.getByRole('button', { name: 'Reset password' }));
+  expect(await screen.findByText("If an account exists for that email, we've started a password reset.")).toBeTruthy();
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Done' }));
+});
