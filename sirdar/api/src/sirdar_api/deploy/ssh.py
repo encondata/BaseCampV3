@@ -14,6 +14,8 @@ from sirdar_api.deploy import Check, ConnectFailed, ConnectResult, known_hosts
 
 CONNECT_TIMEOUT = 15
 COMMAND_TIMEOUT = 10
+RUN_TIMEOUT = 60
+OUTPUT_LIMIT = 256 * 1024
 CHECKS_BUDGET_SECONDS = 30
 _MAX_VALUE = 200
 _AUTH_FAILED = "The SSH server rejected the username, password or key."
@@ -72,7 +74,7 @@ class SshTargetConfig:
                         if s.deploy_ssh_key_passphrase is not None else None))
 
 
-async def _load_client_key(cfg: SshTargetConfig) -> asyncssh.SSHKey | None:
+async def load_client_key(cfg: SshTargetConfig) -> asyncssh.SSHKey | None:
     raw = cfg.key_name
     if not raw:
         return None
@@ -167,10 +169,19 @@ async def _checks(conn: asyncssh.SSHClientConnection) -> list[Check]:
     return done
 
 
-async def test_connection(cfg: SshTargetConfig, db: AsyncSession, *,
-                          target_id: str = "ssh") -> ConnectResult:
-    host, port, user = cfg.host, cfg.port, cfg.user
+@dataclass(frozen=True)
+class PinnedHost:
+    """A host whose live key matches the trusted one in ssh_known_hosts."""
 
+    key: asyncssh.SSHKey
+    key_type: str
+    fingerprint: str
+    public_key: str            # the stored OpenSSH public key line
+
+
+async def pinned_host_key(db: AsyncSession, host: str, port: int) -> PinnedHost:
+    """Fetch the live host key and compare it with the trusted one. Raises
+    HostKeyUnknown, HostKeyMismatch or ConnectFailed; never logs in."""
     live = await known_hosts.fetch_host_key(host, port)
     actual, key_type = known_hosts.fingerprint(live), live.get_algorithm()
     stored = await known_hosts.lookup(db, host, port)
@@ -183,15 +194,20 @@ async def test_connection(cfg: SshTargetConfig, db: AsyncSession, *,
     except (asyncssh.KeyImportError, ValueError):
         raise ConnectFailed("Sirdar's saved key for this host is unreadable. "
                             "Forget the host and trust it again.") from None
+    return PinnedHost(key=pinned, key_type=key_type, fingerprint=actual,
+                      public_key=stored.public_key)
 
-    client_key = await _load_client_key(cfg)
-    password = cfg.password
+
+async def connect_pinned(cfg: SshTargetConfig,
+                         pinned: PinnedHost) -> asyncssh.SSHClientConnection:
+    """Log in, accepting only the pinned host key."""
+    client_key = await load_client_key(cfg)
     try:
-        conn = await asyncio.wait_for(asyncssh.connect(
-            host, port=port, username=user, password=password,
+        return await asyncio.wait_for(asyncssh.connect(
+            cfg.host, port=cfg.port, username=cfg.user, password=cfg.password,
             client_keys=[client_key] if client_key else None,
             # Pin the stored key: (trusted host keys, trusted CA keys, revoked keys).
-            known_hosts=([pinned], [], []),
+            known_hosts=([pinned.key], [], []),
             agent_path=None, config=None, connect_timeout=CONNECT_TIMEOUT,
         ), CONNECT_TIMEOUT + 5)
     except asyncssh.PermissionDenied:
@@ -200,14 +216,42 @@ async def test_connection(cfg: SshTargetConfig, db: AsyncSession, *,
         raise ConnectFailed("The server's host key changed during the test. Try again.") \
             from None
     except (OSError, TimeoutError, asyncssh.Error):
-        raise known_hosts.unreachable(host, port) from None
+        raise known_hosts.unreachable(cfg.host, cfg.port) from None
 
+
+async def test_connection(cfg: SshTargetConfig, db: AsyncSession, *,
+                          target_id: str = "ssh") -> ConnectResult:
+    pinned = await pinned_host_key(db, cfg.host, cfg.port)
+    conn = await connect_pinned(cfg, pinned)
     async with conn:
         checks = await _checks(conn)
-    facts = {"host": host, "port": port, "user": user, "auth": cfg.auth_label,
-             "key_type": key_type, "fingerprint": actual}
+    facts = {"host": cfg.host, "port": cfg.port, "user": cfg.user, "auth": cfg.auth_label,
+             "key_type": pinned.key_type, "fingerprint": pinned.fingerprint}
     return ConnectResult(ok=not any(c.status == "fail" for c in checks), target=target_id,
                          checks=checks, facts=facts)
 
 
 test_connection.__test__ = False  # not a pytest test, despite the name
+
+
+@dataclass(frozen=True)
+class CommandResult:
+    exit_status: int | None            # None: no answer in time
+    stdout: str = field(repr=False)    # may hold secrets (an adopted .env)
+
+
+async def run_command(cfg: SshTargetConfig, db: AsyncSession, command: str, *,
+                      timeout: float = RUN_TIMEOUT) -> CommandResult:
+    """Run one command on a pinned host and return its stdout (capped at
+    OUTPUT_LIMIT) for the caller to parse. Callers quote every argument and
+    never log the output."""
+    pinned = await pinned_host_key(db, cfg.host, cfg.port)
+    conn = await connect_pinned(cfg, pinned)
+    async with conn:
+        try:
+            result = await asyncio.wait_for(
+                conn.run(command, check=False, errors="replace"), timeout)
+        except (OSError, TimeoutError, asyncssh.Error):
+            return CommandResult(None, "")
+    out = result.stdout if isinstance(result.stdout, str) else ""
+    return CommandResult(result.exit_status, out[:OUTPUT_LIMIT])
