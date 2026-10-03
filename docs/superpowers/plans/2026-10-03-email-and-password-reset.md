@@ -319,7 +319,7 @@ SS_PASSWORD_RESET_RATE_LIMIT=5            # reset requests per IP per hour
 SS_PASSWORD_RESET_CONFIRM_RATE_LIMIT=20   # reset link checks + submissions per IP per hour
 ```
 
-Also append the same three lines (same section) to the repo-root `.env` of this worktree and of the main checkout `/Users/jrh1812/Developer/BaseCampV3/.env` (gitignored — never commit them; the main checkout's `.env` is what the running dev stack reads), so the Developer › System config › Environment tab lists them. Append only; touch no other line.
+Also append the same three lines (same section) to the repo-root `.env` — in this worktree it is a symlink to the main checkout's `/Users/jrh1812/Developer/BaseCampV3/.env`, so append once (gitignored — never commit them; the main checkout's `.env` is what the running dev stack reads), so the Developer › System config › Environment tab lists them. Append only; touch no other line.
 
 `deploy/stack/api/compose.yml`, in `x-ss-env` after `SS_SMTP_FROM: ...`:
 
