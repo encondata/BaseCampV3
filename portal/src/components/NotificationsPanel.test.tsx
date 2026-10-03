@@ -316,3 +316,21 @@ it('a router decision error shows inline', async () => {
   await user.click(screen.getByRole('button', { name: 'Approve' }));
   expect(await screen.findByText('That router was deleted.')).toBeTruthy();
 });
+
+it('shows the outcome line on a resolved password reset request', async () => {
+  ctx.items = [item('r1', {
+    kind: 'password_reset_request', title: 'Pat Lee asked for a password reset', link: null as never,
+    payload: { target_person_id: 'p1', state: 'resolved', resolved_by: 'Sam Admin', count: 1 },
+  })];
+  renderPanel();
+  expect(await screen.findByText('Resolved by Sam Admin')).toBeTruthy();
+});
+
+it('shows the repeat count on an open password reset request', async () => {
+  ctx.items = [item('r2', {
+    kind: 'password_reset_request', title: 'Pat Lee asked for a password reset', link: null as never,
+    payload: { target_person_id: 'p1', state: 'open', count: 3 },
+  })];
+  renderPanel();
+  expect(await screen.findByText('Asked 3 times')).toBeTruthy();
+});

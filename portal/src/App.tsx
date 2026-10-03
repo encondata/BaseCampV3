@@ -47,6 +47,7 @@ import Printers from './pages/Printers';
 import PrintLabels from './pages/PrintLabels';
 import Reports from './pages/Reports';
 import Login from './pages/Login';
+import ResetPassword from './pages/ResetPassword';
 import Profile from './pages/Profile';
 import ProcessLogs from './pages/ProcessLogs';
 import Routers from './pages/Routers';
@@ -83,6 +84,7 @@ export default function App() {
           <BrowserRouter>
             <Routes>
               <Route path="/login" element={<Login />} />
+              <Route path="/reset-password" element={<ResetPassword />} />
               <Route
                 element={
                   <ProtectedRoute>

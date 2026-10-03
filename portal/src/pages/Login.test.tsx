@@ -64,16 +64,16 @@ it('Shift+Tab walks the same path backward', async () => {
   expect(document.activeElement).toBe(email);
 });
 
-it('account recovery stays reachable from the keyboard via Contact support', async () => {
+it('account recovery stays reachable from the keyboard via Reset your password', async () => {
   const user = userEvent.setup();
   const { signIn } = renderLogin();
   signIn.focus();
   await user.tab();
   const next = document.activeElement as HTMLElement;
-  // after Sign in: the SSO button, then Contact support
+  // after Sign in: the SSO button, then Reset your password
   expect(next.textContent).toMatch(/sso/i);
   await user.tab();
-  expect(document.activeElement?.textContent).toMatch(/contact support/i);
+  expect(document.activeElement?.textContent).toMatch(/reset your password/i);
 });
 
 it('a verify challenge swaps the form for the code card and completes the login', async () => {
@@ -177,14 +177,14 @@ it('Continue with SSO explains that SSO is not enabled yet', async () => {
   expect(screen.getByText("Company SSO isn't enabled yet — sign in with your email and password.")).toBeTruthy();
 });
 
-it('Forgot password? and Contact support both open the support card', async () => {
+it('Forgot password? and Reset your password both open the recovery card', async () => {
   const user = userEvent.setup();
   renderLogin();
   await user.click(screen.getByRole('button', { name: 'Forgot password?' }));
   expect(screen.getByRole('dialog')).toBeTruthy();
-  await user.click(screen.getByRole('button', { name: 'Got it' }));
+  await user.click(screen.getByRole('button', { name: 'Close' }));
   expect(screen.queryByRole('dialog')).toBeNull();
-  await user.click(screen.getByRole('button', { name: 'Contact support' }));
+  await user.click(screen.getByRole('button', { name: 'Reset your password' }));
   expect(screen.getByRole('dialog')).toBeTruthy();
 });
 

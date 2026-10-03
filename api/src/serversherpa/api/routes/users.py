@@ -52,13 +52,14 @@ from serversherpa.db.models import (
     ResourceGroupGate, Role, UserAccount, WorkerLevel, WorkerProfile,
 )
 from serversherpa.db.ordering import natural
+from serversherpa.notifications import reset_requests
 from serversherpa.notifications.requests import resolve_copies
 from serversherpa.services import totp as totp_service
 from serversherpa.services.activity import person_activity
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.password_policy import apply_password
-from serversherpa.services.sessions import live_session_rows
+from serversherpa.services.sessions import live_session_rows, revoke_all_sessions
 from serversherpa.services.storage import presign_get
 from serversherpa.status.labels import level_colors, level_fields, status_fields, status_labels
 from sqlalchemy.exc import IntegrityError as _IntegrityError  # noqa: F401 (re-exported name kept)
@@ -475,15 +476,6 @@ async def _load_target(
     return person, account, target_roles
 
 
-async def _revoke_all_sessions(db: DbSession, person_id: uuid.UUID, reason: str) -> None:
-    from datetime import UTC as _UTC, datetime as _dt
-    await db.execute(
-        update(AuthSession)
-        .where(AuthSession.person_id == person_id, AuthSession.revoked_at.is_(None))
-        .values(revoked_at=_dt.now(_UTC), revoke_reason=reason)
-    )
-
-
 @router.post("/{person_id}/account", status_code=201)
 async def create_account(
     person_id: uuid.UUID,
@@ -558,7 +550,9 @@ async def reset_password(
                          must_change=body.must_change_password, now=now)
     account.failed_login_count = 0
     account.locked_until = None
-    await _revoke_all_sessions(db, person_id, "password_change")
+    await revoke_all_sessions(db, person_id, "password_change")
+    await reset_requests.resolve(
+        db, person_id, f"{actor.person.first_name} {actor.person.last_name}")
     audit(db, actor_id=actor.person.id, entity_type="user_account",
           entity_id=str(person_id), action="password.reset",
           changes={"must_change_password":
@@ -576,7 +570,7 @@ async def disable_account(
     now = datetime.now(UTC)
     account.disabled_at = now
     account.updated_at = now
-    await _revoke_all_sessions(db, person_id, "account_disabled")
+    await revoke_all_sessions(db, person_id, "account_disabled")
     audit(db, actor_id=actor.person.id, entity_type="user_account",
           entity_id=str(person_id), action="account.disable")
     await db.commit()
@@ -820,7 +814,7 @@ async def revoke_all_user_sessions(
 ) -> None:
     """Sign the person out everywhere without disabling them."""
     await _load_target(db, actor, person_id)
-    await _revoke_all_sessions(db, person_id, reason="admin")
+    await revoke_all_sessions(db, person_id, "admin")
     await totp_service.revoke_trust(db, person_id)
     audit(db, actor_id=actor.person.id, entity_type="auth",
           entity_id=str(person_id), action="session.revoke_all", changes={})

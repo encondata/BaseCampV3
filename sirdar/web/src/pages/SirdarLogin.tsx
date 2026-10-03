@@ -31,6 +31,7 @@ export default function SirdarLogin() {
 
   return (
     <Login eyebrow="Sirdar" sceneTag="Environment Builder" notice={notice}
-           extraErrors={SIRDAR_ERRORS} />
+           extraErrors={SIRDAR_ERRORS}
+           recovery="Sirdar uses your ServerSherpa portal password. Reset it from the portal's sign-in page, then ask a Sirdar admin to re-import users." />
   );
 }

@@ -1,9 +1,8 @@
 """The notification-worker loop — a separate process from the API
-(`serversherpa notification-worker`). Today it runs the password-expiry
-reminder sweep once an hour (notifications/password_reminders.py) and
-logs a status line; the delivery pipeline (email, quiet hours, DND) is a
-later task. Other DB touches are the heartbeat upsert, log writes and
-read-only count queries."""
+(`serversherpa notification-worker`). Each poll it delivers the email
+outbox (mail/delivery.py); once an hour it runs the password-expiry
+reminder sweep (notifications/password_reminders.py); every 15 minutes it
+logs a status line. Quiet hours / DND delivery is still a later task."""
 
 import asyncio
 import logging
@@ -13,6 +12,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import NotificationGroup, NotificationGroupMember
+from serversherpa.mail import email_enabled
+from serversherpa.mail.delivery import deliver_once
 from serversherpa.notifications.password_reminders import run_reminders_once
 
 logger = logging.getLogger("serversherpa.notifications.worker")
@@ -39,8 +40,8 @@ async def run_once(maker) -> None:
     async with maker() as db:
         groups, members = await status_counts(db)
     logger.info(
-        "idle — %d enabled group(s), %d member(s); "
-        "delivery pipeline not implemented", groups, members)
+        "idle — %d enabled group(s), %d member(s); email delivery %s",
+        groups, members, "on" if email_enabled() else "off (SMTP not configured)")
 
 
 async def run_forever(poll_seconds: float = 5.0) -> None:
@@ -52,11 +53,12 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
     install("notification-worker")
     pause_state = {"paused": False}
     check_state = {}
+    deliver_state = {"failed": False}
     heartbeat = start_heartbeat("notification-worker", "worker",
                                 meta_fn=lambda: dict(pause_state))
 
-    logger.info("notification worker online — hourly password expiry "
-                "reminders; no delivery pipeline yet")
+    logger.info("notification worker online — email outbox every %.0fs, hourly "
+                "password expiry reminders", poll_seconds)
 
     maker = get_sessionmaker()
     try:
@@ -76,6 +78,15 @@ async def run_forever(poll_seconds: float = 5.0) -> None:
             if pause_state["paused"]:
                 logger.info("resumed")
             pause_state["paused"] = False
+            try:
+                await deliver_once(maker)
+                deliver_state["failed"] = False
+            except Exception:
+                # a DB blip must never kill the loop: log once per outage
+                if not deliver_state["failed"]:
+                    logger.warning("could not deliver the email outbox — retrying",
+                                   exc_info=True)
+                deliver_state["failed"] = True
             now = time.monotonic()
             if now - last_reminders >= REMINDER_INTERVAL_SECONDS:
                 sent = await run_reminders_once(maker)

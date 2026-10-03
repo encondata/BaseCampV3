@@ -6,17 +6,27 @@
 import { useState, type FormEvent } from 'react';
 
 import { useAuth } from '../auth/AuthContext';
-import { ApiError, changePasswordRequest } from '../lib/api';
+import { ApiError, changePasswordRequest, confirmPasswordReset } from '../lib/api';
 
 const ERRORS: Record<string, string> = {
   invalid_current_password: 'Current password is incorrect.',
   same_as_current: 'The new password must be different from the current one.',
   password_too_short: 'The new password is too short.',
   password_recently_used: "That password was used recently. Choose one you haven't used before.",
+  reset_token_invalid: 'This link has expired or was already used. Request a new one from the sign-in page.',
+  rate_limited: 'Too many attempts. Try again later.',
 };
 
-export default function ChangePasswordForm({ onSuccess }: { onSuccess: () => void }) {
-  const { passwordMinLength } = useAuth();
+export default function ChangePasswordForm({ onSuccess, resetToken, minLength }: {
+  onSuccess: () => void;
+  /** Reset-link mode: no current password; submits to /auth/password-reset/confirm. */
+  resetToken?: string;
+  /** Overrides the signed-in minimum (the reset page has no session). */
+  minLength?: number;
+}) {
+  const { passwordMinLength: sessionMin } = useAuth();
+  const passwordMinLength = minLength ?? sessionMin;
+  const resetMode = resetToken !== undefined;
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -36,7 +46,8 @@ export default function ChangePasswordForm({ onSuccess }: { onSuccess: () => voi
     }
     setSaving(true);
     try {
-      await changePasswordRequest(current, next);
+      if (resetMode) await confirmPasswordReset(resetToken, next);
+      else await changePasswordRequest(current, next);
       onSuccess();
     } catch (err) {
       const code = err instanceof ApiError ? err.code : 'network';
@@ -48,11 +59,13 @@ export default function ChangePasswordForm({ onSuccess }: { onSuccess: () => voi
 
   return (
     <form className="pf-form" onSubmit={submit}>
-      <div className="full">
-        <label htmlFor="cp-current">Current password</label>
-        <input id="cp-current" type="password" autoComplete="current-password"
-               value={current} onChange={(e) => setCurrent(e.target.value)} required />
-      </div>
+      {!resetMode && (
+        <div className="full">
+          <label htmlFor="cp-current">Current password</label>
+          <input id="cp-current" type="password" autoComplete="current-password"
+                 value={current} onChange={(e) => setCurrent(e.target.value)} required />
+        </div>
+      )}
       <div>
         <label htmlFor="cp-new">New password ({passwordMinLength}+ characters)</label>
         <input id="cp-new" type="password" autoComplete="new-password"
@@ -66,12 +79,12 @@ export default function ChangePasswordForm({ onSuccess }: { onSuccess: () => voi
       </div>
       <div className="pf-form-actions">
         <button className="btn-solid" type="submit" disabled={saving}>
-          {saving ? 'Changing…' : 'Change password'}
+          {saving ? (resetMode ? 'Setting…' : 'Changing…') : (resetMode ? 'Set password' : 'Change password')}
         </button>
         {error && <span className="pf-error">{error}</span>}
       </div>
       <p className="set-note full" style={{ padding: 0, margin: 0 }}>
-        Changing your password signs you out everywhere else.
+        {resetMode ? 'Setting a new password signs you out everywhere.' : 'Changing your password signs you out everywhere else.'}
       </p>
     </form>
   );

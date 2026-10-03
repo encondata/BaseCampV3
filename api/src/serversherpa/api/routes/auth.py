@@ -2,6 +2,7 @@
 scoped to /auth — JavaScript never sees it, and it is not sent with
 ordinary API requests."""
 
+import logging
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -10,9 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.api.deps import (
     CurrentUser, DbSession, TotpActor, TotpChallengeOrUser, client_ip,
+    raise_if_reused, rate_limit_ip, require_password_length,
 )
 from serversherpa.api.schemas import (
-    BackupCodesOut, KioskMoveOut, LoginChallengeOut, LoginIn, MeOut, PersonOut, ScopeOut,
+    BackupCodesOut, KioskMoveOut, LoginChallengeOut, LoginIn, MeOut, PasswordResetCheckIn,
+    PasswordResetCheckOut, PasswordResetConfirmIn, PasswordResetRequestIn, PersonOut, ScopeOut,
     SessionOut,
     TotpEnrollConfirmIn, TotpEnrollConfirmOut, TotpEnrollStartOut, TotpRegenerateIn,
     TotpStatusOut, TotpVerifyIn, UiPreferences,
@@ -20,6 +23,7 @@ from serversherpa.api.schemas import (
 from serversherpa.config import get_settings
 from serversherpa.db.models import AuthSession, Initiative, UserAccount
 from serversherpa.services import auth as auth_service
+from serversherpa.services import password_reset
 from serversherpa.services import totp as totp_service
 from serversherpa.services.audit import audit, diff
 from serversherpa.services.auth import AuthError, AuthResult, LoginChallenge
@@ -27,12 +31,15 @@ from serversherpa.services.password_policy import (
     PasswordPolicy, change_reason, expires_at, load_policy,
 )
 from serversherpa.services.storage import presign_get
+from serversherpa.wiki.share_links import IpRateLimiter
 
 
 def person_out(person) -> PersonOut:
     out = PersonOut.model_validate(person)
     out.avatar_url = presign_get(person.avatar_key)
     return out
+
+logger = logging.getLogger("serversherpa.api.auth")
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -130,6 +137,76 @@ def session_response(result: AuthResult, response: Response, totp: TotpStatusOut
 def _auth_http_error(exc: AuthError) -> HTTPException:
     return HTTPException(
         status_code=_STATUS.get(exc.code, 401), detail={"code": exc.code})
+
+
+# ── self-service password reset ─────────────────────────────────────
+# Per-process, per-IP (rate_limit_ip, /64 for IPv6), one-hour windows.
+# /check and /confirm share one counter: both test a guessed token.
+RESET_WINDOW_SECONDS = 3600
+reset_request_limiter = IpRateLimiter(
+    limit=get_settings().password_reset_rate_limit, window_seconds=RESET_WINDOW_SECONDS)
+reset_confirm_limiter = IpRateLimiter(
+    limit=get_settings().password_reset_confirm_rate_limit, window_seconds=RESET_WINDOW_SECONDS)
+
+
+# Real tokens are ~43 chars; anything longer is just an invalid token.
+MAX_RESET_TOKEN_LEN = 512
+
+
+def _limit(limiter: IpRateLimiter, request: Request) -> None:
+    if not limiter.hit(rate_limit_ip(request)):
+        raise HTTPException(status_code=429, detail={"code": "rate_limited"})
+
+
+def _invalid_reset() -> HTTPException:
+    return HTTPException(status_code=400, detail={"code": "reset_token_invalid"})
+
+
+@router.post("/password-reset/request", status_code=202)
+async def password_reset_request(
+    body: PasswordResetRequestIn, request: Request, db: DbSession,
+) -> dict:
+    """Same answer whether or not the account exists (no enumeration)."""
+    _limit(reset_request_limiter, request)
+    try:
+        await password_reset.request_reset(db, body.email, ip=client_ip(request))
+        await db.commit()
+    except Exception as exc:
+        # a failure for a real account must not look different from the
+        # no-op for an unknown one; log the class only (no address/token)
+        await db.rollback()
+        logger.error("password reset request failed: %s", type(exc).__name__)
+    return {"status": "accepted"}
+
+
+@router.post("/password-reset/check", response_model=PasswordResetCheckOut)
+async def password_reset_check(
+    body: PasswordResetCheckIn, request: Request, db: DbSession,
+) -> PasswordResetCheckOut:
+    _limit(reset_confirm_limiter, request)
+    if len(body.token) > MAX_RESET_TOKEN_LEN:
+        return PasswordResetCheckOut(valid=False)
+    valid = await password_reset.find_valid(db, body.token) is not None
+    await db.rollback()          # release the FOR UPDATE lock
+    return PasswordResetCheckOut(valid=valid)
+
+
+@router.post("/password-reset/confirm", status_code=204)
+async def password_reset_confirm(
+    body: PasswordResetConfirmIn, request: Request, db: DbSession,
+) -> None:
+    _limit(reset_confirm_limiter, request)
+    if len(body.token) > MAX_RESET_TOKEN_LEN:
+        raise _invalid_reset()
+    found = await password_reset.find_valid(db, body.token)
+    if found is None:
+        raise _invalid_reset()
+    token, account = found
+    require_password_length(body.new_password)
+    await raise_if_reused(db, account, body.new_password)
+    await password_reset.complete(db, token, account, body.new_password,
+                                  ip=client_ip(request))
+    await db.commit()
 
 
 @router.post("/login", response_model=SessionOut | LoginChallengeOut)

@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     password_min_length: int = 8
     max_failed_logins: int = 10       # failures before temporary lockout
     lockout_seconds: int = 900        # lockout duration (15 min)
+    # self-service password reset (POST /auth/password-reset/*)
+    password_reset_ttl_minutes: int = 15          # reset link lifetime
+    password_reset_rate_limit: int = 5            # /request calls per IP per hour
+    password_reset_confirm_rate_limit: int = 20   # /check + /confirm calls per IP per hour
 
     # ── Scans ──────────────────────────────────────────────
     scans_history_default: int = Field(100, ge=1)  # history rows when caller omits limit

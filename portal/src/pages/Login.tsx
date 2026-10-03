@@ -21,6 +21,7 @@ import EnrollFlow from '../components/totp/EnrollFlow';
 import OtpInput from '../components/totp/OtpInput';
 import { ApiError, isTotpChallenge, totpEnrollConfirm, totpEnrollStart, totpVerify, type TotpChallenge } from '../lib/api';
 import { getSystemStatus } from '../lib/systemStatus';
+import ForgotPasswordCard from '../components/login/ForgotPasswordCard';
 import '../styles/auth-theme.css';
 import '../styles/login-light.css';
 
@@ -41,9 +42,12 @@ export interface LoginProps {
   sceneTag?: string;
   notice?: ReactNode;
   extraErrors?: Record<string, string>;
+  /** Replaces the Forgot password flow with a static recovery card (for hosts
+   *  whose API has no /auth/password-reset routes). */
+  recovery?: ReactNode;
 }
 
-export default function Login({ eyebrow = 'ServerSherpa Portal', sceneTag, notice, extraErrors }: LoginProps = {}) {
+export default function Login({ eyebrow = 'ServerSherpa Portal', sceneTag, notice, extraErrors, recovery }: LoginProps = {}) {
   const navigate = useNavigate();
   const location = useLocation();
   const { login, completeLogin } = useAuth();
@@ -63,7 +67,9 @@ export default function Login({ eyebrow = 'ServerSherpa Portal', sceneTag, notic
   const [invalid, setInvalid] = useState({ email: false, password: false });
   const [loading, setLoading] = useState(false);
   const [ssoHint, setSsoHint] = useState(false);
-  const [forgotPasswordOpen, setForgotPasswordOpen] = useState(false);
+  const [forgotPasswordOpen, setForgotPasswordOpen] = useState(
+    () => new URLSearchParams(location.search).get('forgot') === '1');
+  const [reset, setReset] = useState<{ emailEnabled: boolean | null; ttlMinutes: number }>({ emailEnabled: null, ttlMinutes: 15 });
 
   const [challenge, setChallenge] = useState<TotpChallenge | null>(null);
   const [code, setCode] = useState('');
@@ -77,8 +83,19 @@ export default function Login({ eyebrow = 'ServerSherpa Portal', sceneTag, notic
   const [otpAttempt, setOtpAttempt] = useState(0);
 
   useEffect(() => {
-    getSystemStatus().then((s) => setTrustDays(s.totp_trust_days)).catch(() => {});
+    getSystemStatus().then((s) => {
+      setTrustDays(s.totp_trust_days);
+      setReset({ emailEnabled: !!s.email_enabled, ttlMinutes: s.password_reset_ttl_minutes ?? 15 });
+    }).catch(() => {});
   }, []);
+
+  // Closing a card opened by ?forgot=1 drops the query so a reload doesn't reopen it.
+  const closeForgot = () => {
+    setForgotPasswordOpen(false);
+    if (new URLSearchParams(location.search).has('forgot')) {
+      navigate({ pathname: location.pathname }, { replace: true, state: location.state });
+    }
+  };
 
   const formWrapRef = useRef<HTMLDivElement>(null);
   const emailRef = useRef<HTMLInputElement>(null);
@@ -199,7 +216,7 @@ export default function Login({ eyebrow = 'ServerSherpa Portal', sceneTag, notic
                     Password
                     {/* out of the Tab order so email → password → Sign in is
                         uninterrupted; keyboard users reach the same card via
-                        "Contact support" below the form */}
+                        "Reset your password" below the form */}
                     <button type="button" className="link" tabIndex={-1} onClick={() => setForgotPasswordOpen(true)}>Forgot password?</button>
                   </label>
                   <div className="control">
@@ -250,7 +267,7 @@ export default function Login({ eyebrow = 'ServerSherpa Portal', sceneTag, notic
               )}
 
               <p className="form-foot">
-                Trouble signing in? <button type="button" className="link" onClick={() => setForgotPasswordOpen(true)}>Contact support</button>
+                Trouble signing in? <button type="button" className="link" onClick={() => setForgotPasswordOpen(true)}>Reset your password</button>
               </p>
             </>
           )}
@@ -338,27 +355,23 @@ export default function Login({ eyebrow = 'ServerSherpa Portal', sceneTag, notic
         </div>
       </main>
 
-      {/* Forgot Password / Contact Support card */}
-      {forgotPasswordOpen && (
-        <div
-          className="auth-scrim"
-          role="dialog"
-          aria-modal="true"
-          onMouseDown={(e) => { if (e.target === e.currentTarget) setForgotPasswordOpen(false); }}
-        >
+      {forgotPasswordOpen && recovery !== undefined && (
+        <div className="auth-scrim" role="dialog" aria-modal="true" aria-labelledby="recovery-title"
+             onMouseDown={(e) => { if (e.target === e.currentTarget) closeForgot(); }}>
           <div className="otp-card centered">
-            <button className="otp-close" type="button" aria-label="Close" onClick={() => setForgotPasswordOpen(false)}>
+            <button className="otp-close" type="button" aria-label="Close" onClick={closeForgot}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M5 5l14 14M19 5L5 19" /></svg>
             </button>
-            <div className="eyebrow">Account Recovery</div>
-            <div className="phone-badge">📞</div>
-            <h3 className="otp-title">Call Jimmy</h3>
-            <p className="otp-text">He'll help you get back in.</p>
-            <button className="btn otp-verify" type="button" onClick={() => setForgotPasswordOpen(false)}>
-              <span>Got it</span>
-            </button>
+            <div className="eyebrow">Account recovery</div>
+            <h3 className="otp-title" id="recovery-title">Reset your password</h3>
+            <p className="otp-text">{recovery}</p>
+            <button className="btn otp-verify" type="button" autoFocus onClick={closeForgot}><span>Got it</span></button>
           </div>
         </div>
+      )}
+      {forgotPasswordOpen && recovery === undefined && (
+        <ForgotPasswordCard initialEmail={email} emailEnabled={reset.emailEnabled}
+                            ttlMinutes={reset.ttlMinutes} onClose={closeForgot} />
       )}
     </div>
   );

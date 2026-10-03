@@ -19,12 +19,15 @@ async def _admin(db, client):
 
 
 async def test_status_is_public_and_defaults_off(client):
+    from serversherpa.config import get_settings
     resp = await client.get("/system/status")
     assert resp.status_code == 200, resp.text
     assert resp.json() == {
         "read_only": False, "read_only_message": "",
         "workers_paused": False, "banner": None,
         "totp_trust_days": 7,
+        "email_enabled": False, "password_reset_ttl_minutes": 15,
+        "password_min_length": get_settings().password_min_length,
         "background": None,
     }
 
@@ -42,6 +45,7 @@ async def test_admin_get_requires_settings_change(client, db, seeded_user):
 
 
 async def test_put_merges_trims_and_audits(client, db, seeded_user):
+    from serversherpa.config import get_settings
     hdrs = await _admin(db, client)
     resp = await client.put("/system/admin", headers=hdrs, json={
         "read_only": True, "read_only_message": "  Cutover until 14:00  ",
@@ -72,7 +76,10 @@ async def test_put_merges_trims_and_audits(client, db, seeded_user):
     status = (await client.get("/system/status")).json()
     assert status == {"read_only": True, "read_only_message": "Cutover until 14:00",
                       "workers_paused": False, "banner": "Hello all",
-                      "totp_trust_days": 7, "background": None}
+                      "totp_trust_days": 7, "email_enabled": False,
+                      "password_reset_ttl_minutes": 15,
+                      "password_min_length": get_settings().password_min_length,
+                      "background": None}
 
 
 async def test_status_hides_read_only_message_until_mode_is_on(client, db, seeded_user):
