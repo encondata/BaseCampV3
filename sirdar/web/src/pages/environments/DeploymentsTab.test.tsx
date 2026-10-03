@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 vi.mock('./DeploymentView', () => ({
-  default: ({ id, isLatest }: { id: string; isLatest: boolean }) => <div>view {id} {isLatest ? 'latest' : 'older'}</div>,
+  default: ({ id, isLatest }: { id: string; isLatest: boolean | null }) => (
+    <div>view {id} {isLatest === null ? 'unknown' : isLatest ? 'latest' : 'older'}</div>
+  ),
 }));
 const api = vi.hoisted(() => ({ listDeployments: vi.fn() }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
@@ -43,4 +45,14 @@ it('shows the empty state', async () => {
   api.listDeployments.mockResolvedValue({ deployments: [] });
   render(<DeploymentsTab env={ENV} selected={null} onSelect={vi.fn()} onChanged={vi.fn()} />);
   expect(await screen.findByText('No deployments yet.')).toBeTruthy();
+});
+
+it('the open deployment is neither latest nor older until the list loads, or if it fails', async () => {
+  let fail: (e: Error) => void = () => {};
+  api.listDeployments.mockImplementation(() => new Promise((_, reject) => { fail = reject; }));
+  render(<DeploymentsTab env={ENV} selected="d1" onSelect={vi.fn()} onChanged={vi.fn()} />);
+  expect(await screen.findByText('view d1 unknown')).toBeTruthy();
+  await act(async () => { fail(new Error('down')); });
+  expect(await screen.findByRole('alert')).toBeTruthy();
+  expect(screen.getByText('view d1 unknown')).toBeTruthy();
 });

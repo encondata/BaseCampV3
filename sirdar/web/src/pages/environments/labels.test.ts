@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 
-import { duration, sshTargets, stoppedStep } from './labels';
+import { DEPLOYMENT_STATUS, STEP_STATUS, duration, sshTargets, stoppedStep } from './labels';
 import { FAILED, RUNNING, SUCCEEDED, TARGETS } from './testData';
 
 it('stoppedStep mirrors the API: the failed/cancelled/interrupted step, else the first not run', () => {
@@ -20,4 +20,9 @@ it('duration reads seconds, then minutes', () => {
 
 it('sshTargets keeps configured SSH targets only', () => {
   expect(sshTargets(TARGETS.targets).map((t) => t.id)).toEqual(['ssh:lab']);
+});
+
+it('the cancelled status reads in American English; the API value is unchanged', () => {
+  expect(DEPLOYMENT_STATUS.cancelled).toEqual(['c-amber', 'Canceled']);
+  expect(STEP_STATUS.cancelled).toEqual(['c-amber', 'Canceled']);
 });

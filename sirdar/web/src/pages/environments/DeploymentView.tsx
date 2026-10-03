@@ -1,6 +1,6 @@
 /** One deployment: its steps with live logs (polled while it runs), Cancel,
  *  and Retry from step. Logs render as text only (already redacted server-side). */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type UIEvent } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
 import ComboBox from '@portal/components/ComboBox';
@@ -18,11 +18,14 @@ import {
 export const POLL_MS = 2000;
 /** After a failed poll the wait doubles (4 s, 8 s, …) up to this, until one succeeds. */
 export const MAX_BACKOFF_MS = 30000;
+/** The log follows new output only when the reader is within this many px of its bottom. */
+const STICK_PX = 40;
 
 type RetryAttempt = { fromStep: number; confirm: string; reset: boolean };
 
 export default function DeploymentView({ id, env, isLatest, onFinished, onRetried, onClose }: {
-  id: string; env: Environment; isLatest: boolean;
+  /** null while the history hasn't loaded: Retry stays hidden until it's known. */
+  id: string; env: Environment; isLatest: boolean | null;
   onFinished: () => void; onRetried: (dep: Deployment) => void; onClose: () => void;
 }) {
   const { can } = useAuth();
@@ -45,12 +48,14 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let sawRunning = false;
+    let loaded = false;
     let failures = 0;
     const tick = async () => {
       try {
         const d = await getDeployment(id);
         if (!live) return;
         failures = 0;
+        loaded = true;
         setDep(d);
         setLoadError('');
         if (d.status === 'running') { sawRunning = true; timer = setTimeout(tick, POLL_MS); }
@@ -59,7 +64,10 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
         if (!live) return;
         setLoadError(errorText(e, "Couldn't load this deployment."));
         failures += 1;
-        if (sawRunning) timer = setTimeout(tick, Math.min(POLL_MS * 2 ** failures, MAX_BACKOFF_MS));
+        // Keep trying while it runs, or until the first load lands (a fresh deployment
+        // can blip); a deployment that doesn't exist is final.
+        const gone = (e as { code?: string }).code === 'deployment_not_found';
+        if (!gone && (sawRunning || !loaded)) timer = setTimeout(tick, Math.min(POLL_MS * 2 ** failures, MAX_BACKOFF_MS));
       }
     };
     void tick();
@@ -72,7 +80,19 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   const followed = dep?.steps.find((s) => s.status === 'running')?.number ?? stopped;
   const shown = dep?.steps.find((s) => s.number === (openStep ?? followed)) ?? null;
   const log = shown?.log_tail ?? '';
-  useEffect(() => { const el = logRef.current; if (el) el.scrollTop = el.scrollHeight; }, [log]);
+  // Stick to the bottom only if the reader was already there; a newly opened step starts stuck.
+  const stick = useRef(true);
+  const stuckStep = useRef<number | null>(null);
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el) return;
+    if (stuckStep.current !== shown?.number) { stuckStep.current = shown?.number ?? null; stick.current = true; }
+    if (stick.current) el.scrollTop = el.scrollHeight;
+  }, [log, shown?.number]);
+  const onLogScroll = (e: UIEvent<HTMLPreElement>) => {
+    const el = e.currentTarget;
+    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX;
+  };
 
   const isReset = dep?.mode === 'reset';
   const allowed = dep?.mode === 'update' ? can('deploy', 'add')
@@ -119,8 +139,11 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
 
   if (!dep) {
     return (
-      <section className="sirdar-section sirdar-card sirdar-deployment">
-        {loadError ? <p className="form-error" role="alert">{loadError}</p> : <p className="page-hint">Loading…</p>}
+      <section className="sirdar-section sirdar-card sirdar-deployment" aria-label="Deployment">
+        <div className="sirdar-section-head">
+          {loadError ? <p className="form-error" role="alert">{loadError}</p> : <p className="page-hint">Loading…</p>}
+          <button type="button" className="mini-btn" onClick={onClose}>Close</button>
+        </div>
       </section>
     );
   }
@@ -134,7 +157,7 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
         <div className="sirdar-target-actions">
           {running && can('deploy', 'change') && (
             <button type="button" className="btn-ghost" disabled={cancelling} onClick={() => void cancel()}>
-              {cancelling ? 'Cancelling…' : 'Cancel deployment'}
+              {cancelling ? 'Canceling…' : 'Cancel deployment'}
             </button>
           )}
           <button type="button" className="mini-btn" onClick={onClose}>Close</button>
@@ -165,7 +188,7 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
               </button>
               {open && (
                 <>
-                  <pre className="sirdar-log" ref={logRef} aria-label={`Step ${s.number} log`}>{s.log_tail || 'No output yet.'}</pre>
+                  <pre className="sirdar-log" ref={logRef} onScroll={onLogScroll} aria-label={`Step ${s.number} log`}>{s.log_tail || 'No output yet.'}</pre>
                   {s.log_size > s.log_tail.length && (
                     <p className="page-hint">
                       Showing the last {s.log_tail.length.toLocaleString()} of {s.log_size.toLocaleString()} characters.
@@ -178,7 +201,7 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
         })}
       </ol>
 
-      {mayRetry && isLatest && (
+      {mayRetry && isLatest === true && (
         <div className="sirdar-retry pf-form">
           <div>
             <label className="field-label" htmlFor="retry-step">Retry from step</label>
@@ -198,7 +221,7 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
           </button>
         </div>
       )}
-      {mayRetry && !isLatest && <p className="page-hint">Only the most recent deployment can be retried.</p>}
+      {mayRetry && isLatest === false && <p className="page-hint">Only the most recent deployment can be retried.</p>}
       {actionError && <p className="form-error" role="alert">{actionError}</p>}
       {hostKey.modal}
     </section>

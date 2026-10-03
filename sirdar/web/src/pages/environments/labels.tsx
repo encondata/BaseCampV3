@@ -9,12 +9,12 @@ export const ENV_STATUS: ChipMap = {
 };
 export const DEPLOYMENT_STATUS: ChipMap = {
   running: ['c-blue', 'Running'], succeeded: ['c-green', 'Succeeded'], failed: ['c-red', 'Failed'],
-  cancelled: ['c-amber', 'Cancelled'], interrupted: ['c-amber', 'Interrupted'], adopted: ['tag', 'Adopted'],
+  cancelled: ['c-amber', 'Canceled'], interrupted: ['c-amber', 'Interrupted'], adopted: ['tag', 'Adopted'],
 };
 export const STEP_STATUS: ChipMap = {
   pending: ['tag', 'Pending'], running: ['c-blue', 'Running'], succeeded: ['c-green', 'Done'],
   failed: ['c-red', 'Failed'], skipped: ['tag', 'Skipped'], not_run: ['tag', 'Not run'],
-  cancelled: ['c-amber', 'Cancelled'], interrupted: ['c-amber', 'Interrupted'],
+  cancelled: ['c-amber', 'Canceled'], interrupted: ['c-amber', 'Interrupted'],
 };
 export const TYPE_LABEL: Record<string, string> = { dev: 'Dev', beta: 'Beta', custom: 'Custom' };
 export const MODE_LABEL: Record<string, string> = { update: 'Update', reset: 'Reset data', adopt: 'Adopt' };

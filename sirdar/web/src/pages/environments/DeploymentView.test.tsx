@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -29,9 +29,9 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
-function show(props: { id?: string; isLatest?: boolean } = {}) {
+function show(props: { id?: string; isLatest?: boolean | null } = {}) {
   const handlers = { onFinished: vi.fn(), onRetried: vi.fn(), onClose: vi.fn() };
-  render(<DeploymentView id={props.id ?? 'd1'} env={ENV} isLatest={props.isLatest ?? true} {...handlers} />);
+  render(<DeploymentView id={props.id ?? 'd1'} env={ENV} isLatest={props.isLatest === undefined ? true : props.isLatest} {...handlers} />);
   return handlers;
 }
 const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
@@ -91,7 +91,7 @@ it('Cancel asks first, then cancels; it needs deploy:change', async () => {
   show();
   await user.click(await screen.findByRole('button', { name: 'Cancel deployment' }));
   expect(api.cancelDeployment).toHaveBeenCalledWith('d1');
-  expect(screen.getByRole('button', { name: 'Cancelling…' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Canceling…' })).toBeTruthy();
   cleanup();
   perms.change = false;
   show();
@@ -200,7 +200,8 @@ it('an orphaned run cancels at once; polling continues until the fetched status 
   expect(api.getDeployment).toHaveBeenCalledTimes(2);   // still running server-side here
   await tick(POLL_MS);
   await waitFor(() => expect(onFinished).toHaveBeenCalledTimes(1));
-  expect(screen.queryByRole('button', { name: /^Cancel(ling…| deployment)$/ })).toBeNull();
+  expect(screen.queryByRole('button', { name: /^Cancel(ing…| deployment)$/ })).toBeNull();
+  expect(screen.getAllByText('Canceled').length).toBeGreaterThan(0);
   await tick(POLL_MS * 3);
   expect(api.getDeployment).toHaveBeenCalledTimes(3);
 });
@@ -227,4 +228,58 @@ it('renders logs as text, never as HTML', async () => {
   const log = await screen.findByLabelText('Step 5 log');
   expect(log.textContent).toContain('<img src=x onerror=alert(1)>boom');
   expect(log.querySelector('img')).toBeNull();
+});
+
+it('a failed first load retries with backoff and then shows the deployment; Close works meanwhile', async () => {
+  api.getDeployment.mockRejectedValueOnce(new Error('down')).mockResolvedValue(FAILED);
+  const { onClose } = show();
+  expect((await screen.findByRole('alert')).textContent).toBe("Couldn't load this deployment.");
+  await user.click(screen.getByRole('button', { name: 'Close' }));
+  expect(onClose).toHaveBeenCalledTimes(1);
+  await tick(POLL_MS);
+  expect(api.getDeployment).toHaveBeenCalledTimes(1);   // backed off to 4 s
+  await tick(POLL_MS);
+  expect(api.getDeployment).toHaveBeenCalledTimes(2);
+  expect(await screen.findByText(/docker build exited 1/)).toBeTruthy();
+  expect(screen.queryByText("Couldn't load this deployment.")).toBeNull();
+  await tick(POLL_MS * 5);
+  expect(api.getDeployment).toHaveBeenCalledTimes(2);   // finished: no more polls
+});
+
+it('a deployment that does not exist stops at once', async () => {
+  api.getDeployment.mockRejectedValue(new ApiError(404, 'deployment_not_found', { code: 'deployment_not_found' }));
+  show();
+  expect((await screen.findByRole('alert')).textContent).toBe('That deployment no longer exists.');
+  await tick(POLL_MS * 20);
+  expect(api.getDeployment).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('button', { name: 'Close' })).toBeTruthy();
+});
+
+it('while it is unknown whether this is the latest, neither Retry nor the hint shows', async () => {
+  api.getDeployment.mockResolvedValue(FAILED);
+  show({ isLatest: null });
+  await screen.findByText(/docker build exited 1/);
+  expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  expect(screen.queryByText('Only the most recent deployment can be retried.')).toBeNull();
+});
+
+it('the log follows new output only when the reader is at the bottom', async () => {
+  api.getDeployment.mockResolvedValueOnce(RUNNING).mockResolvedValueOnce(RUNNING_MORE)
+    .mockResolvedValue({ ...RUNNING_MORE,
+      steps: RUNNING_MORE.steps.map((s) => (s.number === 3 ? { ...s, log_tail: `${s.log_tail}more\n` } : s)) });
+  show();
+  await screen.findByText(/Cloning the repo/);
+  const log = screen.getByLabelText('Step 3 log');
+  Object.defineProperty(log, 'scrollHeight', { configurable: true, value: 1000 });
+  Object.defineProperty(log, 'clientHeight', { configurable: true, value: 100 });
+  Object.defineProperty(log, 'scrollTop', { configurable: true, writable: true, value: 200 });
+  fireEvent.scroll(log);                     // scrolled up to read
+  await tick(POLL_MS);
+  await screen.findByText(/Checked out f00dbabe/);
+  expect(log.scrollTop).toBe(200);           // left where the reader is
+  log.scrollTop = 880;                       // within 40px of the bottom
+  fireEvent.scroll(log);
+  await tick(POLL_MS);
+  await screen.findByText(/more/);
+  expect(log.scrollTop).toBe(1000);          // follows the new output
 });

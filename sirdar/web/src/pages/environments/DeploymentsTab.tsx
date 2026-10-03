@@ -30,7 +30,7 @@ export default function DeploymentsTab({ env, selected, onSelect, onChanged }: {
   return (
     <>
       {selected && (
-        <DeploymentView key={selected} id={selected} env={env} isLatest={selected === latestId}
+        <DeploymentView key={selected} id={selected} env={env} isLatest={rows === null ? null : selected === latestId}
                         onFinished={() => { void load(); onChanged(); }}
                         onRetried={(dep) => { onChanged(); onSelect(dep.id); }}
                         onClose={() => onSelect(null)} />
