@@ -1,0 +1,20 @@
+# Step 3 — Fetch code: the environment's checkout at exactly the deployment's
+# commit. Points origin at the configured repo URL; never discards local
+# changes in the checkout (force: false fails instead).
+- name: Fetch code
+  hosts: target
+  gather_facts: false
+  tasks:
+    - name: Check out the commit
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ env_dir }}/repo"
+        version: "{{ sha }}"
+        force: false
+      register: checkout
+
+    - name: The checkout is at the commit
+      ansible.builtin.assert:
+        that: checkout.after == sha
+        fail_msg: "The checkout is at {{ checkout.after }}, not {{ sha }}."
+        quiet: true

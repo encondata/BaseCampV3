@@ -1,0 +1,9 @@
+# Step 7 — Reset data (Reset only): stop every stack and delete its volumes.
+# The next step starts the environment empty.
+- name: Reset data
+  hosts: target
+  gather_facts: false
+  tasks:
+    - name: ss-stack down --volumes
+      ansible.builtin.command:
+        argv: ["{{ ss_stack }}", down, "{{ env_dir }}", --volumes]

@@ -1,0 +1,61 @@
+# Step 1 — Preflight. Changes nothing: checks that the host can take an
+# environment before any other step touches it. Sudo must work, because
+# Bootstrap needs it.
+- name: Preflight
+  hosts: target
+  gather_facts: true
+  tasks:
+    - name: Ubuntu or Debian
+      ansible.builtin.assert:
+        that: ansible_facts['os_family'] == 'Debian'
+        fail_msg: >-
+          Sirdar deploys to Ubuntu or Debian hosts; this one runs
+          {{ ansible_facts['distribution'] }}.
+        quiet: true
+
+    - name: Read the free space on /
+      ansible.builtin.command:
+        argv: [df, -Pk, /]
+      register: df_root
+      changed_when: false
+
+    - name: Enough free disk
+      ansible.builtin.assert:
+        that: (df_root.stdout_lines[-1].split()[3] | int) >= (min_disk_gb | int) * 1048576
+        fail_msg: "Less than {{ min_disk_gb }} GB free on /."
+        quiet: true
+
+    - name: Enough memory
+      ansible.builtin.assert:
+        that: (ansible_facts['memtotal_mb'] | int) >= (min_memory_mb | int)
+        fail_msg: "Less than {{ min_memory_mb }} MB of memory."
+        quiet: true
+
+    - name: Sudo works
+      ansible.builtin.command:
+        argv: [id, -u]
+      become: true
+      register: root_id
+      changed_when: false
+
+    - name: Sudo gives root
+      ansible.builtin.assert:
+        that: root_id.stdout == '0'
+        fail_msg: "sudo didn't give root on this host."
+        quiet: true
+
+    - name: Look for Docker
+      ansible.builtin.command:
+        argv: [docker, --version]
+      register: docker_version
+      changed_when: false
+      failed_when: false
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: >-
+          Preflight passed: {{ ansible_facts['distribution'] }}
+          {{ ansible_facts['distribution_version'] }},
+          {{ ((df_root.stdout_lines[-1].split()[3] | int) / 1048576) | round(1) }} GB free,
+          {{ ansible_facts['memtotal_mb'] }} MB memory, Docker
+          {{ 'present' if docker_version.rc == 0 else 'missing (Bootstrap installs it)' }}.

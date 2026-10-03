@@ -1,0 +1,32 @@
+# Step 6 — Pre-deploy dump (Update only). Skipped when the environment's
+# database isn't running yet (a first deploy has nothing to dump). Reports
+# the dump's path to Sirdar through set_stats.
+- name: Pre-deploy dump
+  hosts: target
+  gather_facts: false
+  tasks:
+    - name: Is the database running?
+      ansible.builtin.command:
+        argv:
+          - docker
+          - ps
+          - --quiet
+          - --filter
+          - "label=com.docker.compose.project=ss-{{ env_name }}-db"
+          - --filter
+          - status=running
+      register: db_running
+      changed_when: false
+
+    - name: ss-stack dump
+      ansible.builtin.command:
+        argv: ["{{ ss_stack }}", dump, "{{ env_dir }}"]
+      register: dump
+      when: db_running.stdout | length > 0
+
+    - name: Report the dump path
+      ansible.builtin.set_stats:
+        data:
+          dump_path: "{{ dump.stdout_lines[-1] if dump is not skipped else '' }}"
+        per_host: false
+        aggregate: true

@@ -1,0 +1,9 @@
+# Step 8 — Start services: ss-stack up starts db, storage, the migrate job,
+# api + workers, web and status in order and waits on their health checks.
+- name: Start services
+  hosts: target
+  gather_facts: false
+  tasks:
+    - name: ss-stack up
+      ansible.builtin.command:
+        argv: ["{{ ss_stack }}", up, "{{ env_dir }}"]
