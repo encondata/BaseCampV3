@@ -64,7 +64,6 @@ case $cmd in
     docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK" >/dev/null
     dc db up -d "${WAIT[@]}"
     dc storage up -d "${WAIT[@]}"
-    dc storage run --rm minio-init
     dc api run --rm migrate
     dc api up -d "${WAIT[@]}"
     dc web up -d "${WAIT[@]}"

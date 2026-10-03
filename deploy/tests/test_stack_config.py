@@ -85,7 +85,7 @@ def test_default_published_ports() -> None:
              for name, svc in rendered(stack)["services"].items()
              if svc.get("ports")}
     assert ports == {"api": [8000], "portal": [8091], "kiosk": [8090], "wiki": [8096],
-                     "minio": [9000], "status": [8095], "mailpit": [8025]}
+                     "seaweedfs": [9000], "status": [8095], "mailpit": [8025]}
 
 
 def test_postgres_is_16_and_unpublished() -> None:
@@ -102,7 +102,7 @@ def test_api_stack_runs_every_worker() -> None:
         assert services[name]["restart"] == "unless-stopped"
 
 
-@pytest.mark.parametrize("stack,service", [("api", "migrate"), ("storage", "minio-init")])
+@pytest.mark.parametrize("stack,service", [("api", "migrate")])
 def test_one_shot_jobs_live_in_the_jobs_profile(stack: str, service: str) -> None:
     assert rendered(stack)["services"][service]["profiles"] == ["jobs"]
 
@@ -192,9 +192,27 @@ def test_web_apps_point_at_the_stack() -> None:
 def test_env_example_secrets_are_placeholders() -> None:
     lines = dict(line.split("=", 1) for line in ENV_EXAMPLE.read_text().splitlines()
                  if line and not line.startswith("#"))
-    for key in ("POSTGRES_PASSWORD", "MINIO_ROOT_PASSWORD", "SS_JWT_SECRET",
+    for key in ("POSTGRES_PASSWORD", "SPACES_SECRET_KEY", "SS_JWT_SECRET",
                 "SS_TOTP_ENCRYPTION_KEY", "SS_PASSWORD_PEPPER", "SS_WIKI_SERVICE_TOKEN"):
         assert lines[key] == "CHANGEME", key
+
+
+def test_storage_runs_seaweedfs_and_mailpit_pinned() -> None:
+    services = rendered("storage")["services"]
+    assert set(services) == {"seaweedfs", "mailpit"}
+    sw = services["seaweedfs"]
+    assert sw["image"] == "chrislusf/seaweedfs:4.48"
+    assert sw["command"] == ["mini", "-dir=/data", "-bucket=serversherpa", "-admin.ui=false"]
+    assert sw["environment"]["AWS_ACCESS_KEY_ID"] == "serversherpa"
+    assert [(p["target"], int(p["published"])) for p in sw["ports"]] == [(8333, 9000)]
+    assert services["mailpit"]["image"] == "axllent/mailpit:v1.31.4"
+
+
+def test_api_and_storage_share_the_spaces_secret() -> None:
+    api_env = rendered("api")["services"]["api"]["environment"]
+    sw_env = rendered("storage")["services"]["seaweedfs"]["environment"]
+    assert api_env["SS_SPACES_ACCESS_KEY"] == sw_env["AWS_ACCESS_KEY_ID"] == "serversherpa"
+    assert api_env["SS_SPACES_SECRET_KEY"] == sw_env["AWS_SECRET_ACCESS_KEY"] == "CHANGEME"
 
 
 def test_readme_rollback_restores_into_a_clean_schema() -> None:

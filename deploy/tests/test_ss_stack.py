@@ -69,7 +69,6 @@ def test_up_starts_stacks_in_dependency_order(env_dir: Path, fake: dict[str, str
         "network create ss-uat",
         dc(env_dir, "db", wait),
         dc(env_dir, "storage", wait),
-        dc(env_dir, "storage", "run --rm minio-init"),
         dc(env_dir, "api", "run --rm migrate"),
         dc(env_dir, "api", wait),
         dc(env_dir, "web", wait),

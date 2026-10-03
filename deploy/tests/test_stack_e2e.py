@@ -15,6 +15,7 @@ import secrets
 import subprocess
 import sys
 import time
+import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -35,7 +36,7 @@ PORTS = {"API": 18000, "PORTAL": 18091, "KIOSK": 18090, "WIKI": 18096,
          "SPACES": 19000, "STATUS": 18095, "MAILPIT": 18025}
 # which stack and Compose service answers on each published port
 OWNERS = {"API": ("api", "api"), "PORTAL": ("web", "portal"), "KIOSK": ("web", "kiosk"),
-          "WIKI": ("web", "wiki"), "SPACES": ("storage", "minio"),
+          "WIKI": ("web", "wiki"), "SPACES": ("storage", "seaweedfs"),
           "STATUS": ("status", "status"), "MAILPIT": ("storage", "mailpit")}
 SERVICES = {"api", "import-worker", "log-service", "notification-worker",
             "scan-matching-worker", "report-worker", "label-worker",
@@ -72,7 +73,7 @@ def env_dir(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
         *[f"STACK_{k}_PORT={v}" for k, v in PORTS.items()],
         "STACK_KEEP_DUMPS=5",
         f"POSTGRES_PASSWORD={secrets.token_hex(16)}",
-        f"MINIO_ROOT_PASSWORD={secrets.token_hex(16)}",
+        f"SPACES_SECRET_KEY={secrets.token_hex(16)}",
         f"SS_JWT_SECRET={secrets.token_hex(32)}",
         f"SS_TOTP_ENCRYPTION_KEY={fernet}",
         f"SS_PASSWORD_PEPPER={secrets.token_hex(32)}",
@@ -100,7 +101,7 @@ def env_dir(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
 
 @pytest.mark.parametrize("name,path", [
     ("API", "/healthz"), ("PORTAL", "/"), ("KIOSK", "/"), ("WIKI", "/healthz"),
-    ("SPACES", "/minio/health/live"), ("STATUS", "/healthz"), ("MAILPIT", "/"),
+    ("SPACES", "/healthz"), ("STATUS", "/healthz"), ("MAILPIT", "/"),
 ])
 def test_every_service_answers(env_dir: Path, name: str, path: str) -> None:
     url = f"http://127.0.0.1:{PORTS[name]}{path}"
@@ -109,6 +110,22 @@ def test_every_service_answers(env_dir: Path, name: str, path: str) -> None:
     except TimeoutError as exc:
         pytest.fail(f"{exc}\n{service_logs(env_dir, *OWNERS[name])}")
     assert status == 200, f"{url} answered {status}\n{service_logs(env_dir, *OWNERS[name])}"
+
+
+def test_spaces_accepts_the_stack_credentials(env_dir: Path) -> None:
+    import boto3
+    from botocore.config import Config
+    secret = dict(l.split("=", 1) for l in (env_dir / ".env").read_text().splitlines()
+                  if "=" in l)["SPACES_SECRET_KEY"]
+    s3 = boto3.client("s3", endpoint_url=f"http://127.0.0.1:{PORTS['SPACES']}",
+                      region_name="us-east-1", aws_access_key_id="serversherpa",
+                      aws_secret_access_key=secret,
+                      config=Config(s3={"addressing_style": "path"}))
+    s3.put_object(Bucket="serversherpa", Key="e2e/probe.txt", Body=b"ok")
+    url = s3.generate_presigned_url("get_object", ExpiresIn=60,
+                                    Params={"Bucket": "serversherpa", "Key": "e2e/probe.txt"})
+    with urllib.request.urlopen(url, timeout=5) as resp:
+        assert resp.read() == b"ok"
 
 
 def test_migrations_reached_head(env_dir: Path) -> None:

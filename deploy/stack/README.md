@@ -5,7 +5,7 @@ Five Compose stacks run one environment on a Docker host:
 | Stack | Services | Published |
 |---|---|---|
 | `db` | postgres (16) | — |
-| `storage` | minio, minio-init (job), mailpit | 9000 (spaces), 8025 (mailpit UI) |
+| `storage` | seaweedfs, mailpit | 9000 (spaces), 8025 (mailpit UI) |
 | `api` | migrate (job), api, 10 workers | 8000 |
 | `web` | portal, kiosk, wiki | 8091, 8090, 8096 |
 | `status` | status | 8095 |
@@ -67,6 +67,8 @@ LAN environment is `uat`.
      To sign in with existing accounts later, `SS_PASSWORD_PEPPER` and
      `SS_TOTP_ENCRYPTION_KEY` must instead equal the values of the
      database you seed from.
+   - An existing environment whose `.env` still has `MINIO_ROOT_PASSWORD`
+     must rename it to `SPACES_SECRET_KEY` (same value).
 
 4. **Build and start**:
 
@@ -99,7 +101,7 @@ LAN environment is `uat`.
    | `status.uat.serversherpa.com` | 8095 |
 
    For `spaces`, add to the Advanced tab: `client_max_body_size 0;`
-   (large uploads go straight to MinIO).
+   (large uploads go straight to SeaweedFS).
 
    The API trusts forwarded client IPs only from `STACK_PROXY_IP`. If NPM
    ever runs on the same host as the stack, its connections arrive from a
@@ -128,7 +130,7 @@ git -C /opt/serversherpa/uat/repo fetch && git -C /opt/serversherpa/uat/repo che
 ```
 
 Roll back: its images are still on the host. Warning: the restore
-discards everything written after the dump, and files in MinIO are not
+discards everything written after the dump, and files in object storage (SeaweedFS) are not
 rolled back. Use the dump `ss-stack dump` printed just before the deploy, or
 the newest from `ls -t /opt/serversherpa/uat/backups`. From
 `/opt/serversherpa/uat/repo/deploy/stack`:
