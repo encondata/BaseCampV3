@@ -70,3 +70,6 @@
 .sirdar-port-input { width: 96px; }
 .sirdar-sub { margin: 16px 0 8px; }
 .sirdar-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.modal-card.reports-modal-card.rgm-card.sirdar-deploy-card { width: min(640px, 96vw); max-width: 96vw; }
+.sirdar-deploy-form { display: flex; flex-direction: column; gap: 14px; }
