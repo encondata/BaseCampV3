@@ -1,0 +1,50 @@
+# Object storage ("spaces") and the environment's mail catcher. SeaweedFS
+# runs in `weed mini` mode — master, volume, filer and the S3 gateway in
+# one process — creates the bucket itself (-bucket=) and takes fixed S3
+# keys from AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, so there is no init
+# job. Only its S3 port is published (for NPM, spaces.<domain>). MinIO
+# was dropped: its community images can no longer be pulled. Prod uses
+# DigitalOcean Spaces through the same SS_SPACES_* settings.
+# SMTP never leaves the box: the API sends to mailpit:1025 and testers
+# read mail at the mailpit UI.
+name: ss-${STACK_ENV:?set STACK_ENV}-storage
+
+services:
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48
+    command: ["mini", "-dir=/data", "-bucket=${SS_SPACES_BUCKET:-serversherpa}", "-admin.ui=false"]
+    environment:
+      AWS_ACCESS_KEY_ID: serversherpa
+      AWS_SECRET_ACCESS_KEY: ${SPACES_SECRET_KEY:?set SPACES_SECRET_KEY}
+    ports:
+      - "${STACK_BIND_IP:-0.0.0.0}:${STACK_SPACES_PORT:-9000}:8333"
+    volumes:
+      - seaweeddata:/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8333/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.31.4
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    ports:
+      - "${STACK_BIND_IP:-0.0.0.0}:${STACK_MAILPIT_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  seaweeddata:
+
+networks:
+  default:
+    name: ss-${STACK_ENV}
+    external: true

@@ -1,0 +1,24 @@
+# Static SPA. Vite's /assets/* names carry a content hash, so existing
+# files there are cached forever; a missing one is a real 404 (never the
+# index.html fallback, which would be cached as a broken bundle). Every
+# other path falls back to index.html, which is never cached so a
+# redeploy is picked up immediately.
+:8080 {
+	root * /srv
+	encode gzip
+	header {
+		X-Frame-Options SAMEORIGIN
+		X-Content-Type-Options nosniff
+		Referrer-Policy same-origin
+	}
+	handle /assets/* {
+		@found file {path}
+		header @found Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+	handle {
+		header Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}

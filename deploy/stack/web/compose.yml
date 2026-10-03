@@ -1,0 +1,52 @@
+# The three browser apps. The portal needs no settings (it derives its
+# siblings from its own hostname); the kiosk writes its two URLs into
+# config.js at start; the wiki server talks to the API over the
+# ss-<env> network.
+name: ss-${STACK_ENV:?set STACK_ENV}-web
+
+services:
+  portal:
+    image: ${STACK_PORTAL_IMAGE:-serversherpa-portal}:${STACK_IMAGE_TAG:?set STACK_IMAGE_TAG}
+    ports:
+      - "${STACK_BIND_IP:-0.0.0.0}:${STACK_PORTAL_PORT:-8091}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  kiosk:
+    image: ${STACK_KIOSK_IMAGE:-serversherpa-kiosk}:${STACK_IMAGE_TAG}
+    environment:
+      KIOSK_API_URL: https://api.${STACK_DOMAIN:?set STACK_DOMAIN}
+      KIOSK_PORTAL_URL: https://portal.${STACK_DOMAIN}
+    ports:
+      - "${STACK_BIND_IP:-0.0.0.0}:${STACK_KIOSK_PORT:-8090}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # exactly ONE replica: the collab server keeps open pages in memory
+  wiki:
+    image: ${STACK_WIKI_IMAGE:-serversherpa-wiki}:${STACK_IMAGE_TAG}
+    environment:
+      WIKI_API_URL: http://api:8000
+      WIKI_SERVICE_TOKEN: ${SS_WIKI_SERVICE_TOKEN:?set SS_WIKI_SERVICE_TOKEN}
+    ports:
+      - "${STACK_BIND_IP:-0.0.0.0}:${STACK_WIKI_PORT:-8096}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    restart: unless-stopped
+
+networks:
+  default:
+    name: ss-${STACK_ENV}
+    external: true
