@@ -118,3 +118,9 @@
    the eyebrow's accent color instead of the browser's default link blue. */
 .eyebrow a { color: inherit; text-decoration: none; }
 .eyebrow a:hover, .eyebrow a:focus-visible { text-decoration: underline; }
+
+/* Snapshots (deploy phase 3): the Upload and Take snapshot modals. */
+.modal-card.reports-modal-card.rgm-card.sirdar-snapmodal-card { width: min(600px, 96vw); max-width: 96vw; }
+.sirdar-snap-form { display: flex; flex-direction: column; gap: 14px; }
+.sirdar-snap-form textarea { width: 100%; resize: vertical; }
+.sirdar-file-pick { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
