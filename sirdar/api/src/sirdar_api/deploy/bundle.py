@@ -14,6 +14,7 @@ our own copy; nothing here prints a key or a secret."""
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import io
 import json
@@ -43,6 +44,7 @@ MANIFEST_KEYS = frozenset({"format", "source", "created_at", "alembic_revision",
                            "object_count", "object_bytes", "members"})
 # Cap on the decompressed bytes of all members; Sirdar passes a tighter one.
 DEFAULT_MAX_BYTES = 64 * 1024 ** 3
+STREAM_ALLOWANCE = 1024 * 1024  # tar headers, padding and the manifest
 MANIFEST_LIMIT = 64 * 1024
 KEYS_LIMIT = 16 * 1024
 CHUNK = 1024 * 1024
@@ -149,6 +151,23 @@ def _now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+class _CappedStream:
+    """Reads through a file object and refuses to hand out more than `limit`
+    bytes: tarfile reads PAX headers whole into memory, so the cap has to sit
+    on the decompressed stream, not only on the members' declared sizes."""
+
+    def __init__(self, f, limit: int):
+        self._f = f
+        self._left = limit
+
+    def read(self, n: int = -1) -> bytes:
+        data = self._f.read(n)
+        self._left -= len(data)
+        if self._left < 0:
+            raise BundleError(_TOO_BIG)
+        return data
+
+
 class _HashingReader:
     """Reads through a file object, hashing what passes."""
 
@@ -188,7 +207,9 @@ def _scan(path, *, on_manifest=None, on_keys=None, on_data=None,
             raise BundleError(_WRITE) from None
 
     try:
-        with tarfile.open(path, "r|gz") as tar:
+        with open(path, "rb") as raw, gzip.GzipFile(fileobj=raw) as unzipped, \
+                tarfile.open(fileobj=_CappedStream(unzipped, max_bytes + STREAM_ALLOWANCE),
+                             mode="r|") as tar:
             for member in tar:
                 if not member.isfile():
                     raise BundleError(_LAYOUT)
@@ -286,13 +307,22 @@ def pack(out, *, source: str, revision: str, bucket: str, db_dump, objects_tar,
             raise BundleError(f"Couldn't read the {label} file.")
     if os.path.getsize(keys_file) > KEYS_LIMIT:
         raise BundleError("The keys file is too large.")
-    count, total = objects_summary(objects_tar)
+    try:
+        count, total = objects_summary(objects_tar)
+    except OSError:
+        raise BundleError("Couldn't read the objects file.") from None
+    sums = {}
+    for name, label, path in ((keys_member, "keys", keys_file),
+                              (DB_DUMP, "database dump", db_dump),
+                              (OBJECTS, "objects", objects_tar)):
+        try:
+            sums[name] = sha256_file(path)
+        except OSError:
+            raise BundleError(f"Couldn't read the {label} file.") from None
     manifest = check_manifest({
         "format": FORMAT, "source": source, "created_at": created_at or _now_iso(),
         "alembic_revision": revision, "bucket": bucket,
-        "object_count": count, "object_bytes": total,
-        "members": {keys_member: sha256_file(keys_file), DB_DUMP: sha256_file(db_dump),
-                    OBJECTS: sha256_file(objects_tar)},
+        "object_count": count, "object_bytes": total, "members": sums,
     })
     raw = json.dumps(manifest, indent=2).encode()
 
@@ -300,7 +330,11 @@ def pack(out, *, source: str, revision: str, bucket: str, db_dump, objects_tar,
         tar.addfile(_member(MANIFEST, len(raw)), io.BytesIO(raw))
         for name, path in ((keys_member, keys_file), (DB_DUMP, db_dump),
                            (OBJECTS, objects_tar)):
-            with open(path, "rb") as f:
+            try:
+                f = open(path, "rb")
+            except OSError:
+                raise BundleError(f"Couldn't read the {name} file.") from None
+            with f:
                 tar.addfile(_member(name, os.path.getsize(path)), f)
 
     _write_partial(Path(out), write)

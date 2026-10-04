@@ -335,3 +335,46 @@ def test_missing_boto3_is_a_clean_error(monkeypatch):
     with pytest.raises(BundleError) as exc:
         bundle.s3_client("http://x", "k", "s")
     assert "boto3" in exc.value.reason
+
+
+def test_an_oversized_pax_header_cannot_balloon_memory(tmp_path):
+    import tracemalloc
+    bomb = tmp_path / "bomb.tar.gz"
+    with tarfile.open(bomb, "w:gz", format=tarfile.PAX_FORMAT) as tar:
+        info = tarfile.TarInfo("manifest.json")
+        info.pax_headers = {"comment": "a" * (60 * 1024 * 1024)}
+        tar.addfile(info, io.BytesIO(b""))
+    assert bomb.stat().st_size < 1024 * 1024
+    tracemalloc.start()
+    try:
+        with pytest.raises(BundleError) as exc:
+            bundle.verify(bomb, max_bytes=1000)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert exc.value.reason == bundle._TOO_BIG
+    assert peak < 50 * 1024 * 1024
+
+
+def test_a_truncated_gzip_is_still_damaged(tmp_path):
+    good = make_bundle(tmp_path)
+    cut = tmp_path / "cut.tar.gz"
+    cut.write_bytes(good.read_bytes()[:-30])
+    with pytest.raises(BundleError) as exc:
+        bundle.verify(cut)
+    assert exc.value.reason == bundle._DAMAGED
+
+
+@pytest.mark.skipif(hasattr(__import__("os"), "geteuid") and __import__("os").geteuid() == 0,
+                    reason="root reads anything")
+def test_pack_with_an_unreadable_input_is_a_clean_error(tmp_path):
+    parts = write_parts(tmp_path)
+    parts["objects"].chmod(0)
+    try:
+        with pytest.raises(BundleError) as exc:
+            bundle.pack(tmp_path / "b.tar.gz", source="uat", revision="1",
+                        bucket="serversherpa", db_dump=parts["db"],
+                        objects_tar=parts["objects"], keys_file=parts["keys"])
+    finally:
+        parts["objects"].chmod(0o600)
+    assert exc.value.reason == "Couldn't read the objects file."
