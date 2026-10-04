@@ -351,6 +351,7 @@ _ENV_STATUS = {"environment_exists": 409, "deploy_in_progress": 409,
                "snapshot_not_found": 404, "snapshot_not_ready": 409,
                "integration_not_configured": 409, "ip_in_use": 409,
                "ssh_targets_unreadable": 409, "vm_invalid": 422}
+_NAME_CONSTRAINT = "environments_name_key"
 
 
 class VmIn(BaseModel):
@@ -364,11 +365,12 @@ class VmIn(BaseModel):
 
 
 class VmPatch(BaseModel):
+    """PATCH's `vm`: sizes (applied by the next deploy's step 0) and how many
+    VM snapshots to keep."""
     cores: int | None = None
     memory_mb: int | None = None
     disk_gb: int | None = None
     keep_snapshots: int | None = None
-_NAME_CONSTRAINT = "environments_name_key"
 
 
 class EnvironmentIn(BaseModel):
