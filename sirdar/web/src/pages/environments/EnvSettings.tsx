@@ -10,11 +10,11 @@ import SecretField, { type SecretAction } from '../../components/SecretField';
 import { ipv4Problem, portProblem, refProblem } from '../../lib/envRules';
 import {
   deployErrorText, errorDetail, getEnvironmentDefaults, updateEnvironment,
-  type DeployTarget, type Deployment, type Environment, type EnvironmentPatch,
+  type DeployTarget, type Deployment, type Environment, type EnvironmentPatch, type VmDefaults,
 } from '../../lib/sirdarApi';
 
 import DeleteEnvironmentModal from './DeleteEnvironmentModal';
-import { deploymentRunning, onProxmox, sshTargets, targetLabel } from './labels';
+import { deploymentRunning, gbOf, mbOf, onProxmox, sshTargets, targetLabel, vmBuilt } from './labels';
 
 const SECRET_LABELS: Record<string, string> = {
   SS_ANTHROPIC_API_KEY: 'Anthropic API key', SS_DB_TESTING_PASSWORD: 'Database testing password',
@@ -37,7 +37,7 @@ function fromEnv(env: Environment) {
     ref: env.git_ref, target: env.target, domain: env.base_domain, proxy: env.proxy_ip, bind: env.bind_ip,
     keep: String(env.keep_dumps), bucket: env.spaces_bucket, level: env.log_level,
     services: Object.fromEntries(env.services.map((s) => [s.service, { host_ip: s.host_ip, port: String(s.port) }])) as Record<string, Svc>,
-    cores: String(env.vm?.cores ?? ''), memory: env.vm ? String(env.vm.memory_mb / 1024) : '',
+    cores: String(env.vm?.cores ?? ''), memory: env.vm ? gbOf(env.vm.memory_mb) : '',
     disk: String(env.vm?.disk_gb ?? ''), keepVm: String(env.vm?.keep_snapshots ?? ''),
   };
 }
@@ -76,6 +76,8 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
   const [secretValue, setSecretValue] = useState<Record<string, string>>({});
   const [levels, setLevels] = useState<string[]>([env.log_level]);
   const [optional, setOptional] = useState<string[]>(Object.keys(SECRET_LABELS));
+  // The API's Machine limits; until they load, only the shape is checked here (the API checks the range).
+  const [vmLimits, setVmLimits] = useState<VmDefaults['limits'] | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
@@ -86,7 +88,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
   const reset = (from: Environment) => { setForm(fromEnv(from)); setSecretAction({}); setSecretValue({}); };
   useEffect(() => { reset(env); }, [env.name]);  // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    getEnvironmentDefaults().then((d) => { setLevels(d.log_levels); setOptional(d.optional_secrets); }).catch(() => { /* only the current level is offered */ });
+    getEnvironmentDefaults().then((d) => { setLevels(d.log_levels); setOptional(d.optional_secrets); setVmLimits(d.vm?.limits ?? null); }).catch(() => { /* only the current level is offered */ });
   }, []);
 
   const set = <K extends keyof Form>(key: K, value: Form[K]) => { setForm((f) => ({ ...f, [key]: value })); setNotice(''); };
@@ -118,13 +120,27 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
       if (problem) { e.services = problem; break; }
     }
     if (onVm && env.vm) {
-      const whole = (raw: string, low: number, high: number) =>
-        /^\d+$/.test(raw.trim()) && Number(raw) >= low && Number(raw) <= high;
-      if (!whole(form.cores, 1, 64)) e.machine = 'Use 1 to 64 vCPUs.';
-      else if (!whole(form.memory, 2, 256)) e.machine = 'Use 2 to 256 GB of memory.';
-      else if (!whole(form.disk, 20, 4096)) e.machine = 'Use a disk of 20 to 4096 GB.';
-      else if (Number(form.disk) < env.vm.disk_gb) e.machine = 'A disk can grow but never shrink.';
-      else if (!whole(form.keepVm, 1, 10)) e.machine = 'Keep 1 to 10 VM snapshots.';
+      const within = (n: number, range?: [number, number]) => !range || (n >= range[0] && n <= range[1]);
+      const whole = (raw: string) => (/^\d+$/.test(raw.trim()) ? Number(raw) : NaN);
+      const lim = vmLimits;
+      const between = (range: [number, number] | undefined, fallback: string) =>
+        range ? `${range[0]} to ${range[1]}` : fallback;
+      if (!(whole(form.cores) >= 1) || !within(whole(form.cores), lim?.cores)) {
+        e.machine = `Use ${between(lim?.cores, 'a whole number of')} vCPUs.`;
+      } else if (!/^\d+(\.\d)?$/.test(form.memory.trim()) || !(mbOf(form.memory) > 0)
+                 || !within(mbOf(form.memory), lim?.memory_mb)) {
+        e.machine = lim
+          ? `Use ${gbOf(lim.memory_mb[0])} to ${gbOf(lim.memory_mb[1])} GB of memory.`
+          : 'Enter the memory in GB, like 8 or 2.5.';
+      } else if (!(whole(form.disk) >= 1) || !within(whole(form.disk), lim?.disk_gb)) {
+        e.machine = `Use a disk of ${between(lim?.disk_gb, 'a whole number of')} GB.`;
+      } else if (Number(form.disk) < env.vm.disk_gb) {
+        e.machine = 'A disk can grow but never shrink.';
+      } else if (!(whole(form.keepVm) >= 1) || !within(whole(form.keepVm), lim?.keep_snapshots)) {
+        e.machine = lim
+          ? `Keep ${lim.keep_snapshots[0]} to ${lim.keep_snapshots[1]} VM snapshots.`
+          : 'Enter how many VM snapshots to keep, as a whole number.';
+      }
     }
     if (!e.services) {
       const used = env.services.map((s) => Number(form.services[s.service].port));
@@ -168,7 +184,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
     if (onVm && env.vm) {
       const vm: NonNullable<EnvironmentPatch['vm']> = {};
       if (Number(form.cores) !== env.vm.cores) vm.cores = Number(form.cores);
-      if (Number(form.memory) * 1024 !== env.vm.memory_mb) vm.memory_mb = Number(form.memory) * 1024;
+      if (mbOf(form.memory) !== env.vm.memory_mb) vm.memory_mb = mbOf(form.memory);
       if (Number(form.disk) !== env.vm.disk_gb) vm.disk_gb = Number(form.disk);
       if (Number(form.keepVm) !== env.vm.keep_snapshots) vm.keep_snapshots = Number(form.keepVm);
       if (Object.keys(vm).length) patch.vm = vm;
@@ -305,7 +321,10 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
         <div className="sirdar-danger-zone">
           <h3 className="sirdar-sub">Delete environment</h3>
           <p className="page-hint">
-            {onVm
+            {onVm && env.vm && !vmBuilt(env.vm)
+              ? 'No VM was created yet; nothing on Proxmox is removed. Deleting it removes the DNS records and proxy '
+                + 'hosts Sirdar made, and removes it from Sirdar.'
+              : onVm
               ? 'Destroys its VM on Proxmox with everything on it, VM snapshots included, removes the DNS records and '
                 + 'proxy hosts Sirdar made, and removes it from Sirdar.'
               : 'Stops it, deletes its data, backups and folder on the host, removes the DNS records and proxy hosts '

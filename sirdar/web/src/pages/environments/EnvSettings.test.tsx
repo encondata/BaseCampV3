@@ -16,7 +16,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import EnvSettings from './EnvSettings';
-import { DEFAULTS, ENV, PX_ENV, PX_TARGETS, TARGETS } from './testData';
+import { DEFAULTS, ENV, PX_ENV, PX_NEW_ENV, PX_TARGETS, TARGETS } from './testData';
 
 Element.prototype.scrollIntoView = () => {};
 beforeEach(() => {
@@ -176,4 +176,39 @@ it('Proxmox: the target and the addresses are the VM\'s; Machine saves only what
   await waitFor(() => expect(onSaved).toHaveBeenCalled());
   expect(api.updateEnvironment).toHaveBeenCalledWith('uat3', { vm: { cores: 8, memory_mb: 16384 } });
   expect(screen.getByText(/Destroys its VM on Proxmox/)).toBeTruthy();
+});
+
+it('Proxmox: the Machine limits and their messages come from the environment defaults', async () => {
+  api.getEnvironmentDefaults.mockResolvedValue({
+    ...DEFAULTS,
+    vm: { ...DEFAULTS.vm, limits: { cores: [2, 16], memory_mb: [4096, 65536], disk_gb: [32, 512], keep_snapshots: [1, 5] } },
+  });
+  render(<EnvSettings env={PX_ENV} targets={PX_TARGETS.targets} onSaved={vi.fn()} />);
+  await waitFor(() => expect(api.getEnvironmentDefaults).toHaveBeenCalled());
+  const field = async (label: string, value: string) => {
+    await userEvent.clear(screen.getByLabelText(label));
+    await userEvent.type(screen.getByLabelText(label), value);
+  };
+  await field('vCPUs', '32');
+  await save();
+  expect(screen.getByText('Use 2 to 16 vCPUs.')).toBeTruthy();
+  await field('vCPUs', '4');
+  await field('Memory (GB)', '128');
+  await save();
+  expect(screen.getByText('Use 4 to 64 GB of memory.')).toBeTruthy();
+  await field('Memory (GB)', '8');
+  await field('Disk (GB)', '1024');
+  await save();
+  expect(screen.getByText('Use a disk of 32 to 512 GB.')).toBeTruthy();
+  await field('Disk (GB)', '64');
+  await field('VM snapshots to keep', '8');
+  await save();
+  expect(screen.getByText('Keep 1 to 5 VM snapshots.')).toBeTruthy();
+  expect(api.updateEnvironment).not.toHaveBeenCalled();
+});
+
+it('Proxmox before its first deploy: the danger zone says nothing on Proxmox is removed', () => {
+  render(<EnvSettings env={PX_NEW_ENV} targets={PX_TARGETS.targets} onSaved={vi.fn()} onDeleteStarted={vi.fn()} />);
+  expect(screen.getByText(/No VM was created yet; nothing on Proxmox is removed\./)).toBeTruthy();
+  expect(screen.queryByText(/Destroys its VM/)).toBeNull();
 });

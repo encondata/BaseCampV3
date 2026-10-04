@@ -19,7 +19,7 @@ import {
   type EnvironmentDefaults, type NewEnvironmentBody, type Snapshot,
 } from '../../lib/sirdarApi';
 
-import { TYPE_LABEL, envTargets, snapshotLabel, sshTargets, vmNetwork, vmSize } from './labels';
+import { TYPE_LABEL, envTargets, gbOf, mbOf, snapshotLabel, sshTargets, vmNetwork, vmSize } from './labels';
 
 type Mode = 'new' | 'adopt';
 type Step = 'basics' | 'machine' | 'services' | 'data' | 'review' | 'result';
@@ -45,8 +45,6 @@ const CIDR_RE = /^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/;
 const VM_IP_HELP = 'Use an address with its prefix, like 10.10.48.70/24.';
 const VM_GATEWAY_HELP = "The gateway must be another address in the VM's network.";
 /** Memory in GB with at most one decimal (what vmSize shows), so Review matches the request. */
-const gbOf = (mb: number) => String(Math.round((mb / 1024) * 10) / 10);
-const mbOf = (gb: string) => Math.round(Number(gb) * 1024);
 const toInt = (ip: string) => ip.split('.').reduce((n, p) => n * 256 + Number(p), 0);
 
 /** The API's check_network for a static address, on the client: '' when the API would accept it. */

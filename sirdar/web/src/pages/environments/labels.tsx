@@ -106,6 +106,13 @@ export const envTargets = (targets: DeployTarget[]) =>
 /** Its host is a VM Sirdar builds on Proxmox. */
 export const onProxmox = (env: Environment) => env.target_kind === 'proxmox';
 
+/** Sirdar built the VM (an id reserved before the first deploy is not a VM yet). */
+export const vmBuilt = (vm: Pick<EnvVm, 'created' | 'vmid'>) => vm.created && vm.vmid !== null;
+
+/** Memory in GB as typed and shown (one decimal at most), and back to MB. */
+export const gbOf = (mb: number) => String(Math.round((mb / 1024) * 10) / 10);
+export const mbOf = (gb: string) => Math.round(Number(gb) * 1024);
+
 /** "4 vCPU · 8 GB · 64 GB disk" */
 export const vmSize = (vm: Pick<EnvVm, 'cores' | 'memory_mb' | 'disk_gb'>) =>
   `${vm.cores} vCPU · ${Math.round((vm.memory_mb / 1024) * 10) / 10} GB · ${vm.disk_gb} GB disk`;

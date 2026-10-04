@@ -13,7 +13,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import DeleteEnvironmentModal from './DeleteEnvironmentModal';
-import { ENV, PUBLISHED_ENV, PX_ENV, TEARDOWN } from './testData';
+import { ENV, PUBLISHED_ENV, PX_ENV, PX_NEW_ENV, TEARDOWN } from './testData';
 
 beforeEach(() => {
   perms.add = true; perms.change = true;
@@ -85,4 +85,16 @@ it('a Proxmox environment: the VM goes, with everything on it', async () => {
   await userEvent.click(within(dialog).getByRole('button', { name: 'Delete environment' }));
   await waitFor(() => expect(onStarted).toHaveBeenCalledWith(TEARDOWN));
   expect(api.startDeployment).toHaveBeenCalledWith('uat3', { mode: 'teardown', confirm_name: 'uat3' });
+});
+
+it('a Proxmox environment whose VM was never created: nothing on Proxmox is removed', () => {
+  render(<DeleteEnvironmentModal env={PX_NEW_ENV} onStarted={vi.fn()} onClose={vi.fn()} />);
+  const dialog = screen.getByRole('dialog', { name: 'Delete uat3' });
+  expect(within(dialog).getByText(/No VM was created yet; nothing on Proxmox is removed\./)).toBeTruthy();
+  expect(within(dialog).queryByText(/Destroys the VM/)).toBeNull();
+  cleanup();
+  // A VM id reserved but the VM not built yet counts as not created.
+  render(<DeleteEnvironmentModal env={{ ...PX_ENV, vm: { ...PX_ENV.vm!, created: false } }}
+                                 onStarted={vi.fn()} onClose={vi.fn()} />);
+  expect(screen.getByText(/No VM was created yet; nothing on Proxmox is removed\./)).toBeTruthy();
 });

@@ -11,6 +11,8 @@ import {
   deployErrorText, startDeployment, type Deployment, type Environment, type ManagedRecordRef,
 } from '../../lib/sirdarApi';
 
+import { vmBuilt } from './labels';
+
 type Attempt = { confirm: string };
 const NOUN: Record<ManagedRecordRef['kind'], string> = {
   dns_record: 'DNS record', proxy_host: 'Proxy host', certificate: 'Certificate',
@@ -82,7 +84,12 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
             <div className="rgm-head-text">
               <div className="eyebrow">Settings</div>
               <h3 id="sirdar-delete-title">Delete {env.name}</h3>
-              {env.target_kind === 'proxmox' && env.vm ? (
+              {env.target_kind === 'proxmox' && env.vm && !vmBuilt(env.vm) ? (
+                <p className="page-hint">
+                  No VM was created yet; nothing on Proxmox is removed. Snapshots taken from {env.name} are kept in
+                  {' '}Sirdar. Then Sirdar forgets the environment.
+                </p>
+              ) : env.target_kind === 'proxmox' && env.vm ? (
                 <p className="page-hint">
                   Destroys the VM {env.vm.name}{env.vm.vmid !== null ? ` (VM ${env.vm.vmid})` : ''} on Proxmox with
                   everything on it: the database, files, backups and VM snapshots. Snapshots taken from {env.name}
