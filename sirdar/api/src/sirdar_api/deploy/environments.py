@@ -280,10 +280,12 @@ def _valid_fernet_key(value: str) -> bool:
 
 def _adopted_secrets(values: dict[str, str]) -> dict[str, str]:
     """The secrets of an adopted .env, only in shapes that render back
-    unchanged: hex where create generates hex, a Fernet key for TOTP, and
-    the PATCH rule for optional secrets (an optional one left at CHANGEME is
-    unset). Anything else raises adopt_value_invalid naming the key, never
-    the value."""
+    unchanged: a Fernet key for TOTP, hex for POSTGRES_PASSWORD (it goes into
+    a database URL unescaped), and the PATCH rule's safe characters for the
+    rest. A hand-built env may carry secrets Sirdar didn't generate (uat's
+    pepper came from dev), so those are kept as they are, not forced to hex.
+    An optional secret left at CHANGEME is unset. Anything else raises
+    adopt_value_invalid naming the key, never the value."""
     secrets: dict[str, str] = {}
     for key in envfile.SECRET_KEYS:
         value = values.get(key, "")
@@ -293,8 +295,10 @@ def _adopted_secrets(values: dict[str, str]) -> dict[str, str]:
             ok = bool(_SECRET_VALUE_RE.fullmatch(value))
         elif key in envfile.FERNET_SECRETS:
             ok = _valid_fernet_key(value)
-        else:
+        elif key == "POSTGRES_PASSWORD":
             ok = bool(_HEX_RE.fullmatch(value))
+        else:
+            ok = value != envfile.PLACEHOLDER and bool(_SECRET_VALUE_RE.fullmatch(value))
         if not ok:
             raise EnvError("adopt_value_invalid", key=key)
         secrets[key] = value

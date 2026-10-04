@@ -315,9 +315,27 @@ async def test_adopt_accepts_secrets_create_would_generate(db, target):
     assert await _secrets(db, env.id) == generated
 
 
+async def test_adopt_keeps_a_render_safe_non_hex_pepper(db, target):
+    """A hand-built env can carry secrets Sirdar didn't generate, like uat's
+    pepper copied from dev (43 mixed-case alphanumerics). Anything that renders
+    back unchanged is kept as is: the pepper must not change, or every
+    password stops working."""
+    await trust_fake(db, target)
+    pepper = "Zq3" * 14 + "x"
+    jwt = "jwt.secret-from_elsewhere~1"
+    serve_remote_env(target, remote_env_text(SS_PASSWORD_PEPPER=pepper, SS_JWT_SECRET=jwt))
+    env, _, _ = await environments.adopt(db, get_settings(), name="uat", type_="dev",
+                                         target_id="ssh")
+    await db.commit()
+    stored = await _secrets(db, env.id)
+    assert stored["SS_PASSWORD_PEPPER"] == pepper
+    assert stored["SS_JWT_SECRET"] == jwt
+
+
 @pytest.mark.parametrize("key, value", [
     ("POSTGRES_PASSWORD", '"ab$cd"'),               # quoted: parse_env keeps the "$"
-    ("SS_JWT_SECRET", "jwt-not-hex-0f1e"),
+    ("POSTGRES_PASSWORD", "p4ss-not-hex"),          # goes into a DB URL unescaped: hex only
+    ("SS_JWT_SECRET", "has space"),
     ("SS_PASSWORD_PEPPER", "'0a1b$2c'"),
     ("SS_TOTP_ENCRYPTION_KEY", "not-a-fernet-key"),
     ("SS_TOTP_ENCRYPTION_KEY", "a1" * 32),          # hex, but not a Fernet key
