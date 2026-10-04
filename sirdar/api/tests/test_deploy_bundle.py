@@ -194,3 +194,144 @@ def test_created_at_defaults_to_now(tmp_path):
                            objects_tar=parts["objects"], keys_file=parts["keys"])
     created = datetime.fromisoformat(manifest["created_at"])
     assert abs((datetime.now(UTC) - created).total_seconds()) < 60
+
+
+def _raw_tar(path, members):
+    """members: (name, type, data, linkname) tuples, written as given."""
+    with tarfile.open(path, "w:gz") as tar:
+        for name, kind, data, link in members:
+            info = tarfile.TarInfo(name)
+            info.type = kind
+            info.linkname = link
+            info.size = len(data) if kind == tarfile.REGTYPE else 0
+            tar.addfile(info, io.BytesIO(data) if kind == tarfile.REGTYPE else None)
+
+
+def test_unpack_leaves_nothing_when_a_checksum_fails(tmp_path):
+    good = make_bundle(tmp_path)
+    bad = tmp_path / "bad.tar.gz"
+    _retar(good, bad, lambda n, d: (n, b"PGDMP-tampered") if n == "db.dump" else (n, d))
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    with pytest.raises(BundleError):
+        bundle.unpack(bad, dest)
+    assert list(dest.iterdir()) == []
+
+
+def test_unpack_leaves_nothing_when_the_last_member_fails(tmp_path):
+    good = make_bundle(tmp_path)
+    bad = tmp_path / "bad.tar.gz"
+    _retar(good, bad, lambda n, d: (n, d + b"x") if n == "objects.tar" else (n, d))
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    with pytest.raises(BundleError):
+        bundle.unpack(bad, dest)
+    assert list(dest.iterdir()) == []
+
+
+def test_unpack_into_a_missing_folder_is_a_write_error(tmp_path):
+    src = make_bundle(tmp_path)
+    with pytest.raises(BundleError) as exc:
+        bundle.unpack(src, tmp_path / "nope")
+    assert exc.value.reason.startswith("Couldn't write")
+
+
+def test_unpack_does_not_follow_a_symlink(tmp_path):
+    src = make_bundle(tmp_path)
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    target = tmp_path / "victim"
+    target.write_text("keep")
+    (dest / "db.dump.partial").symlink_to(target)
+    with pytest.raises(BundleError):
+        bundle.unpack(src, dest)
+    assert target.read_text() == "keep"
+
+
+def test_rewrite_keys_into_a_missing_folder_is_a_write_error(tmp_path):
+    src = make_bundle(tmp_path, keys_member="keys.env")
+    with pytest.raises(BundleError) as exc:
+        bundle.rewrite_keys(src, tmp_path / "nope" / "out.tar.gz", b"E")
+    assert exc.value.reason.startswith("Couldn't write")
+
+
+def test_pack_with_a_missing_input_is_a_clean_error(tmp_path):
+    parts = write_parts(tmp_path)
+    with pytest.raises(BundleError) as exc:
+        bundle.pack(tmp_path / "b.tar.gz", source="uat", revision="1", bucket="serversherpa",
+                    db_dump=tmp_path / "gone", objects_tar=parts["objects"],
+                    keys_file=parts["keys"])
+    assert exc.value.reason.startswith("Couldn't read")
+    tool = bundle.__file__
+    run = subprocess.run([sys.executable, tool, "pack", "--out", str(tmp_path / "c.tar.gz"),
+                          "--source", "uat", "--revision", "1", "--bucket", "serversherpa",
+                          "--db", str(tmp_path / "gone"), "--objects", str(parts["objects"]),
+                          "--keys-env", str(parts["keys"])], capture_output=True, text=True)
+    assert run.returncode == 1
+    assert run.stderr.startswith("bundle: ")
+    assert "Traceback" not in run.stderr
+
+
+def test_a_small_cap_refuses_the_bundle(tmp_path):
+    src = make_bundle(tmp_path)
+    for call in (lambda: bundle.verify(src, max_bytes=10),
+                 lambda: bundle.rewrite_keys(src, tmp_path / "o.tar.gz", b"E", max_bytes=10),
+                 lambda: bundle.unpack(src, tmp_path, max_bytes=10)):
+        with pytest.raises(BundleError) as exc:
+            call()
+        assert exc.value.reason == bundle._TOO_BIG
+    assert bundle.verify(src, max_bytes=bundle.DEFAULT_MAX_BYTES)["source"] == "uat"
+    assert bundle.DEFAULT_MAX_BYTES == 64 * 1024 ** 3
+    cli = subprocess.run([sys.executable, bundle.__file__, "verify", str(src), "--max-bytes", "10"],
+                         capture_output=True, text=True)
+    assert (cli.returncode, cli.stderr.strip()) == (1, f"bundle: {bundle._TOO_BIG}")
+
+
+@pytest.mark.parametrize("value", [
+    "2026-10-04T12:00:00", "2026-10-04", "2026-10-04T12:00:00.5Z", "2026-10-04T12:00:00+00:00",
+    "2026-13-04T12:00:00Z", "2026-10-04 12:00:00Z"])
+def test_created_at_must_be_exactly_the_utc_format(tmp_path, value):
+    parts = write_parts(tmp_path)
+    with pytest.raises(BundleError):
+        bundle.pack(tmp_path / "b.tar.gz", source="uat", revision="1", bucket="serversherpa",
+                    db_dump=parts["db"], objects_tar=parts["objects"],
+                    keys_file=parts["keys"], created_at=value)
+
+
+def test_the_manifest_refuses_unknown_keys(tmp_path):
+    good = make_bundle(tmp_path)
+    bad = tmp_path / "bad.tar.gz"
+    _retar(good, bad, lambda n, d: (n, json.dumps({**json.loads(d), "extra": 1}).encode())
+           if n == "manifest.json" else (n, d))
+    with pytest.raises(BundleError):
+        bundle.verify(bad)
+
+
+@pytest.mark.parametrize("kind", [tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.CHRTYPE])
+def test_special_members_are_refused(tmp_path, kind):
+    bad = tmp_path / "bad.tar.gz"
+    _raw_tar(bad, [("manifest.json", kind, b"", "/etc/passwd")])
+    with pytest.raises(BundleError) as exc:
+        bundle.verify(bad)
+    assert exc.value.reason == bundle._LAYOUT
+
+
+def test_oversized_manifest_and_keys_are_refused(tmp_path):
+    good = make_bundle(tmp_path)
+    big_manifest = tmp_path / "m.tar.gz"
+    _retar(good, big_manifest, lambda n, d: (n, b" " * 70000) if n == "manifest.json" else (n, d))
+    with pytest.raises(BundleError) as exc:
+        bundle.verify(big_manifest)
+    assert exc.value.reason == bundle._LAYOUT
+    big_keys = tmp_path / "k.tar.gz"
+    _retar(good, big_keys, lambda n, d: (n, b"k" * 20000) if n == "keys.enc" else (n, d))
+    with pytest.raises(BundleError) as exc:
+        bundle.read_head(big_keys)
+    assert "too large" in exc.value.reason
+
+
+def test_missing_boto3_is_a_clean_error(monkeypatch):
+    monkeypatch.setitem(sys.modules, "boto3", None)
+    with pytest.raises(BundleError) as exc:
+        bundle.s3_client("http://x", "k", "s")
+    assert "boto3" in exc.value.reason

@@ -38,6 +38,11 @@ REVISION_RE = re.compile(r"[0-9]{1,8}")
 SOURCE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 BUCKET_RE = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+TIME_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+MANIFEST_KEYS = frozenset({"format", "source", "created_at", "alembic_revision", "bucket",
+                           "object_count", "object_bytes", "members"})
+# Cap on the decompressed bytes of all members; Sirdar passes a tighter one.
+DEFAULT_MAX_BYTES = 64 * 1024 ** 3
 MANIFEST_LIMIT = 64 * 1024
 KEYS_LIMIT = 16 * 1024
 CHUNK = 1024 * 1024
@@ -47,6 +52,8 @@ DEFAULT_BUCKET = "serversherpa"
 _LAYOUT = ("The bundle must hold manifest.json, the keys, db.dump and objects.tar, "
            "in that order, and nothing else.")
 _DAMAGED = "The file isn't a complete .tar.gz bundle."
+_TOO_BIG = "The bundle is larger than the allowed size once unpacked."
+_WRITE = "Couldn't write the output files."
 UTC = timezone.utc
 
 
@@ -85,6 +92,8 @@ def check_manifest(data: object) -> dict:
     """The manifest, or BundleError naming what's wrong."""
     if not isinstance(data, dict) or data.get("format") != FORMAT:
         raise BundleError(f"This bundle's format isn't one Sirdar reads (format {FORMAT}).")
+    if set(data) - MANIFEST_KEYS:
+        raise BundleError("The manifest has fields this version doesn't know.")
     source = data.get("source")
     if not isinstance(source, str) or not SOURCE_RE.fullmatch(source):
         raise BundleError("The manifest's source is missing or invalid.")
@@ -115,13 +124,10 @@ def check_manifest(data: object) -> dict:
 
 
 def parse_time(value) -> datetime:
-    """A manifest time ("2026-10-04T12:00:00Z"); fromisoformat reads a
-    trailing Z only from Python 3.11."""
-    if not isinstance(value, str):
-        raise TypeError("not a string")
-    if value.endswith("Z"):
-        value = value[:-1] + "+00:00"
-    return datetime.fromisoformat(value)
+    """A manifest time: exactly "YYYY-MM-DDTHH:MM:SSZ", on every Python."""
+    if not isinstance(value, str) or not TIME_RE.fullmatch(value):
+        raise ValueError("not a UTC time")
+    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
 
 
 def _parse_manifest(raw: bytes) -> dict:
@@ -160,29 +166,45 @@ class _HashingReader:
 
 
 def _scan(path, *, on_manifest=None, on_keys=None, on_data=None,
-          head_only: bool = False) -> tuple[dict, str, bytes]:
+          head_only: bool = False, max_bytes: int = DEFAULT_MAX_BYTES
+          ) -> tuple[dict, str, bytes]:
     """One streaming pass over a bundle: the layout and every checksum are
     checked. on_manifest(manifest), on_keys(name, data) and
     on_data(name, size, reader) see the members as they pass; on_data may
     read its member (it is drained afterwards either way). head_only stops
-    after the keys (no checksum of the big members)."""
+    after the keys (no checksum of the big members). The members' declared
+    sizes may add up to max_bytes at most. Errors raised by the callbacks'
+    writes are write errors, not a damaged bundle."""
     manifest: dict | None = None
     keys_name = ""
     keys_data = b""
     seen: list[str] = []
+    total = 0
+
+    def call(fn, *args) -> None:
+        try:
+            fn(*args)
+        except OSError:
+            raise BundleError(_WRITE) from None
+
     try:
         with tarfile.open(path, "r|gz") as tar:
             for member in tar:
                 if not member.isfile():
                     raise BundleError(_LAYOUT)
+                total += member.size
+                if total > max_bytes:
+                    raise BundleError(_TOO_BIG)
                 if not seen:
                     if member.name != MANIFEST or member.size > MANIFEST_LIMIT:
                         raise BundleError(_LAYOUT)
                     manifest = _parse_manifest(tar.extractfile(member).read())
                     keys_name = next(k for k in KEY_MEMBERS if k in manifest["members"])
                     seen.append(MANIFEST)
+                    if manifest["object_bytes"] > max_bytes:
+                        raise BundleError(_TOO_BIG)
                     if on_manifest is not None:
-                        on_manifest(manifest)
+                        call(on_manifest, manifest)
                     continue
                 expected = (keys_name, DB_DUMP, OBJECTS)
                 if len(seen) > len(expected) or member.name != expected[len(seen) - 1]:
@@ -196,7 +218,7 @@ def _scan(path, *, on_manifest=None, on_keys=None, on_data=None,
                 else:
                     reader = _HashingReader(src)
                     if on_data is not None:
-                        on_data(member.name, member.size, reader)
+                        call(on_data, member.name, member.size, reader)
                     while reader.read(CHUNK):
                         pass
                     digest = reader.hexdigest()
@@ -205,7 +227,7 @@ def _scan(path, *, on_manifest=None, on_keys=None, on_data=None,
                 seen.append(member.name)
                 if member.name == keys_name:
                     if on_keys is not None:
-                        on_keys(keys_name, keys_data)
+                        call(on_keys, keys_name, keys_data)
                     if head_only:
                         return manifest, keys_name, keys_data
     except BundleError:
@@ -223,20 +245,31 @@ def read_head(path) -> tuple[dict, str, bytes]:
     return _scan(path, head_only=True)
 
 
-def verify(path) -> dict:
+def verify(path, max_bytes: int = DEFAULT_MAX_BYTES) -> dict:
     """Check the layout and every checksum; the manifest."""
-    return _scan(path)[0]
+    return _scan(path, max_bytes=max_bytes)[0]
+
+
+def _open_private(path, extra: int = 0) -> int:
+    """A file descriptor for a new file that is mode 600 even if a stale
+    file of that name existed, and never through a symlink."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | extra, 0o600)
+    os.fchmod(fd, 0o600)
+    return fd
 
 
 def _write_partial(out: Path, write) -> None:
     partial = out.with_name(out.name + ".partial")
     try:
-        fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        fd = _open_private(partial)
         with os.fdopen(fd, "wb") as raw, \
                 tarfile.open(fileobj=raw, mode="w:gz", compresslevel=1,
                              format=tarfile.PAX_FORMAT) as tar:
             write(tar)
         os.replace(partial, out)
+    except OSError:
+        partial.unlink(missing_ok=True)
+        raise BundleError(_WRITE) from None
     except BaseException:
         partial.unlink(missing_ok=True)
         raise
@@ -247,6 +280,10 @@ def pack(out, *, source: str, revision: str, bucket: str, db_dump, objects_tar,
     """Write a bundle (mode 600) from its parts; the manifest."""
     if keys_member not in KEY_MEMBERS:
         raise BundleError("The keys member must be keys.enc or keys.env.")
+    for label, path in (("keys", keys_file), ("database dump", db_dump),
+                        ("objects", objects_tar)):
+        if not os.path.isfile(path):
+            raise BundleError(f"Couldn't read the {label} file.")
     if os.path.getsize(keys_file) > KEYS_LIMIT:
         raise BundleError("The keys file is too large.")
     count, total = objects_summary(objects_tar)
@@ -270,7 +307,7 @@ def pack(out, *, source: str, revision: str, bucket: str, db_dump, objects_tar,
     return manifest
 
 
-def rewrite_keys(src, out, keys_enc: bytes) -> dict:
+def rewrite_keys(src, out, keys_enc: bytes, max_bytes: int = DEFAULT_MAX_BYTES) -> dict:
     """Copy a bundle to `out` with its keys replaced by keys_enc (as
     keys.enc), checking every checksum on the way; the new manifest. `out`
     only appears when the whole source checked out."""
@@ -292,31 +329,56 @@ def rewrite_keys(src, out, keys_enc: bytes) -> dict:
         def on_data(name: str, size: int, reader) -> None:
             tar.addfile(_member(name, size), reader)
 
-        _scan(src, on_manifest=on_manifest, on_data=on_data)
+        _scan(src, on_manifest=on_manifest, on_data=on_data, max_bytes=max_bytes)
 
     _write_partial(Path(out), write)
     return result
 
 
-def unpack(path, dest) -> dict:
+def unpack(path, dest, max_bytes: int = DEFAULT_MAX_BYTES) -> dict:
     """Check a bundle and write its db.dump and objects.tar (mode 600) into
-    dest; the keys are never written. The manifest."""
+    dest; the keys are never written. Each member is written as
+    <name>.partial and only renamed into place once the whole bundle has
+    checked out; on any failure nothing is left behind. The manifest."""
     dest = Path(dest)
+    partials: list[str] = []
+    finals: list[str] = []
 
     def on_data(name: str, size: int, reader) -> None:
-        fd = os.open(dest / name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as f:
+        partials.append(name)
+        with os.fdopen(_open_private(dest / (name + ".partial")), "wb") as f:
             while chunk := reader.read(CHUNK):
                 f.write(chunk)
 
-    return _scan(path, on_data=on_data)[0]
+    try:
+        manifest = _scan(path, on_data=on_data, max_bytes=max_bytes)[0]
+        for name in partials:
+            os.replace(dest / (name + ".partial"), dest / name)
+            finals.append(name)
+    except OSError:
+        _remove(dest, partials, finals)
+        raise BundleError(_WRITE) from None
+    except BaseException:
+        _remove(dest, partials, finals)
+        raise
+    return manifest
+
+
+def _remove(dest: Path, partials: list[str], finals: list[str]) -> None:
+    for name in partials:
+        (dest / (name + ".partial")).unlink(missing_ok=True)
+    for name in finals:
+        (dest / name).unlink(missing_ok=True)
 
 
 # ---- objects (boto3, only where a command needs it) ----------------------------
 
 def s3_client(endpoint: str, key_id: str, secret: str):
-    import boto3
-    from botocore.config import Config
+    try:
+        import boto3
+        from botocore.config import Config
+    except ImportError:
+        raise BundleError("Moving objects needs boto3, which isn't installed here.") from None
 
     return boto3.client("s3", endpoint_url=endpoint, region_name="us-east-1",
                         aws_access_key_id=key_id, aws_secret_access_key=secret,
@@ -331,7 +393,9 @@ def export_objects(client, bucket: str, out) -> tuple[int, int]:
     partial = out.with_name(out.name + ".partial")
     count = total = 0
     try:
-        with tarfile.open(partial, "w", format=tarfile.PAX_FORMAT) as tar:
+        fd = _open_private(partial)
+        with os.fdopen(fd, "wb") as raw, tarfile.open(fileobj=raw, mode="w",
+                                                      format=tarfile.PAX_FORMAT) as tar:
             token = None
             while True:
                 kwargs = {"Bucket": bucket}
@@ -353,7 +417,6 @@ def export_objects(client, bucket: str, out) -> tuple[int, int]:
                 if not page.get("IsTruncated"):
                     break
                 token = page["NextContinuationToken"]
-        os.chmod(partial, 0o600)
         os.replace(partial, out)
     except BaseException:
         partial.unlink(missing_ok=True)
@@ -415,9 +478,11 @@ def main(argv: list[str] | None = None) -> int:
     keys.add_argument("--keys-env")
     v = sub.add_parser("verify")
     v.add_argument("bundle")
+    v.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     u = sub.add_parser("unpack")
     u.add_argument("bundle")
     u.add_argument("dest")
+    u.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
     for name in ("export-objects", "import-objects"):
         o = sub.add_parser(name)
         o.add_argument("--out" if name == "export-objects" else "--in", dest="path",
@@ -434,9 +499,9 @@ def main(argv: list[str] | None = None) -> int:
                             keys_member=KEYS_ENC if args.keys_enc else KEYS_ENV)
             print(json.dumps({k: v for k, v in manifest.items() if k != "members"}))
         elif args.command == "verify":
-            print(json.dumps(verify(args.bundle)))
+            print(json.dumps(verify(args.bundle, args.max_bytes)))
         elif args.command == "unpack":
-            print(json.dumps(unpack(args.bundle, args.dest)))
+            print(json.dumps(unpack(args.bundle, args.dest, args.max_bytes)))
         else:
             client, bucket = _s3_from_args(args)
             run = export_objects if args.command == "export-objects" else import_objects
