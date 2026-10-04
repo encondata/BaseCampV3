@@ -473,3 +473,15 @@ it('shows the Snapshots section under Environments', async () => {
   expect(headings.slice(0, 2)).toEqual(['Environments', 'Snapshots']);
   expect(await screen.findByText('No snapshots yet.')).toBeTruthy();
 });
+
+it('the Proxmox card points to Settings and New environment instead of testing here', async () => {
+  api.getDeployTargets.mockResolvedValue({ ...TARGETS, targets: [...TARGETS.targets,
+    { id: 'proxmox', label: 'Proxmox', kind: 'proxmox', available: true, configured: true }] });
+  render(<MemoryRouter><Deploy /></MemoryRouter>);
+  const card = await screen.findByRole('radio', { name: /Proxmox/ });
+  expect(within(card).getByText('PVE')).toBeTruthy();
+  await userEvent.click(card);
+  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  expect(screen.getByText(/Test Proxmox in Settings › Integrations/)).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Test connection' }) as HTMLButtonElement).disabled).toBe(true);
+});
