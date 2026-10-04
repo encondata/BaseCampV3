@@ -23,6 +23,14 @@ LABELS = {"cloudflare": "Cloudflare", "npm": "Nginx Proxy Manager"}
 FIELDS = {"cloudflare": ("zone", "public_ip"), "npm": ("url", "identity", "letsencrypt_email")}
 SECRET_FIELD = {"cloudflare": "token", "npm": "password"}
 DEFAULT_ZONE = "serversherpa.com"
+# A stored secret is reused (secret omitted) only for the target it was
+# entered for: the Cloudflare token only ever goes to api.cloudflare.com, so
+# the zone is enough; the NPM password goes to the URL, for the login.
+TARGET_FIELDS = {"cloudflare": ("zone",), "npm": ("url", "identity")}
+NEW_TARGET_REASON = {
+    "cloudflare": "Enter the token again to use it with a different zone.",
+    "npm": "Enter the password again to use it with a different server or login.",
+}
 PASSWORD_MAX = 1024
 
 _DOMAIN_RE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
@@ -129,6 +137,13 @@ async def _row(db: AsyncSession, kind: str) -> Integration | None:
     return await db.get(Integration, kind, populate_existing=True)
 
 
+def _check_same_target(kind: str, checked: dict, row: Integration) -> None:
+    """Refuse to pair the stored secret with a server, login or zone it
+    wasn't entered for (it would be sent there)."""
+    if any(row.config.get(name) != checked[name] for name in TARGET_FIELDS[kind]):
+        raise IntegrationError("secret_required", reason=NEW_TARGET_REASON[kind])
+
+
 async def is_configured(db: AsyncSession, kind: str) -> bool:
     row = await _row(db, kind)
     return row is not None and row.secret_enc is not None
@@ -160,6 +175,7 @@ async def candidate(db: AsyncSession, settings: Settings, kind: str, values: dic
     row = await _row(db, kind)
     if row is None or row.secret_enc is None:
         raise IntegrationError("secret_required")
+    _check_same_target(kind, checked, row)
     return _config(kind, checked, _decrypt(settings, row))
 
 
@@ -173,6 +189,8 @@ async def save(db: AsyncSession, settings: Settings, kind: str, values: dict,
     row = await _row(db, kind)
     if secret is None and (row is None or row.secret_enc is None):
         raise IntegrationError("secret_required")
+    if secret is None:
+        _check_same_target(kind, checked, row)
     if secret is not None and not vault.is_configured(settings):
         raise IntegrationError("secrets_key_missing")
     if row is None:

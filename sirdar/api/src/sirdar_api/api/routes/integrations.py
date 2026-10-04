@@ -4,6 +4,7 @@ response, log line or audit row carries one (audits list the names of the
 fields that changed), and the request models put no constraint on them, so
 no validation error can describe one."""
 
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -15,10 +16,13 @@ from sirdar_api.deploy import ConnectFailed, cloudflare, integrations, npm, outb
 from sirdar_api.deploy.integrations import IntegrationError
 from sirdar_api.services.audit import audit
 
+log = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/deploy/integrations", tags=["deploy"])
 
 Kind = Literal["cloudflare", "npm"]
 TESTERS = {"cloudflare": cloudflare.test_connection, "npm": npm.test_connection}
+UNEXPECTED_REASON = "Sirdar couldn't reach it."
 _STATUS = {"secrets_key_missing": 400, "integration_unreadable": 409}
 
 
@@ -120,6 +124,13 @@ async def _test(kind: str, values: dict | None, secret: str | None, request: Req
         await db.commit()
         raise HTTPException(status_code=502, detail={"code": "connect_failed",
                                                      "reason": e.reason}) from None
+    except Exception as e:
+        # Only the type: the message may carry the secret or upstream text.
+        log.warning("%s integration test failed unexpectedly: %s", kind, type(e).__name__)
+        record(False)
+        await db.commit()
+        raise HTTPException(status_code=502, detail={"code": "connect_failed",
+                                                     "reason": UNEXPECTED_REASON}) from None
     record(True)
     await db.commit()
     return result.as_dict()

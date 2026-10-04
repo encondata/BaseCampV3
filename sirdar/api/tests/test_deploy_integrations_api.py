@@ -1,15 +1,17 @@
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import select
 
 from sirdar_api.config import get_settings
-from sirdar_api.db.models import AuditLog
+from sirdar_api.api.routes import integrations as integration_routes
+from sirdar_api.db.models import AuditLog, Integration
 from sirdar_api.deploy import outbound
 
 from .api_helpers import auth_headers
 from .deploy_factories import secrets_key  # noqa: F401
 from .fake_cloudflare import FakeCloudflare
 from .fake_npm import FakeNpm
-from .integration_helpers import CF_TOKEN, NPM_PASSWORD
+from .integration_helpers import CF_TOKEN, NPM_PASSWORD, NPM_VALUES
 
 URL = "/api/deploy/integrations"
 CF_BODY = {"zone": "serversherpa.com", "public_ip": "203.0.113.7", "token": CF_TOKEN}
@@ -51,12 +53,12 @@ async def _audits(db, action: str) -> list[dict]:
 
 async def test_permissions(client, db, secrets_key):
     assert (await client.get(URL)).status_code == 401
-    viewer = await auth_headers(client, db, email="admin@test.example.com", roles=("admin",))
-    assert (await client.get(URL, headers=viewer)).status_code == 200
+    admin = await auth_headers(client, db, email="admin@test.example.com", roles=("admin",))
+    assert (await client.get(URL, headers=admin)).status_code == 200
     for method, path, body in (("PUT", "/cloudflare", CF_BODY), ("PUT", "/npm", NPM_BODY),
                                ("DELETE", "/npm", None), ("POST", "/cloudflare/test", None),
                                ("POST", "/npm/test", None)):
-        resp = await client.request(method, URL + path, headers=viewer, json=body)
+        resp = await client.request(method, URL + path, headers=admin, json=body)
         assert resp.status_code == 403, path
 
 
@@ -122,6 +124,7 @@ async def test_remove(client, db, secrets_key, leaks):
 
 
 async def test_test_with_saved_and_unsaved_values(client, db, secrets_key, fakes, leaks):
+    _, proxy = fakes
     h = await auth_headers(client, db)
     resp = await client.post(f"{URL}/cloudflare/test", headers=h)
     assert (resp.status_code, resp.json()["detail"]) == (
@@ -134,11 +137,47 @@ async def test_test_with_saved_and_unsaved_values(client, db, secrets_key, fakes
     resp = await client.post(f"{URL}/npm/test", headers=h)
     assert (resp.status_code, resp.json()["facts"]["version"]) == (200, "2.12.3")
     resp = await client.post(f"{URL}/npm/test", headers=h,
-                             json={**NPM_BODY, "password": None, "identity": "ops@example.com"})
+                             json={**NPM_BODY, "password": "wrong-password"})
     assert (resp.status_code, resp.json()["detail"]) == (
         502, {"code": "connect_failed", "reason": "Nginx Proxy Manager rejected the login."})
+    resp = await client.post(f"{URL}/npm/test", headers=h,
+                             json={**NPM_BODY, "password": None, "identity": "ops@example.com"})
+    assert (resp.status_code, resp.json()["detail"]) == (422, {
+        "code": "secret_required",
+        "reason": "Enter the password again to use it with a different server or login."})
+    resp = await client.put(f"{URL}/npm", headers=h,
+                            json={**NPM_BODY, "password": None, "url": "http://10.10.48.99:81"})
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (422, "secret_required")
+    assert proxy.logins() == 2
     resp = await client.post(f"{URL}/npm/test", headers=h, json={**NPM_BODY, "url": "x"})
     assert (resp.status_code, resp.json()["detail"]["code"]) == (422, "npm_url_invalid")
     assert await _audits(db, "deploy.integration_test") == [
         {"kind": "cloudflare", "ok": True}, {"kind": "npm", "ok": True},
         {"kind": "npm", "ok": False}]
+
+
+async def test_an_unexpected_tester_error_is_a_generic_502(client, db, secrets_key, fakes,
+                                                           leaks, monkeypatch, caplog):
+    async def boom(cfg, *, transport=None):
+        raise RuntimeError(f"upstream said {cfg.password}")
+
+    monkeypatch.setitem(integration_routes.TESTERS, "npm", boom)
+    h = await auth_headers(client, db)
+    await client.put(f"{URL}/npm", headers=h, json=NPM_BODY)
+    resp = await client.post(f"{URL}/npm/test", headers=h)
+    assert (resp.status_code, resp.json()["detail"]) == (
+        502, {"code": "connect_failed", "reason": "Sirdar couldn't reach it."})
+    assert await _audits(db, "deploy.integration_test") == [{"kind": "npm", "ok": False}]
+    assert "RuntimeError" in caplog.text
+    assert NPM_PASSWORD not in caplog.text and "upstream said" not in caplog.text
+
+
+async def test_unreadable_stored_credentials(client, db, secrets_key, fakes, leaks):
+    h = await auth_headers(client, db)
+    db.add(Integration(kind="npm", config={**NPM_VALUES, "letsencrypt_email": "a@b.co"},
+                       secret_enc=Fernet(Fernet.generate_key()).encrypt(b"x")))
+    await db.commit()
+    resp = await client.post(f"{URL}/npm/test", headers=h)
+    assert (resp.status_code, resp.json()["detail"]) == (
+        409, {"code": "integration_unreadable", "kind": "npm"})
+    assert await _audits(db, "deploy.integration_test") == []

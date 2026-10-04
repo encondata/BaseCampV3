@@ -115,10 +115,40 @@ async def test_candidate_uses_the_given_or_the_stored_secret(db, secrets_key):
     assert given.token == "other-" + "t" * 20
     await configure(db)
     stored = await integrations.candidate(db, get_settings(), "npm",
-                                          {**NPM_VALUES, "identity": "ops@example.com"}, None)
-    assert (stored.identity, stored.password) == ("ops@example.com", NPM_PASSWORD)
+                                          {**NPM_VALUES, "letsencrypt_email": "le@example.com"},
+                                          None)
+    assert (stored.letsencrypt_email, stored.password) == ("le@example.com", NPM_PASSWORD)
+    stored = await integrations.candidate(db, get_settings(), "cloudflare",
+                                          {**CF_VALUES, "public_ip": "203.0.113.9"}, None)
+    assert (stored.public_ip, stored.token) == ("203.0.113.9", CF_TOKEN)
     row = await db.get(Integration, "npm", populate_existing=True)
-    assert row.config["identity"] == "admin@example.com"      # nothing was saved
+    assert row.config["letsencrypt_email"] == "admin@example.com"      # nothing was saved
+
+
+NEW_TARGETS = [
+    ("npm", {**NPM_VALUES, "identity": "ops@example.com"},
+     "Enter the password again to use it with a different server or login."),
+    ("npm", {**NPM_VALUES, "url": "http://10.10.48.99:81"},
+     "Enter the password again to use it with a different server or login."),
+    ("cloudflare", {**CF_VALUES, "zone": "example.com"},
+     "Enter the token again to use it with a different zone."),
+]
+
+
+@pytest.mark.parametrize("kind, values, reason", NEW_TARGETS)
+async def test_a_stored_secret_never_goes_to_a_new_target(db, secrets_key, kind, values,
+                                                          reason):
+    await configure(db)
+    with pytest.raises(IntegrationError) as e:
+        await integrations.candidate(db, get_settings(), kind, values, None)
+    assert (e.value.code, e.value.extra) == ("secret_required", {"reason": reason})
+    with pytest.raises(IntegrationError) as e:
+        await integrations.save(db, get_settings(), kind, values, None, actor_id=None)
+    assert (e.value.code, e.value.extra) == ("secret_required", {"reason": reason})
+    await db.rollback()
+    secret = CF_TOKEN if kind == "cloudflare" else NPM_PASSWORD
+    assert (await integrations.candidate(db, get_settings(), kind, values, secret)) is not None
+    assert await integrations.save(db, get_settings(), kind, values, secret, actor_id=None)
 
 
 async def test_public_view_never_carries_a_secret(db, secrets_key):
