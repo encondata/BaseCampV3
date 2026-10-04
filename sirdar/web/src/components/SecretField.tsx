@@ -3,9 +3,13 @@
  *  view-only reader) shows the state alone. */
 export type SecretAction = 'keep' | 'clear' | 'set';
 
-export default function SecretField({ id, label, isSet, adding, action, value, error, disabled = false, onAction, onValue }: {
+export default function SecretField({ id, label, isSet, adding, action, value, error, disabled = false, clearable = true,
+  onAction, onValue }: {
   id: string; label: string; isSet: boolean; adding: boolean; action: SecretAction; value: string;
-  error?: string; disabled?: boolean; onAction: (a: SecretAction) => void; onValue: (v: string) => void;
+  error?: string; disabled?: boolean;
+  /** false: a secret that must stay set (Replace only, no Clear). */
+  clearable?: boolean;
+  onAction: (a: SecretAction) => void; onValue: (v: string) => void;
 }) {
   const showInput = !disabled && (adding || action === 'set');
   return (
@@ -29,7 +33,7 @@ export default function SecretField({ id, label, isSet, adding, action, value, e
               : isSet
                 ? <>
                     <button type="button" className="mini-btn" onClick={() => onAction('set')}>Replace</button>
-                    <button type="button" className="mini-btn" onClick={() => onAction('clear')}>Clear</button>
+                    {clearable && <button type="button" className="mini-btn" onClick={() => onAction('clear')}>Clear</button>}
                   </>
                 : <button type="button" className="mini-btn" onClick={() => onAction('set')}>Add</button>)}
           </div>

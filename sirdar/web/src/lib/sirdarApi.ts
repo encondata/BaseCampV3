@@ -223,7 +223,7 @@ const MESSAGES: Record<string, string> = {
   nothing_to_claim: "There's nothing to claim.",
   claim_conflict: 'Someone else claimed that entry first. Reload the Publish tab.',
   publish_off: 'Publishing is off for this environment.',
-  publish_not_allowed: 'Adopted environments start with publishing off; turn it on in Settings after adopting.',
+  publish_not_allowed: "Adopted environments start with publishing off; turn it on from the environment's Publish tab.",
 };
 
 export function errorText(err: unknown, fallback: string): string {

@@ -161,7 +161,7 @@ it('the publishing codes read as the controller addendum words them', () => {
   expect(text('claim_conflict')).toBe('Someone else claimed that entry first. Reload the Publish tab.');
   expect(text('nothing_to_claim')).toBe("There's nothing to claim.");
   expect(text('publish_not_allowed'))
-    .toBe('Adopted environments start with publishing off; turn it on in Settings after adopting.');
+    .toBe("Adopted environments start with publishing off; turn it on from the environment's Publish tab.");
   expect(text('publish_off')).toBe('Publishing is off for this environment.');
 });
 
