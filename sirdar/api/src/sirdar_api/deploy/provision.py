@@ -598,6 +598,11 @@ class ProxmoxProvisioner:
             await _set_vm(ctx.env_id, vmid=None)
         else:
             work = terraform.workdir(self._settings, ctx.env_id)
+            if found is None and vm.created and terraform.has_state(work):
+                # Terraform still has it: more likely hidden from the token
+                # than gone. Destroying blind could hit the wrong VM.
+                raise StepFailed(f"Sirdar can't see VM {vm.vmid} (check the token's pool "
+                                 "permissions); nothing was removed.")
             if found is None:
                 out(f"VM {vm.vmid} ({vm.name}) is already gone.\n")
             else:

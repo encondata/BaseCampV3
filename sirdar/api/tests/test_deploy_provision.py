@@ -670,3 +670,15 @@ async def test_destroy_removes_a_vm_built_before_created_was_recorded(db, vm_env
                               lambda _: None)
     assert tf.commands()[-1] == "destroy" and 120 not in proxmox_fake.vms
 
+
+async def test_destroy_refuses_a_created_vm_it_can_t_see_while_the_state_has_it(
+        db, vm_env, tf, proxmox_fake):
+    await _built(db, vm_env, tf)
+    del proxmox_fake.vms[120]                  # hidden from the token (pool permissions)
+    with pytest.raises(StepFailed) as e:
+        await provisioner(tf).run("destroy", await ctx_for(db, vm_env, mode="teardown"),
+                                  lambda _: None)
+    assert e.value.reason == ("Sirdar can't see VM 120 (check the token's pool permissions); "
+                              "nothing was removed.")
+    assert "destroy" not in tf.commands()
+    assert terraform.has_state(terraform.workdir(get_settings(), vm_env.id))
