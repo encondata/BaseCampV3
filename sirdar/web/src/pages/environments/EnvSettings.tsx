@@ -14,7 +14,7 @@ import {
 } from '../../lib/sirdarApi';
 
 import DeleteEnvironmentModal from './DeleteEnvironmentModal';
-import { deploymentRunning, gbOf, mbOf, onProxmox, sshTargets, targetLabel, vmBuilt } from './labels';
+import { deploymentRunning, gbOf, mbOf, onProxmox, sshTargets, targetLabel, vmStage } from './labels';
 
 const SECRET_LABELS: Record<string, string> = {
   SS_ANTHROPIC_API_KEY: 'Anthropic API key', SS_DB_TESTING_PASSWORD: 'Database testing password',
@@ -321,9 +321,12 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
         <div className="sirdar-danger-zone">
           <h3 className="sirdar-sub">Delete environment</h3>
           <p className="page-hint">
-            {onVm && env.vm && !vmBuilt(env.vm)
+            {onVm && env.vm && vmStage(env.vm) === 'none'
               ? 'No VM was created yet; nothing on Proxmox is removed. Deleting it removes the DNS records and proxy '
                 + 'hosts Sirdar made, and removes it from Sirdar.'
+              : onVm && env.vm && vmStage(env.vm) === 'partial'
+              ? `Removes the partly built VM ${env.vm.name} (id ${env.vm.vmid}) if Proxmox has it. Deleting it removes `
+                + 'the DNS records and proxy hosts Sirdar made, and removes it from Sirdar.'
               : onVm
               ? 'Destroys its VM on Proxmox with everything on it, VM snapshots included, removes the DNS records and '
                 + 'proxy hosts Sirdar made, and removes it from Sirdar.'

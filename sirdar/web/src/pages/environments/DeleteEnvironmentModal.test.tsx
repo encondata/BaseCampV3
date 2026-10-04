@@ -93,8 +93,12 @@ it('a Proxmox environment whose VM was never created: nothing on Proxmox is remo
   expect(within(dialog).getByText(/No VM was created yet; nothing on Proxmox is removed\./)).toBeTruthy();
   expect(within(dialog).queryByText(/Destroys the VM/)).toBeNull();
   cleanup();
-  // A VM id reserved but the VM not built yet counts as not created.
+});
+
+it('a Proxmox environment with a reserved id but no finished build: removes the partly built VM', () => {
   render(<DeleteEnvironmentModal env={{ ...PX_ENV, vm: { ...PX_ENV.vm!, created: false } }}
                                  onStarted={vi.fn()} onClose={vi.fn()} />);
-  expect(screen.getByText(/No VM was created yet; nothing on Proxmox is removed\./)).toBeTruthy();
+  expect(screen.getByText(/Removes the partly built VM ss-uat3 \(id 120\) if Proxmox has it\./)).toBeTruthy();
+  expect(screen.queryByText(/nothing on Proxmox is removed/)).toBeNull();
+  expect(screen.queryByText(/Destroys the VM/)).toBeNull();
 });

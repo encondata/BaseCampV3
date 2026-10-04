@@ -108,6 +108,9 @@ export const onProxmox = (env: Environment) => env.target_kind === 'proxmox';
 
 /** Sirdar built the VM (an id reserved before the first deploy is not a VM yet). */
 export const vmBuilt = (vm: Pick<EnvVm, 'created' | 'vmid'>) => vm.created && vm.vmid !== null;
+// none: no VM id yet. partial: an id is reserved but the first apply did not finish. built: created.
+export const vmStage = (vm: Pick<EnvVm, 'created' | 'vmid'>): 'none' | 'partial' | 'built' =>
+  vm.vmid === null ? 'none' : vm.created ? 'built' : 'partial';
 
 /** Memory in GB as typed and shown (one decimal at most), and back to MB. */
 export const gbOf = (mb: number) => String(Math.round((mb / 1024) * 10) / 10);
