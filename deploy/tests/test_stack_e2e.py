@@ -222,6 +222,20 @@ def _bundle_tool(env_dir: Path, mount: str, *args: str) -> subprocess.CompletedP
         capture_output=True, text=True, timeout=600)
 
 
+SIGNED_IN_SQL = """
+WITH p AS (INSERT INTO people (first_name, last_name) VALUES ('Snap', 'Probe') RETURNING id),
+u AS (INSERT INTO user_accounts (person_id, email)
+      SELECT id, 'snap-probe@e2e.serversherpa.test' FROM p RETURNING person_id),
+s AS (INSERT INTO auth_sessions (person_id, family_id, token_hash, expires_at)
+      SELECT person_id, gen_random_uuid(), 'snap-probe-session', now() + interval '1 day'
+      FROM u RETURNING id)
+INSERT INTO trusted_devices (person_id, token_hash, expires_at)
+SELECT person_id, 'snap-probe-device', now() + interval '30 days' FROM u, s
+"""
+SESSION_COUNTS = ("SELECT (SELECT count(*) FROM auth_sessions) || '|' || "
+                  "(SELECT count(*) FROM trusted_devices)")
+
+
 # last in the file: it replaces the database and restarts the app stacks
 def test_snapshot_commands_round_trip(env_dir: Path, tmp_path: Path) -> None:
     """The real-container half of Sirdar's Take snapshot and Restore snapshot
@@ -235,6 +249,10 @@ def test_snapshot_commands_round_trip(env_dir: Path, tmp_path: Path) -> None:
     s3 = _spaces(env_dir)
     s3.put_object(Bucket="serversherpa", Key="snap/probe.txt", Body=b"snapshot me",
                   ContentType="text/plain")
+
+    # a signed-in user with a trusted device, so --clear-sessions has rows to clear
+    signed_in = psql(env_dir, SIGNED_IN_SQL)
+    assert signed_in.returncode == 0, signed_in.stderr
 
     in_container = "/tmp/sirdar-snapshot.dump"
     for args in (("exec", "-T", "postgres", "pg_dump", "-U", "serversherpa", "-d",
@@ -251,11 +269,15 @@ def test_snapshot_commands_round_trip(env_dir: Path, tmp_path: Path) -> None:
 
     assert psql(env_dir, "CREATE TABLE snapshot_probe (id int)").returncode == 0
     s3.delete_object(Bucket="serversherpa", Key="snap/probe.txt")
-    restored = ss("restore", str(env_dir), str(work / "db.dump"), "--clear-sessions")
+    restored = ss("restore", str(env_dir), str(work / "db.dump"))
     assert restored.returncode == 0, restored.stdout[-2000:] + restored.stderr[-2000:]
     probe = psql(env_dir, "SELECT to_regclass('public.snapshot_probe') IS NULL")
     assert probe.stdout.strip() == "t", "a table the dump never held survived the restore"
-    assert psql(env_dir, "SELECT count(*) FROM auth_sessions").stdout.strip() == "0"
+    assert psql(env_dir, SESSION_COUNTS).stdout.strip() == "1|1", "the dump lost the sessions"
+
+    restored = ss("restore", str(env_dir), str(work / "db.dump"), "--clear-sessions")
+    assert restored.returncode == 0, restored.stdout[-2000:] + restored.stderr[-2000:]
+    assert psql(env_dir, SESSION_COUNTS).stdout.strip() == "0|0"
 
     imported = _bundle_tool(env_dir, f"{work}:/work:ro", "import-objects", "--in",
                             "/work/objects.tar")
