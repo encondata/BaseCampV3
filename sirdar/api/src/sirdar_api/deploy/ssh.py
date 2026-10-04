@@ -55,10 +55,14 @@ class SshTargetConfig:
     key_name: str = ""
     passphrase: str | None = field(default=None, repr=False)
     sudo_password: str | None = field(default=None, repr=False)
+    # An unencrypted OpenSSH private key held in memory (a Proxmox VM's key,
+    # decrypted from proxmox_vms); used instead of key_file.
+    private_key: str | None = field(default=None, repr=False)
 
     @property
     def auth_label(self) -> str:
-        key, password = bool(self.key_name), self.password is not None
+        key, password = bool(self.key_name) or self.private_key is not None, \
+            self.password is not None
         return "key + password" if key and password else "key" if key else "password"
 
     @classmethod
@@ -75,6 +79,11 @@ class SshTargetConfig:
 
 
 async def load_client_key(cfg: SshTargetConfig) -> asyncssh.SSHKey | None:
+    if cfg.private_key is not None:
+        try:
+            return asyncssh.import_private_key(cfg.private_key)
+        except (asyncssh.KeyImportError, ValueError):
+            raise ConnectFailed("Sirdar's key for this VM can't be read.") from None
     raw = cfg.key_name
     if not raw:
         return None
@@ -99,7 +108,8 @@ async def load_client_key(cfg: SshTargetConfig) -> asyncssh.SSHKey | None:
 async def _run(conn: asyncssh.SSHClientConnection, command: str) -> tuple[int | None, str]:
     """(exit status, first stdout line); exit None when the command didn't answer."""
     try:
-        result = await asyncio.wait_for(conn.run(command, check=False, errors="replace"), COMMAND_TIMEOUT)
+        result = await asyncio.wait_for(conn.run(command, check=False, errors="replace"),
+                                        COMMAND_TIMEOUT)
     except (OSError, TimeoutError, asyncssh.Error):
         return None, ""
     out = result.stdout if isinstance(result.stdout, str) else ""

@@ -29,6 +29,10 @@ def valid_ref(ref: str) -> bool:
     return bool(_REF_RE.fullmatch(ref)) and not ref.endswith(("/", ".lock"))
 
 
+def is_full_sha(ref: str) -> bool:
+    return bool(_ANY_SHA_RE.fullmatch(ref))
+
+
 def ls_remote_command(repo_url: str, ref: str) -> str:
     return f"git ls-remote {shlex.quote(repo_url)} {shlex.quote(ref)}"
 

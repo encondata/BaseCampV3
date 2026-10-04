@@ -14,6 +14,8 @@ from sirdar_api.deploy.ssh import SshTargetConfig
 from sirdar_api.deploy.ssh_targets import SavedSshTarget, SshTargetStore
 
 INSTALLER_LABEL = "Custom (SSH) · Installer"
+# An environment whose host is a VM Sirdar builds on Proxmox (phase 5).
+PROXMOX_TARGET = "proxmox"
 STORE_HINT = "deploy-targets.env isn't writable; see the README."
 
 
@@ -113,7 +115,8 @@ def ssh_targets_at(host: str, port: int, s: Settings) -> list[str]:
     return [tid for tid, cfg in ssh_configs(s) if cfg.host == host and cfg.port == port]
 
 
-def public_targets(s: Settings) -> list[dict]:
+def public_targets(s: Settings, *, proxmox_configured: bool = False) -> list[dict]:
+    """Proxmox is listed (last) once its integration is saved."""
     out = [{"id": t.id, "label": t.label, "kind": t.id, "available": t.available,
             "configured": is_configured(t.id, s)}
            for t in TARGETS if t.id != "ssh"]
@@ -123,4 +126,7 @@ def public_targets(s: Settings) -> list[dict]:
     out += [{"id": t.id, "label": t.name, "kind": "ssh", "source": "saved",
              "available": True, "configured": t.configured}
             for t in saved_targets(s)]
+    if proxmox_configured:
+        out.append({"id": PROXMOX_TARGET, "label": "Proxmox", "kind": "proxmox",
+                    "available": True, "configured": True})
     return out
