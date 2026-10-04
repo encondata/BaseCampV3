@@ -44,7 +44,8 @@ MANIFEST_KEYS = frozenset({"format", "source", "created_at", "alembic_revision",
                            "object_count", "object_bytes", "members"})
 # Cap on the decompressed bytes of all members; Sirdar passes a tighter one.
 DEFAULT_MAX_BYTES = 64 * 1024 ** 3
-STREAM_ALLOWANCE = 1024 * 1024  # tar headers, padding and the manifest
+STREAM_ALLOWANCE = 1024 * 1024  # tar headers and padding beyond the members' bytes
+HEADER_LIMIT = 64 * 1024  # tar extension headers (PAX, GNU long names) never need more
 MANIFEST_LIMIT = 64 * 1024
 KEYS_LIMIT = 16 * 1024
 CHUNK = 1024 * 1024
@@ -153,19 +154,33 @@ def _now_iso() -> str:
 
 class _CappedStream:
     """Reads through a file object and refuses to hand out more than `limit`
-    bytes: tarfile reads PAX headers whole into memory, so the cap has to sit
-    on the decompressed stream, not only on the members' declared sizes."""
+    bytes; the limit moves with the members seen (see _scan), so header bytes
+    can never run far ahead of the data they describe."""
 
     def __init__(self, f, limit: int):
         self._f = f
-        self._left = limit
+        self.limit = limit
+        self._used = 0
 
     def read(self, n: int = -1) -> bytes:
         data = self._f.read(n)
-        self._left -= len(data)
-        if self._left < 0:
+        self._used += len(data)
+        if self._used > self.limit:
             raise BundleError(_TOO_BIG)
         return data
+
+
+class _SafeInfo(tarfile.TarInfo):
+    """tarfile reads an extension header (PAX, GNU long name) whole into
+    memory before yielding the member it belongs to; refuse big ones first."""
+
+    _EXTENSIONS = (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
+                   tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK)
+
+    def _proc_member(self, tarfile_):
+        if self.type in self._EXTENSIONS and self.size > HEADER_LIMIT:
+            raise BundleError(_TOO_BIG)
+        return super()._proc_member(tarfile_)
 
 
 class _HashingReader:
@@ -207,50 +222,52 @@ def _scan(path, *, on_manifest=None, on_keys=None, on_data=None,
             raise BundleError(_WRITE) from None
 
     try:
-        with open(path, "rb") as raw, gzip.GzipFile(fileobj=raw) as unzipped, \
-                tarfile.open(fileobj=_CappedStream(unzipped, max_bytes + STREAM_ALLOWANCE),
-                             mode="r|") as tar:
-            for member in tar:
-                if not member.isfile():
-                    raise BundleError(_LAYOUT)
-                total += member.size
-                if total > max_bytes:
-                    raise BundleError(_TOO_BIG)
-                if not seen:
-                    if member.name != MANIFEST or member.size > MANIFEST_LIMIT:
+        with open(path, "rb") as raw, gzip.GzipFile(fileobj=raw) as unzipped:
+            stream = _CappedStream(unzipped, STREAM_ALLOWANCE)
+            with tarfile.open(fileobj=stream, mode="r|", tarinfo=_SafeInfo) as tar:
+                for member in tar:
+                    if not member.isfile():
                         raise BundleError(_LAYOUT)
-                    manifest = _parse_manifest(tar.extractfile(member).read())
-                    keys_name = next(k for k in KEY_MEMBERS if k in manifest["members"])
-                    seen.append(MANIFEST)
-                    if manifest["object_bytes"] > max_bytes:
+                    total += member.size
+                    if total > max_bytes:
                         raise BundleError(_TOO_BIG)
-                    if on_manifest is not None:
-                        call(on_manifest, manifest)
-                    continue
-                expected = (keys_name, DB_DUMP, OBJECTS)
-                if len(seen) > len(expected) or member.name != expected[len(seen) - 1]:
-                    raise BundleError(_LAYOUT)
-                src = tar.extractfile(member)
-                if member.name == keys_name:
-                    if member.size > KEYS_LIMIT:
-                        raise BundleError("The bundle's keys file is too large.")
-                    keys_data = src.read()
-                    digest = hashlib.sha256(keys_data).hexdigest()
-                else:
-                    reader = _HashingReader(src)
-                    if on_data is not None:
-                        call(on_data, member.name, member.size, reader)
-                    while reader.read(CHUNK):
-                        pass
-                    digest = reader.hexdigest()
-                if digest != manifest["members"][member.name]:
-                    raise BundleError(f"{member.name} doesn't match its checksum in the manifest.")
-                seen.append(member.name)
-                if member.name == keys_name:
-                    if on_keys is not None:
-                        call(on_keys, keys_name, keys_data)
-                    if head_only:
-                        return manifest, keys_name, keys_data
+                    stream.limit = total + STREAM_ALLOWANCE
+                    if not seen:
+                        if member.name != MANIFEST or member.size > MANIFEST_LIMIT:
+                            raise BundleError(_LAYOUT)
+                        manifest = _parse_manifest(tar.extractfile(member).read())
+                        keys_name = next(k for k in KEY_MEMBERS if k in manifest["members"])
+                        seen.append(MANIFEST)
+                        if manifest["object_bytes"] > max_bytes:
+                            raise BundleError(_TOO_BIG)
+                        if on_manifest is not None:
+                            call(on_manifest, manifest)
+                        continue
+                    expected = (keys_name, DB_DUMP, OBJECTS)
+                    if len(seen) > len(expected) or member.name != expected[len(seen) - 1]:
+                        raise BundleError(_LAYOUT)
+                    src = tar.extractfile(member)
+                    if member.name == keys_name:
+                        if member.size > KEYS_LIMIT:
+                            raise BundleError("The bundle's keys file is too large.")
+                        keys_data = src.read()
+                        digest = hashlib.sha256(keys_data).hexdigest()
+                    else:
+                        reader = _HashingReader(src)
+                        if on_data is not None:
+                            call(on_data, member.name, member.size, reader)
+                        while reader.read(CHUNK):
+                            pass
+                        digest = reader.hexdigest()
+                    if digest != manifest["members"][member.name]:
+                        raise BundleError(
+                            f"{member.name} doesn't match its checksum in the manifest.")
+                    seen.append(member.name)
+                    if member.name == keys_name:
+                        if on_keys is not None:
+                            call(on_keys, keys_name, keys_data)
+                        if head_only:
+                            return manifest, keys_name, keys_data
     except BundleError:
         raise
     except (tarfile.TarError, EOFError, zlib.error, OSError):
@@ -296,6 +313,9 @@ def _write_partial(out: Path, write) -> None:
         raise
 
 
+_LABELS = {KEYS_ENC: "keys", KEYS_ENV: "keys", DB_DUMP: "database dump", OBJECTS: "objects"}
+
+
 def pack(out, *, source: str, revision: str, bucket: str, db_dump, objects_tar,
          keys_file, keys_member: str = KEYS_ENC, created_at: str | None = None) -> dict:
     """Write a bundle (mode 600) from its parts; the manifest."""
@@ -333,7 +353,7 @@ def pack(out, *, source: str, revision: str, bucket: str, db_dump, objects_tar,
             try:
                 f = open(path, "rb")
             except OSError:
-                raise BundleError(f"Couldn't read the {name} file.") from None
+                raise BundleError(f"Couldn't read the {_LABELS[name]} file.") from None
             with f:
                 tar.addfile(_member(name, os.path.getsize(path)), f)
 

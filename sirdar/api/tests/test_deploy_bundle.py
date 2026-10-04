@@ -337,18 +337,29 @@ def test_missing_boto3_is_a_clean_error(monkeypatch):
     assert "boto3" in exc.value.reason
 
 
-def test_an_oversized_pax_header_cannot_balloon_memory(tmp_path):
+def _header_bomb(path, kind):
+    """A small .tar.gz whose first entry is a 60 MB PAX or GNU longname header."""
+    if kind == "pax":
+        with tarfile.open(path, "w:gz", format=tarfile.PAX_FORMAT) as tar:
+            info = tarfile.TarInfo("manifest.json")
+            info.pax_headers = {"comment": "a" * (60 * 1024 * 1024)}
+            tar.addfile(info, io.BytesIO(b""))
+    else:
+        with tarfile.open(path, "w:gz", format=tarfile.GNU_FORMAT) as tar:
+            tar.addfile(tarfile.TarInfo("n" * (60 * 1024 * 1024)), io.BytesIO(b""))
+    assert path.stat().st_size < 1024 * 1024
+
+
+@pytest.mark.parametrize("kind", ["pax", "gnu"])
+@pytest.mark.parametrize("cap", [bundle.DEFAULT_MAX_BYTES, 20 * 1024 ** 3, 1000])
+def test_an_oversized_header_entry_cannot_balloon_memory(tmp_path, kind, cap):
     import tracemalloc
     bomb = tmp_path / "bomb.tar.gz"
-    with tarfile.open(bomb, "w:gz", format=tarfile.PAX_FORMAT) as tar:
-        info = tarfile.TarInfo("manifest.json")
-        info.pax_headers = {"comment": "a" * (60 * 1024 * 1024)}
-        tar.addfile(info, io.BytesIO(b""))
-    assert bomb.stat().st_size < 1024 * 1024
+    _header_bomb(bomb, kind)
     tracemalloc.start()
     try:
         with pytest.raises(BundleError) as exc:
-            bundle.verify(bomb, max_bytes=1000)
+            bundle.verify(bomb, max_bytes=cap)
         peak = tracemalloc.get_traced_memory()[1]
     finally:
         tracemalloc.stop()
@@ -378,3 +389,29 @@ def test_pack_with_an_unreadable_input_is_a_clean_error(tmp_path):
     finally:
         parts["objects"].chmod(0o600)
     assert exc.value.reason == "Couldn't read the objects file."
+
+
+def test_a_write_phase_read_error_names_the_file(tmp_path, monkeypatch):
+    parts = write_parts(tmp_path)
+    real_open = open
+
+    def fake_open(path, *a, **k):
+        if str(path) == str(parts["db"]) and a[:1] == ("rb",) and fake_open.armed:
+            raise PermissionError
+        return real_open(path, *a, **k)
+
+    fake_open.armed = False
+    real_sha = bundle.sha256_file
+
+    def sha_then_arm(path):
+        out = real_sha(path)
+        if str(path) == str(parts["objects"]):
+            fake_open.armed = True
+        return out
+
+    monkeypatch.setattr(bundle, "sha256_file", sha_then_arm)
+    monkeypatch.setattr("builtins.open", fake_open)
+    with pytest.raises(BundleError) as exc:
+        bundle.pack(tmp_path / "b.tar.gz", source="uat", revision="1", bucket="serversherpa",
+                    db_dump=parts["db"], objects_tar=parts["objects"], keys_file=parts["keys"])
+    assert exc.value.reason == "Couldn't read the database dump file."
