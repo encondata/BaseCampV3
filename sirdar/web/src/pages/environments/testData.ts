@@ -1,7 +1,7 @@
 /** Fixtures shaped like the /api/deploy environment and deployment endpoints. */
 import type {
   Backup, Deployment, DeploymentStatus, DeploymentStep, DeploymentSummary, DeployTarget, Environment,
-  EnvironmentDefaults, EnvService, Snapshot, StepStatus,
+  EnvironmentDefaults, EnvService, IntegrationCheck, Integrations, PublishPlan, Snapshot, StepStatus,
 } from '../../lib/sirdarApi';
 
 export const SHA = `e73b99ca${'1'.repeat(32)}`;
@@ -14,7 +14,7 @@ const svc = (service: string, port: number): EnvService => ({
 
 export const ADOPTED: DeploymentSummary = {
   id: 'd0', mode: 'adopt', git_ref: 'main', sha: SHA, status: 'adopted', start_step: 1, retry_of: null,
-  failed_step: null, dump_path: null, snapshot: null, restore_dump: null, rollback_available: false,
+  failed_step: null, dump_path: null, snapshot: null, restore_dump: null, rollback_available: false, publish: false,
   previous_sha: null, error: null, actor_name: 'Jimmy Henderson',
   started_at: '2026-10-03T12:00:00Z', finished_at: '2026-10-03T12:00:00Z', created_at: '2026-10-03T12:00:00Z',
 };
@@ -27,7 +27,8 @@ export const ENV: Environment = {
   services: [svc('api', 8000), svc('portal', 8091), svc('kiosk', 8090), svc('wiki', 8096),
              svc('spaces', 9000), svc('status', 8095), svc('mailpit', 8025)],
   secrets_set: { SS_ANTHROPIC_API_KEY: true, SS_DB_TESTING_PASSWORD: false },
-  seed_snapshot: null, last_deployment: ADOPTED, created_at: '2026-10-03T12:00:00Z', updated_at: '2026-10-03T12:00:00Z',
+  seed_snapshot: null, publish: false, managed_records: [],
+  last_deployment: ADOPTED, created_at: '2026-10-03T12:00:00Z', updated_at: '2026-10-03T12:00:00Z',
 };
 
 export const TARGETS = {
@@ -84,7 +85,7 @@ function deployment(status: DeploymentStatus, statuses: StepStatus[], logs: Reco
   const mode = extra.mode ?? 'update';
   return {
     id: 'd1', mode, git_ref: 'main', sha: NEW_SHA, status, start_step: 1, retry_of: null, failed_step: null,
-    dump_path: null, snapshot: null, restore_dump: null, rollback_available: false,
+    dump_path: null, snapshot: null, restore_dump: null, rollback_available: false, publish: false,
     previous_sha: SHA, error: null, actor_name: 'Jimmy Henderson',
     started_at: '2026-10-03T13:00:00Z', finished_at: status === 'running' ? null : '2026-10-03T13:10:00Z',
     created_at: '2026-10-03T13:00:00Z', environment: 'uat',
@@ -144,8 +145,76 @@ export function summary(d: Deployment): DeploymentSummary {
   return {
     id: d.id, mode: d.mode, git_ref: d.git_ref, sha: d.sha, status: d.status, start_step: d.start_step,
     retry_of: d.retry_of, failed_step: d.failed_step, dump_path: d.dump_path, snapshot: d.snapshot,
-    restore_dump: d.restore_dump, rollback_available: d.rollback_available, previous_sha: d.previous_sha,
+    restore_dump: d.restore_dump, rollback_available: d.rollback_available, publish: d.publish,
+    previous_sha: d.previous_sha,
     error: d.error, actor_name: d.actor_name, started_at: d.started_at, finished_at: d.finished_at,
     created_at: d.created_at,
   };
 }
+
+export const INTEGRATIONS: Integrations = {
+  secrets_key_configured: true,
+  cloudflare: { configured: true, zone: 'serversherpa.com', public_ip: '203.0.113.7', token_set: true,
+                updated_at: '2026-10-04T15:00:00Z', updated_by_name: 'Jimmy Henderson' },
+  npm: { configured: true, url: 'http://10.10.48.6:81', identity: 'admin@example.com',
+         letsencrypt_email: 'admin@example.com', password_set: true,
+         updated_at: '2026-10-04T15:05:00Z', updated_by_name: 'Jimmy Henderson' },
+};
+export const NO_INTEGRATIONS: Integrations = {
+  secrets_key_configured: true,
+  cloudflare: { configured: false, zone: null, public_ip: null, token_set: false, updated_at: null, updated_by_name: null },
+  npm: { configured: false, url: null, identity: null, letsencrypt_email: null, password_set: false,
+         updated_at: null, updated_by_name: null },
+};
+export const CF_CHECK: IntegrationCheck = {
+  ok: true, target: 'cloudflare',
+  checks: [
+    { label: 'Zone', status: 'pass', value: 'serversherpa.com (zone-1)' },
+    { label: 'DNS records', status: 'pass', value: '40 records, 31 A' },
+    { label: 'Public IP', status: 'pass', value: '203.0.113.7 · 12 A records point at it' },
+  ],
+  facts: { zone: 'serversherpa.com', zone_id: 'zone-1' },
+};
+/** uat as the Publish tab sees it: api made by hand, portal Sirdar's, kiosk blocked. */
+export const PUBLISH_PLAN: PublishPlan = {
+  publish: false, proxy_ip: '10.10.48.6',
+  cloudflare: { configured: true, zone: 'serversherpa.com', public_ip: '203.0.113.7', error: null },
+  npm: { configured: true, url: 'http://10.10.48.6:81', error: null },
+  services: [
+    { service: 'api', hostname: 'api.uat.serversherpa.com', forward: '10.10.48.63:8000',
+      dns: { state: 'claimable', detail: 'A 203.0.113.7, made outside Sirdar.', origin: null, record_id: 'rec-1' },
+      proxy: { state: 'claimable', detail: 'To 10.10.48.63:8000, made outside Sirdar.', origin: null, host_id: 4 },
+      certificate: { state: 'ok', detail: 'Valid until 2026-12-03.', expires_on: '2026-12-03T10:00:00Z' } },
+    { service: 'portal', hostname: 'portal.uat.serversherpa.com', forward: '10.10.48.63:8091',
+      dns: { state: 'ok', detail: 'A 203.0.113.7', origin: 'created', record_id: 'rec-2' },
+      proxy: { state: 'ok', detail: 'To 10.10.48.63:8091', origin: 'created', host_id: 5 },
+      certificate: { state: 'ok', detail: 'Valid until 2026-12-20.', expires_on: '2026-12-20T10:00:00Z' } },
+    { service: 'kiosk', hostname: 'kiosk.uat.serversherpa.com', forward: '10.10.48.63:8090',
+      dns: { state: 'conflict', detail: 'A CNAME record already uses this name.', origin: null, record_id: null },
+      proxy: { state: 'create', detail: 'Sirdar will create a proxy host to 10.10.48.63:8090.', origin: null, host_id: null },
+      certificate: { state: 'create', detail: "Sirdar will request a Let's Encrypt certificate.", expires_on: null } },
+  ],
+  stale: [],
+};
+export const PUBLISHED_ENV: Environment = {
+  ...ENV, publish: true,
+  managed_records: [
+    { service: 'api', kind: 'dns_record', name: 'api.uat.serversherpa.com', origin: 'claimed' },
+    { service: 'portal', kind: 'certificate', name: 'portal.uat.serversherpa.com', origin: 'created' },
+    { service: 'portal', kind: 'dns_record', name: 'portal.uat.serversherpa.com', origin: 'created' },
+    { service: 'portal', kind: 'proxy_host', name: 'portal.uat.serversherpa.com', origin: 'created' },
+  ],
+};
+const PUBLISH_STEPS: [number, string, string][] = [
+  [12, 'dns', 'DNS records'], [13, 'proxy', 'Proxy hosts'], [14, 'smoke', 'Smoke test'],
+];
+const TEARDOWN_STEPS: [number, string, string][] = [
+  [15, 'teardown', 'Remove environment'], [16, 'unproxy', 'Remove proxy hosts'], [17, 'undns', 'Remove DNS records'],
+];
+const STARTING: StepStatus[] = ['running', 'pending', 'pending'];
+export const PUBLISHING = deployment('running', STARTING, {}, {
+  id: 'd8', mode: 'publish', sha: SHA, start_step: 12, steps: steps(PUBLISH_STEPS, STARTING, {}),
+});
+export const TEARDOWN = deployment('running', STARTING, {}, {
+  id: 'd7', mode: 'teardown', sha: '', start_step: 15, steps: steps(TEARDOWN_STEPS, STARTING, {}),
+});

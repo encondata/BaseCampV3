@@ -1,7 +1,8 @@
 import { expect, it } from 'vitest';
 
 import {
-  DEPLOYMENT_STATUS, MODE_LABEL, STEP_STATUS, dumpTakenAt, duration, formatBytes, snapshotLabel, sshTargets, stoppedStep,
+  CERT_STATE, DEPLOYMENT_STATUS, ENV_STATUS, GATED_MODES, MODE_LABEL, PUBLISH_STATE, RETRY_MODES, STEP_STATUS,
+  dumpTakenAt, duration, formatBytes, snapshotLabel, sshTargets, stoppedStep,
 } from './labels';
 import { FAILED, RUNNING, SNAP, SUCCEEDED, TARGETS } from './testData';
 
@@ -49,4 +50,15 @@ it('dumpTakenAt reads the UTC time out of a dump name or path', () => {
   expect(dumpTakenAt('/opt/serversherpa/uat/backups/20261004T010203Z.dump')).toBe('2026-10-04T01:02:03Z');
   expect(dumpTakenAt('/opt/serversherpa/uat/backups/pre-deploy-20261003.dump')).toBeNull();
   expect(dumpTakenAt(null)).toBeNull();
+});
+
+it('labels the publish and delete modes, the deleting status and the publish states', () => {
+  expect([MODE_LABEL.publish, MODE_LABEL.teardown]).toEqual(['Publish', 'Delete environment']);
+  expect(ENV_STATUS.deleting).toEqual(['c-amber', 'Deleting']);
+  expect(GATED_MODES).toEqual(['reset', 'restore_dump', 'rollback', 'teardown']);
+  expect(RETRY_MODES).toEqual(['update', 'reset', 'restore_dump', 'rollback', 'publish', 'teardown']);
+  expect(Object.keys(PUBLISH_STATE)).toEqual(['ok', 'update', 'create', 'claimable', 'conflict', 'unknown']);
+  expect(PUBLISH_STATE.claimable).toEqual(['c-amber', "Not Sirdar's"]);
+  expect(PUBLISH_STATE.conflict).toEqual(['c-red', 'Blocked']);
+  expect(CERT_STATE.create).toEqual(['tag', 'Will request']);
 });

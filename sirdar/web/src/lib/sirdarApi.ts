@@ -208,6 +208,22 @@ const MESSAGES: Record<string, string> = {
   rollback_not_latest: 'Only the most recent deployment can be rolled back.',
   git_ref_not_allowed: 'Restore backup always uses the deployed commit.',
   upload_aborted: 'The upload was interrupted. Try again.',
+  // integrations and publishing
+  zone_invalid: "That zone isn't a valid domain, like serversherpa.com.",
+  public_ip_invalid: 'The public IP must be an IPv4 address.',
+  token_invalid: "That doesn't look like a Cloudflare API token (20–200 letters, digits, - or _).",
+  secret_required: 'Enter the token or password: none is stored yet.',
+  npm_url_invalid: 'Use the address of Nginx Proxy Manager, like http://10.10.48.6:81 (no path).',
+  identity_invalid: 'Enter the email you sign in to Nginx Proxy Manager with.',
+  letsencrypt_email_invalid: "That isn't a valid email address.",
+  password_invalid: "That password can't be used: it's empty, too long, or has a line break.",
+  integration_not_found: "Those credentials aren't stored any more.",
+  integration_not_configured: 'Set up publishing in Settings › Integrations first.',
+  integration_unreadable: "The stored credentials don't open with this Sirdar's SIRDAR_SECRETS_KEY. Enter them again.",
+  nothing_to_claim: "There's nothing to claim.",
+  claim_conflict: 'Someone else claimed that entry first. Reload the Publish tab.',
+  publish_off: 'Publishing is off for this environment.',
+  publish_not_allowed: 'Adopted environments start with publishing off; turn it on in Settings after adopting.',
 };
 
 export function errorText(err: unknown, fallback: string): string {
@@ -223,10 +239,16 @@ export function errorDetail<T extends object = Record<string, unknown>>(err: unk
 
 /** errorText plus what deploy errors carry: a `reason` (connect and git
  *  failures) replaces the message; the missing .env keys, or the key or
- *  service a check named, are added in parentheses. */
+ *  service a check named, are added in parentheses; an integration_not_configured
+ *  names the integrations still to set up. */
 export function deployErrorText(err: unknown, fallback: string): string {
-  const d = errorDetail<{ reason?: unknown; missing?: unknown; key?: unknown; service?: unknown }>(err);
+  const d = errorDetail<{ reason?: unknown; missing?: unknown; key?: unknown; service?: unknown; kinds?: unknown }>(err);
   if (d && typeof d.reason === 'string' && d.reason) return d.reason;
+  if (d && Array.isArray(d.kinds) && d.kinds.length && err instanceof ApiError
+      && err.code === 'integration_not_configured') {
+    const names = d.kinds.map((k) => INTEGRATION_LABEL[k as IntegrationKind] ?? String(k));
+    return `Set up ${names.join(' and ')} in Settings › Integrations first.`;
+  }
   const base = errorText(err, fallback);
   let extra = '';
   if (d && Array.isArray(d.missing) && d.missing.length) extra = d.missing.join(', ');
@@ -288,11 +310,12 @@ export async function forgetKnownHost(host: string, port: number): Promise<void>
 
 /* ---- Environments and deployments (/api/deploy, deploy step 2) ---- */
 export type EnvType = 'dev' | 'beta' | 'custom';
-export type EnvStatus = 'new' | 'ready' | 'deploying' | 'failed';
-/** Modes POST /environments/{name}/deployments starts. */
+export type EnvStatus = 'new' | 'ready' | 'deploying' | 'failed' | 'deleting';
+/** Modes the Deploy modal starts. */
 export type DeployMode = 'update' | 'reset' | 'restore_dump';
-/** Every mode a deployment record can have. */
-export type DeploymentMode = DeployMode | 'adopt' | 'snapshot' | 'rollback';
+/** Every mode a deployment record can have (publish: steps 12–14 alone;
+ *  teardown: Delete environment). */
+export type DeploymentMode = DeployMode | 'adopt' | 'snapshot' | 'rollback' | 'publish' | 'teardown';
 export type DeploymentStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'adopted';
 export type StepStatus =
   'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'not_run' | 'cancelled' | 'interrupted';
@@ -307,6 +330,8 @@ export interface DeploymentSummary {
   restore_dump: string | null;
   /** A stopped Update with a pre-deploy dump and a commit to go back to. */
   rollback_available: boolean;
+  /** Its plan ends with steps 12–14 (DNS records, proxy hosts, smoke test). */
+  publish: boolean;
   previous_sha: string | null; error: string | null; actor_name: string | null;
   started_at: string; finished_at: string | null; created_at: string;
 }
@@ -326,7 +351,14 @@ export interface Environment {
   secrets_set: Record<string, boolean>;
   /** The snapshot the first deploy restores (kept afterwards). */
   seed_snapshot: SnapshotRef | null;
+  /** Deploys publish DNS records and proxy hosts (steps 12–14). */
+  publish: boolean;
+  /** What Sirdar manages for it in Cloudflare and Nginx Proxy Manager. */
+  managed_records: ManagedRecordRef[];
   last_deployment: DeploymentSummary | null; created_at: string; updated_at: string;
+}
+export interface ManagedRecordRef {
+  service: string; kind: 'dns_record' | 'proxy_host' | 'certificate'; name: string; origin: 'created' | 'claimed';
 }
 /** Adopt's answer adds what it read from the target's .env — names only. */
 export interface AdoptedEnvironment extends Environment { ignored_keys: string[]; imported_secrets: string[] }
@@ -340,6 +372,8 @@ export interface NewEnvironmentBody {
   proxy_ip: string; bind_ip: string; ports: Record<string, number>;
   /** The first deploy restores this snapshot. */
   snapshot_id?: string;
+  /** Deploys publish DNS records and proxy hosts (the API's default: true). */
+  publish?: boolean;
 }
 export interface AdoptEnvironmentBody { name: string; type: EnvType; target: string; git_ref: string }
 /** PATCH body: an omitted field is kept; a secret set to "" is cleared. */
@@ -348,9 +382,10 @@ export interface EnvironmentPatch {
   keep_dumps?: number; spaces_bucket?: string; log_level?: string;
   services?: Record<string, { port?: number; host_ip?: string; proxied?: boolean }>;
   secrets?: Record<string, string>;
+  publish?: boolean;
 }
 export interface DeploymentBody {
-  mode: DeployMode; git_ref?: string; confirm_name?: string;
+  mode: DeployMode | 'publish' | 'teardown'; git_ref?: string; confirm_name?: string;
   /** Reset only. */
   snapshot_id?: string;
   /** Restore backup only: a file name from listBackups. */
@@ -413,6 +448,57 @@ export async function deleteSnapshot(id: string): Promise<void> {
   const resp = await apiFetch(`/deploy/snapshots/${encodeURIComponent(id)}`, { method: 'DELETE' });
   if (!resp.ok) throw await errorOf(resp);
 }
+
+/* ---- Publishing: integrations (Settings) and the Publish tab ---- */
+export type IntegrationKind = 'cloudflare' | 'npm';
+export const INTEGRATION_LABEL: Record<IntegrationKind, string> = {
+  cloudflare: 'Cloudflare', npm: 'Nginx Proxy Manager',
+};
+export interface CloudflareIntegration {
+  configured: boolean; zone: string | null; public_ip: string | null; token_set: boolean;
+  updated_at: string | null; updated_by_name: string | null;
+}
+export interface NpmIntegration {
+  configured: boolean; url: string | null; identity: string | null; letsencrypt_email: string | null;
+  password_set: boolean; updated_at: string | null; updated_by_name: string | null;
+}
+export interface Integrations { secrets_key_configured: boolean; cloudflare: CloudflareIntegration; npm: NpmIntegration }
+/** An omitted secret keeps the stored one. */
+export interface CloudflareBody { zone: string; public_ip: string; token?: string }
+export interface NpmBody { url: string; identity: string; letsencrypt_email?: string; password?: string }
+export interface IntegrationCheck {
+  ok: boolean; target: IntegrationKind; checks: DeployCheck[]; facts: Record<string, unknown>;
+}
+export type PublishEntryState = 'ok' | 'update' | 'create' | 'claimable' | 'conflict' | 'unknown';
+export interface PublishEntry { state: PublishEntryState; detail: string; origin: 'created' | 'claimed' | null }
+export interface PublishService {
+  service: string; hostname: string; forward: string;
+  dns: PublishEntry & { record_id: string | null };
+  proxy: PublishEntry & { host_id: number | null };
+  certificate: { state: 'ok' | 'update' | 'create' | 'unknown'; detail: string; expires_on: string | null };
+}
+export interface PublishPlan {
+  publish: boolean; proxy_ip: string;
+  cloudflare: { configured: boolean; zone: string | null; public_ip: string | null; error: string | null };
+  npm: { configured: boolean; url: string | null; error: string | null };
+  services: PublishService[];
+  /** Managed entries under a name the environment no longer uses. */
+  stale: ManagedRecordRef[];
+}
+const integrationPath = (kind: IntegrationKind) => `/deploy/integrations/${kind}`;
+export const getIntegrations = () => getJson<Integrations>('/deploy/integrations');
+export const saveIntegration = (kind: IntegrationKind, body: CloudflareBody | NpmBody) =>
+  sendJson<Integrations>('PUT', integrationPath(kind), body);
+export async function removeIntegration(kind: IntegrationKind): Promise<void> {
+  const resp = await apiFetch(integrationPath(kind), { method: 'DELETE' });
+  if (!resp.ok) throw await errorOf(resp);
+}
+/** No body: the saved settings. A body: those values unsaved (no secret = the stored one). */
+export const testIntegration = (kind: IntegrationKind, body?: CloudflareBody | NpmBody) =>
+  sendJson<IntegrationCheck>('POST', `${integrationPath(kind)}/test`, body);
+export const getPublishPlan = (name: string) => getJson<PublishPlan>(`${envPath(name)}/publish`);
+export const claimPublish = (name: string) =>
+  sendJson<PublishPlan & { claimed: string[] }>('POST', `${envPath(name)}/publish/claim`);
 
 /* ---- Dashboard (GET /api/dashboard) ---- */
 export interface DashHealth { status: 'healthy' | 'degraded' | 'unknown' | string; label: string }
