@@ -283,11 +283,10 @@ class ProxmoxProvisioner:
             vmid = await api.next_vmid()
             await _set_vm(ctx.env_id, vmid=vmid)
             out(f"Reserved VM id {vmid} for {vm.name}.\n")
-        elif not vm.created:
-            found = (await api.vms()).get(vmid)
-            if found is not None and found["name"] != vm.name:
-                raise StepFailed(f"VM {vmid} is now {found['name'] or 'unnamed'}, not "
-                                 f"{vm.name}. Sirdar changed nothing.")
+        elif await self._identify(api, ctx) is None and vm.created:
+            raise StepFailed(f"The VM Sirdar made for {ctx.env_name} ({vm.name}, VM {vmid}) is "
+                             "gone from Proxmox. Sirdar won't build a new one silently: delete "
+                             "the environment, or fix it by hand, then retry.")
         out(f"{'Updating' if vm.created else 'Creating'} {vm.name} ({vm.cores} vCPU, "
             f"{vm.memory_mb // 1024} GB, {vm.disk_gb} GB disk) with Terraform.\n")
         await self._terraform(ctx, vmid, terraform.APPLY, "create or update the VM", out)
@@ -296,6 +295,23 @@ class ProxmoxProvisioner:
         await self._settle_address(api, ctx, vmid, out)
         sha = None if ctx.sha else await self._resolve_ref(ctx, out)
         return VmOutcome(sha=sha, vm_snapshot=await self._snapshot(api, ctx, vmid, out))
+
+    async def _identify(self, api: Proxmox, ctx: VmContext) -> dict | None:
+        """VM vm.vmid looked up across the cluster: None when no node has it.
+        Proxmox reuses free ids, so a VM there that isn't named vm.name with
+        the sirdar tag, or that sits on another node, is refused."""
+        vm = ctx.vm
+        found = await api.find_vm(vm.vmid)
+        if found is None:
+            return None
+        if found["name"] != vm.name or "sirdar" not in found["tags"]:
+            raise StepFailed(f"VM {vm.vmid} on Proxmox isn't {vm.name} any more; Sirdar "
+                             "changed nothing.")
+        if found["node"] != vm.node:
+            raise StepFailed(f"VM {vm.vmid} ({vm.name}) is on node {found['node']} now, not "
+                             f"{vm.node}. Sirdar changed nothing: move it back, or fix it by "
+                             "hand, then retry.")
+        return found
 
     async def _settle_address(self, api: Proxmox, ctx: VmContext, vmid: int,
                               out: Output) -> None:
@@ -307,8 +323,17 @@ class ProxmoxProvisioner:
             raise StepFailed(f"{ip} is a saved SSH target's address. Sirdar won't pin a VM's "
                              "key there.")
         await _check_address(self._settings, ctx.env_id, ip)
-        await self._pin(api, ctx, vmid, ip, out)
-        if await _record_address(self._settings, ctx.env_id, ctx.vm.ip, ip):
+        made = await self._pin(api, ctx, vmid, ip, out)
+        try:
+            moved = await _record_address(self._settings, ctx.env_id, ctx.vm.ip, ip)
+        except StepFailed:
+            if made:                       # don't leave a pin for an address not recorded
+                async with get_sessionmaker()() as s:
+                    if await known_hosts.forget(s, ip, vms.VM_SSH_PORT, ctx.actor_id,
+                                                target_id=f"proxmox:{ctx.env_name}"):
+                        await s.commit()
+            raise
+        if moved:
             out(f"Every service now points at {ip}.\n")
 
     async def _terraform(self, ctx: VmContext, vmid: int, args: tuple[str, ...], what: str,
@@ -363,10 +388,11 @@ class ProxmoxProvisioner:
                          "the template?")
 
     async def _pin(self, api: Proxmox, ctx: VmContext, vmid: int, ip: str,
-                   out: Output) -> None:
+                   out: Output) -> bool:
         """Read the host key through the guest agent, then pin it with
         known_hosts.trust (which re-reads the live key and refuses a
-        mismatch). The caller has refused a saved SSH target's address."""
+        mismatch). The caller has refused a saved SSH target's address.
+        True when this run made the pin (there was none before)."""
         port = vms.VM_SSH_PORT
         tries = max(1, self._ssh_wait // self._poll)
         line = ""
@@ -392,14 +418,14 @@ class ProxmoxProvisioner:
                     if stored is not None and stored.fingerprint_sha256 == expected:
                         await ssh.pinned_host_key(s, ip, port)
                         out(f"SSH host key {expected} is pinned.\n")
-                        return
+                        return False
                     await known_hosts.trust(s, ip, port, expected, ctx.actor_id,
                                             target_id=f"proxmox:{ctx.env_name}")
                     await s.commit()
                     changed = " (it changed)" if stored is not None else ""
                     out(f"Pinned {ip}'s SSH host key {expected}, read through the guest "
                         f"agent{changed}.\n")
-                    return
+                    return stored is None
                 except (known_hosts.HostKeyChanged, ssh.HostKeyMismatch):
                     raise mismatch from None
                 except ConnectFailed:
@@ -459,6 +485,13 @@ class ProxmoxProvisioner:
         vm, name = ctx.vm, ctx.vm_snapshot
         if vm.vmid is None or not vm.created:
             raise StepFailed("This environment has no VM yet.")
+        if not vms.valid_snapshot_name(name):
+            raise StepFailed(f"{name} isn't a VM snapshot Sirdar takes.")
+        if name not in await _recorded(ctx.env_id):
+            raise StepFailed(f"Sirdar didn't take the VM snapshot {name} for {ctx.env_name}, "
+                             "so it won't restore it.")
+        if await self._identify(api, ctx) is None:
+            raise StepFailed(f"VM {vm.vmid} ({vm.name}) is gone from Proxmox.")
         if name not in {s.get("name") for s in await api.snapshots(vm.vmid)}:
             raise StepFailed(f"The VM snapshot {name} is gone from Proxmox.")
         out(f"Rolling {vm.name} back to {name}.\n")
@@ -476,7 +509,7 @@ class ProxmoxProvisioner:
         if vm.vmid is None:
             out(f"Sirdar never created a VM for {ctx.env_name}.\n")
         else:
-            found = (await api.vms()).get(vm.vmid)
+            found = await api.find_vm(vm.vmid)
             if found is None:
                 out(f"VM {vm.vmid} ({vm.name}) is already gone.\n")
             else:
@@ -486,6 +519,10 @@ class ProxmoxProvisioner:
                 if "sirdar" not in found["tags"]:
                     raise StepFailed(f"VM {vm.vmid} ({vm.name}) has no sirdar tag, so it isn't "
                                      "the VM Sirdar made. Sirdar changed nothing.")
+                if found["node"] != vm.node:
+                    raise StepFailed(f"VM {vm.vmid} ({vm.name}) is on node {found['node']} now, "
+                                     f"not {vm.node}. Sirdar changed nothing: move it back, or "
+                                     "fix it by hand, then retry.")
                 if not terraform.has_state(terraform.workdir(self._settings, ctx.env_id)):
                     raise StepFailed(f"Sirdar's Terraform state for {vm.name} is missing, so it "
                                      f"won't remove VM {vm.vmid}. Remove the VM by hand in "
@@ -493,7 +530,7 @@ class ProxmoxProvisioner:
                 out(f"Destroying {vm.name} (VM {vm.vmid}) and its VM snapshots with "
                     "Terraform.\n")
                 await self._terraform(ctx, vm.vmid, terraform.DESTROY, "destroy the VM", out)
-                if (await api.vms()).get(vm.vmid) is not None:
+                if await api.find_vm(vm.vmid) is not None:
                     raise StepFailed(f"VM {vm.vmid} is still there after Terraform's destroy. "
                                      "Remove it by hand in Proxmox, then retry.")
                 out(f"Destroyed {vm.name}.\n")

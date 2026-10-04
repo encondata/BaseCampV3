@@ -216,6 +216,8 @@ async def test_a_bridge_check_needs_a_bridge_interface():
      lambda px: px.agent_ipv4(120)),
     ("/nodes/pve/qemu/120/snapshot", [None], lambda px: px.snapshots(120)),
     ("/nodes/pve/qemu/120/status/current", ["running"], lambda px: px.status(120)),
+    ("/cluster/resources", {"not": "a list"}, lambda px: px.find_vm(120)),
+    ("/cluster/resources", [{"type": "qemu", "vmid": "abc"}], lambda px: px.find_vm(120)),
 ])
 async def test_malformed_answers_are_a_proxmox_error(path, data, call):
     fake = FakeProxmox()
@@ -268,3 +270,16 @@ async def test_a_missing_pool_is_named():
         with pytest.raises(ProxmoxError) as e:
             await px.pool_vmids()
     assert e.value.reason == "Proxmox has no pool named sirdar."
+
+
+async def test_find_vm_looks_across_the_cluster():
+    fake = FakeProxmox()
+    fake.add_vm(120, "ss-uat3")
+    fake.add_vm(121, "ss-uat4", node="pve2")
+    async with api(fake) as px:
+        assert await px.find_vm(120) == {"name": "ss-uat3", "node": "pve", "status": "running",
+                                         "tags": ("sirdar", "ss-uat3")}
+        assert (await px.find_vm(121))["node"] == "pve2"
+        assert 121 not in await px.vms()                # the node's own list misses it
+        assert await px.find_vm(130) is None
+    assert ("GET", "/cluster/resources") in fake.requests

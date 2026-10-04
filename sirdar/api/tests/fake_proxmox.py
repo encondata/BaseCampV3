@@ -46,8 +46,11 @@ class FakeProxmox:
         return httpx.MockTransport(self.handle)
 
     def add_vm(self, vmid: int, name: str, *, status: str = "running", tags: str | None = None,
-               ips: tuple[str, ...] = (), host_key: str | None = None) -> None:
-        self.vms[vmid] = {"name": name, "template": 0, "status": status,
+               ips: tuple[str, ...] = (), host_key: str | None = None,
+               node: str | None = None) -> None:
+        """`node`: where the VM lives (default this fake's node); a VM on
+        another node shows only in /cluster/resources."""
+        self.vms[vmid] = {"name": name, "template": 0, "status": status, "node": node or self.node,
                           "tags": f"sirdar;{name}" if tags is None else tags,
                           "config": {"agent": "1"}}
         self.pool_members.add(vmid)
@@ -107,7 +110,15 @@ class FakeProxmox:
         if path == f"{n}/qemu":
             return self._ok([{"vmid": v, "name": d["name"], "status": d["status"],
                               "template": d["template"], "tags": d["tags"]}
-                             for v, d in self.vms.items()])
+                             for v, d in self.vms.items()
+                             if d.get("node", self.node) == self.node])
+        if path == "/cluster/resources":
+            kind = request.url.params.get("type")
+            return self._ok([{"id": f"qemu/{v}", "type": "qemu", "vmid": v,
+                              "name": d["name"], "node": d.get("node", self.node),
+                              "status": d["status"], "template": d["template"],
+                              "tags": d["tags"]}
+                             for v, d in self.vms.items() if kind in (None, "vm")])
         if path == f"{n}/storage/local-lvm/status":
             return self._ok(self.storage)
         bridge = re.fullmatch(rf"{n}/network/([^/]+)", path)
@@ -132,7 +143,7 @@ class FakeProxmox:
     def _vm(self, vmid: int, rest: str, method: str, request: httpx.Request,
             form: dict) -> httpx.Response:
         vm = self.vms.get(vmid)
-        if vm is None:
+        if vm is None or vm.get("node", self.node) != self.node:
             return self._err(500)        # Proxmox: "Configuration file ... does not exist"
         agent = self.agent.get(vmid)
         live = vm["status"] == "running"

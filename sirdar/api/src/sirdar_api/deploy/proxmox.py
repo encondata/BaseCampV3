@@ -191,6 +191,20 @@ class Proxmox:
             for v in _list(data)}
 
     @_parsed
+    async def find_vm(self, vmid: int) -> dict | None:
+        """VM `vmid` wherever it is in the cluster (GET /cluster/resources?
+        type=vm), or None when no node has it: {name, node, status, tags}."""
+        data = await self._call("GET", "/cluster/resources", "list the cluster's VMs",
+                                params={"type": "vm"})
+        for v in _list(data):
+            if v.get("type") == "qemu" and int(v["vmid"]) == int(vmid):
+                return {"name": str(v.get("name") or ""), "node": str(v.get("node") or ""),
+                        "status": str(v.get("status") or ""),
+                        "tags": tuple(t for t in str(v.get("tags") or "")
+                                      .replace(",", ";").split(";") if t)}
+        return None
+
+    @_parsed
     async def vm_config(self, vmid: int) -> dict:
         return _dict(await self._call("GET", f"{self._vm(vmid)}/config",
                                       "read the VM's settings"))

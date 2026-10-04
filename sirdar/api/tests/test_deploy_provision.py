@@ -152,7 +152,8 @@ async def test_a_reserved_id_someone_else_took(db, vm_env, tf, proxmox_fake):
     proxmox_fake.add_vm(130, "someone-else")
     with pytest.raises(StepFailed) as e:
         await provisioner(tf).run("provision", await ctx_for(db, vm_env), lambda _: None)
-    assert e.value.reason == "VM 130 is now someone-else, not ss-uat3. Sirdar changed nothing."
+    assert e.value.reason == ("VM 130 on Proxmox isn't ss-uat3 any more; Sirdar changed "
+                              "nothing.")
     assert tf.commands() == []
 
 
@@ -248,7 +249,22 @@ async def test_a_retry_keeps_the_first_attempt_s_snapshot(db, vm_env, tf, proxmo
 
 async def test_restore_a_vm_snapshot(db, vm_env, tf, proxmox_fake):
     await _built(db, vm_env, tf)
-    proxmox_fake.snaps[120] = [{"name": SNAP, "description": ""}]
+    proxmox_fake.snaps[120] = [{"name": SNAP, "description": ""},
+                               {"name": "sirdar-20261001T000000Z", "description": "by hand"}]
+    for name in (SNAP, "sirdar-20200101T000000Z"):
+        db.add(Deployment(environment_id=vm_env.id, mode="update", git_ref="main", sha=OLD,
+                          status="succeeded", start_step=0, vm=True, vm_snapshot=name))
+    await db.commit()
+    for name, reason in (
+            ("sirdar-20261001T000000Z", "Sirdar didn't take the VM snapshot "
+                                        "sirdar-20261001T000000Z for uat3, so it won't restore "
+                                        "it."),
+            ("before-upgrade", "before-upgrade isn't a VM snapshot Sirdar takes.")):
+        with pytest.raises(StepFailed) as e:
+            await provisioner(tf).run("vm_restore", await ctx_for(
+                db, vm_env, mode="vm_restore", vm_snapshot=name), lambda _: None)
+        assert e.value.reason == reason
+    assert proxmox_fake.rolled_back == []
     lines: list[str] = []
     await provisioner(tf).run("vm_restore",
                               await ctx_for(db, vm_env, mode="vm_restore", vm_snapshot=SNAP),
@@ -401,3 +417,93 @@ async def test_destroy_refuses_a_vm_without_the_sirdar_tag(db, vm_env, tf, proxm
     assert e.value.reason == ("VM 120 (ss-uat3) has no sirdar tag, so it isn't the VM Sirdar "
                               "made. Sirdar changed nothing.")
     assert 120 in proxmox_fake.vms and "destroy" not in tf.commands()
+
+
+async def test_a_created_vm_someone_replaced_is_never_applied(db, vm_env, tf, proxmox_fake):
+    """Proxmox reuses the lowest free id: after a manual delete another VM can
+    hold it, and an apply would rename and retag it."""
+    await _built(db, vm_env, tf)
+    proxmox_fake.vms[120]["name"] = "prod-db"
+    proxmox_fake.vms[120]["tags"] = ""
+    before = tf.commands()
+    for name, tags in (("prod-db", ""), ("ss-uat3", "ss-uat3"), ("prod-db", "sirdar;prod-db")):
+        proxmox_fake.vms[120]["name"], proxmox_fake.vms[120]["tags"] = name, tags
+        with pytest.raises(StepFailed) as e:
+            await provisioner(tf).run("provision", await ctx_for(db, vm_env, sha=SHA),
+                                      lambda _: None)
+        assert e.value.reason == ("VM 120 on Proxmox isn't ss-uat3 any more; Sirdar changed "
+                                  "nothing.")
+    assert tf.commands() == before
+
+
+async def test_a_created_vm_that_is_gone_is_not_rebuilt(db, vm_env, tf, proxmox_fake):
+    await _built(db, vm_env, tf)
+    proxmox_fake.remove_vm(120)
+    before = tf.commands()
+    with pytest.raises(StepFailed) as e:
+        await provisioner(tf).run("provision", await ctx_for(db, vm_env, sha=SHA),
+                                  lambda _: None)
+    assert e.value.reason == (
+        "The VM Sirdar made for uat3 (ss-uat3, VM 120) is gone from Proxmox. Sirdar won't "
+        "build a new one silently: delete the environment, or fix it by hand, then retry.")
+    assert tf.commands() == before
+
+
+async def test_a_vm_on_another_node(db, vm_env, tf, proxmox_fake, ssh_server):
+    await _built(db, vm_env, tf)
+    proxmox_fake.vms[120]["node"] = "pve2"
+    reason = ("VM 120 (ss-uat3) is on node pve2 now, not pve. Sirdar changed nothing: move it "
+              "back, or fix it by hand, then retry.")
+    with pytest.raises(StepFailed) as e:
+        await provisioner(tf).run("provision", await ctx_for(db, vm_env, sha=SHA),
+                                  lambda _: None)
+    assert e.value.reason == reason
+    with pytest.raises(StepFailed) as e:
+        await provisioner(tf).run("destroy", await ctx_for(db, vm_env, mode="teardown"),
+                                  lambda _: None)
+    assert e.value.reason == reason
+    assert "destroy" not in tf.commands()
+    assert terraform.has_state(terraform.workdir(get_settings(), vm_env.id))
+    assert await known_hosts.lookup(db, "127.0.0.1", ssh_server.port) is not None
+
+
+async def test_a_failed_re_check_forgets_the_pin_it_made(db, vm_env, tf, ssh_server,
+                                                        monkeypatch):
+    real = vms.address_in_use
+    seen: list[str] = []
+
+    async def taken_on_the_second_look(*args, **kwargs):
+        seen.append(args[2])
+        if len(seen) == 2:
+            return True
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(vms, "address_in_use", taken_on_the_second_look)
+    with pytest.raises(StepFailed) as e:
+        await provisioner(tf).run("provision", await ctx_for(db, vm_env), lambda _: None)
+    assert e.value.reason.startswith("The VM came up at 127.0.0.1, an address another")
+    assert seen == ["127.0.0.1", "127.0.0.1"]
+    assert await known_hosts.lookup(db, "127.0.0.1", ssh_server.port) is None
+    assert (await vms.get(db, vm_env.id)).ip is None
+    actions = list(await db.scalars(select(AuditLog.action).where(
+        AuditLog.action.like("deploy.host_%")).order_by(AuditLog.id)))
+    assert actions == ["deploy.host_trust", "deploy.host_forget"]
+
+
+async def test_a_changed_key_is_pinned_again(db, vm_env, tf, ssh_server):
+    from sqlalchemy import update as sql_update
+
+    from sirdar_api.db.models import SshKnownHost
+
+    await _built(db, vm_env, tf)
+    await db.execute(sql_update(SshKnownHost).where(SshKnownHost.host == "127.0.0.1")
+                     .values(fingerprint_sha256="SHA256:old"))
+    await db.commit()
+    lines: list[str] = []
+    await provisioner(tf).run("provision", await ctx_for(db, vm_env, sha=SHA), lines.append)
+    assert (f"Pinned 127.0.0.1's SSH host key {ssh_server.fingerprint}, read through the "
+            "guest agent (it changed).\n") in "".join(lines)
+    changes = list(await db.scalars(select(AuditLog.changes).where(
+        AuditLog.action == "deploy.host_trust").order_by(AuditLog.id)))
+    assert changes[-1]["previous_fingerprint"] == "SHA256:old"
+    assert changes[-1]["fingerprint"] == ssh_server.fingerprint
