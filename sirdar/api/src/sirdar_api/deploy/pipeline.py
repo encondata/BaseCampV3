@@ -1,7 +1,10 @@
-"""Deployment pipeline (spec Section 2: steps 1–11 here; DNS, proxy and smoke
-tests come in phase 4). Besides Update and Reset it runs the snapshot
-modes: Reset (or a first deploy) that restores a snapshot, Restore backup,
-Roll back, and Take snapshot, a job that leaves the environment as it is.
+"""Deployment pipeline (spec Section 2). Besides Update and Reset it runs the
+snapshot modes: Reset (or a first deploy) that restores a snapshot, Restore
+backup, Roll back, and Take snapshot, a job that leaves the environment as
+it is. A deployment that publishes adds steps 12–14 (DNS records, proxy
+hosts, smoke test), which run in Sirdar through a Publisher instead of a
+playbook; a publish job is only those. Delete environment (teardown) runs
+15–17 and, when they succeed, deletes the environment's row.
 
 One asyncio task per running deployment, registered in _tasks; each task
 uses its own database sessions. Steps run in plan order through a Runner,
@@ -29,7 +32,7 @@ import logging
 import threading
 import uuid
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
@@ -47,7 +50,16 @@ from sirdar_api.db.models import (
     EnvironmentService,
     Snapshot,
 )
-from sirdar_api.deploy import ConnectFailed, envfile, known_hosts, snapshots, ssh, targets, vault
+from sirdar_api.deploy import (
+    ConnectFailed,
+    envfile,
+    known_hosts,
+    publish,
+    snapshots,
+    ssh,
+    targets,
+    vault,
+)
 from sirdar_api.deploy.redact import Redactor
 from sirdar_api.deploy.runner import (
     CANCEL_GRACE_SECONDS,
@@ -59,6 +71,7 @@ from sirdar_api.deploy.runner import (
     RunTarget,
 )
 from sirdar_api.deploy.steps import STEPS_BY_KEY, StepDef, plan_for
+from sirdar_api.services.audit import audit
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +79,8 @@ LOG_LIMIT = 256 * 1024          # characters kept per step: the tail
 FLUSH_SECONDS = 2.0             # how often a running step's log is saved
 MIN_MEMORY_MB = 1800            # "2 GB" as the kernel reports it
 RETRYABLE_STATUSES = ("failed", "cancelled", "interrupted")
+# Jobs that leave the environment's status, commit and image tag as they are.
+KEEPS_STATUS = ("snapshot", "publish")
 # App shutdown waits this long: a cancelled runner may take its full grace
 # to stop and still write its outcome before the engine is disposed.
 SHUTDOWN_SECONDS = CANCEL_GRACE_SECONDS + 5
@@ -95,6 +110,11 @@ class PrepareError(Exception):
 def make_runner(settings: Settings) -> Runner:
     """The runner every deployment uses (tests replace this function)."""
     return AnsibleRunner(settings.runner_dir)
+
+
+def make_publisher(settings: Settings) -> publish.Publisher:
+    """What runs steps 12–14 and 16–17 (tests replace this function)."""
+    return publish.HttpPublisher()
 
 
 async def sweep_runs() -> int:
@@ -142,22 +162,28 @@ def restores(mode: str, snapshot_id: uuid.UUID | None) -> bool:
 
 
 def plan_of(dep: Deployment) -> list[StepDef]:
-    return plan_for(dep.mode, restore=restores(dep.mode, dep.snapshot_id))
+    return plan_for(dep.mode, restore=restores(dep.mode, dep.snapshot_id), publish=dep.publish)
 
 
 # ---- records -----------------------------------------------------------------
 
 async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, git_ref: str,
-                            sha: str, actor_id: uuid.UUID | None, start_step: int = 1,
+                            sha: str, actor_id: uuid.UUID | None,
+                            start_step: int | None = None,
                             retry_of: uuid.UUID | None = None,
                             snapshot_id: uuid.UUID | None = None,
-                            restore_dump: str | None = None) -> Deployment:
+                            restore_dump: str | None = None,
+                            publish: bool = False) -> Deployment:
     """Add a running deployment and its step rows. The caller commits, then
-    calls launch(). Raises DeployInProgress (only the insert is rolled back,
-    through a savepoint: the caller's session and objects stay usable), or
-    ValueError when start_step isn't a step of this mode's plan. A snapshot
-    job leaves the environment's status alone."""
-    plan = plan_for(mode, restore=restores(mode, snapshot_id))
+    calls launch(). start_step None means the plan's first step (1, or 12
+    for a publish job, 15 for a teardown). Raises DeployInProgress (only the
+    insert is rolled back, through a savepoint: the caller's session and
+    objects stay usable), or ValueError when start_step isn't a step of this
+    mode's plan (or the mode can't publish). Snapshot and publish jobs leave
+    the environment's status alone; a teardown marks it deleting."""
+    plan = plan_for(mode, restore=restores(mode, snapshot_id), publish=publish)
+    if start_step is None:
+        start_step = plan[0].number
     if start_step not in {step.number for step in plan}:
         raise ValueError(f"start_step {start_step} isn't a step of the {mode} plan")
     if snapshot_id is not None:
@@ -185,7 +211,7 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                      status="running", start_step=start_step, retry_of=retry_of,
                      previous_sha=previous_sha, actor_id=actor_id,
                      snapshot_id=snapshot_id, restore_dump=restore_dump,
-                     dump_path=dump_path)
+                     dump_path=dump_path, publish=publish)
     try:
         async with db.begin_nested():
             db.add(dep)
@@ -198,9 +224,10 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
         db.add(DeploymentStep(deployment_id=dep.id, number=step.number, key=step.key,
                               name=step.name,
                               status="skipped" if step.number < start_step else "pending"))
-    if mode != "snapshot":
-        env.status = "deploying"
-        env.updated_at = _now()
+    if mode == "teardown":
+        env.status, env.updated_at = "deleting", _now()
+    elif mode not in KEEPS_STATUS:
+        env.status, env.updated_at = "deploying", _now()
     await db.flush()
     return dep
 
@@ -271,7 +298,7 @@ async def recover_orphans() -> int:
         await s.execute(update(Environment)
                         .where(Environment.id.in_(select(Deployment.environment_id)
                                                   .where(Deployment.id.in_(ids))),
-                               Environment.status == "deploying")
+                               Environment.status.in_(("deploying", "deleting")))
                         .values(status="failed", updated_at=now))
         taken = list(await s.scalars(select(Deployment.snapshot_id).where(
             Deployment.id.in_(ids), Deployment.mode == "snapshot",
@@ -336,7 +363,7 @@ async def _close(deployment_id: uuid.UUID, env_id: uuid.UUID, step_number: int |
                 await s.execute(update(Snapshot).where(Snapshot.id == snapshot_id,
                                                        Snapshot.status == "pending")
                                 .values(status="failed"))
-        else:
+        elif mode != "publish":          # a publish job leaves the environment as it was
             await s.execute(update(Environment).where(Environment.id == env_id)
                             .values(status="failed", updated_at=now))
         await s.commit()
@@ -396,7 +423,7 @@ async def _flush_loop(step_id: uuid.UUID, buffer: _LogBuffer) -> None:
 
 @dataclass(frozen=True)
 class _Context:
-    target: RunTarget
+    target: RunTarget | None                   # None when no step runs on the host
     common: dict = field(repr=False)
     env_file_b64: str = field(repr=False)
     redactor: Redactor = field(repr=False)
@@ -411,6 +438,8 @@ class _Context:
     # The restored snapshot's pepper and TOTP key: stored as the
     # environment's own once Restore snapshot succeeds.
     snapshot_keys: dict = field(default_factory=dict, repr=False)
+    # Steps 12–14 and 16–17: credentials and the public services.
+    publishing: publish.PublishContext | None = field(default=None, repr=False)
 
     def vars_for(self, step_key: str) -> dict:
         if step_key == "render":
@@ -435,8 +464,14 @@ async def _load_secrets(db: AsyncSession, env_id: uuid.UUID,
                            "SIRDAR_SECRETS_KEY.") from None
 
 
-async def _prepare(db: AsyncSession, env: Environment, dep: Deployment,
-                   settings: Settings) -> _Context:
+async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings: Settings, *,
+                   needs_host: bool = True, more_secrets: tuple[str, ...] = ()) -> _Context:
+    """Everything the steps need. Without host steps (a publish job, or a
+    retry of only steps 12–14 or 16–17) there is no target to connect to:
+    only the redactor is built. more_secrets: the integration credentials."""
+    if not needs_host:
+        return _Context(target=None, common={"env_name": env.name}, env_file_b64="",
+                        redactor=Redactor(_redaction_values(more_secrets)))
     cfg = targets.ssh_config_for(env.target_id, settings)
     if cfg is None:
         raise PrepareError("This environment's SSH target isn't configured any more. "
@@ -485,7 +520,7 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment,
               "min_disk_gb": ssh.MIN_DISK_GB, "min_memory_mb": MIN_MEMORY_MB}
     redactor = Redactor(_redaction_values([*secrets.values(), env_b64, cfg.password,
                                            cfg.passphrase, cfg.sudo_password, private_key,
-                                           *extra_secrets]))
+                                           *extra_secrets, *more_secrets]))
     return _Context(target=target, common=common, env_file_b64=env_b64, redactor=redactor,
                     dump_required=env.current_sha is not None,
                     restores_snapshot=restores(dep.mode, dep.snapshot_id), step_vars=step_vars,
@@ -585,6 +620,37 @@ async def _run_step(runner: Runner, ctx: _Context, step: DeploymentStep) -> RunR
         await _save_log(step.id, buffer.text())
 
 
+async def _run_python_step(publisher: publish.Publisher, ctx: _Context,
+                           step: DeploymentStep) -> RunResult:
+    """A step that runs in Sirdar: the same log handling as a playbook. A
+    StepFailed reason ends the log; any other error shows only our copy.
+    Cancel (and shutdown's interrupt) propagates like an Ansible step's."""
+    definition = STEPS_BY_KEY[step.key]
+    buffer = _LogBuffer(ctx.redactor)
+    flusher = asyncio.create_task(_flush_loop(step.id, buffer))
+    try:
+        await asyncio.wait_for(publisher.run(step.key, ctx.publishing, buffer.append),
+                               definition.timeout)
+        return RunResult(status="successful", rc=0)
+    except asyncio.CancelledError:
+        raise
+    except TimeoutError:
+        return RunResult(status="timeout", rc=-1)
+    except publish.StepFailed as e:
+        buffer.append(e.reason + "\n")
+        return RunResult(status="failed", rc=1)
+    # A failed step, never the exception text.
+    except Exception as e:  # noqa: BLE001
+        log.error("deploy step %s couldn't run: %s", step.key, type(e).__name__)
+        buffer.append(UNEXPECTED + "\n")
+        return RunResult(status="failed", rc=-1)
+    finally:
+        flusher.cancel()
+        with suppress(asyncio.CancelledError):
+            await flusher
+        await _save_log(step.id, buffer.text())
+
+
 async def _run(deployment_id: uuid.UUID) -> None:
     current: int | None = None                 # number of the step in progress
     env_id: uuid.UUID | None = None
@@ -601,9 +667,14 @@ async def _run(deployment_id: uuid.UUID) -> None:
                 settings = get_settings()
                 current = todo[0].number
                 await _mark_running(db, todo[0])
+                runs = {STEPS_BY_KEY[s.key].runs for s in todo}
                 try:
-                    ctx = await _prepare(db, env, dep, settings)
-                except PrepareError as e:
+                    publishing = (await publish.prepare(db, env, settings)
+                                  if "python" in runs else None)
+                    ctx = await _prepare(
+                        db, env, dep, settings, needs_host="ansible" in runs,
+                        more_secrets=tuple(publishing.secret_values) if publishing else ())
+                except (PrepareError, publish.PublishError) as e:
                     await db.rollback()
                     await _close(deployment_id, env_id, current, step_status="failed",
                                  dep_status="failed", error=e.reason, failed_step=current,
@@ -611,8 +682,10 @@ async def _run(deployment_id: uuid.UUID) -> None:
                     return
                 # End _prepare's read transaction: step 1 must not hold a
                 # connection idle in a transaction for its whole timeout.
+                ctx = replace(ctx, publishing=publishing)
                 await db.commit()
                 runner = make_runner(settings)
+                publisher = make_publisher(settings)
                 for step in todo:
                     current = step.number
                     if step.status != "running":
@@ -624,7 +697,10 @@ async def _run(deployment_id: uuid.UUID) -> None:
                         step.status, step.finished_at = "succeeded", _now()
                         await db.commit()
                         continue
-                    result = await _run_step(runner, ctx, step)
+                    if STEPS_BY_KEY[step.key].runs == "python":
+                        result = await _run_python_step(publisher, ctx, step)
+                    else:
+                        result = await _run_step(runner, ctx, step)
                     if result.status != "successful":
                         # Before the rollback, which may expire `step`: reloading
                         # it would need a greenlet.
@@ -654,7 +730,14 @@ async def _run(deployment_id: uuid.UUID) -> None:
             current = None
             now = _now()
             dep.status, dep.finished_at = "succeeded", now
-            if dep.mode != "snapshot":
+            if dep.mode == "teardown":
+                # Its deployments, steps, services, secrets and managed
+                # records go with it (ON DELETE CASCADE); the audit row stays.
+                audit(db, actor_id=dep.actor_id, action="deploy.environment_delete",
+                      entity_type="environment", entity_id=env.name,
+                      changes={"environment": env.name, "deployment": str(dep.id)})
+                await db.delete(env)
+            elif dep.mode not in KEEPS_STATUS:
                 env.current_sha, env.image_tag = dep.sha, envfile.image_tag(dep.sha)
                 env.status, env.updated_at = "ready", now
             await db.commit()
