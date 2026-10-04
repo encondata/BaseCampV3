@@ -1,11 +1,12 @@
 """Backups, Restore backup, Roll back and the retry rules of the new modes (phase 3)."""
 
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
 from sirdar_api.config import get_settings
-from sirdar_api.db.models import Snapshot
+from sirdar_api.db.models import Deployment, DeploymentStep, Snapshot
 from sirdar_api.deploy import environments, snapshots
 from sirdar_api.deploy.runner import RunResult
 
@@ -53,9 +54,77 @@ async def test_backups_listing(client, db, ready, ssh_server, leak_guard):
     resp = await client.get("/api/deploy/environments/uat/backups", headers=h)
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"backups": [
-        {"name": BACKUP, "size_bytes": 2097152, "modified_at": "2025-10-04T01:02:03+00:00"},
+        {"name": BACKUP, "size_bytes": 2097152, "modified_at": "2025-10-04T01:02:03+00:00",
+         "restorable": True, "reason": None},
         {"name": "20261003T120000Z.dump", "size_bytes": 1048576,
-         "modified_at": "2025-10-03T12:00:00.500000+00:00"}]}
+         "modified_at": "2025-10-03T12:00:00.500000+00:00", "restorable": True,
+         "reason": None}]}
+
+
+async def _restored_at(db, env_id, finished_at: datetime, *, key: str = "restore",
+                       status: str = "succeeded") -> None:
+    """A deployment of env_id whose step `key` ended `status` at finished_at."""
+    dep = Deployment(environment_id=env_id, mode="reset", git_ref=OLD, sha=OLD,
+                     status="succeeded" if status == "succeeded" else "failed",
+                     finished_at=finished_at)
+    db.add(dep)
+    await db.flush()
+    db.add(DeploymentStep(deployment_id=dep.id, number=9, key=key, name="Restore snapshot",
+                          status=status, started_at=finished_at, finished_at=finished_at))
+    await db.commit()
+
+
+KEYS_CHANGED = ("Taken before the sign-in keys changed (snapshot restore on "
+                "2026-10-03 18:00 UTC).")
+
+
+async def test_backups_from_before_a_key_change_are_not_restorable(client, db, ready, ssh_server,
+                                                                    leak_guard):
+    """A snapshot restore replaced the pepper and TOTP key: older dumps were
+    made under keys that no longer exist anywhere."""
+    other = await make_environment(db, name="other", current_sha=OLD)
+    await _restored_at(db, other.id, datetime(2026, 10, 4, 6, 0, tzinfo=UTC))   # not uat's
+    await _restored_at(db, ready.id, datetime(2026, 10, 4, 5, 0, tzinfo=UTC),
+                       status="failed")                                       # never took
+    await _restored_at(db, ready.id, datetime(2026, 10, 2, 9, 0, tzinfo=UTC))
+    await _restored_at(db, ready.id, datetime(2026, 10, 3, 18, 0, 0, 250000, tzinfo=UTC))
+    await _restored_at(db, ready.id, datetime(2026, 10, 4, 7, 0, tzinfo=UTC),
+                       key="restore_dump")                                    # same keys
+    ssh_server.overrides[environments.backups_command("uat")] = (
+        "20261003T120000Z.dump\t1048576\t1759492800.5\n"
+        f"{BACKUP}\t2097152\t1759539723.0\n")
+    h = await auth_headers(client, db)
+    resp = await client.get("/api/deploy/environments/uat/backups", headers=h)
+    assert resp.status_code == 200, resp.text
+    assert [(b["name"], b["restorable"], b["reason"]) for b in resp.json()["backups"]] == [
+        (BACKUP, True, None), ("20261003T120000Z.dump", False, KEYS_CHANGED)]
+
+
+async def test_restoring_a_backup_from_before_a_key_change_is_refused(
+        client, db, ready, fake_runner, leak_guard):
+    await _restored_at(db, ready.id, datetime(2026, 10, 3, 18, 0, tzinfo=UTC))
+    h = await auth_headers(client, db)
+    body = {"mode": "restore_dump", "backup": "20261003T120000Z.dump", "confirm_name": "uat"}
+    resp = await client.post(START, headers=h, json=body)
+    assert (resp.status_code, resp.json()) == (
+        409, {"detail": {"code": "backup_keys_changed", "reason": KEYS_CHANGED}})
+    assert await _audits(db, "deploy.deployment_start") == []
+    assert fake_runner.requests == []
+    # A dump named for the second the keys changed in may have started before: refused.
+    resp = await client.post(START, headers=h, json={**body, "backup": "20261003T180000Z.dump"})
+    assert resp.status_code == 409
+    resp = await client.post(START, headers=h, json={**body, "backup": "20261003T180001Z.dump"})
+    assert resp.status_code == 201, resp.text
+    await _finish(resp.json())
+
+
+async def test_every_backup_is_restorable_without_a_snapshot_restore(client, db, ready,
+                                                                     fake_runner, leak_guard):
+    h = await auth_headers(client, db)
+    resp = await client.post(START, headers=h, json={
+        "mode": "restore_dump", "backup": "20200101T000000Z.dump", "confirm_name": "uat"})
+    assert resp.status_code == 201, resp.text
+    await _finish(resp.json())
 
 
 async def test_backups_on_an_untrusted_host(client, db, deploy_env, ssh_server, snapshots_dir,

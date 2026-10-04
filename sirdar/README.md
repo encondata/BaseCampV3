@@ -286,7 +286,11 @@ accept bodies that large too.
 into an empty database, then migrates and starts the app. It runs the deployed
 commit's code and config again first (Fetch code, Render config with Sirdar's
 stored keys, Build images, cached), so a failed Update's checkout or `.env`
-never decides what the backup is restored under. Roll back (offered
+never decides what the backup is restored under. A backup taken before a
+snapshot restore replaced the pepper and TOTP key can't be restored (its users'
+keys no longer exist anywhere): the backups listing marks it
+`"restorable": false` with a `reason`, and starting one answers 409
+`backup_keys_changed`. Roll back (offered
 after a failed Update) deploys the previous commit and restores that
 Update's dump. Uploaded files are never rolled back.
 

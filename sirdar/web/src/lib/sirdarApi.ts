@@ -203,6 +203,7 @@ const MESSAGES: Record<string, string> = {
   snapshot_not_allowed: 'Only Reset data (or a new environment) can restore a snapshot.',
   not_deployed: "This environment hasn't been deployed yet.",
   backup_invalid: "That isn't one of this environment's backups.",
+  backup_keys_changed: 'That backup was taken before the sign-in keys changed, so nobody could sign in after restoring it.',
   rollback_unavailable: "This deployment can't be rolled back: it needs a pre-deploy dump and a commit to go back to.",
   rollback_not_latest: 'Only the most recent deployment can be rolled back.',
   git_ref_not_allowed: 'Restore backup always uses the deployed commit.',

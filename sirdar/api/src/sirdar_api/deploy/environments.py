@@ -16,12 +16,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from cryptography.fernet import Fernet
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
 from sirdar_api.db.models import (
     Deployment,
+    DeploymentStep,
     Environment,
     EnvironmentSecret,
     EnvironmentService,
@@ -478,9 +479,36 @@ def backups_command(name: str) -> str:
             "-printf '%f\\t%s\\t%T@\\n' 2>/dev/null || true")
 
 
+def backup_taken_at(name: str) -> datetime:
+    """When `ss-stack dump` took a backup: the UTC time in its name."""
+    return datetime.strptime(name, "%Y%m%dT%H%M%SZ.dump").replace(tzinfo=UTC)
+
+
+async def keys_changed_at(db: AsyncSession, env_id) -> datetime | None:
+    """When a snapshot restore last replaced the environment's pepper and TOTP
+    key (the end of its latest succeeded Restore snapshot step), or None."""
+    return await db.scalar(
+        select(func.max(DeploymentStep.finished_at))
+        .join(Deployment, Deployment.id == DeploymentStep.deployment_id)
+        .where(Deployment.environment_id == env_id, DeploymentStep.key == "restore",
+               DeploymentStep.status == "succeeded"))
+
+
+def backup_blocked(name: str, changed_at: datetime | None) -> str | None:
+    """Why a backup can't be restored, or None. A dump taken before a snapshot
+    restore was made under keys that no longer exist anywhere: restoring it
+    would lock everyone out. Names have whole seconds: a dump named for the
+    second the keys changed in may have started before, so it counts as before."""
+    if changed_at is None or backup_taken_at(name) > changed_at:
+        return None
+    when = changed_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    return f"Taken before the sign-in keys changed (snapshot restore on {when})."
+
+
 async def list_backups(db: AsyncSession, cfg: SshTargetConfig, env: Environment) -> list[dict]:
-    """The environment's pre-deploy dumps, newest first: name, size, time.
-    Lines that aren't `ss-stack dump` files are ignored."""
+    """The environment's pre-deploy dumps, newest first: name, size, time,
+    and whether it can be restored (`restorable`, else a `reason`). Lines
+    that aren't `ss-stack dump` files are ignored."""
     result = await ssh.run_command(cfg, db, backups_command(env.name))
     if result.exit_status is None:
         raise ConnectFailed(_NO_ANSWER)
@@ -494,4 +522,8 @@ async def list_backups(db: AsyncSession, cfg: SshTargetConfig, env: Environment)
         except (ValueError, OverflowError, OSError):
             continue
         rows.append({"name": parts[0], "size_bytes": int(parts[1]), "modified_at": modified})
+    changed_at = await keys_changed_at(db, env.id)
+    for row in rows:
+        row["reason"] = backup_blocked(row["name"], changed_at)
+        row["restorable"] = row["reason"] is None
     return sorted(rows, key=lambda r: r["name"], reverse=True)

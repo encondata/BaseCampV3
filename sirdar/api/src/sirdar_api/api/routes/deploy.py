@@ -669,6 +669,11 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
     if body.mode == "restore_dump":
         if env.current_sha is None:
             raise HTTPException(status_code=409, detail={"code": "not_deployed"})
+        reason = environments.backup_blocked(
+            body.backup, await environments.keys_changed_at(db, env.id))
+        if reason is not None:
+            raise HTTPException(status_code=409, detail={"code": "backup_keys_changed",
+                                                         "reason": reason})
         await _pinned(db, cfg)
         return await _launch(db, env, request, actor, action="deploy.deployment_start",
                              mode="restore_dump", git_ref=env.current_sha,
