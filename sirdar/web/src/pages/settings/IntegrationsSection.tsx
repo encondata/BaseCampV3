@@ -1,8 +1,8 @@
 /** Settings › Integrations: the credentials Sirdar publishes environments
  *  with (Cloudflare DNS, Nginx Proxy Manager) and builds Proxmox VMs with.
- *  Secrets are write-only: a card
- *  shows only whether one is set. Test checks the saved settings; Remove
- *  forgets them (nothing changes in Cloudflare or NPM). */
+ *  Secrets are write-only: a card shows only whether one is set. Test checks
+ *  the saved settings; Remove forgets them (nothing changes in Cloudflare,
+ *  NPM or Proxmox). */
 import { Fragment, useCallback, useEffect, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -70,7 +70,10 @@ export default function IntegrationsSection() {
       const result = await testIntegration(kind);
       setResults((r) => ({ ...r, [kind]: result }));
     } catch (e) {
-      setProblems((p) => ({ ...p, [kind]: deployErrorText(e, "Couldn't test the connection.") }));
+      const code = (e as { code?: string }).code;
+      // The certificate prompt lives in the Edit modal.
+      const review = code === 'tls_untrusted' || code === 'tls_mismatch' ? ' Open Edit to review the certificate.' : '';
+      setProblems((p) => ({ ...p, [kind]: deployErrorText(e, "Couldn't test the connection.") + review }));
     } finally {
       setBusy(null);
     }

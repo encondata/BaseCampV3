@@ -119,3 +119,14 @@ it('Proxmox can only be removed when no environment uses it', async () => {
   await userEvent.click(within(px).getByRole('button', { name: 'Remove Proxmox' }));
   expect(await within(px).findByText('Environments still use it: uat3. Delete them first.')).toBeTruthy();
 });
+
+it("the card's Test points to Edit when the certificate needs review", async () => {
+  api.testIntegration.mockRejectedValue(new ApiError(409, 'tls_mismatch',
+    { code: 'tls_mismatch', expected: 'AA', actual: 'BB' }));
+  render(<IntegrationsSection />);
+  const px = await screen.findByRole('group', { name: 'Proxmox' });
+  await userEvent.click(within(px).getByRole('button', { name: 'Test Proxmox' }));
+  expect(await within(px).findByText(
+    "The Proxmox server's certificate doesn't match the one Sirdar trusted. Open Edit to review the certificate."))
+    .toBeTruthy();
+});

@@ -119,3 +119,36 @@ it('API errors land on their field; a failed test shows the reason', async () =>
   await userEvent.click(within(dialog).getByRole('button', { name: 'Test' }));
   expect(await within(dialog).findByText('Proxmox rejected the API token.')).toBeTruthy();
 });
+
+it.each([
+  ['a code-only detail', { code: 'tls_untrusted' }, "Sirdar doesn't trust this Proxmox server's certificate yet."],
+  ['a null detail', null, "Sirdar doesn't trust this Proxmox server's certificate yet."],
+  ['a mismatch without both fingerprints', { code: 'tls_mismatch', expected: PX_FINGERPRINT },
+   "The Proxmox server's certificate doesn't match the one Sirdar trusted."],
+])('a certificate answer with %s shows the message instead of a prompt', async (_name, detail, text) => {
+  const code = (detail as { code?: string } | null)?.code ?? 'tls_untrusted';
+  api.testIntegration.mockRejectedValueOnce(new ApiError(409, code, detail));
+  const { dialog } = show(INTEGRATIONS);
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Test' }));
+  expect(await within(dialog).findByText(text)).toBeTruthy();
+  expect(within(dialog).queryByRole('group', { name: 'Server certificate' })).toBeNull();
+});
+
+it('a certificate without names still shows the prompt', async () => {
+  const { names: _names, ...rest } = PX_CERT;
+  api.testIntegration.mockRejectedValueOnce(new ApiError(409, 'tls_untrusted', { code: 'tls_untrusted', ...rest }));
+  const { dialog } = show(INTEGRATIONS);
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Test' }));
+  const prompt = await within(dialog).findByRole('group', { name: 'Server certificate' });
+  expect(within(prompt).getByText(PX_CERT.fingerprint)).toBeTruthy();
+});
+
+it('never prefills the token; keeping it sends no token key', async () => {
+  const { dialog } = show(INTEGRATIONS);
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Replace' }));
+  expect((within(dialog).getByLabelText('API token') as HTMLInputElement).value).toBe('');
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Keep' }));
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.saveIntegration).toHaveBeenCalled());
+  expect(api.saveIntegration.mock.calls[0][1]).not.toHaveProperty('token');
+});

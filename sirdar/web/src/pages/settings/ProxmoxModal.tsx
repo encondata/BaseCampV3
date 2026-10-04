@@ -142,10 +142,14 @@ export default function ProxmoxModal({ current, onSaved, onClose }: {
       if (asked !== version.current) return;
       const code = (err as { code?: string }).code ?? '';
       const d = errorDetail<Record<string, unknown>>(err);
-      if (code === 'tls_untrusted' && d) {
-        setPending({ kind: 'untrusted', what, cert: d as unknown as TlsCertificate });
-      } else if (code === 'tls_mismatch' && d) {
-        setPending({ kind: 'changed', what, expected: String(d.expected), actual: String(d.actual) });
+      const str = (v: unknown) => (typeof v === 'string' ? v : '');
+      if (code === 'tls_untrusted' && d && typeof d.fingerprint === 'string') {
+        const names = Array.isArray(d.names) ? d.names.map(String) : [];
+        setPending({ kind: 'untrusted', what, cert: {
+          fingerprint: d.fingerprint, subject: str(d.subject), issuer: str(d.issuer), not_after: str(d.not_after), names,
+        } });
+      } else if (code === 'tls_mismatch' && d && typeof d.expected === 'string' && typeof d.actual === 'string') {
+        setPending({ kind: 'changed', what, expected: d.expected, actual: d.actual });
       } else {
         setErrors({ [CODE_FIELD[code] ?? 'form']: deployErrorText(err,
           what === 'test' ? "Couldn't test these settings." : "Couldn't save these settings.") });
@@ -217,7 +221,7 @@ export default function ProxmoxModal({ current, onSaved, onClose }: {
                     <dt>SHA-256 fingerprint</dt><dd className="mono sirdar-fingerprint">{pending.cert.fingerprint}</dd>
                     <dt>Subject</dt><dd>{pending.cert.subject}</dd>
                     <dt>Issued by</dt><dd>{pending.cert.issuer}</dd>
-                    <dt>Expires</dt><dd className="mono">{when(pending.cert.not_after)}</dd>
+                    <dt>Expires</dt><dd className="mono">{pending.cert.not_after ? when(pending.cert.not_after) : '—'}</dd>
                     <dt>Names</dt><dd className="mono">{pending.cert.names.join(', ')}</dd>
                   </dl>
                   <button type="button" className="btn-solid" disabled={!!busy}
