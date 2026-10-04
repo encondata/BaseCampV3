@@ -288,4 +288,47 @@ it('Data: with no snapshot only Start empty is offered, and a gone snapshot send
   await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
   expect(await screen.findByText('That snapshot no longer exists.')).toBeTruthy();
   expect(screen.getByRole('combobox', { name: 'Snapshot' })).toBeTruthy();
+  // The gone snapshot is cleared and no longer offered.
+  await userEvent.click(screen.getByRole('combobox', { name: 'Snapshot' }));
+  expect(screen.queryByRole('button', { name: /^dev-2026-10-04/ })).toBeNull();
+  await next();
+  expect(screen.getByText('Choose a snapshot.')).toBeTruthy();
+});
+
+it('Data: picking a snapshot, going Back and choosing Start empty creates an empty environment', async () => {
+  const { onCreated } = await open();
+  await fillBasics();
+  await next();
+  await next();
+  await userEvent.click(screen.getByRole('radio', { name: 'From a snapshot' }));
+  await userEvent.click(screen.getByRole('combobox', { name: 'Snapshot' }));
+  await userEvent.click(await screen.findByRole('button', { name: /^dev-2026-10-04/ }));
+  await next();
+  expect(screen.getByText(/^Snapshot dev-2026-10-04/)).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Start empty' }));
+  await next();
+  expect(screen.getByText('Empty')).toBeTruthy();
+  expect(screen.queryByText(/^Snapshot dev-2026-10-04/)).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  await waitFor(() => expect(onCreated).toHaveBeenCalledWith(ENV));
+  expect('snapshot_id' in api.createEnvironment.mock.calls[0][0]).toBe(false);
+});
+
+it('Adopt has no Data step and never sends a snapshot_id, even after one was picked in Create', async () => {
+  api.adoptEnvironment.mockResolvedValue({ ...ENV, imported_secrets: [], ignored_keys: [] });
+  await open();
+  await fillBasics('uat');
+  await next();
+  await next();
+  await userEvent.click(screen.getByRole('radio', { name: 'From a snapshot' }));
+  await userEvent.click(screen.getByRole('combobox', { name: 'Snapshot' }));
+  await userEvent.click(await screen.findByRole('button', { name: /^dev-2026-10-04/ }));
+  await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Adopt existing' }));
+  expect(screen.queryByText('Data')).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Adopt' }));
+  await waitFor(() => expect(api.adoptEnvironment).toHaveBeenCalledTimes(1));
+  expect('snapshot_id' in api.adoptEnvironment.mock.calls[0][0]).toBe(false);
 });

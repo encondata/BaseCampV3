@@ -154,7 +154,9 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
   };
 
   const dataErrors = (): Errors => (dataMode === 'snapshot' && !snapshotId ? { data: 'Choose a snapshot.' } : {});
-  const chosen = snapshots.find((s) => s.id === snapshotId);
+  // Only a snapshot the Data step still says to use: going Back to "Start empty" keeps
+  // snapshotId but must not show (or send) it.
+  const chosen = dataMode === 'snapshot' ? snapshots.find((s) => s.id === snapshotId) : undefined;
 
   const next = () => {
     const e = step === 'basics' ? basicsErrors() : step === 'services' ? servicesErrors() : dataErrors();
@@ -172,6 +174,12 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
     const code = (err as { code?: string }).code ?? '';
     const field = CODE_FIELD[code] ?? 'form';
     setErrors({ [field]: deployErrorText(err, attempt.mode === 'new' ? "Couldn't create the environment." : "Couldn't adopt the environment.") });
+    if (field === 'data') {
+      // The snapshot is gone or no longer ready: clear the pick and stop offering it.
+      const gone = attempt.mode === 'new' ? attempt.body.snapshot_id : undefined;
+      setSnapshotId('');
+      setSnapshots((list) => list.filter((s) => s.id !== gone));
+    }
     if (field === 'services' || field === 'data') setStep(field);
     else if (field !== 'form') setStep('basics');
   };
@@ -212,7 +220,7 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
       ...(domain.trim() ? { base_domain: domain.trim() } : {}),
       proxy_ip: proxy.trim(), bind_ip: bind.trim(),
       ports: Object.fromEntries(services.map((s) => [s.service, Number(ports[s.service])])),
-      ...(dataMode === 'snapshot' && snapshotId ? { snapshot_id: snapshotId } : {}),
+      ...(chosen ? { snapshot_id: chosen.id } : {}),
     } });
   };
 
