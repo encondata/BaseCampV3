@@ -208,3 +208,16 @@ async def test_step_0_timeout_and_crash(db, vm_env, fake_runner, fake_provisione
     dep, steps, _ = await _load(dep_id)
     assert steps[0].log == "provision: ok\nSirdar couldn't run this step.\n"
     assert PX_TOKEN_SECRET not in (dep.error or "")
+
+
+async def test_host_steps_refuse_a_deployment_without_a_commit(db, vm_env, fake_runner,
+                                                               fake_provisioner):
+    """Step 0 resolves a branch on the VM; when it succeeded without a commit
+    (it never should), step 1 refuses before writing an .env for no image."""
+    fake_provisioner.effects["provision"] = _vm_up
+    fake_provisioner.outcomes["provision"] = VmOutcome(sha=None)
+    dep_id = await _start(db, vm_env, sha="")
+    dep, steps, _env = await _load(dep_id)
+    assert dep.status == "failed" and dep.error == pipeline.NO_COMMIT
+    assert [s.status for s in steps][:2] == ["succeeded", "failed"]
+    assert fake_runner.requests == []

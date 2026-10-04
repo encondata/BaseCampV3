@@ -105,6 +105,10 @@ class DeployInProgress(Exception):
     """Another deployment of this environment is running."""
 
 
+NO_COMMIT = ("This deployment has no commit yet (step 0 resolves it on the VM), so Sirdar "
+             "won't run the host steps. Retry from step 0 (Prepare VM).")
+
+
 class PrepareError(Exception):
     """The run can't start. `reason` is our own copy, shown in the log."""
 
@@ -497,6 +501,8 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
     if not needs_host:
         return _Context(target=None, common={"env_name": env.name}, env_file_b64="",
                         redactor=Redactor(_redaction_values(more_secrets)))
+    if not dep.sha:                    # an .env and an image tag need the commit
+        raise PrepareError(NO_COMMIT)
     try:
         cfg = await vms.host_config(db, settings, env)
     except (vault.SecretsKeyMissing, vault.SecretUnreadable):
