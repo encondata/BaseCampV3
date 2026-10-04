@@ -295,3 +295,24 @@ async def test_a_vm_restore_retry_checks_the_sign_in_keys_again(client, db, px, 
     assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "vm_snapshot_keys_changed")
     assert resp.json()["detail"]["reason"].startswith("Taken before the sign-in keys changed")
     assert fake_provisioner.calls == ["vm_restore"]
+
+
+@pytest.mark.parametrize("with_address", [False, True])
+async def test_backups_on_a_vm_need_the_secrets_key(client, db, px, monkeypatch, secrets_key,
+                                                    with_address):
+    """The VM's SSH key is sealed with SIRDAR_SECRETS_KEY: without it the
+    list says so, whether or not the VM has an address yet."""
+    from sirdar_api.config import get_settings
+
+    h = await auth_headers(client, db)
+    created = await _uat3(client, h, current_sha=SHA, db=db)
+    if with_address:
+        vm = await vms.get(db, uuid.UUID(created["id"]))
+        vm.ip = "10.10.48.70"
+        await db.commit()
+    monkeypatch.setenv("SIRDAR_SECRETS_KEY", "")
+    get_settings.cache_clear()
+    resp = await client.get(f"{UAT3}/backups", headers=h)
+    assert (resp.status_code, resp.json()) == (400, {"detail": {"code": "secrets_key_missing"}})
+    monkeypatch.setenv("SIRDAR_SECRETS_KEY", secrets_key)    # the leak guard reads with it
+    get_settings.cache_clear()

@@ -1017,7 +1017,8 @@ async def list_backups(name: str, db: DbSession,
                        actor: AuthContext = require_permission("deploy", "view")):
     """The environment's pre-deploy dumps, read over SSH (newest first)."""
     env = await _environment(db, name)
-    cfg = await _host_target(db, env, need_secrets=False)
+    # A VM's SSH key is sealed with the secrets key (a saved target's isn't).
+    cfg = await _host_target(db, env, need_secrets=_on_vm(env))
     if cfg is None:                     # a VM step 0 hasn't built: nothing to list
         return {"backups": []}
     try:
