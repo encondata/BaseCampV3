@@ -4,9 +4,11 @@ import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-const perms = vi.hoisted(() => ({ change: true }));
+const perms = vi.hoisted(() => ({ add: true, change: true }));
 vi.mock('@portal/auth/AuthContext', () => ({
-  useAuth: () => ({ can: (r: string, a: string) => r === 'deploy' && (a !== 'change' || perms.change) }),
+  useAuth: () => ({
+    can: (r: string, a: string) => r === 'deploy' && (a === 'add' ? perms.add : a !== 'change' || perms.change),
+  }),
 }));
 const api = vi.hoisted(() => ({ updateEnvironment: vi.fn(), getEnvironmentDefaults: vi.fn() }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
@@ -18,7 +20,7 @@ import { DEFAULTS, ENV, TARGETS } from './testData';
 
 Element.prototype.scrollIntoView = () => {};
 beforeEach(() => {
-  perms.change = true;
+  perms.add = true; perms.change = true;
   Object.values(api).forEach((f) => f.mockReset());
   api.getEnvironmentDefaults.mockResolvedValue(DEFAULTS);
   // The saved record: plain fields applied (services / secrets keep the fixture's shape).
@@ -138,4 +140,15 @@ it('the fields are disabled while a deployment runs, not just Save', () => {
   expect((screen.getByLabelText('api address') as HTMLInputElement).disabled).toBe(true);
   expect((screen.getByRole('combobox', { name: 'Target' }) as HTMLInputElement).disabled).toBe(true);
   expect(screen.queryByRole('button', { name: 'Replace' })).toBeNull();
+});
+
+it('Delete environment needs deploy:add and deploy:change, and says backups go too', () => {
+  render(<EnvSettings env={ENV} targets={TARGETS.targets} onSaved={vi.fn()} onDeleteStarted={vi.fn()} />);
+  expect(screen.getByRole('button', { name: 'Delete environment…' })).toBeTruthy();
+  expect(screen.getByText(/deletes its data, backups and folder on the host/)).toBeTruthy();
+  cleanup();
+  perms.add = false;
+  render(<EnvSettings env={ENV} targets={TARGETS.targets} onSaved={vi.fn()} onDeleteStarted={vi.fn()} />);
+  expect(screen.getByRole('button', { name: 'Save settings' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Delete environment…' })).toBeNull();
 });

@@ -70,7 +70,8 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
 
   const made = env.managed_records.filter((r) => r.origin === 'created');
   const claimed = env.managed_records.filter((r) => r.origin === 'claimed');
-  const ready = confirm === env.name && !busy && can('deploy', 'change');
+  // The API's teardown needs deploy:add and deploy:change.
+  const ready = confirm === env.name && !busy && can('deploy', 'add') && can('deploy', 'change');
 
   return (
     <>

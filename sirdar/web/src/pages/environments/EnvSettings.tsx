@@ -64,6 +64,8 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
   const deploying = deploymentRunning(env);
   const [deleting, setDeleting] = useState(false);
   const off = locked || deploying;
+  // The API's teardown needs both.
+  const mayDelete = can('deploy', 'add') && can('deploy', 'change');
   const [form, setForm] = useState<Form>(() => fromEnv(env));
   const [secretAction, setSecretAction] = useState<Record<string, SecretAction>>({});
   const [secretValue, setSecretValue] = useState<Record<string, string>>({});
@@ -246,12 +248,12 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
           </button>
         </div>
       )}
-      {!locked && onDeleteStarted && (
+      {mayDelete && onDeleteStarted && (
         <div className="sirdar-danger-zone">
           <h3 className="sirdar-sub">Delete environment</h3>
           <p className="page-hint">
-            Stops it, deletes its data and folder on the host, removes the DNS records and proxy hosts Sirdar made, and
-            removes it from Sirdar.
+            Stops it, deletes its data, backups and folder on the host, removes the DNS records and proxy hosts Sirdar
+            made, and removes it from Sirdar.
           </p>
           <div className="sirdar-actions">
             <button type="button" className="btn-solid btn-danger" disabled={deploying}

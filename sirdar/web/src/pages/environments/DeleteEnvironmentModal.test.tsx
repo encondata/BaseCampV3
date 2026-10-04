@@ -3,7 +3,10 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-vi.mock('@portal/auth/AuthContext', () => ({ useAuth: () => ({ can: () => true }) }));
+const perms = vi.hoisted(() => ({ add: true, change: true }));
+vi.mock('@portal/auth/AuthContext', () => ({
+  useAuth: () => ({ can: (r: string, a: string) => r === 'deploy' && (a === 'add' ? perms.add : a !== 'change' || perms.change) }),
+}));
 const api = vi.hoisted(() => ({ startDeployment: vi.fn(), trustKnownHost: vi.fn() }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 
@@ -13,6 +16,7 @@ import DeleteEnvironmentModal from './DeleteEnvironmentModal';
 import { ENV, PUBLISHED_ENV, TEARDOWN } from './testData';
 
 beforeEach(() => {
+  perms.add = true; perms.change = true;
   Object.values(api).forEach((f) => f.mockReset());
   api.startDeployment.mockResolvedValue(TEARDOWN);
 });
@@ -58,4 +62,14 @@ it('an API refusal is shown in the modal', async () => {
   await userEvent.click(within(dialog).getByRole('button', { name: 'Delete environment' }));
   expect(await within(dialog).findByText('Set up Cloudflare in Settings › Integrations first.'))
     .toBeTruthy();
+});
+
+it('the typed name is not enough without both deploy:add and deploy:change', async () => {
+  for (const [add, change] of [[false, true], [true, false]]) {
+    perms.add = add; perms.change = change;
+    const { dialog } = show();
+    await userEvent.type(within(dialog).getByLabelText('Type uat to confirm'), 'uat');
+    expect((within(dialog).getByRole('button', { name: 'Delete environment' }) as HTMLButtonElement).disabled).toBe(true);
+    cleanup();
+  }
 });
