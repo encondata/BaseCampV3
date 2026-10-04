@@ -1,4 +1,4 @@
-# Step 8 — Start services: ss-stack up starts db, storage, the migrate job,
+# Step 10 — Start services: ss-stack up starts db, storage, the migrate job,
 # api + workers, web and status in order and waits on their health checks.
 - name: Start services
   hosts: target

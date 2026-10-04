@@ -297,7 +297,7 @@ async def test_start_step_the_pipeline_rejects_is_422_not_500(client, db, ready,
     resp = await client.post(retry, headers=h, json={"from_step": 7})
     assert (resp.status_code, resp.json()) == (422, {"detail": {"code": "from_step_invalid"}})
 
-    monkeypatch.setattr(deploy_routes, "plan_for", lambda mode: steps.plan_for("reset"))
+    monkeypatch.setattr(deploy_routes, "plan_for", lambda mode, **kw: steps.plan_for("reset"))
     resp = await client.post(retry, headers=h, json={"from_step": 7})
     assert (resp.status_code, resp.json()) == (422, {"detail": {"code": "invalid_start_step"}})
     assert await _audits(db, "deploy.deployment_retry") == []

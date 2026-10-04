@@ -1,9 +1,41 @@
 # Step 7 — Reset data (Reset only): stop every stack and delete its volumes.
-# The next step starts the environment empty.
+# The next step starts the environment empty. A Reset that restores a
+# snapshot (snapshot_revision set) first refuses one whose database is at a
+# newer migration than this commit has, before anything is deleted; the
+# same three tasks stay in restore.yml for a seeded first deploy (no Reset).
 - name: Reset data
   hosts: target
   gather_facts: false
   tasks:
+    - name: This commit's migrations
+      ansible.builtin.find:
+        paths: "{{ env_dir }}/repo/api/migrations/versions"
+        patterns: ["^[0-9]+_.*[.]py$"]
+        use_regex: true
+      register: migrations
+      when: snapshot_revision is defined
+
+    - name: This commit's newest migration
+      ansible.builtin.set_fact:
+        code_head: >-
+          {{ migrations.files | map(attribute='path') | map('basename')
+             | map('regex_search', '^[0-9]+') | map('int') | max }}
+      when:
+        - snapshot_revision is defined
+        - migrations.files | length > 0
+
+    - name: The snapshot isn't newer than the code
+      ansible.builtin.assert:
+        that:
+          - migrations.files | length > 0
+          - snapshot_revision | int <= code_head | int
+        fail_msg: >-
+          This snapshot's database is at migration {{ snapshot_revision }}, newer than
+          this commit's newest migration ({{ code_head | default('none') }}). Deploy a
+          newer commit, or pick another snapshot.
+        quiet: true
+      when: snapshot_revision is defined
+
     - name: ss-stack down --volumes
       ansible.builtin.command:
         argv: ["{{ ss_stack }}", down, "{{ env_dir }}", --volumes]

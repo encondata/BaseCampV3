@@ -11,13 +11,16 @@ vi.mock('@portal/auth/AuthContext', () => ({
 }));
 const api = vi.hoisted(() => ({
   getDeployment: vi.fn(), cancelDeployment: vi.fn(), retryDeployment: vi.fn(), trustKnownHost: vi.fn(),
+  rollbackDeployment: vi.fn(),
 }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 
 import { ApiError } from '@portal/lib/api';
 
 import DeploymentView, { POLL_MS } from './DeploymentView';
-import { ENV, FAILED, RESET_FAILED, RUNNING, RUNNING_MORE, SUCCEEDED } from './testData';
+import {
+  ENV, FAILED, RESET_FAILED, RESTORE_FAILED, ROLLBACKABLE, RUNNING, RUNNING_MORE, SNAP, SUCCEEDED,
+} from './testData';
 
 Element.prototype.scrollIntoView = () => {};   // jsdom lacks it (ComboBox calls it)
 let user: ReturnType<typeof userEvent.setup>;
@@ -327,4 +330,85 @@ it('a step closed and opened again starts stuck to the bottom of its log', async
     delete (proto as unknown as Record<string, unknown>).clientHeight;
     delete (proto as unknown as Record<string, unknown>).scrollTop;
   }
+});
+
+it('a failed Update with a dump offers Roll back behind the typed name', async () => {
+  api.getDeployment.mockResolvedValue(ROLLBACKABLE);
+  api.rollbackDeployment.mockResolvedValue({ ...RUNNING, id: 'd8', mode: 'rollback' });
+  const { onRetried } = show({ id: 'd4' });
+  expect(await screen.findByRole('heading', { name: 'Roll back' })).toBeTruthy();
+  expect(screen.getByText(/Deploys the previous commit/).textContent).toContain('e73b99ca');
+  // Which dump it restores, and when it was taken, before the typed-name gate.
+  const which = screen.getByText(/Restores the backup/);
+  expect(which.textContent).toContain('20261003T130500Z.dump');
+  expect(which.textContent).toContain(new Date('2026-10-03T13:05:00Z').toLocaleString());
+  const go = screen.getByRole('button', { name: 'Roll back' }) as HTMLButtonElement;
+  expect(go.disabled).toBe(true);
+  await user.type(screen.getByLabelText('Type uat to confirm', { selector: '#rollback-confirm' }), 'uat');
+  await user.click(go);
+  await waitFor(() => expect(onRetried).toHaveBeenCalledWith(expect.objectContaining({ id: 'd8' })));
+  expect(api.rollbackDeployment).toHaveBeenCalledWith('d4', 'uat');
+});
+
+it('Roll back is hidden without change, on an older deployment, and when unavailable', async () => {
+  api.getDeployment.mockResolvedValue(ROLLBACKABLE);
+  perms.change = false;
+  show({ id: 'd4' });
+  await screen.findByText(/migrate exited 1/);
+  expect(screen.queryByRole('heading', { name: 'Roll back' })).toBeNull();
+  cleanup();
+  perms.change = true;
+  show({ id: 'd4', isLatest: false });
+  await screen.findByText(/migrate exited 1/);
+  expect(screen.queryByRole('heading', { name: 'Roll back' })).toBeNull();
+  cleanup();
+  api.getDeployment.mockResolvedValue(FAILED);
+  show();
+  await screen.findByText(/docker build exited 1/);
+  expect(screen.queryByRole('heading', { name: 'Roll back' })).toBeNull();
+});
+
+it('a failed Restore backup retries behind the typed name and shows its backup', async () => {
+  api.getDeployment.mockResolvedValue(RESTORE_FAILED);
+  api.retryDeployment.mockResolvedValue({ ...RUNNING, id: 'd6' });
+  show({ id: 'd5' });
+  expect(await screen.findByRole('heading', { level: 2, name: /^Restore backup · e73b99ca/ })).toBeTruthy();
+  expect(screen.getByText('20261003T130500Z.dump', { selector: 'dd' })).toBeTruthy();
+  const retry = screen.getByRole('button', { name: 'Retry' }) as HTMLButtonElement;
+  expect(retry.disabled).toBe(true);
+  await user.type(screen.getByLabelText('Type uat to confirm', { selector: '#retry-confirm' }), 'uat');
+  await user.click(retry);
+  await waitFor(() => expect(api.retryDeployment).toHaveBeenCalledWith('d5', { from_step: 9, confirm_name: 'uat' }));
+});
+
+it('a snapshot job is never retried, and names its snapshot', async () => {
+  api.getDeployment.mockResolvedValue({
+    ...FAILED, mode: 'snapshot', snapshot: { id: SNAP.id, name: SNAP.name },
+    steps: [{ ...FAILED.steps[0] }, { ...FAILED.steps[4], number: 11, key: 'export', name: 'Take snapshot' }],
+  });
+  show();
+  expect(await screen.findByText('dev-2026-10-04', { selector: 'dd' })).toBeTruthy();
+  expect(screen.getByRole('heading', { level: 2, name: /^Take snapshot ·/ })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+});
+
+const RESTORE_HINT = 'Retry this deployment — a new Update would put the old sign-in keys back.';
+
+it('a failed restoring deployment says to retry it rather than run a new Update', async () => {
+  api.getDeployment.mockResolvedValue({
+    ...RESET_FAILED, snapshot: { id: SNAP.id, name: SNAP.name },
+    steps: [...RESET_FAILED.steps.slice(0, 6),
+      { ...RESET_FAILED.steps[6], number: 9, key: 'restore', name: 'Restore snapshot', status: 'failed' }],
+  });
+  show({ id: 'd3' });
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeTruthy();
+  expect(screen.getByText(RESTORE_HINT)).toBeTruthy();
+  expect(screen.getByText('dev-2026-10-04', { selector: 'dd' })).toBeTruthy();
+});
+
+it('a failed deployment without a restore step has no restore hint', async () => {
+  api.getDeployment.mockResolvedValue(RESET_FAILED);
+  show({ id: 'd3' });
+  expect(await screen.findByRole('button', { name: 'Retry' })).toBeTruthy();
+  expect(screen.queryByText(RESTORE_HINT)).toBeNull();
 });

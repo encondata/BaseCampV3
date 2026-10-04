@@ -1,4 +1,4 @@
-"""Sirdar's own tables (migrations 0001–0004). `users` mirrors the portal's
+"""Sirdar's own tables (migrations 0001–0005). `users` mirrors the portal's
 user_accounts + people for the people it copies; Sirdar-only data
 (overrides, sessions, audit, lockout counters) never comes from the portal."""
 
@@ -199,6 +199,9 @@ class Environment(Base):
     keep_dumps: Mapped[int] = mapped_column(Integer, server_default=text("5"))
     spaces_bucket: Mapped[str] = mapped_column(server_default=text("'serversherpa'"))
     log_level: Mapped[str] = mapped_column(server_default=text("'INFO'"))
+    # The snapshot the first deploy restores (migration 0005); kept afterwards.
+    seed_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("snapshots.id", ondelete="SET NULL"))
     created_by: Mapped[uuid.UUID | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
@@ -235,7 +238,8 @@ class Deployment(Base):
         primary_key=True, server_default=text("gen_random_uuid()"))
     environment_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("environments.id", ondelete="CASCADE"))
-    mode: Mapped[str]                              # update | reset | adopt
+    # update | reset | adopt | snapshot | restore_dump | rollback
+    mode: Mapped[str]
     git_ref: Mapped[str]
     sha: Mapped[str]
     status: Mapped[str]
@@ -244,6 +248,12 @@ class Deployment(Base):
         ForeignKey("deployments.id", ondelete="SET NULL"))
     failed_step: Mapped[int | None] = mapped_column(Integer)
     dump_path: Mapped[str | None]
+    # The snapshot a reset or first deploy restores, or the one a snapshot
+    # job takes (migration 0005).
+    snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("snapshots.id", ondelete="SET NULL"))
+    # restore_dump / rollback: the backup's file name in <env-dir>/backups.
+    restore_dump: Mapped[str | None]
     previous_sha: Mapped[str | None]
     error: Mapped[str | None]
     actor_id: Mapped[uuid.UUID | None]
@@ -266,3 +276,28 @@ class DeploymentStep(Base):
     started_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
     log: Mapped[str] = mapped_column(server_default=text("''"))
+
+
+class Snapshot(Base):
+    """A snapshot bundle on SIRDAR_SNAPSHOTS_DIR (migration 0005). A pending
+    row belongs to a running "snapshot" deployment; ready rows have a
+    bundle; failed rows are what a failed snapshot job left."""
+
+    __tablename__ = "snapshots"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    name: Mapped[str] = mapped_column(unique=True)
+    origin: Mapped[str]                            # upload | environment
+    source: Mapped[str]                            # manifest source / environment name
+    status: Mapped[str] = mapped_column(server_default=text("'ready'"))
+    alembic_revision: Mapped[str | None]
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    checksum: Mapped[str | None]                   # SHA-256 of the bundle file
+    object_count: Mapped[int | None] = mapped_column(Integer)
+    object_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    notes: Mapped[str] = mapped_column(server_default=text("''"))
+    bundle_file: Mapped[str | None]                # file name in SIRDAR_SNAPSHOTS_DIR
+    source_created_at: Mapped[datetime | None]
+    created_by: Mapped[uuid.UUID | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

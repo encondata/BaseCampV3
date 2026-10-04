@@ -69,7 +69,7 @@ async def test_update_runs_every_step_in_order(db, env, fake_runner):
     assert fake_runner.steps() == UPDATE_KEYS
     assert [(s.number, s.status) for s in steps] == [
         (1, "succeeded"), (2, "succeeded"), (3, "succeeded"), (4, "succeeded"),
-        (5, "succeeded"), (6, "succeeded"), (8, "succeeded")]
+        (5, "succeeded"), (6, "succeeded"), (10, "succeeded")]
     assert all(s.started_at and s.finished_at for s in steps)
     assert steps[0].log == "ok: [target] preflight\n"
     assert (dep.status, dep.dump_path, dep.previous_sha, dep.error) == (
@@ -95,7 +95,8 @@ async def test_requests_carry_the_pinned_target_and_step_vars(db, env, fake_runn
         assert request.playbook == STEPS_BY_KEY[request.step].playbook
         assert request.timeout == STEPS_BY_KEY[request.step].timeout
         if request.step == "dump":
-            assert request.extravars == {**common, "dump_required": True}
+            assert request.extravars == {**common, "dump_required": True,
+                                         "restores_snapshot": False}
         elif request.step == "render":
             assert set(request.extravars) == {*common, "env_file_b64"}
             values = envfile.parse_env(
@@ -154,7 +155,7 @@ async def test_a_failed_first_step_gets_its_own_message(db, env, fake_runner):
 async def test_timeout_message(db, env, fake_runner):
     fake_runner.results["up"] = RunResult(status="timeout", rc=254)
     dep, _, _ = await _load(await _start(db, env))
-    assert dep.error == "Step 8 (Start services) timed out after 45 minutes."
+    assert dep.error == "Step 10 (Start services) timed out after 45 minutes."
 
 
 async def test_logs_are_redacted(db, env, fake_runner):
@@ -388,6 +389,10 @@ async def test_app_lifespan_recovers_then_shuts_down(monkeypatch):
         calls.append("sweep")
         return 0
 
+    async def sweep_snapshots():
+        calls.append("sweep_snapshots")
+        return 0
+
     timeouts: list[float] = []
 
     async def shutdown(timeout=10.0):
@@ -396,11 +401,12 @@ async def test_app_lifespan_recovers_then_shuts_down(monkeypatch):
 
     monkeypatch.setattr(pipeline, "recover_orphans", recover)
     monkeypatch.setattr(pipeline, "sweep_runs", sweep)
+    monkeypatch.setattr(pipeline, "sweep_snapshots", sweep_snapshots)
     monkeypatch.setattr(pipeline, "shutdown", shutdown)
     app = create_app()
     async with app.router.lifespan_context(app):
-        assert calls == ["recover", "sweep"]
-    assert calls == ["recover", "sweep", "shutdown"]
+        assert calls == ["recover", "sweep", "sweep_snapshots"]
+    assert calls == ["recover", "sweep", "sweep_snapshots", "shutdown"]
     assert timeouts == [CANCEL_GRACE_SECONDS + 5]    # the runner's grace, plus a margin
 
 
@@ -415,6 +421,7 @@ async def test_app_lifespan_starts_when_recovery_and_sweep_fail(monkeypatch):
 
     monkeypatch.setattr(pipeline, "recover_orphans", broken)
     monkeypatch.setattr(pipeline, "sweep_runs", broken)
+    monkeypatch.setattr(pipeline, "sweep_snapshots", broken)
     monkeypatch.setattr(pipeline, "shutdown", shutdown)
     app = create_app()
     async with app.router.lifespan_context(app):
@@ -439,7 +446,11 @@ async def test_startup_sweep_removes_every_run_folder(monkeypatch, tmp_path):
     async def shutdown(timeout=10.0):
         return None
 
+    async def no_sweep():
+        return 0
+
     monkeypatch.setattr(pipeline, "recover_orphans", recover)
+    monkeypatch.setattr(pipeline, "sweep_snapshots", no_sweep)
     monkeypatch.setattr(pipeline, "shutdown", shutdown)
     monkeypatch.setattr(pipeline, "make_runner", lambda settings: AnsibleRunner(str(root)))
     app = create_app()
@@ -457,3 +468,34 @@ async def test_sweep_runs_uses_the_runner(monkeypatch):
     assert await pipeline.sweep_runs() == 3
     monkeypatch.setattr(pipeline, "make_runner", lambda settings: object())
     assert await pipeline.sweep_runs() == 0
+
+
+async def test_startup_sweeps_stale_snapshot_uploads(monkeypatch, tmp_path):
+    """A crashed upload can leave plaintext keys in incoming/: startup removes
+    every *.upload and *.partial there (and *.partial beside the bundles)."""
+    from sirdar_api.config import get_settings
+
+    folder = tmp_path / "snapshots"
+    (folder / "incoming").mkdir(parents=True)
+    upload = folder / "incoming" / "abc.upload"
+    upload.write_text("SS_PASSWORD_PEPPER=plain\n")
+    partial = folder / "abc.tar.gz.partial"
+    partial.write_text("half")
+    bundle_file = folder / "abc.tar.gz"
+    bundle_file.write_text("kept")
+    monkeypatch.setenv("SIRDAR_SNAPSHOTS_DIR", str(folder))
+    get_settings.cache_clear()
+
+    async def nothing(*args, **kwargs):
+        return 0
+
+    monkeypatch.setattr(pipeline, "recover_orphans", nothing)
+    monkeypatch.setattr(pipeline, "sweep_runs", nothing)
+    monkeypatch.setattr(pipeline, "shutdown", nothing)
+    try:
+        app = create_app()
+        async with app.router.lifespan_context(app):
+            assert not upload.exists() and not partial.exists()
+            assert bundle_file.exists()
+    finally:
+        get_settings.cache_clear()

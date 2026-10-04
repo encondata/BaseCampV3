@@ -15,7 +15,7 @@ const api = vi.hoisted(() => ({
   getDeployTargets: vi.fn(), getDoRegions: vi.fn(), connectDeploy: vi.fn(), listKnownHosts: vi.fn(),
   trustKnownHost: vi.fn(), forgetKnownHost: vi.fn(), deleteSshTarget: vi.fn(),
   getSshTarget: vi.fn(), listKeyFiles: vi.fn(), createSshTarget: vi.fn(), updateSshTarget: vi.fn(),
-  listEnvironments: vi.fn(),
+  listEnvironments: vi.fn(), listSnapshots: vi.fn(),
 }));
 vi.mock('../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../lib/sirdarApi')>()), ...api }));
 
@@ -53,6 +53,7 @@ beforeEach(() => {
   api.getDeployTargets.mockResolvedValue(TARGETS);
   api.listKnownHosts.mockResolvedValue([]);
   api.listEnvironments.mockResolvedValue({ environments: [] });
+  api.listSnapshots.mockResolvedValue({ snapshots: [] });
 });
 Element.prototype.scrollIntoView = () => {};   // jsdom lacks it (ComboBox calls it)
 afterEach(cleanup);
@@ -464,4 +465,11 @@ it('shows the Environments section first', async () => {
   expect(await screen.findByRole('table', { name: 'Environments' })).toBeTruthy();
   expect(screen.getAllByRole('heading', { level: 2 })[0].textContent).toBe('Environments');
   expect(api.listEnvironments).toHaveBeenCalled();
+});
+
+it('shows the Snapshots section under Environments', async () => {
+  await ready();
+  const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
+  expect(headings.slice(0, 2)).toEqual(['Environments', 'Snapshots']);
+  expect(await screen.findByText('No snapshots yet.')).toBeTruthy();
 });

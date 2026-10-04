@@ -11,15 +11,24 @@ the .env on the next deploy."""
 import ipaddress
 import re
 import shlex
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 
 from cryptography.fernet import Fernet
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
-from sirdar_api.db.models import Deployment, Environment, EnvironmentSecret, EnvironmentService
+from sirdar_api.db.models import (
+    Deployment,
+    DeploymentStep,
+    Environment,
+    EnvironmentSecret,
+    EnvironmentService,
+    Snapshot,
+)
 from sirdar_api.deploy import ConnectFailed, envfile, names, ssh, targets, vault
 from sirdar_api.deploy.gitref import SHA_RE, valid_ref
 from sirdar_api.deploy.ssh import SshTargetConfig
@@ -39,6 +48,8 @@ _SECRET_VALUE_RE = re.compile(r"[A-Za-z0-9._~+/=:@%^*!?,;-]{1,1024}")
 _HEX_RE = re.compile(r"[0-9a-fA-F]{1,1024}")
 _FERNET_KEY_RE = re.compile(r"[A-Za-z0-9_-]{43}=")
 _NO_ANSWER = "The target didn't answer in time."
+# The names `ss-stack dump` gives pre-deploy dumps (UTC timestamps).
+BACKUP_RE = re.compile(r"[0-9]{8}T[0-9]{6}Z\.dump")
 
 
 class EnvError(Exception):
@@ -176,12 +187,13 @@ async def _insert(db: AsyncSession, settings: Settings, cfg: SshTargetConfig, *,
                   bind_ip: str, ports: dict[str, int], keep_dumps: int, spaces_bucket: str,
                   log_level: str, status: str, current_sha: str | None,
                   image_tag: str | None, secrets: dict[str, str],
-                  actor_id) -> Environment:
+                  actor_id, seed_snapshot_id: uuid.UUID | None = None) -> Environment:
     env = Environment(name=name, type=type_, target_id=target_id, base_domain=domain,
                       git_ref=git_ref, current_sha=current_sha, image_tag=image_tag,
                       status=status, proxy_ip=proxy_ip, bind_ip=bind_ip,
                       keep_dumps=keep_dumps, spaces_bucket=spaces_bucket,
-                      log_level=log_level, created_by=actor_id)
+                      log_level=log_level, created_by=actor_id,
+                      seed_snapshot_id=seed_snapshot_id)
     db.add(env)
     await db.flush()
     for service in envfile.SERVICES:
@@ -199,11 +211,23 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                      target_id: str, git_ref: str = DEFAULT_GIT_REF,
                      base_domain: str | None = None, proxy_ip: str | None = None,
                      bind_ip: str = DEFAULT_BIND_IP,
-                     ports: dict[str, int] | None = None, actor_id=None) -> Environment:
+                     ports: dict[str, int] | None = None, actor_id=None,
+                     snapshot_id: uuid.UUID | None = None) -> Environment:
     """A new environment (status "new"): default ports unless given, the
-    target's host for every service, freshly generated secrets."""
+    target's host for every service, freshly generated secrets. With a
+    snapshot, its first deploy restores that snapshot (and its keys)."""
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
                           git_ref=git_ref)
+    if snapshot_id is not None:
+        # Locked until the caller commits, so a concurrent delete waits and
+        # then sees this environment's seed (in use) instead of racing it.
+        snap = await db.scalar(select(Snapshot).where(Snapshot.id == snapshot_id)
+                               .with_for_update()
+                               .execution_options(populate_existing=True))
+        if snap is None:
+            raise EnvError("snapshot_not_found")
+        if snap.status != "ready":
+            raise EnvError("snapshot_not_ready")
     domain = _check_domain(base_domain or f"{name}.{DEFAULT_DOMAIN_SUFFIX}")
     if not proxy_ip:
         raise EnvError("proxy_ip_required")
@@ -221,7 +245,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         domain=domain, proxy_ip=proxy, bind_ip=bind, ports=all_ports,
         keep_dumps=envfile.DEFAULT_KEEP_DUMPS, spaces_bucket=envfile.DEFAULT_SPACES_BUCKET,
         log_level=envfile.DEFAULT_LOG_LEVEL, status="new", current_sha=None, image_tag=None,
-        secrets=vault.generate_env_secrets(), actor_id=actor_id)
+        secrets=vault.generate_env_secrets(), actor_id=actor_id, seed_snapshot_id=snapshot_id)
 
 
 @dataclass(frozen=True)
@@ -446,3 +470,98 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
         env.updated_at = _now()
     await db.flush()
     return changed
+
+
+# ---- backups (pre-deploy dumps on the target) -----------------------------------
+
+def backups_command(name: str) -> str:
+    folder = shlex.quote(envfile.env_dir(name) + "/backups")
+    return (f"find {folder} -maxdepth 1 -type f -name '*.dump' "
+            "-printf '%f\\t%s\\t%T@\\n' 2>/dev/null || true")
+
+
+def backup_taken_at(name: str) -> datetime:
+    """When `ss-stack dump` took a backup: the UTC time in its name (a name
+    valid_backup_name accepts)."""
+    return datetime.strptime(name, "%Y%m%dT%H%M%SZ.dump").replace(tzinfo=UTC)
+
+
+def valid_backup_name(name: str) -> bool:
+    """A name `ss-stack dump` could give: BACKUP_RE's shape and a real UTC
+    time (not month 13, February 30th or second 60)."""
+    if not BACKUP_RE.fullmatch(name):
+        return False
+    try:
+        backup_taken_at(name)
+    except ValueError:
+        return False
+    return True
+
+
+@dataclass(frozen=True)
+class KeyChanges:
+    """What makes an environment's backups unrestorable: when a snapshot
+    restore last replaced its pepper and TOTP key (the end of its latest
+    succeeded Restore snapshot step, or None), and the names of the dumps
+    that deployments with a Restore snapshot step took of the database that
+    was there before (a seeded first deploy's own dump)."""
+    changed_at: datetime | None
+    pre_restore: frozenset[str]
+
+
+async def key_changes(db: AsyncSession, env_id) -> KeyChanges:
+    changed_at = await db.scalar(
+        select(func.max(DeploymentStep.finished_at))
+        .join(Deployment, Deployment.id == DeploymentStep.deployment_id)
+        .where(Deployment.environment_id == env_id, DeploymentStep.key == "restore",
+               DeploymentStep.status == "succeeded"))
+    restoring = select(DeploymentStep.deployment_id).where(DeploymentStep.key == "restore")
+    paths = await db.scalars(select(Deployment.dump_path).where(
+        Deployment.environment_id == env_id, Deployment.dump_path.is_not(None),
+        Deployment.id.in_(restoring)))
+    return KeyChanges(changed_at, frozenset(PurePosixPath(p).name for p in paths))
+
+
+PRE_RESTORE = ("Taken from the database that was here before a snapshot restore; its sign-in "
+               "keys are gone.")
+
+
+def backup_blocked(name: str, changes: KeyChanges) -> str | None:
+    """Why a backup (a valid_backup_name) can't be restored, or None. A dump
+    made under keys a snapshot restore replaced would lock everyone out: the
+    keys no longer exist anywhere.
+    - A dump a restoring deployment took is from before its restore, whatever
+      the target's clock wrote in its name.
+    - Otherwise the name's time against the key change. Names have whole
+      seconds: a dump named for the second the keys changed in may have
+      started before, so it counts as before."""
+    if name in changes.pre_restore:
+        return PRE_RESTORE
+    if changes.changed_at is None or backup_taken_at(name) > changes.changed_at:
+        return None
+    when = changes.changed_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    return f"Taken before the sign-in keys changed (snapshot restore on {when})."
+
+
+async def list_backups(db: AsyncSession, cfg: SshTargetConfig, env: Environment) -> list[dict]:
+    """The environment's pre-deploy dumps, newest first: name, size, time,
+    and whether it can be restored (`restorable`, else a `reason`). Lines
+    that aren't `ss-stack dump` files are ignored."""
+    result = await ssh.run_command(cfg, db, backups_command(env.name))
+    if result.exit_status is None:
+        raise ConnectFailed(_NO_ANSWER)
+    rows: list[dict] = []
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3 or not valid_backup_name(parts[0]) or not parts[1].isdecimal():
+            continue
+        try:
+            modified = datetime.fromtimestamp(float(parts[2]), UTC)
+        except (ValueError, OverflowError, OSError):
+            continue
+        rows.append({"name": parts[0], "size_bytes": int(parts[1]), "modified_at": modified})
+    changes = await key_changes(db, env.id)
+    for row in rows:
+        row["reason"] = backup_blocked(row["name"], changes)
+        row["restorable"] = row["reason"] is None
+    return sorted(rows, key=lambda r: r["name"], reverse=True)

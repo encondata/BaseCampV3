@@ -16,6 +16,12 @@ export default function EnvOverview({ env }: { env: Environment }) {
           <dt>Image tag</dt><dd className="mono">{env.image_tag ?? '—'}</dd>
           <dt>Default ref</dt><dd className="mono">{env.git_ref}</dd>
           <dt>Folder</dt><dd className="mono">{env.env_dir}</dd>
+          {env.seed_snapshot && (
+            <>
+              <dt>Seed snapshot</dt>
+              <dd>{env.seed_snapshot.name}{env.current_sha === null ? ' (the first deploy restores it)' : ''}</dd>
+            </>
+          )}
           <dt>Last deployment</dt>
           <dd>
             {last ? (

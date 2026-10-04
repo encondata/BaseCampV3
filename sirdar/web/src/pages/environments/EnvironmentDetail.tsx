@@ -9,6 +9,7 @@ import {
   errorText, getDeployTargets, getEnvironment, type DeployTarget, type Deployment, type Environment,
 } from '../../lib/sirdarApi';
 
+import BackupsTab from './BackupsTab';
 import DeploymentsTab from './DeploymentsTab';
 import DeployModal from './DeployModal';
 import EnvOverview from './EnvOverview';
@@ -20,8 +21,10 @@ import { ENV_STATUS, StatusChip, TYPE_LABEL, targetLabel } from './labels';
  *  the header, Deploy and Settings notice when the run ends. */
 export const ENV_POLL_MS = 5000;
 
-type Tab = 'overview' | 'deployments' | 'settings';
-const TABS: [Tab, string][] = [['overview', 'Overview'], ['deployments', 'Deployments'], ['settings', 'Settings']];
+type Tab = 'overview' | 'deployments' | 'backups' | 'settings';
+const TABS: [Tab, string][] = [
+  ['overview', 'Overview'], ['deployments', 'Deployments'], ['backups', 'Backups'], ['settings', 'Settings'],
+];
 
 /** Keyed by name: moving to another environment starts from a clean page
  *  (no stale environment, tab or open deployment). */
@@ -116,6 +119,7 @@ function EnvironmentPage({ name }: { name: string }) {
       {tab === 'deployments' && (
         <DeploymentsTab env={env} selected={selected} onSelect={setSelected} onChanged={() => void load()} />
       )}
+      {tab === 'backups' && <BackupsTab env={env} onStarted={started} />}
       {tab === 'settings' && <EnvSettings env={env} targets={targets} onSaved={setEnv} />}
       {deploying && <DeployModal env={env} onStarted={started} onClose={() => setDeploying(false)} />}
     </div>

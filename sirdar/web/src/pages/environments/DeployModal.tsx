@@ -1,24 +1,33 @@
 /** Deploy an environment: a git ref and Update (default) or Reset data
- *  (needs deploy:change and the typed environment name). Opened from the
- *  environment page and from the Dashboard. */
+ *  (needs deploy:change and the typed environment name; it can restore a
+ *  snapshot after the reset). Opened from the environment page and from the
+ *  Dashboard. */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
+import ComboBox from '@portal/components/ComboBox';
 
 import { useHostKeyTrust } from '../../components/useHostKeyTrust';
 import { arrowNav } from '../../lib/arrowNav';
 import { refProblem } from '../../lib/envRules';
 import {
-  deployErrorText, startDeployment, type DeployMode, type Deployment, type Environment,
+  deployErrorText, listSnapshots, startDeployment, type Deployment, type Environment, type Snapshot,
 } from '../../lib/sirdarApi';
 
-type Field = 'ref' | 'confirm' | 'form';
-type Attempt = { mode: DeployMode; ref: string; confirm: string };
-const MODES: [DeployMode, string, string][] = [
+import { snapshotLabel } from './labels';
+
+type Mode = 'update' | 'reset';
+type Field = 'ref' | 'confirm' | 'snapshot' | 'form';
+type Attempt = { mode: Mode; ref: string; confirm: string; snapshotId: string };
+const MODES: [Mode, string, string][] = [
   ['update', 'Update', 'Keeps the data. Once the environment has been deployed, a database dump is taken first.'],
-  ['reset', 'Reset data', "Deletes this environment's database and files, then starts it empty. This can't be undone."],
+  ['reset', 'Reset data', "Deletes this environment's database and files, then starts it empty or from a snapshot. This can't be undone."],
 ];
-const CODE_FIELD: Record<string, Field> = { ref_invalid: 'ref', ref_not_found: 'ref', confirm_name_mismatch: 'confirm' };
+const AFTER: ['empty' | 'snapshot', string][] = [['empty', 'Start empty'], ['snapshot', 'From a snapshot']];
+const CODE_FIELD: Record<string, Field> = {
+  ref_invalid: 'ref', ref_not_found: 'ref', confirm_name_mismatch: 'confirm',
+  snapshot_not_found: 'snapshot', snapshot_not_ready: 'snapshot',
+};
 
 export default function DeployModal({ env, onStarted, onClose }: {
   env: Environment; onStarted: (dep: Deployment) => void; onClose: () => void;
@@ -27,8 +36,13 @@ export default function DeployModal({ env, onStarted, onClose }: {
   const canAdd = can('deploy', 'add');
   const canChange = can('deploy', 'change');
   const [ref, setRef] = useState(env.git_ref);
-  const [mode, setMode] = useState<DeployMode>('update');
+  const [mode, setMode] = useState<Mode>('update');
   const [confirm, setConfirm] = useState('');
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  // The starts-empty hint waits for the list: until then "none ready" isn't known.
+  const [snapshotsLoaded, setSnapshotsLoaded] = useState(false);
+  const [after, setAfter] = useState<'empty' | 'snapshot'>('empty');
+  const [snapshotId, setSnapshotId] = useState('');
   const [errors, setErrors] = useState<Partial<Record<Field, string>>>({});
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -56,6 +70,16 @@ export default function DeployModal({ env, onStarted, onClose }: {
     if (refocus.current && !hostKey.open && !busy) { refocus.current = false; refInput.current?.focus(); }
   });
 
+  // Snapshots are optional: without them Reset data offers "Start empty" only.
+  useEffect(() => {
+    let live = true;
+    listSnapshots().then((r) => {
+      if (live) { setSnapshots(r.snapshots.filter((x) => x.status === 'ready')); setSnapshotsLoaded(true); }
+    })
+      .catch(() => { /* no snapshot choice */ });
+    return () => { live = false; };
+  }, []);
+
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
     refInput.current?.focus();
@@ -70,7 +94,9 @@ export default function DeployModal({ env, onStarted, onClose }: {
   }, []);
 
   const reset = mode === 'reset';
-  const ready = canAdd && !busy && (!reset || (canChange && confirm === env.name));
+  const restoring = reset && after === 'snapshot';
+  const ready = canAdd && !busy && (!reset || (canChange && confirm === env.name)) && (!restoring || !!snapshotId);
+  const seeded = mode === 'update' && env.current_sha === null ? env.seed_snapshot : null;
 
   // Replays exactly the attempt that hit the host-key prompt, whatever the form says now.
   const run = async (attempt: Attempt) => {
@@ -81,12 +107,15 @@ export default function DeployModal({ env, onStarted, onClose }: {
     setErrors({});
     try {
       onStarted(await startDeployment(env.name, attempt.mode === 'reset'
-        ? { mode: attempt.mode, git_ref: attempt.ref, confirm_name: attempt.confirm }
+        ? { mode: attempt.mode, git_ref: attempt.ref, confirm_name: attempt.confirm,
+            ...(attempt.snapshotId ? { snapshot_id: attempt.snapshotId } : {}) }
         : { mode: attempt.mode, git_ref: attempt.ref }));
     } catch (err) {
       refocus.current = true;
       if (!hostKey.handle(err, env.target, attempt)) {
         const code = (err as { code?: string }).code ?? '';
+        // The chosen snapshot is gone or not ready: don't offer it again as chosen.
+        if (CODE_FIELD[code] === 'snapshot') setSnapshotId('');
         setErrors({ [CODE_FIELD[code] ?? 'form']: deployErrorText(err, "Couldn't start the deployment.") });
       }
     } finally {
@@ -99,8 +128,9 @@ export default function DeployModal({ env, onStarted, onClose }: {
     if (busyRef.current) return;
     const problem = refProblem(ref);
     if (problem) { setErrors({ ref: problem }); return; }
+    if (restoring && !snapshotId) { setErrors({ snapshot: 'Choose a snapshot.' }); return; }
     if (reset && confirm !== env.name) { setErrors({ confirm: `Type ${env.name} to confirm.` }); return; }
-    void run({ mode, ref: ref.trim(), confirm });
+    void run({ mode, ref: ref.trim(), confirm, snapshotId: restoring ? snapshotId : '' });
   };
 
   return (
@@ -143,7 +173,42 @@ export default function DeployModal({ env, onStarted, onClose }: {
               </div>
               <p className="page-hint">{MODES.find(([m]) => m === mode)?.[2]}</p>
               {!canChange && <p className="page-hint">Reset data needs permission to change deployments.</p>}
+              {seeded && (
+                <p className="page-hint">
+                  This first deploy restores the snapshot <b>{seeded.name}</b>: its database, files and sign-in keys.
+                </p>
+              )}
             </div>
+            {reset && (
+              <div>
+                <span className="field-label" id="deploy-after-label">After the reset</span>
+                <div className="segmented" role="radiogroup" aria-labelledby="deploy-after-label">
+                  {AFTER.map(([a, label]) => {
+                    const locked = a === 'snapshot' && snapshots.length === 0;
+                    return (
+                      <button key={a} type="button" role="radio" aria-checked={after === a} aria-disabled={locked}
+                              className={after === a ? 'on' : ''} tabIndex={after === a ? 0 : -1} onKeyDown={arrowNav}
+                              onClick={() => { if (!locked) { setAfter(a); setErrors({}); } }}>{label}</button>
+                    );
+                  })}
+                </div>
+                {after === 'snapshot' && (
+                  <>
+                    <label className="field-label sirdar-sub-label" htmlFor="deploy-snapshot">Snapshot</label>
+                    <ComboBox inputId="deploy-snapshot" ariaLabel="Snapshot" portal value={snapshotId}
+                              placeholder="Choose a snapshot…"
+                              options={snapshots.map((x) => ({ value: x.id, label: snapshotLabel(x) }))}
+                              onChange={(v) => { setSnapshotId(v); setErrors({}); }} />
+                    <p className="page-hint">
+                      Its users sign in with their own passwords and 2FA: the snapshot's keys replace this
+                      environment's. Everyone signed in here now is signed out.
+                    </p>
+                  </>
+                )}
+                {snapshotsLoaded && snapshots.length === 0 && <p className="page-hint">No snapshot is ready, so it starts empty.</p>}
+                {errors.snapshot && <p className="form-error" role="alert">{errors.snapshot}</p>}
+              </div>
+            )}
             {reset && (
               <div>
                 <label className="field-label" htmlFor="deploy-confirm">Type {env.name} to confirm</label>
@@ -158,7 +223,7 @@ export default function DeployModal({ env, onStarted, onClose }: {
           <div className="modal-foot">
             <button type="button" className="btn-ghost" disabled={busy} onClick={onClose}>Cancel</button>
             <button type="button" className="btn-solid" disabled={!ready} onClick={submit}>
-              {busy ? 'Starting…' : reset ? 'Reset and deploy' : 'Deploy'}
+              {busy ? 'Starting…' : restoring ? 'Reset and restore' : reset ? 'Reset and deploy' : 'Deploy'}
             </button>
           </div>
         </div>

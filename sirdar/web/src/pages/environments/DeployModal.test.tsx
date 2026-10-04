@@ -9,19 +9,21 @@ vi.mock('@portal/auth/AuthContext', () => ({
     can: (r: string, a: string) => r === 'deploy' && (a === 'view' || (a === 'add' && perms.add) || (a === 'change' && perms.change)),
   }),
 }));
-const api = vi.hoisted(() => ({ startDeployment: vi.fn(), trustKnownHost: vi.fn() }));
+const api = vi.hoisted(() => ({ startDeployment: vi.fn(), trustKnownHost: vi.fn(), listSnapshots: vi.fn() }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 
 import { ApiError } from '@portal/lib/api';
 
 import DeployModal from './DeployModal';
-import { ENV, RUNNING } from './testData';
+import { ENV, RUNNING, SNAP, SNAP_TAKING } from './testData';
 
 beforeEach(() => {
   perms.add = true; perms.change = true;
   Object.values(api).forEach((f) => f.mockReset());
   api.startDeployment.mockResolvedValue(RUNNING);
+  api.listSnapshots.mockResolvedValue({ snapshots: [SNAP, SNAP_TAKING] });
 });
+Element.prototype.scrollIntoView = () => {};   // jsdom lacks it (ComboBox calls it)
 afterEach(cleanup);
 
 function open(env = ENV) {
@@ -30,7 +32,8 @@ function open(env = ENV) {
   render(<DeployModal env={env} onStarted={onStarted} onClose={onClose} />);
   return { onStarted, onClose };
 }
-const deployBtn = () => screen.getByRole('button', { name: /^(Deploy|Reset and deploy|Starting…)$/ }) as HTMLButtonElement;
+const deployBtn = () =>
+  screen.getByRole('button', { name: /^(Deploy|Reset and deploy|Reset and restore|Starting…)$/ }) as HTMLButtonElement;
 
 it("starts an Update from the environment's ref", async () => {
   const { onStarted } = open({ ...ENV, git_ref: 'release/2.9' });
@@ -151,4 +154,70 @@ it('Escape closes it, but not while starting', async () => {
   const again = open();
   await userEvent.keyboard('{Escape}');
   expect(again.onClose).toHaveBeenCalledTimes(1);
+});
+
+it('Reset data can restore a ready snapshot after the reset', async () => {
+  const { onStarted } = open();
+  await userEvent.click(screen.getByRole('radio', { name: 'Reset data' }));
+  expect(screen.getByRole('radio', { name: 'Start empty' }).getAttribute('aria-checked')).toBe('true');
+  await userEvent.click(screen.getByRole('radio', { name: 'From a snapshot' }));
+  expect(deployBtn().textContent).toBe('Reset and restore');
+  await userEvent.type(screen.getByLabelText('Type uat to confirm'), 'uat');
+  expect(deployBtn().disabled).toBe(true);                     // no snapshot chosen yet
+  await userEvent.click(screen.getByRole('combobox', { name: 'Snapshot' }));
+  expect(screen.queryByRole('button', { name: /uat-2026-10-04/ })).toBeNull();
+  await userEvent.click(await screen.findByRole('button', { name: /^dev-2026-10-04/ }));
+  expect(screen.getByText(/Everyone signed in here now is signed out/)).toBeTruthy();
+  await userEvent.click(deployBtn());
+  await waitFor(() => expect(onStarted).toHaveBeenCalledWith(RUNNING));
+  expect(api.startDeployment).toHaveBeenCalledWith('uat', {
+    mode: 'reset', git_ref: 'main', confirm_name: 'uat', snapshot_id: 's1' });
+});
+
+it('without a ready snapshot Reset data starts empty only', async () => {
+  api.listSnapshots.mockResolvedValue({ snapshots: [] });
+  open();
+  await userEvent.click(screen.getByRole('radio', { name: 'Reset data' }));
+  expect(screen.getByRole('radio', { name: 'From a snapshot' }).getAttribute('aria-disabled')).toBe('true');
+  expect(screen.getByText('No snapshot is ready, so it starts empty.')).toBeTruthy();
+});
+
+it("the starts-empty hint waits for the snapshot list", async () => {
+  let resolve!: (v: { snapshots: unknown[] }) => void;
+  api.listSnapshots.mockReturnValue(new Promise((r) => { resolve = r; }));
+  open();
+  await userEvent.click(screen.getByRole('radio', { name: 'Reset data' }));
+  expect(screen.queryByText('No snapshot is ready, so it starts empty.')).toBeNull();
+  resolve({ snapshots: [] });
+  expect(await screen.findByText('No snapshot is ready, so it starts empty.')).toBeTruthy();
+  cleanup();
+  api.listSnapshots.mockRejectedValue(new ApiError(500, 'internal', {}));
+  open();
+  await userEvent.click(screen.getByRole('radio', { name: 'Reset data' }));
+  await waitFor(() => expect(api.listSnapshots).toHaveBeenCalledTimes(2));
+  await Promise.resolve();
+  expect(screen.queryByText('No snapshot is ready, so it starts empty.')).toBeNull();
+});
+
+it.each(['snapshot_not_found', 'snapshot_not_ready'])('a %s refusal clears the chosen snapshot', async (code) => {
+  api.startDeployment.mockRejectedValueOnce(new ApiError(409, code, { code }));
+  open();
+  await userEvent.click(screen.getByRole('radio', { name: 'Reset data' }));
+  await userEvent.click(screen.getByRole('radio', { name: 'From a snapshot' }));
+  await userEvent.type(screen.getByLabelText('Type uat to confirm'), 'uat');
+  await userEvent.click(screen.getByRole('combobox', { name: 'Snapshot' }));
+  await userEvent.click(await screen.findByRole('button', { name: /^dev-2026-10-04/ }));
+  await userEvent.click(deployBtn());
+  expect(await screen.findByRole('alert')).toBeTruthy();
+  expect(deployBtn().disabled).toBe(true);                     // the stale choice is gone
+  expect((screen.getByRole('combobox', { name: 'Snapshot' }) as HTMLInputElement).value).toBe('');
+});
+
+it("a seeded environment's first deploy says it restores the snapshot", async () => {
+  open({ ...ENV, current_sha: null, status: 'new', seed_snapshot: { id: 's1', name: 'dev-2026-10-04' } });
+  expect(await screen.findByText(/This first deploy restores the snapshot/)).toBeTruthy();
+  expect(screen.getByText('dev-2026-10-04', { selector: 'b' })).toBeTruthy();
+  cleanup();
+  open({ ...ENV, seed_snapshot: { id: 's1', name: 'dev-2026-10-04' } });    // deployed already
+  expect(screen.queryByText(/This first deploy restores/)).toBeNull();
 });

@@ -33,6 +33,16 @@ def secrets_key(monkeypatch):
 
 
 @pytest.fixture
+def snapshots_dir(monkeypatch, tmp_path, secrets_key):
+    """SIRDAR_SNAPSHOTS_DIR in this test's tmp folder (and a secrets key)."""
+    folder = tmp_path / "snapshots"
+    monkeypatch.setenv("SIRDAR_SNAPSHOTS_DIR", str(folder))
+    get_settings.cache_clear()
+    yield folder
+    get_settings.cache_clear()
+
+
+@pytest.fixture
 def fake_runner(monkeypatch):
     runner = FakeRunner()
     monkeypatch.setattr(pipeline, "make_runner", lambda settings: runner)

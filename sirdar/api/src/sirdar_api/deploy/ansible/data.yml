@@ -1,0 +1,25 @@
+# Step 8 — Start data services: the database and storage only (ss-stack
+# data), so a restore can run before migrate and the app start. A checkout
+# from before phase 3 has no data command: say so instead of printing
+# ss-stack's usage.
+- name: Start data services
+  hosts: target
+  gather_facts: false
+  tasks:
+    - name: Does this checkout's ss-stack have the data command?
+      ansible.builtin.command:
+        argv: [grep, -q, "^  data)", "{{ ss_stack }}"]
+      register: knows_data
+      changed_when: false
+      failed_when: false
+
+    - name: Stop when it doesn't
+      ansible.builtin.fail:
+        msg: >-
+          This commit's ss-stack predates snapshots (it has no data command),
+          so it can't restore. Deploy a newer commit.
+      when: knows_data.rc != 0
+
+    - name: ss-stack data
+      ansible.builtin.command:
+        argv: ["{{ ss_stack }}", data, "{{ env_dir }}"]

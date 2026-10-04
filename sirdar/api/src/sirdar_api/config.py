@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     runner_dir: str = "/app/runner"
     # What targets clone and fetch ServerSherpa from.
     deploy_repo_url: str = "https://github.com/encondata/BaseCampV3.git"
+    # Snapshot bundles (phase 3): one .tar.gz per snapshot, and incoming/ for
+    # uploads and fetches in progress. Owned by uid 10001, mode 700.
+    snapshots_dir: str = "/app/snapshots"
+    # The largest snapshot upload Sirdar accepts, in bytes (default 5 GiB).
+    snapshot_max_bytes: int = Field(default=5 * 1024 ** 3, gt=0)
 
     @field_validator("deploy_do_token", "deploy_aws_secret_access_key",
                      "deploy_ssh_password", "deploy_ssh_key_passphrase", "secrets_key",

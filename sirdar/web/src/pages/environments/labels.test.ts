@@ -1,7 +1,9 @@
 import { expect, it } from 'vitest';
 
-import { DEPLOYMENT_STATUS, STEP_STATUS, duration, sshTargets, stoppedStep } from './labels';
-import { FAILED, RUNNING, SUCCEEDED, TARGETS } from './testData';
+import {
+  DEPLOYMENT_STATUS, MODE_LABEL, STEP_STATUS, dumpTakenAt, duration, formatBytes, snapshotLabel, sshTargets, stoppedStep,
+} from './labels';
+import { FAILED, RUNNING, SNAP, SUCCEEDED, TARGETS } from './testData';
 
 it('stoppedStep mirrors the API: the failed/cancelled/interrupted step, else the first not run', () => {
   expect(stoppedStep(FAILED.steps)).toBe(5);
@@ -25,4 +27,26 @@ it('sshTargets keeps configured SSH targets only', () => {
 it('the cancelled status reads in American English; the API value is unchanged', () => {
   expect(DEPLOYMENT_STATUS.cancelled).toEqual(['c-amber', 'Canceled']);
   expect(STEP_STATUS.cancelled).toEqual(['c-amber', 'Canceled']);
+});
+
+it('formatBytes and snapshotLabel', () => {
+  expect(formatBytes(null)).toBe('—');
+  expect(formatBytes(512)).toBe('512 bytes');
+  expect(formatBytes(1536)).toBe('1.5 KB');
+  expect(formatBytes(552_000_000)).toBe('526.4 MB');
+  expect(formatBytes(5 * 1024 ** 3)).toBe('5.0 GB');
+  expect(snapshotLabel(SNAP)).toBe('dev-2026-10-04 · mac-dev · migration 0089 · 526.4 MB');
+});
+
+it('every deployment mode has a label', () => {
+  expect(MODE_LABEL.snapshot).toBe('Take snapshot');
+  expect(MODE_LABEL.restore_dump).toBe('Restore backup');
+  expect(MODE_LABEL.rollback).toBe('Roll back');
+});
+
+it('dumpTakenAt reads the UTC time out of a dump name or path', () => {
+  expect(dumpTakenAt('20261003T130500Z.dump')).toBe('2026-10-03T13:05:00Z');
+  expect(dumpTakenAt('/opt/serversherpa/uat/backups/20261004T010203Z.dump')).toBe('2026-10-04T01:02:03Z');
+  expect(dumpTakenAt('/opt/serversherpa/uat/backups/pre-deploy-20261003.dump')).toBeNull();
+  expect(dumpTakenAt(null)).toBeNull();
 });

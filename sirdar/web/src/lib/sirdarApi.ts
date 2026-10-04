@@ -187,6 +187,27 @@ const MESSAGES: Record<string, string> = {
   retry_not_latest: 'Only the most recent deployment can be retried.',
   from_step_invalid: 'Pick a step at or before the one where the deployment stopped.',
   invalid_start_step: "That step isn't part of this deployment.",
+  // snapshots, backups and rollback
+  snapshot_name_invalid: 'Use letters, numbers, dots, hyphens and underscores, starting with a letter or number (up to 64).',
+  notes_too_long: 'Keep the notes under 2,000 characters.',
+  snapshot_exists: 'A snapshot with that name already exists.',
+  snapshot_too_large: 'That file is larger than Sirdar accepts.',
+  http_413: 'That file is larger than the proxy in front of Sirdar accepts.',
+  bundle_invalid: "That file isn't a snapshot bundle Sirdar can use.",
+  snapshots_dir_unwritable: "Sirdar can't write its snapshots folder. It must be owned by uid 10001 with mode 700; see the README.",
+  snapshot_keys_unreadable: "This snapshot's keys don't open with this Sirdar's SIRDAR_SECRETS_KEY.",
+  snapshot_file_missing: "This snapshot's bundle is missing from Sirdar's snapshots folder.",
+  snapshot_not_found: 'That snapshot no longer exists.',
+  snapshot_not_ready: "That snapshot isn't ready yet.",
+  snapshot_in_use: 'That snapshot is in use: a snapshot job or a deployment is running with it, or an environment that has not deployed yet starts from it.',
+  snapshot_not_allowed: 'Only Reset data (or a new environment) can restore a snapshot.',
+  not_deployed: "This environment hasn't been deployed yet.",
+  backup_invalid: "That isn't one of this environment's backups.",
+  backup_keys_changed: 'That backup was taken before the sign-in keys changed, so nobody could sign in after restoring it.',
+  rollback_unavailable: "This deployment can't be rolled back: it needs a pre-deploy dump and a commit to go back to.",
+  rollback_not_latest: 'Only the most recent deployment can be rolled back.',
+  git_ref_not_allowed: 'Restore backup always uses the deployed commit.',
+  upload_aborted: 'The upload was interrupted. Try again.',
 };
 
 export function errorText(err: unknown, fallback: string): string {
@@ -268,14 +289,24 @@ export async function forgetKnownHost(host: string, port: number): Promise<void>
 /* ---- Environments and deployments (/api/deploy, deploy step 2) ---- */
 export type EnvType = 'dev' | 'beta' | 'custom';
 export type EnvStatus = 'new' | 'ready' | 'deploying' | 'failed';
-export type DeployMode = 'update' | 'reset';
+/** Modes POST /environments/{name}/deployments starts. */
+export type DeployMode = 'update' | 'reset' | 'restore_dump';
+/** Every mode a deployment record can have. */
+export type DeploymentMode = DeployMode | 'adopt' | 'snapshot' | 'rollback';
 export type DeploymentStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'adopted';
 export type StepStatus =
   'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'not_run' | 'cancelled' | 'interrupted';
 export interface EnvService { service: string; host_ip: string; port: number; hostname: string | null; proxied: boolean }
+export interface SnapshotRef { id: string; name: string }
 export interface DeploymentSummary {
-  id: string; mode: DeployMode | 'adopt'; git_ref: string; sha: string; status: DeploymentStatus;
+  id: string; mode: DeploymentMode; git_ref: string; sha: string; status: DeploymentStatus;
   start_step: number; retry_of: string | null; failed_step: number | null; dump_path: string | null;
+  /** The snapshot a reset or first deploy restores, or the one a snapshot job takes. */
+  snapshot: SnapshotRef | null;
+  /** restore_dump and rollback: the backup's file name in <env-dir>/backups. */
+  restore_dump: string | null;
+  /** A stopped Update with a pre-deploy dump and a commit to go back to. */
+  rollback_available: boolean;
   previous_sha: string | null; error: string | null; actor_name: string | null;
   started_at: string; finished_at: string | null; created_at: string;
 }
@@ -293,6 +324,8 @@ export interface Environment {
   services: EnvService[];
   /** Which optional (write-only) secrets are set. */
   secrets_set: Record<string, boolean>;
+  /** The snapshot the first deploy restores (kept afterwards). */
+  seed_snapshot: SnapshotRef | null;
   last_deployment: DeploymentSummary | null; created_at: string; updated_at: string;
 }
 /** Adopt's answer adds what it read from the target's .env — names only. */
@@ -305,6 +338,8 @@ export interface EnvironmentDefaults {
 export interface NewEnvironmentBody {
   name: string; type: EnvType; target: string; git_ref: string; base_domain?: string;
   proxy_ip: string; bind_ip: string; ports: Record<string, number>;
+  /** The first deploy restores this snapshot. */
+  snapshot_id?: string;
 }
 export interface AdoptEnvironmentBody { name: string; type: EnvType; target: string; git_ref: string }
 /** PATCH body: an omitted field is kept; a secret set to "" is cleared. */
@@ -314,8 +349,29 @@ export interface EnvironmentPatch {
   services?: Record<string, { port?: number; host_ip?: string; proxied?: boolean }>;
   secrets?: Record<string, string>;
 }
-export interface DeploymentBody { mode: DeployMode; git_ref?: string; confirm_name?: string }
+export interface DeploymentBody {
+  mode: DeployMode; git_ref?: string; confirm_name?: string;
+  /** Reset only. */
+  snapshot_id?: string;
+  /** Restore backup only: a file name from listBackups. */
+  backup?: string;
+}
 export interface RetryBody { from_step?: number; confirm_name?: string }
+export type SnapshotStatus = 'pending' | 'ready' | 'failed';
+export interface Snapshot {
+  id: string; name: string; origin: 'upload' | 'environment';
+  /** The bundle's source (an environment's name, or what the Mac script was told). */
+  source: string; status: SnapshotStatus; alembic_revision: string | null;
+  size_bytes: number | null; checksum: string | null; object_count: number | null; object_bytes: number | null;
+  notes: string; source_created_at: string | null; created_at: string; created_by_name: string | null;
+  /** The snapshot job's deployment (taken snapshots only). */
+  deployment_id: string | null;
+}
+/** `restorable` is false (with the `reason`) for a dump taken before a
+ *  snapshot restore changed the sign-in keys. */
+export interface Backup {
+  name: string; size_bytes: number; modified_at: string; restorable: boolean; reason: string | null;
+}
 
 const envPath = (name: string) => `/deploy/environments/${encodeURIComponent(name)}`;
 const depPath = (id: string) => `/deploy/deployments/${encodeURIComponent(id)}`;
@@ -337,6 +393,26 @@ export const cancelDeployment = (id: string) =>
   sendJson<{ id: string; status: 'cancelling' | 'cancelled' }>('POST', `${depPath(id)}/cancel`);
 export const retryDeployment = (id: string, body: RetryBody) =>
   sendJson<Deployment>('POST', `${depPath(id)}/retry`, body);
+export const rollbackDeployment = (id: string, confirmName: string) =>
+  sendJson<Deployment>('POST', `${depPath(id)}/rollback`, { confirm_name: confirmName });
+export const listBackups = (name: string) => getJson<{ backups: Backup[] }>(`${envPath(name)}/backups`);
+
+export const listSnapshots = () => getJson<{ snapshots: Snapshot[] }>('/deploy/snapshots');
+/** The bundle goes up as the raw request body (streamed; no multipart). */
+export async function uploadSnapshot(file: Blob, name: string, notes: string): Promise<Snapshot> {
+  const params = new URLSearchParams({ name, notes });
+  const resp = await apiFetch(`/deploy/snapshots?${params.toString()}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/gzip' }, body: file,
+  });
+  if (!resp.ok) throw await errorOf(resp);
+  return resp.json();
+}
+export const takeSnapshot = (env: string, name: string, notes: string) =>
+  sendJson<{ snapshot: Snapshot; deployment: Deployment }>('POST', `${envPath(env)}/snapshots`, { name, notes });
+export async function deleteSnapshot(id: string): Promise<void> {
+  const resp = await apiFetch(`/deploy/snapshots/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!resp.ok) throw await errorOf(resp);
+}
 
 /* ---- Dashboard (GET /api/dashboard) ---- */
 export interface DashHealth { status: 'healthy' | 'degraded' | 'unknown' | string; label: string }
