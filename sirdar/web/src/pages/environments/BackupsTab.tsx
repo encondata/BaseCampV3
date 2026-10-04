@@ -7,8 +7,9 @@ import DataTable from '@portal/components/DataTable';
 
 import { deployErrorText, listBackups, type Backup, type Deployment, type Environment } from '../../lib/sirdarApi';
 
-import { deploymentRunning, formatBytes, when } from './labels';
+import { deploymentRunning, formatBytes, onProxmox, when } from './labels';
 import RestoreBackupModal from './RestoreBackupModal';
+import VmSnapshots from './VmSnapshots';
 
 export default function BackupsTab({ env, onStarted }: {
   env: Environment; onStarted: (dep: Deployment) => void;
@@ -33,6 +34,8 @@ export default function BackupsTab({ env, onStarted }: {
   const running = deploymentRunning(env);
   const mayRestore = can('deploy', 'change');
   return (
+    <>
+    {onProxmox(env) && <VmSnapshots env={env} onStarted={onStarted} />}
     <section className="sirdar-section">
       <div className="sirdar-section-head">
         <h2>Backups</h2>
@@ -69,5 +72,6 @@ export default function BackupsTab({ env, onStarted }: {
                             onStarted={(dep) => { setRestoring(null); onStarted(dep); }} />
       )}
     </section>
+    </>
   );
 }
