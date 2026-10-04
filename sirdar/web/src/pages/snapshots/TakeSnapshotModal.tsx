@@ -25,7 +25,8 @@ export default function TakeSnapshotModal({ envs, initialEnv, onStarted, onClose
   onStarted: (result: { snapshot: Snapshot; deployment: Deployment }) => void; onClose: () => void;
 }) {
   const { can } = useAuth();
-  const first = initialEnv ?? envs[0]?.name ?? '';
+  // An initial environment that isn't in the list (not deployed, or gone) falls back to the first.
+  const first = (initialEnv && envs.some((e) => e.name === initialEnv) ? initialEnv : envs[0]?.name) ?? '';
   const [env, setEnv] = useState(first);
   const [name, setName] = useState(first ? defaultSnapshotName(first) : '');
   const [nameTouched, setNameTouched] = useState(false);
@@ -65,7 +66,8 @@ export default function TakeSnapshotModal({ envs, initialEnv, onStarted, onClose
   };
 
   const nameError = snapshotNameProblem(name);
-  const ready = !!env && !!name.trim() && !nameError && !busy;
+  const chosen = envs.find((e) => e.name === env);
+  const ready = !!chosen && !!name.trim() && !nameError && !busy;
 
   // Replays exactly the attempt that hit the host-key prompt.
   const run = async (attempt: Attempt) => {
@@ -84,7 +86,6 @@ export default function TakeSnapshotModal({ envs, initialEnv, onStarted, onClose
   };
 
   const submit = () => {
-    const chosen = envs.find((e) => e.name === env);
     if (!chosen || !name.trim()) return;
     void run({ env: chosen.name, target: chosen.target, name: name.trim(), notes: notes.trim() });
   };
@@ -112,7 +113,7 @@ export default function TakeSnapshotModal({ envs, initialEnv, onStarted, onClose
             <div>
               <label className="field-label" htmlFor="take-env">Environment</label>
               <ComboBox inputId="take-env" ariaLabel="Environment" portal value={env}
-                        placeholder="Choose an environment…"
+                        placeholder="Choose an environment…" disabled={busy}
                         options={envs.map((e) => ({ value: e.name, label: `${e.name} · ${e.base_domain}` }))}
                         onChange={pickEnv} />
               {envs.length === 0 && <p className="page-hint">No environment has been deployed yet.</p>}

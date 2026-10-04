@@ -73,3 +73,28 @@ it('says so when nothing has been deployed', () => {
   expect(screen.getByText('No environment has been deployed yet.')).toBeTruthy();
   expect(takeBtn().disabled).toBe(true);
 });
+
+it('an unknown initial environment falls back to the first one', async () => {
+  const { onStarted } = open('gone');
+  expect((screen.getByRole('combobox', { name: 'Environment' }) as HTMLInputElement).value).toBe('uat · uat.serversherpa.com');
+  expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe(TODAY);
+  expect(takeBtn().disabled).toBe(false);
+  await userEvent.click(takeBtn());
+  await waitFor(() => expect(onStarted).toHaveBeenCalled());
+  expect(api.takeSnapshot).toHaveBeenCalledWith('uat', TODAY, '');
+});
+
+it('without any environment it can\'t be taken', () => {
+  render(<TakeSnapshotModal envs={[]} initialEnv="uat" onStarted={vi.fn()} onClose={vi.fn()} />);
+  expect(takeBtn().disabled).toBe(true);
+});
+
+it('the environment is locked while starting', async () => {
+  let release!: () => void;
+  api.takeSnapshot.mockReturnValue(new Promise((r) => { release = () => r({ snapshot: SNAP_TAKING, deployment: RUNNING }); }));
+  open();
+  await userEvent.click(takeBtn());
+  expect((screen.getByRole('combobox', { name: 'Environment' }) as HTMLInputElement).disabled).toBe(true);
+  release();
+  await waitFor(() => expect(takeBtn().textContent).toBe('Take snapshot'));
+});
