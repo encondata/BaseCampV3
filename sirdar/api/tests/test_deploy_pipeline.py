@@ -69,7 +69,7 @@ async def test_update_runs_every_step_in_order(db, env, fake_runner):
     assert fake_runner.steps() == UPDATE_KEYS
     assert [(s.number, s.status) for s in steps] == [
         (1, "succeeded"), (2, "succeeded"), (3, "succeeded"), (4, "succeeded"),
-        (5, "succeeded"), (6, "succeeded"), (8, "succeeded")]
+        (5, "succeeded"), (6, "succeeded"), (10, "succeeded")]
     assert all(s.started_at and s.finished_at for s in steps)
     assert steps[0].log == "ok: [target] preflight\n"
     assert (dep.status, dep.dump_path, dep.previous_sha, dep.error) == (
@@ -154,7 +154,7 @@ async def test_a_failed_first_step_gets_its_own_message(db, env, fake_runner):
 async def test_timeout_message(db, env, fake_runner):
     fake_runner.results["up"] = RunResult(status="timeout", rc=254)
     dep, _, _ = await _load(await _start(db, env))
-    assert dep.error == "Step 8 (Start services) timed out after 45 minutes."
+    assert dep.error == "Step 10 (Start services) timed out after 45 minutes."
 
 
 async def test_logs_are_redacted(db, env, fake_runner):

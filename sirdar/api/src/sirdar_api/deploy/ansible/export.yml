@@ -1,0 +1,102 @@
+# Step 11 — Take snapshot. Dumps the database (inside its container, then
+# copied out), exports every object of the bucket through a one-off
+# container of the environment's api image, packs both with the keys Sirdar
+# sent (keys.enc, already encrypted with SIRDAR_SECRETS_KEY) and fetches the
+# bundle to Sirdar, which checks it after this step. Uses docker compose
+# with the stack's db compose file, never ss-stack, so it works on any
+# checkout. The work folder and the in-container dump go however it ends.
+- name: Take snapshot
+  hosts: target
+  gather_facts: false
+  vars:
+    work: "{{ env_dir }}/snapshot-work"
+    bundle_python: "{{ snapshot_python | default('python3') }}"
+    container_dump: /tmp/sirdar-snapshot.dump
+    db_compose: [docker, compose, --env-file, "{{ env_dir }}/.env",
+                 -f, "{{ env_dir }}/repo/deploy/stack/db/compose.yml"]
+  tasks:
+    - name: Export and fetch
+      block:
+        - name: Empty work folder
+          ansible.builtin.file:
+            path: "{{ work }}"
+            state: absent
+
+        - name: Work folder
+          ansible.builtin.file:
+            path: "{{ work }}"
+            state: directory
+            mode: "0700"
+
+        - name: Bundle tool
+          ansible.builtin.copy:
+            src: "{{ bundle_tool }}"
+            dest: "{{ work }}/bundle.py"
+            mode: "0644"
+
+        - name: Keys
+          ansible.builtin.copy:
+            content: "{{ keys_enc_b64 | b64decode }}"
+            dest: "{{ work }}/keys.enc"
+            mode: "0600"
+          no_log: true
+
+        - name: The database's migration
+          ansible.builtin.command:
+            argv: "{{ db_compose + ['exec', '-T', 'postgres', 'psql', '-U', 'serversherpa',
+                   '-d', 'serversherpa', '-tAc', 'SELECT version_num FROM alembic_version'] }}"
+          register: revision
+          changed_when: false
+
+        - name: pg_dump inside the database container
+          ansible.builtin.command:
+            argv: "{{ db_compose + ['exec', '-T', 'postgres', 'pg_dump', '-U', 'serversherpa',
+                   '-d', 'serversherpa', '-Fc', '--no-owner', '--no-acl',
+                   '-f', container_dump] }}"
+
+        - name: Copy the dump out
+          ansible.builtin.command:
+            argv: "{{ db_compose + ['cp', 'postgres:' + container_dump, work + '/db.dump'] }}"
+
+        - name: Who runs the export
+          ansible.builtin.command:
+            argv: [id, -u]
+          register: uid
+          changed_when: false
+
+        - name: Their group
+          ansible.builtin.command:
+            argv: [id, -g]
+          register: gid
+          changed_when: false
+
+        - name: Export the objects
+          ansible.builtin.command:
+            argv: [docker, run, --rm, --network, "ss-{{ env_name }}",
+                   --env-file, "{{ env_dir }}/.env", --user, "{{ uid.stdout }}:{{ gid.stdout }}",
+                   -e, HOME=/tmp, -v, "{{ work }}:/work", "{{ api_image }}",
+                   python, /work/bundle.py, export-objects, --out, /work/objects.tar]
+
+        - name: Pack the bundle
+          ansible.builtin.command:
+            argv: ["{{ bundle_python }}", "{{ work }}/bundle.py", pack, --out, "{{ work }}/bundle.tar.gz",
+                   --source, "{{ env_name }}", --revision, "{{ revision.stdout | trim }}",
+                   --bucket, "{{ spaces_bucket }}", --db, "{{ work }}/db.dump",
+                   --objects, "{{ work }}/objects.tar", --keys-enc, "{{ work }}/keys.enc"]
+
+        - name: Fetch the bundle to Sirdar
+          ansible.builtin.fetch:
+            src: "{{ work }}/bundle.tar.gz"
+            dest: "{{ snapshot_dest }}"
+            flat: true
+      always:
+        - name: Remove the dump from the database container
+          ansible.builtin.command:
+            argv: "{{ db_compose + ['exec', '-T', 'postgres', 'rm', '-f', container_dump] }}"
+          changed_when: false
+          failed_when: false
+
+        - name: Remove the work folder
+          ansible.builtin.file:
+            path: "{{ work }}"
+            state: absent

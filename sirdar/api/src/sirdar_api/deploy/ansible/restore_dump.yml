@@ -1,0 +1,22 @@
+# Step 9 — Restore backup (Restore backup and Roll back): ss-stack restore
+# stops the app stacks and puts one of the environment's own pre-deploy
+# dumps back into an empty schema. Objects are not rolled back. Sessions
+# stay: the dump comes from this environment, with its own keys.
+- name: Restore backup
+  hosts: target
+  gather_facts: false
+  tasks:
+    - name: Look for the backup
+      ansible.builtin.stat:
+        path: "{{ env_dir }}/backups/{{ dump_name }}"
+      register: backup
+
+    - name: The backup exists
+      ansible.builtin.assert:
+        that: backup.stat.exists and backup.stat.isreg
+        fail_msg: "There's no backup {{ dump_name }} in {{ env_dir }}/backups."
+        quiet: true
+
+    - name: ss-stack restore
+      ansible.builtin.command:
+        argv: ["{{ ss_stack }}", restore, "{{ env_dir }}", "{{ env_dir }}/backups/{{ dump_name }}"]

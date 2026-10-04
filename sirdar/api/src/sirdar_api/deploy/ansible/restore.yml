@@ -1,0 +1,103 @@
+# Step 9 — Restore snapshot (Reset with a snapshot, or the first deploy of
+# an environment created from one). Refuses a snapshot whose database is at
+# a newer migration than this commit has. Copies the bundle from Sirdar,
+# checks every checksum while unpacking (the keys stay packed), restores the
+# database with ss-stack restore (writers stopped, empty schema, sessions
+# cleared) and uploads the objects into the environment's bucket through a
+# one-off container of the api image Build images made. The snapshot's
+# pepper and TOTP key are already in the .env that Render config wrote.
+- name: Restore snapshot
+  hosts: target
+  gather_facts: false
+  vars:
+    work: "{{ env_dir }}/restore-work"
+    bundle_python: "{{ snapshot_python | default('python3') }}"
+  tasks:
+    - name: This commit's migrations
+      ansible.builtin.find:
+        paths: "{{ env_dir }}/repo/api/migrations/versions"
+        patterns: ["^[0-9]+_.*[.]py$"]
+        use_regex: true
+      register: migrations
+
+    - name: This commit's newest migration
+      ansible.builtin.set_fact:
+        code_head: >-
+          {{ migrations.files | map(attribute='path') | map('basename')
+             | map('regex_search', '^[0-9]+') | map('int') | max }}
+      when: migrations.files | length > 0
+
+    - name: The snapshot isn't newer than the code
+      ansible.builtin.assert:
+        that:
+          - migrations.files | length > 0
+          - snapshot_revision | int <= code_head | int
+        fail_msg: >-
+          This snapshot's database is at migration {{ snapshot_revision }}, newer than
+          this commit's newest migration ({{ code_head | default('none') }}). Deploy a
+          newer commit, or pick another snapshot.
+        quiet: true
+
+    - name: Restore
+      block:
+        - name: Empty work folder
+          ansible.builtin.file:
+            path: "{{ work }}"
+            state: absent
+
+        - name: Work folder
+          ansible.builtin.file:
+            path: "{{ work }}"
+            state: directory
+            mode: "0700"
+
+        - name: Bundle tool
+          ansible.builtin.copy:
+            src: "{{ bundle_tool }}"
+            dest: "{{ work }}/bundle.py"
+            mode: "0644"
+
+        - name: Copy the snapshot from Sirdar
+          ansible.builtin.copy:
+            src: "{{ bundle_path }}"
+            dest: "{{ work }}/bundle.tar.gz"
+            mode: "0600"
+
+        - name: Check and unpack it
+          ansible.builtin.command:
+            argv: ["{{ bundle_python }}", "{{ work }}/bundle.py", unpack, "{{ work }}/bundle.tar.gz",
+                   "{{ work }}"]
+
+        - name: Drop the packed copy
+          ansible.builtin.file:
+            path: "{{ work }}/bundle.tar.gz"
+            state: absent
+
+        - name: ss-stack restore
+          ansible.builtin.command:
+            argv: ["{{ ss_stack }}", restore, "{{ env_dir }}", "{{ work }}/db.dump",
+                   --clear-sessions]
+
+        - name: Who runs the upload
+          ansible.builtin.command:
+            argv: [id, -u]
+          register: uid
+          changed_when: false
+
+        - name: Their group
+          ansible.builtin.command:
+            argv: [id, -g]
+          register: gid
+          changed_when: false
+
+        - name: Upload the objects
+          ansible.builtin.command:
+            argv: [docker, run, --rm, --network, "ss-{{ env_name }}",
+                   --env-file, "{{ env_dir }}/.env", --user, "{{ uid.stdout }}:{{ gid.stdout }}",
+                   -e, HOME=/tmp, -v, "{{ work }}:/work:ro", "{{ api_image }}",
+                   python, /work/bundle.py, import-objects, --in, /work/objects.tar]
+      always:
+        - name: Remove the work folder
+          ansible.builtin.file:
+            path: "{{ work }}"
+            state: absent
