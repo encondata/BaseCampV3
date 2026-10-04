@@ -7,7 +7,7 @@ import pytest
 
 from sirdar_api.deploy import ConnectFailed, tls_pin
 
-from .tls_helpers import make_cert
+from .tls_helpers import make_ca, make_cert
 
 
 def test_the_fingerprint_is_sha256_in_proxmox_s_format():
@@ -84,3 +84,72 @@ async def test_the_guard_refuses_a_real_host(no_real_hosts):
         await tls_pin.fetch_certificate("10.10.48.5", 8006)
     assert no_real_hosts == ["tls:10.10.48.5"]
     no_real_hosts.clear()
+
+
+def test_a_pem_with_two_certificates_is_refused():
+    """The pin is exactly one certificate: a leaf plus an extra CA would pass
+    the fingerprint check on the leaf and then trust the CA as well."""
+    leaf, _ = make_cert()
+    ca, _ = make_ca()
+    for pem in (leaf + ca, ca + leaf, leaf + leaf):
+        with pytest.raises(ValueError):
+            tls_pin.fingerprint_of(pem)
+        with pytest.raises(ValueError):
+            tls_pin.describe(pem)
+        with pytest.raises(ValueError):
+            tls_pin.pinned_context(pem)
+
+
+@pytest.mark.parametrize("extra", ["junk\n", "-----BEGIN PRIVATE KEY-----\nAAAA\n"])
+def test_text_around_the_certificate_is_refused(extra):
+    pem, _ = make_cert()
+    for bad in (pem + extra, extra + pem):
+        with pytest.raises(ValueError):
+            tls_pin.fingerprint_of(bad)
+        with pytest.raises(ValueError):
+            tls_pin.pinned_context(bad)
+
+
+def test_surrounding_whitespace_is_fine():
+    pem, _ = make_cert()
+    assert tls_pin.fingerprint_of(f"\n  {pem}\n\n") == tls_pin.fingerprint_of(pem)
+
+
+def test_the_pinned_context_trusts_exactly_one_certificate():
+    pem, _ = make_cert()
+    assert tls_pin.pinned_context(pem).cert_store_stats()["x509"] == 1
+
+
+@pytest.mark.parametrize("value", [
+    "ab" * 32, ("AB" * 32), ":".join(["ab"] * 32), "  " + ":".join(["Ab"] * 32) + " "])
+def test_fingerprints_normalize_to_the_colon_form(value):
+    assert tls_pin.normalize_fingerprint(value) == ":".join(["AB"] * 32)
+
+
+@pytest.mark.parametrize("value", [
+    "", "AB:CD", "ab" * 31, "ab" * 33, "zz" * 32, "AB:" * 31 + "A:B", "AB-" * 31 + "AB", None])
+def test_a_malformed_fingerprint_is_refused(value):
+    with pytest.raises(ValueError):
+        tls_pin.normalize_fingerprint(value)
+
+
+async def test_a_leaf_issued_by_a_ca_can_be_pinned_alone(tmp_path):
+    """Proxmox's shape: pve-ssl.pem is signed by pve-root-ca.pem and the
+    server sends both. Pinning only the leaf is enough, and the CA isn't
+    trusted for anything else."""
+    ca = make_ca()
+    leaf, leaf_key = make_cert(ca=ca)
+    sibling, sibling_key = make_cert(cn="other", ca=ca)
+    server, port = await _tls_server(tmp_path, leaf + ca[0], leaf_key)
+    async with server:
+        _, writer = await asyncio.open_connection("127.0.0.1", port,
+                                                  ssl=tls_pin.pinned_context(leaf))
+        writer.close()
+        live = await tls_pin.fetch_certificate("127.0.0.1", port)
+        assert tls_pin.fingerprint_of(live) == tls_pin.fingerprint_of(leaf)
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    server, port = await _tls_server(other_dir, sibling + ca[0], sibling_key)
+    async with server:
+        with pytest.raises(ssl.SSLCertVerificationError):
+            await asyncio.open_connection("127.0.0.1", port, ssl=tls_pin.pinned_context(leaf))

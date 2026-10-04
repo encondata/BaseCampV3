@@ -22,7 +22,7 @@ from .integration_helpers import (
     configure,
     configure_proxmox,
 )
-from .tls_helpers import make_cert
+from .tls_helpers import make_ca, make_cert
 
 
 async def test_save_and_load_cloudflare(db, secrets_key):
@@ -231,8 +231,15 @@ async def test_save_and_load_proxmox(db, secrets_key):
     ("vlan_tag", "12", "vlan_tag_invalid"),
     ("template_vmid", 99, "template_vmid_invalid"),
     ("template_vmid", True, "template_vmid_invalid"),
-    ("tls_fingerprint", "AB:CD", "tls_untrusted"),
+    ("url", "https://10.10.48.5:0", "proxmox_url_invalid"),
+    ("url", "https://10.10.48.5:65536", "proxmox_url_invalid"),
+    ("url", "https://10.10.48.5:99999", "proxmox_url_invalid"),
+    ("tls_fingerprint", "AB:CD", "tls_fingerprint_invalid"),
+    ("tls_fingerprint", "zz" * 32, "tls_fingerprint_invalid"),
+    ("tls_fingerprint", None, "tls_untrusted"),
+    ("tls_fingerprint", "", "tls_untrusted"),
     ("tls_cert_pem", None, "tls_untrusted"),
+    ("tls_cert_pem", "not a certificate", "tls_untrusted"),
 ])
 def test_proxmox_fields_are_checked(field, value, code):
     with pytest.raises(IntegrationError) as e:
@@ -251,7 +258,11 @@ def test_the_pinned_certificate_must_match_the_fingerprint():
 
 @pytest.mark.parametrize("token", [
     PX_TOKEN_ID, f"sirdar@pve={PX_TOKEN_SECRET}", f"{PX_TOKEN_ID}=not-a-uuid",
-    f"{PX_TOKEN}\n", f"root@pam {PX_TOKEN}"])
+    f"{PX_TOKEN}\n", f"root@pam {PX_TOKEN}", f"a=b@pve!t={PX_TOKEN_SECRET}",
+    f"a:b@pve!t={PX_TOKEN_SECRET}", f"a/b@pve!t={PX_TOKEN_SECRET}",
+    f"a@b@pve!t={PX_TOKEN_SECRET}", f"j\u00e9@pve!t={PX_TOKEN_SECRET}",
+    f"sirdar@p ve!t={PX_TOKEN_SECRET}", f"sirdar@pve!1t={PX_TOKEN_SECRET}",
+    f"sirdar@pve!t!u={PX_TOKEN_SECRET}", f"sirdar@pve!t={PX_TOKEN_SECRET}x"])
 def test_proxmox_tokens_are_checked(token):
     with pytest.raises(IntegrationError) as e:
         integrations.check_secret("proxmox", token)
@@ -276,3 +287,33 @@ async def test_in_use_names_the_proxmox_environments(db, secrets_key):
     assert await integrations.in_use(db, "proxmox") == ["uat3"]
     assert await integrations.in_use(db, "npm") == []
     assert await integrations.config_of(db, "cloudflare") == {}
+
+
+def test_a_two_certificate_pem_is_never_pinned():
+    """A leaf plus an extra CA has the leaf's fingerprint but would trust the CA."""
+    ca, _ = make_ca()
+    for pem in (PX_VALUES["tls_cert_pem"] + ca, ca + PX_VALUES["tls_cert_pem"]):
+        with pytest.raises(IntegrationError) as e:
+            integrations.check_fields("proxmox", {**PX_VALUES, "tls_cert_pem": pem})
+        assert e.value.code == "tls_untrusted"
+
+
+def test_a_fingerprint_without_colons_is_normalized():
+    bare = PX_FINGERPRINT.replace(":", "").lower()
+    checked = integrations.check_fields("proxmox", {**PX_VALUES, "tls_fingerprint": bare})
+    assert checked["tls_fingerprint"] == PX_FINGERPRINT
+
+
+@pytest.mark.parametrize("url", ["https://10.10.48.5:1", "https://10.10.48.5:65535",
+                                 "https://pve.lab", "https://pve.lab:8006/"])
+def test_proxmox_urls_in_range_are_accepted(url):
+    assert integrations.check_proxmox_url(url) == url.rstrip("/")
+
+
+@pytest.mark.parametrize("token_id", [
+    "sirdar@pve!sirdar", "jimmy.henderson+ops@ad-corp!deploy_1",
+    "root@pam!t", "svc-acct@pve!Sirdar.v2"])
+def test_proxmox_token_ids_follow_proxmox_s_rule(token_id):
+    token = f"{token_id}={PX_TOKEN_SECRET}"
+    assert integrations.check_secret("proxmox", token) == token
+    assert integrations.token_id_of(token) == token_id

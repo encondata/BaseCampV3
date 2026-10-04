@@ -44,16 +44,18 @@ _DOMAIN_RE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{20,200}")
 _URL_RE = re.compile(r"https?://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?")
 _EMAIL_RE = re.compile(r"[^@\s]{1,64}@[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,63}")
-_PVE_URL_RE = re.compile(r"https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?")
+_PVE_URL_RE = re.compile(r"https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(?::([0-9]{1,5}))?")
 _NODE_RE = re.compile(r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 _POOL_RE = re.compile(r"[A-Za-z0-9_.-]{1,40}")
 _STORAGE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,62}")
 _BRIDGE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,14}")
 # user@realm!tokenid=<uuid>: the id part is shown, the uuid is the secret.
+# Proxmox's rule: the user is anything but whitespace, ':', '/', '!' and '@'
+# (here also printable ASCII only and no '=', which splits id from secret);
+# the realm [A-Za-z0-9._-]; the token id starts with a letter.
 _PVE_TOKEN_RE = re.compile(
-    r"([A-Za-z0-9._-]{1,64}@[A-Za-z0-9._-]{1,64}![A-Za-z][A-Za-z0-9._-]{1,63})="
+    r"((?:(?![:/!@=])[!-~]){1,64}@[A-Za-z0-9._-]{1,32}![A-Za-z][A-Za-z0-9._-]{0,63})="
     r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})")
-_FINGERPRINT_RE = re.compile(r"([0-9A-F]{2}:){31}[0-9A-F]{2}")
 
 _REASONS = {
     "secrets_key_missing": "SIRDAR_SECRETS_KEY isn't set, so Sirdar can't read the "
@@ -147,7 +149,8 @@ def _check_npm(values: dict) -> dict:
 
 def check_proxmox_url(value) -> str:
     url = str(value or "").strip().rstrip("/")
-    if not _PVE_URL_RE.fullmatch(url):
+    match = _PVE_URL_RE.fullmatch(url)
+    if not match or (match.group(2) is not None and not 1 <= int(match.group(2)) <= 65535):
         raise IntegrationError("proxmox_url_invalid")
     return url
 
@@ -176,9 +179,15 @@ def _check_proxmox(values: dict) -> dict:
     vlan = values.get("vlan_tag")
     vlan = None if vlan is None else _int_in(vlan, 1, 4094, "vlan_tag_invalid")
     template = _int_in(values.get("template_vmid"), 100, 999_999_999, "template_vmid_invalid")
-    fingerprint = str(values.get("tls_fingerprint") or "").strip().upper()
+    given = str(values.get("tls_fingerprint") or "").strip()
+    if not given:                                  # nothing trusted yet
+        raise IntegrationError("tls_untrusted")
+    try:
+        fingerprint = tls_pin.normalize_fingerprint(given)
+    except ValueError:
+        raise IntegrationError("tls_fingerprint_invalid") from None
     pem = values.get("tls_cert_pem")
-    if not _FINGERPRINT_RE.fullmatch(fingerprint) or not isinstance(pem, str):
+    if not isinstance(pem, str):
         raise IntegrationError("tls_untrusted")
     try:
         actual = tls_pin.fingerprint_of(pem)
