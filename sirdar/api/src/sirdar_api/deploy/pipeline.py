@@ -403,6 +403,9 @@ class _Context:
     # An environment that has deployed before has a database worth keeping:
     # its pre-deploy dump must happen (dump.yml fails rather than skip it).
     dump_required: bool = False
+    # It restores a snapshot: the dump refuses a database that exists but
+    # isn't running (the restore would drop it unbacked).
+    restores_snapshot: bool = False
     # Extra vars of the snapshot steps (restore, restore_dump, export).
     step_vars: dict = field(default_factory=dict, repr=False)
     # The restored snapshot's pepper and TOTP key: stored as the
@@ -413,7 +416,8 @@ class _Context:
         if step_key == "render":
             return {**self.common, "env_file_b64": self.env_file_b64}
         if step_key == "dump":
-            return {**self.common, "dump_required": self.dump_required}
+            return {**self.common, "dump_required": self.dump_required,
+                    "restores_snapshot": self.restores_snapshot}
         return {**self.common, **self.step_vars.get(step_key, {})}
 
 
@@ -483,7 +487,8 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment,
                                            cfg.passphrase, cfg.sudo_password, private_key,
                                            *extra_secrets]))
     return _Context(target=target, common=common, env_file_b64=env_b64, redactor=redactor,
-                    dump_required=env.current_sha is not None, step_vars=step_vars,
+                    dump_required=env.current_sha is not None,
+                    restores_snapshot=restores(dep.mode, dep.snapshot_id), step_vars=step_vars,
                     snapshot_keys=snapshot_keys)
 
 

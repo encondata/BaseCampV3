@@ -97,6 +97,12 @@ async def test_reset_with_a_snapshot_restores_it_and_keeps_its_keys(db, env, fak
     assert await _secret(db, env.id, "SS_JWT_SECRET") == ENV_SECRETS["SS_JWT_SECRET"]
 
 
+async def test_an_update_dump_isnt_told_it_restores(db, env, fake_runner):
+    await _run(db, env, mode="update")
+    dump = next(r for r in fake_runner.requests if r.step == "dump")
+    assert dump.extravars["restores_snapshot"] is False
+
+
 async def test_a_plain_reset_has_no_revision_check(db, env, fake_runner):
     dep, _, _ = await _load(await _run(db, env, mode="reset"))
     assert dep.status == "succeeded"
@@ -136,6 +142,8 @@ async def test_first_deploy_of_a_seeded_environment_restores(db, env, fake_runne
     # it; an empty host has none, so the dump isn't required.
     dump = next(r for r in fake_runner.requests if r.step == "dump")
     assert dump.extravars["dump_required"] is False
+    # ...and refuses to restore over a database that exists but is stopped.
+    assert dump.extravars["restores_snapshot"] is True
 
 
 async def test_a_seeded_first_deploy_keeps_the_dump_it_took(db, env, fake_runner, tmp_path):

@@ -106,13 +106,21 @@ DUMP_BLOCKED = ("The database isn't running, so the pre-deploy backup can't be t
                 "Start it (or Reset) and retry.")
 
 
-def _run_dump(tmp_path, *, db_running: bool, dump_required: bool | None):
+def _run_dump(tmp_path, *, db_running: bool, dump_required: bool | None,
+              volume: bool = False, restoring: bool | None = None):
     """dump.yml on this machine (connection local) with stand-ins for docker
-    (answers a container id only when db_running) and ss-stack."""
+    (`ps` answers a container id only when db_running; `volume inspect`
+    succeeds only for ss-e2e-db_pgdata when `volume`) and ss-stack."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     docker = bin_dir / "docker"
-    docker.write_text("#!/bin/sh\n" + ("echo 0123abcd\n" if db_running else "") + "exit 0\n")
+    docker.write_text(
+        "#!/bin/sh\n"
+        f"echo \"$*\" >> {tmp_path / 'docker-calls'}\n"
+        "if [ \"$1\" = volume ]; then\n"
+        + ("  [ \"$3\" = ss-e2e-db_pgdata ] && exit 0\n" if volume else "")
+        + "  echo 'no such volume' >&2; exit 1\nfi\n"
+        + ("echo 0123abcd\n" if db_running else "") + "exit 0\n")
     ss_stack = bin_dir / "ss-stack"
     ss_stack.write_text(f"#!/bin/sh\necho \"$1 $2\" > {tmp_path / 'ss-stack-called'}\n"
                         "echo /x/backups/e2e.dump\n")
@@ -123,6 +131,8 @@ def _run_dump(tmp_path, *, db_running: bool, dump_required: bool | None):
     extra = {"env_name": "e2e", "env_dir": "/x", "ss_stack": str(ss_stack)}
     if dump_required is not None:
         extra["dump_required"] = dump_required
+    if restoring is not None:
+        extra["restores_snapshot"] = restoring
     env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
            "ANSIBLE_CONFIG": str(cfg), "ANSIBLE_HOME": str(tmp_path),
            "ANSIBLE_LOCAL_TEMP": str(tmp_path / "tmp"), "ANSIBLE_NOCOLOR": "1"}
@@ -149,6 +159,40 @@ def test_dump_playbook_logic(tmp_path, db_running, dump_required, ok, dumped):
     if dumped:
         assert called.read_text() == "dump /x\n"
     assert (DUMP_BLOCKED in out) is (not ok), out
+
+
+STOPPED_DB = ("A database for e2e already exists on this server but isn't running. Adopt the "
+              "environment instead, or remove its volume (ss-e2e-db_pgdata).")
+
+
+@pytest.mark.parametrize("db_running, volume, restoring, ok, dumped", [
+    (False, True, True, False, False),    # a stopped database the restore would drop
+    (False, False, True, True, False),    # an empty host: nothing to keep
+    (True, True, True, True, True),       # running: backed up, then restored over
+    (False, True, False, True, False),    # an Update's first deploy doesn't restore
+    (False, True, None, True, False),
+])
+def test_dump_playbook_refuses_to_restore_over_a_stopped_database(
+        tmp_path, db_running, volume, restoring, ok, dumped):
+    result = _run_dump(tmp_path, db_running=db_running, dump_required=False, volume=volume,
+                       restoring=restoring)
+    out = result.stdout + result.stderr
+    assert (result.returncode == 0) is ok, out
+    assert (tmp_path / "ss-stack-called").exists() is dumped, out
+    assert (STOPPED_DB in out) is (not ok), out
+    calls = (tmp_path / "docker-calls").read_text().splitlines()
+    inspected = "volume inspect ss-e2e-db_pgdata" in calls
+    assert inspected is (bool(restoring) and not db_running), calls
+
+
+def test_the_volume_name_is_the_db_stacks():
+    """dump.yml's check names the volume `ss-stack data` would start."""
+    compose = yaml.safe_load((REPO / "deploy" / "stack" / "db" / "compose.yml").read_text())
+    assert compose["name"] == "ss-${STACK_ENV:?set STACK_ENV}-db"
+    assert "pgdata" in compose["volumes"]
+    assert "pgdata:/var/lib/postgresql/data" in compose["services"]["postgres"]["volumes"]
+    text = (PLAYBOOK_DIR / "dump.yml").read_text()
+    assert '"ss-{{ env_name }}-db_pgdata"' in text
 
 
 # ---- the phase 3 playbooks, run on this machine with stand-ins -------------------

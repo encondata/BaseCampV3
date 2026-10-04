@@ -95,7 +95,8 @@ async def test_requests_carry_the_pinned_target_and_step_vars(db, env, fake_runn
         assert request.playbook == STEPS_BY_KEY[request.step].playbook
         assert request.timeout == STEPS_BY_KEY[request.step].timeout
         if request.step == "dump":
-            assert request.extravars == {**common, "dump_required": True}
+            assert request.extravars == {**common, "dump_required": True,
+                                         "restores_snapshot": False}
         elif request.step == "render":
             assert set(request.extravars) == {*common, "env_file_b64"}
             values = envfile.parse_env(
