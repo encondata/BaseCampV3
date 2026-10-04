@@ -16,21 +16,25 @@ shows them (inspect), Claim records the claimable ones, and the steps
 apply them. Errors carry our own copy; credentials stay inside the
 Cloudflare and Npm clients."""
 
+import asyncio
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Protocol
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
+from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import Environment, ManagedRecord
-from sirdar_api.deploy import integrations, outbound
+from sirdar_api.deploy import integrations, npm, outbound, smoke
 from sirdar_api.deploy.cloudflare import Cloudflare, CloudflareError, DnsRecord
 from sirdar_api.deploy.environments import services_of
 from sirdar_api.deploy.integrations import CloudflareConfig, IntegrationError, NpmConfig
 from sirdar_api.deploy.npm import (
+    CERT_BACKOFF,
     RENEW_DAYS,
     Certificate,
     Npm,
@@ -395,3 +399,317 @@ async def claim(db: AsyncSession, env: Environment, state: dict) -> list[str]:
             claimed.append(f"{key}:{svc['hostname']}")
     await db.flush()
     return claimed
+
+
+# ---- steps 12–14 and 16–17 -------------------------------------------------------------
+
+SPACES_ADVANCED = "client_max_body_size 0;"
+
+
+class StepFailed(Exception):
+    """A publish step can't finish. `reason` (our own copy) ends its log."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
+
+
+class Publisher(Protocol):
+    async def run(self, step: str, ctx: PublishContext, out: Output) -> None: ...
+
+
+def _need_to_publish(cfg, label: str):
+    if cfg is None:
+        raise StepFailed(f"{label} isn't set up. Add it in Settings › Integrations, or turn "
+                         "Publish off for this environment.")
+    return cfg
+
+
+def _need_to_remove(cfg, label: str):
+    if cfg is None:
+        raise StepFailed(f"{label} isn't set up, so Sirdar can't remove what it made there. "
+                         "Add it in Settings › Integrations, then retry.")
+    return cfg
+
+
+def _stop_on_blockers(plan: list[tuple[ServicePlan, Status]], what: str) -> None:
+    """Plan first: one blocker anywhere and nothing is changed."""
+    bad = [(s, st) for s, st in plan if st.state in ("claimable", "conflict")]
+    if not bad:
+        return
+    lines = "\n".join(f"  {s.hostname}: {st.detail}" for s, st in bad)
+    hint = ("Claim the existing ones on the Publish tab, or remove them by hand, then retry."
+            if any(st.state == "claimable" for _, st in bad) else "Fix them by hand, then retry.")
+    raise StepFailed(f"Sirdar changed nothing: these {what} are in the way.\n{lines}\n{hint}")
+
+
+async def _rows_and_owners(env_id, kind: str) -> tuple[dict, dict]:
+    async with get_sessionmaker()() as s:
+        return await rows_of(s, env_id), await owners_of(s, env_id, kind)
+
+
+async def _all_rows(env_id, kinds: tuple[str, ...]) -> list[ManagedRecord]:
+    async with get_sessionmaker()() as s:
+        return [r for r in (await rows_of(s, env_id)).values() if r.kind in kinds]
+
+
+async def _remember(env_id, service: str, kind: str, external_id, name: str) -> None:
+    """Record something Sirdar just created, at once and on its own, so a
+    later failure in the same step still knows it is Sirdar's."""
+    async with get_sessionmaker()() as s:
+        await s.execute(delete(ManagedRecord).where(
+            ManagedRecord.environment_id == env_id, ManagedRecord.service == service,
+            ManagedRecord.kind == kind))
+        s.add(ManagedRecord(environment_id=env_id, service=service, kind=kind,
+                            external_id=str(external_id), name=name, origin="created"))
+        await s.commit()
+
+
+async def _forget(row_id) -> None:
+    async with get_sessionmaker()() as s:
+        await s.execute(delete(ManagedRecord).where(ManagedRecord.id == row_id))
+        await s.commit()
+
+
+# DNS
+
+async def _drop_dns(api: Cloudflare | None, row: ManagedRecord, out: Output) -> None:
+    if row.origin == "created":
+        deleted = await api.delete(row.external_id)
+        out(f"{row.name}: {'deleted the A record' if deleted else 'already gone'}\n")
+    else:
+        out(f"{row.name}: left in place (claimed, not made by Sirdar)\n")
+    await _forget(row.id)
+
+
+async def ensure_dns(ctx: PublishContext, out: Output, *, transport) -> None:
+    cfg = _need_to_publish(ctx.cloudflare, "Cloudflare")
+    rows, owners = await _rows_and_owners(ctx.env_id, DNS)
+    async with Cloudflare(cfg, transport=transport) as api:
+        records = await api.records()
+        plan = [(s, dns_status(s, records, current_row(rows, s, DNS), owners, zone=cfg.zone,
+                               public_ip=cfg.public_ip)) for s in ctx.services]
+        _stop_on_blockers(plan, "DNS records")
+        dns_rows = {k: r for k, r in rows.items() if k[1] == DNS}
+        for row in stale_rows(dns_rows, ctx.services):
+            await _drop_dns(api, row, out)
+        for s, st in plan:
+            if st.state == "ok":
+                out(f"{s.hostname}: A {cfg.public_ip}, unchanged\n")
+            elif st.state == "update":
+                await api.update_a(st.current.id, name=s.hostname, content=cfg.public_ip,
+                                   proxied=s.proxied)
+                out(f"{s.hostname}: updated to A {cfg.public_ip}\n")
+            else:
+                made = await api.create_a(s.hostname, cfg.public_ip, proxied=s.proxied,
+                                          comment=f"Managed by Sirdar ({ctx.env_name}/{s.service})")
+                await _remember(ctx.env_id, s.service, DNS, made.id, s.hostname)
+                out(f"{s.hostname}: created A {cfg.public_ip}\n")
+
+
+async def remove_dns(ctx: PublishContext, out: Output, *, transport) -> None:
+    rows = sorted(await _all_rows(ctx.env_id, (DNS,)), key=lambda r: r.name)
+    if not rows:
+        out("No DNS records to remove.\n")
+        return
+    if not any(r.origin == "created" for r in rows):
+        for row in rows:
+            await _drop_dns(None, row, out)
+        return
+    cfg = _need_to_remove(ctx.cloudflare, "Cloudflare")
+    async with Cloudflare(cfg, transport=transport) as api:
+        for row in rows:
+            await _drop_dns(api, row, out)
+
+
+# Proxy hosts and certificates
+
+def new_host_body(sp: ServicePlan) -> dict:
+    return {"domain_names": [sp.hostname], "forward_scheme": "http",
+            "forward_host": sp.host_ip, "forward_port": sp.port, "certificate_id": 0,
+            "ssl_forced": False, "hsts_enabled": False, "hsts_subdomains": False,
+            "http2_support": False, "block_exploits": True, "caching_enabled": False,
+            "allow_websocket_upgrade": True, "access_list_id": 0,
+            "advanced_config": SPACES_ADVANCED if sp.service == "spaces" else "",
+            "meta": {"letsencrypt_agree": False, "dns_challenge": False}, "locations": []}
+
+
+def host_body(host: ProxyHost, sp: ServicePlan, *, certificate_id: int | None = None) -> dict:
+    """Read-modify-write: everything the host has (access lists, advanced
+    config, ...) with Sirdar's fields on top."""
+    body = {k: host.raw[k] for k in npm.HOST_FIELDS if k in host.raw}
+    body["locations"] = body.get("locations") or []
+    body.update(forward_scheme="http", forward_host=sp.host_ip, forward_port=sp.port,
+                allow_websocket_upgrade=True)
+    if certificate_id is not None:
+        body.update(certificate_id=certificate_id, ssl_forced=True, http2_support=True)
+    return body
+
+
+async def _drop_npm(api: Npm | None, row: ManagedRecord, out: Output) -> None:
+    what = "proxy host" if row.kind == PROXY else "certificate"
+    if row.origin == "created":
+        if row.kind == PROXY:
+            deleted = await api.delete_host(int(row.external_id))
+        else:
+            deleted = await api.delete_certificate(int(row.external_id))
+        out(f"{row.name}: {'deleted the' if deleted else 'already gone:'} {what} "
+            f"#{row.external_id}\n")
+    else:
+        out(f"{row.name}: left the {what} in place (claimed, not made by Sirdar)\n")
+    await _forget(row.id)
+
+
+async def _issued_anyway(api: Npm, hostname: str,
+                         certs: list[Certificate]) -> Certificate | None:
+    """After a timed-out request (npm.py): NPM may still have issued it. The
+    one new Let's Encrypt certificate for exactly this name, absent from the
+    list read at the start of the step, is the answer to Sirdar's request."""
+    known = {c.id for c in certs}
+    new = [c for c in await api.certificates() if c.id not in known
+           and c.provider == "letsencrypt" and c.domain_names == (hostname,)]
+    return new[0] if len(new) == 1 else None
+
+
+async def _ensure_certificate(api: Npm, ctx: PublishContext, sp: ServicePlan, host: ProxyHost,
+                              certs: list[Certificate], email: str, rows: dict,
+                              now: datetime, out: Output) -> int:
+    """Spec: keep a covering certificate with more than RENEW_DAYS left;
+    renew the host's own Let's Encrypt one when it is closer; else reuse
+    another covering one; else request one (HTTP challenge)."""
+    current = (next((c for c in certs if c.id == host.certificate_id), None)
+               if host.certificate_id else None)
+    if current is not None and covers(current, sp.hostname):
+        left = days_left(current, now)
+        if left is None or left > RENEW_DAYS:
+            return current.id
+        if current.provider == "letsencrypt":
+            out(f"{sp.hostname}: certificate #{current.id} expires {_date(current)}; renewing\n")
+            renewed = await api.renew_certificate(current.id, sp.hostname, out=out)
+            certs[:] = [renewed if c.id == renewed.id else c for c in certs]
+            return renewed.id
+    other = usable_certificate(certs, sp.hostname, now)
+    if other is not None:
+        out(f"{sp.hostname}: using certificate #{other.id}\n")
+        return other.id
+    out(f"{sp.hostname}: requesting a Let's Encrypt certificate\n")
+    try:
+        made = await api.request_certificate(sp.hostname, email, out=out)
+    except npm.TimedOut:
+        made = await _issued_anyway(api, sp.hostname, certs)
+        if made is None:
+            raise
+        out(f"{sp.hostname}: the request timed out, but Nginx Proxy Manager issued "
+            f"certificate #{made.id}\n")
+    certs.append(made)
+    await _remember(ctx.env_id, sp.service, CERT, made.id, sp.hostname)
+    old = rows.get((sp.service, CERT))
+    if old is not None and old.origin == "created" and old.external_id != str(made.id):
+        try:
+            await api.delete_certificate(int(old.external_id))
+        except NpmError:
+            out(f"{sp.hostname}: couldn't delete the old certificate #{old.external_id}; "
+                "it stays in Nginx Proxy Manager\n")
+    return made.id
+
+
+async def ensure_proxy(ctx: PublishContext, out: Output, *, transport,
+                       sleep: Callable[[float], Awaitable[None]], now: datetime,
+                       backoff: tuple[int, ...]) -> None:
+    cfg = _need_to_publish(ctx.npm, "Nginx Proxy Manager")
+    rows, owners = await _rows_and_owners(ctx.env_id, PROXY)
+    async with Npm(cfg, transport=transport, sleep=sleep, backoff=backoff) as api:
+        hosts = await api.proxy_hosts()
+        certs = await api.certificates()
+        plan = [(s, proxy_status(s, hosts, current_row(rows, s, PROXY), owners))
+                for s in ctx.services]
+        _stop_on_blockers(plan, "proxy hosts")
+        npm_rows = {k: r for k, r in rows.items() if k[1] in (PROXY, CERT)}
+        for row in sorted(stale_rows(npm_rows, ctx.services), key=lambda r: r.kind != PROXY):
+            await _drop_npm(api, row, out)       # hosts before the certificates they use
+        for s, st in plan:
+            found = st.current
+            if st.state == "create":
+                found = await api.create_host(new_host_body(s))
+                await _remember(ctx.env_id, s.service, PROXY, found.id, s.hostname)
+                out(f"{s.hostname}: created a proxy host to {s.forward}\n")
+            elif st.state == "update":
+                found = await api.update_host(found.id, host_body(found, s))
+                out(f"{s.hostname}: proxy host now goes to {s.forward}\n")
+            else:
+                out(f"{s.hostname}: proxy host to {s.forward}, unchanged\n")
+            cert_id = await _ensure_certificate(api, ctx, s, found, certs,
+                                                cfg.letsencrypt_email, rows, now, out)
+            if (found.certificate_id != cert_id or not found.ssl_forced
+                    or not found.http2_support):
+                await api.update_host(found.id, host_body(found, s, certificate_id=cert_id))
+                out(f"{s.hostname}: HTTPS with certificate #{cert_id}, Force SSL on\n")
+
+
+async def remove_proxy(ctx: PublishContext, out: Output, *, transport) -> None:
+    rows = sorted(await _all_rows(ctx.env_id, (PROXY, CERT)),
+                  key=lambda r: (r.kind != PROXY, r.name))
+    if not rows:
+        out("No proxy hosts or certificates to remove.\n")
+        return
+    if not any(r.origin == "created" for r in rows):
+        for row in rows:
+            await _drop_npm(None, row, out)
+        return
+    cfg = _need_to_remove(ctx.npm, "Nginx Proxy Manager")
+    async with Npm(cfg, transport=transport) as api:
+        for row in rows:
+            await _drop_npm(api, row, out)
+
+
+# Smoke test
+
+async def run_smoke(ctx: PublishContext, out: Output, *, transport,
+                    sleep: Callable[[float], Awaitable[None]], attempts: int,
+                    delay: float) -> None:
+    results = await smoke.run([(s.service, s.hostname) for s in ctx.services], ctx.proxy_ip,
+                              transport=transport, sleep=sleep, attempts=attempts, delay=delay,
+                              out=out)
+    for r in results:
+        out(f"{r.url}: {r.detail}\n")
+    failed = [r.service for r in results if not r.ok]
+    if failed:
+        raise StepFailed(f"{len(failed)} of {len(results)} public URLs didn't answer: "
+                         f"{', '.join(failed)}.")
+
+
+class HttpPublisher:
+    """The real publisher: steps 12–14 and 16–17 against Cloudflare, Nginx
+    Proxy Manager and the public URLs, through outbound.transports(). Waits
+    and the clock are injectable for tests."""
+
+    def __init__(self, *, sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 now: Callable[[], datetime] | None = None,
+                 cert_backoff: tuple[int, ...] = CERT_BACKOFF,
+                 smoke_attempts: int = smoke.ATTEMPTS, smoke_delay: float = smoke.DELAY):
+        self._sleep = sleep
+        self._now = now or (lambda: datetime.now(UTC))
+        self._backoff = cert_backoff
+        self._smoke_attempts = smoke_attempts
+        self._smoke_delay = smoke_delay
+
+    async def run(self, step: str, ctx: PublishContext, out: Output) -> None:
+        transports = outbound.transports()
+        try:
+            match step:
+                case "dns":
+                    await ensure_dns(ctx, out, transport=transports["cloudflare"])
+                case "proxy":
+                    await ensure_proxy(ctx, out, transport=transports["npm"], sleep=self._sleep,
+                                       now=self._now(), backoff=self._backoff)
+                case "smoke":
+                    await run_smoke(ctx, out, transport=transports["smoke"], sleep=self._sleep,
+                                    attempts=self._smoke_attempts, delay=self._smoke_delay)
+                case "unproxy":
+                    await remove_proxy(ctx, out, transport=transports["npm"])
+                case "undns":
+                    await remove_dns(ctx, out, transport=transports["cloudflare"])
+                case _:
+                    raise ValueError(f"{step!r} isn't a publish step")
+        except (CloudflareError, NpmError) as e:
+            raise StepFailed(e.reason) from None

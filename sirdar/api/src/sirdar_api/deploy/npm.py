@@ -60,6 +60,13 @@ class NotFound(NpmError):
         super().__init__("Nginx Proxy Manager has no such item.", 404)
 
 
+class TimedOut(NpmError):
+    """NPM didn't answer in time; a write may still have happened."""
+
+    def __init__(self):
+        super().__init__(_TIMED_OUT)
+
+
 class _Retryable(NpmError):
     def __init__(self, why: str):
         super().__init__(why)
@@ -170,7 +177,7 @@ class Npm:
             resp = await self._client.post("/tokens", json={"identity": self.cfg.identity,
                                                             "secret": self.cfg.password})
         except httpx.TimeoutException:
-            raise NpmError(_TIMED_OUT) from None
+            raise TimedOut() from None
         except httpx.HTTPError:
             raise NpmError(_UNREACHABLE) from None
         if resp.status_code in (400, 401, 403):
@@ -192,7 +199,7 @@ class Npm:
                 method, path, json=json, timeout=timeout,
                 headers={"Authorization": f"Bearer {self._token}"})
         except httpx.TimeoutException:
-            raise NpmError(_TIMED_OUT) from None
+            raise TimedOut() from None
         except httpx.HTTPError:
             raise NpmError(_UNREACHABLE) from None
         if resp.status_code == 401 and again:
