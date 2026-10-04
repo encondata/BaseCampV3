@@ -2,6 +2,8 @@
 or "tls" (certificate didn't verify), "down" (refused) or "slow" (timeout).
 Each hostname's answers are used in turn; the last one repeats."""
 
+import ssl
+
 import httpx
 
 
@@ -21,9 +23,11 @@ class FakeSmoke:
         self.requests.append(request)
         queue = self.answers.get(request.headers["host"])
         answer = (queue.pop(0) if len(queue) > 1 else queue[0]) if queue else self.default
-        if answer == "tls":
-            raise httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed",
-                                     request=request)
+        if answer == "tls":                 # chained like httpcore's: no "SSL" in the text
+            try:
+                raise ssl.SSLCertVerificationError(1, "certificate verify failed")
+            except ssl.SSLError as e:
+                raise httpx.ConnectError("handshake failed", request=request) from e
         if answer == "down":
             raise httpx.ConnectError("[Errno 111] Connection refused", request=request)
         if answer == "slow":
