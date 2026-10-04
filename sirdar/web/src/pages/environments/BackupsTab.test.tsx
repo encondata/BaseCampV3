@@ -13,7 +13,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import BackupsTab from './BackupsTab';
-import { BACKUPS, BLOCKED_BACKUP, ENV, KEYS_CHANGED_REASON, RUNNING } from './testData';
+import { BACKUPS, BLOCKED_BACKUP, ENV, KEYS_CHANGED_REASON, PUBLISHING, RUNNING, summary } from './testData';
 
 beforeEach(() => {
   perms.change = true;
@@ -99,6 +99,16 @@ it('view-only, deploying, empty and unreachable states', async () => {
   api.listBackups.mockRejectedValue(new ApiError(502, 'connect_failed', { code: 'connect_failed', reason: 'Timed out.' }));
   show();
   expect((await screen.findByRole('alert')).textContent).toBe('Timed out.');
+});
+
+it('Restore is disabled while the environment is being deleted or a publish job runs', async () => {
+  for (const env of [{ ...ENV, status: 'deleting' as const }, { ...ENV, last_deployment: summary(PUBLISHING) }]) {
+    show(env);
+    const btn = await screen.findByRole('button', { name: 'Restore 20261004T010203Z.dump' }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+    expect(btn.title).toBe('A deployment is running.');
+    cleanup();
+  }
 });
 
 it('a load error does not also claim there are no backups', async () => {
