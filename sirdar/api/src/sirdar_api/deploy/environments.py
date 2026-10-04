@@ -480,8 +480,21 @@ def backups_command(name: str) -> str:
 
 
 def backup_taken_at(name: str) -> datetime:
-    """When `ss-stack dump` took a backup: the UTC time in its name."""
+    """When `ss-stack dump` took a backup: the UTC time in its name (a name
+    valid_backup_name accepts)."""
     return datetime.strptime(name, "%Y%m%dT%H%M%SZ.dump").replace(tzinfo=UTC)
+
+
+def valid_backup_name(name: str) -> bool:
+    """A name `ss-stack dump` could give: BACKUP_RE's shape and a real UTC
+    time (not month 13, February 30th or second 60)."""
+    if not BACKUP_RE.fullmatch(name):
+        return False
+    try:
+        backup_taken_at(name)
+    except ValueError:
+        return False
+    return True
 
 
 async def keys_changed_at(db: AsyncSession, env_id) -> datetime | None:
@@ -515,7 +528,7 @@ async def list_backups(db: AsyncSession, cfg: SshTargetConfig, env: Environment)
     rows: list[dict] = []
     for line in result.stdout.splitlines():
         parts = line.split("\t")
-        if len(parts) != 3 or not BACKUP_RE.fullmatch(parts[0]) or not parts[1].isdecimal():
+        if len(parts) != 3 or not valid_backup_name(parts[0]) or not parts[1].isdecimal():
             continue
         try:
             modified = datetime.fromtimestamp(float(parts[2]), UTC)

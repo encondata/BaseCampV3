@@ -659,7 +659,7 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
     if (body.backup is not None) != (body.mode == "restore_dump"):
         raise HTTPException(status_code=422, detail={"code": "backup_invalid"})
     if body.mode == "restore_dump":
-        if not environments.BACKUP_RE.fullmatch(body.backup):
+        if not environments.valid_backup_name(body.backup):
             raise HTTPException(status_code=422, detail={"code": "backup_invalid"})
         if body.git_ref is not None:        # it deploys the running commit
             raise HTTPException(status_code=422, detail={"code": "git_ref_not_allowed"})
@@ -795,7 +795,7 @@ async def rollback_deployment(deployment_id: uuid.UUID, body: RollbackIn, reques
     if latest is None or latest.id != dep.id:
         raise HTTPException(status_code=409, detail={"code": "rollback_not_latest"})
     dump = PurePosixPath(dep.dump_path).name
-    if not environments.BACKUP_RE.fullmatch(dump):
+    if not environments.valid_backup_name(dump):
         raise HTTPException(status_code=409, detail={"code": "rollback_unavailable"})
     cfg = _deploy_target(env)
     await _pinned(db, cfg)

@@ -427,3 +427,31 @@ async def test_retrying_a_rollback_needs_change(client, db, ready, fake_runner, 
     resp = await client.post(f"/api/deploy/deployments/{back['id']}/retry", headers=adder,
                              json={"confirm_name": "uat"})
     assert resp.status_code == 403
+
+
+IMPOSSIBLE = ("20261399T000000Z.dump", "20260229T000000Z.dump", "20261004T246000Z.dump",
+              "20261004T235960Z.dump")
+
+
+async def test_an_impossible_backup_time_is_backup_invalid(client, db, ready, fake_runner,
+                                                           leak_guard):
+    """The shape matches BACKUP_RE but no clock ever read that time."""
+    await _restored_at(db, ready.id, datetime(2026, 10, 3, 18, 0, tzinfo=UTC))
+    h = await auth_headers(client, db)
+    for name in IMPOSSIBLE:
+        resp = await client.post(START, headers=h, json={
+            "mode": "restore_dump", "backup": name, "confirm_name": "uat"})
+        assert (resp.status_code, resp.json()) == (
+            422, {"detail": {"code": "backup_invalid"}}), name
+    assert fake_runner.requests == []
+
+
+async def test_the_listing_skips_an_impossible_backup_time(client, db, ready, ssh_server,
+                                                           leak_guard):
+    await _restored_at(db, ready.id, datetime(2026, 10, 3, 18, 0, tzinfo=UTC))
+    ssh_server.overrides[environments.backups_command("uat")] = "".join(
+        f"{name}\t5\t1759539723.0\n" for name in (*IMPOSSIBLE, BACKUP))
+    h = await auth_headers(client, db)
+    resp = await client.get("/api/deploy/environments/uat/backups", headers=h)
+    assert resp.status_code == 200, resp.text
+    assert [b["name"] for b in resp.json()["backups"]] == [BACKUP]
