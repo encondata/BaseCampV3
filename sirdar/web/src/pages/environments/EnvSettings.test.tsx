@@ -16,7 +16,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import EnvSettings from './EnvSettings';
-import { DEFAULTS, ENV, TARGETS } from './testData';
+import { DEFAULTS, ENV, PX_ENV, PX_TARGETS, TARGETS } from './testData';
 
 Element.prototype.scrollIntoView = () => {};
 beforeEach(() => {
@@ -151,4 +151,29 @@ it('Delete environment needs deploy:add and deploy:change, and says backups go t
   render(<EnvSettings env={ENV} targets={TARGETS.targets} onSaved={vi.fn()} onDeleteStarted={vi.fn()} />);
   expect(screen.getByRole('button', { name: 'Save settings' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Delete environment…' })).toBeNull();
+});
+
+it('Proxmox: the target and the addresses are the VM\'s; Machine saves only what changed', async () => {
+  const onSaved = vi.fn();
+  render(<EnvSettings env={PX_ENV} targets={PX_TARGETS.targets} onSaved={onSaved} onDeleteStarted={vi.fn()} />);
+  expect((screen.getByLabelText('Target') as HTMLInputElement).value).toBe('Proxmox · ss-uat3');
+  expect((screen.getByLabelText('Target') as HTMLInputElement).disabled).toBe(true);
+  expect(screen.queryByLabelText('api address')).toBeNull();
+  expect(within(screen.getByRole('table', { name: 'Service addresses' })).getAllByText('10.10.48.70')).toHaveLength(7);
+  expect((screen.getByLabelText('vCPUs') as HTMLInputElement).value).toBe('4');
+  const disk = screen.getByLabelText('Disk (GB)');
+  await userEvent.clear(disk);
+  await userEvent.type(disk, '32');
+  await save();
+  expect(screen.getByText('A disk can grow but never shrink.')).toBeTruthy();
+  await userEvent.clear(disk);
+  await userEvent.type(disk, '64');
+  await userEvent.clear(screen.getByLabelText('vCPUs'));
+  await userEvent.type(screen.getByLabelText('vCPUs'), '8');
+  await userEvent.clear(screen.getByLabelText('Memory (GB)'));
+  await userEvent.type(screen.getByLabelText('Memory (GB)'), '16');
+  await save();
+  await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  expect(api.updateEnvironment).toHaveBeenCalledWith('uat3', { vm: { cores: 8, memory_mb: 16384 } });
+  expect(screen.getByText(/Destroys its VM on Proxmox/)).toBeTruthy();
 });

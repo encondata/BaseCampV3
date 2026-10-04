@@ -82,11 +82,19 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
             <div className="rgm-head-text">
               <div className="eyebrow">Settings</div>
               <h3 id="sirdar-delete-title">Delete {env.name}</h3>
-              <p className="page-hint">
-                Stops every container of {env.name}, deletes its database and files, and removes the whole
-                {' '}{env.env_dir} folder from the host, backups included. Snapshots taken from {env.name} are kept,
-                and so are Docker images. Then Sirdar forgets the environment.
-              </p>
+              {env.target_kind === 'proxmox' && env.vm ? (
+                <p className="page-hint">
+                  Destroys the VM {env.vm.name}{env.vm.vmid !== null ? ` (VM ${env.vm.vmid})` : ''} on Proxmox with
+                  everything on it: the database, files, backups and VM snapshots. Snapshots taken from {env.name}
+                  {' '}are kept in Sirdar. Then Sirdar forgets the environment.
+                </p>
+              ) : (
+                <p className="page-hint">
+                  Stops every container of {env.name}, deletes its database and files, and removes the whole
+                  {' '}{env.env_dir} folder from the host, backups included. Snapshots taken from {env.name} are kept,
+                  and so are Docker images. Then Sirdar forgets the environment.
+                </p>
+              )}
             </div>
             <button type="button" className="modal-close" aria-label="Close" disabled={busy} onClick={onClose}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"

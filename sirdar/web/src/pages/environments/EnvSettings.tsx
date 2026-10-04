@@ -14,7 +14,7 @@ import {
 } from '../../lib/sirdarApi';
 
 import DeleteEnvironmentModal from './DeleteEnvironmentModal';
-import { deploymentRunning, sshTargets, targetLabel } from './labels';
+import { deploymentRunning, onProxmox, sshTargets, targetLabel } from './labels';
 
 const SECRET_LABELS: Record<string, string> = {
   SS_ANTHROPIC_API_KEY: 'Anthropic API key', SS_DB_TESTING_PASSWORD: 'Database testing password',
@@ -26,7 +26,9 @@ const CODE_FIELD: Record<string, string> = {
   ref_invalid: 'ref', target_invalid: 'target', target_not_configured: 'target', base_domain_invalid: 'domain',
   proxy_ip_invalid: 'proxy', bind_ip_invalid: 'bind', keep_dumps_invalid: 'keep', bucket_invalid: 'bucket',
   log_level_invalid: 'level', port_invalid: 'services', host_ip_invalid: 'services', ports_conflict: 'services',
-  service_unknown: 'services',
+  service_unknown: 'services', host_ip_managed: 'services', target_kind_locked: 'target',
+  vm_cores_invalid: 'machine', vm_memory_invalid: 'machine', vm_disk_invalid: 'machine', vm_disk_shrink: 'machine',
+  vm_keep_snapshots_invalid: 'machine',
 };
 
 type Svc = { host_ip: string; port: string };
@@ -35,6 +37,8 @@ function fromEnv(env: Environment) {
     ref: env.git_ref, target: env.target, domain: env.base_domain, proxy: env.proxy_ip, bind: env.bind_ip,
     keep: String(env.keep_dumps), bucket: env.spaces_bucket, level: env.log_level,
     services: Object.fromEntries(env.services.map((s) => [s.service, { host_ip: s.host_ip, port: String(s.port) }])) as Record<string, Svc>,
+    cores: String(env.vm?.cores ?? ''), memory: env.vm ? String(env.vm.memory_mb / 1024) : '',
+    disk: String(env.vm?.disk_gb ?? ''), keepVm: String(env.vm?.keep_snapshots ?? ''),
   };
 }
 type Form = ReturnType<typeof fromEnv>;
@@ -64,6 +68,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
   const deploying = deploymentRunning(env);
   const [deleting, setDeleting] = useState(false);
   const off = locked || deploying;
+  const onVm = onProxmox(env);
   // The API's teardown needs both.
   const mayDelete = can('deploy', 'add') && can('deploy', 'change');
   const [form, setForm] = useState<Form>(() => fromEnv(env));
@@ -107,8 +112,19 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
       : "That bucket name isn't valid (3–63 lowercase letters, numbers, dots and hyphens).");
     for (const s of env.services) {
       const v = form.services[s.service];
-      const problem = ipv4Problem(v.host_ip, `${s.service} address`) || (portProblem(v.port) && `${s.service}: ${portProblem(v.port)}`);
+      // A Proxmox environment's addresses are the VM's: only the ports are edited.
+      const problem = (!onVm && ipv4Problem(v.host_ip, `${s.service} address`))
+        || (portProblem(v.port) && `${s.service}: ${portProblem(v.port)}`);
       if (problem) { e.services = problem; break; }
+    }
+    if (onVm && env.vm) {
+      const whole = (raw: string, low: number, high: number) =>
+        /^\d+$/.test(raw.trim()) && Number(raw) >= low && Number(raw) <= high;
+      if (!whole(form.cores, 1, 64)) e.machine = 'Use 1 to 64 vCPUs.';
+      else if (!whole(form.memory, 2, 256)) e.machine = 'Use 2 to 256 GB of memory.';
+      else if (!whole(form.disk, 20, 4096)) e.machine = 'Use a disk of 20 to 4096 GB.';
+      else if (Number(form.disk) < env.vm.disk_gb) e.machine = 'A disk can grow but never shrink.';
+      else if (!whole(form.keepVm, 1, 10)) e.machine = 'Keep 1 to 10 VM snapshots.';
     }
     if (!e.services) {
       const used = env.services.map((s) => Number(form.services[s.service].port));
@@ -139,7 +155,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
       const v = form.services[s.service];
       const change: { port?: number; host_ip?: string } = {};
       if (Number(v.port) !== s.port) change.port = Number(v.port);
-      if (t(v.host_ip) !== s.host_ip) change.host_ip = t(v.host_ip);
+      if (!onVm && t(v.host_ip) !== s.host_ip) change.host_ip = t(v.host_ip);
       if (Object.keys(change).length) services[s.service] = change;
     }
     if (Object.keys(services).length) patch.services = services;
@@ -149,6 +165,14 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
       else if (secretAction[key] === 'clear') secrets[key] = '';
     }
     if (Object.keys(secrets).length) patch.secrets = secrets;
+    if (onVm && env.vm) {
+      const vm: NonNullable<EnvironmentPatch['vm']> = {};
+      if (Number(form.cores) !== env.vm.cores) vm.cores = Number(form.cores);
+      if (Number(form.memory) * 1024 !== env.vm.memory_mb) vm.memory_mb = Number(form.memory) * 1024;
+      if (Number(form.disk) !== env.vm.disk_gb) vm.disk_gb = Number(form.disk);
+      if (Number(form.keepVm) !== env.vm.keep_snapshots) vm.keep_snapshots = Number(form.keepVm);
+      if (Object.keys(vm).length) patch.vm = vm;
+    }
     return patch;
   };
 
@@ -183,12 +207,18 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
       <div className="pf-form sirdar-env-grid">
         <TextField id="env-set-ref" label="Default git ref" value={form.ref} error={errors.ref} disabled={off}
                    onChange={(v) => set('ref', v)} />
-        <div>
-          <label className="field-label" htmlFor="env-set-target">Target</label>
-          <ComboBox inputId="env-set-target" ariaLabel="Target" portal value={form.target} options={targetOptions}
-                    disabled={off} onChange={(v) => set('target', v)} />
-          {errors.target && <p className="form-error" role="alert">{errors.target}</p>}
-        </div>
+        {onVm ? (
+          <TextField id="env-set-target" label="Target" value={`Proxmox · ${env.vm?.name ?? ''}`} disabled
+                     error={errors.target} hint="A Proxmox environment stays on the VM Sirdar built for it."
+                     onChange={() => {}} />
+        ) : (
+          <div>
+            <label className="field-label" htmlFor="env-set-target">Target</label>
+            <ComboBox inputId="env-set-target" ariaLabel="Target" portal value={form.target} options={targetOptions}
+                      disabled={off} onChange={(v) => set('target', v)} />
+            {errors.target && <p className="form-error" role="alert">{errors.target}</p>}
+          </div>
+        )}
         <TextField id="env-set-domain" label="Base domain" value={form.domain} error={errors.domain} disabled={off}
                    hint={'Each service is named <service>.<base domain>.'} onChange={(v) => set('domain', v)} />
         <TextField id="env-set-proxy" label="Proxy IP" value={form.proxy} error={errors.proxy} disabled={off}
@@ -207,6 +237,27 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
         </div>
       </div>
 
+      {onVm && (
+        <>
+          <h3 className="sirdar-sub">Machine</h3>
+          <p className="page-hint">
+            The next deploy's step 0 resizes the VM (Proxmox restarts it when it must). A disk can grow but never
+            shrink.
+          </p>
+          <div className="pf-form sirdar-env-grid">
+            <TextField id="env-set-cores" label="vCPUs" value={form.cores} disabled={off}
+                       onChange={(v) => set('cores', v)} />
+            <TextField id="env-set-memory" label="Memory (GB)" value={form.memory} disabled={off}
+                       onChange={(v) => set('memory', v)} />
+            <TextField id="env-set-disk" label="Disk (GB)" value={form.disk} disabled={off}
+                       onChange={(v) => set('disk', v)} />
+            <TextField id="env-set-keepvm" label="VM snapshots to keep" value={form.keepVm} disabled={off}
+                       hint="The newest stay; older ones Sirdar took are deleted." onChange={(v) => set('keepVm', v)} />
+          </div>
+          {errors.machine && <p className="form-error" role="alert">{errors.machine}</p>}
+        </>
+      )}
+
       <h3 className="sirdar-sub">Services</h3>
       <DataTable
         ariaLabel="Service addresses"
@@ -217,8 +268,10 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
           cells: [
             <b className="cell-top">{s.service}</b>,
             s.hostname ?? '—',
-            <input type="text" aria-label={`${s.service} address`} value={form.services[s.service]?.host_ip ?? ''}
-                   disabled={off} onChange={(e) => setSvc(s.service, 'host_ip', e.target.value)} />,
+            onVm
+              ? <span className="mono">{s.host_ip}</span>
+              : <input type="text" aria-label={`${s.service} address`} value={form.services[s.service]?.host_ip ?? ''}
+                       disabled={off} onChange={(e) => setSvc(s.service, 'host_ip', e.target.value)} />,
             <input className="sirdar-port-input" type="text" inputMode="numeric" aria-label={`${s.service} port`}
                    value={form.services[s.service]?.port ?? ''} disabled={off}
                    onChange={(e) => setSvc(s.service, 'port', e.target.value)} />,
@@ -252,8 +305,11 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
         <div className="sirdar-danger-zone">
           <h3 className="sirdar-sub">Delete environment</h3>
           <p className="page-hint">
-            Stops it, deletes its data, backups and folder on the host, removes the DNS records and proxy hosts Sirdar
-            made, and removes it from Sirdar.
+            {onVm
+              ? 'Destroys its VM on Proxmox with everything on it, VM snapshots included, removes the DNS records and '
+                + 'proxy hosts Sirdar made, and removes it from Sirdar.'
+              : 'Stops it, deletes its data, backups and folder on the host, removes the DNS records and proxy hosts '
+                + 'Sirdar made, and removes it from Sirdar.'}
           </p>
           <div className="sirdar-actions">
             <button type="button" className="btn-solid btn-danger" disabled={deploying}
