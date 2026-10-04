@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sirdar_api.deploy import bundle, steps
+from sirdar_api.deploy import bundle, runner, steps
 from sirdar_api.deploy.steps import PLAYBOOK_DIR
 
 from .bundle_helpers import make_bundle
@@ -32,12 +32,43 @@ def _tasks(playbook: str):
     return plays, found
 
 
-def _keys(mode, restore=False):
-    return [s.key for s in steps.plan_for(mode, restore=restore)]
+def _keys(mode, restore=False, publish=False):
+    return [s.key for s in steps.plan_for(mode, restore=restore, publish=publish)]
+
+
+def test_publish_and_teardown_plans():
+    published = ["dns", "proxy", "smoke"]
+    for mode in steps.PUBLISHING_MODES:
+        for restore in ((False, True) if mode in ("update", "reset") else (False,)):
+            assert _keys(mode, restore, publish=True) == [*_keys(mode, restore), *published]
+    assert [s.number for s in steps.plan_for("update", publish=True)] == [
+        1, 2, 3, 4, 5, 6, 10, 12, 13, 14]
+    assert [s.number for s in steps.plan_for("update", restore=True, publish=True)] == [
+        1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 13, 14]
+    assert [s.number for s in steps.plan_for("restore_dump", publish=True)] == [
+        1, 3, 4, 5, 8, 9, 10, 12, 13, 14]
+    assert _keys("publish") == published
+    assert _keys("teardown") == ["teardown", "unproxy", "undns"]
+    assert [s.number for s in steps.plan_for("teardown")] == [15, 16, 17]
+    for mode in ("snapshot", "publish", "teardown"):
+        with pytest.raises(ValueError):
+            steps.plan_for(mode, publish=True)
+    for mode in steps.PUBLISHING_MODES:
+        numbers = [s.number for s in steps.plan_for(mode, publish=True)]
+        assert numbers == sorted(set(numbers)), f"{mode}: numbers must rise"
+    runs = {s.key: s.runs for s in steps.STEPS}
+    assert [k for k, r in runs.items() if r == "python"] == [
+        "dns", "proxy", "smoke", "unproxy", "undns"]
+    assert all(s.playbook == "" for s in steps.STEPS if s.runs == "python")
+    assert all(s.playbook for s in steps.ANSIBLE_STEPS)
+    assert steps.STEPS_BY_KEY["proxy"].timeout >= 30 * 60
+    assert (steps.STEPS_BY_KEY["dns"].name, steps.STEPS_BY_KEY["teardown"].name) == (
+        "DNS records", "Remove environment")
 
 
 def test_plans():
-    assert [s.number for s in steps.STEPS] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11]
+    assert [s.number for s in steps.STEPS] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11, 12, 13, 14,
+                                               15, 16, 17]
     assert [s.number for s in steps.plan_for("update")] == [1, 2, 3, 4, 5, 6, 10]
     build = ["preflight", "bootstrap", "fetch", "render", "build"]
     # a seeded first deploy backs up whatever database is already there
@@ -67,16 +98,16 @@ def test_plans():
 
 def test_every_playbook_belongs_to_a_step():
     assert sorted(p.name for p in PLAYBOOK_DIR.glob("*.yml")) == \
-        sorted(s.playbook for s in steps.STEPS)
+        sorted(s.playbook for s in steps.ANSIBLE_STEPS)
 
 
 def test_playbooks_ship_with_the_package():
     folder = resources.files("sirdar_api.deploy").joinpath("ansible")
-    for step in steps.STEPS:
+    for step in steps.ANSIBLE_STEPS:
         assert folder.joinpath(step.playbook).is_file()
 
 
-@pytest.mark.parametrize("step", steps.STEPS, ids=lambda s: s.key)
+@pytest.mark.parametrize("step", steps.ANSIBLE_STEPS, ids=lambda s: s.key)
 def test_playbook_shape(step):
     plays, tasks = _tasks(step.playbook)
     assert len(plays) == 1 and plays[0]["hosts"] == "target"
@@ -89,7 +120,7 @@ def test_playbook_shape(step):
             assert task.get("no_log") is True, f"{step.playbook}: {task['name']} needs no_log"
 
 
-@pytest.mark.parametrize("step", steps.STEPS, ids=lambda s: s.key)
+@pytest.mark.parametrize("step", steps.ANSIBLE_STEPS, ids=lambda s: s.key)
 def test_syntax_check(step, tmp_path):
     cfg = tmp_path / "ansible.cfg"
     cfg.write_text("[defaults]\n")
@@ -437,3 +468,82 @@ def test_export_playbook_cleans_up_after_a_failure(tmp_path):
     assert calls[-1].endswith("exec -T postgres rm -f /tmp/sirdar-snapshot.dump")
     assert not (env_dir / "snapshot-work").exists()
     assert not dest.exists()
+
+
+# ---- step 15: Remove environment ------------------------------------------------------
+
+def _teardown_vars(env_dir: Path, tmp_path: Path, /, **override) -> dict:
+    # _target names the folder "env": that is the environment name the
+    # playbook's safety check compares against, under env_root = tmp_path.
+    # Wrapped as the runner wraps every extravar.
+    return runner._unsafe({**_common(env_dir), "env_name": "env", "env_root": str(tmp_path),
+                           "teardown_become": False, **override})
+
+
+def test_teardown_playbook_stops_everything_and_removes_the_folder(tmp_path):
+    env_dir, env = _target(tmp_path)
+    result, calls = _play(tmp_path, "teardown.yml", _teardown_vars(env_dir, tmp_path), env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert [c.split(" -f ")[-1] for c in calls if c.startswith("compose")] == [
+        f"{env_dir}/repo/deploy/stack/{s}/compose.yml down --volumes"
+        for s in ("status", "web", "api", "storage", "db")]
+    assert "network rm ss-e2e" in calls
+    assert not env_dir.exists()
+    assert (REPO / "deploy" / "stack" / "ss-stack").is_file()      # the symlink went, not this
+
+
+def test_teardown_playbook_gives_ss_stack_no_stdin():
+    """docker compose under ss-stack must never read the SSH session's stdin."""
+    _, tasks = _tasks("teardown.yml")
+    down = [t for t in tasks if t["name"] == "ss-stack down --volumes"]
+    assert len(down) == 1
+    argv = down[0]["ansible.builtin.command"]["argv"]
+    assert argv[:2] == ["sh", "-c"]
+    assert argv[2] == 'exec "$0" down "$1" --volumes </dev/null'
+    assert argv[3:] == ["{{ ss_stack }}", "{{ env_dir }}"]      # arguments, never script text
+
+
+def test_teardown_playbook_removes_a_folder_that_never_deployed(tmp_path):
+    env_dir, env = _target(tmp_path)
+    (env_dir / ".env").unlink()
+    result, calls = _play(tmp_path, "teardown.yml", _teardown_vars(env_dir, tmp_path), env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert calls == [] and not env_dir.exists()
+    again, _ = _play(tmp_path, "teardown.yml", _teardown_vars(env_dir, tmp_path), env)
+    assert again.returncode == 0, again.stdout + again.stderr
+
+
+def test_teardown_playbook_refuses_a_folder_outside_the_root(tmp_path):
+    env_dir, env = _target(tmp_path)
+    extra = _teardown_vars(env_dir, tmp_path, env_root="/opt/serversherpa")
+    result, calls = _play(tmp_path, "teardown.yml", extra, env)
+    assert result.returncode != 0
+    assert f"Refusing to remove {env_dir}" in result.stdout
+    assert calls == [] and env_dir.exists()
+
+
+@pytest.mark.parametrize("env_name, env_dir", [
+    ("env", "{root}/env/"),                 # not exactly the folder
+    ("env", "{root}/env/.."),
+    ("env", "{root}/other"),
+    ("env", "{root}"),
+    ("env", "{root}/env/repo"),
+    ("..", "{root}/.."),
+    ("Env", "{root}/Env"),
+    ("env/x", "{root}/env/x"),
+    ("e", "{root}/e"),
+    ("{{ 7*7 }}", "{root}/{{ 7*7 }}"),
+])
+def test_teardown_playbook_refuses_anything_but_root_slash_name(tmp_path, env_name, env_dir):
+    real_dir, env = _target(tmp_path)
+    extra = _teardown_vars(real_dir, tmp_path, env_name=env_name,
+                           env_dir=env_dir.format(root=tmp_path))
+    result, calls = _play(tmp_path, "teardown.yml", extra, env)
+    assert result.returncode != 0
+    assert "Refusing to remove" in result.stdout
+    assert calls == [] and real_dir.exists() and (real_dir / ".env").exists()
+
+
+def test_teardown_playbook_defaults_to_opt_serversherpa():
+    plays, _ = _tasks("teardown.yml")
+    assert plays[0]["vars"]["root"] == "{{ env_root | default('/opt/serversherpa') }}"

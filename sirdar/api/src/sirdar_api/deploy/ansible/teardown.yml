@@ -1,0 +1,48 @@
+# Step 15 — Remove environment (Delete environment only): stop every stack
+# and delete its volumes and network (ss-stack down --volumes), then delete
+# the environment's folder: checkout, .env and backups. Images stay: another
+# environment on this host may run the same commit. A folder without a .env
+# or ss-stack (never deployed, half bootstrapped) is simply deleted. Steps
+# 16 and 17 then remove the proxy hosts and DNS records Sirdar made.
+- name: Remove environment
+  hosts: target
+  gather_facts: false
+  vars:
+    root: "{{ env_root | default('/opt/serversherpa') }}"
+  tasks:
+    - name: Only an environment's own folder
+      ansible.builtin.assert:
+        that:
+          - env_name is match('^[a-z][a-z0-9-]{1,31}$')
+          - env_dir == root ~ '/' ~ env_name
+        fail_msg: "Refusing to remove {{ env_dir }}: it isn't {{ root }}/{{ env_name }}."
+        quiet: true
+
+    - name: Look for the environment's .env
+      ansible.builtin.stat:
+        path: "{{ env_dir }}/.env"
+      register: env_file
+
+    - name: Look for ss-stack
+      ansible.builtin.stat:
+        path: "{{ ss_stack }}"
+      register: stack_tool
+
+    # sh only to close stdin (docker compose would read the SSH session's);
+    # ss_stack and env_dir are its arguments, never part of the script.
+    - name: ss-stack down --volumes
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -c
+          - 'exec "$0" down "$1" --volumes </dev/null'
+          - "{{ ss_stack }}"
+          - "{{ env_dir }}"
+      when: env_file.stat.exists and stack_tool.stat.exists
+      changed_when: true
+
+    - name: Remove the environment folder
+      become: "{{ teardown_become | default(true) | bool }}"
+      ansible.builtin.file:
+        path: "{{ env_dir }}"
+        state: absent

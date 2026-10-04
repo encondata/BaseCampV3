@@ -4,13 +4,22 @@ Numbers follow the spec's order: 8 starts the data services, 9 restores
 data and 10 ("Start services": `ss-stack up` runs migrate, then the app)
 covers spec steps 10–11. Restore snapshot and Restore backup share number
 9 and never meet in one plan. Take snapshot (11) is a job of its own.
-DNS, proxy and smoke tests (12–14) are phase 4."""
+
+12–14 publish (DNS records, proxy hosts, smoke test). They run in Sirdar
+itself (runs="python", see publish.py) and a deployment has them when it
+publishes; a "publish" deployment is only them. Delete environment
+("teardown") runs 15 (stacks and folder on the host, an Ansible playbook),
+then 16 and 17 (the proxy hosts and DNS records Sirdar made)."""
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 PLAYBOOK_DIR = Path(__file__).resolve().parent / "ansible"
-MODES = ("update", "reset", "snapshot", "restore_dump", "rollback")
+MODES = ("update", "reset", "snapshot", "restore_dump", "rollback", "publish", "teardown")
+# Modes that change what runs on the host: they publish afterwards when asked.
+PUBLISHING_MODES = ("update", "reset", "restore_dump", "rollback")
+PUBLISH_KEYS = ("dns", "proxy", "smoke")
 
 
 @dataclass(frozen=True)
@@ -18,8 +27,9 @@ class StepDef:
     number: int
     key: str
     name: str
-    playbook: str
-    timeout: int                 # seconds for the whole playbook run
+    playbook: str                # "" for a step that runs in Sirdar
+    timeout: int                 # seconds for the whole step
+    runs: Literal["ansible", "python"] = "ansible"
 
 
 STEPS: tuple[StepDef, ...] = (
@@ -35,8 +45,15 @@ STEPS: tuple[StepDef, ...] = (
     StepDef(9, "restore_dump", "Restore backup", "restore_dump.yml", 60 * 60),
     StepDef(10, "up", "Start services", "up.yml", 45 * 60),
     StepDef(11, "export", "Take snapshot", "export.yml", 120 * 60),
+    StepDef(12, "dns", "DNS records", "", 10 * 60, "python"),
+    StepDef(13, "proxy", "Proxy hosts", "", 45 * 60, "python"),
+    StepDef(14, "smoke", "Smoke test", "", 10 * 60, "python"),
+    StepDef(15, "teardown", "Remove environment", "teardown.yml", 30 * 60),
+    StepDef(16, "unproxy", "Remove proxy hosts", "", 15 * 60, "python"),
+    StepDef(17, "undns", "Remove DNS records", "", 10 * 60, "python"),
 )
 STEPS_BY_KEY = {s.key: s for s in STEPS}
+ANSIBLE_STEPS = tuple(s for s in STEPS if s.runs == "ansible")
 
 _BUILD = ("preflight", "bootstrap", "fetch", "render", "build")
 # (mode, restores a snapshot) -> step keys, in order.
@@ -56,12 +73,19 @@ _PLANS: dict[tuple[str, bool], tuple[str, ...]] = {
     # the previous commit, with the failed deployment's pre-deploy dump
     ("rollback", False): ("preflight", "fetch", "render", "build", "data", "restore_dump", "up"),
     ("snapshot", False): ("preflight", "export"),
+    ("publish", False): PUBLISH_KEYS,
+    # the host first: nothing is unpublished while the environment still runs
+    ("teardown", False): ("teardown", "unproxy", "undns"),
 }
 
 
-def plan_for(mode: str, *, restore: bool = False) -> list[StepDef]:
+def plan_for(mode: str, *, restore: bool = False, publish: bool = False) -> list[StepDef]:
     try:
         keys = _PLANS[(mode, restore)]
     except KeyError:
         raise ValueError(f"no deploy plan for mode {mode!r} (restore={restore})") from None
+    if publish:
+        if mode not in PUBLISHING_MODES:
+            raise ValueError(f"mode {mode!r} doesn't publish")
+        keys = (*keys, *PUBLISH_KEYS)
     return [STEPS_BY_KEY[k] for k in keys]
