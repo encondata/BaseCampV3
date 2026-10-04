@@ -11,6 +11,7 @@ the .env on the next deploy."""
 import ipaddress
 import re
 import shlex
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -19,7 +20,13 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
-from sirdar_api.db.models import Deployment, Environment, EnvironmentSecret, EnvironmentService
+from sirdar_api.db.models import (
+    Deployment,
+    Environment,
+    EnvironmentSecret,
+    EnvironmentService,
+    Snapshot,
+)
 from sirdar_api.deploy import ConnectFailed, envfile, names, ssh, targets, vault
 from sirdar_api.deploy.gitref import SHA_RE, valid_ref
 from sirdar_api.deploy.ssh import SshTargetConfig
@@ -176,12 +183,13 @@ async def _insert(db: AsyncSession, settings: Settings, cfg: SshTargetConfig, *,
                   bind_ip: str, ports: dict[str, int], keep_dumps: int, spaces_bucket: str,
                   log_level: str, status: str, current_sha: str | None,
                   image_tag: str | None, secrets: dict[str, str],
-                  actor_id) -> Environment:
+                  actor_id, seed_snapshot_id: uuid.UUID | None = None) -> Environment:
     env = Environment(name=name, type=type_, target_id=target_id, base_domain=domain,
                       git_ref=git_ref, current_sha=current_sha, image_tag=image_tag,
                       status=status, proxy_ip=proxy_ip, bind_ip=bind_ip,
                       keep_dumps=keep_dumps, spaces_bucket=spaces_bucket,
-                      log_level=log_level, created_by=actor_id)
+                      log_level=log_level, created_by=actor_id,
+                      seed_snapshot_id=seed_snapshot_id)
     db.add(env)
     await db.flush()
     for service in envfile.SERVICES:
@@ -199,11 +207,23 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                      target_id: str, git_ref: str = DEFAULT_GIT_REF,
                      base_domain: str | None = None, proxy_ip: str | None = None,
                      bind_ip: str = DEFAULT_BIND_IP,
-                     ports: dict[str, int] | None = None, actor_id=None) -> Environment:
+                     ports: dict[str, int] | None = None, actor_id=None,
+                     snapshot_id: uuid.UUID | None = None) -> Environment:
     """A new environment (status "new"): default ports unless given, the
-    target's host for every service, freshly generated secrets."""
+    target's host for every service, freshly generated secrets. With a
+    snapshot, its first deploy restores that snapshot (and its keys)."""
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
                           git_ref=git_ref)
+    if snapshot_id is not None:
+        # Locked until the caller commits, so a concurrent delete waits and
+        # then sees this environment's seed (in use) instead of racing it.
+        snap = await db.scalar(select(Snapshot).where(Snapshot.id == snapshot_id)
+                               .with_for_update()
+                               .execution_options(populate_existing=True))
+        if snap is None:
+            raise EnvError("snapshot_not_found")
+        if snap.status != "ready":
+            raise EnvError("snapshot_not_ready")
     domain = _check_domain(base_domain or f"{name}.{DEFAULT_DOMAIN_SUFFIX}")
     if not proxy_ip:
         raise EnvError("proxy_ip_required")
@@ -221,7 +241,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         domain=domain, proxy_ip=proxy, bind_ip=bind, ports=all_ports,
         keep_dumps=envfile.DEFAULT_KEEP_DUMPS, spaces_bucket=envfile.DEFAULT_SPACES_BUCKET,
         log_level=envfile.DEFAULT_LOG_LEVEL, status="new", current_sha=None, image_tag=None,
-        secrets=vault.generate_env_secrets(), actor_id=actor_id)
+        secrets=vault.generate_env_secrets(), actor_id=actor_id, seed_snapshot_id=snapshot_id)
 
 
 @dataclass(frozen=True)

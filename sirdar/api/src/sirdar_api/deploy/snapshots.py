@@ -328,15 +328,41 @@ async def in_use(db: AsyncSession, snap: Snapshot) -> bool:
     return running is not None or seeding is not None
 
 
-async def delete(db: AsyncSession, settings: Settings, snap: Snapshot) -> Path | None:
+async def delete(db: AsyncSession, settings: Settings, snap: Snapshot) -> Path:
     """Delete the row; the bundle file to remove once the caller has
-    committed (None when there is none)."""
-    if await in_use(db, snap):
+    committed (it may not exist). The row is locked and re-read first, so a
+    concurrent create_deployment (which locks it too) either finishes first
+    (in use) or sees it gone. The path is returned whatever the status: a
+    failed snapshot can still have a stored bundle when a cancel landed
+    during ingest."""
+    locked = await db.scalar(select(Snapshot).where(Snapshot.id == snap.id)
+                             .with_for_update()
+                             .execution_options(populate_existing=True))
+    if locked is None:
+        raise SnapshotError("snapshot_not_found")
+    if await in_use(db, locked):
         raise SnapshotError("snapshot_in_use")
-    path = root(settings) / snap.bundle_file if snap.bundle_file else None
-    await db.delete(snap)
+    path = root(settings) / (locked.bundle_file or f"{locked.id}.tar.gz")
+    await db.delete(locked)
     await db.flush()
     return path
+
+
+def sweep_incoming(settings: Settings) -> int:
+    """Remove every *.upload and *.partial a crash left: in incoming/ and
+    beside the bundles. Only for startup, when no upload is in flight.
+    Sync; a missing folder is fine."""
+    removed = 0
+    for folder, patterns in ((incoming_dir(settings), ("*.upload", "*.partial")),
+                             (root(settings), ("*.partial",))):
+        if not folder.is_dir():
+            continue
+        for pattern in patterns:
+            for path in folder.glob(pattern):
+                if path.is_symlink() or path.is_file():
+                    path.unlink(missing_ok=True)
+                    removed += 1
+    return removed
 
 
 async def ready_snapshot(db: AsyncSession, snapshot_id: uuid.UUID) -> Snapshot:

@@ -240,3 +240,73 @@ async def test_bundle_checks_cap_decompression_at_four_times_the_upload_cap(
     await _upload(db, make_bundle(tmp_path, name="b2.tar.gz", keys=token).read_bytes(),
                   name="second")
     assert seen == [("rewrite_keys", 4_000_000), ("verify", 4_000_000)]
+
+
+async def test_delete_rechecks_the_locked_row(db, tmp_path, snapshots_dir):
+    """delete() locks and re-reads the row: a stale ready copy in this session
+    doesn't hide that another session made it pending, or deleted it."""
+    from sqlalchemy import update
+
+    from sirdar_api.db.engine import get_sessionmaker
+
+    settings = get_settings()
+    snap = await _upload(db, _keys_env_bundle(tmp_path))
+    snap_id = snap.id
+    assert snap.status == "ready"
+    async with get_sessionmaker()() as other:
+        await other.execute(update(Snapshot).where(Snapshot.id == snap.id)
+                            .values(status="pending"))
+        await other.commit()
+    with pytest.raises(SnapshotError) as exc:
+        await snapshots.delete(db, settings, snap)
+    assert exc.value.code == "snapshot_in_use"
+    await db.rollback()
+    snap = await db.get(Snapshot, snap_id)              # loaded again, then deleted elsewhere
+    async with get_sessionmaker()() as other:
+        await other.execute(Snapshot.__table__.delete().where(Snapshot.id == snap_id))
+        await other.commit()
+    with pytest.raises(SnapshotError) as exc:
+        await snapshots.delete(db, settings, snap)
+    assert exc.value.code == "snapshot_not_found"
+
+
+async def test_delete_of_a_failed_snapshot_returns_its_bundle(db, tmp_path, snapshots_dir):
+    """A cancel that lands during ingest leaves the snapshot failed, with no
+    bundle_file, but the stored bundle may already be on disk."""
+    settings = get_settings()
+    env = await make_environment(db, current_sha="a" * 40)
+    snap = await snapshots.begin_take(db, settings, env, name="half-in", notes="",
+                                      actor_id=None)
+    snap.status = "failed"
+    await db.commit()
+    leftover = snapshots.root(settings) / f"{snap.id}.tar.gz"
+    leftover.write_bytes(b"stored before the cancel")
+    assert await snapshots.delete(db, settings, snap) == leftover
+    await db.commit()
+    assert await db.get(Snapshot, snap.id) is None
+
+
+def test_sweep_incoming_removes_stale_uploads_and_partials(snapshots_dir):
+    settings = get_settings()
+    snapshots.ensure_dirs(settings)
+    root, incoming = snapshots.root(settings), snapshots.incoming_dir(settings)
+    stale = [incoming / f"{uuid.uuid4()}.upload", incoming / "x.tar.gz.partial",
+             root / f"{uuid.uuid4()}.tar.gz.partial"]
+    for path in stale:
+        path.write_bytes(KEYS_ENV)                      # a crashed upload's plaintext keys
+    kept = [root / f"{uuid.uuid4()}.tar.gz", incoming / f"{uuid.uuid4()}.tar.gz"]
+    for path in kept:
+        path.write_bytes(b"bundle")
+    assert snapshots.sweep_incoming(settings) == 3
+    assert not any(p.exists() for p in stale)
+    assert all(p.exists() for p in kept)
+    assert snapshots.sweep_incoming(settings) == 0
+
+
+def test_sweep_incoming_without_a_snapshots_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIRDAR_SNAPSHOTS_DIR", str(tmp_path / "nowhere"))
+    get_settings.cache_clear()
+    try:
+        assert snapshots.sweep_incoming(get_settings()) == 0
+    finally:
+        get_settings.cache_clear()

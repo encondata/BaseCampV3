@@ -280,3 +280,22 @@ async def test_restore_secrets_never_reach_the_error_or_logs(db, env, fake_runne
     text = (dep.error or "") + "".join(s.log or "" for s in steps)
     for value in SNAP_KEYS.values():
         assert value not in text
+
+
+async def test_create_rechecks_the_locked_row_not_a_stale_copy(db, env, tmp_path):
+    """The snapshot this session already holds says ready; another session
+    failed it since. The locked select must read the row, not the copy."""
+    from sqlalchemy import update
+
+    from sirdar_api.db.engine import get_sessionmaker
+
+    snap = await _ready_snapshot(db, tmp_path)
+    assert snap.status == "ready"                      # in this session's identity map
+    async with get_sessionmaker()() as other:
+        await other.execute(update(Snapshot).where(Snapshot.id == snap.id)
+                            .values(status="failed"))
+        await other.commit()
+    with pytest.raises(snapshots.SnapshotError) as caught:
+        await pipeline.create_deployment(db, env, mode="reset", git_ref="main", sha=SHA,
+                                         actor_id=None, snapshot_id=snap.id)
+    assert caught.value.code == "snapshot_not_ready"

@@ -107,6 +107,12 @@ async def sweep_runs() -> int:
     return await asyncio.to_thread(sweep, 0)
 
 
+async def sweep_snapshots() -> int:
+    """Startup: remove the half-written files a crashed upload or bundle
+    write left in SIRDAR_SNAPSHOTS_DIR (an upload's may hold plaintext keys)."""
+    return await asyncio.to_thread(snapshots.sweep_incoming, get_settings())
+
+
 def _redaction_values(values) -> list[str]:
     """Each secret plus its JSON-escaped form (quotes, backslashes and line
     breaks as ansible prints them) when that differs."""
@@ -156,8 +162,10 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
         # Lock the snapshot row until the caller commits, and re-check it in
         # this transaction: a concurrent delete (which locks it too) then
         # either finishes first (we refuse) or sees our running deployment.
+        # populate_existing: read the locked row, not a stale identity-map copy.
         snap = await db.scalar(select(Snapshot).where(Snapshot.id == snapshot_id)
-                               .with_for_update())
+                               .with_for_update()
+                               .execution_options(populate_existing=True))
         if snap is None:
             raise snapshots.SnapshotError("snapshot_not_found")
         wanted = "pending" if mode == "snapshot" else "ready"

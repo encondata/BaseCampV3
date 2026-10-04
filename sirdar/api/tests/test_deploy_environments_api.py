@@ -23,8 +23,8 @@ from .test_deploy_api import _ssh_env, deploy_env  # noqa: F401
 URL = "/api/deploy/environments"
 ENV_KEYS = {"id", "name", "type", "target", "base_domain", "env_dir", "git_ref", "current_sha",
             "image_tag", "status", "proxy_ip", "bind_ip", "keep_dumps", "spaces_bucket",
-            "log_level", "services", "secrets_set", "last_deployment", "created_at",
-            "updated_at"}
+            "log_level", "services", "secrets_set", "seed_snapshot", "last_deployment",
+            "created_at", "updated_at"}
 NEW = {"mode": "new", "name": "qa", "type": "custom", "target": "ssh",
        "proxy_ip": "10.10.48.6"}
 DEFAULTS_URL = "/api/deploy/environment-defaults"

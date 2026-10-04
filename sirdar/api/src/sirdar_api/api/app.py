@@ -32,6 +32,11 @@ async def _lifespan(app: FastAPI):
     # A disk problem must not stop the app starting.
     except Exception as e:  # noqa: BLE001
         log.warning("couldn't sweep stale runner folders at startup: %s", type(e).__name__)
+    try:
+        await pipeline.sweep_snapshots()     # half-written uploads (maybe plaintext keys)
+    # A disk problem must not stop the app starting.
+    except Exception as e:  # noqa: BLE001
+        log.warning("couldn't sweep stale snapshot uploads at startup: %s", type(e).__name__)
     yield
     await pipeline.shutdown(timeout=pipeline.SHUTDOWN_SECONDS)   # runs end "interrupted"
     await dispose_engine()
