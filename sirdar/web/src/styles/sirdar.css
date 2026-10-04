@@ -141,3 +141,8 @@
 /* Publish tab */
 .sirdar-publish-switch { margin: 8px 0 16px; }
 .sirdar-publish-switch .segmented { margin-top: 4px; }
+
+.sirdar-plain-list { margin: 4px 0 0; padding-left: 18px; }
+.sirdar-plain-list li { margin: 2px 0; }
+.sirdar-danger-zone { margin-top: 28px; }
+.sirdar-danger-zone .sirdar-actions { justify-content: flex-start; }

@@ -10,9 +10,10 @@ import SecretField, { type SecretAction } from '../../components/SecretField';
 import { ipv4Problem, portProblem, refProblem } from '../../lib/envRules';
 import {
   deployErrorText, errorDetail, getEnvironmentDefaults, updateEnvironment,
-  type DeployTarget, type Environment, type EnvironmentPatch,
+  type DeployTarget, type Deployment, type Environment, type EnvironmentPatch,
 } from '../../lib/sirdarApi';
 
+import DeleteEnvironmentModal from './DeleteEnvironmentModal';
 import { sshTargets, targetLabel } from './labels';
 
 const SECRET_LABELS: Record<string, string> = {
@@ -53,12 +54,15 @@ function TextField({ id, label, value, error, hint, disabled, onChange }: {
   );
 }
 
-export default function EnvSettings({ env, targets, onSaved }: {
+export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: {
   env: Environment; targets: DeployTarget[]; onSaved: (env: Environment) => void;
+  /** Given: offer Delete environment, and hand its teardown deployment back. */
+  onDeleteStarted?: (dep: Deployment) => void;
 }) {
   const { can } = useAuth();
   const locked = !can('deploy', 'change');
-  const deploying = env.status === 'deploying';
+  const deploying = env.status === 'deploying' || env.status === 'deleting';
+  const [deleting, setDeleting] = useState(false);
   const off = locked || deploying;
   const [form, setForm] = useState<Form>(() => fromEnv(env));
   const [secretAction, setSecretAction] = useState<Record<string, SecretAction>>({});
@@ -241,6 +245,25 @@ export default function EnvSettings({ env, targets, onSaved }: {
             {saving ? 'Saving…' : 'Save settings'}
           </button>
         </div>
+      )}
+      {!locked && onDeleteStarted && (
+        <div className="sirdar-danger-zone">
+          <h3 className="sirdar-sub">Delete environment</h3>
+          <p className="page-hint">
+            Stops it, deletes its data and folder on the host, removes the DNS records and proxy hosts Sirdar made, and
+            removes it from Sirdar.
+          </p>
+          <div className="sirdar-actions">
+            <button type="button" className="btn-solid btn-danger" disabled={deploying}
+                    title={deploying ? 'A deployment is running.' : undefined} onClick={() => setDeleting(true)}>
+              Delete environment…
+            </button>
+          </div>
+        </div>
+      )}
+      {deleting && onDeleteStarted && (
+        <DeleteEnvironmentModal env={env} onClose={() => setDeleting(false)}
+                                onStarted={(dep) => { setDeleting(false); onDeleteStarted(dep); }} />
       )}
     </section>
   );

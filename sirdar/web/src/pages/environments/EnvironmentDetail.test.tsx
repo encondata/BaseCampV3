@@ -21,7 +21,7 @@ vi.mock('./DeploymentView', () => ({ default: ({ id }: { id: string }) => <div>d
 import { ApiError } from '@portal/lib/api';
 
 import EnvironmentDetail, { ENV_POLL_MS } from './EnvironmentDetail';
-import { ADOPTED, BACKUPS, DEFAULTS, ENV, PUBLISH_PLAN, RUNNING, TARGETS, summary } from './testData';
+import { ADOPTED, BACKUPS, DEFAULTS, ENV, PUBLISH_PLAN, RUNNING, TARGETS, TEARDOWN, summary } from './testData';
 
 Element.prototype.scrollIntoView = () => {};
 beforeEach(() => {
@@ -203,6 +203,18 @@ describe('while the environment is deploying', () => {
     await tick(ENV_POLL_MS * 4);
     expect(api.getEnvironment).toHaveBeenCalledTimes(3);
   });
+
+  it('once a deleting environment is gone, the page says so', async () => {
+    api.getEnvironment.mockResolvedValueOnce({ ...ENV, status: 'deleting' })
+      .mockRejectedValue(new ApiError(404, 'environment_not_found', { code: 'environment_not_found' }));
+    show();
+    expect(await screen.findByText('Deleting')).toBeTruthy();
+    await tick(ENV_POLL_MS);
+    expect(await screen.findByText('uat was deleted.')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Back to Deploy' }).getAttribute('href')).toBe('/deploy');
+    await tick(ENV_POLL_MS * 3);                 // gone: polling stops
+    expect(api.getEnvironment).toHaveBeenCalledTimes(2);
+  });
 });
 
 it('the Overview names the seed snapshot the first deploy restores', async () => {
@@ -231,4 +243,26 @@ it('the Publish tab sits between Deployments and Backups and shows the plan', as
   await userEvent.click(screen.getByRole('tab', { name: 'Publish' }));
   expect(await screen.findByRole('table', { name: 'Public names' })).toBeTruthy();
   expect(api.getPublishPlan).toHaveBeenCalledWith('uat');
+});
+
+it('Delete environment from the Settings tab: typed name, then the page follows the teardown', async () => {
+  api.startDeployment.mockResolvedValue(TEARDOWN);
+  api.getEnvironment.mockResolvedValueOnce(ENV).mockResolvedValue({ ...ENV, status: 'deleting' });
+  show();
+  await userEvent.click(await screen.findByRole('tab', { name: 'Settings' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Delete environment…' }));
+  const dialog = screen.getByRole('dialog', { name: 'Delete uat' });
+  await userEvent.type(within(dialog).getByLabelText('Type uat to confirm'), 'uat');
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Delete environment' }));
+  expect(await screen.findByText('deployment view d7')).toBeTruthy();
+  expect(screen.getByRole('tab', { name: 'Deployments' }).getAttribute('aria-selected')).toBe('true');
+  expect(await screen.findByText('Deleting')).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Deploy' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('a view-only reader has no Delete environment button', async () => {
+  perms.change = false;
+  show();
+  await userEvent.click(await screen.findByRole('tab', { name: 'Settings' }));
+  expect(screen.queryByRole('button', { name: 'Delete environment…' })).toBeNull();
 });

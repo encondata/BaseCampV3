@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '@portal/auth/AuthContext';
+import { ApiError } from '@portal/lib/api';
 
 import {
   errorText, getDeployTargets, getEnvironment, type DeployTarget, type Deployment, type Environment,
@@ -45,6 +46,9 @@ function EnvironmentPage({ name }: { name: string }) {
   const [selected, setSelected] = useState<string | null>(linked);
   const [tab, setTab] = useState<Tab>(linked ? 'deployments' : 'overview');
   const [deploying, setDeploying] = useState(false);
+  // A teardown ends by deleting the environment: a 404 after it loaded means gone.
+  const [gone, setGone] = useState(false);
+  const loaded = useRef(false);
   const seq = useRef(0);
 
   // A new ?deployment= link on the same environment opens that deployment.
@@ -54,15 +58,19 @@ function EnvironmentPage({ name }: { name: string }) {
   const load = useCallback(() => {
     const n = ++seq.current;
     return getEnvironment(name)
-      .then((e) => { if (n === seq.current) { setEnv(e); setError(''); } })
-      .catch((e) => { if (n === seq.current) setError(errorText(e, "Couldn't load this environment.")); });
+      .then((e) => { if (n === seq.current) { loaded.current = true; setEnv(e); setError(''); } })
+      .catch((e) => {
+        if (n !== seq.current) return;
+        if (loaded.current && e instanceof ApiError && e.code === 'environment_not_found') setGone(true);
+        else setError(errorText(e, "Couldn't load this environment."));
+      });
   }, [name]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => () => { seq.current += 1; }, []);
   // One reload at a time: the next is scheduled only after the last settles.
   const status = env?.status;
   useEffect(() => {
-    if (status !== 'deploying') return undefined;
+    if ((status !== 'deploying' && status !== 'deleting') || gone) return undefined;
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const schedule = () => {
@@ -70,7 +78,7 @@ function EnvironmentPage({ name }: { name: string }) {
     };
     schedule();
     return () => { live = false; if (timer) clearTimeout(timer); };
-  }, [status, load]);
+  }, [status, load, gone]);
   useEffect(() => {
     let live = true;
     getDeployTargets().then((r) => { if (live) setTargets(r.targets); })
@@ -86,6 +94,15 @@ function EnvironmentPage({ name }: { name: string }) {
   };
 
   const crumb = <div className="eyebrow"><Link to="/deploy">Deploy</Link></div>;
+  if (gone) {
+    return (
+      <div className="portal-page">
+        {crumb}
+        <p className="page-hint" role="status">{name} was deleted.</p>
+        <Link to="/deploy">Back to Deploy</Link>
+      </div>
+    );
+  }
   if (!env) {
     return (
       <div className="portal-page">
@@ -94,7 +111,7 @@ function EnvironmentPage({ name }: { name: string }) {
       </div>
     );
   }
-  const running = env.status === 'deploying';
+  const running = env.status === 'deploying' || env.status === 'deleting';
   return (
     <div className="portal-page">
       {crumb}
@@ -123,7 +140,7 @@ function EnvironmentPage({ name }: { name: string }) {
       )}
       {tab === 'publish' && <PublishTab env={env} onStarted={started} onChanged={setEnv} />}
       {tab === 'backups' && <BackupsTab env={env} onStarted={started} />}
-      {tab === 'settings' && <EnvSettings env={env} targets={targets} onSaved={setEnv} />}
+      {tab === 'settings' && <EnvSettings env={env} targets={targets} onSaved={setEnv} onDeleteStarted={started} />}
       {deploying && <DeployModal env={env} onStarted={started} onClose={() => setDeploying(false)} />}
     </div>
   );
