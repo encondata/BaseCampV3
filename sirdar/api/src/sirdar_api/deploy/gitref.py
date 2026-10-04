@@ -29,6 +29,16 @@ def valid_ref(ref: str) -> bool:
     return bool(_REF_RE.fullmatch(ref)) and not ref.endswith(("/", ".lock"))
 
 
+def is_full_sha(ref: str) -> bool:
+    """Any-case 40-hex: store it with full_sha (lowercase), never as given."""
+    return bool(_ANY_SHA_RE.fullmatch(ref))
+
+
+def full_sha(ref: str) -> str | None:
+    """The ref as a stored commit (lowercase) when it is a full SHA, else None."""
+    return ref.lower() if is_full_sha(ref) else None
+
+
 def ls_remote_command(repo_url: str, ref: str) -> str:
     return f"git ls-remote {shlex.quote(repo_url)} {shlex.quote(ref)}"
 

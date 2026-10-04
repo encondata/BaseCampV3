@@ -9,17 +9,26 @@ covers spec steps 10–11. Restore snapshot and Restore backup share number
 itself (runs="python", see publish.py) and a deployment has them when it
 publishes; a "publish" deployment is only them. Delete environment
 ("teardown") runs 15 (stacks and folder on the host, an Ansible playbook),
-then 16 and 17 (the proxy hosts and DNS records Sirdar made)."""
+then 16 and 17 (the proxy hosts and DNS records Sirdar made).
+
+A Proxmox environment (vm=True) builds its host first: 0 Prepare VM
+(runs="vm", see provision.py) starts its update / reset / restore_dump /
+rollback plans; its Delete runs 15 Destroy VM instead of 15 Remove
+environment; and only it has "vm_restore", a plan of 0 Restore VM snapshot
+alone. Steps with the same number never meet in one plan."""
 
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 PLAYBOOK_DIR = Path(__file__).resolve().parent / "ansible"
-MODES = ("update", "reset", "snapshot", "restore_dump", "rollback", "publish", "teardown")
+MODES = ("update", "reset", "snapshot", "restore_dump", "rollback", "publish", "teardown",
+         "vm_restore")
 # Modes that change what runs on the host: they publish afterwards when asked.
 PUBLISHING_MODES = ("update", "reset", "restore_dump", "rollback")
 PUBLISH_KEYS = ("dns", "proxy", "smoke")
+# A Proxmox environment's modes that start with 0 Prepare VM.
+VM_HOST_MODES = ("update", "reset", "restore_dump", "rollback")
 
 
 @dataclass(frozen=True)
@@ -29,10 +38,12 @@ class StepDef:
     name: str
     playbook: str                # "" for a step that runs in Sirdar
     timeout: int                 # seconds for the whole step
-    runs: Literal["ansible", "python"] = "ansible"
+    runs: Literal["ansible", "python", "vm"] = "ansible"
 
 
 STEPS: tuple[StepDef, ...] = (
+    StepDef(0, "provision", "Prepare VM", "", 30 * 60, "vm"),
+    StepDef(0, "vm_restore", "Restore VM snapshot", "", 30 * 60, "vm"),
     StepDef(1, "preflight", "Preflight", "preflight.yml", 5 * 60),
     StepDef(2, "bootstrap", "Bootstrap", "bootstrap.yml", 30 * 60),
     StepDef(3, "fetch", "Fetch code", "fetch.yml", 15 * 60),
@@ -49,6 +60,7 @@ STEPS: tuple[StepDef, ...] = (
     StepDef(13, "proxy", "Proxy hosts", "", 45 * 60, "python"),
     StepDef(14, "smoke", "Smoke test", "", 10 * 60, "python"),
     StepDef(15, "teardown", "Remove environment", "teardown.yml", 30 * 60),
+    StepDef(15, "destroy", "Destroy VM", "", 30 * 60, "vm"),
     StepDef(16, "unproxy", "Remove proxy hosts", "", 15 * 60, "python"),
     StepDef(17, "undns", "Remove DNS records", "", 10 * 60, "python"),
 )
@@ -76,14 +88,22 @@ _PLANS: dict[tuple[str, bool], tuple[str, ...]] = {
     ("publish", False): PUBLISH_KEYS,
     # the host first: nothing is unpublished while the environment still runs
     ("teardown", False): ("teardown", "unproxy", "undns"),
+    ("vm_restore", False): ("vm_restore",),
 }
 
 
-def plan_for(mode: str, *, restore: bool = False, publish: bool = False) -> list[StepDef]:
+def plan_for(mode: str, *, restore: bool = False, publish: bool = False,
+             vm: bool = False) -> list[StepDef]:
     try:
         keys = _PLANS[(mode, restore)]
     except KeyError:
         raise ValueError(f"no deploy plan for mode {mode!r} (restore={restore})") from None
+    if mode == "vm_restore" and not vm:
+        raise ValueError("only a Proxmox environment restores a VM snapshot")
+    if vm and mode in VM_HOST_MODES:
+        keys = ("provision", *keys)
+    elif vm and mode == "teardown":
+        keys = ("destroy", *keys[1:])           # the VM goes, with everything on it
     if publish:
         if mode not in PUBLISHING_MODES:
             raise ValueError(f"mode {mode!r} doesn't publish")

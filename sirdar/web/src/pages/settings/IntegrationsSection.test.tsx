@@ -98,3 +98,35 @@ it('without SIRDAR_SECRETS_KEY nothing can be stored', async () => {
   const setUp = screen.getByRole('button', { name: 'Set up Cloudflare' }) as HTMLButtonElement;
   expect(setUp.disabled).toBe(true);
 });
+
+it('shows the Proxmox card: where it builds VMs, the token id, never the token', async () => {
+  render(<IntegrationsSection />);
+  const px = await screen.findByRole('group', { name: 'Proxmox' });
+  expect(within(px).getByText('Configured')).toBeTruthy();
+  expect(within(px).getByText('https://10.10.48.5:8006')).toBeTruthy();
+  expect(within(px).getByText('Set (sirdar@pve!sirdar)')).toBeTruthy();
+  expect(within(px).getByText('ubuntu template 9000 · local-lvm · vmbr0', { exact: false })).toBeTruthy();
+  await userEvent.click(within(px).getByRole('button', { name: 'Edit Proxmox' }));
+  expect(screen.getByRole('dialog', { name: 'Proxmox' })).toBeTruthy();
+});
+
+it('Proxmox can only be removed when no environment uses it', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  api.removeIntegration.mockRejectedValue(new ApiError(409, 'integration_in_use',
+    { code: 'integration_in_use', environments: ['uat3'] }));
+  render(<IntegrationsSection />);
+  const px = await screen.findByRole('group', { name: 'Proxmox' });
+  await userEvent.click(within(px).getByRole('button', { name: 'Remove Proxmox' }));
+  expect(await within(px).findByText('Environments still use it: uat3. Delete them first.')).toBeTruthy();
+});
+
+it("the card's Test points to Edit when the certificate needs review", async () => {
+  api.testIntegration.mockRejectedValue(new ApiError(409, 'tls_mismatch',
+    { code: 'tls_mismatch', expected: 'AA', actual: 'BB' }));
+  render(<IntegrationsSection />);
+  const px = await screen.findByRole('group', { name: 'Proxmox' });
+  await userEvent.click(within(px).getByRole('button', { name: 'Test Proxmox' }));
+  expect(await within(px).findByText(
+    "The Proxmox server's certificate doesn't match the one Sirdar trusted. Open Edit to review the certificate."))
+    .toBeTruthy();
+});

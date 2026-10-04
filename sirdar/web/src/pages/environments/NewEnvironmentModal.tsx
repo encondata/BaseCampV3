@@ -1,7 +1,8 @@
 /** New environment: Create (Basics › Services › Data › Review) makes a new
  *  environment record with generated secrets, empty or seeded from a snapshot
- *  its first deploy restores; Adopt (Basics › Result) reads a hand-built
- *  environment's .env and checkout over SSH and changes nothing. */
+ *  its first deploy restores; on Proxmox a Machine step sizes the VM the
+ *  first deploy builds and sets its address. Adopt (Basics › Result) reads a
+ *  hand-built environment's .env and checkout over SSH and changes nothing. */
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -18,12 +19,13 @@ import {
   type EnvironmentDefaults, type NewEnvironmentBody, type Snapshot,
 } from '../../lib/sirdarApi';
 
-import { TYPE_LABEL, snapshotLabel, sshTargets } from './labels';
+import { TYPE_LABEL, envTargets, gbOf, mbOf, snapshotLabel, sshTargets, vmNetwork, vmSize } from './labels';
 
 type Mode = 'new' | 'adopt';
-type Step = 'basics' | 'services' | 'data' | 'review' | 'result';
+type Step = 'basics' | 'machine' | 'services' | 'data' | 'review' | 'result';
 type DataMode = 'empty' | 'snapshot';
-type Field = 'name' | 'target' | 'ref' | 'domain' | 'proxy' | 'bind' | 'services' | 'data' | 'form';
+type IpMode = 'static' | 'dhcp';
+type Field = 'name' | 'target' | 'ref' | 'domain' | 'proxy' | 'bind' | 'machine' | 'services' | 'data' | 'form';
 type Errors = Partial<Record<Field, string>>;
 /** One submission, kept whole so a host-key retry replays exactly what failed. */
 type Attempt = { mode: 'new'; body: NewEnvironmentBody } | { mode: 'adopt'; body: AdoptEnvironmentBody };
@@ -34,11 +36,41 @@ const STEPS: Record<Mode, [Step, string][]> = {
   new: [['basics', 'Basics'], ['services', 'Services'], ['data', 'Data'], ['review', 'Review']],
   adopt: [['basics', 'Basics'], ['result', 'Result']],
 };
+const PROXMOX_STEPS: [Step, string][] = [
+  ['basics', 'Basics'], ['machine', 'Machine'], ['services', 'Services'], ['data', 'Data'], ['review', 'Review'],
+];
+const IP_MODES: [IpMode, string][] = [['static', 'Static'], ['dhcp', 'DHCP']];
+const CIDR_RE = /^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/;
+// The API's messages for vm_ip_invalid and vm_gateway_invalid.
+const VM_IP_HELP = 'Use an address with its prefix, like 10.10.48.70/24.';
+const VM_GATEWAY_HELP = "The gateway must be another address in the VM's network.";
+/** Memory in GB with at most one decimal (what vmSize shows), so Review matches the request. */
+const toInt = (ip: string) => ip.split('.').reduce((n, p) => n * 256 + Number(p), 0);
+
+/** The API's check_network for a static address, on the client: '' when the API would accept it. */
+function vmNetworkProblem(cidr: string, gw: string): string {
+  const m = CIDR_RE.exec(cidr.trim());
+  const prefix = m ? Number(m[2]) : 0;
+  if (!m || ipv4Problem(m[1], 'address') || prefix < 8 || prefix > 30) return VM_IP_HELP;
+  const ip = toInt(m[1]);
+  const mask = (0xffffffff << (32 - prefix)) >>> 0;
+  const network = (ip & mask) >>> 0;
+  const broadcast = (network | (~mask >>> 0)) >>> 0;
+  const first = ip >>> 24;
+  // network or broadcast, 0.0.0.0/8 (unspecified too), loopback, link-local, multicast and reserved (240/4)
+  if (ip === network || ip === broadcast || first === 0 || first === 127 || first >= 224
+      || (ip >>> 16) === 0xa9fe) return VM_IP_HELP;
+  if (ipv4Problem(gw, 'gateway')) return VM_GATEWAY_HELP;
+  const g = toInt(gw.trim());
+  if (((g & mask) >>> 0) !== network || g === ip || g === network || g === broadcast) return VM_GATEWAY_HELP;
+  return '';
+}
 const DATA_MODES: [DataMode, string][] = [['empty', 'Start empty'], ['snapshot', 'From a snapshot']];
 type PublishChoice = 'on' | 'off';
 const PUBLISH_CHOICES: [PublishChoice, string][] = [['on', 'On'], ['off', 'Off']];
 const HINT: Record<Mode, string> = {
-  new: 'Create an environment on an SSH target. Sirdar generates its secrets; the first deploy builds it.',
+  new: 'Create an environment on an SSH target, or on a VM Sirdar builds on Proxmox. Sirdar generates its secrets; '
+    + 'the first deploy builds it.',
   adopt: "Adopt an environment set up by hand. Sirdar reads its .env and git checkout over SSH and changes nothing.",
 };
 /** API error code → the field (and so the step) it belongs to. */
@@ -48,6 +80,9 @@ const CODE_FIELD: Record<string, Field> = {
   base_domain_invalid: 'domain', proxy_ip_required: 'proxy', proxy_ip_invalid: 'proxy',
   bind_ip_invalid: 'bind', port_invalid: 'services', ports_conflict: 'services', service_unknown: 'services',
   snapshot_not_found: 'data', snapshot_not_ready: 'data',
+  integration_not_configured: 'target', adopt_not_allowed: 'target', vm_not_allowed: 'target',
+  vm_cores_invalid: 'machine', vm_memory_invalid: 'machine', vm_disk_invalid: 'machine',
+  vm_ip_mode_invalid: 'machine', vm_ip_invalid: 'machine', vm_gateway_invalid: 'machine', ip_in_use: 'machine',
 };
 const only = (e: Errors): Errors => Object.fromEntries(Object.entries(e).filter(([, v]) => v)) as Errors;
 
@@ -72,6 +107,12 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
   const [dataMode, setDataMode] = useState<DataMode>('empty');
   const [snapshotId, setSnapshotId] = useState('');
   const [publish, setPublish] = useState<PublishChoice>('on');
+  const [cores, setCores] = useState('4');
+  const [memoryGb, setMemoryGb] = useState('8');
+  const [diskGb, setDiskGb] = useState('64');
+  const [ipMode, setIpMode] = useState<IpMode>('static');
+  const [ipCidr, setIpCidr] = useState('');
+  const [gateway, setGateway] = useState('');
   // Both integrations set up (null until known). Without them Publish starts Off.
   const [canPublish, setCanPublish] = useState<boolean | null>(null);
   const publishChosen = useRef(false);
@@ -116,10 +157,13 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
     Promise.all([getDeployTargets(), getEnvironmentDefaults(), snaps]).then(([t, d, ready]) => {
       if (!live) return;
       setSnapshots(ready);
-      const ssh = sshTargets(t.targets);
-      setTargets(ssh);
+      const usable = envTargets(t.targets);
+      setTargets(usable);
       setDefaults(d);
-      setTarget((cur) => cur || ssh[0]?.id || '');
+      setTarget((cur) => cur || usable[0]?.id || '');
+      setCores(String(d.vm.cores));
+      setMemoryGb(gbOf(d.vm.memory_mb));
+      setDiskGb(String(d.vm.disk_gb));
       setRef(d.git_ref);
       setBind(d.bind_ip);
       setPorts(Object.fromEntries(d.services.map((s) => [s.service, String(s.port)])));
@@ -153,10 +197,19 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
   const services = defaults?.services ?? [];
   const effectiveDomain = domain.trim() || `${trimmed || '<name>'}.${defaults?.domain_suffix ?? 'serversherpa.com'}`;
   const targetName = (id: string) => targets?.find((t) => t.id === id)?.label ?? id;
+  const onVm = mode === 'new' && target === 'proxmox';
+  // Adopt reads a hand-built environment over SSH: Proxmox environments are only ones Sirdar builds.
+  const offered = (targets ?? []).filter((t) => mode === 'new' || t.id !== 'proxmox');
+  useEffect(() => {
+    if (mode === 'adopt' && target === 'proxmox') setTarget(sshTargets(targets ?? [])[0]?.id ?? '');
+  }, [mode, target, targets]);
+  const limits = defaults?.vm.limits;
+  const machine = { cores: Number(cores), memory_mb: mbOf(memoryGb), disk_gb: Number(diskGb),
+                    ip_mode: ipMode, ip_cidr: ipCidr.trim() || null, gateway: gateway.trim() || null };
 
   const basicsErrors = (): Errors => only({
     name: trimmed ? nameProblem(trimmed) : 'Enter a name.',
-    target: target ? '' : 'Choose an SSH target.',
+    target: target ? '' : 'Choose a target.',
     ref: refProblem(ref),
     proxy: mode === 'new' ? ipv4Problem(proxy, 'proxy IP') : '',
     bind: mode === 'new' ? ipv4Problem(bind, 'bind IP') : '',
@@ -170,20 +223,41 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
     return new Set(used).size === used.length ? {} : { services: "Two services can't use the same port." };
   };
 
+  const machineErrors = (): Errors => {
+    if (!limits) return {};
+    const inRange = (n: number, [low, high]: [number, number]) => n >= low && n <= high;
+    const whole = (raw: string) => (/^\d+$/.test(raw.trim()) ? Number(raw) : NaN);
+    if (!inRange(whole(cores), limits.cores)) {
+      return { machine: `Use ${limits.cores[0]} to ${limits.cores[1]} vCPUs.` };
+    }
+    if (!/^\d+(\.\d)?$/.test(memoryGb.trim()) || !inRange(mbOf(memoryGb), limits.memory_mb)) {
+      return { machine: `Use ${gbOf(limits.memory_mb[0])} to ${gbOf(limits.memory_mb[1])} GB of memory.` };
+    }
+    if (!inRange(whole(diskGb), limits.disk_gb)) {
+      return { machine: `Use a disk of ${limits.disk_gb[0]} to ${limits.disk_gb[1]} GB.` };
+    }
+    if (ipMode === 'dhcp') return {};
+    const problem = vmNetworkProblem(ipCidr, gateway);
+    return problem ? { machine: problem } : {};
+  };
+
   const dataErrors = (): Errors => (dataMode === 'snapshot' && !snapshotId ? { data: 'Choose a snapshot.' } : {});
   // Only a snapshot the Data step still says to use: going Back to "Start empty" keeps
   // snapshotId but must not show (or send) it.
   const chosen = dataMode === 'snapshot' ? snapshots.find((s) => s.id === snapshotId) : undefined;
 
   const next = () => {
-    const e = step === 'basics' ? basicsErrors() : step === 'services' ? servicesErrors() : dataErrors();
+    const e = step === 'basics' ? basicsErrors() : step === 'machine' ? machineErrors()
+      : step === 'services' ? servicesErrors() : dataErrors();
     setErrors(e);
     if (Object.keys(e).length) return;
-    setStep(step === 'basics' ? 'services' : step === 'services' ? 'data' : 'review');
+    setStep(step === 'basics' ? (onVm ? 'machine' : 'services') : step === 'machine' ? 'services'
+      : step === 'services' ? 'data' : 'review');
   };
   const back = () => {
     setErrors({});
-    setStep(step === 'review' ? 'data' : step === 'data' ? 'services' : 'basics');
+    setStep(step === 'review' ? 'data' : step === 'data' ? 'services'
+      : step === 'services' ? (onVm ? 'machine' : 'basics') : 'basics');
   };
 
   const fail = (err: unknown, attempt: Attempt) => {
@@ -197,7 +271,7 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
       setSnapshotId('');
       setSnapshots((list) => list.filter((s) => s.id !== gone));
     }
-    if (field === 'services' || field === 'data') setStep(field);
+    if (field === 'services' || field === 'data' || field === 'machine') setStep(field);
     else if (field !== 'form') setStep('basics');
   };
 
@@ -239,10 +313,14 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
       ports: Object.fromEntries(services.map((s) => [s.service, Number(ports[s.service])])),
       ...(chosen ? { snapshot_id: chosen.id } : {}),
       publish: publish === 'on',
+      ...(onVm ? { vm: {
+        cores: machine.cores, memory_mb: machine.memory_mb, disk_gb: machine.disk_gb, ip_mode: ipMode,
+        ...(ipMode === 'static' ? { ip_cidr: ipCidr.trim(), gateway: gateway.trim() } : {}),
+      } } : {}),
     } });
   };
 
-  const stepList = STEPS[mode];
+  const stepList = onVm ? PROXMOX_STEPS : STEPS[mode];
   const at = stepList.findIndex(([s]) => s === step);
 
   const radios = <T extends string>(items: [T, string][], value: T, set: (v: T) => void) => items.map(([v, label]) => (
@@ -308,12 +386,16 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                 <div>
                   <label className="field-label" htmlFor="env-new-target">Target</label>
                   <ComboBox inputId="env-new-target" ariaLabel="Target" portal value={target}
-                            placeholder="Choose an SSH target…"
-                            options={(targets ?? []).map((t) => ({ value: t.id, label: t.label }))}
+                            placeholder="Choose a target…"
+                            options={offered.map((t) => ({ value: t.id, label: t.label }))}
                             onChange={setTarget} />
-                  {targets && targets.length === 0 && (
-                    <p className="page-hint">No SSH target is ready. Add one under Target on the Deploy page first.</p>
+                  {targets && offered.length === 0 && (
+                    <p className="page-hint">
+                      No target is ready. Add an SSH target under Target on the Deploy page, or set up Proxmox in
+                      Settings › Integrations.
+                    </p>
                   )}
+                  {onVm && <p className="page-hint">Sirdar builds a VM for it on Proxmox on the first deploy.</p>}
                   {errors.target && <p className="form-error" role="alert">{errors.target}</p>}
                 </div>
                 <div>
@@ -352,6 +434,56 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
               </div>
             )}
 
+            {defaults && step === 'machine' && (
+              <div className="sirdar-env-grid">
+                <p className="page-hint sirdar-span2">
+                  Sirdar clones the Ubuntu template into a VM named ss-{trimmed} on Proxmox, then deploys to it. Sizes
+                  can grow later in Settings; the network can't change.
+                </p>
+                <div>
+                  <label className="field-label" htmlFor="env-vm-cores">vCPUs</label>
+                  <input id="env-vm-cores" type="text" inputMode="numeric" value={cores}
+                         onChange={(e) => setCores(e.target.value)} />
+                </div>
+                <div>
+                  <label className="field-label" htmlFor="env-vm-memory">Memory (GB)</label>
+                  <input id="env-vm-memory" type="text" inputMode="decimal" value={memoryGb}
+                         onChange={(e) => setMemoryGb(e.target.value)} />
+                </div>
+                <div>
+                  <label className="field-label" htmlFor="env-vm-disk">Disk (GB)</label>
+                  <input id="env-vm-disk" type="text" inputMode="numeric" value={diskGb}
+                         onChange={(e) => setDiskGb(e.target.value)} />
+                </div>
+                <div className="sirdar-span2">
+                  <span className="field-label" id="env-vm-net-label">Network</span>
+                  <div className="segmented" role="radiogroup" aria-labelledby="env-vm-net-label">
+                    {radios(IP_MODES, ipMode, setIpMode)}
+                  </div>
+                  <p className="page-hint">
+                    {ipMode === 'static'
+                      ? 'A fixed LAN address: the proxy hosts forward to it, so it should never move.'
+                      : "The router's DHCP gives it an address; reserve it there so the proxy hosts keep working."}
+                  </p>
+                </div>
+                {ipMode === 'static' && (
+                  <>
+                    <div>
+                      <label className="field-label" htmlFor="env-vm-ip">Address</label>
+                      <input id="env-vm-ip" type="text" value={ipCidr} placeholder="10.10.48.70/24" autoComplete="off"
+                             spellCheck={false} onChange={(e) => setIpCidr(e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="field-label" htmlFor="env-vm-gateway">Gateway</label>
+                      <input id="env-vm-gateway" type="text" value={gateway} placeholder="10.10.48.1"
+                             autoComplete="off" spellCheck={false} onChange={(e) => setGateway(e.target.value)} />
+                    </div>
+                  </>
+                )}
+                {errors.machine && <p className="form-error sirdar-span2" role="alert">{errors.machine}</p>}
+              </div>
+            )}
+
             {defaults && step === 'services' && (
               <>
                 <p className="page-hint">
@@ -386,7 +518,7 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                     cells: [
                       <b className="cell-top">{s.service}</b>,
                       s.public ? `${s.service}.${effectiveDomain}` : '—',
-                      <span className="cell-sub">Target's address</span>,
+                      <span className="cell-sub">{onVm ? "The VM's address" : "Target's address"}</span>,
                       <input className="sirdar-port-input" type="text" inputMode="numeric" aria-label={`${s.service} port`}
                              value={ports[s.service] ?? ''}
                              onChange={(e) => setPorts((p) => ({ ...p, [s.service]: e.target.value }))} />,
@@ -440,6 +572,12 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                   <dt>Name</dt><dd className="mono">{trimmed}</dd>
                   <dt>Type</dt><dd>{TYPE_LABEL[type]}</dd>
                   <dt>Target</dt><dd>{targetName(target)}</dd>
+                  {onVm && (
+                    <>
+                      <dt>Machine</dt>
+                      <dd>{`${vmSize(machine)} · ${vmNetwork(machine)}`}</dd>
+                    </>
+                  )}
                   <dt>Git ref</dt><dd className="mono">{ref.trim()}</dd>
                   <dt>Folder on the target</dt><dd className="mono">{`${defaults.env_root}/${trimmed}`}</dd>
                   <dt>Base domain</dt><dd className="mono">{effectiveDomain}</dd>

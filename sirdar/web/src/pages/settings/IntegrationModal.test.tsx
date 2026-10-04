@@ -8,7 +8,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 
 import { ApiError } from '@portal/lib/api';
 
-import type { IntegrationKind, Integrations } from '../../lib/sirdarApi';
+import type { PublishKind, Integrations } from '../../lib/sirdarApi';
 import { CF_CHECK, INTEGRATIONS, NO_INTEGRATIONS } from '../environments/testData';
 
 import IntegrationModal from './IntegrationModal';
@@ -20,7 +20,7 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-function show(kind: IntegrationKind, current: Integrations = NO_INTEGRATIONS) {
+function show(kind: PublishKind, current: Integrations = NO_INTEGRATIONS) {
   const onSaved = vi.fn();
   const onClose = vi.fn();
   render(<IntegrationModal kind={kind} current={current} onSaved={onSaved} onClose={onClose} />);

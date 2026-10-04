@@ -57,8 +57,8 @@ export interface SirdarSettings {
 }
 
 export interface DeployTarget {
-  /** 'aws' | 'gcp' | 'digitalocean' | 'ssh' (installer) | 'ssh:<slug>' (saved). */
-  id: string; label: string; kind?: 'aws' | 'gcp' | 'digitalocean' | 'ssh';
+  /** 'aws' | 'gcp' | 'digitalocean' | 'ssh' (installer) | 'ssh:<slug>' (saved) | 'proxmox' (once set up). */
+  id: string; label: string; kind?: 'aws' | 'gcp' | 'digitalocean' | 'ssh' | 'proxmox';
   source?: 'installer' | 'saved'; available: boolean; configured: boolean;
 }
 export interface SshTarget {
@@ -224,6 +224,41 @@ const MESSAGES: Record<string, string> = {
   claim_conflict: 'Someone else claimed that entry first. Reload the Publish tab.',
   publish_off: 'Publishing is off for this environment. Turn it on from the Publish tab, or retry from an earlier step.',
   publish_not_allowed: "Adopted environments start with publishing off; turn it on from the environment's Publish tab.",
+  // Proxmox targets
+  proxmox_url_invalid: 'Use the Proxmox address with https, like https://10.10.48.5:8006 (no path).',
+  node_invalid: "That node name isn't valid.",
+  pool_invalid: "That pool name isn't valid.",
+  storage_invalid: "That storage name isn't valid, like local-lvm.",
+  bridge_invalid: "That bridge name isn't valid, like vmbr0.",
+  vlan_tag_invalid: 'Use a VLAN tag from 1 to 4094, or leave it empty.',
+  template_vmid_invalid: "Use the template's VM id, a number from 100 up.",
+  proxmox_token_invalid: "That doesn't look like a Proxmox API token (user@realm!tokenid=secret).",
+  tls_untrusted: "Sirdar doesn't trust this Proxmox server's certificate yet.",
+  tls_mismatch: "The Proxmox server's certificate doesn't match the one Sirdar trusted.",
+  tls_fingerprint_invalid: 'Use a SHA-256 fingerprint: 64 hex digits, with or without colons.',
+  integration_in_use: 'Environments still use it. Delete them first.',
+  vm_invalid: "Those VM settings aren't valid.",
+  vm_cores_invalid: 'Use 1 to 64 vCPUs.',
+  vm_memory_invalid: 'Use 2 to 256 GB of memory.',
+  vm_disk_invalid: 'Use a disk of 20 to 4096 GB.',
+  vm_keep_snapshots_invalid: 'Keep 1 to 10 VM snapshots.',
+  vm_ip_mode_invalid: 'Choose Static or DHCP.',
+  vm_ip_invalid: 'Use an address with its prefix, like 10.10.48.70/24.',
+  vm_gateway_invalid: "The gateway must be another address in the VM's network.",
+  vm_not_allowed: 'Only a Proxmox environment has a VM.',
+  vm_disk_shrink: "A VM's disk can grow but never shrink.",
+  ip_in_use: 'That address is already used: by the proxy, an SSH target or another environment.',
+  ssh_targets_unreadable: "Sirdar couldn't read the saved SSH targets, so it can't check that address is free.",
+  adopt_not_allowed: 'Only environments on SSH targets can be adopted. Proxmox environments are ones Sirdar builds.',
+  host_ip_managed: "A Proxmox environment's services always run on its VM.",
+  target_kind_locked: "An environment can't move between an SSH target and Proxmox.",
+  vm_snapshot_not_allowed: 'Only a Proxmox environment takes VM snapshots.',
+  vm_snapshot_invalid: "That isn't one of this environment's VM snapshots.",
+  vm_snapshot_not_found: "That VM snapshot isn't one Sirdar took for this environment.",
+  vm_snapshot_keys_changed: 'That VM snapshot was taken before the sign-in keys changed, so nobody could sign in after restoring it.',
+  not_proxmox: "This environment isn't on Proxmox.",
+  vm_not_ready: "This environment's VM isn't built yet. Deploy it first.",
+  vm_key_unreadable: "Sirdar's key for this VM doesn't open with the current SIRDAR_SECRETS_KEY.",
 };
 
 export function errorText(err: unknown, fallback: string): string {
@@ -242,8 +277,14 @@ export function errorDetail<T extends object = Record<string, unknown>>(err: unk
  *  service a check named, are added in parentheses; an integration_not_configured
  *  names the integrations still to set up. */
 export function deployErrorText(err: unknown, fallback: string): string {
-  const d = errorDetail<{ reason?: unknown; missing?: unknown; key?: unknown; service?: unknown; kinds?: unknown }>(err);
+  const d = errorDetail<{
+    reason?: unknown; missing?: unknown; key?: unknown; service?: unknown; kinds?: unknown; environments?: unknown;
+  }>(err);
   if (d && typeof d.reason === 'string' && d.reason) return d.reason;
+  if (d && Array.isArray(d.environments) && d.environments.length && err instanceof ApiError
+      && err.code === 'integration_in_use') {
+    return `Environments still use it: ${d.environments.join(', ')}. Delete them first.`;
+  }
   if (d && Array.isArray(d.kinds) && d.kinds.length && err instanceof ApiError
       && err.code === 'integration_not_configured') {
     const names = d.kinds.map((k) => INTEGRATION_LABEL[k as IntegrationKind] ?? String(k));
@@ -315,7 +356,7 @@ export type EnvStatus = 'new' | 'ready' | 'deploying' | 'failed' | 'deleting';
 export type DeployMode = 'update' | 'reset' | 'restore_dump';
 /** Every mode a deployment record can have (publish: steps 12–14 alone;
  *  teardown: Delete environment). */
-export type DeploymentMode = DeployMode | 'adopt' | 'snapshot' | 'rollback' | 'publish' | 'teardown';
+export type DeploymentMode = DeployMode | 'adopt' | 'snapshot' | 'rollback' | 'publish' | 'teardown' | 'vm_restore';
 export type DeploymentStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'adopted';
 export type StepStatus =
   'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'not_run' | 'cancelled' | 'interrupted';
@@ -332,6 +373,12 @@ export interface DeploymentSummary {
   rollback_available: boolean;
   /** Its plan ends with steps 12–14 (DNS records, proxy hosts, smoke test). */
   publish: boolean;
+  /** Its plan has the VM steps (a Proxmox environment): 0 Prepare VM, 0 Restore VM snapshot or 15 Destroy VM. */
+  vm: boolean;
+  /** Step 0 takes a VM snapshot before anything changes. */
+  take_vm_snapshot: boolean;
+  /** The VM snapshot it took — for vm_restore, the one it restores. */
+  vm_snapshot: string | null;
   previous_sha: string | null; error: string | null; actor_name: string | null;
   started_at: string; finished_at: string | null; created_at: string;
 }
@@ -344,6 +391,9 @@ export interface DeploymentStep {
 export interface Deployment extends DeploymentSummary { environment: string; steps: DeploymentStep[] }
 export interface Environment {
   id: string; name: string; type: EnvType; target: string; base_domain: string; env_dir: string;
+  /** 'proxmox': its host is a VM Sirdar builds (`vm`); 'ssh': a saved SSH target. */
+  target_kind: 'ssh' | 'proxmox';
+  vm: EnvVm | null;
   git_ref: string; current_sha: string | null; image_tag: string | null; status: EnvStatus;
   proxy_ip: string; bind_ip: string; keep_dumps: number; spaces_bucket: string; log_level: string;
   services: EnvService[];
@@ -360,12 +410,31 @@ export interface Environment {
 export interface ManagedRecordRef {
   service: string; kind: 'dns_record' | 'proxy_host' | 'certificate'; name: string; origin: 'created' | 'claimed';
 }
+/** A Proxmox environment's VM. `vmid` is null until step 0 reserves it; `ip` until the guest agent reports it. */
+export interface EnvVm {
+  name: string; node: string; vmid: number | null; cores: number; memory_mb: number; disk_gb: number;
+  ip_mode: 'static' | 'dhcp'; ip_cidr: string | null; gateway: string | null; ip: string | null;
+  keep_snapshots: number; created: boolean;
+}
+export interface VmDefaults {
+  cores: number; memory_mb: number; disk_gb: number; keep_snapshots: number;
+  limits: Record<'cores' | 'memory_mb' | 'disk_gb' | 'keep_snapshots', [number, number]>;
+}
+export interface NewVm {
+  cores?: number; memory_mb?: number; disk_gb?: number; ip_mode: 'static' | 'dhcp'; ip_cidr?: string; gateway?: string;
+}
+/** A VM snapshot Sirdar took (GET …/vm-snapshots): `sha` is the commit it holds. */
+export interface VmSnapshot {
+  name: string; taken_at: string; sha: string | null; deployment_id: string; description: string;
+  restorable: boolean; reason: string | null;
+}
 /** Adopt's answer adds what it read from the target's .env — names only. */
 export interface AdoptedEnvironment extends Environment { ignored_keys: string[]; imported_secrets: string[] }
 export interface EnvironmentDefaults {
   services: { service: string; port: number; public: boolean }[];
   domain_suffix: string; env_root: string; git_ref: string; bind_ip: string; keep_dumps: number;
   spaces_bucket: string; log_levels: string[]; optional_secrets: string[];
+  vm: VmDefaults;
 }
 export interface NewEnvironmentBody {
   name: string; type: EnvType; target: string; git_ref: string; base_domain?: string;
@@ -374,6 +443,8 @@ export interface NewEnvironmentBody {
   snapshot_id?: string;
   /** Deploys publish DNS records and proxy hosts (the API's default: true). */
   publish?: boolean;
+  /** target 'proxmox' only: the VM step 0 builds. */
+  vm?: NewVm;
 }
 export interface AdoptEnvironmentBody { name: string; type: EnvType; target: string; git_ref: string }
 /** PATCH body: an omitted field is kept; a secret set to "" is cleared. */
@@ -383,9 +454,14 @@ export interface EnvironmentPatch {
   services?: Record<string, { port?: number; host_ip?: string; proxied?: boolean }>;
   secrets?: Record<string, string>;
   publish?: boolean;
+  vm?: { cores?: number; memory_mb?: number; disk_gb?: number; keep_snapshots?: number };
 }
 export interface DeploymentBody {
-  mode: DeployMode | 'publish' | 'teardown'; git_ref?: string; confirm_name?: string;
+  mode: DeployMode | 'publish' | 'teardown' | 'vm_restore'; git_ref?: string; confirm_name?: string;
+  /** Proxmox update / reset / restore_dump: a VM snapshot first (the API's default: yes once deployed). */
+  take_vm_snapshot?: boolean;
+  /** vm_restore only: a name from listVmSnapshots. */
+  vm_snapshot?: string;
   /** Reset only. */
   snapshot_id?: string;
   /** Restore backup only: a file name from listBackups. */
@@ -431,6 +507,8 @@ export const retryDeployment = (id: string, body: RetryBody) =>
 export const rollbackDeployment = (id: string, confirmName: string) =>
   sendJson<Deployment>('POST', `${depPath(id)}/rollback`, { confirm_name: confirmName });
 export const listBackups = (name: string) => getJson<{ backups: Backup[] }>(`${envPath(name)}/backups`);
+export const listVmSnapshots = (name: string) =>
+  getJson<{ snapshots: VmSnapshot[] }>(`${envPath(name)}/vm-snapshots`);
 
 export const listSnapshots = () => getJson<{ snapshots: Snapshot[] }>('/deploy/snapshots');
 /** The bundle goes up as the raw request body (streamed; no multipart). */
@@ -450,9 +528,11 @@ export async function deleteSnapshot(id: string): Promise<void> {
 }
 
 /* ---- Publishing: integrations (Settings) and the Publish tab ---- */
-export type IntegrationKind = 'cloudflare' | 'npm';
+/** The integrations Sirdar publishes with. */
+export type PublishKind = 'cloudflare' | 'npm';
+export type IntegrationKind = PublishKind | 'proxmox';
 export const INTEGRATION_LABEL: Record<IntegrationKind, string> = {
-  cloudflare: 'Cloudflare', npm: 'Nginx Proxy Manager',
+  cloudflare: 'Cloudflare', npm: 'Nginx Proxy Manager', proxmox: 'Proxmox',
 };
 export interface CloudflareIntegration {
   configured: boolean; zone: string | null; public_ip: string | null; token_set: boolean;
@@ -462,10 +542,27 @@ export interface NpmIntegration {
   configured: boolean; url: string | null; identity: string | null; letsencrypt_email: string | null;
   password_set: boolean; updated_at: string | null; updated_by_name: string | null;
 }
-export interface Integrations { secrets_key_configured: boolean; cloudflare: CloudflareIntegration; npm: NpmIntegration }
+export interface ProxmoxIntegration {
+  configured: boolean; url: string | null; node: string | null; pool: string | null; storage: string | null;
+  bridge: string | null; vlan_tag: number | null; template_vmid: number | null;
+  /** The pinned certificate's SHA-256 fingerprint, AB:CD:… */
+  tls_fingerprint: string | null;
+  /** user@realm!tokenid — the part of the token that isn't secret. */
+  token_id: string | null; token_set: boolean; updated_at: string | null; updated_by_name: string | null;
+}
+export interface Integrations {
+  secrets_key_configured: boolean; cloudflare: CloudflareIntegration; npm: NpmIntegration; proxmox: ProxmoxIntegration;
+}
 /** An omitted secret keeps the stored one. */
 export interface CloudflareBody { zone: string; public_ip: string; token?: string }
 export interface NpmBody { url: string; identity: string; letsencrypt_email?: string; password?: string }
+/** tls_fingerprint: the certificate the user trusted (null: show it first). An omitted token keeps the stored one. */
+export interface ProxmoxBody {
+  url: string; node: string; pool: string; storage: string; bridge: string; vlan_tag: number | null;
+  template_vmid: number; tls_fingerprint: string | null; token?: string;
+}
+/** A Proxmox server's certificate, as tls_untrusted describes it. */
+export interface TlsCertificate { fingerprint: string; subject: string; issuer: string; not_after: string; names: string[] }
 export interface IntegrationCheck {
   ok: boolean; target: IntegrationKind; checks: DeployCheck[]; facts: Record<string, unknown>;
 }
@@ -487,14 +584,14 @@ export interface PublishPlan {
 }
 const integrationPath = (kind: IntegrationKind) => `/deploy/integrations/${kind}`;
 export const getIntegrations = () => getJson<Integrations>('/deploy/integrations');
-export const saveIntegration = (kind: IntegrationKind, body: CloudflareBody | NpmBody) =>
+export const saveIntegration = (kind: IntegrationKind, body: CloudflareBody | NpmBody | ProxmoxBody) =>
   sendJson<Integrations>('PUT', integrationPath(kind), body);
 export async function removeIntegration(kind: IntegrationKind): Promise<void> {
   const resp = await apiFetch(integrationPath(kind), { method: 'DELETE' });
   if (!resp.ok) throw await errorOf(resp);
 }
 /** No body: the saved settings. A body: those values unsaved (no secret = the stored one). */
-export const testIntegration = (kind: IntegrationKind, body?: CloudflareBody | NpmBody) =>
+export const testIntegration = (kind: IntegrationKind, body?: CloudflareBody | NpmBody | ProxmoxBody) =>
   sendJson<IntegrationCheck>('POST', `${integrationPath(kind)}/test`, body);
 export const getPublishPlan = (name: string) => getJson<PublishPlan>(`${envPath(name)}/publish`);
 export const claimPublish = (name: string) =>

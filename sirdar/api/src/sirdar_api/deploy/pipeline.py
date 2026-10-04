@@ -4,7 +4,10 @@ backup, Roll back, and Take snapshot, a job that leaves the environment as
 it is. A deployment that publishes adds steps 12–14 (DNS records, proxy
 hosts, smoke test), which run in Sirdar through a Publisher instead of a
 playbook; a publish job is only those. Delete environment (teardown) runs
-15–17 and, when they succeed, deletes the environment's row.
+15–17 and, when they succeed, deletes the environment's row. A Proxmox
+environment's deployment (vm) adds the VM steps, run by a Provisioner: 0
+Prepare VM before the host steps (the SSH host is prepared after it, once
+the VM has an address), 0 Restore VM snapshot alone, and 15 Destroy VM.
 
 One asyncio task per running deployment, registered in _tasks; each task
 uses its own database sessions. Steps run in plan order through a Runner,
@@ -54,11 +57,14 @@ from sirdar_api.deploy import (
     ConnectFailed,
     envfile,
     known_hosts,
+    provision,
     publish,
     snapshots,
     ssh,
     targets,
+    terraform,
     vault,
+    vms,
 )
 from sirdar_api.deploy.redact import Redactor
 from sirdar_api.deploy.runner import (
@@ -99,6 +105,10 @@ class DeployInProgress(Exception):
     """Another deployment of this environment is running."""
 
 
+NO_COMMIT = ("This deployment has no commit yet (step 0 resolves it on the VM), so Sirdar "
+             "won't run the host steps. Retry from step 0 (Prepare VM).")
+
+
 class PrepareError(Exception):
     """The run can't start. `reason` is our own copy, shown in the log."""
 
@@ -115,6 +125,16 @@ def make_runner(settings: Settings) -> Runner:
 def make_publisher(settings: Settings) -> publish.Publisher:
     """What runs steps 12–14 and 16–17 (tests replace this function)."""
     return publish.HttpPublisher()
+
+
+def make_terraform(settings: Settings) -> terraform.TerraformRunner:
+    return terraform.SubprocessTerraform(settings.terraform_binary)
+
+
+def make_provisioner(settings: Settings) -> provision.Provisioner:
+    """What runs a Proxmox environment's VM steps (tests replace this function)."""
+    return provision.ProxmoxProvisioner(terraform_runner=make_terraform(settings),
+                                        settings=settings)
 
 
 async def sweep_runs() -> int:
@@ -162,7 +182,8 @@ def restores(mode: str, snapshot_id: uuid.UUID | None) -> bool:
 
 
 def plan_of(dep: Deployment) -> list[StepDef]:
-    return plan_for(dep.mode, restore=restores(dep.mode, dep.snapshot_id), publish=dep.publish)
+    return plan_for(dep.mode, restore=restores(dep.mode, dep.snapshot_id), publish=dep.publish,
+                    vm=dep.vm)
 
 
 # ---- records -----------------------------------------------------------------
@@ -173,7 +194,9 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                             retry_of: uuid.UUID | None = None,
                             snapshot_id: uuid.UUID | None = None,
                             restore_dump: str | None = None,
-                            publish: bool = False) -> Deployment:
+                            publish: bool = False, vm: bool = False,
+                            take_vm_snapshot: bool = False,
+                            vm_snapshot: str | None = None) -> Deployment:
     """Add a running deployment and its step rows. The caller commits, then
     calls launch(). start_step None means the plan's first step (1, or 12
     for a publish job, 15 for a teardown). Raises DeployInProgress (only the
@@ -181,7 +204,7 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     objects stay usable), or ValueError when start_step isn't a step of this
     mode's plan (or the mode can't publish). Snapshot and publish jobs leave
     the environment's status alone; a teardown marks it deleting."""
-    plan = plan_for(mode, restore=restores(mode, snapshot_id), publish=publish)
+    plan = plan_for(mode, restore=restores(mode, snapshot_id), publish=publish, vm=vm)
     if start_step is None:
         start_step = plan[0].number
     if start_step not in {step.number for step in plan}:
@@ -207,11 +230,15 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
         parent = await db.get(Deployment, retry_of)
         if parent is not None:
             previous_sha, dump_path = parent.previous_sha, parent.dump_path
+            # ...and its VM snapshot from before anything changed (step 0 keeps it).
+            if vm_snapshot is None:
+                vm_snapshot = parent.vm_snapshot
     dep = Deployment(environment_id=env.id, mode=mode, git_ref=git_ref, sha=sha,
                      status="running", start_step=start_step, retry_of=retry_of,
                      previous_sha=previous_sha, actor_id=actor_id,
                      snapshot_id=snapshot_id, restore_dump=restore_dump,
-                     dump_path=dump_path, publish=publish)
+                     dump_path=dump_path, publish=publish, vm=vm,
+                     take_vm_snapshot=take_vm_snapshot, vm_snapshot=vm_snapshot)
     try:
         async with db.begin_nested():
             db.add(dep)
@@ -440,6 +467,8 @@ class _Context:
     snapshot_keys: dict = field(default_factory=dict, repr=False)
     # Steps 12–14 and 16–17: credentials and the public services.
     publishing: publish.PublishContext | None = field(default=None, repr=False)
+    # Steps 0 and 15 of a Proxmox environment: its VM and the Proxmox token.
+    vm: provision.VmContext | None = field(default=None, repr=False)
 
     def vars_for(self, step_key: str) -> dict:
         if step_key == "render":
@@ -472,7 +501,16 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
     if not needs_host:
         return _Context(target=None, common={"env_name": env.name}, env_file_b64="",
                         redactor=Redactor(_redaction_values(more_secrets)))
-    cfg = targets.ssh_config_for(env.target_id, settings)
+    if not dep.sha and dep.mode != "teardown":   # the .env names the commit's image
+        raise PrepareError(NO_COMMIT)
+    try:
+        cfg = await vms.host_config(db, settings, env)
+    except (vault.SecretsKeyMissing, vault.SecretUnreadable):
+        raise PrepareError("Sirdar can't read its key for this environment's VM with the "
+                           "current SIRDAR_SECRETS_KEY.") from None
+    if cfg is None and env.target_id == targets.PROXMOX_TARGET:
+        raise PrepareError("This environment's VM has no address yet. Retry from step 0 "
+                           "(Prepare VM).")
     if cfg is None:
         raise PrepareError("This environment's SSH target isn't configured any more. "
                            "Pick another target, then retry.")
@@ -651,6 +689,38 @@ async def _run_python_step(publisher: publish.Publisher, ctx: _Context,
         await _save_log(step.id, buffer.text())
 
 
+async def _run_vm_step(provisioner: provision.Provisioner, ctx: _Context,
+                       step: DeploymentStep) -> RunResult:
+    """Step 0 or 15 of a Proxmox environment, in Sirdar: a publish step's log
+    handling, plus what step 0 found out (the resolved commit, the VM
+    snapshot) in the result's data."""
+    definition = STEPS_BY_KEY[step.key]
+    buffer = _LogBuffer(ctx.redactor)
+    flusher = asyncio.create_task(_flush_loop(step.id, buffer))
+    try:
+        outcome = await asyncio.wait_for(provisioner.run(step.key, ctx.vm, buffer.append),
+                                         definition.timeout)
+        return RunResult(status="successful", rc=0,
+                         data={"sha": outcome.sha, "vm_snapshot": outcome.vm_snapshot})
+    except asyncio.CancelledError:
+        raise
+    except TimeoutError:
+        return RunResult(status="timeout", rc=-1)
+    except publish.StepFailed as e:
+        buffer.append(e.reason + "\n")
+        return RunResult(status="failed", rc=1)
+    # A failed step, never the exception text.
+    except Exception as e:  # noqa: BLE001
+        log.error("deploy step %s couldn't run: %s", step.key, type(e).__name__)
+        buffer.append(UNEXPECTED + "\n")
+        return RunResult(status="failed", rc=-1)
+    finally:
+        flusher.cancel()
+        with suppress(asyncio.CancelledError):
+            await flusher
+        await _save_log(step.id, buffer.text())
+
+
 async def _run(deployment_id: uuid.UUID) -> None:
     current: int | None = None                 # number of the step in progress
     env_id: uuid.UUID | None = None
@@ -671,10 +741,15 @@ async def _run(deployment_id: uuid.UUID) -> None:
                 try:
                     publishing = (await publish.prepare(db, env, settings)
                                   if "python" in runs else None)
-                    ctx = await _prepare(
-                        db, env, dep, settings, needs_host="ansible" in runs,
-                        more_secrets=tuple(publishing.secret_values) if publishing else ())
-                except (PrepareError, publish.PublishError) as e:
+                    vm_ctx = (await provision.prepare(db, env, dep, settings)
+                              if "vm" in runs else None)
+                    more = (*(publishing.secret_values if publishing else ()),
+                            *(vm_ctx.secret_values if vm_ctx else ()))
+                    # Step 0 first: the SSH host is prepared once the VM is up.
+                    host_now = "ansible" in runs and STEPS_BY_KEY[todo[0].key].runs != "vm"
+                    ctx = await _prepare(db, env, dep, settings, needs_host=host_now,
+                                         more_secrets=more)
+                except (PrepareError, publish.PublishError, provision.VmPrepareError) as e:
                     await db.rollback()
                     await _close(deployment_id, env_id, current, step_status="failed",
                                  dep_status="failed", error=e.reason, failed_step=current,
@@ -682,14 +757,27 @@ async def _run(deployment_id: uuid.UUID) -> None:
                     return
                 # End _prepare's read transaction: step 1 must not hold a
                 # connection idle in a transaction for its whole timeout.
-                ctx = replace(ctx, publishing=publishing)
+                ctx = replace(ctx, publishing=publishing, vm=vm_ctx)
                 await db.commit()
                 runner = make_runner(settings)
                 publisher = make_publisher(settings)
+                provisioner = make_provisioner(settings) if vm_ctx is not None else None
                 for step in todo:
                     current = step.number
                     if step.status != "running":
                         await _mark_running(db, step)
+                    runs_on = STEPS_BY_KEY[step.key].runs
+                    if runs_on == "ansible" and ctx.target is None:
+                        try:
+                            host = await _prepare(db, env, dep, settings, more_secrets=more)
+                        except PrepareError as e:
+                            await db.rollback()
+                            await _close(deployment_id, env_id, current, step_status="failed",
+                                         dep_status="failed", error=e.reason,
+                                         failed_step=current, append_log=e.reason + "\n")
+                            return
+                        ctx = replace(host, publishing=ctx.publishing, vm=ctx.vm)
+                        await db.commit()
                     if step.key == "dump" and dep.dump_path:
                         # Never replace the chain's first pre-deploy dump.
                         name = PurePosixPath(dep.dump_path).name
@@ -697,8 +785,10 @@ async def _run(deployment_id: uuid.UUID) -> None:
                         step.status, step.finished_at = "succeeded", _now()
                         await db.commit()
                         continue
-                    if STEPS_BY_KEY[step.key].runs == "python":
+                    if runs_on == "python":
                         result = await _run_python_step(publisher, ctx, step)
+                    elif runs_on == "vm":
+                        result = await _run_vm_step(provisioner, ctx, step)
                     else:
                         result = await _run_step(runner, ctx, step)
                     if result.status != "successful":
@@ -710,7 +800,13 @@ async def _run(deployment_id: uuid.UUID) -> None:
                                      dep_status="failed", error=reason, failed_step=current)
                         return
                     step.status, step.finished_at = "succeeded", _now()
-                    if step.key == "dump":
+                    if step.key == "provision":
+                        # The commit step 0 resolved on the VM, and its VM snapshot.
+                        if result.data.get("sha"):
+                            dep.sha = result.data["sha"]
+                        if result.data.get("vm_snapshot"):
+                            dep.vm_snapshot = result.data["vm_snapshot"]
+                    elif step.key == "dump":
                         dep.dump_path = result.data.get("dump_path") or None
                     elif step.key == "restore":
                         await _keep_snapshot_keys(db, env.id, settings, ctx.snapshot_keys)

@@ -25,7 +25,7 @@ const ENV_KEYS: Record<string, string[]> = {
   aws: ['SIRDAR_DEPLOY_AWS_ACCESS_KEY_ID', 'SIRDAR_DEPLOY_AWS_SECRET_ACCESS_KEY'],
   gcp: ['SIRDAR_DEPLOY_GCP_PROJECT_ID', 'SIRDAR_DEPLOY_GCP_CREDENTIALS_FILE'],
 };
-const INITIALS: Record<string, string> = { aws: 'AWS', gcp: 'GC', digitalocean: 'DO', ssh: 'SSH' };
+const INITIALS: Record<string, string> = { aws: 'AWS', gcp: 'GC', digitalocean: 'DO', ssh: 'SSH', proxmox: 'PVE' };
 const kindOf = (t: DeployTarget) => t.kind ?? t.id;
 const CHECK_CHIP: Record<DeployCheck['status'], { cls: string; text: string }> = {
   pass: { cls: 'c-green', text: 'Pass' }, warn: { cls: 'c-amber', text: 'Warning' }, fail: { cls: 'c-red', text: 'Fail' },
@@ -106,7 +106,10 @@ export default function Deploy() {
   const trimmedName = envName.trim();
   const nameError = isCustom ? nameProblem(envName) : '';
   const nameOk = !isCustom || (!!trimmedName && !nameError);
-  const canRun = !!selected && selected.available && selected.configured && !!type && nameOk && canAdd && !running;
+  // Proxmox is tested in Settings › Integrations; its environments are made with New environment.
+  const proxmoxSelected = !!selected && kindOf(selected) === 'proxmox';
+  const canRun = !!selected && selected.available && selected.configured && !!type && nameOk && canAdd && !running
+    && !proxmoxSelected;
 
   const clearOutcome = () => { setResult(null); setMismatch(null); setError(''); };
   const pick = (set: (v: string) => void, v: string, current: string) => {
@@ -231,6 +234,12 @@ export default function Deploy() {
           </div>
         )}
         {selected?.source === 'installer' && <p className="page-hint">Edit this target in sirdar/.env.</p>}
+        {proxmoxSelected && (
+          <p className="page-hint sirdar-envnote">
+            Test Proxmox in Settings › Integrations. Environments on it are made with New environment, which builds
+            their VM on the first deploy.
+          </p>
+        )}
         {savedSelected && !savedSelected.configured && (
           <p className="page-hint sirdar-envnote">This target needs a password or a key file. Use Edit to add one.</p>
         )}

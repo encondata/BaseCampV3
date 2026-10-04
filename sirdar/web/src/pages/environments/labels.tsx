@@ -1,5 +1,5 @@
 /** Labels, status chips and small helpers shared by the environment pages. */
-import type { DeployTarget, DeploymentStep, Environment, Snapshot } from '../../lib/sirdarApi';
+import type { DeployTarget, DeploymentStep, EnvVm, Environment, Snapshot } from '../../lib/sirdarApi';
 
 /** status → [chip class, label] */
 type ChipMap = Record<string, [string, string]>;
@@ -27,6 +27,7 @@ export const TYPE_LABEL: Record<string, string> = { dev: 'Dev', beta: 'Beta', cu
 export const MODE_LABEL: Record<string, string> = {
   update: 'Update', reset: 'Reset data', adopt: 'Adopt', snapshot: 'Take snapshot',
   restore_dump: 'Restore backup', rollback: 'Roll back', publish: 'Publish', teardown: 'Delete environment',
+  vm_restore: 'Restore VM snapshot',
 };
 /** A Publish tab entry's state (the API's PublishPlan). */
 export const PUBLISH_STATE: ChipMap = {
@@ -43,8 +44,8 @@ export const SNAPSHOT_STATUS: ChipMap = {
 export const RETRYABLE = ['failed', 'cancelled', 'interrupted'];
 /** Modes that replace data: they need deploy:change and the environment's name typed back
  *  (the API's GATED_MODES). A snapshot job is never retried. */
-export const GATED_MODES = ['reset', 'restore_dump', 'rollback', 'teardown'];
-export const RETRY_MODES = ['update', 'reset', 'restore_dump', 'rollback', 'publish', 'teardown'];
+export const GATED_MODES = ['reset', 'restore_dump', 'rollback', 'teardown', 'vm_restore'];
+export const RETRY_MODES = ['update', 'reset', 'restore_dump', 'rollback', 'publish', 'teardown', 'vm_restore'];
 
 /** 1,536 → "1.5 KB"; null → "—". Binary steps, as the file sizes people see. */
 export function formatBytes(n: number | null | undefined): string {
@@ -97,3 +98,31 @@ export const targetLabel = (targets: DeployTarget[], id: string) => targets.find
 /** Targets an environment can use: the installer's and saved SSH targets that are configured. */
 export const sshTargets = (targets: DeployTarget[]) =>
   targets.filter((t) => (t.id === 'ssh' || t.id.startsWith('ssh:')) && t.available && t.configured);
+
+/** Targets a new environment can use: configured SSH targets, then Proxmox once it is set up. */
+export const envTargets = (targets: DeployTarget[]) =>
+  [...sshTargets(targets), ...targets.filter((t) => t.id === 'proxmox' && t.configured)];
+
+/** Its host is a VM Sirdar builds on Proxmox. */
+export const onProxmox = (env: Environment) => env.target_kind === 'proxmox';
+
+/** Sirdar built the VM (an id reserved before the first deploy is not a VM yet). */
+export const vmBuilt = (vm: Pick<EnvVm, 'created' | 'vmid'>) => vm.created && vm.vmid !== null;
+// none: no VM id yet. partial: an id is reserved but the first apply did not finish. built: created.
+export const vmStage = (vm: Pick<EnvVm, 'created' | 'vmid'>): 'none' | 'partial' | 'built' =>
+  vm.vmid === null ? 'none' : vm.created ? 'built' : 'partial';
+
+/** Memory in GB as typed and shown (one decimal at most), and back to MB. */
+export const gbOf = (mb: number) => String(Math.round((mb / 1024) * 10) / 10);
+export const mbOf = (gb: string) => Math.round(Number(gb) * 1024);
+
+/** "4 vCPU · 8 GB · 64 GB disk" */
+export const vmSize = (vm: Pick<EnvVm, 'cores' | 'memory_mb' | 'disk_gb'>) =>
+  `${vm.cores} vCPU · ${Math.round((vm.memory_mb / 1024) * 10) / 10} GB · ${vm.disk_gb} GB disk`;
+
+/** "10.10.48.70/24 via 10.10.48.1", or "DHCP"; never "null" for a missing part. */
+export const vmNetwork = (vm: Pick<EnvVm, 'ip_mode' | 'ip_cidr' | 'gateway'>) => {
+  if (vm.ip_mode !== 'static') return 'DHCP';
+  if (!vm.ip_cidr) return 'Static, no address yet';
+  return vm.gateway ? `${vm.ip_cidr} via ${vm.gateway}` : vm.ip_cidr;
+};

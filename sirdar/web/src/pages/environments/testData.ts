@@ -1,7 +1,8 @@
 /** Fixtures shaped like the /api/deploy environment and deployment endpoints. */
 import type {
-  Backup, Deployment, DeploymentStatus, DeploymentStep, DeploymentSummary, DeployTarget, Environment,
-  EnvironmentDefaults, EnvService, IntegrationCheck, Integrations, PublishPlan, Snapshot, StepStatus,
+  Backup, Deployment, DeploymentStatus, DeploymentStep, DeploymentSummary, DeployTarget, EnvVm, Environment,
+  EnvironmentDefaults, EnvService, IntegrationCheck, Integrations, PublishPlan, Snapshot, StepStatus, TlsCertificate,
+  VmSnapshot,
 } from '../../lib/sirdarApi';
 
 export const SHA = `e73b99ca${'1'.repeat(32)}`;
@@ -15,12 +16,14 @@ const svc = (service: string, port: number): EnvService => ({
 export const ADOPTED: DeploymentSummary = {
   id: 'd0', mode: 'adopt', git_ref: 'main', sha: SHA, status: 'adopted', start_step: 1, retry_of: null,
   failed_step: null, dump_path: null, snapshot: null, restore_dump: null, rollback_available: false, publish: false,
+  vm: false, take_vm_snapshot: false, vm_snapshot: null,
   previous_sha: null, error: null, actor_name: 'Jimmy Henderson',
   started_at: '2026-10-03T12:00:00Z', finished_at: '2026-10-03T12:00:00Z', created_at: '2026-10-03T12:00:00Z',
 };
 
 export const ENV: Environment = {
-  id: 'e1', name: 'uat', type: 'dev', target: 'ssh:lab', base_domain: 'uat.serversherpa.com',
+  id: 'e1', name: 'uat', type: 'dev', target: 'ssh:lab', target_kind: 'ssh', vm: null,
+  base_domain: 'uat.serversherpa.com',
   env_dir: '/opt/serversherpa/uat', git_ref: 'main', current_sha: SHA, image_tag: 'e73b99ca',
   status: 'ready', proxy_ip: '10.10.48.6', bind_ip: '0.0.0.0', keep_dumps: 5,
   spaces_bucket: 'serversherpa', log_level: 'INFO',
@@ -50,6 +53,8 @@ export const DEFAULTS: EnvironmentDefaults = {
   domain_suffix: 'serversherpa.com', env_root: '/opt/serversherpa', git_ref: 'main', bind_ip: '0.0.0.0',
   keep_dumps: 5, spaces_bucket: 'serversherpa', log_levels: ['DEBUG', 'INFO', 'WARNING', 'ERROR'],
   optional_secrets: ['SS_ANTHROPIC_API_KEY', 'SS_DB_TESTING_PASSWORD'],
+  vm: { cores: 4, memory_mb: 8192, disk_gb: 64, keep_snapshots: 3,
+        limits: { cores: [1, 64], memory_mb: [2048, 262144], disk_gb: [20, 4096], keep_snapshots: [1, 10] } },
 };
 
 const UPDATE_PLAN: [number, string, string][] = [
@@ -86,6 +91,7 @@ function deployment(status: DeploymentStatus, statuses: StepStatus[], logs: Reco
   return {
     id: 'd1', mode, git_ref: 'main', sha: NEW_SHA, status, start_step: 1, retry_of: null, failed_step: null,
     dump_path: null, snapshot: null, restore_dump: null, rollback_available: false, publish: false,
+    vm: false, take_vm_snapshot: false, vm_snapshot: null,
     previous_sha: SHA, error: null, actor_name: 'Jimmy Henderson',
     started_at: '2026-10-03T13:00:00Z', finished_at: status === 'running' ? null : '2026-10-03T13:10:00Z',
     created_at: '2026-10-03T13:00:00Z', environment: 'uat',
@@ -146,6 +152,7 @@ export function summary(d: Deployment): DeploymentSummary {
     id: d.id, mode: d.mode, git_ref: d.git_ref, sha: d.sha, status: d.status, start_step: d.start_step,
     retry_of: d.retry_of, failed_step: d.failed_step, dump_path: d.dump_path, snapshot: d.snapshot,
     restore_dump: d.restore_dump, rollback_available: d.rollback_available, publish: d.publish,
+    vm: d.vm, take_vm_snapshot: d.take_vm_snapshot, vm_snapshot: d.vm_snapshot,
     previous_sha: d.previous_sha,
     error: d.error, actor_name: d.actor_name, started_at: d.started_at, finished_at: d.finished_at,
     created_at: d.created_at,
@@ -159,12 +166,20 @@ export const INTEGRATIONS: Integrations = {
   npm: { configured: true, url: 'http://10.10.48.6:81', identity: 'admin@example.com',
          letsencrypt_email: 'admin@example.com', password_set: true,
          updated_at: '2026-10-04T15:05:00Z', updated_by_name: 'Jimmy Henderson' },
+  proxmox: { configured: true, url: 'https://10.10.48.5:8006', node: 'pve', pool: 'sirdar', storage: 'local-lvm',
+             bridge: 'vmbr0', vlan_tag: null, template_vmid: 9000,
+             tls_fingerprint: fingerprint(7),
+             token_id: 'sirdar@pve!sirdar', token_set: true,
+             updated_at: '2026-10-04T16:00:00Z', updated_by_name: 'Jimmy Henderson' },
 };
 export const NO_INTEGRATIONS: Integrations = {
   secrets_key_configured: true,
   cloudflare: { configured: false, zone: null, public_ip: null, token_set: false, updated_at: null, updated_by_name: null },
   npm: { configured: false, url: null, identity: null, letsencrypt_email: null, password_set: false,
          updated_at: null, updated_by_name: null },
+  proxmox: { configured: false, url: null, node: null, pool: null, storage: null, bridge: null, vlan_tag: null,
+             template_vmid: null, tls_fingerprint: null, token_id: null, token_set: false, updated_at: null,
+             updated_by_name: null },
 };
 export const CF_CHECK: IntegrationCheck = {
   ok: true, target: 'cloudflare',
@@ -217,4 +232,68 @@ export const PUBLISHING = deployment('running', STARTING, {}, {
 });
 export const TEARDOWN = deployment('running', STARTING, {}, {
   id: 'd7', mode: 'teardown', sha: '', start_step: 15, steps: steps(TEARDOWN_STEPS, STARTING, {}),
+});
+
+/* ---- Proxmox (phase 5) ---- */
+/** A made-up SHA-256 fingerprint in Proxmox's format: 32 hex pairs, AB:CD:… (95 characters). */
+function fingerprint(seed: number): string {
+  return Array.from({ length: 32 }, (_, i) => ((i * seed + 17) % 256).toString(16).toUpperCase().padStart(2, '0'))
+    .join(':');
+}
+export const PX_FINGERPRINT = INTEGRATIONS.proxmox.tls_fingerprint!;
+/** What tls_untrusted describes: a new server's certificate. */
+export const PX_CERT: TlsCertificate = {
+  fingerprint: fingerprint(13),
+  subject: 'pve.lab', issuer: 'Proxmox Virtual Environment', not_after: '2027-10-04T00:00:00+00:00',
+  names: ['pve', 'pve.lab', '10.10.48.5'],
+};
+export const PX_TOKEN = 'sirdar@pve!sirdar=1b2c3d4e-5f60-4a7b-8c9d-0e1f2a3b4c5d';
+export const PX_CHECK: IntegrationCheck = {
+  ok: true, target: 'proxmox',
+  checks: [
+    { label: 'Proxmox', status: 'pass', value: 'Version 9.0.10' },
+    { label: 'Node', status: 'pass', value: 'pve' },
+    { label: 'Pool', status: 'pass', value: 'sirdar · 1 VMs' },
+    { label: 'Template', status: 'pass', value: 'ubuntu-2404-template (9000)' },
+    { label: 'Storage', status: 'pass', value: 'local-lvm · 500 GB free' },
+    { label: 'Bridge', status: 'pass', value: 'vmbr0' },
+  ],
+  facts: { url: 'https://10.10.48.5:8006', node: 'pve', version: '9.0.10', token_id: 'sirdar@pve!sirdar' },
+};
+export const PX_TARGETS = {
+  ...TARGETS,
+  targets: [...TARGETS.targets,
+            { id: 'proxmox', label: 'Proxmox', kind: 'proxmox', available: true, configured: true } as DeployTarget],
+};
+export const PX_VM: EnvVm = {
+  name: 'ss-uat3', node: 'pve', vmid: 120, cores: 4, memory_mb: 8192, disk_gb: 64, ip_mode: 'static',
+  ip_cidr: '10.10.48.70/24', gateway: '10.10.48.1', ip: '10.10.48.70', keep_snapshots: 3, created: true,
+};
+/** uat3 on Proxmox, deployed. */
+export const PX_ENV: Environment = {
+  ...ENV, id: 'e3', name: 'uat3', target: 'proxmox', target_kind: 'proxmox', vm: PX_VM,
+  base_domain: 'uat3.serversherpa.com', env_dir: '/opt/serversherpa/uat3', secrets_set: {},
+  services: ENV.services.map((s) => ({
+    ...s, host_ip: '10.10.48.70', hostname: s.hostname ? s.hostname.replace('.uat.', '.uat3.') : null })),
+};
+/** uat3 just created: no VM yet, never deployed. */
+export const PX_NEW_ENV: Environment = {
+  ...PX_ENV, status: 'new', current_sha: null, image_tag: null, last_deployment: null,
+  vm: { ...PX_VM, vmid: null, ip: null, created: false },
+};
+export const VM_SNAPSHOTS: VmSnapshot[] = [
+  { name: 'sirdar-20261004T120000Z', taken_at: '2026-10-04T12:00:00Z', sha: SHA, deployment_id: 'd10',
+    description: 'Sirdar: before update of uat3', restorable: true, reason: null },
+  { name: 'sirdar-20261002T080000Z', taken_at: '2026-10-02T08:00:00Z', sha: NEW_SHA, deployment_id: 'd9',
+    description: 'Sirdar: before reset of uat3', restorable: false, reason: KEYS_CHANGED_REASON },
+];
+const VM_UPDATE_PLAN: [number, string, string][] = [[0, 'provision', 'Prepare VM'], ...UPDATE_PLAN];
+const VM_UP_FAILED: StepStatus[] = [
+  'succeeded', 'succeeded', 'succeeded', 'succeeded', 'succeeded', 'succeeded', 'succeeded', 'failed'];
+/** A failed Update of uat3 whose step 0 took a VM snapshot (and that can also roll back its dump). */
+export const VM_ROLLBACKABLE = deployment('failed', VM_UP_FAILED, { 10: 'migrate exited 1\n' }, {
+  id: 'd11', environment: 'uat3', vm: true, take_vm_snapshot: true, vm_snapshot: 'sirdar-20261004T120000Z',
+  failed_step: 10, error: 'Step 10 (Start services) failed. See its log.',
+  dump_path: '/opt/serversherpa/uat3/backups/20261004T120500Z.dump', rollback_available: true,
+  steps: steps(VM_UPDATE_PLAN, VM_UP_FAILED, { 10: 'migrate exited 1\n' }),
 });

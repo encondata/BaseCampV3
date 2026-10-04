@@ -9,7 +9,7 @@ import SecretField, { type SecretAction } from '../../components/SecretField';
 import { ipv4Problem } from '../../lib/envRules';
 import {
   INTEGRATION_LABEL, deployErrorText, saveIntegration, testIntegration,
-  type CloudflareBody, type IntegrationCheck, type IntegrationKind, type Integrations, type NpmBody,
+  type CloudflareBody, type IntegrationCheck, type PublishKind, type Integrations, type NpmBody,
 } from '../../lib/sirdarApi';
 
 type Field = 'zone' | 'ip' | 'url' | 'identity' | 'email' | 'secret' | 'form';
@@ -21,14 +21,14 @@ const CODE_FIELD: Record<string, Field> = {
 };
 const URL_RE = /^https?:\/\/[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:\d{1,5})?\/?$/;
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/;
-const DESCRIPTION: Record<IntegrationKind, string> = {
+const DESCRIPTION: Record<PublishKind, string> = {
   cloudflare: 'Sirdar keeps an A record for each public service in this zone, pointing at the public IP. '
     + 'The API token needs DNS edit on the zone.',
   npm: "Sirdar keeps a proxy host and a Let's Encrypt certificate for each public service through the "
     + 'Nginx Proxy Manager API.',
 };
-const SECRET_LABEL: Record<IntegrationKind, string> = { cloudflare: 'API token', npm: 'Password' };
-const SECRET_MISSING: Record<IntegrationKind, string> = { cloudflare: 'Enter the API token.', npm: 'Enter the password.' };
+const SECRET_LABEL: Record<PublishKind, string> = { cloudflare: 'API token', npm: 'Password' };
+const SECRET_MISSING: Record<PublishKind, string> = { cloudflare: 'Enter the API token.', npm: 'Enter the password.' };
 
 function TextField({ id, label, value, error, hint, inputRef, onChange }: {
   id: string; label: string; value: string; error?: string; hint?: string;
@@ -46,7 +46,7 @@ function TextField({ id, label, value, error, hint, inputRef, onChange }: {
 }
 
 export default function IntegrationModal({ kind, current, onSaved, onClose }: {
-  kind: IntegrationKind; current: Integrations; onSaved: (saved: Integrations) => void; onClose: () => void;
+  kind: PublishKind; current: Integrations; onSaved: (saved: Integrations) => void; onClose: () => void;
 }) {
   const cf = current.cloudflare;
   const npm = current.npm;

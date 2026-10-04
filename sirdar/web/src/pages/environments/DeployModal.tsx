@@ -14,11 +14,13 @@ import {
   deployErrorText, listSnapshots, startDeployment, type Deployment, type Environment, type Snapshot,
 } from '../../lib/sirdarApi';
 
-import { snapshotLabel } from './labels';
+import { onProxmox, snapshotLabel } from './labels';
 
 type Mode = 'update' | 'reset';
 type Field = 'ref' | 'confirm' | 'snapshot' | 'form';
-type Attempt = { mode: Mode; ref: string; confirm: string; snapshotId: string };
+/** vmSnapshot: null for an environment that doesn't choose (SSH, or a VM never deployed). */
+type Attempt = { mode: Mode; ref: string; confirm: string; snapshotId: string; vmSnapshot: boolean | null };
+const VM_SNAPSHOT: ['on' | 'off', string][] = [['on', 'On'], ['off', 'Off']];
 const MODES: [Mode, string, string][] = [
   ['update', 'Update', 'Keeps the data. Once the environment has been deployed, a database dump is taken first.'],
   ['reset', 'Reset data', "Deletes this environment's database and files, then starts it empty or from a snapshot. This can't be undone."],
@@ -43,6 +45,9 @@ export default function DeployModal({ env, onStarted, onClose }: {
   const [snapshotsLoaded, setSnapshotsLoaded] = useState(false);
   const [after, setAfter] = useState<'empty' | 'snapshot'>('empty');
   const [snapshotId, setSnapshotId] = useState('');
+  // A deployed Proxmox environment snapshots its VM in step 0 unless turned off.
+  const choosesVmSnapshot = onProxmox(env) && env.current_sha !== null;
+  const [vmSnapshot, setVmSnapshot] = useState<'on' | 'off'>('on');
   const [errors, setErrors] = useState<Partial<Record<Field, string>>>({});
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -106,10 +111,11 @@ export default function DeployModal({ env, onStarted, onClose }: {
     setBusy(true);
     setErrors({});
     try {
+      const vm = attempt.vmSnapshot === null ? {} : { take_vm_snapshot: attempt.vmSnapshot };
       onStarted(await startDeployment(env.name, attempt.mode === 'reset'
         ? { mode: attempt.mode, git_ref: attempt.ref, confirm_name: attempt.confirm,
-            ...(attempt.snapshotId ? { snapshot_id: attempt.snapshotId } : {}) }
-        : { mode: attempt.mode, git_ref: attempt.ref }));
+            ...(attempt.snapshotId ? { snapshot_id: attempt.snapshotId } : {}), ...vm }
+        : { mode: attempt.mode, git_ref: attempt.ref, ...vm }));
     } catch (err) {
       refocus.current = true;
       if (!hostKey.handle(err, env.target, attempt)) {
@@ -130,7 +136,8 @@ export default function DeployModal({ env, onStarted, onClose }: {
     if (problem) { setErrors({ ref: problem }); return; }
     if (restoring && !snapshotId) { setErrors({ snapshot: 'Choose a snapshot.' }); return; }
     if (reset && confirm !== env.name) { setErrors({ confirm: `Type ${env.name} to confirm.` }); return; }
-    void run({ mode, ref: ref.trim(), confirm, snapshotId: restoring ? snapshotId : '' });
+    void run({ mode, ref: ref.trim(), confirm, snapshotId: restoring ? snapshotId : '',
+               vmSnapshot: choosesVmSnapshot ? vmSnapshot === 'on' : null });
   };
 
   return (
@@ -143,7 +150,10 @@ export default function DeployModal({ env, onStarted, onClose }: {
               <div className="eyebrow">Deploy</div>
               <h3 id="sirdar-deploy-title">Deploy {env.name}</h3>
               <p className="page-hint">
-                Runs in {env.env_dir} on the target. You can follow each step's log while it runs.
+                {onProxmox(env) && env.vm
+                  ? `Prepares the VM ${env.vm.name} on Proxmox, then runs in ${env.env_dir} on it. `
+                  : `Runs in ${env.env_dir} on the target. `}
+                You can follow each step's log while it runs.
               </p>
             </div>
             <button type="button" className="modal-close" aria-label="Close" disabled={busy} onClick={onClose}>
@@ -179,6 +189,27 @@ export default function DeployModal({ env, onStarted, onClose }: {
                 </p>
               )}
             </div>
+            {onProxmox(env) && (
+              <div>
+                {choosesVmSnapshot ? (
+                  <>
+                    <span className="field-label" id="deploy-vmsnap-label">VM snapshot first</span>
+                    <div className="segmented" role="radiogroup" aria-labelledby="deploy-vmsnap-label">
+                      {VM_SNAPSHOT.map(([v, label]) => (
+                        <button key={v} type="button" role="radio" aria-checked={vmSnapshot === v}
+                                className={vmSnapshot === v ? 'on' : ''} tabIndex={vmSnapshot === v ? 0 : -1}
+                                onKeyDown={arrowNav} onClick={() => setVmSnapshot(v)}>{label}</button>
+                      ))}
+                    </div>
+                    <p className="page-hint">
+                      Step 0 snapshots the whole VM before anything changes. Restore it from the Backups tab.
+                    </p>
+                  </>
+                ) : (
+                  <p className="page-hint">The first deploy builds the VM; there's nothing to snapshot yet.</p>
+                )}
+              </div>
+            )}
             {reset && (
               <div>
                 <span className="field-label" id="deploy-after-label">After the reset</span>

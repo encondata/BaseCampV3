@@ -232,17 +232,18 @@ every run pins it. Code comes from `SIRDAR_DEPLOY_REPO_URL` (default
 `https://github.com/encondata/BaseCampV3.git`); a branch or tag becomes a
 commit through `git ls-remote` on the target.
 
-**Steps.** 1 Preflight · 2 Bootstrap · 3 Fetch code · 4 Render config ·
-5 Build images · 6 Pre-deploy dump (Update, a seeded first deploy too) ·
-7 Reset data (Reset) · 8 Start data services · 9 Restore snapshot or Restore backup ·
-10 Start services (migrate, then the app) · 11 Take snapshot (a job of its
-own) · 12 DNS records · 13 Proxy hosts · 14 Smoke test (when the environment
-publishes) · 15 Remove environment · 16 Remove proxy hosts · 17 Remove DNS
-records (Delete environment). The first failure stops the deployment; retry
-re-runs from the failed step. One deployment per environment at a time.
-Reset, Restore backup, Roll back and Delete environment replace or remove
-data: they need `deploy:change` and the environment's name typed back
-(`confirm_name`).
+**Steps.** 0 Prepare VM (Proxmox environments) · 1 Preflight · 2 Bootstrap ·
+3 Fetch code · 4 Render config · 5 Build images · 6 Pre-deploy dump (Update, a
+seeded first deploy too) · 7 Reset data (Reset) · 8 Start data services ·
+9 Restore snapshot or Restore backup · 10 Start services (migrate, then the
+app) · 11 Take snapshot (a job of its own) · 12 DNS records · 13 Proxy hosts ·
+14 Smoke test (when the environment publishes) · 15 Remove environment, or
+Destroy VM on Proxmox · 16 Remove proxy hosts · 17 Remove DNS records (Delete
+environment). Restore VM snapshot (Proxmox) is step 0 alone. The first
+failure stops the deployment; retry re-runs from the failed step. One
+deployment per environment at a time. Reset, Restore backup, Roll back,
+Restore VM snapshot and Delete environment replace or remove data: they need
+`deploy:change` and the environment's name typed back (`confirm_name`).
 
 **Publishing (DNS + proxy).** With an environment's **Publish** switch on
 (the default for new environments; off for adopted ones and for every
@@ -281,6 +282,105 @@ images stay on the host.
 checkout's commit over SSH and imports them, secrets encrypted. Nothing on
 the host changes. Keys Sirdar doesn't manage come back in `ignored_keys`
 and are left out of `.env` on the next deploy.
+
+**Proxmox targets.** Besides SSH targets, an environment can live on a VM
+Sirdar builds on Proxmox (target `proxmox`). Step 0 runs Terraform
+(`bpg/proxmox`, baked into the image with its checksum; no registry access) to
+full-clone the Ubuntu 24.04 template into the pool as `ss-<env>` (tags
+`sirdar`, `ss-<env>`), sized as the environment says (default 4 vCPU, 8 GB,
+64 GB), with cloud-init for the `deploy` user, Sirdar's key for that VM and a
+static address or DHCP. It then reads the VM's address and SSH host key
+through the guest agent, pins the key, points every service at the VM and runs
+the usual steps. Each Update, Reset, Restore backup or Roll back of a deployed
+Proxmox environment first takes a VM snapshot (`sirdar-<UTC time>`, the newest
+3 kept). Sirdar prunes and restores only the snapshots its own deployments
+recorded: snapshots made by hand are never touched, whatever their names. The
+Backups tab lists them with **Restore VM snapshot**. **Delete environment**
+destroys the VM (only one Sirdar created: it checks the id, name and `sirdar`
+tag) with its snapshots, then the DNS records and proxy hosts. Terraform state
+lives in `sirdar/terraform/<environment id>/` (mounted at `/app/terraform`,
+uid 10001, mode 700): back it up with the rest of `sirdar/`, and never edit or
+delete these VMs in Proxmox by hand. Existing VMs can't be adopted onto
+Proxmox: a hand-built VM (uat) stays an SSH target.
+
+Safety checks. Sirdar pins exactly one certificate for the Proxmox API: the
+one whose fingerprint you trusted. A PEM with extra certificates is refused,
+so a CA can't ride along behind the leaf, and Terraform trusts that
+certificate alone. Before every apply, restore and destroy, Sirdar looks the
+VM id up across the whole cluster and refuses unless the VM there is named
+`ss-<env>`, carries the `sirdar` tag and sits on the recorded node (Proxmox
+reuses free ids). If a VM Sirdar created is gone from Proxmox, step 0 stops
+instead of silently building a new one: delete the environment, or fix it by
+hand, then retry. A VM's address, whether typed in or leased by DHCP, is
+checked against everything that might use it: the proxy, every environment's
+proxy, every saved SSH target (names are resolved, and an unreadable targets
+file refuses), the Proxmox host, other environments' service addresses and
+other VMs. The check runs under a database advisory lock held until the
+address is recorded, so two creates can't claim the same address, and it runs
+again before the address is written. A static address that already answers
+SSH is refused before the VM is built.
+
+A VM keeps the template, storage, pool, bridge and VLAN it was cloned with:
+they are recorded when the environment is created, so changing them in
+Settings › Integrations › Proxmox only affects new environments. Step 0 runs
+`terraform plan`, reads the plan and refuses it if it would replace or remove
+anything; only Delete environment destroys a VM. The VM snapshot is taken
+before Terraform changes the VM, so it holds the old sizing too. A VM id
+another environment reserved but hasn't built yet is skipped (the next 20 ids
+are checked with Proxmox). Delete environment releases an id it reserved but
+never built, and refuses when a VM it built is invisible to the token while
+Terraform's state still has it (check the token's pool permissions).
+
+Set up once on the Proxmox host (as root), then enter the URL, node, pool,
+storage, bridge, template id and API token in Settings › Integrations ›
+Proxmox, trust the certificate fingerprint it shows (compare it with
+Datacenter › Node › System › Certificates), and press Test. The template must
+be an Ubuntu 24.04 cloud image with `qemu-guest-agent` installed (Sirdar reads
+the VM's address and host key through the agent), its boot disk on `scsi0`,
+and VM id 9000 unless you enter another id:
+
+```bash
+# The template: Ubuntu 24.04 cloud image with the guest agent (id 9000)
+apt-get install -y libguestfs-tools
+wget https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
+virt-customize -a noble-server-cloudimg-amd64.img --install qemu-guest-agent \
+  --truncate /etc/machine-id
+qm create 9000 --name ubuntu-2404-template --memory 2048 --cores 2 \
+  --net0 virtio,bridge=vmbr0 --scsihw virtio-scsi-single --agent enabled=1 --ostype l26 \
+  --serial0 socket --vga serial0
+qm importdisk 9000 noble-server-cloudimg-amd64.img local-lvm
+qm set 9000 --scsi0 local-lvm:vm-9000-disk-0,discard=on,ssd=1 --boot order=scsi0 \
+  --ide2 local-lvm:cloudinit
+qm template 9000
+# The pool Sirdar works in, holding the template
+pvesh create /pools --poolid sirdar
+pvesh set /pools/sirdar --vms 9000
+# A user and token that can act only in the pool, its storage and bridge
+# (Proxmox 8: replace VM.GuestAgent.Audit VM.GuestAgent.FileRead with VM.Monitor)
+pveum role add SirdarProvision -privs "VM.Allocate VM.Clone VM.Audit VM.PowerMgmt \
+  VM.Config.CDROM VM.Config.CPU VM.Config.Cloudinit VM.Config.Disk VM.Config.HWType \
+  VM.Config.Memory VM.Config.Network VM.Config.Options VM.Snapshot VM.Snapshot.Rollback \
+  VM.GuestAgent.Audit VM.GuestAgent.FileRead Datastore.AllocateSpace Datastore.Audit \
+  SDN.Use Pool.Audit Sys.Audit"
+pveum user add sirdar@pve
+pveum aclmod /pool/sirdar -user sirdar@pve -role SirdarProvision
+pveum aclmod /storage/local-lvm -user sirdar@pve -role SirdarProvision
+pveum aclmod /sdn/zones/localnetwork/vmbr0 -user sirdar@pve -role SirdarProvision
+pveum aclmod /nodes/pve -user sirdar@pve -role SirdarProvision   # the bridge check (optional)
+pveum user token add sirdar@pve sirdar --privsep 0               # shows the token once
+```
+
+The token (`sirdar@pve!sirdar=<uuid>`) is stored encrypted and never shown
+again; Terraform gets it only through its environment. Proxmox can't be
+removed from Settings while an environment uses it.
+
+| API (under `/api/deploy`) | Needs |
+|---|---|
+| `PUT /integrations/proxmox`, `POST /integrations/proxmox/test`, `DELETE /integrations/proxmox` | `deploy:change` |
+| `POST /environments` with `target: "proxmox"` and `vm` | `deploy:add` |
+| `PATCH /environments/{name}` with `vm` (sizes, snapshots kept) | `deploy:change` |
+| `GET /environments/{name}/vm-snapshots` | `deploy:view` |
+| `POST /environments/{name}/deployments` (`mode`: `vm_restore`, with `vm_snapshot`) | `deploy:add` and `deploy:change` |
 
 | API (under `/api/deploy`) | Needs |
 |---|---|

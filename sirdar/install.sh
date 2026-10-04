@@ -396,6 +396,10 @@ ensure_runner_dir() {  # ensure_runner_dir DIR
 ensure_snapshots_dir() {  # ensure_snapshots_dir DIR
   ensure_private_dir "$1" "snapshots can't be uploaded or taken"
 }
+# Terraform state for Proxmox VMs lives in <dir>/sirdar/terraform (/app/terraform).
+ensure_terraform_dir() {  # ensure_terraform_dir DIR
+  ensure_private_dir "$1" "Proxmox environments can't be built or deleted"
+}
 ensure_private_dir() {  # ensure_private_dir DIR WHAT-FAILS
   local d="$1" ok=1
   mkdir -p "$d" 2>/dev/null || as_root mkdir -p "$d" || ok=0
@@ -1792,6 +1796,7 @@ main() {
   ensure_config_dir "$DIR/sirdar/config"
   ensure_runner_dir "$DIR/sirdar/runner"
   ensure_snapshots_dir "$DIR/sirdar/snapshots"
+  ensure_terraform_dir "$DIR/sirdar/terraform"
 
   if [ -f "$DIR/sirdar/.env" ]; then
     info "Keeping existing $DIR/sirdar/.env"

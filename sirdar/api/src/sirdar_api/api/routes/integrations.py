@@ -1,5 +1,8 @@
 """Settings › Integrations: the Cloudflare and Nginx Proxy Manager
-credentials Sirdar publishes environments with. Secrets are write-only: no
+credentials Sirdar publishes environments with, and the Proxmox API token
+it builds VMs with (its TLS certificate is pinned trust-on-first-use: save
+and Test answer tls_untrusted until the request names the fingerprint the
+user was shown). Secrets are write-only: no
 response, log line or audit row carries one (audits list the names of the
 fields that changed), and the request models put no constraint on them, so
 no validation error can describe one."""
@@ -12,7 +15,15 @@ from pydantic import BaseModel, Field
 
 from sirdar_api.api.deps import AuthContext, DbSession, client_ip, require_permission
 from sirdar_api.config import get_settings
-from sirdar_api.deploy import ConnectFailed, cloudflare, integrations, npm, outbound
+from sirdar_api.deploy import (
+    ConnectFailed,
+    cloudflare,
+    integrations,
+    npm,
+    outbound,
+    proxmox,
+    tls_pin,
+)
 from sirdar_api.deploy.integrations import IntegrationError
 from sirdar_api.services.audit import audit
 
@@ -20,10 +31,16 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/deploy/integrations", tags=["deploy"])
 
-Kind = Literal["cloudflare", "npm"]
-TESTERS = {"cloudflare": cloudflare.test_connection, "npm": npm.test_connection}
+Kind = Literal["cloudflare", "npm", "proxmox"]
+TESTERS = {"cloudflare": cloudflare.test_connection, "npm": npm.test_connection,
+           "proxmox": proxmox.test_connection}
 UNEXPECTED_REASON = "Sirdar couldn't reach it."
-_STATUS = {"secrets_key_missing": 400, "integration_unreadable": 409}
+# Everything else is a 422 (tls_fingerprint_invalid among them); tls_untrusted
+# only comes from integrations when the route's own pin check was bypassed.
+_STATUS = {"secrets_key_missing": 400, "integration_unreadable": 409,
+           "tls_untrusted": 409, "tls_fingerprint_invalid": 422}
+PROXMOX_FIELDS = ("url", "node", "pool", "storage", "bridge", "vlan_tag", "template_vmid",
+                  "tls_fingerprint")
 
 
 class CloudflareIn(BaseModel):
@@ -39,6 +56,19 @@ class NpmIn(BaseModel):
     password: str | None = None
 
 
+class ProxmoxIn(BaseModel):
+    url: str = Field(max_length=300)
+    node: str = Field(max_length=63)
+    pool: str = Field(max_length=40)
+    storage: str = Field(max_length=63)
+    bridge: str = Field(max_length=15)
+    vlan_tag: int | None = None
+    template_vmid: int
+    # The fingerprint the user was shown and trusted (None: show it first).
+    tls_fingerprint: str | None = Field(default=None, max_length=95)
+    token: str | None = None
+
+
 def _http(e: IntegrationError) -> HTTPException:
     return HTTPException(status_code=_STATUS.get(e.code, 422), detail={"code": e.code, **e.extra})
 
@@ -50,6 +80,42 @@ def _cloudflare_values(body: CloudflareIn) -> dict:
 def _npm_values(body: NpmIn) -> dict:
     return {"url": body.url, "identity": body.identity,
             "letsencrypt_email": body.letsencrypt_email}
+
+
+async def _proxmox_values(db, body: ProxmoxIn) -> dict:
+    """The form's values plus the pinned certificate. The stored pin is
+    reused for the same URL and fingerprint; otherwise the live certificate
+    is fetched and must have the fingerprint the request names."""
+    try:
+        url = integrations.check_proxmox_url(body.url)
+    except IntegrationError as e:
+        raise _http(e) from None
+    wanted = None
+    if (body.tls_fingerprint or "").strip():
+        try:
+            wanted = tls_pin.normalize_fingerprint(body.tls_fingerprint)
+        except ValueError:
+            raise _http(IntegrationError("tls_fingerprint_invalid")) from None
+    values = {name: getattr(body, name) for name in PROXMOX_FIELDS}
+    values.update(url=url, tls_fingerprint=wanted)
+    stored = await integrations.config_of(db, "proxmox")
+    if (wanted and stored.get("url") == url and stored.get("tls_fingerprint") == wanted
+            and stored.get("tls_cert_pem")):
+        return {**values, "tls_cert_pem": stored["tls_cert_pem"]}
+    try:
+        pem = await tls_pin.fetch_certificate(*proxmox.split_url(url))
+    except ConnectFailed as e:
+        raise HTTPException(status_code=502, detail={"code": "connect_failed",
+                                                     "reason": e.reason}) from None
+    actual = tls_pin.fingerprint_of(pem)
+    if not wanted:
+        raise HTTPException(status_code=409, detail={"code": "tls_untrusted",
+                                                     "fingerprint": actual,
+                                                     **tls_pin.describe(pem)})
+    if actual != wanted:
+        raise HTTPException(status_code=409, detail={"code": "tls_mismatch",
+                                                     "expected": wanted, "actual": actual})
+    return {**values, "tls_cert_pem": pem}
 
 
 @router.get("")
@@ -86,9 +152,20 @@ async def save_npm(body: NpmIn, request: Request, db: DbSession,
     return await _save("npm", _npm_values(body), body.password, request, db, actor)
 
 
+@router.put("/proxmox")
+async def save_proxmox(body: ProxmoxIn, request: Request, db: DbSession,
+                       actor: AuthContext = require_permission("deploy", "change")):
+    return await _save("proxmox", await _proxmox_values(db, body), body.token, request, db,
+                       actor)
+
+
 @router.delete("/{kind}", status_code=204)
 async def remove_integration(kind: Kind, request: Request, db: DbSession,
                              actor: AuthContext = require_permission("deploy", "change")):
+    users = await integrations.in_use(db, kind)
+    if users:
+        raise HTTPException(status_code=409, detail={"code": "integration_in_use",
+                                                     "environments": users})
     if not await integrations.remove(db, kind):
         raise HTTPException(status_code=404, detail={"code": "integration_not_found"})
     audit(db, actor_id=actor.user.person_id, action="deploy.integration_remove",
@@ -148,3 +225,10 @@ async def check_npm(request: Request, db: DbSession, body: NpmIn | None = None,
                     actor: AuthContext = require_permission("deploy", "change")):
     return await _test("npm", _npm_values(body) if body else None,
                        body.password if body else None, request, db, actor)
+
+
+@router.post("/proxmox/test")
+async def check_proxmox(request: Request, db: DbSession, body: ProxmoxIn | None = None,
+                        actor: AuthContext = require_permission("deploy", "change")):
+    values = await _proxmox_values(db, body) if body else None
+    return await _test("proxmox", values, body.token if body else None, request, db, actor)

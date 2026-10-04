@@ -146,3 +146,13 @@
 .sirdar-plain-list li { margin: 2px 0; }
 .sirdar-danger-zone { margin-top: 28px; }
 .sirdar-danger-zone .sirdar-actions { justify-content: flex-start; }
+
+/* Settings › Integrations › Proxmox: three columns of short fields; the URL,
+   the certificate, its trust prompt and the token span the row. */
+.modal-card.reports-modal-card.rgm-card.sirdar-proxmox-card { width: min(760px, 96vw); max-width: 96vw; }
+.sirdar-proxmox-form { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.sirdar-proxmox-form .sirdar-span2 { grid-column: 1 / -1; }
+.sirdar-fingerprint { overflow-wrap: anywhere; }
+.sirdar-cert-prompt { display: flex; flex-direction: column; gap: 10px; align-items: flex-start;
+  padding: 12px; border: 1px solid var(--border, rgba(127, 127, 127, .35)); border-radius: 8px; }
+@media (max-width: 760px) { .sirdar-proxmox-form { grid-template-columns: 1fr; } }

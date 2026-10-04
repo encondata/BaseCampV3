@@ -2,9 +2,12 @@ import { expect, it } from 'vitest';
 
 import {
   CERT_STATE, DEPLOYMENT_STATUS, ENV_STATUS, GATED_MODES, MODE_LABEL, PUBLISH_STATE, RETRY_MODES, STEP_STATUS,
-  deploymentRunning, dumpTakenAt, duration, formatBytes, snapshotLabel, sshTargets, stoppedStep,
+  deploymentRunning, dumpTakenAt, duration, envTargets, formatBytes, onProxmox, snapshotLabel, sshTargets,
+  stoppedStep, vmNetwork, vmSize,
 } from './labels';
-import { ENV, FAILED, PUBLISHING, RUNNING, SNAP, SUCCEEDED, TARGETS, summary } from './testData';
+import {
+  ENV, FAILED, PUBLISHING, PX_ENV, PX_TARGETS, PX_VM, RUNNING, SNAP, SUCCEEDED, TARGETS, summary,
+} from './testData';
 
 it('stoppedStep mirrors the API: the failed/cancelled/interrupted step, else the first not run', () => {
   expect(stoppedStep(FAILED.steps)).toBe(5);
@@ -55,8 +58,8 @@ it('dumpTakenAt reads the UTC time out of a dump name or path', () => {
 it('labels the publish and delete modes, the deleting status and the publish states', () => {
   expect([MODE_LABEL.publish, MODE_LABEL.teardown]).toEqual(['Publish', 'Delete environment']);
   expect(ENV_STATUS.deleting).toEqual(['c-amber', 'Deleting']);
-  expect(GATED_MODES).toEqual(['reset', 'restore_dump', 'rollback', 'teardown']);
-  expect(RETRY_MODES).toEqual(['update', 'reset', 'restore_dump', 'rollback', 'publish', 'teardown']);
+  expect(GATED_MODES).toEqual(['reset', 'restore_dump', 'rollback', 'teardown', 'vm_restore']);
+  expect(RETRY_MODES).toEqual(['update', 'reset', 'restore_dump', 'rollback', 'publish', 'teardown', 'vm_restore']);
   expect(Object.keys(PUBLISH_STATE)).toEqual(['ok', 'update', 'create', 'claimable', 'conflict', 'unknown']);
   expect(PUBLISH_STATE.claimable).toEqual(['c-amber', "Not Sirdar's"]);
   expect(PUBLISH_STATE.conflict).toEqual(['c-red', 'Blocked']);
@@ -70,4 +73,20 @@ it('deploymentRunning: deploying, deleting, or a latest deployment still running
   expect(deploymentRunning({ ...ENV, last_deployment: summary(PUBLISHING) })).toBe(true);
   expect(deploymentRunning({ ...ENV, last_deployment: summary({ ...PUBLISHING, status: 'succeeded' }) })).toBe(false);
   expect(deploymentRunning({ ...ENV, last_deployment: null })).toBe(false);
+});
+
+it('Proxmox: targets, the mode, and the VM in words', () => {
+  expect(envTargets(TARGETS.targets).map((t) => t.id)).toEqual(['ssh:lab']);
+  expect(envTargets(PX_TARGETS.targets).map((t) => t.id)).toEqual(['ssh:lab', 'proxmox']);
+  expect(sshTargets(PX_TARGETS.targets).map((t) => t.id)).toEqual(['ssh:lab']);
+  expect([onProxmox(ENV), onProxmox(PX_ENV)]).toEqual([false, true]);
+  expect(MODE_LABEL.vm_restore).toBe('Restore VM snapshot');
+  expect(GATED_MODES).toContain('vm_restore');
+  expect(RETRY_MODES).toContain('vm_restore');
+  expect(vmSize(PX_VM)).toBe('4 vCPU · 8 GB · 64 GB disk');
+  expect(vmSize({ ...PX_VM, memory_mb: 12288 })).toBe('4 vCPU · 12 GB · 64 GB disk');
+  expect(vmNetwork(PX_VM)).toBe('10.10.48.70/24 via 10.10.48.1');
+  expect(vmNetwork({ ...PX_VM, ip_mode: 'dhcp', ip_cidr: null, gateway: null })).toBe('DHCP');
+  expect(vmNetwork({ ...PX_VM, ip_cidr: null, gateway: null })).toBe('Static, no address yet');
+  expect(vmNetwork({ ...PX_VM, gateway: null })).toBe('10.10.48.70/24');
 });

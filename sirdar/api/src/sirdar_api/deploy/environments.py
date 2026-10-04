@@ -29,7 +29,7 @@ from sirdar_api.db.models import (
     EnvironmentService,
     Snapshot,
 )
-from sirdar_api.deploy import ConnectFailed, envfile, names, ssh, targets, vault
+from sirdar_api.deploy import ConnectFailed, envfile, integrations, names, ssh, targets, vault, vms
 from sirdar_api.deploy.gitref import SHA_RE, valid_ref
 from sirdar_api.deploy.ssh import SshTargetConfig
 
@@ -125,7 +125,11 @@ def _check_log_level(value: str) -> str:
     return level
 
 
-def _check_target(target_id: str, settings: Settings) -> SshTargetConfig:
+def _check_target(target_id: str, settings: Settings) -> SshTargetConfig | None:
+    """An SSH target's config, or None for "proxmox" (the host is the VM
+    step 0 builds)."""
+    if target_id == targets.PROXMOX_TARGET:
+        return None
     if not SSH_TARGET_RE.fullmatch(target_id):
         raise EnvError("target_invalid")
     cfg = targets.ssh_config_for(target_id, settings)
@@ -169,7 +173,7 @@ async def is_deploying(db: AsyncSession, env_id) -> bool:
 # ---- create and adopt --------------------------------------------------------
 
 async def _precheck(db: AsyncSession, settings: Settings, *, name: str, type_: str,
-                    target_id: str, git_ref: str) -> SshTargetConfig:
+                    target_id: str, git_ref: str) -> SshTargetConfig | None:
     _check_name(name)
     if type_ not in ENV_TYPES:
         raise EnvError("type_invalid")
@@ -182,8 +186,9 @@ async def _precheck(db: AsyncSession, settings: Settings, *, name: str, type_: s
     return cfg
 
 
-async def _insert(db: AsyncSession, settings: Settings, cfg: SshTargetConfig, *, name: str,
-                  type_: str, target_id: str, git_ref: str, domain: str, proxy_ip: str,
+async def _insert(db: AsyncSession, settings: Settings, *, name: str,
+                  type_: str, target_id: str, git_ref: str, host: str, domain: str,
+                  proxy_ip: str,
                   bind_ip: str, ports: dict[str, int], keep_dumps: int, spaces_bucket: str,
                   log_level: str, status: str, current_sha: str | None,
                   image_tag: str | None, secrets: dict[str, str],
@@ -198,7 +203,7 @@ async def _insert(db: AsyncSession, settings: Settings, cfg: SshTargetConfig, *,
     db.add(env)
     await db.flush()
     for service in envfile.SERVICES:
-        db.add(EnvironmentService(environment_id=env.id, service=service, host_ip=cfg.host,
+        db.add(EnvironmentService(environment_id=env.id, service=service, host_ip=host,
                                   port=ports[service], hostname=_hostname(service, domain),
                                   proxied=False))
     for key, value in secrets.items():
@@ -214,11 +219,14 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                      bind_ip: str = DEFAULT_BIND_IP,
                      ports: dict[str, int] | None = None, actor_id=None,
                      snapshot_id: uuid.UUID | None = None,
-                     publish: bool = True) -> Environment:
+                     publish: bool = True, vm: dict | None = None) -> Environment:
     """A new environment (status "new"): default ports unless given, the
     target's host for every service, freshly generated secrets. With a
     snapshot, its first deploy restores that snapshot (and its keys). With
-    publish (the default), its deploys add DNS, proxy and smoke steps."""
+    publish (the default), its deploys add DNS, proxy and smoke steps. On
+    target "proxmox", `vm` sizes the VM step 0 builds and sets its network;
+    every service points at its static address (0.0.0.0 for DHCP until step
+    0 reads it), and the proxmox_vms row records it as Sirdar's."""
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
                           git_ref=git_ref)
     if snapshot_id is not None:
@@ -243,13 +251,33 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     all_ports = {s: _check_port(given.get(s, envfile.DEFAULT_PORTS[s]), s)
                  for s in envfile.SERVICES}
     _check_ports_unique(all_ports)
-    return await _insert(
-        db, settings, cfg, name=name, type_=type_, target_id=target_id, git_ref=git_ref,
-        domain=domain, proxy_ip=proxy, bind_ip=bind, ports=all_ports,
+    spec = None
+    host = cfg.host if cfg is not None else ""
+    if target_id == targets.PROXMOX_TARGET:
+        if not await integrations.is_configured(db, "proxmox"):
+            raise EnvError("integration_not_configured", kinds=["proxmox"])
+        try:
+            spec = vms.check_spec({} if vm is None else vm)
+            address = vms.static_ip(spec["ip_cidr"])
+            if address:
+                await vms.lock_addresses(db)        # held until the caller commits
+                if await vms.address_in_use(db, settings, address, proxy_ip=proxy):
+                    raise EnvError("ip_in_use")
+        except vms.VmError as e:
+            raise EnvError(e.code, **e.extra) from None
+        host = address or "0.0.0.0"
+    elif vm is not None:
+        raise EnvError("vm_not_allowed")
+    env = await _insert(
+        db, settings, name=name, type_=type_, target_id=target_id, git_ref=git_ref,
+        host=host, domain=domain, proxy_ip=proxy, bind_ip=bind, ports=all_ports,
         keep_dumps=envfile.DEFAULT_KEEP_DUMPS, spaces_bucket=envfile.DEFAULT_SPACES_BUCKET,
         log_level=envfile.DEFAULT_LOG_LEVEL, status="new", current_sha=None, image_tag=None,
         secrets=vault.generate_env_secrets(), actor_id=actor_id, seed_snapshot_id=snapshot_id,
         publish=publish)
+    if spec is not None:
+        await vms.add(db, settings, env, spec, await integrations.config_of(db, "proxmox"))
+    return env
 
 
 @dataclass(frozen=True)
@@ -336,6 +364,10 @@ def _adopted_secrets(values: dict[str, str]) -> dict[str, str]:
 async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
                 target_id: str, git_ref: str = "main",
                 actor_id=None) -> tuple[Environment, Deployment, AdoptReport]:
+    if target_id == targets.PROXMOX_TARGET:
+        # Proxmox environments are only ones Sirdar built: a hand-built VM
+        # (uat) stays an SSH target.
+        raise EnvError("adopt_not_allowed")
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
                           git_ref=git_ref)
     folder = envfile.env_dir(name)
@@ -367,8 +399,9 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
         raise EnvError("adopt_repo_missing")
 
     env = await _insert(
-        db, settings, cfg, name=name, type_=type_, target_id=target_id, git_ref=git_ref,
-        domain=picked["domain"], proxy_ip=picked["proxy_ip"], bind_ip=picked["bind_ip"],
+        db, settings, name=name, type_=type_, target_id=target_id, git_ref=git_ref,
+        host=cfg.host, domain=picked["domain"], proxy_ip=picked["proxy_ip"],
+        bind_ip=picked["bind_ip"],
         ports=picked["ports"], keep_dumps=picked["keep_dumps"],
         spaces_bucket=picked["spaces_bucket"], log_level=picked["log_level"],
         status="ready", current_sha=sha, image_tag=picked["image_tag"], secrets=secrets,
@@ -401,7 +434,10 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
 
     if fields.get("git_ref") is not None:
         put("git_ref", _check_ref(fields["git_ref"]))
+    on_vm = env.target_id == targets.PROXMOX_TARGET
     if fields.get("target") is not None:
+        if (fields["target"] == targets.PROXMOX_TARGET) != on_vm:
+            raise EnvError("target_kind_locked")
         _check_target(fields["target"], settings)
         put("target_id", fields["target"])
     old_domain = env.base_domain
@@ -433,6 +469,8 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
                 row.port = port
                 changed.append(f"services.{service}.port")
         if patch.get("host_ip") is not None:
+            if on_vm:                           # step 0 points them at the VM
+                raise EnvError("host_ip_managed", service=service)
             host_ip = _check_ipv4(patch["host_ip"], "host_ip_invalid")
             if row.host_ip != host_ip:
                 row.host_ip = host_ip
@@ -471,6 +509,15 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
         else:
             row.value_enc, row.updated_at = vault.encrypt(settings, value), _now()
         changed.append(f"secrets.{key}")
+
+    if fields.get("vm") is not None:
+        machine = await vms.get(db, env.id) if on_vm else None
+        if machine is None:
+            raise EnvError("vm_not_allowed")
+        try:
+            changed += await vms.update(db, machine, fields["vm"])
+        except vms.VmError as e:
+            raise EnvError(e.code, **e.extra) from None
 
     if changed:
         env.updated_at = _now()

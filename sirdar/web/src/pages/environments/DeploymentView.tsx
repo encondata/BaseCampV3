@@ -9,7 +9,7 @@ import { ApiError } from '@portal/lib/api';
 
 import { useHostKeyTrust } from '../../components/useHostKeyTrust';
 import {
-  cancelDeployment, deployErrorText, errorText, getDeployment, retryDeployment, rollbackDeployment,
+  cancelDeployment, deployErrorText, errorText, getDeployment, retryDeployment, rollbackDeployment, startDeployment,
   type Deployment, type Environment,
 } from '../../lib/sirdarApi';
 
@@ -27,7 +27,8 @@ const STICK_PX = 40;
 
 /** A retry or a rollback, kept whole so a host-key prompt replays exactly it. */
 type Attempt = { kind: 'retry'; fromStep: number; confirm: string; gated: boolean }
-  | { kind: 'rollback'; confirm: string };
+  | { kind: 'rollback'; confirm: string }
+  | { kind: 'vm_restore'; confirm: string; snapshot: string };
 
 export default function DeploymentView({ id, env, isLatest, onFinished, onRetried, onClose }: {
   /** null while the history hasn't loaded: Retry stays hidden until it's known. */
@@ -43,6 +44,7 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   const [fromStep, setFromStep] = useState('');
   const [confirm, setConfirm] = useState('');
   const [rollbackConfirm, setRollbackConfirm] = useState('');
+  const [vmConfirm, setVmConfirm] = useState('');
   const [retrying, setRetrying] = useState(false);
   const retryingRef = useRef(false);
   const [actionError, setActionError] = useState('');
@@ -108,6 +110,9 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
     : gated ? can('deploy', 'add') && can('deploy', 'change') : can('deploy', 'add');
   const mayRetry = !!dep && RETRYABLE.includes(dep.status) && allowed && stopped !== null;
   const mayRollBack = !!dep && dep.rollback_available && can('deploy', 'add') && can('deploy', 'change');
+  // A failed deployment whose step 0 took a VM snapshot: put the whole VM back.
+  const mayRestoreVm = !!dep && !!dep.vm_snapshot && dep.mode !== 'vm_restore' && RETRYABLE.includes(dep.status)
+    && can('deploy', 'add') && can('deploy', 'change');
   // A restoring deployment (Reset with a snapshot, seeded first deploy) already wrote the
   // snapshot's keys into the host .env: retry it rather than follow it with a plain Update.
   const restoring = !!dep && dep.steps.some((s) => s.key === 'restore');
@@ -120,15 +125,18 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
     setActionError('');
     try {
       if (attempt.kind === 'rollback') onRetried(await rollbackDeployment(id, attempt.confirm));
-      else {
+      else if (attempt.kind === 'vm_restore') {
+        onRetried(await startDeployment(env.name, {
+          mode: 'vm_restore', vm_snapshot: attempt.snapshot, confirm_name: attempt.confirm }));
+      } else {
         onRetried(await retryDeployment(id, attempt.gated
           ? { from_step: attempt.fromStep, confirm_name: attempt.confirm }
           : { from_step: attempt.fromStep }));
       }
     } catch (e) {
       if (!hostKey.handle(e, env.target, attempt)) {
-        setActionError(deployErrorText(e, attempt.kind === 'rollback'
-          ? "Couldn't roll back the deployment." : "Couldn't retry the deployment."));
+        setActionError(deployErrorText(e, attempt.kind === 'rollback' ? "Couldn't roll back the deployment."
+          : attempt.kind === 'vm_restore' ? "Couldn't restore the VM snapshot." : "Couldn't retry the deployment."));
       }
     } finally {
       retryingRef.current = false;
@@ -143,7 +151,7 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   const retry = () => {
     if (!dep || stopped === null) return;
     if (gated && confirm !== env.name) { setActionError(`Type ${env.name} to confirm.`); return; }
-    void run({ kind: 'retry', fromStep: Number(fromStep || stopped), confirm, gated });
+    void run({ kind: 'retry', fromStep: fromStep === '' ? stopped : Number(fromStep), confirm, gated });
   };
 
   const cancel = async () => {
@@ -193,6 +201,10 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
           <><dt>{dep.mode === 'snapshot' ? 'Snapshot' : 'Restores snapshot'}</dt><dd>{dep.snapshot.name}</dd></>
         )}
         {dep.restore_dump && <><dt>Restores backup</dt><dd className="mono">{dep.restore_dump}</dd></>}
+        {dep.vm_snapshot && (
+          <><dt>{dep.mode === 'vm_restore' ? 'Restores VM snapshot' : 'VM snapshot'}</dt>
+            <dd className="mono">{dep.vm_snapshot}</dd></>
+        )}
       </dl>
       {dep.error && <p className="form-error">{dep.error}</p>}
       {loadError && <p className="form-error" role="alert">{loadError}</p>}
@@ -271,6 +283,28 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
                     disabled={retrying || hostKey.open || rollbackConfirm !== env.name}
                     onClick={() => void run({ kind: 'rollback', confirm: rollbackConfirm })}>
               {retrying ? 'Starting…' : 'Roll back'}
+            </button>
+          </div>
+        </div>
+      )}
+      {mayRestoreVm && isLatest === true && (
+        <div className="sirdar-rollback">
+          <h3 className="sirdar-sub">Restore VM snapshot</h3>
+          <p className="page-hint">
+            Puts the whole VM back to {dep.vm_snapshot}, taken before this deployment changed anything: database,
+            files and backups. The running commit goes back to{' '}
+            <span className="mono">{shortSha(dep.previous_sha)}</span>.
+          </p>
+          <div className="sirdar-retry pf-form">
+            <div>
+              <label className="field-label" htmlFor="vmrestore-confirm">Type {env.name} to restore the VM snapshot</label>
+              <input id="vmrestore-confirm" type="text" value={vmConfirm} maxLength={64} autoComplete="off"
+                     spellCheck={false} onChange={(e) => setVmConfirm(e.target.value)} />
+            </div>
+            <button type="button" className="btn-ghost"
+                    disabled={retrying || hostKey.open || vmConfirm !== env.name}
+                    onClick={() => void run({ kind: 'vm_restore', confirm: vmConfirm, snapshot: dep.vm_snapshot! })}>
+              {retrying ? 'Starting…' : 'Restore VM snapshot'}
             </button>
           </div>
         </div>
