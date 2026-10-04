@@ -11,7 +11,7 @@ vi.mock('@portal/auth/AuthContext', () => ({
 }));
 const api = vi.hoisted(() => ({
   getDeployment: vi.fn(), cancelDeployment: vi.fn(), retryDeployment: vi.fn(), trustKnownHost: vi.fn(),
-  rollbackDeployment: vi.fn(),
+  rollbackDeployment: vi.fn(), startDeployment: vi.fn(),
 }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 
@@ -19,7 +19,8 @@ import { ApiError } from '@portal/lib/api';
 
 import DeploymentView, { POLL_MS } from './DeploymentView';
 import {
-  ENV, FAILED, RESET_FAILED, RESTORE_FAILED, ROLLBACKABLE, RUNNING, RUNNING_MORE, SNAP, SUCCEEDED,
+  ENV, FAILED, PX_ENV, RESET_FAILED, RESTORE_FAILED, ROLLBACKABLE, RUNNING, RUNNING_MORE, SNAP, SUCCEEDED,
+  VM_ROLLBACKABLE,
 } from './testData';
 
 Element.prototype.scrollIntoView = () => {};   // jsdom lacks it (ComboBox calls it)
@@ -411,4 +412,45 @@ it('a failed deployment without a restore step has no restore hint', async () =>
   show({ id: 'd3' });
   expect(await screen.findByRole('button', { name: 'Retry' })).toBeTruthy();
   expect(screen.queryByText(RESTORE_HINT)).toBeNull();
+});
+
+it('a failed Proxmox deploy offers its VM snapshot as well as the dump', async () => {
+  api.getDeployment.mockResolvedValue(VM_ROLLBACKABLE);
+  api.startDeployment.mockResolvedValue(RUNNING);
+  const handlers = { onFinished: vi.fn(), onRetried: vi.fn(), onClose: vi.fn() };
+  render(<DeploymentView id="d11" env={PX_ENV} isLatest {...handlers} />);
+  expect(await screen.findByText('Prepare VM')).toBeTruthy();                         // step 0 is listed
+  expect(screen.getAllByText('sirdar-20261004T120000Z').length).toBeGreaterThan(0);
+  const panel = screen.getByRole('heading', { name: 'Restore VM snapshot' }).closest('div') as HTMLElement;
+  expect(panel.textContent).toMatch(/Puts the whole VM back to sirdar-20261004T120000Z/);
+  const go = screen.getByRole('button', { name: 'Restore VM snapshot' }) as HTMLButtonElement;
+  expect(go.disabled).toBe(true);
+  await user.type(screen.getByLabelText('Type uat3 to restore the VM snapshot'), 'uat3');
+  await user.click(go);
+  await waitFor(() => expect(handlers.onRetried).toHaveBeenCalledWith(RUNNING));
+  expect(api.startDeployment).toHaveBeenCalledWith('uat3', {
+    mode: 'vm_restore', vm_snapshot: 'sirdar-20261004T120000Z', confirm_name: 'uat3' });
+});
+
+it('no VM snapshot panel without the change permission or a snapshot', async () => {
+  api.getDeployment.mockResolvedValue(ROLLBACKABLE);
+  show();
+  await screen.findByRole('heading', { name: 'Roll back' });
+  expect(screen.queryByRole('heading', { name: 'Restore VM snapshot' })).toBeNull();
+  cleanup();
+  perms.change = false;
+  api.getDeployment.mockResolvedValue(VM_ROLLBACKABLE);
+  render(<DeploymentView id="d11" env={PX_ENV} isLatest onFinished={vi.fn()} onRetried={vi.fn()} onClose={vi.fn()} />);
+  expect(await screen.findByText('Prepare VM')).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Restore VM snapshot' })).toBeNull();
+});
+
+it('a failed Proxmox deploy can be retried from step 0', async () => {
+  api.getDeployment.mockResolvedValue(VM_ROLLBACKABLE);
+  api.retryDeployment.mockResolvedValue({ ...RUNNING, id: 'd12' });
+  render(<DeploymentView id="d11" env={PX_ENV} isLatest onFinished={vi.fn()} onRetried={vi.fn()} onClose={vi.fn()} />);
+  await user.click(await screen.findByLabelText('Retry from step'));
+  await user.click(await screen.findByText('0. Prepare VM'));
+  await user.click(screen.getByRole('button', { name: 'Retry' }));
+  await waitFor(() => expect(api.retryDeployment).toHaveBeenCalledWith('d11', { from_step: 0 }));
 });

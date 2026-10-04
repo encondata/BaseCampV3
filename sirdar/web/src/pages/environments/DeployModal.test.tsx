@@ -15,7 +15,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import DeployModal from './DeployModal';
-import { ENV, RUNNING, SNAP, SNAP_TAKING } from './testData';
+import { ENV, PX_ENV, PX_NEW_ENV, RUNNING, SNAP, SNAP_TAKING } from './testData';
 
 beforeEach(() => {
   perms.add = true; perms.change = true;
@@ -220,4 +220,33 @@ it("a seeded environment's first deploy says it restores the snapshot", async ()
   cleanup();
   open({ ...ENV, seed_snapshot: { id: 's1', name: 'dev-2026-10-04' } });    // deployed already
   expect(screen.queryByText(/This first deploy restores/)).toBeNull();
+});
+
+it('Proxmox: a VM snapshot is taken first unless turned off', async () => {
+  const { onStarted } = open(PX_ENV);
+  expect(screen.getByText(/Prepares the VM ss-uat3 on Proxmox/)).toBeTruthy();
+  expect(screen.getByRole('radio', { name: 'On' }).getAttribute('aria-checked')).toBe('true');
+  await userEvent.click(deployBtn());
+  await waitFor(() => expect(onStarted).toHaveBeenCalledWith(RUNNING));
+  expect(api.startDeployment).toHaveBeenLastCalledWith('uat3', { mode: 'update', git_ref: 'main', take_vm_snapshot: true });
+  cleanup();
+  open(PX_ENV);
+  await userEvent.click(screen.getByRole('radio', { name: 'Off' }));
+  await userEvent.click(deployBtn());
+  await waitFor(() => expect(api.startDeployment).toHaveBeenCalledTimes(2));
+  expect(api.startDeployment).toHaveBeenLastCalledWith('uat3', { mode: 'update', git_ref: 'main', take_vm_snapshot: false });
+});
+
+it('Proxmox before its first deploy: nothing to snapshot, and SSH environments never send the choice', async () => {
+  open(PX_NEW_ENV);
+  expect(screen.queryByRole('radio', { name: 'On' })).toBeNull();
+  expect(screen.getByText(/The first deploy builds the VM/)).toBeTruthy();
+  await userEvent.click(deployBtn());
+  await waitFor(() => expect(api.startDeployment).toHaveBeenCalledWith('uat3', { mode: 'update', git_ref: 'main' }));
+  cleanup();
+  open(ENV);
+  expect(screen.queryByRole('radio', { name: 'On' })).toBeNull();
+  await userEvent.click(deployBtn());
+  await waitFor(() => expect(api.startDeployment).toHaveBeenCalledTimes(2));
+  expect(api.startDeployment).toHaveBeenLastCalledWith('uat', { mode: 'update', git_ref: 'main' });
 });
