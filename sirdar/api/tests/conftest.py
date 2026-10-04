@@ -156,10 +156,17 @@ def no_real_hosts():
     the list of blocked attempts (a test that blocks on purpose clears it);
     the test fails at teardown if any is left. Its own MonkeyPatch, like
     no_real_http."""
-    from sirdar_api.deploy import tls_pin
+    from sirdar_api.deploy import terraform, tls_pin
 
     hits: list[str] = []
     real_read = tls_pin._read_certificate
+    real_spawn = terraform._spawn
+
+    async def spawn(argv, **kw):
+        if not Path(argv[0]).name.startswith("fake-"):
+            hits.append(f"terraform:{argv[0]}")
+            raise AssertionError(f"a test started a real Terraform ({argv[0]})")
+        return await real_spawn(argv, **kw)
 
     def read(host, port):
         if host != "127.0.0.1":
@@ -169,5 +176,6 @@ def no_real_hosts():
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(tls_pin, "_read_certificate", read)
+        mp.setattr(terraform, "_spawn", spawn)
         yield hits
     assert not hits, f"a test reached real hosts: {', '.join(hits)}"

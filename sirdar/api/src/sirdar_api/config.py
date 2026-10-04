@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     snapshots_dir: str = "/app/snapshots"
     # The largest snapshot upload Sirdar accepts, in bytes (default 5 GiB).
     snapshot_max_bytes: int = Field(default=5 * 1024 ** 3, gt=0)
+    # Proxmox environments (phase 5): one Terraform folder per environment,
+    # state included. Owned by uid 10001, mode 700, never served.
+    terraform_dir: str = "/app/terraform"
+    terraform_binary: str = "terraform"
+    # Points Terraform at the provider mirror baked into the image (no registry).
+    terraform_cli_config: str = "/opt/terraform/terraformrc"
 
     @field_validator("deploy_do_token", "deploy_aws_secret_access_key",
                      "deploy_ssh_password", "deploy_ssh_key_passphrase", "secrets_key",

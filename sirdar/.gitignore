@@ -13,3 +13,5 @@ runner/*
 !runner/.gitkeep
 snapshots/*
 !snapshots/.gitkeep
+terraform/*
+!terraform/.gitkeep
