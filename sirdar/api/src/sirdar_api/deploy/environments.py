@@ -276,8 +276,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         secrets=vault.generate_env_secrets(), actor_id=actor_id, seed_snapshot_id=snapshot_id,
         publish=publish)
     if spec is not None:
-        node = (await integrations.config_of(db, "proxmox"))["node"]
-        await vms.add(db, settings, env, spec, node)
+        await vms.add(db, settings, env, spec, await integrations.config_of(db, "proxmox"))
     return env
 
 

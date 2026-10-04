@@ -54,7 +54,38 @@ def test_the_vm_config():
         "ip_config": [{"ipv4": {"address": "10.10.48.70/24", "gateway": "10.10.48.1"}}]}
     assert (vm["started"], vm["on_boot"], vm["stop_on_destroy"], vm["purge_on_destroy"]) == (
         True, True, True, True)
+    # bpg/proxmox's clone fields force a new VM: never act on a change there.
+    assert vm["lifecycle"] == {"ignore_changes": ["clone"]}
     assert PX_TOKEN not in json.dumps(config)
+
+
+def test_step_0_plans_then_applies_the_saved_plan():
+    assert terraform.PLAN == ("plan", "-input=false", "-no-color", "-out=tfplan")
+    assert terraform.SHOW == ("show", "-json", "-no-color", "tfplan")
+    assert terraform.APPLY == ("apply", "-input=false", "-no-color", "tfplan")
+    assert "-auto-approve" in terraform.DESTROY
+
+
+@pytest.mark.parametrize("plan, ok", [
+    ({"resource_changes": [{"change": {"actions": ["update"]}}]}, True),
+    ({"resource_changes": [{"change": {"actions": ["no-op"]}}]}, True),
+    ({"resource_changes": [{"change": {"actions": ["create"]}}]}, True),
+    ({}, True),
+    ({"resource_changes": [{"change": {"actions": ["delete", "create"]}}]}, False),
+    ({"resource_changes": [{"change": {"actions": ["create", "delete"]}}]}, False),
+    ({"resource_changes": [{"change": {"actions": ["no-op"]}},
+                           {"change": {"actions": ["delete"]}}]}, False),
+])
+def test_a_plan_that_deletes(plan, ok):
+    assert terraform.plan_deletes(plan) is not ok
+
+
+@pytest.mark.parametrize("plan", [[], "x", {"resource_changes": "x"},
+                                  {"resource_changes": [{"change": {}}]},
+                                  {"resource_changes": [{"change": {"actions": "delete"}}]}])
+def test_a_plan_of_the_wrong_shape(plan):
+    with pytest.raises(ValueError):
+        terraform.plan_deletes(plan)
 
 
 def test_dhcp_and_a_vlan():
@@ -140,7 +171,7 @@ async def test_the_runner_streams_output_and_reports_the_exit(tmp_path):
     result = await SubprocessTerraform(binary).run(
         TfRequest(args=terraform.APPLY, workdir=tmp_path, env=env, timeout=30), lines.append)
     assert (result.status, result.rc) == ("successful", 0)
-    assert "".join(lines) == ("args: apply -input=false -no-color -auto-approve\n"
+    assert "".join(lines) == ("args: apply -input=false -no-color tfplan\n"
                               "token: set\ndb: absent\n")
     result = await SubprocessTerraform(binary).run(
         TfRequest(args=terraform.INIT, workdir=tmp_path, env={**env, "FAKE_EXIT": "1"},

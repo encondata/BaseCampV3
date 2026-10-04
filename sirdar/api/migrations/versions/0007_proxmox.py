@@ -26,6 +26,16 @@ def upgrade() -> None:
           environment_id uuid PRIMARY KEY REFERENCES environments(id) ON DELETE CASCADE,
           node text NOT NULL,
           vmid integer UNIQUE CHECK (vmid BETWEEN 100 AND 999999999),
+          -- The clone inputs, frozen from the integration when the VM is
+          -- created: bpg/proxmox replaces a VM whose clone source or
+          -- datastore changes, so step 0 renders from these, never from the
+          -- integration as it is now. (Added to 0007 itself before it was
+          -- deployed anywhere.)
+          template_vmid integer NOT NULL CHECK (template_vmid BETWEEN 100 AND 999999999),
+          storage text NOT NULL,
+          pool text NOT NULL,
+          bridge text NOT NULL,
+          vlan_tag integer CHECK (vlan_tag BETWEEN 1 AND 4094),
           name text NOT NULL UNIQUE,
           cores integer NOT NULL CHECK (cores BETWEEN 1 AND 64),
           memory_mb integer NOT NULL CHECK (memory_mb BETWEEN 2048 AND 262144),

@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import UTC, datetime
 
@@ -99,9 +100,11 @@ async def test_the_first_run_builds_the_vm_pins_its_key_and_resolves_the_ref(
     outcome = await provisioner(tf, resolve=resolves_to(SHA, calls)).run(
         "provision", await ctx_for(db, vm_env), lines.append)
     assert outcome == VmOutcome(sha=SHA, vm_snapshot=None)
-    assert tf.commands() == ["init", "apply"]
-    apply = tf.requests[1]
-    assert apply.args == terraform.APPLY and apply.env["PROXMOX_VE_API_TOKEN"] == PX_TOKEN
+    assert tf.commands() == ["init", "plan", "show", "apply"]
+    assert [r.args for r in tf.requests[1:]] == [terraform.PLAN, terraform.SHOW, terraform.APPLY]
+    assert tf.plans == [["create"]]
+    apply = tf.requests[3]
+    assert apply.env["PROXMOX_VE_API_TOKEN"] == PX_TOKEN
     assert PX_TOKEN_SECRET not in (apply.workdir / "main.tf.json").read_text()
     vm = await vms.get(db, vm_env.id)
     assert (vm.vmid, vm.created, vm.ip) == (120, True, "127.0.0.1")
@@ -127,7 +130,8 @@ async def test_a_second_run_updates_the_vm_and_keeps_the_pin(db, vm_env, tf, ssh
     outcome = await provisioner(tf).run("provision", await ctx_for(db, vm_env, sha=SHA),
                                         lines.append)
     assert outcome == VmOutcome()                       # a commit given: nothing to resolve
-    assert tf.commands() == ["init", "apply", "apply"]
+    assert tf.commands() == ["init", "plan", "show", "apply", "plan", "show", "apply"]
+    assert tf.plans == [["create"], ["update"]]
     text = "".join(lines)
     assert "Updating ss-uat3" in text and "Reserved" not in text
     assert f"SSH host key {ssh_server.fingerprint} is pinned.\n" in text
@@ -507,3 +511,58 @@ async def test_a_changed_key_is_pinned_again(db, vm_env, tf, ssh_server):
         AuditLog.action == "deploy.host_trust").order_by(AuditLog.id)))
     assert changes[-1]["previous_fingerprint"] == "SHA256:old"
     assert changes[-1]["fingerprint"] == ssh_server.fingerprint
+
+
+async def test_a_changed_template_or_storage_never_replaces_the_vm(db, vm_env, tf):
+    """bpg/proxmox's clone fields force a new VM: the clone inputs are frozen
+    in proxmox_vms at create, so changing the integration changes nothing
+    for a VM that exists."""
+    vm = await vms.get(db, vm_env.id)
+    assert (vm.template_vmid, vm.storage, vm.pool, vm.bridge, vm.vlan_tag) == (
+        9000, "local-lvm", "sirdar", "vmbr0", None)
+    await _built(db, vm_env, tf)
+    row = await db.get(Integration, "proxmox")
+    row.config = {**row.config, "template_vmid": 9001, "storage": "fast-zfs", "pool": "other",
+                  "bridge": "vmbr1", "vlan_tag": 40}
+    await db.commit()
+    await provisioner(tf).run("provision", await ctx_for(db, vm_env, sha=SHA), lambda _: None)
+    assert tf.plans == [["create"], ["update"]]
+    assert tf.commands()[-1] == "apply"
+    work = terraform.workdir(get_settings(), vm_env.id)
+    config = json.loads((work / "main.tf.json").read_text())
+    block = config["resource"]["proxmox_virtual_environment_vm"]["vm"]
+    assert block["clone"] == {"vm_id": 9000, "full": True, "node_name": "pve",
+                              "datastore_id": "local-lvm"}
+    assert (block["pool_id"], block["disk"][0]["datastore_id"],
+            block["initialization"]["datastore_id"]) == ("sirdar", "local-lvm", "local-lvm")
+    assert block["network_device"] == [{"bridge": "vmbr0", "model": "virtio"}]
+    assert block["lifecycle"] == {"ignore_changes": ["clone"]}
+
+
+@pytest.mark.parametrize("actions", [["delete", "create"], ["create", "delete"], ["delete"]])
+async def test_a_plan_that_would_replace_or_remove_the_vm_is_never_applied(
+        db, vm_env, tf, proxmox_fake, actions):
+    await _built(db, vm_env, tf)
+    tf.plan_actions = actions
+    lines: list[str] = []
+    with pytest.raises(StepFailed) as e:
+        await provisioner(tf).run("provision", await ctx_for(db, vm_env, sha=SHA),
+                                  lines.append)
+    assert e.value.reason == provision.PLAN_DESTROYS.format(name="ss-uat3", vmid=120)
+    assert tf.commands()[-3:] == ["apply", "plan", "show"]          # no second apply
+    assert 120 in proxmox_fake.vms
+    assert '"resource_changes"' not in "".join(lines)               # the plan isn't logged
+
+
+async def test_a_plan_sirdar_can_t_read_is_never_applied(db, vm_env, tf):
+    tf.output["show"] = ["not json\n"]
+    with pytest.raises(StepFailed) as e:
+        await provisioner(tf).run("provision", await ctx_for(db, vm_env), lambda _: None)
+    assert e.value.reason == provision.PLAN_UNREADABLE
+    assert "apply" not in tf.commands()
+    tf.output.pop("show")
+    tf.results["plan"] = TfResult(status="failed", rc=1)
+    with pytest.raises(StepFailed) as e:
+        await provisioner(tf).run("provision", await ctx_for(db, vm_env), lambda _: None)
+    assert e.value.reason == "Terraform couldn't plan the VM's changes. See the log above."
+    assert "apply" not in tf.commands()

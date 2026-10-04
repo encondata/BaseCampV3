@@ -185,9 +185,16 @@ async def address_in_use(db: AsyncSession, settings: Settings, ip: str, *, proxy
 
 
 async def add(db: AsyncSession, settings: Settings, env: Environment, spec: dict,
-              node: str) -> ProxmoxVm:
+              proxmox: dict) -> ProxmoxVm:
+    """`proxmox`: the integration's stored settings. The node and the clone
+    inputs (template, storage, pool, bridge, VLAN) are frozen into the row:
+    the VM keeps them whatever the integration says later."""
     private, public_key = new_keypair(env.name)
-    vm = ProxmoxVm(environment_id=env.id, node=node, name=vm_name(env.name),
+    vlan = proxmox.get("vlan_tag")
+    vm = ProxmoxVm(environment_id=env.id, node=proxmox["node"],
+                   template_vmid=int(proxmox["template_vmid"]), storage=proxmox["storage"],
+                   pool=proxmox["pool"], bridge=proxmox["bridge"],
+                   vlan_tag=None if vlan is None else int(vlan), name=vm_name(env.name),
                    cores=spec["cores"], memory_mb=spec["memory_mb"], disk_gb=spec["disk_gb"],
                    ip_mode=spec["ip_mode"], ip_cidr=spec["ip_cidr"], gateway=spec["gateway"],
                    ip=None, ssh_public_key=public_key,

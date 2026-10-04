@@ -15,11 +15,13 @@ is then checked against the live SSH server by known_hosts.trust. Failures
 raise publish.StepFailed with our own copy."""
 
 import asyncio
+import json
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Protocol
 
 import asyncssh
@@ -55,6 +57,11 @@ TERRAFORM_DIR_UNWRITABLE = ("Sirdar can't write its Terraform folder (SIRDAR_TER
 PINNED_CERTIFICATE_INVALID = ("The pinned Proxmox certificate isn't one valid certificate. "
                               "Trust the server's certificate again in Settings › "
                               "Integrations › Proxmox, then retry.")
+PLAN_UNREADABLE = ("Sirdar couldn't read Terraform's plan, so it applied nothing. See the "
+                   "log above, then retry.")
+PLAN_DESTROYS = ("Terraform's plan would replace or remove {name} (VM {vmid}), so Sirdar "
+                 "applied nothing. Only Delete environment removes a VM. Check what changed "
+                 "on the VM in Proxmox, then retry.")
 TARGETS_UNREADABLE = ("Sirdar can't read the saved SSH targets file, so it can't check that "
                       "the VM's address is free. Fix the file, then retry.")
 _REF_REASONS = {
@@ -89,6 +96,12 @@ class VmState:
     ssh_public_key: str
     keep_snapshots: int
     created: bool
+    # The clone inputs frozen at create (what the VM is rendered from).
+    template_vmid: int
+    storage: str
+    pool: str
+    bridge: str
+    vlan_tag: int | None
 
     @classmethod
     def of(cls, row: ProxmoxVm) -> "VmState":
@@ -96,7 +109,8 @@ class VmState:
                    memory_mb=row.memory_mb, disk_gb=row.disk_gb, ip_mode=row.ip_mode,
                    ip_cidr=row.ip_cidr, gateway=row.gateway, ip=row.ip,
                    ssh_public_key=row.ssh_public_key, keep_snapshots=row.keep_snapshots,
-                   created=row.created)
+                   created=row.created, template_vmid=row.template_vmid, storage=row.storage,
+                   pool=row.pool, bridge=row.bridge, vlan_tag=row.vlan_tag)
 
     @property
     def static_ip(self) -> str | None:
@@ -289,7 +303,7 @@ class ProxmoxProvisioner:
                              "the environment, or fix it by hand, then retry.")
         out(f"{'Updating' if vm.created else 'Creating'} {vm.name} ({vm.cores} vCPU, "
             f"{vm.memory_mb // 1024} GB, {vm.disk_gb} GB disk) with Terraform.\n")
-        await self._terraform(ctx, vmid, terraform.APPLY, "create or update the VM", out)
+        await self._apply(ctx, vmid, out)
         if not vm.created:
             await _set_vm(ctx.env_id, created=True)
         await self._settle_address(api, ctx, vmid, out)
@@ -336,13 +350,18 @@ class ProxmoxProvisioner:
         if moved:
             out(f"Every service now points at {ip}.\n")
 
-    async def _terraform(self, ctx: VmContext, vmid: int, args: tuple[str, ...], what: str,
-                         out: Output) -> None:
+    async def _workdir(self, ctx: VmContext, vmid: int,
+                       out: Output) -> tuple[Path, dict[str, str]]:
+        """The working folder with this run's config (set up with `init` when
+        new) and Terraform's environment. The VM is rendered from its own
+        row: the node and the clone inputs frozen at create, never the
+        integration as it is now (a changed template or storage would
+        replace the VM)."""
         vm, px = ctx.vm, ctx.proxmox
         spec = terraform.VmSpec(
-            env_name=ctx.env_name, name=vm.name, vmid=vmid, node=vm.node, pool=px.pool,
-            storage=px.storage, bridge=px.bridge, vlan_tag=px.vlan_tag,
-            template_vmid=px.template_vmid, cores=vm.cores, memory_mb=vm.memory_mb,
+            env_name=ctx.env_name, name=vm.name, vmid=vmid, node=vm.node, pool=vm.pool,
+            storage=vm.storage, bridge=vm.bridge, vlan_tag=vm.vlan_tag,
+            template_vmid=vm.template_vmid, cores=vm.cores, memory_mb=vm.memory_mb,
             disk_gb=vm.disk_gb, ip_cidr=vm.ip_cidr, gateway=vm.gateway,
             ssh_public_key=vm.ssh_public_key)
         try:
@@ -354,16 +373,34 @@ class ProxmoxProvisioner:
         except terraform.PinnedCertificateInvalid:
             raise StepFailed(PINNED_CERTIFICATE_INVALID) from None
         env = terraform.run_env(self._settings, work, px.token)
-        runs = [(terraform.INIT, "set up Terraform")] if terraform.needs_init(work) else []
-        runs.append((args, what))
-        for command, doing in runs:
-            result = await self._tf.run(terraform.TfRequest(
-                args=command, workdir=work, env=env, timeout=terraform.APPLY_TIMEOUT), out)
-            if result.status == "timeout":
-                raise StepFailed(f"Terraform didn't {doing} in "
-                                 f"{terraform.APPLY_TIMEOUT // 60} minutes.")
-            if result.status != "successful":
-                raise StepFailed(f"Terraform couldn't {doing}. See the log above.")
+        if terraform.needs_init(work):
+            await self._tf_run(terraform.INIT, "set up Terraform", work, env, out)
+        return work, env
+
+    async def _tf_run(self, args: tuple[str, ...], doing: str, work: Path,
+                      env: dict[str, str], out: Output) -> None:
+        result = await self._tf.run(terraform.TfRequest(
+            args=args, workdir=work, env=env, timeout=terraform.APPLY_TIMEOUT), out)
+        if result.status == "timeout":
+            raise StepFailed(f"Terraform didn't {doing} in "
+                             f"{terraform.APPLY_TIMEOUT // 60} minutes.")
+        if result.status != "successful":
+            raise StepFailed(f"Terraform couldn't {doing}. See the log above.")
+
+    async def _apply(self, ctx: VmContext, vmid: int, out: Output) -> None:
+        """Plan, read the plan, refuse any delete (a replace or a destroy:
+        only step 15 removes a VM), then apply exactly that plan."""
+        work, env = await self._workdir(ctx, vmid, out)
+        await self._tf_run(terraform.PLAN, "plan the VM's changes", work, env, out)
+        shown: list[str] = []                  # the plan's JSON: read, never logged
+        await self._tf_run(terraform.SHOW, "read its plan", work, env, shown.append)
+        try:
+            deletes = terraform.plan_deletes(json.loads("".join(shown)))
+        except ValueError:
+            raise StepFailed(PLAN_UNREADABLE) from None
+        if deletes:
+            raise StepFailed(PLAN_DESTROYS.format(name=ctx.vm.name, vmid=vmid))
+        await self._tf_run(terraform.APPLY, "create or update the VM", work, env, out)
 
     async def _address(self, api: Proxmox, vmid: int, vm: VmState, out: Output) -> str:
         out("Waiting for the VM's guest agent to report its address.\n")
@@ -529,7 +566,8 @@ class ProxmoxProvisioner:
                                      "Proxmox, then retry.")
                 out(f"Destroying {vm.name} (VM {vm.vmid}) and its VM snapshots with "
                     "Terraform.\n")
-                await self._terraform(ctx, vm.vmid, terraform.DESTROY, "destroy the VM", out)
+                work, env = await self._workdir(ctx, vm.vmid, out)
+                await self._tf_run(terraform.DESTROY, "destroy the VM", work, env, out)
                 if await api.find_vm(vm.vmid) is not None:
                     raise StepFailed(f"VM {vm.vmid} is still there after Terraform's destroy. "
                                      "Remove it by hand in Proxmox, then retry.")

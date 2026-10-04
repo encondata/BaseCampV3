@@ -288,8 +288,10 @@ async def test_migration_0006_round_trip():
 
 
 def _vm(env_id, **over) -> ProxmoxVm:
-    kw = dict(environment_id=env_id, node="pve", name="ss-uat", cores=4, memory_mb=8192,
-              disk_gb=64, ip_mode="static", ip_cidr="10.10.48.70/24", gateway="10.10.48.1",
+    kw = dict(environment_id=env_id, node="pve", template_vmid=9000, storage="local-lvm",
+              pool="sirdar", bridge="vmbr0", vlan_tag=None, name="ss-uat", cores=4,
+              memory_mb=8192, disk_gb=64, ip_mode="static", ip_cidr="10.10.48.70/24",
+              gateway="10.10.48.1",
               ssh_public_key="ssh-ed25519 AAAAC3Nz test", ssh_private_key_enc=b"enc")
     kw.update(over)
     return ProxmoxVm(**kw)
@@ -307,6 +309,8 @@ async def test_proxmox_vms_and_the_vm_columns(db):
     await db.commit()
     vm = await db.get(ProxmoxVm, env.id)
     assert (vm.vmid, vm.ip, vm.keep_snapshots, vm.created) == (None, None, 3, False)
+    assert (vm.template_vmid, vm.storage, vm.pool, vm.bridge, vm.vlan_tag) == (
+        9000, "local-lvm", "sirdar", "vmbr0", None)
     assert vm.created_at is not None
     await db.refresh(dep)
     assert (dep.vm, dep.take_vm_snapshot, dep.vm_snapshot) == (
@@ -335,7 +339,10 @@ async def test_proxmox_vm_constraints(db):
                 _vm(other_id, name="ss-uat2", memory_mb=1024),
                 _vm(other_id, name="ss-uat2", disk_gb=10),
                 _vm(other_id, name="ss-uat2", keep_snapshots=11),
-                _vm(other_id, name="ss-uat2", vmid=99)):
+                _vm(other_id, name="ss-uat2", vmid=99),
+                _vm(other_id, name="ss-uat2", template_vmid=None),  # clone inputs are frozen
+                _vm(other_id, name="ss-uat2", storage=None),
+                _vm(other_id, name="ss-uat2", vlan_tag=4095)):
         db.add(bad)
         with pytest.raises(IntegrityError):
             await db.commit()
@@ -403,9 +410,10 @@ async def test_migration_0007_downgrade_refuses_while_vms_are_managed():
             "VALUES ('vm2', 'dev', 'proxmox', 'vm2.example.com', '10.0.0.2') RETURNING id"
         ).fetchone()[0]
         conn.execute(
-            "INSERT INTO proxmox_vms (environment_id, node, vmid, name, cores, memory_mb, "
-            "disk_gb, ip_mode, ssh_public_key, ssh_private_key_enc) "
-            "VALUES (%s, 'pve', 120, 'ss-vm2', 4, 8192, 64, 'dhcp', 'ssh-ed25519 x', 'k')",
+            "INSERT INTO proxmox_vms (environment_id, node, vmid, template_vmid, storage, "
+            "pool, bridge, name, cores, memory_mb, disk_gb, ip_mode, ssh_public_key, "
+            "ssh_private_key_enc) VALUES (%s, 'pve', 120, 9000, 'local-lvm', 'sirdar', "
+            "'vmbr0', 'ss-vm2', 4, 8192, 64, 'dhcp', 'ssh-ed25519 x', 'k')",
             (env_id,))
         conn.execute("INSERT INTO integrations (kind, config) VALUES ('proxmox', '{}')")
     with pytest.raises(subprocess.CalledProcessError) as err:

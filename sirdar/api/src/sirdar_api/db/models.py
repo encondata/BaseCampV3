@@ -363,6 +363,13 @@ class ProxmoxVm(Base):
         ForeignKey("environments.id", ondelete="CASCADE"), primary_key=True)
     node: Mapped[str]
     vmid: Mapped[int | None] = mapped_column(Integer)
+    # The clone inputs, frozen from the integration at create: step 0
+    # renders the VM from these (changing them would replace the VM).
+    template_vmid: Mapped[int] = mapped_column(Integer)
+    storage: Mapped[str]
+    pool: Mapped[str]
+    bridge: Mapped[str]
+    vlan_tag: Mapped[int | None] = mapped_column(Integer)
     name: Mapped[str]
     cores: Mapped[int] = mapped_column(Integer)
     memory_mb: Mapped[int] = mapped_column(Integer)

@@ -32,8 +32,13 @@ from sirdar_api.deploy import tls_pin
 TERRAFORM_VERSION = "1.16.5"
 PROVIDER_VERSION = "0.115.0"
 VM_USER = "deploy"
+PLAN_FILE = "tfplan"
 INIT = ("init", "-input=false", "-no-color")
-APPLY = ("apply", "-input=false", "-no-color", "-auto-approve")
+# Step 0 plans, reads the plan (refusing any delete) and applies exactly that
+# plan; only step 15's DESTROY removes a VM.
+PLAN = ("plan", "-input=false", "-no-color", f"-out={PLAN_FILE}")
+SHOW = ("show", "-json", "-no-color", PLAN_FILE)
+APPLY = ("apply", "-input=false", "-no-color", PLAN_FILE)
 DESTROY = ("destroy", "-input=false", "-no-color", "-auto-approve")
 APPLY_TIMEOUT = 25 * 60            # inside the step's 30 minutes
 _INHERITED_ENV = ("PATH", "LANG", "TZ")
@@ -100,6 +105,9 @@ def render_config(url: str, spec: VmSpec) -> dict:
         "initialization": {"datastore_id": spec.storage,
                            "user_account": {"username": VM_USER, "keys": [spec.ssh_public_key]},
                            "ip_config": [{"ipv4": ipv4}]},
+        # The clone fields force a new VM in bpg/proxmox. They only matter at
+        # create (and are frozen in proxmox_vms anyway): never act on them.
+        "lifecycle": {"ignore_changes": ["clone"]},
     }
     return {
         "terraform": {"required_version": f"= {TERRAFORM_VERSION}",
@@ -108,6 +116,25 @@ def render_config(url: str, spec: VmSpec) -> dict:
         "provider": {"proxmox": {"endpoint": url, "insecure": False}},
         "resource": {"proxmox_virtual_environment_vm": {"vm": vm}},
     }
+
+
+def plan_deletes(plan) -> bool:
+    """Whether `terraform show -json` output plans to delete anything (a
+    destroy, or a replace: "delete" + "create" either way round).
+    ValueError when it isn't the shape Terraform writes."""
+    if not isinstance(plan, dict):
+        raise ValueError("not a plan")
+    changes = plan.get("resource_changes") or []
+    if not isinstance(changes, list):
+        raise ValueError("not a plan")
+    for change in changes:
+        actions = (change.get("change") or {}).get("actions") if isinstance(change, dict) \
+            else None
+        if not isinstance(actions, list):
+            raise ValueError("not a plan")
+        if "delete" in actions:
+            return True
+    return False
 
 
 def workdir(settings: Settings, env_id: uuid.UUID) -> Path:
@@ -129,7 +156,7 @@ def _write_private(path: Path, text: str) -> None:
 
 def prepare_workdir(settings: Settings, env_id: uuid.UUID, config: dict, ca_pem: str) -> Path:
     """Write this run's config and pinned certificate; keep the state and
-    .terraform/. A crash log from an earlier run is removed. The pin must
+    .terraform/. A crash log or a plan from an earlier run is removed. The pin must
     be exactly one certificate (PinnedCertificateInvalid otherwise)."""
     try:
         tls_pin.load_one(ca_pem)
@@ -145,6 +172,7 @@ def prepare_workdir(settings: Settings, env_id: uuid.UUID, config: dict, ca_pem:
         _write_private(work / "main.tf.json", json.dumps(config, indent=2))
         _write_private(work / "proxmox-ca.pem", ca_pem)
         (work / "crash.log").unlink(missing_ok=True)
+        (work / PLAN_FILE).unlink(missing_ok=True)      # a plan is applied by its own run
     except PermissionError:
         raise TerraformDirUnwritable() from None
     return work
