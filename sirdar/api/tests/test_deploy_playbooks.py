@@ -526,44 +526,69 @@ def test_teardown_playbook_removes_a_folder_that_never_deployed(tmp_path):
     assert again.returncode == 0, again.stdout + again.stderr
 
 
-def _refused(tmp_path, env_dir, result, calls):
+def _victim(root: Path, name: str) -> Path:
+    """A deployed-looking environment folder <root>/<name> (a .env and the
+    real ss-stack, so a broken guard would also call docker) with sentinel
+    files in it and in its root. Every refusal test aims at one of these
+    under tmp_path, never at a real system path."""
+    folder = root / name
+    (folder / "repo" / "deploy").mkdir(parents=True)
+    (folder / "repo" / "deploy" / "stack").symlink_to(REPO / "deploy" / "stack")
+    (folder / ".env").write_text(ENV_EXAMPLE.read_text().replace("=CHANGEME", "=0123abcd"))
+    (folder / "sentinel").write_text("keep")
+    (root / "sentinel").write_text("keep")
+    return folder
+
+
+def _victim_vars(folder: Path, **override) -> dict:
+    return _teardown_vars(folder, env_name=folder.name,
+                          ss_stack=str(folder / "repo/deploy/stack/ss-stack"), **override)
+
+
+def _refused(result, calls, *folders: Path):
     out = result.stdout + result.stderr
     assert result.returncode != 0, out
     assert "Refusing to remove" in result.stdout, out
     assert calls == [], calls                                   # no docker
-    assert env_dir.exists() and (env_dir / ".env").exists()     # no rm
-    assert Path("/etc").exists()
+    for folder in folders:                                      # no rm
+        assert (folder / ".env").is_file(), folder
+        if (folder.parent / "sentinel").exists() or (folder / "sentinel").exists():
+            assert (folder / "sentinel").read_text() == "keep", folder
+            assert (folder.parent / "sentinel").read_text() == "keep", folder
 
 
 def test_teardown_playbook_refuses_a_folder_outside_opt_serversherpa(tmp_path):
     env_dir, env = _teardown_target(tmp_path, test_root=False)
     result, calls = _play(tmp_path, "teardown.yml", _teardown_vars(env_dir), env)
-    _refused(tmp_path, env_dir, result, calls)
+    _refused(result, calls, env_dir)
     assert f"Refusing to remove {env_dir}: it isn't /opt/serversherpa/env." in result.stdout
 
 
+# Each extravar tries to move the root onto <tmp>/victimroot so that
+# <tmp>/victimroot/victim passes as "<root>/<name>": the old playbook's
+# `root` play var (env_root | default(...)) let exactly this through. The
+# absolute-path form (env_root="" with env_dir=/<name>) is the same attack;
+# it is pinned by test_teardown_playbook_has_no_overridable_root and never
+# run against a real path.
 @pytest.mark.parametrize("override", [
-    {"root": "/", "env_name": "etc", "env_dir": "//etc"},
-    {"env_root": "", "env_name": "etc", "env_dir": "/etc"},
-    {"env_root": "/", "env_name": "etc", "env_dir": "//etc"},
-    {"root": "{tmp}"},                       # the real folder, moved under an extravar root
-    {"env_root": "{tmp}"},
-    {"teardown_root": "{tmp}"},
-], ids=["root=/", "env_root=empty,/etc", "env_root=/", "root=tmp", "env_root=tmp",
-        "teardown_root=tmp"])
+    {"root": "{victimroot}"},
+    {"env_root": "{victimroot}"},
+    {"env_root": ""},
+    {"teardown_root": "{victimroot}"},
+    {"lookup": "{victimroot}"},              # can't shadow the lookup either
+], ids=["root", "env_root", "env_root=empty", "teardown_root", "lookup"])
 def test_teardown_playbook_root_cannot_come_from_extravars(tmp_path, override):
-    env_dir, env = _teardown_target(tmp_path, test_root=False)
-    override = {k: v.format(tmp=tmp_path) for k, v in override.items()}
-    result, calls = _play(tmp_path, "teardown.yml", _teardown_vars(env_dir, **override), env)
-    _refused(tmp_path, env_dir, result, calls)
-
-
-def test_teardown_playbook_lookup_cannot_be_shadowed(tmp_path):
-    env_dir, env = _teardown_target(tmp_path, test_root=False)
-    result, calls = _play(tmp_path, "teardown.yml",
-                          _teardown_vars(env_dir, lookup=str(tmp_path)), env)
-    assert result.returncode != 0
-    assert calls == [] and env_dir.exists() and (env_dir / ".env").exists()
+    real_dir, env = _teardown_target(tmp_path, test_root=False)
+    victimroot = tmp_path / "victimroot"
+    victim = _victim(victimroot, "victim")
+    override = {k: v.format(victimroot=victimroot) for k, v in override.items()}
+    result, calls = _play(tmp_path, "teardown.yml", _victim_vars(victim, **override), env)
+    if "lookup" in override:                 # fails while templating, before the message
+        out = result.stdout + result.stderr
+        assert result.returncode != 0, out
+        assert calls == [] and (victim / "sentinel").exists() and (victim / ".env").exists()
+    else:
+        _refused(result, calls, victim, real_dir)
 
 
 @pytest.mark.parametrize("env_name, env_dir", [
@@ -572,8 +597,8 @@ def test_teardown_playbook_lookup_cannot_be_shadowed(tmp_path):
     ("env", "{root}/other"),
     ("env", "{root}"),
     ("env", "{root}/env/repo"),
-    ("..", "{root}/.."),
-    ("Env", "{root}/Env"),
+    ("..", "{root}/.."),                    # = tmp_path: still a sentinel tree
+    ("Env", "{root}/Env"),                  # the env folder on a case-insensitive disk
     ("env/x", "{root}/env/x"),
     ("e", "{root}/e"),
     ("env-", "{root}/env-"),                # names.CUSTOM_NAME_RE: no trailing hyphen
@@ -581,10 +606,17 @@ def test_teardown_playbook_lookup_cannot_be_shadowed(tmp_path):
     ("{{ 7*7 }}", "{root}/{{ 7*7 }}"),
 ])
 def test_teardown_playbook_refuses_anything_but_root_slash_name(tmp_path, env_name, env_dir):
-    real_dir, env = _teardown_target(tmp_path)
-    extra = _teardown_vars(real_dir, env_name=env_name, env_dir=env_dir.format(root=tmp_path))
+    real_dir, env = _teardown_target(tmp_path, test_root=False)
+    victimroot = tmp_path / "victimroot"
+    env["SIRDAR_TEST_TEARDOWN_ROOT"] = str(victimroot)
+    victims = [_victim(victimroot, n) for n in ("env", "other", "e", "env-")]
+    _victim(victimroot / "env" / "repo", "x")
+    target = env_dir.format(root=victimroot)
+    extra = _teardown_vars(Path(target), env_name=env_name, env_dir=target,
+                           ss_stack=f"{target}/repo/deploy/stack/ss-stack")
     result, calls = _play(tmp_path, "teardown.yml", extra, env)
-    _refused(tmp_path, real_dir, result, calls)
+    _refused(result, calls, real_dir, *victims)
+    assert (victimroot / "env" / "repo" / "x" / "sentinel").exists()
 
 
 def test_teardown_playbook_refuses_another_ss_stack(tmp_path):
@@ -592,7 +624,7 @@ def test_teardown_playbook_refuses_another_ss_stack(tmp_path):
     other = tmp_path / "bin" / "docker"
     result, calls = _play(tmp_path, "teardown.yml",
                           _teardown_vars(env_dir, ss_stack=str(other)), env)
-    _refused(tmp_path, env_dir, result, calls)
+    _refused(result, calls, env_dir)
 
 
 def test_teardown_playbook_has_no_overridable_root():
@@ -614,7 +646,7 @@ def test_the_test_root_never_reaches_a_real_run(tmp_path, monkeypatch):
     """SIRDAR_TEST_TEARDOWN_ROOT is outside the runner's job-env allowlist:
     set in the API process, the playbook never sees it."""
     from .test_deploy_runner import _request
-    monkeypatch.setenv(TEST_ROOT_ENV, "/")
+    monkeypatch.setenv(TEST_ROOT_ENV, str(tmp_path / "victimroot"))
     assert TEST_ROOT_ENV not in runner._INHERITED_ENV
     assert not TEST_ROOT_ENV.startswith(runner._INHERITED_PREFIXES)
     ansible = runner.AnsibleRunner(str(tmp_path / "runner"))
