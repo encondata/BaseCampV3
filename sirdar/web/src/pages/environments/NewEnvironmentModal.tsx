@@ -41,6 +41,32 @@ const PROXMOX_STEPS: [Step, string][] = [
 ];
 const IP_MODES: [IpMode, string][] = [['static', 'Static'], ['dhcp', 'DHCP']];
 const CIDR_RE = /^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/;
+// The API's messages for vm_ip_invalid and vm_gateway_invalid.
+const VM_IP_HELP = 'Use an address with its prefix, like 10.10.48.70/24.';
+const VM_GATEWAY_HELP = "The gateway must be another address in the VM's network.";
+/** Memory in GB with at most one decimal (what vmSize shows), so Review matches the request. */
+const gbOf = (mb: number) => String(Math.round((mb / 1024) * 10) / 10);
+const mbOf = (gb: string) => Math.round(Number(gb) * 1024);
+const toInt = (ip: string) => ip.split('.').reduce((n, p) => n * 256 + Number(p), 0);
+
+/** The API's check_network for a static address, on the client: '' when the API would accept it. */
+function vmNetworkProblem(cidr: string, gw: string): string {
+  const m = CIDR_RE.exec(cidr.trim());
+  const prefix = m ? Number(m[2]) : 0;
+  if (!m || ipv4Problem(m[1], 'address') || prefix < 8 || prefix > 30) return VM_IP_HELP;
+  const ip = toInt(m[1]);
+  const mask = (0xffffffff << (32 - prefix)) >>> 0;
+  const network = (ip & mask) >>> 0;
+  const broadcast = (network | (~mask >>> 0)) >>> 0;
+  const first = ip >>> 24;
+  // network or broadcast, 0.0.0.0/8 (unspecified too), loopback, link-local, multicast and reserved (240/4)
+  if (ip === network || ip === broadcast || first === 0 || first === 127 || first >= 224
+      || (ip >>> 16) === 0xa9fe) return VM_IP_HELP;
+  if (ipv4Problem(gw, 'gateway')) return VM_GATEWAY_HELP;
+  const g = toInt(gw.trim());
+  if (((g & mask) >>> 0) !== network || g === ip || g === network || g === broadcast) return VM_GATEWAY_HELP;
+  return '';
+}
 const DATA_MODES: [DataMode, string][] = [['empty', 'Start empty'], ['snapshot', 'From a snapshot']];
 type PublishChoice = 'on' | 'off';
 const PUBLISH_CHOICES: [PublishChoice, string][] = [['on', 'On'], ['off', 'Off']];
@@ -138,7 +164,7 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
       setDefaults(d);
       setTarget((cur) => cur || usable[0]?.id || '');
       setCores(String(d.vm.cores));
-      setMemoryGb(String(d.vm.memory_mb / 1024));
+      setMemoryGb(gbOf(d.vm.memory_mb));
       setDiskGb(String(d.vm.disk_gb));
       setRef(d.git_ref);
       setBind(d.bind_ip);
@@ -180,7 +206,7 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
     if (mode === 'adopt' && target === 'proxmox') setTarget(sshTargets(targets ?? [])[0]?.id ?? '');
   }, [mode, target, targets]);
   const limits = defaults?.vm.limits;
-  const machine = { cores: Number(cores), memory_mb: Number(memoryGb) * 1024, disk_gb: Number(diskGb),
+  const machine = { cores: Number(cores), memory_mb: mbOf(memoryGb), disk_gb: Number(diskGb),
                     ip_mode: ipMode, ip_cidr: ipCidr.trim() || null, gateway: gateway.trim() || null };
 
   const basicsErrors = (): Errors => only({
@@ -200,19 +226,21 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
   };
 
   const machineErrors = (): Errors => {
-    const within = (raw: string, [low, high]: [number, number], scale = 1) =>
-      /^\d+$/.test(raw.trim()) && Number(raw) * scale >= low && Number(raw) * scale <= high;
     if (!limits) return {};
-    if (!within(cores, limits.cores)) return { machine: 'Use 1 to 64 vCPUs.' };
-    if (!within(memoryGb, limits.memory_mb, 1024)) return { machine: 'Use 2 to 256 GB of memory.' };
-    if (!within(diskGb, limits.disk_gb)) return { machine: 'Use a disk of 20 to 4096 GB.' };
-    if (ipMode === 'dhcp') return {};
-    const m = CIDR_RE.exec(ipCidr.trim());
-    if (!m || ipv4Problem(m[1], 'address') || Number(m[2]) < 8 || Number(m[2]) > 30) {
-      return { machine: 'Enter the address with its prefix, like 10.10.48.70/24.' };
+    const inRange = (n: number, [low, high]: [number, number]) => n >= low && n <= high;
+    const whole = (raw: string) => (/^\d+$/.test(raw.trim()) ? Number(raw) : NaN);
+    if (!inRange(whole(cores), limits.cores)) {
+      return { machine: `Use ${limits.cores[0]} to ${limits.cores[1]} vCPUs.` };
     }
-    const gw = ipv4Problem(gateway, 'gateway');
-    return gw ? { machine: gw } : {};
+    if (!/^\d+(\.\d)?$/.test(memoryGb.trim()) || !inRange(mbOf(memoryGb), limits.memory_mb)) {
+      return { machine: `Use ${gbOf(limits.memory_mb[0])} to ${gbOf(limits.memory_mb[1])} GB of memory.` };
+    }
+    if (!inRange(whole(diskGb), limits.disk_gb)) {
+      return { machine: `Use a disk of ${limits.disk_gb[0]} to ${limits.disk_gb[1]} GB.` };
+    }
+    if (ipMode === 'dhcp') return {};
+    const problem = vmNetworkProblem(ipCidr, gateway);
+    return problem ? { machine: problem } : {};
   };
 
   const dataErrors = (): Errors => (dataMode === 'snapshot' && !snapshotId ? { data: 'Choose a snapshot.' } : {});
@@ -421,7 +449,7 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                 </div>
                 <div>
                   <label className="field-label" htmlFor="env-vm-memory">Memory (GB)</label>
-                  <input id="env-vm-memory" type="text" inputMode="numeric" value={memoryGb}
+                  <input id="env-vm-memory" type="text" inputMode="decimal" value={memoryGb}
                          onChange={(e) => setMemoryGb(e.target.value)} />
                 </div>
                 <div>

@@ -425,7 +425,7 @@ it('Proxmox: a Machine step sizes the VM and sets its address; Review and the re
   expect((screen.getByLabelText('Disk (GB)') as HTMLInputElement).value).toBe('64');
   expect(screen.getByRole('radio', { name: 'Static' }).getAttribute('aria-checked')).toBe('true');
   await next();
-  expect(screen.getByText('Enter the address with its prefix, like 10.10.48.70/24.')).toBeTruthy();
+  expect(screen.getByText('Use an address with its prefix, like 10.10.48.70/24.')).toBeTruthy();
   await userEvent.type(screen.getByLabelText('Address'), '10.10.48.70/24');
   await userEvent.type(screen.getByLabelText('Gateway'), '10.10.48.1');
   const cores = screen.getByLabelText('vCPUs');
@@ -486,4 +486,124 @@ it('Adopt offers SSH targets only', async () => {
   await userEvent.click(screen.getByRole('radio', { name: 'Adopt existing' }));
   await userEvent.click(screen.getByRole('combobox', { name: 'Target' }));
   expect(screen.queryByRole('button', { name: 'Proxmox' })).toBeNull();
+});
+
+async function toMachine(defaults = DEFAULTS) {
+  api.getDeployTargets.mockResolvedValue(PX_TARGETS);
+  api.getEnvironmentDefaults.mockResolvedValue(defaults);
+  api.createEnvironment.mockResolvedValue(PX_NEW_ENV);
+  const opened = await open();
+  await fillBasics('uat3');
+  await pickProxmox();
+  await next();
+  return opened;
+}
+async function setNetwork(address: string, gw: string) {
+  const a = screen.getByLabelText('Address');
+  const g = screen.getByLabelText('Gateway');
+  await userEvent.clear(a);
+  if (address) await userEvent.type(a, address);
+  await userEvent.clear(g);
+  if (gw) await userEvent.type(g, gw);
+  await next();
+}
+const GATEWAY_HELP = "The gateway must be another address in the VM's network.";
+const IP_HELP = 'Use an address with its prefix, like 10.10.48.70/24.';
+
+it('Proxmox: the network is checked like the API does', async () => {
+  await toMachine();
+  await setNetwork('10.10.48.70/24', '10.10.49.1');          // gateway outside the subnet
+  expect(screen.getByText(GATEWAY_HELP)).toBeTruthy();
+  await setNetwork('10.10.48.70/24', '10.10.48.70');         // gateway is the VM itself
+  expect(screen.getByText(GATEWAY_HELP)).toBeTruthy();
+  await setNetwork('10.10.48.70/24', '10.10.48.255');        // gateway is the broadcast address
+  expect(screen.getByText(GATEWAY_HELP)).toBeTruthy();
+  for (const address of ['10.10.48.0/24', '10.10.48.255/24', '127.0.0.5/8', '169.254.1.2/16', '224.0.0.5/8',
+                         '240.0.0.5/8', '0.1.2.3/8', '10.10.48.70/31']) {
+    await setNetwork(address, '10.10.48.1');
+    expect(screen.getByText(IP_HELP)).toBeTruthy();
+  }
+  await setNetwork('10.10.48.70/24', '10.10.48.1');
+  expect(screen.getByRole('table', { name: 'Services' })).toBeTruthy();
+});
+
+it('Proxmox: a DHCP create sends no address or gateway, and Review says DHCP', async () => {
+  await toMachine();
+  await userEvent.type(screen.getByLabelText('Address'), '10.10.48.70/24');
+  await userEvent.click(screen.getByRole('radio', { name: 'DHCP' }));
+  await next();
+  await next();
+  await next();
+  expect(screen.getByText('4 vCPU · 8 GB · 64 GB disk · DHCP')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  await waitFor(() => expect(api.createEnvironment).toHaveBeenCalled());
+  expect(api.createEnvironment.mock.calls[0][0].vm).toStrictEqual(
+    { cores: 4, memory_mb: 8192, disk_gb: 64, ip_mode: 'dhcp' });
+});
+
+it('Proxmox: the limit messages come from the defaults, and a fractional GB default is kept', async () => {
+  await toMachine({
+    ...DEFAULTS,
+    vm: { ...DEFAULTS.vm, memory_mb: 1536,
+          limits: { cores: [1, 8], memory_mb: [1024, 16384], disk_gb: [10, 500], keep_snapshots: [1, 10] } },
+  });
+  expect((screen.getByLabelText('Memory (GB)') as HTMLInputElement).value).toBe('1.5');
+  const cores = screen.getByLabelText('vCPUs');
+  await userEvent.clear(cores);
+  await userEvent.type(cores, '9');
+  await next();
+  expect(screen.getByText('Use 1 to 8 vCPUs.')).toBeTruthy();
+  await userEvent.clear(cores);
+  await userEvent.type(cores, '2');
+  const disk = screen.getByLabelText('Disk (GB)');
+  await userEvent.clear(disk);
+  await userEvent.type(disk, '501');
+  await next();
+  expect(screen.getByText('Use a disk of 10 to 500 GB.')).toBeTruthy();
+  await userEvent.clear(disk);
+  await userEvent.type(disk, '64');
+  const memory = screen.getByLabelText('Memory (GB)');
+  await userEvent.clear(memory);
+  await userEvent.type(memory, '0.5');
+  await next();
+  expect(screen.getByText('Use 1 to 16 GB of memory.')).toBeTruthy();
+  await userEvent.clear(memory);
+  await userEvent.type(memory, '1.5');
+  await userEvent.click(screen.getByRole('radio', { name: 'DHCP' }));
+  await next();
+  await next();
+  await next();
+  expect(screen.getByText('2 vCPU · 1.5 GB · 64 GB disk · DHCP')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  await waitFor(() => expect(api.createEnvironment).toHaveBeenCalled());
+  expect(api.createEnvironment.mock.calls[0][0].vm).toMatchObject({ cores: 2, memory_mb: 1536, disk_gb: 64 });
+});
+
+it('an SSH create sends no vm key and has no Machine step', async () => {
+  api.getDeployTargets.mockResolvedValue(PX_TARGETS);
+  await open();
+  await fillBasics('qa');
+  await next();
+  expect(screen.queryByText('Machine')).toBeNull();
+  await next();
+  await next();
+  expect(screen.queryByText('Machine')).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  await waitFor(() => expect(api.createEnvironment).toHaveBeenCalled());
+  expect(api.createEnvironment.mock.calls[0][0].target).toBe('ssh:lab');
+  expect('vm' in api.createEnvironment.mock.calls[0][0]).toBe(false);
+});
+
+it('switching to Adopt with Proxmox chosen falls back to the first SSH target', async () => {
+  api.getDeployTargets.mockResolvedValue(PX_TARGETS);
+  api.adoptEnvironment.mockRejectedValue(new ApiError(422, 'stop', { code: 'stop' }));
+  await open();
+  await userEvent.type(screen.getByLabelText('Name'), 'uat3');
+  await pickProxmox();
+  await userEvent.click(screen.getByRole('radio', { name: 'Adopt existing' }));
+  await waitFor(() => expect((screen.getByRole('combobox', { name: 'Target' }) as HTMLInputElement).value)
+    .toBe('Lab box'));
+  await userEvent.click(screen.getByRole('button', { name: 'Adopt' }));
+  await waitFor(() => expect(api.adoptEnvironment).toHaveBeenCalled());
+  expect(api.adoptEnvironment.mock.calls[0][0].target).toBe('ssh:lab');
 });

@@ -87,4 +87,6 @@ it('Proxmox: targets, the mode, and the VM in words', () => {
   expect(vmSize({ ...PX_VM, memory_mb: 12288 })).toBe('4 vCPU · 12 GB · 64 GB disk');
   expect(vmNetwork(PX_VM)).toBe('10.10.48.70/24 via 10.10.48.1');
   expect(vmNetwork({ ...PX_VM, ip_mode: 'dhcp', ip_cidr: null, gateway: null })).toBe('DHCP');
+  expect(vmNetwork({ ...PX_VM, ip_cidr: null, gateway: null })).toBe('Static, no address yet');
+  expect(vmNetwork({ ...PX_VM, gateway: null })).toBe('10.10.48.70/24');
 });

@@ -110,6 +110,9 @@ export const onProxmox = (env: Environment) => env.target_kind === 'proxmox';
 export const vmSize = (vm: Pick<EnvVm, 'cores' | 'memory_mb' | 'disk_gb'>) =>
   `${vm.cores} vCPU · ${Math.round((vm.memory_mb / 1024) * 10) / 10} GB · ${vm.disk_gb} GB disk`;
 
-/** "10.10.48.70/24 via 10.10.48.1", or "DHCP". */
-export const vmNetwork = (vm: Pick<EnvVm, 'ip_mode' | 'ip_cidr' | 'gateway'>) =>
-  vm.ip_mode === 'static' ? `${vm.ip_cidr} via ${vm.gateway}` : 'DHCP';
+/** "10.10.48.70/24 via 10.10.48.1", or "DHCP"; never "null" for a missing part. */
+export const vmNetwork = (vm: Pick<EnvVm, 'ip_mode' | 'ip_cidr' | 'gateway'>) => {
+  if (vm.ip_mode !== 'static') return 'DHCP';
+  if (!vm.ip_cidr) return 'Static, no address yet';
+  return vm.gateway ? `${vm.ip_cidr} via ${vm.gateway}` : vm.ip_cidr;
+};
