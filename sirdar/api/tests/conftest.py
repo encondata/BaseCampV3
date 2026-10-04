@@ -151,22 +151,16 @@ def no_real_http():
 @pytest.fixture(autouse=True)
 def no_real_hosts():
     """No test reaches a real Proxmox host outside httpx: the raw TLS
-    certificate fetch may only dial 127.0.0.1 (the tests' own TLS server).
-    Later tasks add Terraform and the provisioner's port probe here. Yields
-    the list of blocked attempts (a test that blocks on purpose clears it);
-    the test fails at teardown if any is left. Its own MonkeyPatch, like
-    no_real_http."""
-    from sirdar_api.deploy import terraform, tls_pin
+    certificate fetch may only dial 127.0.0.1 (the tests' own TLS server),
+    Terraform only runs fake-* scripts, and the provisioner's port probe
+    never dials out. Yields the list of blocked attempts (a test that
+    blocks on purpose clears it); the test fails at teardown if any is
+    left. Its own MonkeyPatch, like no_real_http."""
+    from sirdar_api.deploy import provision, terraform, tls_pin
 
     hits: list[str] = []
     real_read = tls_pin._read_certificate
     real_spawn = terraform._spawn
-
-    async def spawn(argv, **kw):
-        if not Path(argv[0]).name.startswith("fake-"):
-            hits.append(f"terraform:{argv[0]}")
-            raise AssertionError(f"a test started a real Terraform ({argv[0]})")
-        return await real_spawn(argv, **kw)
 
     def read(host, port):
         if host != "127.0.0.1":
@@ -174,8 +168,19 @@ def no_real_hosts():
             raise AssertionError(f"a test fetched a real TLS certificate from {host}")
         return real_read(host, port)
 
+    async def spawn(argv, **kw):
+        if not Path(argv[0]).name.startswith("fake-"):
+            hits.append(f"terraform:{argv[0]}")
+            raise AssertionError(f"a test started a real Terraform ({argv[0]})")
+        return await real_spawn(argv, **kw)
+
+    async def probe(host, port, timeout=3.0):
+        hits.append(f"probe:{host}")
+        raise AssertionError(f"a test probed a real port ({host}:{port})")
+
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(tls_pin, "_read_certificate", read)
         mp.setattr(terraform, "_spawn", spawn)
+        mp.setattr(provision, "tcp_open", probe)
         yield hits
     assert not hits, f"a test reached real hosts: {', '.join(hits)}"
