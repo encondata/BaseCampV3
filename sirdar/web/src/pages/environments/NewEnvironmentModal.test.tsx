@@ -16,7 +16,9 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import NewEnvironmentModal from './NewEnvironmentModal';
-import { DEFAULTS, ENV, INTEGRATIONS, NO_INTEGRATIONS, SNAP, SNAP_TAKING, TARGETS } from './testData';
+import {
+  DEFAULTS, ENV, INTEGRATIONS, NO_INTEGRATIONS, PX_NEW_ENV, PX_TARGETS, SNAP, SNAP_TAKING, TARGETS,
+} from './testData';
 
 Element.prototype.scrollIntoView = () => {};   // jsdom lacks it (ComboBox calls it)
 beforeEach(() => {
@@ -402,4 +404,86 @@ it('Adopt has no Data step and never sends a snapshot_id, even after one was pic
   await userEvent.click(screen.getByRole('button', { name: 'Adopt' }));
   await waitFor(() => expect(api.adoptEnvironment).toHaveBeenCalledTimes(1));
   expect('snapshot_id' in api.adoptEnvironment.mock.calls[0][0]).toBe(false);
+});
+
+async function pickProxmox() {
+  await userEvent.click(screen.getByRole('combobox', { name: 'Target' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Proxmox' }));
+}
+
+it('Proxmox: a Machine step sizes the VM and sets its address; Review and the request carry it', async () => {
+  api.getDeployTargets.mockResolvedValue(PX_TARGETS);
+  api.createEnvironment.mockResolvedValue(PX_NEW_ENV);
+  const { onCreated } = await open();
+  await fillBasics('uat3');
+  await pickProxmox();
+  await next();
+  expect(['Basics', 'Machine', 'Services', 'Data', 'Review'].every((s) => screen.getByText(s))).toBe(true);
+  expect(screen.getByText(/into a VM named ss-uat3/)).toBeTruthy();
+  expect((screen.getByLabelText('vCPUs') as HTMLInputElement).value).toBe('4');
+  expect((screen.getByLabelText('Memory (GB)') as HTMLInputElement).value).toBe('8');
+  expect((screen.getByLabelText('Disk (GB)') as HTMLInputElement).value).toBe('64');
+  expect(screen.getByRole('radio', { name: 'Static' }).getAttribute('aria-checked')).toBe('true');
+  await next();
+  expect(screen.getByText('Enter the address with its prefix, like 10.10.48.70/24.')).toBeTruthy();
+  await userEvent.type(screen.getByLabelText('Address'), '10.10.48.70/24');
+  await userEvent.type(screen.getByLabelText('Gateway'), '10.10.48.1');
+  const cores = screen.getByLabelText('vCPUs');
+  await userEvent.clear(cores);
+  await userEvent.type(cores, '2');
+  await next();
+  expect(within(screen.getByRole('table', { name: 'Services' })).getAllByText("The VM's address")).toHaveLength(7);
+  await next();
+  await next();
+  expect(screen.getByText('2 vCPU · 8 GB · 64 GB disk · 10.10.48.70/24 via 10.10.48.1')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  await waitFor(() => expect(onCreated).toHaveBeenCalledWith(PX_NEW_ENV));
+  expect(api.createEnvironment.mock.calls[0][0]).toMatchObject({
+    name: 'uat3', target: 'proxmox',
+    vm: { cores: 2, memory_mb: 8192, disk_gb: 64, ip_mode: 'static', ip_cidr: '10.10.48.70/24', gateway: '10.10.48.1' },
+  });
+});
+
+it('Proxmox: DHCP needs no address; sizes are checked against the limits', async () => {
+  api.getDeployTargets.mockResolvedValue(PX_TARGETS);
+  await open();
+  await fillBasics('uat3');
+  await pickProxmox();
+  await next();
+  await userEvent.click(screen.getByRole('radio', { name: 'DHCP' }));
+  expect(screen.queryByLabelText('Address')).toBeNull();
+  const memory = screen.getByLabelText('Memory (GB)');
+  await userEvent.clear(memory);
+  await userEvent.type(memory, '1');
+  await next();
+  expect(screen.getByText('Use 2 to 256 GB of memory.')).toBeTruthy();
+  await userEvent.clear(memory);
+  await userEvent.type(memory, '4');
+  await next();
+  expect(screen.getByRole('table', { name: 'Services' })).toBeTruthy();
+});
+
+it('Proxmox: an address in use sends you back to Machine', async () => {
+  api.getDeployTargets.mockResolvedValue(PX_TARGETS);
+  api.createEnvironment.mockRejectedValue(new ApiError(409, 'ip_in_use', { code: 'ip_in_use' }));
+  await open();
+  await fillBasics('uat3');
+  await pickProxmox();
+  await next();
+  await userEvent.type(screen.getByLabelText('Address'), '10.10.48.63/24');
+  await userEvent.type(screen.getByLabelText('Gateway'), '10.10.48.1');
+  await next();
+  await next();
+  await next();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  expect(await screen.findByText(/That address is already used/)).toBeTruthy();
+  expect(screen.getByLabelText('Address')).toBeTruthy();
+});
+
+it('Adopt offers SSH targets only', async () => {
+  api.getDeployTargets.mockResolvedValue(PX_TARGETS);
+  await open();
+  await userEvent.click(screen.getByRole('radio', { name: 'Adopt existing' }));
+  await userEvent.click(screen.getByRole('combobox', { name: 'Target' }));
+  expect(screen.queryByRole('button', { name: 'Proxmox' })).toBeNull();
 });
