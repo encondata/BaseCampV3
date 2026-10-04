@@ -10,7 +10,7 @@ import { ApiError } from '@portal/lib/api';
 
 import { SNAP } from '../environments/testData';
 
-import UploadSnapshotModal, { nameFromFile, snapshotNameProblem } from './UploadSnapshotModal';
+import UploadSnapshotModal, { bundleFileProblem, nameFromFile, snapshotNameProblem } from './UploadSnapshotModal';
 
 beforeEach(() => { api.uploadSnapshot.mockReset(); api.uploadSnapshot.mockResolvedValue(SNAP); });
 afterEach(cleanup);
@@ -91,4 +91,27 @@ it('helpers', () => {
   expect(snapshotNameProblem('')).toBe('');
   expect(snapshotNameProblem('dev-2026.10_04')).toBe('');
   expect(snapshotNameProblem('-x')).not.toBe('');
+});
+
+it('bundleFileProblem accepts .tar.gz, .tgz and .gz only', () => {
+  expect(bundleFileProblem('seed.tar.gz')).toBe('');
+  expect(bundleFileProblem('seed.TGZ')).toBe('');
+  expect(bundleFileProblem('seed.gz')).toBe('');
+  expect(bundleFileProblem('seed.zip')).toMatch(/\.tar\.gz/);
+  expect(bundleFileProblem('seed.tar')).not.toBe('');
+});
+
+it('refuses a file that is not a gzip bundle before uploading', async () => {
+  open();
+  choose(bundle('notes.txt'));
+  const alert = screen.getByRole('alert');
+  expect(alert.textContent).toBe('Choose the .tar.gz bundle that make-seed-snapshot.sh made (.tar.gz, .tgz or .gz).');
+  expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('');
+  expect(screen.getByText('No file chosen')).toBeTruthy();
+  expect(uploadBtn().disabled).toBe(true);
+  // A good file clears it.
+  choose(bundle());
+  expect(screen.queryByRole('alert')).toBeNull();
+  expect(uploadBtn().disabled).toBe(false);
+  expect(api.uploadSnapshot).not.toHaveBeenCalled();
 });

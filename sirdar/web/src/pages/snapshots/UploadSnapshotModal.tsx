@@ -16,6 +16,12 @@ export function snapshotNameProblem(raw: string): string {
     ? '' : 'Use letters, numbers, dots, hyphens and underscores, starting with a letter or number (up to 64).';
 }
 
+/** A bundle is gzip: refuse anything else before sending it. '' when fine. */
+export function bundleFileProblem(fileName: string): string {
+  return /\.(tar\.gz|tgz|gz)$/i.test(fileName)
+    ? '' : 'Choose the .tar.gz bundle that make-seed-snapshot.sh made (.tar.gz, .tgz or .gz).';
+}
+
 /** "seed-20261004T120000Z.tar.gz" → "seed-20261004T120000Z". */
 export function nameFromFile(fileName: string): string {
   return fileName.replace(/\.tar\.gz$|\.tgz$/i, '').replace(/[^A-Za-z0-9._-]/g, '-').replace(/^[^A-Za-z0-9]+/, '').slice(0, 64);
@@ -28,6 +34,7 @@ export default function UploadSnapshotModal({ onUploaded, onClose }: {
   const [name, setName] = useState('');
   const [notes, setNotes] = useState('');
   const [error, setError] = useState('');
+  const [fileError, setFileError] = useState('');
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   busyRef.current = busy;
@@ -50,8 +57,11 @@ export default function UploadSnapshotModal({ onUploaded, onClose }: {
   }, []);
 
   const pick = (f: File | null) => {
-    setFile(f);
+    const problem = f ? bundleFileProblem(f.name) : '';
+    setFileError(problem);
     setError('');
+    if (problem) { setFile(null); return; }
+    setFile(f);
     if (f && !name.trim()) setName(nameFromFile(f.name));
   };
 
@@ -107,8 +117,9 @@ export default function UploadSnapshotModal({ onUploaded, onClose }: {
                 {file ? `${file.name} · ${formatBytes(file.size)}` : 'No file chosen'}
               </span>
               <input ref={fileInput} type="file" accept=".gz,.tgz,application/gzip" hidden data-testid="snap-file"
-                     onChange={(e) => pick(e.target.files?.[0] ?? null)} />
+                     onChange={(e) => { pick(e.target.files?.[0] ?? null); e.target.value = ''; }} />
             </div>
+            {fileError && <p className="form-error" role="alert">{fileError}</p>}
           </div>
           <div>
             <label className="field-label" htmlFor="snap-name">Name</label>
