@@ -24,7 +24,7 @@ URL = "/api/deploy/environments"
 ENV_KEYS = {"id", "name", "type", "target", "base_domain", "env_dir", "git_ref", "current_sha",
             "image_tag", "status", "proxy_ip", "bind_ip", "keep_dumps", "spaces_bucket",
             "log_level", "services", "secrets_set", "seed_snapshot", "last_deployment",
-            "created_at", "updated_at", "publish", "managed_records"}
+            "created_at", "updated_at", "publish", "managed_records", "target_kind", "vm"}
 NEW = {"mode": "new", "name": "qa", "type": "custom", "target": "ssh",
        "proxy_ip": "10.10.48.6"}
 DEFAULTS_URL = "/api/deploy/environment-defaults"
@@ -68,7 +68,10 @@ async def test_environment_defaults(client, db):
         "domain_suffix": "serversherpa.com", "env_root": "/opt/serversherpa", "git_ref": "main",
         "bind_ip": "0.0.0.0", "keep_dumps": 5, "spaces_bucket": "serversherpa",
         "log_levels": ["DEBUG", "INFO", "WARNING", "ERROR"],
-        "optional_secrets": ["SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD"]}
+        "optional_secrets": ["SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD"],
+        "vm": {"cores": 4, "memory_mb": 8192, "disk_gb": 64, "keep_snapshots": 3,
+               "limits": {"cores": [1, 64], "memory_mb": [2048, 262144],
+                          "disk_gb": [20, 4096], "keep_snapshots": [1, 10]}}}
 
 
 async def test_create_new_environment(client, db, target, leak_guard):
@@ -77,6 +80,7 @@ async def test_create_new_environment(client, db, target, leak_guard):
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert set(body) == ENV_KEYS
+    assert (body["target_kind"], body["vm"]) == ("ssh", None)
     assert (body["name"], body["type"], body["target"], body["status"], body["base_domain"],
             body["env_dir"], body["current_sha"], body["last_deployment"]) == (
         "qa", "custom", "ssh", "new", "qa.serversherpa.com", "/opt/serversherpa/qa", None,

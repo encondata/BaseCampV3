@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.db.models import Deployment, DeploymentStep, Environment, ManagedRecord, User
-from sirdar_api.deploy import envfile, snapshots
+from sirdar_api.deploy import envfile, snapshots, targets, vms
 from sirdar_api.deploy.environments import secret_keys_of, services_of
 
 LOG_TAIL_DEFAULT = 8000
@@ -46,6 +46,8 @@ async def deployment_summary(db: AsyncSession, dep: Deployment) -> dict:
             "snapshot": await snapshots.snapshot_ref(db, dep.snapshot_id),
             "restore_dump": dep.restore_dump, "rollback_available": rollback_available(dep),
             "publish": dep.publish,
+            "vm": dep.vm, "take_vm_snapshot": dep.take_vm_snapshot,
+            "vm_snapshot": dep.vm_snapshot,
             "previous_sha": dep.previous_sha, "error": dep.error,
             "actor_name": await _actor_name(db, dep.actor_id),
             "started_at": dep.started_at, "finished_at": dep.finished_at,
@@ -78,8 +80,12 @@ async def environment_out(db: AsyncSession, env: Environment) -> dict:
     services = await services_of(db, env.id)
     keys = await secret_keys_of(db, env.id)
     last = await latest_deployment(db, env.id)
+    on_vm = env.target_id == targets.PROXMOX_TARGET
+    vm = await vms.get(db, env.id) if on_vm else None
     return {
         "id": str(env.id), "name": env.name, "type": env.type, "target": env.target_id,
+        "target_kind": "proxmox" if on_vm else "ssh",
+        "vm": vms.public(vm) if vm is not None else None,
         "base_domain": env.base_domain, "env_dir": envfile.env_dir(env.name),
         "git_ref": env.git_ref, "current_sha": env.current_sha, "image_tag": env.image_tag,
         "status": env.status, "proxy_ip": env.proxy_ip, "bind_ip": env.bind_ip,
