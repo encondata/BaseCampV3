@@ -12,7 +12,8 @@ import { useHostKeyTrust } from '../../components/useHostKeyTrust';
 import { arrowNav } from '../../lib/arrowNav';
 import { NAME_HELP, ipv4Problem, nameProblem, portProblem, refProblem } from '../../lib/envRules';
 import {
-  adoptEnvironment, createEnvironment, deployErrorText, getDeployTargets, getEnvironmentDefaults, listSnapshots,
+  adoptEnvironment, createEnvironment, deployErrorText, getDeployTargets, getEnvironmentDefaults, getIntegrations,
+  listSnapshots,
   type AdoptEnvironmentBody, type AdoptedEnvironment, type DeployTarget, type EnvType, type Environment,
   type EnvironmentDefaults, type NewEnvironmentBody, type Snapshot,
 } from '../../lib/sirdarApi';
@@ -71,6 +72,9 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
   const [dataMode, setDataMode] = useState<DataMode>('empty');
   const [snapshotId, setSnapshotId] = useState('');
   const [publish, setPublish] = useState<PublishChoice>('on');
+  // Both integrations set up (null until known). Without them Publish starts Off.
+  const [canPublish, setCanPublish] = useState<boolean | null>(null);
+  const publishChosen = useRef(false);
   const [errors, setErrors] = useState<Errors>({});
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<AdoptedEnvironment | null>(null);
@@ -120,6 +124,16 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
       setBind(d.bind_ip);
       setPorts(Object.fromEntries(d.services.map((s) => [s.service, String(s.port)])));
     }).catch((e) => { if (live) setLoadError(deployErrorText(e, "Couldn't load the targets and defaults.")); });
+    return () => { live = false; };
+  }, []);
+  useEffect(() => {
+    let live = true;
+    getIntegrations().then((i) => {
+      if (!live) return;
+      const ready = i.cloudflare.configured && i.npm.configured;
+      setCanPublish(ready);
+      if (!publishChosen.current) setPublish(ready ? 'on' : 'off');
+    }).catch(() => { /* the API's default (on) stands; a deploy says what's missing */ });
     return () => { live = false; };
   }, []);
   useEffect(() => { if (defaults) nameRef.current?.focus(); }, [defaults]);
@@ -346,14 +360,20 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                 <div>
                   <span className="field-label" id="env-publish-label">Publish DNS and proxy</span>
                   <div className="segmented" role="radiogroup" aria-labelledby="env-publish-label">
-                    {radios(PUBLISH_CHOICES, publish, setPublish)}
+                    {radios(PUBLISH_CHOICES, publish, (v) => { publishChosen.current = true; setPublish(v); })}
                   </div>
                   <p className="page-hint">
                     {publish === 'on'
                       ? 'Each deploy creates or updates a DNS record and a proxy host for every public name (Settings › '
-                        + 'Integrations has the credentials).'
+                        + 'Integrations has the credentials). Hand-made records or proxy hosts already at those names '
+                        + 'must be claimed on the Publish tab first.'
                       : 'DNS records and proxy hosts stay as they are: set them up by hand, or turn Publish on later.'}
                   </p>
+                  {canPublish === false && (
+                    <p className="page-hint">
+                      Set up Cloudflare and Nginx Proxy Manager in Settings › Integrations to publish.
+                    </p>
+                  )}
                 </div>
                 <DataTable
                   ariaLabel="Services"
