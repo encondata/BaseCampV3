@@ -1,4 +1,4 @@
-"""Sirdar's own tables (migrations 0001–0006). `users` mirrors the portal's
+"""Sirdar's own tables (migrations 0001–0007). `users` mirrors the portal's
 user_accounts + people for the people it copies; Sirdar-only data
 (overrides, sessions, audit, lockout counters) never comes from the portal."""
 
@@ -241,6 +241,7 @@ class Deployment(Base):
     environment_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("environments.id", ondelete="CASCADE"))
     # update | reset | adopt | snapshot | restore_dump | rollback | publish | teardown
+    # | vm_restore
     mode: Mapped[str]
     git_ref: Mapped[str]
     sha: Mapped[str]
@@ -258,6 +259,12 @@ class Deployment(Base):
     restore_dump: Mapped[str | None]
     # Whether its plan has steps 12–14 (migration 0006): retries keep it.
     publish: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    # Proxmox (migration 0007): its plan has the VM steps (0 / 15); it asked
+    # for a VM snapshot in step 0; the VM snapshot it took (vm_restore: the
+    # one it restores). Retries keep all three.
+    vm: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    take_vm_snapshot: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    vm_snapshot: Mapped[str | None]
     previous_sha: Mapped[str | None]
     error: Mapped[str | None]
     actor_id: Mapped[uuid.UUID | None]
@@ -314,7 +321,7 @@ class Integration(Base):
 
     __tablename__ = "integrations"
 
-    kind: Mapped[str] = mapped_column(primary_key=True)        # cloudflare | npm
+    kind: Mapped[str] = mapped_column(primary_key=True)        # cloudflare | npm | proxmox
     config: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     secret_enc: Mapped[bytes | None] = mapped_column(BYTEA)
     updated_by: Mapped[uuid.UUID | None]
@@ -338,5 +345,35 @@ class ManagedRecord(Base):
     external_id: Mapped[str]
     name: Mapped[str]                              # the hostname it serves
     origin: Mapped[str]                            # created | claimed
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class ProxmoxVm(Base):
+    """The VM Sirdar builds on Proxmox for one environment (migration 0007),
+    and the record that it is Sirdar's: Sirdar changes or destroys only VM
+    `vmid` named `name`. `vmid` is reserved before Terraform creates it;
+    `created` turns true after the first successful apply; `ip` is the
+    address the guest agent reported. The private key is Fernet-encrypted
+    with SIRDAR_SECRETS_KEY and never returned."""
+
+    __tablename__ = "proxmox_vms"
+
+    environment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("environments.id", ondelete="CASCADE"), primary_key=True)
+    node: Mapped[str]
+    vmid: Mapped[int | None] = mapped_column(Integer)
+    name: Mapped[str]
+    cores: Mapped[int] = mapped_column(Integer)
+    memory_mb: Mapped[int] = mapped_column(Integer)
+    disk_gb: Mapped[int] = mapped_column(Integer)
+    ip_mode: Mapped[str]                              # static | dhcp
+    ip_cidr: Mapped[str | None]
+    gateway: Mapped[str | None]
+    ip: Mapped[str | None]
+    ssh_public_key: Mapped[str]
+    ssh_private_key_enc: Mapped[bytes] = mapped_column(BYTEA)
+    keep_snapshots: Mapped[int] = mapped_column(Integer, server_default=text("3"))
+    created: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

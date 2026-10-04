@@ -14,6 +14,7 @@ from sirdar_api.db.models import (
     EnvironmentService,
     Integration,
     ManagedRecord,
+    ProxmoxVm,
     Snapshot,
 )
 
@@ -284,3 +285,96 @@ async def test_migration_0006_round_trip():
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
         assert conn.execute("SELECT publish FROM environments WHERE id = %s",
                             (env_id,)).fetchone()[0] is False
+
+
+def _vm(env_id, **over) -> ProxmoxVm:
+    kw = dict(environment_id=env_id, node="pve", name="ss-uat", cores=4, memory_mb=8192,
+              disk_gb=64, ip_mode="static", ip_cidr="10.10.48.70/24", gateway="10.10.48.1",
+              ssh_public_key="ssh-ed25519 AAAAC3Nz test", ssh_private_key_enc=b"enc")
+    kw.update(over)
+    return ProxmoxVm(**kw)
+
+
+async def test_proxmox_vms_and_the_vm_columns(db):
+    env = await _env(db)
+    db.add(_vm(env.id))
+    db.add(Integration(kind="proxmox", config={"url": "https://10.10.48.5:8006"},
+                       secret_enc=b"x"))
+    dep = Deployment(environment_id=env.id, mode="vm_restore", git_ref=SHA, sha=SHA,
+                     status="succeeded", start_step=0, vm=True,
+                     vm_snapshot="sirdar-20261004T120000Z")
+    db.add(dep)
+    await db.commit()
+    vm = await db.get(ProxmoxVm, env.id)
+    assert (vm.vmid, vm.ip, vm.keep_snapshots, vm.created) == (None, None, 3, False)
+    assert vm.created_at is not None
+    await db.refresh(dep)
+    assert (dep.vm, dep.take_vm_snapshot, dep.vm_snapshot) == (
+        True, False, "sirdar-20261004T120000Z")
+    plain = _dep(env, status="succeeded")
+    db.add(plain)
+    await db.commit()
+    await db.refresh(plain)
+    assert (plain.vm, plain.take_vm_snapshot, plain.vm_snapshot) == (False, False, None)
+    await db.execute(delete(Environment).where(Environment.id == env.id))
+    await db.commit()
+    assert await db.scalar(select(func.count()).select_from(ProxmoxVm)) == 0
+
+
+async def test_proxmox_vm_constraints(db):
+    env, other = await _env(db), await _env(db, name="uat2")
+    env_id, other_id = env.id, other.id
+    db.add(_vm(env_id, vmid=120))
+    await db.commit()
+    for bad in (_vm(other_id, name="ss-uat2", vmid=120),          # one VM id, one environment
+                _vm(other_id),                                    # the name ss-uat again
+                _vm(other_id, name="ss-uat2", ip_cidr=None),      # static needs an address
+                _vm(other_id, name="ss-uat2", ip_mode="dhcp"),    # dhcp with an address
+                _vm(other_id, name="ss-uat2", ip_mode="bridged"),
+                _vm(other_id, name="ss-uat2", cores=0),
+                _vm(other_id, name="ss-uat2", memory_mb=1024),
+                _vm(other_id, name="ss-uat2", disk_gb=10),
+                _vm(other_id, name="ss-uat2", keep_snapshots=11),
+                _vm(other_id, name="ss-uat2", vmid=99)):
+        db.add(bad)
+        with pytest.raises(IntegrityError):
+            await db.commit()
+        await db.rollback()
+    db.add(_vm(other_id, name="ss-uat2", ip_mode="dhcp", ip_cidr=None, gateway=None))
+    await db.commit()
+    db.add(Integration(kind="vsphere"))
+    with pytest.raises(IntegrityError):
+        await db.commit()
+    await db.rollback()
+
+
+async def test_migration_0007_round_trip():
+    """Downgrading drops the VM restores, the VM steps and the Proxmox
+    credentials, and keeps the environments (their VMs would be orphaned)."""
+    from sirdar_api.db.engine import dispose_engine
+    await dispose_engine()
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        env_id = conn.execute(
+            "INSERT INTO environments (name, type, target_id, base_domain, proxy_ip) "
+            "VALUES ('vm1', 'dev', 'proxmox', 'vm1.example.com', '10.0.0.2') RETURNING id"
+        ).fetchone()[0]
+        dep_id = conn.execute(
+            "INSERT INTO deployments (environment_id, mode, git_ref, sha, status, start_step, "
+            "vm) VALUES (%s, 'vm_restore', %s, %s, 'succeeded', 0, true) RETURNING id",
+            (env_id, SHA, SHA)).fetchone()[0]
+        conn.execute("INSERT INTO deployment_steps (deployment_id, number, key, name) "
+                     "VALUES (%s, 0, 'vm_restore', 'Restore VM snapshot')", (dep_id,))
+        conn.execute("INSERT INTO integrations (kind, config) VALUES ('proxmox', '{}')")
+    _alembic("downgrade", "0006")
+    try:
+        with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+            assert conn.execute("SELECT count(*) FROM deployments WHERE id = %s",
+                                (dep_id,)).fetchone()[0] == 0
+            assert conn.execute("SELECT count(*) FROM integrations WHERE kind = 'proxmox'"
+                                ).fetchone()[0] == 0
+            assert conn.execute("SELECT count(*) FROM environments WHERE id = %s",
+                                (env_id,)).fetchone()[0] == 1
+    finally:
+        _alembic("upgrade", "head")
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        assert conn.execute("SELECT to_regclass('proxmox_vms') IS NOT NULL").fetchone()[0]
