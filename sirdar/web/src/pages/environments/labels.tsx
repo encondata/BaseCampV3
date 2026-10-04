@@ -1,5 +1,5 @@
 /** Labels, status chips and small helpers shared by the environment pages. */
-import type { DeployTarget, DeploymentStep, Snapshot } from '../../lib/sirdarApi';
+import type { DeployTarget, DeploymentStep, Environment, Snapshot } from '../../lib/sirdarApi';
 
 /** status → [chip class, label] */
 type ChipMap = Record<string, [string, string]>;
@@ -8,6 +8,12 @@ export const ENV_STATUS: ChipMap = {
   new: ['tag', 'New'], ready: ['c-green', 'Ready'], deploying: ['c-blue', 'Deploying'], failed: ['c-red', 'Failed'],
   deleting: ['c-amber', 'Deleting'],
 };
+/** A deployment is running: the environment is deploying or deleting, or its
+ *  latest deployment is still running (a publish or snapshot job leaves the
+ *  environment's status as it was). The API refuses changes meanwhile. */
+export const deploymentRunning = (env: Environment) =>
+  env.status === 'deploying' || env.status === 'deleting' || env.last_deployment?.status === 'running';
+
 export const DEPLOYMENT_STATUS: ChipMap = {
   running: ['c-blue', 'Running'], succeeded: ['c-green', 'Succeeded'], failed: ['c-red', 'Failed'],
   cancelled: ['c-amber', 'Canceled'], interrupted: ['c-amber', 'Interrupted'], adopted: ['tag', 'Adopted'],

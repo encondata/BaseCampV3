@@ -17,10 +17,11 @@ import EnvOverview from './EnvOverview';
 import EnvSettings from './EnvSettings';
 import PublishTab from './PublishTab';
 
-import { ENV_STATUS, StatusChip, TYPE_LABEL, targetLabel } from './labels';
+import { ENV_STATUS, StatusChip, TYPE_LABEL, deploymentRunning, targetLabel } from './labels';
 
-/** While the environment is deploying it is reloaded this often, on every tab, so
- *  the header, Deploy and Settings notice when the run ends. */
+/** While a deployment runs (the environment is deploying or deleting, or a
+ *  publish or snapshot job is running) it is reloaded this often, on every tab,
+ *  so the header, Deploy, Publish and Settings notice when the run ends. */
 export const ENV_POLL_MS = 5000;
 
 type Tab = 'overview' | 'deployments' | 'publish' | 'backups' | 'settings';
@@ -68,9 +69,9 @@ function EnvironmentPage({ name }: { name: string }) {
   useEffect(() => { void load(); }, [load]);
   useEffect(() => () => { seq.current += 1; }, []);
   // One reload at a time: the next is scheduled only after the last settles.
-  const status = env?.status;
+  const busy = !!env && deploymentRunning(env);
   useEffect(() => {
-    if ((status !== 'deploying' && status !== 'deleting') || gone) return undefined;
+    if (!busy || gone) return undefined;
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const schedule = () => {
@@ -78,7 +79,7 @@ function EnvironmentPage({ name }: { name: string }) {
     };
     schedule();
     return () => { live = false; if (timer) clearTimeout(timer); };
-  }, [status, load, gone]);
+  }, [busy, load, gone]);
   useEffect(() => {
     let live = true;
     getDeployTargets().then((r) => { if (live) setTargets(r.targets); })
@@ -111,7 +112,7 @@ function EnvironmentPage({ name }: { name: string }) {
       </div>
     );
   }
-  const running = env.status === 'deploying' || env.status === 'deleting';
+  const running = deploymentRunning(env);
   return (
     <div className="portal-page">
       {crumb}

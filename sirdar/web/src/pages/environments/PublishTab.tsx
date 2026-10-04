@@ -14,7 +14,7 @@ import {
   type Deployment, type Environment, type PublishEntry, type PublishPlan,
 } from '../../lib/sirdarApi';
 
-import { CERT_STATE, PUBLISH_STATE, StatusChip } from './labels';
+import { CERT_STATE, PUBLISH_STATE, StatusChip, deploymentRunning } from './labels';
 
 const SWITCH: [boolean, string][] = [[true, 'On'], [false, 'Off']];
 
@@ -45,11 +45,12 @@ export default function PublishTab({ env, onStarted, onChanged }: {
       .then((p) => { if (n === seq.current) { setPlan(p); setError(''); } })
       .catch((e) => { if (n === seq.current) setError(deployErrorText(e, "Couldn't read what publishing would do.")); });
   }, [env.name]);
-  // A deployment that ends may have published: read again.
-  useEffect(() => { void load(); }, [load, env.status]);
+  // A publish job keeps the environment's status, so "running" also reads its
+  // latest deployment. A deployment that ends may have published: read again.
+  const running = deploymentRunning(env);
+  useEffect(() => { void load(); }, [load, env.status, running]);
   useEffect(() => () => { seq.current += 1; }, []);
 
-  const running = env.status === 'deploying' || env.status === 'deleting';
   const mayChange = can('deploy', 'change');
   const mayDeploy = can('deploy', 'add');
   const configured = !!plan && plan.cloudflare.configured && plan.npm.configured;

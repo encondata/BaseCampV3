@@ -21,7 +21,9 @@ vi.mock('./DeploymentView', () => ({ default: ({ id }: { id: string }) => <div>d
 import { ApiError } from '@portal/lib/api';
 
 import EnvironmentDetail, { ENV_POLL_MS } from './EnvironmentDetail';
-import { ADOPTED, BACKUPS, DEFAULTS, ENV, PUBLISH_PLAN, RUNNING, TARGETS, TEARDOWN, summary } from './testData';
+import {
+  ADOPTED, BACKUPS, DEFAULTS, ENV, PUBLISHED_ENV, PUBLISHING, PUBLISH_PLAN, RUNNING, TARGETS, TEARDOWN, summary,
+} from './testData';
 
 Element.prototype.scrollIntoView = () => {};
 beforeEach(() => {
@@ -182,6 +184,34 @@ describe('while the environment is deploying', () => {
     await waitFor(() => expect((screen.getByRole('button', { name: 'Deploy' }) as HTMLButtonElement).disabled).toBe(false));
     expect(screen.getByText('Ready')).toBeTruthy();
     await tick(ENV_POLL_MS * 4);                 // ready: polling stops
+    expect(api.getEnvironment).toHaveBeenCalledTimes(3);
+  });
+
+  it('a publish job keeps the status Ready, yet the page polls and locks Deploy, Claim and Delete until it ends', async () => {
+    const publishing = { ...PUBLISHED_ENV, last_deployment: summary(PUBLISHING) };
+    const done = { ...PUBLISHED_ENV, last_deployment: summary({ ...PUBLISHING, status: 'succeeded' }) };
+    api.getEnvironment.mockResolvedValueOnce(publishing).mockResolvedValueOnce(publishing).mockResolvedValue(done);
+    show();
+    const deploy = (await screen.findByRole('button', { name: 'Deploy' })) as HTMLButtonElement;
+    expect(screen.getByText('Ready')).toBeTruthy();
+    expect(deploy.disabled).toBe(true);
+    await userEvent.click(screen.getByRole('tab', { name: 'Publish' }));
+    await screen.findByRole('table', { name: 'Public names' });
+    expect((screen.getByRole('button', { name: 'Claim existing' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(api.getPublishPlan).toHaveBeenCalledTimes(1);
+    await tick(ENV_POLL_MS);
+    expect(api.getEnvironment).toHaveBeenCalledTimes(2);
+    await userEvent.click(screen.getByRole('tab', { name: 'Settings' }));
+    expect((screen.getByRole('button', { name: 'Delete environment…' }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole('tab', { name: 'Publish' }));
+    await screen.findByRole('table', { name: 'Public names' });
+    const plans = api.getPublishPlan.mock.calls.length;
+    await tick(ENV_POLL_MS);                     // the job ended
+    expect(api.getEnvironment).toHaveBeenCalledTimes(3);
+    await waitFor(() => expect(deploy.disabled).toBe(false));
+    expect((screen.getByRole('button', { name: 'Claim existing' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(api.getPublishPlan.mock.calls.length).toBe(plans + 1);   // the plan is read again
+    await tick(ENV_POLL_MS * 4);                 // polling stops
     expect(api.getEnvironment).toHaveBeenCalledTimes(3);
   });
 

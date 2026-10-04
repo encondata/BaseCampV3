@@ -14,7 +14,7 @@ import {
 } from '../../lib/sirdarApi';
 
 import DeleteEnvironmentModal from './DeleteEnvironmentModal';
-import { sshTargets, targetLabel } from './labels';
+import { deploymentRunning, sshTargets, targetLabel } from './labels';
 
 const SECRET_LABELS: Record<string, string> = {
   SS_ANTHROPIC_API_KEY: 'Anthropic API key', SS_DB_TESTING_PASSWORD: 'Database testing password',
@@ -61,7 +61,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
 }) {
   const { can } = useAuth();
   const locked = !can('deploy', 'change');
-  const deploying = env.status === 'deploying' || env.status === 'deleting';
+  const deploying = deploymentRunning(env);
   const [deleting, setDeleting] = useState(false);
   const off = locked || deploying;
   const [form, setForm] = useState<Form>(() => fromEnv(env));

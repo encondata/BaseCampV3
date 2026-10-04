@@ -2,9 +2,9 @@ import { expect, it } from 'vitest';
 
 import {
   CERT_STATE, DEPLOYMENT_STATUS, ENV_STATUS, GATED_MODES, MODE_LABEL, PUBLISH_STATE, RETRY_MODES, STEP_STATUS,
-  dumpTakenAt, duration, formatBytes, snapshotLabel, sshTargets, stoppedStep,
+  deploymentRunning, dumpTakenAt, duration, formatBytes, snapshotLabel, sshTargets, stoppedStep,
 } from './labels';
-import { FAILED, RUNNING, SNAP, SUCCEEDED, TARGETS } from './testData';
+import { ENV, FAILED, PUBLISHING, RUNNING, SNAP, SUCCEEDED, TARGETS, summary } from './testData';
 
 it('stoppedStep mirrors the API: the failed/cancelled/interrupted step, else the first not run', () => {
   expect(stoppedStep(FAILED.steps)).toBe(5);
@@ -61,4 +61,13 @@ it('labels the publish and delete modes, the deleting status and the publish sta
   expect(PUBLISH_STATE.claimable).toEqual(['c-amber', "Not Sirdar's"]);
   expect(PUBLISH_STATE.conflict).toEqual(['c-red', 'Blocked']);
   expect(CERT_STATE.create).toEqual(['tag', 'Will request']);
+});
+
+it('deploymentRunning: deploying, deleting, or a latest deployment still running (a publish job)', () => {
+  expect(deploymentRunning(ENV)).toBe(false);
+  expect(deploymentRunning({ ...ENV, status: 'deploying' })).toBe(true);
+  expect(deploymentRunning({ ...ENV, status: 'deleting' })).toBe(true);
+  expect(deploymentRunning({ ...ENV, last_deployment: summary(PUBLISHING) })).toBe(true);
+  expect(deploymentRunning({ ...ENV, last_deployment: summary({ ...PUBLISHING, status: 'succeeded' }) })).toBe(false);
+  expect(deploymentRunning({ ...ENV, last_deployment: null })).toBe(false);
 });
