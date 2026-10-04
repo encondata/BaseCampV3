@@ -222,7 +222,7 @@ const MESSAGES: Record<string, string> = {
   integration_unreadable: "The stored credentials don't open with this Sirdar's SIRDAR_SECRETS_KEY. Enter them again.",
   nothing_to_claim: "There's nothing to claim.",
   claim_conflict: 'Someone else claimed that entry first. Reload the Publish tab.',
-  publish_off: 'Publishing is off for this environment.',
+  publish_off: 'Publishing is off for this environment. Turn it on from the Publish tab, or retry from an earlier step.',
   publish_not_allowed: "Adopted environments start with publishing off; turn it on from the environment's Publish tab.",
 };
 

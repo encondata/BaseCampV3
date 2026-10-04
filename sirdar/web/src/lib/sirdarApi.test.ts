@@ -162,7 +162,9 @@ it('the publishing codes read as the controller addendum words them', () => {
   expect(text('nothing_to_claim')).toBe("There's nothing to claim.");
   expect(text('publish_not_allowed'))
     .toBe("Adopted environments start with publishing off; turn it on from the environment's Publish tab.");
-  expect(text('publish_off')).toBe('Publishing is off for this environment.');
+  expect(text('publish_off')).toBe(
+    'Publishing is off for this environment. Turn it on from the Publish tab, or retry from an earlier step.',
+  );
 });
 
 it('secret_required shows the reason the API gives', () => {

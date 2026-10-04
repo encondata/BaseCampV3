@@ -488,3 +488,16 @@ async def test_a_replaced_certificate_that_no_longer_matches_stays(db, env, publ
     assert new != theirs and theirs in proxy.certs
     assert f"api.uat2.serversherpa.com: Certificate #{theirs} {LEFT}" in lines
     assert not any("deleted the old certificate" in line for line in lines)
+
+
+async def test_unproxy_leaves_a_multi_name_certificate_at_the_recorded_id(db, env,
+                                                                          publish_fakes):
+    """Sirdar only requests single-name certificates: one that also names
+    something else isn't the one it made, even when it names the host."""
+    proxy = publish_fakes.npm
+    shared = proxy.add_cert(["api.uat2.serversherpa.com", "shop.example.com"])
+    await managed(db, env, "api", CERT, shared)
+    lines = await _run(db, env, "unproxy")
+    assert shared in proxy.certs
+    assert f"api.uat2.serversherpa.com: Certificate #{shared} {LEFT}" in lines
+    assert await _rows(db) == []

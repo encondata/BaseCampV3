@@ -533,12 +533,13 @@ def still_sirdars_record(found: DnsRecord, name: str) -> bool:
 
 
 def still_sirdars_host(found: ProxyHost, name: str) -> bool:
-    return found.domain_names == (name,)
+    return found.domain_names == (name.lower(),)
 
 
 def still_sirdars_certificate(found: Certificate, name: str) -> bool:
-    """Sirdar only requests Let's Encrypt certificates for exactly one name."""
-    return found.provider == "letsencrypt" and name in found.domain_names
+    """Sirdar only requests Let's Encrypt certificates for exactly one name
+    (domain_names are lower-cased when read)."""
+    return found.provider == "letsencrypt" and found.domain_names == (name.lower(),)
 
 
 # DNS
