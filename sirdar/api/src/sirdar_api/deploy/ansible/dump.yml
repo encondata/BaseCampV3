@@ -1,6 +1,7 @@
-# Step 6 — Pre-deploy dump (Update only). Skipped when the environment's
-# database isn't running and Sirdar says the dump isn't required (a first
-# deploy has nothing to dump). An environment that has deployed before
+# Step 6 — Pre-deploy dump (Update, including a seeded first deploy, which
+# backs up a database already on the host before the restore drops it).
+# Skipped when the environment's database isn't running and Sirdar says the
+# dump isn't required (a first deploy usually has nothing to dump). An environment that has deployed before
 # (dump_required) fails here instead: "up" would migrate with no backup.
 # Reports the dump's path to Sirdar through set_stats.
 - name: Pre-deploy dump

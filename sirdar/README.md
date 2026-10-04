@@ -233,8 +233,8 @@ every run pins it. Code comes from `SIRDAR_DEPLOY_REPO_URL` (default
 commit through `git ls-remote` on the target.
 
 **Steps.** 1 Preflight · 2 Bootstrap · 3 Fetch code · 4 Render config ·
-5 Build images · 6 Pre-deploy dump (Update) · 7 Reset data (Reset) ·
-8 Start data services · 9 Restore snapshot or Restore backup ·
+5 Build images · 6 Pre-deploy dump (Update, a seeded first deploy too) ·
+7 Reset data (Reset) · 8 Start data services · 9 Restore snapshot or Restore backup ·
 10 Start services (migrate, then the app) · 11 Take snapshot (a job of its
 own). The first failure stops the deployment; retry re-runs from the failed
 step. One deployment per environment at a time. Reset, Restore backup and

@@ -42,8 +42,10 @@ _BUILD = ("preflight", "bootstrap", "fetch", "render", "build")
 # (mode, restores a snapshot) -> step keys, in order.
 _PLANS: dict[tuple[str, bool], tuple[str, ...]] = {
     ("update", False): (*_BUILD, "dump", "up"),
-    # the first deploy of an environment created from a snapshot
-    ("update", True): (*_BUILD, "data", "restore", "up"),
+    # the first deploy of an environment created from a snapshot; the dump
+    # backs up a database already on the host (not required: usually none)
+    # before ss-stack restore drops it
+    ("update", True): (*_BUILD, "dump", "data", "restore", "up"),
     ("reset", False): (*_BUILD, "reset", "up"),
     ("reset", True): (*_BUILD, "reset", "data", "restore", "up"),
     # The deployed commit (current_sha) again, rendered with Sirdar's stored

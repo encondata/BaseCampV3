@@ -129,8 +129,26 @@ async def test_first_deploy_of_a_seeded_environment_restores(db, env, fake_runne
     env.current_sha = None
     await db.commit()
     dep, _, _ = await _load(await _run(db, env, mode="update", snapshot_id=snap.id))
-    assert fake_runner.steps() == [*BUILD, "data", "restore", "up"]
+    assert fake_runner.steps() == [*BUILD, "dump", "data", "restore", "up"]
     assert dep.status == "succeeded"
+    # Whatever database is already there (Create chosen over Adopt on a host
+    # that runs the environment) is backed up before ss-stack restore drops
+    # it; an empty host has none, so the dump isn't required.
+    dump = next(r for r in fake_runner.requests if r.step == "dump")
+    assert dump.extravars["dump_required"] is False
+
+
+async def test_a_seeded_first_deploy_keeps_the_dump_it_took(db, env, fake_runner, tmp_path):
+    snap = await _ready_snapshot(db, tmp_path)
+    env.current_sha = None
+    await db.commit()
+    fake_runner.results["dump"] = RunResult(
+        status="successful", rc=0,
+        data={"dump_path": "/opt/serversherpa/uat/backups/20261004T010203Z.dump"})
+    dep, steps, _ = await _load(await _run(db, env, mode="update", snapshot_id=snap.id))
+    assert [s.number for s in steps] == [1, 2, 3, 4, 5, 6, 8, 9, 10]
+    assert (dep.status, dep.dump_path) == (
+        "succeeded", "/opt/serversherpa/uat/backups/20261004T010203Z.dump")
 
 
 async def test_a_deleted_snapshot_fails_step_one(db, env, fake_runner, tmp_path):

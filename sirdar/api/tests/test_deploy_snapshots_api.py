@@ -220,7 +220,7 @@ async def test_create_from_a_snapshot_restores_on_the_first_deploy(
 
     url = "/api/deploy/environments/uat2/deployments"
     first = (await client.post(url, headers=h, json={})).json()
-    assert [s["key"] for s in first["steps"]] == [*BUILD, "data", "restore", "up"]
+    assert [s["key"] for s in first["steps"]] == [*BUILD, "dump", "data", "restore", "up"]
     assert first["snapshot"]["name"] == "dev-2026-10-04"
     await _finish(first)
     second = (await client.post(url, headers=h, json={})).json()

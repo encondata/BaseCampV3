@@ -40,7 +40,10 @@ def test_plans():
     assert [s.number for s in steps.STEPS] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11]
     assert [s.number for s in steps.plan_for("update")] == [1, 2, 3, 4, 5, 6, 10]
     build = ["preflight", "bootstrap", "fetch", "render", "build"]
-    assert _keys("update", True) == [*build, "data", "restore", "up"]
+    # a seeded first deploy backs up whatever database is already there
+    assert _keys("update", True) == [*build, "dump", "data", "restore", "up"]
+    assert [s.number for s in steps.plan_for("update", restore=True)] == [
+        1, 2, 3, 4, 5, 6, 8, 9, 10]
     assert _keys("reset") == [*build, "reset", "up"]
     assert _keys("reset", True) == [*build, "reset", "data", "restore", "up"]
     # Restore backup runs the deployed commit with Sirdar's stored keys, like Roll back
