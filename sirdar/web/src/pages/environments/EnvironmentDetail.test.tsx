@@ -266,3 +266,9 @@ it('a view-only reader has no Delete environment button', async () => {
   await userEvent.click(await screen.findByRole('tab', { name: 'Settings' }));
   expect(screen.queryByRole('button', { name: 'Delete environment…' })).toBeNull();
 });
+
+it('the Overview says who keeps the public names', async () => {
+  api.getEnvironment.mockResolvedValue({ ...ENV, publish: true });
+  show();
+  expect(await screen.findByText(/Sirdar keeps their DNS records and proxy hosts up to date/)).toBeTruthy();
+});

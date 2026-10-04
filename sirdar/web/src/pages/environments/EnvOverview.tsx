@@ -54,7 +54,10 @@ export default function EnvOverview({ env }: { env: Environment }) {
           }))}
         />
         <p className="page-hint">
-          Public URLs answer once their DNS records and proxy hosts exist. Mailpit catches this environment's email on the LAN.
+          {env.publish
+            ? 'Sirdar keeps their DNS records and proxy hosts up to date on every deploy (Publish tab). '
+            : 'Public URLs answer once their DNS records and proxy hosts exist: set up by hand, or turn Publish on. '}
+          Mailpit catches this environment's email on the LAN.
         </p>
       </section>
     </>
