@@ -1,4 +1,4 @@
-"""Sirdar's own tables (migrations 0001–0005). `users` mirrors the portal's
+"""Sirdar's own tables (migrations 0001–0006). `users` mirrors the portal's
 user_accounts + people for the people it copies; Sirdar-only data
 (overrides, sessions, audit, lockout counters) never comes from the portal."""
 
@@ -202,6 +202,8 @@ class Environment(Base):
     # The snapshot the first deploy restores (migration 0005); kept afterwards.
     seed_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("snapshots.id", ondelete="SET NULL"))
+    # Deploys add steps 12–14 (DNS, proxy, smoke test) when on (migration 0006).
+    publish: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     created_by: Mapped[uuid.UUID | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
@@ -238,7 +240,7 @@ class Deployment(Base):
         primary_key=True, server_default=text("gen_random_uuid()"))
     environment_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("environments.id", ondelete="CASCADE"))
-    # update | reset | adopt | snapshot | restore_dump | rollback
+    # update | reset | adopt | snapshot | restore_dump | rollback | publish | teardown
     mode: Mapped[str]
     git_ref: Mapped[str]
     sha: Mapped[str]
@@ -254,6 +256,8 @@ class Deployment(Base):
         ForeignKey("snapshots.id", ondelete="SET NULL"))
     # restore_dump / rollback: the backup's file name in <env-dir>/backups.
     restore_dump: Mapped[str | None]
+    # Whether its plan has steps 12–14 (migration 0006): retries keep it.
+    publish: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     previous_sha: Mapped[str | None]
     error: Mapped[str | None]
     actor_id: Mapped[uuid.UUID | None]
@@ -301,3 +305,38 @@ class Snapshot(Base):
     source_created_at: Mapped[datetime | None]
     created_by: Mapped[uuid.UUID | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class Integration(Base):
+    """Credentials Sirdar publishes with (migration 0006): `config` holds the
+    non-secret settings, `secret_enc` the token or password (Fernet,
+    SIRDAR_SECRETS_KEY). Never returned; see deploy/integrations.py."""
+
+    __tablename__ = "integrations"
+
+    kind: Mapped[str] = mapped_column(primary_key=True)        # cloudflare | npm
+    config: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
+    secret_enc: Mapped[bytes | None] = mapped_column(BYTEA)
+    updated_by: Mapped[uuid.UUID | None]
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class ManagedRecord(Base):
+    """A Cloudflare record, NPM proxy host or NPM certificate Sirdar manages
+    for one environment's service (migration 0006). origin "created": Sirdar
+    made it and Delete environment removes it; "claimed": it existed before,
+    Sirdar keeps it up to date and never deletes it."""
+
+    __tablename__ = "managed_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    environment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("environments.id", ondelete="CASCADE"))
+    service: Mapped[str]
+    kind: Mapped[str]                              # dns_record | proxy_host | certificate
+    external_id: Mapped[str]
+    name: Mapped[str]                              # the hostname it serves
+    origin: Mapped[str]                            # created | claimed
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
