@@ -277,7 +277,8 @@ can start from a snapshot (its first deploy restores it) and Reset data can
 restore one. Restoring replaces the environment's pepper and TOTP key with
 the snapshot's, so its users sign in with their own passwords and 2FA, and
 signs everyone out. A snapshot whose database is at a newer migration than
-the commit being deployed is refused. Uploads are capped at
+the commit being deployed is refused, by a Reset before Reset data deletes
+anything. Uploads are capped at
 `SIRDAR_SNAPSHOT_MAX_BYTES` (default 5 GiB); a reverse proxy in front must
 accept bodies that large too.
 

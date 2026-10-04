@@ -84,6 +84,9 @@ async def test_reset_with_a_snapshot_restores_it_and_keeps_its_keys(db, env, fak
     assert values["SS_TOTP_ENCRYPTION_KEY"] == SNAP_KEYS["SS_TOTP_ENCRYPTION_KEY"]
     assert values["POSTGRES_PASSWORD"] == ENV_SECRETS["POSTGRES_PASSWORD"]
     restore = next(r for r in fake_runner.requests if r.step == "restore")
+    # Reset data checks the snapshot's revision before it wipes anything.
+    reset = next(r for r in fake_runner.requests if r.step == "reset")
+    assert reset.extravars["snapshot_revision"] == "0089"
     assert restore.extravars["bundle_path"] == str(snapshots.bundle_path(get_settings(), snap))
     assert restore.extravars["bundle_tool"] == snapshots.BUNDLE_TOOL
     assert restore.extravars["snapshot_revision"] == "0089"
@@ -92,6 +95,25 @@ async def test_reset_with_a_snapshot_restores_it_and_keeps_its_keys(db, env, fak
     for key, value in SNAP_KEYS.items():
         assert await _secret(db, env.id, key) == value
     assert await _secret(db, env.id, "SS_JWT_SECRET") == ENV_SECRETS["SS_JWT_SECRET"]
+
+
+async def test_a_plain_reset_has_no_revision_check(db, env, fake_runner):
+    dep, _, _ = await _load(await _run(db, env, mode="reset"))
+    assert dep.status == "succeeded"
+    reset = next(r for r in fake_runner.requests if r.step == "reset")
+    assert "snapshot_revision" not in reset.extravars
+
+
+async def test_a_too_new_snapshot_stops_the_reset_before_the_wipe(db, env, fake_runner,
+                                                                  tmp_path):
+    """reset.yml refuses it (its playbook test): the deployment fails at 7 and
+    no later step runs."""
+    snap = await _ready_snapshot(db, tmp_path)
+    fake_runner.results["reset"] = RunResult(status="failed", rc=2)
+    dep, steps, e = await _load(await _run(db, env, mode="reset", snapshot_id=snap.id))
+    assert (dep.status, dep.failed_step, e.status) == ("failed", 7, "failed")
+    assert fake_runner.steps() == [*BUILD, "reset"]
+    assert await _secret(db, env.id, "SS_PASSWORD_PEPPER") == ENV_SECRETS["SS_PASSWORD_PEPPER"]
 
 
 async def test_a_failed_restore_keeps_the_old_keys(db, env, fake_runner, tmp_path):

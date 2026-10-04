@@ -277,6 +277,41 @@ def test_restore_playbook_refuses_a_newer_snapshot(tmp_path):
     assert calls == []
 
 
+@pytest.mark.parametrize("revision, head, wiped", [
+    (None, 88, True),             # a plain Reset: no snapshot, no check
+    ("0089", 89, True),
+    ("0089", 88, False),          # too new: refused before anything is deleted
+])
+def test_reset_playbook_checks_the_snapshot_before_wiping(tmp_path, revision, head, wiped):
+    env_dir, env = _target(tmp_path, head=head)
+    extra = _common(env_dir)
+    if revision is not None:
+        extra["snapshot_revision"] = revision
+    result, calls = _play(tmp_path, "reset.yml", extra, env)
+    out = result.stdout + result.stderr
+    assert (result.returncode == 0) is wiped, out
+    downs = [c for c in calls if c.startswith("compose") and c.endswith(" down --volumes")]
+    assert bool(downs) is wiped, calls
+    if not wiped:
+        assert calls == []
+        assert ("at migration 0089, newer than this commit's newest migration (88)"
+                in result.stdout)
+
+
+def test_reset_and_restore_share_the_revision_check():
+    """The same three tasks: Reset runs them early (before the wipe), only
+    when it restores a snapshot; Restore snapshot keeps them for a seeded
+    first deploy, which has no Reset."""
+    _, reset = _tasks("reset.yml")
+    _, restore = _tasks("restore.yml")
+    early = [t for t in reset if "ss-stack" not in t["name"]]
+    assert [{k: v for k, v in t.items() if k != "when"} for t in early] == [
+        {k: v for k, v in t.items() if k != "when"} for t in restore[:3]]
+    for task in early:
+        when = task["when"] if isinstance(task["when"], list) else [task["when"]]
+        assert "snapshot_revision is defined" in when, task["name"]
+
+
 def test_restore_playbook_stops_on_a_damaged_bundle_and_cleans_up(tmp_path):
     env_dir, env = _target(tmp_path)
     bad = tmp_path / "bad.tar.gz"

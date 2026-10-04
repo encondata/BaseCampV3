@@ -506,6 +506,8 @@ async def _snapshot_vars(db: AsyncSession, env: Environment, dep: Deployment,
                 "bundle_tool": snapshots.BUNDLE_TOOL,
                 "snapshot_revision": snap.alembic_revision,
                 "api_image": f"serversherpa-api:{envfile.image_tag(dep.sha)}"}
+            # Reset data refuses a too-new snapshot before it wipes anything.
+            step_vars["reset"] = {"snapshot_revision": snap.alembic_revision}
         if dep.mode == "snapshot":
             if snap is None or snap.status != "pending":
                 raise PrepareError("This snapshot job's record is gone. Take the snapshot "
