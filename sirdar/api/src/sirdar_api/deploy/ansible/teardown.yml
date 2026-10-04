@@ -7,15 +7,20 @@
 - name: Remove environment
   hosts: target
   gather_facts: false
-  vars:
-    root: "{{ env_root | default('/opt/serversherpa') }}"
   tasks:
+    # The guard holds inside this playbook alone: the root is a literal, not
+    # a var an extravar could replace. SIRDAR_TEST_TEARDOWN_ROOT is read on
+    # the controller for the local tests only; the runner's job env is an
+    # allowlist that never carries it.
     - name: Only an environment's own folder
       ansible.builtin.assert:
         that:
-          - env_name is match('^[a-z][a-z0-9-]{1,31}$')
-          - env_dir == root ~ '/' ~ env_name
-        fail_msg: "Refusing to remove {{ env_dir }}: it isn't {{ root }}/{{ env_name }}."
+          - env_name is match('^[a-z][a-z0-9-]{1,31}(?<!-)\Z')
+          - env_dir == (lookup('env', 'SIRDAR_TEST_TEARDOWN_ROOT') or '/opt/serversherpa') ~ '/' ~ env_name
+          - ss_stack == env_dir ~ '/repo/deploy/stack/ss-stack'
+        fail_msg: >-
+          Refusing to remove {{ env_dir }}: it isn't
+          {{ lookup('env', 'SIRDAR_TEST_TEARDOWN_ROOT') or '/opt/serversherpa' }}/{{ env_name }}.
         quiet: true
 
     - name: Look for the environment's .env
