@@ -160,6 +160,8 @@ async def _inventory(settings: Settings, refresh: bool, transport=None) -> dict:
 def _env_state(env: Environment) -> str:
     if env.status in ("deploying", "failed"):
         return env.status
+    if env.status == "deleting":
+        return "deploying"
     return "active" if env.current_sha else "empty"
 
 

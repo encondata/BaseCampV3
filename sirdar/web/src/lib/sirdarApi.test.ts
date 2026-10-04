@@ -51,6 +51,25 @@ const CALLS: { name: string; call: () => Promise<unknown>; path: string; method?
     call: () => sirdar.startDeployment('uat', { mode: 'restore_dump', backup: 'x.dump', confirm_name: 'uat' }),
     path: '/deploy/environments/uat/deployments', method: 'POST',
     body: { mode: 'restore_dump', backup: 'x.dump', confirm_name: 'uat' } },
+  { name: 'getIntegrations', call: () => sirdar.getIntegrations(), path: '/deploy/integrations' },
+  { name: 'saveIntegration', call: () => sirdar.saveIntegration('cloudflare',
+      { zone: 'serversherpa.com', public_ip: '203.0.113.7', token: 't' }),
+    path: '/deploy/integrations/cloudflare', method: 'PUT',
+    body: { zone: 'serversherpa.com', public_ip: '203.0.113.7', token: 't' } },
+  { name: 'removeIntegration', call: () => sirdar.removeIntegration('npm'), path: '/deploy/integrations/npm',
+    method: 'DELETE' },
+  { name: 'testIntegration (saved)', call: () => sirdar.testIntegration('npm'),
+    path: '/deploy/integrations/npm/test', method: 'POST' },
+  { name: 'testIntegration (unsaved)', call: () => sirdar.testIntegration('npm',
+      { url: 'http://10.10.48.6:81', identity: 'a@b.co' }),
+    path: '/deploy/integrations/npm/test', method: 'POST', body: { url: 'http://10.10.48.6:81', identity: 'a@b.co' } },
+  { name: 'getPublishPlan', call: () => sirdar.getPublishPlan('uat'), path: '/deploy/environments/uat/publish' },
+  { name: 'claimPublish', call: () => sirdar.claimPublish('uat'), path: '/deploy/environments/uat/publish/claim',
+    method: 'POST' },
+  { name: 'startDeployment (publish)', call: () => sirdar.startDeployment('uat', { mode: 'publish' }),
+    path: '/deploy/environments/uat/deployments', method: 'POST', body: { mode: 'publish' } },
+  { name: 'startDeployment (delete)', call: () => sirdar.startDeployment('uat', { mode: 'teardown', confirm_name: 'uat' }),
+    path: '/deploy/environments/uat/deployments', method: 'POST', body: { mode: 'teardown', confirm_name: 'uat' } },
 ];
 
 it.each(CALLS)('$name calls $path', async ({ call, path, method, body }) => {
@@ -66,10 +85,11 @@ function deployCodes(): string[] {
   // jsdom replaces the global URL, so resolve from the file's path as a string.
   const root = join(dirname(fileURLToPath(import.meta.url)), '../../../api/src/sirdar_api');
   const found = new Set<string>(['sudo_password_too_long']);
-  for (const file of ['api/routes/deploy.py', 'deploy/environments.py', 'deploy/gitref.py',
-                       'deploy/ssh_targets.py', 'deploy/snapshots.py']) {
+  for (const file of ['api/routes/deploy.py', 'api/routes/integrations.py', 'deploy/environments.py',
+                       'deploy/gitref.py', 'deploy/ssh_targets.py', 'deploy/snapshots.py', 'deploy/integrations.py']) {
     const src = readFileSync(join(root, file), 'utf8');
-    for (const re of [/"code": "([a-z_]+)"/g, /(?:EnvError|RefError|TargetError|SnapshotError)\("([a-z_]+)"/g,
+    for (const re of [/"code": "([a-z_]+)"/g,
+                      /(?:EnvError|RefError|TargetError|SnapshotError|IntegrationError)\("([a-z_]+)"/g,
                       /"([a-z]+_too_long)"/g, /_check_ipv4\([^()]*,\s*"([a-z]+_[a-z_]+)"\)/g]) {
       for (const m of src.matchAll(re)) found.add(m[1]);
     }
@@ -85,6 +105,10 @@ it('every error code the deploy routes can return has its own message', () => {
   expect(codes).toContain('ref_lookup_failed');
   expect(codes).toContain('snapshot_in_use');
   expect(codes).toContain('rollback_not_latest');
+  for (const code of ['integration_not_configured', 'publish_off', 'nothing_to_claim', 'claim_conflict',
+                      'token_invalid', 'npm_url_invalid', 'secret_required', 'publish_not_allowed']) {
+    expect(codes).toContain(code);
+  }
   const missing = codes.filter((c) => sirdar.errorText(new ApiError(400, c), '__none__') === '__none__');
   expect(missing).toEqual([]);
 });
@@ -121,4 +145,30 @@ it('a bundle problem shows its reason', () => {
   expect(sirdar.deployErrorText(new ApiError(422, 'bundle_invalid', {
     code: 'bundle_invalid', reason: "db.dump doesn't match its checksum in the manifest." }), 'x'))
     .toBe("db.dump doesn't match its checksum in the manifest.");
+});
+
+it('deployErrorText names the integrations a publish still needs', () => {
+  const err = new ApiError(409, 'integration_not_configured',
+    { code: 'integration_not_configured', kinds: ['cloudflare', 'npm'] });
+  expect(sirdar.deployErrorText(err, 'x'))
+    .toBe('Set up Cloudflare and Nginx Proxy Manager in Settings › Integrations first.');
+  const one = new ApiError(409, 'integration_not_configured', { code: 'integration_not_configured', kinds: ['npm'] });
+  expect(sirdar.deployErrorText(one, 'x')).toBe('Set up Nginx Proxy Manager in Settings › Integrations first.');
+});
+
+it('the publishing codes read as the controller addendum words them', () => {
+  const text = (code: string) => sirdar.errorText(new ApiError(409, code, { code }), 'x');
+  expect(text('claim_conflict')).toBe('Someone else claimed that entry first. Reload the Publish tab.');
+  expect(text('nothing_to_claim')).toBe("There's nothing to claim.");
+  expect(text('publish_not_allowed'))
+    .toBe("Adopted environments start with publishing off; turn it on from the environment's Publish tab.");
+  expect(text('publish_off')).toBe(
+    'Publishing is off for this environment. Turn it on from the Publish tab, or retry from an earlier step.',
+  );
+});
+
+it('secret_required shows the reason the API gives', () => {
+  const err = new ApiError(422, 'secret_required',
+    { code: 'secret_required', reason: 'Enter the token again: the zone changed.' });
+  expect(sirdar.deployErrorText(err, 'x')).toBe('Enter the token again: the zone changed.');
 });

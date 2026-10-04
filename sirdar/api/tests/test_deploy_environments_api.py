@@ -24,7 +24,7 @@ URL = "/api/deploy/environments"
 ENV_KEYS = {"id", "name", "type", "target", "base_domain", "env_dir", "git_ref", "current_sha",
             "image_tag", "status", "proxy_ip", "bind_ip", "keep_dumps", "spaces_bucket",
             "log_level", "services", "secrets_set", "seed_snapshot", "last_deployment",
-            "created_at", "updated_at"}
+            "created_at", "updated_at", "publish", "managed_records"}
 NEW = {"mode": "new", "name": "qa", "type": "custom", "target": "ssh",
        "proxy_ip": "10.10.48.6"}
 DEFAULTS_URL = "/api/deploy/environment-defaults"
@@ -89,7 +89,7 @@ async def test_create_new_environment(client, db, target, leak_guard):
                                    "SS_DB_TESTING_PASSWORD": False}
     assert await _audits(db, "deploy.environment_create") == [{
         "name": "qa", "type": "custom", "target": "ssh", "base_domain": "qa.serversherpa.com",
-        "git_ref": "main", "proxy_ip": "10.10.48.6", "bind_ip": "0.0.0.0"}]
+        "git_ref": "main", "proxy_ip": "10.10.48.6", "bind_ip": "0.0.0.0", "publish": True}]
     assert (await client.get(f"{URL}/qa", headers=h)).json() == body
     listed = (await client.get(URL, headers=h)).json()["environments"]
     assert [e["name"] for e in listed] == ["qa"]
@@ -267,3 +267,18 @@ async def test_create_name_race(client, db, target, leak_guard, monkeypatch):
     assert (resp.status_code, resp.json()) == (409, {"detail": {"code": "environment_exists"}})
     assert [e["name"] for e in (await client.get(URL, headers=h)).json()["environments"]] == [
         "qa"]
+
+
+async def test_publish_flag_on_create_adopt_and_patch(client, db, target, leak_guard):
+    h = await auth_headers(client, db)
+    made = (await client.post(URL, headers=h, json=NEW)).json()
+    assert (made["publish"], made["managed_records"]) == (True, [])
+    off = (await client.post(URL, headers=h, json={**NEW, "name": "qa2", "publish": False}))
+    assert off.json()["publish"] is False
+    resp = await client.post(URL, headers=h, json={"mode": "adopt", "name": "uat", "type": "dev",
+                                                   "target": "ssh", "publish": True})
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (422, "publish_not_allowed")
+    resp = await client.patch(f"{URL}/qa2", headers=h, json={"publish": True})
+    assert resp.json()["publish"] is True
+    assert (await _audits(db, "deploy.environment_update"))[-1] == {"changed": ["publish"]}
+    assert [c["publish"] for c in await _audits(db, "deploy.environment_create")] == [True, False]

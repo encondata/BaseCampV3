@@ -1,10 +1,15 @@
 import { useEffect, useState } from 'react';
 
+import { useAuth } from '@portal/auth/AuthContext';
+
 import { errorText, getSettings, type SirdarSettings } from '../lib/sirdarApi';
+
+import IntegrationsSection from './settings/IntegrationsSection';
 
 const minutes = (s: number) => `${Math.round(s / 60)} min`;
 
 export default function Settings() {
+  const { can } = useAuth();
   const [s, setS] = useState<SirdarSettings | null>(null);
   const [error, setError] = useState('');
   useEffect(() => { getSettings().then(setS).catch((e) => setError(errorText(e, "Couldn't load settings."))); }, []);
@@ -13,7 +18,7 @@ export default function Settings() {
       <div className="eyebrow">System</div>
       <div className="dir-head">
         <h1>Settings</h1>
-        <p>How this Sirdar is configured. These come from the server's environment.</p>
+        <p>How this Sirdar is configured. The values below come from the server's environment.</p>
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
       {s && (
@@ -25,6 +30,7 @@ export default function Settings() {
           <span>Lockout</span><span>{s.max_failed_logins} failures → {minutes(s.lockout_seconds)}</span>
         </div>
       )}
+      {can('deploy', 'view') && <IntegrationsSection />}
     </div>
   );
 }

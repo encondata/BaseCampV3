@@ -1,12 +1,19 @@
 /** Labels, status chips and small helpers shared by the environment pages. */
-import type { DeployTarget, DeploymentStep, Snapshot } from '../../lib/sirdarApi';
+import type { DeployTarget, DeploymentStep, Environment, Snapshot } from '../../lib/sirdarApi';
 
 /** status → [chip class, label] */
 type ChipMap = Record<string, [string, string]>;
 
 export const ENV_STATUS: ChipMap = {
   new: ['tag', 'New'], ready: ['c-green', 'Ready'], deploying: ['c-blue', 'Deploying'], failed: ['c-red', 'Failed'],
+  deleting: ['c-amber', 'Deleting'],
 };
+/** A deployment is running: the environment is deploying or deleting, or its
+ *  latest deployment is still running (a publish or snapshot job leaves the
+ *  environment's status as it was). The API refuses changes meanwhile. */
+export const deploymentRunning = (env: Environment) =>
+  env.status === 'deploying' || env.status === 'deleting' || env.last_deployment?.status === 'running';
+
 export const DEPLOYMENT_STATUS: ChipMap = {
   running: ['c-blue', 'Running'], succeeded: ['c-green', 'Succeeded'], failed: ['c-red', 'Failed'],
   cancelled: ['c-amber', 'Canceled'], interrupted: ['c-amber', 'Interrupted'], adopted: ['tag', 'Adopted'],
@@ -19,7 +26,15 @@ export const STEP_STATUS: ChipMap = {
 export const TYPE_LABEL: Record<string, string> = { dev: 'Dev', beta: 'Beta', custom: 'Custom' };
 export const MODE_LABEL: Record<string, string> = {
   update: 'Update', reset: 'Reset data', adopt: 'Adopt', snapshot: 'Take snapshot',
-  restore_dump: 'Restore backup', rollback: 'Roll back',
+  restore_dump: 'Restore backup', rollback: 'Roll back', publish: 'Publish', teardown: 'Delete environment',
+};
+/** A Publish tab entry's state (the API's PublishPlan). */
+export const PUBLISH_STATE: ChipMap = {
+  ok: ['c-green', 'Up to date'], update: ['c-blue', 'Will update'], create: ['tag', 'Will create'],
+  claimable: ['c-amber', "Not Sirdar's"], conflict: ['c-red', 'Blocked'], unknown: ['tag', 'Unknown'],
+};
+export const CERT_STATE: ChipMap = {
+  ok: ['c-green', 'Valid'], update: ['c-blue', 'Will update'], create: ['tag', 'Will request'], unknown: ['tag', 'Unknown'],
 };
 export const SNAPSHOT_STATUS: ChipMap = {
   pending: ['c-blue', 'Taking'], ready: ['c-green', 'Ready'], failed: ['c-red', 'Failed'],
@@ -28,8 +43,8 @@ export const SNAPSHOT_STATUS: ChipMap = {
 export const RETRYABLE = ['failed', 'cancelled', 'interrupted'];
 /** Modes that replace data: they need deploy:change and the environment's name typed back
  *  (the API's GATED_MODES). A snapshot job is never retried. */
-export const GATED_MODES = ['reset', 'restore_dump', 'rollback'];
-export const RETRY_MODES = ['update', 'reset', 'restore_dump', 'rollback'];
+export const GATED_MODES = ['reset', 'restore_dump', 'rollback', 'teardown'];
+export const RETRY_MODES = ['update', 'reset', 'restore_dump', 'rollback', 'publish', 'teardown'];
 
 /** 1,536 → "1.5 KB"; null → "—". Binary steps, as the file sizes people see. */
 export function formatBytes(n: number | null | undefined): string {

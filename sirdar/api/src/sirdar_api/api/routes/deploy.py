@@ -26,6 +26,7 @@ from sirdar_api.deploy import (
     known_hosts,
     names,
     pipeline,
+    publish,
     serialize,
     snapshots,
     ssh,
@@ -356,6 +357,8 @@ class EnvironmentIn(BaseModel):
     ports: dict[str, int] = Field(default_factory=dict)
     # mode "new" only: the first deploy restores this snapshot
     snapshot_id: uuid.UUID | None = None
+    # mode "new" only (default on): deploys publish DNS records and proxy hosts
+    publish: bool | None = None
 
 
 class ServicePatch(BaseModel):
@@ -374,6 +377,7 @@ class EnvironmentPatch(BaseModel):
     spaces_bucket: str | None = Field(default=None, max_length=63)
     log_level: str | None = Field(default=None, max_length=10)
     services: dict[str, ServicePatch] | None = None
+    publish: bool | None = None
     # Write-only. No pydantic constraint on the values, so no validation error
     # can describe one; the service answers secret_invalid / secret_not_editable.
     secrets: dict[str, str] | None = None
@@ -439,13 +443,17 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
     report = None
     if body.mode == "adopt" and body.snapshot_id is not None:
         raise HTTPException(status_code=422, detail={"code": "snapshot_not_allowed"})
+    if body.mode == "adopt" and body.publish:
+        # A hand-built environment's DNS and proxy were made by hand: turn
+        # Publish on after claiming them on the Publish tab.
+        raise HTTPException(status_code=422, detail={"code": "publish_not_allowed"})
     try:
         if body.mode == "new":
             env = await environments.create_new(
                 db, settings, name=body.name, type_=body.type, target_id=body.target,
                 git_ref=body.git_ref, base_domain=body.base_domain, proxy_ip=body.proxy_ip,
                 bind_ip=body.bind_ip, ports=body.ports, actor_id=actor_id,
-                snapshot_id=body.snapshot_id)
+                snapshot_id=body.snapshot_id, publish=body.publish is not False)
         else:
             env, _, report = await environments.adopt(
                 db, settings, name=body.name, type_=body.type, target_id=body.target,
@@ -467,7 +475,7 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
     if report is None:
         changes = {"name": env.name, "type": env.type, "target": env.target_id,
                    "base_domain": env.base_domain, "git_ref": env.git_ref,
-                   "proxy_ip": env.proxy_ip, "bind_ip": env.bind_ip}
+                   "proxy_ip": env.proxy_ip, "bind_ip": env.bind_ip, "publish": env.publish}
         seed = await snapshots.snapshot_ref(db, env.seed_snapshot_id)
         if seed is not None:
             changes["seed_snapshot"] = seed["name"]
@@ -524,7 +532,8 @@ _REF_REASON = {
 
 
 class DeploymentIn(BaseModel):
-    mode: Literal["update", "reset", "restore_dump"] = "update"
+    # publish: steps 12–14 for the running commit; teardown: Delete environment
+    mode: Literal["update", "reset", "restore_dump", "publish", "teardown"] = "update"
     git_ref: str | None = Field(default=None, max_length=200)
     # Reset and Restore backup: must equal the environment's name exactly.
     confirm_name: str | None = Field(default=None, max_length=64)
@@ -544,8 +553,8 @@ class RollbackIn(BaseModel):
 
 
 # Modes that replace data: deploy:change and the environment's name typed back.
-GATED_MODES = ("reset", "restore_dump", "rollback")
-RETRY_MODES = ("update", "reset", "restore_dump", "rollback")
+GATED_MODES = ("reset", "restore_dump", "rollback", "teardown")
+RETRY_MODES = ("update", "reset", "restore_dump", "rollback", "publish", "teardown")
 
 
 def _forbidden() -> HTTPException:
@@ -605,9 +614,9 @@ async def _has_step(db, deployment_id: uuid.UUID, key: str) -> bool:
 
 
 async def _launch(db, env: Environment, request: Request, actor: AuthContext, *, action: str,
-                  mode: str, git_ref: str, sha: str, start_step: int = 1,
+                  mode: str, git_ref: str, sha: str, start_step: int | None = None,
                   retry_of: uuid.UUID | None = None, snapshot: Snapshot | None = None,
-                  restore_dump: str | None = None) -> dict:
+                  restore_dump: str | None = None, publish: bool = False) -> dict:
     env_name = env.name           # read now: a lock conflict rolls the session back
     snapshot_id = snapshot.id if snapshot is not None else None
     snapshot_name = snapshot.name if snapshot is not None else None
@@ -616,7 +625,7 @@ async def _launch(db, env: Environment, request: Request, actor: AuthContext, *,
                                                actor_id=actor.user.person_id,
                                                start_step=start_step, retry_of=retry_of,
                                                snapshot_id=snapshot_id,
-                                               restore_dump=restore_dump)
+                                               restore_dump=restore_dump, publish=publish)
     except pipeline.DeployInProgress:
         raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"}) from None
     except snapshots.SnapshotError as e:
@@ -633,6 +642,8 @@ async def _launch(db, env: Environment, request: Request, actor: AuthContext, *,
         changes["snapshot"] = snapshot_name
     if restore_dump is not None:
         changes["backup"] = restore_dump
+    if publish:
+        changes["publish"] = True
     audit(db, actor_id=actor.user.person_id, action=action, entity_type="deployment",
           entity_id=str(dep.id), ip=client_ip(request), changes=changes)
     await db.commit()
@@ -645,6 +656,28 @@ async def _pinned(db, cfg: SshTargetConfig) -> None:
         await ssh.pinned_host_key(db, cfg.host, cfg.port)
     except _SSH_ERRORS as e:
         raise _ssh_http(e) from None
+
+
+async def _require_integrations(db, env: Environment, *, teardown: bool = False) -> None:
+    """Refuse up front (not after a 30-minute build) when publishing, or
+    removing what Sirdar made, needs an integration that isn't set up."""
+    missing = await publish.missing_integrations(db, env, teardown=teardown)
+    if missing:
+        raise HTTPException(status_code=409, detail={"code": "integration_not_configured",
+                                                     "kinds": missing})
+
+
+async def _start_publish(db, env: Environment, request: Request, actor: AuthContext) -> dict:
+    """A publish job: steps 12–14 for the running commit. No SSH."""
+    if not env.publish:
+        raise HTTPException(status_code=409, detail={"code": "publish_off"})
+    if env.current_sha is None:
+        raise HTTPException(status_code=409, detail={"code": "not_deployed"})
+    if not vault.is_configured(get_settings()):
+        raise HTTPException(status_code=400, detail={"code": "secrets_key_missing"})
+    await _require_integrations(db, env)
+    return await _launch(db, env, request, actor, action="deploy.deployment_start",
+                         mode="publish", git_ref=env.git_ref, sha=env.current_sha)
 
 
 @router.post("/environments/{name}/deployments", status_code=201)
@@ -663,9 +696,20 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
             raise HTTPException(status_code=422, detail={"code": "backup_invalid"})
         if body.git_ref is not None:        # it deploys the running commit
             raise HTTPException(status_code=422, detail={"code": "git_ref_not_allowed"})
+    if body.mode in ("publish", "teardown") and body.git_ref is not None:
+        raise HTTPException(status_code=422, detail={"code": "git_ref_not_allowed"})
     if await environments.is_deploying(db, env.id):
         raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"})
+    if body.mode == "publish":
+        return await _start_publish(db, env, request, actor)
     cfg = _deploy_target(env)
+    if body.mode == "teardown":
+        await _require_integrations(db, env, teardown=True)
+        await _pinned(db, cfg)
+        return await _launch(db, env, request, actor, action="deploy.deployment_start",
+                             mode="teardown", git_ref=env.git_ref, sha=env.current_sha or "")
+    if env.publish:
+        await _require_integrations(db, env)
     if body.mode == "restore_dump":
         if env.current_sha is None:
             raise HTTPException(status_code=409, detail={"code": "not_deployed"})
@@ -677,7 +721,8 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
         await _pinned(db, cfg)
         return await _launch(db, env, request, actor, action="deploy.deployment_start",
                              mode="restore_dump", git_ref=env.current_sha,
-                             sha=env.current_sha, restore_dump=body.backup)
+                             sha=env.current_sha, restore_dump=body.backup,
+                             publish=env.publish)
     snapshot_id = body.snapshot_id
     if body.mode == "update" and env.current_sha is None:
         snapshot_id = env.seed_snapshot_id          # the first deploy restores the seed
@@ -698,7 +743,8 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
     except _SSH_ERRORS as e:
         raise _ssh_http(e) from None
     return await _launch(db, env, request, actor, action="deploy.deployment_start",
-                         mode=body.mode, git_ref=ref, sha=sha, snapshot=snapshot)
+                         mode=body.mode, git_ref=ref, sha=sha, snapshot=snapshot,
+                         publish=env.publish)
 
 
 @router.get("/environments/{name}/deployments")
@@ -758,9 +804,16 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     # Whether it restored a snapshot: its own step rows say so even after the
     # snapshot was deleted (snapshot_id is then NULL).
     restoring = dep.mode in ("update", "reset") and await _has_step(db, dep.id, "restore")
-    plan = plan_for(dep.mode, restore=restoring)
+    plan = plan_for(dep.mode, restore=restoring, publish=dep.publish)
     if from_step not in [s.number for s in plan] or from_step > stopped:
         raise HTTPException(status_code=422, detail={"code": "from_step_invalid"})
+    # The Publish switch as it is now: a retry never publishes an environment
+    # whose switch was turned off since. A data retry drops steps 12–14; one
+    # that would start at them (or a publish job's retry) is refused.
+    publishing = dep.publish and env.publish
+    if not env.publish and (dep.mode == "publish" or (
+            dep.publish and from_step >= STEPS_BY_KEY["dns"].number)):
+        raise HTTPException(status_code=409, detail={"code": "publish_off"})
     if restoring and dep.snapshot_id is None:
         if from_step <= STEPS_BY_KEY["restore"].number:
             raise HTTPException(status_code=404, detail={"code": "snapshot_not_found"})
@@ -771,12 +824,21 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
             snapshot = await snapshots.ready_snapshot(db, dep.snapshot_id)
         except snapshots.SnapshotError as e:
             raise _snapshot_http(e) from None
-    cfg = _deploy_target(env)
-    await _pinned(db, cfg)
+    # As the pipeline does: with no host step left to run (a publish job, or
+    # a retry of only steps 12–14 or 16–17) there is no target to connect to.
+    if any(s.runs == "ansible" for s in plan if s.number >= from_step):
+        cfg = _deploy_target(env)
+        await _pinned(db, cfg)
+    elif not vault.is_configured(get_settings()):
+        raise HTTPException(status_code=400, detail={"code": "secrets_key_missing"})
+    if dep.mode == "teardown":
+        await _require_integrations(db, env, teardown=True)
+    elif dep.mode == "publish" or publishing:
+        await _require_integrations(db, env)
     return await _launch(db, env, request, actor, action="deploy.deployment_retry",
                          mode=dep.mode, git_ref=dep.git_ref, sha=dep.sha,
                          start_step=from_step, retry_of=dep.id, snapshot=snapshot,
-                         restore_dump=dep.restore_dump)
+                         restore_dump=dep.restore_dump, publish=publishing)
 
 
 @router.post("/deployments/{deployment_id}/rollback", status_code=201)
@@ -799,9 +861,11 @@ async def rollback_deployment(deployment_id: uuid.UUID, body: RollbackIn, reques
         raise HTTPException(status_code=409, detail={"code": "rollback_unavailable"})
     cfg = _deploy_target(env)
     await _pinned(db, cfg)
+    if env.publish:
+        await _require_integrations(db, env)
     return await _launch(db, env, request, actor, action="deploy.deployment_rollback",
                          mode="rollback", git_ref=dep.previous_sha, sha=dep.previous_sha,
-                         restore_dump=dump)
+                         restore_dump=dump, publish=env.publish)
 
 
 @router.get("/environments/{name}/backups")
@@ -817,6 +881,53 @@ async def list_backups(name: str, db: DbSession,
     except _SSH_ERRORS as e:
         raise _ssh_http(e) from None
     return {"backups": rows}
+
+
+# ---- publishing (the Publish tab) -----------------------------------------------
+
+def _publish_out(state: dict) -> dict:
+    """The Publish tab's shape, with certificate expiry dates as ISO 8601."""
+    for svc in state["services"]:
+        cert = svc["certificate"]
+        if isinstance(cert.get("expires_on"), datetime):
+            cert["expires_on"] = cert["expires_on"].isoformat()
+    return state
+
+
+@router.get("/environments/{name}/publish")
+async def publish_state(name: str, db: DbSession,
+                        actor: AuthContext = require_permission("deploy", "view")):
+    """What publishing would do now, per public service (reads Cloudflare and
+    Nginx Proxy Manager, changes nothing)."""
+    env = await _environment(db, name)
+    return _publish_out(await publish.inspect(db, env, get_settings()))
+
+
+@router.post("/environments/{name}/publish/claim")
+async def publish_claim(name: str, request: Request, db: DbSession,
+                        actor: AuthContext = require_permission("deploy", "change")):
+    """Take every hand-made DNS record and proxy host at this environment's
+    names under Sirdar's care: kept up to date, never deleted. Writes only
+    Sirdar's database."""
+    env = await _environment(db, name)
+    env_name = env.name           # read now: a conflict rolls the session back
+    if await environments.is_deploying(db, env.id):
+        raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"})
+    settings = get_settings()
+    state = await publish.inspect(db, env, settings)
+    try:
+        claimed = await publish.claim(db, env, state)
+    except IntegrityError:
+        # another environment, or a concurrent claim, took one first
+        await db.rollback()
+        raise HTTPException(status_code=409, detail={"code": "claim_conflict"}) from None
+    if not claimed:
+        raise HTTPException(status_code=409, detail={"code": "nothing_to_claim"})
+    audit(db, actor_id=actor.user.person_id, action="deploy.publish_claim",
+          entity_type="environment", entity_id=env_name, ip=client_ip(request),
+          changes={"environment": env_name, "claimed": claimed})
+    await db.commit()
+    return {**_publish_out(await publish.inspect(db, env, settings)), "claimed": claimed}
 
 
 # ---- snapshots -------------------------------------------------------------------

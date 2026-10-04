@@ -236,10 +236,45 @@ commit through `git ls-remote` on the target.
 5 Build images · 6 Pre-deploy dump (Update, a seeded first deploy too) ·
 7 Reset data (Reset) · 8 Start data services · 9 Restore snapshot or Restore backup ·
 10 Start services (migrate, then the app) · 11 Take snapshot (a job of its
-own). The first failure stops the deployment; retry re-runs from the failed
-step. One deployment per environment at a time. Reset, Restore backup and
-Roll back replace data: they need `deploy:change` and the environment's name
-typed back (`confirm_name`).
+own) · 12 DNS records · 13 Proxy hosts · 14 Smoke test (when the environment
+publishes) · 15 Remove environment · 16 Remove proxy hosts · 17 Remove DNS
+records (Delete environment). The first failure stops the deployment; retry
+re-runs from the failed step. One deployment per environment at a time.
+Reset, Restore backup, Roll back and Delete environment replace or remove
+data: they need `deploy:change` and the environment's name typed back
+(`confirm_name`).
+
+**Publishing (DNS + proxy).** With an environment's **Publish** switch on
+(the default for new environments; off for adopted ones and for every
+environment that existed before migration 0006), each deploy ends with
+steps 12-14: a Cloudflare A record per public service
+(`<service>.<base domain>` pointing at the public IP set in Settings, DNS
+only unless the service's `proxied` flag is on), an Nginx Proxy Manager proxy
+host per service (http to the service's host and port, WebSockets, Block
+common exploits, HTTP/2, Force SSL, a Let's Encrypt certificate by HTTP
+challenge, reused while it has more than 30 days left), and a smoke test that
+asks every public URL through NPM's LAN IP (`proxy_ip`) with the public name
+as SNI and Host. A **publish** deployment runs only those three. Credentials
+live in Settings > Integrations (Cloudflare API token with DNS edit on the
+zone; NPM URL, login and password), encrypted with `SIRDAR_SECRETS_KEY` and
+never shown again; each has a Test button. A stored token or password is
+reused (left blank on save or Test) only for the target it was entered for:
+the same zone for Cloudflare, the same URL and login for NPM. Change the
+target and the secret must be entered again.
+
+Sirdar changes only what it records in `managed_records`: entries it
+**created**, and hand-made ones someone **claimed** on the environment's
+Publish tab. Any other record or proxy host at a wanted name, or a wildcard
+such as `*.dev.serversherpa.com` that a new record would override, stops
+the step before anything changes. Claimed entries are kept up to date but
+never deleted. **Delete environment** stops the stacks, deletes the
+volumes and `/opt/serversherpa/<env>` (backups included; the playbook checks
+the folder against a fixed `/opt/serversherpa` root, so no variable can point
+it elsewhere), removes the proxy hosts, certificates and DNS records Sirdar
+created, forgets the claimed ones, and then removes the environment from
+Sirdar. A certificate Sirdar created that a proxy host staying in place
+(for example a claimed one) still uses is only forgotten, not deleted. Docker
+images stay on the host.
 
 **Adopting a hand-built environment** (`POST /api/deploy/environments` with
 `"mode": "adopt"`): Sirdar reads `/opt/serversherpa/<name>/.env` and the
@@ -264,6 +299,12 @@ and are left out of `.env` on the next deploy.
 | `POST /snapshots?name=…&notes=…` (body: the bundle) | `deploy:add` |
 | `POST /environments/{name}/snapshots` (take one) | `deploy:add` |
 | `DELETE /snapshots/{id}` | `deploy:change` |
+| `GET /integrations` | `deploy:view` |
+| `PUT /integrations/cloudflare`, `PUT /integrations/npm`, `DELETE /integrations/{kind}`, `POST /integrations/{kind}/test` | `deploy:change` |
+| `GET /environments/{name}/publish` | `deploy:view` |
+| `POST /environments/{name}/publish/claim` | `deploy:change` |
+| `POST /environments/{name}/deployments` (`mode`: `publish`) | `deploy:add` |
+| `POST /environments/{name}/deployments` (`mode`: `teardown`, with `confirm_name`) | `deploy:change` |
 
 **Snapshots.** A snapshot is one `.tar.gz`: `manifest.json`, `keys.enc` (the
 source's `SS_PASSWORD_PEPPER` and `SS_TOTP_ENCRYPTION_KEY`, encrypted with

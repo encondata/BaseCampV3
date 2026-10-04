@@ -7,7 +7,7 @@ import DataTable from '@portal/components/DataTable';
 
 import { deployErrorText, listBackups, type Backup, type Deployment, type Environment } from '../../lib/sirdarApi';
 
-import { formatBytes, when } from './labels';
+import { deploymentRunning, formatBytes, when } from './labels';
 import RestoreBackupModal from './RestoreBackupModal';
 
 export default function BackupsTab({ env, onStarted }: {
@@ -30,7 +30,7 @@ export default function BackupsTab({ env, onStarted }: {
   useEffect(() => { void load(); }, [load, env.status]);
   useEffect(() => () => { seq.current += 1; }, []);
 
-  const running = env.status === 'deploying';
+  const running = deploymentRunning(env);
   const mayRestore = can('deploy', 'change');
   return (
     <section className="sirdar-section">

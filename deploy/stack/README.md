@@ -87,6 +87,10 @@ LAN environment is `uat`.
    names. If it doesn't, add the six names to local DNS pointing at NPM's
    LAN IP. The containers themselves already go straight to NPM.
 
+   Sirdar does steps 5 and 6 itself for an environment with Publish on
+   (Settings > Integrations needs the Cloudflare token and NPM login); the
+   hand steps below are for environments it doesn't manage.
+
 6. **Nginx Proxy Manager** — one proxy host per name, scheme `http`,
    forward to the host's LAN IP, Websockets Support ON, then SSL tab:
    request a new Let's Encrypt certificate, Force SSL ON.

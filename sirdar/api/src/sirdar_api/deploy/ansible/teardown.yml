@@ -1,0 +1,81 @@
+# Step 15 — Remove environment (Delete environment only): stop every stack
+# and delete its volumes and network (ss-stack down --volumes), then delete
+# the environment's folder: checkout, .env and backups. Images stay: another
+# environment on this host may run the same commit. A .env whose STACK_ENV
+# names another environment stops it before anything is removed. A folder
+# without a .env or ss-stack (never deployed, half bootstrapped) is simply
+# deleted. Steps
+# 16 and 17 then remove the proxy hosts and DNS records Sirdar made.
+- name: Remove environment
+  hosts: target
+  gather_facts: false
+  tasks:
+    # The guard holds inside this playbook alone: the root is a literal, not
+    # a var an extravar could replace. SIRDAR_TEST_TEARDOWN_ROOT is read on
+    # the controller for the local tests only; the runner's job env is an
+    # allowlist that never carries it.
+    - name: Only an environment's own folder
+      ansible.builtin.assert:
+        that:
+          - env_name is match('^[a-z][a-z0-9-]{1,31}(?<!-)\Z')
+          - env_dir == (lookup('env', 'SIRDAR_TEST_TEARDOWN_ROOT') or '/opt/serversherpa') ~ '/' ~ env_name
+          - ss_stack == env_dir ~ '/repo/deploy/stack/ss-stack'
+        fail_msg: >-
+          Refusing to remove {{ env_dir }}: it isn't
+          {{ lookup('env', 'SIRDAR_TEST_TEARDOWN_ROOT') or '/opt/serversherpa' }}/{{ env_name }}.
+        quiet: true
+
+    - name: Look for the environment's .env
+      ansible.builtin.stat:
+        path: "{{ env_dir }}/.env"
+      register: env_file
+
+    # ss-stack down --volumes removes the volumes of the stack the .env's
+    # STACK_ENV names, whatever folder it sits in: it must be this one. Read
+    # as ss-stack reads it (the last assignment wins, quotes dropped); the
+    # value is only compared and shown, never run. Without a .env (never
+    # deployed) there is no stack to take down.
+    - name: Read the .env
+      ansible.builtin.slurp:
+        src: "{{ env_dir }}/.env"
+      register: env_text
+      when: env_file.stat.exists
+
+    - name: Only this environment's stack
+      ansible.builtin.assert:
+        that:
+          - stack_env == env_name
+        fail_msg: >-
+          The .env in {{ env_dir }} belongs to {{ stack_env or 'no environment' }},
+          not {{ env_name }}; nothing was removed.
+        quiet: true
+      vars:
+        stack_env: >-
+          {{ env_text.content | b64decode
+             | regex_findall('(?m)^STACK_ENV=(.*)$') | last | default('', true)
+             | trim | trim('"') | trim("'") }}
+      when: env_file.stat.exists
+
+    - name: Look for ss-stack
+      ansible.builtin.stat:
+        path: "{{ ss_stack }}"
+      register: stack_tool
+
+    # sh only to close stdin (docker compose would read the SSH session's);
+    # ss_stack and env_dir are its arguments, never part of the script.
+    - name: ss-stack down --volumes
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -c
+          - 'exec "$0" down "$1" --volumes </dev/null'
+          - "{{ ss_stack }}"
+          - "{{ env_dir }}"
+      when: env_file.stat.exists and stack_tool.stat.exists
+      changed_when: true
+
+    - name: Remove the environment folder
+      become: "{{ teardown_become | default(true) | bool }}"
+      ansible.builtin.file:
+        path: "{{ env_dir }}"
+        state: absent

@@ -9,14 +9,14 @@ vi.mock('@portal/auth/AuthContext', () => ({
 }));
 const api = vi.hoisted(() => ({
   getDeployTargets: vi.fn(), getEnvironmentDefaults: vi.fn(), createEnvironment: vi.fn(),
-  adoptEnvironment: vi.fn(), trustKnownHost: vi.fn(), listSnapshots: vi.fn(),
+  adoptEnvironment: vi.fn(), trustKnownHost: vi.fn(), listSnapshots: vi.fn(), getIntegrations: vi.fn(),
 }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 
 import { ApiError } from '@portal/lib/api';
 
 import NewEnvironmentModal from './NewEnvironmentModal';
-import { DEFAULTS, ENV, SNAP, SNAP_TAKING, TARGETS } from './testData';
+import { DEFAULTS, ENV, INTEGRATIONS, NO_INTEGRATIONS, SNAP, SNAP_TAKING, TARGETS } from './testData';
 
 Element.prototype.scrollIntoView = () => {};   // jsdom lacks it (ComboBox calls it)
 beforeEach(() => {
@@ -26,6 +26,7 @@ beforeEach(() => {
   api.getEnvironmentDefaults.mockResolvedValue(DEFAULTS);
   api.createEnvironment.mockResolvedValue(ENV);
   api.listSnapshots.mockResolvedValue({ snapshots: [SNAP, SNAP_TAKING] });
+  api.getIntegrations.mockResolvedValue(INTEGRATIONS);
 });
 afterEach(cleanup);
 
@@ -71,7 +72,77 @@ it('creates an environment through Basics, Services and Review', async () => {
   expect(api.createEnvironment).toHaveBeenCalledWith({
     name: 'qa', type: 'custom', target: 'ssh:lab', git_ref: 'main', proxy_ip: '10.10.48.6', bind_ip: '0.0.0.0',
     ports: { api: 8100, portal: 8091, kiosk: 8090, wiki: 8096, spaces: 9000, status: 8095, mailpit: 8025 },
+    publish: true,
   });
+});
+
+it('Services offers Publish (on by default); Off is shown in Review and sent', async () => {
+  await open();
+  await fillBasics();
+  await next();
+  const group = await screen.findByRole('radiogroup', { name: 'Publish DNS and proxy' });
+  expect(within(group).getByRole('radio', { name: 'On' }).getAttribute('aria-checked')).toBe('true');
+  expect(screen.getByText(/Each deploy creates or updates a DNS record and a proxy host/)).toBeTruthy();
+  expect(screen.getByText(/Hand-made records or proxy hosts already at those names must be claimed on the Publish tab/))
+    .toBeTruthy();
+  expect(screen.queryByText(/to publish\.$/)).toBeNull();
+  expect(api.getIntegrations).toHaveBeenCalledTimes(1);
+  await userEvent.click(within(group).getByRole('radio', { name: 'Off' }));
+  expect(screen.getByText(/DNS records and proxy hosts stay as they are/)).toBeTruthy();
+  await next();
+  await next();
+  expect(screen.getByText('Off: DNS and the proxy are set up by hand')).toBeTruthy();
+  const table = screen.getByRole('table', { name: 'Services to create' });
+  expect(within(table).queryByText('On the first deploy')).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  await waitFor(() => expect(api.createEnvironment).toHaveBeenCalled());
+  expect(api.createEnvironment.mock.calls[0][0].publish).toBe(false);
+});
+
+it('without both integrations set up, Publish starts Off and says where to set them up', async () => {
+  for (const current of [NO_INTEGRATIONS, { ...INTEGRATIONS, npm: NO_INTEGRATIONS.npm }]) {
+    api.getIntegrations.mockResolvedValue(current);
+    api.createEnvironment.mockClear();
+    await open();
+    await fillBasics();
+    await next();
+    const group = await screen.findByRole('radiogroup', { name: 'Publish DNS and proxy' });
+    await waitFor(() => expect(within(group).getByRole('radio', { name: 'Off' }).getAttribute('aria-checked')).toBe('true'));
+    expect(screen.getByText('Set up Cloudflare and Nginx Proxy Manager in Settings › Integrations to publish.'))
+      .toBeTruthy();
+    await next();
+    await next();
+    await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+    await waitFor(() => expect(api.createEnvironment).toHaveBeenCalled());
+    expect(api.createEnvironment.mock.calls[0][0].publish).toBe(false);
+    cleanup();
+  }
+});
+
+it('a choice made before the integrations load is kept', async () => {
+  let release: (v: typeof NO_INTEGRATIONS) => void = () => {};
+  api.getIntegrations.mockImplementation(() => new Promise((r) => { release = r; }));
+  await open();
+  await fillBasics();
+  await next();
+  const group = await screen.findByRole('radiogroup', { name: 'Publish DNS and proxy' });
+  await userEvent.click(within(group).getByRole('radio', { name: 'Off' }));
+  await userEvent.click(within(group).getByRole('radio', { name: 'On' }));
+  release(NO_INTEGRATIONS);
+  expect(await screen.findByText('Set up Cloudflare and Nginx Proxy Manager in Settings › Integrations to publish.'))
+    .toBeTruthy();
+  expect(within(group).getByRole('radio', { name: 'On' }).getAttribute('aria-checked')).toBe('true');
+});
+
+it('with Publish on, Review lists the names it publishes', async () => {
+  await open();
+  await fillBasics();
+  await next();
+  await next();
+  await next();
+  expect(screen.getByText('On: Sirdar publishes the public names')).toBeTruthy();
+  const table = screen.getByRole('table', { name: 'Services to create' });
+  expect(within(table).getAllByText('On the first deploy')).toHaveLength(6);
 });
 
 it('checks the basics and the ports before moving on', async () => {

@@ -12,6 +12,8 @@ from sirdar_api.db.models import (
     Environment,
     EnvironmentSecret,
     EnvironmentService,
+    Integration,
+    ManagedRecord,
     Snapshot,
 )
 
@@ -187,3 +189,98 @@ async def test_migration_0005_moves_start_services_to_step_10():
                            (dep_id,)).fetchone()
     assert steps == [("dump", 6), ("up", 10)]
     assert dep == (10, 10)
+
+
+def _record(env_id, **over) -> ManagedRecord:
+    kw = dict(environment_id=env_id, service="api", kind="dns_record", external_id="rec-1",
+              name="api.uat.serversherpa.com", origin="created")
+    kw.update(over)
+    return ManagedRecord(**kw)
+
+
+async def test_publish_tables_and_columns(db):
+    env = await _env(db)
+    await db.refresh(env)
+    assert env.publish is False
+    db.add(Integration(kind="cloudflare", config={"zone": "serversherpa.com"}, secret_enc=b"x"))
+    db.add(_record(env.id))
+    dep = Deployment(environment_id=env.id, mode="publish", git_ref="main", sha=SHA,
+                     status="succeeded", start_step=12, publish=True)
+    db.add(dep)
+    env.status = "deleting"
+    await db.commit()
+    row = await db.get(Integration, "cloudflare")
+    assert row.updated_at is not None and row.config == {"zone": "serversherpa.com"}
+    await db.refresh(dep)
+    assert dep.publish is True
+    db.add(Deployment(environment_id=env.id, mode="teardown", git_ref="main", sha="",
+                      status="failed", start_step=15))
+    await db.commit()
+    await db.execute(delete(Environment).where(Environment.id == env.id))
+    await db.commit()
+    assert await db.scalar(select(func.count()).select_from(ManagedRecord)) == 0
+
+
+async def test_managed_record_constraints(db):
+    env, other = await _env(db), await _env(db, name="uat2")
+    env_id, other_id = env.id, other.id
+    db.add(_record(env_id))
+    await db.commit()
+    for bad in (_record(env_id, external_id="rec-2"),      # a second api record for uat
+                _record(other_id),                         # uat's record, claimed by uat2
+                _record(other_id, external_id="r3", kind="cname"),
+                _record(other_id, external_id="r4", origin="adopted")):
+        db.add(bad)
+        with pytest.raises(IntegrityError):
+            await db.commit()
+        await db.rollback()
+    # one id per kind: a proxy host and a DNS record may share "rec-1"
+    db.add(_record(other_id, kind="proxy_host"))
+    await db.commit()
+    db.add(Integration(kind="route53"))
+    with pytest.raises(IntegrityError):
+        await db.commit()
+    await db.rollback()
+
+
+async def test_deleting_an_environment_cascades_its_managed_records(db):
+    """Delete environment ends by deleting the row: its managed_records go with
+    it, and another environment's stay."""
+    env, other = await _env(db), await _env(db, name="uat2")
+    env_id, other_id = env.id, other.id
+    db.add(_record(env_id))
+    db.add(_record(env_id, kind="proxy_host", external_id="7"))
+    db.add(_record(other_id, service="portal", external_id="rec-9"))
+    await db.commit()
+    await db.execute(delete(Environment).where(Environment.id == env_id))
+    await db.commit()
+    left = await db.scalars(select(ManagedRecord.environment_id))
+    assert list(left) == [other_id]
+
+
+async def test_migration_0006_round_trip():
+    """Downgrading drops the publish and teardown deployments with their
+    steps; upgrading again leaves every existing environment unpublished."""
+    from sirdar_api.db.engine import dispose_engine
+    await dispose_engine()
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        env_id = conn.execute(
+            "INSERT INTO environments (name, type, target_id, base_domain, proxy_ip, publish) "
+            "VALUES ('pub', 'dev', 'ssh', 'pub.example.com', '10.0.0.2', true) RETURNING id"
+        ).fetchone()[0]
+        dep_id = conn.execute(
+            "INSERT INTO deployments (environment_id, mode, git_ref, sha, status, start_step, "
+            "publish) VALUES (%s, 'publish', 'main', %s, 'succeeded', 12, true) RETURNING id",
+            (env_id, SHA)).fetchone()[0]
+        conn.execute("INSERT INTO deployment_steps (deployment_id, number, key, name) "
+                     "VALUES (%s, 12, 'dns', 'DNS records')", (dep_id,))
+    _alembic("downgrade", "0005")
+    try:
+        with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+            assert conn.execute("SELECT count(*) FROM deployments WHERE id = %s",
+                                (dep_id,)).fetchone()[0] == 0
+    finally:
+        _alembic("upgrade", "head")
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        assert conn.execute("SELECT publish FROM environments WHERE id = %s",
+                            (env_id,)).fetchone()[0] is False

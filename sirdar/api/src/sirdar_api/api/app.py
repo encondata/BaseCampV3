@@ -104,6 +104,7 @@ def create_app() -> FastAPI:
                             status_code=200 if ok else 503)
 
     from sirdar_api.api.routes import access, audit, auth, dashboard, deploy, me, system, users
+    from sirdar_api.api.routes import integrations as integration_routes
     from sirdar_api.api.routes import settings as settings_routes
 
     api.include_router(auth.router)
@@ -114,6 +115,7 @@ def create_app() -> FastAPI:
     api.include_router(audit.router)
     api.include_router(settings_routes.router)
     api.include_router(deploy.router)
+    api.include_router(integration_routes.router)
     api.include_router(dashboard.router)
 
     app.include_router(api)

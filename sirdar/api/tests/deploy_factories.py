@@ -8,6 +8,7 @@ from sirdar_api.config import get_settings
 from sirdar_api.db.models import AuditLog, Environment, EnvironmentSecret, EnvironmentService
 from sirdar_api.deploy import envfile, known_hosts, pipeline, vault
 
+from .fake_publisher import FakePublisher
 from .fake_runner import FakeRunner
 from .ssh_server import SSH_PASSWORD
 
@@ -47,6 +48,13 @@ def fake_runner(monkeypatch):
     runner = FakeRunner()
     monkeypatch.setattr(pipeline, "make_runner", lambda settings: runner)
     return runner
+
+
+@pytest.fixture
+def fake_publisher(monkeypatch):
+    publisher = FakePublisher()
+    monkeypatch.setattr(pipeline, "make_publisher", lambda settings: publisher)
+    return publisher
 
 
 @pytest.fixture(autouse=True)

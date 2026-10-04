@@ -13,7 +13,7 @@ vi.mock('@portal/auth/AuthContext', () => ({
 const api = vi.hoisted(() => ({
   getEnvironment: vi.fn(), getDeployTargets: vi.fn(), startDeployment: vi.fn(), trustKnownHost: vi.fn(),
   listDeployments: vi.fn(), updateEnvironment: vi.fn(), getEnvironmentDefaults: vi.fn(),
-  listSnapshots: vi.fn(), listBackups: vi.fn(),
+  listSnapshots: vi.fn(), listBackups: vi.fn(), getPublishPlan: vi.fn(), claimPublish: vi.fn(),
 }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 vi.mock('./DeploymentView', () => ({ default: ({ id }: { id: string }) => <div>deployment view {id}</div> }));
@@ -21,7 +21,9 @@ vi.mock('./DeploymentView', () => ({ default: ({ id }: { id: string }) => <div>d
 import { ApiError } from '@portal/lib/api';
 
 import EnvironmentDetail, { ENV_POLL_MS } from './EnvironmentDetail';
-import { ADOPTED, BACKUPS, DEFAULTS, ENV, RUNNING, TARGETS, summary } from './testData';
+import {
+  ADOPTED, BACKUPS, DEFAULTS, ENV, PUBLISHED_ENV, PUBLISHING, PUBLISH_PLAN, RUNNING, TARGETS, TEARDOWN, summary,
+} from './testData';
 
 Element.prototype.scrollIntoView = () => {};
 beforeEach(() => {
@@ -33,6 +35,7 @@ beforeEach(() => {
   api.listDeployments.mockResolvedValue({ deployments: [summary(RUNNING), ADOPTED] });
   api.listSnapshots.mockResolvedValue({ snapshots: [] });
   api.listBackups.mockResolvedValue({ backups: BACKUPS });
+  api.getPublishPlan.mockResolvedValue(PUBLISH_PLAN);
 });
 afterEach(cleanup);
 
@@ -184,6 +187,34 @@ describe('while the environment is deploying', () => {
     expect(api.getEnvironment).toHaveBeenCalledTimes(3);
   });
 
+  it('a publish job keeps the status Ready, yet the page polls and locks Deploy, Claim and Delete until it ends', async () => {
+    const publishing = { ...PUBLISHED_ENV, last_deployment: summary(PUBLISHING) };
+    const done = { ...PUBLISHED_ENV, last_deployment: summary({ ...PUBLISHING, status: 'succeeded' }) };
+    api.getEnvironment.mockResolvedValueOnce(publishing).mockResolvedValueOnce(publishing).mockResolvedValue(done);
+    show();
+    const deploy = (await screen.findByRole('button', { name: 'Deploy' })) as HTMLButtonElement;
+    expect(screen.getByText('Ready')).toBeTruthy();
+    expect(deploy.disabled).toBe(true);
+    await userEvent.click(screen.getByRole('tab', { name: 'Publish' }));
+    await screen.findByRole('table', { name: 'Public names' });
+    expect((screen.getByRole('button', { name: 'Claim existing' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(api.getPublishPlan).toHaveBeenCalledTimes(1);
+    await tick(ENV_POLL_MS);
+    expect(api.getEnvironment).toHaveBeenCalledTimes(2);
+    await userEvent.click(screen.getByRole('tab', { name: 'Settings' }));
+    expect((screen.getByRole('button', { name: 'Delete environment…' }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole('tab', { name: 'Publish' }));
+    await screen.findByRole('table', { name: 'Public names' });
+    const plans = api.getPublishPlan.mock.calls.length;
+    await tick(ENV_POLL_MS);                     // the job ended
+    expect(api.getEnvironment).toHaveBeenCalledTimes(3);
+    await waitFor(() => expect(deploy.disabled).toBe(false));
+    expect((screen.getByRole('button', { name: 'Claim existing' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(api.getPublishPlan.mock.calls.length).toBe(plans + 1);   // the plan is read again
+    await tick(ENV_POLL_MS * 4);                 // polling stops
+    expect(api.getEnvironment).toHaveBeenCalledTimes(3);
+  });
+
   it('never overlaps reloads, and stops when the page goes away', async () => {
     let release: (e: typeof ENV) => void = () => {};
     api.getEnvironment.mockResolvedValueOnce({ ...ENV, status: 'deploying' })
@@ -201,6 +232,18 @@ describe('while the environment is deploying', () => {
     cleanup();
     await tick(ENV_POLL_MS * 4);
     expect(api.getEnvironment).toHaveBeenCalledTimes(3);
+  });
+
+  it('once a deleting environment is gone, the page says so', async () => {
+    api.getEnvironment.mockResolvedValueOnce({ ...ENV, status: 'deleting' })
+      .mockRejectedValue(new ApiError(404, 'environment_not_found', { code: 'environment_not_found' }));
+    show();
+    expect(await screen.findByText('Deleting')).toBeTruthy();
+    await tick(ENV_POLL_MS);
+    expect(await screen.findByText('uat was deleted.')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Back to Deploy' }).getAttribute('href')).toBe('/deploy');
+    await tick(ENV_POLL_MS * 3);                 // gone: polling stops
+    expect(api.getEnvironment).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -220,4 +263,42 @@ it('the Backups tab restores a dump and then follows it on the Deployments tab',
   await userEvent.click(screen.getByRole('button', { name: 'Restore backup' }));
   expect(await screen.findByText('deployment view d7')).toBeTruthy();
   expect(screen.getByRole('tab', { name: 'Deployments' }).getAttribute('aria-selected')).toBe('true');
+});
+
+it('the Publish tab sits between Deployments and Backups and shows the plan', async () => {
+  show();
+  await screen.findByRole('heading', { level: 1, name: 'uat' });
+  expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(
+    ['Overview', 'Deployments', 'Publish', 'Backups', 'Settings']);
+  await userEvent.click(screen.getByRole('tab', { name: 'Publish' }));
+  expect(await screen.findByRole('table', { name: 'Public names' })).toBeTruthy();
+  expect(api.getPublishPlan).toHaveBeenCalledWith('uat');
+});
+
+it('Delete environment from the Settings tab: typed name, then the page follows the teardown', async () => {
+  api.startDeployment.mockResolvedValue(TEARDOWN);
+  api.getEnvironment.mockResolvedValueOnce(ENV).mockResolvedValue({ ...ENV, status: 'deleting' });
+  show();
+  await userEvent.click(await screen.findByRole('tab', { name: 'Settings' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Delete environment…' }));
+  const dialog = screen.getByRole('dialog', { name: 'Delete uat' });
+  await userEvent.type(within(dialog).getByLabelText('Type uat to confirm'), 'uat');
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Delete environment' }));
+  expect(await screen.findByText('deployment view d7')).toBeTruthy();
+  expect(screen.getByRole('tab', { name: 'Deployments' }).getAttribute('aria-selected')).toBe('true');
+  expect(await screen.findByText('Deleting')).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Deploy' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('a view-only reader has no Delete environment button', async () => {
+  perms.change = false;
+  show();
+  await userEvent.click(await screen.findByRole('tab', { name: 'Settings' }));
+  expect(screen.queryByRole('button', { name: 'Delete environment…' })).toBeNull();
+});
+
+it('the Overview says who keeps the public names', async () => {
+  api.getEnvironment.mockResolvedValue({ ...ENV, publish: true });
+  show();
+  expect(await screen.findByText(/Sirdar keeps their DNS records and proxy hosts up to date/)).toBeTruthy();
 });

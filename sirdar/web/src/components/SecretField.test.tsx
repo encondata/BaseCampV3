@@ -25,3 +25,9 @@ it('disabled shows the state with no buttons and no input', () => {
   expect(screen.queryByRole('button')).toBeNull();
   expect(screen.queryByLabelText('API key')).toBeNull();
 });
+
+it('a secret that must stay set offers Replace but not Clear', () => {
+  render(<SecretField {...base} isSet adding={false} action="keep" clearable={false} onAction={vi.fn()} />);
+  expect(screen.getByRole('button', { name: 'Replace' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Clear' })).toBeNull();
+});

@@ -5,7 +5,7 @@ step logs were redacted before they were stored."""
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sirdar_api.db.models import Deployment, DeploymentStep, Environment, User
+from sirdar_api.db.models import Deployment, DeploymentStep, Environment, ManagedRecord, User
 from sirdar_api.deploy import envfile, snapshots
 from sirdar_api.deploy.environments import secret_keys_of, services_of
 
@@ -45,6 +45,7 @@ async def deployment_summary(db: AsyncSession, dep: Deployment) -> dict:
             "failed_step": dep.failed_step, "dump_path": dep.dump_path,
             "snapshot": await snapshots.snapshot_ref(db, dep.snapshot_id),
             "restore_dump": dep.restore_dump, "rollback_available": rollback_available(dep),
+            "publish": dep.publish,
             "previous_sha": dep.previous_sha, "error": dep.error,
             "actor_name": await _actor_name(db, dep.actor_id),
             "started_at": dep.started_at, "finished_at": dep.finished_at,
@@ -64,6 +65,15 @@ async def deployment_out(db: AsyncSession, dep: Deployment, *, environment_name:
                       for s in steps]}
 
 
+async def managed_records_out(db: AsyncSession, env_id) -> list[dict]:
+    """What Sirdar manages for the environment in Cloudflare and NPM (names
+    and origins only)."""
+    rows = await db.scalars(select(ManagedRecord).where(ManagedRecord.environment_id == env_id)
+                            .order_by(ManagedRecord.service, ManagedRecord.kind))
+    return [{"service": r.service, "kind": r.kind, "name": r.name, "origin": r.origin}
+            for r in rows]
+
+
 async def environment_out(db: AsyncSession, env: Environment) -> dict:
     services = await services_of(db, env.id)
     keys = await secret_keys_of(db, env.id)
@@ -79,6 +89,8 @@ async def environment_out(db: AsyncSession, env: Environment) -> dict:
                       "hostname": r.hostname, "proxied": r.proxied} for r in services],
         "secrets_set": {k: k in keys for k in envfile.OPTIONAL_SECRETS},
         "seed_snapshot": await snapshots.snapshot_ref(db, env.seed_snapshot_id),
+        "publish": env.publish,
+        "managed_records": await managed_records_out(db, env.id),
         "last_deployment": await deployment_summary(db, last) if last else None,
         "created_at": env.created_at, "updated_at": env.updated_at,
     }

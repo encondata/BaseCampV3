@@ -130,3 +130,19 @@
 
 /* Backups tab: a dump from before a snapshot restore changed the sign-in keys. */
 .sirdar-backup-blocked { display: inline-block; max-width: 340px; color: var(--text-mute); font-size: 12px; text-align: right; white-space: normal; }
+
+/* Settings › Integrations. 4 classes, to out-rank the portal's
+   `.modal-card.reports-modal-card.rgm-card` width (980px). */
+.modal-card.reports-modal-card.rgm-card.sirdar-integration-card { width: min(620px, 96vw); max-width: 96vw; }
+.sirdar-integration-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.sirdar-integration-form .sirdar-span2 { grid-column: 1 / -1; }
+@media (max-width: 640px) { .sirdar-integration-form { grid-template-columns: 1fr; } }
+
+/* Publish tab */
+.sirdar-publish-switch { margin: 8px 0 16px; }
+.sirdar-publish-switch .segmented { margin-top: 4px; }
+
+.sirdar-plain-list { margin: 4px 0 0; padding-left: 18px; }
+.sirdar-plain-list li { margin: 2px 0; }
+.sirdar-danger-zone { margin-top: 28px; }
+.sirdar-danger-zone .sirdar-actions { justify-content: flex-start; }
