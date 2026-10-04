@@ -195,3 +195,88 @@ def test_the_image_pins_the_versions_this_module_renders():
     rc = (API_DIR.parent / "terraformrc").read_text()
     assert "filesystem_mirror" in rc and "/opt/terraform/providers" in rc
     assert "direct" not in rc
+
+
+@pytest.mark.parametrize("pem", ["", "   \n", "not a certificate",
+                                 PX_CERT + PX_CERT,
+                                 PX_CERT.replace("MI", "XX", 1)],
+                         ids=["empty", "blank", "text", "two", "garbled"])
+def test_the_pinned_certificate_must_be_exactly_one(tf_dir, pem):
+    """An empty or garbled pin would leave Go's default trust in place."""
+    with pytest.raises(terraform.PinnedCertificateInvalid) as caught:
+        terraform.prepare_workdir(get_settings(), ENV_ID, {}, pem)
+    assert "BEGIN" not in str(caught.value)
+    assert not (tf_dir / str(ENV_ID) / "proxmox-ca.pem").exists()
+
+
+async def test_a_long_line_does_not_stall_the_run(tmp_path):
+    binary = _fake_binary(tmp_path, "head -c 204800 /dev/zero | tr '\\0' x\necho\n"
+                                    "head -c 2097152 /dev/zero | tr '\\0' y >&2\necho\n"
+                                    "echo done\n")
+    lines: list[str] = []
+    result = await asyncio.wait_for(SubprocessTerraform(binary).run(
+        TfRequest(args=terraform.APPLY, workdir=tmp_path, env={"PATH": os.environ["PATH"]},
+                  timeout=20), lines.append), 30)
+    assert (result.status, result.rc) == ("successful", 0)
+    assert "x" * 204800 + "\n" in lines
+    assert lines[-1].endswith("done\n")
+
+
+async def test_an_on_output_error_does_not_stall_the_run(tmp_path, caplog):
+    binary = _fake_binary(tmp_path, "i=0\nwhile [ $i -lt 5000 ]; do\n"
+                                    "  echo \"line $i secret-ish payload padding padding\"\n"
+                                    "  i=$((i+1))\ndone\necho done\n")
+    seen: list[str] = []
+
+    def out(line):
+        seen.append(line)
+        raise RuntimeError(f"boom {line}")
+
+    result = await asyncio.wait_for(SubprocessTerraform(binary).run(
+        TfRequest(args=terraform.APPLY, workdir=tmp_path, env={"PATH": os.environ["PATH"]},
+                  timeout=20), out), 30)
+    assert (result.status, result.rc) == ("successful", 0)
+    assert seen[-1] == "done\n" and len(seen) == 5001
+    errors = [r for r in caplog.records if r.name == terraform.__name__]
+    assert len(errors) == 1
+    assert "RuntimeError" in errors[0].getMessage()
+    assert "boom" not in caplog.text and "payload" not in caplog.text
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+@pytest.mark.parametrize("second_cancel", [False, True])
+async def test_a_process_that_ignores_sigint_is_killed(tmp_path, second_cancel):
+    pidfile = tmp_path / "child.pid"
+    binary = _fake_binary(tmp_path, "trap '' INT\n"
+                                    f"sh -c 'trap \"\" INT; echo $$ > {pidfile}; "
+                                    "exec sleep 60' &\n"
+                                    "echo started\nwait\nwait\n")
+    started = asyncio.Event()
+    runner = SubprocessTerraform(binary, grace=0.5 if not second_cancel else 30)
+    task = asyncio.create_task(runner.run(
+        TfRequest(args=terraform.APPLY, workdir=tmp_path, env={"PATH": os.environ["PATH"]},
+                  timeout=60), lambda line: started.set()))
+    await asyncio.wait_for(started.wait(), 10)
+    for _ in range(100):
+        if pidfile.exists() and pidfile.read_text().strip():
+            break
+        await asyncio.sleep(0.05)
+    child = int(pidfile.read_text())
+    task.cancel()
+    if second_cancel:                    # cancel again during the grace wait
+        await asyncio.sleep(0.3)
+        task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 10)
+    for _ in range(50):
+        if not _alive(child):
+            break
+        await asyncio.sleep(0.05)
+    assert not _alive(child)

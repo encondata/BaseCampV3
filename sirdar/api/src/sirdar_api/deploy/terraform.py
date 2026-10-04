@@ -15,6 +15,7 @@ fake-* script (_spawn is the one place a process starts)."""
 
 import asyncio
 import json
+import logging
 import os
 import shutil
 import signal
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from sirdar_api.config import Settings
+from sirdar_api.deploy import tls_pin
 
 TERRAFORM_VERSION = "1.16.5"
 PROVIDER_VERSION = "0.115.0"
@@ -35,10 +37,21 @@ APPLY = ("apply", "-input=false", "-no-color", "-auto-approve")
 DESTROY = ("destroy", "-input=false", "-no-color", "-auto-approve")
 APPLY_TIMEOUT = 25 * 60            # inside the step's 30 minutes
 _INHERITED_ENV = ("PATH", "LANG", "TZ")
+# The longest output line read whole (a provider's debug or plan line can be
+# long); a longer one is dropped in pieces, and reading goes on.
+_LINE_LIMIT = 1024 * 1024
+
+log = logging.getLogger(__name__)
 
 
 class TerraformDirUnwritable(PermissionError):
     """SIRDAR_TERRAFORM_DIR can't be written (not owned by uid 10001?)."""
+
+
+class PinnedCertificateInvalid(ValueError):
+    """The pinned Proxmox certificate isn't exactly one PEM certificate. An
+    empty or unreadable SSL_CERT_FILE would let Terraform fall back to the
+    system's trust, so it is refused before anything is written."""
 
 
 @dataclass(frozen=True)
@@ -116,7 +129,13 @@ def _write_private(path: Path, text: str) -> None:
 
 def prepare_workdir(settings: Settings, env_id: uuid.UUID, config: dict, ca_pem: str) -> Path:
     """Write this run's config and pinned certificate; keep the state and
-    .terraform/. A crash log from an earlier run is removed."""
+    .terraform/. A crash log from an earlier run is removed. The pin must
+    be exactly one certificate (PinnedCertificateInvalid otherwise)."""
+    try:
+        tls_pin.load_one(ca_pem)
+    except ValueError:
+        raise PinnedCertificateInvalid(
+            "The pinned Proxmox certificate isn't one valid certificate.") from None
     try:
         _private_dir(Path(settings.terraform_dir))
         work = workdir(settings, env_id)
@@ -187,7 +206,7 @@ async def _spawn(argv: list[str], *, cwd: Path, env: dict) -> asyncio.subprocess
     return await asyncio.create_subprocess_exec(
         *argv, cwd=str(cwd), env=env, stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        start_new_session=True)
+        start_new_session=True, limit=_LINE_LIMIT)
 
 
 class SubprocessTerraform:
@@ -202,25 +221,44 @@ class SubprocessTerraform:
     async def _stop(self, proc: asyncio.subprocess.Process) -> None:
         """Like Ctrl-C in a terminal: SIGINT to the whole process group
         (Terraform and its provider plugins; _spawn starts a new session),
-        then SIGKILL to the group after the grace period."""
+        then SIGKILL to the group after the grace period. The SIGKILL is
+        unconditional (finally): a second cancel during the grace wait, or
+        a plugin left behind after Terraform exits, still gets it."""
         if proc.returncode is not None:
             return
         with suppress(ProcessLookupError, PermissionError):
             os.killpg(proc.pid, signal.SIGINT)
         try:
-            await asyncio.wait_for(proc.wait(), self.grace)
-        except TimeoutError:
+            with suppress(TimeoutError):
+                await asyncio.wait_for(proc.wait(), self.grace)
+        finally:
             with suppress(ProcessLookupError, PermissionError):
                 os.killpg(proc.pid, signal.SIGKILL)
-            await proc.wait()
+        await proc.wait()
 
     async def run(self, request: TfRequest,
                   on_output: Callable[[str], None]) -> TfResult:
         proc = await _spawn([self.binary, *request.args], cwd=request.workdir, env=request.env)
 
         async def pump() -> None:
-            async for line in proc.stdout:
-                on_output(line.decode(errors="replace"))
+            """Drains the pipe to the end whatever happens to a line: a full
+            pipe would stall Terraform. A failing on_output is logged once,
+            by exception type only (its message could carry output)."""
+            reported = False
+            while True:
+                try:
+                    line = await proc.stdout.readline()
+                except ValueError:              # longer than _LINE_LIMIT: dropped
+                    continue
+                if not line:
+                    return
+                try:
+                    on_output(line.decode(errors="replace"))
+                except Exception as exc:
+                    if not reported:
+                        reported = True
+                        log.warning("Terraform output handler failed (%s); output "
+                                    "keeps draining", type(exc).__name__)
 
         reader = asyncio.ensure_future(pump())
         try:
@@ -231,8 +269,10 @@ class SubprocessTerraform:
                 await asyncio.wait_for(reader, 5)
             return TfResult(status="timeout", rc=-1)
         except asyncio.CancelledError:
-            await self._stop(proc)
-            reader.cancel()
+            try:
+                await self._stop(proc)
+            finally:
+                reader.cancel()
             raise
         with suppress(Exception):
             await asyncio.wait_for(reader, 5)
