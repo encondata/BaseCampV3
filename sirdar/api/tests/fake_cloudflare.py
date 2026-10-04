@@ -21,6 +21,8 @@ class FakeCloudflare:
         self.requests: list[httpx.Request] = []
         self.fail_writes: int | None = None     # answer every write with this status
         self.down = False
+        self.throttle = 0                       # answer this many requests with 429
+        self.retry_after: str | None = "7"      # the 429's Retry-After header
         self._ids = itertools.count(1)
 
     def add(self, type_: str, name: str, content: str, *, proxied: bool = False,
@@ -51,6 +53,11 @@ class FakeCloudflare:
         self.requests.append(request)
         if self.down:
             raise httpx.ConnectError("unreachable", request=request)
+        if self.throttle:
+            self.throttle -= 1
+            headers = {"retry-after": self.retry_after} if self.retry_after is not None else {}
+            resp = self._error(429, 971, "Please wait and consider throttling your request speed")
+            return httpx.Response(429, headers=headers, content=resp.content)
         if request.headers.get("authorization") != f"Bearer {self.token}":
             return self._error(403, 9109, "Invalid access token")
         path, method = request.url.path, request.method

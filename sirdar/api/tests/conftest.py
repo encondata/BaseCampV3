@@ -119,14 +119,30 @@ def source():
 @pytest.fixture(autouse=True)
 def no_real_http():
     """No test reaches a real server (Cloudflare, Nginx Proxy Manager, a
-    public URL): every outbound client takes a transport, and the real one
-    fails the test here. Its own MonkeyPatch, not the shared `monkeypatch`
-    fixture: requesting that from an autouse fixture would set it up first
-    and so undo a test's patches only after every other teardown ran (e.g.
-    stop_pipeline would see a test's fake pipeline._tasks)."""
-    async def refuse(self, request):
-        raise AssertionError(f"a test made a real HTTP request to {request.url.host}")
+    public URL): every outbound client takes a transport, and the real ones
+    (async and sync) fail the request here. Each blocked host is also
+    recorded, and the test fails at teardown if any was: a catch-all such as
+    the pipeline's `except Exception` can swallow the AssertionError. Yields
+    that list (a test that blocks on purpose clears it).
+
+    Its own MonkeyPatch, not the shared `monkeypatch` fixture: requesting
+    that from an autouse fixture would set it up first and so undo a test's
+    patches only after every other teardown ran (e.g. stop_pipeline would
+    see a test's fake pipeline._tasks)."""
+    hits: list[str] = []
+
+    def blocked(request):
+        hits.append(request.url.host)
+        return AssertionError(f"a test made a real HTTP request to {request.url.host}")
+
+    async def refuse_async(self, request):
+        raise blocked(request)
+
+    def refuse_sync(self, request):
+        raise blocked(request)
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(httpx.AsyncHTTPTransport, "handle_async_request", refuse)
-        yield
+        mp.setattr(httpx.AsyncHTTPTransport, "handle_async_request", refuse_async)
+        mp.setattr(httpx.HTTPTransport, "handle_request", refuse_sync)
+        yield hits
+    assert not hits, f"a test made real HTTP requests to {', '.join(hits)}"

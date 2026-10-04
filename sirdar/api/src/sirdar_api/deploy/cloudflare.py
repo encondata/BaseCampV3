@@ -3,6 +3,8 @@ records, and create, change and delete A records by id. The API token goes
 only into the Authorization header; errors carry our own copy, never
 Cloudflare's or httpx's text (either may echo request details)."""
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import httpx
@@ -13,10 +15,17 @@ from sirdar_api.deploy.integrations import CloudflareConfig
 BASE_URL = "https://api.cloudflare.com/client/v4"
 PER_PAGE = 500
 MAX_PAGES = 20
+RETRY_AFTER_DEFAULT = 5.0       # seconds, when a 429 has no usable Retry-After
+RETRY_AFTER_CAP = 30.0
+# Cloudflare's codes for a bad, expired or under-scoped token; it sends some
+# of them with HTTP 400.
+AUTH_CODES = frozenset({1000, 6003, 6111, 9109, 10000})
 _UNREACHABLE = "Couldn't reach the Cloudflare API."
 _DENIED = "Cloudflare rejected the API token, or it has no access to this zone."
 _MALFORMED = "The Cloudflare API token is malformed."
 _UNEXPECTED = "Cloudflare sent a response Sirdar didn't understand."
+_NOT_FOUND = "Cloudflare couldn't find that zone or record."
+_RATE_LIMITED = "Cloudflare is rate-limiting Sirdar; try again in a few minutes."
 
 
 class CloudflareError(Exception):
@@ -53,21 +62,41 @@ def _record(raw) -> DnsRecord:
         raise CloudflareError(_UNEXPECTED) from None
 
 
-def _refused(body, status: int) -> str:
+def _codes(body) -> list[int]:
     errors = body.get("errors") if isinstance(body, dict) else None
-    if (isinstance(errors, list) and errors and isinstance(errors[0], dict)
-            and isinstance(errors[0].get("code"), int)):
-        return f"Cloudflare refused the request (error {errors[0]['code']})."
+    if not isinstance(errors, list):
+        return []
+    return [e["code"] for e in errors
+            if isinstance(e, dict) and isinstance(e.get("code"), int)]
+
+
+def _refused(body, status: int) -> str:
+    codes = _codes(body)
+    if codes:
+        return f"Cloudflare refused the request (error {codes[0]})."
     return f"Cloudflare answered with HTTP {status}."
+
+
+def _retry_after(resp: httpx.Response) -> float:
+    """Seconds to wait before the one retry: Retry-After (delta-seconds), capped."""
+    try:
+        seconds = float(resp.headers.get("retry-after", ""))
+    except ValueError:
+        return RETRY_AFTER_DEFAULT
+    if seconds != seconds or seconds < 0:          # NaN or negative
+        return RETRY_AFTER_DEFAULT
+    return min(seconds, RETRY_AFTER_CAP)
 
 
 class Cloudflare:
     """`async with Cloudflare(cfg, transport=...) as cf:` — one client per step."""
 
     def __init__(self, cfg: CloudflareConfig, *,
-                 transport: httpx.AsyncBaseTransport | None = None):
+                 transport: httpx.AsyncBaseTransport | None = None,
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep):
         self.cfg = cfg
         self._transport = transport
+        self._sleep = sleep
         self._client: httpx.AsyncClient | None = None
         self._zone_id: str | None = None
 
@@ -83,20 +112,33 @@ class Cloudflare:
     async def __aexit__(self, *exc) -> None:
         await self._client.aclose()
 
-    async def _call(self, method: str, path: str, *, params: dict | None = None,
-                    json: dict | None = None) -> dict:
+    async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         try:
-            resp = await self._client.request(method, path, params=params, json=json)
+            return await self._client.request(method, path, **kwargs)
         except httpx.HTTPError:
             raise CloudflareError(_UNREACHABLE) from None
+
+    async def _call(self, method: str, path: str, *, params: dict | None = None,
+                    json: dict | None = None, missing_is_gone: bool = False) -> dict:
+        """`missing_is_gone`: a 404 means the record id is gone (RecordGone);
+        otherwise a 404 is a plain CloudflareError."""
+        resp = await self._request(method, path, params=params, json=json)
+        if resp.status_code == 429:
+            await self._sleep(_retry_after(resp))
+            resp = await self._request(method, path, params=params, json=json)
+            if resp.status_code == 429:
+                raise CloudflareError(_RATE_LIMITED)
         try:
             body = resp.json()
         except ValueError:
             body = None
-        if resp.status_code in (401, 403):
+        if resp.status_code in (401, 403) or (
+                resp.status_code >= 400 and AUTH_CODES.intersection(_codes(body))):
             raise CloudflareError(_DENIED)
         if resp.status_code == 404:
-            raise RecordGone()
+            if missing_is_gone:
+                raise RecordGone()
+            raise CloudflareError(_NOT_FOUND)
         if not isinstance(body, dict) or resp.status_code >= 400 or body.get("success") is not True:
             raise CloudflareError(_refused(body, resp.status_code))
         return body
@@ -141,16 +183,20 @@ class Cloudflare:
 
     async def update_a(self, record_id: str, *, name: str, content: str,
                        proxied: bool) -> DnsRecord:
+        """Raises RecordGone when the id no longer exists. Sets TTL to auto
+        (1), so a claimed record converges with the ones Sirdar creates."""
         zone = await self.zone_id()
         body = await self._call("PATCH", f"/zones/{zone}/dns_records/{record_id}", json={
-            "type": "A", "name": name, "content": content, "proxied": proxied})
+            "type": "A", "name": name, "content": content, "ttl": 1, "proxied": proxied},
+            missing_is_gone=True)
         return _record(body.get("result"))
 
     async def delete(self, record_id: str) -> bool:
         """False when the record was already gone."""
         zone = await self.zone_id()
         try:
-            await self._call("DELETE", f"/zones/{zone}/dns_records/{record_id}")
+            await self._call("DELETE", f"/zones/{zone}/dns_records/{record_id}",
+                             missing_is_gone=True)
         except RecordGone:
             return False
         return True
