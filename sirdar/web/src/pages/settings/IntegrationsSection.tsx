@@ -9,19 +9,19 @@ import { useAuth } from '@portal/auth/AuthContext';
 import CheckList from '../../components/CheckList';
 import {
   INTEGRATION_LABEL, deployErrorText, getIntegrations, removeIntegration, testIntegration,
-  type IntegrationCheck, type IntegrationKind, type Integrations,
+  type IntegrationCheck, type PublishKind, type Integrations,
 } from '../../lib/sirdarApi';
 import { when } from '../environments/labels';
 
 import IntegrationModal from './IntegrationModal';
 
-const KINDS: IntegrationKind[] = ['cloudflare', 'npm'];
-const PURPOSE: Record<IntegrationKind, string> = {
+const KINDS: PublishKind[] = ['cloudflare', 'npm'];
+const PURPOSE: Record<PublishKind, string> = {
   cloudflare: 'DNS records for every public service of an environment that publishes.',
   npm: 'Proxy hosts and certificates for every public service of an environment that publishes.',
 };
 
-function settingsOf(data: Integrations, kind: IntegrationKind): [string, string][] {
+function settingsOf(data: Integrations, kind: PublishKind): [string, string][] {
   const set = (on: boolean) => (on ? 'Set' : 'Not set');
   if (kind === 'cloudflare') {
     const c = data.cloudflare;
@@ -37,22 +37,22 @@ export default function IntegrationsSection() {
   const mayChange = can('deploy', 'change');
   const [data, setData] = useState<Integrations | null>(null);
   const [error, setError] = useState('');
-  const [editing, setEditing] = useState<IntegrationKind | null>(null);
-  const [results, setResults] = useState<Partial<Record<IntegrationKind, IntegrationCheck>>>({});
-  const [problems, setProblems] = useState<Partial<Record<IntegrationKind, string>>>({});
-  const [busy, setBusy] = useState<IntegrationKind | null>(null);
+  const [editing, setEditing] = useState<PublishKind | null>(null);
+  const [results, setResults] = useState<Partial<Record<PublishKind, IntegrationCheck>>>({});
+  const [problems, setProblems] = useState<Partial<Record<PublishKind, string>>>({});
+  const [busy, setBusy] = useState<PublishKind | null>(null);
 
   const load = useCallback(() => getIntegrations()
     .then((d) => { setData(d); setError(''); })
     .catch((e) => setError(deployErrorText(e, "Couldn't load the integrations."))), []);
   useEffect(() => { void load(); }, [load]);
 
-  const forget = (kind: IntegrationKind) => {
+  const forget = (kind: PublishKind) => {
     setResults((r) => ({ ...r, [kind]: undefined }));
     setProblems((p) => ({ ...p, [kind]: '' }));
   };
 
-  const test = async (kind: IntegrationKind) => {
+  const test = async (kind: PublishKind) => {
     forget(kind);
     setBusy(kind);
     try {
@@ -65,7 +65,7 @@ export default function IntegrationsSection() {
     }
   };
 
-  const remove = async (kind: IntegrationKind) => {
+  const remove = async (kind: PublishKind) => {
     const label = INTEGRATION_LABEL[kind];
     if (!window.confirm(`Remove the ${label} credentials? Publishing stops until they are set again; `
       + `nothing changes in ${label} itself.`)) return;

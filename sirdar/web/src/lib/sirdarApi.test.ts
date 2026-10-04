@@ -70,6 +70,19 @@ const CALLS: { name: string; call: () => Promise<unknown>; path: string; method?
     path: '/deploy/environments/uat/deployments', method: 'POST', body: { mode: 'publish' } },
   { name: 'startDeployment (delete)', call: () => sirdar.startDeployment('uat', { mode: 'teardown', confirm_name: 'uat' }),
     path: '/deploy/environments/uat/deployments', method: 'POST', body: { mode: 'teardown', confirm_name: 'uat' } },
+  { name: 'listVmSnapshots', call: () => sirdar.listVmSnapshots('uat3'),
+    path: '/deploy/environments/uat3/vm-snapshots' },
+  { name: 'saveIntegration (proxmox)', call: () => sirdar.saveIntegration('proxmox', {
+      url: 'https://10.10.48.5:8006', node: 'pve', pool: 'sirdar', storage: 'local-lvm', bridge: 'vmbr0',
+      vlan_tag: null, template_vmid: 9000, tls_fingerprint: null }),
+    path: '/deploy/integrations/proxmox', method: 'PUT',
+    body: { url: 'https://10.10.48.5:8006', node: 'pve', pool: 'sirdar', storage: 'local-lvm', bridge: 'vmbr0',
+            vlan_tag: null, template_vmid: 9000, tls_fingerprint: null } },
+  { name: 'startDeployment (restore a VM snapshot)',
+    call: () => sirdar.startDeployment('uat3', { mode: 'vm_restore', vm_snapshot: 'sirdar-20261004T120000Z',
+                                                 confirm_name: 'uat3' }),
+    path: '/deploy/environments/uat3/deployments', method: 'POST',
+    body: { mode: 'vm_restore', vm_snapshot: 'sirdar-20261004T120000Z', confirm_name: 'uat3' } },
 ];
 
 it.each(CALLS)('$name calls $path', async ({ call, path, method, body }) => {
@@ -86,10 +99,12 @@ function deployCodes(): string[] {
   const root = join(dirname(fileURLToPath(import.meta.url)), '../../../api/src/sirdar_api');
   const found = new Set<string>(['sudo_password_too_long']);
   for (const file of ['api/routes/deploy.py', 'api/routes/integrations.py', 'deploy/environments.py',
-                       'deploy/gitref.py', 'deploy/ssh_targets.py', 'deploy/snapshots.py', 'deploy/integrations.py']) {
+                       'deploy/gitref.py', 'deploy/ssh_targets.py', 'deploy/snapshots.py', 'deploy/integrations.py',
+                       'deploy/vms.py']) {
     const src = readFileSync(join(root, file), 'utf8');
     for (const re of [/"code": "([a-z_]+)"/g,
-                      /(?:EnvError|RefError|TargetError|SnapshotError|IntegrationError)\("([a-z_]+)"/g,
+                      /(?:EnvError|RefError|TargetError|SnapshotError|IntegrationError|VmError)\("([a-z_]+)"/g,
+                      /"(vm_[a-z_]+_invalid)"/g, /, "([a-z_]+_invalid)"\)/g,
                       /"([a-z]+_too_long)"/g, /_check_ipv4\([^()]*,\s*"([a-z]+_[a-z_]+)"\)/g]) {
       for (const m of src.matchAll(re)) found.add(m[1]);
     }
@@ -106,7 +121,11 @@ it('every error code the deploy routes can return has its own message', () => {
   expect(codes).toContain('snapshot_in_use');
   expect(codes).toContain('rollback_not_latest');
   for (const code of ['integration_not_configured', 'publish_off', 'nothing_to_claim', 'claim_conflict',
-                      'token_invalid', 'npm_url_invalid', 'secret_required', 'publish_not_allowed']) {
+                      'token_invalid', 'npm_url_invalid', 'secret_required', 'publish_not_allowed',
+                      'proxmox_url_invalid', 'node_invalid', 'template_vmid_invalid', 'proxmox_token_invalid',
+                      'tls_untrusted', 'tls_mismatch', 'integration_in_use', 'vm_cores_invalid', 'vm_disk_shrink',
+                      'vm_ip_invalid', 'ip_in_use', 'adopt_not_allowed', 'host_ip_managed', 'target_kind_locked',
+                      'vm_snapshot_not_found', 'vm_snapshot_keys_changed', 'not_proxmox', 'vm_not_ready']) {
     expect(codes).toContain(code);
   }
   const missing = codes.filter((c) => sirdar.errorText(new ApiError(400, c), '__none__') === '__none__');
@@ -171,4 +190,11 @@ it('secret_required shows the reason the API gives', () => {
   const err = new ApiError(422, 'secret_required',
     { code: 'secret_required', reason: 'Enter the token again: the zone changed.' });
   expect(sirdar.deployErrorText(err, 'x')).toBe('Enter the token again: the zone changed.');
+});
+
+it('integration_in_use names the environments that still use it', () => {
+  expect(sirdar.deployErrorText(new ApiError(409, 'integration_in_use',
+    { code: 'integration_in_use', environments: ['uat3', 'uat4'] }), 'x'))
+    .toBe('Environments still use it: uat3, uat4. Delete them first.');
+  expect(sirdar.INTEGRATION_LABEL.proxmox).toBe('Proxmox');
 });
