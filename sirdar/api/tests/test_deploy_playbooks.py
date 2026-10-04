@@ -67,8 +67,8 @@ def test_publish_and_teardown_plans():
 
 
 def test_plans():
-    assert [s.number for s in steps.STEPS] == [1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11, 12, 13, 14,
-                                               15, 16, 17]
+    assert [s.number for s in steps.STEPS] == [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11, 12,
+                                               13, 14, 15, 15, 16, 17]
     assert [s.number for s in steps.plan_for("update")] == [1, 2, 3, 4, 5, 6, 10]
     build = ["preflight", "bootstrap", "fetch", "render", "build"]
     # a seeded first deploy backs up whatever database is already there
@@ -87,7 +87,7 @@ def test_plans():
         with pytest.raises(ValueError):
             steps.plan_for(mode, restore=restore)
     for mode in steps.MODES:
-        numbers = [s.number for s in steps.plan_for(mode)]
+        numbers = [s.number for s in steps.plan_for(mode, vm=mode == "vm_restore")]
         assert numbers == sorted(set(numbers)), f"{mode}: numbers must rise"
     assert steps.STEPS_BY_KEY["up"].timeout >= 30 * 60
     assert steps.STEPS_BY_KEY["build"].timeout >= 60 * 60
