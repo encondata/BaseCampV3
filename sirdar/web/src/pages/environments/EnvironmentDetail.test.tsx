@@ -13,6 +13,7 @@ vi.mock('@portal/auth/AuthContext', () => ({
 const api = vi.hoisted(() => ({
   getEnvironment: vi.fn(), getDeployTargets: vi.fn(), startDeployment: vi.fn(), trustKnownHost: vi.fn(),
   listDeployments: vi.fn(), updateEnvironment: vi.fn(), getEnvironmentDefaults: vi.fn(),
+  listSnapshots: vi.fn(),
 }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 vi.mock('./DeploymentView', () => ({ default: ({ id }: { id: string }) => <div>deployment view {id}</div> }));
@@ -30,6 +31,7 @@ beforeEach(() => {
   api.getEnvironment.mockResolvedValue(ENV);
   api.getDeployTargets.mockResolvedValue(TARGETS);
   api.listDeployments.mockResolvedValue({ deployments: [summary(RUNNING), ADOPTED] });
+  api.listSnapshots.mockResolvedValue({ snapshots: [] });
 });
 afterEach(cleanup);
 
@@ -199,4 +201,11 @@ describe('while the environment is deploying', () => {
     await tick(ENV_POLL_MS * 4);
     expect(api.getEnvironment).toHaveBeenCalledTimes(3);
   });
+});
+
+it('the Overview names the seed snapshot the first deploy restores', async () => {
+  api.getEnvironment.mockResolvedValue({ ...ENV, current_sha: null, status: 'new', last_deployment: null,
+                                         seed_snapshot: { id: 's1', name: 'dev-2026-10-04' } });
+  show();
+  expect(await screen.findByText('dev-2026-10-04 (the first deploy restores it)')).toBeTruthy();
 });
