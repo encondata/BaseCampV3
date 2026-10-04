@@ -36,14 +36,17 @@ export default function PublishTab({ env, onStarted, onChanged }: {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState<'' | 'switch' | 'claim' | 'publish'>('');
+  const [loading, setLoading] = useState(true);
   const seq = useRef(0);
 
-  // Only the newest request's answer lands.
+  // Only the newest request's answer lands; Refresh waits for it.
   const load = useCallback(() => {
     const n = ++seq.current;
+    setLoading(true);
     return getPublishPlan(env.name)
       .then((p) => { if (n === seq.current) { setPlan(p); setError(''); } })
-      .catch((e) => { if (n === seq.current) setError(deployErrorText(e, "Couldn't read what publishing would do.")); });
+      .catch((e) => { if (n === seq.current) setError(deployErrorText(e, "Couldn't read what publishing would do.")); })
+      .finally(() => { if (n === seq.current) setLoading(false); });
   }, [env.name]);
   // A publish job keeps the environment's status, so "running" also reads its
   // latest deployment. A deployment that ends may have published: read again.
@@ -91,11 +94,14 @@ export default function PublishTab({ env, onStarted, onChanged }: {
     <section className="sirdar-section">
       <div className="sirdar-section-head">
         <h2>Publish</h2>
-        <button type="button" className="mini-btn" onClick={() => void load()}>Refresh</button>
+        <button type="button" className="mini-btn" disabled={loading} onClick={() => void load()}>
+          {loading ? 'Refreshing…' : 'Refresh'}
+        </button>
       </div>
       <div className="sirdar-publish-switch">
         <span className="field-label" id="publish-switch-label">Publish DNS and proxy</span>
-        <div className="segmented" role="radiogroup" aria-labelledby="publish-switch-label">
+        <div className="segmented" role="radiogroup" aria-labelledby="publish-switch-label"
+             title={mayChange && running ? 'A deployment is running.' : undefined}>
           {SWITCH.map(([value, label]) => (
             <button key={label} type="button" role="radio" aria-checked={env.publish === value}
                     aria-disabled={switchLocked} className={env.publish === value ? 'on' : ''}
@@ -108,6 +114,7 @@ export default function PublishTab({ env, onStarted, onChanged }: {
             ? 'Each deploy ends by bringing the DNS records and proxy hosts below up to date, then checks every public URL.'
             : 'Deploys leave DNS and the proxy as they are.'}
         </p>
+        {mayChange && running && <p className="page-hint">Publish can't change while a deployment is running.</p>}
       </div>
       {plan && !configured && (
         <p className="page-hint">
@@ -135,7 +142,8 @@ export default function PublishTab({ env, onStarted, onChanged }: {
             </div>,
           ],
         }))}
-        emptyText={plan === null ? 'Loading…' : 'This environment has no public services.'}
+        emptyText={plan !== null ? 'This environment has no public services.'
+          : loading ? 'Loading…' : "Couldn't load the publish plan."}
       />
       {plan && plan.stale.length > 0 && (
         <p className="page-hint">

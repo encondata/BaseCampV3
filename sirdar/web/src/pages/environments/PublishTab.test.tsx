@@ -15,10 +15,12 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 
-import type { Environment } from '../../lib/sirdarApi';
+import { ApiError } from '@portal/lib/api';
+
+import type { Environment, PublishPlan } from '../../lib/sirdarApi';
 
 import PublishTab from './PublishTab';
-import { ENV, PUBLISHED_ENV, PUBLISHING, PUBLISH_PLAN } from './testData';
+import { ENV, PUBLISHED_ENV, PUBLISHING, PUBLISH_PLAN, summary } from './testData';
 
 beforeEach(() => {
   perms.add = true; perms.change = true;
@@ -144,4 +146,39 @@ it('a certificate that waits for its proxy host reads neutrally, not as an error
   expect(within(cert).getByText('Unknown').className).not.toMatch(/c-red/);
   expect(within(cert).getByText('Waits for the proxy host.')).toBeTruthy();
   expect(screen.queryByRole('alert')).toBeNull();
+});
+
+it('a failed first load shows the error and stops saying Loading', async () => {
+  api.getPublishPlan.mockRejectedValue(new ApiError(500, 'server_error', { code: 'server_error' }));
+  show();
+  expect(await screen.findByText("Couldn't load the publish plan.")).toBeTruthy();
+  expect(screen.getByRole('alert').textContent).toBe("Couldn't read what publishing would do.");
+  expect(screen.queryByText('Loading…')).toBeNull();
+});
+
+it('Refresh is disabled and says so while a read is in flight', async () => {
+  let release: (p: PublishPlan) => void = () => {};
+  api.getPublishPlan.mockImplementation(() => new Promise((r) => { release = r; }));
+  show();
+  const refresh = screen.getByRole('button', { name: 'Refreshing…' }) as HTMLButtonElement;
+  expect(refresh.disabled).toBe(true);
+  release(PUBLISH_PLAN);
+  await waitFor(() => expect((screen.getByRole('button', { name: 'Refresh' }) as HTMLButtonElement).disabled).toBe(false));
+  await userEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  expect((screen.getByRole('button', { name: 'Refreshing…' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(api.getPublishPlan).toHaveBeenCalledTimes(2);
+  release(PUBLISH_PLAN);
+  await screen.findByRole('button', { name: 'Refresh' });
+});
+
+it('while a deployment runs the switch is locked and says why', async () => {
+  show({ ...PUBLISHED_ENV, last_deployment: summary(PUBLISHING) });
+  await screen.findByRole('table', { name: 'Public names' });
+  const group = screen.getByRole('radiogroup', { name: 'Publish DNS and proxy' });
+  expect(group.getAttribute('title')).toBe('A deployment is running.');
+  expect(within(group).getByRole('radio', { name: 'Off' }).getAttribute('aria-disabled')).toBe('true');
+  expect(screen.getByText("Publish can't change while a deployment is running.")).toBeTruthy();
+  await userEvent.click(within(group).getByRole('radio', { name: 'Off' }));
+  expect(api.updateEnvironment).not.toHaveBeenCalled();
+  expect((screen.getByRole('button', { name: 'Publish now' }) as HTMLButtonElement).title).toBe('A deployment is running.');
 });
