@@ -16,6 +16,8 @@ from .integration_helpers import NPM_PASSWORD
 CERTBOT_BUSY = ("Command failed: certbot certonly ... Another instance of Certbot is already "
                 "running.")
 CHALLENGE_FAILED = "Some challenges have failed."
+OTHER_CERTBOT = "Command failed: certbot certonly ... urn:ietf:params:acme:error:rateLimited"
+REQUIRED_HOST_FIELDS = ("domain_names", "forward_scheme", "forward_host", "forward_port")
 
 
 class FakeNpm:
@@ -33,6 +35,10 @@ class FakeNpm:
         self.renewed: list[int] = []
         self.expire_tokens = False     # the next authenticated call finds its token expired
         self.down = False
+        self.legacy_errors = False     # certbot text in error.message (else in debug.stack)
+        self.cert_errors = 0           # the next N certificate calls fail some other way
+        self.host_errors = 0           # the next N proxy-host calls answer a plain 500
+        self.last_error: str | None = None
         self._ids = itertools.count(1)
 
     def add_host(self, domain: str, forward_host: str, forward_port: int, **over) -> int:
@@ -64,17 +70,31 @@ class FakeNpm:
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handler)
 
-    @staticmethod
-    def _error(status: int, message: str) -> httpx.Response:
+    def _error(self, status: int, message: str) -> httpx.Response:
+        self.last_error = message
         return httpx.Response(status, json={"error": {"code": status, "message": message}})
+
+    def _command_error(self, text: str) -> httpx.Response:
+        """NPM 2.x hides a CommandError: the message is "Internal Error" and
+        certbot's output is only in debug."""
+        if self.legacy_errors:
+            return self._error(500, text)
+        self.last_error = "Internal Error"
+        return httpx.Response(500, json={
+            "error": {"code": 500, "message": "Internal Error"},
+            "debug": {"stack": [f"CommandError: {text}", "    at /app/lib/utils.js:16:13"],
+                      "previous": {"code": 1, "public": False}}})
 
     def _certbot(self, domains: list[str]) -> httpx.Response | None:
         if self.certbot_busy:
             self.certbot_busy -= 1
-            return self._error(500, CERTBOT_BUSY)
+            return self._command_error(CERTBOT_BUSY)
         if self.challenge_fails:
             self.challenge_fails -= 1
-            return self._error(500, CHALLENGE_FAILED)
+            return self._command_error(CHALLENGE_FAILED)
+        if self.cert_errors:
+            self.cert_errors -= 1
+            return self._command_error(OTHER_CERTBOT)
         return None
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -97,6 +117,9 @@ class FakeNpm:
             self.expire_tokens = False
         if request.headers.get("authorization", "").removeprefix("Bearer ") not in self.tokens:
             return self._error(401, "Token has expired")
+        if path.startswith("/api/nginx/proxy-hosts") and self.host_errors:
+            self.host_errors -= 1
+            return self._error(500, "Internal Error")
         if path == "/api/nginx/proxy-hosts":
             if method == "GET":
                 return httpx.Response(200, json=list(self.hosts.values()))
@@ -104,6 +127,13 @@ class FakeNpm:
             extra = sorted(set(body) - set(npm.HOST_FIELDS))
             if extra:
                 return self._error(400, f"data should NOT have additional properties ({extra[0]})")
+            for name in REQUIRED_HOST_FIELDS:
+                if name not in body:
+                    return self._error(400, f"data must have required property '{name}'")
+            served = {d.lower() for h in self.hosts.values() for d in h["domain_names"]}
+            for domain in body["domain_names"]:
+                if domain.lower() in served:
+                    return self._error(400, f"{domain.lower()} is already in use")
             rest = {k: v for k, v in body.items()
                     if k not in ("domain_names", "forward_host", "forward_port")}
             hid = self.add_host(body["domain_names"][0], body["forward_host"],
@@ -127,6 +157,10 @@ class FakeNpm:
             if method == "GET":
                 return httpx.Response(200, json=list(self.certs.values()))
             body = json.loads(request.content)
+            if body.get("provider") != "letsencrypt":
+                return self._error(400, "data/provider must be equal to one of the allowed values")
+            if (body.get("meta") or {}).get("letsencrypt_agree") is not True:
+                return self._error(400, "data/meta/letsencrypt_agree must be true")
             self.cert_requests.append(list(body["domain_names"]))
             failed = self._certbot(body["domain_names"])
             if failed is not None:

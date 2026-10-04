@@ -168,3 +168,94 @@ def test_expiry_math_is_in_days():
     later = NOW + timedelta(days=31, hours=12)
     cert = Certificate(id=1, provider="other", domain_names=("x.y.z",), expires_on=later)
     assert npm.days_left(cert, NOW) == pytest.approx(31.5)
+
+
+async def test_certbot_text_in_the_debug_stack_is_retried():
+    """NPM 2.x answers a certbot failure with "Internal Error" and puts the
+    certbot output in debug.stack; the marker is found there."""
+    fake = FakeNpm()
+    fake.certbot_busy = 1
+    sleeps = []
+    async with _client(fake, sleeps) as api:
+        await api.request_certificate("api.uat2.serversherpa.com", "ops@example.com")
+    assert sleeps == [30]
+    assert len(fake.cert_requests) == 2
+
+
+async def test_certbot_text_in_the_message_is_retried_too():
+    fake = FakeNpm()
+    fake.legacy_errors = True
+    fake.certbot_busy, fake.challenge_fails = 1, 1
+    sleeps = []
+    async with _client(fake, sleeps) as api:
+        await api.request_certificate("api.uat2.serversherpa.com", "ops@example.com")
+    assert sleeps == [30, 60]
+
+
+async def test_an_unmatched_certificate_500_is_our_certificate_copy():
+    fake = FakeNpm(now=NOW)
+    cid = fake.add_cert(["api.uat.serversherpa.com"], days=5)
+    fake.cert_errors = 2
+    sleeps = []
+    async with _client(fake, sleeps) as api:
+        with pytest.raises(NpmError) as e:
+            await api.request_certificate("api.uat2.serversherpa.com", "ops@example.com")
+        assert e.value.reason.startswith(
+            "Nginx Proxy Manager couldn't get a certificate for api.uat2.serversherpa.com.")
+        with pytest.raises(NpmError) as e:
+            await api.renew_certificate(cid, "api.uat.serversherpa.com")
+        assert e.value.reason.startswith(
+            "Nginx Proxy Manager couldn't get a certificate for api.uat.serversherpa.com.")
+    assert sleeps == []
+    assert "debug" not in e.value.reason and "Internal Error" not in e.value.reason
+
+
+async def test_a_500_elsewhere_stays_generic():
+    fake = FakeNpm()
+    fake.host_errors = 1
+    async with _client(fake) as api:
+        with pytest.raises(NpmError) as e:
+            await api.proxy_hosts()
+    assert e.value.reason == "Nginx Proxy Manager answered with HTTP 500."
+
+
+async def test_the_fake_refuses_what_npm_refuses():
+    fake = FakeNpm()
+    fake.add_host("api.uat.serversherpa.com", "10.10.48.63", 8000)
+    full = {"forward_scheme": "http", "forward_host": "10.10.48.63", "forward_port": 8100}
+    async with _client(fake) as api:
+        with pytest.raises(NpmError) as e:
+            await api.create_host({"domain_names": ["API.uat.serversherpa.com"], **full})
+        assert e.value.reason == "Nginx Proxy Manager answered with HTTP 400."
+        assert fake.last_error == "api.uat.serversherpa.com is already in use"
+        for missing in ("domain_names", "forward_scheme", "forward_host", "forward_port"):
+            body = {"domain_names": ["portal.uat.serversherpa.com"], **full}
+            del body[missing]
+            with pytest.raises(NpmError):
+                await api.create_host(body)
+            assert fake.last_error == f"data must have required property '{missing}'"
+    assert len(fake.hosts) == 1
+
+
+async def test_the_fake_checks_certificate_requests():
+    fake = FakeNpm()
+    async with _client(fake) as api:
+        for body in ({"provider": "other", "domain_names": ["a.serversherpa.com"],
+                      "meta": {"letsencrypt_agree": True}},
+                     {"provider": "letsencrypt", "domain_names": ["a.serversherpa.com"],
+                      "meta": {"letsencrypt_agree": False}}):
+            with pytest.raises(NpmError):
+                await api._call("POST", "/nginx/certificates", json=body)
+    assert fake.certs == {}
+
+
+def test_covers_ignores_the_hostname_case():
+    cert = Certificate(id=1, provider="letsencrypt", domain_names=("*.uat.serversherpa.com",),
+                       expires_on=None)
+    assert npm.covers(cert, "API.UAT.serversherpa.com")
+
+
+def test_reprs_hide_the_password():
+    assert NPM_PASSWORD not in repr(CFG)
+    assert NPM_PASSWORD not in repr(Npm(CFG))
+    assert NPM_PASSWORD not in repr(vars(Npm(CFG)))

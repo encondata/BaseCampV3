@@ -6,8 +6,17 @@ when a call answers 401. NPM's hourly certbot renew can hold certbot's lock
 ("Another instance of Certbot is already running"), and a name Cloudflare
 just published may not be visible to Let's Encrypt yet ("Some challenges
 have failed"): certificate requests that fail for those reasons are retried
-after each CERT_BACKOFF wait. The password goes only into the login body;
-errors carry our own copy, never NPM's or httpx's text."""
+after each CERT_BACKOFF wait. NPM 2.x answers a certbot failure with
+"Internal Error" and puts certbot's output in the response's debug block, so
+the fixed markers are looked for anywhere in the body text (only matched,
+never echoed); any other certificate failure gets our certificate copy.
+
+A certificate request that times out may still have been issued by NPM:
+callers re-list certificates (and reuse one that covers the name) before
+requesting again.
+
+The password goes only into the login body; errors carry our own copy, never
+NPM's or httpx's text."""
 
 import asyncio
 from collections.abc import Awaitable, Callable
@@ -40,14 +49,15 @@ _UNEXPECTED = "Nginx Proxy Manager sent a response Sirdar didn't understand."
 class NpmError(Exception):
     """`reason` is user-facing copy we wrote."""
 
-    def __init__(self, reason: str):
+    def __init__(self, reason: str, status: int | None = None):
         super().__init__(reason)
         self.reason = reason
+        self.status = status  # the HTTP status NPM answered with, when it did
 
 
 class NotFound(NpmError):
     def __init__(self):
-        super().__init__("Nginx Proxy Manager has no such item.")
+        super().__init__("Nginx Proxy Manager has no such item.", 404)
 
 
 class _Retryable(NpmError):
@@ -91,6 +101,7 @@ def parse_expiry(value) -> datetime | None:
 
 def covers(cert: Certificate, hostname: str) -> bool:
     """The certificate names the host, or is a wildcard for its parent."""
+    hostname = hostname.lower()
     parent = hostname.split(".", 1)[1] if "." in hostname else ""
     return hostname in cert.domain_names or (bool(parent) and f"*.{parent}" in cert.domain_names)
 
@@ -121,14 +132,6 @@ def _certificate(raw) -> Certificate:
                            expires_on=parse_expiry(raw.get("expires_on")))
     except (KeyError, TypeError, ValueError, AttributeError):
         raise NpmError(_UNEXPECTED) from None
-
-
-def _message(resp: httpx.Response) -> str:
-    try:
-        error = resp.json().get("error")
-        return str(error.get("message") or "") if isinstance(error, dict) else ""
-    except (ValueError, AttributeError):
-        return ""
 
 
 def _cert_failed(domain: str) -> str:
@@ -198,11 +201,12 @@ class Npm:
         if resp.status_code == 404:
             raise NotFound()
         if resp.status_code >= 400:
-            message = _message(resp)
+            text = resp.text
             for marker, why in _RETRYABLE.items():
-                if marker in message:
+                if marker in text:
                     raise _Retryable(why)
-            raise NpmError(f"Nginx Proxy Manager answered with HTTP {resp.status_code}.")
+            raise NpmError(f"Nginx Proxy Manager answered with HTTP {resp.status_code}.",
+                           resp.status_code)
         try:
             return resp.json()
         except ValueError:
@@ -253,6 +257,12 @@ class Npm:
                 if out is not None:
                     out(f"{domain}: {e.why}; trying again in {wait} s\n")
                 await self._sleep(wait)
+            except NotFound:
+                raise
+            except NpmError as e:
+                if e.status is not None and e.status >= 500:
+                    raise NpmError(_cert_failed(domain), e.status) from None
+                raise
         raise NpmError(_cert_failed(domain))
 
     async def request_certificate(self, domain: str, email: str,
