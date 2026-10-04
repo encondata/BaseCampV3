@@ -397,3 +397,94 @@ async def test_a_replaced_certificate_another_host_uses_stays(db, env, publish_f
     lines = await _run(db, env, "proxy")
     assert new not in proxy.certs
     assert f"api.uat2.serversherpa.com: deleted the old certificate #{new}\n" in lines
+
+
+# ---- deletes check the live object is still Sirdar's ---------------------------------
+
+LEFT = "left in place: it no longer matches what Sirdar made.\n"
+
+
+async def test_undns_leaves_records_that_no_longer_match(db, env, publish_fakes):
+    """A created row's id now names something else (renamed, retyped or
+    relabeled by hand): the row is forgotten and the record survives."""
+    cf = publish_fakes.cf
+    renamed = cf.add("A", "shop.serversherpa.com", PUBLIC_IP,
+                     comment="Managed by Sirdar (uat2/api)")
+    retyped = cf.add("CNAME", "portal.uat2.serversherpa.com", "elsewhere.example.com")
+    relabeled = cf.add("A", "kiosk.uat2.serversherpa.com", PUBLIC_IP, comment="by hand, keep")
+    mine = cf.add("A", "wiki.uat2.serversherpa.com", PUBLIC_IP,
+                  comment="Managed by Sirdar (uat2/wiki)")
+    for service, rid in (("api", renamed), ("portal", retyped), ("kiosk", relabeled),
+                         ("wiki", mine)):
+        await managed(db, env, service, DNS, rid)
+    lines = await _run(db, env, "undns")
+    assert sorted(cf.records) == sorted([renamed, retyped, relabeled])
+    assert f"api.uat2.serversherpa.com: DNS record #{renamed} {LEFT}" in lines
+    assert f"portal.uat2.serversherpa.com: DNS record #{retyped} {LEFT}" in lines
+    assert f"kiosk.uat2.serversherpa.com: DNS record #{relabeled} {LEFT}" in lines
+    assert "wiki.uat2.serversherpa.com: deleted the A record\n" in lines
+    assert await _rows(db) == []
+
+
+async def test_dns_stale_drop_leaves_a_record_that_no_longer_matches(db, env, publish_fakes):
+    cf = publish_fakes.cf
+    repurposed = cf.add("A", "shop.serversherpa.com", "198.51.100.9")
+    await managed(db, env, "api", DNS, repurposed, name="api.old.serversherpa.com")
+    lines = await _run(db, env, "dns")
+    assert cf.records[repurposed]["name"] == "shop.serversherpa.com"
+    assert f"api.old.serversherpa.com: DNS record #{repurposed} {LEFT}" in lines
+    assert ("api.uat2.serversherpa.com: created A 203.0.113.7\n") in lines
+    rows = {(s, k): e for s, k, e, _ in await _rows(db)}
+    assert rows[("api", DNS)] != repurposed
+
+
+async def test_unproxy_leaves_hosts_and_certificates_that_no_longer_match(db, env,
+                                                                          publish_fakes):
+    proxy = publish_fakes.npm
+    widened = proxy.add_host("api.uat2.serversherpa.com", "10.10.48.63", 8000)
+    proxy.hosts[widened]["domain_names"].append("shop.example.com")
+    reused = proxy.add_host("legacy.example.com", "10.10.48.9", 80)
+    custom = proxy.add_cert(["kiosk.uat2.serversherpa.com"], provider="other")
+    renamed = proxy.add_cert(["shop.example.com"])
+    mine = proxy.add_cert(["wiki.uat2.serversherpa.com"])
+    for service, kind, ext in (("api", PROXY, widened), ("portal", PROXY, reused),
+                               ("kiosk", CERT, custom), ("status", CERT, renamed),
+                               ("wiki", CERT, mine)):
+        await managed(db, env, service, kind, ext)
+    lines = await _run(db, env, "unproxy")
+    assert sorted(proxy.hosts) == sorted([widened, reused])
+    assert sorted(proxy.certs) == sorted([custom, renamed])
+    assert f"api.uat2.serversherpa.com: Proxy host #{widened} {LEFT}" in lines
+    assert f"portal.uat2.serversherpa.com: Proxy host #{reused} {LEFT}" in lines
+    assert f"kiosk.uat2.serversherpa.com: Certificate #{custom} {LEFT}" in lines
+    assert f"status.uat2.serversherpa.com: Certificate #{renamed} {LEFT}" in lines
+    assert f"wiki.uat2.serversherpa.com: deleted the certificate #{mine}\n" in lines
+    assert await _rows(db) == []
+
+
+async def test_proxy_stale_drop_leaves_a_host_that_no_longer_matches(db, env, publish_fakes):
+    proxy = publish_fakes.npm
+    repurposed = proxy.add_host("legacy.example.com", "10.10.48.9", 80)
+    other_cert = proxy.add_cert(["legacy.example.com"])
+    await managed(db, env, "api", PROXY, repurposed, name="api.old.serversherpa.com")
+    await managed(db, env, "api", CERT, other_cert, name="api.old.serversherpa.com")
+    lines = await _run(db, env, "proxy")
+    assert repurposed in proxy.hosts and other_cert in proxy.certs
+    assert f"api.old.serversherpa.com: Proxy host #{repurposed} {LEFT}" in lines
+    assert f"api.old.serversherpa.com: Certificate #{other_cert} {LEFT}" in lines
+    assert "api.uat2.serversherpa.com: created a proxy host to 10.10.48.63:8000\n" in lines
+
+
+async def test_a_replaced_certificate_that_no_longer_matches_stays(db, env, publish_fakes):
+    """Sirdar's earlier certificate id now names someone else's certificate
+    (NPM rebuilt): the new one is requested, the other is left alone."""
+    proxy = publish_fakes.npm
+    api_host = proxy.add_host("api.uat2.serversherpa.com", "10.10.48.63", 8000)
+    theirs = proxy.add_cert(["shop.example.com"], days=60)
+    await managed(db, env, "api", PROXY, api_host)
+    await managed(db, env, "api", CERT, theirs)
+    lines = await _run(db, env, "proxy")
+    new = proxy.hosts[api_host]["certificate_id"]
+    assert new != theirs and theirs in proxy.certs
+    assert f"api.uat2.serversherpa.com: Certificate #{theirs} {LEFT}" in lines
+    assert not any("deleted the old certificate" in line for line in lines)

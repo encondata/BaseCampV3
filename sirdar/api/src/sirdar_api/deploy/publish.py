@@ -513,15 +513,57 @@ async def _forget(row_id) -> None:
         await s.commit()
 
 
+# Before deleting by id, the live object must still be what Sirdar made: ids
+# can be reused (NPM's are small integers and restart when NPM is rebuilt),
+# and an entry can be repurposed by hand. One that no longer matches is only
+# forgotten.
+
+SIRDAR_COMMENT = "Managed by Sirdar"
+
+
+def _left_in_place(row: ManagedRecord, what: str, external_id) -> str:
+    return (f"{row.name}: {what} #{external_id} left in place: it no longer matches what "
+            "Sirdar made.\n")
+
+
+def still_sirdars_record(found: DnsRecord, name: str) -> bool:
+    """An A record at the name; a comment, when it has one, still Sirdar's."""
+    return (found.type == "A" and found.name == name
+            and (not found.comment or found.comment.startswith(SIRDAR_COMMENT)))
+
+
+def still_sirdars_host(found: ProxyHost, name: str) -> bool:
+    return found.domain_names == (name,)
+
+
+def still_sirdars_certificate(found: Certificate, name: str) -> bool:
+    """Sirdar only requests Let's Encrypt certificates for exactly one name."""
+    return found.provider == "letsencrypt" and name in found.domain_names
+
+
 # DNS
 
-async def _drop_dns(api: Cloudflare | None, row: ManagedRecord, out: Output) -> None:
+async def _drop_dns(api: Cloudflare | None, row: ManagedRecord, out: Output,
+                    records: list[DnsRecord] | None) -> bool:
+    """Delete a created record (when it still matches) and forget the row.
+    `records` is the zone as read in this step. True when the record is
+    gone; False when it stays (claimed, or no longer Sirdar's)."""
+    gone = False
     if row.origin == "created":
-        deleted = await api.delete(row.external_id)
-        out(f"{row.name}: {'deleted the A record' if deleted else 'already gone'}\n")
+        found = next((r for r in records if r.id == row.external_id), None)
+        if found is None:
+            out(f"{row.name}: already gone\n")
+            gone = True
+        elif not still_sirdars_record(found, row.name):
+            out(_left_in_place(row, "DNS record", row.external_id))
+        else:
+            deleted = await api.delete(row.external_id)
+            out(f"{row.name}: {'deleted the A record' if deleted else 'already gone'}\n")
+            gone = True
     else:
         out(f"{row.name}: left in place (claimed, not made by Sirdar)\n")
     await _forget(row.id)
+    return gone
 
 
 async def ensure_dns(ctx: PublishContext, out: Output, *, transport) -> None:
@@ -534,10 +576,9 @@ async def ensure_dns(ctx: PublishContext, out: Output, *, transport) -> None:
         dns_rows = {k: r for k, r in rows.items() if k[1] == DNS}
         dropped = set()
         for row in stale_rows(dns_rows, ctx.services):
-            await _drop_dns(api, row, out)
-            dropped.add((row.service, row.kind))
-            if row.origin == "created":
+            if await _drop_dns(api, row, out, records):
                 records = [r for r in records if r.id != row.external_id]
+            dropped.add((row.service, row.kind))
         rows = {k: r for k, r in rows.items() if k not in dropped}
         plan = [(s, dns_status(s, records, current_row(rows, s, DNS), owners, zone=cfg.zone,
                                public_ip=cfg.public_ip)) for s in ctx.services]
@@ -563,12 +604,13 @@ async def remove_dns(ctx: PublishContext, out: Output, *, transport) -> None:
         return
     if not any(r.origin == "created" for r in rows):
         for row in rows:
-            await _drop_dns(None, row, out)
+            await _drop_dns(None, row, out, None)
         return
     cfg = _need_to_remove(ctx.cloudflare, "Cloudflare")
     async with Cloudflare(cfg, transport=transport) as api:
+        records = await api.records()
         for row in rows:
-            await _drop_dns(api, row, out)
+            await _drop_dns(api, row, out, records)
 
 
 # Proxy hosts and certificates
@@ -605,26 +647,39 @@ def _in_use(name: str, cert_id, host_id: int) -> str:
     return f"{name}: Certificate #{cert_id} left in place: proxy host #{host_id} still uses it.\n"
 
 
-async def _drop_npm(api: Npm | None, row: ManagedRecord, out: Output) -> None:
-    """Delete what Sirdar created and forget the row. A certificate a host
-    that stays (e.g. a claimed one) still uses is only forgotten: deleting
-    it would leave NPM pointing at missing files."""
+async def _drop_npm(api: Npm | None, row: ManagedRecord, out: Output) -> bool:
+    """Delete what Sirdar created and forget the row. The live host or
+    certificate is read first: one that no longer matches what Sirdar made
+    is only forgotten. So is a certificate a host that stays (e.g. a claimed
+    one) still uses: deleting it would leave NPM pointing at missing files.
+    True when the entry is gone; False when it stays."""
     what = "proxy host" if row.kind == PROXY else "certificate"
-    if row.origin == "created":
-        user = None if row.kind == PROXY else await _host_using(api, int(row.external_id))
-        if user is not None:
-            out(_in_use(row.name, row.external_id, user))
-            await _forget(row.id)
-            return
-        if row.kind == PROXY:
-            deleted = await api.delete_host(int(row.external_id))
-        else:
-            deleted = await api.delete_certificate(int(row.external_id))
-        out(f"{row.name}: {'deleted the' if deleted else 'already gone:'} {what} "
-            f"#{row.external_id}\n")
-    else:
+    if row.origin != "created":
         out(f"{row.name}: left the {what} in place (claimed, not made by Sirdar)\n")
+        await _forget(row.id)
+        return False
+    ext = int(row.external_id)
+    if row.kind == PROXY:
+        found = next((h for h in await api.proxy_hosts() if h.id == ext), None)
+        matches = found is not None and still_sirdars_host(found, row.name)
+    else:
+        found = next((c for c in await api.certificates() if c.id == ext), None)
+        matches = found is not None and still_sirdars_certificate(found, row.name)
+    gone = True
+    if found is None:
+        out(f"{row.name}: already gone: {what} #{ext}\n")
+    elif not matches:
+        out(_left_in_place(row, what.capitalize(), ext))
+        gone = False
+    elif row.kind == CERT and (user := await _host_using(api, ext)) is not None:
+        out(_in_use(row.name, ext, user))
+        gone = False
+    else:
+        deleted = (await api.delete_host(ext) if row.kind == PROXY
+                   else await api.delete_certificate(ext))
+        out(f"{row.name}: {'deleted the' if deleted else 'already gone:'} {what} #{ext}\n")
     await _forget(row.id)
+    return gone
 
 
 async def _issued_anyway(api: Npm, hostname: str,
@@ -683,6 +738,14 @@ async def _delete_replaced(api: Npm, hostname: str, cert_id: int, out: Output) -
     """Sirdar's earlier certificate for the name, already forgotten (the new
     one took its row): deleted unless a host still uses it."""
     try:
+        found = next((c for c in await api.certificates() if c.id == cert_id), None)
+        if found is None:
+            out(f"{hostname}: the old certificate #{cert_id} is already gone\n")
+            return
+        if not still_sirdars_certificate(found, hostname):
+            out(f"{hostname}: Certificate #{cert_id} left in place: it no longer matches what "
+                "Sirdar made.\n")
+            return
         user = await _host_using(api, cert_id)
         if user is not None:
             out(_in_use(hostname, cert_id, user))
@@ -706,9 +769,10 @@ async def ensure_proxy(ctx: PublishContext, out: Output, *, transport,
         npm_rows = {k: r for k, r in rows.items() if k[1] in (PROXY, CERT)}
         dropped = set()
         for row in sorted(stale_rows(npm_rows, ctx.services), key=lambda r: r.kind != PROXY):
-            await _drop_npm(api, row, out)       # hosts before the certificates they use
+            # Hosts before the certificates they use.
+            removed = await _drop_npm(api, row, out)
             dropped.add((row.service, row.kind))
-            if row.origin == "created":
+            if removed:
                 gone = int(row.external_id)
                 if row.kind == PROXY:
                     hosts = [h for h in hosts if h.id != gone]
