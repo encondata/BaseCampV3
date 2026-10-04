@@ -8,6 +8,7 @@ Errors are ProxmoxError with our own copy, never Proxmox's text or the
 token."""
 
 import asyncio
+import functools
 import ssl
 import time
 from collections.abc import Awaitable, Callable
@@ -26,6 +27,8 @@ TLS_CHANGED = ("The Proxmox server's certificate isn't the one Sirdar trusts. If
                "renewed on purpose, trust the new one in Settings › Integrations › Proxmox.")
 _GB = 1024 ** 3
 _SKIPPED_IFACES = ("docker", "br-", "veth")
+_BRIDGE_TYPES = ("bridge", "OVSBridge")
+MALFORMED = "Proxmox answered in a way Sirdar doesn't understand."
 
 
 class ProxmoxError(Exception):
@@ -58,12 +61,47 @@ def _tls_refused(exc: BaseException) -> bool:
     return False
 
 
+def _parsed(parse):
+    """Decorator: a payload that isn't the shape we read (KeyError,
+    TypeError, ValueError, AttributeError) is a ProxmoxError, never a crash."""
+    @functools.wraps(parse)
+    async def wrapper(*args, **kwargs):
+        try:
+            return await parse(*args, **kwargs)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise ProxmoxError(MALFORMED) from None
+    return wrapper
+
+
+def _duration(seconds: int) -> str:
+    if seconds < 120:
+        return f"{seconds} second{'' if seconds == 1 else 's'}"
+    return f"{seconds // 60} minutes"
+
+
 def _reason(status: int, what: str) -> str:
     if status == 401:
         return "Proxmox rejected the API token."
     if status == 403:
         return f"The API token isn't allowed to {what}. Check its privileges (see the README)."
     return f"Proxmox couldn't {what} (HTTP {status})."
+
+
+def _list(data) -> list:
+    """A JSON list from Proxmox (TypeError, so MALFORMED, when it isn't)."""
+    if data is None:
+        return []
+    if not isinstance(data, list):
+        raise TypeError("expected a list")
+    return data
+
+
+def _dict(data) -> dict:
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise TypeError("expected an object")
+    return data
 
 
 class Proxmox:
@@ -105,53 +143,74 @@ class Proxmox:
         try:
             return resp.json()["data"]
         except (ValueError, KeyError, TypeError):
-            raise ProxmoxError("Proxmox answered with something Sirdar can't read.") from None
+            raise ProxmoxError(MALFORMED) from None
 
     def _vm(self, vmid: int) -> str:
         return f"/nodes/{self._node}/qemu/{int(vmid)}"
 
+    @_parsed
     async def version(self) -> str:
         data = await self._call("GET", "/version", "read its version")
         return str((data or {}).get("version", ""))
 
+    @_parsed
     async def nodes(self) -> list[str]:
         data = await self._call("GET", "/nodes", "list the nodes")
-        return [str(n.get("node")) for n in data or []]
+        return [str(n["node"]) for n in _list(data)]
 
+    @_parsed
     async def next_vmid(self) -> int:
-        try:
-            return int(await self._call("GET", "/cluster/nextid", "reserve a VM id"))
-        except (TypeError, ValueError):
-            raise ProxmoxError("Proxmox answered with something Sirdar can't read.") from None
+        return int(await self._call("GET", "/cluster/nextid", "reserve a VM id"))
 
+    @_parsed
     async def pool_vmids(self) -> set[int]:
-        data = await self._call("GET", f"/pools/{quote(self._cfg.pool, safe='')}",
-                                "read the pool")
-        return {int(m["vmid"]) for m in (data or {}).get("members", []) if "vmid" in m}
+        """The pool's VM ids (storage members have no vmid). GET /pools?poolid=
+        (PVE 8.1+); the older GET /pools/{id} only when that form answers 400
+        or 501."""
+        pool = self._cfg.pool
+        try:
+            data = await self._call("GET", "/pools", "read the pool", params={"poolid": pool})
+            found = [p for p in _list(data) if p["poolid"] == pool]
+            if not found:
+                raise ProxmoxError(f"Proxmox has no pool named {pool}.")
+            members = found[0].get("members") or []
+        except ProxmoxError as e:
+            if e.status not in (400, 501):
+                raise
+            data = await self._call("GET", f"/pools/{quote(pool, safe='')}", "read the pool")
+            members = (data or {}).get("members") or []
+        return {int(m["vmid"]) for m in _list(members) if m.get("vmid") is not None}
 
+    @_parsed
     async def vms(self) -> dict[int, dict]:
         data = await self._call("GET", f"/nodes/{self._node}/qemu", "list the VMs")
         return {int(v["vmid"]): {
             "name": str(v.get("name") or ""), "status": str(v.get("status") or ""),
             "template": bool(v.get("template")),
             "tags": tuple(t for t in str(v.get("tags") or "").replace(",", ";").split(";") if t)}
-            for v in data or []}
+            for v in _list(data)}
 
+    @_parsed
     async def vm_config(self, vmid: int) -> dict:
-        return await self._call("GET", f"{self._vm(vmid)}/config", "read the VM's settings") or {}
+        return _dict(await self._call("GET", f"{self._vm(vmid)}/config",
+                                      "read the VM's settings"))
 
+    @_parsed
     async def status(self, vmid: int) -> str:
         data = await self._call("GET", f"{self._vm(vmid)}/status/current", "read the VM's state")
-        return str((data or {}).get("status", ""))
+        return str(_dict(data).get("status", ""))
 
+    @_parsed
     async def storage_status(self) -> dict:
         path = f"/nodes/{self._node}/storage/{quote(self._cfg.storage, safe='')}/status"
-        return await self._call("GET", path, "read the storage") or {}
+        return _dict(await self._call("GET", path, "read the storage"))
 
+    @_parsed
     async def bridge(self) -> dict:
         path = f"/nodes/{self._node}/network/{quote(self._cfg.bridge, safe='')}"
-        return await self._call("GET", path, "read the network bridge") or {}
+        return _dict(await self._call("GET", path, "read the network bridge"))
 
+    @_parsed
     async def agent_ipv4(self, vmid: int) -> list[str]:
         """The VM's IPv4 addresses in the agent's interface order, without
         loopback, Docker's own interfaces (docker0, br-*, veth*) and
@@ -159,26 +218,28 @@ class Proxmox:
         data = await self._call("GET", f"{self._vm(vmid)}/agent/network-get-interfaces",
                                 "ask the guest agent for the VM's addresses", agent=True)
         found: list[str] = []
-        for iface in (data or {}).get("result", []):
+        for iface in _list(_dict(data).get("result") or []):
             name = str(iface.get("name", ""))
             if name == "lo" or name.startswith(_SKIPPED_IFACES):
                 continue
-            for addr in iface.get("ip-addresses", []):
+            for addr in _list(iface.get("ip-addresses") or []):
                 ip = str(addr.get("ip-address", ""))
                 if (addr.get("ip-address-type") == "ipv4" and ip
                         and not ip.startswith("169.254.") and ip not in found):
                     found.append(ip)
         return found
 
+    @_parsed
     async def agent_file(self, vmid: int, path: str) -> str:
         data = await self._call("GET", f"{self._vm(vmid)}/agent/file-read",
                                 "read a file through the guest agent", params={"file": path},
                                 agent=True)
-        return str((data or {}).get("content", ""))
+        return str(_dict(data).get("content", ""))
 
+    @_parsed
     async def snapshots(self, vmid: int) -> list[dict]:
         data = await self._call("GET", f"{self._vm(vmid)}/snapshot", "list the VM snapshots")
-        return [s for s in data or [] if s.get("name") != "current"]
+        return [s for s in _list(data) if s["name"] != "current"]
 
     async def take_snapshot(self, vmid: int, name: str, description: str) -> None:
         upid = await self._call("POST", f"{self._vm(vmid)}/snapshot", "take a VM snapshot",
@@ -202,10 +263,15 @@ class Proxmox:
 
     async def wait(self, upid, what: str) -> None:
         """Until Proxmox's task `upid` stops; its exit status must be OK."""
+        if not isinstance(upid, str) or not upid.startswith("UPID:"):
+            raise ProxmoxError(f"Proxmox didn't return a task id ({what}), so Sirdar "
+                               "can't follow it.")
         deadline = time.monotonic() + self._task_timeout
         path = f"/nodes/{self._node}/tasks/{quote(str(upid), safe='')}/status"
         while True:
-            data = await self._call("GET", path, f"follow the task ({what})") or {}
+            data = await self._call("GET", path, f"follow the task ({what})")
+            if not isinstance(data, dict):
+                raise ProxmoxError(MALFORMED)
             if data.get("status") == "stopped":
                 exit_status = str(data.get("exitstatus") or "")
                 if exit_status == "OK" or exit_status.startswith("WARNINGS"):
@@ -214,7 +280,7 @@ class Proxmox:
                                    "See the task log in Proxmox.")
             if time.monotonic() >= deadline:
                 raise ProxmoxError(f"Proxmox didn't finish ({what}) in "
-                                   f"{self._task_timeout // 60} minutes.")
+                                   f"{_duration(int(self._task_timeout))}.")
             await self._sleep(self._poll)
 
 
@@ -265,7 +331,7 @@ async def test_connection(cfg: ProxmoxConfig, *,
 
         async def bridge() -> Check:
             try:
-                await api.bridge()
+                iface = await api.bridge()
             except ProxmoxError as e:
                 if e.status == 403:
                     return Check("Bridge", "warn", f"{cfg.bridge} · can't check it (the token "
@@ -274,6 +340,8 @@ async def test_connection(cfg: ProxmoxConfig, *,
                     return Check("Bridge", "fail", f"No bridge named {cfg.bridge} on "
                                                    f"{cfg.node}.")
                 raise
+            if iface.get("type") not in _BRIDGE_TYPES:
+                return Check("Bridge", "fail", f"{cfg.bridge} isn't a bridge.")
             return Check("Bridge", "pass",
                          cfg.bridge + (f" · VLAN {cfg.vlan_tag}" if cfg.vlan_tag else ""))
 

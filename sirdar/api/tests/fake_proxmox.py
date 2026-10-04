@@ -22,10 +22,14 @@ class FakeProxmox:
             "name": "ubuntu-2404-template", "template": 1, "status": "stopped", "tags": "",
             "config": {"agent": "1", "scsi0": "local-lvm:base-9000-disk-0,size=3584M"}}}
         self.pool_members: set[int] = {TEMPLATE}
+        self.pool_storage = [{"id": "storage/pve/local-lvm", "type": "storage",
+                              "storage": "local-lvm", "node": "pve"}]   # members without a vmid
         self.next_id = 120
         self.storage = {"active": 1, "enabled": 1, "content": "images,rootdir",
                         "avail": 500 * 1024 ** 3, "total": 900 * 1024 ** 3}
         self.bridges = {"vmbr0"}
+        self.iface_types: dict[str, str] = {}   # iface -> type, default "bridge"
+        self.answer: dict[tuple[str, str], object] = {}   # (method, path) -> raw data
         self.agent: dict[int, dict] = {}         # vmid -> {"ips": [...], "host_key": str}
         self.snaps: dict[int, list[dict]] = {}
         self.tasks: dict[str, str] = {}
@@ -61,6 +65,10 @@ class FakeProxmox:
         self.polls[upid] = 0
         return upid
 
+    def _members(self) -> list[dict]:
+        return [*({"vmid": v, "type": "qemu", "id": f"qemu/{v}"}
+                  for v in sorted(self.pool_members)), *self.pool_storage]
+
     @staticmethod
     def _ok(data) -> httpx.Response:
         return httpx.Response(200, json={"data": data})
@@ -80,6 +88,8 @@ class FakeProxmox:
             return self._err(401)
         if (method, path) in self.fail:
             return self._err(self.fail[(method, path)])
+        if (method, path) in self.answer:
+            return self._ok(self.answer[(method, path)])
         form = parse_qs(request.content.decode()) if request.content else {}
         n = f"/nodes/{self.node}"
         if path == "/version":
@@ -88,9 +98,12 @@ class FakeProxmox:
             return self._ok([{"node": self.node, "status": "online"}])
         if path == "/cluster/nextid":
             return self._ok(str(self.next_id))
-        if path == f"/pools/{self.pool}":
-            return self._ok({"members": [{"vmid": v, "type": "qemu"}
-                                         for v in sorted(self.pool_members)]})
+        if path == "/pools":                    # PVE 8.1+: ?poolid=<id>, a list
+            wanted = request.url.params.get("poolid")
+            pools = [{"poolid": self.pool, "members": self._members()}]
+            return self._ok([p for p in pools if wanted in (None, p["poolid"])])
+        if path == f"/pools/{self.pool}":       # the older (now deprecated) form
+            return self._ok({"members": self._members()})
         if path == f"{n}/qemu":
             return self._ok([{"vmid": v, "name": d["name"], "status": d["status"],
                               "template": d["template"], "tags": d["tags"]}
@@ -99,7 +112,8 @@ class FakeProxmox:
             return self._ok(self.storage)
         bridge = re.fullmatch(rf"{n}/network/([^/]+)", path)
         if bridge:
-            return (self._ok({"iface": bridge[1], "type": "bridge"})
+            return (self._ok({"iface": bridge[1],
+                              "type": self.iface_types.get(bridge[1], "bridge")})
                     if bridge[1] in self.bridges else self._err(500))
         task = re.fullmatch(rf"{n}/tasks/([^/]+)/status", path)
         if task:

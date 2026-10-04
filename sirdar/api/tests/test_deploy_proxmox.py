@@ -48,7 +48,7 @@ async def test_problems_show_as_failed_checks():
     fake.vms[9000]["template"] = 0
     fake.storage["active"] = 0
     fake.bridges = set()
-    fake.fail[("GET", "/pools/sirdar")] = 403
+    fake.fail[("GET", "/pools")] = 403
     result = await proxmox.test_connection(CFG, transport=fake.transport())
     assert not result.ok
     by = {c.label: (c.status, c.value) for c in result.checks}
@@ -142,7 +142,7 @@ async def test_a_failed_task_and_a_task_that_never_ends():
     async with api(fake, task_timeout=0) as px:
         with pytest.raises(ProxmoxError) as e:
             await px.start(120)
-    assert e.value.reason == "Proxmox didn't finish (start the VM) in 0 minutes."
+    assert e.value.reason == "Proxmox didn't finish (start the VM) in 0 seconds."
 
 
 async def test_errors_carry_our_copy_never_the_token():
@@ -161,3 +161,110 @@ async def test_the_real_transport_is_guarded(no_real_http):
             await px.version()
     assert no_real_http == ["10.10.48.5"]
     no_real_http.clear()
+
+
+async def test_the_pool_uses_the_query_form_and_skips_members_without_a_vmid():
+    fake = FakeProxmox()
+    fake.add_vm(120, "ss-uat3")
+    async with api(fake) as px:
+        assert await px.pool_vmids() == {120, 9000}
+    assert ("GET", "/pools") in fake.requests
+    assert ("GET", "/pools/sirdar") not in fake.requests
+
+
+@pytest.mark.parametrize("status", [400, 501])
+async def test_the_pool_falls_back_to_the_path_form_on_older_proxmox(status):
+    fake = FakeProxmox()
+    fake.add_vm(120, "ss-uat3")
+    fake.fail[("GET", "/pools")] = status
+    async with api(fake) as px:
+        assert await px.pool_vmids() == {120, 9000}
+    assert ("GET", "/pools/sirdar") in fake.requests
+
+
+async def test_the_pool_does_not_fall_back_on_other_errors():
+    fake = FakeProxmox()
+    fake.fail[("GET", "/pools")] = 500
+    async with api(fake) as px:
+        with pytest.raises(ProxmoxError) as e:
+            await px.pool_vmids()
+    assert e.value.status == 500
+    assert ("GET", "/pools/sirdar") not in fake.requests
+
+
+async def test_a_bridge_check_needs_a_bridge_interface():
+    fake = FakeProxmox()
+    fake.iface_types["vmbr0"] = "OVSBridge"
+    result = await proxmox.test_connection(CFG, transport=fake.transport())
+    assert {c.label: c.status for c in result.checks}["Bridge"] == "pass"
+    fake.iface_types["vmbr0"] = "eth"
+    result = await proxmox.test_connection(CFG, transport=fake.transport())
+    by = {c.label: (c.status, c.value) for c in result.checks}
+    assert by["Bridge"] == ("fail", "vmbr0 isn't a bridge.")
+    assert not result.ok
+
+
+@pytest.mark.parametrize("path, data, call", [
+    ("/nodes/pve/qemu", [{"name": "no-vmid"}], lambda px: px.vms()),
+    ("/nodes/pve/qemu", [{"vmid": "abc"}], lambda px: px.vms()),
+    ("/nodes/pve/qemu", {"not": "a list"}, lambda px: px.vms()),
+    ("/pools", [{"poolid": "sirdar", "members": [{"vmid": "x"}]}], lambda px: px.pool_vmids()),
+    ("/pools", "nonsense", lambda px: px.pool_vmids()),
+    ("/nodes", [None], lambda px: px.nodes()),
+    ("/version", ["9.0"], lambda px: px.version()),
+    ("/nodes/pve/qemu/120/agent/network-get-interfaces", {"result": [None]},
+     lambda px: px.agent_ipv4(120)),
+    ("/nodes/pve/qemu/120/snapshot", [None], lambda px: px.snapshots(120)),
+    ("/nodes/pve/qemu/120/status/current", ["running"], lambda px: px.status(120)),
+])
+async def test_malformed_answers_are_a_proxmox_error(path, data, call):
+    fake = FakeProxmox()
+    fake.add_vm(120, "ss-uat3")
+    fake.answer[("GET", path)] = data
+    async with api(fake) as px:
+        with pytest.raises(ProxmoxError) as e:
+            await call(px)
+    assert e.value.reason == "Proxmox answered in a way Sirdar doesn't understand."
+
+
+@pytest.mark.parametrize("upid", [None, 42, {"x": 1}, "", "not-a-upid", "upid:lower"])
+async def test_wait_refuses_something_that_isnt_a_task_id(upid):
+    fake = FakeProxmox()
+    async with api(fake) as px:
+        with pytest.raises(ProxmoxError) as e:
+            await px.wait(upid, "start the VM")
+    assert e.value.reason == ("Proxmox didn't return a task id (start the VM), so Sirdar "
+                              "can't follow it.")
+    assert not any("/tasks/" in p for _, p in fake.requests)
+
+
+async def test_a_start_that_answers_without_a_task_id_is_refused():
+    fake = FakeProxmox()
+    fake.add_vm(120, "ss-uat3", status="stopped")
+    fake.answer[("POST", "/nodes/pve/qemu/120/status/start")] = None
+    async with api(fake) as px:
+        with pytest.raises(ProxmoxError):
+            await px.start(120)
+
+
+@pytest.mark.parametrize("seconds, copy", [(0, "0 seconds"), (90, "90 seconds"),
+                                           (119, "119 seconds"), (120, "2 minutes"),
+                                           (900, "15 minutes")])
+async def test_the_task_timeout_copy(seconds, copy, monkeypatch):
+    fake = FakeProxmox()
+    fake.add_vm(120, "ss-uat3", status="stopped")
+    fake.running_polls = 10 ** 6
+    clock = iter(range(0, 10 ** 6, 1000))
+    monkeypatch.setattr(proxmox.time, "monotonic", lambda: next(clock))
+    async with api(fake, task_timeout=seconds) as px:
+        with pytest.raises(ProxmoxError) as e:
+            await px.start(120)
+    assert e.value.reason == f"Proxmox didn't finish (start the VM) in {copy}."
+
+
+async def test_a_missing_pool_is_named():
+    fake = FakeProxmox(pool="other")
+    async with api(fake) as px:
+        with pytest.raises(ProxmoxError) as e:
+            await px.pool_vmids()
+    assert e.value.reason == "Proxmox has no pool named sirdar."
