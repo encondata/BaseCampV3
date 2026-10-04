@@ -824,12 +824,13 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
             snapshot = await snapshots.ready_snapshot(db, dep.snapshot_id)
         except snapshots.SnapshotError as e:
             raise _snapshot_http(e) from None
-    if dep.mode == "publish":
-        if not vault.is_configured(get_settings()):
-            raise HTTPException(status_code=400, detail={"code": "secrets_key_missing"})
-    else:
+    # As the pipeline does: with no host step left to run (a publish job, or
+    # a retry of only steps 12–14 or 16–17) there is no target to connect to.
+    if any(s.runs == "ansible" for s in plan if s.number >= from_step):
         cfg = _deploy_target(env)
         await _pinned(db, cfg)
+    elif not vault.is_configured(get_settings()):
+        raise HTTPException(status_code=400, detail={"code": "secrets_key_missing"})
     if dep.mode == "teardown":
         await _require_integrations(db, env, teardown=True)
     elif dep.mode == "publish" or publishing:

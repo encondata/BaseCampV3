@@ -297,3 +297,25 @@ async def test_a_data_retry_drops_publishing_when_the_switch_is_off(
     got = (await client.get(f"/api/deploy/deployments/{retry['id']}", headers=h)).json()
     assert got["status"] == "succeeded"
 
+
+
+async def test_a_delete_retry_past_the_host_step_needs_no_ssh(client, db, ready, fake_runner,
+                                                             fake_publisher, no_leaks):
+    await configure(db)
+    fake_publisher.fail["unproxy"] = "npm down"
+    h = await auth_headers(client, db)
+    body = (await client.post(START, headers=h,
+                              json={"mode": "teardown", "confirm_name": "uat"})).json()
+    await _finish(body)
+    # The host is gone from Sirdar's settings (and its key with it).
+    ready.target_id = "ssh:gone"
+    await db.commit()
+    fake_publisher.fail.clear()
+    requests = len(fake_runner.requests)
+    resp = await client.post(f"/api/deploy/deployments/{body['id']}/retry", headers=h,
+                             json={"confirm_name": "uat"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["start_step"] == 16
+    await _finish(resp.json())
+    assert len(fake_runner.requests) == requests
+    assert (await client.get(ENV_URL, headers=h)).status_code == 404
