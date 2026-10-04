@@ -1,6 +1,6 @@
 /** The Snapshots section on /deploy: every snapshot, Upload, Take snapshot
- *  and Delete. A snapshot being taken links to its job and the list reloads
- *  until it ends. */
+ *  and Delete. A snapshot being taken (or that failed) links to its job, and
+ *  the list reloads until it ends. */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -63,7 +63,8 @@ export default function SnapshotsSection() {
     } catch (e) { setError(errorText(e, "Couldn't delete that snapshot.")); }
   };
 
-  const status = (s: Snapshot) => (s.status === 'pending' && s.deployment_id
+  // A failed one links too: its job's log says why.
+  const status = (s: Snapshot) => ((s.status === 'pending' || s.status === 'failed') && s.deployment_id
     ? <><StatusChip map={SNAPSHOT_STATUS} status={s.status} />{' '}
         <Link to={`/deploy/environments/${encodeURIComponent(s.source)}?deployment=${encodeURIComponent(s.deployment_id)}`}>
           View the job</Link></>

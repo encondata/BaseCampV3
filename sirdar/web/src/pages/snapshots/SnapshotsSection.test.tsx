@@ -87,6 +87,21 @@ it('a snapshot being taken links to its job, and the list reloads until it is do
   expect(api.listSnapshots).toHaveBeenCalledTimes(2);
 });
 
+it('a failed taken snapshot links to its job so the reason is reachable; a failed upload has none', async () => {
+  api.listSnapshots.mockResolvedValue({ snapshots: [
+    { ...SNAP_TAKING, status: 'failed' },
+    { ...SNAP, id: 's3', name: 'broken-upload', status: 'failed' },
+  ] });
+  show();
+  const table = await screen.findByRole('table');
+  const links = await within(table).findAllByRole('link', { name: 'View the job' });
+  expect(links).toHaveLength(1);
+  expect(links[0].getAttribute('href')).toBe('/deploy/environments/uat?deployment=d9');
+  const taken = within(table).getByText('uat-2026-10-04').closest('tr') as HTMLElement;
+  expect(within(taken).getByText('Failed')).toBeTruthy();
+  expect(within(taken).getByRole('link', { name: 'View the job' })).toBeTruthy();
+});
+
 it('deletes after a confirmation', async () => {
   const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
   show();
