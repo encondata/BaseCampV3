@@ -757,6 +757,16 @@ async def _start_publish(db, env: Environment, request: Request, actor: AuthCont
                          mode="publish", git_ref=env.git_ref, sha=env.current_sha)
 
 
+async def _vm_snapshot_restorable(db, env: Environment, name: str) -> None:
+    """409 vm_snapshot_keys_changed when a snapshot restore replaced the
+    sign-in keys after the VM snapshot was taken."""
+    changed_at = (await environments.key_changes(db, env.id)).changed_at
+    reason = vms.snapshot_blocked(name, changed_at)
+    if reason is not None:
+        raise HTTPException(status_code=409, detail={"code": "vm_snapshot_keys_changed",
+                                                     "reason": reason})
+
+
 async def _start_vm_restore(db, env: Environment, name: str, request: Request,
                             actor: AuthContext) -> dict:
     """Restore VM snapshot: the VM back to a snapshot Sirdar took for this
@@ -771,11 +781,7 @@ async def _start_vm_restore(db, env: Environment, name: str, request: Request,
     taking = (await vms.taking_deployments(db, env.id)).get(name)
     if taking is None or not taking.previous_sha:
         raise HTTPException(status_code=404, detail={"code": "vm_snapshot_not_found"})
-    changed_at = (await environments.key_changes(db, env.id)).changed_at
-    reason = vms.snapshot_blocked(name, changed_at)
-    if reason is not None:
-        raise HTTPException(status_code=409, detail={"code": "vm_snapshot_keys_changed",
-                                                     "reason": reason})
+    await _vm_snapshot_restorable(db, env, name)
     return await _launch(db, env, request, actor, action="deploy.deployment_start",
                          mode="vm_restore", git_ref=taking.previous_sha,
                          sha=taking.previous_sha, vm=True, vm_snapshot=name)
@@ -958,6 +964,10 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
             await _pinned(db, cfg)
     elif not vault.is_configured(get_settings()):
         raise HTTPException(status_code=400, detail={"code": "secrets_key_missing"})
+    if dep.mode == "vm_restore":
+        # As at the start: the sign-in keys may have changed since the
+        # failed attempt (a snapshot restore), so the VM snapshot's are gone.
+        await _vm_snapshot_restorable(db, env, dep.vm_snapshot)
     if dep.mode == "teardown":
         await _require_integrations(db, env, teardown=True)
     elif dep.mode == "publish" or publishing:

@@ -263,3 +263,35 @@ async def test_an_unreadable_vm_key(client, db, px, fake_runner, fake_provisione
                              json={"mode": "teardown", "confirm_name": "uat3"})
     assert resp.status_code == 201, resp.text
     await _finish(resp.json())
+
+
+async def test_a_vm_restore_retry_checks_the_sign_in_keys_again(client, db, px, fake_runner,
+                                                                fake_provisioner):
+    """A snapshot restore after the failed Restore VM snapshot replaced the
+    sign-in keys: retrying would bring back keys that exist nowhere."""
+    h = await auth_headers(client, db)
+    created = await _uat3(client, h, current_sha=SHA, db=db)
+    env_id = uuid.UUID(created["id"])
+    await _taken(db, env_id)
+    fake_provisioner.fail["vm_restore"] = "Proxmox said no."
+    good = {"mode": "vm_restore", "vm_snapshot": SNAP, "confirm_name": "uat3"}
+    resp = await client.post(f"{UAT3}/deployments", headers=h, json=good)
+    assert resp.status_code == 201, resp.text
+    failed = resp.json()
+    await _finish(failed)
+    retry = f"/api/deploy/deployments/{failed['id']}/retry"
+    # The keys change after the failure (a snapshot restore's step finished
+    # later than the VM snapshot was taken), with the failed restore still latest.
+    restoring = Deployment(environment_id=env_id, mode="reset", git_ref="main", sha=SHA,
+                           status="succeeded", start_step=1,
+                           created_at=vms.snapshot_taken_at(SNAP) - timedelta(days=1))
+    db.add(restoring)
+    await db.flush()
+    db.add(DeploymentStep(deployment_id=restoring.id, number=9, key="restore",
+                          name="Restore snapshot", status="succeeded",
+                          finished_at=vms.snapshot_taken_at(SNAP) + timedelta(hours=1)))
+    await db.commit()
+    resp = await client.post(retry, headers=h, json={"from_step": 0, "confirm_name": "uat3"})
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "vm_snapshot_keys_changed")
+    assert resp.json()["detail"]["reason"].startswith("Taken before the sign-in keys changed")
+    assert fake_provisioner.calls == ["vm_restore"]
