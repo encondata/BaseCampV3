@@ -13,7 +13,7 @@ vi.mock('@portal/auth/AuthContext', () => ({
 const api = vi.hoisted(() => ({
   getEnvironment: vi.fn(), getDeployTargets: vi.fn(), startDeployment: vi.fn(), trustKnownHost: vi.fn(),
   listDeployments: vi.fn(), updateEnvironment: vi.fn(), getEnvironmentDefaults: vi.fn(),
-  listSnapshots: vi.fn(),
+  listSnapshots: vi.fn(), listBackups: vi.fn(),
 }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 vi.mock('./DeploymentView', () => ({ default: ({ id }: { id: string }) => <div>deployment view {id}</div> }));
@@ -21,7 +21,7 @@ vi.mock('./DeploymentView', () => ({ default: ({ id }: { id: string }) => <div>d
 import { ApiError } from '@portal/lib/api';
 
 import EnvironmentDetail, { ENV_POLL_MS } from './EnvironmentDetail';
-import { ADOPTED, DEFAULTS, ENV, RUNNING, TARGETS, summary } from './testData';
+import { ADOPTED, BACKUPS, DEFAULTS, ENV, RUNNING, TARGETS, summary } from './testData';
 
 Element.prototype.scrollIntoView = () => {};
 beforeEach(() => {
@@ -32,6 +32,7 @@ beforeEach(() => {
   api.getDeployTargets.mockResolvedValue(TARGETS);
   api.listDeployments.mockResolvedValue({ deployments: [summary(RUNNING), ADOPTED] });
   api.listSnapshots.mockResolvedValue({ snapshots: [] });
+  api.listBackups.mockResolvedValue({ backups: BACKUPS });
 });
 afterEach(cleanup);
 
@@ -208,4 +209,15 @@ it('the Overview names the seed snapshot the first deploy restores', async () =>
                                          seed_snapshot: { id: 's1', name: 'dev-2026-10-04' } });
   show();
   expect(await screen.findByText('dev-2026-10-04 (the first deploy restores it)')).toBeTruthy();
+});
+
+it('the Backups tab restores a dump and then follows it on the Deployments tab', async () => {
+  api.startDeployment.mockResolvedValue({ ...RUNNING, id: 'd7', mode: 'restore_dump' });
+  show();
+  await userEvent.click(await screen.findByRole('tab', { name: 'Backups' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Restore 20261004T010203Z.dump' }));
+  await userEvent.type(screen.getByLabelText('Type uat to confirm'), 'uat');
+  await userEvent.click(screen.getByRole('button', { name: 'Restore backup' }));
+  expect(await screen.findByText('deployment view d7')).toBeTruthy();
+  expect(screen.getByRole('tab', { name: 'Deployments' }).getAttribute('aria-selected')).toBe('true');
 });
