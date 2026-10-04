@@ -1,8 +1,10 @@
 # Step 15 — Remove environment (Delete environment only): stop every stack
 # and delete its volumes and network (ss-stack down --volumes), then delete
 # the environment's folder: checkout, .env and backups. Images stay: another
-# environment on this host may run the same commit. A folder without a .env
-# or ss-stack (never deployed, half bootstrapped) is simply deleted. Steps
+# environment on this host may run the same commit. A .env whose STACK_ENV
+# names another environment stops it before anything is removed. A folder
+# without a .env or ss-stack (never deployed, half bootstrapped) is simply
+# deleted. Steps
 # 16 and 17 then remove the proxy hosts and DNS records Sirdar made.
 - name: Remove environment
   hosts: target
@@ -27,6 +29,32 @@
       ansible.builtin.stat:
         path: "{{ env_dir }}/.env"
       register: env_file
+
+    # ss-stack down --volumes removes the volumes of the stack the .env's
+    # STACK_ENV names, whatever folder it sits in: it must be this one. Read
+    # as ss-stack reads it (the last assignment wins, quotes dropped); the
+    # value is only compared and shown, never run. Without a .env (never
+    # deployed) there is no stack to take down.
+    - name: Read the .env
+      ansible.builtin.slurp:
+        src: "{{ env_dir }}/.env"
+      register: env_text
+      when: env_file.stat.exists
+
+    - name: Only this environment's stack
+      ansible.builtin.assert:
+        that:
+          - stack_env == env_name
+        fail_msg: >-
+          The .env in {{ env_dir }} belongs to {{ stack_env or 'no environment' }},
+          not {{ env_name }}; nothing was removed.
+        quiet: true
+      vars:
+        stack_env: >-
+          {{ env_text.content | b64decode
+             | regex_findall('(?m)^STACK_ENV=(.*)$') | last | default('', true)
+             | trim | trim('"') | trim("'") }}
+      when: env_file.stat.exists
 
     - name: Look for ss-stack
       ansible.builtin.stat:

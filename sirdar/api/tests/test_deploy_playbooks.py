@@ -487,6 +487,8 @@ def _teardown_target(tmp_path: Path, *, test_root: bool = True) -> tuple[Path, d
     """_target, with the controller-side test root pointing at tmp_path
     (the only way to move the root away from /opt/serversherpa)."""
     env_dir, env = _target(tmp_path)
+    env_file = env_dir / ".env"
+    env_file.write_text(env_file.read_text().replace("STACK_ENV=e2e", "STACK_ENV=env"))
     env.pop(TEST_ROOT_ENV, None)
     if test_root:
         env[TEST_ROOT_ENV] = str(tmp_path)
@@ -500,7 +502,7 @@ def test_teardown_playbook_stops_everything_and_removes_the_folder(tmp_path):
     assert [c.split(" -f ")[-1] for c in calls if c.startswith("compose")] == [
         f"{env_dir}/repo/deploy/stack/{s}/compose.yml down --volumes"
         for s in ("status", "web", "api", "storage", "db")]
-    assert "network rm ss-e2e" in calls
+    assert "network rm ss-env" in calls
     assert not env_dir.exists()
     assert (REPO / "deploy" / "stack" / "ss-stack").is_file()      # the symlink went, not this
 
@@ -514,6 +516,40 @@ def test_teardown_playbook_gives_ss_stack_no_stdin():
     assert argv[:2] == ["sh", "-c"]
     assert argv[2] == 'exec "$0" down "$1" --volumes </dev/null'
     assert argv[3:] == ["{{ ss_stack }}", "{{ env_dir }}"]      # arguments, never script text
+
+
+@pytest.mark.parametrize("line, owner", [
+    ("STACK_ENV=prod", "prod"),
+    ("STACK_ENV='prod'", "prod"),
+    ("STACK_ENV=", "no environment"),
+    ("# no STACK_ENV", "no environment"),
+    ("STACK_ENV={{ 7*7 }}", "{{ 7*7 }}"),        # shown, never templated
+])
+def test_teardown_playbook_refuses_another_environments_env_file(tmp_path, line, owner):
+    """ss-stack down --volumes acts on the stack the .env names: one that
+    names another environment (or none) would take that one's volumes."""
+    env_dir, env = _teardown_target(tmp_path)
+    env_file = env_dir / ".env"
+    text = env_file.read_text().replace("STACK_ENV=env\n", "")
+    first = "" if line.startswith("#") else "STACK_ENV=env\n"   # the last assignment wins
+    env_file.write_text(f"{first}{text}{line}\n")
+    (env_dir / "sentinel").write_text("keep")
+    result, calls = _play(tmp_path, "teardown.yml", _teardown_vars(env_dir), env)
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert calls == [], calls
+    assert (env_dir / "sentinel").read_text() == "keep" and env_file.is_file()
+    assert (f"The .env in {env_dir} belongs to {owner}, not env; nothing was removed."
+            in result.stdout), out
+
+
+def test_teardown_playbook_reads_a_quoted_stack_env(tmp_path):
+    env_dir, env = _teardown_target(tmp_path)
+    env_file = env_dir / ".env"
+    env_file.write_text(env_file.read_text().replace("STACK_ENV=env", 'STACK_ENV="env"'))
+    result, calls = _play(tmp_path, "teardown.yml", _teardown_vars(env_dir), env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "network rm ss-env" in calls and not env_dir.exists()
 
 
 def test_teardown_playbook_removes_a_folder_that_never_deployed(tmp_path):
