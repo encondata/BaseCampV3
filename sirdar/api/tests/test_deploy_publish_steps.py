@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -258,7 +259,8 @@ async def test_removing_only_claimed_entries_needs_no_credentials(db, secrets_ke
                               "there. Add it in Settings › Integrations, then retry.")
 
 
-def _time_out_after_issuing(publish_fakes, monkeypatch, *, issue: bool):
+def _time_out_after_issuing(publish_fakes, monkeypatch, *, issue: bool,
+                            no_expiry: bool = False):
     """NPM gets (and maybe issues) the api certificate request, but the answer
     never comes back."""
     import httpx
@@ -271,7 +273,9 @@ def _time_out_after_issuing(publish_fakes, monkeypatch, *, issue: bool):
         if (request.method == "POST" and request.url.path == "/api/nginx/certificates"
                 and b"api.uat2" in request.content):
             if issue:
-                fake.handler(request)
+                made = json.loads(fake.handler(request).content)
+                if no_expiry:
+                    fake.certs[made["id"]]["expires_on"] = None
             raise httpx.ReadTimeout("timed out", request=request)
         return fake.handler(request)
 
@@ -303,4 +307,93 @@ async def test_proxy_fails_when_a_timed_out_request_issued_nothing(db, env, publ
     with pytest.raises(StepFailed) as e:
         await _run(db, env, "proxy")
     assert e.value.reason == "Nginx Proxy Manager didn't answer in time."
+    kinds = {(s, k) for s, k, _, _ in await _rows(db)}
+    assert ("api", PROXY) in kinds and ("api", CERT) not in kinds
+
+
+async def test_proxy_does_not_adopt_an_issued_certificate_without_an_expiry(
+        db, env, publish_fakes, monkeypatch):
+    _time_out_after_issuing(publish_fakes, monkeypatch, issue=True, no_expiry=True)
+    with pytest.raises(StepFailed) as e:
+        await _run(db, env, "proxy")
+    assert e.value.reason == "Nginx Proxy Manager didn't answer in time."
     assert ("api", CERT) not in {(s, k) for s, k, _, _ in await _rows(db)}
+
+
+# ---- a certificate a remaining proxy host uses is never deleted --------------------------
+
+async def test_unproxy_keeps_a_certificate_a_claimed_host_still_uses(db, env, publish_fakes):
+    proxy = publish_fakes.npm
+    claimed_host = proxy.add_host("api.uat2.serversherpa.com", "10.10.48.63", 8000)
+    await managed(db, env, "api", PROXY, claimed_host, origin="claimed")
+    await _run(db, env, "proxy")
+    mine = proxy.hosts[claimed_host]["certificate_id"]
+    assert mine and {(s, k): o for s, k, _, o in await _rows(db)}[("api", CERT)] == "created"
+    lines = await _run(db, env, "unproxy")
+    assert list(proxy.hosts) == [claimed_host] and list(proxy.certs) == [mine]
+    assert proxy.hosts[claimed_host]["certificate_id"] == mine
+    assert (f"api.uat2.serversherpa.com: Certificate #{mine} left in place: proxy host "
+            f"#{claimed_host} still uses it.\n") in lines
+    assert await _rows(db) == []
+
+
+async def test_proxy_removes_stale_entries_but_keeps_a_used_certificate(db, env,
+                                                                       publish_fakes):
+    """The base domain changed: created hosts and certificates under the old
+    names go, a claimed host is forgotten, and the certificate Sirdar made
+    for it stays because it still serves."""
+    proxy = publish_fakes.npm
+    old_cert = proxy.add_cert(["api.old.serversherpa.com"], days=80)
+    old_host = proxy.add_host("api.old.serversherpa.com", "10.10.48.63", 8000,
+                              certificate_id=old_cert, ssl_forced=True)
+    kept_cert = proxy.add_cert(["portal.old.serversherpa.com"], days=80)
+    kept_host = proxy.add_host("portal.old.serversherpa.com", "10.10.48.63", 8091,
+                               certificate_id=kept_cert, ssl_forced=True)
+    for service, kind, ext, origin in (("api", PROXY, old_host, "created"),
+                                       ("api", CERT, old_cert, "created"),
+                                       ("portal", PROXY, kept_host, "claimed"),
+                                       ("portal", CERT, kept_cert, "created")):
+        await managed(db, env, service, kind, ext, origin=origin,
+                      name=f"{service}.old.serversherpa.com")
+    lines = await _run(db, env, "proxy")
+    assert old_host not in proxy.hosts and old_cert not in proxy.certs
+    assert proxy.hosts[kept_host]["certificate_id"] == kept_cert and kept_cert in proxy.certs
+    assert f"api.old.serversherpa.com: deleted the proxy host #{old_host}\n" in lines
+    assert f"api.old.serversherpa.com: deleted the certificate #{old_cert}\n" in lines
+    assert not any("old certificate" in line for line in lines)   # not deleted twice
+    assert [r.url.path for r in proxy.requests if r.method == "DELETE"].count(
+        f"/api/nginx/certificates/{old_cert}") == 1
+    assert ("portal.old.serversherpa.com: left the proxy host in place (claimed, not made by "
+            "Sirdar)\n") in lines
+    assert (f"portal.old.serversherpa.com: Certificate #{kept_cert} left in place: proxy host "
+            f"#{kept_host} still uses it.\n") in lines
+    hosts = {h["domain_names"][0] for h in proxy.hosts.values()}
+    assert hosts == set(NAMES) | {"portal.old.serversherpa.com"}
+    rows = await db.scalars(select(ManagedRecord).execution_options(populate_existing=True))
+    assert {r.name for r in rows} == set(NAMES)
+
+
+async def test_a_replaced_certificate_another_host_uses_stays(db, env, publish_fakes):
+    """Sirdar's certificate for api expired (no renew: the host no longer
+    uses it), so a new one is requested; the old one is deleted only when no
+    host uses it."""
+    proxy = publish_fakes.npm
+    expired = proxy.add_cert(["api.uat2.serversherpa.com"], days=-5)
+    api_host = proxy.add_host("api.uat2.serversherpa.com", "10.10.48.63", 8000)
+    other = proxy.add_host("legacy.example.com", "10.10.48.9", 80, certificate_id=expired)
+    await managed(db, env, "api", PROXY, api_host)
+    await managed(db, env, "api", CERT, expired)
+    lines = await _run(db, env, "proxy")
+    new = proxy.hosts[api_host]["certificate_id"]
+    assert new != expired and expired in proxy.certs
+    assert (f"api.uat2.serversherpa.com: Certificate #{expired} left in place: proxy host "
+            f"#{other} still uses it.\n") in lines
+    rows = {(s, k): e for s, k, e, _ in await _rows(db)}
+    assert rows[("api", CERT)] == str(new)
+    # Unused, it goes.
+    del proxy.hosts[other]
+    proxy.certs[new]["expires_on"] = proxy.certs[expired]["expires_on"]
+    proxy.hosts[api_host]["certificate_id"] = 0
+    lines = await _run(db, env, "proxy")
+    assert new not in proxy.certs
+    assert f"api.uat2.serversherpa.com: deleted the old certificate #{new}\n" in lines

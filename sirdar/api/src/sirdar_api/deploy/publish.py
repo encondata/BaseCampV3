@@ -595,9 +595,27 @@ def host_body(host: ProxyHost, sp: ServicePlan, *, certificate_id: int | None = 
     return body
 
 
+async def _host_using(api: Npm, cert_id: int) -> int | None:
+    """A proxy host that still uses the certificate (read live, so hosts
+    deleted earlier in this run are gone from the list)."""
+    return next((h.id for h in await api.proxy_hosts() if h.certificate_id == cert_id), None)
+
+
+def _in_use(name: str, cert_id, host_id: int) -> str:
+    return f"{name}: Certificate #{cert_id} left in place: proxy host #{host_id} still uses it.\n"
+
+
 async def _drop_npm(api: Npm | None, row: ManagedRecord, out: Output) -> None:
+    """Delete what Sirdar created and forget the row. A certificate a host
+    that stays (e.g. a claimed one) still uses is only forgotten: deleting
+    it would leave NPM pointing at missing files."""
     what = "proxy host" if row.kind == PROXY else "certificate"
     if row.origin == "created":
+        user = None if row.kind == PROXY else await _host_using(api, int(row.external_id))
+        if user is not None:
+            out(_in_use(row.name, row.external_id, user))
+            await _forget(row.id)
+            return
         if row.kind == PROXY:
             deleted = await api.delete_host(int(row.external_id))
         else:
@@ -616,31 +634,34 @@ async def _issued_anyway(api: Npm, hostname: str,
     list read at the start of the step, is the answer to Sirdar's request."""
     known = {c.id for c in certs}
     new = [c for c in await api.certificates() if c.id not in known
-           and c.provider == "letsencrypt" and c.domain_names == (hostname,)]
+           and c.provider == "letsencrypt" and c.domain_names == (hostname,)
+           and c.expires_on is not None]
     return new[0] if len(new) == 1 else None
 
 
 async def _ensure_certificate(api: Npm, ctx: PublishContext, sp: ServicePlan, host: ProxyHost,
                               certs: list[Certificate], email: str, rows: dict,
-                              now: datetime, out: Output) -> int:
+                              now: datetime, out: Output) -> tuple[int, int | None]:
     """Spec: keep a covering certificate with more than RENEW_DAYS left;
     renew the host's own Let's Encrypt one when it is closer; else reuse
-    another covering one; else request one (HTTP challenge)."""
+    another covering one; else request one (HTTP challenge). Returns the
+    certificate id and, when a new one replaced Sirdar's earlier one, that
+    old id: the caller deletes it once the host has moved off it."""
     current = (next((c for c in certs if c.id == host.certificate_id), None)
                if host.certificate_id else None)
     if current is not None and covers(current, sp.hostname):
         left = days_left(current, now)
         if left is None or left > RENEW_DAYS:
-            return current.id
+            return current.id, None
         if current.provider == "letsencrypt":
             out(f"{sp.hostname}: certificate #{current.id} expires {_date(current)}; renewing\n")
             renewed = await api.renew_certificate(current.id, sp.hostname, out=out)
             certs[:] = [renewed if c.id == renewed.id else c for c in certs]
-            return renewed.id
+            return renewed.id, None
     other = usable_certificate(certs, sp.hostname, now)
     if other is not None:
         out(f"{sp.hostname}: using certificate #{other.id}\n")
-        return other.id
+        return other.id, None
     out(f"{sp.hostname}: requesting a Let's Encrypt certificate\n")
     try:
         made = await api.request_certificate(sp.hostname, email, out=out)
@@ -654,12 +675,23 @@ async def _ensure_certificate(api: Npm, ctx: PublishContext, sp: ServicePlan, ho
     await _remember(ctx.env_id, sp.service, CERT, made.id, sp.hostname)
     old = rows.get((sp.service, CERT))
     if old is not None and old.origin == "created" and old.external_id != str(made.id):
-        try:
-            await api.delete_certificate(int(old.external_id))
-        except NpmError:
-            out(f"{sp.hostname}: couldn't delete the old certificate #{old.external_id}; "
-                "it stays in Nginx Proxy Manager\n")
-    return made.id
+        return made.id, int(old.external_id)
+    return made.id, None
+
+
+async def _delete_replaced(api: Npm, hostname: str, cert_id: int, out: Output) -> None:
+    """Sirdar's earlier certificate for the name, already forgotten (the new
+    one took its row): deleted unless a host still uses it."""
+    try:
+        user = await _host_using(api, cert_id)
+        if user is not None:
+            out(_in_use(hostname, cert_id, user))
+            return
+        await api.delete_certificate(cert_id)
+        out(f"{hostname}: deleted the old certificate #{cert_id}\n")
+    except NpmError:
+        out(f"{hostname}: couldn't delete the old certificate #{cert_id}; "
+            "it stays in Nginx Proxy Manager\n")
 
 
 async def ensure_proxy(ctx: PublishContext, out: Output, *, transport,
@@ -697,12 +729,14 @@ async def ensure_proxy(ctx: PublishContext, out: Output, *, transport,
                 out(f"{s.hostname}: proxy host now goes to {s.forward}\n")
             else:
                 out(f"{s.hostname}: proxy host to {s.forward}, unchanged\n")
-            cert_id = await _ensure_certificate(api, ctx, s, found, certs,
-                                                cfg.letsencrypt_email, rows, now, out)
+            cert_id, replaced = await _ensure_certificate(api, ctx, s, found, certs,
+                                                          cfg.letsencrypt_email, rows, now, out)
             if (found.certificate_id != cert_id or not found.ssl_forced
                     or not found.http2_support):
                 await api.update_host(found.id, host_body(found, s, certificate_id=cert_id))
                 out(f"{s.hostname}: HTTPS with certificate #{cert_id}, Force SSL on\n")
+            if replaced is not None:
+                await _delete_replaced(api, s.hostname, replaced, out)
 
 
 async def remove_proxy(ctx: PublishContext, out: Output, *, transport) -> None:
