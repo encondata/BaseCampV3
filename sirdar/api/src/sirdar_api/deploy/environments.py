@@ -187,13 +187,14 @@ async def _insert(db: AsyncSession, settings: Settings, cfg: SshTargetConfig, *,
                   bind_ip: str, ports: dict[str, int], keep_dumps: int, spaces_bucket: str,
                   log_level: str, status: str, current_sha: str | None,
                   image_tag: str | None, secrets: dict[str, str],
-                  actor_id, seed_snapshot_id: uuid.UUID | None = None) -> Environment:
+                  actor_id, seed_snapshot_id: uuid.UUID | None = None,
+                  publish: bool = False) -> Environment:
     env = Environment(name=name, type=type_, target_id=target_id, base_domain=domain,
                       git_ref=git_ref, current_sha=current_sha, image_tag=image_tag,
                       status=status, proxy_ip=proxy_ip, bind_ip=bind_ip,
                       keep_dumps=keep_dumps, spaces_bucket=spaces_bucket,
                       log_level=log_level, created_by=actor_id,
-                      seed_snapshot_id=seed_snapshot_id)
+                      seed_snapshot_id=seed_snapshot_id, publish=publish)
     db.add(env)
     await db.flush()
     for service in envfile.SERVICES:
@@ -212,10 +213,12 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                      base_domain: str | None = None, proxy_ip: str | None = None,
                      bind_ip: str = DEFAULT_BIND_IP,
                      ports: dict[str, int] | None = None, actor_id=None,
-                     snapshot_id: uuid.UUID | None = None) -> Environment:
+                     snapshot_id: uuid.UUID | None = None,
+                     publish: bool = True) -> Environment:
     """A new environment (status "new"): default ports unless given, the
     target's host for every service, freshly generated secrets. With a
-    snapshot, its first deploy restores that snapshot (and its keys)."""
+    snapshot, its first deploy restores that snapshot (and its keys). With
+    publish (the default), its deploys add DNS, proxy and smoke steps."""
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
                           git_ref=git_ref)
     if snapshot_id is not None:
@@ -245,7 +248,8 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         domain=domain, proxy_ip=proxy, bind_ip=bind, ports=all_ports,
         keep_dumps=envfile.DEFAULT_KEEP_DUMPS, spaces_bucket=envfile.DEFAULT_SPACES_BUCKET,
         log_level=envfile.DEFAULT_LOG_LEVEL, status="new", current_sha=None, image_tag=None,
-        secrets=vault.generate_env_secrets(), actor_id=actor_id, seed_snapshot_id=snapshot_id)
+        secrets=vault.generate_env_secrets(), actor_id=actor_id, seed_snapshot_id=snapshot_id,
+        publish=publish)
 
 
 @dataclass(frozen=True)
@@ -413,6 +417,8 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
         put("spaces_bucket", _check_bucket(fields["spaces_bucket"]))
     if fields.get("log_level") is not None:
         put("log_level", _check_log_level(fields["log_level"]))
+    if fields.get("publish") is not None:
+        put("publish", bool(fields["publish"]))
 
     rows = {r.service: r for r in await services_of(db, env.id)}
     service_fields = fields.get("services") or {}

@@ -204,7 +204,8 @@ async def test_create_from_a_snapshot_restores_on_the_first_deploy(
     h = await auth_headers(client, db)
     snap = await _ready_snapshot(client, h, tmp_path)
     new = {"mode": "new", "name": "uat2", "type": "custom", "target": "ssh",
-           "proxy_ip": "10.10.48.6", "snapshot_id": snap["id"]}
+           "proxy_ip": "10.10.48.6", "snapshot_id": snap["id"],
+           "publish": False}            # publishing has its own tests
     resp = await client.post("/api/deploy/environments", headers=h,
                              json={**new, "snapshot_id": str(uuid.uuid4())})
     assert (resp.status_code, resp.json()) == (404, {"detail": {"code": "snapshot_not_found"}})
