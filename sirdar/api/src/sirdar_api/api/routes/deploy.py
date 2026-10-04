@@ -807,6 +807,13 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     plan = plan_for(dep.mode, restore=restoring, publish=dep.publish)
     if from_step not in [s.number for s in plan] or from_step > stopped:
         raise HTTPException(status_code=422, detail={"code": "from_step_invalid"})
+    # The Publish switch as it is now: a retry never publishes an environment
+    # whose switch was turned off since. A data retry drops steps 12–14; one
+    # that would start at them (or a publish job's retry) is refused.
+    publishing = dep.publish and env.publish
+    if not env.publish and (dep.mode == "publish" or (
+            dep.publish and from_step >= STEPS_BY_KEY["dns"].number)):
+        raise HTTPException(status_code=409, detail={"code": "publish_off"})
     if restoring and dep.snapshot_id is None:
         if from_step <= STEPS_BY_KEY["restore"].number:
             raise HTTPException(status_code=404, detail={"code": "snapshot_not_found"})
@@ -825,12 +832,12 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
         await _pinned(db, cfg)
     if dep.mode == "teardown":
         await _require_integrations(db, env, teardown=True)
-    elif dep.mode == "publish" or dep.publish:
+    elif dep.mode == "publish" or publishing:
         await _require_integrations(db, env)
     return await _launch(db, env, request, actor, action="deploy.deployment_retry",
                          mode=dep.mode, git_ref=dep.git_ref, sha=dep.sha,
                          start_step=from_step, retry_of=dep.id, snapshot=snapshot,
-                         restore_dump=dep.restore_dump, publish=dep.publish)
+                         restore_dump=dep.restore_dump, publish=publishing)
 
 
 @router.post("/deployments/{deployment_id}/rollback", status_code=201)

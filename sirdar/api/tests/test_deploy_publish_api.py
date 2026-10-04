@@ -251,3 +251,49 @@ async def test_a_claim_race_is_a_409(client, db, ready, publish_fakes, monkeypat
     assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "claim_conflict")
     assert await _audits(db, "deploy.publish_claim") == []
     assert (await client.get(ENV_URL, headers=h)).json()["managed_records"] == []
+
+
+# ---- retries follow the Publish switch -----------------------------------------------
+
+async def test_a_publish_job_retry_needs_the_switch_on(client, db, ready, fake_runner,
+                                                        fake_publisher, no_leaks):
+    await _publish_on(db, ready)
+    await configure(db)
+    fake_publisher.fail["proxy"] = "busy"
+    h = await auth_headers(client, db)
+    body = (await client.post(START, headers=h, json={"mode": "publish"})).json()
+    await _finish(body)
+    assert (await client.patch(ENV_URL, headers=h, json={"publish": False})).status_code == 200
+    fake_publisher.fail.clear()
+    resp = await client.post(f"/api/deploy/deployments/{body['id']}/retry", headers=h, json={})
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "publish_off")
+
+
+async def test_a_data_retry_drops_publishing_when_the_switch_is_off(
+        client, db, ready, fake_runner, fake_publisher, no_leaks):
+    await _publish_on(db, ready)
+    await configure(db)
+    fake_publisher.fail["proxy"] = "busy"
+    h = await auth_headers(client, db)
+    body = (await client.post(START, headers=h, json={})).json()
+    await _finish(body)
+    assert (await client.patch(ENV_URL, headers=h, json={"publish": False})).status_code == 200
+    fake_publisher.fail.clear()
+    url = f"/api/deploy/deployments/{body['id']}/retry"
+    # From the failed publishing step (the default) or any later one: refused.
+    for payload in ({}, {"from_step": 12}, {"from_step": 13}):
+        resp = await client.post(url, headers=h, json=payload)
+        assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "publish_off"), payload
+    # From a host step: runs without steps 12–14.
+    first = body["steps"][0]["number"]
+    resp = await client.post(url, headers=h, json={"from_step": first})
+    assert resp.status_code == 201, resp.text
+    retry = resp.json()
+    assert retry["publish"] is False
+    assert [s["key"] for s in retry["steps"]] == UPDATE_KEYS
+    calls = len(fake_publisher.calls)
+    await _finish(retry)
+    assert len(fake_publisher.calls) == calls
+    got = (await client.get(f"/api/deploy/deployments/{retry['id']}", headers=h)).json()
+    assert got["status"] == "succeeded"
+
