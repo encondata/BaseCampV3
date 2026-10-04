@@ -501,7 +501,7 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
     if not needs_host:
         return _Context(target=None, common={"env_name": env.name}, env_file_b64="",
                         redactor=Redactor(_redaction_values(more_secrets)))
-    if not dep.sha:                    # an .env and an image tag need the commit
+    if not dep.sha and dep.mode != "teardown":   # the .env names the commit's image
         raise PrepareError(NO_COMMIT)
     try:
         cfg = await vms.host_config(db, settings, env)
