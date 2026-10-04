@@ -100,7 +100,11 @@ class FakeProxmox:
         if path == "/nodes":
             return self._ok([{"node": self.node, "status": "online"}])
         if path == "/cluster/nextid":
-            return self._ok(str(self.next_id))
+            asked = request.url.params.get("vmid")
+            if asked is None:
+                return self._ok(str(self.next_id))
+            # Proxmox: the id itself when free, else 400 "VM <id> already exists".
+            return self._err(400) if int(asked) in self.vms else self._ok(asked)
         if path == "/pools":                    # PVE 8.1+: ?poolid=<id>, a list
             wanted = request.url.params.get("poolid")
             pools = [{"poolid": self.pool, "members": self._members()}]

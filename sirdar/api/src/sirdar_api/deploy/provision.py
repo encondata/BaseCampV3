@@ -26,6 +26,7 @@ from typing import Protocol
 
 import asyncssh
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
@@ -57,6 +58,10 @@ TERRAFORM_DIR_UNWRITABLE = ("Sirdar can't write its Terraform folder (SIRDAR_TER
 PINNED_CERTIFICATE_INVALID = ("The pinned Proxmox certificate isn't one valid certificate. "
                               "Trust the server's certificate again in Settings › "
                               "Integrations › Proxmox, then retry.")
+VMID_TRIES = 20
+_VMID_CONSTRAINT = "proxmox_vms_vmid_key"
+NO_FREE_VMID = ("Sirdar couldn't find a free VM id in {tries} tries (from {first}): other "
+                "environments or VMs hold them. Retry, or free some ids in Proxmox.")
 PLAN_UNREADABLE = ("Sirdar couldn't read Terraform's plan, so it applied nothing. See the "
                    "log above, then retry.")
 PLAN_DESTROYS = ("Terraform's plan would replace or remove {name} (VM {vmid}), so Sirdar "
@@ -188,6 +193,17 @@ async def _set_vm(env_id: uuid.UUID, **values) -> None:
         await s.commit()
 
 
+async def _claim_vmid(env_id: uuid.UUID, vmid: int) -> bool:
+    """Record `vmid` on the VM row; False when another row holds it."""
+    try:
+        await _set_vm(env_id, vmid=vmid)
+    except IntegrityError as e:
+        if _VMID_CONSTRAINT in str(e.orig):
+            return False
+        raise
+    return True
+
+
 def _address_taken(ip: str) -> StepFailed:
     return StepFailed(f"The VM came up at {ip}, an address another environment, an SSH "
                       "target, the proxy or Proxmox already uses. Sirdar recorded nothing for "
@@ -294,8 +310,7 @@ class ProxmoxProvisioner:
                 raise StepFailed(f"Something already answers SSH at {vm.static_ip}, so Sirdar "
                                  "won't give that address to a new VM. Free it, or delete this "
                                  "environment and create it with another address.")
-            vmid = await api.next_vmid()
-            await _set_vm(ctx.env_id, vmid=vmid)
+            vmid = await self._reserve(api, ctx)
             out(f"Reserved VM id {vmid} for {vm.name}.\n")
         elif await self._identify(api, ctx) is None and vm.created:
             raise StepFailed(f"The VM Sirdar made for {ctx.env_name} ({vm.name}, VM {vmid}) is "
@@ -316,6 +331,21 @@ class ProxmoxProvisioner:
         await self._settle_address(api, ctx, vmid, out)
         sha = None if ctx.sha else await self._resolve_ref(ctx, out)
         return VmOutcome(sha=sha, vm_snapshot=snapshot)
+
+    async def _reserve(self, api: Proxmox, ctx: VmContext) -> int:
+        """Proxmox's next free id, recorded on the VM row. Another
+        environment may hold that id reserved without having built its VM
+        (Proxmox doesn't know it): then the next ids are checked with
+        Proxmox and tried in turn, VMID_TRIES in all."""
+        candidate = first = await api.next_vmid()
+        for attempt in range(VMID_TRIES):
+            if attempt and not await api.vmid_free(candidate):
+                candidate += 1
+                continue
+            if await _claim_vmid(ctx.env_id, candidate):
+                return candidate
+            candidate += 1
+        raise StepFailed(NO_FREE_VMID.format(tries=VMID_TRIES, first=first))
 
     async def _identify(self, api: Proxmox, ctx: VmContext) -> dict | None:
         """VM vm.vmid looked up across the cluster: None when no node has it.
@@ -556,10 +586,18 @@ class ProxmoxProvisioner:
 
     async def _destroy(self, api: Proxmox, ctx: VmContext, out: Output) -> None:
         vm = ctx.vm
+        found = None if vm.vmid is None else await api.find_vm(vm.vmid)
+        ours = (found is not None and found["name"] == vm.name
+                and "sirdar" in found["tags"])
         if vm.vmid is None:
             out(f"Sirdar never created a VM for {ctx.env_name}.\n")
+        elif not vm.created and not ours:
+            # Reserved, never built (or someone else's VM took the id since):
+            # nothing of Sirdar's to remove, and the id is released.
+            out(f"VM {vm.vmid} was never created by Sirdar; forgetting the id.\n")
+            await _set_vm(ctx.env_id, vmid=None)
         else:
-            found = await api.find_vm(vm.vmid)
+            work = terraform.workdir(self._settings, ctx.env_id)
             if found is None:
                 out(f"VM {vm.vmid} ({vm.name}) is already gone.\n")
             else:
@@ -573,7 +611,7 @@ class ProxmoxProvisioner:
                     raise StepFailed(f"VM {vm.vmid} ({vm.name}) is on node {found['node']} now, "
                                      f"not {vm.node}. Sirdar changed nothing: move it back, or "
                                      "fix it by hand, then retry.")
-                if not terraform.has_state(terraform.workdir(self._settings, ctx.env_id)):
+                if not terraform.has_state(work):
                     raise StepFailed(f"Sirdar's Terraform state for {vm.name} is missing, so it "
                                      f"won't remove VM {vm.vmid}. Remove the VM by hand in "
                                      "Proxmox, then retry.")

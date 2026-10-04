@@ -608,3 +608,65 @@ async def test_a_snapshot_taken_before_a_failed_apply_is_recorded_at_once(db, vm
     await db.refresh(dep)
     assert dep.vm_snapshot == SNAP
     assert [s["name"] for s in proxmox_fake.snaps[120]] == [SNAP]
+
+
+async def test_an_id_another_environment_reserved_is_skipped(db, vm_env, tf, proxmox_fake):
+    """Proxmox offers the lowest free id, which another environment may have
+    reserved without building yet: Sirdar asks for the next one."""
+    other = await make_vm_environment(db, name="uat4", ip_mode="dhcp", ip_cidr=None,
+                                      gateway=None)
+    (await vms.get(db, other.id)).vmid = 120
+    await db.commit()
+    proxmox_fake.add_vm(121, "someone-else")
+    lines: list[str] = []
+    await provisioner(tf).run("provision", await ctx_for(db, vm_env), lines.append)
+    vm = await vms.get(db, vm_env.id)
+    assert (vm.vmid, vm.created) == (122, True)
+    assert "Reserved VM id 122 for ss-uat3.\n" in lines
+    assert ("GET", "/cluster/nextid") in proxmox_fake.requests
+
+
+async def test_no_free_id_in_twenty_tries(db, vm_env, tf, proxmox_fake):
+    other = await make_vm_environment(db, name="uat4", ip_mode="dhcp", ip_cidr=None,
+                                      gateway=None)
+    (await vms.get(db, other.id)).vmid = 120
+    await db.commit()
+    for vmid in range(121, 141):
+        proxmox_fake.add_vm(vmid, f"vm{vmid}")
+    with pytest.raises(StepFailed) as e:
+        await provisioner(tf).run("provision", await ctx_for(db, vm_env), lambda _: None)
+    assert e.value.reason == provision.NO_FREE_VMID.format(tries=20, first=120)
+    assert (await vms.get(db, vm_env.id)).vmid is None and tf.commands() == []
+    nextid = [r for r in proxmox_fake.requests if r == ("GET", "/cluster/nextid")]
+    assert len(nextid) == 20                      # the first ask, then 19 checks
+
+
+@pytest.mark.parametrize("someone", [None, ("other-vm", "other-vm"), ("ss-uat3", "")])
+async def test_destroy_forgets_an_id_sirdar_reserved_but_never_built(
+        db, vm_env, tf, proxmox_fake, someone):
+    vm = await vms.get(db, vm_env.id)
+    vm.vmid = 130
+    await db.commit()
+    if someone is not None:
+        proxmox_fake.add_vm(130, someone[0], tags=someone[1])
+    lines: list[str] = []
+    await provisioner(tf).run("destroy", await ctx_for(db, vm_env, mode="teardown"),
+                              lines.append)
+    assert "VM 130 was never created by Sirdar; forgetting the id.\n" in lines
+    assert "destroy" not in tf.commands()
+    assert (someone is None) or 130 in proxmox_fake.vms
+    assert (await vms.get(db, vm_env.id)).vmid is None
+
+
+async def test_destroy_removes_a_vm_built_before_created_was_recorded(db, vm_env, tf,
+                                                                      proxmox_fake):
+    """An apply that made the VM but stopped before `created` was written:
+    the VM is Sirdar's by name and tag, and Terraform's state has it."""
+    await _built(db, vm_env, tf)
+    vm = await vms.get(db, vm_env.id)
+    vm.created = False
+    await db.commit()
+    await provisioner(tf).run("destroy", await ctx_for(db, vm_env, mode="teardown"),
+                              lambda _: None)
+    assert tf.commands()[-1] == "destroy" and 120 not in proxmox_fake.vms
+

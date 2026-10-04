@@ -163,6 +163,19 @@ class Proxmox:
         return int(await self._call("GET", "/cluster/nextid", "reserve a VM id"))
 
     @_parsed
+    async def vmid_free(self, vmid: int) -> bool:
+        """Whether no VM or container has id `vmid` (GET /cluster/nextid?vmid=,
+        which answers 400 when it is taken)."""
+        try:
+            data = await self._call("GET", "/cluster/nextid", "check a VM id",
+                                    params={"vmid": int(vmid)})
+        except ProxmoxError as e:
+            if e.status == 400:
+                return False
+            raise
+        return int(data) == int(vmid)
+
+    @_parsed
     async def pool_vmids(self) -> set[int]:
         """The pool's VM ids (storage members have no vmid). GET /pools?poolid=
         (PVE 8.1+); the older GET /pools/{id} only when that form answers 400
