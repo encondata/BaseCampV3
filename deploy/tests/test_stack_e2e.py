@@ -10,8 +10,10 @@ Ports sit in the 18xxx/19xxx range so the Mac dev stack (8000, 8025,
 from __future__ import annotations
 
 import base64
+import json
 import os
 import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -165,7 +167,7 @@ def psql(env_dir: Path, sql: str) -> subprocess.CompletedProcess[str]:
                    "-d", "serversherpa", "-v", "ON_ERROR_STOP=1", "-tAc", sql)
 
 
-# last in the file: it stops and restarts the api, web and status stacks
+# it stops and restarts the api, web and status stacks
 def test_readme_rollback_restores_the_dump_cleanly(env_dir: Path) -> None:
     """The runbook's rollback, end to end: dump, let a "newer migration"
     create a table, then stop, restore with the README's own commands and
@@ -193,4 +195,77 @@ def test_readme_rollback_restores_the_dump_cleanly(env_dir: Path) -> None:
     assert up.returncode == 0, up.stdout[-4000:] + up.stderr[-4000:]
     current = compose(env_dir, "api", "exec", "-T", "-w", "/app/api", "api", "alembic", "current")
     assert current.returncode == 0, current.stderr
+    assert "(head)" in current.stdout
+
+
+BUNDLE_TOOL = REPO / "sirdar" / "api" / "src" / "sirdar_api" / "deploy" / "bundle.py"
+
+
+def _spaces(env_dir: Path):
+    import boto3
+    from botocore.config import Config
+    secret = dict(line.split("=", 1) for line in (env_dir / ".env").read_text().splitlines()
+                  if "=" in line)["SPACES_SECRET_KEY"]
+    return boto3.client("s3", endpoint_url=f"http://127.0.0.1:{PORTS['SPACES']}",
+                        region_name="us-east-1", aws_access_key_id="serversherpa",
+                        aws_secret_access_key=secret,
+                        config=Config(s3={"addressing_style": "path"}))
+
+
+def _bundle_tool(env_dir: Path, mount: str, *args: str) -> subprocess.CompletedProcess[str]:
+    """bundle.py in a one-off api container on ss-e2e, the way Sirdar's
+    export.yml and restore.yml run it."""
+    return subprocess.run(
+        ["docker", "run", "--rm", "--network", "ss-e2e", "--env-file", str(env_dir / ".env"),
+         "--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp", "-v", mount,
+         "serversherpa-api:e2e", "python", "/work/bundle.py", *args],
+        capture_output=True, text=True, timeout=600)
+
+
+# last in the file: it replaces the database and restarts the app stacks
+def test_snapshot_commands_round_trip(env_dir: Path, tmp_path: Path) -> None:
+    """The real-container half of Sirdar's Take snapshot and Restore snapshot
+    steps: export.yml's pg_dump inside the db container and `compose cp`,
+    bundle.py's object export and import through the api image on ss-e2e,
+    and `ss-stack restore --clear-sessions` and `ss-stack data`."""
+    work = tmp_path / "work"
+    work.mkdir()
+    shutil.copy(BUNDLE_TOOL, work / "bundle.py")
+    (work / "bundle.py").chmod(0o644)
+    s3 = _spaces(env_dir)
+    s3.put_object(Bucket="serversherpa", Key="snap/probe.txt", Body=b"snapshot me",
+                  ContentType="text/plain")
+
+    in_container = "/tmp/sirdar-snapshot.dump"
+    for args in (("exec", "-T", "postgres", "pg_dump", "-U", "serversherpa", "-d",
+                  "serversherpa", "-Fc", "--no-owner", "--no-acl", "-f", in_container),
+                 ("cp", f"postgres:{in_container}", str(work / "db.dump")),
+                 ("exec", "-T", "postgres", "rm", "-f", in_container)):
+        out = compose(env_dir, "db", *args)
+        assert out.returncode == 0, out.stderr
+    assert (work / "db.dump").read_bytes()[:5] == b"PGDMP"
+    exported = _bundle_tool(env_dir, f"{work}:/work", "export-objects", "--out",
+                            "/work/objects.tar")
+    assert exported.returncode == 0, exported.stderr
+    assert json.loads(exported.stdout)["objects"] >= 1
+
+    assert psql(env_dir, "CREATE TABLE snapshot_probe (id int)").returncode == 0
+    s3.delete_object(Bucket="serversherpa", Key="snap/probe.txt")
+    restored = ss("restore", str(env_dir), str(work / "db.dump"), "--clear-sessions")
+    assert restored.returncode == 0, restored.stdout[-2000:] + restored.stderr[-2000:]
+    probe = psql(env_dir, "SELECT to_regclass('public.snapshot_probe') IS NULL")
+    assert probe.stdout.strip() == "t", "a table the dump never held survived the restore"
+    assert psql(env_dir, "SELECT count(*) FROM auth_sessions").stdout.strip() == "0"
+
+    imported = _bundle_tool(env_dir, f"{work}:/work:ro", "import-objects", "--in",
+                            "/work/objects.tar")
+    assert imported.returncode == 0, imported.stderr
+    obj = s3.get_object(Bucket="serversherpa", Key="snap/probe.txt")
+    assert (obj["Body"].read(), obj["ContentType"]) == (b"snapshot me", "text/plain")
+
+    data = ss("data", str(env_dir))
+    assert data.returncode == 0, data.stderr[-2000:]
+    up = ss("up", str(env_dir))
+    assert up.returncode == 0, up.stdout[-4000:] + up.stderr[-4000:]
+    current = compose(env_dir, "api", "exec", "-T", "-w", "/app/api", "api", "alembic", "current")
     assert "(head)" in current.stdout

@@ -161,6 +161,11 @@ the newest from `ls -t /opt/serversherpa/uat/backups`. From
 3. Set `STACK_IMAGE_TAG` in `/opt/serversherpa/uat/.env` back to the previous SHA.
 4. `./ss-stack up /opt/serversherpa/uat`
 
+With an `ss-stack` from Sirdar deploy phase 3 on, steps 1 and 2 are one
+command (it also starts the database if it is down):
+`./ss-stack restore /opt/serversherpa/uat /opt/serversherpa/uat/backups/<file>.dump`.
+`./ss-stack data /opt/serversherpa/uat` starts only the database and storage.
+
 ## Tests
 
 From the repo root, with any Python that has pytest:

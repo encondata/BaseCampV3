@@ -21,6 +21,9 @@ case "$*" in
     # a dump that hangs halfway, so a test can kill ss-stack mid-dump
     [[ -n "${FAKE_SLOW_PG_DUMP:-}" ]] && { printf 'PGDMP-part'; sleep 30; exit 0; }
     printf 'PGDMP-fake' ;;
+  *pg_restore*)
+    cat > "$DOCKER_LOG.stdin"
+    [[ -n "${FAKE_FAIL_PG_RESTORE:-}" ]] && exit 1 ;;
 esac
 exit 0
 """
@@ -110,6 +113,7 @@ def test_unknown_command_prints_usage(env_dir: Path, fake: dict[str, str]) -> No
     out = run(fake, "explode", str(env_dir))
     assert out.returncode == 2
     assert "ss-stack build" in out.stdout + out.stderr
+    assert "ss-stack restore <env-dir> <file.dump> [--clear-sessions]" in out.stdout + out.stderr
 
 
 def test_build_uses_only_the_build_file(env_dir: Path, fake: dict[str, str]) -> None:
@@ -209,3 +213,78 @@ def test_interrupted_dump_leaves_no_partial(env_dir: Path, fake: dict[str, str],
             proc.wait()
     assert proc.returncode != 0
     assert list(backups.iterdir()) == []
+
+
+WAIT = "up -d --wait --wait-timeout 300 --remove-orphans"
+PSQL = "exec -T postgres psql -U serversherpa -d serversherpa -v ON_ERROR_STOP=1 -q"
+CLEAR = ("DO $$ BEGIN IF to_regclass('public.auth_sessions') IS NOT NULL THEN DELETE FROM "
+         "auth_sessions; END IF; IF to_regclass('public.trusted_devices') IS NOT NULL THEN "
+         "DELETE FROM trusted_devices; END IF; END $$;")
+
+
+def test_data_starts_only_the_database_and_storage(env_dir: Path, fake: dict[str, str]) -> None:
+    out = run(fake, "data", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert calls(fake) == ["network inspect ss-uat", "network create ss-uat",
+                           dc(env_dir, "db", WAIT), dc(env_dir, "storage", WAIT)]
+
+
+def test_data_refuses_placeholder_secrets(env_dir: Path, fake: dict[str, str]) -> None:
+    (env_dir / ".env").write_text(ENV_EXAMPLE.read_text())
+    out = run(fake, "data", str(env_dir))
+    assert out.returncode != 0 and calls(fake) == []
+
+
+def _dump(tmp_path: Path) -> Path:
+    dump = tmp_path / "20261004T010203Z.dump"
+    dump.write_bytes(b"PGDMP-restore-me")
+    return dump
+
+
+def test_restore_stops_writers_empties_the_schema_and_restores(
+        env_dir: Path, fake: dict[str, str], tmp_path: Path) -> None:
+    dump = _dump(tmp_path)
+    out = run({**fake, "FAKE_NETWORK_EXISTS": "1"}, "restore", str(env_dir), str(dump),
+              "--clear-sessions")
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == f"restored {dump}"
+    assert calls(fake) == [
+        "network inspect ss-uat",
+        dc(env_dir, "status", "stop"), dc(env_dir, "web", "stop"), dc(env_dir, "api", "stop"),
+        dc(env_dir, "db", WAIT),
+        dc(env_dir, "db", f"{PSQL} -c DROP SCHEMA public CASCADE; CREATE SCHEMA public;"),
+        dc(env_dir, "db", "exec -T postgres pg_restore --exit-on-error --no-owner --no-acl "
+                          "-U serversherpa -d serversherpa"),
+        dc(env_dir, "db", f"{PSQL} -c {CLEAR}"),
+    ]
+    assert Path(fake["DOCKER_LOG"] + ".stdin").read_bytes() == b"PGDMP-restore-me"
+
+
+def test_restore_keeps_sessions_unless_asked(env_dir: Path, fake: dict[str, str],
+                                             tmp_path: Path) -> None:
+    out = run({**fake, "FAKE_NETWORK_EXISTS": "1"}, "restore", str(env_dir), str(_dump(tmp_path)))
+    assert out.returncode == 0, out.stderr
+    assert not any("auth_sessions" in c for c in calls(fake))
+
+
+def test_restore_reports_a_failed_pg_restore(env_dir: Path, fake: dict[str, str],
+                                             tmp_path: Path) -> None:
+    out = run({**fake, "FAKE_FAIL_PG_RESTORE": "1"}, "restore", str(env_dir),
+              str(_dump(tmp_path)), "--clear-sessions")
+    assert out.returncode != 0
+    assert "pg_restore failed" in out.stderr
+    assert not any("auth_sessions" in c for c in calls(fake))
+
+
+@pytest.mark.parametrize("args, code, message", [
+    (["/no/such.dump"], 1, "no such dump file: /no/such.dump"),
+    ([], 2, "ss-stack build"),
+    (["DUMP", "--everything"], 2, "ss-stack build"),
+])
+def test_restore_arguments(env_dir: Path, fake: dict[str, str], tmp_path: Path,
+                           args: list[str], code: int, message: str) -> None:
+    args = [str(_dump(tmp_path)) if a == "DUMP" else a for a in args]
+    out = run(fake, "restore", str(env_dir), *args)
+    assert out.returncode == code
+    assert message in out.stdout + out.stderr
+    assert calls(fake) == []
