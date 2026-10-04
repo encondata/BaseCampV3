@@ -27,6 +27,8 @@ services:
       SIRDAR_DEPLOY_TARGETS_FILE: /app/config/deploy-targets.env
       # Deploy runs: one private Ansible folder per step, deleted afterwards.
       SIRDAR_RUNNER_DIR: /app/runner
+      # Snapshot bundles (database, files and encrypted sign-in keys).
+      SIRDAR_SNAPSHOTS_DIR: /app/snapshots
     volumes:
       # Deploy-page SSH/GCP key files; the container runs as uid 10001.
       - ${SIRDAR_DEPLOY_KEYS_DIR:-./deploy-keys}:/app/deploy-keys:ro
@@ -36,6 +38,9 @@ services:
       # Deploy run folders hold a run's secrets while it runs: owned by uid
       # 10001, mode 700 (the installer sets that up).
       - ./runner:/app/runner
+      # Snapshot bundles hold whole databases: owned by uid 10001, mode 700
+      # (the installer sets that up). Back this folder up if you need them.
+      - ./snapshots:/app/snapshots
     ports:
       - "${SIRDAR_BIND:-127.0.0.1}:${SIRDAR_PORT:-8098}:8080"   # put the reverse proxy in front
     depends_on:

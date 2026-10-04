@@ -234,10 +234,12 @@ commit through `git ls-remote` on the target.
 
 **Steps.** 1 Preflight · 2 Bootstrap · 3 Fetch code · 4 Render config ·
 5 Build images · 6 Pre-deploy dump (Update) · 7 Reset data (Reset) ·
-8 Start services. The first failure stops the deployment; retry re-runs
-from the failed step. One deployment per environment at a time. Reset
-deletes the environment's data: it needs `deploy:change` and the
-environment's name typed back (`confirm_name`).
+8 Start data services · 9 Restore snapshot or Restore backup ·
+10 Start services (migrate, then the app) · 11 Take snapshot (a job of its
+own). The first failure stops the deployment; retry re-runs from the failed
+step. One deployment per environment at a time. Reset, Restore backup and
+Roll back replace data: they need `deploy:change` and the environment's name
+typed back (`confirm_name`).
 
 **Adopting a hand-built environment** (`POST /api/deploy/environments` with
 `"mode": "adopt"`): Sirdar reads `/opt/serversherpa/<name>/.env` and the
@@ -253,7 +255,37 @@ and are left out of `.env` on the next deploy.
 | `POST /environments/{name}/deployments` (`mode`: `update` or `reset`) | `deploy:add`; Reset also `deploy:change` |
 | `GET /environments/{name}/deployments`, `GET /deployments/{id}?tail=N` | `deploy:view` |
 | `POST /deployments/{id}/cancel` | `deploy:change` |
-| `POST /deployments/{id}/retry` | `deploy:add`; a Reset deployment also `deploy:change` |
+| `POST /deployments/{id}/retry` | `deploy:add`; a Reset, Restore backup or Roll back deployment also `deploy:change` |
+| `POST /environments` with `snapshot_id` (mode `new`) | `deploy:add` |
+| `POST /environments/{name}/deployments` (`mode`: `restore_dump`, with `backup`) | `deploy:add` and `deploy:change` |
+| `GET /environments/{name}/backups` | `deploy:view` |
+| `POST /deployments/{id}/rollback` | `deploy:change` |
+| `GET /snapshots` | `deploy:view` |
+| `POST /snapshots?name=…&notes=…` (body: the bundle) | `deploy:add` |
+| `POST /environments/{name}/snapshots` (take one) | `deploy:add` |
+| `DELETE /snapshots/{id}` | `deploy:change` |
+
+**Snapshots.** A snapshot is one `.tar.gz`: `manifest.json`, `keys.enc` (the
+source's `SS_PASSWORD_PEPPER` and `SS_TOTP_ENCRYPTION_KEY`, encrypted with
+`SIRDAR_SECRETS_KEY`), `db.dump` (`pg_dump -Fc`) and `objects.tar` (every
+object of the bucket, content types kept). Bundles live in
+`sirdar/snapshots/` (mounted at `/app/snapshots`, owned by uid 10001, mode
+700; the installer creates it) and are never served to browsers. Make one
+from the Mac dev stack with `scripts/make-seed-snapshot.sh` and upload it on
+the Deploy page, or take one from a deployed environment. A new environment
+can start from a snapshot (its first deploy restores it) and Reset data can
+restore one. Restoring replaces the environment's pepper and TOTP key with
+the snapshot's, so its users sign in with their own passwords and 2FA, and
+signs everyone out. A snapshot whose database is at a newer migration than
+the commit being deployed is refused. Uploads are capped at
+`SIRDAR_SNAPSHOT_MAX_BYTES` (default 5 GiB); a reverse proxy in front must
+accept bodies that large too.
+
+**Backups and rollback.** Each Update's pre-deploy dump stays in
+`<env-dir>/backups` (the newest `keep_dumps`). Restore backup puts one back
+into an empty database, then migrates and starts the app. Roll back (offered
+after a failed Update) deploys the previous commit and restores that
+Update's dump. Uploaded files are never rolled back.
 
 Deployments run inside Sirdar's single API process. Restarting Sirdar marks
 running deployments `interrupted`; retry them.

@@ -11,3 +11,5 @@ config/*
 !config/.gitkeep
 runner/*
 !runner/.gitkeep
+snapshots/*
+!snapshots/.gitkeep

@@ -386,9 +386,17 @@ ensure_config_dir() {  # ensure_config_dir DIR
 }
 
 # Deploy steps run Ansible in <dir>/sirdar/runner (mounted at /app/runner):
-# one private folder per run, holding that run's secrets until it ends. The
-# folder must belong to the container user (uid 10001) and nobody else (700).
+# one private folder per run, holding that run's secrets until it ends.
+# Snapshot bundles live in <dir>/sirdar/snapshots (/app/snapshots): whole
+# databases. Both must belong to the container user (uid 10001) and nobody
+# else (700).
 ensure_runner_dir() {  # ensure_runner_dir DIR
+  ensure_private_dir "$1" "deployments will fail"
+}
+ensure_snapshots_dir() {  # ensure_snapshots_dir DIR
+  ensure_private_dir "$1" "snapshots can't be uploaded or taken"
+}
+ensure_private_dir() {  # ensure_private_dir DIR WHAT-FAILS
   local d="$1" ok=1
   mkdir -p "$d" 2>/dev/null || as_root mkdir -p "$d" || ok=0
   if [ "$ok" = 1 ]; then
@@ -398,7 +406,7 @@ ensure_runner_dir() {  # ensure_runner_dir DIR
     ensure_mode 700 "$d" || ok=0
   fi
   if [ "$ok" != 1 ]; then
-    warn "couldn't give $d to uid 10001, so deployments will fail until it is. Run: sudo chown 10001:10001 '$d' && sudo chmod 700 '$d'"
+    warn "couldn't give $d to uid 10001, so $2 until it is. Run: sudo chown 10001:10001 '$d' && sudo chmod 700 '$d'"
   fi
   return 0
 }
@@ -1724,6 +1732,7 @@ summary() {
   Settings:     $DIR/sirdar/.env
   Saved SSH targets: $DIR/sirdar/config/deploy-targets.env
   Deploy runs:  $DIR/sirdar/runner   (SIRDAR_SECRETS_KEY is in .env: back it up)
+  Snapshots:    $DIR/sirdar/snapshots   (whole databases: keep them private)
   Update:       re-run this script to update
 
   Logs:            $p logs -f sirdar
@@ -1782,6 +1791,7 @@ main() {
   ensure_deploy_keys_dir "$DIR/sirdar/deploy-keys"
   ensure_config_dir "$DIR/sirdar/config"
   ensure_runner_dir "$DIR/sirdar/runner"
+  ensure_snapshots_dir "$DIR/sirdar/snapshots"
 
   if [ -f "$DIR/sirdar/.env" ]; then
     info "Keeping existing $DIR/sirdar/.env"
