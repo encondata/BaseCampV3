@@ -135,6 +135,25 @@ def current_row(rows: dict, sp: ServicePlan, kind: str) -> ManagedRecord | None:
     return found if found is not None and found.name == sp.hostname else None
 
 
+def stale_holder(rows: dict, sp: ServicePlan, kind: str) -> ManagedRecord | None:
+    """This service's row of this kind when it is under another name (the
+    base domain changed): it holds the (service, kind) place a claim needs."""
+    found = rows.get((sp.service, kind))
+    return found if found is not None and found.name != sp.hostname else None
+
+
+def _waits_for_stale(status: Status, rows: dict, sp: ServicePlan, kind: str) -> Status:
+    """A claimable entry whose place is held by something Sirdar created
+    under an old name can't be claimed yet: publishing removes the old one
+    first (the steps drop stale rows before planning)."""
+    old = stale_holder(rows, sp, kind)
+    if status.state != "claimable" or old is None or old.origin != "created":
+        return status
+    noun = "record" if kind == DNS else "proxy host"
+    return Status("conflict", f"{status.detail} Publishing first removes Sirdar's old {noun} "
+                              f"at {old.name}; then claim this one.", status.current)
+
+
 def stale_rows(rows: dict, services) -> list[ManagedRecord]:
     """Managed rows for a service that is no longer public, or under a name
     the environment no longer uses (its base domain changed)."""
@@ -188,8 +207,10 @@ def dns_status(sp: ServicePlan, records: list[DnsRecord], row: ManagedRecord | N
     if not in_zone(sp.hostname, zone):
         return Status("conflict", f"{sp.hostname} isn't in the Cloudflare zone {zone}.")
     if row is not None:
-        mine = next((r for r in records if r.id == row.external_id
-                     and r.name == sp.hostname), None)
+        mine = next((r for r in records if r.id == row.external_id), None)
+        if mine is not None and mine.name != sp.hostname:
+            return Status("conflict", f"Sirdar's record {mine.id} is now named {mine.name}; "
+                                      "fix it in Cloudflare or remove it.", mine)
         if mine is not None:
             if mine.type == "A" and mine.content == public_ip:
                 if mine.proxied == sp.proxied:
@@ -204,7 +225,9 @@ def dns_status(sp: ServicePlan, records: list[DnsRecord], row: ManagedRecord | N
         return status
     # Sirdar's record is gone: recreate it only where nothing else holds the name.
     if status.state == "create":
-        return Status("create", "Sirdar's record is gone; it will be created again.")
+        return Status("create", "The record Sirdar claimed is gone; it will be created again."
+                      if row.origin == "claimed"
+                      else "Sirdar's record is gone; it will be created again.")
     if status.state == "claimable":
         return Status("conflict",
                       "Sirdar's record is gone and another A record now uses this name.")
@@ -246,6 +269,9 @@ def proxy_status(sp: ServicePlan, hosts: list[ProxyHost], row: ManagedRecord | N
                  owners: dict[str, str]) -> Status:
     if row is not None:
         mine = next((h for h in hosts if str(h.id) == row.external_id), None)
+        if mine is not None and sp.hostname not in mine.domain_names:
+            return Status("conflict", f"Sirdar's proxy host #{mine.id} no longer serves "
+                                      f"{sp.hostname}; fix it in NPM or remove it.", mine)
         if mine is not None:
             drift = _forward_drift(mine, sp)
             if not drift:
@@ -256,7 +282,9 @@ def proxy_status(sp: ServicePlan, hosts: list[ProxyHost], row: ManagedRecord | N
         return status
     # Sirdar's proxy host is gone: recreate it only where no other host serves the name.
     if status.state == "create":
-        return Status("create", "Sirdar's proxy host is gone; it will be created again.")
+        return Status("create", "The proxy host Sirdar claimed is gone; it will be created "
+                                "again." if row.origin == "claimed"
+                      else "Sirdar's proxy host is gone; it will be created again.")
     if status.state == "claimable":
         return Status("conflict", "Sirdar's proxy host is gone and another proxy host now "
                                   "serves this name.")
@@ -349,8 +377,9 @@ async def inspect(db: AsyncSession, env: Environment, settings: Settings) -> dic
             out["cloudflare"]["error"] = e.reason
         else:
             owners = await owners_of(db, env.id, DNS)
-            dns = {s.service: dns_status(s, records, current_row(rows, s, DNS), owners,
-                                         zone=cf.zone, public_ip=cf.public_ip)
+            dns = {s.service: _waits_for_stale(
+                       dns_status(s, records, current_row(rows, s, DNS), owners,
+                                  zone=cf.zone, public_ip=cf.public_ip), rows, s, DNS)
                    for s in services}
 
     try:
@@ -368,9 +397,14 @@ async def inspect(db: AsyncSession, env: Environment, settings: Settings) -> dic
         else:
             owners = await owners_of(db, env.id, PROXY)
             for s in services:
-                status = proxy_status(s, hosts, current_row(rows, s, PROXY), owners)
+                status = _waits_for_stale(
+                    proxy_status(s, hosts, current_row(rows, s, PROXY), owners), rows, s, PROXY)
                 proxies[s.service] = status
-                certs[s.service] = cert_status(status.current, all_certs, s.hostname, now)
+                # Only a host Sirdar manages (or will create) has its certificate judged.
+                certs[s.service] = (
+                    cert_status(status.current, all_certs, s.hostname, now)
+                    if status.state in ("ok", "update", "create")
+                    else Status("unknown", "Waits for the proxy host."))
 
     out["services"] = [{
         "service": s.service, "hostname": s.hostname, "forward": s.forward,
@@ -387,12 +421,20 @@ async def claim(db: AsyncSession, env: Environment, state: dict) -> list[str]:
     """Record every claimable DNS record and proxy host in `state` (from
     inspect) as claimed. Certificates are never claimed. Writes only
     Sirdar's database; the caller audits and commits."""
+    rows = await rows_of(db, env.id)
     claimed: list[str] = []
     for svc in state["services"]:
         for key, kind, id_key in (("dns", DNS, "record_id"), ("proxy", PROXY, "host_id")):
             entry = svc[key]
             if entry["state"] != "claimable":
                 continue
+            old = rows.get((svc["service"], kind))
+            if old is not None:
+                if old.origin != "claimed" or old.name == svc["hostname"]:
+                    continue        # a created entry under an old name goes by publishing first
+                # A claimed entry under an old name: forgotten, left in place.
+                await db.delete(old)
+                await db.flush()
             db.add(ManagedRecord(environment_id=env.id, service=svc["service"], kind=kind,
                                  external_id=str(entry[id_key]), name=svc["hostname"],
                                  origin="claimed"))
@@ -487,12 +529,19 @@ async def ensure_dns(ctx: PublishContext, out: Output, *, transport) -> None:
     rows, owners = await _rows_and_owners(ctx.env_id, DNS)
     async with Cloudflare(cfg, transport=transport) as api:
         records = await api.records()
+        # Names the environment no longer uses go first (only what Sirdar
+        # created is deleted), so they don't hold a place a claim needs.
+        dns_rows = {k: r for k, r in rows.items() if k[1] == DNS}
+        dropped = set()
+        for row in stale_rows(dns_rows, ctx.services):
+            await _drop_dns(api, row, out)
+            dropped.add((row.service, row.kind))
+            if row.origin == "created":
+                records = [r for r in records if r.id != row.external_id]
+        rows = {k: r for k, r in rows.items() if k not in dropped}
         plan = [(s, dns_status(s, records, current_row(rows, s, DNS), owners, zone=cfg.zone,
                                public_ip=cfg.public_ip)) for s in ctx.services]
         _stop_on_blockers(plan, "DNS records")
-        dns_rows = {k: r for k, r in rows.items() if k[1] == DNS}
-        for row in stale_rows(dns_rows, ctx.services):
-            await _drop_dns(api, row, out)
         for s, st in plan:
             if st.state == "ok":
                 out(f"{s.hostname}: A {cfg.public_ip}, unchanged\n")
@@ -621,12 +670,22 @@ async def ensure_proxy(ctx: PublishContext, out: Output, *, transport,
     async with Npm(cfg, transport=transport, sleep=sleep, backoff=backoff) as api:
         hosts = await api.proxy_hosts()
         certs = await api.certificates()
+        # Names the environment no longer uses go first, as in ensure_dns.
+        npm_rows = {k: r for k, r in rows.items() if k[1] in (PROXY, CERT)}
+        dropped = set()
+        for row in sorted(stale_rows(npm_rows, ctx.services), key=lambda r: r.kind != PROXY):
+            await _drop_npm(api, row, out)       # hosts before the certificates they use
+            dropped.add((row.service, row.kind))
+            if row.origin == "created":
+                gone = int(row.external_id)
+                if row.kind == PROXY:
+                    hosts = [h for h in hosts if h.id != gone]
+                else:
+                    certs = [c for c in certs if c.id != gone]
+        rows = {k: r for k, r in rows.items() if k not in dropped}
         plan = [(s, proxy_status(s, hosts, current_row(rows, s, PROXY), owners))
                 for s in ctx.services]
         _stop_on_blockers(plan, "proxy hosts")
-        npm_rows = {k: r for k, r in rows.items() if k[1] in (PROXY, CERT)}
-        for row in sorted(stale_rows(npm_rows, ctx.services), key=lambda r: r.kind != PROXY):
-            await _drop_npm(api, row, out)       # hosts before the certificates they use
         for s, st in plan:
             found = st.current
             if st.state == "create":

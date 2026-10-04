@@ -53,6 +53,11 @@ def _dns(records, managed_row=None, owners=None, service=API):
     ([rec("r1", proxied=True)], row(DNS, "r1", origin="claimed"), None,
      ("update", "Cloudflare's proxy is on; Sirdar will turn it off.")),
     ([], row(DNS, "r1"), None, ("create", "Sirdar's record is gone; it will be created again.")),
+    ([], row(DNS, "r1", origin="claimed"), None,
+     ("create", "The record Sirdar claimed is gone; it will be created again.")),
+    ([rec("r1", name="api2.uat2.serversherpa.com")], row(DNS, "r1"), None,
+     ("conflict", "Sirdar's record r1 is now named api2.uat2.serversherpa.com; fix it in "
+                  "Cloudflare or remove it.")),
     ([rec("r1", content="198.51.100.1")], None, None,
      ("claimable", "A 198.51.100.1, made outside Sirdar.")),
     ([rec("r1")], None, {"r1": "uat"}, ("conflict", "The environment uat manages this record.")),
@@ -93,6 +98,11 @@ def test_dns_status_outside_the_zone():
      ("update", "Sirdar will change the forward port and WebSockets.")),
     ([], row(PROXY, 5), None,
      ("create", "Sirdar's proxy host is gone; it will be created again.")),
+    ([], row(PROXY, 5, origin="claimed"), None,
+     ("create", "The proxy host Sirdar claimed is gone; it will be created again.")),
+    ([host(5, names=("api2.uat2.serversherpa.com",))], row(PROXY, 5), None,
+     ("conflict", "Sirdar's proxy host #5 no longer serves api.uat2.serversherpa.com; fix it "
+                  "in NPM or remove it.")),
     ([host(5, fwd=("10.10.48.63", 8000))], None, None,
      ("claimable", "To 10.10.48.63:8000, made outside Sirdar.")),
     ([host(5)], None, {"5": "uat"}, ("conflict", "The environment uat manages this proxy host.")),
@@ -188,8 +198,9 @@ async def test_inspect_reports_every_service(db, secrets_key, publish_fakes):
                                 "Sirdar.", "origin": None, "record_id": hand_api}
     assert by["api"]["proxy"] == {"state": "claimable", "detail": "To 10.10.48.63:8000, made "
                                   "outside Sirdar.", "origin": None, "host_id": api_host}
-    assert by["api"]["certificate"]["state"] == "ok"
-    assert by["api"]["certificate"]["expires_on"] is not None
+    # The host isn't Sirdar's yet, so its certificate isn't judged.
+    assert by["api"]["certificate"] == {"state": "unknown", "expires_on": None,
+                                        "detail": "Waits for the proxy host."}
     assert (by["portal"]["dns"]["state"], by["portal"]["dns"]["origin"]) == ("ok", "created")
     assert by["kiosk"]["dns"]["state"] == "conflict"
     assert (by["status"]["dns"]["state"], by["status"]["proxy"]["state"],
@@ -236,3 +247,95 @@ async def test_claim_records_only_claimable_entries(db, secrets_key, publish_fak
 
 def test_status_compares_on_state_and_detail_only():
     assert Status("ok", "x", current=1) == Status("ok", "x", current=2)
+
+
+async def test_inspect_judges_certificates_of_hosts_sirdar_manages(db, secrets_key,
+                                                                   publish_fakes):
+    env = await _uat2(db)
+    proxy = publish_fakes.npm
+    api_cert = proxy.add_cert(["api.uat2.serversherpa.com"], days=70)
+    api_host = proxy.add_host("api.uat2.serversherpa.com", "10.10.48.63", 8000,
+                              certificate_id=api_cert, ssl_forced=True,
+                              allow_websocket_upgrade=True)
+    proxy.add_host("portal.uat2.serversherpa.com", "10.10.48.63", 8091)
+    proxy.add_host("portal.uat2.serversherpa.com", "10.10.48.63", 8091)
+    await managed(db, env, "api", PROXY, api_host, origin="claimed")
+    by = {s["service"]: s for s in (await publish.inspect(db, env, get_settings()))["services"]}
+    assert (by["api"]["proxy"]["state"], by["api"]["certificate"]["state"]) == ("ok", "ok")
+    assert by["api"]["certificate"]["expires_on"] is not None
+    assert (by["portal"]["proxy"]["state"], by["portal"]["certificate"]["state"]) == (
+        "conflict", "unknown")
+    assert by["status"]["certificate"]["state"] == "create"
+
+
+async def test_claim_replaces_a_claimed_entry_under_an_old_name(db, secrets_key,
+                                                               publish_fakes):
+    """Base domain renamed: the claimed row at the old name is forgotten (it
+    stays in Cloudflare) and the hand-made record at the new name is claimed."""
+    env = await _uat2(db)
+    cf = publish_fakes.cf
+    old = cf.add("A", "api.old.serversherpa.com", PUBLIC_IP)
+    await managed(db, env, "api", DNS, old, origin="claimed", name="api.old.serversherpa.com")
+    hand = cf.add("A", "api.uat2.serversherpa.com", PUBLIC_IP)
+    state = await publish.inspect(db, env, get_settings())
+    assert state["services"][0]["dns"]["state"] == "claimable"
+    assert await publish.claim(db, env, state) == ["dns:api.uat2.serversherpa.com"]
+    await db.commit()
+    rows = list(await db.scalars(select(ManagedRecord)
+                                 .execution_options(populate_existing=True)))
+    assert [(r.service, r.kind, r.external_id, r.name, r.origin) for r in rows] == [
+        ("api", DNS, hand, "api.uat2.serversherpa.com", "claimed")]
+    assert old in cf.records and cf.writes() == []
+
+
+async def test_a_created_entry_under_an_old_name_goes_before_claiming(db, secrets_key,
+                                                                     publish_fakes):
+    """Base domain renamed with a record Sirdar created at the old name and a
+    hand-made one at the new name: inspect says why Claim must wait, Publish
+    removes Sirdar's old record and stops at the hand-made one, then Claim
+    works and the next Publish goes through."""
+    env = await _uat2(db)
+    cf = publish_fakes.cf
+    old = cf.add("A", "api.old.serversherpa.com", PUBLIC_IP)
+    await managed(db, env, "api", DNS, old, name="api.old.serversherpa.com")
+    hand = cf.add("A", "api.uat2.serversherpa.com", PUBLIC_IP)
+    state = await publish.inspect(db, env, get_settings())
+    api = state["services"][0]["dns"]
+    assert (api["state"], api["detail"]) == (
+        "conflict", "A 203.0.113.7, made outside Sirdar. Publishing first removes Sirdar's "
+                    "old record at api.old.serversherpa.com; then claim this one.")
+    assert await publish.claim(db, env, state) == []
+
+    ctx = await publish.prepare(db, env, get_settings())
+    lines: list[str] = []
+    with pytest.raises(publish.StepFailed) as e:
+        await publish.HttpPublisher().run("dns", ctx, lines.append)
+    assert "api.uat2.serversherpa.com: A 203.0.113.7, made outside Sirdar." in e.value.reason
+    assert lines == ["api.old.serversherpa.com: deleted the A record\n"]
+    assert old not in cf.records and hand in cf.records
+
+    state = await publish.inspect(db, env, get_settings())
+    assert state["services"][0]["dns"]["state"] == "claimable" and state["stale"] == []
+    assert await publish.claim(db, env, state) == ["dns:api.uat2.serversherpa.com"]
+    await db.commit()
+    await publish.HttpPublisher().run("dns", ctx, lines.append)
+    assert "api.uat2.serversherpa.com: A 203.0.113.7, unchanged\n" in lines
+
+
+async def test_proxy_step_removes_a_created_host_under_an_old_name_first(db, secrets_key,
+                                                                        publish_fakes):
+    env = await _uat2(db)
+    proxy = publish_fakes.npm
+    old = proxy.add_host("api.old.serversherpa.com", "10.10.48.63", 8000)
+    await managed(db, env, "api", PROXY, old, name="api.old.serversherpa.com")
+    hand = proxy.add_host("api.uat2.serversherpa.com", "10.10.48.63", 8000)
+    ctx = await publish.prepare(db, env, get_settings())
+    lines: list[str] = []
+    with pytest.raises(publish.StepFailed) as e:
+        await publish.HttpPublisher().run("proxy", ctx, lines.append)
+    assert "api.uat2.serversherpa.com: To 10.10.48.63:8000, made outside Sirdar." in (
+        e.value.reason)
+    assert old not in proxy.hosts and hand in proxy.hosts
+    assert lines == [f"api.old.serversherpa.com: deleted the proxy host #{old}\n"]
+    state = await publish.inspect(db, env, get_settings())
+    assert await publish.claim(db, env, state) == ["proxy:api.uat2.serversherpa.com"]
