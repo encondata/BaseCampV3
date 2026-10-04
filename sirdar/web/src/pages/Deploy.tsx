@@ -14,6 +14,7 @@ import {
 } from '../lib/sirdarApi';
 
 import EnvironmentsSection from './environments/EnvironmentsSection';
+import SnapshotsSection from './snapshots/SnapshotsSection';
 
 /** .env keys (names only) each target needs; the API never reports which are missing.
  *  Keep in sync with sirdar/api/src/sirdar_api/config.py and the Deploy spec. */
@@ -194,6 +195,7 @@ export default function Deploy() {
       </div>
       {loadError && <p className="form-error" role="alert">{loadError}</p>}
       <EnvironmentsSection targets={targets} />
+      <SnapshotsSection />
 
       <section className="sirdar-section">
         <h2>Target</h2>
