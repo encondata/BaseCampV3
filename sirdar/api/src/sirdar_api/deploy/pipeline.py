@@ -1,5 +1,7 @@
-"""Deployment pipeline (spec Section 2: steps 1–8 here; DNS, proxy and smoke
-tests come in phase 4).
+"""Deployment pipeline (spec Section 2: steps 1–11 here; DNS, proxy and smoke
+tests come in phase 4). Besides Update and Reset it runs the snapshot
+modes: Reset (or a first deploy) that restores a snapshot, Restore backup,
+Roll back, and Take snapshot, a job that leaves the environment as it is.
 
 One asyncio task per running deployment, registered in _tasks; each task
 uses its own database sessions. Steps run in plan order through a Runner,
@@ -42,8 +44,9 @@ from sirdar_api.db.models import (
     Environment,
     EnvironmentSecret,
     EnvironmentService,
+    Snapshot,
 )
-from sirdar_api.deploy import ConnectFailed, envfile, known_hosts, ssh, targets, vault
+from sirdar_api.deploy import ConnectFailed, envfile, known_hosts, snapshots, ssh, targets, vault
 from sirdar_api.deploy.redact import Redactor
 from sirdar_api.deploy.runner import (
     CANCEL_GRACE_SECONDS,
@@ -54,7 +57,7 @@ from sirdar_api.deploy.runner import (
     RunResult,
     RunTarget,
 )
-from sirdar_api.deploy.steps import STEPS_BY_KEY, plan_for
+from sirdar_api.deploy.steps import STEPS_BY_KEY, StepDef, plan_for
 
 log = logging.getLogger(__name__)
 
@@ -123,21 +126,47 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def restores(mode: str, snapshot_id: uuid.UUID | None) -> bool:
+    """Whether a deployment restores a snapshot (Reset with one, or the first
+    deploy of an environment created from one). A snapshot job also points
+    at a snapshot, but takes it."""
+    return snapshot_id is not None and mode in ("update", "reset")
+
+
+def plan_of(dep: Deployment) -> list[StepDef]:
+    return plan_for(dep.mode, restore=restores(dep.mode, dep.snapshot_id))
+
+
 # ---- records -----------------------------------------------------------------
 
 async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, git_ref: str,
                             sha: str, actor_id: uuid.UUID | None, start_step: int = 1,
-                            retry_of: uuid.UUID | None = None) -> Deployment:
+                            retry_of: uuid.UUID | None = None,
+                            snapshot_id: uuid.UUID | None = None,
+                            restore_dump: str | None = None) -> Deployment:
     """Add a running deployment and its step rows. The caller commits, then
     calls launch(). Raises DeployInProgress (only the insert is rolled back,
     through a savepoint: the caller's session and objects stay usable), or
-    ValueError when start_step isn't a step of this mode's plan."""
-    plan = plan_for(mode)
+    ValueError when start_step isn't a step of this mode's plan. A snapshot
+    job leaves the environment's status alone."""
+    plan = plan_for(mode, restore=restores(mode, snapshot_id))
     if start_step not in {step.number for step in plan}:
         raise ValueError(f"start_step {start_step} isn't a step of the {mode} plan")
+    if snapshot_id is not None:
+        # Lock the snapshot row until the caller commits, and re-check it in
+        # this transaction: a concurrent delete (which locks it too) then
+        # either finishes first (we refuse) or sees our running deployment.
+        snap = await db.scalar(select(Snapshot).where(Snapshot.id == snapshot_id)
+                               .with_for_update())
+        if snap is None:
+            raise snapshots.SnapshotError("snapshot_not_found")
+        wanted = "pending" if mode == "snapshot" else "ready"
+        if snap.status != wanted:
+            raise snapshots.SnapshotError("snapshot_not_ready")
     dep = Deployment(environment_id=env.id, mode=mode, git_ref=git_ref, sha=sha,
                      status="running", start_step=start_step, retry_of=retry_of,
-                     previous_sha=env.current_sha, actor_id=actor_id)
+                     previous_sha=env.current_sha, actor_id=actor_id,
+                     snapshot_id=snapshot_id, restore_dump=restore_dump)
     try:
         async with db.begin_nested():
             db.add(dep)
@@ -150,8 +179,9 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
         db.add(DeploymentStep(deployment_id=dep.id, number=step.number, key=step.key,
                               name=step.name,
                               status="skipped" if step.number < start_step else "pending"))
-    env.status = "deploying"
-    env.updated_at = _now()
+    if mode != "snapshot":
+        env.status = "deploying"
+        env.updated_at = _now()
     await db.flush()
     return dep
 
@@ -224,10 +254,20 @@ async def recover_orphans() -> int:
                                                   .where(Deployment.id.in_(ids))),
                                Environment.status == "deploying")
                         .values(status="failed", updated_at=now))
+        taken = list(await s.scalars(select(Deployment.snapshot_id).where(
+            Deployment.id.in_(ids), Deployment.mode == "snapshot",
+            Deployment.snapshot_id.is_not(None))))
+        if taken:
+            await s.execute(update(Snapshot).where(Snapshot.id.in_(taken),
+                                                   Snapshot.status == "pending")
+                            .values(status="failed"))
         await s.execute(update(Deployment).where(Deployment.id.in_(ids))
                         .values(status="interrupted", finished_at=now, error=INTERRUPTED))
         await s.commit()
-        return len(ids)
+    settings = get_settings()
+    for snapshot_id in taken:
+        snapshots.discard_fetched(settings, snapshot_id)
+    return len(ids)
 
 
 async def close_orphan(deployment_id: uuid.UUID) -> None:
@@ -247,9 +287,15 @@ async def _close(deployment_id: uuid.UUID, env_id: uuid.UUID, step_number: int |
                  step_status: str, dep_status: str, error: str, failed_step: int | None = None,
                  append_log: str = "") -> None:
     """End a deployment that didn't succeed, in a fresh session (the run's own
-    session may be mid-transaction or cancelled)."""
+    session may be mid-transaction or cancelled). A snapshot job's pending
+    snapshot becomes failed (and its half-fetched bundle goes); any other
+    mode leaves the environment failed."""
     now = _now()
+    taken: uuid.UUID | None = None
     async with get_sessionmaker()() as s:
+        mode, snapshot_id = (await s.execute(
+            select(Deployment.mode, Deployment.snapshot_id)
+            .where(Deployment.id == deployment_id))).one()
         if step_number is not None:
             values: dict = {"status": step_status, "finished_at": now}
             if append_log:
@@ -265,9 +311,17 @@ async def _close(deployment_id: uuid.UUID, env_id: uuid.UUID, step_number: int |
         await s.execute(update(Deployment).where(Deployment.id == deployment_id)
                         .values(status=dep_status, finished_at=now, error=error,
                                 failed_step=failed_step))
-        await s.execute(update(Environment).where(Environment.id == env_id)
-                        .values(status="failed", updated_at=now))
+        if mode == "snapshot":
+            taken = snapshot_id
+            if snapshot_id is not None:
+                await s.execute(update(Snapshot).where(Snapshot.id == snapshot_id,
+                                                       Snapshot.status == "pending")
+                                .values(status="failed"))
+        else:
+            await s.execute(update(Environment).where(Environment.id == env_id)
+                            .values(status="failed", updated_at=now))
         await s.commit()
+    snapshots.discard_fetched(get_settings(), taken)
 
 
 # ---- logs ----------------------------------------------------------------------
@@ -330,13 +384,18 @@ class _Context:
     # An environment that has deployed before has a database worth keeping:
     # its pre-deploy dump must happen (dump.yml fails rather than skip it).
     dump_required: bool = False
+    # Extra vars of the snapshot steps (restore, restore_dump, export).
+    step_vars: dict = field(default_factory=dict, repr=False)
+    # The restored snapshot's pepper and TOTP key: stored as the
+    # environment's own once Restore snapshot succeeds.
+    snapshot_keys: dict = field(default_factory=dict, repr=False)
 
     def vars_for(self, step_key: str) -> dict:
         if step_key == "render":
             return {**self.common, "env_file_b64": self.env_file_b64}
         if step_key == "dump":
             return {**self.common, "dump_required": self.dump_required}
-        return dict(self.common)
+        return {**self.common, **self.step_vars.get(step_key, {})}
 
 
 async def _load_secrets(db: AsyncSession, env_id: uuid.UUID,
@@ -374,6 +433,9 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment,
     except ConnectFailed as e:
         raise PrepareError(e.reason) from None
     secrets = await _load_secrets(db, env.id, settings)
+    step_vars, snapshot_keys, extra_secrets = await _snapshot_vars(db, env, dep, settings,
+                                                                   secrets)
+    secrets = {**secrets, **snapshot_keys}
     rows = await db.scalars(select(EnvironmentService)
                             .where(EnvironmentService.environment_id == env.id))
     ports = {**envfile.DEFAULT_PORTS, **{r.service: r.port for r in rows}}
@@ -399,9 +461,63 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment,
               "sha": dep.sha, "ss_stack": f"{folder}/repo/deploy/stack/ss-stack",
               "min_disk_gb": ssh.MIN_DISK_GB, "min_memory_mb": MIN_MEMORY_MB}
     redactor = Redactor(_redaction_values([*secrets.values(), env_b64, cfg.password,
-                                           cfg.passphrase, cfg.sudo_password, private_key]))
+                                           cfg.passphrase, cfg.sudo_password, private_key,
+                                           *extra_secrets]))
     return _Context(target=target, common=common, env_file_b64=env_b64, redactor=redactor,
-                    dump_required=env.current_sha is not None)
+                    dump_required=env.current_sha is not None, step_vars=step_vars,
+                    snapshot_keys=snapshot_keys)
+
+
+async def _snapshot_vars(db: AsyncSession, env: Environment, dep: Deployment,
+                         settings: Settings, secrets: dict[str, str]
+                         ) -> tuple[dict, dict[str, str], list[str]]:
+    """(per-step vars, the restored snapshot's keys, more values to redact)."""
+    step_vars: dict[str, dict] = {}
+    keys: dict[str, str] = {}
+    extra: list[str] = []
+    snap = await db.get(Snapshot, dep.snapshot_id) if dep.snapshot_id else None
+    try:
+        if restores(dep.mode, dep.snapshot_id):
+            if snap is None or snap.status != "ready":
+                raise PrepareError("The snapshot this deployment restores is gone. Start a "
+                                   "new deployment.")
+            keys = await asyncio.to_thread(snapshots.read_keys, settings, snap)
+            step_vars["restore"] = {
+                "bundle_path": str(snapshots.bundle_path(settings, snap)),
+                "bundle_tool": snapshots.BUNDLE_TOOL,
+                "snapshot_revision": snap.alembic_revision,
+                "api_image": f"serversherpa-api:{envfile.image_tag(dep.sha)}"}
+        if dep.mode == "snapshot":
+            if snap is None or snap.status != "pending":
+                raise PrepareError("This snapshot job's record is gone. Take the snapshot "
+                                   "again.")
+            await asyncio.to_thread(snapshots.ensure_dirs, settings)
+            token = snapshots.encrypt_keys(settings, secrets)
+            token_b64 = base64.b64encode(token).decode()
+            extra += [token.decode(), token_b64]
+            step_vars["export"] = {
+                "snapshot_dest": str(snapshots.fetched_path(settings, snap.id)),
+                "bundle_tool": snapshots.BUNDLE_TOOL, "keys_enc_b64": token_b64,
+                "api_image": f"serversherpa-api:{env.image_tag}",
+                "spaces_bucket": env.spaces_bucket}
+    except snapshots.SnapshotError as e:
+        raise PrepareError(e.reason) from None
+    if dep.restore_dump:
+        step_vars["restore_dump"] = {"dump_name": dep.restore_dump}
+    return step_vars, keys, extra
+
+
+async def _keep_snapshot_keys(db: AsyncSession, env_id: uuid.UUID, settings: Settings,
+                              keys: dict[str, str]) -> None:
+    """After a restore the environment runs on the snapshot's pepper and TOTP
+    key: store them as its own, so later deploys render them."""
+    for key, value in keys.items():
+        row = await db.get(EnvironmentSecret, (env_id, key))
+        if row is None:
+            db.add(EnvironmentSecret(environment_id=env_id, key=key,
+                                     value_enc=vault.encrypt(settings, value)))
+        else:
+            row.value_enc, row.updated_at = vault.encrypt(settings, value), _now()
 
 
 def _failure_reason(step: DeploymentStep, result: RunResult) -> str:
@@ -487,12 +603,27 @@ async def _run(deployment_id: uuid.UUID) -> None:
                     step.status, step.finished_at = "succeeded", _now()
                     if step.key == "dump":
                         dep.dump_path = result.data.get("dump_path") or None
+                    elif step.key == "restore":
+                        await _keep_snapshot_keys(db, env.id, settings, ctx.snapshot_keys)
+                    elif step.key == "export":
+                        try:
+                            stored = await asyncio.to_thread(snapshots.ingest_fetched,
+                                                             settings, dep.snapshot_id)
+                        except snapshots.SnapshotError as e:
+                            reason = f"Step {step.number} ({step.name}) failed: {e.reason}"
+                            await db.rollback()
+                            await _close(deployment_id, env_id, current, step_status="failed",
+                                         dep_status="failed", error=reason,
+                                         failed_step=current, append_log=reason + "\n")
+                            return
+                        snapshots.mark_ready(await db.get(Snapshot, dep.snapshot_id), stored)
                     await db.commit()
             current = None
             now = _now()
             dep.status, dep.finished_at = "succeeded", now
-            env.current_sha, env.image_tag = dep.sha, envfile.image_tag(dep.sha)
-            env.status, env.updated_at = "ready", now
+            if dep.mode != "snapshot":
+                env.current_sha, env.image_tag = dep.sha, envfile.image_tag(dep.sha)
+                env.status, env.updated_at = "ready", now
             await db.commit()
         except asyncio.CancelledError:
             status = "cancelled" if deployment_id in _cancel_requested else "interrupted"
