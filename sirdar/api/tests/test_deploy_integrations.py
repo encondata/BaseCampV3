@@ -8,7 +8,21 @@ from sirdar_api.deploy.integrations import IntegrationError
 
 from .deploy_factories import secrets_key  # noqa: F401
 from .factories import make_user
-from .integration_helpers import CF_TOKEN, CF_VALUES, NPM_PASSWORD, NPM_VALUES, configure
+from .deploy_factories import make_environment
+from .integration_helpers import (
+    CF_TOKEN,
+    CF_VALUES,
+    NPM_PASSWORD,
+    NPM_VALUES,
+    PX_FINGERPRINT,
+    PX_TOKEN,
+    PX_TOKEN_ID,
+    PX_TOKEN_SECRET,
+    PX_VALUES,
+    configure,
+    configure_proxmox,
+)
+from .tls_helpers import make_cert
 
 
 async def test_save_and_load_cloudflare(db, secrets_key):
@@ -159,6 +173,10 @@ async def test_public_view_never_carries_a_secret(db, secrets_key):
                        "updated_at": None, "updated_by_name": None},
         "npm": {"configured": False, "url": None, "identity": None, "letsencrypt_email": None,
                 "password_set": False, "updated_at": None, "updated_by_name": None},
+        "proxmox": {"configured": False, "url": None, "node": None, "pool": None,
+                    "storage": None, "bridge": None, "vlan_tag": None, "template_vmid": None,
+                    "tls_fingerprint": None, "token_id": None, "token_set": False,
+                    "updated_at": None, "updated_by_name": None},
     }
     user = await make_user(db, email="ops@test.example.com", first_name="Jimmy",
                            last_name="Henderson")
@@ -179,3 +197,82 @@ async def test_remove(db, secrets_key):
     await db.commit()
     assert await integrations.remove(db, "npm") is False
     assert await integrations.load_npm(db, get_settings()) is None
+
+
+async def test_save_and_load_proxmox(db, secrets_key):
+    changed = await integrations.save(db, get_settings(), "proxmox", PX_VALUES, PX_TOKEN,
+                                      actor_id=None)
+    await db.commit()
+    assert set(changed) == {"url", "node", "pool", "storage", "bridge", "template_vmid",
+                            "tls_fingerprint", "tls_cert_pem", "token_id", "token"}
+    row = await db.get(Integration, "proxmox")
+    assert row.config["token_id"] == PX_TOKEN_ID
+    assert PX_TOKEN_SECRET not in repr(row.config)
+    assert PX_TOKEN.encode() not in bytes(row.secret_enc)
+    cfg = await integrations.load_proxmox(db, get_settings())
+    assert (cfg.url, cfg.node, cfg.template_vmid, cfg.vlan_tag, cfg.token) == (
+        "https://10.10.48.5:8006", "pve", 9000, None, PX_TOKEN)
+    assert (cfg.token_id, cfg.token_secret) == (PX_TOKEN_ID, PX_TOKEN_SECRET)
+    assert PX_TOKEN_SECRET not in repr(cfg) and "BEGIN CERTIFICATE" not in repr(cfg)
+    view = (await integrations.public(db, get_settings()))["proxmox"]
+    assert (view["configured"], view["token_set"], view["token_id"], view["tls_fingerprint"]) == (
+        True, True, PX_TOKEN_ID, PX_FINGERPRINT)
+    assert "tls_cert_pem" not in view and PX_TOKEN_SECRET not in repr(view)
+
+
+@pytest.mark.parametrize("field,value,code", [
+    ("url", "http://10.10.48.5:8006", "proxmox_url_invalid"),
+    ("url", "https://10.10.48.5:8006/api2/json", "proxmox_url_invalid"),
+    ("node", "pve node", "node_invalid"),
+    ("pool", "", "pool_invalid"),
+    ("storage", "1local", "storage_invalid"),
+    ("bridge", "vmbr0-much-too-long", "bridge_invalid"),
+    ("vlan_tag", 4095, "vlan_tag_invalid"),
+    ("vlan_tag", "12", "vlan_tag_invalid"),
+    ("template_vmid", 99, "template_vmid_invalid"),
+    ("template_vmid", True, "template_vmid_invalid"),
+    ("tls_fingerprint", "AB:CD", "tls_untrusted"),
+    ("tls_cert_pem", None, "tls_untrusted"),
+])
+def test_proxmox_fields_are_checked(field, value, code):
+    with pytest.raises(IntegrationError) as e:
+        integrations.check_fields("proxmox", {**PX_VALUES, field: value})
+    assert e.value.code == code
+
+
+def test_the_pinned_certificate_must_match_the_fingerprint():
+    other, _ = make_cert(cn="impostor")
+    with pytest.raises(IntegrationError) as e:
+        integrations.check_fields("proxmox", {**PX_VALUES, "tls_cert_pem": other})
+    assert e.value.code == "tls_untrusted"
+    lower = {**PX_VALUES, "tls_fingerprint": PX_FINGERPRINT.lower(), "vlan_tag": 40}
+    assert integrations.check_fields("proxmox", lower)["tls_fingerprint"] == PX_FINGERPRINT
+
+
+@pytest.mark.parametrize("token", [
+    PX_TOKEN_ID, f"sirdar@pve={PX_TOKEN_SECRET}", f"{PX_TOKEN_ID}=not-a-uuid",
+    f"{PX_TOKEN}\n", f"root@pam {PX_TOKEN}"])
+def test_proxmox_tokens_are_checked(token):
+    with pytest.raises(IntegrationError) as e:
+        integrations.check_secret("proxmox", token)
+    assert e.value.code == "proxmox_token_invalid"
+
+
+async def test_a_stored_proxmox_token_goes_only_to_its_own_server(db, secrets_key):
+    await configure_proxmox(db)
+    changed = await integrations.save(db, get_settings(), "proxmox",
+                                      {**PX_VALUES, "storage": "fast"}, None, actor_id=None)
+    assert changed == ["storage"]
+    assert (await integrations.config_of(db, "proxmox"))["token_id"] == PX_TOKEN_ID
+    with pytest.raises(IntegrationError) as e:
+        await integrations.candidate(db, get_settings(), "proxmox",
+                                     {**PX_VALUES, "url": "https://10.10.48.9:8006"}, None)
+    assert e.value.code == "secret_required"
+
+
+async def test_in_use_names_the_proxmox_environments(db, secrets_key):
+    await make_environment(db, name="uat3", target_id="proxmox")
+    await make_environment(db, name="uat")
+    assert await integrations.in_use(db, "proxmox") == ["uat3"]
+    assert await integrations.in_use(db, "npm") == []
+    assert await integrations.config_of(db, "cloudflare") == {}

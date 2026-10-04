@@ -146,3 +146,28 @@ def no_real_http():
         mp.setattr(httpx.HTTPTransport, "handle_request", refuse_sync)
         yield hits
     assert not hits, f"a test made real HTTP requests to {', '.join(hits)}"
+
+
+@pytest.fixture(autouse=True)
+def no_real_hosts():
+    """No test reaches a real Proxmox host outside httpx: the raw TLS
+    certificate fetch may only dial 127.0.0.1 (the tests' own TLS server).
+    Later tasks add Terraform and the provisioner's port probe here. Yields
+    the list of blocked attempts (a test that blocks on purpose clears it);
+    the test fails at teardown if any is left. Its own MonkeyPatch, like
+    no_real_http."""
+    from sirdar_api.deploy import tls_pin
+
+    hits: list[str] = []
+    real_read = tls_pin._read_certificate
+
+    def read(host, port):
+        if host != "127.0.0.1":
+            hits.append(f"tls:{host}")
+            raise AssertionError(f"a test fetched a real TLS certificate from {host}")
+        return real_read(host, port)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(tls_pin, "_read_certificate", read)
+        yield hits
+    assert not hits, f"a test reached real hosts: {', '.join(hits)}"
