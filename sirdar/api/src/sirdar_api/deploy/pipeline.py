@@ -31,6 +31,7 @@ import uuid
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -71,6 +72,7 @@ SHUTDOWN_SECONDS = CANCEL_GRACE_SECONDS + 5
 INTERRUPTED = "Sirdar stopped while this deployment was running."
 CANCELLED = "Canceled."
 UNEXPECTED = "Sirdar couldn't run this step."
+KEPT_DUMP = "Keeping the pre-deploy backup from the first attempt"
 RUNNER_DIR_UNWRITABLE = ("Sirdar can't write its runner folder (SIRDAR_RUNNER_DIR). It must "
                          "be owned by uid 10001 with mode 700.")
 
@@ -171,10 +173,19 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
         wanted = "pending" if mode == "snapshot" else "ready"
         if snap.status != wanted:
             raise snapshots.SnapshotError("snapshot_not_ready")
+    previous_sha, dump_path = env.current_sha, None
+    if retry_of is not None:
+        # A retry carries on its chain's first attempt: the commit to roll back
+        # to and the pre-deploy dump taken before anything changed (a later
+        # dump may already be post-migration).
+        parent = await db.get(Deployment, retry_of)
+        if parent is not None:
+            previous_sha, dump_path = parent.previous_sha, parent.dump_path
     dep = Deployment(environment_id=env.id, mode=mode, git_ref=git_ref, sha=sha,
                      status="running", start_step=start_step, retry_of=retry_of,
-                     previous_sha=env.current_sha, actor_id=actor_id,
-                     snapshot_id=snapshot_id, restore_dump=restore_dump)
+                     previous_sha=previous_sha, actor_id=actor_id,
+                     snapshot_id=snapshot_id, restore_dump=restore_dump,
+                     dump_path=dump_path)
     try:
         async with db.begin_nested():
             db.add(dep)
@@ -599,6 +610,13 @@ async def _run(deployment_id: uuid.UUID) -> None:
                     current = step.number
                     if step.status != "running":
                         await _mark_running(db, step)
+                    if step.key == "dump" and dep.dump_path:
+                        # Never replace the chain's first pre-deploy dump.
+                        name = PurePosixPath(dep.dump_path).name
+                        await _save_log(step.id, f"{KEPT_DUMP}: {name}\n")
+                        step.status, step.finished_at = "succeeded", _now()
+                        await db.commit()
+                        continue
                     result = await _run_step(runner, ctx, step)
                     if result.status != "successful":
                         # Before the rollback, which may expire `step`: reloading

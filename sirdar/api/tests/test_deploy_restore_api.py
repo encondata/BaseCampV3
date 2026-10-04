@@ -21,7 +21,7 @@ from .deploy_factories import (  # noqa: F401
 )
 from .ssh_server import ssh_server  # noqa: F401
 from .test_deploy_api import _ssh_env, deploy_env  # noqa: F401
-from .test_deploy_deployments_api import OLD, _headers_without_change
+from .test_deploy_deployments_api import OLD, SHA, _headers_without_change
 from .test_deploy_snapshots_api import (  # noqa: F401
     PEPPER,
     SNAPSHOTS,
@@ -252,3 +252,91 @@ async def test_upload_aborted_by_the_client(client, db, ready, leak_guard):
     assert list(snapshots.incoming_dir(get_settings()).iterdir()) == []
     assert await db.scalar(select(Snapshot.id)) is None
     assert await _audits(db, "deploy.snapshot_upload") == []
+
+
+async def _failed_update(client, h, fake_runner) -> dict:
+    """An Update (OLD -> SHA) whose pre-deploy dump is BACKUP and that fails at 10."""
+    fake_runner.results["dump"] = RunResult(
+        status="successful", rc=0, data={"dump_path": f"/opt/serversherpa/uat/backups/{BACKUP}"})
+    fake_runner.results["up"] = RunResult(status="failed", rc=1)
+    failed = (await client.post(START, headers=h, json={})).json()
+    await _finish(failed)
+    # A later dump would have a different name (and be post-migration).
+    fake_runner.results["dump"] = RunResult(
+        status="successful", rc=0,
+        data={"dump_path": "/opt/serversherpa/uat/backups/20261004T020000Z.dump"})
+    return failed
+
+
+async def test_rollback_after_a_failed_retry_uses_the_first_dump(client, db, ready, fake_runner,
+                                                                 leak_guard):
+    h = await auth_headers(client, db)
+    failed = await _failed_update(client, h, fake_runner)
+    retry = (await client.post(f"/api/deploy/deployments/{failed['id']}/retry", headers=h,
+                               json={})).json()
+    assert retry["start_step"] == 10
+    await _finish(retry)
+    got = (await client.get(f"/api/deploy/deployments/{retry['id']}", headers=h)).json()
+    assert (got["status"], got["dump_path"], got["previous_sha"], got["rollback_available"]) == (
+        "failed", f"/opt/serversherpa/uat/backups/{BACKUP}", OLD, True)
+
+    fake_runner.results.pop("up")
+    before = len(fake_runner.requests)
+    resp = await client.post(f"/api/deploy/deployments/{retry['id']}/rollback", headers=h,
+                             json={"confirm_name": "uat"})
+    assert resp.status_code == 201, resp.text
+    back = resp.json()
+    assert (back["sha"], back["restore_dump"]) == (OLD, BACKUP)
+    await _finish(back)
+    ran = {r.step: r.extravars for r in fake_runner.requests[before:]}
+    assert ran["fetch"]["sha"] == OLD
+    assert ran["restore_dump"]["dump_name"] == BACKUP
+
+
+async def test_retry_from_the_start_keeps_the_first_dump(client, db, ready, fake_runner,
+                                                         leak_guard):
+    h = await auth_headers(client, db)
+    failed = await _failed_update(client, h, fake_runner)
+    before = len(fake_runner.requests)
+    retry = (await client.post(f"/api/deploy/deployments/{failed['id']}/retry", headers=h,
+                               json={"from_step": 1})).json()
+    await _finish(retry)
+    assert "dump" not in [r.step for r in fake_runner.requests[before:]]
+    got = (await client.get(f"/api/deploy/deployments/{retry['id']}", headers=h)).json()
+    assert (got["status"], got["dump_path"], got["sha"], got["previous_sha"]) == (
+        "failed", f"/opt/serversherpa/uat/backups/{BACKUP}", SHA, OLD)
+    dump_step = next(s for s in got["steps"] if s["key"] == "dump")
+    assert dump_step["status"] == "succeeded"
+    kept = f"Keeping the pre-deploy backup from the first attempt: {BACKUP}"
+    assert kept in dump_step["log_tail"]
+
+
+async def test_restore_backup_takes_no_git_ref(client, db, ready, leak_guard):
+    h = await auth_headers(client, db)
+    resp = await client.post(START, headers=h, json={
+        "mode": "restore_dump", "backup": BACKUP, "confirm_name": "uat", "git_ref": "main"})
+    assert (resp.status_code, resp.json()) == (422, {"detail": {"code": "git_ref_not_allowed"}})
+
+
+async def test_backup_name_checked_before_the_target(client, db, ready, leak_guard):
+    await make_environment(db, name="cloud", target_id="aws", current_sha=OLD)
+    h = await auth_headers(client, db)
+    url = "/api/deploy/environments/cloud/deployments"
+    body = {"mode": "restore_dump", "backup": "../.env", "confirm_name": "cloud"}
+    resp = await client.post(url, headers=h, json=body)
+    assert (resp.status_code, resp.json()) == (422, {"detail": {"code": "backup_invalid"}})
+    resp = await client.post(url, headers=h, json={**body, "backup": BACKUP})
+    assert (resp.status_code, resp.json()) == (400, {"detail": {"code": "target_not_configured"}})
+
+
+async def test_retrying_a_rollback_needs_change(client, db, ready, fake_runner, leak_guard):
+    h = await auth_headers(client, db)
+    failed = await _failed_update(client, h, fake_runner)
+    fake_runner.results["up"] = RunResult(status="failed", rc=1)
+    back = (await client.post(f"/api/deploy/deployments/{failed['id']}/rollback", headers=h,
+                              json={"confirm_name": "uat"})).json()
+    await _finish(back)
+    adder = await _headers_without_change(client, db)
+    resp = await client.post(f"/api/deploy/deployments/{back['id']}/retry", headers=adder,
+                             json={"confirm_name": "uat"})
+    assert resp.status_code == 403

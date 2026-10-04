@@ -658,12 +658,15 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
         raise HTTPException(status_code=422, detail={"code": "snapshot_not_allowed"})
     if (body.backup is not None) != (body.mode == "restore_dump"):
         raise HTTPException(status_code=422, detail={"code": "backup_invalid"})
+    if body.mode == "restore_dump":
+        if not environments.BACKUP_RE.fullmatch(body.backup):
+            raise HTTPException(status_code=422, detail={"code": "backup_invalid"})
+        if body.git_ref is not None:        # it deploys the running commit
+            raise HTTPException(status_code=422, detail={"code": "git_ref_not_allowed"})
     if await environments.is_deploying(db, env.id):
         raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"})
     cfg = _deploy_target(env)
     if body.mode == "restore_dump":
-        if not environments.BACKUP_RE.fullmatch(body.backup):
-            raise HTTPException(status_code=422, detail={"code": "backup_invalid"})
         if env.current_sha is None:
             raise HTTPException(status_code=409, detail={"code": "not_deployed"})
         await _pinned(db, cfg)
