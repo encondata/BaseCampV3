@@ -670,7 +670,7 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
         if env.current_sha is None:
             raise HTTPException(status_code=409, detail={"code": "not_deployed"})
         reason = environments.backup_blocked(
-            body.backup, await environments.keys_changed_at(db, env.id))
+            body.backup, await environments.key_changes(db, env.id))
         if reason is not None:
             raise HTTPException(status_code=409, detail={"code": "backup_keys_changed",
                                                          "reason": reason})

@@ -14,6 +14,7 @@ import shlex
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 
 from cryptography.fernet import Fernet
 from sqlalchemy import delete, func, select
@@ -497,24 +498,48 @@ def valid_backup_name(name: str) -> bool:
     return True
 
 
-async def keys_changed_at(db: AsyncSession, env_id) -> datetime | None:
-    """When a snapshot restore last replaced the environment's pepper and TOTP
-    key (the end of its latest succeeded Restore snapshot step), or None."""
-    return await db.scalar(
+@dataclass(frozen=True)
+class KeyChanges:
+    """What makes an environment's backups unrestorable: when a snapshot
+    restore last replaced its pepper and TOTP key (the end of its latest
+    succeeded Restore snapshot step, or None), and the names of the dumps
+    that deployments with a Restore snapshot step took of the database that
+    was there before (a seeded first deploy's own dump)."""
+    changed_at: datetime | None
+    pre_restore: frozenset[str]
+
+
+async def key_changes(db: AsyncSession, env_id) -> KeyChanges:
+    changed_at = await db.scalar(
         select(func.max(DeploymentStep.finished_at))
         .join(Deployment, Deployment.id == DeploymentStep.deployment_id)
         .where(Deployment.environment_id == env_id, DeploymentStep.key == "restore",
                DeploymentStep.status == "succeeded"))
+    restoring = select(DeploymentStep.deployment_id).where(DeploymentStep.key == "restore")
+    paths = await db.scalars(select(Deployment.dump_path).where(
+        Deployment.environment_id == env_id, Deployment.dump_path.is_not(None),
+        Deployment.id.in_(restoring)))
+    return KeyChanges(changed_at, frozenset(PurePosixPath(p).name for p in paths))
 
 
-def backup_blocked(name: str, changed_at: datetime | None) -> str | None:
-    """Why a backup can't be restored, or None. A dump taken before a snapshot
-    restore was made under keys that no longer exist anywhere: restoring it
-    would lock everyone out. Names have whole seconds: a dump named for the
-    second the keys changed in may have started before, so it counts as before."""
-    if changed_at is None or backup_taken_at(name) > changed_at:
+PRE_RESTORE = ("Taken from the database that was here before a snapshot restore; its sign-in "
+               "keys are gone.")
+
+
+def backup_blocked(name: str, changes: KeyChanges) -> str | None:
+    """Why a backup (a valid_backup_name) can't be restored, or None. A dump
+    made under keys a snapshot restore replaced would lock everyone out: the
+    keys no longer exist anywhere.
+    - A dump a restoring deployment took is from before its restore, whatever
+      the target's clock wrote in its name.
+    - Otherwise the name's time against the key change. Names have whole
+      seconds: a dump named for the second the keys changed in may have
+      started before, so it counts as before."""
+    if name in changes.pre_restore:
+        return PRE_RESTORE
+    if changes.changed_at is None or backup_taken_at(name) > changes.changed_at:
         return None
-    when = changed_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    when = changes.changed_at.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
     return f"Taken before the sign-in keys changed (snapshot restore on {when})."
 
 
@@ -535,8 +560,8 @@ async def list_backups(db: AsyncSession, cfg: SshTargetConfig, env: Environment)
         except (ValueError, OverflowError, OSError):
             continue
         rows.append({"name": parts[0], "size_bytes": int(parts[1]), "modified_at": modified})
-    changed_at = await keys_changed_at(db, env.id)
+    changes = await key_changes(db, env.id)
     for row in rows:
-        row["reason"] = backup_blocked(row["name"], changed_at)
+        row["reason"] = backup_blocked(row["name"], changes)
         row["restorable"] = row["reason"] is None
     return sorted(rows, key=lambda r: r["name"], reverse=True)

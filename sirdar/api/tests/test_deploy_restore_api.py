@@ -62,11 +62,12 @@ async def test_backups_listing(client, db, ready, ssh_server, leak_guard):
 
 
 async def _restored_at(db, env_id, finished_at: datetime, *, key: str = "restore",
-                       status: str = "succeeded") -> None:
-    """A deployment of env_id whose step `key` ended `status` at finished_at."""
+                       status: str = "succeeded", dump_path: str | None = None) -> None:
+    """A deployment of env_id whose step `key` ended `status` at finished_at
+    (and that took the pre-deploy dump `dump_path`)."""
     dep = Deployment(environment_id=env_id, mode="reset", git_ref=OLD, sha=OLD,
                      status="succeeded" if status == "succeeded" else "failed",
-                     finished_at=finished_at)
+                     finished_at=finished_at, dump_path=dump_path)
     db.add(dep)
     await db.flush()
     db.add(DeploymentStep(deployment_id=dep.id, number=9, key=key, name="Restore snapshot",
@@ -455,3 +456,43 @@ async def test_the_listing_skips_an_impossible_backup_time(client, db, ready, ss
     resp = await client.get("/api/deploy/environments/uat/backups", headers=h)
     assert resp.status_code == 200, resp.text
     assert [b["name"] for b in resp.json()["backups"]] == [BACKUP]
+
+
+PRE_RESTORE = ("Taken from the database that was here before a snapshot restore; its sign-in "
+               "keys are gone.")
+SKEWED = "20261005T090000Z.dump"       # the target's clock ran ahead of Sirdar's
+
+
+async def test_a_seeded_deploys_own_dump_is_never_restorable(client, db, ready, ssh_server,
+                                                             fake_runner, leak_guard):
+    """Clock skew can't make it look newer than the key change: the dump a
+    deployment with a restore step took is by definition from before it."""
+    folder = "/opt/serversherpa/uat/backups"
+    await _restored_at(db, ready.id, datetime(2026, 10, 4, 7, 0, tzinfo=UTC),
+                       dump_path=f"{folder}/{SKEWED}")
+    await _restored_at(db, ready.id, datetime(2026, 10, 4, 8, 0, tzinfo=UTC), status="failed",
+                       dump_path=f"{folder}/20261005T100000Z.dump")   # a restore step still
+    await _restored_at(db, ready.id, datetime(2026, 10, 4, 9, 0, tzinfo=UTC), key="dump",
+                       dump_path=f"{folder}/20261005T110000Z.dump")   # no restore step
+    other = await make_environment(db, name="other", current_sha=OLD)
+    await _restored_at(db, other.id, datetime(2026, 10, 4, 7, 0, tzinfo=UTC),
+                       dump_path="/opt/serversherpa/other/backups/20261005T120000Z.dump")
+    names = (SKEWED, "20261005T100000Z.dump", "20261005T110000Z.dump", "20261005T120000Z.dump")
+    ssh_server.overrides[environments.backups_command("uat")] = "".join(
+        f"{name}\t5\t1759539723.0\n" for name in names)
+    h = await auth_headers(client, db)
+    resp = await client.get("/api/deploy/environments/uat/backups", headers=h)
+    assert resp.status_code == 200, resp.text
+    assert [(b["name"], b["restorable"], b["reason"]) for b in resp.json()["backups"]] == [
+        ("20261005T120000Z.dump", True, None),
+        ("20261005T110000Z.dump", True, None),
+        ("20261005T100000Z.dump", False, PRE_RESTORE),
+        (SKEWED, False, PRE_RESTORE)]
+    body = {"mode": "restore_dump", "backup": SKEWED, "confirm_name": "uat"}
+    resp = await client.post(START, headers=h, json=body)
+    assert (resp.status_code, resp.json()) == (
+        409, {"detail": {"code": "backup_keys_changed", "reason": PRE_RESTORE}})
+    assert fake_runner.requests == []
+    resp = await client.post(START, headers=h, json={**body, "backup": "20261005T110000Z.dump"})
+    assert resp.status_code == 201, resp.text
+    await _finish(resp.json())

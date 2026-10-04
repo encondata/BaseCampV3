@@ -291,7 +291,9 @@ never decides what the backup is restored under. A backup taken before a
 snapshot restore replaced the pepper and TOTP key can't be restored (its users'
 keys no longer exist anywhere): the backups listing marks it
 `"restorable": false` with a `reason`, and starting one answers 409
-`backup_keys_changed`. Roll back (offered
+`backup_keys_changed`. Neither can the dump a seeded first deploy took of a
+database that was already there, whatever the target's clock named it.
+Roll back (offered
 after a failed Update) deploys the previous commit and restores that
 Update's dump. Uploaded files are never rolled back.
 
