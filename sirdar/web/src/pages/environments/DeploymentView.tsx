@@ -14,7 +14,8 @@ import {
 } from '../../lib/sirdarApi';
 
 import {
-  DEPLOYMENT_STATUS, GATED_MODES, MODE_LABEL, RETRY_MODES, RETRYABLE, STEP_STATUS, StatusChip, duration, shortSha,
+  DEPLOYMENT_STATUS, GATED_MODES, MODE_LABEL, RETRY_MODES, RETRYABLE, STEP_STATUS, StatusChip, baseName, dumpTakenAt,
+  duration, shortSha,
   stoppedStep, when,
 } from './labels';
 
@@ -254,6 +255,12 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
             Deploys the previous commit <span className="mono">{shortSha(dep.previous_sha)}</span> again and restores
             this deployment's pre-deploy dump. Uploaded files are not rolled back.
           </p>
+          {dep.dump_path && (
+            <p className="page-hint">
+              Restores the backup <span className="mono">{baseName(dep.dump_path)}</span>
+              {dumpTakenAt(dep.dump_path) ? <>, taken <span className="mono">{when(dumpTakenAt(dep.dump_path))}</span></> : null}.
+            </p>
+          )}
           <div className="sirdar-retry pf-form">
             <div>
               <label className="field-label" htmlFor="rollback-confirm">Type {env.name} to confirm</label>

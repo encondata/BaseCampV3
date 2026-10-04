@@ -52,6 +52,14 @@ export function StatusChip({ map, status }: { map: ChipMap; status: string }) {
 }
 
 export const when = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString() : '—');
+/** The file name at the end of a dump path. */
+export const baseName = (path: string) => path.slice(path.lastIndexOf('/') + 1);
+/** A pre-deploy dump is named for its UTC time, `YYYYMMDDTHHMMSSZ.dump`;
+ *  that time as ISO, or null for any other name. */
+export function dumpTakenAt(path: string | null | undefined): string | null {
+  const m = path ? /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z\.dump$/.exec(baseName(path)) : null;
+  return m ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z` : null;
+}
 export const shortSha = (sha: string | null | undefined) => (sha ? sha.slice(0, 8) : '—');
 
 /** "42s" / "1m 05s"; a step still running counts up to `now`. */

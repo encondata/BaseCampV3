@@ -338,6 +338,10 @@ it('a failed Update with a dump offers Roll back behind the typed name', async (
   const { onRetried } = show({ id: 'd4' });
   expect(await screen.findByRole('heading', { name: 'Roll back' })).toBeTruthy();
   expect(screen.getByText(/Deploys the previous commit/).textContent).toContain('e73b99ca');
+  // Which dump it restores, and when it was taken, before the typed-name gate.
+  const which = screen.getByText(/Restores the backup/);
+  expect(which.textContent).toContain('20261003T130500Z.dump');
+  expect(which.textContent).toContain(new Date('2026-10-03T13:05:00Z').toLocaleString());
   const go = screen.getByRole('button', { name: 'Roll back' }) as HTMLButtonElement;
   expect(go.disabled).toBe(true);
   await user.type(screen.getByLabelText('Type uat to confirm', { selector: '#rollback-confirm' }), 'uat');
