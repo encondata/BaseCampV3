@@ -320,6 +320,17 @@ address is recorded, so two creates can't claim the same address, and it runs
 again before the address is written. A static address that already answers
 SSH is refused before the VM is built.
 
+A VM keeps the template, storage, pool, bridge and VLAN it was cloned with:
+they are recorded when the environment is created, so changing them in
+Settings › Integrations › Proxmox only affects new environments. Step 0 runs
+`terraform plan`, reads the plan and refuses it if it would replace or remove
+anything; only Delete environment destroys a VM. The VM snapshot is taken
+before Terraform changes the VM, so it holds the old sizing too. A VM id
+another environment reserved but hasn't built yet is skipped (the next 20 ids
+are checked with Proxmox). Delete environment releases an id it reserved but
+never built, and refuses when a VM it built is invisible to the token while
+Terraform's state still has it (check the token's pool permissions).
+
 Set up once on the Proxmox host (as root), then enter the URL, node, pool,
 storage, bridge, template id and API token in Settings › Integrations ›
 Proxmox, trust the certificate fingerprint it shows (compare it with
