@@ -14,6 +14,7 @@ import DeploymentsTab from './DeploymentsTab';
 import DeployModal from './DeployModal';
 import EnvOverview from './EnvOverview';
 import EnvSettings from './EnvSettings';
+import PublishTab from './PublishTab';
 
 import { ENV_STATUS, StatusChip, TYPE_LABEL, targetLabel } from './labels';
 
@@ -21,9 +22,10 @@ import { ENV_STATUS, StatusChip, TYPE_LABEL, targetLabel } from './labels';
  *  the header, Deploy and Settings notice when the run ends. */
 export const ENV_POLL_MS = 5000;
 
-type Tab = 'overview' | 'deployments' | 'backups' | 'settings';
+type Tab = 'overview' | 'deployments' | 'publish' | 'backups' | 'settings';
 const TABS: [Tab, string][] = [
-  ['overview', 'Overview'], ['deployments', 'Deployments'], ['backups', 'Backups'], ['settings', 'Settings'],
+  ['overview', 'Overview'], ['deployments', 'Deployments'], ['publish', 'Publish'], ['backups', 'Backups'],
+  ['settings', 'Settings'],
 ];
 
 /** Keyed by name: moving to another environment starts from a clean page
@@ -119,6 +121,7 @@ function EnvironmentPage({ name }: { name: string }) {
       {tab === 'deployments' && (
         <DeploymentsTab env={env} selected={selected} onSelect={setSelected} onChanged={() => void load()} />
       )}
+      {tab === 'publish' && <PublishTab env={env} onStarted={started} onChanged={setEnv} />}
       {tab === 'backups' && <BackupsTab env={env} onStarted={started} />}
       {tab === 'settings' && <EnvSettings env={env} targets={targets} onSaved={setEnv} />}
       {deploying && <DeployModal env={env} onStarted={started} onClose={() => setDeploying(false)} />}

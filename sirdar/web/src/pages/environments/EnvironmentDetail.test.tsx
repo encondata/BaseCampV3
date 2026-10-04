@@ -13,7 +13,7 @@ vi.mock('@portal/auth/AuthContext', () => ({
 const api = vi.hoisted(() => ({
   getEnvironment: vi.fn(), getDeployTargets: vi.fn(), startDeployment: vi.fn(), trustKnownHost: vi.fn(),
   listDeployments: vi.fn(), updateEnvironment: vi.fn(), getEnvironmentDefaults: vi.fn(),
-  listSnapshots: vi.fn(), listBackups: vi.fn(),
+  listSnapshots: vi.fn(), listBackups: vi.fn(), getPublishPlan: vi.fn(), claimPublish: vi.fn(),
 }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 vi.mock('./DeploymentView', () => ({ default: ({ id }: { id: string }) => <div>deployment view {id}</div> }));
@@ -21,7 +21,7 @@ vi.mock('./DeploymentView', () => ({ default: ({ id }: { id: string }) => <div>d
 import { ApiError } from '@portal/lib/api';
 
 import EnvironmentDetail, { ENV_POLL_MS } from './EnvironmentDetail';
-import { ADOPTED, BACKUPS, DEFAULTS, ENV, RUNNING, TARGETS, summary } from './testData';
+import { ADOPTED, BACKUPS, DEFAULTS, ENV, PUBLISH_PLAN, RUNNING, TARGETS, summary } from './testData';
 
 Element.prototype.scrollIntoView = () => {};
 beforeEach(() => {
@@ -33,6 +33,7 @@ beforeEach(() => {
   api.listDeployments.mockResolvedValue({ deployments: [summary(RUNNING), ADOPTED] });
   api.listSnapshots.mockResolvedValue({ snapshots: [] });
   api.listBackups.mockResolvedValue({ backups: BACKUPS });
+  api.getPublishPlan.mockResolvedValue(PUBLISH_PLAN);
 });
 afterEach(cleanup);
 
@@ -220,4 +221,14 @@ it('the Backups tab restores a dump and then follows it on the Deployments tab',
   await userEvent.click(screen.getByRole('button', { name: 'Restore backup' }));
   expect(await screen.findByText('deployment view d7')).toBeTruthy();
   expect(screen.getByRole('tab', { name: 'Deployments' }).getAttribute('aria-selected')).toBe('true');
+});
+
+it('the Publish tab sits between Deployments and Backups and shows the plan', async () => {
+  show();
+  await screen.findByRole('heading', { level: 1, name: 'uat' });
+  expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(
+    ['Overview', 'Deployments', 'Publish', 'Backups', 'Settings']);
+  await userEvent.click(screen.getByRole('tab', { name: 'Publish' }));
+  expect(await screen.findByRole('table', { name: 'Public names' })).toBeTruthy();
+  expect(api.getPublishPlan).toHaveBeenCalledWith('uat');
 });
