@@ -301,14 +301,21 @@ class ProxmoxProvisioner:
             raise StepFailed(f"The VM Sirdar made for {ctx.env_name} ({vm.name}, VM {vmid}) is "
                              "gone from Proxmox. Sirdar won't build a new one silently: delete "
                              "the environment, or fix it by hand, then retry.")
+        snapshot: str | None = None
+        if vm.created:
+            # Before Terraform changes anything: the snapshot holds the VM as
+            # it was, its sizing included.
+            snapshot = await self._snapshot(api, ctx, vmid, out)
         out(f"{'Updating' if vm.created else 'Creating'} {vm.name} ({vm.cores} vCPU, "
             f"{vm.memory_mb // 1024} GB, {vm.disk_gb} GB disk) with Terraform.\n")
         await self._apply(ctx, vmid, out)
         if not vm.created:
             await _set_vm(ctx.env_id, created=True)
+            # A VM built just now had nothing before: still before step 1.
+            snapshot = await self._snapshot(api, ctx, vmid, out)
         await self._settle_address(api, ctx, vmid, out)
         sha = None if ctx.sha else await self._resolve_ref(ctx, out)
-        return VmOutcome(sha=sha, vm_snapshot=await self._snapshot(api, ctx, vmid, out))
+        return VmOutcome(sha=sha, vm_snapshot=snapshot)
 
     async def _identify(self, api: Proxmox, ctx: VmContext) -> dict | None:
         """VM vm.vmid looked up across the cluster: None when no node has it.
@@ -504,6 +511,12 @@ class ProxmoxProvisioner:
         await api.take_snapshot(vmid, name, f"Sirdar: before {ctx.mode} of {ctx.env_name} "
                                             f"(deployment {ctx.deployment_id})")
         out(f"Took VM snapshot {name}.\n")
+        # Recorded at once: a later failure in this step still leaves it
+        # Sirdar's (kept by a retry, listed, pruned in turn).
+        async with get_sessionmaker()() as s:
+            await s.execute(update(Deployment).where(Deployment.id == ctx.deployment_id)
+                            .values(vm_snapshot=name))
+            await s.commit()
         keep = await _recorded(ctx.env_id) | {name}
         # Only the sirdar-* snapshots Sirdar's deployments recorded: a snapshot
         # made by hand is never pruned, whatever its name.

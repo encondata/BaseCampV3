@@ -566,3 +566,45 @@ async def test_a_plan_sirdar_can_t_read_is_never_applied(db, vm_env, tf):
         await provisioner(tf).run("provision", await ctx_for(db, vm_env), lambda _: None)
     assert e.value.reason == "Terraform couldn't plan the VM's changes. See the log above."
     assert "apply" not in tf.commands()
+
+
+async def test_the_vm_snapshot_is_taken_before_terraform_changes_the_vm(db, vm_env, tf,
+                                                                       proxmox_fake):
+    """Before every change on the VM: a resize by this run's apply is in the
+    snapshot's past, so restoring it undoes the resize too."""
+    await _built(db, vm_env, tf)
+    seen: list[list[str]] = []
+    tf.effects["plan"] = lambda _r: seen.append(
+        [s["name"] for s in proxmox_fake.snaps.get(120, [])])
+    lines: list[str] = []
+    outcome = await provisioner(tf).run(
+        "provision", await ctx_for(db, vm_env, sha=SHA, take=True), lines.append)
+    assert outcome.vm_snapshot == SNAP and seen == [[SNAP]]
+    text = "".join(lines)
+    assert text.index(f"Took VM snapshot {SNAP}.\n") < text.index("fake terraform plan")
+
+
+async def test_a_vm_still_to_be_built_is_snapshotted_once_it_exists(db, vm_env, tf,
+                                                                   proxmox_fake):
+    outcome = await provisioner(tf).run(
+        "provision", await ctx_for(db, vm_env, take=True), lambda _: None)
+    assert outcome.vm_snapshot == SNAP
+    assert [s["name"] for s in proxmox_fake.snaps[120]] == [SNAP]
+
+
+async def test_a_snapshot_taken_before_a_failed_apply_is_recorded_at_once(db, vm_env, tf,
+                                                                          proxmox_fake):
+    """The deployment records it as soon as it exists, so a retry keeps it
+    and pruning and the VM snapshot list know it is Sirdar's."""
+    await _built(db, vm_env, tf)
+    dep = Deployment(environment_id=vm_env.id, mode="update", git_ref="main", sha=SHA,
+                     status="running", start_step=0, vm=True, take_vm_snapshot=True)
+    db.add(dep)
+    await db.commit()
+    ctx = await provision.prepare(db, vm_env, dep, get_settings())
+    tf.results["apply"] = TfResult(status="failed", rc=1)
+    with pytest.raises(StepFailed):
+        await provisioner(tf).run("provision", ctx, lambda _: None)
+    await db.refresh(dep)
+    assert dep.vm_snapshot == SNAP
+    assert [s["name"] for s in proxmox_fake.snaps[120]] == [SNAP]
