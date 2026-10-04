@@ -374,7 +374,45 @@ async def test_migration_0007_round_trip():
                                 ).fetchone()[0] == 0
             assert conn.execute("SELECT count(*) FROM environments WHERE id = %s",
                                 (env_id,)).fetchone()[0] == 1
+            assert not conn.execute("SELECT to_regclass('proxmox_vms') IS NOT NULL"
+                                    ).fetchone()[0]
+            assert conn.execute(
+                "SELECT count(*) FROM information_schema.columns WHERE table_name = "
+                "'deployments' AND column_name IN ('vm', 'take_vm_snapshot', 'vm_snapshot')"
+            ).fetchone()[0] == 0
+            for bad in ("INSERT INTO integrations (kind, config) VALUES ('proxmox', '{}')",
+                        "INSERT INTO deployments (environment_id, mode, git_ref, sha, status, "
+                        f"start_step) VALUES ('{env_id}', 'vm_restore', 'main', '{SHA}', "
+                        "'succeeded', 0)"):
+                with pytest.raises(psycopg.errors.CheckViolation):
+                    conn.execute(bad)
     finally:
         _alembic("upgrade", "head")
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
         assert conn.execute("SELECT to_regclass('proxmox_vms') IS NOT NULL").fetchone()[0]
+
+
+async def test_migration_0007_downgrade_refuses_while_vms_are_managed():
+    """Downgrading would erase the ownership record and the SSH key of each VM
+    Sirdar built, orphaning them: it refuses, and nothing changes."""
+    from sirdar_api.db.engine import dispose_engine
+    await dispose_engine()
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        env_id = conn.execute(
+            "INSERT INTO environments (name, type, target_id, base_domain, proxy_ip) "
+            "VALUES ('vm2', 'dev', 'proxmox', 'vm2.example.com', '10.0.0.2') RETURNING id"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO proxmox_vms (environment_id, node, vmid, name, cores, memory_mb, "
+            "disk_gb, ip_mode, ssh_public_key, ssh_private_key_enc) "
+            "VALUES (%s, 'pve', 120, 'ss-vm2', 4, 8192, 64, 'dhcp', 'ssh-ed25519 x', 'k')",
+            (env_id,))
+        conn.execute("INSERT INTO integrations (kind, config) VALUES ('proxmox', '{}')")
+    with pytest.raises(subprocess.CalledProcessError) as err:
+        _alembic("downgrade", "0006")
+    assert b"Can't downgrade below 0007 while Sirdar manages Proxmox VMs" in err.value.stderr
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0007"
+        assert conn.execute("SELECT count(*) FROM proxmox_vms").fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM integrations WHERE kind = 'proxmox'"
+                            ).fetchone()[0] == 1

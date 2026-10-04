@@ -55,7 +55,17 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # Environments on target 'proxmox' stay: deleting them would orphan their VMs.
+    # For the same reason it refuses while proxmox_vms (the ownership record and
+    # each VM's SSH key) has rows, before anything is dropped.
     op.execute("""
+        DO $$
+        BEGIN
+          IF EXISTS (SELECT 1 FROM proxmox_vms) THEN
+            RAISE EXCEPTION 'Can''t downgrade below 0007 while Sirdar manages Proxmox VMs; '
+              'delete those environments first.';
+          END IF;
+        END
+        $$;
         DELETE FROM deployments WHERE mode = 'vm_restore';
         DELETE FROM deployment_steps WHERE key IN ('provision', 'vm_restore', 'destroy');
         DELETE FROM integrations WHERE kind = 'proxmox';
