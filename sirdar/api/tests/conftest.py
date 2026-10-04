@@ -7,6 +7,7 @@ import os
 import subprocess
 from pathlib import Path
 
+import httpx
 import psycopg
 import pytest
 from cryptography.fernet import Fernet
@@ -113,3 +114,19 @@ async def db():
 def source():
     with psycopg.connect(SOURCE_PSYCOPG_URL, autocommit=True) as conn:
         yield conn
+
+
+@pytest.fixture(autouse=True)
+def no_real_http():
+    """No test reaches a real server (Cloudflare, Nginx Proxy Manager, a
+    public URL): every outbound client takes a transport, and the real one
+    fails the test here. Its own MonkeyPatch, not the shared `monkeypatch`
+    fixture: requesting that from an autouse fixture would set it up first
+    and so undo a test's patches only after every other teardown ran (e.g.
+    stop_pipeline would see a test's fake pipeline._tasks)."""
+    async def refuse(self, request):
+        raise AssertionError(f"a test made a real HTTP request to {request.url.host}")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(httpx.AsyncHTTPTransport, "handle_async_request", refuse)
+        yield
