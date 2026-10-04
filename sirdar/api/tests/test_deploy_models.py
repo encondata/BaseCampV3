@@ -243,6 +243,21 @@ async def test_managed_record_constraints(db):
     await db.rollback()
 
 
+async def test_deleting_an_environment_cascades_its_managed_records(db):
+    """Delete environment ends by deleting the row: its managed_records go with
+    it, and another environment's stay."""
+    env, other = await _env(db), await _env(db, name="uat2")
+    env_id, other_id = env.id, other.id
+    db.add(_record(env_id))
+    db.add(_record(env_id, kind="proxy_host", external_id="7"))
+    db.add(_record(other_id, service="portal", external_id="rec-9"))
+    await db.commit()
+    await db.execute(delete(Environment).where(Environment.id == env_id))
+    await db.commit()
+    left = await db.scalars(select(ManagedRecord.environment_id))
+    assert list(left) == [other_id]
+
+
 async def test_migration_0006_round_trip():
     """Downgrading drops the publish and teardown deployments with their
     steps; upgrading again leaves every existing environment unpublished."""
