@@ -182,6 +182,37 @@ it('without a ready snapshot Reset data starts empty only', async () => {
   expect(screen.getByText('No snapshot is ready, so it starts empty.')).toBeTruthy();
 });
 
+it("the starts-empty hint waits for the snapshot list", async () => {
+  let resolve!: (v: { snapshots: unknown[] }) => void;
+  api.listSnapshots.mockReturnValue(new Promise((r) => { resolve = r; }));
+  open();
+  await userEvent.click(screen.getByRole('radio', { name: 'Reset data' }));
+  expect(screen.queryByText('No snapshot is ready, so it starts empty.')).toBeNull();
+  resolve({ snapshots: [] });
+  expect(await screen.findByText('No snapshot is ready, so it starts empty.')).toBeTruthy();
+  cleanup();
+  api.listSnapshots.mockRejectedValue(new ApiError(500, 'internal', {}));
+  open();
+  await userEvent.click(screen.getByRole('radio', { name: 'Reset data' }));
+  await waitFor(() => expect(api.listSnapshots).toHaveBeenCalledTimes(2));
+  await Promise.resolve();
+  expect(screen.queryByText('No snapshot is ready, so it starts empty.')).toBeNull();
+});
+
+it.each(['snapshot_not_found', 'snapshot_not_ready'])('a %s refusal clears the chosen snapshot', async (code) => {
+  api.startDeployment.mockRejectedValueOnce(new ApiError(409, code, { code }));
+  open();
+  await userEvent.click(screen.getByRole('radio', { name: 'Reset data' }));
+  await userEvent.click(screen.getByRole('radio', { name: 'From a snapshot' }));
+  await userEvent.type(screen.getByLabelText('Type uat to confirm'), 'uat');
+  await userEvent.click(screen.getByRole('combobox', { name: 'Snapshot' }));
+  await userEvent.click(await screen.findByRole('button', { name: /^dev-2026-10-04/ }));
+  await userEvent.click(deployBtn());
+  expect(await screen.findByRole('alert')).toBeTruthy();
+  expect(deployBtn().disabled).toBe(true);                     // the stale choice is gone
+  expect((screen.getByRole('combobox', { name: 'Snapshot' }) as HTMLInputElement).value).toBe('');
+});
+
 it("a seeded environment's first deploy says it restores the snapshot", async () => {
   open({ ...ENV, current_sha: null, status: 'new', seed_snapshot: { id: 's1', name: 'dev-2026-10-04' } });
   expect(await screen.findByText(/This first deploy restores the snapshot/)).toBeTruthy();

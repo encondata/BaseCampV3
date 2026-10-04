@@ -39,6 +39,8 @@ export default function DeployModal({ env, onStarted, onClose }: {
   const [mode, setMode] = useState<Mode>('update');
   const [confirm, setConfirm] = useState('');
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  // The starts-empty hint waits for the list: until then "none ready" isn't known.
+  const [snapshotsLoaded, setSnapshotsLoaded] = useState(false);
   const [after, setAfter] = useState<'empty' | 'snapshot'>('empty');
   const [snapshotId, setSnapshotId] = useState('');
   const [errors, setErrors] = useState<Partial<Record<Field, string>>>({});
@@ -71,7 +73,9 @@ export default function DeployModal({ env, onStarted, onClose }: {
   // Snapshots are optional: without them Reset data offers "Start empty" only.
   useEffect(() => {
     let live = true;
-    listSnapshots().then((r) => { if (live) setSnapshots(r.snapshots.filter((x) => x.status === 'ready')); })
+    listSnapshots().then((r) => {
+      if (live) { setSnapshots(r.snapshots.filter((x) => x.status === 'ready')); setSnapshotsLoaded(true); }
+    })
       .catch(() => { /* no snapshot choice */ });
     return () => { live = false; };
   }, []);
@@ -110,6 +114,8 @@ export default function DeployModal({ env, onStarted, onClose }: {
       refocus.current = true;
       if (!hostKey.handle(err, env.target, attempt)) {
         const code = (err as { code?: string }).code ?? '';
+        // The chosen snapshot is gone or not ready: don't offer it again as chosen.
+        if (CODE_FIELD[code] === 'snapshot') setSnapshotId('');
         setErrors({ [CODE_FIELD[code] ?? 'form']: deployErrorText(err, "Couldn't start the deployment.") });
       }
     } finally {
@@ -199,7 +205,7 @@ export default function DeployModal({ env, onStarted, onClose }: {
                     </p>
                   </>
                 )}
-                {snapshots.length === 0 && <p className="page-hint">No snapshot is ready, so it starts empty.</p>}
+                {snapshotsLoaded && snapshots.length === 0 && <p className="page-hint">No snapshot is ready, so it starts empty.</p>}
                 {errors.snapshot && <p className="form-error" role="alert">{errors.snapshot}</p>}
               </div>
             )}
