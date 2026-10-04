@@ -300,6 +300,16 @@ def test_restore_dump_playbook(tmp_path):
     assert result.returncode != 0
     assert f"There's no backup 20200101T000000Z.dump in {env_dir}/backups." in result.stdout
 
+    # Only `ss-stack dump` names: nothing outside backups/, even a file that exists.
+    (env_dir / "backups" / "notes.dump").write_bytes(b"PGDMP-other")
+    for bad in ("../.env", "notes.dump", "20261004T010203Z.dump/..", "/etc/passwd",
+                "20261004T010203Z.dump.partial", "20261004T010203Z.dump\n"):
+        Path(env["DOCKER_LOG"]).unlink(missing_ok=True)
+        result, calls = _play(tmp_path, "restore_dump.yml", {**extra, "dump_name": bad}, env)
+        assert result.returncode != 0, bad
+        assert "isn't a backup name" in result.stdout, bad
+        assert calls == [], bad
+
 
 def _export_vars(env_dir: Path, dest: Path) -> dict:
     return {**_common(env_dir), "snapshot_dest": str(dest), "bundle_tool": bundle.__file__,

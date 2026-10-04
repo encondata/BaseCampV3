@@ -46,6 +46,8 @@ _SECRET_VALUE_RE = re.compile(r"[A-Za-z0-9._~+/=:@%^*!?,;-]{1,1024}")
 _HEX_RE = re.compile(r"[0-9a-fA-F]{1,1024}")
 _FERNET_KEY_RE = re.compile(r"[A-Za-z0-9_-]{43}=")
 _NO_ANSWER = "The target didn't answer in time."
+# The names `ss-stack dump` gives pre-deploy dumps (UTC timestamps).
+BACKUP_RE = re.compile(r"[0-9]{8}T[0-9]{6}Z\.dump")
 
 
 class EnvError(Exception):
@@ -466,3 +468,30 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
         env.updated_at = _now()
     await db.flush()
     return changed
+
+
+# ---- backups (pre-deploy dumps on the target) -----------------------------------
+
+def backups_command(name: str) -> str:
+    folder = shlex.quote(envfile.env_dir(name) + "/backups")
+    return (f"find {folder} -maxdepth 1 -type f -name '*.dump' "
+            "-printf '%f\\t%s\\t%T@\\n' 2>/dev/null || true")
+
+
+async def list_backups(db: AsyncSession, cfg: SshTargetConfig, env: Environment) -> list[dict]:
+    """The environment's pre-deploy dumps, newest first: name, size, time.
+    Lines that aren't `ss-stack dump` files are ignored."""
+    result = await ssh.run_command(cfg, db, backups_command(env.name))
+    if result.exit_status is None:
+        raise ConnectFailed(_NO_ANSWER)
+    rows: list[dict] = []
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3 or not BACKUP_RE.fullmatch(parts[0]) or not parts[1].isdecimal():
+            continue
+        try:
+            modified = datetime.fromtimestamp(float(parts[2]), UTC)
+        except (ValueError, OverflowError, OSError):
+            continue
+        rows.append({"name": parts[0], "size_bytes": int(parts[1]), "modified_at": modified})
+    return sorted(rows, key=lambda r: r["name"], reverse=True)

@@ -5,12 +5,14 @@ import asyncio
 import os
 import uuid
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from starlette.requests import ClientDisconnect
 
 from sirdar_api.api.deps import AuthContext, DbSession, client_ip, require_permission
 from sirdar_api.config import get_settings
@@ -32,7 +34,7 @@ from sirdar_api.deploy import (
 )
 from sirdar_api.deploy.ssh import SshTargetConfig
 from sirdar_api.deploy.ssh_targets import SavedSshTarget, TargetError
-from sirdar_api.deploy.steps import plan_for
+from sirdar_api.deploy.steps import STEPS_BY_KEY, plan_for
 from sirdar_api.services.audit import audit
 
 router = APIRouter(prefix="/deploy", tags=["deploy"])
@@ -522,12 +524,14 @@ _REF_REASON = {
 
 
 class DeploymentIn(BaseModel):
-    mode: Literal["update", "reset"] = "update"
+    mode: Literal["update", "reset", "restore_dump"] = "update"
     git_ref: str | None = Field(default=None, max_length=200)
-    # Reset only: must equal the environment's name exactly.
+    # Reset and Restore backup: must equal the environment's name exactly.
     confirm_name: str | None = Field(default=None, max_length=64)
     # Reset only: restore this snapshot after the reset.
     snapshot_id: uuid.UUID | None = None
+    # Restore backup only: a file name from GET /environments/{name}/backups.
+    backup: str | None = Field(default=None, max_length=64)
 
 
 class RetryIn(BaseModel):
@@ -535,13 +539,23 @@ class RetryIn(BaseModel):
     confirm_name: str | None = Field(default=None, max_length=64)
 
 
+class RollbackIn(BaseModel):
+    confirm_name: str | None = Field(default=None, max_length=64)
+
+
+# Modes that replace data: deploy:change and the environment's name typed back.
+GATED_MODES = ("reset", "restore_dump", "rollback")
+RETRY_MODES = ("update", "reset", "restore_dump", "rollback")
+
+
 def _forbidden() -> HTTPException:
     return HTTPException(status_code=403, detail={"code": "forbidden"})
 
 
 def _require_mode(actor: AuthContext, mode: str) -> None:
-    """Update needs deploy:add (the route's guard); Reset also needs change."""
-    if mode == "reset" and not actor.access.can("deploy", "change"):
+    """Update needs deploy:add (the route's guard); the modes that replace
+    data also need change."""
+    if mode in GATED_MODES and not actor.access.can("deploy", "change"):
         raise _forbidden()
 
 
@@ -582,6 +596,12 @@ async def _stopped_step(db, deployment_id: uuid.UUID) -> int | None:
         if status in pipeline.RETRYABLE_STATUSES:
             return number
     return next((number for number, status in rows if status == "not_run"), None)
+
+
+async def _has_step(db, deployment_id: uuid.UUID, key: str) -> bool:
+    found = await db.scalar(select(DeploymentStep.number).where(
+        DeploymentStep.deployment_id == deployment_id, DeploymentStep.key == key).limit(1))
+    return found is not None
 
 
 async def _launch(db, env: Environment, request: Request, actor: AuthContext, *, action: str,
@@ -632,13 +652,24 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
                            actor: AuthContext = require_permission("deploy", "add")):
     _require_mode(actor, body.mode)
     env = await _environment(db, name)
-    if body.mode == "reset" and body.confirm_name != env.name:
+    if body.mode in GATED_MODES and body.confirm_name != env.name:
         raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
     if body.snapshot_id is not None and body.mode != "reset":
         raise HTTPException(status_code=422, detail={"code": "snapshot_not_allowed"})
+    if (body.backup is not None) != (body.mode == "restore_dump"):
+        raise HTTPException(status_code=422, detail={"code": "backup_invalid"})
     if await environments.is_deploying(db, env.id):
         raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"})
     cfg = _deploy_target(env)
+    if body.mode == "restore_dump":
+        if not environments.BACKUP_RE.fullmatch(body.backup):
+            raise HTTPException(status_code=422, detail={"code": "backup_invalid"})
+        if env.current_sha is None:
+            raise HTTPException(status_code=409, detail={"code": "not_deployed"})
+        await _pinned(db, cfg)
+        return await _launch(db, env, request, actor, action="deploy.deployment_start",
+                             mode="restore_dump", git_ref=env.current_sha,
+                             sha=env.current_sha, restore_dump=body.backup)
     snapshot_id = body.snapshot_id
     if body.mode == "update" and env.current_sha is None:
         snapshot_id = env.seed_snapshot_id          # the first deploy restores the seed
@@ -704,10 +735,10 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
                            actor: AuthContext = require_permission("deploy", "add")):
     dep = await _deployment(db, deployment_id)
     _require_mode(actor, dep.mode)
-    if dep.status not in pipeline.RETRYABLE_STATUSES or dep.mode not in ("update", "reset"):
+    if dep.status not in pipeline.RETRYABLE_STATUSES or dep.mode not in RETRY_MODES:
         raise HTTPException(status_code=409, detail={"code": "not_retryable"})
     env = await db.get(Environment, dep.environment_id)
-    if dep.mode == "reset" and body.confirm_name != env.name:
+    if dep.mode in GATED_MODES and body.confirm_name != env.name:
         raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
     latest = await serialize.latest_deployment(db, env.id)
     if latest is None or latest.id != dep.id:
@@ -716,11 +747,18 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     if stopped is None:
         raise HTTPException(status_code=409, detail={"code": "not_retryable"})
     from_step = body.from_step or stopped
-    plan = plan_for(dep.mode, restore=pipeline.restores(dep.mode, dep.snapshot_id))
+    # Whether it restored a snapshot: its own step rows say so even after the
+    # snapshot was deleted (snapshot_id is then NULL).
+    restoring = dep.mode in ("update", "reset") and await _has_step(db, dep.id, "restore")
+    plan = plan_for(dep.mode, restore=restoring)
     if from_step not in [s.number for s in plan] or from_step > stopped:
         raise HTTPException(status_code=422, detail={"code": "from_step_invalid"})
+    if restoring and dep.snapshot_id is None:
+        if from_step <= STEPS_BY_KEY["restore"].number:
+            raise HTTPException(status_code=404, detail={"code": "snapshot_not_found"})
+        restoring = False             # the restore already succeeded; only later steps rerun
     snapshot = None
-    if pipeline.restores(dep.mode, dep.snapshot_id):
+    if restoring:
         try:
             snapshot = await snapshots.ready_snapshot(db, dep.snapshot_id)
         except snapshots.SnapshotError as e:
@@ -731,6 +769,46 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
                          mode=dep.mode, git_ref=dep.git_ref, sha=dep.sha,
                          start_step=from_step, retry_of=dep.id, snapshot=snapshot,
                          restore_dump=dep.restore_dump)
+
+
+@router.post("/deployments/{deployment_id}/rollback", status_code=201)
+async def rollback_deployment(deployment_id: uuid.UUID, body: RollbackIn, request: Request,
+                              db: DbSession,
+                              actor: AuthContext = require_permission("deploy", "change")):
+    """Spec: after a failed Update, deploy the previous commit again and put
+    its pre-deploy dump back. Objects are not rolled back."""
+    dep = await _deployment(db, deployment_id)
+    if not serialize.rollback_available(dep):
+        raise HTTPException(status_code=409, detail={"code": "rollback_unavailable"})
+    env = await db.get(Environment, dep.environment_id)
+    if body.confirm_name != env.name:
+        raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
+    latest = await serialize.latest_deployment(db, env.id)
+    if latest is None or latest.id != dep.id:
+        raise HTTPException(status_code=409, detail={"code": "rollback_not_latest"})
+    dump = PurePosixPath(dep.dump_path).name
+    if not environments.BACKUP_RE.fullmatch(dump):
+        raise HTTPException(status_code=409, detail={"code": "rollback_unavailable"})
+    cfg = _deploy_target(env)
+    await _pinned(db, cfg)
+    return await _launch(db, env, request, actor, action="deploy.deployment_rollback",
+                         mode="rollback", git_ref=dep.previous_sha, sha=dep.previous_sha,
+                         restore_dump=dump)
+
+
+@router.get("/environments/{name}/backups")
+async def list_backups(name: str, db: DbSession,
+                       actor: AuthContext = require_permission("deploy", "view")):
+    """The environment's pre-deploy dumps, read over SSH (newest first)."""
+    env = await _environment(db, name)
+    cfg = targets.ssh_config_for(env.target_id, get_settings())
+    if cfg is None:
+        raise HTTPException(status_code=400, detail={"code": "target_not_configured"})
+    try:
+        rows = await environments.list_backups(db, cfg, env)
+    except _SSH_ERRORS as e:
+        raise _ssh_http(e) from None
+    return {"backups": rows}
 
 
 # ---- snapshots -------------------------------------------------------------------
@@ -762,6 +840,11 @@ async def upload_snapshot(request: Request, db: DbSession,
     except snapshots.SnapshotError as e:
         await db.rollback()
         raise _snapshot_http(e) from None
+    except ClientDisconnect:
+        # The client went away mid-upload; receive_upload already removed the
+        # partial file. Nobody reads this answer, but it isn't a 500.
+        await db.rollback()
+        raise HTTPException(status_code=400, detail={"code": "upload_aborted"}) from None
     audit(db, actor_id=actor.user.person_id, action="deploy.snapshot_upload",
           entity_type="snapshot", entity_id=snap.name, ip=client_ip(request),
           changes={"name": snap.name, "source": snap.source,
