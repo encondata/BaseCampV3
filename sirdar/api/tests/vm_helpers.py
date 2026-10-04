@@ -6,9 +6,11 @@ VM in FakeProxmox the way a real apply or destroy would."""
 
 import json
 
+import pytest
+
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import Environment
-from sirdar_api.deploy import envfile, environments
+from sirdar_api.deploy import envfile, environments, vms
 
 from .fake_terraform import write_state
 
@@ -17,10 +19,20 @@ VM_SPEC = {"ip_mode": "static", "ip_cidr": "127.0.0.1/8", "gateway": "127.0.0.25
 
 async def make_vm_environment(db, *, name: str = "uat3", current_sha: str | None = None,
                               publish: bool = False, **vm) -> Environment:
-    """Needs the secrets_key fixture and a saved Proxmox integration."""
-    env = await environments.create_new(db, get_settings(), name=name, type_="dev",
-                                        target_id="proxmox", proxy_ip="10.0.0.2",
-                                        vm={**VM_SPEC, **vm}, publish=publish)
+    """Needs the secrets_key fixture and a saved Proxmox integration. Loopback
+    is allowed and the address check skipped for this create only: the tests'
+    SSH server (often the installer target too) is on 127.0.0.1.
+    test_deploy_vms covers both rules."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(vms, "ALLOW_LOOPBACK", True)
+
+        async def free(*args, **kwargs) -> bool:
+            return False
+
+        mp.setattr(vms, "address_in_use", free)
+        env = await environments.create_new(db, get_settings(), name=name, type_="dev",
+                                            target_id="proxmox", proxy_ip="10.0.0.2",
+                                            vm={**VM_SPEC, **vm}, publish=publish)
     if current_sha:
         env.current_sha, env.image_tag = current_sha, envfile.image_tag(current_sha)
         env.status = "ready"

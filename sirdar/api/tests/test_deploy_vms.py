@@ -30,6 +30,15 @@ def test_sizes_default_and_networks_are_checked():
                            "ip_cidr": " 10.10.48.70/24 "})
     assert (spec["cores"], spec["ip_cidr"], spec["gateway"]) == (8, "10.10.48.70/24", "10.10.48.1")
     assert vms.static_ip("10.10.48.70/24") == "10.10.48.70" and vms.static_ip(None) is None
+    assert vms.check_spec({"ip_mode": "dhcp", "ip_cidr": "", "gateway": None})["ip_cidr"] is None
+
+
+def test_loopback_only_behind_the_test_knob(monkeypatch):
+    spec = {"ip_mode": "static", "ip_cidr": "127.0.0.1/8", "gateway": "127.0.0.254"}
+    with pytest.raises(vms.VmError):
+        vms.check_spec(spec)
+    monkeypatch.setattr(vms, "ALLOW_LOOPBACK", True)
+    assert vms.check_spec(spec)["ip_cidr"] == "127.0.0.1/8"
 
 
 @pytest.mark.parametrize("fields,code", [
@@ -46,6 +55,16 @@ def test_sizes_default_and_networks_are_checked():
     ({**VM, "gateway": "10.10.49.1"}, "vm_gateway_invalid"),     # outside the network
     ({**VM, "gateway": "10.10.48.70"}, "vm_gateway_invalid"),    # the VM itself
     ({**VM, "gateway": ""}, "vm_gateway_invalid"),
+    ({**VM, "gateway": "10.10.48.0"}, "vm_gateway_invalid"),     # the network's address
+    ({**VM, "gateway": "10.10.48.255"}, "vm_gateway_invalid"),   # its broadcast address
+    ({**VM, "ip_cidr": "224.0.0.5/8"}, "vm_ip_invalid"),         # multicast
+    ({**VM, "ip_cidr": "169.254.3.4/16", "gateway": "169.254.0.1"}, "vm_ip_invalid"),
+    ({**VM, "ip_cidr": "0.1.2.3/8", "gateway": "0.0.0.1"}, "vm_ip_invalid"),
+    ({**VM, "ip_cidr": "240.0.0.5/8", "gateway": "240.0.0.1"}, "vm_ip_invalid"),  # reserved
+    ({**VM, "ip_cidr": "127.0.0.5/8", "gateway": "127.0.0.1"}, "vm_ip_invalid"),  # loopback
+    ({"ip_mode": "dhcp", "ip_cidr": "10.10.48.70/24"}, "vm_ip_invalid"),
+    ({"ip_mode": "dhcp", "gateway": "10.10.48.1"}, "vm_gateway_invalid"),
+    ("dhcp", "vm_invalid"),
 ])
 def test_bad_specs(fields, code):
     with pytest.raises(vms.VmError) as e:
@@ -95,24 +114,153 @@ async def test_a_dhcp_vm_s_services_wait_for_its_address(db, deploy_env, secrets
     assert {s.host_ip for s in await environments.services_of(db, env.id)} == {"0.0.0.0"}
 
 
-async def test_create_needs_the_integration_and_a_free_address(db, deploy_env, secrets_key):
-    deploy_env(ssh_host="10.10.48.63", ssh_user="jrh", ssh_password="pw")   # uat's VM
+async def test_create_needs_the_integration(db, deploy_env, secrets_key):
     with pytest.raises(EnvError) as e:
         await _create(db)
     assert (e.value.code, e.value.extra) == ("integration_not_configured", {"kinds": ["proxmox"]})
+
+
+def _saved_targets(tmp_path, **hosts) -> str:
+    """deploy-targets.env with one saved target per slug=host (no user, no
+    password: not configured)."""
+    path = tmp_path / "targets" / "deploy-targets.env"
+    path.parent.mkdir(exist_ok=True)
+    lines = [f"SIRDAR_SSH_TARGETS={','.join(hosts)}"]
+    for slug, host in hosts.items():
+        lines.append(f"SIRDAR_SSH_{slug.upper()}_HOST={host}")
+    path.write_text("\n".join(lines) + "\n")
+    return str(path)
+
+
+async def _refused(db, code="ip_in_use", **kw):
+    with pytest.raises(EnvError) as e:
+        await _create(db, **kw)
+    assert e.value.code == code
+    await db.rollback()
+
+
+async def test_refuses_the_installer_target_s_host(db, deploy_env, secrets_key):
+    deploy_env(ssh_host="10.10.48.63")                 # not configured: no user or password
     await configure_proxmox(db)
-    for taken in ("10.10.48.63/24", "10.10.48.6/24"):        # an SSH target, the proxy
-        with pytest.raises(EnvError) as e:
-            await _create(db, vm={**VM, "ip_cidr": taken})
-        assert e.value.code == "ip_in_use"
-    await _create(db)
+    await _refused(db, vm={**VM, "ip_cidr": "10.10.48.63/24"})
+
+
+async def test_refuses_an_unconfigured_saved_target_s_host(db, deploy_env, secrets_key,
+                                                           tmp_path, monkeypatch):
+    deploy_env()
+    monkeypatch.setenv("SIRDAR_DEPLOY_TARGETS_FILE", _saved_targets(tmp_path, uat="10.10.48.63"))
+    get_settings.cache_clear()
+    await configure_proxmox(db)
+    await _refused(db, vm={**VM, "ip_cidr": "10.10.48.63/24"})
+
+
+async def test_refuses_a_saved_target_s_resolved_name(db, deploy_env, secrets_key, tmp_path,
+                                                      monkeypatch):
+    deploy_env()
+    monkeypatch.setenv("SIRDAR_DEPLOY_TARGETS_FILE",
+                       _saved_targets(tmp_path, uat="uat.lan", odd="nowhere.lan"))
+    get_settings.cache_clear()
+    looked_up = []
+
+    async def resolve(host):
+        looked_up.append(host)
+        if host == "nowhere.lan":
+            raise OSError("no such host")
+        return {"10.10.48.63"} if host == "uat.lan" else set()
+
+    monkeypatch.setattr(vms, "resolve_host", resolve)
+    await configure_proxmox(db)
+    await _refused(db, vm={**VM, "ip_cidr": "10.10.48.63/24"})
+    assert {"uat.lan", "nowhere.lan"} <= set(looked_up)
+    await _create(db)                                   # an unresolvable name refuses nothing
+
+
+async def test_resolve_host_gives_up_quickly(monkeypatch):
+    import asyncio
+
+    async def slow(*a, **kw):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(vms, "RESOLVE_TIMEOUT", 0.05)
+    monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", slow)
+    assert await vms.resolve_host("slow.lan") == set()
+    assert await vms.resolve_host("10.10.48.9") == {"10.10.48.9"}
+
+
+async def test_an_unreadable_targets_file_refuses(db, deploy_env, secrets_key, tmp_path,
+                                                  monkeypatch):
+    deploy_env()
+    path = tmp_path / "targets" / "deploy-targets.env"
+    path.parent.mkdir()
+    path.write_bytes(b"SIRDAR_SSH_TARGETS=\xff\xfe\n")          # not UTF-8
+    monkeypatch.setenv("SIRDAR_DEPLOY_TARGETS_FILE", str(path))
+    get_settings.cache_clear()
+    await configure_proxmox(db)
+    await _refused(db, code="ssh_targets_unreadable")
+
+
+async def test_refuses_the_proxy_and_proxmox_itself(db, deploy_env, secrets_key):
+    await configure_proxmox(db)                         # https://10.10.48.5:8006
+    await _refused(db, vm={**VM, "ip_cidr": "10.10.48.6/24"})     # this environment's proxy
+    await _refused(db, vm={**VM, "ip_cidr": "10.10.48.5/24"})     # the Proxmox host
+
+
+async def test_refuses_another_environment_s_proxy(db, deploy_env, secrets_key):
+    await configure_proxmox(db)
+    other = await make_environment(db, name="other")
+    other.proxy_ip = "10.10.48.9"
     await db.commit()
-    with pytest.raises(EnvError) as e:
-        await _create(db, name="uat4")                       # uat3's address
-    assert e.value.code == "ip_in_use"
-    with pytest.raises(EnvError) as e:
-        await _create(db, name="uat4", vm={**VM, "cores": 99})
-    assert e.value.code == "vm_cores_invalid"
+    await _refused(db, vm={**VM, "ip_cidr": "10.10.48.9/24"})
+
+
+async def test_refuses_another_environment_s_service_address(db, deploy_env, secrets_key):
+    await configure_proxmox(db)
+    other = await make_environment(db, name="other")
+    for row in await environments.services_of(db, other.id):
+        row.host_ip = "10.10.48.70"
+    await db.commit()
+    await _refused(db)
+
+
+async def test_refuses_another_vm_s_static_address(db, deploy_env, secrets_key):
+    await configure_proxmox(db)
+    first = await _create(db)
+    for row in await environments.services_of(db, first.id):
+        row.host_ip = "10.10.48.99"                     # only the VM row still names .70
+    await db.commit()
+    await _refused(db, name="uat4")
+
+
+async def test_refuses_another_vm_s_dhcp_lease(db, deploy_env, secrets_key):
+    await configure_proxmox(db)
+    first = await _create(db, vm={"ip_mode": "dhcp"})
+    (await vms.get(db, first.id)).ip = "10.10.48.70"
+    await db.commit()
+    await _refused(db, name="uat4")
+
+
+async def test_sizes_are_checked_on_create(db, deploy_env, secrets_key):
+    await configure_proxmox(db)
+    await _refused(db, code="vm_cores_invalid", vm={**VM, "cores": 99})
+    for bad in ("static", ["x"], 5):
+        await _refused(db, code="vm_invalid", vm=bad)
+
+
+async def test_concurrent_creates_take_turns(db, deploy_env, secrets_key):
+    import asyncio
+
+    from sirdar_api.db.engine import get_sessionmaker
+
+    await configure_proxmox(db)
+    await _create(db)                                   # holds the address lock until commit
+    async with get_sessionmaker()() as other:
+        second = asyncio.create_task(_create(other, name="uat4"))
+        await asyncio.sleep(0.3)
+        assert not second.done()                        # waiting for the first create
+        await db.commit()
+        with pytest.raises(EnvError) as e:
+            await second
+        assert e.value.code == "ip_in_use"
 
 
 async def test_target_rules(db, deploy_env, secrets_key):
@@ -132,7 +280,9 @@ async def test_target_rules(db, deploy_env, secrets_key):
                          ({"services": {"api": {"host_ip": "10.10.48.71"}}}, "host_ip_managed"),
                          ({"vm": {"disk_gb": 32}}, "vm_disk_shrink"),
                          ({"vm": {"keep_snapshots": 0}}, "vm_keep_snapshots_invalid"),
-                         ({"vm": {"memory_mb": 1000}}, "vm_memory_invalid")):
+                         ({"vm": {"memory_mb": 1000}}, "vm_memory_invalid"),
+                         ({"vm": "big"}, "vm_invalid"),
+                         ({"vm": [1]}, "vm_invalid")):
         # A rollback expires every loaded row: read the environment again each time.
         env = await environments.get_by_name(db, "uat3")
         with pytest.raises(EnvError) as e:
@@ -191,3 +341,15 @@ def test_the_target_list_shows_proxmox_once_it_is_set_up(tmp_path):
 def test_is_full_sha():
     assert gitref.is_full_sha("A" * 40) and gitref.is_full_sha("0123456789" * 4)
     assert not gitref.is_full_sha("main") and not gitref.is_full_sha("a" * 39)
+    assert gitref.full_sha("ABCDEF0123" * 4) == "abcdef0123" * 4      # stored lowercase
+    assert gitref.full_sha("main") is None
+
+
+async def test_the_helper_builds_a_loopback_vm_environment(db, deploy_env, secrets_key):
+    from .vm_helpers import make_vm_environment
+
+    deploy_env(ssh_host="127.0.0.1", ssh_user="root", ssh_password="pw")
+    await configure_proxmox(db)
+    env = await make_vm_environment(db, current_sha="a" * 40)
+    assert (await vms.get(db, env.id)).ip_cidr == "127.0.0.1/8" and env.status == "ready"
+    assert vms.ALLOW_LOOPBACK is False                  # only for that create

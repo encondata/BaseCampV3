@@ -5,17 +5,20 @@ encrypted with SIRDAR_SECRETS_KEY), address checks that keep a new VM off
 addresses in use, the VM's SSH connection for the deploy steps, and VM
 snapshot names. Callers audit and commit."""
 
+import asyncio
 import ipaddress
 import re
+import socket
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 import asyncssh
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
 from sirdar_api.db.models import Deployment, Environment, EnvironmentService, ProxmoxVm
-from sirdar_api.deploy import targets, vault
+from sirdar_api.deploy import integrations, targets, vault
 from sirdar_api.deploy.ssh import SshTargetConfig
 
 PROXMOX_TARGET = targets.PROXMOX_TARGET
@@ -27,6 +30,13 @@ LIMITS = {"cores": (1, 64), "memory_mb": (2048, 262144), "disk_gb": (20, 4096),
           "keep_snapshots": (1, 10)}
 _CODES = {"cores": "vm_cores_invalid", "memory_mb": "vm_memory_invalid",
           "disk_gb": "vm_disk_invalid", "keep_snapshots": "vm_keep_snapshots_invalid"}
+# Loopback VM addresses are refused; tests turn this on so their own SSH
+# server on 127.0.0.1 can play the VM.
+ALLOW_LOOPBACK = False
+RESOLVE_TIMEOUT = 2.0              # seconds per host name looked up by address_in_use
+# pg_advisory_xact_lock key that serializes address checks with the rows they
+# guard (create, and anything that changes a VM's address), until commit.
+ADDRESS_LOCK_KEY = 0x53495244_41444452        # "SIRDADDR"
 SNAPSHOT_RE = re.compile(r"sirdar-[0-9]{8}T[0-9]{6}Z")
 _SNAPSHOT_FORMAT = "sirdar-%Y%m%dT%H%M%SZ"
 
@@ -56,6 +66,10 @@ def check_network(ip_mode, ip_cidr, gateway) -> tuple[str, str | None, str | Non
     address needs its prefix (8–30) and can't be the network's own or
     broadcast address; the gateway must be another address in it."""
     if ip_mode == "dhcp":
+        if ip_cidr not in (None, ""):       # DHCP picks the address: don't drop one silently
+            raise VmError("vm_ip_invalid")
+        if gateway not in (None, ""):
+            raise VmError("vm_gateway_invalid")
         return "dhcp", None, None
     if ip_mode != "static":
         raise VmError("vm_ip_mode_invalid")
@@ -63,15 +77,18 @@ def check_network(ip_mode, ip_cidr, gateway) -> tuple[str, str | None, str | Non
         iface = ipaddress.IPv4Interface(str(ip_cidr or "").strip())
     except ValueError:
         raise VmError("vm_ip_invalid") from None
-    net = iface.network
+    net, ip = iface.network, iface.ip
     if (not 8 <= net.prefixlen <= 30
-            or iface.ip in (net.network_address, net.broadcast_address)):
+            or ip in (net.network_address, net.broadcast_address)
+            or ip.is_multicast or ip.is_link_local or ip.is_unspecified or ip.is_reserved
+            or (ip.is_loopback and not ALLOW_LOOPBACK)
+            or (ip in ipaddress.IPv4Network("0.0.0.0/8"))):
         raise VmError("vm_ip_invalid")
     try:
         gw = ipaddress.IPv4Address(str(gateway or "").strip())
     except ValueError:
         raise VmError("vm_gateway_invalid") from None
-    if gw not in net or gw == iface.ip:
+    if gw not in net or gw in (ip, net.network_address, net.broadcast_address):
         raise VmError("vm_gateway_invalid")
     return "static", str(iface), str(gw)
 
@@ -81,6 +98,8 @@ def static_ip(ip_cidr: str | None) -> str | None:
 
 
 def check_spec(fields: dict) -> dict:
+    if not isinstance(fields, dict):
+        raise VmError("vm_invalid")
     sizes = {key: check_size(key, fields[key] if fields.get(key) is not None else default)
              for key, default in DEFAULTS.items()}
     mode, cidr, gateway = check_network(fields.get("ip_mode"), fields.get("ip_cidr"),
@@ -99,20 +118,70 @@ async def get(db: AsyncSession, env_id) -> ProxmoxVm | None:
     return await db.get(ProxmoxVm, env_id, populate_existing=True)
 
 
+async def lock_addresses(db: AsyncSession) -> None:
+    """Serialize address checks until this transaction ends: take it before
+    address_in_use and keep it through the insert or update, so two creates
+    can't both see an address free."""
+    await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": ADDRESS_LOCK_KEY})
+
+
+async def resolve_host(host: str) -> set[str]:
+    """The IPv4 addresses a target's host names (itself for an address);
+    empty when it doesn't resolve within RESOLVE_TIMEOUT. Tests replace it."""
+    try:
+        return {str(ipaddress.IPv4Address(host))}
+    except ValueError:
+        pass
+    try:
+        found = await asyncio.wait_for(
+            asyncio.get_running_loop().getaddrinfo(host, None, family=socket.AF_INET,
+                                                   type=socket.SOCK_STREAM),
+            RESOLVE_TIMEOUT)
+    except (OSError, TimeoutError, UnicodeError):
+        return set()
+    return {info[4][0] for info in found or ()}
+
+
+def _target_hosts(settings: Settings) -> set[str]:
+    """Every SSH target's host, configured or not: the installer's and each
+    saved one. A targets file that exists but can't be read refuses (uat's
+    host might be in it)."""
+    hosts = {settings.deploy_ssh_host.strip()}
+    try:
+        saved = targets.ssh_store(settings).load()
+    except (OSError, UnicodeDecodeError):
+        raise VmError("ssh_targets_unreadable") from None
+    hosts |= {t.host.strip() for t in saved}
+    return {h for h in hosts if h}
+
+
 async def address_in_use(db: AsyncSession, settings: Settings, ip: str, *, proxy_ip: str,
                          env_id=None) -> bool:
-    """The proxy's address, a saved SSH target's host (uat's VM among them),
-    another environment's service address, or another VM's address."""
-    if ip == proxy_ip or any(cfg.host == ip for _, cfg in targets.ssh_configs(settings)):
+    """The proxy's address, any environment's proxy, every SSH target's host
+    (uat's VM among them; names resolved), the Proxmox host, another
+    environment's service address, or another VM's address. Raises
+    VmError("ssh_targets_unreadable"). Call lock_addresses first."""
+    hosts = _target_hosts(settings)
+    url = (await integrations.config_of(db, "proxmox")).get("url")
+    if url:
+        hosts.add(urlsplit(url).hostname or "")
+    refused = {proxy_ip, *(h.lower() for h in hosts)}
+    for host in hosts:
+        try:
+            refused |= await resolve_host(host)
+        except (OSError, TimeoutError, UnicodeError):
+            pass                         # an unresolvable name is still compared as text
+    refused |= set(await db.scalars(select(Environment.proxy_ip)))
+    if ip in refused:
         return True
     services = select(EnvironmentService.host_ip)
-    machines = select(ProxmoxVm)
+    machines = select(ProxmoxVm.ip, ProxmoxVm.ip_cidr)
     if env_id is not None:
         services = services.where(EnvironmentService.environment_id != env_id)
         machines = machines.where(ProxmoxVm.environment_id != env_id)
     if ip in set(await db.scalars(services)):
         return True
-    return any(ip in (vm.ip, static_ip(vm.ip_cidr)) for vm in await db.scalars(machines))
+    return any(ip in (vm_ip, static_ip(cidr)) for vm_ip, cidr in await db.execute(machines))
 
 
 async def add(db: AsyncSession, settings: Settings, env: Environment, spec: dict,
@@ -188,6 +257,8 @@ async def taking_deployments(db: AsyncSession, env_id) -> dict[str, Deployment]:
 async def update(db: AsyncSession, vm: ProxmoxVm, fields: dict) -> list[str]:
     """A PATCH's `vm`: sizes and how many VM snapshots to keep (the next
     deploy's step 0 applies the sizes). A disk never shrinks."""
+    if not isinstance(fields, dict):
+        raise VmError("vm_invalid")
     changed: list[str] = []
     for key in ("cores", "memory_mb", "disk_gb", "keep_snapshots"):
         if fields.get(key) is None:

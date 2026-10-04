@@ -257,12 +257,14 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         if not await integrations.is_configured(db, "proxmox"):
             raise EnvError("integration_not_configured", kinds=["proxmox"])
         try:
-            spec = vms.check_spec(vm or {})
+            spec = vms.check_spec({} if vm is None else vm)
+            address = vms.static_ip(spec["ip_cidr"])
+            if address:
+                await vms.lock_addresses(db)        # held until the caller commits
+                if await vms.address_in_use(db, settings, address, proxy_ip=proxy):
+                    raise EnvError("ip_in_use")
         except vms.VmError as e:
             raise EnvError(e.code, **e.extra) from None
-        address = vms.static_ip(spec["ip_cidr"])
-        if address and await vms.address_in_use(db, settings, address, proxy_ip=proxy):
-            raise EnvError("ip_in_use")
         host = address or "0.0.0.0"
     elif vm is not None:
         raise EnvError("vm_not_allowed")
