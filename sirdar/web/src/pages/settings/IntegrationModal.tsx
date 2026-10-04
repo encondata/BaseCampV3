@@ -65,6 +65,9 @@ export default function IntegrationModal({ kind, current, onSaved, onClose }: {
   const [result, setResult] = useState<IntegrationCheck | null>(null);
   const busyRef = useRef(busy);
   busyRef.current = busy;
+  // Bumped by every edit: a Test result (or one still out) for older values is dropped.
+  const edits = useRef(0);
+  const edited = <T,>(set: (v: T) => void) => (v: T) => { edits.current += 1; setResult(null); set(v); };
   const firstRef = useRef<HTMLInputElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -110,8 +113,12 @@ export default function IntegrationModal({ kind, current, onSaved, onClose }: {
     busyRef.current = what;
     setBusy(what);
     setResult(null);
+    const at = edits.current;
     try {
-      if (what === 'test') setResult(await testIntegration(kind, body()));
+      if (what === 'test') {
+        const checked = await testIntegration(kind, body());
+        if (at === edits.current) setResult(checked);
+      }
       else onSaved(await saveIntegration(kind, body()));
     } catch (err) {
       const code = (err as { code?: string }).code ?? '';
@@ -143,24 +150,24 @@ export default function IntegrationModal({ kind, current, onSaved, onClose }: {
           {kind === 'cloudflare' ? (
             <>
               <TextField id="int-zone" label="Zone" value={zone} error={errors.zone} inputRef={firstRef}
-                         onChange={setZone} />
+                         onChange={edited(setZone)} />
               <TextField id="int-ip" label="Public IP" value={ip} error={errors.ip}
-                         hint="The WAN address every A record points at." onChange={setIp} />
+                         hint="The WAN address every A record points at." onChange={edited(setIp)} />
             </>
           ) : (
             <>
               <TextField id="int-url" label="URL" value={url} error={errors.url} inputRef={firstRef}
-                         hint="Where Sirdar reaches Nginx Proxy Manager, like http://10.10.48.6:81." onChange={setUrl} />
+                         hint="Where Sirdar reaches Nginx Proxy Manager, like http://10.10.48.6:81." onChange={edited(setUrl)} />
               <TextField id="int-identity" label="Login email" value={identity} error={errors.identity}
-                         onChange={setIdentity} />
+                         onChange={edited(setIdentity)} />
               <TextField id="int-email" label="Let's Encrypt email" value={email} error={errors.email}
-                         hint="Blank uses the login email." onChange={setEmail} />
+                         hint="Blank uses the login email." onChange={edited(setEmail)} />
             </>
           )}
           <div className="sirdar-span2">
             <SecretField id="int-secret" label={SECRET_LABEL[kind]} isSet={secretSet} adding={!secretSet}
                          action={action} value={secret} error={errors.secret} clearable={false}
-                         onAction={(a) => { setAction(a); setSecret(''); }} onValue={setSecret} />
+                         onAction={edited((a: SecretAction) => { setAction(a); setSecret(''); })} onValue={edited(setSecret)} />
           </div>
           {result && (
             <div className="sirdar-span2">

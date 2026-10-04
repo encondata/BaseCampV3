@@ -55,6 +55,29 @@ it('Test tries the values in the form without saving them and lists the checks',
   expect(api.saveIntegration).not.toHaveBeenCalled();
 });
 
+it('any edit clears a Test result that no longer matches the form', async () => {
+  const { dialog } = show('cloudflare');
+  await userEvent.type(within(dialog).getByLabelText('Public IP'), '203.0.113.7');
+  await userEvent.type(within(dialog).getByLabelText('API token'), 'cf-token-123456789012345');
+  for (const edit of ['Zone', 'Public IP', 'API token']) {
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Test' }));
+    await within(dialog).findByRole('list', { name: 'Cloudflare test' });
+    await userEvent.type(within(dialog).getByLabelText(edit), '9');
+    expect(within(dialog).queryByRole('list', { name: 'Cloudflare test' })).toBeNull();
+  }
+});
+
+it('a Test answer for values edited since is dropped', async () => {
+  let release: (v: typeof CF_CHECK) => void = () => {};
+  api.testIntegration.mockImplementation(() => new Promise((r) => { release = r; }));
+  const { dialog } = show('npm', INTEGRATIONS);
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Test' }));
+  await userEvent.type(within(dialog).getByLabelText('Login email'), 'x');
+  release(CF_CHECK);
+  await waitFor(() => expect((within(dialog).getByRole('button', { name: 'Test' }) as HTMLButtonElement).disabled).toBe(false));
+  expect(within(dialog).queryByRole('list', { name: 'Nginx Proxy Manager test' })).toBeNull();
+});
+
 it('editing NPM keeps the stored password unless it is replaced, and never offers Clear', async () => {
   const { onSaved, dialog } = show('npm', INTEGRATIONS);
   expect(within(dialog).getByText('Password: set')).toBeTruthy();
