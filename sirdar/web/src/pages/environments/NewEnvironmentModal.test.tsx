@@ -9,14 +9,14 @@ vi.mock('@portal/auth/AuthContext', () => ({
 }));
 const api = vi.hoisted(() => ({
   getDeployTargets: vi.fn(), getEnvironmentDefaults: vi.fn(), createEnvironment: vi.fn(),
-  adoptEnvironment: vi.fn(), trustKnownHost: vi.fn(),
+  adoptEnvironment: vi.fn(), trustKnownHost: vi.fn(), listSnapshots: vi.fn(),
 }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 
 import { ApiError } from '@portal/lib/api';
 
 import NewEnvironmentModal from './NewEnvironmentModal';
-import { DEFAULTS, ENV, TARGETS } from './testData';
+import { DEFAULTS, ENV, SNAP, SNAP_TAKING, TARGETS } from './testData';
 
 Element.prototype.scrollIntoView = () => {};   // jsdom lacks it (ComboBox calls it)
 beforeEach(() => {
@@ -25,6 +25,7 @@ beforeEach(() => {
   api.getDeployTargets.mockResolvedValue(TARGETS);
   api.getEnvironmentDefaults.mockResolvedValue(DEFAULTS);
   api.createEnvironment.mockResolvedValue(ENV);
+  api.listSnapshots.mockResolvedValue({ snapshots: [SNAP, SNAP_TAKING] });
 });
 afterEach(cleanup);
 
@@ -46,7 +47,7 @@ it('has the report-generate header and the Create steps', async () => {
   expect(screen.getByRole('heading', { name: 'New environment' })).toBeTruthy();
   expect(screen.getByText('Deploy', { selector: '.eyebrow' })).toBeTruthy();
   expect(screen.getByText(/Sirdar generates its secrets/)).toBeTruthy();
-  expect(['Basics', 'Services', 'Review'].every((s) => screen.getByText(s))).toBe(true);
+  expect(['Basics', 'Services', 'Data', 'Review'].every((s) => screen.getByText(s))).toBe(true);
 });
 
 it('creates an environment through Basics, Services and Review', async () => {
@@ -60,7 +61,10 @@ it('creates an environment through Basics, Services and Review', async () => {
   await userEvent.clear(apiPort);
   await userEvent.type(apiPort, '8100');
   await next();
+  expect(screen.getByRole('radio', { name: 'Start empty' }).getAttribute('aria-checked')).toBe('true');
+  await next();
   expect(screen.getByText('/opt/serversherpa/qa')).toBeTruthy();
+  expect(screen.getByText('Empty')).toBeTruthy();
   expect(within(screen.getByRole('table', { name: 'Services to create' })).getByText('8100')).toBeTruthy();
   await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
   await waitFor(() => expect(onCreated).toHaveBeenCalledWith(ENV));
@@ -94,6 +98,7 @@ it('an API error goes back to the step that owns the field', async () => {
   api.createEnvironment.mockRejectedValue(new ApiError(409, 'environment_exists', { code: 'environment_exists' }));
   await open();
   await fillBasics();
+  await next();
   await next();
   await next();
   await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
@@ -197,6 +202,7 @@ it('create: an unknown host key is trusted with "Trust and create" and retries t
   await fillBasics();
   await next();
   await next();
+  await next();
   await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
   await userEvent.click(await screen.findByRole('button', { name: 'Trust and create' }));
   expect(screen.queryByRole('button', { name: 'Trust and adopt' })).toBeNull();
@@ -233,7 +239,53 @@ it('a create error that sends you back to Basics focuses the Name', async () => 
   await fillBasics();
   await next();
   await next();
+  await next();
   await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
   expect(await screen.findByText('An environment with that name already exists.')).toBeTruthy();
   await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Name')));
+});
+
+it('Data: a new environment can start from a ready snapshot', async () => {
+  const { onCreated } = await open();
+  await fillBasics();
+  await next();
+  await next();
+  expect(screen.getByText(/starts an empty database/)).toBeTruthy();
+  await userEvent.click(screen.getByRole('radio', { name: 'From a snapshot' }));
+  expect(screen.getByText(/restores the snapshot's database and files/)).toBeTruthy();
+  await next();
+  expect(screen.getByText('Choose a snapshot.')).toBeTruthy();
+  await userEvent.click(screen.getByRole('combobox', { name: 'Snapshot' }));
+  expect(screen.queryByRole('button', { name: /uat-2026-10-04/ })).toBeNull();      // still being taken
+  await userEvent.click(await screen.findByRole('button', { name: 'dev-2026-10-04 · mac-dev · migration 0089 · 526.4 MB' }));
+  await next();
+  expect(screen.getByText('Snapshot dev-2026-10-04 (migration 0089), restored by the first deploy')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  await waitFor(() => expect(onCreated).toHaveBeenCalledWith(ENV));
+  expect(api.createEnvironment.mock.calls[0][0].snapshot_id).toBe('s1');
+});
+
+it('Data: with no snapshot only Start empty is offered, and a gone snapshot sends you back to Data', async () => {
+  api.listSnapshots.mockResolvedValue({ snapshots: [] });
+  await open();
+  await fillBasics();
+  await next();
+  await next();
+  const fromSnap = screen.getByRole('radio', { name: 'From a snapshot' });
+  expect(fromSnap.getAttribute('aria-disabled')).toBe('true');
+  expect(screen.getByText(/No snapshot yet/)).toBeTruthy();
+  cleanup();
+  api.listSnapshots.mockResolvedValue({ snapshots: [SNAP] });
+  api.createEnvironment.mockRejectedValue(new ApiError(404, 'snapshot_not_found', { code: 'snapshot_not_found' }));
+  await open();
+  await fillBasics();
+  await next();
+  await next();
+  await userEvent.click(screen.getByRole('radio', { name: 'From a snapshot' }));
+  await userEvent.click(screen.getByRole('combobox', { name: 'Snapshot' }));
+  await userEvent.click(await screen.findByRole('button', { name: /^dev-2026-10-04/ }));
+  await next();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  expect(await screen.findByText('That snapshot no longer exists.')).toBeTruthy();
+  expect(screen.getByRole('combobox', { name: 'Snapshot' })).toBeTruthy();
 });

@@ -1,6 +1,7 @@
-/** New environment: Create (Basics › Services › Review) makes a new
- *  environment record with generated secrets; Adopt (Basics › Result) reads a
- *  hand-built environment's .env and checkout over SSH and changes nothing. */
+/** New environment: Create (Basics › Services › Data › Review) makes a new
+ *  environment record with generated secrets, empty or seeded from a snapshot
+ *  its first deploy restores; Adopt (Basics › Result) reads a hand-built
+ *  environment's .env and checkout over SSH and changes nothing. */
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -11,16 +12,17 @@ import { useHostKeyTrust } from '../../components/useHostKeyTrust';
 import { arrowNav } from '../../lib/arrowNav';
 import { NAME_HELP, ipv4Problem, nameProblem, portProblem, refProblem } from '../../lib/envRules';
 import {
-  adoptEnvironment, createEnvironment, deployErrorText, getDeployTargets, getEnvironmentDefaults,
+  adoptEnvironment, createEnvironment, deployErrorText, getDeployTargets, getEnvironmentDefaults, listSnapshots,
   type AdoptEnvironmentBody, type AdoptedEnvironment, type DeployTarget, type EnvType, type Environment,
-  type EnvironmentDefaults, type NewEnvironmentBody,
+  type EnvironmentDefaults, type NewEnvironmentBody, type Snapshot,
 } from '../../lib/sirdarApi';
 
-import { TYPE_LABEL, sshTargets } from './labels';
+import { TYPE_LABEL, snapshotLabel, sshTargets } from './labels';
 
 type Mode = 'new' | 'adopt';
-type Step = 'basics' | 'services' | 'review' | 'result';
-type Field = 'name' | 'target' | 'ref' | 'domain' | 'proxy' | 'bind' | 'services' | 'form';
+type Step = 'basics' | 'services' | 'data' | 'review' | 'result';
+type DataMode = 'empty' | 'snapshot';
+type Field = 'name' | 'target' | 'ref' | 'domain' | 'proxy' | 'bind' | 'services' | 'data' | 'form';
 type Errors = Partial<Record<Field, string>>;
 /** One submission, kept whole so a host-key retry replays exactly what failed. */
 type Attempt = { mode: 'new'; body: NewEnvironmentBody } | { mode: 'adopt'; body: AdoptEnvironmentBody };
@@ -28,9 +30,10 @@ type Attempt = { mode: 'new'; body: NewEnvironmentBody } | { mode: 'adopt'; body
 const TYPES: EnvType[] = ['dev', 'beta', 'custom'];
 const MODES: [Mode, string][] = [['new', 'Create new'], ['adopt', 'Adopt existing']];
 const STEPS: Record<Mode, [Step, string][]> = {
-  new: [['basics', 'Basics'], ['services', 'Services'], ['review', 'Review']],
+  new: [['basics', 'Basics'], ['services', 'Services'], ['data', 'Data'], ['review', 'Review']],
   adopt: [['basics', 'Basics'], ['result', 'Result']],
 };
+const DATA_MODES: [DataMode, string][] = [['empty', 'Start empty'], ['snapshot', 'From a snapshot']];
 const HINT: Record<Mode, string> = {
   new: 'Create an environment on an SSH target. Sirdar generates its secrets; the first deploy builds it.',
   adopt: "Adopt an environment set up by hand. Sirdar reads its .env and git checkout over SSH and changes nothing.",
@@ -41,6 +44,7 @@ const CODE_FIELD: Record<string, Field> = {
   target_invalid: 'target', target_not_configured: 'target', ref_invalid: 'ref',
   base_domain_invalid: 'domain', proxy_ip_required: 'proxy', proxy_ip_invalid: 'proxy',
   bind_ip_invalid: 'bind', port_invalid: 'services', ports_conflict: 'services', service_unknown: 'services',
+  snapshot_not_found: 'data', snapshot_not_ready: 'data',
 };
 const only = (e: Errors): Errors => Object.fromEntries(Object.entries(e).filter(([, v]) => v)) as Errors;
 
@@ -61,6 +65,9 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
   const [proxy, setProxy] = useState('');
   const [bind, setBind] = useState('0.0.0.0');
   const [ports, setPorts] = useState<Record<string, string>>({});
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [dataMode, setDataMode] = useState<DataMode>('empty');
+  const [snapshotId, setSnapshotId] = useState('');
   const [errors, setErrors] = useState<Errors>({});
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<AdoptedEnvironment | null>(null);
@@ -96,8 +103,12 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
 
   useEffect(() => {
     let live = true;
-    Promise.all([getDeployTargets(), getEnvironmentDefaults()]).then(([t, d]) => {
+    // Snapshots are optional: without them the Data step offers "Start empty" only.
+    const snaps = listSnapshots().then((r) => r.snapshots.filter((s) => s.status === 'ready'))
+      .catch(() => [] as Snapshot[]);
+    Promise.all([getDeployTargets(), getEnvironmentDefaults(), snaps]).then(([t, d, ready]) => {
       if (!live) return;
+      setSnapshots(ready);
       const ssh = sshTargets(t.targets);
       setTargets(ssh);
       setDefaults(d);
@@ -142,20 +153,26 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
     return new Set(used).size === used.length ? {} : { services: "Two services can't use the same port." };
   };
 
+  const dataErrors = (): Errors => (dataMode === 'snapshot' && !snapshotId ? { data: 'Choose a snapshot.' } : {});
+  const chosen = snapshots.find((s) => s.id === snapshotId);
+
   const next = () => {
-    const e = step === 'basics' ? basicsErrors() : servicesErrors();
+    const e = step === 'basics' ? basicsErrors() : step === 'services' ? servicesErrors() : dataErrors();
     setErrors(e);
     if (Object.keys(e).length) return;
-    setStep(step === 'basics' ? 'services' : 'review');
+    setStep(step === 'basics' ? 'services' : step === 'services' ? 'data' : 'review');
   };
-  const back = () => { setErrors({}); setStep(step === 'review' ? 'services' : 'basics'); };
+  const back = () => {
+    setErrors({});
+    setStep(step === 'review' ? 'data' : step === 'data' ? 'services' : 'basics');
+  };
 
   const fail = (err: unknown, attempt: Attempt) => {
     if (hostKey.handle(err, attempt.body.target, attempt)) return;
     const code = (err as { code?: string }).code ?? '';
     const field = CODE_FIELD[code] ?? 'form';
     setErrors({ [field]: deployErrorText(err, attempt.mode === 'new' ? "Couldn't create the environment." : "Couldn't adopt the environment.") });
-    if (field === 'services') setStep('services');
+    if (field === 'services' || field === 'data') setStep(field);
     else if (field !== 'form') setStep('basics');
   };
 
@@ -195,6 +212,7 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
       ...(domain.trim() ? { base_domain: domain.trim() } : {}),
       proxy_ip: proxy.trim(), bind_ip: bind.trim(),
       ports: Object.fromEntries(services.map((s) => [s.service, Number(ports[s.service])])),
+      ...(dataMode === 'snapshot' && snapshotId ? { snapshot_id: snapshotId } : {}),
     } });
   };
 
@@ -335,6 +353,43 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
               </>
             )}
 
+            {defaults && step === 'data' && (
+              <div className="sirdar-env-grid">
+                <div className="sirdar-span2">
+                  <span className="field-label" id="env-data-label">Data</span>
+                  <div className="segmented" role="radiogroup" aria-labelledby="env-data-label">
+                    {DATA_MODES.map(([m, label]) => {
+                      const locked = m === 'snapshot' && snapshots.length === 0;
+                      return (
+                        <button key={m} type="button" role="radio" aria-checked={dataMode === m} aria-disabled={locked}
+                                className={dataMode === m ? 'on' : ''} tabIndex={dataMode === m ? 0 : -1}
+                                onKeyDown={arrowNav}
+                                onClick={() => { if (!locked) { setDataMode(m); setErrors({}); } }}>{label}</button>
+                      );
+                    })}
+                  </div>
+                  <p className="page-hint">
+                    {dataMode === 'empty'
+                      ? 'The first deploy starts an empty database; create its first admin afterward.'
+                      : "The first deploy restores the snapshot's database and files. Its users sign in with their own passwords and 2FA."}
+                  </p>
+                  {snapshots.length === 0 && (
+                    <p className="page-hint">No snapshot yet. Upload one or take one in Snapshots on the Deploy page.</p>
+                  )}
+                </div>
+                {dataMode === 'snapshot' && (
+                  <div className="sirdar-span2">
+                    <label className="field-label" htmlFor="env-new-snapshot">Snapshot</label>
+                    <ComboBox inputId="env-new-snapshot" ariaLabel="Snapshot" portal value={snapshotId}
+                              placeholder="Choose a snapshot…"
+                              options={snapshots.map((s) => ({ value: s.id, label: snapshotLabel(s) }))}
+                              onChange={(v) => { setSnapshotId(v); setErrors({}); }} />
+                    {errors.data && <p className="form-error" role="alert">{errors.data}</p>}
+                  </div>
+                )}
+              </div>
+            )}
+
             {defaults && step === 'review' && (
               <>
                 <dl className="sirdar-kv">
@@ -347,6 +402,8 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                   <dt>Proxy IP</dt><dd className="mono">{proxy.trim()}</dd>
                   <dt>Bind IP</dt><dd className="mono">{bind.trim()}</dd>
                   <dt>Secrets</dt><dd>Generated by Sirdar and never shown</dd>
+                  <dt>Data</dt>
+                  <dd>{chosen ? `Snapshot ${chosen.name} (migration ${chosen.alembic_revision ?? '—'}), restored by the first deploy` : 'Empty'}</dd>
                 </dl>
                 <h4 className="sirdar-sub">Services</h4>
                 <DataTable
