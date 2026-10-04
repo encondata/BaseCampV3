@@ -130,9 +130,15 @@ export const SNAP_TAKING: Snapshot = {
   source_created_at: null, created_at: '2026-10-04T12:00:00Z', deployment_id: 'd9',
 };
 export const BACKUPS: Backup[] = [
-  { name: '20261004T010203Z.dump', size_bytes: 2_097_152, modified_at: '2026-10-04T01:02:03Z' },
-  { name: '20261003T130500Z.dump', size_bytes: 1_048_576, modified_at: '2026-10-03T13:05:00Z' },
+  { name: '20261004T010203Z.dump', size_bytes: 2_097_152, modified_at: '2026-10-04T01:02:03Z', restorable: true, reason: null },
+  { name: '20261003T130500Z.dump', size_bytes: 1_048_576, modified_at: '2026-10-03T13:05:00Z', restorable: true, reason: null },
 ];
+export const KEYS_CHANGED_REASON = 'Taken before the sign-in keys changed (snapshot restore on 2026-10-03 20:00 UTC).';
+/** A dump made under the old sign-in keys, before a snapshot restore. */
+export const BLOCKED_BACKUP: Backup = {
+  name: '20261002T090000Z.dump', size_bytes: 524_288, modified_at: '2026-10-02T09:00:00Z',
+  restorable: false, reason: KEYS_CHANGED_REASON,
+};
 
 export function summary(d: Deployment): DeploymentSummary {
   return {

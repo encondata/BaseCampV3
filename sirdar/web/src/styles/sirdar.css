@@ -127,3 +127,6 @@
 .sirdar-sub-label { margin-top: 12px; }
 
 .sirdar-rollback { margin-top: 16px; }
+
+/* Backups tab: a dump from before a snapshot restore changed the sign-in keys. */
+.sirdar-backup-blocked { display: inline-block; max-width: 340px; color: var(--text-mute); font-size: 12px; text-align: right; white-space: normal; }

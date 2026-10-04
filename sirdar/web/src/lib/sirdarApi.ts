@@ -367,7 +367,11 @@ export interface Snapshot {
   /** The snapshot job's deployment (taken snapshots only). */
   deployment_id: string | null;
 }
-export interface Backup { name: string; size_bytes: number; modified_at: string }
+/** `restorable` is false (with the `reason`) for a dump taken before a
+ *  snapshot restore changed the sign-in keys. */
+export interface Backup {
+  name: string; size_bytes: number; modified_at: string; restorable: boolean; reason: string | null;
+}
 
 const envPath = (name: string) => `/deploy/environments/${encodeURIComponent(name)}`;
 const depPath = (id: string) => `/deploy/deployments/${encodeURIComponent(id)}`;

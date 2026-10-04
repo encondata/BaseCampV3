@@ -43,7 +43,7 @@ export default function BackupsTab({ env, onStarted }: {
         Restoring one puts the database back. Uploaded files are not rolled back.
       </p>
       {error && <p className="form-error" role="alert">{error}</p>}
-      <DataTable
+      {!(error && (rows ?? []).length === 0) && <DataTable
         ariaLabel="Backups"
         columns={[
           { key: 'name', label: 'File', mono: true }, { key: 'when', label: 'Taken', mono: true },
@@ -53,7 +53,9 @@ export default function BackupsTab({ env, onStarted }: {
           key: b.name,
           cells: [
             b.name, when(b.modified_at), formatBytes(b.size_bytes),
-            mayRestore
+            !b.restorable
+              ? <span className="sirdar-backup-blocked">{b.reason ?? "Can't be restored."}</span>
+              : mayRestore
               ? <button type="button" className="mini-btn" aria-label={`Restore ${b.name}`} disabled={running}
                         title={running ? 'A deployment is running.' : undefined}
                         onClick={() => setRestoring(b)}>Restore</button>
@@ -61,7 +63,7 @@ export default function BackupsTab({ env, onStarted }: {
           ],
         }))}
         emptyText={rows === null ? 'Loading…' : 'No backups yet. Each Update takes one before it migrates.'}
-      />
+      />}
       {restoring && (
         <RestoreBackupModal env={env} backup={restoring} onClose={() => setRestoring(null)}
                             onStarted={(dep) => { setRestoring(null); onStarted(dep); }} />

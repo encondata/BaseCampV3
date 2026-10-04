@@ -13,7 +13,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import BackupsTab from './BackupsTab';
-import { BACKUPS, ENV, RUNNING } from './testData';
+import { BACKUPS, BLOCKED_BACKUP, ENV, KEYS_CHANGED_REASON, RUNNING } from './testData';
 
 beforeEach(() => {
   perms.change = true;
@@ -99,4 +99,34 @@ it('view-only, deploying, empty and unreachable states', async () => {
   api.listBackups.mockRejectedValue(new ApiError(502, 'connect_failed', { code: 'connect_failed', reason: 'Timed out.' }));
   show();
   expect((await screen.findByRole('alert')).textContent).toBe('Timed out.');
+});
+
+it('a load error does not also claim there are no backups', async () => {
+  api.listBackups.mockRejectedValue(new ApiError(502, 'connect_failed', { code: 'connect_failed', reason: 'Timed out.' }));
+  show();
+  await screen.findByRole('alert');
+  expect(screen.queryByText(/No backups yet/)).toBeNull();
+  expect(screen.queryByText('Loading…')).toBeNull();
+});
+
+it('a backup from before the sign-in keys changed shows why and offers no Restore', async () => {
+  api.listBackups.mockResolvedValue({ backups: [...BACKUPS, BLOCKED_BACKUP] });
+  show();
+  const table = await screen.findByRole('table', { name: 'Backups' });
+  const row = within(table).getByText(BLOCKED_BACKUP.name).closest('tr') as HTMLElement;
+  expect(within(row).getByText(KEYS_CHANGED_REASON)).toBeTruthy();
+  expect(within(row).queryByRole('button')).toBeNull();
+  expect(screen.queryByRole('button', { name: `Restore ${BLOCKED_BACKUP.name}` })).toBeNull();
+  // The others stay restorable.
+  expect(screen.getByRole('button', { name: 'Restore 20261003T130500Z.dump' })).toBeTruthy();
+});
+
+it('a refused key-changed restore shows the dated reason', async () => {
+  api.startDeployment.mockRejectedValue(new ApiError(409, 'backup_keys_changed', {
+    code: 'backup_keys_changed', reason: KEYS_CHANGED_REASON }));
+  show();
+  await userEvent.click(await screen.findByRole('button', { name: 'Restore 20261004T010203Z.dump' }));
+  await userEvent.type(screen.getByLabelText('Type uat to confirm'), 'uat');
+  await userEvent.click(screen.getByRole('button', { name: 'Restore backup' }));
+  expect((await screen.findByRole('alert')).textContent).toBe(KEYS_CHANGED_REASON);
 });
