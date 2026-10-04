@@ -123,10 +123,19 @@ async def test_a_deleted_snapshot_fails_step_one(db, env, fake_runner, tmp_path)
 async def test_restore_backup_and_roll_back(db, env, fake_runner):
     dep, _, e = await _load(await _run(db, env, mode="restore_dump", sha=OLD,
                                        restore_dump="20261004T010203Z.dump"))
-    assert fake_runner.steps() == ["preflight", "data", "restore_dump", "up"]
+    assert fake_runner.steps() == ["preflight", "fetch", "render", "build", "data",
+                                   "restore_dump", "up"]
     request = next(r for r in fake_runner.requests if r.step == "restore_dump")
     assert request.extravars["dump_name"] == "20261004T010203Z.dump"
     assert (dep.status, e.current_sha) == ("succeeded", OLD)
+    # The deployed commit's code and Sirdar's stored keys, whatever a failed
+    # Update (or a failed restoring Reset) left in repo/ and .env.
+    ran = {r.step: r.extravars for r in fake_runner.requests}
+    assert ran["fetch"]["sha"] == OLD
+    values = envfile.parse_env(base64.b64decode(ran["render"]["env_file_b64"]).decode())
+    assert values["SS_PASSWORD_PEPPER"] == ENV_SECRETS["SS_PASSWORD_PEPPER"]
+    assert values["SS_TOTP_ENCRYPTION_KEY"] == ENV_SECRETS["SS_TOTP_ENCRYPTION_KEY"]
+    assert values["STACK_IMAGE_TAG"] == "aaaaaaaa"
 
     fake_runner.requests.clear()
     dep, _, e = await _load(await _run(db, env, mode="rollback", sha="b" * 40,
@@ -231,8 +240,8 @@ async def test_recover_orphans_fails_a_pending_snapshot(db, env):
 async def test_plan_of(db, env):
     dep = await pipeline.create_deployment(db, env, mode="restore_dump", git_ref="main",
                                            sha=OLD, actor_id=None, restore_dump="x.dump")
-    assert [s.key for s in pipeline.plan_of(dep)] == ["preflight", "data", "restore_dump",
-                                                      "up"]
+    assert [s.key for s in pipeline.plan_of(dep)] == ["preflight", "fetch", "render", "build",
+                                                      "data", "restore_dump", "up"]
     assert pipeline.restores("reset", dep.id) and not pipeline.restores("snapshot", dep.id)
     assert not pipeline.restores("reset", None)
 

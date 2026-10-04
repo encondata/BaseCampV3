@@ -62,7 +62,8 @@ const RESET_PLAN: [number, string, string][] = [
   [10, 'up', 'Start services'],
 ];
 const RESTORE_DUMP_PLAN: [number, string, string][] = [
-  [1, 'preflight', 'Preflight'], [8, 'data', 'Start data services'], [9, 'restore_dump', 'Restore backup'],
+  [1, 'preflight', 'Preflight'], [3, 'fetch', 'Fetch code'], [4, 'render', 'Render config'],
+  [5, 'build', 'Build images'], [8, 'data', 'Start data services'], [9, 'restore_dump', 'Restore backup'],
   [10, 'up', 'Start services'],
 ];
 const ENDED: StepStatus[] = ['succeeded', 'failed', 'cancelled', 'interrupted'];
@@ -111,7 +112,7 @@ export const ROLLBACKABLE = deployment('failed', UP_FAILED, { 10: 'migrate exite
   id: 'd4', failed_step: 10, error: 'Step 10 (Start services) failed. See its log.',
   dump_path: '/opt/serversherpa/uat/backups/20261003T130500Z.dump', rollback_available: true,
 });
-export const RESTORE_FAILED = deployment('failed', ['succeeded', 'succeeded', 'failed', 'not_run'],
+export const RESTORE_FAILED = deployment('failed', ['succeeded', 'succeeded', 'succeeded', 'succeeded', 'succeeded', 'failed', 'not_run'],
   { 9: 'pg_restore failed\n' }, {
     id: 'd5', mode: 'restore_dump', sha: SHA, git_ref: SHA, failed_step: 9, restore_dump: '20261003T130500Z.dump',
     error: 'Step 9 (Restore backup) failed. See its log.',

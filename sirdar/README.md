@@ -283,7 +283,10 @@ accept bodies that large too.
 
 **Backups and rollback.** Each Update's pre-deploy dump stays in
 `<env-dir>/backups` (the newest `keep_dumps`). Restore backup puts one back
-into an empty database, then migrates and starts the app. Roll back (offered
+into an empty database, then migrates and starts the app. It runs the deployed
+commit's code and config again first (Fetch code, Render config with Sirdar's
+stored keys, Build images, cached), so a failed Update's checkout or `.env`
+never decides what the backup is restored under. Roll back (offered
 after a failed Update) deploys the previous commit and restores that
 Update's dump. Uploaded files are never rolled back.
 

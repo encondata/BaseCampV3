@@ -43,9 +43,11 @@ def test_plans():
     assert _keys("update", True) == [*build, "data", "restore", "up"]
     assert _keys("reset") == [*build, "reset", "up"]
     assert _keys("reset", True) == [*build, "reset", "data", "restore", "up"]
-    assert _keys("restore_dump") == ["preflight", "data", "restore_dump", "up"]
-    assert _keys("rollback") == ["preflight", "fetch", "render", "build", "data",
-                                 "restore_dump", "up"]
+    # Restore backup runs the deployed commit with Sirdar's stored keys, like Roll back
+    restore_backup = ["preflight", "fetch", "render", "build", "data", "restore_dump", "up"]
+    assert _keys("restore_dump") == restore_backup
+    assert [s.number for s in steps.plan_for("restore_dump")] == [1, 3, 4, 5, 8, 9, 10]
+    assert _keys("rollback") == restore_backup
     assert _keys("snapshot") == ["preflight", "export"]
     for mode, restore in (("adopt", False), ("snapshot", True), ("restore_dump", True)):
         with pytest.raises(ValueError):

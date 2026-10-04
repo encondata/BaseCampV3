@@ -46,7 +46,11 @@ _PLANS: dict[tuple[str, bool], tuple[str, ...]] = {
     ("update", True): (*_BUILD, "data", "restore", "up"),
     ("reset", False): (*_BUILD, "reset", "up"),
     ("reset", True): (*_BUILD, "reset", "data", "restore", "up"),
-    ("restore_dump", False): ("preflight", "data", "restore_dump", "up"),
+    # The deployed commit (current_sha) again, rendered with Sirdar's stored
+    # keys: a failed Update may have left repo/ and .env at another commit,
+    # and a failed restoring Reset the snapshot's keys in .env. Build is cached.
+    ("restore_dump", False): ("preflight", "fetch", "render", "build", "data", "restore_dump",
+                              "up"),
     # the previous commit, with the failed deployment's pre-deploy dump
     ("rollback", False): ("preflight", "fetch", "render", "build", "data", "restore_dump", "up"),
     ("snapshot", False): ("preflight", "export"),

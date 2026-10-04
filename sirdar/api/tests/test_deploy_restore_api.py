@@ -84,7 +84,8 @@ async def test_restore_a_backup(client, db, ready, fake_runner, leak_guard):
     assert resp.status_code == 201, resp.text
     dep = resp.json()
     assert (dep["mode"], dep["sha"], dep["restore_dump"]) == ("restore_dump", OLD, BACKUP)
-    assert [s["key"] for s in dep["steps"]] == ["preflight", "data", "restore_dump", "up"]
+    assert [s["key"] for s in dep["steps"]] == ["preflight", "fetch", "render", "build", "data",
+                                                "restore_dump", "up"]
     await _finish(dep)
     request = next(r for r in fake_runner.requests if r.step == "restore_dump")
     assert request.extravars["dump_name"] == BACKUP
@@ -160,6 +161,23 @@ async def test_retry_rules_for_the_new_modes(client, db, ready, fake_runner, tmp
     assert resp.status_code == 201, resp.text
     again = resp.json()
     assert (again["start_step"], again["restore_dump"]) == (9, BACKUP)
+    await _finish(again)
+
+    # A retry may go back to Fetch code (3): the plan has it now.
+    fake_runner.results["up"] = RunResult(status="failed", rc=1)
+    dep = (await client.post(START, headers=h, json={
+        "mode": "restore_dump", "backup": BACKUP, "confirm_name": "uat"})).json()
+    await _finish(dep)
+    fake_runner.results.pop("up")
+    resp = await client.post(f"/api/deploy/deployments/{dep['id']}/retry", headers=h,
+                             json={"confirm_name": "uat", "from_step": 2})
+    assert (resp.status_code, resp.json()) == (422, {"detail": {"code": "from_step_invalid"}})
+    resp = await client.post(f"/api/deploy/deployments/{dep['id']}/retry", headers=h,
+                             json={"confirm_name": "uat", "from_step": 3})
+    assert resp.status_code == 201, resp.text
+    again = resp.json()
+    assert [(s["key"], s["status"]) for s in again["steps"]][:2] == [
+        ("preflight", "skipped"), ("fetch", "pending")]
     await _finish(again)
 
     resp = await client.post("/api/deploy/environments/uat/snapshots", headers=h,
