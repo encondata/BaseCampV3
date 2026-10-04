@@ -1,5 +1,6 @@
 /** One deployment: its steps with live logs (polled while it runs), Cancel,
- *  and Retry from step. Logs render as text only (already redacted server-side). */
+ *  Retry from step and, after a failed Update, Roll back. Logs render as text
+ *  only (already redacted server-side). */
 import { useEffect, useRef, useState, type UIEvent } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -8,12 +9,13 @@ import { ApiError } from '@portal/lib/api';
 
 import { useHostKeyTrust } from '../../components/useHostKeyTrust';
 import {
-  cancelDeployment, deployErrorText, errorText, getDeployment, retryDeployment,
+  cancelDeployment, deployErrorText, errorText, getDeployment, retryDeployment, rollbackDeployment,
   type Deployment, type Environment,
 } from '../../lib/sirdarApi';
 
 import {
-  DEPLOYMENT_STATUS, MODE_LABEL, RETRYABLE, STEP_STATUS, StatusChip, duration, shortSha, stoppedStep, when,
+  DEPLOYMENT_STATUS, GATED_MODES, MODE_LABEL, RETRY_MODES, RETRYABLE, STEP_STATUS, StatusChip, duration, shortSha,
+  stoppedStep, when,
 } from './labels';
 
 export const POLL_MS = 2000;
@@ -22,7 +24,9 @@ export const MAX_BACKOFF_MS = 30000;
 /** The log follows new output only when the reader is within this many px of its bottom. */
 const STICK_PX = 40;
 
-type RetryAttempt = { fromStep: number; confirm: string; reset: boolean };
+/** A retry or a rollback, kept whole so a host-key prompt replays exactly it. */
+type Attempt = { kind: 'retry'; fromStep: number; confirm: string; gated: boolean }
+  | { kind: 'rollback'; confirm: string };
 
 export default function DeploymentView({ id, env, isLatest, onFinished, onRetried, onClose }: {
   /** null while the history hasn't loaded: Retry stays hidden until it's known. */
@@ -37,6 +41,7 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   const [cancelling, setCancelling] = useState(false);
   const [fromStep, setFromStep] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [rollbackConfirm, setRollbackConfirm] = useState('');
   const [retrying, setRetrying] = useState(false);
   const retryingRef = useRef(false);
   const [actionError, setActionError] = useState('');
@@ -96,37 +101,48 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
     stick.current = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX;
   };
 
-  const isReset = dep?.mode === 'reset';
-  const allowed = dep?.mode === 'update' ? can('deploy', 'add')
-    : dep?.mode === 'reset' ? can('deploy', 'add') && can('deploy', 'change') : false;
+  // Reset, Restore backup and Roll back replace data: change permission and the typed name.
+  const gated = !!dep && GATED_MODES.includes(dep.mode);
+  const allowed = !dep || !RETRY_MODES.includes(dep.mode) ? false
+    : gated ? can('deploy', 'add') && can('deploy', 'change') : can('deploy', 'add');
   const mayRetry = !!dep && RETRYABLE.includes(dep.status) && allowed && stopped !== null;
+  const mayRollBack = !!dep && dep.rollback_available && can('deploy', 'add') && can('deploy', 'change');
+  // A restoring deployment (Reset with a snapshot, seeded first deploy) already wrote the
+  // snapshot's keys into the host .env: retry it rather than follow it with a plain Update.
+  const restoring = !!dep && dep.steps.some((s) => s.key === 'restore');
 
   // Replays exactly the attempt that hit the host-key prompt.
-  const run = async (attempt: RetryAttempt) => {
+  const run = async (attempt: Attempt) => {
     if (retryingRef.current) return;
     retryingRef.current = true;
     setRetrying(true);
     setActionError('');
     try {
-      onRetried(await retryDeployment(id, attempt.reset
-        ? { from_step: attempt.fromStep, confirm_name: attempt.confirm }
-        : { from_step: attempt.fromStep }));
+      if (attempt.kind === 'rollback') onRetried(await rollbackDeployment(id, attempt.confirm));
+      else {
+        onRetried(await retryDeployment(id, attempt.gated
+          ? { from_step: attempt.fromStep, confirm_name: attempt.confirm }
+          : { from_step: attempt.fromStep }));
+      }
     } catch (e) {
-      if (!hostKey.handle(e, env.target, attempt)) setActionError(deployErrorText(e, "Couldn't retry the deployment."));
+      if (!hostKey.handle(e, env.target, attempt)) {
+        setActionError(deployErrorText(e, attempt.kind === 'rollback'
+          ? "Couldn't roll back the deployment." : "Couldn't retry the deployment."));
+      }
     } finally {
       retryingRef.current = false;
       setRetrying(false);
     }
   };
-  const hostKey = useHostKeyTrust<RetryAttempt>({
-    canTrust: can('deploy', 'change'), trustLabel: 'Trust and retry',
+  const hostKey = useHostKeyTrust<Attempt>({
+    canTrust: can('deploy', 'change'), trustLabel: 'Trust and continue',
     onTrusted: (attempt) => { void run(attempt); }, onProblem: setActionError,
   });
 
   const retry = () => {
     if (!dep || stopped === null) return;
-    if (isReset && confirm !== env.name) { setActionError(`Type ${env.name} to confirm.`); return; }
-    void run({ fromStep: Number(fromStep || stopped), confirm, reset: isReset });
+    if (gated && confirm !== env.name) { setActionError(`Type ${env.name} to confirm.`); return; }
+    void run({ kind: 'retry', fromStep: Number(fromStep || stopped), confirm, gated });
   };
 
   const cancel = async () => {
@@ -172,6 +188,10 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
         <dt>Finished</dt><dd className="mono">{when(dep.finished_at)}</dd>
         {dep.retry_of && <><dt>Retry</dt><dd>From step {dep.start_step}</dd></>}
         {dep.dump_path && <><dt>Pre-deploy dump</dt><dd className="mono">{dep.dump_path}</dd></>}
+        {dep.snapshot && (
+          <><dt>{dep.mode === 'snapshot' ? 'Snapshot' : 'Restores snapshot'}</dt><dd>{dep.snapshot.name}</dd></>
+        )}
+        {dep.restore_dump && <><dt>Restores backup</dt><dd className="mono">{dep.restore_dump}</dd></>}
       </dl>
       {dep.error && <p className="form-error">{dep.error}</p>}
       {loadError && <p className="form-error" role="alert">{loadError}</p>}
@@ -210,20 +230,44 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
             <ComboBox inputId="retry-step" ariaLabel="Retry from step" portal value={fromStep || String(stopped)}
                       options={retryOptions} onChange={setFromStep} />
           </div>
-          {isReset && (
+          {gated && (
             <div>
               <label className="field-label" htmlFor="retry-confirm">Type {env.name} to confirm</label>
               <input id="retry-confirm" type="text" value={confirm} maxLength={64} autoComplete="off"
                      spellCheck={false} onChange={(e) => setConfirm(e.target.value)} />
             </div>
           )}
-          <button type="button" className="btn-solid" disabled={retrying || hostKey.open || (isReset && confirm !== env.name)}
+          <button type="button" className="btn-solid" disabled={retrying || hostKey.open || (gated && confirm !== env.name)}
                   onClick={retry}>
             {retrying ? 'Retrying…' : 'Retry'}
           </button>
         </div>
       )}
+      {mayRetry && isLatest === true && restoring && (
+        <p className="page-hint">Retry this deployment — a new Update would put the old sign-in keys back.</p>
+      )}
       {mayRetry && isLatest === false && <p className="page-hint">Only the most recent deployment can be retried.</p>}
+      {mayRollBack && isLatest === true && (
+        <div className="sirdar-rollback">
+          <h3 className="sirdar-sub">Roll back</h3>
+          <p className="page-hint">
+            Deploys the previous commit <span className="mono">{shortSha(dep.previous_sha)}</span> again and restores
+            this deployment's pre-deploy dump. Uploaded files are not rolled back.
+          </p>
+          <div className="sirdar-retry pf-form">
+            <div>
+              <label className="field-label" htmlFor="rollback-confirm">Type {env.name} to confirm</label>
+              <input id="rollback-confirm" type="text" value={rollbackConfirm} maxLength={64} autoComplete="off"
+                     spellCheck={false} onChange={(e) => setRollbackConfirm(e.target.value)} />
+            </div>
+            <button type="button" className="btn-ghost"
+                    disabled={retrying || hostKey.open || rollbackConfirm !== env.name}
+                    onClick={() => void run({ kind: 'rollback', confirm: rollbackConfirm })}>
+              {retrying ? 'Starting…' : 'Roll back'}
+            </button>
+          </div>
+        </div>
+      )}
       {actionError && <p className="form-error" role="alert">{actionError}</p>}
       {hostKey.modal}
     </section>

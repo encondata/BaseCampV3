@@ -125,3 +125,5 @@
 .sirdar-snap-form textarea { width: 100%; resize: vertical; }
 .sirdar-file-pick { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .sirdar-sub-label { margin-top: 12px; }
+
+.sirdar-rollback { margin-top: 16px; }
