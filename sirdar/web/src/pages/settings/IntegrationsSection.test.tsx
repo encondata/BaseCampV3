@@ -197,3 +197,56 @@ it('Proxmox, when not set up, is one line with Set up', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Set up Proxmox' }));
   expect(screen.getByRole('dialog', { name: 'Proxmox' })).toBeTruthy();
 });
+
+it('shows the DigitalOcean card in the main grid: whether a token is stored, never the token', async () => {
+  render(<IntegrationsSection />);
+  const dig = await screen.findByRole('group', { name: 'DigitalOcean' });
+  expect(dig.parentElement!.classList).toContain('sirdar-integration-cards');
+  expect(dig.querySelector('.sirdar-card-head > h3')?.textContent).toBe('DigitalOcean');
+  expect(dig.querySelector('.sirdar-card-head > .chip')?.textContent).toBe('Configured');
+  expect(dig.querySelector('dl.sirdar-kv')).toBeTruthy();
+  const dt = within(dig).getByText('API token', { selector: 'dt' });
+  expect(dt.nextElementSibling!.textContent).toBe('Set');
+  expect(within(dig).getByText(/by Jimmy Henderson/)).toBeTruthy();
+  expect(dig.textContent).not.toMatch(/dop_v1_/);
+  await userEvent.click(within(dig).getByRole('button', { name: 'Test DigitalOcean' }));
+  expect(api.testIntegration).toHaveBeenCalledWith('digitalocean');
+  await userEvent.click(within(dig).getByRole('button', { name: 'Edit DigitalOcean' }));
+  expect(screen.getByRole('dialog', { name: 'DigitalOcean' })).toBeTruthy();
+});
+
+it("a DigitalOcean token from the server environment: Test works, nothing to remove", async () => {
+  api.getIntegrations.mockResolvedValue({
+    ...NO_INTEGRATIONS,
+    digitalocean: { configured: true, token_set: false, source: 'environment', updated_at: null, updated_by_name: null },
+  });
+  render(<IntegrationsSection />);
+  const dig = await screen.findByRole('group', { name: 'DigitalOcean' });
+  expect(within(dig).getByText('Configured')).toBeTruthy();
+  const dt = within(dig).getByText('API token', { selector: 'dt' });
+  expect(dt.nextElementSibling!.textContent).toBe('From the server environment');
+  expect(within(dig).getByRole('button', { name: 'Test DigitalOcean' })).toBeTruthy();
+  expect(within(dig).queryByRole('button', { name: 'Remove DigitalOcean' })).toBeNull();
+  await userEvent.click(within(dig).getByRole('button', { name: 'Set up DigitalOcean' }));
+  expect(screen.getByRole('dialog', { name: 'DigitalOcean' })).toBeTruthy();
+});
+
+it('no DigitalOcean token anywhere: Not set up, Set up only', async () => {
+  api.getIntegrations.mockResolvedValue(NO_INTEGRATIONS);
+  render(<IntegrationsSection />);
+  const dig = await screen.findByRole('group', { name: 'DigitalOcean' });
+  expect(within(dig).getByText('Not set up')).toBeTruthy();
+  expect(within(dig).getByText('API token', { selector: 'dt' }).nextElementSibling!.textContent).toBe('Not set');
+  expect(within(dig).queryByRole('button', { name: 'Test DigitalOcean' })).toBeNull();
+  expect(within(dig).queryByRole('button', { name: 'Remove DigitalOcean' })).toBeNull();
+});
+
+it('removing the stored DigitalOcean token says it falls back to the environment', async () => {
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  render(<IntegrationsSection />);
+  const dig = await screen.findByRole('group', { name: 'DigitalOcean' });
+  await userEvent.click(within(dig).getByRole('button', { name: 'Remove DigitalOcean' }));
+  await waitFor(() => expect(api.removeIntegration).toHaveBeenCalledWith('digitalocean'));
+  expect(confirm.mock.calls[0][0]).toBe('Remove the stored DigitalOcean API token? Sirdar then uses '
+    + "SIRDAR_DEPLOY_DO_TOKEN from the server environment, if it is set; nothing changes in DigitalOcean itself.");
+});

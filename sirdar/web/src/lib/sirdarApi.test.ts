@@ -126,7 +126,8 @@ it('every error code the deploy routes can return has its own message', () => {
                       'tls_untrusted', 'tls_mismatch', 'integration_in_use', 'vm_cores_invalid', 'vm_disk_shrink',
                       'vm_ip_invalid', 'ip_in_use', 'adopt_not_allowed', 'host_ip_managed', 'target_kind_locked',
                       'vm_snapshot_not_found', 'vm_snapshot_keys_changed', 'not_vm_environment', 'vm_not_ready',
-                      'esxi_url_invalid', 'source_vm_invalid', 'dns_servers_invalid', 'vm_name_invalid']) {
+                      'esxi_url_invalid', 'source_vm_invalid', 'dns_servers_invalid', 'vm_name_invalid',
+                      'do_token_invalid']) {
     expect(codes).toContain(code);
   }
   const missing = codes.filter((c) => sirdar.errorText(new ApiError(400, c), '__none__') === '__none__');

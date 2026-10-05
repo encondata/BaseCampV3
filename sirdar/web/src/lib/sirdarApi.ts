@@ -212,6 +212,7 @@ const MESSAGES: Record<string, string> = {
   zone_invalid: "That zone isn't a valid domain, like serversherpa.com.",
   public_ip_invalid: 'The public IP must be an IPv4 address.',
   token_invalid: "That doesn't look like a Cloudflare API token (20–200 letters, digits, - or _).",
+  do_token_invalid: "That doesn't look like a DigitalOcean API token: dop_v1_ and 64 hex digits, or up to 200 characters with no spaces.",
   secret_required: 'Enter the token or password: none is stored yet.',
   npm_url_invalid: 'Use the address of Nginx Proxy Manager, like http://10.10.48.6:81 (no path).',
   identity_invalid: 'Enter the email you sign in to Nginx Proxy Manager with.',
@@ -544,9 +545,12 @@ export async function deleteSnapshot(id: string): Promise<void> {
 export type PublishKind = 'cloudflare' | 'npm';
 /** The hosts Sirdar builds environments' VMs on. */
 export type VmHostKind = 'proxmox' | 'esxi';
-export type IntegrationKind = PublishKind | VmHostKind;
+/** The cloud account the Deploy page and the dashboard read. */
+export type CloudKind = 'digitalocean';
+export type IntegrationKind = PublishKind | VmHostKind | CloudKind;
 export const INTEGRATION_LABEL: Record<IntegrationKind, string> = {
   cloudflare: 'Cloudflare', npm: 'Nginx Proxy Manager', proxmox: 'Proxmox', esxi: 'VMware ESXi',
+  digitalocean: 'DigitalOcean',
 };
 export interface CloudflareIntegration {
   configured: boolean; zone: string | null; public_ip: string | null; token_set: boolean;
@@ -574,9 +578,16 @@ export interface EsxiIntegration {
   dns_servers: string[];
   tls_fingerprint: string | null; password_set: boolean; updated_at: string | null; updated_by_name: string | null;
 }
+/** configured: a token is stored or SIRDAR_DEPLOY_DO_TOKEN is set; token_set: one is stored (it wins). */
+export interface DigitalOceanIntegration {
+  configured: boolean; token_set: boolean;
+  /** Where the token Sirdar uses comes from: Settings (stored), the server's .env, or nowhere. */
+  source: 'stored' | 'environment' | null;
+  updated_at: string | null; updated_by_name: string | null;
+}
 export interface Integrations {
   secrets_key_configured: boolean; cloudflare: CloudflareIntegration; npm: NpmIntegration; proxmox: ProxmoxIntegration;
-  esxi: EsxiIntegration;
+  esxi: EsxiIntegration; digitalocean: DigitalOceanIntegration;
 }
 /** An omitted secret keeps the stored one. */
 export interface CloudflareBody { zone: string; public_ip: string; token?: string }
@@ -591,6 +602,9 @@ export interface EsxiBody {
   url: string; user: string; datastore: string; network: string; resource_pool: string | null; source_vm: string;
   dns_servers: string[]; tls_fingerprint: string | null; password?: string;
 }
+/** An omitted token keeps the stored one (a Test then uses the token Sirdar uses). */
+export interface DigitalOceanBody { token?: string }
+type IntegrationBody = CloudflareBody | NpmBody | ProxmoxBody | EsxiBody | DigitalOceanBody;
 /** A VM host's certificate, as tls_untrusted describes it. */
 export interface TlsCertificate { fingerprint: string; subject: string; issuer: string; not_after: string; names: string[] }
 export interface IntegrationCheck {
@@ -614,14 +628,14 @@ export interface PublishPlan {
 }
 const integrationPath = (kind: IntegrationKind) => `/deploy/integrations/${kind}`;
 export const getIntegrations = () => getJson<Integrations>('/deploy/integrations');
-export const saveIntegration = (kind: IntegrationKind, body: CloudflareBody | NpmBody | ProxmoxBody | EsxiBody) =>
+export const saveIntegration = (kind: IntegrationKind, body: IntegrationBody) =>
   sendJson<Integrations>('PUT', integrationPath(kind), body);
 export async function removeIntegration(kind: IntegrationKind): Promise<void> {
   const resp = await apiFetch(integrationPath(kind), { method: 'DELETE' });
   if (!resp.ok) throw await errorOf(resp);
 }
 /** No body: the saved settings. A body: those values unsaved (no secret = the stored one). */
-export const testIntegration = (kind: IntegrationKind, body?: CloudflareBody | NpmBody | ProxmoxBody | EsxiBody) =>
+export const testIntegration = (kind: IntegrationKind, body?: IntegrationBody) =>
   sendJson<IntegrationCheck>('POST', `${integrationPath(kind)}/test`, body);
 export const getPublishPlan = (name: string) => getJson<PublishPlan>(`${envPath(name)}/publish`);
 export const claimPublish = (name: string) =>

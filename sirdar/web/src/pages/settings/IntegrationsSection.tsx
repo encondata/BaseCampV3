@@ -1,8 +1,10 @@
 /** Settings › Integrations: the credentials Sirdar publishes environments
- *  with (Cloudflare DNS, Nginx Proxy Manager) and builds VMs with (VMware
- *  ESXi; Proxmox under Other hosts). Secrets are write-only: a card shows only
- *  whether one is set. Test checks the saved settings; Remove forgets them
- *  (nothing changes in Cloudflare, NPM, ESXi or Proxmox). */
+ *  with (Cloudflare DNS, Nginx Proxy Manager), builds VMs with (VMware
+ *  ESXi; Proxmox under Other hosts) and reads DigitalOcean with (its token
+ *  falls back to SIRDAR_DEPLOY_DO_TOKEN when none is stored). Secrets are
+ *  write-only: a card shows only whether one is set. Test checks the saved
+ *  settings; Remove forgets them (nothing changes in Cloudflare, NPM, ESXi,
+ *  Proxmox or DigitalOcean). */
 import { Fragment, useCallback, useEffect, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -15,18 +17,27 @@ import {
 } from '../../lib/sirdarApi';
 import { when } from '../environments/labels';
 
+import DigitalOceanModal from './DigitalOceanModal';
 import EsxiModal from './EsxiModal';
 import IntegrationModal from './IntegrationModal';
 import ProxmoxModal from './ProxmoxModal';
 
 /** The main cards; Proxmox waits under "Other hosts". */
-const KINDS: IntegrationKind[] = ['cloudflare', 'npm', 'esxi'];
+const KINDS: IntegrationKind[] = ['cloudflare', 'npm', 'esxi', 'digitalocean'];
 const PURPOSE: Record<IntegrationKind, string> = {
   esxi: 'The VMware ESXi host Sirdar builds a VM on for each ESXi environment.',
   proxmox: 'The Proxmox host Sirdar builds a VM on for each Proxmox environment.',
   cloudflare: 'DNS records for every public service of an environment that publishes.',
   npm: 'Proxy hosts and certificates for every public service of an environment that publishes.',
+  digitalocean: "The Deploy page's DigitalOcean connection test and regions, and the dashboard's infrastructure.",
 };
+const DO_SOURCE = { stored: 'Set', environment: 'From the server environment' } as const;
+
+/** Whether Sirdar stores this integration's credentials (what Remove forgets).
+ *  DigitalOcean can be configured from the server environment alone. */
+function stored(data: Integrations, kind: IntegrationKind): boolean {
+  return kind === 'digitalocean' ? data.digitalocean.token_set : data[kind].configured;
+}
 
 function settingsOf(data: Integrations, kind: IntegrationKind): [string, string][] {
   const set = (on: boolean) => (on ? 'Set' : 'Not set');
@@ -46,6 +57,10 @@ function settingsOf(data: Integrations, kind: IntegrationKind): [string, string]
     return [['URL', p.url ?? '—'], ['Node and pool', p.node ? `${p.node} · ${p.pool}` : '—'], ['Builds from', where],
             ['Certificate', p.tls_fingerprint ? `${p.tls_fingerprint.slice(0, 23)}…` : '—'],
             ['API token', p.token_set ? `Set (${p.token_id})` : 'Not set']];
+  }
+  if (kind === 'digitalocean') {
+    const source = data.digitalocean.source;
+    return [['API token', source ? DO_SOURCE[source] : 'Not set']];
   }
   if (kind === 'cloudflare') {
     const c = data.cloudflare;
@@ -96,7 +111,10 @@ export default function IntegrationsSection() {
   const remove = async (kind: IntegrationKind) => {
     const label = INTEGRATION_LABEL[kind];
     const vmHost = kind === 'proxmox' || kind === 'esxi';
-    if (!window.confirm(vmHost
+    if (!window.confirm(kind === 'digitalocean'
+      ? 'Remove the stored DigitalOcean API token? Sirdar then uses SIRDAR_DEPLOY_DO_TOKEN from the server '
+        + 'environment, if it is set; nothing changes in DigitalOcean itself.'
+      : vmHost
       ? `Remove the ${label} credentials? Nothing changes on ${kind === 'esxi' ? 'ESXi' : 'Proxmox'} itself.`
       : `Remove the ${label} credentials? Publishing stops until they are set again; `
         + `nothing changes in ${label} itself.`)) return;
@@ -117,6 +135,7 @@ export default function IntegrationsSection() {
     if (!data) return null;
     const label = INTEGRATION_LABEL[kind];
     const item = data[kind];
+    const saved = stored(data, kind);
     return (
       <div key={kind} className="sirdar-card" role="group" aria-label={label}>
         <div className="sirdar-card-head">
@@ -138,7 +157,7 @@ export default function IntegrationsSection() {
         )}
         {mayChange && (
           <div className="sirdar-actions">
-            {item.configured && (
+            {saved && (
               <button type="button" className="mini-btn danger" aria-label={`Remove ${label}`}
                       disabled={busy === kind} onClick={() => void remove(kind)}>Remove</button>
             )}
@@ -149,9 +168,9 @@ export default function IntegrationsSection() {
               </button>
             )}
             <button type="button" className="mini-btn"
-                    aria-label={`${item.configured ? 'Edit' : 'Set up'} ${label}`}
+                    aria-label={`${saved ? 'Edit' : 'Set up'} ${label}`}
                     disabled={!data.secrets_key_configured || busy === kind} onClick={() => setEditing(kind)}>
-              {item.configured ? 'Edit' : 'Set up'}
+              {saved ? 'Edit' : 'Set up'}
             </button>
           </div>
         )}
@@ -166,7 +185,8 @@ export default function IntegrationsSection() {
       <h2>Integrations</h2>
       <p className="page-hint">
         Environments with Publish on use Cloudflare and Nginx Proxy Manager for their DNS records and proxy hosts;
-        ESXi environments are built on VMware ESXi. Tokens and passwords are stored encrypted and never shown again.
+        ESXi environments are built on VMware ESXi. The Deploy page and the dashboard read DigitalOcean. Tokens and
+        passwords are stored encrypted and never shown again.
       </p>
       {error && <p className="form-error" role="alert">{error}</p>}
       {data && !data.secrets_key_configured && (
@@ -206,9 +226,13 @@ export default function IntegrationsSection() {
         </div>
       )}
       {data && !mayChange && <p className="page-hint">You can view these settings but not change them.</p>}
-      {editing && data && editing !== 'proxmox' && editing !== 'esxi' && (
+      {editing && data && (editing === 'cloudflare' || editing === 'npm') && (
         <IntegrationModal kind={editing} current={data} onClose={() => setEditing(null)}
                           onSaved={(saved) => { setData(saved); forget(editing); setEditing(null); }} />
+      )}
+      {editing === 'digitalocean' && data && (
+        <DigitalOceanModal current={data} onClose={() => setEditing(null)}
+                           onSaved={(saved) => { setData(saved); forget('digitalocean'); setEditing(null); }} />
       )}
       {editing === 'esxi' && data && (
         <EsxiModal current={data} onClose={() => setEditing(null)}

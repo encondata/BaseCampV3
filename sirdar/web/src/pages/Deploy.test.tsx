@@ -83,6 +83,7 @@ it('a not-configured target lists the env keys to set', async () => {
   await userEvent.click(screen.getByRole('radio', { name: /DigitalOcean/ }));
   expect(screen.getByText(/SIRDAR_DEPLOY_DO_TOKEN/)).toBeTruthy();
   expect(screen.getByText(/re-run the installer/i)).toBeTruthy();
+  expect(screen.getByText(/Add the API token in Settings › Integrations › DigitalOcean, or set/)).toBeTruthy();
   expect(testBtn().disabled).toBe(true);
 });
 
