@@ -57,6 +57,7 @@ from sirdar_api.db.models import (
 from sirdar_api.deploy import (
     ConnectFailed,
     envfile,
+    esxi_provision,
     known_hosts,
     provision,
     publish,
@@ -137,7 +138,8 @@ def make_provisioner(settings: Settings) -> provision.Provisioner:
     """What runs a VM environment's VM steps (tests replace this function)."""
     return vmsteps.HostProvisioner(
         proxmox=provision.ProxmoxProvisioner(terraform_runner=make_terraform(settings),
-                                             settings=settings))
+                                             settings=settings),
+        esxi=esxi_provision.EsxiProvisioner(settings=settings))
 
 
 async def sweep_runs() -> int:
