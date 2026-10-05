@@ -30,7 +30,8 @@ this phase only builds new environments.
 | Sizes | Defaults for every environment = current V2 production: droplet 2 vCPU / 4 GB / 80 GB (`s-2vcpu-4gb`), database 2 vCPU / 4 GB / 60 GB (`db-s-2vcpu-4gb`), single node; a standby-node option. Editable at create. |
 | Delete | Sirdar takes a snapshot first, then removes everything it tagged. Production needs a second confirmation and must be marked **retiring** first; a live slot can't be deleted. |
 | Existing V2 prod | Out of scope. A later cutover (snapshot old, seed new, switch DNS) gets its own plan. |
-| Live test | Approved to spend money: a throwaway two-slot dev environment, built, seeded, switched, renewed, deleted the same day. Uses the DO token and region Sirdar already has. |
+| DigitalOcean accounts | **Two DigitalOcean accounts** (API keys), e.g. *Production* and *Development*, each with its own region. Every DO environment is built in one account, chosen at create and frozen (it can't move later). Production environments default to the Production account. |
+| Live test | Approved to spend money: a throwaway two-slot dev environment, built, seeded, switched, renewed, deleted the same day. Built in the *Development* account. |
 
 ## 1. Resources per environment
 
@@ -149,16 +150,37 @@ outside the VPC.
 - Other two-slot environments show the same slot pair and Activate on their
   card.
 
-## 8. Security and secrets
+## 8. DigitalOcean accounts
 
-- The DO account token stays in Sirdar (Settings › Integrations). Droplets get
+- Settings › Integrations › DigitalOcean holds **two named accounts** (labels,
+  default *Production* and *Development*), each with its own API token
+  (vault-encrypted, write-only), default region and Test. The existing single
+  DigitalOcean token becomes the *Production* account on migration; the
+  `SIRDAR_DEPLOY_DO_TOKEN` env fallback stays attached to that account.
+- The integration is stored per account (`integrations` gets an account key,
+  or a new `do_accounts` table — the plan decides), so the two never share a
+  token.
+- New environment's DigitalOcean target asks which account; the choice is
+  frozen on the environment and every resource, client call, Activate, renewal
+  and delete for it uses that account's token. Removing an account is refused
+  while environments use it, and so is changing an account's token to one
+  that belongs to a different DigitalOcean team (checked through the account
+  API's team UUID), so environments can't silently move.
+- The dashboard's infrastructure view and the Deploy page connection test show
+  both accounts.
+- Each account's scoped droplet token (certificate/load balancer) is created
+  in that account.
+
+## 9. Security and secrets
+
+- The DO account tokens stay in Sirdar (Settings › Integrations). Droplets get
   only the scoped certificate/load-balancer token.
 - Database password, Spaces secret, scoped token, CA cert: vault-encrypted in
   Sirdar, written only into the droplet `.env` (mode 600), never in responses,
   logs or audit.
 - ACME account key: per Sirdar, vault-encrypted.
 
-## 9. Testing and verification
+## 10. Testing and verification
 
 - `FakeDigitalOcean` (droplets, VPCs, databases, firewall/trusted sources,
   Spaces keys + buckets, load balancers, certificates, tags) behind the
@@ -171,7 +193,7 @@ outside the VPC.
 
 ## Build order
 
-- **7a**: DO client + fake, `do_resources`, step 0, external-data stack
+- **7a**: the two DigitalOcean accounts, DO client + fake, `do_resources`, step 0, external-data stack
   (`STACK_EXTERNAL_DATA`, `.env` render), Caddy `proxy` stack, seeding, delete.
 - **7b**: slots, Activate, auto-activate, add-a-slot, `cert-worker` + Sirdar
   backup renewal, dashboard and UI.
