@@ -14,8 +14,16 @@ from sirdar_api.deploy.ssh import SshTargetConfig
 from sirdar_api.deploy.ssh_targets import SavedSshTarget, SshTargetStore
 
 INSTALLER_LABEL = "Custom (SSH) · Installer"
-# An environment whose host is a VM Sirdar builds on Proxmox (phase 5).
+# Environments whose host is a VM Sirdar builds: on Proxmox (phase 5) or on a
+# standalone ESXi host (phase 6). The target id equals the integration kind.
 PROXMOX_TARGET = "proxmox"
+ESXI_TARGET = "esxi"
+VM_TARGETS = (PROXMOX_TARGET, ESXI_TARGET)
+VM_TARGET_LABELS = {PROXMOX_TARGET: "Proxmox", ESXI_TARGET: "VMware ESXi"}
+
+
+def is_vm_target(target_id: str | None) -> bool:
+    return target_id in VM_TARGETS
 STORE_HINT = "deploy-targets.env isn't writable; see the README."
 
 
@@ -115,8 +123,9 @@ def ssh_targets_at(host: str, port: int, s: Settings) -> list[str]:
     return [tid for tid, cfg in ssh_configs(s) if cfg.host == host and cfg.port == port]
 
 
-def public_targets(s: Settings, *, proxmox_configured: bool = False) -> list[dict]:
-    """Proxmox is listed (last) once its integration is saved."""
+def public_targets(s: Settings, *, proxmox_configured: bool = False,
+                   esxi_configured: bool = False) -> list[dict]:
+    """The VM hosts are listed last (Proxmox, then ESXi) once saved."""
     out = [{"id": t.id, "label": t.label, "kind": t.id, "available": t.available,
             "configured": is_configured(t.id, s)}
            for t in TARGETS if t.id != "ssh"]
@@ -126,7 +135,8 @@ def public_targets(s: Settings, *, proxmox_configured: bool = False) -> list[dic
     out += [{"id": t.id, "label": t.name, "kind": "ssh", "source": "saved",
              "available": True, "configured": t.configured}
             for t in saved_targets(s)]
-    if proxmox_configured:
-        out.append({"id": PROXMOX_TARGET, "label": "Proxmox", "kind": "proxmox",
-                    "available": True, "configured": True})
+    for kind, on in ((PROXMOX_TARGET, proxmox_configured), (ESXI_TARGET, esxi_configured)):
+        if on:
+            out.append({"id": kind, "label": VM_TARGET_LABELS[kind], "kind": kind,
+                        "available": True, "configured": True})
     return out

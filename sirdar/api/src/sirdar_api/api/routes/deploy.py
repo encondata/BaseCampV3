@@ -111,7 +111,8 @@ async def list_targets(db: DbSession, actor: AuthContext = require_permission("d
     s = get_settings()
     writable = targets.can_add_ssh(s)
     listed = targets.public_targets(
-        s, proxmox_configured=await integrations.is_configured(db, "proxmox"))
+        s, proxmox_configured=await integrations.is_configured(db, "proxmox"),
+        esxi_configured=await integrations.is_configured(db, "esxi"))
     return {"targets": listed, "types": targets.DEPLOY_TYPES,
             "can_add_ssh": writable, "ssh_store_hint": None if writable else targets.STORE_HINT}
 

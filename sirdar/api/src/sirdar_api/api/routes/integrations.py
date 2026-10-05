@@ -1,6 +1,7 @@
 """Settings › Integrations: the Cloudflare and Nginx Proxy Manager
 credentials Sirdar publishes environments with, and the Proxmox API token
-it builds VMs with (its TLS certificate is pinned trust-on-first-use: save
+and ESXi password it builds VMs with (their TLS certificates are pinned
+trust-on-first-use: save
 and Test answer tls_untrusted until the request names the fingerprint the
 user was shown). Secrets are write-only: no
 response, log line or audit row carries one (audits list the names of the
@@ -18,6 +19,7 @@ from sirdar_api.config import get_settings
 from sirdar_api.deploy import (
     ConnectFailed,
     cloudflare,
+    esxi,
     integrations,
     npm,
     outbound,
@@ -31,9 +33,11 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/deploy/integrations", tags=["deploy"])
 
-Kind = Literal["cloudflare", "npm", "proxmox"]
+Kind = Literal["cloudflare", "npm", "proxmox", "esxi"]
 TESTERS = {"cloudflare": cloudflare.test_connection, "npm": npm.test_connection,
-           "proxmox": proxmox.test_connection}
+           "proxmox": proxmox.test_connection, "esxi": esxi.test_connection}
+# Where each VM host's certificate is fetched from (host, port).
+SPLIT_URL = {"proxmox": proxmox.split_url, "esxi": esxi.split_url}
 UNEXPECTED_REASON = "Sirdar couldn't reach it."
 # Everything else is a 422 (tls_fingerprint_invalid among them); tls_untrusted
 # only comes from integrations when the route's own pin check was bypassed.
@@ -41,6 +45,8 @@ _STATUS = {"secrets_key_missing": 400, "integration_unreadable": 409,
            "tls_untrusted": 409, "tls_fingerprint_invalid": 422}
 PROXMOX_FIELDS = ("url", "node", "pool", "storage", "bridge", "vlan_tag", "template_vmid",
                   "tls_fingerprint")
+ESXI_FIELDS = ("url", "user", "datastore", "network", "resource_pool", "source_vm",
+               "dns_servers", "tls_fingerprint")
 
 
 class CloudflareIn(BaseModel):
@@ -69,6 +75,19 @@ class ProxmoxIn(BaseModel):
     token: str | None = None
 
 
+class EsxiIn(BaseModel):
+    url: str = Field(max_length=300)
+    user: str = Field(max_length=64)
+    datastore: str = Field(max_length=80)
+    network: str = Field(max_length=80)
+    resource_pool: str | None = Field(default=None, max_length=80)
+    source_vm: str = Field(max_length=80)
+    dns_servers: list[str] = Field(default_factory=list, max_length=5)
+    # The fingerprint the user was shown and trusted (None: show it first).
+    tls_fingerprint: str | None = Field(default=None, max_length=95)
+    password: str | None = None
+
+
 def _http(e: IntegrationError) -> HTTPException:
     return HTTPException(status_code=_STATUS.get(e.code, 422), detail={"code": e.code, **e.extra})
 
@@ -82,28 +101,23 @@ def _npm_values(body: NpmIn) -> dict:
             "letsencrypt_email": body.letsencrypt_email}
 
 
-async def _proxmox_values(db, body: ProxmoxIn) -> dict:
-    """The form's values plus the pinned certificate. The stored pin is
-    reused for the same URL and fingerprint; otherwise the live certificate
-    is fetched and must have the fingerprint the request names."""
-    try:
-        url = integrations.check_proxmox_url(body.url)
-    except IntegrationError as e:
-        raise _http(e) from None
+async def _pinned(db, kind: str, url: str, given: str | None) -> tuple[str, str]:
+    """(fingerprint, certificate PEM) for a VM host's form. The stored pin is
+    reused for the same URL and fingerprint; otherwise the live certificate is
+    fetched and must have the fingerprint the request names (409 tls_untrusted
+    shows it first, 409 tls_mismatch when it changed)."""
     wanted = None
-    if (body.tls_fingerprint or "").strip():
+    if (given or "").strip():
         try:
-            wanted = tls_pin.normalize_fingerprint(body.tls_fingerprint)
+            wanted = tls_pin.normalize_fingerprint(given)
         except ValueError:
             raise _http(IntegrationError("tls_fingerprint_invalid")) from None
-    values = {name: getattr(body, name) for name in PROXMOX_FIELDS}
-    values.update(url=url, tls_fingerprint=wanted)
-    stored = await integrations.config_of(db, "proxmox")
+    stored = await integrations.config_of(db, kind)
     if (wanted and stored.get("url") == url and stored.get("tls_fingerprint") == wanted
             and stored.get("tls_cert_pem")):
-        return {**values, "tls_cert_pem": stored["tls_cert_pem"]}
+        return wanted, stored["tls_cert_pem"]
     try:
-        pem = await tls_pin.fetch_certificate(*proxmox.split_url(url))
+        pem = await tls_pin.fetch_certificate(*SPLIT_URL[kind](url))
     except ConnectFailed as e:
         raise HTTPException(status_code=502, detail={"code": "connect_failed",
                                                      "reason": e.reason}) from None
@@ -115,7 +129,29 @@ async def _proxmox_values(db, body: ProxmoxIn) -> dict:
     if actual != wanted:
         raise HTTPException(status_code=409, detail={"code": "tls_mismatch",
                                                      "expected": wanted, "actual": actual})
-    return {**values, "tls_cert_pem": pem}
+    return wanted, pem
+
+
+async def _proxmox_values(db, body: ProxmoxIn) -> dict:
+    """The form's values plus the pinned certificate."""
+    try:
+        url = integrations.check_proxmox_url(body.url)
+    except IntegrationError as e:
+        raise _http(e) from None
+    fingerprint, pem = await _pinned(db, "proxmox", url, body.tls_fingerprint)
+    values = {name: getattr(body, name) for name in PROXMOX_FIELDS}
+    return {**values, "url": url, "tls_fingerprint": fingerprint, "tls_cert_pem": pem}
+
+
+async def _esxi_values(db, body: EsxiIn) -> dict:
+    """The form's values plus the pinned certificate."""
+    try:
+        url = integrations.check_esxi_url(body.url)
+    except IntegrationError as e:
+        raise _http(e) from None
+    fingerprint, pem = await _pinned(db, "esxi", url, body.tls_fingerprint)
+    values = {name: getattr(body, name) for name in ESXI_FIELDS}
+    return {**values, "url": url, "tls_fingerprint": fingerprint, "tls_cert_pem": pem}
 
 
 @router.get("")
@@ -159,6 +195,12 @@ async def save_proxmox(body: ProxmoxIn, request: Request, db: DbSession,
                        actor)
 
 
+@router.put("/esxi")
+async def save_esxi(body: EsxiIn, request: Request, db: DbSession,
+                    actor: AuthContext = require_permission("deploy", "change")):
+    return await _save("esxi", await _esxi_values(db, body), body.password, request, db, actor)
+
+
 @router.delete("/{kind}", status_code=204)
 async def remove_integration(kind: Kind, request: Request, db: DbSession,
                              actor: AuthContext = require_permission("deploy", "change")):
@@ -195,7 +237,7 @@ async def _test(kind: str, values: dict | None, secret: str | None, request: Req
               changes={"kind": kind, "ok": ok})
 
     try:
-        result = await TESTERS[kind](cfg, transport=outbound.transports()[kind])
+        result = await TESTERS[kind](cfg, transport=outbound.transports().get(kind))
     except ConnectFailed as e:
         record(False)
         await db.commit()
@@ -232,3 +274,10 @@ async def check_proxmox(request: Request, db: DbSession, body: ProxmoxIn | None 
                         actor: AuthContext = require_permission("deploy", "change")):
     values = await _proxmox_values(db, body) if body else None
     return await _test("proxmox", values, body.token if body else None, request, db, actor)
+
+
+@router.post("/esxi/test")
+async def check_esxi(request: Request, db: DbSession, body: EsxiIn | None = None,
+                     actor: AuthContext = require_permission("deploy", "change")):
+    values = await _esxi_values(db, body) if body else None
+    return await _test("esxi", values, body.password if body else None, request, db, actor)
