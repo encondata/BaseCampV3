@@ -12,6 +12,7 @@ from sirdar_api.db.models import (
     Environment,
     EnvironmentSecret,
     EnvironmentService,
+    EsxiVm,
     Integration,
     ManagedRecord,
     ProxmoxVm,
@@ -420,7 +421,90 @@ async def test_migration_0007_downgrade_refuses_while_vms_are_managed():
         _alembic("downgrade", "0006")
     assert b"Can't downgrade below 0007 while Sirdar manages Proxmox VMs" in err.value.stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0007"
+        # The refused downgrade rolls back as a whole: still at head.
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0008"
         assert conn.execute("SELECT count(*) FROM proxmox_vms").fetchone()[0] == 1
         assert conn.execute("SELECT count(*) FROM integrations WHERE kind = 'proxmox'"
                             ).fetchone()[0] == 1
+
+
+def _esxi_vm(env_id, **over) -> EsxiVm:
+    kw = dict(environment_id=env_id, name="ss-uat3", host="10.10.48.10", datastore="datastore1",
+              network="VM Network", source_vm="sirdar-ubuntu-2404-seed", cores=4,
+              memory_mb=8192, disk_gb=64, ip_mode="static", ip_cidr="10.10.48.71/24",
+              gateway="10.10.48.1", ssh_public_key="ssh-ed25519 AAAAC3Nz test",
+              ssh_private_key_enc=b"enc", host_key_public="ssh-ed25519 AAAAC3Nz host",
+              host_key_private_enc=b"henc")
+    kw.update(over)
+    return EsxiVm(**kw)
+
+
+async def test_esxi_vms(db):
+    env = await _env(db, name="uat3")
+    db.add(_esxi_vm(env.id))
+    db.add(Integration(kind="esxi", config={"url": "https://10.10.48.10"}, secret_enc=b"x"))
+    await db.commit()
+    vm = await db.get(EsxiVm, env.id)
+    assert (vm.moref, vm.instance_uuid, vm.vm_path, vm.ip, vm.created, vm.keep_snapshots,
+            vm.resource_pool, vm.dns_servers) == (None, None, None, None, False, 3, None, [])
+    vm.moref, vm.instance_uuid = "12", "52b1c3d4-0000-0000-0000-000000000001"
+    vm.vm_path, vm.created = "[datastore1] ss-uat3/ss-uat3.vmx", True
+    vm.dns_servers, vm.host_key_private_enc = ["10.10.48.1"], None
+    await db.commit()
+    other_id = (await _env(db, name="uat4")).id   # read before a rollback expires it
+    for bad in (_esxi_vm(other_id),                                    # the name is taken
+                _esxi_vm(other_id, name="ss-uat4", moref="13"),        # moref without a uuid
+                _esxi_vm(other_id, name="ss-uat4", created=True),      # created without a VM
+                _esxi_vm(other_id, name="ss-uat4", moref="14",
+                         instance_uuid="52b1c3d4-0000-0000-0000-000000000001"),  # uuid taken
+                _esxi_vm(other_id, name="ss-uat4", ip_mode="dhcp"),    # dhcp with an address
+                _esxi_vm(other_id, name="ss-uat4", cores=0),
+                _esxi_vm(other_id, name="ss-uat4", disk_gb=10),
+                _esxi_vm(other_id, name="ss-uat4", keep_snapshots=11),
+                _esxi_vm(other_id, name="ss-uat4", host_key_public=None)):
+        db.add(bad)
+        with pytest.raises(IntegrityError):
+            await db.commit()
+        await db.rollback()
+    db.add(_esxi_vm(other_id, name="ss-uat4", ip_mode="dhcp", ip_cidr=None, gateway=None))
+    await db.commit()
+    await db.delete(await db.get(Environment, other_id))
+    await db.commit()
+    assert await db.get(EsxiVm, other_id) is None                       # cascades
+
+
+async def test_migration_0008_downgrade_refuses_while_esxi_vms_are_managed():
+    from sirdar_api.db.engine import dispose_engine
+    await dispose_engine()
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        env_id = conn.execute(
+            "INSERT INTO environments (name, type, target_id, base_domain, proxy_ip) "
+            "VALUES ('vm3', 'dev', 'esxi', 'vm3.example.com', '10.0.0.2') RETURNING id"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO esxi_vms (environment_id, name, host, datastore, network, source_vm, "
+            "cores, memory_mb, disk_gb, ip_mode, ssh_public_key, ssh_private_key_enc, "
+            "host_key_public) VALUES (%s, 'ss-vm3', '10.10.48.10', 'datastore1', "
+            "'VM Network', 'seed', 4, 8192, 64, 'dhcp', 'ssh-ed25519 x', 'k', "
+            "'ssh-ed25519 h')", (env_id,))
+    with pytest.raises(subprocess.CalledProcessError) as err:
+        _alembic("downgrade", "0007")
+    assert b"while Sirdar manages ESXi VMs" in err.value.stderr
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        assert conn.execute("SELECT count(*) FROM esxi_vms").fetchone()[0] == 1
+        conn.execute("DELETE FROM esxi_vms")
+        conn.execute("INSERT INTO integrations (kind, config) VALUES ('esxi', '{}')")
+    _alembic("downgrade", "0007")
+    try:
+        with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+            assert not conn.execute("SELECT to_regclass('esxi_vms') IS NOT NULL").fetchone()[0]
+            assert conn.execute("SELECT count(*) FROM integrations WHERE kind = 'esxi'"
+                                ).fetchone()[0] == 0
+            assert conn.execute("SELECT count(*) FROM environments WHERE id = %s",
+                                (env_id,)).fetchone()[0] == 1
+            with pytest.raises(psycopg.errors.CheckViolation):
+                conn.execute("INSERT INTO integrations (kind, config) VALUES ('esxi', '{}')")
+    finally:
+        _alembic("upgrade", "head")
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        assert conn.execute("SELECT to_regclass('esxi_vms') IS NOT NULL").fetchone()[0]
