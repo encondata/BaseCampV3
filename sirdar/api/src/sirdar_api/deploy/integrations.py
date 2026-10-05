@@ -269,6 +269,9 @@ def _check_dns(value) -> list[str]:
     return found
 
 
+check_dns_servers = _check_dns          # vms checks the stored list again before freezing it
+
+
 def _check_esxi(values: dict) -> dict:
     url = check_esxi_url(values.get("url"))
 

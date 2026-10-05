@@ -11,17 +11,48 @@ settings once SSH answers with that key; metadata cleans it up in the guest
 as well."""
 
 import base64
+import ipaddress
+import re
 import uuid
 
 import yaml
 
 VM_USER = "deploy"
+MAX_DNS_SERVERS = 3
+# "ss-" and an environment name (vms.check_vm_hostname's rule).
+_HOSTNAME_RE = re.compile(r"ss-[a-z][a-z0-9-]{0,30}[a-z0-9]")
+
+
+def _checked(*, hostname, ip_cidr, gateway, dns_servers) -> None:
+    """A last guard: callers check these first (vms.add_esxi), but nothing
+    unchecked is ever written into the YAML. Raises ValueError."""
+    if not isinstance(hostname, str) or not _HOSTNAME_RE.fullmatch(hostname):
+        raise ValueError("hostname")
+    dns = tuple(dns_servers)
+    if len(dns) > MAX_DNS_SERVERS:
+        raise ValueError("dns_servers")
+    for server in dns:
+        if not isinstance(server, str) or str(ipaddress.IPv4Address(server)) != server:
+            raise ValueError("dns_servers")
+    if ip_cidr is None:
+        if gateway is not None:
+            raise ValueError("gateway")
+        return
+    if not isinstance(ip_cidr, str) or "/" not in ip_cidr:
+        raise ValueError("ip_cidr")
+    iface = ipaddress.IPv4Interface(ip_cidr)
+    if str(iface) != ip_cidr:
+        raise ValueError("ip_cidr")
+    if not isinstance(gateway, str) or str(ipaddress.IPv4Address(gateway)) != gateway:
+        raise ValueError("gateway")
 
 
 def metadata(*, env_id: uuid.UUID, hostname: str, ip_cidr: str | None, gateway: str | None,
              dns_servers: tuple[str, ...]) -> str:
     """A static address with its default route and DNS (the given servers,
-    else the gateway), or DHCP (with the given DNS servers, if any)."""
+    else the gateway), or DHCP (with the given DNS servers, if any). Every
+    value is checked first (ValueError)."""
+    _checked(hostname=hostname, ip_cidr=ip_cidr, gateway=gateway, dns_servers=dns_servers)
     if ip_cidr:
         nic: dict = {"match": {"driver": "vmxnet3"}, "dhcp4": False, "addresses": [ip_cidr],
                      "routes": [{"to": "default", "via": gateway}],

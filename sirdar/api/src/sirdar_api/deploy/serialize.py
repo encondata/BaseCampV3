@@ -80,11 +80,11 @@ async def environment_out(db: AsyncSession, env: Environment) -> dict:
     services = await services_of(db, env.id)
     keys = await secret_keys_of(db, env.id)
     last = await latest_deployment(db, env.id)
-    on_vm = env.target_id == targets.PROXMOX_TARGET
-    vm = await vms.get(db, env.id) if on_vm else None
+    on_vm = targets.is_vm_target(env.target_id)
+    vm = await vms.get_for(db, env) if on_vm else None
     return {
         "id": str(env.id), "name": env.name, "type": env.type, "target": env.target_id,
-        "target_kind": "proxmox" if on_vm else "ssh",
+        "target_kind": env.target_id if on_vm else "ssh",
         "vm": vms.public(vm) if vm is not None else None,
         "base_domain": env.base_domain, "env_dir": envfile.env_dir(env.name),
         "git_ref": env.git_ref, "current_sha": env.current_sha, "image_tag": env.image_tag,

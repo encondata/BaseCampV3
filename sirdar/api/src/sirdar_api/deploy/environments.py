@@ -126,9 +126,9 @@ def _check_log_level(value: str) -> str:
 
 
 def _check_target(target_id: str, settings: Settings) -> SshTargetConfig | None:
-    """An SSH target's config, or None for "proxmox" (the host is the VM
+    """An SSH target's config, or None for a VM target (the host is the VM
     step 0 builds)."""
-    if target_id == targets.PROXMOX_TARGET:
+    if targets.is_vm_target(target_id):
         return None
     if not SSH_TARGET_RE.fullmatch(target_id):
         raise EnvError("target_invalid")
@@ -223,10 +223,10 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     """A new environment (status "new"): default ports unless given, the
     target's host for every service, freshly generated secrets. With a
     snapshot, its first deploy restores that snapshot (and its keys). With
-    publish (the default), its deploys add DNS, proxy and smoke steps. On
-    target "proxmox", `vm` sizes the VM step 0 builds and sets its network;
-    every service points at its static address (0.0.0.0 for DHCP until step
-    0 reads it), and the proxmox_vms row records it as Sirdar's."""
+    publish (the default), its deploys add DNS, proxy and smoke steps. On a
+    VM target ("proxmox" or "esxi"), `vm` sizes the VM step 0 builds and
+    sets its network; every service points at its static address (0.0.0.0
+    for DHCP until step 0 reads it), and its VM row records it as Sirdar's."""
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
                           git_ref=git_ref)
     if snapshot_id is not None:
@@ -253,9 +253,9 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     _check_ports_unique(all_ports)
     spec = None
     host = cfg.host if cfg is not None else ""
-    if target_id == targets.PROXMOX_TARGET:
-        if not await integrations.is_configured(db, "proxmox"):
-            raise EnvError("integration_not_configured", kinds=["proxmox"])
+    if targets.is_vm_target(target_id):
+        if not await integrations.is_configured(db, target_id):
+            raise EnvError("integration_not_configured", kinds=[target_id])
         try:
             spec = vms.check_spec({} if vm is None else vm)
             address = vms.static_ip(spec["ip_cidr"])
@@ -276,7 +276,14 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         secrets=vault.generate_env_secrets(), actor_id=actor_id, seed_snapshot_id=snapshot_id,
         publish=publish)
     if spec is not None:
-        await vms.add(db, settings, env, spec, await integrations.config_of(db, "proxmox"))
+        stored = await integrations.config_of(db, target_id)
+        try:
+            if target_id == targets.ESXI_TARGET:
+                await vms.add_esxi(db, settings, env, spec, stored)
+            else:
+                await vms.add(db, settings, env, spec, stored)
+        except vms.VmError as e:
+            raise EnvError(e.code, **e.extra) from None
     return env
 
 
@@ -364,9 +371,9 @@ def _adopted_secrets(values: dict[str, str]) -> dict[str, str]:
 async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
                 target_id: str, git_ref: str = "main",
                 actor_id=None) -> tuple[Environment, Deployment, AdoptReport]:
-    if target_id == targets.PROXMOX_TARGET:
-        # Proxmox environments are only ones Sirdar built: a hand-built VM
-        # (uat) stays an SSH target.
+    if targets.is_vm_target(target_id):
+        # VM environments are only ones Sirdar built: a hand-built VM (uat)
+        # stays an SSH target.
         raise EnvError("adopt_not_allowed")
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
                           git_ref=git_ref)
@@ -434,9 +441,10 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
 
     if fields.get("git_ref") is not None:
         put("git_ref", _check_ref(fields["git_ref"]))
-    on_vm = env.target_id == targets.PROXMOX_TARGET
+    on_vm = targets.is_vm_target(env.target_id)
     if fields.get("target") is not None:
-        if (fields["target"] == targets.PROXMOX_TARGET) != on_vm:
+        # An environment never moves to or from a VM host, nor between hosts.
+        if fields["target"] != env.target_id and (on_vm or targets.is_vm_target(fields["target"])):
             raise EnvError("target_kind_locked")
         _check_target(fields["target"], settings)
         put("target_id", fields["target"])
@@ -511,7 +519,7 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
         changed.append(f"secrets.{key}")
 
     if fields.get("vm") is not None:
-        machine = await vms.get(db, env.id) if on_vm else None
+        machine = await vms.get_for(db, env) if on_vm else None
         if machine is None:
             raise EnvError("vm_not_allowed")
         try:

@@ -1,6 +1,7 @@
 import base64
 import uuid
 
+import pytest
 import yaml
 
 from sirdar_api.deploy import cloudinit
@@ -62,3 +63,17 @@ def test_guestinfo_is_base64_and_only_the_user_data_holds_the_private_key():
     assert base64.b64decode(info["guestinfo.userdata"]).decode() == user
     assert "PRIVATE KEY" not in base64.b64decode(info["guestinfo.metadata"]).decode()
     assert cloudinit.scrub() == {"guestinfo.userdata": "", "guestinfo.userdata.encoding": ""}
+
+
+@pytest.mark.parametrize("kw", [
+    {"hostname": "ss-uat3\nfoo: bar"}, {"hostname": "ss-Uat3"}, {"hostname": ""},
+    {"dns_servers": ("1.1.1.1\nfoo: bar",)}, {"dns_servers": ("nameserver",)},
+    {"dns_servers": ("1.1.1.1", "1.0.0.1", "8.8.8.8", "9.9.9.9")},
+    {"ip_cidr": "10.10.48.71/24\nfoo: bar"}, {"ip_cidr": "10.10.48.71"},
+    {"gateway": "10.10.48.1\nfoo: bar"}, {"gateway": None},
+])
+def test_metadata_refuses_unchecked_inputs(kw):
+    args = {"env_id": ENV_ID, "hostname": "ss-uat3", "ip_cidr": "10.10.48.71/24",
+            "gateway": "10.10.48.1", "dns_servers": (), **kw}
+    with pytest.raises(ValueError):
+        cloudinit.metadata(**args)

@@ -1,9 +1,10 @@
-"""Proxmox VMs Sirdar builds for environments (phase 5). The proxmox_vms
-row is both the VM's settings and the record that it is Sirdar's: sizing
-and network checks, the per-environment SSH key pair (private half
-encrypted with SIRDAR_SECRETS_KEY), address checks that keep a new VM off
-addresses in use, the VM's SSH connection for the deploy steps, and VM
-snapshot names. Callers audit and commit."""
+"""The VMs Sirdar builds for environments, on Proxmox (phase 5) or ESXi
+(phase 6). The proxmox_vms or esxi_vms row is both the VM's settings and
+the record that it is Sirdar's: sizing and network checks, the
+per-environment SSH key pair (private half encrypted with
+SIRDAR_SECRETS_KEY), address checks that keep a new VM off addresses in
+use, the VM's SSH connection for the deploy steps, and VM snapshot names.
+Callers audit and commit."""
 
 import asyncio
 import ipaddress
@@ -17,11 +18,15 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
-from sirdar_api.db.models import Deployment, Environment, EnvironmentService, ProxmoxVm
+from sirdar_api.db.models import (Deployment, Environment, EnvironmentService, EsxiVm,
+                                  ProxmoxVm)
 from sirdar_api.deploy import integrations, targets, vault
 from sirdar_api.deploy.ssh import SshTargetConfig
 
 PROXMOX_TARGET = targets.PROXMOX_TARGET
+ESXI_TARGET = targets.ESXI_TARGET
+MODELS: dict[str, type[ProxmoxVm] | type[EsxiVm]] = {PROXMOX_TARGET: ProxmoxVm,
+                                                     ESXI_TARGET: EsxiVm}
 VM_USER = "deploy"                 # cloud-init's user: passwordless sudo on Ubuntu cloud images
 VM_SSH_PORT = 22                   # read at call time; tests point it at their SSH server
 DEFAULTS = {"cores": 4, "memory_mb": 8192, "disk_gb": 64}
@@ -52,6 +57,35 @@ class VmError(Exception):
 
 def vm_name(env_name: str) -> str:
     return f"ss-{env_name}"
+
+
+# A VM's name is its guest host name too (cloud-init's local-hostname): "ss-"
+# and an environment name (names.CUSTOM_NAME_RE), never ending in "-".
+_VM_NAME_RE = re.compile(r"ss-[a-z][a-z0-9-]{0,30}[a-z0-9]")
+
+
+def check_vm_hostname(name) -> str:
+    """The VM name as a host name, checked before it reaches cloud-init."""
+    if not isinstance(name, str) or not _VM_NAME_RE.fullmatch(name):
+        raise VmError("vm_name_invalid")
+    return name
+
+
+def check_dns_servers(value) -> list[str]:
+    """The integration's DNS servers, checked again before they are frozen
+    into a VM row (and from there into cloud-init's metadata): only a list
+    of up to integrations.MAX_DNS_SERVERS plain IPv4 addresses."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise VmError("dns_servers_invalid")
+    try:
+        found = integrations.check_dns_servers(value)
+    except integrations.IntegrationError:
+        raise VmError("dns_servers_invalid") from None
+    if found != value:                  # stored values are already canonical
+        raise VmError("dns_servers_invalid")
+    return found
 
 
 def check_size(key: str, value) -> int:
@@ -114,8 +148,34 @@ def new_keypair(env_name: str) -> tuple[str, str]:
             key.export_public_key("openssh").decode().strip())
 
 
+def new_host_keypair(env_name: str) -> tuple[str, str]:
+    """(private, public) OpenSSH ed25519 host key for an ESXi VM: delivered by
+    cloud-init, so its fingerprint is known before the VM first boots. Tests
+    replace this to hand in their SSH server's key."""
+    key = asyncssh.generate_private_key("ssh-ed25519", comment=f"root@{vm_name(env_name)}")
+    return (key.export_private_key("openssh").decode(),
+            key.export_public_key("openssh").decode().strip())
+
+
 async def get(db: AsyncSession, env_id) -> ProxmoxVm | None:
     return await db.get(ProxmoxVm, env_id, populate_existing=True)
+
+
+async def get_for(db: AsyncSession, env: Environment) -> ProxmoxVm | EsxiVm | None:
+    """The VM row of a VM environment (by its target), None otherwise."""
+    model = MODELS.get(env.target_id)
+    if model is None:
+        return None
+    return await db.get(model, env.id, populate_existing=True)
+
+
+def stage(vm: ProxmoxVm | EsxiVm) -> str:
+    """none: no VM yet; partial: one exists (or its id is reserved) but the
+    first build didn't finish; built."""
+    started = vm.instance_uuid if isinstance(vm, EsxiVm) else vm.vmid
+    if started is None:
+        return "none"
+    return "built" if vm.created else "partial"
 
 
 async def lock_addresses(db: AsyncSession) -> None:
@@ -158,13 +218,15 @@ def _target_hosts(settings: Settings) -> set[str]:
 async def address_in_use(db: AsyncSession, settings: Settings, ip: str, *, proxy_ip: str,
                          env_id=None) -> bool:
     """The proxy's address, any environment's proxy, every SSH target's host
-    (uat's VM among them; names resolved), the Proxmox host, another
+    (uat's VM among them; names resolved), both VM hosts (Proxmox and ESXi),
+    another
     environment's service address, or another VM's address. Raises
     VmError("ssh_targets_unreadable"). Call lock_addresses first."""
     hosts = _target_hosts(settings)
-    url = (await integrations.config_of(db, "proxmox")).get("url")
-    if url:
-        hosts.add(urlsplit(url).hostname or "")
+    for kind in targets.VM_TARGETS:
+        url = (await integrations.config_of(db, kind)).get("url")
+        if url:
+            hosts.add(urlsplit(url).hostname or "")
     refused = {proxy_ip, *(h.lower() for h in hosts)}
     for host in hosts:
         try:
@@ -175,13 +237,17 @@ async def address_in_use(db: AsyncSession, settings: Settings, ip: str, *, proxy
     if ip in refused:
         return True
     services = select(EnvironmentService.host_ip)
-    machines = select(ProxmoxVm.ip, ProxmoxVm.ip_cidr)
     if env_id is not None:
         services = services.where(EnvironmentService.environment_id != env_id)
-        machines = machines.where(ProxmoxVm.environment_id != env_id)
     if ip in set(await db.scalars(services)):
         return True
-    return any(ip in (vm_ip, static_ip(cidr)) for vm_ip, cidr in await db.execute(machines))
+    for model in (ProxmoxVm, EsxiVm):
+        machines = select(model.ip, model.ip_cidr)
+        if env_id is not None:
+            machines = machines.where(model.environment_id != env_id)
+        if any(ip in (vm_ip, static_ip(cidr)) for vm_ip, cidr in await db.execute(machines)):
+            return True
+    return False
 
 
 async def add(db: AsyncSession, settings: Settings, env: Environment, spec: dict,
@@ -205,15 +271,43 @@ async def add(db: AsyncSession, settings: Settings, env: Environment, spec: dict
     return vm
 
 
+async def add_esxi(db: AsyncSession, settings: Settings, env: Environment, spec: dict,
+                   esxi: dict) -> EsxiVm:
+    """`esxi`: the integration's stored settings. Where the VM is built (the
+    host, datastore, port group, pool, seed VM and DNS servers) is frozen
+    into the row. Two key pairs: Sirdar's SSH key for the deploy user, and
+    the VM's own host key (private half kept only until step 0 delivers it).
+    The host name and DNS servers, which reach cloud-init's metadata, are
+    checked here first: VmError("vm_name_invalid" | "dns_servers_invalid")."""
+    name = check_vm_hostname(vm_name(env.name))
+    dns = check_dns_servers(esxi.get("dns_servers"))
+    private, public_key = new_keypair(env.name)
+    host_private, host_public = new_host_keypair(env.name)
+    vm = EsxiVm(environment_id=env.id, name=name,
+                host=urlsplit(esxi["url"]).hostname or "", datastore=esxi["datastore"],
+                network=esxi["network"], resource_pool=esxi.get("resource_pool"),
+                source_vm=esxi["source_vm"], dns_servers=dns,
+                cores=spec["cores"], memory_mb=spec["memory_mb"], disk_gb=spec["disk_gb"],
+                ip_mode=spec["ip_mode"], ip_cidr=spec["ip_cidr"], gateway=spec["gateway"],
+                ip=None, ssh_public_key=public_key,
+                ssh_private_key_enc=vault.encrypt(settings, private),
+                host_key_public=host_public,
+                host_key_private_enc=vault.encrypt(settings, host_private),
+                keep_snapshots=KEEP_SNAPSHOTS)
+    db.add(vm)
+    await db.flush()
+    return vm
+
+
 async def host_config(db: AsyncSession, settings: Settings,
                       env: Environment) -> SshTargetConfig | None:
     """The SSH connection the deploy steps use: a saved target's, or for a
-    Proxmox environment the VM's (None until step 0 has read its address).
+    VM environment the VM's (None until step 0 has read its address).
     The VM's key is decrypted here: vault.SecretsKeyMissing or
     vault.SecretUnreadable propagate."""
-    if env.target_id != PROXMOX_TARGET:
+    if not targets.is_vm_target(env.target_id):
         return targets.ssh_config_for(env.target_id, settings)
-    vm = await get(db, env.id)
+    vm = await get_for(db, env)
     if vm is None or not vm.ip:
         return None
     return SshTargetConfig(host=vm.ip, port=VM_SSH_PORT, user=VM_USER,
@@ -261,7 +355,7 @@ async def taking_deployments(db: AsyncSession, env_id) -> dict[str, Deployment]:
     return found
 
 
-async def update(db: AsyncSession, vm: ProxmoxVm, fields: dict) -> list[str]:
+async def update(db: AsyncSession, vm: ProxmoxVm | EsxiVm, fields: dict) -> list[str]:
     """A PATCH's `vm`: sizes and how many VM snapshots to keep (the next
     deploy's step 0 applies the sizes). A disk never shrinks."""
     if not isinstance(fields, dict):
@@ -282,8 +376,13 @@ async def update(db: AsyncSession, vm: ProxmoxVm, fields: dict) -> list[str]:
     return changed
 
 
-def public(vm: ProxmoxVm) -> dict:
-    return {"name": vm.name, "node": vm.node, "vmid": vm.vmid, "cores": vm.cores,
-            "memory_mb": vm.memory_mb, "disk_gb": vm.disk_gb, "ip_mode": vm.ip_mode,
-            "ip_cidr": vm.ip_cidr, "gateway": vm.gateway, "ip": vm.ip,
-            "keep_snapshots": vm.keep_snapshots, "created": vm.created}
+def public(vm: ProxmoxVm | EsxiVm) -> dict:
+    common = {"stage": stage(vm), "name": vm.name, "cores": vm.cores,
+              "memory_mb": vm.memory_mb, "disk_gb": vm.disk_gb, "ip_mode": vm.ip_mode,
+              "ip_cidr": vm.ip_cidr, "gateway": vm.gateway, "ip": vm.ip,
+              "keep_snapshots": vm.keep_snapshots, "created": vm.created}
+    if isinstance(vm, EsxiVm):
+        return {"kind": "esxi", **common, "host": vm.host, "node": None, "vmid": None,
+                "moref": vm.moref}
+    return {"kind": "proxmox", **common, "host": vm.node, "node": vm.node, "vmid": vm.vmid,
+            "moref": None}
