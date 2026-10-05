@@ -226,10 +226,18 @@ def _snapshot_fault(fault: BaseException) -> bool:
     return any(c.__name__.rsplit(".", 1)[-1] == "SnapshotFault" for c in type(fault).__mro__)
 
 
+def _quiesce_blocked(fault: BaseException) -> bool:
+    """Faults a quiesced snapshot hits when VMware Tools can't do it (not
+    running, or the guest isn't in a state to quiesce)."""
+    return isinstance(fault, (vim.fault.ToolsUnavailable, vim.fault.InvalidState))
+
+
 def _mapped(fault: BaseException, what: str, *, quiesce: bool = False) -> EsxiError:
-    """A quiesce fault, or any snapshot fault while quiescing, is QuiesceFailed
-    (the caller then falls back to a crash-consistent snapshot)."""
-    if _fault_name(fault) in _QUIESCE_FAULTS or (quiesce and _snapshot_fault(fault)):
+    """A quiesce fault, or while quiescing any snapshot fault, Tools being
+    unavailable or an invalid state, is QuiesceFailed (the caller then falls
+    back to a crash-consistent snapshot, which gives ESXi's own answer)."""
+    if _fault_name(fault) in _QUIESCE_FAULTS or (
+            quiesce and (_snapshot_fault(fault) or _quiesce_blocked(fault))):
         return QuiesceFailed("ESXi couldn't quiesce the guest's file systems.")
     return EsxiError(fault_reason(fault, what))
 

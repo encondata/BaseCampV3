@@ -436,3 +436,16 @@ async def test_disk_users_finds_a_disk_as_base_or_current_delta(monkeypatch):
     assert await api.disk_users(path) == ["a", "b"]
     assert await api.disk_users("[datastore1] x/x.vmdk") == []
     pool.shutdown()
+
+
+@pytest.mark.parametrize("fault", [vim.fault.ToolsUnavailable(), vim.fault.InvalidState()])
+async def test_tools_unavailable_or_invalid_state_while_quiescing_falls_back(fault):
+    task = _Task("error", fault)
+    vm = SimpleNamespace(CreateSnapshot_Task=lambda **kw: task)
+    api, pool = _client(_content_with_vm(vm))
+    with pytest.raises(esxi.QuiesceFailed):
+        await api.take_snapshot("52aa", "s", "", quiesce=True)
+    with pytest.raises(EsxiError) as e:
+        await api.take_snapshot("52aa", "s", "", quiesce=False)
+    assert not isinstance(e.value, esxi.QuiesceFailed)
+    pool.shutdown()
