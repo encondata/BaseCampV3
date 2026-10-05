@@ -14,10 +14,24 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
-.sirdar-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
-.sirdar-card { padding: 16px; border: 1px solid var(--paper-line, #e5e7eb); border-radius: 12px; background: var(--surface, #fff); }
+/* Card grids: a track never goes below its min (or the row, on a phone),
+   and a card never grows past its track — a long value wraps inside it
+   instead of painting over the next card and widening the page. */
+.sirdar-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: 16px; }
+.sirdar-cards > * { min-width: 0; }
+.sirdar-card { min-width: 0; padding: 16px; border: 1px solid var(--paper-line, #e5e7eb); border-radius: 12px;
+  background: var(--surface, #fff); overflow-wrap: anywhere; }
 .sirdar-card h3 { margin: 0 0 6px; }
-.sirdar-kv { display: grid; grid-template-columns: max-content 1fr; gap: 8px 24px; }
+/* A card's title with its status chip: the chip stays top-right, or drops
+   below the title when the two don't fit on one line. */
+.sirdar-card-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 6px 12px; }
+.sirdar-card-head h3 { flex: 1 1 auto; min-width: 0; }
+.sirdar-card-head .chip { flex: none; }
+/* Key/value lists: labels take what they need (up to 40%, then wrap); the
+   value gets the rest and wraps (Breakable marks the sensible points in
+   URLs and emails; `anywhere` is the fallback), never clips. */
+.sirdar-kv { display: grid; grid-template-columns: fit-content(40%) minmax(0, 1fr); gap: 8px 20px; }
+.sirdar-kv > * { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 
 .sirdar-import-card { width: min(920px, calc(100vw - 48px)); }
 .sirdar-stats { display: flex; gap: 12px; margin: 0 0 16px; flex-wrap: wrap; }
@@ -25,15 +39,15 @@
 .sirdar-stat b { font-size: 20px; }
 .sirdar-stat span { font-size: 12px; opacity: 0.7; }
 
-.sirdar-section { margin: 24px 0; }
-.sirdar-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.sirdar-section { margin: 24px 0; min-width: 0; }
+.sirdar-section-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
 
-.sirdar-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+.sirdar-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 12px; }
 
 .sirdar-target { text-align: left; display: flex; flex-direction: column; gap: 6px; cursor: pointer; font: inherit; color: inherit; }
 .sirdar-target[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
 .sirdar-target[aria-checked="true"] { border-color: var(--sirdar-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--sirdar-accent) 25%, transparent); }
-.sirdar-target-top { display: flex; align-items: center; justify-content: space-between; }
+.sirdar-target-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
 .sirdar-target-icon { display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 9px; background: color-mix(in srgb, var(--sirdar-accent) 14%, transparent); color: var(--sirdar-accent); font-size: 12px; font-weight: 700; }
 .sirdar-envnote code { margin: 0 2px; }
 .sirdar-types button { align-items: flex-start; }
@@ -57,7 +71,7 @@
 .sirdar-secret-row { display: flex; align-items: center; gap: 8px; }
 .sirdar-secret-row input { flex: 1; }
 .sirdar-add-target { border-style: dashed; align-items: center; justify-content: center; }
-.sirdar-target-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.sirdar-target-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; }
 /* In a section head (DeploymentView) the actions line up with the heading. */
 .sirdar-section-head .sirdar-target-actions { margin-top: 0; }
 
@@ -134,6 +148,8 @@
 /* Settings › Integrations. 4 classes, to out-rank the portal's
    `.modal-card.reports-modal-card.rgm-card` width (980px). */
 .modal-card.reports-modal-card.rgm-card.sirdar-integration-card { width: min(620px, 96vw); max-width: 96vw; }
+/* The three cards share the row (each at least 300px), one per row on a phone. */
+.sirdar-integration-cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); margin-top: 14px; }
 .sirdar-integration-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .sirdar-integration-form .sirdar-span2 { grid-column: 1 / -1; }
 @media (max-width: 640px) { .sirdar-integration-form { grid-template-columns: 1fr; } }
