@@ -245,7 +245,7 @@ const MESSAGES: Record<string, string> = {
   tls_fingerprint_invalid: 'Use a SHA-256 fingerprint: 64 hex digits, with or without colons.',
   integration_in_use: 'Environments still use it. Delete them first.',
   vm_invalid: "Those VM settings aren't valid.",
-  vm_name_invalid: "That VM name can't be used as its host name: ss- and the environment's name.",
+  vm_name_invalid: "The environment name can't be used as a VM host name.",
   vm_cores_invalid: 'Use 1 to 64 vCPUs.',
   vm_memory_invalid: 'Use 2 to 256 GB of memory.',
   vm_disk_invalid: 'Use a disk of 20 to 4096 GB.',

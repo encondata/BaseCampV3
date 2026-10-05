@@ -17,7 +17,8 @@ import { ApiError } from '@portal/lib/api';
 
 import NewEnvironmentModal from './NewEnvironmentModal';
 import {
-  DEFAULTS, ENV, INTEGRATIONS, NO_INTEGRATIONS, PX_NEW_ENV, PX_TARGETS, SNAP, SNAP_TAKING, TARGETS,
+  DEFAULTS, ENV, ESXI_NEW_ENV, ESXI_TARGETS, INTEGRATIONS, NO_INTEGRATIONS, PX_NEW_ENV, PX_TARGETS, SNAP,
+  SNAP_TAKING, TARGETS,
 } from './testData';
 
 Element.prototype.scrollIntoView = () => {};   // jsdom lacks it (ComboBox calls it)
@@ -606,4 +607,82 @@ it('switching to Adopt with Proxmox chosen falls back to the first SSH target', 
   await userEvent.click(screen.getByRole('button', { name: 'Adopt' }));
   await waitFor(() => expect(api.adoptEnvironment).toHaveBeenCalled());
   expect(api.adoptEnvironment.mock.calls[0][0].target).toBe('ssh:lab');
+});
+
+/* ---- VMware ESXi (phase 6b) ---- */
+async function pickEsxi() {
+  await userEvent.click(screen.getByRole('combobox', { name: 'Target' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'VMware ESXi' }));
+}
+
+it('ESXi: the target says Sirdar builds a VM there and adds the Machine step', async () => {
+  api.getDeployTargets.mockResolvedValue(ESXI_TARGETS);
+  await open();
+  await fillBasics('uat3');
+  await pickEsxi();
+  expect(screen.getByText('Sirdar builds a VM for it on ESXi on the first deploy.')).toBeTruthy();
+  expect(['Basics', 'Machine', 'Services', 'Data', 'Review'].every((s) => screen.getByText(s))).toBe(true);
+  await next();
+  expect(screen.getByText(
+    "Sirdar copies the Ubuntu seed VM's disk into a VM named ss-uat3 on ESXi, then deploys to it. "
+    + "Sizes can grow later in Settings; the network can't change.")).toBeTruthy();
+});
+
+it('ESXi: creating sends target esxi with the vm body', async () => {
+  api.getDeployTargets.mockResolvedValue(ESXI_TARGETS);
+  api.createEnvironment.mockResolvedValue(ESXI_NEW_ENV);
+  const { onCreated } = await open();
+  await fillBasics('uat3');
+  await pickEsxi();
+  await next();
+  await userEvent.type(screen.getByLabelText('Address'), '10.10.48.71/24');
+  await userEvent.type(screen.getByLabelText('Gateway'), '10.10.48.1');
+  const cores = screen.getByLabelText('vCPUs');
+  await userEvent.clear(cores);
+  await userEvent.type(cores, '2');
+  await next();
+  expect(within(screen.getByRole('table', { name: 'Services' })).getAllByText("The VM's address")).toHaveLength(7);
+  await next();
+  await next();
+  expect(screen.getByText('2 vCPU · 8 GB · 64 GB disk · 10.10.48.71/24 via 10.10.48.1')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  await waitFor(() => expect(onCreated).toHaveBeenCalledWith(ESXI_NEW_ENV));
+  expect(api.createEnvironment.mock.calls[0][0]).toMatchObject({
+    name: 'uat3', target: 'esxi',
+    vm: { cores: 2, memory_mb: 8192, disk_gb: 64, ip_mode: 'static', ip_cidr: '10.10.48.71/24', gateway: '10.10.48.1' },
+  });
+});
+
+it('ESXi: Adopt does not offer it, and a chosen ESXi target falls back to the first SSH target', async () => {
+  api.getDeployTargets.mockResolvedValue(ESXI_TARGETS);
+  api.adoptEnvironment.mockRejectedValue(new ApiError(422, 'stop', { code: 'stop' }));
+  await open();
+  await userEvent.type(screen.getByLabelText('Name'), 'uat3');
+  await pickEsxi();
+  await userEvent.click(screen.getByRole('radio', { name: 'Adopt existing' }));
+  await waitFor(() => expect((screen.getByRole('combobox', { name: 'Target' }) as HTMLInputElement).value)
+    .toBe('Lab box'));
+  await userEvent.click(screen.getByRole('combobox', { name: 'Target' }));
+  expect(screen.queryByRole('button', { name: 'VMware ESXi' })).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Adopt' }));
+  await waitFor(() => expect(api.adoptEnvironment).toHaveBeenCalled());
+  expect(api.adoptEnvironment.mock.calls[0][0].target).toBe('ssh:lab');
+});
+
+it('ESXi: an unconfigured ESXi integration is reported on Basics', async () => {
+  api.getDeployTargets.mockResolvedValue(ESXI_TARGETS);
+  api.createEnvironment.mockRejectedValue(
+    new ApiError(409, 'integration_not_configured', { code: 'integration_not_configured', kinds: ['esxi'] }));
+  await open();
+  await fillBasics('uat3');
+  await pickEsxi();
+  await next();
+  await userEvent.type(screen.getByLabelText('Address'), '10.10.48.71/24');
+  await userEvent.type(screen.getByLabelText('Gateway'), '10.10.48.1');
+  await next();
+  await next();
+  await next();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  expect(await screen.findByText('Set up VMware ESXi in Settings › Integrations first.')).toBeTruthy();
+  expect(screen.getByLabelText('Name')).toBeTruthy();
 });

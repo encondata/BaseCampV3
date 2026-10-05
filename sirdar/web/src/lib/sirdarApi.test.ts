@@ -221,4 +221,5 @@ it('the VM-host codes read host-neutral', () => {
     .toBe("An environment can't move between an SSH target and a VM host, or between VM hosts.");
   expect(text('tls_untrusted')).toBe("Sirdar doesn't trust this server's certificate yet.");
   expect(text('not_vm_environment')).toBe("This environment isn't on a VM host.");
+  expect(text('vm_name_invalid')).toBe("The environment name can't be used as a VM host name.");
 });
