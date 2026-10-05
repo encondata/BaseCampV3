@@ -170,7 +170,9 @@ async def test_a_stored_secret_never_goes_to_a_new_target(db, secrets_key, kind,
     assert await integrations.save(db, get_settings(), kind, values, secret, actor_id=None)
 
 
-async def test_public_view_never_carries_a_secret(db, secrets_key):
+async def test_public_view_never_carries_a_secret(db, secrets_key, monkeypatch):
+    monkeypatch.setenv("SIRDAR_DEPLOY_DO_TOKEN", "")     # no DigitalOcean fallback either
+    get_settings.cache_clear()
     empty = await integrations.public(db, get_settings())
     assert empty == {
         "secrets_key_configured": True,
@@ -186,6 +188,8 @@ async def test_public_view_never_carries_a_secret(db, secrets_key):
                  "network": None, "resource_pool": None, "source_vm": None, "dns_servers": [],
                  "tls_fingerprint": None, "password_set": False, "updated_at": None,
                  "updated_by_name": None},
+        "digitalocean": {"configured": False, "token_set": False, "source": None,
+                         "updated_at": None, "updated_by_name": None},
     }
     user = await make_user(db, email="ops@test.example.com", first_name="Jimmy",
                            last_name="Henderson")

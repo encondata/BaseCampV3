@@ -321,7 +321,7 @@ class Integration(Base):
 
     __tablename__ = "integrations"
 
-    kind: Mapped[str] = mapped_column(primary_key=True)        # cloudflare | npm | proxmox
+    kind: Mapped[str] = mapped_column(primary_key=True)   # cloudflare|npm|proxmox|esxi|digitalocean
     config: Mapped[dict] = mapped_column(JSONB, server_default=text("'{}'::jsonb"))
     secret_enc: Mapped[bytes | None] = mapped_column(BYTEA)
     updated_by: Mapped[uuid.UUID | None]

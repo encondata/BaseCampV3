@@ -1,8 +1,9 @@
 """Dashboard data. Environment cards come from Sirdar's environments (deploy
 step 2), with Dev / Beta placeholders until environments of those types
 exist; DigitalOcean inventory (grouped by sirdar-* tags) fills the
-infrastructure tree. Production Blue/Green has no records yet, so it stays
-empty."""
+infrastructure tree, read with the token digitalocean.resolve() picks (the
+stored integration token, else SIRDAR_DEPLOY_DO_TOKEN). Production
+Blue/Green has no records yet, so it stays empty."""
 
 import hashlib
 import time
@@ -14,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sirdar_api.config import Settings
 from sirdar_api.dashboard.demo import demo_dashboard, node
 from sirdar_api.db.models import Deployment, Environment
-from sirdar_api.deploy import ConnectFailed, digitalocean, names, targets
+from sirdar_api.deploy import ConnectFailed, digitalocean, names, outbound, targets
+from sirdar_api.deploy.integrations import IntegrationError
 
 CACHE_SECONDS = 30
 FAILURE_SECONDS = 10
@@ -149,7 +151,8 @@ async def _inventory(settings: Settings, refresh: bool, transport=None) -> dict:
         if isinstance(hit[1], dict) and age < CACHE_SECONDS:
             return hit[1]
     try:
-        inv = await digitalocean.inventory(settings, transport=transport)
+        inv = await digitalocean.inventory(
+            settings, transport=transport or outbound.transports().get("digitalocean"))
     except ConnectFailed as e:
         _cache[key] = (time.monotonic(), e.reason)
         raise
@@ -225,7 +228,12 @@ async def build_dashboard(settings: Settings, *, db: AsyncSession | None = None,
         return demo_dashboard()
     infra: dict = {"source": "none", "error": None, "tree": []}
     inv: dict = {"droplets": [], "databases": [], "load_balancers": []}
-    if targets.is_configured("digitalocean", settings):
+    if db is not None:
+        try:
+            settings = await digitalocean.resolve(db, settings)
+        except IntegrationError as e:          # a stored token that won't decrypt
+            infra.update(source="digitalocean", error=e.reason)
+    if infra["error"] is None and targets.is_configured("digitalocean", settings):
         infra["source"] = "digitalocean"
         try:
             inv = await _inventory(settings, refresh)

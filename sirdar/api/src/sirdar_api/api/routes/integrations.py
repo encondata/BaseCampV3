@@ -1,5 +1,7 @@
 """Settings › Integrations: the Cloudflare and Nginx Proxy Manager
-credentials Sirdar publishes environments with, and the Proxmox API token
+credentials Sirdar publishes environments with, the DigitalOcean API token
+(SIRDAR_DEPLOY_DO_TOKEN is the fallback when none is stored; the saved
+settings' Test uses whichever applies), and the Proxmox API token
 and ESXi password it builds VMs with (their TLS certificates are pinned
 trust-on-first-use: save
 and Test answer tls_untrusted until the request names the fingerprint the
@@ -19,6 +21,7 @@ from sirdar_api.config import get_settings
 from sirdar_api.deploy import (
     ConnectFailed,
     cloudflare,
+    digitalocean,
     esxi,
     integrations,
     npm,
@@ -33,9 +36,10 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/deploy/integrations", tags=["deploy"])
 
-Kind = Literal["cloudflare", "npm", "proxmox", "esxi"]
+Kind = Literal["cloudflare", "npm", "proxmox", "esxi", "digitalocean"]
 TESTERS = {"cloudflare": cloudflare.test_connection, "npm": npm.test_connection,
-           "proxmox": proxmox.test_connection, "esxi": esxi.test_connection}
+           "proxmox": proxmox.test_connection, "esxi": esxi.test_connection,
+           "digitalocean": digitalocean.test_integration}
 # Where each VM host's certificate is fetched from (host, port).
 SPLIT_URL = {"proxmox": proxmox.split_url, "esxi": esxi.split_url}
 UNEXPECTED_REASON = "Sirdar couldn't reach it."
@@ -86,6 +90,10 @@ class EsxiIn(BaseModel):
     # The fingerprint the user was shown and trusted (None: show it first).
     tls_fingerprint: str | None = Field(default=None, max_length=95)
     password: str | None = None
+
+
+class DigitalOceanIn(BaseModel):
+    token: str | None = None
 
 
 def _http(e: IntegrationError) -> HTTPException:
@@ -208,6 +216,12 @@ async def save_esxi(body: EsxiIn, request: Request, db: DbSession,
                        request, db, actor)
 
 
+@router.put("/digitalocean")
+async def save_digitalocean(body: DigitalOceanIn, request: Request, db: DbSession,
+                            actor: AuthContext = require_permission("deploy", "change")):
+    return await _save("digitalocean", {}, body.token, request, db, actor)
+
+
 @router.delete("/{kind}", status_code=204)
 async def remove_integration(kind: Kind, request: Request, db: DbSession,
                              actor: AuthContext = require_permission("deploy", "change")):
@@ -288,3 +302,12 @@ async def check_esxi(request: Request, db: DbSession, body: EsxiIn | None = None
                      actor: AuthContext = require_permission("deploy", "change")):
     values = await _esxi_values(db, body) if body else None
     return await _test("esxi", values, body.password if body else None, request, db, actor)
+
+
+@router.post("/digitalocean/test")
+async def check_digitalocean(request: Request, db: DbSession,
+                             body: DigitalOceanIn | None = None,
+                             actor: AuthContext = require_permission("deploy", "change")):
+    """No token: the token Sirdar uses (stored, else SIRDAR_DEPLOY_DO_TOKEN)."""
+    token = body.token if body else None
+    return await _test("digitalocean", None if token is None else {}, token, request, db, actor)

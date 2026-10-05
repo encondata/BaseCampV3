@@ -17,7 +17,8 @@ import EnvironmentsSection from './environments/EnvironmentsSection';
 import SnapshotsSection from './snapshots/SnapshotsSection';
 
 /** .env keys (names only) each target needs; the API never reports which are missing.
- *  Keep in sync with sirdar/api/src/sirdar_api/config.py and the Deploy spec. */
+ *  Keep in sync with sirdar/api/src/sirdar_api/config.py and the Deploy spec. DigitalOcean's
+ *  token can instead be saved in Settings › Integrations (it wins over the .env one). */
 const ENV_KEYS: Record<string, string[]> = {
   digitalocean: ['SIRDAR_DEPLOY_DO_TOKEN'],
   ssh: ['SIRDAR_DEPLOY_SSH_HOST', 'SIRDAR_DEPLOY_SSH_USER',
@@ -245,7 +246,8 @@ export default function Deploy() {
         )}
         {selected && selected.available && !selected.configured && selected.source !== 'saved' && (
           <p className="page-hint sirdar-envnote">
-            Set {ENV_KEYS[kindOf(selected)]?.map((k, i) => (
+            {kindOf(selected) === 'digitalocean' && 'Add the API token in Settings › Integrations › DigitalOcean, or '}
+            {kindOf(selected) === 'digitalocean' ? 'set' : 'Set'} {ENV_KEYS[kindOf(selected)]?.map((k, i) => (
               <span key={k}>{i > 0 && ', '}<code>{k}</code></span>
             ))} in the .env file, then re-run the installer.
           </p>

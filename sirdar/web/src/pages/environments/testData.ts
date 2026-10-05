@@ -175,6 +175,8 @@ export const INTEGRATIONS: Integrations = {
           resource_pool: null, source_vm: 'sirdar-ubuntu-2404-seed', dns_servers: [],
           tls_fingerprint: fingerprint(11), password_set: true,
           updated_at: '2026-10-05T15:00:00Z', updated_by_name: 'Jimmy Henderson' },
+  digitalocean: { configured: true, token_set: true, source: 'stored',
+                  updated_at: '2026-10-05T16:00:00Z', updated_by_name: 'Jimmy Henderson' },
 };
 export const NO_INTEGRATIONS: Integrations = {
   secrets_key_configured: true,
@@ -187,6 +189,7 @@ export const NO_INTEGRATIONS: Integrations = {
   esxi: { configured: false, url: null, user: null, datastore: null, network: null, resource_pool: null,
           source_vm: null, dns_servers: [], tls_fingerprint: null, password_set: false, updated_at: null,
           updated_by_name: null },
+  digitalocean: { configured: false, token_set: false, source: null, updated_at: null, updated_by_name: null },
 };
 export const CF_CHECK: IntegrationCheck = {
   ok: true, target: 'cloudflare',

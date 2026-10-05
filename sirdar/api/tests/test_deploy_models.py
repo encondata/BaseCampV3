@@ -422,7 +422,7 @@ async def test_migration_0007_downgrade_refuses_while_vms_are_managed():
     assert b"Can't downgrade below 0007 while Sirdar manages Proxmox VMs" in err.value.stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
         # The refused downgrade rolls back as a whole: still at head.
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0008"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0009"
         assert conn.execute("SELECT count(*) FROM proxmox_vms").fetchone()[0] == 1
         assert conn.execute("SELECT count(*) FROM integrations WHERE kind = 'proxmox'"
                             ).fetchone()[0] == 1
@@ -508,3 +508,28 @@ async def test_migration_0008_downgrade_refuses_while_esxi_vms_are_managed():
         _alembic("upgrade", "head")
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
         assert conn.execute("SELECT to_regclass('esxi_vms') IS NOT NULL").fetchone()[0]
+
+
+async def test_migration_0009_round_trip():
+    """The digitalocean integration kind: downgrading drops a stored token
+    (SIRDAR_DEPLOY_DO_TOKEN is the only source below 0009) and refuses the kind."""
+    from sirdar_api.db.engine import dispose_engine
+    await dispose_engine()
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        conn.execute("INSERT INTO integrations (kind, config, secret_enc) "
+                     "VALUES ('digitalocean', '{}', 'enc')")
+        conn.execute("INSERT INTO integrations (kind, config) VALUES ('esxi', '{}')")
+    _alembic("downgrade", "0008")
+    try:
+        with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+            assert conn.execute("SELECT kind FROM integrations ORDER BY kind").fetchall() == [
+                ("esxi",)]
+            with pytest.raises(psycopg.errors.CheckViolation):
+                conn.execute("INSERT INTO integrations (kind, config) "
+                             "VALUES ('digitalocean', '{}')")
+    finally:
+        _alembic("upgrade", "head")
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        conn.execute("INSERT INTO integrations (kind, config) VALUES ('digitalocean', '{}')")
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute("INSERT INTO integrations (kind, config) VALUES ('aws', '{}')")

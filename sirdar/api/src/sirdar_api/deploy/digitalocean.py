@@ -1,19 +1,40 @@
 """DigitalOcean connection test: read-only calls with the configured API
 token. The token goes only into the Authorization header; errors carry
-our own copy, never httpx's message (it can echo request details)."""
+our own copy, never httpx's message (it can echo request details).
+
+The token is the one integrations.load_digitalocean resolves: the one stored
+in Settings › Integrations, else SIRDAR_DEPLOY_DO_TOKEN. Callers pass
+resolve()'s settings, whose deploy_do_token is that token."""
 
 import re
 
 import httpx
+from pydantic import SecretStr
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from sirdar_api.config import Settings
-from sirdar_api.deploy import Check, ConnectFailed, ConnectResult
+from sirdar_api.config import Settings, get_settings
+from sirdar_api.deploy import Check, ConnectFailed, ConnectResult, integrations
+from sirdar_api.deploy.integrations import DigitalOceanConfig
 
 BASE_URL = "https://api.digitalocean.com/v2"
 _UNREACHABLE = "Couldn't reach the DigitalOcean API."
 _BAD_TOKEN = "DigitalOcean rejected the API token."
 _MALFORMED_TOKEN = "The DigitalOcean API token is malformed."
 _UNEXPECTED = "DigitalOcean sent a response Sirdar didn't understand."
+
+
+def with_token(settings: Settings, token: str | None) -> Settings:
+    """A copy of settings whose deploy_do_token is `token` (None: no token)."""
+    return settings.model_copy(
+        update={"deploy_do_token": SecretStr(token) if token is not None else None})
+
+
+async def resolve(db: AsyncSession, settings: Settings) -> Settings:
+    """settings with the token Sirdar uses: the stored integration token,
+    else SIRDAR_DEPLOY_DO_TOKEN, else none. IntegrationError when the stored
+    token can't be decrypted."""
+    cfg = await integrations.load_digitalocean(db, settings)
+    return with_token(settings, cfg.token if cfg else None)
 
 
 async def _get(client: httpx.AsyncClient, path: str, **params) -> dict:
@@ -138,3 +159,13 @@ async def test_connection(settings: Settings, *, region: str | None = None,
 
 
 test_connection.__test__ = False  # not a pytest test, despite the name
+
+
+async def test_integration(cfg: DigitalOceanConfig, *,
+                           transport: httpx.AsyncBaseTransport | None = None) -> ConnectResult:
+    """Settings › Integrations › Test: the connection test with cfg's token
+    (saved or not) and SIRDAR_DEPLOY_DO_REGION's region check, if one is set."""
+    return await test_connection(with_token(get_settings(), cfg.token), transport=transport)
+
+
+test_integration.__test__ = False

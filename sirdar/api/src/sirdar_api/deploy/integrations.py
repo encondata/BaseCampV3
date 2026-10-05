@@ -1,7 +1,8 @@
 """Integration credentials: the Cloudflare API token and the Nginx Proxy
 Manager login Sirdar publishes with (phase 4), the Proxmox API token it
-builds VMs with (phase 5) and the ESXi password it builds VMs with (phase 6),
-plus their non-secret settings. The Proxmox and ESXi configs also hold the
+builds VMs with (phase 5), the ESXi password it builds VMs with (phase 6) and
+the DigitalOcean API token (SIRDAR_DEPLOY_DO_TOKEN is its fallback when none
+is stored), plus their non-secret settings. The Proxmox and ESXi configs also hold the
 pinned TLS certificate (tls_pin); Proxmox's holds the token's id part.
 
 The secret is Fernet-encrypted with SIRDAR_SECRETS_KEY in
@@ -21,30 +22,33 @@ from sirdar_api.config import Settings
 from sirdar_api.db.models import Environment, Integration, User
 from sirdar_api.deploy import envfile, tls_pin, vault
 
-KINDS = ("cloudflare", "npm", "proxmox", "esxi")
+KINDS = ("cloudflare", "npm", "proxmox", "esxi", "digitalocean")
 # The kinds an environment's VM is built on; an environment on one has
 # target_id equal to the kind (targets.VM_TARGETS).
 VM_HOST_KINDS = ("proxmox", "esxi")
 LABELS = {"cloudflare": "Cloudflare", "npm": "Nginx Proxy Manager", "proxmox": "Proxmox",
-          "esxi": "VMware ESXi"}
+          "esxi": "VMware ESXi", "digitalocean": "DigitalOcean"}
 FIELDS = {"cloudflare": ("zone", "public_ip"), "npm": ("url", "identity", "letsencrypt_email"),
           "proxmox": ("url", "node", "pool", "storage", "bridge", "vlan_tag", "template_vmid",
                       "tls_fingerprint", "token_id"),
           "esxi": ("url", "user", "datastore", "network", "resource_pool", "source_vm",
-                   "dns_servers", "tls_fingerprint")}
+                   "dns_servers", "tls_fingerprint"),
+          "digitalocean": ()}
 SECRET_FIELD = {"cloudflare": "token", "npm": "password", "proxmox": "token",
-                "esxi": "password"}
+                "esxi": "password", "digitalocean": "token"}
 DEFAULT_ZONE = "serversherpa.com"
 # A stored secret is reused (secret omitted) only for the target it was
 # entered for: the Cloudflare token only ever goes to api.cloudflare.com, so
 # the zone is enough; the NPM and ESXi passwords go to the URL, for that login.
+# The DigitalOcean token only ever goes to api.digitalocean.com.
 TARGET_FIELDS = {"cloudflare": ("zone",), "npm": ("url", "identity"), "proxmox": ("url",),
-                 "esxi": ("url", "user")}
+                 "esxi": ("url", "user"), "digitalocean": ()}
 NEW_TARGET_REASON = {
     "cloudflare": "Enter the token again to use it with a different zone.",
     "npm": "Enter the password again to use it with a different server or login.",
     "proxmox": "Enter the API token again to use it with a different Proxmox server.",
     "esxi": "Enter the password again to use it with a different ESXi host or user.",
+    "digitalocean": "Enter the API token again.",
 }
 # The environment target that builds its host on Proxmox (targets.PROXMOX_TARGET).
 PROXMOX_TARGET = "proxmox"
@@ -53,6 +57,13 @@ PASSWORD_MAX = 1024
 
 _DOMAIN_RE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{20,200}")
+# A DigitalOcean personal access token is dop_v1_ and 64 hex digits; other
+# tokens (older or scoped formats) are any printable ASCII without spaces, up
+# to 200 characters. Only a dop_v1_ token is held to its full shape, so a
+# truncated paste is caught.
+DO_TOKEN_PREFIX = "dop_v1_"
+_DO_TOKEN_RE = re.compile(r"dop_v1_[0-9a-fA-F]{64}")
+_PRINTABLE_TOKEN_RE = re.compile(r"[!-~]{1,200}")
 _URL_RE = re.compile(r"https?://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?")
 _EMAIL_RE = re.compile(r"[^@\s]{1,64}@[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,63}")
 _PVE_URL_RE = re.compile(r"https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(?::([0-9]{1,5}))?")
@@ -143,6 +154,13 @@ class EsxiConfig:
     tls_fingerprint: str
     tls_cert_pem: str = field(repr=False)
     password: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class DigitalOceanConfig:
+    token: str = field(repr=False)
+    # "stored" (Settings › Integrations) or "environment" (SIRDAR_DEPLOY_DO_TOKEN).
+    source: str = "stored"
 
 
 def token_id_of(token: str) -> str:
@@ -296,7 +314,7 @@ def _check_esxi(values: dict) -> dict:
 
 
 _CHECKS = {"cloudflare": _check_cloudflare, "npm": _check_npm, "proxmox": _check_proxmox,
-           "esxi": _check_esxi}
+           "esxi": _check_esxi, "digitalocean": lambda values: {}}
 
 
 def check_fields(kind: str, values: dict) -> dict:
@@ -310,14 +328,22 @@ def check_secret(kind: str, value: str) -> str:
     elif kind == "proxmox":
         if not isinstance(value, str) or not _PVE_TOKEN_RE.fullmatch(value):
             raise IntegrationError("proxmox_token_invalid")
+    elif kind == "digitalocean":
+        if (not isinstance(value, str) or not _PRINTABLE_TOKEN_RE.fullmatch(value)
+                or (value.startswith(DO_TOKEN_PREFIX) and not _DO_TOKEN_RE.fullmatch(value))):
+            raise IntegrationError("do_token_invalid")
     elif (not isinstance(value, str) or not value or len(value) > PASSWORD_MAX
           or envfile.unsafe_value(value)):
         raise IntegrationError("password_invalid")
     return value
 
 
-def _config(kind: str, config: dict,
-            secret: str) -> CloudflareConfig | NpmConfig | ProxmoxConfig | EsxiConfig:
+Config = CloudflareConfig | NpmConfig | ProxmoxConfig | EsxiConfig | DigitalOceanConfig
+
+
+def _config(kind: str, config: dict, secret: str) -> Config:
+    if kind == "digitalocean":
+        return DigitalOceanConfig(token=secret)
     if kind == "cloudflare":
         return CloudflareConfig(zone=config["zone"], public_ip=config["public_ip"], token=secret)
     if kind == "proxmox":
@@ -364,9 +390,11 @@ async def is_configured(db: AsyncSession, kind: str) -> bool:
     return row is not None and row.secret_enc is not None
 
 
-async def load(db: AsyncSession, settings: Settings, kind: str
-               ) -> CloudflareConfig | NpmConfig | ProxmoxConfig | EsxiConfig | None:
-    """The stored settings with the decrypted secret; None when not set up."""
+async def load(db: AsyncSession, settings: Settings, kind: str) -> Config | None:
+    """The stored settings with the decrypted secret; None when not set up.
+    DigitalOcean falls back to SIRDAR_DEPLOY_DO_TOKEN (load_digitalocean)."""
+    if kind == "digitalocean":
+        return await load_digitalocean(db, settings)
     row = await _row(db, kind)
     if row is None or row.secret_enc is None:
         return None
@@ -387,6 +415,28 @@ async def load_proxmox(db: AsyncSession, settings: Settings) -> ProxmoxConfig | 
 
 async def load_esxi(db: AsyncSession, settings: Settings) -> EsxiConfig | None:
     return await load(db, settings, "esxi")
+
+
+async def load_digitalocean(db: AsyncSession, settings: Settings) -> DigitalOceanConfig | None:
+    """The one DigitalOcean token Sirdar uses: the stored one, else
+    SIRDAR_DEPLOY_DO_TOKEN; None when neither is set. A stored token that
+    won't decrypt raises IntegrationError: it is never silently replaced by
+    the environment's."""
+    row = await _row(db, "digitalocean")
+    if row is not None and row.secret_enc is not None:
+        return DigitalOceanConfig(token=_decrypt(settings, row), source="stored")
+    if settings.deploy_do_token is not None:
+        return DigitalOceanConfig(token=settings.deploy_do_token.get_secret_value(),
+                                  source="environment")
+    return None
+
+
+async def digitalocean_source(db: AsyncSession, settings: Settings) -> str | None:
+    """Where the DigitalOcean token comes from, without decrypting it:
+    "stored", "environment" or None."""
+    if await is_configured(db, "digitalocean"):
+        return "stored"
+    return "environment" if settings.deploy_do_token is not None else None
 
 
 async def config_of(db: AsyncSession, kind: str) -> dict:
@@ -420,8 +470,7 @@ async def check_url_change(db: AsyncSession, kind: str, url: str) -> None:
 
 
 async def candidate(db: AsyncSession, settings: Settings, kind: str, values: dict,
-                    secret: str | None
-                    ) -> CloudflareConfig | NpmConfig | ProxmoxConfig | EsxiConfig:
+                    secret: str | None) -> Config:
     """Unsaved values for a Test: the given secret, else the stored one."""
     checked = check_fields(kind, values)
     if secret is not None:
@@ -487,4 +536,9 @@ async def public(db: AsyncSession, settings: Settings) -> dict:
         }
         if kind == "esxi":                         # a list even before it is set up
             out[kind]["dns_servers"] = list(config.get("dns_servers") or [])
+        if kind == "digitalocean":                 # SIRDAR_DEPLOY_DO_TOKEN is the fallback
+            source = await digitalocean_source(db, settings)
+            out[kind] = {"configured": source is not None, "token_set": source == "stored",
+                         "source": source, "updated_at": out[kind]["updated_at"],
+                         "updated_by_name": out[kind]["updated_by_name"]}
     return out
