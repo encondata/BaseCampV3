@@ -18,6 +18,12 @@ import { CF_CHECK, INTEGRATIONS, NO_INTEGRATIONS } from '../environments/testDat
 
 import IntegrationsSection from './IntegrationsSection';
 
+/** Proxmox lives under the collapsed "Other hosts". */
+async function openOtherHosts() {
+  await userEvent.click(await screen.findByRole('button', { name: 'Other hosts' }));
+  return screen.getByRole('group', { name: 'Proxmox' });
+}
+
 beforeEach(() => {
   perms.change = true;
   Object.values(api).forEach((f) => f.mockReset());
@@ -101,7 +107,7 @@ it('without SIRDAR_SECRETS_KEY nothing can be stored', async () => {
 
 it('shows the Proxmox card: where it builds VMs, the token id, never the token', async () => {
   render(<IntegrationsSection />);
-  const px = await screen.findByRole('group', { name: 'Proxmox' });
+  const px = await openOtherHosts();
   expect(within(px).getByText('Configured')).toBeTruthy();
   expect(within(px).getByText('https://10.10.48.5:8006')).toBeTruthy();
   expect(within(px).getByText('Set (sirdar@pve!sirdar)')).toBeTruthy();
@@ -115,7 +121,7 @@ it('Proxmox can only be removed when no environment uses it', async () => {
   api.removeIntegration.mockRejectedValue(new ApiError(409, 'integration_in_use',
     { code: 'integration_in_use', environments: ['uat3'] }));
   render(<IntegrationsSection />);
-  const px = await screen.findByRole('group', { name: 'Proxmox' });
+  const px = await openOtherHosts();
   await userEvent.click(within(px).getByRole('button', { name: 'Remove Proxmox' }));
   expect(await within(px).findByText('Environments still use it: uat3. Delete them first.')).toBeTruthy();
 });
@@ -124,7 +130,7 @@ it("the card's Test points to Edit when the certificate needs review", async () 
   api.testIntegration.mockRejectedValue(new ApiError(409, 'tls_mismatch',
     { code: 'tls_mismatch', expected: 'AA', actual: 'BB' }));
   render(<IntegrationsSection />);
-  const px = await screen.findByRole('group', { name: 'Proxmox' });
+  const px = await openOtherHosts();
   await userEvent.click(within(px).getByRole('button', { name: 'Test Proxmox' }));
   expect(await within(px).findByText(
     "The server's certificate doesn't match the one Sirdar trusted. Open Edit to review the certificate."))
@@ -141,4 +147,53 @@ it('lays the cards out to fill the row, with URLs and emails that wrap at sensib
   expect(url.querySelectorAll('wbr').length).toBeGreaterThan(0);
   const email = within(npm).getAllByText('admin@example.com', { selector: 'dd' })[0];
   expect(email.querySelectorAll('wbr').length).toBeGreaterThan(0);
+});
+
+it('shows the VMware ESXi card: where it builds VMs, never the password', async () => {
+  render(<IntegrationsSection />);
+  const ex = await screen.findByRole('group', { name: 'VMware ESXi' });
+  expect(ex.parentElement!.classList).toContain('sirdar-integration-cards');
+  expect(within(ex).getByText('Configured')).toBeTruthy();
+  expect(within(ex).getByText('https://10.10.48.10', { selector: 'dd' })).toBeTruthy();
+  expect(within(ex).getByText('sirdar', { selector: 'dd' })).toBeTruthy();
+  expect(within(ex).getByText('sirdar-ubuntu-2404-seed · datastore1 · VM Network', { selector: 'dd' })).toBeTruthy();
+  expect(within(ex).getByText("Each VM's gateway", { selector: 'dd' })).toBeTruthy();
+  expect(within(ex).getByText(`${INTEGRATIONS.esxi.tls_fingerprint!.slice(0, 23)}…`, { selector: 'dd' })).toBeTruthy();
+  const dt = within(ex).getByText('Password', { selector: 'dt' });
+  expect(dt.nextElementSibling!.textContent).toBe('Set');
+});
+
+it('Edit ESXi opens its modal; Remove names ESXi', async () => {
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  render(<IntegrationsSection />);
+  const ex = await screen.findByRole('group', { name: 'VMware ESXi' });
+  await userEvent.click(within(ex).getByRole('button', { name: 'Remove VMware ESXi' }));
+  expect(confirm.mock.calls[0][0]).toBe('Remove the VMware ESXi credentials? Nothing changes on ESXi itself.');
+  expect(api.removeIntegration).not.toHaveBeenCalled();
+  await userEvent.click(within(ex).getByRole('button', { name: 'Edit VMware ESXi' }));
+  expect(screen.getByRole('dialog', { name: 'VMware ESXi' })).toBeTruthy();
+});
+
+it('Proxmox, when set up, waits under the collapsed Other hosts', async () => {
+  render(<IntegrationsSection />);
+  await screen.findByRole('group', { name: 'VMware ESXi' });
+  expect(screen.queryByRole('group', { name: 'Proxmox' })).toBeNull();
+  const toggle = screen.getByRole('button', { name: 'Other hosts' });
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  await userEvent.click(toggle);
+  expect(screen.getByRole('button', { name: 'Hide other hosts' }).getAttribute('aria-expanded')).toBe('true');
+  const px = screen.getByRole('group', { name: 'Proxmox' });
+  expect(within(px).getByRole('button', { name: 'Edit Proxmox' })).toBeTruthy();
+  expect(within(px).getByRole('button', { name: 'Test Proxmox' })).toBeTruthy();
+  expect(within(px).getByRole('button', { name: 'Remove Proxmox' })).toBeTruthy();
+});
+
+it('Proxmox, when not set up, is one line with Set up', async () => {
+  api.getIntegrations.mockResolvedValue(NO_INTEGRATIONS);
+  render(<IntegrationsSection />);
+  await userEvent.click(await screen.findByRole('button', { name: 'Other hosts' }));
+  expect(screen.getByText('Proxmox · Not set up')).toBeTruthy();
+  expect(screen.queryByRole('group', { name: 'Proxmox' })).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Set up Proxmox' }));
+  expect(screen.getByRole('dialog', { name: 'Proxmox' })).toBeTruthy();
 });

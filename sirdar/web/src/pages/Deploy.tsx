@@ -25,7 +25,7 @@ const ENV_KEYS: Record<string, string[]> = {
   aws: ['SIRDAR_DEPLOY_AWS_ACCESS_KEY_ID', 'SIRDAR_DEPLOY_AWS_SECRET_ACCESS_KEY'],
   gcp: ['SIRDAR_DEPLOY_GCP_PROJECT_ID', 'SIRDAR_DEPLOY_GCP_CREDENTIALS_FILE'],
 };
-const INITIALS: Record<string, string> = { aws: 'AWS', gcp: 'GC', digitalocean: 'DO', ssh: 'SSH', proxmox: 'PVE' };
+const INITIALS: Record<string, string> = { aws: 'AWS', gcp: 'GC', digitalocean: 'DO', ssh: 'SSH', proxmox: 'PVE', esxi: 'ESXi' };
 const kindOf = (t: DeployTarget) => t.kind ?? t.id;
 const CHECK_CHIP: Record<DeployCheck['status'], { cls: string; text: string }> = {
   pass: { cls: 'c-green', text: 'Pass' }, warn: { cls: 'c-amber', text: 'Warning' }, fail: { cls: 'c-red', text: 'Fail' },
@@ -106,10 +106,10 @@ export default function Deploy() {
   const trimmedName = envName.trim();
   const nameError = isCustom ? nameProblem(envName) : '';
   const nameOk = !isCustom || (!!trimmedName && !nameError);
-  // Proxmox is tested in Settings › Integrations; its environments are made with New environment.
-  const proxmoxSelected = !!selected && kindOf(selected) === 'proxmox';
+  // VM hosts are tested in Settings › Integrations; their environments are made with New environment.
+  const vmHostSelected = !!selected && (kindOf(selected) === 'proxmox' || kindOf(selected) === 'esxi');
   const canRun = !!selected && selected.available && selected.configured && !!type && nameOk && canAdd && !running
-    && !proxmoxSelected;
+    && !vmHostSelected;
 
   const clearOutcome = () => { setResult(null); setMismatch(null); setError(''); };
   const pick = (set: (v: string) => void, v: string, current: string) => {
@@ -234,10 +234,10 @@ export default function Deploy() {
           </div>
         )}
         {selected?.source === 'installer' && <p className="page-hint">Edit this target in sirdar/.env.</p>}
-        {proxmoxSelected && (
+        {vmHostSelected && selected && (
           <p className="page-hint sirdar-envnote">
-            Test Proxmox in Settings › Integrations. Environments on it are made with New environment, which builds
-            their VM on the first deploy.
+            Test {selected.label} in Settings › Integrations. Environments on it are made with New environment, which
+            builds their VM on the first deploy.
           </p>
         )}
         {savedSelected && !savedSelected.configured && (
