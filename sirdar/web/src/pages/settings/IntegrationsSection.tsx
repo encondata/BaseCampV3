@@ -7,6 +7,7 @@ import { Fragment, useCallback, useEffect, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
 
+import Breakable from '../../components/Breakable';
 import CheckList from '../../components/CheckList';
 import {
   INTEGRATION_LABEL, deployErrorText, getIntegrations, removeIntegration, testIntegration,
@@ -112,13 +113,13 @@ export default function IntegrationsSection() {
         </p>
       )}
       {data && (
-        <div className="sirdar-cards">
+        <div className="sirdar-cards sirdar-integration-cards">
           {KINDS.map((kind) => {
             const label = INTEGRATION_LABEL[kind];
             const item = data[kind];
             return (
               <div key={kind} className="sirdar-card" role="group" aria-label={label}>
-                <div className="sirdar-section-head">
+                <div className="sirdar-card-head">
                   <h3>{label}</h3>
                   <span className={`chip ${item.configured ? 'c-green' : 'tag'}`}>
                     {item.configured ? 'Configured' : 'Not set up'}
@@ -127,7 +128,7 @@ export default function IntegrationsSection() {
                 <p className="page-hint">{PURPOSE[kind]}</p>
                 <dl className="sirdar-kv">
                   {settingsOf(data, kind).map(([k, v]) => (
-                    <Fragment key={k}><dt>{k}</dt><dd className="mono">{v}</dd></Fragment>
+                    <Fragment key={k}><dt>{k}</dt><dd className="mono"><Breakable text={v} /></dd></Fragment>
                   ))}
                 </dl>
                 {item.updated_at && (

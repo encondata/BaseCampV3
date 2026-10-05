@@ -130,3 +130,15 @@ it("the card's Test points to Edit when the certificate needs review", async () 
     "The Proxmox server's certificate doesn't match the one Sirdar trusted. Open Edit to review the certificate."))
     .toBeTruthy();
 });
+
+it('lays the cards out to fill the row, with URLs and emails that wrap at sensible points', async () => {
+  render(<IntegrationsSection />);
+  const npm = await screen.findByRole('group', { name: 'Nginx Proxy Manager' });
+  expect(npm.parentElement!.classList).toContain('sirdar-integration-cards');
+  expect(npm.querySelector('.sirdar-card-head > h3')?.textContent).toBe('Nginx Proxy Manager');
+  expect(npm.querySelector('.sirdar-card-head > .chip')?.textContent).toBe('Configured');
+  const url = within(npm).getByText('http://10.10.48.6:81', { selector: 'dd' });
+  expect(url.querySelectorAll('wbr').length).toBeGreaterThan(0);
+  const email = within(npm).getAllByText('admin@example.com', { selector: 'dd' })[0];
+  expect(email.querySelectorAll('wbr').length).toBeGreaterThan(0);
+});
