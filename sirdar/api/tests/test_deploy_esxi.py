@@ -170,3 +170,213 @@ async def test_the_guard_refuses_a_real_esxi(no_real_hosts):
 
 def test_the_password_never_reaches_a_repr():
     assert ESXI_PASSWORD not in repr(CFG)
+
+
+# ---- review fixes: the real client's edges, over hand-made pyVmomi stand-ins --------
+
+def _client(content=None, **kw):
+    import concurrent.futures
+    si = SimpleNamespace(RetrieveContent=lambda: content)
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    return esxi.PyvmomiEsxi(si, pool, **kw), pool
+
+
+def _content_with_vm(vm):
+    return SimpleNamespace(searchIndex=SimpleNamespace(
+        FindByUuid=lambda *a: vm), rootFolder=SimpleNamespace(childEntity=[]))
+
+
+async def test_a_host_without_a_datacenter_is_our_copy_not_a_runtime_error():
+    api, pool = _client(SimpleNamespace(rootFolder=SimpleNamespace(childEntity=[])))
+    with pytest.raises(EsxiError) as e:
+        await api.datastore("datastore1")
+    assert e.value.reason == "ESXi has no datacenter."
+    pool.shutdown()
+
+
+async def test_a_stray_stop_iteration_or_runtime_error_is_malformed():
+    api, pool = _client()
+
+    def stop():
+        return next(iter(()))
+
+    for fn in (stop, lambda: (_ for _ in ()).throw(RuntimeError("raw"))):
+        with pytest.raises(EsxiError) as e:
+            await api._do("x", fn)
+        assert e.value.reason == esxi.MALFORMED
+    pool.shutdown()
+
+
+async def test_missing_devices_are_named():
+    vm = SimpleNamespace(config=SimpleNamespace(hardware=SimpleNamespace(device=[])))
+    api, pool = _client(_content_with_vm(vm))
+    with pytest.raises(EsxiError) as e:
+        await api.attach_disk("52aa", "[datastore1] x/x-disk0.vmdk")
+    assert e.value.reason == "That VM has no ParaVirtual SCSI controller."
+    with pytest.raises(EsxiError) as e:
+        await api.grow_disk("52aa", 2000, 64)
+    assert e.value.reason == "ESXi has no such disk on that VM."
+    pool.shutdown()
+
+
+class _Task:
+    """A vSphere task stand-in. A running one finishes by itself after a
+    second, so a client that never cancels it can't hang the test run."""
+
+    def __init__(self, state="running", error=None):
+        import time as time_
+        self._info = SimpleNamespace(state=state, error=error, result=None)
+        self._ends = time_.monotonic() + 1.0
+        self.cancelled = 0
+
+    @property
+    def info(self):
+        import time as time_
+        if self._info.state == "running" and time_.monotonic() >= self._ends:
+            self._info.state = "success"
+        return self._info
+
+    def CancelTask(self):
+        self.cancelled += 1
+
+
+async def test_a_task_that_runs_too_long_is_cancelled():
+    task = _Task()
+    vm = SimpleNamespace(PowerOnVM_Task=lambda: task)
+    api, pool = _client(_content_with_vm(vm), poll=0.01, task_timeout=0)
+    with pytest.raises(EsxiError) as e:
+        await api.power_on("52aa")
+    assert "didn't finish" in e.value.reason and task.cancelled == 1
+    pool.shutdown()
+
+
+async def test_a_cancelled_call_cancels_its_esxi_task():
+    import asyncio
+    task = _Task()
+    vm = SimpleNamespace(PowerOnVM_Task=lambda: task)
+    api, pool = _client(_content_with_vm(vm), poll=0.01)
+    call = asyncio.ensure_future(api.power_on("52aa"))
+    await asyncio.sleep(0.05)
+    call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await call
+    for _ in range(50):
+        if task.cancelled:
+            break
+        await asyncio.sleep(0.01)
+    assert task.cancelled == 1
+    pool.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("fault", [vim.fault.SnapshotFault(),
+                                   vim.fault.FilesystemQuiesceFault(),
+                                   vim.fault.ApplicationQuiesceFault()])
+async def test_any_snapshot_fault_while_quiescing_is_quiesce_failed(fault):
+    task = _Task("error", fault)
+    vm = SimpleNamespace(CreateSnapshot_Task=lambda **kw: task)
+    api, pool = _client(_content_with_vm(vm))
+    with pytest.raises(esxi.QuiesceFailed):
+        await api.take_snapshot("52aa", "s", "", quiesce=True)
+    pool.shutdown()
+
+
+async def test_a_snapshot_fault_without_quiescing_is_a_plain_error():
+    task = _Task("error", vim.fault.SnapshotFault())
+    vm = SimpleNamespace(CreateSnapshot_Task=lambda **kw: task)
+    api, pool = _client(_content_with_vm(vm))
+    with pytest.raises(EsxiError) as e:
+        await api.take_snapshot("52aa", "s", "", quiesce=False)
+    assert not isinstance(e.value, esxi.QuiesceFailed)
+    pool.shutdown()
+
+
+@pytest.mark.parametrize(("fault", "exists"), [(vim.fault.FileNotFound(), False),
+                                               (vim.fault.FileLocked(), True),
+                                               (None, True)])
+async def test_file_exists_treats_only_file_not_found_as_absent(monkeypatch, fault, exists):
+    def query(**kw):
+        if fault is not None:
+            raise fault
+        return "uuid"
+    content = SimpleNamespace(virtualDiskManager=SimpleNamespace(QueryVirtualDiskUuid=query))
+    api, pool = _client(content)
+    monkeypatch.setattr(api, "_dc", lambda: None)
+    assert await api.file_exists("[datastore1] x/x-disk0.vmdk") is exists
+    pool.shutdown()
+
+
+def test_an_ambiguous_resource_pool_is_refused(monkeypatch):
+    def pool(name, *children):
+        return SimpleNamespace(name=name, resourcePool=list(children))
+    root = pool("Resources", pool("sirdar"), pool("lab", pool("sirdar")), pool("other"))
+    api, executor = _client()
+    monkeypatch.setattr(api, "_host", lambda: (SimpleNamespace(resourcePool=root), None))
+    assert api._pool_named("other").name == "other"
+    assert api._pool_named("missing") is None
+    with pytest.raises(EsxiError) as e:
+        api._pool_named("sirdar")
+    assert e.value.reason == ("ESXi has more than one resource pool named sirdar; Sirdar "
+                              "won't pick one.")
+    executor.shutdown()
+
+
+async def test_a_sign_in_that_hangs_times_out(monkeypatch):
+    import time as time_
+    monkeypatch.setattr(esxi, "SIGN_IN_TIMEOUT", 0.1)
+    monkeypatch.setattr(esxi, "_smart_connect", lambda cfg: time_.sleep(0.5))
+    with pytest.raises(ConnectFailed) as e:
+        await esxi.test_connection(CFG)
+    assert e.value.reason == "ESXi at 10.10.48.10:443 didn't answer in time."
+
+
+async def test_the_session_is_closed_even_on_a_second_cancel(monkeypatch):
+    import asyncio
+    import threading
+    closed = threading.Event()
+    monkeypatch.setattr(esxi, "_smart_connect", lambda cfg: "si")
+
+    def disconnect(si):
+        import time as time_
+        time_.sleep(0.1)
+        closed.set()
+    monkeypatch.setattr(esxi, "Disconnect", disconnect)
+    entered = asyncio.Event()
+
+    async def body():
+        async with esxi.connect(CFG):
+            entered.set()
+            await asyncio.sleep(10)
+
+    run = asyncio.ensure_future(body())
+    await entered.wait()
+    run.cancel()
+    await asyncio.sleep(0.01)
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    await asyncio.to_thread(closed.wait, 2)
+    assert closed.is_set()
+
+
+# ---- the fake is as strict as ESXi --------------------------------------------------
+
+async def test_the_fake_is_strict(esxi_fake):
+    seed = esxi_fake.by_name(SEED)
+    vm = esxi_fake.add_vm("ss-uat3", power_state="poweredOff")
+    with pytest.raises(EsxiError) as e:
+        await esxi_fake.attach_disk(vm.instance_uuid, "[datastore1] nope.vmdk")
+    assert e.value.reason == "ESXi couldn't attach the disk: a file it needs is missing."
+    with pytest.raises(EsxiError):
+        await esxi_fake.delete_disk("[datastore1] nope.vmdk")
+    with pytest.raises(EsxiError):
+        await esxi_fake.delete_snapshot(vm.instance_uuid, 999)
+    with pytest.raises(EsxiError):
+        await esxi_fake.grow_disk(seed.instance_uuid, 9999, 64)
+    await esxi_fake.power_on(vm.instance_uuid)
+    with pytest.raises(EsxiError) as e:
+        await esxi_fake.power_on(vm.instance_uuid)
+    assert "power state" in e.value.reason
+    await esxi_fake.power_off(vm.instance_uuid)
+    esxi_fake.quiesce_fails = True
+    await esxi_fake.take_snapshot(vm.instance_uuid, "s", "", quiesce=True)   # off: ignored
+    assert len(vm.snapshots) == 1

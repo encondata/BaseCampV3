@@ -18,11 +18,11 @@ the password."""
 
 import asyncio
 import contextlib
-import functools
 import http.client
 import ipaddress
 import re
 import ssl
+import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -42,6 +42,8 @@ DEFAULT_PORT = 443
 # id. Not a guestinfo.* key, so the guest can neither read nor change it.
 OWNER_KEY = "sirdar.environment"
 HTTP_TIMEOUT = 30
+# SmartConnect's version discovery has no timeout of its own: sign-in as a whole has one.
+SIGN_IN_TIMEOUT = HTTP_TIMEOUT + 5
 TASK_POLL_SECONDS = 2.0
 TASK_TIMEOUT_SECONDS = 30 * 60
 SCSI_KEY = -101
@@ -210,8 +212,17 @@ def fault_reason(fault: BaseException, what: str) -> str:
     return f"ESXi couldn't {what} ({type(fault).__name__})."
 
 
-def _mapped(fault: BaseException, what: str) -> EsxiError:
-    if _fault_name(fault) in _QUIESCE_FAULTS:
+def _snapshot_fault(fault: BaseException) -> bool:
+    kind = getattr(vim.fault, "SnapshotFault", None)
+    if kind is not None and isinstance(fault, kind):
+        return True
+    return any(c.__name__.rsplit(".", 1)[-1] == "SnapshotFault" for c in type(fault).__mro__)
+
+
+def _mapped(fault: BaseException, what: str, *, quiesce: bool = False) -> EsxiError:
+    """A quiesce fault, or any snapshot fault while quiescing, is QuiesceFailed
+    (the caller then falls back to a crash-consistent snapshot)."""
+    if _fault_name(fault) in _QUIESCE_FAULTS or (quiesce and _snapshot_fault(fault)):
         return QuiesceFailed("ESXi couldn't quiesce the guest's file systems.")
     return EsxiError(fault_reason(fault, what))
 
@@ -320,19 +331,34 @@ class PyvmomiEsxi:
         self._pool = pool
         self._poll = poll
         self._task_timeout = task_timeout
+        # Set when the awaiting coroutine is cancelled; _wait then cancels the
+        # ESXi task. Each call brings its own (the worker runs one at a time).
+        self._cancel = threading.Event()
 
-    async def _do(self, what: str, fn: Callable, *args):
+    async def _do(self, what: str, fn: Callable, *args, quiesce: bool = False):
         loop = asyncio.get_running_loop()
+        cancel = threading.Event()
+
+        def job():
+            self._cancel = cancel
+            return fn(*args)
+
         try:
-            return await loop.run_in_executor(self._pool, functools.partial(fn, *args))
+            return await loop.run_in_executor(self._pool, job)
+        except asyncio.CancelledError:
+            cancel.set()
+            raise
         except EsxiError:
             raise
         except vmodl.MethodFault as e:
-            raise _mapped(e, what) from None
+            raise _mapped(e, what, quiesce=quiesce) from None
         except (OSError, http.client.HTTPException) as e:
             raise EsxiError(TLS_CHANGED if _tls_refused(e) else "Sirdar lost its connection "
                             "to ESXi.") from None
-        except (AttributeError, TypeError, ValueError, KeyError, IndexError, StopIteration):
+        # StopIteration can't cross into a future (asyncio makes it a RuntimeError):
+        # both are a safety net, the helpers below raise our own copy.
+        except (AttributeError, TypeError, ValueError, KeyError, IndexError, StopIteration,
+                RuntimeError):
             raise EsxiError(MALFORMED) from None
 
     # -- sync helpers (worker thread only) --
@@ -340,12 +366,17 @@ class PyvmomiEsxi:
         return self._si.RetrieveContent()
 
     def _dc(self):
-        return next(e for e in self._content().rootFolder.childEntity
-                    if isinstance(e, vim.Datacenter))
+        dc = next((e for e in self._content().rootFolder.childEntity or ()
+                   if isinstance(e, vim.Datacenter)), None)
+        if dc is None:
+            raise EsxiError("ESXi has no datacenter.")
+        return dc
 
     def _host(self):
-        compute = next(e for e in self._dc().hostFolder.childEntity
-                       if isinstance(e, vim.ComputeResource))
+        compute = next((e for e in self._dc().hostFolder.childEntity or ()
+                        if isinstance(e, vim.ComputeResource)), None)
+        if compute is None or not compute.host:
+            raise EsxiError("ESXi has no host in its datacenter.")
         return compute, compute.host[0]
 
     def _vm(self, uuid: str):
@@ -354,28 +385,47 @@ class PyvmomiEsxi:
             raise EsxiError("ESXi has no VM with that id.")
         return vm
 
-    def _wait(self, task, what: str):
+    @staticmethod
+    def _cancel_task(task) -> None:
+        with contextlib.suppress(Exception):          # best effort: it may have just ended
+            task.CancelTask()
+
+    def _wait(self, task, what: str, *, quiesce: bool = False):
         deadline = time.monotonic() + self._task_timeout
+        cancel = self._cancel
         while True:
             info = task.info
             if info.state == vim.TaskInfo.State.success:
                 return info.result
             if info.state == vim.TaskInfo.State.error:
-                raise _mapped(info.error, what)
+                raise _mapped(info.error, what, quiesce=quiesce)
+            if cancel.is_set():
+                self._cancel_task(task)
+                raise EsxiError(f"Sirdar stopped waiting for ESXi to {what}.")
             if time.monotonic() >= deadline:
+                self._cancel_task(task)
                 raise EsxiError(f"ESXi didn't finish ({what}) in "
                                 f"{self._task_timeout // 60} minutes.")
             time.sleep(self._poll)
 
-    def _pools(self) -> dict[str, object]:
+    def _pools(self) -> dict[str, list]:
         compute, _ = self._host()
-        found: dict[str, object] = {}
+        found: dict[str, list] = {}
         todo = list(compute.resourcePool.resourcePool or ())
         while todo:
             pool = todo.pop()
-            found.setdefault(str(pool.name), pool)
+            found.setdefault(str(pool.name), []).append(pool)
             todo += list(pool.resourcePool or ())
         return found
+
+    def _pool_named(self, name: str):
+        """The resource pool with this name, None when there's none; refused
+        when two share it (pools nest, so names needn't be unique)."""
+        found = self._pools().get(name, [])
+        if len(found) > 1:
+            raise EsxiError(f"ESXi has more than one resource pool named {name}; Sirdar "
+                            "won't pick one.")
+        return found[0] if found else None
 
     def _all_vms(self):
         content = self._content()
@@ -386,9 +436,12 @@ class PyvmomiEsxi:
         finally:
             view.Destroy()
 
-    def _device(self, vm, kind, key: int | None = None):
-        return next(d for d in vm.config.hardware.device
-                    if isinstance(d, kind) and (key is None or d.key == key))
+    def _device(self, vm, kind, missing: str, key: int | None = None):
+        device = next((d for d in vm.config.hardware.device or ()
+                       if isinstance(d, kind) and (key is None or d.key == key)), None)
+        if device is None:
+            raise EsxiError(missing)
+        return device
 
     def _reconfig(self, uuid: str, spec, what: str) -> None:
         self._wait(self._vm(uuid).ReconfigVM_Task(spec=spec), what)
@@ -454,7 +507,7 @@ class PyvmomiEsxi:
                 raise EsxiError(f"ESXi has no port group named {spec.network}.")
             pool = compute.resourcePool
             if spec.resource_pool:
-                pool = self._pools().get(spec.resource_pool)
+                pool = self._pool_named(spec.resource_pool)
                 if pool is None:
                     raise EsxiError(f"ESXi has no resource pool named {spec.resource_pool}.")
             task = dc.vmFolder.CreateVM_Task(config=create_config(spec, network=network),
@@ -469,6 +522,8 @@ class PyvmomiEsxi:
                                                                         datacenter=self._dc())
             except vim.fault.FileNotFound:
                 return False
+            except vim.fault.FileFault:                 # there, but locked or unreadable
+                return True
             return True
         return await self._do("look for the disk", run)
 
@@ -491,7 +546,8 @@ class PyvmomiEsxi:
     async def attach_disk(self, uuid: str, path: str) -> None:
         def run():
             vm = self._vm(uuid)
-            controller = self._device(vm, vim.vm.device.ParaVirtualSCSIController)
+            controller = self._device(vm, vim.vm.device.ParaVirtualSCSIController,
+                                      "That VM has no ParaVirtual SCSI controller.")
             disk = vim.vm.device.VirtualDisk(
                 key=NEW_DISK_KEY, controllerKey=controller.key, unitNumber=0,
                 backing=vim.vm.device.VirtualDisk.FlatVer2BackingInfo(
@@ -504,7 +560,8 @@ class PyvmomiEsxi:
     async def grow_disk(self, uuid: str, disk_key: int, size_gb: int) -> None:
         def run():
             vm = self._vm(uuid)
-            disk = self._device(vm, vim.vm.device.VirtualDisk, disk_key)
+            disk = self._device(vm, vim.vm.device.VirtualDisk,
+                                "ESXi has no such disk on that VM.", disk_key)
             if size_gb * _KB_PER_GB <= int(disk.capacityInKB):
                 return
             disk.capacityInKB = size_gb * _KB_PER_GB
@@ -553,7 +610,7 @@ class PyvmomiEsxi:
         await self._do("take a VM snapshot", lambda: self._wait(
             self._vm(uuid).CreateSnapshot_Task(name=name, description=description,
                                                memory=False, quiesce=quiesce),
-            "take a VM snapshot"))
+            "take a VM snapshot", quiesce=quiesce), quiesce=quiesce)
 
     async def revert_snapshot(self, uuid: str, snapshot_id: int) -> None:
         def run():
@@ -600,18 +657,34 @@ def _open(cfg: EsxiConfig):
 async def connect(cfg: EsxiConfig) -> AsyncIterator[EsxiApi]:
     """A signed-in session for the length of the block, then signed out."""
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="esxi")
-    loop = asyncio.get_running_loop()
+    opening = pool.submit(_open, cfg)
     try:
-        si = await loop.run_in_executor(pool, _open, cfg)
-    except BaseException:
+        si = await asyncio.wait_for(asyncio.wrap_future(opening), SIGN_IN_TIMEOUT)
+    except BaseException as e:
+        # The worker can't be interrupted: if it signs in after all, sign out.
+        opening.add_done_callback(_sign_out_late)
         pool.shutdown(wait=False)
+        if isinstance(e, TimeoutError):
+            host, port = split_url(cfg.url)
+            raise EsxiError(f"ESXi at {host}:{port} didn't answer in time.") from None
         raise
     try:
         yield PyvmomiEsxi(si, pool)
     finally:
-        with contextlib.suppress(Exception):
-            await loop.run_in_executor(pool, Disconnect, si)
-        pool.shutdown(wait=False)
+        try:
+            # Queued on the session's worker, so it runs after any call still in
+            # flight; shielded, so a second cancel stops our wait, not the sign-out.
+            closing = pool.submit(Disconnect, si)
+            with contextlib.suppress(Exception):
+                await asyncio.shield(asyncio.wrap_future(closing))
+        finally:
+            pool.shutdown(wait=False)
+
+
+def _sign_out_late(opening) -> None:
+    with contextlib.suppress(BaseException):
+        if not opening.cancelled() and opening.exception() is None:
+            Disconnect(opening.result())
 
 
 async def test_connection(cfg: EsxiConfig, *, transport=None) -> ConnectResult:

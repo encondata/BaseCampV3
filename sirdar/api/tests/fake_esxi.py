@@ -3,11 +3,15 @@ over plain records. It acts the way ESXi does where Sirdar depends on it:
 VM names are unique, a disk with snapshots can't grow, CPU and memory change
 only while the VM is off, a disk-only snapshot reverts to a powered-off VM,
 and destroying a running VM is refused. `fail[method] = EsxiError(...)` makes
-a method fail; `logins` records (url, user) — never the password."""
+a method fail; `logins` records (url, user) — never the password. Missing
+files, disks and snapshots, and a power-on of a running VM, fail the way
+ESXi's faults do (through esxi.fault_reason)."""
 
 import contextlib
 import itertools
 from dataclasses import dataclass, field, replace
+
+from pyVmomi import vim
 
 from sirdar_api.deploy import esxi
 from sirdar_api.deploy.esxi import (
@@ -167,16 +171,23 @@ class FakeEsxi:
 
     async def delete_disk(self, path: str) -> None:
         self._call("delete_disk")
-        self.files.pop(path, None)
+        if path not in self.files:
+            raise EsxiError(esxi.fault_reason(vim.fault.FileNotFound(),
+                                              "delete the half-copied disk"))
+        del self.files[path]
 
     async def attach_disk(self, uuid: str, path: str) -> None:
         self._call("attach_disk")
         vm = self._vm(uuid)
+        if path not in self.files:
+            raise EsxiError(esxi.fault_reason(vim.fault.FileNotFound(), "attach the disk"))
         vm.disks.append(DiskInfo(2000 + len(vm.disks), path, self.files[path]))
 
     async def grow_disk(self, uuid: str, disk_key: int, size_gb: int) -> None:
         self._call("grow_disk")
         vm = self._vm(uuid)
+        if not any(d.key == disk_key for d in vm.disks):
+            raise EsxiError("ESXi has no such disk on that VM.")
         if vm.snapshots:
             raise EsxiError("ESXi couldn't grow the disk (vim.fault.InvalidSnapshotFormat).")
         vm.disks = [replace(d, capacity_gb=max(d.capacity_gb, size_gb)) if d.key == disk_key
@@ -203,6 +214,8 @@ class FakeEsxi:
     async def power_on(self, uuid: str) -> None:
         self._call("power_on")
         vm = self._vm(uuid)
+        if vm.power_state == "poweredOn":
+            raise EsxiError(esxi.fault_reason(vim.fault.InvalidPowerState(), "start the VM"))
         vm.power_state, vm.tools_running, vm.ipv4 = "poweredOn", True, tuple(self.boot_ips)
 
     async def shutdown_guest(self, uuid: str) -> None:
@@ -230,9 +243,11 @@ class FakeEsxi:
     async def take_snapshot(self, uuid: str, name: str, description: str, *,
                             quiesce: bool) -> None:
         self._call("take_snapshot")
-        if quiesce and self.quiesce_fails:
+        vm = self._vm(uuid)
+        # ESXi ignores quiesce on a VM that's off: there's no guest to quiesce.
+        if quiesce and self.quiesce_fails and vm.power_state == "poweredOn":
             raise QuiesceFailed("ESXi couldn't quiesce the guest's file systems.")
-        self._vm(uuid).snapshots.append(SnapshotInfo(next(self._ids), name, description, None))
+        vm.snapshots.append(SnapshotInfo(next(self._ids), name, description, None))
 
     async def revert_snapshot(self, uuid: str, snapshot_id: int) -> None:
         self._call("revert_snapshot")
@@ -244,6 +259,8 @@ class FakeEsxi:
     async def delete_snapshot(self, uuid: str, snapshot_id: int) -> None:
         self._call("delete_snapshot")
         vm = self._vm(uuid)
+        if not any(s.id == snapshot_id for s in vm.snapshots):
+            raise EsxiError("ESXi has no such snapshot.")
         vm.snapshots = [s for s in vm.snapshots if s.id != snapshot_id]
 
     async def destroy(self, uuid: str) -> None:
