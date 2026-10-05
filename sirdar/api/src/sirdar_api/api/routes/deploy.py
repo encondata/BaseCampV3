@@ -345,7 +345,6 @@ async def forget_host(request: Request, db: DbSession,
 
 # ---- environments (deploy pipeline) -------------------------------------------
 
-# An environment's target: an SSH target, or "proxmox" (a VM Sirdar builds).
 # An environment's target: an SSH target, or a VM host Sirdar builds on.
 ENV_TARGET_PATTERN = r"^(ssh|ssh:[a-z0-9]+(-[a-z0-9]+)*|proxmox|esxi)$"
 EnvType = Literal["dev", "beta", "custom"]

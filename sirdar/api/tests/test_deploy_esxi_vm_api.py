@@ -66,8 +66,9 @@ async def test_create_an_esxi_environment(client, db, esx):
     assert (body["vm"]["kind"], body["vm"]["stage"], body["vm"]["host"],
             body["vm"]["moref"]) == ("esxi", "none", "10.10.48.10", None)
     assert {s["host_ip"] for s in body["services"]} == {"10.10.48.71"}
-    resp = await client.post(URL, headers=h, json={**BODY, "mode": "adopt", "vm": None})
-    assert resp.json()["detail"]["code"] in ("adopt_not_allowed", "environment_exists")
+    resp = await client.post(URL, headers=h,
+                             json={**BODY, "name": "uat4", "mode": "adopt", "vm": None})
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (422, "adopt_not_allowed")
 
 
 async def test_a_deploy_starts_with_prepare_vm_and_delete_destroys_it(client, db, esx,
