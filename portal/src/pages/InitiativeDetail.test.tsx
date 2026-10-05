@@ -466,6 +466,48 @@ it('without initiatives:change there is no Actions trigger on either list', asyn
   expect(within(prow).queryByRole('button', { name: /Actions/ })).toBeNull();
 });
 
+/* ── people edit table (rank-gated, independent of god mode) ─────── */
+
+const peopleToolbar = async () =>
+  (await screen.findByPlaceholderText('Filter people…')).closest('.dir-toolbar') as HTMLElement;
+
+it('people list: Edit table shows for super admin (80) without god mode and edits Work type', async () => {
+  auth.maxRank = 80;
+  api.listInitiativeWorkTypes.mockResolvedValue([{
+    record_type: 'work_type', key: 'tech', label: 'Tech', description: '', color: '#178a4c',
+    sort_order: 1, is_active: true, usage_count: null,
+  }]);
+  const user = userEvent.setup();
+  renderPage();
+  await user.click(within(await peopleToolbar()).getByRole('button', { name: 'Edit table' }));
+  const row = await personRow();
+  expect(row.closest('.dir-list')!.classList.contains('editing')).toBe(true);
+  const workType = within(row).getAllByRole('combobox')
+    .find((el) => within(el).queryByRole('option', { name: 'Tech' })) as HTMLSelectElement;
+  expect(workType).toBeDefined();
+  expect(workType.value).toBe('tech');
+  expect(within(row).getByRole('spinbutton')).not.toBeNull();
+});
+
+it('people list: Edit table shows for developer (100)', async () => {
+  auth.maxRank = 100;
+  renderPage();
+  expect(within(await peopleToolbar()).getByRole('button', { name: 'Edit table' })).not.toBeNull();
+});
+
+it('people list: Edit table is hidden for admin (60)', async () => {
+  auth.maxRank = 60;
+  renderPage();
+  expect(within(await peopleToolbar()).queryByRole('button', { name: 'Edit table' })).toBeNull();
+});
+
+it('people list: Edit table is hidden without change permission', async () => {
+  auth.maxRank = 100;
+  auth.can = (resource, action) => !(resource === 'initiatives' && action === 'change');
+  renderPage();
+  expect(within(await peopleToolbar()).queryByRole('button', { name: 'Edit table' })).toBeNull();
+});
+
 /* ── kiosk password line ─────────────────────────────────────────── */
 
 it('admins see the kiosk password as Not set / Set', async () => {

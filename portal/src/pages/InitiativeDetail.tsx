@@ -59,7 +59,7 @@ import {
   type TimeSummaryOut,
   type WorkerOption,
 } from '../lib/api';
-import { ADMIN_RANK } from '../lib/access';
+import { ADMIN_RANK, SUPER_ADMIN_RANK } from '../lib/access';
 import { statusChip as chip } from '../lib/chips';
 import { relativeTime } from '../lib/format';
 import { useListCollapse } from '../lib/listCollapse';
@@ -72,7 +72,7 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import {
-  GodCell, GodEditToggle, numberToPatch, useGodEdit, type GodField,
+  GodCell, GodEditToggle, numberToPatch, type GodField,
 } from '../lib/godEdit';
 import {
   ACTIONS_TRACK, applyColumnOrder,
@@ -187,7 +187,7 @@ function personRatingValue(row: InitiativePersonRow): number {
 export default function InitiativeDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { can, godMode, maxRank, preferences } = useAuth();
+  const { can, maxRank, preferences } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
   const toast = useToast();
   const canChange = can('initiatives', 'change');
@@ -196,7 +196,9 @@ export default function InitiativeDetail() {
   const canViewPartners = can('partners', 'view');
   const canViewWorkers = can('workers', 'view');
   const isAdmin = maxRank >= ADMIN_RANK;
-  const god = useGodEdit();
+  // People edit table: gated on rank (super admin 80+) plus change
+  // permission, not god mode.
+  const [peopleEditing, setPeopleEditing] = useState(false);
 
   const [initiative, setInitiative] = useState<InitiativeDetailOut | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -282,8 +284,7 @@ export default function InitiativeDetail() {
   const canViewScans = can('scans', 'view');
   const [assetsActionError, setAssetsActionError] = useState('');
   // Inline edit-table mode for Assets — a separate toggle from the People
-  // section's god.editing (Task 5b): gated on maxRank/canChange, not
-  // godMode, so it isn't tied to useGodEdit()'s godMode-derived `editing`.
+  // section's peopleEditing, gated on maxRank/canChange rather than godMode.
   const [assetsEditing, setAssetsEditing] = useState(false);
   const assetsPanel = useListCollapse('initiative-assets');
   // Rack elevation modal (Task 6) — opened from a Source/Destination Rack
@@ -548,11 +549,11 @@ export default function InitiativeDetail() {
    *  for the duration of the edit. */
   const peopleRowStyle = {
     gridTemplateColumns: peopleGrid.gridTemplateColumns,
-    minWidth: god.editing ? undefined : peopleGrid.minWidth,
+    minWidth: peopleEditing ? undefined : peopleGrid.minWidth,
   };
 
   const personCellFor = (p: InitiativePersonRow, key: string) => {
-    if (god.editing) {
+    if (peopleEditing) {
       const gf = godFieldFor(key);
       if (gf) {
         return (
@@ -1019,12 +1020,13 @@ export default function InitiativeDetail() {
                     <ColumnsButton columns={peopleOrderedCols} visible={peopleVisibleCols}
                                    onChange={setPeopleVisibleCols}
                                    onReorder={setPeopleColOrder} />
-                    <GodEditToggle editing={god.editing} onToggle={god.toggle}
-                                   visible={godMode && canChange} />
+                    <GodEditToggle editing={peopleEditing}
+                                   onToggle={() => setPeopleEditing((e) => !e)}
+                                   visible={maxRank >= SUPER_ADMIN_RANK && canChange} />
                   </div>
                 </div>
 
-                <div className={`dir-list idet-people-list list-scroll${god.editing ? ' editing' : ''}`}>
+                <div className={`dir-list idet-people-list list-scroll${peopleEditing ? ' editing' : ''}`}>
                   <div className="list-head" style={peopleRowStyle}>
                     {peopleShownCols.map((c) => (
                       <ColHead key={c.key} col={c}
