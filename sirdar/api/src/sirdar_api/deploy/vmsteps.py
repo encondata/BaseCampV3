@@ -23,7 +23,9 @@ async def prepare(db: AsyncSession, env: Environment, dep: Deployment,
 
 
 class HostProvisioner:
-    """Runs a VM step on the host its context belongs to."""
+    """Runs a VM step on the host its context belongs to: an EsxiVmContext
+    on ESXi, a Proxmox VmContext on Proxmox. Anything else is refused, never
+    handed to Proxmox by default."""
 
     def __init__(self, *, proxmox: Provisioner, esxi: Provisioner | None = None):
         self._proxmox = proxmox
@@ -34,4 +36,6 @@ class HostProvisioner:
             if self._esxi is None:
                 raise VmPrepareError("ESXi steps can't run here.")
             return await self._esxi.run(step, ctx, out)
-        return await self._proxmox.run(step, ctx, out)
+        if isinstance(ctx, provision.VmContext):
+            return await self._proxmox.run(step, ctx, out)
+        raise VmPrepareError("This environment isn't on a VM host, so it has no VM steps.")

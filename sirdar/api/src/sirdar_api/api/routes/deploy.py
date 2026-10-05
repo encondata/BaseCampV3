@@ -17,12 +17,14 @@ from starlette.requests import ClientDisconnect
 
 from sirdar_api.api.deps import AuthContext, DbSession, client_ip, require_permission
 from sirdar_api.config import get_settings
-from sirdar_api.db.models import Deployment, DeploymentStep, Environment, Snapshot, SshKnownHost
+from sirdar_api.db.models import (Deployment, DeploymentStep, Environment, EsxiVm, Snapshot,
+                                  SshKnownHost)
 from sirdar_api.deploy import (
     ConnectFailed,
     digitalocean,
     envfile,
     environments,
+    esxi,
     gitref,
     integrations,
     known_hosts,
@@ -344,7 +346,8 @@ async def forget_host(request: Request, db: DbSession,
 # ---- environments (deploy pipeline) -------------------------------------------
 
 # An environment's target: an SSH target, or "proxmox" (a VM Sirdar builds).
-ENV_TARGET_PATTERN = r"^(ssh|ssh:[a-z0-9]+(-[a-z0-9]+)*|proxmox)$"
+# An environment's target: an SSH target, or a VM host Sirdar builds on.
+ENV_TARGET_PATTERN = r"^(ssh|ssh:[a-z0-9]+(-[a-z0-9]+)*|proxmox|esxi)$"
 EnvType = Literal["dev", "beta", "custom"]
 _SSH_ERRORS = (ssh.HostKeyUnknown, ssh.HostKeyMismatch, ConnectFailed)
 _ENV_STATUS = {"environment_exists": 409, "deploy_in_progress": 409,
@@ -356,7 +359,7 @@ _NAME_CONSTRAINT = "environments_name_key"
 
 
 class VmIn(BaseModel):
-    """A Proxmox environment's VM (mode "new", target "proxmox")."""
+    """A VM environment's VM (mode "new", target "proxmox" or "esxi")."""
     cores: int | None = None
     memory_mb: int | None = None
     disk_gb: int | None = None
@@ -389,7 +392,7 @@ class EnvironmentIn(BaseModel):
     snapshot_id: uuid.UUID | None = None
     # mode "new" only (default on): deploys publish DNS records and proxy hosts
     publish: bool | None = None
-    # mode "new" with target "proxmox" only: the VM step 0 builds
+    # mode "new" with a VM target only: the VM step 0 builds
     vm: VmIn | None = None
 
 
@@ -573,10 +576,10 @@ _REF_REASON = {
 
 class DeploymentIn(BaseModel):
     # publish: steps 12–14 for the running commit; teardown: Delete environment;
-    # vm_restore: a Proxmox environment's VM back to one of its VM snapshots
+    # vm_restore: a VM environment's VM back to one of its VM snapshots
     mode: Literal["update", "reset", "restore_dump", "publish", "teardown",
                   "vm_restore"] = "update"
-    # Proxmox, update / reset / restore_dump: take a VM snapshot in step 0
+    # VM environments, update / reset / restore_dump: take a VM snapshot in step 0
     # (default: yes once deployed).
     take_vm_snapshot: bool | None = None
     # vm_restore only: the VM snapshot (a name from GET .../vm-snapshots).
@@ -628,8 +631,8 @@ def _snapshot_http(e: snapshots.SnapshotError) -> HTTPException:
 
 async def _host_target(db, env: Environment, *,
                        need_secrets: bool = True) -> SshTargetConfig | None:
-    """The SSH connection the host steps use. None only for a Proxmox
-    environment whose VM has no address yet (step 0 builds it)."""
+    """The SSH connection the host steps use. None only for a VM environment
+    whose VM has no address yet (step 0 builds it)."""
     settings = get_settings()
     if need_secrets and not vault.is_configured(settings):
         raise HTTPException(status_code=400, detail={"code": "secrets_key_missing"})
@@ -637,23 +640,23 @@ async def _host_target(db, env: Environment, *,
         cfg = await vms.host_config(db, settings, env)
     except (vault.SecretsKeyMissing, vault.SecretUnreadable):
         raise HTTPException(status_code=409, detail={"code": "vm_key_unreadable"}) from None
-    if cfg is None and env.target_id != targets.PROXMOX_TARGET:
+    if cfg is None and not targets.is_vm_target(env.target_id):
         raise HTTPException(status_code=400, detail={"code": "target_not_configured"})
     return cfg
 
 
 def _on_vm(env: Environment) -> bool:
-    return env.target_id == targets.PROXMOX_TARGET
+    return targets.is_vm_target(env.target_id)
 
 
-async def _require_proxmox(db, env: Environment) -> None:
-    if _on_vm(env) and not await integrations.is_configured(db, "proxmox"):
+async def _require_vm_host(db, env: Environment) -> None:
+    if _on_vm(env) and not await integrations.is_configured(db, env.target_id):
         raise HTTPException(status_code=409, detail={"code": "integration_not_configured",
-                                                     "kinds": ["proxmox"]})
+                                                     "kinds": [env.target_id]})
 
 
 def _take_vm_snapshot(env: Environment, asked: bool | None) -> bool:
-    """A deployed Proxmox environment takes a VM snapshot in step 0 unless
+    """A deployed VM environment takes a VM snapshot in step 0 unless
     asked not to; a VM that never ran a deploy has nothing to keep."""
     return _on_vm(env) and env.current_sha is not None and asked is not False
 
@@ -775,10 +778,10 @@ async def _start_vm_restore(db, env: Environment, name: str, request: Request,
     """Restore VM snapshot: the VM back to a snapshot Sirdar took for this
     environment, and the environment's commit back to the one it holds."""
     if not _on_vm(env):
-        raise HTTPException(status_code=409, detail={"code": "not_proxmox"})
+        raise HTTPException(status_code=409, detail={"code": "not_vm_environment"})
     if not vms.valid_snapshot_name(name):
         raise HTTPException(status_code=422, detail={"code": "vm_snapshot_invalid"})
-    await _require_proxmox(db, env)
+    await _require_vm_host(db, env)
     if not vault.is_configured(get_settings()):
         raise HTTPException(status_code=400, detail={"code": "secrets_key_missing"})
     taking = (await vms.taking_deployments(db, env.id)).get(name)
@@ -819,7 +822,7 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
         return await _start_publish(db, env, request, actor)
     if body.mode == "vm_restore":
         return await _start_vm_restore(db, env, body.vm_snapshot, request, actor)
-    await _require_proxmox(db, env)
+    await _require_vm_host(db, env)
     if body.mode == "teardown" and on_vm:
         # Step 15 Destroy VM needs no SSH (nor the VM's key).
         if not vault.is_configured(get_settings()):
@@ -960,7 +963,7 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
             raise _snapshot_http(e) from None
     # As the pipeline does: with no host step left to run (a publish job, or
     # a retry of only steps 12–14 or 16–17) there is no target to connect to.
-    await _require_proxmox(db, env)
+    await _require_vm_host(db, env)
     if any(s.runs == "ansible" for s in plan if s.number >= from_step):
         cfg = await _host_target(db, env)
         if not dep.vm:                  # a VM deployment's step 0 pins the key
@@ -1003,7 +1006,7 @@ async def rollback_deployment(deployment_id: uuid.UUID, body: RollbackIn, reques
         raise HTTPException(status_code=409, detail={"code": "rollback_unavailable"})
     if body.take_vm_snapshot is not None and not _on_vm(env):
         raise HTTPException(status_code=422, detail={"code": "vm_snapshot_not_allowed"})
-    await _require_proxmox(db, env)
+    await _require_vm_host(db, env)
     cfg = await _host_target(db, env)
     if not _on_vm(env):
         await _pinned(db, cfg)
@@ -1031,38 +1034,46 @@ async def list_backups(name: str, db: DbSession,
     return {"backups": rows}
 
 
+async def _live_snapshots(cfg, vm) -> list[tuple[str, str]]:
+    """(name, description) of every snapshot the host has for the VM."""
+    if isinstance(vm, EsxiVm):
+        async with esxi.connect(cfg) as api:
+            return [(s.name, s.description) for s in await api.snapshots(vm.instance_uuid)]
+    async with proxmox.Proxmox(replace(cfg, node=vm.node),
+                               transport=outbound.transports()["proxmox"]) as api:
+        return [(str(s.get("name", "")), str(s.get("description") or ""))
+                for s in await api.snapshots(vm.vmid)]
+
+
 @router.get("/environments/{name}/vm-snapshots")
 async def list_vm_snapshots(name: str, db: DbSession,
                             actor: AuthContext = require_permission("deploy", "view")):
-    """The VM snapshots Sirdar took for a Proxmox environment that still
-    exist in Proxmox, newest first, with the commit each holds and whether
-    it can be restored (read live from Proxmox)."""
+    """The VM snapshots Sirdar took for a VM environment that still exist on
+    its host, newest first, with the commit each holds and whether it can be
+    restored (read live from Proxmox or ESXi)."""
     env = await _environment(db, name)
     if not _on_vm(env):
-        raise HTTPException(status_code=409, detail={"code": "not_proxmox"})
+        raise HTTPException(status_code=409, detail={"code": "not_vm_environment"})
     try:
-        cfg = await integrations.load_proxmox(db, get_settings())
+        cfg = await integrations.load(db, get_settings(), env.target_id)
     except integrations.IntegrationError as e:
         status = 400 if e.code == "secrets_key_missing" else 409
         raise HTTPException(status_code=status, detail={"code": e.code}) from None
     if cfg is None:
         raise HTTPException(status_code=409, detail={"code": "integration_not_configured",
-                                                     "kinds": ["proxmox"]})
-    vm = await vms.get(db, env.id)
-    if vm is None or vm.vmid is None or not vm.created:
+                                                     "kinds": [env.target_id]})
+    vm = await vms.get_for(db, env)
+    if vm is None or vms.stage(vm) != "built":
         return {"snapshots": []}
     taking = await vms.taking_deployments(db, env.id)
     changed_at = (await environments.key_changes(db, env.id)).changed_at
     try:
-        async with proxmox.Proxmox(replace(cfg, node=vm.node),
-                                   transport=outbound.transports()["proxmox"]) as api:
-            found = await api.snapshots(vm.vmid)
-    except proxmox.ProxmoxError as e:
+        found = await _live_snapshots(cfg, vm)
+    except (proxmox.ProxmoxError, esxi.EsxiError) as e:
         raise HTTPException(status_code=502, detail={"code": "connect_failed",
                                                      "reason": e.reason}) from None
     rows = []
-    for snap in found:
-        name_ = str(snap.get("name", ""))
+    for name_, description in found:
         dep = taking.get(name_)
         if dep is None or not vms.valid_snapshot_name(name_):
             continue
@@ -1070,7 +1081,7 @@ async def list_vm_snapshots(name: str, db: DbSession,
         rows.append({"name": name_,
                      "taken_at": vms.snapshot_taken_at(name_).strftime("%Y-%m-%dT%H:%M:%SZ"),
                      "sha": dep.previous_sha, "deployment_id": str(dep.id),
-                     "description": str(snap.get("description") or ""),
+                     "description": description,
                      "restorable": reason is None and bool(dep.previous_sha),
                      "reason": reason})
     return {"snapshots": sorted(rows, key=lambda r: r["name"], reverse=True)}

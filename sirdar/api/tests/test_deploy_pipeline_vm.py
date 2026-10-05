@@ -242,3 +242,23 @@ async def test_an_esxi_environment_s_step_0_goes_to_the_esxi_vm_steps(
     assert (steps[0].number, steps[0].key, steps[0].status) == (0, "provision", "succeeded")
     assert fake_provisioner.calls == ["provision"] and fake_runner.steps() == UPDATE_KEYS
     assert (dep.status, dep.sha) == ("succeeded", SHA)
+
+
+async def test_the_host_provisioner_dispatches_by_the_context_s_host():
+    from sirdar_api.deploy import vmsteps
+
+    from .fake_provisioner import FakeProvisioner
+
+    px, ex = FakeProvisioner(), FakeProvisioner()
+    host = vmsteps.HostProvisioner(proxmox=px, esxi=ex)
+    esxi_ctx = esxi_provision.EsxiVmContext.__new__(esxi_provision.EsxiVmContext)
+    px_ctx = provision.VmContext.__new__(provision.VmContext)
+    await host.run("provision", esxi_ctx, lambda _: None)
+    await host.run("destroy", px_ctx, lambda _: None)
+    assert (px.calls, ex.calls) == (["destroy"], ["provision"])
+    # Anything else is no VM host's: never handed to Proxmox by default.
+    with pytest.raises(vmcommon.VmPrepareError):
+        await host.run("destroy", object(), lambda _: None)
+    with pytest.raises(vmcommon.VmPrepareError):
+        await vmsteps.HostProvisioner(proxmox=px).run("destroy", esxi_ctx, lambda _: None)
+    assert (px.calls, ex.calls) == (["destroy"], ["provision"])

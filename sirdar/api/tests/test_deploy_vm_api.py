@@ -196,7 +196,7 @@ async def test_restore_a_vm_snapshot(client, db, px, fake_runner, fake_provision
     await make_environment(db, name="uat")
     resp = await client.post(f"{URL}/uat/deployments", headers=h,
                              json={**good, "confirm_name": "uat"})
-    assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "not_proxmox")
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "not_vm_environment")
 
 
 async def test_the_vm_snapshot_list(client, db, px):
@@ -224,7 +224,7 @@ async def test_the_vm_snapshot_list(client, db, px):
         502, {"code": "connect_failed", "reason": proxmox.TLS_CHANGED})
     await make_environment(db, name="uat")
     resp = await client.get(f"{URL}/uat/vm-snapshots", headers=h)
-    assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "not_proxmox")
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "not_vm_environment")
 
 
 async def test_delete_a_proxmox_environment(client, db, px, fake_runner, fake_provisioner,

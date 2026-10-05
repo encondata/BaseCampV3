@@ -696,7 +696,7 @@ async def _run_python_step(publisher: publish.Publisher, ctx: _Context,
 
 async def _run_vm_step(provisioner: provision.Provisioner, ctx: _Context,
                        step: DeploymentStep) -> RunResult:
-    """Step 0 or 15 of a Proxmox environment, in Sirdar: a publish step's log
+    """Step 0 or 15 of a VM environment, in Sirdar: a publish step's log
     handling, plus what step 0 found out (the resolved commit, the VM
     snapshot) in the result's data."""
     definition = STEPS_BY_KEY[step.key]
