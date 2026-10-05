@@ -14,7 +14,9 @@ import {
 } from '../../lib/sirdarApi';
 
 import DeleteEnvironmentModal from './DeleteEnvironmentModal';
-import { deploymentRunning, gbOf, mbOf, onProxmox, sshTargets, targetLabel, vmStage } from './labels';
+import {
+  deploymentRunning, gbOf, hostLabel, mbOf, onVmHost, sshTargets, targetLabel, vmRef, vmStage,
+} from './labels';
 
 const SECRET_LABELS: Record<string, string> = {
   SS_ANTHROPIC_API_KEY: 'Anthropic API key', SS_DB_TESTING_PASSWORD: 'Database testing password',
@@ -68,7 +70,8 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
   const deploying = deploymentRunning(env);
   const [deleting, setDeleting] = useState(false);
   const off = locked || deploying;
-  const onVm = onProxmox(env);
+  const onVm = onVmHost(env);
+  const esxi = env.target_kind === 'esxi';
   // The API's teardown needs both.
   const mayDelete = can('deploy', 'add') && can('deploy', 'change');
   const [form, setForm] = useState<Form>(() => fromEnv(env));
@@ -114,7 +117,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
       : "That bucket name isn't valid (3–63 lowercase letters, numbers, dots and hyphens).");
     for (const s of env.services) {
       const v = form.services[s.service];
-      // A Proxmox environment's addresses are the VM's: only the ports are edited.
+      // A VM environment's addresses are the VM's: only the ports are edited.
       const problem = (!onVm && ipv4Problem(v.host_ip, `${s.service} address`))
         || (portProblem(v.port) && `${s.service}: ${portProblem(v.port)}`);
       if (problem) { e.services = problem; break; }
@@ -224,8 +227,8 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
         <TextField id="env-set-ref" label="Default git ref" value={form.ref} error={errors.ref} disabled={off}
                    onChange={(v) => set('ref', v)} />
         {onVm ? (
-          <TextField id="env-set-target" label="Target" value={`Proxmox · ${env.vm?.name ?? ''}`} disabled
-                     error={errors.target} hint="A Proxmox environment stays on the VM Sirdar built for it."
+          <TextField id="env-set-target" label="Target" value={`${hostLabel(env)} · ${env.vm?.name ?? ''}`} disabled
+                     error={errors.target} hint="It stays on the VM Sirdar built for it."
                      onChange={() => {}} />
         ) : (
           <div>
@@ -257,8 +260,11 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
         <>
           <h3 className="sirdar-sub">Machine</h3>
           <p className="page-hint">
-            The next deploy's step 0 resizes the VM (Proxmox restarts it when it must). A disk can grow but never
-            shrink.
+            {esxi
+              ? "The next deploy's step 0 resizes the VM: ESXi shuts it down and starts it again to change its vCPUs, "
+                + 'memory or disk. A disk can grow but never shrink.'
+              : "The next deploy's step 0 resizes the VM (Proxmox restarts it when it must). A disk can grow but never "
+                + 'shrink.'}
           </p>
           <div className="pf-form sirdar-env-grid">
             <TextField id="env-set-cores" label="vCPUs" value={form.cores} disabled={off}
@@ -270,6 +276,12 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
             <TextField id="env-set-keepvm" label="VM snapshots to keep" value={form.keepVm} disabled={off}
                        hint="The newest stay; older ones Sirdar took are deleted." onChange={(v) => set('keepVm', v)} />
           </div>
+          {esxi && env.vm && /^\d+$/.test(form.disk.trim()) && Number(form.disk.trim()) > env.vm.disk_gb && (
+            <p className="page-hint">
+              ESXi can't grow a disk that has snapshots: the next deploy deletes this environment's VM snapshots
+              first, then takes a new one.
+            </p>
+          )}
           {errors.machine && <p className="form-error" role="alert">{errors.machine}</p>}
         </>
       )}
@@ -322,14 +334,15 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
           <h3 className="sirdar-sub">Delete environment</h3>
           <p className="page-hint">
             {onVm && env.vm && vmStage(env.vm) === 'none'
-              ? 'No VM was created yet; nothing on Proxmox is removed. Deleting it removes the DNS records and proxy '
-                + 'hosts Sirdar made, and removes it from Sirdar.'
+              ? `No VM was created yet; nothing on ${hostLabel(env)} is removed. Deleting it removes the DNS records `
+                + 'and proxy hosts Sirdar made, and removes it from Sirdar.'
               : onVm && env.vm && vmStage(env.vm) === 'partial'
-              ? `Removes the partly built VM ${env.vm.name} (id ${env.vm.vmid}) if Proxmox has it. Deleting it removes `
-                + 'the DNS records and proxy hosts Sirdar made, and removes it from Sirdar.'
+              ? `Removes the partly built VM ${env.vm.name}${vmRef(env.vm) ? ` (${vmRef(env.vm)})` : ''} if `
+                + `${hostLabel(env)} has it. Deleting it removes the DNS records and proxy hosts Sirdar made, and `
+                + 'removes it from Sirdar.'
               : onVm
-              ? 'Destroys its VM on Proxmox with everything on it, VM snapshots included, removes the DNS records and '
-                + 'proxy hosts Sirdar made, and removes it from Sirdar.'
+              ? `Destroys its VM on ${hostLabel(env)} with everything on it, VM snapshots included, removes the DNS `
+                + 'records and proxy hosts Sirdar made, and removes it from Sirdar.'
               : 'Stops it, deletes its data, backups and folder on the host, removes the DNS records and proxy hosts '
                 + 'Sirdar made, and removes it from Sirdar.'}
           </p>

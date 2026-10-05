@@ -15,7 +15,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import DeployModal from './DeployModal';
-import { ENV, PX_ENV, PX_NEW_ENV, RUNNING, SNAP, SNAP_TAKING } from './testData';
+import { ENV, ESXI_ENV, PX_ENV, PX_NEW_ENV, RUNNING, SNAP, SNAP_TAKING } from './testData';
 
 beforeEach(() => {
   perms.add = true; perms.change = true;
@@ -249,4 +249,14 @@ it('Proxmox before its first deploy: nothing to snapshot, and SSH environments n
   await userEvent.click(deployBtn());
   await waitFor(() => expect(api.startDeployment).toHaveBeenCalledTimes(2));
   expect(api.startDeployment).toHaveBeenLastCalledWith('uat', { mode: 'update', git_ref: 'main' });
+});
+
+it('ESXi: prepares the VM on ESXi and offers a VM snapshot first', async () => {
+  const { onStarted } = open(ESXI_ENV);
+  expect(screen.getByText(/Prepares the VM ss-uat3 on ESXi, then runs in \/opt\/serversherpa\/uat3 on it\./)).toBeTruthy();
+  expect(screen.getByText('VM snapshot first')).toBeTruthy();
+  expect(screen.getByRole('radio', { name: 'On' }).getAttribute('aria-checked')).toBe('true');
+  await userEvent.click(deployBtn());
+  await waitFor(() => expect(onStarted).toHaveBeenCalledWith(RUNNING));
+  expect(api.startDeployment).toHaveBeenLastCalledWith('uat3', { mode: 'update', git_ref: 'main', take_vm_snapshot: true });
 });
