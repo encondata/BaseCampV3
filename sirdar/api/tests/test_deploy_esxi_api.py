@@ -137,3 +137,17 @@ async def test_the_target_list_has_esxi_once_saved(client, db, secrets_key):
     listed = (await client.get("/api/deploy/targets", headers=h)).json()["targets"]
     assert listed[-1] == {"id": "esxi", "label": "VMware ESXi", "kind": "esxi",
                           "available": True, "configured": True}
+
+
+async def test_the_url_can_t_change_while_an_environment_uses_it(client, db, secrets_key,
+                                                                 certificate):
+    await configure_esxi(db)
+    await make_environment(db, name="uat3", target_id="esxi")
+    h = await auth_headers(client, db)
+    resp = await client.put(URL, headers=h, json={**ESXI_BODY, "url": "https://10.10.48.11",
+                                                  "password": ESXI_PASSWORD})
+    assert (resp.status_code, resp.json()["detail"]) == (
+        409, {"code": "integration_in_use", "environments": ["uat3"]})
+    assert certificate["calls"] == []
+    resp = await client.put(URL, headers=h, json={**ESXI_BODY, "datastore": "ssd2"})
+    assert resp.status_code == 200, resp.text

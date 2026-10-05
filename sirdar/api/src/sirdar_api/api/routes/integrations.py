@@ -42,7 +42,7 @@ UNEXPECTED_REASON = "Sirdar couldn't reach it."
 # Everything else is a 422 (tls_fingerprint_invalid among them); tls_untrusted
 # only comes from integrations when the route's own pin check was bypassed.
 _STATUS = {"secrets_key_missing": 400, "integration_unreadable": 409,
-           "tls_untrusted": 409, "tls_fingerprint_invalid": 422}
+           "integration_in_use": 409, "tls_untrusted": 409, "tls_fingerprint_invalid": 422}
 PROXMOX_FIELDS = ("url", "node", "pool", "storage", "bridge", "vlan_tag", "template_vmid",
                   "tls_fingerprint")
 ESXI_FIELDS = ("url", "user", "datastore", "network", "resource_pool", "source_vm",
@@ -132,10 +132,13 @@ async def _pinned(db, kind: str, url: str, given: str | None) -> tuple[str, str]
     return wanted, pem
 
 
-async def _proxmox_values(db, body: ProxmoxIn) -> dict:
-    """The form's values plus the pinned certificate."""
+async def _proxmox_values(db, body: ProxmoxIn, *, saving: bool = False) -> dict:
+    """The form's values plus the pinned certificate. Saving refuses a new
+    URL while environments use the host (before any certificate fetch)."""
     try:
         url = integrations.check_proxmox_url(body.url)
+        if saving:
+            await integrations.check_url_change(db, "proxmox", url)
     except IntegrationError as e:
         raise _http(e) from None
     fingerprint, pem = await _pinned(db, "proxmox", url, body.tls_fingerprint)
@@ -143,10 +146,13 @@ async def _proxmox_values(db, body: ProxmoxIn) -> dict:
     return {**values, "url": url, "tls_fingerprint": fingerprint, "tls_cert_pem": pem}
 
 
-async def _esxi_values(db, body: EsxiIn) -> dict:
-    """The form's values plus the pinned certificate."""
+async def _esxi_values(db, body: EsxiIn, *, saving: bool = False) -> dict:
+    """The form's values plus the pinned certificate. Saving refuses a new
+    URL while environments use the host (before any certificate fetch)."""
     try:
         url = integrations.check_esxi_url(body.url)
+        if saving:
+            await integrations.check_url_change(db, "esxi", url)
     except IntegrationError as e:
         raise _http(e) from None
     fingerprint, pem = await _pinned(db, "esxi", url, body.tls_fingerprint)
@@ -191,14 +197,15 @@ async def save_npm(body: NpmIn, request: Request, db: DbSession,
 @router.put("/proxmox")
 async def save_proxmox(body: ProxmoxIn, request: Request, db: DbSession,
                        actor: AuthContext = require_permission("deploy", "change")):
-    return await _save("proxmox", await _proxmox_values(db, body), body.token, request, db,
-                       actor)
+    return await _save("proxmox", await _proxmox_values(db, body, saving=True), body.token,
+                       request, db, actor)
 
 
 @router.put("/esxi")
 async def save_esxi(body: EsxiIn, request: Request, db: DbSession,
                     actor: AuthContext = require_permission("deploy", "change")):
-    return await _save("esxi", await _esxi_values(db, body), body.password, request, db, actor)
+    return await _save("esxi", await _esxi_values(db, body, saving=True), body.password,
+                       request, db, actor)
 
 
 @router.delete("/{kind}", status_code=204)

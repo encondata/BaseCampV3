@@ -405,6 +405,20 @@ async def in_use(db: AsyncSession, kind: str) -> list[str]:
                                  .order_by(Environment.name)))
 
 
+async def check_url_change(db: AsyncSession, kind: str, url: str) -> None:
+    """A VM host's URL can't move while environments are built on it: their
+    VMs would be looked for (and called gone) on another host.
+    IntegrationError("integration_in_use", environments=[...])."""
+    if kind not in VM_HOST_KINDS:
+        return
+    stored = (await config_of(db, kind)).get("url")
+    if stored is None or stored == url:
+        return
+    users = await in_use(db, kind)
+    if users:
+        raise IntegrationError("integration_in_use", environments=users)
+
+
 async def candidate(db: AsyncSession, settings: Settings, kind: str, values: dict,
                     secret: str | None
                     ) -> CloudflareConfig | NpmConfig | ProxmoxConfig | EsxiConfig:
@@ -426,6 +440,8 @@ async def save(db: AsyncSession, settings: Settings, kind: str, values: dict,
     checked = check_fields(kind, values)
     if secret is not None:
         check_secret(kind, secret)
+    if "url" in checked:
+        await check_url_change(db, kind, checked["url"])
     row = await _row(db, kind)
     if secret is None and (row is None or row.secret_enc is None):
         raise IntegrationError("secret_required")

@@ -580,3 +580,41 @@ async def test_an_address_in_sirdar_s_registry_stops_the_create(db, esxi_env, es
                                      "target, the proxy or ESXi already uses")
     assert "Sirdar created nothing" in e.value.reason
     assert esxi_fake.specs == [] and "create_vm" not in esxi_fake.calls
+
+
+MOVED = ("This environment was built on 10.10.48.10, but the ESXi integration now points at "
+         "10.10.48.11. Point it back, or delete the environment first.")
+
+
+async def _point_esxi_at(db, url):
+    row = await db.get(Integration, "esxi", populate_existing=True)
+    row.config = {**row.config, "url": url}
+    await db.commit()
+
+
+@pytest.mark.parametrize(("step", "mode"), [("provision", "update"), ("destroy", "teardown")])
+async def test_prepare_refuses_an_integration_that_moved_to_another_host(db, esxi_env, esxi_fake,
+                                                                         step, mode):
+    await run(db, esxi_env)
+    await _point_esxi_at(db, "https://10.10.48.11")
+    esxi_fake.calls.clear()
+    with pytest.raises(VmPrepareError) as e:
+        await run(db, esxi_env, step=step, mode=mode)
+    assert e.value.reason == MOVED
+    assert esxi_fake.calls == [] and esxi_fake.by_name("ss-uat3") is not None
+    await _point_esxi_at(db, "https://10.10.48.10:443")       # the same host: fine
+    await run(db, esxi_env, step=step, mode=mode)
+
+
+async def test_destroy_never_calls_a_vm_gone_on_another_host(db, esxi_env, esxi_fake):
+    import dataclasses
+    await run(db, esxi_env)
+    ctx = await ctx_for(db, esxi_env, mode="teardown")
+    moved = dataclasses.replace(ctx, esxi=dataclasses.replace(ctx.esxi,
+                                                              url="https://10.10.48.11"))
+    esxi_fake.calls.clear()
+    lines: list[str] = []
+    with pytest.raises(StepFailed) as e:
+        await provisioner().run("destroy", moved, lines.append)
+    assert e.value.reason == MOVED
+    assert esxi_fake.calls == [] and "already gone" not in "".join(lines)

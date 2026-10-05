@@ -182,3 +182,17 @@ async def test_permissions(client, db, secrets_key):
                                ("DELETE", "", None)):
         resp = await client.request(method, URL + path, headers=admin, json=body)
         assert resp.status_code == 403, (method, path)
+
+
+async def test_the_url_can_t_change_while_an_environment_uses_it(client, db, secrets_key,
+                                                                 certificate):
+    await configure_proxmox(db)
+    await make_environment(db, name="uat3", target_id="proxmox")
+    h = await auth_headers(client, db)
+    resp = await client.put(URL, headers=h, json={**PX_BODY, "url": "https://10.10.48.99:8006",
+                                                  "token": PX_TOKEN})
+    assert (resp.status_code, resp.json()["detail"]) == (
+        409, {"code": "integration_in_use", "environments": ["uat3"]})
+    assert certificate["calls"] == []
+    resp = await client.put(URL, headers=h, json={**PX_BODY, "storage": "ssd2"})
+    assert resp.status_code == 200, resp.text

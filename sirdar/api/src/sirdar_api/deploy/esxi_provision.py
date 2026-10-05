@@ -131,6 +131,8 @@ async def prepare(db: AsyncSession, env: Environment, dep: Deployment,
     if not isinstance(row, EsxiVm):
         raise VmPrepareError("This environment has no VM record, so Sirdar won't build or "
                              "remove a VM for it.")
+    if (moved := _moved(row.host, cfg)) is not None:
+        raise VmPrepareError(moved)
     private = None
     if row.host_key_private_enc is not None:
         try:
@@ -143,6 +145,17 @@ async def prepare(db: AsyncSession, env: Environment, dep: Deployment,
                          repo_url=settings.deploy_repo_url, take_snapshot=dep.take_vm_snapshot,
                          vm_snapshot=dep.vm_snapshot, vm=EsxiVmState.of(row, private),
                          esxi=cfg)
+
+
+def _moved(host: str, cfg: EsxiConfig) -> str | None:
+    """Why the integration can't reach this environment's VM: it points at
+    another host than the one the VM was built on (None when it's the same).
+    Sirdar would otherwise look for the VM there, and call it gone."""
+    now = esxi.split_url(cfg.url)[0]
+    if now == host:
+        return None
+    return (f"This environment was built on {host}, but the ESXi integration now points at "
+            f"{now or cfg.url}. Point it back, or delete the environment first.")
 
 
 def _annotation(ctx: EsxiVmContext) -> str:
@@ -175,6 +188,8 @@ class EsxiProvisioner:
     async def run(self, step: str, ctx: EsxiVmContext, out: Output) -> VmOutcome:
         if step not in self.STEPS:
             raise ValueError(f"{step!r} isn't a VM step")
+        if (moved := _moved(ctx.vm.host, ctx.esxi)) is not None:
+            raise StepFailed(moved)
         try:
             async with esxi.connect(ctx.esxi) as api:
                 if step == "provision":
