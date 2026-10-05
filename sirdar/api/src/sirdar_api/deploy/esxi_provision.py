@@ -360,7 +360,12 @@ class EsxiProvisioner:
                              "understand. Remove the VM by hand, then retry.") from None
         if not info.disks:
             if await api.file_exists(path):
-                # Only this exact path, inside the VM's own folder, never attached.
+                # Only this exact path, inside the VM's own folder, attached to
+                # no VM on the host (this one has no disks).
+                users = await api.disk_users(path)
+                if users:
+                    raise StepFailed(f"{path} is attached to {', '.join(users)}, so Sirdar "
+                                     "won't delete it. Detach it there, then retry.")
                 await api.delete_disk(path)
                 out(f"Removed the half-copied disk {path} from an earlier attempt.\n")
             seed = await self._seed_disk(api, ctx)

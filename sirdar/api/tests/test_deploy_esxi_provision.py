@@ -645,3 +645,19 @@ async def test_a_build_needs_a_readable_host_key(db, esxi_env, esxi_fake):
     assert e.value.reason == ("Sirdar can't read the VM's host key with the current "
                               "SIRDAR_SECRETS_KEY, so it can't build the VM.")
     assert esxi_fake.specs == []
+
+
+async def test_a_half_copied_disk_another_vm_uses_is_never_deleted(db, esxi_env, esxi_fake):
+    esxi_fake.fail["attach_disk"] = EsxiError("ESXi couldn't attach the disk (x).")
+    with pytest.raises(StepFailed):
+        await run(db, esxi_env)
+    del esxi_fake.fail["attach_disk"]
+    thief = esxi_fake.add_vm("borrower", power_state="poweredOn",
+                             disks=[esxi.DiskInfo(2000, DISK, 3)])
+    esxi_fake.calls.clear()
+    with pytest.raises(StepFailed) as e:
+        await run(db, esxi_env)
+    assert e.value.reason == (f"{DISK} is attached to borrower, so Sirdar won't delete it. "
+                              "Detach it there, then retry.")
+    assert DISK in esxi_fake.files and thief.disks[0].path == DISK
+    assert "delete_disk" not in esxi_fake.calls
