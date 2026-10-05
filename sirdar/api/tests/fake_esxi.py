@@ -2,7 +2,9 @@
 over plain records. It acts the way ESXi does where Sirdar depends on it:
 VM names are unique, a disk with snapshots can't grow, CPU and memory change
 only while the VM is off, a disk-only snapshot reverts to a powered-off VM,
-and destroying a running VM is refused. `fail[method] = EsxiError(...)` makes
+destroying a running VM is refused, and a snapshot moves each disk's writes to
+a new delta file (DiskInfo.current, "-00000N.vmdk") while DiskInfo.path stays
+the base, as esxi.disk_info reads the backing.parent chain. `fail[method] = EsxiError(...)` makes
 a method fail; `logins` records (url, user) — never the password. Missing
 files, disks and snapshots, and a power-on of a running VM, fail the way
 ESXi's faults do (through esxi.fault_reason)."""
@@ -46,6 +48,13 @@ class FakeVm:
     ipv4: tuple = ()
     snapshots: list = field(default_factory=list)      # [SnapshotInfo]
     template: bool = False
+    deltas: int = 0                                    # delta files made so far
+
+    def new_delta(self) -> None:
+        """Writes go to a new delta whose parent chain ends at the base."""
+        self.deltas += 1
+        self.disks = [replace(d, current=f"{d.path.removesuffix('.vmdk')}-{self.deltas:06d}.vmdk")
+                      for d in self.disks]
 
     def info(self) -> VmInfo:
         return VmInfo(moref=self.moref, instance_uuid=self.instance_uuid, name=self.name,
@@ -248,6 +257,7 @@ class FakeEsxi:
         if quiesce and self.quiesce_fails and vm.power_state == "poweredOn":
             raise QuiesceFailed("ESXi couldn't quiesce the guest's file systems.")
         vm.snapshots.append(SnapshotInfo(next(self._ids), name, description, None))
+        vm.new_delta()
 
     async def revert_snapshot(self, uuid: str, snapshot_id: int) -> None:
         self._call("revert_snapshot")
@@ -255,6 +265,7 @@ class FakeEsxi:
         if not any(s.id == snapshot_id for s in vm.snapshots):
             raise EsxiError("ESXi has no such snapshot.")
         vm.power_state, vm.tools_running, vm.ipv4 = "poweredOff", False, ()
+        vm.new_delta()
 
     async def delete_snapshot(self, uuid: str, snapshot_id: int) -> None:
         self._call("delete_snapshot")
@@ -262,6 +273,8 @@ class FakeEsxi:
         if not any(s.id == snapshot_id for s in vm.snapshots):
             raise EsxiError("ESXi has no such snapshot.")
         vm.snapshots = [s for s in vm.snapshots if s.id != snapshot_id]
+        if not vm.snapshots:                           # consolidated back into the base
+            vm.disks = [replace(d, current="") for d in vm.disks]
 
     async def destroy(self, uuid: str) -> None:
         self._call("destroy")

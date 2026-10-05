@@ -15,7 +15,7 @@ from sirdar_api.deploy.vmcommon import VmPrepareError
 
 from .deploy_factories import secrets_key  # noqa: F401
 from .esxi_helpers import esxi_fake  # noqa: F401
-from .fake_esxi import SEED_DISK
+from .fake_esxi import SEED, SEED_DISK
 from .integration_helpers import ESXI_PASSWORD, configure_esxi
 from .proxmox_helpers import no_sleep
 from .ssh_server import ssh_server  # noqa: F401
@@ -50,10 +50,10 @@ def resolves_to(sha):
 def provisioner(**kw):
     kw.setdefault("probe", nothing_answers)
     kw.setdefault("resolve", resolves_to(SHA))
+    kw.setdefault("sleep", no_sleep)
     for key, value in (("poll", 1), ("tools_wait", 3), ("ssh_wait", 3), ("shutdown_wait", 3)):
         kw.setdefault(key, value)
-    return esxi_provision.EsxiProvisioner(settings=get_settings(), sleep=no_sleep,
-                                          now=lambda: NOW, **kw)
+    return esxi_provision.EsxiProvisioner(settings=get_settings(), now=lambda: NOW, **kw)
 
 
 async def ctx_for(db, env, *, mode="update", sha="", take=False, vm_snapshot=None):
@@ -99,6 +99,7 @@ async def test_the_first_run_builds_the_vm_and_pins_the_generated_key(db, esxi_e
     assert [d.path for d in vm.disks] == [DISK] and vm.disks[0].capacity_gb == 64
     assert vm.power_state == "poweredOn"
     assert "guestinfo.userdata" not in vm.extra and "guestinfo.metadata" in vm.extra
+    assert "guestinfo.userdata.encoding" not in vm.extra
     record = await row(db, esxi_env)
     assert (record.moref, record.instance_uuid, record.vm_path, record.created, record.ip,
             record.host_key_private_enc) == (
@@ -111,6 +112,9 @@ async def test_the_first_run_builds_the_vm_and_pins_the_generated_key(db, esxi_e
     log = "".join(lines)
     assert "PRIVATE KEY" not in log and ESXI_PASSWORD not in log
     assert SEED_DISK in esxi_fake.files                  # the seed is copied, never moved
+    seed = esxi_fake.by_name(SEED)
+    assert seed.power_state == "poweredOff" and [(d.path, d.capacity_gb) for d in seed.disks] == [
+        (SEED_DISK, 3)] and not seed.snapshots
 
 
 async def test_a_second_run_changes_nothing_and_keeps_the_pin(db, esxi_env, esxi_fake):
@@ -371,3 +375,146 @@ async def test_the_context_hides_its_secrets(db, esxi_env):
     assert ESXI_PASSWORD in ctx.secret_values
     assert any("PRIVATE KEY" in v for v in ctx.secret_values)
     assert ESXI_PASSWORD not in repr(ctx) and "PRIVATE KEY" not in repr(ctx)
+
+
+async def test_an_update_after_a_vm_snapshot_passes_the_disk_check(db, esxi_env, esxi_fake):
+    await run(db, esxi_env)
+    await run(db, esxi_env, take=True)
+    vm = esxi_fake.by_name("ss-uat3")
+    assert vm.disks[0].path == DISK
+    assert vm.disks[0].current == "[datastore1] ss-uat3/ss-uat3-disk0-000001.vmdk"
+    esxi_fake.calls.clear()
+    await run(db, esxi_env)                             # still Sirdar's disk
+    assert "power_on" not in esxi_fake.calls and [s.name for s in vm.snapshots] == [SNAP]
+
+
+async def test_a_grow_after_snapshots_shuts_down_first_then_drops_them(db, esxi_env, esxi_fake):
+    await run(db, esxi_env)
+    await run(db, esxi_env, take=True)
+    record = await row(db, esxi_env)
+    record.disk_gb = 80
+    await db.commit()
+    esxi_fake.calls.clear()
+    outcome = await run(db, esxi_env, take=True)
+    vm = esxi_fake.by_name("ss-uat3")
+    calls = esxi_fake.calls
+    assert calls.index("shutdown_guest") < calls.index("delete_snapshot") < calls.index(
+        "grow_disk") < calls.index("power_on") < calls.index("take_snapshot")
+    assert vm.disks[0].capacity_gb == 80 and outcome.vm_snapshot == SNAP
+    assert vm.disks[0].path == DISK and vm.disks[0].current.endswith("-000002.vmdk")
+
+
+async def test_a_grow_whose_guest_won_t_stop_keeps_its_snapshots(db, esxi_env, esxi_fake):
+    await run(db, esxi_env)
+    await run(db, esxi_env, take=True)
+    vm = esxi_fake.by_name("ss-uat3")
+    before = list(vm.snapshots)
+    record = await row(db, esxi_env)
+    record.disk_gb = 80
+    await db.commit()
+    esxi_fake.shutdown_stalls = True
+    esxi_fake.calls.clear()
+    with pytest.raises(StepFailed) as e:
+        await run(db, esxi_env)
+    assert "didn't shut down" in e.value.reason
+    assert vm.snapshots == before and vm.disks[0].capacity_gb == 64
+    assert not {"delete_snapshot", "grow_disk", "set_size"} & set(esxi_fake.calls)
+
+
+async def test_two_snapshots_with_a_recorded_name_block_a_grow(db, esxi_env, esxi_fake):
+    await run(db, esxi_env)
+    await run(db, esxi_env, take=True)
+    vm = esxi_fake.by_name("ss-uat3")
+    vm.snapshots.append(SnapshotInfo(606, SNAP, "", None))
+    record = await row(db, esxi_env)
+    record.disk_gb = 80
+    await db.commit()
+    esxi_fake.calls.clear()
+    with pytest.raises(StepFailed) as e:
+        await run(db, esxi_env)
+    assert SNAP in e.value.reason and len(vm.snapshots) == 2
+    assert not {"shutdown_guest", "delete_snapshot", "grow_disk"} & set(esxi_fake.calls)
+
+
+async def test_the_prune_skips_a_name_two_snapshots_share(db, esxi_env, esxi_fake):
+    await run(db, esxi_env)
+    vm = esxi_fake.by_name("ss-uat3")
+    old = ["sirdar-20261001T000000Z", "sirdar-20261002T000000Z", "sirdar-20261003T000000Z"]
+    for name in old:
+        vm.snapshots.append(SnapshotInfo(len(vm.snapshots) + 100, name, "", None))
+        db.add(Deployment(environment_id=esxi_env.id, mode="update", git_ref="main", sha=SHA,
+                          status="succeeded", start_step=0, vm=True, vm_snapshot=name))
+    vm.snapshots.append(SnapshotInfo(700, old[0], "", None))
+    await db.commit()
+    lines: list[str] = []
+    await run(db, esxi_env, take=True, lines=lines)
+    assert [s.name for s in vm.snapshots].count(old[0]) == 2
+    assert "delete_snapshot" not in esxi_fake.calls
+    assert f"ESXi has 2 VM snapshots named {old[0]}" in "".join(lines)
+
+
+async def test_a_failed_resize_after_the_shutdown_says_the_vm_is_off(db, esxi_env, esxi_fake):
+    await run(db, esxi_env)
+    record = await row(db, esxi_env)
+    record.cores = 6
+    await db.commit()
+    esxi_fake.fail["set_size"] = EsxiError("ESXi couldn't resize the VM (x).")
+    lines: list[str] = []
+    with pytest.raises(StepFailed):
+        await run(db, esxi_env, lines=lines)
+    assert "The VM was left powered off; retry the deployment." in "".join(lines)
+    assert esxi_fake.by_name("ss-uat3").power_state == "poweredOff"
+
+
+async def test_a_snapshot_that_appears_after_its_task_failed_stays_recorded(db, esxi_env,
+                                                                            esxi_fake):
+    await run(db, esxi_env)
+    vm = esxi_fake.by_name("ss-uat3")
+    esxi_fake.fail["take_snapshot"] = EsxiError("ESXi didn't finish (take a VM snapshot).")
+    waited: list[float] = []
+
+    async def late(seconds):
+        waited.append(seconds)
+        if not any(s.name == SNAP for s in vm.snapshots):
+            vm.snapshots.append(SnapshotInfo(808, SNAP, "", None))
+
+    ctx = await ctx_for(db, esxi_env, take=True)
+    with pytest.raises(StepFailed):
+        await provisioner(sleep=late).run("provision", ctx, lambda _: None)
+    assert waited
+    dep = await db.get(Deployment, ctx.deployment_id, populate_existing=True)
+    assert dep.vm_snapshot == SNAP
+
+
+async def test_a_renamed_vm_is_refused_by_prepare(db, esxi_env, esxi_fake):
+    await run(db, esxi_env)
+    vm = esxi_fake.by_name("ss-uat3")
+    vm.name = "renamed"
+    esxi_fake.calls.clear()
+    with pytest.raises(StepFailed) as e:
+        await run(db, esxi_env)
+    assert "changed nothing" in e.value.reason
+    assert not {"power_on", "power_off", "shutdown_guest", "set_size", "take_snapshot",
+                "set_extra_config"} & set(esxi_fake.calls)
+
+
+async def test_destroy_refuses_a_renamed_vm(db, esxi_env, esxi_fake):
+    await run(db, esxi_env)
+    vm = esxi_fake.by_name("ss-uat3")
+    vm.name = "renamed"
+    with pytest.raises(StepFailed) as e:
+        await run(db, esxi_env, step="destroy", mode="teardown")
+    assert "not ss-uat3" in e.value.reason
+    assert vm.instance_uuid in esxi_fake.vms and vm.power_state == "poweredOn"
+
+
+async def test_destroy_refuses_a_marker_twin(db, esxi_env, esxi_fake):
+    await run(db, esxi_env)
+    vm = esxi_fake.by_name("ss-uat3")
+    vm.power_state = "poweredOff"
+    await esxi_fake.destroy(vm.instance_uuid)
+    twin = esxi_fake.add_vm("ss-uat3", owner=str(esxi_env.id), power_state="poweredOn")
+    with pytest.raises(StepFailed) as e:
+        await run(db, esxi_env, step="destroy", mode="teardown")
+    assert "its id changed" in e.value.reason
+    assert esxi_fake.by_name("ss-uat3") is twin and twin.power_state == "poweredOn"

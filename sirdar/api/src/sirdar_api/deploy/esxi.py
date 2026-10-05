@@ -57,6 +57,8 @@ LICENSE_READ_ONLY = ("ESXi's license doesn't allow changes through its API (a fr
                      "license is read-only). Sirdar needs a paid license.")
 MALFORMED = "ESXi answered in a way Sirdar doesn't understand."
 _VM_PATH_RE = re.compile(r"(\[[^\]]+\] [^/]+)/[^/]+\.vmx")
+# ESXi allows 32 snapshots in a chain: a longer backing.parent chain is malformed.
+_MAX_DELTA_CHAIN = 64
 _QUIESCE_FAULTS = ("ApplicationQuiesceFault", "FilesystemQuiesceFault")
 
 
@@ -91,8 +93,11 @@ class DatastoreInfo:
 @dataclass(frozen=True)
 class DiskInfo:
     key: int
-    path: str                       # "[datastore1] ss-uat3/ss-uat3-disk0.vmdk"
+    path: str                       # the base file: "[datastore1] ss-uat3/ss-uat3-disk0.vmdk"
     capacity_gb: int
+    # The file the VM writes now when a snapshot made it a delta
+    # ("...-disk0-000001.vmdk"); "" while it writes the base itself.
+    current: str = ""
 
 
 @dataclass(frozen=True)
@@ -283,10 +288,28 @@ def guest_ipv4(guest) -> tuple[str, ...]:
     return tuple(found)
 
 
+def disk_info(device) -> DiskInfo:
+    """A virtual disk by its base file. Once the VM has a snapshot,
+    backing.fileName is the newest delta; the base is the root of the
+    backing.parent chain."""
+    backing = device.backing
+    current = str(backing.fileName)
+    for _ in range(_MAX_DELTA_CHAIN):
+        parent = getattr(backing, "parent", None)
+        if parent is None:
+            break
+        backing = parent
+    else:
+        raise EsxiError(MALFORMED)
+    base = str(backing.fileName)
+    return DiskInfo(int(device.key), base, int(device.capacityInKB) // _KB_PER_GB,
+                    current="" if current == base else current)
+
+
 def vm_info(vm) -> VmInfo:
     cfg = vm.config
-    disks = tuple(DiskInfo(int(d.key), str(d.backing.fileName), int(d.capacityInKB) // _KB_PER_GB)
-                  for d in cfg.hardware.device if isinstance(d, vim.vm.device.VirtualDisk))
+    disks = tuple(disk_info(d) for d in cfg.hardware.device
+                  if isinstance(d, vim.vm.device.VirtualDisk))
     tree = vm.snapshot.rootSnapshotList if vm.snapshot else ()
     return VmInfo(moref=str(vm._moId), instance_uuid=str(cfg.instanceUuid), name=str(cfg.name),
                   owner=owner_of(cfg.extraConfig), power_state=str(vm.runtime.powerState),

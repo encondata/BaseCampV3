@@ -94,6 +94,25 @@ def test_vm_info_reads_disks_owner_and_snapshots():
                                                               "by hand"]
 
 
+def test_vm_info_reports_a_snapshotted_disk_by_its_base_file():
+    """Once a VM has a snapshot, ESXi's backing.fileName is the delta; the
+    base is the root of backing.parent."""
+    Backing = vim.vm.device.VirtualDisk.FlatVer2BackingInfo
+    base = Backing(fileName="[datastore1] ss-uat3/ss-uat3-disk0.vmdk")
+    middle = Backing(fileName="[datastore1] ss-uat3/ss-uat3-disk0-000001.vmdk", parent=base)
+    delta = Backing(fileName="[datastore1] ss-uat3/ss-uat3-disk0-000002.vmdk", parent=middle)
+    disk = vim.vm.device.VirtualDisk(key=2000, capacityInKB=64 * 1024 * 1024, backing=delta)
+    vm = SimpleNamespace(
+        _moId="12", runtime=SimpleNamespace(powerState="poweredOn"), snapshot=None,
+        config=SimpleNamespace(
+            instanceUuid="52aa", name="ss-uat3", template=False,
+            files=SimpleNamespace(vmPathName="[datastore1] ss-uat3/ss-uat3.vmx"),
+            extraConfig=[], hardware=SimpleNamespace(numCPU=4, memoryMB=8192, device=[disk])))
+    [info] = esxi.vm_info(vm).disks
+    assert info.path == "[datastore1] ss-uat3/ss-uat3-disk0.vmdk"
+    assert info.current == "[datastore1] ss-uat3/ss-uat3-disk0-000002.vmdk"
+
+
 def test_guest_ipv4_skips_link_local_and_non_virtual_nics():
     def nic(device, *ips):
         return SimpleNamespace(deviceConfigId=device, ipAddress=list(ips),

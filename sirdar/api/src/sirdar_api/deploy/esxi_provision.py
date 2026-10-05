@@ -15,6 +15,7 @@ from esxi_vms. Failures raise publish.StepFailed with our own copy."""
 
 import asyncio
 import uuid
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -35,7 +36,7 @@ from sirdar_api.deploy import (
     vmcommon,
     vms,
 )
-from sirdar_api.deploy.esxi import EsxiApi, EsxiError, QuiesceFailed, VmInfo
+from sirdar_api.deploy.esxi import EsxiApi, EsxiError, QuiesceFailed, SnapshotInfo, VmInfo
 from sirdar_api.deploy.integrations import EsxiConfig, IntegrationError
 from sirdar_api.deploy.publish import StepFailed
 from sirdar_api.deploy.vmcommon import Output, VmOutcome, VmPrepareError
@@ -44,6 +45,7 @@ TOOLS_WAIT_SECONDS = 5 * 60
 SSH_WAIT_SECONDS = 5 * 60
 SHUTDOWN_WAIT_SECONDS = 5 * 60
 POLL_SECONDS = 5
+SNAPSHOT_GRACE_SECONDS = 15
 HOST_LABEL = "ESXi"
 
 
@@ -246,20 +248,26 @@ class EsxiProvisioner:
             info = await self._lost_vm(api, ctx, out) or await self._create(api, ctx, out)
         uuid_ = info.instance_uuid
         snapshot: str | None = None
+        grows = False
         if vm.created:
             self._check_disk(info, ctx)
             grows = vm.disk_gb > info.disk_gb
-            if not grows:
+            doomed = None
+            if grows:
+                # ESXi can't grow a disk with snapshots. Refused here, before any
+                # change, unless every one is Sirdar's; they go after the shutdown.
+                doomed = await self._snapshots_for_grow(api, ctx, uuid_)
+            else:
                 # Before anything changes: the snapshot holds the VM as it was.
                 snapshot = await self._snapshot(api, ctx, uuid_, out)
-            await self._resize(api, ctx, info, grows, out)
-            if grows:
-                # ESXi can't grow a disk with snapshots: the new one comes after.
-                snapshot = await self._snapshot(api, ctx, uuid_, out)
+            await self._resize(api, ctx, info, doomed, out)
         else:
             await self._build(api, ctx, info, out)
         await self._start(api, uuid_, out)
         ip = await self._address(api, uuid_, out, vm)
+        if grows:
+            # The grown VM is back up (Tools answer, so it can quiesce).
+            snapshot = await self._snapshot(api, ctx, uuid_, out)
         await vmcommon.settle_address(
             self._settings, model=EsxiVm, env_id=ctx.env_id, previous_ip=vm.ip, ip=ip,
             pin=lambda: self._pin(ctx, ip, out), actor_id=ctx.actor_id,
@@ -336,29 +344,44 @@ class EsxiProvisioner:
             await api.grow_disk(uuid_, info.disks[0].key, vm.disk_gb)
             out(f"Grew the disk to {vm.disk_gb} GB.\n")
 
-    async def _resize(self, api: EsxiApi, ctx: EsxiVmContext, info: VmInfo, grows: bool,
-                      out: Output) -> None:
+    async def _resize(self, api: EsxiApi, ctx: EsxiVmContext, info: VmInfo,
+                      doomed: list[SnapshotInfo] | None, out: Output) -> None:
+        """`doomed` (only when the disk grows): the snapshots to delete first.
+        Order: graceful shutdown (or nothing changes), the snapshots, the
+        size, the disk; _start powers the VM on after."""
         vm, uuid_ = ctx.vm, info.instance_uuid
+        grows = doomed is not None
         if info.disk_gb > vm.disk_gb:
             out(f"The disk is {info.disk_gb} GB, more than the {vm.disk_gb} GB recorded; "
                 "Sirdar never shrinks a disk.\n")
         resize = (info.cores, info.memory_mb) != (vm.cores, vm.memory_mb)
         if not resize and not grows:
             return
-        if grows:
-            await self._drop_snapshots_for_grow(api, ctx, uuid_, out)
+        stopped = False
         if info.power_state != "poweredOff":
             await self._shut_down(api, uuid_, out)
-        if resize:
-            await api.set_size(uuid_, vm.cores, vm.memory_mb)
-            out(f"Set {vm.name} to {vm.cores} vCPU and {vm.memory_mb / 1024:g} GB.\n")
-        if grows:
-            await api.grow_disk(uuid_, info.disks[0].key, vm.disk_gb)
-            out(f"Grew the disk from {info.disk_gb} GB to {vm.disk_gb} GB; the guest grows its "
-                "file system when it boots.\n")
+            stopped = True
+        try:
+            for snap in doomed or ():
+                await api.delete_snapshot(uuid_, snap.id)
+                out(f"Deleted the VM snapshot {snap.name}: ESXi can't grow a disk that has "
+                    "snapshots.\n")
+            if resize:
+                await api.set_size(uuid_, vm.cores, vm.memory_mb)
+                out(f"Set {vm.name} to {vm.cores} vCPU and {vm.memory_mb / 1024:g} GB.\n")
+            if grows:
+                await api.grow_disk(uuid_, info.disks[0].key, vm.disk_gb)
+                out(f"Grew the disk from {info.disk_gb} GB to {vm.disk_gb} GB; the guest grows "
+                    "its file system when it boots.\n")
+        except (EsxiError, StepFailed):
+            if stopped:
+                out("The VM was left powered off; retry the deployment.\n")
+            raise
 
-    async def _drop_snapshots_for_grow(self, api: EsxiApi, ctx: EsxiVmContext, uuid_: str,
-                                       out: Output) -> None:
+    async def _snapshots_for_grow(self, api: EsxiApi, ctx: EsxiVmContext,
+                                  uuid_: str) -> list[SnapshotInfo]:
+        """The VM's snapshots, which a grow deletes: refused (changing nothing)
+        unless each is one Sirdar recorded, and no two share a name."""
         snaps = await api.snapshots(uuid_)
         recorded = await vmcommon.recorded_snapshots(ctx.env_id)
         foreign = sorted({s.name for s in snaps
@@ -367,10 +390,14 @@ class EsxiProvisioner:
             raise StepFailed(f"ESXi can't grow a disk that has snapshots, and "
                              f"{', '.join(foreign)} weren't taken by Sirdar, so it won't delete "
                              "them. Delete them in the ESXi Host Client, then retry.")
-        for snap in snaps:
-            await api.delete_snapshot(uuid_, snap.id)
-            out(f"Deleted the VM snapshot {snap.name}: ESXi can't grow a disk that has "
-                "snapshots.\n")
+        names = Counter(s.name for s in snaps)
+        twice = sorted(n for n, count in names.items() if count > 1)
+        if twice:
+            raise StepFailed(f"ESXi can't grow a disk that has snapshots, and it has more than "
+                             f"one VM snapshot named {', '.join(twice)}, so Sirdar won't pick "
+                             "which to delete. Sirdar changed nothing: delete the extra one in "
+                             "the ESXi Host Client, then retry.")
+        return snaps
 
     async def _shut_down(self, api: EsxiApi, uuid_: str, out: Output) -> None:
         out("Shutting the guest down to resize the VM.\n")
@@ -454,6 +481,9 @@ class EsxiProvisioner:
                 await api.take_snapshot(uuid_, name, description, quiesce=False)
         except EsxiError:
             with suppress(EsxiError):
+                # A task that timed out can still finish: give it a moment, so
+                # a late snapshot stays recorded (and so pruned in turn).
+                await self._sleep(SNAPSHOT_GRACE_SECONDS)
                 if all(s.name != name for s in await api.snapshots(uuid_)):
                     await vmcommon.record_vm_snapshot(ctx.deployment_id, None)
             raise
@@ -462,8 +492,13 @@ class EsxiProvisioner:
         doomed = set(vmcommon.to_prune([s.name for s in current],
                                        await vmcommon.recorded_snapshots(ctx.env_id) | {name},
                                        ctx.vm.keep_snapshots))
+        counts = Counter(s.name for s in current)
         for snap in current:
-            if snap.name in doomed:
+            if snap.name in doomed and counts[snap.name] > 1:
+                out(f"ESXi has {counts[snap.name]} VM snapshots named {snap.name}; Sirdar won't "
+                    "pick which to delete, so it kept them.\n")
+                doomed.discard(snap.name)
+            elif snap.name in doomed:
                 await api.delete_snapshot(uuid_, snap.id)
                 out(f"Deleted the old VM snapshot {snap.name} (keeping the newest "
                     f"{ctx.vm.keep_snapshots}).\n")
