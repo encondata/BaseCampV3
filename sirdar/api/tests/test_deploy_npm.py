@@ -26,7 +26,7 @@ async def test_login_and_reads():
     hid = fake.add_host("api.uat.serversherpa.com", "10.10.48.63", 8000, certificate_id=7)
     cid = fake.add_cert(["*.uat.serversherpa.com"], days=45)
     async with _client(fake) as api:
-        assert await api.version() == "2.12.3"
+        assert await api.version() == "2.16.0"
         hosts = await api.proxy_hosts()
         certs = await api.certificates()
     assert [(h.id, h.domain_names, h.forward_host, h.forward_port, h.certificate_id)
@@ -78,7 +78,8 @@ async def test_hosts_create_update_delete():
         assert moved.forward_port == 8101
         with pytest.raises(NpmError) as e:
             await api.update_host(host.id, {"enabled": False})
-        assert e.value.reason == "Nginx Proxy Manager answered with HTTP 400."
+        assert e.value.reason == ("Nginx Proxy Manager refused the request: data should NOT "
+                                  "have additional properties (enabled)")
         assert await api.delete_host(host.id) is True
         assert await api.delete_host(host.id) is False
 
@@ -98,9 +99,7 @@ async def test_a_certificate_request_waits_out_certbot():
         "api.uat2.serversherpa.com: Let's Encrypt couldn't check the name yet; trying again in "
         "120 s\n",
     ]
-    body = fake.requests[-1].read()
-    assert b'"letsencrypt_email":"ops@example.com"' in body.replace(b" ", b"")
-    assert b'"dns_challenge":false' in body.replace(b" ", b"")
+    assert fake.cert_metas[-1] == {"dns_challenge": False}
 
 
 async def test_a_certificate_request_gives_up_after_the_backoff():
@@ -152,11 +151,11 @@ async def test_connection_test():
     result = await npm.test_connection(CFG, transport=fake.transport(), now=NOW)
     assert result.target == "npm"
     assert [(c.label, c.status, c.value) for c in result.checks] == [
-        ("Login", "pass", "admin@example.com"), ("Version", "pass", "2.12.3"),
+        ("Login", "pass", "admin@example.com"), ("Version", "pass", "2.16.0"),
         ("Proxy hosts", "pass", "1"),
         ("Certificates", "warn", "2, 1 expiring within 30 days"),
     ]
-    assert result.facts == {"url": "http://10.10.48.6:81", "version": "2.12.3",
+    assert result.facts == {"url": "http://10.10.48.6:81", "version": "2.16.0",
                             "proxy_hosts": 1, "certificates": 2}
     fake.secret = "changed-password"
     with pytest.raises(ConnectFailed) as e:
@@ -226,7 +225,8 @@ async def test_the_fake_refuses_what_npm_refuses():
     async with _client(fake) as api:
         with pytest.raises(NpmError) as e:
             await api.create_host({"domain_names": ["API.uat.serversherpa.com"], **full})
-        assert e.value.reason == "Nginx Proxy Manager answered with HTTP 400."
+        assert e.value.reason == ("Nginx Proxy Manager refused the request: "
+                                  "api.uat.serversherpa.com is already in use")
         assert fake.last_error == "api.uat.serversherpa.com is already in use"
         for missing in ("domain_names", "forward_scheme", "forward_host", "forward_port"):
             body = {"domain_names": ["portal.uat.serversherpa.com"], **full}
@@ -238,15 +238,126 @@ async def test_the_fake_refuses_what_npm_refuses():
 
 
 async def test_the_fake_checks_certificate_requests():
-    fake = FakeNpm()
+    """2.13+ refuses the removed meta keys; legacy (2.12) requires them."""
+    fake, legacy = FakeNpm(), FakeNpm(legacy=True)
+    bad = {"provider": "other", "domain_names": ["a.serversherpa.com"],
+           "meta": {"dns_challenge": False}}
+    old = {"provider": "letsencrypt", "domain_names": ["a.serversherpa.com"],
+           "meta": {"letsencrypt_email": "ops@example.com", "letsencrypt_agree": True,
+                    "dns_challenge": False}}
+    new = {"provider": "letsencrypt", "domain_names": ["a.serversherpa.com"],
+           "meta": {"dns_challenge": False}}
     async with _client(fake) as api:
-        for body in ({"provider": "other", "domain_names": ["a.serversherpa.com"],
-                      "meta": {"letsencrypt_agree": True}},
-                     {"provider": "letsencrypt", "domain_names": ["a.serversherpa.com"],
-                      "meta": {"letsencrypt_agree": False}}):
+        for body in (bad, old):
             with pytest.raises(NpmError):
                 await api._call("POST", "/nginx/certificates", json=body)
-    assert fake.certs == {}
+        assert fake.last_error == "data/meta must NOT have additional properties"
+    async with _client(legacy) as api:
+        assert await api.version() == "2.12.3"
+        with pytest.raises(NpmError):
+            await api._call("POST", "/nginx/certificates", json=new)
+        assert legacy.last_error == "data/meta must have required property 'letsencrypt_email'"
+        with pytest.raises(NpmError):
+            await api._call("POST", "/nginx/certificates", json={
+                **old, "meta": {**old["meta"], "letsencrypt_agree": False}})
+    assert fake.certs == {} and legacy.certs == {}
+
+
+async def test_modern_npm_gets_the_modern_certificate_body():
+    """NPM 2.13+ dropped letsencrypt_email/letsencrypt_agree (it uses the NPM
+    user's email and always agrees); sending them is a 400."""
+    fake = FakeNpm()
+    async with _client(fake) as api:
+        cert = await api.request_certificate("api.uat2.serversherpa.com", "ops@example.com")
+    assert cert.domain_names == ("api.uat2.serversherpa.com",)
+    assert fake.cert_metas == [{"dns_challenge": False}]
+    body = next(r for r in fake.requests if r.url.path == "/api/nginx/certificates").read()
+    assert b"ops@example.com" not in body and b"letsencrypt_agree" not in body
+
+
+async def test_legacy_npm_gets_the_legacy_certificate_body():
+    fake = FakeNpm(legacy=True)
+    async with _client(fake) as api:
+        await api.request_certificate("api.uat2.serversherpa.com", "ops@example.com")
+    assert fake.cert_metas == [{"letsencrypt_email": "ops@example.com",
+                                "letsencrypt_agree": True, "dns_challenge": False}]
+    assert len(fake.certs) == 1
+
+
+@pytest.mark.parametrize("legacy,reported", [(True, (2, 16, 0)), (False, (2, 12, 3))])
+async def test_a_wrong_schema_guess_retries_once_with_the_other_body(legacy, reported):
+    fake = FakeNpm(legacy=legacy, version=reported)
+    async with _client(fake) as api:
+        await api.request_certificate("api.uat2.serversherpa.com", "ops@example.com")
+    assert len(fake.cert_metas) == 2
+    assert ("letsencrypt_email" in fake.cert_metas[-1]) is legacy
+    assert len(fake.certs) == 1
+
+
+async def test_an_unreadable_version_assumes_modern_npm():
+    fake = FakeNpm(legacy=True, version=None)
+    async with _client(fake) as api:
+        await api.request_certificate("api.uat2.serversherpa.com", "ops@example.com")
+    assert [("letsencrypt_email" in m) for m in fake.cert_metas] == [False, True]
+
+
+async def test_other_certificate_400s_are_not_retried_and_say_why():
+    fake = FakeNpm()
+    fake.cert_refusal = "data/domain_names/0 must match format \"domain\""
+    sleeps = []
+    async with _client(fake, sleeps) as api:
+        with pytest.raises(NpmError) as e:
+            await api.request_certificate("api.uat2.serversherpa.com", "ops@example.com")
+    assert e.value.reason == ("Nginx Proxy Manager refused the request: data/domain_names/0 "
+                              'must match format "domain"')
+    assert e.value.status == 400
+    assert len(fake.cert_metas) == 1 and sleeps == []
+
+
+async def test_a_refusal_message_is_one_short_clean_line():
+    fake = FakeNpm()
+    fake.host_refusal = "bad\x00 thing\r\n\tsecond\x1b[31m line " + "x" * 400
+    async with _client(fake) as api:
+        with pytest.raises(NpmError) as e:
+            await api.proxy_hosts()
+    reason = e.value.reason
+    prefix = "Nginx Proxy Manager refused the request: "
+    assert reason.startswith(prefix + "bad thing second [31m line x")
+    message = reason.removeprefix(prefix)
+    assert len(message) <= 200
+    assert all(ch.isprintable() for ch in reason)
+
+
+async def test_a_refusal_without_a_message_keeps_the_status_copy():
+    fake = FakeNpm()
+    fake.host_refusal = ""
+    async with _client(fake) as api:
+        with pytest.raises(NpmError) as e:
+            await api.proxy_hosts()
+    assert e.value.reason == "Nginx Proxy Manager answered with HTTP 400."
+
+
+async def test_a_refusal_never_echoes_the_password_or_token():
+    fake = FakeNpm()
+    async with _client(fake) as api:
+        fake.host_refusal = f"bad secret {NPM_PASSWORD} and token {api._token}"
+        with pytest.raises(NpmError) as e:
+            await api.proxy_hosts()
+        assert api._token not in e.value.reason
+    assert NPM_PASSWORD not in e.value.reason
+    assert e.value.reason.startswith("Nginx Proxy Manager refused the request: bad secret")
+
+
+@pytest.mark.parametrize("status", [400, 403, 422])
+async def test_login_refusals_never_echo_npm(status):
+    fake = FakeNpm()
+    fake.login_refusal = (status, f"identity admin@example.com secret {NPM_PASSWORD}")
+    with pytest.raises(NpmError) as e:
+        async with _client(fake):
+            pass
+    assert NPM_PASSWORD not in e.value.reason and "admin@" not in e.value.reason
+    assert e.value.reason in ("Nginx Proxy Manager rejected the login.",
+                              f"Nginx Proxy Manager answered with HTTP {status}.")
 
 
 def test_covers_ignores_the_hostname_case():
