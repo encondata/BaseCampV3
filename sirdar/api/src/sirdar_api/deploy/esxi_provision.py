@@ -567,6 +567,16 @@ class EsxiProvisioner:
             out(f"Forgot {vm.ip}'s SSH host key.\n")
 
     async def _remove(self, api: EsxiApi, found: VmInfo, vm: EsxiVmState, out: Output) -> None:
+        # Destroy deletes every disk attached to the VM: only none, or the one
+        # Sirdar copied into the VM's folder (its base, under any snapshot deltas).
+        if found.disks:
+            try:
+                ours = esxi.disk_path_for(found.vm_path, vm.name)
+            except ValueError:
+                ours = None
+            if len(found.disks) != 1 or found.disks[0].path != ours:
+                raise StepFailed(f"VM {vm.name} has a disk Sirdar didn't put there; detach it "
+                                 "before deleting the environment. Nothing was removed.")
         if found.power_state != "poweredOff":
             await api.power_off(found.instance_uuid)
             out("Powered the VM off.\n")

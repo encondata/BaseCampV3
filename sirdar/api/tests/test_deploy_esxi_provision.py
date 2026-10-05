@@ -518,3 +518,41 @@ async def test_destroy_refuses_a_marker_twin(db, esxi_env, esxi_fake):
         await run(db, esxi_env, step="destroy", mode="teardown")
     assert "its id changed" in e.value.reason
     assert esxi_fake.by_name("ss-uat3") is twin and twin.power_state == "poweredOn"
+
+
+FOREIGN_DISK = "[datastore1] shared/shared-data.vmdk"
+
+
+@pytest.mark.parametrize("how", ["extra", "swapped"])
+async def test_destroy_refuses_a_disk_sirdar_didn_t_put_there(db, esxi_env, esxi_fake, how):
+    await run(db, esxi_env)
+    vm = esxi_fake.by_name("ss-uat3")
+    esxi_fake.files[FOREIGN_DISK] = 100
+    foreign = esxi.DiskInfo(2100, FOREIGN_DISK, 100)
+    vm.disks = [*vm.disks, foreign] if how == "extra" else [foreign]
+    esxi_fake.calls.clear()
+    with pytest.raises(StepFailed) as e:
+        await run(db, esxi_env, step="destroy", mode="teardown")
+    assert e.value.reason == ("VM ss-uat3 has a disk Sirdar didn't put there; detach it before "
+                              "deleting the environment. Nothing was removed.")
+    assert vm.instance_uuid in esxi_fake.vms and vm.power_state == "poweredOn"
+    assert FOREIGN_DISK in esxi_fake.files
+    assert not {"power_off", "destroy"} & set(esxi_fake.calls)
+
+
+async def test_destroy_takes_a_vm_whose_disk_has_snapshot_deltas(db, esxi_env, esxi_fake):
+    await run(db, esxi_env, take=True)
+    await run(db, esxi_env, take=True)
+    vm = esxi_fake.by_name("ss-uat3")
+    assert vm.disks[0].current                       # writes go to a delta now
+    await run(db, esxi_env, step="destroy", mode="teardown")
+    assert esxi_fake.by_name("ss-uat3") is None
+
+
+async def test_destroy_takes_an_unfinished_vm_with_no_disk(db, esxi_env, esxi_fake):
+    esxi_fake.fail["copy_disk"] = EsxiError("ESXi couldn't copy the seed disk (x).")
+    with pytest.raises(StepFailed):
+        await run(db, esxi_env)
+    assert esxi_fake.by_name("ss-uat3").disks == []
+    await run(db, esxi_env, step="destroy", mode="teardown")
+    assert esxi_fake.by_name("ss-uat3") is None
