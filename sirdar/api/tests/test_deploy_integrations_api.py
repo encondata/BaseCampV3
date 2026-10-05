@@ -135,7 +135,7 @@ async def test_test_with_saved_and_unsaved_values(client, db, secrets_key, fakes
     assert (await client.get(URL, headers=h)).json()["cloudflare"]["configured"] is False
     await client.put(f"{URL}/npm", headers=h, json=NPM_BODY)
     resp = await client.post(f"{URL}/npm/test", headers=h)
-    assert (resp.status_code, resp.json()["facts"]["version"]) == (200, "2.12.3")
+    assert (resp.status_code, resp.json()["facts"]["version"]) == (200, "2.16.0")
     resp = await client.post(f"{URL}/npm/test", headers=h,
                              json={**NPM_BODY, "password": "wrong-password"})
     assert (resp.status_code, resp.json()["detail"]) == (

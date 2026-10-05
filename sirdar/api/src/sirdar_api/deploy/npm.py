@@ -15,10 +15,18 @@ A certificate request that times out may still have been issued by NPM:
 callers re-list certificates (and reuse one that covers the name) before
 requesting again.
 
-The password goes only into the login body; errors carry our own copy, never
-NPM's or httpx's text."""
+NPM 2.13.0 dropped meta.letsencrypt_email and meta.letsencrypt_agree from
+the certificate schema (meta refuses unknown keys, the email is the NPM
+user's own and --agree-tos is always passed); 2.12.x needs both. The body is
+picked by the version GET /api/ reports, and a 400 that names the other
+schema is retried once with the other body.
+
+The password goes only into the login body. Errors carry our own copy; a
+4xx outside the login adds NPM's error.message, cleaned to one short line
+with the password and token taken out. A login refusal never echoes NPM."""
 
 import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -44,15 +52,20 @@ _UNREACHABLE = "Couldn't reach Nginx Proxy Manager."
 _TIMED_OUT = "Nginx Proxy Manager didn't answer in time."
 _BAD_LOGIN = "Nginx Proxy Manager rejected the login."
 _UNEXPECTED = "Nginx Proxy Manager sent a response Sirdar didn't understand."
+_REFUSED = "Nginx Proxy Manager refused the request: "
+MESSAGE_MAX = 200
+LEGACY_CERT_BEFORE = (2, 13)   # NPM versions before this take letsencrypt_email/_agree
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 class NpmError(Exception):
     """`reason` is user-facing copy we wrote."""
 
-    def __init__(self, reason: str, status: int | None = None):
+    def __init__(self, reason: str, status: int | None = None, message: str = ""):
         super().__init__(reason)
         self.reason = reason
         self.status = status  # the HTTP status NPM answered with, when it did
+        self.message = message  # NPM's cleaned error.message on a 4xx, else ""
 
 
 class NotFound(NpmError):
@@ -141,6 +154,48 @@ def _certificate(raw) -> Certificate:
         raise NpmError(_UNEXPECTED) from None
 
 
+def _clean(text: str, *secrets: str) -> str:
+    """One printable line of at most MESSAGE_MAX characters, secrets removed."""
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "")
+    text = " ".join(_CONTROL.sub(" ", text).split())
+    for secret in secrets:  # a secret split by a control character
+        if secret:
+            text = text.replace(secret, "")
+    return text if len(text) <= MESSAGE_MAX else text[:MESSAGE_MAX - 1].rstrip() + "…"
+
+
+def _npm_message(resp: httpx.Response) -> str:
+    try:
+        message = resp.json()["error"]["message"]
+    except (ValueError, KeyError, TypeError):
+        return ""
+    return message if isinstance(message, str) else ""
+
+
+def _parse_version(value: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in value.split("."))
+
+
+def _cert_body(domain: str, email: str, legacy: bool) -> dict:
+    meta = {"dns_challenge": False}
+    if legacy:
+        meta = {"letsencrypt_email": email, "letsencrypt_agree": True, **meta}
+    return {"provider": "letsencrypt", "domain_names": [domain], "meta": meta}
+
+
+def _other_schema(e: NpmError, legacy: bool) -> bool:
+    """The 400 says NPM wants the other certificate body."""
+    if e.status != 400:
+        return False
+    text = e.message.lower()
+    if legacy:
+        return "additional properties" in text
+    return any(k in text for k in ("letsencrypt_email", "letsencrypt_agree",
+                                   "must have required property"))
+
+
 def _cert_failed(domain: str) -> str:
     return (f"Nginx Proxy Manager couldn't get a certificate for {domain}. Check that the name "
             "resolves to the public IP and that port 80 reaches the proxy, then retry.")
@@ -158,6 +213,7 @@ class Npm:
         self._backoff = backoff
         self._client: httpx.AsyncClient | None = None
         self._token = ""
+        self._legacy_certs: bool | None = None
 
     async def __aenter__(self) -> "Npm":
         self._client = httpx.AsyncClient(base_url=self.cfg.url + "/api", timeout=TIMEOUT,
@@ -212,6 +268,10 @@ class Npm:
             for marker, why in _RETRYABLE.items():
                 if marker in text:
                     raise _Retryable(why)
+            if resp.status_code < 500:
+                message = _clean(_npm_message(resp), self.cfg.password, self._token)
+                if message:
+                    raise NpmError(_REFUSED + message, resp.status_code, message)
             raise NpmError(f"Nginx Proxy Manager answered with HTTP {resp.status_code}.",
                            resp.status_code)
         try:
@@ -272,11 +332,34 @@ class Npm:
                 raise
         raise NpmError(_cert_failed(domain))
 
+    async def _legacy_certificates(self) -> bool:
+        """NPM before 2.13 wants letsencrypt_email/_agree; an unreadable
+        version counts as current NPM (the 400 retry covers a wrong guess)."""
+        if self._legacy_certs is None:
+            try:
+                self._legacy_certs = _parse_version(await self.version()) < LEGACY_CERT_BEFORE
+            except TimedOut:
+                raise
+            except NpmError:
+                self._legacy_certs = False
+        return self._legacy_certs
+
     async def request_certificate(self, domain: str, email: str,
                                   out: Callable[[str], None] | None = None) -> Certificate:
-        body = {"provider": "letsencrypt", "domain_names": [domain],
-                "meta": {"letsencrypt_email": email, "letsencrypt_agree": True,
-                         "dns_challenge": False}}
+        """`email` only reaches NPM before 2.13; later NPM uses its user's."""
+        legacy = await self._legacy_certificates()
+        try:
+            return await self._post_certificate(domain, email, legacy, out)
+        except NpmError as e:
+            if not _other_schema(e, legacy):
+                raise
+        cert = await self._post_certificate(domain, email, not legacy, out)
+        self._legacy_certs = not legacy
+        return cert
+
+    async def _post_certificate(self, domain: str, email: str, legacy: bool,
+                                out: Callable[[str], None] | None) -> Certificate:
+        body = _cert_body(domain, email, legacy)
         return await self._certbot(domain, out, lambda: self._call(
             "POST", "/nginx/certificates", json=body, timeout=CERT_TIMEOUT))
 

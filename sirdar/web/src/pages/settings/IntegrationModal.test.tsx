@@ -83,6 +83,8 @@ it('editing NPM keeps the stored password unless it is replaced, and never offer
   expect(within(dialog).getByText('Password: set')).toBeTruthy();
   expect(within(dialog).queryByRole('button', { name: 'Clear' })).toBeNull();
   expect((within(dialog).getByLabelText("Let's Encrypt email") as HTMLInputElement).value).toBe('');
+  expect(within(dialog).getByText(
+    "Older Nginx Proxy Manager versions use this; 2.16 and later use the NPM login's own email.")).toBeTruthy();
   const login = within(dialog).getByLabelText('Login email');
   await userEvent.clear(login);
   await userEvent.type(login, 'ops@example.com');

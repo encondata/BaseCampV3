@@ -1,7 +1,13 @@
 """A stand-in for the Nginx Proxy Manager REST API calls deploy/npm.py
 makes: an httpx.MockTransport over in-memory proxy hosts and certificates.
 Hosts and certificates share one id counter, as ids are only compared
-within a kind."""
+within a kind.
+
+Certificate requests follow NPM 2.13+'s schema (2.16.0 is live): meta
+refuses unknown keys, and letsencrypt_email / letsencrypt_agree are gone
+(NPM uses its user's email and always agrees). `legacy=True` models 2.12.x,
+which reports 2.12.3 and needs both keys. `version` overrides what GET /api/
+reports (None: the call fails), to test a wrong guess."""
 
 import itertools
 import json
@@ -18,12 +24,22 @@ CERTBOT_BUSY = ("Command failed: certbot certonly ... Another instance of Certbo
 CHALLENGE_FAILED = "Some challenges have failed."
 OTHER_CERTBOT = "Command failed: certbot certonly ... urn:ietf:params:acme:error:rateLimited"
 REQUIRED_HOST_FIELDS = ("domain_names", "forward_scheme", "forward_host", "forward_port")
+MODERN_META = {"certificate", "certificate_key", "dns_challenge", "dns_provider_credentials",
+               "dns_provider", "letsencrypt_certificate", "propagation_seconds", "key_type"}
+LEGACY_META = (MODERN_META - {"key_type"}) | {"letsencrypt_email", "letsencrypt_agree"}
+_DEFAULT = object()
 
 
 class FakeNpm:
     def __init__(self, *, identity: str = "admin@example.com", secret: str = NPM_PASSWORD,
-                 now: datetime | None = None):
+                 now: datetime | None = None, legacy: bool = False, version=_DEFAULT):
         self.identity, self.secret = identity, secret
+        self.legacy = legacy
+        self.version = ((2, 12, 3) if legacy else (2, 16, 0)) if version is _DEFAULT else version
+        self.cert_metas: list[dict] = []   # meta of every certificate request
+        self.cert_refusal: str | None = None   # the next certificate request answers this 400
+        self.host_refusal: str | None = None   # the next proxy-host call answers this 400
+        self.login_refusal: tuple[int, str] | None = None  # (status, message) for logins
         self.now = now or datetime.now(UTC)
         self.hosts: dict[int, dict] = {}
         self.certs: dict[int, dict] = {}
@@ -104,19 +120,30 @@ class FakeNpm:
         path, method = request.url.path, request.method
         if path == "/api/tokens" and method == "POST":
             body = json.loads(request.content)
+            if self.login_refusal is not None:
+                return self._error(*self.login_refusal)
             if (body.get("identity"), body.get("secret")) != (self.identity, self.secret):
                 return self._error(401, "Invalid email or password")
             token = f"tok-{next(self._ids)}"
             self.tokens.add(token)
             return httpx.Response(200, json={"token": token, "expires": "2026-10-05T00:00:00Z"})
         if path == "/api/" and method == "GET":
-            return httpx.Response(200, json={"status": "OK",
-                                             "version": {"major": 2, "minor": 12, "revision": 3}})
+            if self.version is None:
+                return self._error(500, "Internal Error")
+            major, minor, revision = self.version
+            return httpx.Response(200, json={"status": "OK", "version": {
+                "major": major, "minor": minor, "revision": revision}})
         if self.expire_tokens:
             self.tokens.clear()
             self.expire_tokens = False
         if request.headers.get("authorization", "").removeprefix("Bearer ") not in self.tokens:
             return self._error(401, "Token has expired")
+        if path.startswith("/api/nginx/proxy-hosts") and self.host_refusal is not None:
+            message, self.host_refusal = self.host_refusal, None
+            if not message:
+                self.last_error = None
+                return httpx.Response(400, json={"error": {"code": 400}})
+            return self._error(400, message)
         if path.startswith("/api/nginx/proxy-hosts") and self.host_errors:
             self.host_errors -= 1
             return self._error(500, "Internal Error")
@@ -159,8 +186,19 @@ class FakeNpm:
             body = json.loads(request.content)
             if body.get("provider") != "letsencrypt":
                 return self._error(400, "data/provider must be equal to one of the allowed values")
-            if (body.get("meta") or {}).get("letsencrypt_agree") is not True:
-                return self._error(400, "data/meta/letsencrypt_agree must be true")
+            meta = body.get("meta") or {}
+            self.cert_metas.append(dict(meta))
+            if set(meta) - (LEGACY_META if self.legacy else MODERN_META):
+                return self._error(400, "data/meta must NOT have additional properties")
+            if self.legacy:
+                if "letsencrypt_email" not in meta:
+                    return self._error(
+                        400, "data/meta must have required property 'letsencrypt_email'")
+                if meta.get("letsencrypt_agree") is not True:
+                    return self._error(400, "data/meta/letsencrypt_agree must be true")
+            if self.cert_refusal is not None:
+                message, self.cert_refusal = self.cert_refusal, None
+                return self._error(400, message)
             self.cert_requests.append(list(body["domain_names"]))
             failed = self._certbot(body["domain_names"])
             if failed is not None:
