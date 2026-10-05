@@ -319,6 +319,18 @@ it('a create error that sends you back to Basics focuses the Name', async () => 
   await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Name')));
 });
 
+it('vm_name_invalid goes back to the Name', async () => {
+  api.createEnvironment.mockRejectedValue(new ApiError(422, 'vm_name_invalid', { code: 'vm_name_invalid' }));
+  await open();
+  await fillBasics();
+  await next();
+  await next();
+  await next();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  expect(await screen.findByText("The environment name can't be used as a VM host name.")).toBeTruthy();
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Name')));
+});
+
 it('Data: a new environment can start from a ready snapshot', async () => {
   const { onCreated } = await open();
   await fillBasics();

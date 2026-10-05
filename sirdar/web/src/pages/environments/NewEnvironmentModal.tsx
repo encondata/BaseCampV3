@@ -77,7 +77,7 @@ const HINT: Record<Mode, string> = {
 };
 /** API error code → the field (and so the step) it belongs to. */
 const CODE_FIELD: Record<string, Field> = {
-  name_invalid: 'name', name_reserved: 'name', environment_exists: 'name',
+  name_invalid: 'name', name_reserved: 'name', environment_exists: 'name', vm_name_invalid: 'name',
   target_invalid: 'target', target_not_configured: 'target', ref_invalid: 'ref',
   base_domain_invalid: 'domain', proxy_ip_required: 'proxy', proxy_ip_invalid: 'proxy',
   bind_ip_invalid: 'bind', port_invalid: 'services', ports_conflict: 'services', service_unknown: 'services',
