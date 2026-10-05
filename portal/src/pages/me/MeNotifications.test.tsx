@@ -22,6 +22,7 @@ vi.mock('../../auth/AuthContext', () => ({
       nav_mode: 'expanded',
       nav_bg: 'default',
       nav_size: 'default',
+      list_view: 'expanded',
       notif: { critical: true, email: true, maint: true, digest: false, sound: 'chime' },
       list_prefs: {},
     } satisfies UiPreferences,

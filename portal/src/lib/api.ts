@@ -68,6 +68,7 @@ export interface UiPreferences {
   nav_mode: 'expanded' | 'rail' | 'hidden';
   nav_bg: string; // 'default' or a custom '#rrggbb'
   nav_size: 'small' | 'default' | 'large' | 'xlarge';
+  list_view: 'expanded' | 'collapsed' | 'last'; // how collapsible lists start on open
   notif: NotifPrefs;
   // Per-page list UI state (visible columns, sort, column filters), keyed by
   // page key — free-form on the wire; lib/columnMenu.tsx owns the shape it
