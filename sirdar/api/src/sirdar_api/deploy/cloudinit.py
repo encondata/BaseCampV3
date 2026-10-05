@@ -28,6 +28,8 @@ def _checked(*, hostname, ip_cidr, gateway, dns_servers) -> None:
     unchecked is ever written into the YAML. Raises ValueError."""
     if not isinstance(hostname, str) or not _HOSTNAME_RE.fullmatch(hostname):
         raise ValueError("hostname")
+    if not isinstance(dns_servers, (tuple, list)):        # None too: ValueError, never TypeError
+        raise ValueError("dns_servers")
     dns = tuple(dns_servers)
     if len(dns) > MAX_DNS_SERVERS:
         raise ValueError("dns_servers")

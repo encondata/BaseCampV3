@@ -71,9 +71,16 @@ def test_guestinfo_is_base64_and_only_the_user_data_holds_the_private_key():
     {"dns_servers": ("1.1.1.1", "1.0.0.1", "8.8.8.8", "9.9.9.9")},
     {"ip_cidr": "10.10.48.71/24\nfoo: bar"}, {"ip_cidr": "10.10.48.71"},
     {"gateway": "10.10.48.1\nfoo: bar"}, {"gateway": None},
+    {"hostname": None}, {"dns_servers": None}, {"dns_servers": (None,)}, {"dns_servers": 3},
+    {"ip_cidr": 3}, {"gateway": 3}, {"dns_servers": "1.1.1.1"},
 ])
 def test_metadata_refuses_unchecked_inputs(kw):
     args = {"env_id": ENV_ID, "hostname": "ss-uat3", "ip_cidr": "10.10.48.71/24",
             "gateway": "10.10.48.1", "dns_servers": (), **kw}
     with pytest.raises(ValueError):
         cloudinit.metadata(**args)
+
+
+def test_the_host_name_rule_is_the_vm_name_rule():
+    from sirdar_api.deploy import vms
+    assert cloudinit._HOSTNAME_RE.pattern == vms._VM_NAME_RE.pattern
