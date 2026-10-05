@@ -206,6 +206,11 @@ class ProxmoxProvisioner:
     async def _provision(self, api: Proxmox, ctx: VmContext, out: Output) -> VmOutcome:
         vm = ctx.vm
         vmid = vm.vmid
+        if not vm.created and vm.static_ip:
+            # Before the apply that creates the VM (and before an id is
+            # reserved): not an address another environment or host uses.
+            await vmcommon.check_address(self._settings, ctx.env_id, vm.static_ip,
+                                         before_boot=True)
         if vmid is None:
             probe = self._probe or vmcommon.tcp_open
             if vm.static_ip and await probe(vm.static_ip, vms.VM_SSH_PORT):

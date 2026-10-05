@@ -201,6 +201,16 @@ async def test_a_live_key_that_doesn_t_match_the_agent_s(db, vm_env, tf, proxmox
 async def test_a_saved_ssh_target_s_address_is_never_pinned(db, vm_env, tf, deploy_env,
                                                            ssh_server):
     deploy_env(ssh_host="127.0.0.1", ssh_port=ssh_server.port, ssh_user="x", ssh_password="y")
+    # A new VM isn't given the address at all (checked before the apply)...
+    with pytest.raises(StepFailed) as e:
+        await provisioner(tf).run("provision", await ctx_for(db, vm_env), lambda _: None)
+    assert e.value.reason.startswith("127.0.0.1 is an address another environment, an SSH "
+                                     "target, the proxy or Proxmox already uses")
+    assert tf.commands() == []
+    # ...and a built VM that comes up there isn't pinned.
+    deploy_env()
+    await _built(db, vm_env, tf)
+    deploy_env(ssh_host="127.0.0.1", ssh_port=ssh_server.port, ssh_user="x", ssh_password="y")
     with pytest.raises(StepFailed) as e:
         await provisioner(tf).run("provision", await ctx_for(db, vm_env), lambda _: None)
     assert e.value.reason == ("127.0.0.1 is a saved SSH target's address. Sirdar won't pin a "
@@ -476,17 +486,17 @@ async def test_a_failed_re_check_forgets_the_pin_it_made(db, vm_env, tf, ssh_ser
     real = vms.address_in_use
     seen: list[str] = []
 
-    async def taken_on_the_second_look(*args, **kwargs):
+    async def taken_on_the_last_look(*args, **kwargs):
         seen.append(args[2])
-        if len(seen) == 2:
+        if len(seen) == 3:             # before the apply, before the pin, at the record
             return True
         return await real(*args, **kwargs)
 
-    monkeypatch.setattr(vms, "address_in_use", taken_on_the_second_look)
+    monkeypatch.setattr(vms, "address_in_use", taken_on_the_last_look)
     with pytest.raises(StepFailed) as e:
         await provisioner(tf).run("provision", await ctx_for(db, vm_env), lambda _: None)
     assert e.value.reason.startswith("The VM came up at 127.0.0.1, an address another")
-    assert seen == ["127.0.0.1", "127.0.0.1"]
+    assert seen == ["127.0.0.1", "127.0.0.1", "127.0.0.1"]
     assert await known_hosts.lookup(db, "127.0.0.1", ssh_server.port) is None
     assert (await vms.get(db, vm_env.id)).ip is None
     actions = list(await db.scalars(select(AuditLog.action).where(
@@ -682,3 +692,14 @@ async def test_destroy_refuses_a_created_vm_it_can_t_see_while_the_state_has_it(
                               "nothing was removed.")
     assert "destroy" not in tf.commands()
     assert terraform.has_state(terraform.workdir(get_settings(), vm_env.id))
+
+
+async def test_an_address_in_sirdar_s_registry_stops_the_apply(db, vm_env, tf, monkeypatch):
+    async def taken(*args, **kwargs) -> bool:
+        return True
+    monkeypatch.setattr(vms, "address_in_use", taken)
+    with pytest.raises(StepFailed) as e:
+        await provisioner(tf).run("provision", await ctx_for(db, vm_env), lambda _: None)
+    assert e.value.reason.startswith("127.0.0.1 is an address another environment, an SSH "
+                                     "target, the proxy or Proxmox already uses")
+    assert "apply" not in tf.commands()

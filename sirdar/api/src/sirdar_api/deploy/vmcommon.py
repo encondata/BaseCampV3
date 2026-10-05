@@ -78,8 +78,15 @@ def _address_taken(ip: str, host_label: str) -> StepFailed:
                       "for it: free the address (or fix the DHCP lease), then retry.")
 
 
+def _address_refused(ip: str, host_label: str) -> StepFailed:
+    return StepFailed(f"{ip} is an address another environment, an SSH target, the proxy or "
+                      f"{host_label} already uses, so Sirdar won't give it to a new VM. Sirdar "
+                      "created nothing: free the address, or delete this environment and create "
+                      "it with another address.")
+
+
 async def _address_free(s: AsyncSession, settings: Settings, env_id: uuid.UUID, ip: str,
-                        host_label: str) -> None:
+                        host_label: str, *, before_boot: bool = False) -> None:
     """Under the address lock (vms.lock_addresses, held until `s`'s
     transaction ends): StepFailed unless `ip` is free for this environment's
     VM."""
@@ -91,15 +98,16 @@ async def _address_free(s: AsyncSession, settings: Settings, env_id: uuid.UUID, 
     except vms.VmError:
         raise StepFailed(TARGETS_UNREADABLE) from None
     if taken:
-        raise _address_taken(ip, host_label)
+        raise (_address_refused if before_boot else _address_taken)(ip, host_label)
 
 
 async def check_address(settings: Settings, env_id: uuid.UUID, ip: str, *,
-                        host_label: str = "Proxmox") -> None:
-    """Before pinning a key at the address: is it free? (A DHCP lease can
-    land on an address in use.)"""
+                        host_label: str = "Proxmox", before_boot: bool = False) -> None:
+    """Is the address free? Before a new VM is given its static address
+    (`before_boot`), and before pinning a key at the address it came up at
+    (a DHCP lease can land on an address in use)."""
     async with get_sessionmaker()() as s:
-        await _address_free(s, settings, env_id, ip, host_label)
+        await _address_free(s, settings, env_id, ip, host_label, before_boot=before_boot)
         await s.rollback()
 
 

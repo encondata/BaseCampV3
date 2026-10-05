@@ -556,3 +556,27 @@ async def test_destroy_takes_an_unfinished_vm_with_no_disk(db, esxi_env, esxi_fa
     assert esxi_fake.by_name("ss-uat3").disks == []
     await run(db, esxi_env, step="destroy", mode="teardown")
     assert esxi_fake.by_name("ss-uat3") is None
+
+
+async def test_an_address_another_vm_on_the_host_reports_stops_the_create(db, esxi_env,
+                                                                           esxi_fake):
+    esxi_fake.add_vm("legacy-box", power_state="poweredOn", ips=("10.9.9.9", "127.0.0.1"))
+    with pytest.raises(StepFailed) as e:
+        await run(db, esxi_env)
+    assert e.value.reason == ("legacy-box on ESXi already reports 127.0.0.1, so Sirdar won't "
+                              "give that address to a new VM. Free it, or delete this "
+                              "environment and create it with another address.")
+    assert esxi_fake.specs == [] and "create_vm" not in esxi_fake.calls
+
+
+async def test_an_address_in_sirdar_s_registry_stops_the_create(db, esxi_env, esxi_fake,
+                                                                monkeypatch):
+    async def taken(*args, **kwargs) -> bool:
+        return True
+    monkeypatch.setattr(vms, "address_in_use", taken)
+    with pytest.raises(StepFailed) as e:
+        await run(db, esxi_env)
+    assert e.value.reason.startswith("127.0.0.1 is an address another environment, an SSH "
+                                     "target, the proxy or ESXi already uses")
+    assert "Sirdar created nothing" in e.value.reason
+    assert esxi_fake.specs == [] and "create_vm" not in esxi_fake.calls

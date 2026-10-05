@@ -399,3 +399,40 @@ async def test_the_fake_is_strict(esxi_fake):
     esxi_fake.quiesce_fails = True
     await esxi_fake.take_snapshot(vm.instance_uuid, "s", "", quiesce=True)   # off: ignored
     assert len(vm.snapshots) == 1
+
+
+def _listed_vm(name, *, ips=(), disk=None, config=True):
+    nics = [SimpleNamespace(deviceConfigId=4000, ipAddress=list(ips), ipConfig=None)]
+    devices = []
+    if disk is not None:
+        devices.append(vim.vm.device.VirtualDisk(
+            key=2000, capacityInKB=64 * 1024 * 1024, backing=disk))
+    return SimpleNamespace(
+        name=name, guest=SimpleNamespace(ipAddress=None, net=nics),
+        config=SimpleNamespace(name=name, hardware=SimpleNamespace(device=devices))
+        if config else None)
+
+
+async def test_guest_ips_lists_every_vm_that_reports_an_address(monkeypatch):
+    api, pool = _client()
+    monkeypatch.setattr(api, "_all_vms", lambda: [
+        _listed_vm("legacy", ips=("10.10.48.71", "fe80::1")), _listed_vm("quiet"),
+        _listed_vm("orphan", ips=("10.10.48.72",), config=False)])
+    assert await api.guest_ips() == [("legacy", ("10.10.48.71",)),
+                                     ("orphan", ("10.10.48.72",))]
+    pool.shutdown()
+
+
+async def test_disk_users_finds_a_disk_as_base_or_current_delta(monkeypatch):
+    Backing = vim.vm.device.VirtualDisk.FlatVer2BackingInfo
+    path = "[datastore1] ss-uat3/ss-uat3-disk0.vmdk"
+    base = Backing(fileName=path)
+    delta = Backing(fileName="[datastore1] ss-uat3/ss-uat3-disk0-000001.vmdk", parent=base)
+    api, pool = _client()
+    monkeypatch.setattr(api, "_all_vms", lambda: [
+        _listed_vm("a", disk=Backing(fileName=path)), _listed_vm("b", disk=delta),
+        _listed_vm("c", disk=Backing(fileName="[datastore1] c/c.vmdk")),
+        _listed_vm("gone", config=False)])
+    assert await api.disk_users(path) == ["a", "b"]
+    assert await api.disk_users("[datastore1] x/x.vmdk") == []
+    pool.shutdown()

@@ -154,6 +154,8 @@ class EsxiApi(Protocol):
     async def resource_pool_names(self) -> list[str]: ...
     async def find_vm(self, instance_uuid: str) -> VmInfo | None: ...
     async def find_vm_by_name(self, name: str) -> VmInfo | None: ...
+    async def guest_ips(self) -> list[tuple[str, tuple[str, ...]]]: ...
+    async def disk_users(self, path: str) -> list[str]: ...
     async def create_vm(self, spec: CreateSpec) -> VmInfo: ...
     async def file_exists(self, path: str) -> bool: ...
     async def copy_disk(self, src: str, dst: str) -> None: ...
@@ -520,6 +522,37 @@ class PyvmomiEsxi:
                                 "one.")
             return vm_info(found[0]) if found else None
         return await self._do("look up the VM", run)
+
+    async def guest_ips(self) -> list[tuple[str, tuple[str, ...]]]:
+        """(name, IPv4 addresses) of every VM on the host whose VMware Tools
+        report any: step 0 won't hand a new VM one of them."""
+        def run():
+            found = []
+            for vm in self._all_vms():
+                guest = getattr(vm, "guest", None)
+                ips = guest_ipv4(guest) if guest is not None else ()
+                if ips:
+                    found.append((str(vm.name), ips))
+            return found
+        return await self._do("read the VMs' addresses", run)
+
+    async def disk_users(self, path: str) -> list[str]:
+        """Names of the VMs with this disk file attached (as the base file or
+        the delta they write now). A VM whose configuration ESXi can't read
+        (inaccessible or orphaned) has nothing attached that it could lock."""
+        def run():
+            users = set()
+            for vm in self._all_vms():
+                cfg = getattr(vm, "config", None)
+                if cfg is None:
+                    continue
+                for device in cfg.hardware.device or ():
+                    if isinstance(device, vim.vm.device.VirtualDisk):
+                        disk = disk_info(device)
+                        if path in (disk.path, disk.current):
+                            users.add(str(cfg.name))
+            return sorted(users)
+        return await self._do("look up which VMs use the disk", run)
 
     async def create_vm(self, spec: CreateSpec) -> VmInfo:
         def run():

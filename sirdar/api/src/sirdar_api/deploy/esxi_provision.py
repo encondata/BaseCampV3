@@ -284,6 +284,17 @@ class EsxiProvisioner:
 
     async def _create(self, api: EsxiApi, ctx: EsxiVmContext, out: Output) -> VmInfo:
         vm = ctx.vm
+        if vm.static_ip:
+            # Before the VM exists: the address isn't Sirdar's or the host's in
+            # the registry, no VM on the host reports it, nothing answers SSH there.
+            await vmcommon.check_address(self._settings, ctx.env_id, vm.static_ip,
+                                         host_label=HOST_LABEL, before_boot=True)
+            for other, ips in await api.guest_ips():
+                if vm.static_ip in ips:
+                    raise StepFailed(f"{other} on ESXi already reports {vm.static_ip}, so "
+                                     "Sirdar won't give that address to a new VM. Free it, or "
+                                     "delete this environment and create it with another "
+                                     "address.")
         probe = self._probe or vmcommon.tcp_open
         if vm.static_ip and await probe(vm.static_ip, vms.VM_SSH_PORT):
             raise StepFailed(f"Something already answers SSH at {vm.static_ip}, so Sirdar "

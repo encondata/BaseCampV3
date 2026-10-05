@@ -154,6 +154,15 @@ class FakeEsxi:
             raise EsxiError(f"ESXi has more than one VM named {name}; Sirdar won't pick one.")
         return found[0].info() if found else None
 
+    async def guest_ips(self) -> list[tuple[str, tuple[str, ...]]]:
+        self._call("guest_ips")
+        return [(v.name, tuple(v.ipv4)) for v in self.vms.values() if v.ipv4]
+
+    async def disk_users(self, path: str) -> list[str]:
+        self._call("disk_users")
+        return sorted({v.name for v in self.vms.values()
+                       if any(path in (d.path, d.current) for d in v.disks)})
+
     async def create_vm(self, spec) -> VmInfo:
         self._call("create_vm")
         if self.by_name(spec.name):
