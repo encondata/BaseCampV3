@@ -232,14 +232,14 @@ every run pins it. Code comes from `SIRDAR_DEPLOY_REPO_URL` (default
 `https://github.com/encondata/BaseCampV3.git`); a branch or tag becomes a
 commit through `git ls-remote` on the target.
 
-**Steps.** 0 Prepare VM (Proxmox environments) · 1 Preflight · 2 Bootstrap ·
+**Steps.** 0 Prepare VM (Proxmox and ESXi environments) · 1 Preflight · 2 Bootstrap ·
 3 Fetch code · 4 Render config · 5 Build images · 6 Pre-deploy dump (Update, a
 seeded first deploy too) · 7 Reset data (Reset) · 8 Start data services ·
 9 Restore snapshot or Restore backup · 10 Start services (migrate, then the
 app) · 11 Take snapshot (a job of its own) · 12 DNS records · 13 Proxy hosts ·
 14 Smoke test (when the environment publishes) · 15 Remove environment, or
-Destroy VM on Proxmox · 16 Remove proxy hosts · 17 Remove DNS records (Delete
-environment). Restore VM snapshot (Proxmox) is step 0 alone. The first
+Destroy VM on Proxmox or ESXi · 16 Remove proxy hosts · 17 Remove DNS records (Delete
+environment). Restore VM snapshot (Proxmox or ESXi) is step 0 alone. The first
 failure stops the deployment; retry re-runs from the failed step. One
 deployment per environment at a time. Reset, Restore backup, Roll back,
 Restore VM snapshot and Delete environment replace or remove data: they need
@@ -381,6 +381,159 @@ removed from Settings while an environment uses it.
 | `PATCH /environments/{name}` with `vm` (sizes, snapshots kept) | `deploy:change` |
 | `GET /environments/{name}/vm-snapshots` | `deploy:view` |
 | `POST /environments/{name}/deployments` (`mode`: `vm_restore`, with `vm_snapshot`) | `deploy:add` and `deploy:change` |
+
+**VMware ESXi targets.** An environment can also live on a VM Sirdar builds
+on one standalone, licensed ESXi 7 host (target `esxi`; no vCenter). Proxmox
+stays supported beside it: in Settings › Integrations, ESXi is a main card
+and Proxmox moves into the collapsed **Other hosts** area, where it is set up
+and used exactly as described above.
+
+What Sirdar does on ESXi:
+
+- Step 0 creates the VM `ss-<env>` (Ubuntu 64-bit guest, ParaVirtual SCSI, a
+  vmxnet3 NIC on the port group) on the datastore, copies the seed VM's disk
+  into the VM's own folder as `ss-<env>-disk0.vmdk` (thin), attaches it,
+  grows it to the environment's size (default 4 vCPU, 8 GB, 64 GB) and powers
+  the VM on. The VM is recorded the moment ESXi creates it.
+- cloud-init, through VMware's guestinfo datasource, sets up the user
+  `deploy` with Sirdar's key for that VM (passwordless sudo, no password
+  login), the static address or DHCP, and an SSH host key **Sirdar
+  generated**. Its fingerprint is known before the VM first boots; step 0
+  waits for VMware Tools to report the address (a static address must be the
+  one reported), then pins the key with the live server, which must present
+  exactly that key. Once SSH answers with it, step 0 **scrubs** the
+  user-data holding the key's private half from the VM's settings
+  (`guestinfo.userdata` is emptied, which deletes it) and from Sirdar's
+  database: from then on the private key exists only on the VM's disk. The
+  metadata stays, so later boots keep the same instance id and cloud-init
+  doesn't run again. The key never changes, so Restore VM snapshot needs no
+  new pin.
+- Each Update, Reset, Restore backup or Roll back of a deployed ESXi
+  environment first takes a VM snapshot (`sirdar-<UTC time>`, disk only,
+  quiesced through VMware Tools, or crash-consistent with a log line when
+  quiescing fails). The name is recorded on the deployment before ESXi's task
+  runs. Sirdar keeps the newest 3 of the snapshots it recorded; snapshots
+  made by hand are never touched, and a name that appears twice is never
+  picked for a delete or a restore.
+- **Delete environment** destroys the VM (powered off first; ESXi removes its
+  files and snapshots), checks that ESXi no longer finds it, and forgets its
+  pinned host key.
+
+**Ownership.** Sirdar touches only a VM it created. Before step 0, a restore
+or a destroy changes anything, the VM must match all three of: the recorded
+instance UUID, the name `ss-<env>`, and the extraConfig key
+`sirdar.environment` holding that environment's id. The key is written
+together with the VM, so a VM named `ss-<env>` that carries it is this
+environment's even if the record was lost: a retry picks it up and Delete
+removes it. A VM with the right name but no key (or another environment's
+id) is refused, and so is a VM with the key under a different instance UUID.
+A mismatch fails the step and changes nothing. Never edit or remove that key,
+and never rename these VMs. A VM Sirdar finished building that has gone
+missing is never rebuilt silently; a half-built one that is gone is built
+again. Existing VMs can't be adopted onto ESXi (422 `adopt_not_allowed`).
+
+**Disks.** Sirdar checks that the VM has exactly one disk, the one it copied
+into the VM's folder, before it changes anything. Once a VM has snapshots,
+ESXi writes to a delta file (`…-disk0-000001.vmdk`); Sirdar follows the
+disk's snapshot chain back to its base file, so the check holds through
+snapshots. A disk it didn't put there stops the step.
+
+**Sizing.** Changing vCPU, memory or the disk applies on the next deploy:
+
+1. Step 0 first checks the VM's snapshots when the disk grows (ESXi can't
+   grow a disk that has snapshots). A snapshot someone made by hand, or two
+   with the same name, stops the step with their names, changing nothing.
+   Delete them in the Host Client, then retry.
+2. It shuts the guest down through VMware Tools and waits up to 5 minutes.
+   If the guest doesn't stop, the step fails and nothing changes (there is
+   no hard power-off).
+3. For a disk grow, it deletes this environment's Sirdar snapshots.
+4. It sets vCPU and memory, then grows the disk.
+5. It powers the VM on (the guest grows its file system at boot), waits for
+   the address and, after a grow, takes a new VM snapshot.
+
+When vCPU and memory change but the disk doesn't, the VM snapshot is taken
+before the shutdown, so it holds the old sizing too. A failure after the
+shutdown leaves the VM off and says so; retry the deployment. Disks never
+shrink. A VM snapshot restore that brings back older vCPU or memory sizes is
+set back to the recorded sizes by the next step 0.
+
+**Address safety.** A VM's address, typed in or leased by DHCP, is refused
+when anything else might use it: the proxy, every environment's proxy, every
+saved SSH target (names resolved; an unreadable targets file refuses), both
+VM hosts' own addresses (the Proxmox and ESXi URL hosts), other
+environments' service addresses, and every other Proxmox or ESXi VM. The
+check runs at create (409 `ip_in_use`) and again in step 0 under a database
+advisory lock held until the address is recorded. A static address that
+already answers SSH is refused before the VM is created. Sirdar never pins a
+saved SSH target's address, and forgets a pin it made when the locked
+re-check fails.
+
+Set up once, on the ESXi host:
+
+- **License.** A paid license is needed. Free ESXi makes the API read-only;
+  Test's License check says so.
+- **The API user.** Make a dedicated local user:
+  1. In the Host Client, go to Manage › Security & users › Users › Add user,
+     and add `sirdar` with a long password.
+  2. Go to Host › Actions › Permissions › Add user, and give `sirdar` the
+     role Administrator. Standalone ESXi can't scope a user to some VMs;
+     Sirdar's ownership checks are what protect the other VMs.
+- **The seed VM** (one time):
+  1. Download `noble-server-cloudimg-amd64.ova` from
+     `https://cloud-images.ubuntu.com/noble/current/` and check it against
+     that folder's `SHA256SUMS`. Ubuntu's cloud image ships open-vm-tools,
+     which reports the VM's address.
+  2. In the Host Client, go to Virtual Machines › Create / Register VM ›
+     Deploy a virtual machine from an OVF or OVA file.
+  3. Name it `sirdar-ubuntu-2404-seed`, pick the datastore and Thin
+     provisioning, leave every property empty, and **uncheck "Power on
+     automatically"**.
+  4. Never power it on, and never take snapshots of it. Test checks that it
+     exists, is powered off, has one disk and has no snapshots, and step 0
+     checks again before it copies the disk.
+- **The datastore and port group.** Note the datastore the VMs go on (for
+  example `datastore1`) and a standard-switch port group (for example
+  `VM Network`) on the network the VMs' addresses belong to. A resource pool
+  is optional (empty means the host's root pool).
+
+Then enter the URL (`https://<host>`, port 443 unless you add one), user,
+password, datastore, port group, resource pool, seed VM name and up to 3 DNS
+servers (empty means the gateway for a static address, or what DHCP hands
+out) in Settings › Integrations › VMware ESXi, and press Test. The checks are ESXi, License, Datastore, Network,
+Resource pool and Seed VM. A VM keeps the datastore, port group, resource
+pool, seed and DNS servers it was created with; changing them only affects
+new environments. Its network (static or DHCP) is fixed at create.
+
+**The certificate.** Save or Test shows the host's certificate fingerprint
+(SHA-256). Compare it with what the ESXi Shell prints for
+`openssl x509 -in /etc/vmware/ssl/rui.crt -noout -fingerprint -sha256`, or
+with the browser's certificate viewer on the Host Client, before you click
+Trust. The host name isn't checked, because ESXi's certificate usually names
+only `localhost.localdomain`; the pinned certificate is the only one trusted,
+and pyVmomi checks the same fingerprint again before it sends the login. If
+the host's certificate changes, steps can't connect and Save or Test answers
+409 `tls_mismatch` until you trust the new one.
+
+The password is stored encrypted and never shown again. It stays inside
+Sirdar's process (no subprocess sees it) and is reused, when left blank, only
+for the same URL and user. ESXi can't be removed from Settings while an
+environment uses it.
+
+**Packages.** pyVmomi 8.0.3.0.1 (it still covers ESXi 7; 9.x doesn't promise
+to) and six 1.17.0 are installed in the image with `--require-hashes` from
+`sirdar/api/requirements-esxi.txt`. Bump them together with
+`sirdar/api/pyproject.toml`; a test compares the two.
+
+| API (under `/api/deploy`) | Needs |
+|---|---|
+| `PUT /integrations/esxi`, `POST /integrations/esxi/test`, `DELETE /integrations/esxi` | `deploy:change` |
+| `POST /environments` with `target: "esxi"` and `vm` | `deploy:add` |
+| `PATCH /environments/{name}` with `vm` (sizes, snapshots kept) | `deploy:change` |
+| `GET /environments/{name}/vm-snapshots` | `deploy:view` |
+| `POST /environments/{name}/deployments` (`mode`: `vm_restore`, with `vm_snapshot`) | `deploy:add` and `deploy:change` |
+
+Routes for VMs answer 409 `not_vm_environment` on an SSH environment.
 
 | API (under `/api/deploy`) | Needs |
 |---|---|
