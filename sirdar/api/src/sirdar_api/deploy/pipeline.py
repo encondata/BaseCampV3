@@ -4,10 +4,11 @@ backup, Roll back, and Take snapshot, a job that leaves the environment as
 it is. A deployment that publishes adds steps 12–14 (DNS records, proxy
 hosts, smoke test), which run in Sirdar through a Publisher instead of a
 playbook; a publish job is only those. Delete environment (teardown) runs
-15–17 and, when they succeed, deletes the environment's row. A Proxmox
-environment's deployment (vm) adds the VM steps, run by a Provisioner: 0
-Prepare VM before the host steps (the SSH host is prepared after it, once
-the VM has an address), 0 Restore VM snapshot alone, and 15 Destroy VM.
+15–17 and, when they succeed, deletes the environment's row. A VM
+environment's deployment (vm; on Proxmox or ESXi) adds the VM steps, run by
+a Provisioner: 0 Prepare VM before the host steps (the SSH host is prepared
+after it, once the VM has an address), 0 Restore VM snapshot alone, and 15
+Destroy VM.
 
 One asyncio task per running deployment, registered in _tasks; each task
 uses its own database sessions. Steps run in plan order through a Runner,
@@ -65,6 +66,7 @@ from sirdar_api.deploy import (
     terraform,
     vault,
     vms,
+    vmsteps,
 )
 from sirdar_api.deploy.redact import Redactor
 from sirdar_api.deploy.runner import (
@@ -132,9 +134,10 @@ def make_terraform(settings: Settings) -> terraform.TerraformRunner:
 
 
 def make_provisioner(settings: Settings) -> provision.Provisioner:
-    """What runs a Proxmox environment's VM steps (tests replace this function)."""
-    return provision.ProxmoxProvisioner(terraform_runner=make_terraform(settings),
-                                        settings=settings)
+    """What runs a VM environment's VM steps (tests replace this function)."""
+    return vmsteps.HostProvisioner(
+        proxmox=provision.ProxmoxProvisioner(terraform_runner=make_terraform(settings),
+                                             settings=settings))
 
 
 async def sweep_runs() -> int:
@@ -467,8 +470,8 @@ class _Context:
     snapshot_keys: dict = field(default_factory=dict, repr=False)
     # Steps 12–14 and 16–17: credentials and the public services.
     publishing: publish.PublishContext | None = field(default=None, repr=False)
-    # Steps 0 and 15 of a Proxmox environment: its VM and the Proxmox token.
-    vm: provision.VmContext | None = field(default=None, repr=False)
+    # Steps 0 and 15 of a VM environment: its VM and the host's credentials.
+    vm: vmsteps.VmContext | None = field(default=None, repr=False)
 
     def vars_for(self, step_key: str) -> dict:
         if step_key == "render":
@@ -508,7 +511,7 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
     except (vault.SecretsKeyMissing, vault.SecretUnreadable):
         raise PrepareError("Sirdar can't read its key for this environment's VM with the "
                            "current SIRDAR_SECRETS_KEY.") from None
-    if cfg is None and env.target_id == targets.PROXMOX_TARGET:
+    if cfg is None and targets.is_vm_target(env.target_id):
         raise PrepareError("This environment's VM has no address yet. Retry from step 0 "
                            "(Prepare VM).")
     if cfg is None:
@@ -741,7 +744,7 @@ async def _run(deployment_id: uuid.UUID) -> None:
                 try:
                     publishing = (await publish.prepare(db, env, settings)
                                   if "python" in runs else None)
-                    vm_ctx = (await provision.prepare(db, env, dep, settings)
+                    vm_ctx = (await vmsteps.prepare(db, env, dep, settings)
                               if "vm" in runs else None)
                     more = (*(publishing.secret_values if publishing else ()),
                             *(vm_ctx.secret_values if vm_ctx else ()))
@@ -749,7 +752,7 @@ async def _run(deployment_id: uuid.UUID) -> None:
                     host_now = "ansible" in runs and STEPS_BY_KEY[todo[0].key].runs != "vm"
                     ctx = await _prepare(db, env, dep, settings, needs_host=host_now,
                                          more_secrets=more)
-                except (PrepareError, publish.PublishError, provision.VmPrepareError) as e:
+                except (PrepareError, publish.PublishError, vmsteps.VmPrepareError) as e:
                     await db.rollback()
                     await _close(deployment_id, env_id, current, step_status="failed",
                                  dep_status="failed", error=e.reason, failed_step=current,

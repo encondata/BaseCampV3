@@ -18,37 +18,35 @@ import asyncio
 import json
 import uuid
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
 
 import asyncssh
-from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
-from sirdar_api.db.engine import get_sessionmaker
-from sirdar_api.db.models import Deployment, Environment, EnvironmentService, ProxmoxVm
+from sirdar_api.db.models import Deployment, Environment, ProxmoxVm
 from sirdar_api.deploy import (
-    ConnectFailed,
     gitref,
     integrations,
     known_hosts,
     outbound,
-    ssh,
-    targets,
     terraform,
-    vault,
+    vmcommon,
     vms,
 )
 from sirdar_api.deploy.integrations import IntegrationError, ProxmoxConfig
 from sirdar_api.deploy.proxmox import AgentNotReady, Proxmox, ProxmoxError
 from sirdar_api.deploy.publish import StepFailed
+from sirdar_api.deploy.vmcommon import (  # noqa: F401 — re-exported for callers and tests
+    Output,
+    Provisioner,
+    VmOutcome,
+    VmPrepareError,
+)
 
-Output = Callable[[str], None]
 HOST_KEY_FILE = "/etc/ssh/ssh_host_ed25519_key.pub"
 AGENT_WAIT_SECONDS = 5 * 60
 SSH_WAIT_SECONDS = 5 * 60
@@ -67,22 +65,6 @@ PLAN_UNREADABLE = ("Sirdar couldn't read Terraform's plan, so it applied nothing
 PLAN_DESTROYS = ("Terraform's plan would replace or remove {name} (VM {vmid}), so Sirdar "
                  "applied nothing. Only Delete environment removes a VM. Check what changed "
                  "on the VM in Proxmox, then retry.")
-TARGETS_UNREADABLE = ("Sirdar can't read the saved SSH targets file, so it can't check that "
-                      "the VM's address is free. Fix the file, then retry.")
-_REF_REASONS = {
-    "ref_not_found": "The repository has no branch, tag or commit named {ref}.",
-    "ref_invalid": "{ref} isn't a valid branch, tag or commit.",
-    "git_missing": "git isn't installed on the VM.",
-    "ref_lookup_failed": "The VM couldn't list the repository's branches and tags.",
-}
-
-
-class VmPrepareError(Exception):
-    """The VM steps can't start. `reason` is our own copy."""
-
-    def __init__(self, reason: str):
-        super().__init__(reason)
-        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -145,16 +127,6 @@ class VmContext:
         return [self.proxmox.token, self.proxmox.token_secret]
 
 
-@dataclass(frozen=True)
-class VmOutcome:
-    sha: str | None = None             # the commit step 0 resolved
-    vm_snapshot: str | None = None     # the VM snapshot step 0 took (or kept)
-
-
-class Provisioner(Protocol):
-    async def run(self, step: str, ctx: VmContext, out: Output) -> VmOutcome: ...
-
-
 async def prepare(db: AsyncSession, env: Environment, dep: Deployment,
                   settings: Settings) -> VmContext:
     try:
@@ -174,23 +146,8 @@ async def prepare(db: AsyncSession, env: Environment, dep: Deployment,
                      vm_snapshot=dep.vm_snapshot, vm=VmState.of(row), proxmox=cfg)
 
 
-async def tcp_open(host: str, port: int, timeout: float = 3.0) -> bool:
-    """Whether something accepts TCP connections at host:port. Tests guard it."""
-    try:
-        _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
-    except (OSError, TimeoutError):
-        return False
-    writer.close()
-    with suppress(Exception):
-        await writer.wait_closed()
-    return True
-
-
 async def _set_vm(env_id: uuid.UUID, **values) -> None:
-    async with get_sessionmaker()() as s:
-        await s.execute(update(ProxmoxVm).where(ProxmoxVm.environment_id == env_id)
-                        .values(**values, updated_at=datetime.now(UTC)))
-        await s.commit()
+    await vmcommon.set_vm(ProxmoxVm, env_id, **values)
 
 
 async def _claim_vmid(env_id: uuid.UUID, vmid: int) -> bool:
@@ -202,61 +159,6 @@ async def _claim_vmid(env_id: uuid.UUID, vmid: int) -> bool:
             return False
         raise
     return True
-
-
-def _address_taken(ip: str) -> StepFailed:
-    return StepFailed(f"The VM came up at {ip}, an address another environment, an SSH "
-                      "target, the proxy or Proxmox already uses. Sirdar recorded nothing for "
-                      "it: free the address (or fix the DHCP lease), then retry.")
-
-
-async def _address_free(s: AsyncSession, settings: Settings, env_id: uuid.UUID,
-                        ip: str) -> None:
-    """Under the address lock (vms.lock_addresses, held until `s`'s
-    transaction ends): StepFailed unless `ip` is free for this environment's
-    VM."""
-    proxy_ip = await s.scalar(select(Environment.proxy_ip).where(Environment.id == env_id))
-    await vms.lock_addresses(s)
-    try:
-        taken = await vms.address_in_use(s, settings, ip, proxy_ip=proxy_ip or "",
-                                         env_id=env_id)
-    except vms.VmError:
-        raise StepFailed(TARGETS_UNREADABLE) from None
-    if taken:
-        raise _address_taken(ip)
-
-
-async def _check_address(settings: Settings, env_id: uuid.UUID, ip: str) -> None:
-    """Before pinning a key at the address: is it free? (A DHCP lease can
-    land on an address in use.)"""
-    async with get_sessionmaker()() as s:
-        await _address_free(s, settings, env_id, ip)
-        await s.rollback()
-
-
-async def _record_address(settings: Settings, env_id: uuid.UUID, previous: str | None,
-                          ip: str) -> bool:
-    """Re-check the address under the lock, then write the VM's address and
-    point every service at it in the same transaction. True when a service
-    moved."""
-    async with get_sessionmaker()() as s:
-        await _address_free(s, settings, env_id, ip)
-        if ip != previous:
-            await s.execute(update(ProxmoxVm).where(ProxmoxVm.environment_id == env_id)
-                            .values(ip=ip, updated_at=datetime.now(UTC)))
-        result = await s.execute(update(EnvironmentService).where(
-            EnvironmentService.environment_id == env_id, EnvironmentService.host_ip != ip)
-            .values(host_ip=ip))
-        await s.commit()
-        return result.rowcount > 0
-
-
-async def _recorded(env_id: uuid.UUID) -> set[str]:
-    """Names of the VM snapshots Sirdar took for this environment."""
-    async with get_sessionmaker()() as s:
-        return set(await s.scalars(select(Deployment.vm_snapshot).where(
-            Deployment.environment_id == env_id, Deployment.vm_snapshot.is_not(None),
-            Deployment.mode != "vm_restore")))
 
 
 class ProxmoxProvisioner:
@@ -305,7 +207,7 @@ class ProxmoxProvisioner:
         vm = ctx.vm
         vmid = vm.vmid
         if vmid is None:
-            probe = self._probe or tcp_open
+            probe = self._probe or vmcommon.tcp_open
             if vm.static_ip and await probe(vm.static_ip, vms.VM_SSH_PORT):
                 raise StepFailed(f"Something already answers SSH at {vm.static_ip}, so Sirdar "
                                  "won't give that address to a new VM. Free it, or delete this "
@@ -329,7 +231,9 @@ class ProxmoxProvisioner:
             # A VM built just now had nothing before: still before step 1.
             snapshot = await self._snapshot(api, ctx, vmid, out)
         await self._settle_address(api, ctx, vmid, out)
-        sha = None if ctx.sha else await self._resolve_ref(ctx, out)
+        sha = None if ctx.sha else await vmcommon.resolve_ref(
+            self._settings, self._resolve, env_id=ctx.env_id, git_ref=ctx.git_ref,
+            repo_url=ctx.repo_url, out=out)
         return VmOutcome(sha=sha, vm_snapshot=snapshot)
 
     async def _reserve(self, api: Proxmox, ctx: VmContext) -> int:
@@ -366,26 +270,13 @@ class ProxmoxProvisioner:
 
     async def _settle_address(self, api: Proxmox, ctx: VmContext, vmid: int,
                               out: Output) -> None:
-        """The guest agent's address: refused at a saved SSH target's or one in
-        use, its key pinned, then recorded (re-checked under the lock) on the
-        VM and every service."""
+        """The guest agent's address, its key pinned, then recorded on the VM
+        and every service (vmcommon.settle_address)."""
         ip = await self._address(api, vmid, ctx.vm, out)
-        if any(cfg.host == ip for _, cfg in targets.ssh_configs(self._settings)):
-            raise StepFailed(f"{ip} is a saved SSH target's address. Sirdar won't pin a VM's "
-                             "key there.")
-        await _check_address(self._settings, ctx.env_id, ip)
-        made = await self._pin(api, ctx, vmid, ip, out)
-        try:
-            moved = await _record_address(self._settings, ctx.env_id, ctx.vm.ip, ip)
-        except StepFailed:
-            if made:                       # don't leave a pin for an address not recorded
-                async with get_sessionmaker()() as s:
-                    if await known_hosts.forget(s, ip, vms.VM_SSH_PORT, ctx.actor_id,
-                                                target_id=f"proxmox:{ctx.env_name}"):
-                        await s.commit()
-            raise
-        if moved:
-            out(f"Every service now points at {ip}.\n")
+        await vmcommon.settle_address(
+            self._settings, model=ProxmoxVm, env_id=ctx.env_id, previous_ip=ctx.vm.ip, ip=ip,
+            pin=lambda: self._pin(api, ctx, vmid, ip, out), actor_id=ctx.actor_id,
+            target_id=f"proxmox:{ctx.env_name}", out=out)
 
     async def _workdir(self, ctx: VmContext, vmid: int,
                        out: Output) -> tuple[Path, dict[str, str]]:
@@ -467,7 +358,6 @@ class ProxmoxProvisioner:
         known_hosts.trust (which re-reads the live key and refuses a
         mismatch). The caller has refused a saved SSH target's address.
         True when this run made the pin (there was none before)."""
-        port = vms.VM_SSH_PORT
         tries = max(1, self._ssh_wait // self._poll)
         line = ""
         for _ in range(tries):
@@ -483,52 +373,12 @@ class ProxmoxProvisioner:
         except (asyncssh.KeyImportError, ValueError):
             raise StepFailed("The VM's SSH host key, read through its guest agent, isn't a key "
                              "Sirdar can use.") from None
-        mismatch = StepFailed("The VM's live SSH key doesn't match the one its guest agent "
-                              "reports. Sirdar pinned nothing.")
-        for _ in range(tries):
-            async with get_sessionmaker()() as s:
-                stored = await known_hosts.lookup(s, ip, port)
-                try:
-                    if stored is not None and stored.fingerprint_sha256 == expected:
-                        await ssh.pinned_host_key(s, ip, port)
-                        out(f"SSH host key {expected} is pinned.\n")
-                        return False
-                    await known_hosts.trust(s, ip, port, expected, ctx.actor_id,
-                                            target_id=f"proxmox:{ctx.env_name}")
-                    await s.commit()
-                    changed = " (it changed)" if stored is not None else ""
-                    out(f"Pinned {ip}'s SSH host key {expected}, read through the guest "
-                        f"agent{changed}.\n")
-                    return stored is None
-                except (known_hosts.HostKeyChanged, ssh.HostKeyMismatch):
-                    raise mismatch from None
-                except ConnectFailed:
-                    pass                                  # SSH isn't up yet
-            await self._sleep(self._poll)
-        raise StepFailed(f"The VM didn't answer SSH at {ip} in {self._ssh_wait // 60} minutes.")
-
-    async def _resolve_ref(self, ctx: VmContext, out: Output) -> str:
-        async with get_sessionmaker()() as s:
-            env = await s.get(Environment, ctx.env_id)
-            try:
-                cfg = await vms.host_config(s, self._settings, env)
-            except (vault.SecretsKeyMissing, vault.SecretUnreadable):
-                raise StepFailed("Sirdar can't read the VM's SSH key. Is SIRDAR_SECRETS_KEY the "
-                                 "one it was made with?") from None
-            if cfg is None:
-                raise StepFailed("The VM has no recorded address yet. Retry from step 0.")
-            try:
-                sha = await self._resolve(cfg, s, ctx.repo_url, ctx.git_ref)
-            except gitref.RefError as e:
-                reason = _REF_REASONS.get(e.code, _REF_REASONS["ref_lookup_failed"])
-                raise StepFailed(reason.format(ref=ctx.git_ref)) from None
-            except ConnectFailed as e:
-                raise StepFailed(e.reason) from None
-            except (ssh.HostKeyUnknown, ssh.HostKeyMismatch):
-                raise StepFailed("The VM's SSH host key changed while Sirdar was resolving the "
-                                 "ref. Retry from step 0.") from None
-        out(f"{ctx.git_ref} is {sha}.\n")
-        return sha
+        return await vmcommon.confirm_pin(
+            ip=ip, expected=expected, actor_id=ctx.actor_id,
+            target_id=f"proxmox:{ctx.env_name}", tries=tries, poll=self._poll,
+            sleep=self._sleep, out=out, how="read through the guest agent",
+            mismatch="The VM's live SSH key doesn't match the one its guest agent reports. "
+                     "Sirdar pinned nothing.", minutes=self._ssh_wait // 60)
 
     async def _snapshot(self, api: Proxmox, ctx: VmContext, vmid: int,
                         out: Output) -> str | None:
@@ -543,17 +393,12 @@ class ProxmoxProvisioner:
         out(f"Took VM snapshot {name}.\n")
         # Recorded at once: a later failure in this step still leaves it
         # Sirdar's (kept by a retry, listed, pruned in turn).
-        async with get_sessionmaker()() as s:
-            await s.execute(update(Deployment).where(Deployment.id == ctx.deployment_id)
-                            .values(vm_snapshot=name))
-            await s.commit()
-        keep = await _recorded(ctx.env_id) | {name}
-        # Only the sirdar-* snapshots Sirdar's deployments recorded: a snapshot
-        # made by hand is never pruned, whatever its name.
-        ours = sorted((s["name"] for s in await api.snapshots(vmid)
-                       if s.get("name") in keep and vms.valid_snapshot_name(s["name"])),
-                      reverse=True)
-        for old in ours[ctx.vm.keep_snapshots:]:
+        await vmcommon.record_vm_snapshot(ctx.deployment_id, name)
+        # Only the sirdar-* snapshots Sirdar's deployments recorded
+        # (vmcommon.to_prune): a snapshot made by hand is never pruned.
+        recorded = await vmcommon.recorded_snapshots(ctx.env_id) | {name}
+        found = [s.get("name") for s in await api.snapshots(vmid)]
+        for old in vmcommon.to_prune(found, recorded, ctx.vm.keep_snapshots):
             await api.delete_snapshot(vmid, old)
             out(f"Deleted the old VM snapshot {old} (keeping the newest "
                 f"{ctx.vm.keep_snapshots}).\n")
@@ -567,7 +412,7 @@ class ProxmoxProvisioner:
             raise StepFailed("This environment has no VM yet.")
         if not vms.valid_snapshot_name(name):
             raise StepFailed(f"{name} isn't a VM snapshot Sirdar takes.")
-        if name not in await _recorded(ctx.env_id):
+        if name not in await vmcommon.recorded_snapshots(ctx.env_id):
             raise StepFailed(f"Sirdar didn't take the VM snapshot {name} for {ctx.env_name}, "
                              "so it won't restore it.")
         if await self._identify(api, ctx) is None:
@@ -628,10 +473,7 @@ class ProxmoxProvisioner:
                     raise StepFailed(f"VM {vm.vmid} is still there after Terraform's destroy. "
                                      "Remove it by hand in Proxmox, then retry.")
                 out(f"Destroyed {vm.name}.\n")
-            if vm.ip:
-                async with get_sessionmaker()() as s:
-                    if await known_hosts.forget(s, vm.ip, vms.VM_SSH_PORT, ctx.actor_id,
-                                                target_id=f"proxmox:{ctx.env_name}"):
-                        await s.commit()
-                        out(f"Forgot {vm.ip}'s SSH host key.\n")
+            if vm.ip and await vmcommon.forget_pin(vm.ip, ctx.actor_id,
+                                                   f"proxmox:{ctx.env_name}"):
+                out(f"Forgot {vm.ip}'s SSH host key.\n")
         await asyncio.to_thread(terraform.remove_workdir, self._settings, ctx.env_id)

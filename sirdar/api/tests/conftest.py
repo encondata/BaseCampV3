@@ -154,11 +154,11 @@ def no_real_hosts():
     """No test reaches a real Proxmox host outside httpx: the raw TLS
     certificate fetch may only dial 127.0.0.1 (the tests' own TLS server),
     Terraform only runs fake-* scripts, never opens a real ESXi session
-    (esxi._smart_connect), and the provisioner's port probe never dials
-    out. Yields the list of blocked attempts (a test that
+    (esxi._smart_connect), and the provisioners' port probe (vmcommon.tcp_open)
+    never dials out. Yields the list of blocked attempts (a test that
     blocks on purpose clears it); the test fails at teardown if any is
     left. Its own MonkeyPatch, like no_real_http."""
-    from sirdar_api.deploy import esxi, provision, terraform, tls_pin
+    from sirdar_api.deploy import esxi, terraform, tls_pin, vmcommon
 
     hits: list[str] = []
     real_read = tls_pin._read_certificate
@@ -188,7 +188,7 @@ def no_real_hosts():
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(tls_pin, "_read_certificate", read)
         mp.setattr(terraform, "_spawn", spawn)
-        mp.setattr(provision, "tcp_open", probe)
+        mp.setattr(vmcommon, "tcp_open", probe)
         mp.setattr(esxi, "_smart_connect", esxi_session)
         yield hits
     assert not hits, f"a test reached real hosts: {', '.join(hits)}"

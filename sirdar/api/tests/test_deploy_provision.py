@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import AuditLog, Deployment, Integration
-from sirdar_api.deploy import gitref, known_hosts, provision, proxmox, terraform, vms
+from sirdar_api.deploy import gitref, known_hosts, provision, proxmox, terraform, vmcommon, vms
 from sirdar_api.deploy.provision import VmOutcome, VmPrepareError
 from sirdar_api.deploy.publish import StepFailed
 from sirdar_api.deploy.terraform import TfResult
@@ -348,7 +348,7 @@ async def test_proxmox_errors_end_as_our_copy(db, vm_env, tf, proxmox_fake):
 
 async def test_the_probe_is_guarded(no_real_hosts):
     with pytest.raises(AssertionError):
-        await provision.tcp_open("10.10.48.70", 22)
+        await vmcommon.tcp_open("10.10.48.70", 22)
     assert no_real_hosts == ["probe:10.10.48.70"]
     no_real_hosts.clear()
 
