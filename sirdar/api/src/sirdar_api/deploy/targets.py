@@ -57,6 +57,8 @@ def get_target(target_id: str) -> Target | None:
 
 
 def is_configured(target_id: str, s: Settings) -> bool:
+    """From settings alone. For DigitalOcean pass digitalocean.resolve()'s
+    settings, which carry the stored integration token when there is one."""
     match target_id:
         case "digitalocean":
             return s.deploy_do_token is not None
@@ -124,10 +126,16 @@ def ssh_targets_at(host: str, port: int, s: Settings) -> list[str]:
 
 
 def public_targets(s: Settings, *, proxmox_configured: bool = False,
-                   esxi_configured: bool = False) -> list[dict]:
-    """The VM hosts are listed last (Proxmox, then ESXi) once saved."""
+                   esxi_configured: bool = False,
+                   digitalocean_configured: bool | None = None) -> list[dict]:
+    """The VM hosts are listed last (Proxmox, then ESXi) once saved.
+    digitalocean_configured: a token is stored or in the environment
+    (integrations.digitalocean_source); None checks the environment only."""
+    configured = {t.id: is_configured(t.id, s) for t in TARGETS}
+    if digitalocean_configured is not None:
+        configured["digitalocean"] = digitalocean_configured
     out = [{"id": t.id, "label": t.label, "kind": t.id, "available": t.available,
-            "configured": is_configured(t.id, s)}
+            "configured": configured[t.id]}
            for t in TARGETS if t.id != "ssh"]
     if installer_present(s):
         out.append({"id": "ssh", "label": INSTALLER_LABEL, "kind": "ssh", "source": "installer",

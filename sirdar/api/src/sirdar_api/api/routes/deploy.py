@@ -114,7 +114,8 @@ async def list_targets(db: DbSession, actor: AuthContext = require_permission("d
     writable = targets.can_add_ssh(s)
     listed = targets.public_targets(
         s, proxmox_configured=await integrations.is_configured(db, "proxmox"),
-        esxi_configured=await integrations.is_configured(db, "esxi"))
+        esxi_configured=await integrations.is_configured(db, "esxi"),
+        digitalocean_configured=await integrations.digitalocean_source(db, s) is not None)
     return {"targets": listed, "types": targets.DEPLOY_TYPES,
             "can_add_ssh": writable, "ssh_store_hint": None if writable else targets.STORE_HINT}
 
@@ -222,13 +223,31 @@ async def list_key_files(actor: AuthContext = require_permission("deploy", "chan
     return {"files": await asyncio.to_thread(_key_file_names, get_settings().deploy_keys_dir)}
 
 
+async def _digitalocean_settings(db) -> tuple:
+    """(settings carrying the DigitalOcean token Sirdar uses, None) or
+    (None, IntegrationError) when the stored token can't be read."""
+    try:
+        return await digitalocean.resolve(db, get_settings()), None
+    except integrations.IntegrationError as e:
+        return None, e
+
+
+def _unreadable(e: integrations.IntegrationError) -> HTTPException:
+    return HTTPException(status_code=409 if e.code == "integration_unreadable" else 400,
+                         detail={"code": e.code, **e.extra})
+
+
 @router.get("/digitalocean/regions")
-async def digitalocean_regions(actor: AuthContext = require_permission("deploy", "view")):
-    settings = get_settings()
+async def digitalocean_regions(db: DbSession,
+                               actor: AuthContext = require_permission("deploy", "view")):
+    settings, problem = await _digitalocean_settings(db)
+    if problem is not None:
+        raise _unreadable(problem)
     if not targets.is_configured("digitalocean", settings):
         raise HTTPException(status_code=400, detail={"code": "target_not_configured"})
     try:
-        return await digitalocean.list_regions(settings)
+        return await digitalocean.list_regions(
+            settings, transport=outbound.transports().get("digitalocean"))
     except ConnectFailed as e:
         raise HTTPException(status_code=502,
                             detail={"code": "connect_failed", "reason": e.reason}) from None
@@ -266,6 +285,12 @@ async def connect(body: ConnectIn, request: Request, db: DbSession,
         return HTTPException(status_code=status, detail={"code": code, **extra})
 
     ssh_config = None
+    if body.target == "digitalocean":
+        resolved, problem = await _digitalocean_settings(db)
+        if problem is not None:
+            await record(False, problem.code)
+            raise _unreadable(problem)
+        settings = resolved
     if body.target == "ssh" or body.target.startswith("ssh:"):
         ssh_config = targets.ssh_config_for(body.target, settings)
         if ssh_config is None:
@@ -279,7 +304,8 @@ async def connect(body: ConnectIn, request: Request, db: DbSession,
 
     try:
         if ssh_config is None:
-            result = await digitalocean.test_connection(settings, region=body.region)
+            result = await digitalocean.test_connection(
+                settings, region=body.region, transport=outbound.transports().get("digitalocean"))
         else:
             result = await ssh.test_connection(ssh_config, db, target_id=body.target)
     except ssh.HostKeyUnknown as e:
