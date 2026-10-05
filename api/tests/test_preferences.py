@@ -20,6 +20,7 @@ PREFS = {
     "nav_mode": "expanded",
     "nav_bg": "default",
     "nav_size": "default",
+    "list_view": "last",
 }
 
 
@@ -40,6 +41,7 @@ async def test_login_returns_default_preferences(client, seeded_user):
         "nav_mode": "expanded",
         "nav_bg": "default",
         "nav_size": "default",
+        "list_view": "expanded",
     }
 
 
@@ -174,3 +176,20 @@ async def test_invalid_notification_sound_rejected(client, seeded_user):
     bad = {**body["preferences"], "notif": {**body["preferences"]["notif"], "sound": "klaxon"}}
     resp = await client.put("/auth/me/preferences", headers=hdrs, json=bad)
     assert resp.status_code == 422
+
+
+async def test_list_view_rejects_unknown_value(client, seeded_user):
+    body = await _login(client)
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+    resp = await client.put("/auth/me/preferences",
+                            json={**PREFS, "list_view": "sideways"}, headers=headers)
+    assert resp.status_code == 422
+
+
+async def test_list_view_defaults_when_absent(client, seeded_user):
+    body = await _login(client)
+    headers = {"Authorization": f"Bearer {body['access_token']}"}
+    legacy = {k: v for k, v in PREFS.items() if k != "list_view"}
+    resp = await client.put("/auth/me/preferences", json=legacy, headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["list_view"] == "expanded"
