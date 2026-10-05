@@ -3,6 +3,7 @@
  *  to trust only if it was renewed on purpose. The modal keeps the request
  *  that asked (`what`) and resends it with the trusted fingerprint. */
 import { errorDetail, type TlsCertificate } from '../lib/sirdarApi';
+import { when } from '../pages/environments/labels';
 
 export type PendingCertificate<W> = { kind: 'untrusted'; what: W; cert: TlsCertificate }
   | { kind: 'changed'; what: W; expected: string; actual: string };
@@ -26,8 +27,6 @@ export function pendingCertificate<W>(err: unknown, what: W): PendingCertificate
   return null;
 }
 
-const expires = (iso: string) => (iso ? new Date(iso).toLocaleString() : '—');
-
 export default function CertificatePrompt<W>({ pending, question, busy, onTrust }: {
   pending: PendingCertificate<W>; question: string; busy: boolean; onTrust: (fingerprint: string, what: W) => void;
 }) {
@@ -40,7 +39,7 @@ export default function CertificatePrompt<W>({ pending, question, busy, onTrust 
             <dt>SHA-256 fingerprint</dt><dd className="mono sirdar-fingerprint">{pending.cert.fingerprint}</dd>
             <dt>Subject</dt><dd>{pending.cert.subject || '—'}</dd>
             <dt>Issued by</dt><dd>{pending.cert.issuer || '—'}</dd>
-            <dt>Expires</dt><dd className="mono">{expires(pending.cert.not_after)}</dd>
+            <dt>Expires</dt><dd className="mono">{when(pending.cert.not_after)}</dd>
             <dt>Names</dt><dd className="mono">{pending.cert.names.join(', ') || '—'}</dd>
           </dl>
           <button type="button" className="btn-solid" disabled={busy}

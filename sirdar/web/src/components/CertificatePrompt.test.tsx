@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '@portal/lib/api';
 
+import { when } from '../pages/environments/labels';
 import { ESXI_CERT } from '../pages/environments/testData';
 
 import CertificatePrompt, { pendingCertificate } from './CertificatePrompt';
@@ -40,6 +41,20 @@ describe('CertificatePrompt', () => {
     expect(screen.getByText(ESXI_CERT.fingerprint)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Trust this certificate' }));
     expect(onTrust).toHaveBeenCalledWith(ESXI_CERT.fingerprint, 'save');
+  });
+
+  it('shows the expiry with the shared date helper, and a dash when it is unreadable', () => {
+    const at = '2027-01-02T03:04:05Z';
+    const { rerender } = render(
+      <CertificatePrompt pending={{ kind: 'untrusted', what: 'save', cert: { ...ESXI_CERT, not_after: at } }}
+                         question="?" busy={false} onTrust={vi.fn()} />);
+    const expiry = () => screen.getByText('Expires').nextElementSibling?.textContent;
+    expect(expiry()).toBe(when(at));
+    for (const bad of ['not a date', '']) {
+      rerender(<CertificatePrompt pending={{ kind: 'untrusted', what: 'save', cert: { ...ESXI_CERT, not_after: bad } }}
+                                  question="?" busy={false} onTrust={vi.fn()} />);
+      expect(expiry()).toBe('—');
+    }
   });
 
   it('warns about a changed certificate', () => {

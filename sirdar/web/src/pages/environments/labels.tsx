@@ -67,7 +67,11 @@ export function StatusChip({ map, status }: { map: ChipMap; status: string }) {
   return <span className={`chip ${cls}`}>{label}</span>;
 }
 
-export const when = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString() : '—');
+/** A time for people to read; "—" when it's missing or not a date. */
+export function when(iso: string | null | undefined): string {
+  const at = iso ? new Date(iso) : null;
+  return at && !Number.isNaN(at.getTime()) ? at.toLocaleString() : '—';
+}
 /** The file name at the end of a dump path. */
 export const baseName = (path: string) => path.slice(path.lastIndexOf('/') + 1);
 /** A pre-deploy dump is named for its UTC time, `YYYYMMDDTHHMMSSZ.dump`;
