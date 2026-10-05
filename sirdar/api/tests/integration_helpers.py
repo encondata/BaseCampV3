@@ -40,3 +40,23 @@ async def configure_proxmox(db) -> None:
     """Save the Proxmox integration (needs the secrets_key fixture) and commit."""
     await integrations.save(db, get_settings(), "proxmox", PX_VALUES, PX_TOKEN, actor_id=None)
     await db.commit()
+
+
+ESXI_PASSWORD = "esxi-PASSWORD-s3cr3t!"
+# ESXi's default certificate names only its host name (no IP).
+ESXI_CERT, ESXI_CERT_KEY = make_cert(cn="localhost.localdomain", ips=(),
+                                     dns=("localhost.localdomain",))
+ESXI_FINGERPRINT = tls_pin.fingerprint_of(ESXI_CERT)
+ESXI_VALUES = {"url": "https://10.10.48.10", "user": "sirdar", "datastore": "datastore1",
+               "network": "VM Network", "resource_pool": None,
+               "source_vm": "sirdar-ubuntu-2404-seed", "dns_servers": [],
+               "tls_fingerprint": ESXI_FINGERPRINT, "tls_cert_pem": ESXI_CERT}
+# What the Settings modal sends (no certificate: the API fetches it).
+ESXI_BODY = {k: v for k, v in ESXI_VALUES.items() if k != "tls_cert_pem"}
+
+
+async def configure_esxi(db) -> None:
+    """Save the ESXi integration (needs the secrets_key fixture) and commit."""
+    await integrations.save(db, get_settings(), "esxi", ESXI_VALUES, ESXI_PASSWORD,
+                            actor_id=None)
+    await db.commit()

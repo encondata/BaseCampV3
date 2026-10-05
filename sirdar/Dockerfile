@@ -55,7 +55,11 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends openssh-client sshpass \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app/api
-COPY sirdar/api/pyproject.toml ./
+COPY sirdar/api/pyproject.toml sirdar/api/requirements-esxi.txt ./
+# pyVmomi (ESXi targets, deploy phase 6) and its one dependency, checked
+# against their published SHA-256 sums; `pip install .` then finds them
+# installed.
+RUN pip install --no-cache-dir --require-hashes --no-deps -r requirements-esxi.txt
 COPY sirdar/api/src ./src
 RUN pip install --no-cache-dir .
 COPY sirdar/api/alembic.ini ./

@@ -12,6 +12,10 @@ from .deploy_factories import make_environment
 from .integration_helpers import (
     CF_TOKEN,
     CF_VALUES,
+    ESXI_CERT,
+    ESXI_FINGERPRINT,
+    ESXI_PASSWORD,
+    ESXI_VALUES,
     NPM_PASSWORD,
     NPM_VALUES,
     PX_FINGERPRINT,
@@ -20,6 +24,7 @@ from .integration_helpers import (
     PX_TOKEN_SECRET,
     PX_VALUES,
     configure,
+    configure_esxi,
     configure_proxmox,
 )
 from .tls_helpers import make_ca, make_cert
@@ -177,6 +182,10 @@ async def test_public_view_never_carries_a_secret(db, secrets_key):
                     "storage": None, "bridge": None, "vlan_tag": None, "template_vmid": None,
                     "tls_fingerprint": None, "token_id": None, "token_set": False,
                     "updated_at": None, "updated_by_name": None},
+        "esxi": {"configured": False, "url": None, "user": None, "datastore": None,
+                 "network": None, "resource_pool": None, "source_vm": None, "dns_servers": [],
+                 "tls_fingerprint": None, "password_set": False, "updated_at": None,
+                 "updated_by_name": None},
     }
     user = await make_user(db, email="ops@test.example.com", first_name="Jimmy",
                            last_name="Henderson")
@@ -317,3 +326,70 @@ def test_proxmox_token_ids_follow_proxmox_s_rule(token_id):
     token = f"{token_id}={PX_TOKEN_SECRET}"
     assert integrations.check_secret("proxmox", token) == token
     assert integrations.token_id_of(token) == token_id
+
+
+async def test_esxi_settings_round_trip(db, secrets_key):
+    changed = await integrations.save(db, get_settings(), "esxi",
+                                      {**ESXI_VALUES, "dns_servers": ["10.10.48.1", " 1.1.1.1"],
+                                       "resource_pool": "  "}, ESXI_PASSWORD, actor_id=None)
+    await db.commit()
+    assert "password" in changed and "user" in changed
+    cfg = await integrations.load_esxi(db, get_settings())
+    assert (cfg.url, cfg.user, cfg.datastore, cfg.network, cfg.resource_pool, cfg.source_vm,
+            cfg.dns_servers, cfg.tls_fingerprint) == (
+        "https://10.10.48.10", "sirdar", "datastore1", "VM Network", None,
+        "sirdar-ubuntu-2404-seed", ("10.10.48.1", "1.1.1.1"), ESXI_FINGERPRINT)
+    assert cfg.password == ESXI_PASSWORD and cfg.tls_cert_pem == ESXI_CERT
+    assert ESXI_PASSWORD not in repr(cfg) and "BEGIN CERTIFICATE" not in repr(cfg)
+    shown = (await integrations.public(db, get_settings()))["esxi"]
+    assert shown["password_set"] and shown["configured"] and "password" not in shown
+    assert shown["dns_servers"] == ["10.10.48.1", "1.1.1.1"] and "tls_cert_pem" not in shown
+
+
+@pytest.mark.parametrize(("change", "code"), [
+    ({"url": "http://10.10.48.10"}, "esxi_url_invalid"),
+    ({"url": "https://10.10.48.10/ui"}, "esxi_url_invalid"),
+    ({"user": "root:x"}, "esxi_user_invalid"),
+    ({"user": ""}, "esxi_user_invalid"),
+    ({"datastore": "[datastore1]"}, "datastore_invalid"),
+    ({"datastore": ""}, "datastore_invalid"),
+    ({"network": "a/b"}, "network_invalid"),
+    ({"resource_pool": "pool\\x"}, "resource_pool_invalid"),
+    ({"source_vm": " "}, "source_vm_invalid"),
+    ({"dns_servers": ["10.10.48.1", "dns.example"]}, "dns_servers_invalid"),
+    ({"dns_servers": ["1.1.1.1", "8.8.8.8", "9.9.9.9", "1.0.0.1"]}, "dns_servers_invalid"),
+    ({"dns_servers": ["127.0.0.1"]}, "dns_servers_invalid"),
+    ({"tls_fingerprint": ""}, "tls_untrusted"),
+    ({"tls_fingerprint": "AB:CD"}, "tls_fingerprint_invalid"),
+])
+async def test_esxi_validation(db, secrets_key, change, code):
+    with pytest.raises(integrations.IntegrationError) as e:
+        await integrations.save(db, get_settings(), "esxi", {**ESXI_VALUES, **change},
+                                ESXI_PASSWORD, actor_id=None)
+    assert e.value.code == code
+
+
+async def test_esxi_password_rules_and_reuse(db, secrets_key):
+    for bad in ("", "a\nb", "x" * 1025):
+        with pytest.raises(integrations.IntegrationError) as e:
+            await integrations.save(db, get_settings(), "esxi", ESXI_VALUES, bad, actor_id=None)
+        assert e.value.code == "password_invalid"
+    await configure_esxi(db)
+    await integrations.save(db, get_settings(), "esxi", {**ESXI_VALUES, "datastore": "ssd2"},
+                            None, actor_id=None)                 # same host and user: kept
+    for other in ({"url": "https://10.10.48.11"}, {"user": "root"}):
+        with pytest.raises(integrations.IntegrationError) as e:
+            await integrations.save(db, get_settings(), "esxi", {**ESXI_VALUES, **other},
+                                    None, actor_id=None)
+        assert e.value.code == "secret_required"
+        assert "different ESXi host or user" in e.value.extra["reason"]
+
+
+async def test_vm_hosts_in_use(db, secrets_key):
+    await configure_esxi(db)
+    env = await make_environment(db, name="uat3")
+    env.target_id = "esxi"
+    await db.commit()
+    assert await integrations.in_use(db, "esxi") == ["uat3"]
+    assert await integrations.in_use(db, "proxmox") == []
+    assert await integrations.in_use(db, "npm") == []

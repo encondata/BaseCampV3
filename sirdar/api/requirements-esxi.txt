@@ -1,0 +1,9 @@
+# The vSphere SDK for ESXi targets (deploy phase 6), installed by the image
+# with --require-hashes before `pip install .`. 8.0.3.0.1, not 9.x: pyVmomi
+# supports the four vSphere releases before its own, and 8.0 U3's window still
+# includes Jimmy's ESXi 7. Bump together with pyproject.toml (a test compares).
+pyvmomi==8.0.3.0.1 \
+    --hash=sha256:db795c960159cfa3c81e6af4cf1f46618e61cf0349db1666de75df98a4f29c69
+six==1.17.0 \
+    --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 \
+    --hash=sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81
