@@ -404,8 +404,8 @@ What Sirdar does on ESXi:
   exactly that key. Once SSH answers with it, step 0 **scrubs** the
   user-data holding the key's private half from the VM's settings
   (`guestinfo.userdata` is emptied, which deletes it) and from Sirdar's
-  database: from then on the private key exists only on the VM's disk. The
-  metadata stays, so later boots keep the same instance id and cloud-init
+  database: from then on the private key exists only on the VM's disk (but
+  see `vmware.log` below). The metadata stays, so later boots keep the same instance id and cloud-init
   doesn't run again. The key never changes, so Restore VM snapshot needs no
   new pin.
 - Each Update, Reset, Restore backup or Roll back of a deployed ESXi
@@ -417,7 +417,20 @@ What Sirdar does on ESXi:
   picked for a delete or a restore.
 - **Delete environment** destroys the VM (powered off first; ESXi removes its
   files and snapshots), checks that ESXi no longer finds it, and forgets its
-  pinned host key.
+  pinned host key. Because ESXi's destroy deletes every disk attached to the
+  VM, it is refused (nothing removed) when the VM has any disk other than the
+  one Sirdar copied into its folder: detach that disk first.
+
+**One Sirdar per ESXi host.** Point only one Sirdar install at a given ESXi
+host. Ownership is the `sirdar.environment` key holding an environment id,
+and VM names are `ss-<env>`: two Sirdars with an environment of the same
+name would contend for the same VM name, and neither can see the other's
+address records.
+
+**`vmware.log`.** ESXi may write the VM's settings, `guestinfo.userdata`
+among them, into the VM's `vmware.log` in its datastore folder. Scrubbing
+removes the key from the VM's settings, but a copy can stay in that log
+until ESXi rotates it. Keep datastore access to administrators.
 
 **Ownership.** Sirdar touches only a VM it created. Before step 0, a restore
 or a destroy changes anything, the VM must match all three of: the recorded
@@ -436,7 +449,8 @@ again. Existing VMs can't be adopted onto ESXi (422 `adopt_not_allowed`).
 into the VM's folder, before it changes anything. Once a VM has snapshots,
 ESXi writes to a delta file (`…-disk0-000001.vmdk`); Sirdar follows the
 disk's snapshot chain back to its base file, so the check holds through
-snapshots. A disk it didn't put there stops the step.
+snapshots. A disk it didn't put there stops the step. A half-copied disk left by an
+earlier attempt is deleted only when no VM on the host has it attached.
 
 **Sizing.** Changing vCPU, memory or the disk applies on the next deploy:
 
@@ -464,8 +478,10 @@ saved SSH target (names resolved; an unreadable targets file refuses), both
 VM hosts' own addresses (the Proxmox and ESXi URL hosts), other
 environments' service addresses, and every other Proxmox or ESXi VM. The
 check runs at create (409 `ip_in_use`) and again in step 0 under a database
-advisory lock held until the address is recorded. A static address that
-already answers SSH is refused before the VM is created. Sirdar never pins a
+advisory lock held until the address is recorded. A static address is
+checked again before the VM is created (on Proxmox, before its id is
+reserved): it must pass the same check, no VM on the ESXi host may report it
+through VMware Tools, and nothing may answer SSH there. Sirdar never pins a
 saved SSH target's address, and forgets a pin it made when the locked
 re-check fails.
 
@@ -517,8 +533,11 @@ the host's certificate changes, steps can't connect and Save or Test answers
 
 The password is stored encrypted and never shown again. It stays inside
 Sirdar's process (no subprocess sees it) and is reused, when left blank, only
-for the same URL and user. ESXi can't be removed from Settings while an
-environment uses it.
+for the same URL and user. ESXi can't be removed from Settings, and its URL
+can't change (409 `integration_in_use`, as for Proxmox's URL), while an
+environment uses it. A VM stays on the host it was built on: if the URL
+points elsewhere anyway, every step of its environments, Delete included,
+stops and says so instead of calling the VM gone.
 
 **Packages.** pyVmomi 8.0.3.0.1 (it still covers ESXi 7; 9.x doesn't promise
 to) and six 1.17.0 are installed in the image with `--require-hashes` from
