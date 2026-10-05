@@ -37,17 +37,19 @@ const auth = vi.hoisted(() => {
 
 const updatePreferences = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 
+const prefs = vi.hoisted(() => ({
+  accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default',
+  motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', list_view: 'expanded',
+  notif: { critical: true, email: true, maint: true, digest: true, sound: 'chime' },
+  list_prefs: {},
+} as UiPreferences));
+
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     can: auth.can,
     godMode: false,
     maxRank: auth.maxRank,
-    preferences: {
-      accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default',
-      motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', list_view: 'expanded',
-      notif: { critical: true, email: true, maint: true, digest: true, sound: 'chime' },
-      list_prefs: {},
-    } satisfies UiPreferences,
+    preferences: prefs,
     updatePreferences,
   }),
 }));
@@ -146,6 +148,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   auth.can = () => true;
   auth.maxRank = 0;
+  prefs.list_view = 'expanded';
+  prefs.list_prefs = {};
   api.getInitiative.mockResolvedValue(INITIATIVE);
   api.listInitiativeAssets.mockResolvedValue([ASSET]);
   api.listAssetStatuses.mockResolvedValue([]);
@@ -192,6 +196,35 @@ const personRow = async () =>
   (await screen.findByText('Ada Lovelace')).closest('.dir-row') as HTMLElement;
 
 /* ── assets list ─────────────────────────────────────────────────── */
+
+const assetsPanelHead = async () =>
+  (await screen.findByRole('button', { name: /^Assets/ }));
+
+it('assets panel: starts open with List view = expanded, and the chevron saves the state', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const head = await assetsPanelHead();
+  expect(head.getAttribute('aria-expanded')).toBe('true');
+  expect(await screen.findByText('switch-01')).not.toBeNull();
+  await user.click(head);
+  expect(head.getAttribute('aria-expanded')).toBe('false');
+  expect(updatePreferences).toHaveBeenCalledWith(expect.objectContaining({
+    list_prefs: expect.objectContaining({ open_state: { 'initiative-assets': false } }),
+  }));
+});
+
+it('assets panel: starts collapsed with List view = collapsed', async () => {
+  prefs.list_view = 'collapsed';
+  renderPage();
+  expect((await assetsPanelHead()).getAttribute('aria-expanded')).toBe('false');
+});
+
+it('assets panel: Remember last restores the saved state', async () => {
+  prefs.list_view = 'last';
+  prefs.list_prefs = { open_state: { 'initiative-assets': false } };
+  renderPage();
+  expect((await assetsPanelHead()).getAttribute('aria-expanded')).toBe('false');
+});
 
 it('assets row: one Actions trigger replaces the inline Edit/Remove buttons', async () => {
   renderPage();

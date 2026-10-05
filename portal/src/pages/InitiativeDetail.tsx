@@ -15,6 +15,7 @@ import {
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import CollapsePanel from '../components/CollapsePanel';
 import ComboBox, { type ComboOption } from '../components/ComboBox';
 import AssetEditDialog from '../components/initiatives/AssetEditDialog';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
@@ -61,6 +62,7 @@ import {
 import { ADMIN_RANK } from '../lib/access';
 import { statusChip as chip } from '../lib/chips';
 import { relativeTime } from '../lib/format';
+import { useListCollapse } from '../lib/listCollapse';
 import {
   INITIATIVE_ERRORS, MOVE_ASSET_COLUMNS, MOVE_ASSET_EDIT_FIELDS, MOVE_ASSET_ERRORS,
   initiativeCellText, moveAssetCellText, moveAssetProgress, moveAssetStatusBreakdown,
@@ -283,6 +285,7 @@ export default function InitiativeDetail() {
   // section's god.editing (Task 5b): gated on maxRank/canChange, not
   // godMode, so it isn't tied to useGodEdit()'s godMode-derived `editing`.
   const [assetsEditing, setAssetsEditing] = useState(false);
+  const assetsPanel = useListCollapse('initiative-assets');
   // Rack elevation modal (Task 6) — opened from a Source/Destination Rack
   // cell button in read-only display mode; null when closed.
   const [rackView, setRackView] = useState<
@@ -756,7 +759,8 @@ export default function InitiativeDetail() {
         )}
 
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
-          <p className="eyebrow-sm">Assets{isMove ? ` — ${assets.length}` : ''}</p>
+          <CollapsePanel title={`Assets${isMove ? ` — ${assets.length}` : ''}`}
+                         open={assetsPanel.open} onToggle={assetsPanel.setOpen}>
           {!isMove && <p className="page-hint">Asset tracking lands here next.</p>}
           {isMove && assetsError && (
             <div className="dir-empty" style={{ marginBottom: 12 }}>
@@ -841,7 +845,11 @@ export default function InitiativeDetail() {
                   </div>
                 )}
 
-                <VirtualRows rows={visibleAssets}
+                {/* Remounted on open/close: VirtualRows measures its offset in a
+                    layout effect, which reads zeros while the panel body is
+                    hidden, so a list that mounted (or last measured) collapsed
+                    would window against a wrong scroll margin. */}
+                <VirtualRows key={assetsPanel.open ? 'open' : 'closed'} rows={visibleAssets}
                   renderRow={(a, vp) => {
                     const open = openAssetId === a.id;
                     return (
@@ -901,6 +909,7 @@ export default function InitiativeDetail() {
               {assetsActionError && <span className="pf-error">{assetsActionError}</span>}
             </>
           )}
+          </CollapsePanel>
         </div>
 
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
