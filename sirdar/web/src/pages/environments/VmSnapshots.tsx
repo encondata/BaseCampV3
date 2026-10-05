@@ -10,7 +10,7 @@ import {
   deployErrorText, listVmSnapshots, type Deployment, type Environment, type VmSnapshot,
 } from '../../lib/sirdarApi';
 
-import { deploymentRunning, hostLabel, shortSha, when } from './labels';
+import { deploymentRunning, ESXI_GROW_NOTE, hostLabel, shortSha, when } from './labels';
 import RestoreVmSnapshotModal from './RestoreVmSnapshotModal';
 
 export default function VmSnapshots({ env, onStarted }: {
@@ -44,7 +44,8 @@ export default function VmSnapshots({ env, onStarted }: {
         <button type="button" className="mini-btn" onClick={() => void load()}>Refresh</button>
       </div>
       <p className="page-hint">
-        Step 0 of each Update, Reset, Restore backup and Roll back snapshots the whole VM before anything changes;
+        Step 0 of each Update, Reset, Restore backup and Roll back snapshots the whole VM before anything changes
+        {env.target_kind === 'esxi' && ` ${ESXI_GROW_NOTE}`};
         the newest {env.vm?.keep_snapshots ?? 3} stay on {hostLabel(env)}. Restoring one puts the VM back: database, files and
         backups.
       </p>

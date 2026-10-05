@@ -14,7 +14,7 @@ import {
   deployErrorText, listSnapshots, startDeployment, type Deployment, type Environment, type Snapshot,
 } from '../../lib/sirdarApi';
 
-import { hostLabel, onVmHost, snapshotLabel } from './labels';
+import { ESXI_GROW_NOTE, hostLabel, onVmHost, snapshotLabel } from './labels';
 
 type Mode = 'update' | 'reset';
 type Field = 'ref' | 'confirm' | 'snapshot' | 'form';
@@ -202,7 +202,8 @@ export default function DeployModal({ env, onStarted, onClose }: {
                       ))}
                     </div>
                     <p className="page-hint">
-                      Step 0 snapshots the whole VM before anything changes. Restore it from the Backups tab.
+                      Step 0 snapshots the whole VM before anything changes
+                      {env.target_kind === 'esxi' && ` ${ESXI_GROW_NOTE}`}. Restore it from the Backups tab.
                     </p>
                   </>
                 ) : (

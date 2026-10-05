@@ -117,6 +117,9 @@ export const onVmHost = (env: Environment) => env.target_kind === 'proxmox' || e
 /** Its host is a VM Sirdar builds on Proxmox. */
 export const onProxmox = (env: Environment) => env.target_kind === 'proxmox';
 /** "Proxmox" or "ESXi" for a VM environment. */
+/** ESXi can't grow a disk that has snapshots: step 0 deletes Sirdar's first,
+ *  so a grow has no snapshot from before it, only one taken after. */
+export const ESXI_GROW_NOTE = '(but on ESXi a disk grow replaces the snapshots, with a new one taken after the grow)';
 export const hostLabel = (env: Environment) => (env.target_kind === 'esxi' ? 'ESXi' : 'Proxmox');
 
 type StageOf = Pick<EnvVm, 'created' | 'vmid'> & Partial<Pick<EnvVm, 'stage'>>;

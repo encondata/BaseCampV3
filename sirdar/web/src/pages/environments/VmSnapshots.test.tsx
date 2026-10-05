@@ -33,6 +33,7 @@ it('a Proxmox environment lists its VM snapshots above the backups', async () =>
   expect(within(rows[0]).getByText('e73b99ca')).toBeTruthy();
   expect(within(rows[1]).getByText(KEYS_CHANGED_REASON)).toBeTruthy();
   expect(screen.getByText(/the newest 3 stay on Proxmox/)).toBeTruthy();
+  expect(screen.queryByText(/disk grow replaces/)).toBeNull();
   expect(api.listVmSnapshots).toHaveBeenCalledWith('uat3');
   expect(screen.getByRole('heading', { name: 'Backups' })).toBeTruthy();
 });
@@ -74,5 +75,6 @@ it('an ESXi environment lists its VM snapshots, kept on ESXi', async () => {
   render(<BackupsTab env={ESXI_ENV} onStarted={vi.fn()} />);
   expect(await screen.findByRole('table', { name: 'VM snapshots' })).toBeTruthy();
   expect(screen.getByText(/the newest 3 stay on ESXi\. /)).toBeTruthy();
+  expect(screen.getByText(/before anything changes \(but on ESXi a disk grow replaces the snapshots, with a new one taken after the grow\); the newest 3/)).toBeTruthy();
   expect(api.listVmSnapshots).toHaveBeenCalledWith('uat3');
 });

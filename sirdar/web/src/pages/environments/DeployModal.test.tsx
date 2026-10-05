@@ -225,6 +225,8 @@ it("a seeded environment's first deploy says it restores the snapshot", async ()
 it('Proxmox: a VM snapshot is taken first unless turned off', async () => {
   const { onStarted } = open(PX_ENV);
   expect(screen.getByText(/Prepares the VM ss-uat3 on Proxmox/)).toBeTruthy();
+  expect(screen.getByText('Step 0 snapshots the whole VM before anything changes. Restore it from the Backups tab.'))
+    .toBeTruthy();
   expect(screen.getByRole('radio', { name: 'On' }).getAttribute('aria-checked')).toBe('true');
   await userEvent.click(deployBtn());
   await waitFor(() => expect(onStarted).toHaveBeenCalledWith(RUNNING));
@@ -255,6 +257,7 @@ it('ESXi: prepares the VM on ESXi and offers a VM snapshot first', async () => {
   const { onStarted } = open(ESXI_ENV);
   expect(screen.getByText(/Prepares the VM ss-uat3 on ESXi, then runs in \/opt\/serversherpa\/uat3 on it\./)).toBeTruthy();
   expect(screen.getByText('VM snapshot first')).toBeTruthy();
+  expect(screen.getByText(/^Step 0 snapshots the whole VM before anything changes \(but on ESXi a disk grow replaces the snapshots, with a new one taken after the grow\)\. Restore it/)).toBeTruthy();
   expect(screen.getByRole('radio', { name: 'On' }).getAttribute('aria-checked')).toBe('true');
   await userEvent.click(deployBtn());
   await waitFor(() => expect(onStarted).toHaveBeenCalledWith(RUNNING));
