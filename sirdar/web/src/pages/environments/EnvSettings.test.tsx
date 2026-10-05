@@ -16,7 +16,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import EnvSettings from './EnvSettings';
-import { DEFAULTS, ENV, PX_ENV, PX_NEW_ENV, PX_TARGETS, TARGETS } from './testData';
+import { DEFAULTS, ENV, ESXI_ENV, ESXI_TARGETS, PX_ENV, PX_NEW_ENV, PX_TARGETS, TARGETS } from './testData';
 
 Element.prototype.scrollIntoView = () => {};
 beforeEach(() => {
@@ -214,8 +214,39 @@ it('Proxmox before its first deploy: the danger zone says nothing on Proxmox is 
 });
 
 it('Proxmox with a partly built VM: the danger zone says the partly built VM is removed', () => {
-  const env = { ...PX_NEW_ENV, vm: { ...PX_NEW_ENV.vm!, vmid: 120, created: false } };
+  const env = { ...PX_NEW_ENV, vm: { ...PX_NEW_ENV.vm!, vmid: 120, created: false, stage: 'partial' as const } };
   render(<EnvSettings env={env} targets={PX_TARGETS.targets} onSaved={vi.fn()} onDeleteStarted={vi.fn()} />);
-  expect(screen.getByText(/Removes the partly built VM .* \(id 120\) if Proxmox has it\./)).toBeTruthy();
+  expect(screen.getByText(/Removes the partly built VM ss-uat3 \(VM 120\) if Proxmox has it\./)).toBeTruthy();
   expect(screen.queryByText(/nothing on Proxmox is removed/)).toBeNull();
+});
+
+it('ESXi: the target, the Machine hint, the disk-grow warning and the danger zone name ESXi', async () => {
+  render(<EnvSettings env={ESXI_ENV} targets={ESXI_TARGETS.targets} onSaved={vi.fn()} onDeleteStarted={vi.fn()} />);
+  expect((screen.getByLabelText('Target') as HTMLInputElement).value).toBe('ESXi · ss-uat3');
+  expect(screen.getByText(
+    "The next deploy's step 0 resizes the VM: ESXi shuts it down and starts it again to change its vCPUs, memory or "
+    + 'disk. A disk can grow but never shrink.',
+  )).toBeTruthy();
+  const warning = /ESXi can't grow a disk that has snapshots: the next deploy deletes this environment's VM snapshots first, then takes a new one\./;
+  expect(screen.queryByText(warning)).toBeNull();
+  const disk = screen.getByLabelText('Disk (GB)');
+  await userEvent.clear(disk);
+  await userEvent.type(disk, '80');
+  expect(screen.getByText(warning)).toBeTruthy();
+  await userEvent.clear(disk);
+  await userEvent.type(disk, '64');
+  expect(screen.queryByText(warning)).toBeNull();
+  expect(screen.getByText(/Destroys its VM on ESXi with everything on it, VM snapshots included, /)).toBeTruthy();
+});
+
+it('Proxmox: the Machine hint is unchanged and a bigger disk shows no ESXi warning', async () => {
+  render(<EnvSettings env={PX_ENV} targets={PX_TARGETS.targets} onSaved={vi.fn()} onDeleteStarted={vi.fn()} />);
+  expect(screen.getByText(
+    "The next deploy's step 0 resizes the VM (Proxmox restarts it when it must). A disk can grow but never shrink.",
+  )).toBeTruthy();
+  const disk = screen.getByLabelText('Disk (GB)');
+  await userEvent.clear(disk);
+  await userEvent.type(disk, '80');
+  expect(screen.queryByText(/can't grow a disk that has snapshots/)).toBeNull();
+  expect(screen.getByText(/Destroys its VM on Proxmox with everything on it, VM snapshots included, /)).toBeTruthy();
 });

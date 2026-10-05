@@ -57,8 +57,8 @@ export interface SirdarSettings {
 }
 
 export interface DeployTarget {
-  /** 'aws' | 'gcp' | 'digitalocean' | 'ssh' (installer) | 'ssh:<slug>' (saved) | 'proxmox' (once set up). */
-  id: string; label: string; kind?: 'aws' | 'gcp' | 'digitalocean' | 'ssh' | 'proxmox';
+  /** 'aws' | 'gcp' | 'digitalocean' | 'ssh' (installer) | 'ssh:<slug>' (saved) | 'proxmox' | 'esxi' (once set up). */
+  id: string; label: string; kind?: 'aws' | 'gcp' | 'digitalocean' | 'ssh' | 'proxmox' | 'esxi';
   source?: 'installer' | 'saved'; available: boolean; configured: boolean;
 }
 export interface SshTarget {
@@ -224,7 +224,7 @@ const MESSAGES: Record<string, string> = {
   claim_conflict: 'Someone else claimed that entry first. Reload the Publish tab.',
   publish_off: 'Publishing is off for this environment. Turn it on from the Publish tab, or retry from an earlier step.',
   publish_not_allowed: "Adopted environments start with publishing off; turn it on from the environment's Publish tab.",
-  // Proxmox targets
+  // VM hosts (Proxmox and ESXi)
   proxmox_url_invalid: 'Use the Proxmox address with https, like https://10.10.48.5:8006 (no path).',
   node_invalid: "That node name isn't valid.",
   pool_invalid: "That pool name isn't valid.",
@@ -233,11 +233,19 @@ const MESSAGES: Record<string, string> = {
   vlan_tag_invalid: 'Use a VLAN tag from 1 to 4094, or leave it empty.',
   template_vmid_invalid: "Use the template's VM id, a number from 100 up.",
   proxmox_token_invalid: "That doesn't look like a Proxmox API token (user@realm!tokenid=secret).",
-  tls_untrusted: "Sirdar doesn't trust this Proxmox server's certificate yet.",
-  tls_mismatch: "The Proxmox server's certificate doesn't match the one Sirdar trusted.",
+  esxi_url_invalid: 'Use the ESXi host with https, like https://10.10.48.10 (no path).',
+  esxi_user_invalid: "That user name isn't valid, like sirdar or root.",
+  datastore_invalid: "That datastore name isn't valid, like datastore1.",
+  network_invalid: "That port group name isn't valid, like VM Network.",
+  resource_pool_invalid: "That resource pool name isn't valid. Leave it empty for the host's root pool.",
+  source_vm_invalid: "That seed VM name isn't valid, like sirdar-ubuntu-2404-seed.",
+  dns_servers_invalid: 'Use up to 3 IPv4 addresses, separated by commas, or leave it empty.',
+  tls_untrusted: "Sirdar doesn't trust this server's certificate yet.",
+  tls_mismatch: "The server's certificate doesn't match the one Sirdar trusted.",
   tls_fingerprint_invalid: 'Use a SHA-256 fingerprint: 64 hex digits, with or without colons.',
   integration_in_use: 'Environments still use it. Delete them first.',
   vm_invalid: "Those VM settings aren't valid.",
+  vm_name_invalid: "The environment name can't be used as a VM host name.",
   vm_cores_invalid: 'Use 1 to 64 vCPUs.',
   vm_memory_invalid: 'Use 2 to 256 GB of memory.',
   vm_disk_invalid: 'Use a disk of 20 to 4096 GB.',
@@ -245,18 +253,18 @@ const MESSAGES: Record<string, string> = {
   vm_ip_mode_invalid: 'Choose Static or DHCP.',
   vm_ip_invalid: 'Use an address with its prefix, like 10.10.48.70/24.',
   vm_gateway_invalid: "The gateway must be another address in the VM's network.",
-  vm_not_allowed: 'Only a Proxmox environment has a VM.',
+  vm_not_allowed: 'Only an environment on a VM host has a VM.',
   vm_disk_shrink: "A VM's disk can grow but never shrink.",
-  ip_in_use: 'That address is already used: by the proxy, an SSH target or another environment.',
+  ip_in_use: 'That address is already used: by the proxy, an SSH target, a VM host or another environment.',
   ssh_targets_unreadable: "Sirdar couldn't read the saved SSH targets, so it can't check that address is free.",
-  adopt_not_allowed: 'Only environments on SSH targets can be adopted. Proxmox environments are ones Sirdar builds.',
-  host_ip_managed: "A Proxmox environment's services always run on its VM.",
-  target_kind_locked: "An environment can't move between an SSH target and Proxmox.",
-  vm_snapshot_not_allowed: 'Only a Proxmox environment takes VM snapshots.',
+  adopt_not_allowed: 'Only environments on SSH targets can be adopted. Environments on Proxmox or ESXi are ones Sirdar builds.',
+  host_ip_managed: "A VM environment's services always run on its VM.",
+  target_kind_locked: "An environment can't move between an SSH target and a VM host, or between VM hosts.",
+  vm_snapshot_not_allowed: 'Only an environment on a VM host takes VM snapshots.',
   vm_snapshot_invalid: "That isn't one of this environment's VM snapshots.",
   vm_snapshot_not_found: "That VM snapshot isn't one Sirdar took for this environment.",
   vm_snapshot_keys_changed: 'That VM snapshot was taken before the sign-in keys changed, so nobody could sign in after restoring it.',
-  not_proxmox: "This environment isn't on Proxmox.",
+  not_vm_environment: "This environment isn't on a VM host.",
   vm_not_ready: "This environment's VM isn't built yet. Deploy it first.",
   vm_key_unreadable: "Sirdar's key for this VM doesn't open with the current SIRDAR_SECRETS_KEY.",
 };
@@ -373,7 +381,7 @@ export interface DeploymentSummary {
   rollback_available: boolean;
   /** Its plan ends with steps 12–14 (DNS records, proxy hosts, smoke test). */
   publish: boolean;
-  /** Its plan has the VM steps (a Proxmox environment): 0 Prepare VM, 0 Restore VM snapshot or 15 Destroy VM. */
+  /** Its plan has the VM steps (a VM environment): 0 Prepare VM, 0 Restore VM snapshot or 15 Destroy VM. */
   vm: boolean;
   /** Step 0 takes a VM snapshot before anything changes. */
   take_vm_snapshot: boolean;
@@ -391,8 +399,8 @@ export interface DeploymentStep {
 export interface Deployment extends DeploymentSummary { environment: string; steps: DeploymentStep[] }
 export interface Environment {
   id: string; name: string; type: EnvType; target: string; base_domain: string; env_dir: string;
-  /** 'proxmox': its host is a VM Sirdar builds (`vm`); 'ssh': a saved SSH target. */
-  target_kind: 'ssh' | 'proxmox';
+  /** 'proxmox' | 'esxi': its host is a VM Sirdar builds (`vm`); 'ssh': a saved SSH target. */
+  target_kind: 'ssh' | VmHostKind;
   vm: EnvVm | null;
   git_ref: string; current_sha: string | null; image_tag: string | null; status: EnvStatus;
   proxy_ip: string; bind_ip: string; keep_dumps: number; spaces_bucket: string; log_level: string;
@@ -410,9 +418,13 @@ export interface Environment {
 export interface ManagedRecordRef {
   service: string; kind: 'dns_record' | 'proxy_host' | 'certificate'; name: string; origin: 'created' | 'claimed';
 }
-/** A Proxmox environment's VM. `vmid` is null until step 0 reserves it; `ip` until the guest agent reports it. */
+/** A VM environment's VM. `stage`: none before step 0 starts one, partial while it isn't finished, then built.
+ *  `vmid`/`node` are Proxmox's, `moref` ESXi's; `ip` is null until the VM reports it. */
 export interface EnvVm {
-  name: string; node: string; vmid: number | null; cores: number; memory_mb: number; disk_gb: number;
+  kind: VmHostKind; stage: 'none' | 'partial' | 'built'; name: string;
+  /** The Proxmox node, or the ESXi host's address. */
+  host: string; node: string | null; vmid: number | null; moref: string | null;
+  cores: number; memory_mb: number; disk_gb: number;
   ip_mode: 'static' | 'dhcp'; ip_cidr: string | null; gateway: string | null; ip: string | null;
   keep_snapshots: number; created: boolean;
 }
@@ -443,7 +455,7 @@ export interface NewEnvironmentBody {
   snapshot_id?: string;
   /** Deploys publish DNS records and proxy hosts (the API's default: true). */
   publish?: boolean;
-  /** target 'proxmox' only: the VM step 0 builds. */
+  /** a VM target ('proxmox' or 'esxi') only: the VM step 0 builds. */
   vm?: NewVm;
 }
 export interface AdoptEnvironmentBody { name: string; type: EnvType; target: string; git_ref: string }
@@ -458,7 +470,7 @@ export interface EnvironmentPatch {
 }
 export interface DeploymentBody {
   mode: DeployMode | 'publish' | 'teardown' | 'vm_restore'; git_ref?: string; confirm_name?: string;
-  /** Proxmox update / reset / restore_dump: a VM snapshot first (the API's default: yes once deployed). */
+  /** VM environments' update / reset / restore_dump: a VM snapshot first (the API's default: yes once deployed). */
   take_vm_snapshot?: boolean;
   /** vm_restore only: a name from listVmSnapshots. */
   vm_snapshot?: string;
@@ -530,9 +542,11 @@ export async function deleteSnapshot(id: string): Promise<void> {
 /* ---- Publishing: integrations (Settings) and the Publish tab ---- */
 /** The integrations Sirdar publishes with. */
 export type PublishKind = 'cloudflare' | 'npm';
-export type IntegrationKind = PublishKind | 'proxmox';
+/** The hosts Sirdar builds environments' VMs on. */
+export type VmHostKind = 'proxmox' | 'esxi';
+export type IntegrationKind = PublishKind | VmHostKind;
 export const INTEGRATION_LABEL: Record<IntegrationKind, string> = {
-  cloudflare: 'Cloudflare', npm: 'Nginx Proxy Manager', proxmox: 'Proxmox',
+  cloudflare: 'Cloudflare', npm: 'Nginx Proxy Manager', proxmox: 'Proxmox', esxi: 'VMware ESXi',
 };
 export interface CloudflareIntegration {
   configured: boolean; zone: string | null; public_ip: string | null; token_set: boolean;
@@ -550,8 +564,19 @@ export interface ProxmoxIntegration {
   /** user@realm!tokenid — the part of the token that isn't secret. */
   token_id: string | null; token_set: boolean; updated_at: string | null; updated_by_name: string | null;
 }
+export interface EsxiIntegration {
+  configured: boolean; url: string | null; user: string | null; datastore: string | null; network: string | null;
+  /** null: the host's root resource pool. */
+  resource_pool: string | null;
+  /** The powered-off VM whose disk every new VM copies. */
+  source_vm: string | null;
+  /** Empty: each VM uses its gateway. */
+  dns_servers: string[];
+  tls_fingerprint: string | null; password_set: boolean; updated_at: string | null; updated_by_name: string | null;
+}
 export interface Integrations {
   secrets_key_configured: boolean; cloudflare: CloudflareIntegration; npm: NpmIntegration; proxmox: ProxmoxIntegration;
+  esxi: EsxiIntegration;
 }
 /** An omitted secret keeps the stored one. */
 export interface CloudflareBody { zone: string; public_ip: string; token?: string }
@@ -561,7 +586,12 @@ export interface ProxmoxBody {
   url: string; node: string; pool: string; storage: string; bridge: string; vlan_tag: number | null;
   template_vmid: number; tls_fingerprint: string | null; token?: string;
 }
-/** A Proxmox server's certificate, as tls_untrusted describes it. */
+/** tls_fingerprint: the certificate the user trusted (null: show it first). An omitted password keeps the stored one. */
+export interface EsxiBody {
+  url: string; user: string; datastore: string; network: string; resource_pool: string | null; source_vm: string;
+  dns_servers: string[]; tls_fingerprint: string | null; password?: string;
+}
+/** A VM host's certificate, as tls_untrusted describes it. */
 export interface TlsCertificate { fingerprint: string; subject: string; issuer: string; not_after: string; names: string[] }
 export interface IntegrationCheck {
   ok: boolean; target: IntegrationKind; checks: DeployCheck[]; facts: Record<string, unknown>;
@@ -584,14 +614,14 @@ export interface PublishPlan {
 }
 const integrationPath = (kind: IntegrationKind) => `/deploy/integrations/${kind}`;
 export const getIntegrations = () => getJson<Integrations>('/deploy/integrations');
-export const saveIntegration = (kind: IntegrationKind, body: CloudflareBody | NpmBody | ProxmoxBody) =>
+export const saveIntegration = (kind: IntegrationKind, body: CloudflareBody | NpmBody | ProxmoxBody | EsxiBody) =>
   sendJson<Integrations>('PUT', integrationPath(kind), body);
 export async function removeIntegration(kind: IntegrationKind): Promise<void> {
   const resp = await apiFetch(integrationPath(kind), { method: 'DELETE' });
   if (!resp.ok) throw await errorOf(resp);
 }
 /** No body: the saved settings. A body: those values unsaved (no secret = the stored one). */
-export const testIntegration = (kind: IntegrationKind, body?: CloudflareBody | NpmBody | ProxmoxBody) =>
+export const testIntegration = (kind: IntegrationKind, body?: CloudflareBody | NpmBody | ProxmoxBody | EsxiBody) =>
   sendJson<IntegrationCheck>('POST', `${integrationPath(kind)}/test`, body);
 export const getPublishPlan = (name: string) => getJson<PublishPlan>(`${envPath(name)}/publish`);
 export const claimPublish = (name: string) =>

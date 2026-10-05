@@ -75,3 +75,9 @@ def test_summaries_never_contain_secrets():
     blob = repr(targets.public_targets(s))
     for secret in ("TOKSECRET", "AWSSECRET", "PWSECRET", "PASSSECRET"):
         assert secret not in blob
+
+
+def test_vm_targets():
+    assert targets.VM_TARGETS == ("proxmox", "esxi")
+    assert targets.is_vm_target("esxi") and targets.is_vm_target("proxmox")
+    assert not targets.is_vm_target("ssh") and not targets.is_vm_target("ssh:uat")

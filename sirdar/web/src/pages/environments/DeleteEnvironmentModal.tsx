@@ -11,7 +11,7 @@ import {
   deployErrorText, startDeployment, type Deployment, type Environment, type ManagedRecordRef,
 } from '../../lib/sirdarApi';
 
-import { vmStage } from './labels';
+import { hostLabel, onVmHost, vmRef, vmStage } from './labels';
 
 type Attempt = { confirm: string };
 const NOUN: Record<ManagedRecordRef['kind'], string> = {
@@ -84,20 +84,21 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
             <div className="rgm-head-text">
               <div className="eyebrow">Settings</div>
               <h3 id="sirdar-delete-title">Delete {env.name}</h3>
-              {env.target_kind === 'proxmox' && env.vm && vmStage(env.vm) === 'none' ? (
+              {onVmHost(env) && env.vm && vmStage(env.vm) === 'none' ? (
                 <p className="page-hint">
-                  No VM was created yet; nothing on Proxmox is removed. Snapshots taken from {env.name} are kept in
+                  No VM was created yet; nothing on {hostLabel(env)} is removed. Snapshots taken from {env.name} are kept in
                   {' '}Sirdar. Then Sirdar forgets the environment.
                 </p>
-              ) : env.target_kind === 'proxmox' && env.vm && vmStage(env.vm) === 'partial' ? (
+              ) : onVmHost(env) && env.vm && vmStage(env.vm) === 'partial' ? (
                 <p className="page-hint">
-                  Removes the partly built VM {env.vm.name} (id {env.vm.vmid}) if Proxmox has it. Snapshots taken
+                  Removes the partly built VM {env.vm.name}{vmRef(env.vm) ? ` (${vmRef(env.vm)})` : ''} if
+                  {' '}{hostLabel(env)} has it. Snapshots taken
                   {' '}from {env.name} are kept in Sirdar. Then Sirdar forgets the environment.
                 </p>
-              ) : env.target_kind === 'proxmox' && env.vm ? (
+              ) : onVmHost(env) && env.vm ? (
                 <p className="page-hint">
-                  Destroys the VM {env.vm.name}{env.vm.vmid !== null ? ` (VM ${env.vm.vmid})` : ''} on Proxmox with
-                  everything on it: the database, files, backups and VM snapshots. Snapshots taken from {env.name}
+                  Destroys the VM {env.vm.name}{vmRef(env.vm) ? ` (${vmRef(env.vm)})` : ''} on {hostLabel(env)} with
+                  {' '}everything on it: the database, files, backups and VM snapshots. Snapshots taken from {env.name}
                   {' '}are kept in Sirdar. Then Sirdar forgets the environment.
                 </p>
               ) : (

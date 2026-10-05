@@ -1,7 +1,8 @@
 """Integration credentials: the Cloudflare API token and the Nginx Proxy
-Manager login Sirdar publishes with (phase 4), and the Proxmox API token it
-builds VMs with (phase 5), plus their non-secret settings. Proxmox's config
-also holds the pinned TLS certificate (tls_pin) and the token's id part.
+Manager login Sirdar publishes with (phase 4), the Proxmox API token it
+builds VMs with (phase 5) and the ESXi password it builds VMs with (phase 6),
+plus their non-secret settings. The Proxmox and ESXi configs also hold the
+pinned TLS certificate (tls_pin); Proxmox's holds the token's id part.
 
 The secret is Fernet-encrypted with SIRDAR_SECRETS_KEY in
 integrations.secret_enc and write-only: public() reports only whether one is
@@ -20,24 +21,34 @@ from sirdar_api.config import Settings
 from sirdar_api.db.models import Environment, Integration, User
 from sirdar_api.deploy import envfile, tls_pin, vault
 
-KINDS = ("cloudflare", "npm", "proxmox")
-LABELS = {"cloudflare": "Cloudflare", "npm": "Nginx Proxy Manager", "proxmox": "Proxmox"}
+KINDS = ("cloudflare", "npm", "proxmox", "esxi")
+# The kinds an environment's VM is built on; an environment on one has
+# target_id equal to the kind (targets.VM_TARGETS).
+VM_HOST_KINDS = ("proxmox", "esxi")
+LABELS = {"cloudflare": "Cloudflare", "npm": "Nginx Proxy Manager", "proxmox": "Proxmox",
+          "esxi": "VMware ESXi"}
 FIELDS = {"cloudflare": ("zone", "public_ip"), "npm": ("url", "identity", "letsencrypt_email"),
           "proxmox": ("url", "node", "pool", "storage", "bridge", "vlan_tag", "template_vmid",
-                      "tls_fingerprint", "token_id")}
-SECRET_FIELD = {"cloudflare": "token", "npm": "password", "proxmox": "token"}
+                      "tls_fingerprint", "token_id"),
+          "esxi": ("url", "user", "datastore", "network", "resource_pool", "source_vm",
+                   "dns_servers", "tls_fingerprint")}
+SECRET_FIELD = {"cloudflare": "token", "npm": "password", "proxmox": "token",
+                "esxi": "password"}
 DEFAULT_ZONE = "serversherpa.com"
 # A stored secret is reused (secret omitted) only for the target it was
 # entered for: the Cloudflare token only ever goes to api.cloudflare.com, so
-# the zone is enough; the NPM password goes to the URL, for the login.
-TARGET_FIELDS = {"cloudflare": ("zone",), "npm": ("url", "identity"), "proxmox": ("url",)}
+# the zone is enough; the NPM and ESXi passwords go to the URL, for that login.
+TARGET_FIELDS = {"cloudflare": ("zone",), "npm": ("url", "identity"), "proxmox": ("url",),
+                 "esxi": ("url", "user")}
 NEW_TARGET_REASON = {
     "cloudflare": "Enter the token again to use it with a different zone.",
     "npm": "Enter the password again to use it with a different server or login.",
     "proxmox": "Enter the API token again to use it with a different Proxmox server.",
+    "esxi": "Enter the password again to use it with a different ESXi host or user.",
 }
 # The environment target that builds its host on Proxmox (targets.PROXMOX_TARGET).
 PROXMOX_TARGET = "proxmox"
+MAX_DNS_SERVERS = 3
 PASSWORD_MAX = 1024
 
 _DOMAIN_RE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
@@ -56,6 +67,11 @@ _BRIDGE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,14}")
 _PVE_TOKEN_RE = re.compile(
     r"((?:(?![:/!@=])[!-~]){1,64}@[A-Za-z0-9._-]{1,32}![A-Za-z][A-Za-z0-9._-]{0,63})="
     r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})")
+# ESXi local users ("root", "sirdar") and datastore / port group / pool / VM
+# names: no brackets (datastore paths use them), slashes, colons or
+# leading/trailing spaces.
+_ESXI_USER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,63}")
+_ESXI_NAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9 ._()-]{0,78}[A-Za-z0-9._()-])?")
 
 _REASONS = {
     "secrets_key_missing": "SIRDAR_SECRETS_KEY isn't set, so Sirdar can't read the "
@@ -115,6 +131,20 @@ class ProxmoxConfig:
         return self.token.split("=", 1)[1]
 
 
+@dataclass(frozen=True)
+class EsxiConfig:
+    url: str
+    user: str
+    datastore: str
+    network: str
+    resource_pool: str | None
+    source_vm: str
+    dns_servers: tuple[str, ...]
+    tls_fingerprint: str
+    tls_cert_pem: str = field(repr=False)
+    password: str = field(repr=False)
+
+
 def token_id_of(token: str) -> str:
     return token.split("=", 1)[0]
 
@@ -147,18 +177,48 @@ def _check_npm(values: dict) -> dict:
     return {"url": url, "identity": identity, "letsencrypt_email": email}
 
 
-def check_proxmox_url(value) -> str:
+def check_https_url(value, code: str) -> str:
     url = str(value or "").strip().rstrip("/")
     match = _PVE_URL_RE.fullmatch(url)
     if not match or (match.group(2) is not None and not 1 <= int(match.group(2)) <= 65535):
-        raise IntegrationError("proxmox_url_invalid")
+        raise IntegrationError(code)
     return url
+
+
+def check_proxmox_url(value) -> str:
+    return check_https_url(value, "proxmox_url_invalid")
+
+
+def check_esxi_url(value) -> str:
+    return check_https_url(value, "esxi_url_invalid")
 
 
 def _int_in(value, low: int, high: int, code: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
         raise IntegrationError(code)
     return value
+
+
+def _check_pin(values: dict) -> tuple[str, str]:
+    """(fingerprint, certificate PEM): the certificate the route fetched and
+    the user trusted must have the fingerprint the request names."""
+    given = str(values.get("tls_fingerprint") or "").strip()
+    if not given:                                  # nothing trusted yet
+        raise IntegrationError("tls_untrusted")
+    try:
+        fingerprint = tls_pin.normalize_fingerprint(given)
+    except ValueError:
+        raise IntegrationError("tls_fingerprint_invalid") from None
+    pem = values.get("tls_cert_pem")
+    if not isinstance(pem, str):
+        raise IntegrationError("tls_untrusted")
+    try:
+        actual = tls_pin.fingerprint_of(pem)
+    except ValueError:
+        raise IntegrationError("tls_untrusted") from None
+    if actual != fingerprint:
+        raise IntegrationError("tls_untrusted")
+    return fingerprint, pem
 
 
 def _check_proxmox(values: dict) -> dict:
@@ -179,28 +239,64 @@ def _check_proxmox(values: dict) -> dict:
     vlan = values.get("vlan_tag")
     vlan = None if vlan is None else _int_in(vlan, 1, 4094, "vlan_tag_invalid")
     template = _int_in(values.get("template_vmid"), 100, 999_999_999, "template_vmid_invalid")
-    given = str(values.get("tls_fingerprint") or "").strip()
-    if not given:                                  # nothing trusted yet
-        raise IntegrationError("tls_untrusted")
-    try:
-        fingerprint = tls_pin.normalize_fingerprint(given)
-    except ValueError:
-        raise IntegrationError("tls_fingerprint_invalid") from None
-    pem = values.get("tls_cert_pem")
-    if not isinstance(pem, str):
-        raise IntegrationError("tls_untrusted")
-    try:
-        actual = tls_pin.fingerprint_of(pem)
-    except ValueError:
-        raise IntegrationError("tls_untrusted") from None
-    if actual != fingerprint:
-        raise IntegrationError("tls_untrusted")
+    fingerprint, pem = _check_pin(values)
     return {"url": url, "node": node, "pool": pool, "storage": storage, "bridge": bridge,
             "vlan_tag": vlan, "template_vmid": template, "tls_fingerprint": fingerprint,
             "tls_cert_pem": pem}
 
 
-_CHECKS = {"cloudflare": _check_cloudflare, "npm": _check_npm, "proxmox": _check_proxmox}
+def _check_dns(value) -> list[str]:
+    """Up to MAX_DNS_SERVERS IPv4 addresses (a list, or one comma-separated
+    string); empty: the VM uses its gateway."""
+    if value in (None, ""):
+        return []
+    items = value if isinstance(value, list) else str(value).split(",")
+    found: list[str] = []
+    for item in items:
+        text = str(item).strip()
+        if not text:
+            continue
+        try:
+            ip = ipaddress.IPv4Address(text)
+        except ValueError:
+            raise IntegrationError("dns_servers_invalid") from None
+        if ip.is_unspecified or ip.is_multicast or ip.is_loopback or ip.is_link_local:
+            raise IntegrationError("dns_servers_invalid")
+        if str(ip) not in found:
+            found.append(str(ip))
+    if len(found) > MAX_DNS_SERVERS:
+        raise IntegrationError("dns_servers_invalid")
+    return found
+
+
+check_dns_servers = _check_dns          # vms checks the stored list again before freezing it
+
+
+def _check_esxi(values: dict) -> dict:
+    url = check_esxi_url(values.get("url"))
+
+    def text(key: str, regex: re.Pattern, code: str) -> str:
+        value = str(values.get(key) or "").strip()
+        if not regex.fullmatch(value):
+            raise IntegrationError(code)
+        return value
+
+    user = text("user", _ESXI_USER_RE, "esxi_user_invalid")
+    datastore = text("datastore", _ESXI_NAME_RE, "datastore_invalid")
+    network = text("network", _ESXI_NAME_RE, "network_invalid")
+    pool = str(values.get("resource_pool") or "").strip()
+    if pool and not _ESXI_NAME_RE.fullmatch(pool):
+        raise IntegrationError("resource_pool_invalid")
+    source = text("source_vm", _ESXI_NAME_RE, "source_vm_invalid")
+    dns = _check_dns(values.get("dns_servers"))
+    fingerprint, pem = _check_pin(values)
+    return {"url": url, "user": user, "datastore": datastore, "network": network,
+            "resource_pool": pool or None, "source_vm": source, "dns_servers": dns,
+            "tls_fingerprint": fingerprint, "tls_cert_pem": pem}
+
+
+_CHECKS = {"cloudflare": _check_cloudflare, "npm": _check_npm, "proxmox": _check_proxmox,
+           "esxi": _check_esxi}
 
 
 def check_fields(kind: str, values: dict) -> dict:
@@ -221,7 +317,7 @@ def check_secret(kind: str, value: str) -> str:
 
 
 def _config(kind: str, config: dict,
-            secret: str) -> CloudflareConfig | NpmConfig | ProxmoxConfig:
+            secret: str) -> CloudflareConfig | NpmConfig | ProxmoxConfig | EsxiConfig:
     if kind == "cloudflare":
         return CloudflareConfig(zone=config["zone"], public_ip=config["public_ip"], token=secret)
     if kind == "proxmox":
@@ -231,6 +327,13 @@ def _config(kind: str, config: dict,
                              template_vmid=config["template_vmid"],
                              tls_fingerprint=config["tls_fingerprint"],
                              tls_cert_pem=config["tls_cert_pem"], token=secret)
+    if kind == "esxi":
+        return EsxiConfig(url=config["url"], user=config["user"], datastore=config["datastore"],
+                          network=config["network"], resource_pool=config.get("resource_pool"),
+                          source_vm=config["source_vm"],
+                          dns_servers=tuple(config.get("dns_servers") or ()),
+                          tls_fingerprint=config["tls_fingerprint"],
+                          tls_cert_pem=config["tls_cert_pem"], password=secret)
     return NpmConfig(url=config["url"], identity=config["identity"],
                      letsencrypt_email=config.get("letsencrypt_email") or config["identity"],
                      password=secret)
@@ -261,8 +364,8 @@ async def is_configured(db: AsyncSession, kind: str) -> bool:
     return row is not None and row.secret_enc is not None
 
 
-async def load(db: AsyncSession, settings: Settings,
-               kind: str) -> CloudflareConfig | NpmConfig | ProxmoxConfig | None:
+async def load(db: AsyncSession, settings: Settings, kind: str
+               ) -> CloudflareConfig | NpmConfig | ProxmoxConfig | EsxiConfig | None:
     """The stored settings with the decrypted secret; None when not set up."""
     row = await _row(db, kind)
     if row is None or row.secret_enc is None:
@@ -282,6 +385,10 @@ async def load_proxmox(db: AsyncSession, settings: Settings) -> ProxmoxConfig | 
     return await load(db, settings, "proxmox")
 
 
+async def load_esxi(db: AsyncSession, settings: Settings) -> EsxiConfig | None:
+    return await load(db, settings, "esxi")
+
+
 async def config_of(db: AsyncSession, kind: str) -> dict:
     """The stored non-secret settings (a copy), {} when none."""
     row = await _row(db, kind)
@@ -289,17 +396,32 @@ async def config_of(db: AsyncSession, kind: str) -> dict:
 
 
 async def in_use(db: AsyncSession, kind: str) -> list[str]:
-    """Environments that can't lose this integration: those built on
-    Proxmox (their VMs could no longer be destroyed)."""
-    if kind != "proxmox":
+    """Environments that can't lose this integration: those built on this
+    VM host (their VMs could no longer be destroyed)."""
+    if kind not in VM_HOST_KINDS:
         return []
     return list(await db.scalars(select(Environment.name)
-                                 .where(Environment.target_id == PROXMOX_TARGET)
+                                 .where(Environment.target_id == kind)
                                  .order_by(Environment.name)))
 
 
+async def check_url_change(db: AsyncSession, kind: str, url: str) -> None:
+    """A VM host's URL can't move while environments are built on it: their
+    VMs would be looked for (and called gone) on another host.
+    IntegrationError("integration_in_use", environments=[...])."""
+    if kind not in VM_HOST_KINDS:
+        return
+    stored = (await config_of(db, kind)).get("url")
+    if stored is None or stored == url:
+        return
+    users = await in_use(db, kind)
+    if users:
+        raise IntegrationError("integration_in_use", environments=users)
+
+
 async def candidate(db: AsyncSession, settings: Settings, kind: str, values: dict,
-                    secret: str | None) -> CloudflareConfig | NpmConfig | ProxmoxConfig:
+                    secret: str | None
+                    ) -> CloudflareConfig | NpmConfig | ProxmoxConfig | EsxiConfig:
     """Unsaved values for a Test: the given secret, else the stored one."""
     checked = check_fields(kind, values)
     if secret is not None:
@@ -318,6 +440,8 @@ async def save(db: AsyncSession, settings: Settings, kind: str, values: dict,
     checked = check_fields(kind, values)
     if secret is not None:
         check_secret(kind, secret)
+    if "url" in checked:
+        await check_url_change(db, kind, checked["url"])
     row = await _row(db, kind)
     if secret is None and (row is None or row.secret_enc is None):
         raise IntegrationError("secret_required")
@@ -361,4 +485,6 @@ async def public(db: AsyncSession, settings: Settings) -> dict:
             "updated_at": row.updated_at if row else None,
             "updated_by_name": by.display_name if by else None,
         }
+        if kind == "esxi":                         # a list even before it is set up
+            out[kind]["dns_servers"] = list(config.get("dns_servers") or [])
     return out

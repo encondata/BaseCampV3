@@ -20,6 +20,7 @@ dependencies = [
     "asyncssh[bcrypt]>=2.14",  # bcrypt: passphrase-protected OpenSSH keys
     "ansible-core==2.21.4",    # deploy pipeline: ansible-playbook
     "ansible-runner==2.4.3",   # deploy pipeline: runs playbooks, streams events
+    "pyvmomi==8.0.3.0.1",      # ESXi targets (hash-pinned in requirements-esxi.txt)
 ]
 
 [project.optional-dependencies]

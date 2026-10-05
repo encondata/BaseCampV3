@@ -38,7 +38,8 @@ SOURCE_PSYCOPG_URL = _psycopg_url(SOURCE_DB)
 SIRDAR_TABLES = ("users, user_roles, permission_overrides, totp_backup_codes, "
                  "auth_sessions, audit_log, import_runs, ssh_known_hosts, "
                  "environments, environment_services, environment_secrets, deployments, "
-                 "deployment_steps, snapshots, integrations, managed_records, proxmox_vms")
+                 "deployment_steps, snapshots, integrations, managed_records, proxmox_vms, "
+                 "esxi_vms")
 SOURCE_TABLES = ("people, user_accounts, roles, person_roles, access_groups, "
                  "access_group_members, totp_backup_codes, system_config")
 
@@ -152,11 +153,12 @@ def no_real_http():
 def no_real_hosts():
     """No test reaches a real Proxmox host outside httpx: the raw TLS
     certificate fetch may only dial 127.0.0.1 (the tests' own TLS server),
-    Terraform only runs fake-* scripts, and the provisioner's port probe
+    Terraform only runs fake-* scripts, never opens a real ESXi session
+    (esxi._smart_connect), and the provisioners' port probe (vmcommon.tcp_open)
     never dials out. Yields the list of blocked attempts (a test that
     blocks on purpose clears it); the test fails at teardown if any is
     left. Its own MonkeyPatch, like no_real_http."""
-    from sirdar_api.deploy import provision, terraform, tls_pin
+    from sirdar_api.deploy import esxi, terraform, tls_pin, vmcommon
 
     hits: list[str] = []
     real_read = tls_pin._read_certificate
@@ -178,9 +180,15 @@ def no_real_hosts():
         hits.append(f"probe:{host}")
         raise AssertionError(f"a test probed a real port ({host}:{port})")
 
+    def esxi_session(cfg):
+        host = esxi.split_url(cfg.url)[0]
+        hits.append(f"esxi:{host}")
+        raise AssertionError(f"a test opened a real ESXi session ({host})")
+
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(tls_pin, "_read_certificate", read)
         mp.setattr(terraform, "_spawn", spawn)
-        mp.setattr(provision, "tcp_open", probe)
+        mp.setattr(vmcommon, "tcp_open", probe)
+        mp.setattr(esxi, "_smart_connect", esxi_session)
         yield hits
     assert not hits, f"a test reached real hosts: {', '.join(hits)}"

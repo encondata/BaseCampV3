@@ -1,4 +1,4 @@
-/** Restore one of a Proxmox environment's VM snapshots: a "Restore VM
+/** Restore one of a VM environment's VM snapshots: a "Restore VM
  *  snapshot" deployment rolls the whole VM back (database, files, backups)
  *  and the running commit with it. Typed-name gate. */
 import { useEffect, useRef, useState } from 'react';

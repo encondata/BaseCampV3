@@ -153,3 +153,21 @@ async def test_a_leaf_issued_by_a_ca_can_be_pinned_alone(tmp_path):
     async with server:
         with pytest.raises(ssl.SSLCertVerificationError):
             await asyncio.open_connection("127.0.0.1", port, ssl=tls_pin.pinned_context(leaf))
+
+
+async def test_without_a_host_name_check_only_the_pinned_certificate_is_trusted(tmp_path):
+    """ESXi's default certificate names its host name, not the IP Sirdar uses:
+    the pin alone decides."""
+    pem, key = make_cert(cn="localhost.localdomain", ips=(), dns=("localhost.localdomain",))
+    impostor, _ = make_cert(cn="localhost.localdomain", ips=(), dns=("localhost.localdomain",))
+    server, port = await _tls_server(tmp_path, pem, key)
+    async with server:
+        ctx = tls_pin.pinned_context(pem, check_hostname=False)
+        assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname is False
+        _, writer = await asyncio.open_connection("127.0.0.1", port, ssl=ctx)
+        writer.close()
+        with pytest.raises(ssl.SSLCertVerificationError):
+            await asyncio.open_connection("127.0.0.1", port, ssl=tls_pin.pinned_context(pem))
+        with pytest.raises(ssl.SSLCertVerificationError):
+            await asyncio.open_connection(
+                "127.0.0.1", port, ssl=tls_pin.pinned_context(impostor, check_hostname=False))

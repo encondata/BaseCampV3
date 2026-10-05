@@ -13,7 +13,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import DeleteEnvironmentModal from './DeleteEnvironmentModal';
-import { ENV, PUBLISHED_ENV, PX_ENV, PX_NEW_ENV, TEARDOWN } from './testData';
+import { ENV, ESXI_ENV, ESXI_NEW_ENV, ESXI_VM, PUBLISHED_ENV, PX_ENV, PX_NEW_ENV, TEARDOWN } from './testData';
 
 beforeEach(() => {
   perms.add = true; perms.change = true;
@@ -96,9 +96,25 @@ it('a Proxmox environment whose VM was never created: nothing on Proxmox is remo
 });
 
 it('a Proxmox environment with a reserved id but no finished build: removes the partly built VM', () => {
-  render(<DeleteEnvironmentModal env={{ ...PX_ENV, vm: { ...PX_ENV.vm!, created: false } }}
+  render(<DeleteEnvironmentModal env={{ ...PX_ENV, vm: { ...PX_ENV.vm!, created: false, stage: 'partial' as const } }}
                                  onStarted={vi.fn()} onClose={vi.fn()} />);
-  expect(screen.getByText(/Removes the partly built VM ss-uat3 \(id 120\) if Proxmox has it\./)).toBeTruthy();
+  expect(screen.getByText(/Removes the partly built VM ss-uat3 \(VM 120\) if Proxmox has it\./)).toBeTruthy();
   expect(screen.queryByText(/nothing on Proxmox is removed/)).toBeNull();
+  expect(screen.queryByText(/Destroys the VM/)).toBeNull();
+});
+
+it('an ESXi environment names ESXi: built, never created, and partly built', () => {
+  render(<DeleteEnvironmentModal env={ESXI_ENV} onStarted={vi.fn()} onClose={vi.fn()} />);
+  expect(screen.getByText(
+    /Destroys the VM ss-uat3 \(VM 12\) on ESXi with everything on it: the database, files, backups and VM snapshots/,
+  )).toBeTruthy();
+  cleanup();
+  render(<DeleteEnvironmentModal env={ESXI_NEW_ENV} onStarted={vi.fn()} onClose={vi.fn()} />);
+  expect(screen.getByText(/No VM was created yet; nothing on ESXi is removed\./)).toBeTruthy();
+  expect(screen.queryByText(/Destroys the VM/)).toBeNull();
+  cleanup();
+  render(<DeleteEnvironmentModal env={{ ...ESXI_ENV, vm: { ...ESXI_VM, stage: 'partial', created: false } }}
+                                 onStarted={vi.fn()} onClose={vi.fn()} />);
+  expect(screen.getByText(/Removes the partly built VM ss-uat3 \(VM 12\) if ESXi has it\./)).toBeTruthy();
   expect(screen.queryByText(/Destroys the VM/)).toBeNull();
 });

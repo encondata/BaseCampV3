@@ -62,7 +62,8 @@ async def test_create_a_proxmox_environment(client, db, px):
     h = await auth_headers(client, db)
     body = await _uat3(client, h)
     assert (body["target"], body["target_kind"]) == ("proxmox", "proxmox")
-    assert body["vm"] == {"name": "ss-uat3", "node": "pve", "vmid": None, "cores": 2,
+    assert body["vm"] == {"kind": "proxmox", "stage": "none", "host": "pve", "moref": None,
+                          "name": "ss-uat3", "node": "pve", "vmid": None, "cores": 2,
                           "memory_mb": 8192, "disk_gb": 64, "ip_mode": "static",
                           "ip_cidr": "10.10.48.70/24", "gateway": "10.10.48.1", "ip": None,
                           "keep_snapshots": 3, "created": False}
@@ -195,7 +196,7 @@ async def test_restore_a_vm_snapshot(client, db, px, fake_runner, fake_provision
     await make_environment(db, name="uat")
     resp = await client.post(f"{URL}/uat/deployments", headers=h,
                              json={**good, "confirm_name": "uat"})
-    assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "not_proxmox")
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "not_vm_environment")
 
 
 async def test_the_vm_snapshot_list(client, db, px):
@@ -223,7 +224,7 @@ async def test_the_vm_snapshot_list(client, db, px):
         502, {"code": "connect_failed", "reason": proxmox.TLS_CHANGED})
     await make_environment(db, name="uat")
     resp = await client.get(f"{URL}/uat/vm-snapshots", headers=h)
-    assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "not_proxmox")
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "not_vm_environment")
 
 
 async def test_delete_a_proxmox_environment(client, db, px, fake_runner, fake_provisioner,

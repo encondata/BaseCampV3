@@ -3,7 +3,7 @@ import DataTable from '@portal/components/DataTable';
 
 import type { Environment } from '../../lib/sirdarApi';
 
-import { DEPLOYMENT_STATUS, MODE_LABEL, StatusChip, onProxmox, vmNetwork, vmSize, when } from './labels';
+import { DEPLOYMENT_STATUS, MODE_LABEL, StatusChip, onVmHost, vmNetwork, vmRef, vmSize, when } from './labels';
 
 export default function EnvOverview({ env }: { env: Environment }) {
   const last = env.last_deployment;
@@ -34,15 +34,15 @@ export default function EnvOverview({ env }: { env: Environment }) {
           </dd>
         </dl>
       </section>
-      {onProxmox(env) && env.vm && (
+      {onVmHost(env) && env.vm && (
         <section className="sirdar-section">
           <h2>Machine</h2>
           <dl className="sirdar-kv">
             <dt>VM</dt>
             <dd className="mono">
-              {env.vm.vmid !== null ? `${env.vm.name} (VM ${env.vm.vmid})` : `${env.vm.name} · built by the first deploy`}
+              {vmRef(env.vm) ? `${env.vm.name} (${vmRef(env.vm)})` : `${env.vm.name} · built by the first deploy`}
             </dd>
-            <dt>Node</dt><dd className="mono">{env.vm.node}</dd>
+            <dt>{env.vm.kind === 'esxi' ? 'Host' : 'Node'}</dt><dd className="mono">{env.vm.host}</dd>
             <dt>Size</dt><dd>{vmSize(env.vm)}</dd>
             <dt>Network</dt><dd className="mono">{vmNetwork(env.vm)}</dd>
             <dt>Address</dt><dd className="mono">{env.vm.ip ?? 'Not known yet'}</dd>

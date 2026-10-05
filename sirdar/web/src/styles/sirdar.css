@@ -172,3 +172,13 @@
 .sirdar-cert-prompt { display: flex; flex-direction: column; gap: 10px; align-items: flex-start;
   padding: 12px; border: 1px solid var(--border, rgba(127, 127, 127, .35)); border-radius: 8px; }
 @media (max-width: 760px) { .sirdar-proxmox-form { grid-template-columns: 1fr; } }
+
+/* Settings › Integrations › VMware ESXi: the same three-column form as Proxmox. */
+.modal-card.reports-modal-card.rgm-card.sirdar-esxi-card { width: min(760px, 96vw); max-width: 96vw; }
+.sirdar-esxi-form { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.sirdar-esxi-form .sirdar-span2 { grid-column: 1 / -1; }
+@media (max-width: 760px) { .sirdar-esxi-form { grid-template-columns: 1fr; } }
+/* Proxmox under the collapsed "Other hosts": its full card, or one line when not set up. */
+.sirdar-other-hosts { margin-top: 16px; }
+.sirdar-other-hosts .sirdar-cards { margin-top: 12px; }
+.sirdar-other-hosts-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px; }

@@ -1,4 +1,4 @@
-"""Sirdar's own tables (migrations 0001–0007). `users` mirrors the portal's
+"""Sirdar's own tables (migrations 0001–0008). `users` mirrors the portal's
 user_accounts + people for the people it copies; Sirdar-only data
 (overrides, sessions, audit, lockout counters) never comes from the portal."""
 
@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, text
-from sqlalchemy.dialects.postgresql import BYTEA, CITEXT, INET, JSONB, TIMESTAMP, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, BYTEA, CITEXT, INET, JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import Text
 
@@ -380,6 +380,47 @@ class ProxmoxVm(Base):
     ip: Mapped[str | None]
     ssh_public_key: Mapped[str]
     ssh_private_key_enc: Mapped[bytes] = mapped_column(BYTEA)
+    keep_snapshots: Mapped[int] = mapped_column(Integer, server_default=text("3"))
+    created: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class EsxiVm(Base):
+    """The VM Sirdar builds on a standalone ESXi host for one environment
+    (migration 0008), and the record that it is Sirdar's: Sirdar changes or
+    destroys only the VM whose instance UUID, name and `sirdar.environment`
+    extraConfig marker match this row. `moref`, `instance_uuid` and
+    `vm_path` are written the moment ESXi creates it; `created` turns true
+    once its disk is attached and it has booted. The host key's private half
+    is kept only until step 0 has delivered it. Private keys are
+    Fernet-encrypted with SIRDAR_SECRETS_KEY and never returned."""
+
+    __tablename__ = "esxi_vms"
+
+    environment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("environments.id", ondelete="CASCADE"), primary_key=True)
+    name: Mapped[str]
+    host: Mapped[str]
+    datastore: Mapped[str]
+    network: Mapped[str]
+    resource_pool: Mapped[str | None]
+    source_vm: Mapped[str]
+    dns_servers: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default=text("'{}'"))
+    moref: Mapped[str | None]
+    instance_uuid: Mapped[str | None]
+    vm_path: Mapped[str | None]
+    cores: Mapped[int] = mapped_column(Integer)
+    memory_mb: Mapped[int] = mapped_column(Integer)
+    disk_gb: Mapped[int] = mapped_column(Integer)
+    ip_mode: Mapped[str]                              # static | dhcp
+    ip_cidr: Mapped[str | None]
+    gateway: Mapped[str | None]
+    ip: Mapped[str | None]
+    ssh_public_key: Mapped[str]
+    ssh_private_key_enc: Mapped[bytes] = mapped_column(BYTEA)
+    host_key_public: Mapped[str]
+    host_key_private_enc: Mapped[bytes | None] = mapped_column(BYTEA)
     keep_snapshots: Mapped[int] = mapped_column(Integer, server_default=text("3"))
     created: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

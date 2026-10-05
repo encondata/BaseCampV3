@@ -63,3 +63,30 @@ def destroy_removes_vm(fake_px):
         fake_px.remove_vm(_vm_block(request)["vm_id"])
         write_state(request, vm=False)
     return effect
+
+
+async def make_esxi_environment(db, *, name: str = "uat3", current_sha: str | None = None,
+                                publish: bool = False, host_key=None, **vm) -> Environment:
+    """An ESXi environment. Needs the secrets_key fixture and a saved ESXi
+    integration. Loopback is allowed and the address check skipped, as in
+    make_vm_environment. host_key: the asyncssh private key the VM's SSH
+    server presents (the tests' own server); otherwise Sirdar makes one."""
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(vms, "ALLOW_LOOPBACK", True)
+
+        async def free(*args, **kwargs) -> bool:
+            return False
+
+        mp.setattr(vms, "address_in_use", free)
+        if host_key is not None:
+            mp.setattr(vms, "new_host_keypair", lambda env_name: (
+                host_key.export_private_key("openssh").decode(),
+                host_key.export_public_key("openssh").decode().strip()))
+        env = await environments.create_new(db, get_settings(), name=name, type_="dev",
+                                            target_id="esxi", proxy_ip="10.0.0.2",
+                                            vm={**VM_SPEC, **vm}, publish=publish)
+    if current_sha:
+        env.current_sha, env.image_tag = current_sha, envfile.image_tag(current_sha)
+        env.status = "ready"
+    await db.commit()
+    return env

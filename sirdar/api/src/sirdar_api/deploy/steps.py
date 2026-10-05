@@ -11,8 +11,8 @@ publishes; a "publish" deployment is only them. Delete environment
 ("teardown") runs 15 (stacks and folder on the host, an Ansible playbook),
 then 16 and 17 (the proxy hosts and DNS records Sirdar made).
 
-A Proxmox environment (vm=True) builds its host first: 0 Prepare VM
-(runs="vm", see provision.py) starts its update / reset / restore_dump /
+A VM environment (vm=True; Proxmox or ESXi) builds its host first: 0 Prepare VM
+(runs="vm", see vmsteps.py) starts its update / reset / restore_dump /
 rollback plans; its Delete runs 15 Destroy VM instead of 15 Remove
 environment; and only it has "vm_restore", a plan of 0 Restore VM snapshot
 alone. Steps with the same number never meet in one plan."""
@@ -27,7 +27,7 @@ MODES = ("update", "reset", "snapshot", "restore_dump", "rollback", "publish", "
 # Modes that change what runs on the host: they publish afterwards when asked.
 PUBLISHING_MODES = ("update", "reset", "restore_dump", "rollback")
 PUBLISH_KEYS = ("dns", "proxy", "smoke")
-# A Proxmox environment's modes that start with 0 Prepare VM.
+# A VM environment's modes that start with 0 Prepare VM.
 VM_HOST_MODES = ("update", "reset", "restore_dump", "rollback")
 
 
@@ -99,7 +99,7 @@ def plan_for(mode: str, *, restore: bool = False, publish: bool = False,
     except KeyError:
         raise ValueError(f"no deploy plan for mode {mode!r} (restore={restore})") from None
     if mode == "vm_restore" and not vm:
-        raise ValueError("only a Proxmox environment restores a VM snapshot")
+        raise ValueError("only a VM environment restores a VM snapshot")
     if vm and mode in VM_HOST_MODES:
         keys = ("provision", *keys)
     elif vm and mode == "teardown":

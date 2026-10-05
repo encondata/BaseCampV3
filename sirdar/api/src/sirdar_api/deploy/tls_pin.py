@@ -1,5 +1,5 @@
 """Trust-on-first-use pinning of a server's TLS certificate (Proxmox's
-self-signed pve-ssl.pem), the TLS twin of known_hosts: the user sees the
+pve-ssl.pem, ESXi's rui.crt), the TLS twin of known_hosts: the user sees the
 fingerprint, Sirdar stores the certificate itself, and every later
 connection trusts that certificate and nothing else.
 
@@ -105,14 +105,17 @@ async def fetch_certificate(host: str, port: int) -> str:
         raise ConnectFailed(f"Couldn't reach {host}:{port} over TLS.") from None
 
 
-def pinned_context(pem: str) -> ssl.SSLContext:
+def pinned_context(pem: str, *, check_hostname: bool = True) -> ssl.SSLContext:
     """A client context whose only trust anchor is this certificate. Partial
-    chains are allowed so a leaf can anchor itself; the host name is still
-    checked against the certificate's names. ValueError unless `pem` is
-    exactly one certificate (only its DER bytes are loaded)."""
+    chains are allowed so a leaf can anchor itself. The host name is checked
+    against the certificate's names unless check_hostname is False (ESXi's
+    default certificate names only its host name, and the pin alone decides:
+    verification itself stays on). ValueError unless `pem` is exactly one
+    certificate (only its DER bytes are loaded)."""
     der = _der(pem)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)          # CERT_REQUIRED, check_hostname
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.check_hostname = check_hostname                    # verify_mode stays CERT_REQUIRED
     ctx.load_verify_locations(cadata=der)
     if ctx.cert_store_stats()["x509"] != 1:                # not an assert: survives -O
         raise ValueError("the pinned context must trust exactly one certificate")

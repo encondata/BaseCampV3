@@ -6,20 +6,17 @@
  *  same request goes again with that fingerprint. */
 import { type RefObject, useEffect, useRef, useState } from 'react';
 
+import CertificatePrompt, { pendingCertificate, type PendingCertificate } from '../../components/CertificatePrompt';
 import CheckList from '../../components/CheckList';
 import SecretField, { type SecretAction } from '../../components/SecretField';
 import {
-  deployErrorText, errorDetail, saveIntegration, testIntegration,
-  type IntegrationCheck, type Integrations, type ProxmoxBody, type TlsCertificate,
+  deployErrorText, saveIntegration, testIntegration,
+  type IntegrationCheck, type Integrations, type ProxmoxBody,
 } from '../../lib/sirdarApi';
-import { when } from '../environments/labels';
 
 type Field = 'url' | 'node' | 'pool' | 'storage' | 'bridge' | 'vlan' | 'template' | 'secret' | 'form';
 type Errors = Partial<Record<Field, string>>;
 type What = 'test' | 'save';
-/** A certificate waiting for the user: a new one (tls_untrusted) or a changed one (tls_mismatch). */
-type Pending = { kind: 'untrusted'; what: What; cert: TlsCertificate }
-  | { kind: 'changed'; what: What; expected: string; actual: string };
 /** API error code → the field it belongs to. */
 const CODE_FIELD: Record<string, Field> = {
   proxmox_url_invalid: 'url', node_invalid: 'node', pool_invalid: 'pool', storage_invalid: 'storage',
@@ -59,7 +56,7 @@ export default function ProxmoxModal({ current, onSaved, onClose }: {
   const [template, setTemplate] = useState(px.template_vmid === null ? '9000' : String(px.template_vmid));
   /** The certificate the next request trusts; null: let the server show it first. */
   const [fingerprint, setFingerprint] = useState<string | null>(px.tls_fingerprint);
-  const [pending, setPending] = useState<Pending | null>(null);
+  const [pending, setPending] = useState<PendingCertificate<What> | null>(null);
   const [action, setAction] = useState<SecretAction>(px.token_set ? 'keep' : 'set');
   const [secret, setSecret] = useState('');
   const [errors, setErrors] = useState<Errors>({});
@@ -140,20 +137,10 @@ export default function ProxmoxModal({ current, onSaved, onClose }: {
       }
     } catch (err) {
       if (asked !== version.current) return;
-      const code = (err as { code?: string }).code ?? '';
-      const d = errorDetail<Record<string, unknown>>(err);
-      const str = (v: unknown) => (typeof v === 'string' ? v : '');
-      if (code === 'tls_untrusted' && d && typeof d.fingerprint === 'string') {
-        const names = Array.isArray(d.names) ? d.names.map(String) : [];
-        setPending({ kind: 'untrusted', what, cert: {
-          fingerprint: d.fingerprint, subject: str(d.subject), issuer: str(d.issuer), not_after: str(d.not_after), names,
-        } });
-      } else if (code === 'tls_mismatch' && d && typeof d.expected === 'string' && typeof d.actual === 'string') {
-        setPending({ kind: 'changed', what, expected: d.expected, actual: d.actual });
-      } else {
-        setErrors({ [CODE_FIELD[code] ?? 'form']: deployErrorText(err,
-          what === 'test' ? "Couldn't test these settings." : "Couldn't save these settings.") });
-      }
+      const prompt = pendingCertificate(err, what);
+      if (prompt) setPending(prompt);
+      else setErrors({ [CODE_FIELD[(err as { code?: string }).code ?? ''] ?? 'form']: deployErrorText(err,
+        what === 'test' ? "Couldn't test these settings." : "Couldn't save these settings.") });
     } finally {
       busyRef.current = '';
       setBusy('');
@@ -213,34 +200,8 @@ export default function ProxmoxModal({ current, onSaved, onClose }: {
             )}
           </div>
           {pending && (
-            <div className="sirdar-span2 sirdar-cert-prompt" role="group" aria-label="Server certificate">
-              {pending.kind === 'untrusted' ? (
-                <>
-                  <p>Is this the certificate Proxmox shows under the node's System › Certificates?</p>
-                  <dl className="sirdar-kv">
-                    <dt>SHA-256 fingerprint</dt><dd className="mono sirdar-fingerprint">{pending.cert.fingerprint}</dd>
-                    <dt>Subject</dt><dd>{pending.cert.subject}</dd>
-                    <dt>Issued by</dt><dd>{pending.cert.issuer}</dd>
-                    <dt>Expires</dt><dd className="mono">{pending.cert.not_after ? when(pending.cert.not_after) : '—'}</dd>
-                    <dt>Names</dt><dd className="mono">{pending.cert.names.join(', ')}</dd>
-                  </dl>
-                  <button type="button" className="btn-solid" disabled={!!busy}
-                          onClick={() => trust(pending.cert.fingerprint, pending.what)}>Trust this certificate</button>
-                </>
-              ) : (
-                <>
-                  <p className="form-error">
-                    The server's certificate changed. Trust the new one only if it was renewed on purpose.
-                  </p>
-                  <dl className="sirdar-kv">
-                    <dt>Trusted</dt><dd className="mono sirdar-fingerprint">{pending.expected}</dd>
-                    <dt>Now</dt><dd className="mono sirdar-fingerprint">{pending.actual}</dd>
-                  </dl>
-                  <button type="button" className="btn-ghost" disabled={!!busy}
-                          onClick={() => trust(pending.actual, pending.what)}>Trust the new certificate</button>
-                </>
-              )}
-            </div>
+            <CertificatePrompt pending={pending} busy={!!busy} onTrust={trust}
+                               question="Is this the certificate Proxmox shows under the node's System › Certificates?" />
           )}
           <div className="sirdar-span2">
             <SecretField id="px-token" label="API token" isSet={px.token_set} adding={!px.token_set}

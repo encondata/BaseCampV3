@@ -125,7 +125,8 @@ it('every error code the deploy routes can return has its own message', () => {
                       'proxmox_url_invalid', 'node_invalid', 'template_vmid_invalid', 'proxmox_token_invalid',
                       'tls_untrusted', 'tls_mismatch', 'integration_in_use', 'vm_cores_invalid', 'vm_disk_shrink',
                       'vm_ip_invalid', 'ip_in_use', 'adopt_not_allowed', 'host_ip_managed', 'target_kind_locked',
-                      'vm_snapshot_not_found', 'vm_snapshot_keys_changed', 'not_proxmox', 'vm_not_ready']) {
+                      'vm_snapshot_not_found', 'vm_snapshot_keys_changed', 'not_vm_environment', 'vm_not_ready',
+                      'esxi_url_invalid', 'source_vm_invalid', 'dns_servers_invalid', 'vm_name_invalid']) {
     expect(codes).toContain(code);
   }
   const missing = codes.filter((c) => sirdar.errorText(new ApiError(400, c), '__none__') === '__none__');
@@ -197,4 +198,28 @@ it('integration_in_use names the environments that still use it', () => {
     { code: 'integration_in_use', environments: ['uat3', 'uat4'] }), 'x'))
     .toBe('Environments still use it: uat3, uat4. Delete them first.');
   expect(sirdar.INTEGRATION_LABEL.proxmox).toBe('Proxmox');
+});
+
+const apiError = (status: number, detail: { code: string } & Record<string, unknown>) =>
+  new ApiError(status, detail.code, detail);
+
+it('names ESXi in integration_not_configured and explains the new codes', () => {
+  expect(sirdar.deployErrorText(apiError(409, { code: 'integration_not_configured', kinds: ['esxi'] }), 'x'))
+    .toBe('Set up VMware ESXi in Settings › Integrations first.');
+  for (const code of ['esxi_url_invalid', 'esxi_user_invalid', 'datastore_invalid', 'network_invalid',
+    'resource_pool_invalid', 'source_vm_invalid', 'dns_servers_invalid', 'not_vm_environment', 'vm_name_invalid']) {
+    expect(sirdar.deployErrorText(apiError(422, { code }), 'fallback')).not.toBe('fallback');
+  }
+  expect(sirdar.INTEGRATION_LABEL.esxi).toBe('VMware ESXi');
+  expect(sirdar.errorText(new ApiError(409, 'not_proxmox'), '__none__')).toBe('__none__');
+});
+
+it('the VM-host codes read host-neutral', () => {
+  const text = (code: string) => sirdar.errorText(new ApiError(409, code, { code }), 'x');
+  expect(text('vm_not_allowed')).toBe('Only an environment on a VM host has a VM.');
+  expect(text('target_kind_locked'))
+    .toBe("An environment can't move between an SSH target and a VM host, or between VM hosts.");
+  expect(text('tls_untrusted')).toBe("Sirdar doesn't trust this server's certificate yet.");
+  expect(text('not_vm_environment')).toBe("This environment isn't on a VM host.");
+  expect(text('vm_name_invalid')).toBe("The environment name can't be used as a VM host name.");
 });

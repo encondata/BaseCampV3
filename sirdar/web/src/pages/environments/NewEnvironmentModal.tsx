@@ -1,7 +1,7 @@
 /** New environment: Create (Basics › Services › Data › Review) makes a new
  *  environment record with generated secrets, empty or seeded from a snapshot
- *  its first deploy restores; on Proxmox a Machine step sizes the VM the
- *  first deploy builds and sets its address. Adopt (Basics › Result) reads a
+ *  its first deploy restores; on a VM host (Proxmox or ESXi) a Machine step
+ *  sizes the VM the first deploy builds and sets its address. Adopt (Basics › Result) reads a
  *  hand-built environment's .env and checkout over SSH and changes nothing. */
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
@@ -16,10 +16,12 @@ import {
   adoptEnvironment, createEnvironment, deployErrorText, getDeployTargets, getEnvironmentDefaults, getIntegrations,
   listSnapshots,
   type AdoptEnvironmentBody, type AdoptedEnvironment, type DeployTarget, type EnvType, type Environment,
-  type EnvironmentDefaults, type NewEnvironmentBody, type Snapshot,
+  type EnvironmentDefaults, type NewEnvironmentBody, type Snapshot, type VmHostKind,
 } from '../../lib/sirdarApi';
 
-import { TYPE_LABEL, envTargets, gbOf, mbOf, snapshotLabel, sshTargets, vmNetwork, vmSize } from './labels';
+import {
+  TYPE_LABEL, VM_HOST_LABEL, envTargets, gbOf, isVmTarget, mbOf, snapshotLabel, sshTargets, vmNetwork, vmSize,
+} from './labels';
 
 type Mode = 'new' | 'adopt';
 type Step = 'basics' | 'machine' | 'services' | 'data' | 'review' | 'result';
@@ -36,7 +38,7 @@ const STEPS: Record<Mode, [Step, string][]> = {
   new: [['basics', 'Basics'], ['services', 'Services'], ['data', 'Data'], ['review', 'Review']],
   adopt: [['basics', 'Basics'], ['result', 'Result']],
 };
-const PROXMOX_STEPS: [Step, string][] = [
+const VM_STEPS: [Step, string][] = [
   ['basics', 'Basics'], ['machine', 'Machine'], ['services', 'Services'], ['data', 'Data'], ['review', 'Review'],
 ];
 const IP_MODES: [IpMode, string][] = [['static', 'Static'], ['dhcp', 'DHCP']];
@@ -69,13 +71,13 @@ const DATA_MODES: [DataMode, string][] = [['empty', 'Start empty'], ['snapshot',
 type PublishChoice = 'on' | 'off';
 const PUBLISH_CHOICES: [PublishChoice, string][] = [['on', 'On'], ['off', 'Off']];
 const HINT: Record<Mode, string> = {
-  new: 'Create an environment on an SSH target, or on a VM Sirdar builds on Proxmox. Sirdar generates its secrets; '
-    + 'the first deploy builds it.',
+  new: 'Create an environment on an SSH target, or on a VM Sirdar builds on ESXi or Proxmox. Sirdar generates its '
+    + 'secrets; the first deploy builds it.',
   adopt: "Adopt an environment set up by hand. Sirdar reads its .env and git checkout over SSH and changes nothing.",
 };
 /** API error code → the field (and so the step) it belongs to. */
 const CODE_FIELD: Record<string, Field> = {
-  name_invalid: 'name', name_reserved: 'name', environment_exists: 'name',
+  name_invalid: 'name', name_reserved: 'name', environment_exists: 'name', vm_name_invalid: 'name',
   target_invalid: 'target', target_not_configured: 'target', ref_invalid: 'ref',
   base_domain_invalid: 'domain', proxy_ip_required: 'proxy', proxy_ip_invalid: 'proxy',
   bind_ip_invalid: 'bind', port_invalid: 'services', ports_conflict: 'services', service_unknown: 'services',
@@ -197,11 +199,12 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
   const services = defaults?.services ?? [];
   const effectiveDomain = domain.trim() || `${trimmed || '<name>'}.${defaults?.domain_suffix ?? 'serversherpa.com'}`;
   const targetName = (id: string) => targets?.find((t) => t.id === id)?.label ?? id;
-  const onVm = mode === 'new' && target === 'proxmox';
-  // Adopt reads a hand-built environment over SSH: Proxmox environments are only ones Sirdar builds.
-  const offered = (targets ?? []).filter((t) => mode === 'new' || t.id !== 'proxmox');
+  const onVm = mode === 'new' && isVmTarget(target);
+  const hostName = isVmTarget(target) ? VM_HOST_LABEL[target as VmHostKind] : '';
+  // Adopt reads a hand-built environment over SSH: VM environments are only ones Sirdar builds.
+  const offered = (targets ?? []).filter((t) => mode === 'new' || !isVmTarget(t.id));
   useEffect(() => {
-    if (mode === 'adopt' && target === 'proxmox') setTarget(sshTargets(targets ?? [])[0]?.id ?? '');
+    if (mode === 'adopt' && isVmTarget(target)) setTarget(sshTargets(targets ?? [])[0]?.id ?? '');
   }, [mode, target, targets]);
   const limits = defaults?.vm.limits;
   const machine = { cores: Number(cores), memory_mb: mbOf(memoryGb), disk_gb: Number(diskGb),
@@ -320,7 +323,7 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
     } });
   };
 
-  const stepList = onVm ? PROXMOX_STEPS : STEPS[mode];
+  const stepList = onVm ? VM_STEPS : STEPS[mode];
   const at = stepList.findIndex(([s]) => s === step);
 
   const radios = <T extends string>(items: [T, string][], value: T, set: (v: T) => void) => items.map(([v, label]) => (
@@ -391,11 +394,11 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                             onChange={setTarget} />
                   {targets && offered.length === 0 && (
                     <p className="page-hint">
-                      No target is ready. Add an SSH target under Target on the Deploy page, or set up Proxmox in
+                      No target is ready. Add an SSH target under Target on the Deploy page, or set up VMware ESXi in
                       Settings › Integrations.
                     </p>
                   )}
-                  {onVm && <p className="page-hint">Sirdar builds a VM for it on Proxmox on the first deploy.</p>}
+                  {onVm && <p className="page-hint">Sirdar builds a VM for it on {hostName} on the first deploy.</p>}
                   {errors.target && <p className="form-error" role="alert">{errors.target}</p>}
                 </div>
                 <div>
@@ -437,8 +440,10 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
             {defaults && step === 'machine' && (
               <div className="sirdar-env-grid">
                 <p className="page-hint sirdar-span2">
-                  Sirdar clones the Ubuntu template into a VM named ss-{trimmed} on Proxmox, then deploys to it. Sizes
-                  can grow later in Settings; the network can't change.
+                  {target === 'esxi'
+                    ? `Sirdar copies the Ubuntu seed VM's disk into a VM named ss-${trimmed} on ESXi, then deploys to it. `
+                    : `Sirdar clones the Ubuntu template into a VM named ss-${trimmed} on Proxmox, then deploys to it. `}
+                  Sizes can grow later in Settings; the network can't change.
                 </p>
                 <div>
                   <label className="field-label" htmlFor="env-vm-cores">vCPUs</label>

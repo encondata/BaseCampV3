@@ -5,8 +5,8 @@ from dataclasses import replace
 import pytest
 
 from sirdar_api.db.engine import get_sessionmaker
-from sirdar_api.db.models import Deployment, Environment, ProxmoxVm
-from sirdar_api.deploy import envfile, pipeline, provision, vms
+from sirdar_api.db.models import Deployment, Environment, EsxiVm, ProxmoxVm
+from sirdar_api.deploy import envfile, esxi_provision, pipeline, provision, vmcommon, vms
 from sirdar_api.deploy.provision import VmOutcome
 from sirdar_api.deploy.runner import RunResult
 from sirdar_api.deploy.steps import STEPS_BY_KEY
@@ -19,11 +19,11 @@ from .deploy_factories import (  # noqa: F401
     stop_pipeline,
     trust_fake,
 )
-from .integration_helpers import PX_TOKEN_SECRET, configure_proxmox
+from .integration_helpers import PX_TOKEN_SECRET, configure_esxi, configure_proxmox
 from .ssh_server import ssh_server  # noqa: F401
 from .test_deploy_api import deploy_env  # noqa: F401
 from .test_deploy_pipeline import OLD, SHA, UPDATE_KEYS, _load
-from .vm_helpers import make_vm_environment
+from .vm_helpers import make_esxi_environment, make_vm_environment
 
 SNAP = "sirdar-20261004T120000Z"
 
@@ -221,3 +221,44 @@ async def test_host_steps_refuse_a_deployment_without_a_commit(db, vm_env, fake_
     assert dep.status == "failed" and dep.error == pipeline.NO_COMMIT
     assert [s.status for s in steps][:2] == ["succeeded", "failed"]
     assert fake_runner.requests == []
+
+
+async def test_an_esxi_environment_s_step_0_goes_to_the_esxi_vm_steps(
+        db, deploy_env, secrets_key, ssh_server, monkeypatch, fake_runner, fake_provisioner):
+    monkeypatch.setattr(vms, "VM_SSH_PORT", ssh_server.port)
+    await configure_esxi(db)
+    env = await make_esxi_environment(db, current_sha=OLD)
+    await trust_fake(db, ssh_server)
+
+    async def up(ctx) -> None:
+        await vmcommon.set_vm(EsxiVm, ctx.env_id, moref="10", created=True, ip="127.0.0.1",
+                              instance_uuid="52aa0000-0000-0000-0000-000000000010")
+
+    fake_provisioner.effects["provision"] = up
+    fake_provisioner.outcomes["provision"] = VmOutcome(sha=SHA)
+    dep_id = await _start(db, env, sha="")
+    dep, steps, _ = await _load(dep_id)
+    assert isinstance(fake_provisioner.contexts[0], esxi_provision.EsxiVmContext)
+    assert (steps[0].number, steps[0].key, steps[0].status) == (0, "provision", "succeeded")
+    assert fake_provisioner.calls == ["provision"] and fake_runner.steps() == UPDATE_KEYS
+    assert (dep.status, dep.sha) == ("succeeded", SHA)
+
+
+async def test_the_host_provisioner_dispatches_by_the_context_s_host():
+    from sirdar_api.deploy import vmsteps
+
+    from .fake_provisioner import FakeProvisioner
+
+    px, ex = FakeProvisioner(), FakeProvisioner()
+    host = vmsteps.HostProvisioner(proxmox=px, esxi=ex)
+    esxi_ctx = esxi_provision.EsxiVmContext.__new__(esxi_provision.EsxiVmContext)
+    px_ctx = provision.VmContext.__new__(provision.VmContext)
+    await host.run("provision", esxi_ctx, lambda _: None)
+    await host.run("destroy", px_ctx, lambda _: None)
+    assert (px.calls, ex.calls) == (["destroy"], ["provision"])
+    # Anything else is no VM host's: never handed to Proxmox by default.
+    with pytest.raises(vmcommon.VmPrepareError):
+        await host.run("destroy", object(), lambda _: None)
+    with pytest.raises(vmcommon.VmPrepareError):
+        await vmsteps.HostProvisioner(proxmox=px).run("destroy", esxi_ctx, lambda _: None)
+    assert (px.calls, ex.calls) == (["destroy"], ["provision"])

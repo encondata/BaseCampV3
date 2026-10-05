@@ -1,4 +1,4 @@
-/** A Proxmox environment's VM snapshots (read live from Proxmox): the ones
+/** A VM environment's VM snapshots (read live from Proxmox or ESXi): the ones
  *  Sirdar took in step 0 of a deploy, each restorable with the typed-name
  *  gate unless a snapshot restore changed the sign-in keys since. */
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -10,7 +10,7 @@ import {
   deployErrorText, listVmSnapshots, type Deployment, type Environment, type VmSnapshot,
 } from '../../lib/sirdarApi';
 
-import { deploymentRunning, shortSha, when } from './labels';
+import { deploymentRunning, ESXI_GROW_NOTE, hostLabel, shortSha, when } from './labels';
 import RestoreVmSnapshotModal from './RestoreVmSnapshotModal';
 
 export default function VmSnapshots({ env, onStarted }: {
@@ -44,8 +44,9 @@ export default function VmSnapshots({ env, onStarted }: {
         <button type="button" className="mini-btn" onClick={() => void load()}>Refresh</button>
       </div>
       <p className="page-hint">
-        Step 0 of each Update, Reset, Restore backup and Roll back snapshots the whole VM before anything changes;
-        the newest {env.vm?.keep_snapshots ?? 3} stay on Proxmox. Restoring one puts the VM back: database, files and
+        Step 0 of each Update, Reset, Restore backup and Roll back snapshots the whole VM before anything changes
+        {env.target_kind === 'esxi' && ` ${ESXI_GROW_NOTE}`};
+        the newest {env.vm?.keep_snapshots ?? 3} stay on {hostLabel(env)}. Restoring one puts the VM back: database, files and
         backups.
       </p>
       {error && <p className="form-error" role="alert">{error}</p>}

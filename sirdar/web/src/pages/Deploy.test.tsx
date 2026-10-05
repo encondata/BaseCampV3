@@ -485,3 +485,16 @@ it('the Proxmox card points to Settings and New environment instead of testing h
   expect(screen.getByText(/Test Proxmox in Settings › Integrations/)).toBeTruthy();
   expect((screen.getByRole('button', { name: 'Test connection' }) as HTMLButtonElement).disabled).toBe(true);
 });
+
+it('the ESXi card points to Settings and New environment instead of testing here', async () => {
+  api.getDeployTargets.mockResolvedValue({ ...TARGETS, targets: [...TARGETS.targets,
+    { id: 'esxi', label: 'VMware ESXi', kind: 'esxi', available: true, configured: true }] });
+  render(<MemoryRouter><Deploy /></MemoryRouter>);
+  const card = await screen.findByRole('radio', { name: /VMware ESXi/ });
+  expect(within(card).getByText('ESXi')).toBeTruthy();
+  await userEvent.click(card);
+  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  expect(screen.getByText('Test VMware ESXi in Settings › Integrations. Environments on it are made with New '
+    + 'environment, which builds their VM on the first deploy.')).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Test connection' }) as HTMLButtonElement).disabled).toBe(true);
+});

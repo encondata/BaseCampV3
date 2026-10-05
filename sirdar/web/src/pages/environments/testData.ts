@@ -171,6 +171,10 @@ export const INTEGRATIONS: Integrations = {
              tls_fingerprint: fingerprint(7),
              token_id: 'sirdar@pve!sirdar', token_set: true,
              updated_at: '2026-10-04T16:00:00Z', updated_by_name: 'Jimmy Henderson' },
+  esxi: { configured: true, url: 'https://10.10.48.10', user: 'sirdar', datastore: 'datastore1', network: 'VM Network',
+          resource_pool: null, source_vm: 'sirdar-ubuntu-2404-seed', dns_servers: [],
+          tls_fingerprint: fingerprint(11), password_set: true,
+          updated_at: '2026-10-05T15:00:00Z', updated_by_name: 'Jimmy Henderson' },
 };
 export const NO_INTEGRATIONS: Integrations = {
   secrets_key_configured: true,
@@ -180,6 +184,9 @@ export const NO_INTEGRATIONS: Integrations = {
   proxmox: { configured: false, url: null, node: null, pool: null, storage: null, bridge: null, vlan_tag: null,
              template_vmid: null, tls_fingerprint: null, token_id: null, token_set: false, updated_at: null,
              updated_by_name: null },
+  esxi: { configured: false, url: null, user: null, datastore: null, network: null, resource_pool: null,
+          source_vm: null, dns_servers: [], tls_fingerprint: null, password_set: false, updated_at: null,
+          updated_by_name: null },
 };
 export const CF_CHECK: IntegrationCheck = {
   ok: true, target: 'cloudflare',
@@ -266,7 +273,7 @@ export const PX_TARGETS = {
             { id: 'proxmox', label: 'Proxmox', kind: 'proxmox', available: true, configured: true } as DeployTarget],
 };
 export const PX_VM: EnvVm = {
-  name: 'ss-uat3', node: 'pve', vmid: 120, cores: 4, memory_mb: 8192, disk_gb: 64, ip_mode: 'static',
+  kind: 'proxmox', stage: 'built', name: 'ss-uat3', host: 'pve', node: 'pve', vmid: 120, moref: null, cores: 4, memory_mb: 8192, disk_gb: 64, ip_mode: 'static',
   ip_cidr: '10.10.48.70/24', gateway: '10.10.48.1', ip: '10.10.48.70', keep_snapshots: 3, created: true,
 };
 /** uat3 on Proxmox, deployed. */
@@ -279,7 +286,7 @@ export const PX_ENV: Environment = {
 /** uat3 just created: no VM yet, never deployed. */
 export const PX_NEW_ENV: Environment = {
   ...PX_ENV, status: 'new', current_sha: null, image_tag: null, last_deployment: null,
-  vm: { ...PX_VM, vmid: null, ip: null, created: false },
+  vm: { ...PX_VM, vmid: null, ip: null, created: false, stage: 'none' },
 };
 export const VM_SNAPSHOTS: VmSnapshot[] = [
   { name: 'sirdar-20261004T120000Z', taken_at: '2026-10-04T12:00:00Z', sha: SHA, deployment_id: 'd10',
@@ -297,3 +304,45 @@ export const VM_ROLLBACKABLE = deployment('failed', VM_UP_FAILED, { 10: 'migrate
   dump_path: '/opt/serversherpa/uat3/backups/20261004T120500Z.dump', rollback_available: true,
   steps: steps(VM_UPDATE_PLAN, VM_UP_FAILED, { 10: 'migrate exited 1\n' }),
 });
+
+/* ---- VMware ESXi (phase 6) ---- */
+export const ESXI_FINGERPRINT = INTEGRATIONS.esxi.tls_fingerprint!;
+/** What tls_untrusted describes for an ESXi host: its default certificate names only its host name. */
+export const ESXI_CERT: TlsCertificate = {
+  fingerprint: fingerprint(19), subject: 'localhost.localdomain', issuer: 'localhost.localdomain',
+  not_after: '2030-01-01T00:00:00+00:00', names: ['localhost.localdomain'],
+};
+export const ESXI_PASSWORD = 'esxi-PASSWORD-s3cr3t!';
+export const ESXI_CHECK: IntegrationCheck = {
+  ok: true, target: 'esxi',
+  checks: [
+    { label: 'ESXi', status: 'pass', value: 'VMware ESXi 7.0.3 build-21930508' },
+    { label: 'License', status: 'pass', value: 'esx.enterprisePlus.cpuPackage' },
+    { label: 'Datastore', status: 'pass', value: 'datastore1 · 800 GB free' },
+    { label: 'Network', status: 'pass', value: 'VM Network' },
+    { label: 'Resource pool', status: 'pass', value: "The host's root pool" },
+    { label: 'Seed VM', status: 'pass',
+      value: 'sirdar-ubuntu-2404-seed · [datastore1] sirdar-ubuntu-2404-seed/sirdar-ubuntu-2404-seed.vmdk · 3 GB' },
+  ],
+  facts: { url: 'https://10.10.48.10', version: '7.0.3', build: '21930508', user: 'sirdar' },
+};
+export const ESXI_TARGETS = {
+  ...TARGETS,
+  targets: [...TARGETS.targets,
+            { id: 'esxi', label: 'VMware ESXi', kind: 'esxi', available: true, configured: true } as DeployTarget],
+};
+export const ESXI_VM: EnvVm = {
+  kind: 'esxi', stage: 'built', name: 'ss-uat3', host: '10.10.48.10', node: null, vmid: null, moref: '12',
+  cores: 4, memory_mb: 8192, disk_gb: 64, ip_mode: 'static', ip_cidr: '10.10.48.71/24', gateway: '10.10.48.1',
+  ip: '10.10.48.71', keep_snapshots: 3, created: true,
+};
+/** uat3 on ESXi, deployed. */
+export const ESXI_ENV: Environment = {
+  ...PX_ENV, target: 'esxi', target_kind: 'esxi', vm: ESXI_VM,
+  services: PX_ENV.services.map((s) => ({ ...s, host_ip: '10.10.48.71' })),
+};
+/** uat3 on ESXi just created: no VM yet, never deployed. */
+export const ESXI_NEW_ENV: Environment = {
+  ...ESXI_ENV, status: 'new', current_sha: null, image_tag: null, last_deployment: null,
+  vm: { ...ESXI_VM, stage: 'none', moref: null, ip: null, created: false },
+};
