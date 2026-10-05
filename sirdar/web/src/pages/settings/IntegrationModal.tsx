@@ -161,7 +161,7 @@ export default function IntegrationModal({ kind, current, onSaved, onClose }: {
               <TextField id="int-identity" label="Login email" value={identity} error={errors.identity}
                          onChange={edited(setIdentity)} />
               <TextField id="int-email" label="Let's Encrypt email" value={email} error={errors.email}
-                         hint="Older Nginx Proxy Manager versions use this; 2.16 and later use the NPM login's own email."
+                         hint="Older Nginx Proxy Manager versions use this; 2.13 and later use the NPM login's own email."
                          onChange={edited(setEmail)} />
             </>
           )}
