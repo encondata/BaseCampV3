@@ -96,7 +96,7 @@ it('a Proxmox environment whose VM was never created: nothing on Proxmox is remo
 });
 
 it('a Proxmox environment with a reserved id but no finished build: removes the partly built VM', () => {
-  render(<DeleteEnvironmentModal env={{ ...PX_ENV, vm: { ...PX_ENV.vm!, created: false } }}
+  render(<DeleteEnvironmentModal env={{ ...PX_ENV, vm: { ...PX_ENV.vm!, created: false, stage: 'partial' as const } }}
                                  onStarted={vi.fn()} onClose={vi.fn()} />);
   expect(screen.getByText(/Removes the partly built VM ss-uat3 \(id 120\) if Proxmox has it\./)).toBeTruthy();
   expect(screen.queryByText(/nothing on Proxmox is removed/)).toBeNull();

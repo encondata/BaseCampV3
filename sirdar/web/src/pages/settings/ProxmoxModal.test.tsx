@@ -121,10 +121,10 @@ it('API errors land on their field; a failed test shows the reason', async () =>
 });
 
 it.each([
-  ['a code-only detail', { code: 'tls_untrusted' }, "Sirdar doesn't trust this Proxmox server's certificate yet."],
-  ['a null detail', null, "Sirdar doesn't trust this Proxmox server's certificate yet."],
+  ['a code-only detail', { code: 'tls_untrusted' }, "Sirdar doesn't trust this server's certificate yet."],
+  ['a null detail', null, "Sirdar doesn't trust this server's certificate yet."],
   ['a mismatch without both fingerprints', { code: 'tls_mismatch', expected: PX_FINGERPRINT },
-   "The Proxmox server's certificate doesn't match the one Sirdar trusted."],
+   "The server's certificate doesn't match the one Sirdar trusted."],
 ])('a certificate answer with %s shows the message instead of a prompt', async (_name, detail, text) => {
   const code = (detail as { code?: string } | null)?.code ?? 'tls_untrusted';
   api.testIntegration.mockRejectedValueOnce(new ApiError(409, code, detail));

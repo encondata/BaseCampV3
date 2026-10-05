@@ -1,12 +1,13 @@
-import { expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import {
   CERT_STATE, DEPLOYMENT_STATUS, ENV_STATUS, GATED_MODES, MODE_LABEL, PUBLISH_STATE, RETRY_MODES, STEP_STATUS,
-  deploymentRunning, dumpTakenAt, duration, envTargets, formatBytes, onProxmox, snapshotLabel, sshTargets,
-  stoppedStep, vmNetwork, vmSize,
+  deploymentRunning, dumpTakenAt, duration, envTargets, formatBytes, hostLabel, isVmTarget, onProxmox, onVmHost,
+  snapshotLabel, sshTargets, stoppedStep, VM_HOST_LABEL, vmBuilt, vmNetwork, vmRef, vmSize, vmStage,
 } from './labels';
 import {
-  ENV, FAILED, PUBLISHING, PX_ENV, PX_TARGETS, PX_VM, RUNNING, SNAP, SUCCEEDED, TARGETS, summary,
+  ENV, ESXI_ENV, ESXI_NEW_ENV, ESXI_TARGETS, ESXI_VM, FAILED, PUBLISHING, PX_ENV, PX_NEW_ENV, PX_TARGETS, PX_VM,
+  RUNNING, SNAP, SUCCEEDED, TARGETS, summary,
 } from './testData';
 
 it('stoppedStep mirrors the API: the failed/cancelled/interrupted step, else the first not run', () => {
@@ -89,4 +90,38 @@ it('Proxmox: targets, the mode, and the VM in words', () => {
   expect(vmNetwork({ ...PX_VM, ip_mode: 'dhcp', ip_cidr: null, gateway: null })).toBe('DHCP');
   expect(vmNetwork({ ...PX_VM, ip_cidr: null, gateway: null })).toBe('Static, no address yet');
   expect(vmNetwork({ ...PX_VM, gateway: null })).toBe('10.10.48.70/24');
+});
+
+describe('VM hosts', () => {
+  it('knows both hosts', () => {
+    expect(isVmTarget('esxi')).toBe(true);
+    expect(isVmTarget('proxmox')).toBe(true);
+    expect(isVmTarget('ssh:uat')).toBe(false);
+    expect(onVmHost(ESXI_ENV)).toBe(true);
+    expect(onVmHost(PX_ENV)).toBe(true);
+    expect(onVmHost(ENV)).toBe(false);
+    expect(onProxmox(ESXI_ENV)).toBe(false);
+    expect(hostLabel(ESXI_ENV)).toBe('ESXi');
+    expect(hostLabel(PX_ENV)).toBe('Proxmox');
+    expect(VM_HOST_LABEL).toEqual({ proxmox: 'Proxmox', esxi: 'ESXi' });
+  });
+
+  it('names a VM by its id on either host', () => {
+    expect(vmRef(PX_VM)).toBe('VM 120');
+    expect(vmRef(ESXI_VM)).toBe('VM 12');
+    expect(vmRef({ ...ESXI_VM, moref: null })).toBeNull();
+  });
+
+  it("reads the stage from the API, with Proxmox's old rule as the fallback", () => {
+    expect(vmStage(ESXI_NEW_ENV.vm!)).toBe('none');
+    expect(vmStage(PX_NEW_ENV.vm!)).toBe('none');
+    expect(vmStage({ ...ESXI_VM, stage: 'partial' })).toBe('partial');
+    expect(vmStage({ created: false, vmid: 120 })).toBe('partial');
+    expect(vmBuilt(ESXI_VM)).toBe(true);
+    expect(vmBuilt({ ...ESXI_VM, stage: 'partial' })).toBe(false);
+  });
+
+  it('offers ESXi as a target once it is set up', () => {
+    expect(envTargets(ESXI_TARGETS.targets).map((t) => t.id)).toEqual(['ssh:lab', 'esxi']);
+  });
 });

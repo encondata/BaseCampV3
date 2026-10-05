@@ -127,7 +127,7 @@ it("the card's Test points to Edit when the certificate needs review", async () 
   const px = await screen.findByRole('group', { name: 'Proxmox' });
   await userEvent.click(within(px).getByRole('button', { name: 'Test Proxmox' }));
   expect(await within(px).findByText(
-    "The Proxmox server's certificate doesn't match the one Sirdar trusted. Open Edit to review the certificate."))
+    "The server's certificate doesn't match the one Sirdar trusted. Open Edit to review the certificate."))
     .toBeTruthy();
 });
 

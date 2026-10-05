@@ -1,5 +1,5 @@
 /** Labels, status chips and small helpers shared by the environment pages. */
-import type { DeployTarget, DeploymentStep, EnvVm, Environment, Snapshot } from '../../lib/sirdarApi';
+import type { DeployTarget, DeploymentStep, EnvVm, Environment, Snapshot, VmHostKind } from '../../lib/sirdarApi';
 
 /** status → [chip class, label] */
 type ChipMap = Record<string, [string, string]>;
@@ -99,18 +99,31 @@ export const targetLabel = (targets: DeployTarget[], id: string) => targets.find
 export const sshTargets = (targets: DeployTarget[]) =>
   targets.filter((t) => (t.id === 'ssh' || t.id.startsWith('ssh:')) && t.available && t.configured);
 
-/** Targets a new environment can use: configured SSH targets, then Proxmox once it is set up. */
-export const envTargets = (targets: DeployTarget[]) =>
-  [...sshTargets(targets), ...targets.filter((t) => t.id === 'proxmox' && t.configured)];
+export const VM_HOST_LABEL: Record<VmHostKind, string> = { proxmox: 'Proxmox', esxi: 'ESXi' };
 
+/** A target whose host is a VM Sirdar builds. */
+export const isVmTarget = (id: string) => id === 'proxmox' || id === 'esxi';
+
+/** Targets a new environment can use: configured SSH targets, then the VM hosts once set up. */
+export const envTargets = (targets: DeployTarget[]) =>
+  [...sshTargets(targets), ...targets.filter((t) => isVmTarget(t.id) && t.configured)];
+
+/** Its host is a VM Sirdar builds, on Proxmox or ESXi. */
+export const onVmHost = (env: Environment) => env.target_kind === 'proxmox' || env.target_kind === 'esxi';
 /** Its host is a VM Sirdar builds on Proxmox. */
 export const onProxmox = (env: Environment) => env.target_kind === 'proxmox';
+/** "Proxmox" or "ESXi" for a VM environment. */
+export const hostLabel = (env: Environment) => (env.target_kind === 'esxi' ? 'ESXi' : 'Proxmox');
 
-/** Sirdar built the VM (an id reserved before the first deploy is not a VM yet). */
-export const vmBuilt = (vm: Pick<EnvVm, 'created' | 'vmid'>) => vm.created && vm.vmid !== null;
-// none: no VM id yet. partial: an id is reserved but the first apply did not finish. built: created.
-export const vmStage = (vm: Pick<EnvVm, 'created' | 'vmid'>): 'none' | 'partial' | 'built' =>
-  vm.vmid === null ? 'none' : vm.created ? 'built' : 'partial';
+type StageOf = Pick<EnvVm, 'created' | 'vmid'> & Partial<Pick<EnvVm, 'stage'>>;
+// none: no VM yet. partial: one exists (or an id is reserved) but the first build didn't finish. built.
+export const vmStage = (vm: StageOf): 'none' | 'partial' | 'built' =>
+  vm.stage ?? (vm.vmid === null ? 'none' : vm.created ? 'built' : 'partial');
+/** Sirdar built the VM (an id reserved, or a VM half built, is not a VM yet). */
+export const vmBuilt = (vm: StageOf) => vmStage(vm) === 'built';
+/** "VM 120" (Proxmox) or "VM 12" (ESXi's managed object id); null before one exists. */
+export const vmRef = (vm: Pick<EnvVm, 'vmid' | 'moref'>) =>
+  vm.vmid !== null ? `VM ${vm.vmid}` : vm.moref ? `VM ${vm.moref}` : null;
 
 /** Memory in GB as typed and shown (one decimal at most), and back to MB. */
 export const gbOf = (mb: number) => String(Math.round((mb / 1024) * 10) / 10);

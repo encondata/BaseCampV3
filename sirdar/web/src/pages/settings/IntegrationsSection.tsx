@@ -21,6 +21,7 @@ import ProxmoxModal from './ProxmoxModal';
 const KINDS: IntegrationKind[] = ['cloudflare', 'npm', 'proxmox'];
 const PURPOSE: Record<IntegrationKind, string> = {
   proxmox: 'The Proxmox host Sirdar builds a VM on for each Proxmox environment.',
+  esxi: 'The VMware ESXi host Sirdar builds a VM on for each ESXi environment.',
   cloudflare: 'DNS records for every public service of an environment that publishes.',
   npm: 'Proxy hosts and certificates for every public service of an environment that publishes.',
 };
@@ -163,7 +164,7 @@ export default function IntegrationsSection() {
         </div>
       )}
       {data && !mayChange && <p className="page-hint">You can view these settings but not change them.</p>}
-      {editing && data && editing !== 'proxmox' && (
+      {editing && data && editing !== 'proxmox' && editing !== 'esxi' && (
         <IntegrationModal kind={editing} current={data} onClose={() => setEditing(null)}
                           onSaved={(saved) => { setData(saved); forget(editing); setEditing(null); }} />
       )}

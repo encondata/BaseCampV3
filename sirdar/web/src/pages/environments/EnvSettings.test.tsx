@@ -214,7 +214,7 @@ it('Proxmox before its first deploy: the danger zone says nothing on Proxmox is 
 });
 
 it('Proxmox with a partly built VM: the danger zone says the partly built VM is removed', () => {
-  const env = { ...PX_NEW_ENV, vm: { ...PX_NEW_ENV.vm!, vmid: 120, created: false } };
+  const env = { ...PX_NEW_ENV, vm: { ...PX_NEW_ENV.vm!, vmid: 120, created: false, stage: 'partial' as const } };
   render(<EnvSettings env={env} targets={PX_TARGETS.targets} onSaved={vi.fn()} onDeleteStarted={vi.fn()} />);
   expect(screen.getByText(/Removes the partly built VM .* \(id 120\) if Proxmox has it\./)).toBeTruthy();
   expect(screen.queryByText(/nothing on Proxmox is removed/)).toBeNull();
