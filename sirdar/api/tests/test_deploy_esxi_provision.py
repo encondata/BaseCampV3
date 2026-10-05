@@ -618,3 +618,30 @@ async def test_destroy_never_calls_a_vm_gone_on_another_host(db, esxi_env, esxi_
         await provisioner().run("destroy", moved, lines.append)
     assert e.value.reason == MOVED
     assert esxi_fake.calls == [] and "already gone" not in "".join(lines)
+
+
+async def _garble_host_key(db, env):
+    record = await row(db, env)
+    record.host_key_private_enc = b"not-a-fernet-token"
+    await db.commit()
+
+
+async def test_teardown_doesn_t_need_the_host_key(db, esxi_env, esxi_fake):
+    esxi_fake.fail["copy_disk"] = EsxiError("ESXi couldn't copy the seed disk (x).")
+    with pytest.raises(StepFailed):
+        await run(db, esxi_env)
+    del esxi_fake.fail["copy_disk"]
+    await _garble_host_key(db, esxi_env)
+    ctx = await ctx_for(db, esxi_env, mode="teardown")
+    assert ctx.vm.host_key_private is None
+    await provisioner().run("destroy", ctx, lambda _: None)
+    assert esxi_fake.by_name("ss-uat3") is None
+
+
+async def test_a_build_needs_a_readable_host_key(db, esxi_env, esxi_fake):
+    await _garble_host_key(db, esxi_env)
+    with pytest.raises(StepFailed) as e:
+        await run(db, esxi_env)
+    assert e.value.reason == ("Sirdar can't read the VM's host key with the current "
+                              "SIRDAR_SECRETS_KEY, so it can't build the VM.")
+    assert esxi_fake.specs == []

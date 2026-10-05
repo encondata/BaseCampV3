@@ -51,8 +51,9 @@ HOST_LABEL = "ESXi"
 
 @dataclass(frozen=True)
 class EsxiVmState:
-    """The esxi_vms row when the run started (the host key's private half
-    decrypted, only while it hasn't been delivered)."""
+    """The esxi_vms row when the run started. `host_key_pending`: the host
+    key's private half is still stored (not yet delivered and scrubbed);
+    `host_key_private`: it decrypted, only for a run that may build."""
     name: str
     host: str
     datastore: str
@@ -74,6 +75,7 @@ class EsxiVmState:
     host_key_public: str
     keep_snapshots: int
     created: bool
+    host_key_pending: bool = False
     host_key_private: str | None = field(default=None, repr=False)
 
     @classmethod
@@ -86,6 +88,7 @@ class EsxiVmState:
                    ip_cidr=row.ip_cidr, gateway=row.gateway, ip=row.ip,
                    ssh_public_key=row.ssh_public_key, host_key_public=row.host_key_public,
                    keep_snapshots=row.keep_snapshots, created=row.created,
+                   host_key_pending=row.host_key_private_enc is not None,
                    host_key_private=host_key_private)
 
     @property
@@ -133,13 +136,12 @@ async def prepare(db: AsyncSession, env: Environment, dep: Deployment,
                              "remove a VM for it.")
     if (moved := _moved(row.host, cfg)) is not None:
         raise VmPrepareError(moved)
+    # Only a build delivers the host key: a teardown never decrypts it, and a
+    # key that won't decrypt stops only the build that needs it (_create).
     private = None
-    if row.host_key_private_enc is not None:
-        try:
+    if row.host_key_private_enc is not None and dep.mode != "teardown":
+        with suppress(vault.SecretsKeyMissing, vault.SecretUnreadable):
             private = vault.decrypt(settings, row.host_key_private_enc)
-        except (vault.SecretsKeyMissing, vault.SecretUnreadable):
-            raise VmPrepareError("Sirdar can't read the VM's host key with the current "
-                                 "SIRDAR_SECRETS_KEY.") from None
     return EsxiVmContext(env_id=env.id, env_name=env.name, deployment_id=dep.id,
                          actor_id=dep.actor_id, mode=dep.mode, git_ref=dep.git_ref, sha=dep.sha,
                          repo_url=settings.deploy_repo_url, take_snapshot=dep.take_vm_snapshot,
@@ -315,6 +317,9 @@ class EsxiProvisioner:
             raise StepFailed(f"Something already answers SSH at {vm.static_ip}, so Sirdar "
                              "won't give that address to a new VM. Free it, or delete this "
                              "environment and create it with another address.")
+        if not vm.host_key_private and vm.host_key_pending:
+            raise StepFailed("Sirdar can't read the VM's host key with the current "
+                             "SIRDAR_SECRETS_KEY, so it can't build the VM.")
         if not vm.host_key_private:
             raise StepFailed(f"Sirdar no longer has the host key it made for {vm.name}, so it "
                              "can't build the VM. Delete this environment and create it again.")
@@ -475,7 +480,7 @@ class EsxiProvisioner:
     async def _scrub(self, api: EsxiApi, ctx: EsxiVmContext, uuid_: str, out: Output) -> None:
         """Once SSH answered with the generated key: the user-data that held
         its private half leaves the VM's settings, and Sirdar forgets it."""
-        if ctx.vm.host_key_private is None:
+        if not ctx.vm.host_key_pending:
             return
         await api.set_extra_config(uuid_, cloudinit.scrub())
         await vmcommon.set_vm(EsxiVm, ctx.env_id, host_key_private_enc=None)
