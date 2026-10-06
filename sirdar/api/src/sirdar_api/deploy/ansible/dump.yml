@@ -5,64 +5,80 @@
 # environment that has deployed before (dump_required) fails here instead:
 # "up" would migrate with no backup. So does a deployment that restores a
 # snapshot onto a database volume whose container is stopped.
+# On DigitalOcean (external_data) the managed database is dumped through
+# ss-stack's one-off client.
 # Reports the dump's path to Sirdar through set_stats.
 - name: Pre-deploy dump
   hosts: target
   gather_facts: false
   tasks:
-    - name: Is the database running?
-      ansible.builtin.command:
-        argv:
-          - docker
-          - ps
-          - --quiet
-          - --filter
-          - "label=com.docker.compose.project=ss-{{ env_name }}-db"
-          - --filter
-          - status=running
-      register: db_running
-      changed_when: false
-
-    # A deployment that restores a snapshot (a seeded first deploy) would
-    # start a stopped database's volume (`ss-stack data`) and drop it
-    # (`ss-stack restore`) without this dump: refuse before anything changes.
-    - name: Is there a stopped database?
-      ansible.builtin.command:
-        argv: [docker, volume, inspect, "ss-{{ env_name }}-db_pgdata"]
-      register: db_volume
-      changed_when: false
-      failed_when: false
-      when:
-        - restores_snapshot | default(false) | bool
-        - db_running.stdout | length == 0
-
-    - name: Stop before the restore drops it
-      ansible.builtin.fail:
-        msg: >-
-          A database for {{ env_name }} already exists on this server but isn't running.
-          Adopt the environment instead, or remove its volume (ss-{{ env_name }}-db_pgdata).
-      when:
-        - db_volume is not skipped
-        - db_volume.rc == 0
-
-    - name: Stop when the backup can't be taken
-      ansible.builtin.fail:
-        msg: >-
-          The database isn't running, so the pre-deploy backup can't be taken.
-          Start it (or Reset) and retry.
-      when:
-        - dump_required | default(false) | bool
-        - db_running.stdout | length == 0
-
-    - name: ss-stack dump
+    # DigitalOcean: the managed database is always running, so the dump always
+    # happens (a first deploy dumps an empty database).
+    - name: ss-stack dump (the managed database)
       ansible.builtin.command:
         argv: ["{{ ss_stack }}", dump, "{{ env_dir }}"]
-      register: dump
-      when: db_running.stdout | length > 0
+      register: managed_dump
+      when: external_data | default(false) | bool
+
+    - name: The local database
+      when: not (external_data | default(false) | bool)
+      block:
+        - name: Is the database running?
+          ansible.builtin.command:
+            argv:
+              - docker
+              - ps
+              - --quiet
+              - --filter
+              - "label=com.docker.compose.project=ss-{{ env_name }}-db"
+              - --filter
+              - status=running
+          register: db_running
+          changed_when: false
+
+        # A deployment that restores a snapshot (a seeded first deploy) would
+        # start a stopped database's volume (`ss-stack data`) and drop it
+        # (`ss-stack restore`) without this dump: refuse before anything changes.
+        - name: Is there a stopped database?
+          ansible.builtin.command:
+            argv: [docker, volume, inspect, "ss-{{ env_name }}-db_pgdata"]
+          register: db_volume
+          changed_when: false
+          failed_when: false
+          when:
+            - restores_snapshot | default(false) | bool
+            - db_running.stdout | length == 0
+
+        - name: Stop before the restore drops it
+          ansible.builtin.fail:
+            msg: >-
+              A database for {{ env_name }} already exists on this server but isn't running.
+              Adopt the environment instead, or remove its volume (ss-{{ env_name }}-db_pgdata).
+          when:
+            - db_volume is not skipped
+            - db_volume.rc == 0
+
+        - name: Stop when the backup can't be taken
+          ansible.builtin.fail:
+            msg: >-
+              The database isn't running, so the pre-deploy backup can't be taken.
+              Start it (or Reset) and retry.
+          when:
+            - dump_required | default(false) | bool
+            - db_running.stdout | length == 0
+
+        - name: ss-stack dump
+          ansible.builtin.command:
+            argv: ["{{ ss_stack }}", dump, "{{ env_dir }}"]
+          register: dump
+          when: db_running.stdout | length > 0
 
     - name: Report the dump path
       ansible.builtin.set_stats:
         data:
-          dump_path: "{{ dump.stdout_lines[-1] if dump is not skipped else '' }}"
+          dump_path: >-
+            {{ managed_dump.stdout_lines[-1] if managed_dump is not skipped
+               else (dump.stdout_lines[-1] if dump is defined and dump is not skipped
+                     else '') }}
         per_host: false
         aggregate: true

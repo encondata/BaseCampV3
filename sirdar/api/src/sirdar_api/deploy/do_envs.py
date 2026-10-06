@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sirdar_api.config import Settings
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import DoEnvironment, DoResource, DoSlot, Environment
-from sirdar_api.deploy import acme, vault, vms
+from sirdar_api.deploy import acme, spaces, vault, vms
 from sirdar_api.deploy.ssh import SshTargetConfig
 
 DO_TARGET = "digitalocean"
@@ -191,6 +191,38 @@ async def host_config(db: AsyncSession, settings: Settings, env: Environment,
     return SshTargetConfig(host=slot_row.public_ip, port=vms.VM_SSH_PORT, user=vms.VM_USER,
                            private_key=vault.decrypt(settings, row.ssh_private_key_enc),
                            key_name=f"Sirdar's key for {droplet_name(env.name, slot)}")
+
+
+async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot: str,
+                    secrets: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """The .env keys a slot's droplet needs on top of the usual ones, and the
+    secret values among them (for the redactor). DoEnvError("do_not_ready",
+    missing=[...]) until step 0 has recorded them. POSTGRES_PASSWORD is the
+    generated hex secret (safe inside a URL) and the managed role's password."""
+    row = await get(db, env.id)
+    slot_row = await db.get(DoSlot, (env.id, slot), populate_existing=True)
+    missing = [label for label, value in (
+        ("load balancer address", row.lb_ip if row else None),
+        ("VPC range", row.vpc_ip_range if row else None),
+        ("database host", row.db_host if row else None),
+        ("Spaces key", row.spaces_key_id if row and row.spaces_secret_enc else None),
+        ("droplet", slot_row.droplet_id if slot_row else None)) if not value]
+    if missing:
+        raise DoEnvError("do_not_ready", missing=missing)
+    spaces_secret = vault.decrypt(settings, row.spaces_secret_enc)
+    url = (f"postgresql+asyncpg://{DB_USER}:{secrets['POSTGRES_PASSWORD']}@{row.db_host}:"
+           f"{row.db_port}/{DB_NAME}")
+    extra = {
+        "STACK_EXTERNAL_DATA": "1", "STACK_CADDY": "1", "STACK_NETWORK_SUBNET": NETWORK_SUBNET,
+        "STACK_HOSTS_IP": row.lb_ip, "STACK_TRUSTED_PROXIES": row.vpc_ip_range,
+        "STACK_DB_HOST": row.db_host, "STACK_DB_PORT": str(row.db_port),
+        "STACK_DB_NAME": DB_NAME, "STACK_DB_USER": DB_USER,
+        "SS_DATABASE_URL": url, "SS_DATABASE_SSL": "require",
+        "SS_SPACES_ENDPOINT": spaces.endpoint(row.region), "SS_SPACES_REGION": row.region,
+        "SS_SPACES_ACCESS_KEY": row.spaces_key_id, "SS_SPACES_SECRET_KEY": spaces_secret,
+        "SS_SPACES_USE_PATH_STYLE": "false", "STACK_DROPLET_ID": slot_row.droplet_id,
+    }
+    return extra, [url, spaces_secret]
 
 
 # ---- own-session writers -------------------------------------------------------------------

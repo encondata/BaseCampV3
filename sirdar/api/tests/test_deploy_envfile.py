@@ -33,7 +33,8 @@ def _keys(text: str) -> list[str]:
 def test_rendered_keys_match_env_example_in_order():
     example = _keys(ENV_EXAMPLE.read_text())
     assert _keys(envfile.render_env(_cfg())) == example
-    assert tuple(example) == envfile.KNOWN_KEYS
+    # the DigitalOcean extras follow, commented out in env.example
+    assert tuple(example) + envfile.EXTRA_KEYS == envfile.KNOWN_KEYS
 
 
 def test_render_values():
@@ -106,3 +107,28 @@ def test_helpers():
     assert set(envfile.SERVICES) == set(envfile.DEFAULT_PORTS) == set(envfile.PORT_KEYS)
     assert envfile.PUBLIC_SERVICES == envfile.SERVICES[:6]
     assert set(envfile.HEX_SECRETS) | set(envfile.FERNET_SECRETS) == set(envfile.REQUIRED_SECRETS)
+
+
+def test_extras_render_after_the_optional_secrets():
+    text = envfile.render_env(_cfg(extra={"STACK_EXTERNAL_DATA": "1", "SS_DATABASE_SSL": "require",
+                                          "STACK_DB_PORT": "25060"}))
+    keys = _keys(text)
+    assert keys[-3:] == ["STACK_EXTERNAL_DATA", "SS_DATABASE_SSL", "STACK_DB_PORT"]
+    assert keys.index("SS_DB_TESTING_PASSWORD") < keys.index("STACK_EXTERNAL_DATA")
+    assert envfile.parse_env(text)["STACK_DB_PORT"] == "25060"
+
+
+@pytest.mark.parametrize("extra, reason", [
+    ({"NOT_ALLOWED": "1"}, "unknown key NOT_ALLOWED"),
+    ({"POSTGRES_PASSWORD": "x"}, "unknown key POSTGRES_PASSWORD"),
+    ({"SS_DATABASE_URL": "a\nB=c"}, "SS_DATABASE_URL contains a control or line-break character"),
+])
+def test_extras_are_checked(extra, reason):
+    with pytest.raises(RenderError) as err:
+        envfile.render_env(_cfg(extra=extra))
+    assert err.value.reason == reason
+
+
+def test_extras_stay_out_of_repr():
+    cfg = _cfg(extra={"SS_SPACES_SECRET_KEY": "spaces-SECRET"})
+    assert "spaces-SECRET" not in repr(cfg)

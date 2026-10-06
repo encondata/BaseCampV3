@@ -14,6 +14,12 @@
     container_dump: /tmp/sirdar-snapshot.dump
     db_compose: [docker, compose, --env-file, "{{ env_dir }}/.env",
                  -f, "{{ env_dir }}/repo/deploy/stack/db/compose.yml"]
+    # DigitalOcean: the managed database through ss-stack's one-off client,
+    # and the objects from the environment's Spaces bucket.
+    external: "{{ external_data | default(false) | bool }}"
+    spaces_args: >-
+      {{ ['--endpoint', spaces_endpoint, '--key-id', spaces_key_id, '--region', spaces_region]
+         if external_data | default(false) | bool else [] }}
   tasks:
     - name: Export and fetch
       block:
@@ -47,16 +53,31 @@
                    '-d', 'serversherpa', '-tAc', 'SELECT version_num FROM alembic_version'] }}"
           register: revision
           changed_when: false
+          when: not external
 
         - name: pg_dump inside the database container
           ansible.builtin.command:
             argv: "{{ db_compose + ['exec', '-T', 'postgres', 'pg_dump', '-U', 'serversherpa',
                    '-d', 'serversherpa', '-Fc', '--no-owner', '--no-acl',
                    '-f', container_dump] }}"
+          when: not external
 
         - name: Copy the dump out
           ansible.builtin.command:
             argv: "{{ db_compose + ['cp', 'postgres:' + container_dump, work + '/db.dump'] }}"
+          when: not external
+
+        - name: The database's migration (managed)
+          ansible.builtin.command:
+            argv: ["{{ ss_stack }}", revision, "{{ env_dir }}"]
+          register: managed_revision
+          changed_when: false
+          when: external
+
+        - name: pg_dump of the managed database
+          ansible.builtin.command:
+            argv: ["{{ ss_stack }}", pgdump, "{{ env_dir }}", "{{ work }}/db.dump"]
+          when: external
 
         - name: Who runs the export
           ansible.builtin.command:
@@ -72,15 +93,17 @@
 
         - name: Export the objects
           ansible.builtin.command:
-            argv: [docker, run, --rm, --network, "ss-{{ env_name }}",
-                   --env-file, "{{ env_dir }}/.env", --user, "{{ uid.stdout }}:{{ gid.stdout }}",
-                   -e, HOME=/tmp, -v, "{{ work }}:/work", "{{ api_image }}",
-                   python, /work/bundle.py, export-objects, --out, /work/objects.tar]
+            argv: "{{ ['docker', 'run', '--rm', '--network', 'ss-' + env_name,
+                   '--env-file', env_dir + '/.env', '--user', uid.stdout + ':' + gid.stdout,
+                   '-e', 'HOME=/tmp', '-v', work + ':/work', api_image,
+                   'python', '/work/bundle.py', 'export-objects', '--out', '/work/objects.tar']
+                   + spaces_args }}"
 
         - name: Pack the bundle
           ansible.builtin.command:
             argv: ["{{ bundle_python }}", "{{ work }}/bundle.py", pack, --out, "{{ work }}/bundle.tar.gz",
-                   --source, "{{ env_name }}", --revision, "{{ revision.stdout | trim }}",
+                   --source, "{{ env_name }}", --revision,
+                   "{{ (managed_revision.stdout if external else revision.stdout) | trim }}",
                    --bucket, "{{ spaces_bucket }}", --db, "{{ work }}/db.dump",
                    --objects, "{{ work }}/objects.tar", --keys-enc, "{{ work }}/keys.enc"]
 
@@ -95,6 +118,7 @@
             argv: "{{ db_compose + ['exec', '-T', 'postgres', 'rm', '-f', container_dump] }}"
           changed_when: false
           failed_when: false
+          when: not external
 
         - name: Remove the work folder
           ansible.builtin.file:

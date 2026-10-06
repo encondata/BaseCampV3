@@ -15,7 +15,12 @@ A VM environment (vm=True; Proxmox or ESXi) builds its host first: 0 Prepare VM
 (runs="vm", see vmsteps.py) starts its update / reset / restore_dump /
 rollback plans; its Delete runs 15 Destroy VM instead of 15 Remove
 environment; and only it has "vm_restore", a plan of 0 Restore VM snapshot
-alone. Steps with the same number never meet in one plan."""
+alone. Steps with the same number never meet in one plan.
+
+A DigitalOcean environment (deploy phase 7) has its own "vm" steps: 0 Prepare
+DigitalOcean, 14 Switch traffic and 18 Remove DigitalOcean resources (see
+do_provision.py), and 13 Smoke test (slot), a playbook that checks each
+public name through Caddy on the slot's droplet."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +49,7 @@ class StepDef:
 STEPS: tuple[StepDef, ...] = (
     StepDef(0, "provision", "Prepare VM", "", 30 * 60, "vm"),
     StepDef(0, "vm_restore", "Restore VM snapshot", "", 30 * 60, "vm"),
+    StepDef(0, "do_prepare", "Prepare DigitalOcean", "", 60 * 60, "vm"),
     StepDef(1, "preflight", "Preflight", "preflight.yml", 5 * 60),
     StepDef(2, "bootstrap", "Bootstrap", "bootstrap.yml", 30 * 60),
     StepDef(3, "fetch", "Fetch code", "fetch.yml", 15 * 60),
@@ -58,11 +64,14 @@ STEPS: tuple[StepDef, ...] = (
     StepDef(11, "export", "Take snapshot", "export.yml", 120 * 60),
     StepDef(12, "dns", "DNS records", "", 10 * 60, "python"),
     StepDef(13, "proxy", "Proxy hosts", "", 45 * 60, "python"),
+    StepDef(13, "slot_smoke", "Smoke test (slot)", "slot_smoke.yml", 10 * 60),
     StepDef(14, "smoke", "Smoke test", "", 10 * 60, "python"),
+    StepDef(14, "go_live", "Switch traffic", "", 15 * 60, "vm"),
     StepDef(15, "teardown", "Remove environment", "teardown.yml", 30 * 60),
     StepDef(15, "destroy", "Destroy VM", "", 30 * 60, "vm"),
     StepDef(16, "unproxy", "Remove proxy hosts", "", 15 * 60, "python"),
     StepDef(17, "undns", "Remove DNS records", "", 10 * 60, "python"),
+    StepDef(18, "do_destroy", "Remove DigitalOcean resources", "", 60 * 60, "vm"),
 )
 STEPS_BY_KEY = {s.key: s for s in STEPS}
 ANSIBLE_STEPS = tuple(s for s in STEPS if s.runs == "ansible")

@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import DoEnvironment, DoSlot, Environment
-from sirdar_api.deploy import do_envs, environments, vms
+from sirdar_api.deploy import do_envs, envfile, environments, vms
 from sirdar_api.deploy import vault
 from sirdar_api.deploy.environments import EnvError
 
@@ -202,3 +202,34 @@ async def test_unretiring_needs_no_other_production(client, db):
     resp = await client.patch(f"{URL}/prod", headers=h,
                               json={"retiring": False, "confirm_name": "prod"})
     assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "production_exists")
+
+
+async def test_env_extra(db):
+    from .deploy_factories import ENV_SECRETS
+    env = await make_do_environment(db)
+    with pytest.raises(do_envs.DoEnvError) as e:
+        await do_envs.env_extra(db, get_settings(), env, "orange", ENV_SECRETS)
+    assert e.value.code == "do_not_ready"
+    assert e.value.extra["missing"] == ["load balancer address", "VPC range", "database host",
+                                        "Spaces key", "droplet"]
+    from sirdar_api.deploy import vault
+    await do_envs.set_do(env.id, lb_ip="203.0.113.50", vpc_ip_range="10.116.0.0/20",
+                         db_host="private-ss-uat9-db.db.ondigitalocean.com", db_port=25060,
+                         spaces_key_id="DO00KEY000001",
+                         spaces_secret_enc=vault.encrypt(get_settings(), "spaces-SECRET-1"))
+    await do_envs.set_slot(env.id, "orange", droplet_id="4001", public_ip="127.0.0.1")
+    extra, secrets = await do_envs.env_extra(db, get_settings(), env, "orange", ENV_SECRETS)
+    password = ENV_SECRETS["POSTGRES_PASSWORD"]
+    assert extra == {
+        "STACK_EXTERNAL_DATA": "1", "STACK_CADDY": "1", "STACK_NETWORK_SUBNET": "172.30.0.0/24",
+        "STACK_HOSTS_IP": "203.0.113.50", "STACK_TRUSTED_PROXIES": "10.116.0.0/20",
+        "STACK_DB_HOST": "private-ss-uat9-db.db.ondigitalocean.com", "STACK_DB_PORT": "25060",
+        "STACK_DB_NAME": "serversherpa", "STACK_DB_USER": "serversherpa",
+        "SS_DATABASE_URL": "postgresql+asyncpg://serversherpa:"
+                           f"{password}@private-ss-uat9-db.db.ondigitalocean.com:25060/serversherpa",
+        "SS_DATABASE_SSL": "require", "SS_SPACES_ENDPOINT": "https://nyc3.digitaloceanspaces.com",
+        "SS_SPACES_REGION": "nyc3", "SS_SPACES_ACCESS_KEY": "DO00KEY000001",
+        "SS_SPACES_SECRET_KEY": "spaces-SECRET-1", "SS_SPACES_USE_PATH_STYLE": "false",
+        "STACK_DROPLET_ID": "4001"}
+    assert set(secrets) == {extra["SS_DATABASE_URL"], "spaces-SECRET-1"}
+    assert list(extra) == [k for k in envfile.EXTRA_KEYS if k in extra]

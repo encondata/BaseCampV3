@@ -53,6 +53,40 @@
         enabled: true
       become: true
 
+    # DigitalOcean: the droplet's user-data holds its SSH host key, and the
+    # metadata service hands user-data to anything on the droplet. Containers
+    # never need it: reject their traffic to it, now and after every Docker
+    # (re)start.
+    - name: Containers can't reach the metadata service
+      when: block_metadata | default(false) | bool
+      become: true
+      block:
+        - name: The rule's unit
+          ansible.builtin.copy:
+            dest: /etc/systemd/system/sirdar-metadata-block.service
+            mode: "0644"
+            content: |
+              [Unit]
+              Description=Keep containers away from the DigitalOcean metadata service (Sirdar)
+              After=docker.service
+              Requires=docker.service
+              PartOf=docker.service
+
+              [Service]
+              Type=oneshot
+              RemainAfterExit=yes
+              ExecStart=/bin/sh -c 'iptables -C DOCKER-USER -d 169.254.169.254 -j REJECT 2>/dev/null || iptables -I DOCKER-USER -d 169.254.169.254 -j REJECT'
+
+              [Install]
+              WantedBy=multi-user.target
+
+        - name: The rule is on, and comes back with Docker
+          ansible.builtin.systemd_service:
+            name: sirdar-metadata-block
+            enabled: true
+            state: restarted
+            daemon_reload: true
+
     - name: The SSH user may run docker
       ansible.builtin.user:
         name: "{{ ansible_facts['user_id'] }}"

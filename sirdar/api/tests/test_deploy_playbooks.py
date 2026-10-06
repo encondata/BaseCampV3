@@ -3,6 +3,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from importlib import resources
 from pathlib import Path
 
@@ -67,8 +69,8 @@ def test_publish_and_teardown_plans():
 
 
 def test_plans():
-    assert [s.number for s in steps.STEPS] == [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11, 12,
-                                               13, 14, 15, 15, 16, 17]
+    assert [s.number for s in steps.STEPS] == [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11,
+                                               12, 13, 13, 14, 14, 15, 15, 16, 17, 18]
     assert [s.number for s in steps.plan_for("update")] == [1, 2, 3, 4, 5, 6, 10]
     build = ["preflight", "bootstrap", "fetch", "render", "build"]
     # a seeded first deploy backs up whatever database is already there
@@ -237,6 +239,7 @@ args=("$@")
 last="${args[${#args[@]}-1]}"
 [[ -n "${FAKE_FAIL:-}" && "$*" == *"$FAKE_FAIL"* ]] && { echo "fake failure" >&2; exit 1; }
 case "$*" in
+  "network inspect -f"*) echo "${FAKE_SUBNET:-172.30.0.0/24}" ;;
   *"SELECT version_num FROM alembic_version"*) echo "${FAKE_REVISION:-0089}" ;;
   *" cp postgres:"*) printf 'PGDMP-from-container' > "$last" ;;
   *pg_restore*) cat > "$DOCKER_LOG.restored" ;;
@@ -693,3 +696,100 @@ def test_the_test_root_never_reaches_a_real_run(tmp_path, monkeypatch):
     finally:
         import shutil
         shutil.rmtree(run_dir)
+
+
+# ---- DigitalOcean (phase 7): the managed database, Spaces and the slot smoke test ----
+
+EXTERNAL_ENV = ("STACK_EXTERNAL_DATA=1\nSTACK_NETWORK_SUBNET=172.30.0.0/24\n"
+                "STACK_DB_HOST=db.internal\nSTACK_DB_PORT=25060\nSTACK_DB_NAME=serversherpa\n"
+                "STACK_DB_USER=serversherpa\nSS_SPACES_SECRET_KEY=spaces-SECRET\n")
+SPACES_VARS = {"external_data": True, "spaces_endpoint": "https://nyc3.digitaloceanspaces.com",
+               "spaces_key_id": "DO00KEY000001", "spaces_region": "nyc3"}
+SPACES_ARGS = ("--endpoint https://nyc3.digitaloceanspaces.com --key-id DO00KEY000001 "
+               "--region nyc3")
+
+
+def _external(env_dir: Path) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(EXTERNAL_ENV)
+
+
+def test_dump_playbook_on_a_managed_database(tmp_path):
+    env_dir, env = _target(tmp_path)
+    _external(env_dir)
+    result, calls = _play(tmp_path, "dump.yml", {**_common(env_dir), "external_data": True,
+                                                "dump_required": True}, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not any(c.startswith("ps ") or c.startswith("volume ") for c in calls)
+    assert any("postgres:16-alpine pg_dump -Fc" in c for c in calls)
+
+
+def test_export_playbook_on_a_managed_database(tmp_path):
+    env_dir, env = _target(tmp_path)
+    _external(env_dir)
+    dest = tmp_path / "sirdar" / "incoming" / "snap.tar.gz"
+    result, calls = _play(tmp_path, "export.yml", {**_export_vars(env_dir, dest), **SPACES_VARS},
+                          env)
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert not any("db/compose.yml" in c for c in calls)
+    assert any("postgres:16-alpine psql -tAc SELECT version_num FROM alembic_version" in c
+               for c in calls)
+    assert any("pg_dump -Fc --no-owner --no-acl" in c for c in calls)
+    assert any(c.endswith(f"export-objects --out /work/objects.tar {SPACES_ARGS}") for c in calls)
+    assert bundle.read_head(dest)[0]["alembic_revision"] == "0089"
+    assert "spaces-SECRET" not in out
+
+
+def test_restore_playbook_on_a_managed_database(tmp_path):
+    env_dir, env = _target(tmp_path)
+    _external(env_dir)
+    snap = make_bundle(tmp_path)
+    result, calls = _play(tmp_path, "restore.yml", {**_restore_vars(env_dir, snap), **SPACES_VARS},
+                          env)
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert any("pg_restore --exit-on-error --no-owner --no-acl -d serversherpa" in c
+               for c in calls)
+    assert calls[-1].endswith(f"import-objects --in /work/objects.tar {SPACES_ARGS}")
+
+
+class _Answer(BaseHTTPRequestHandler):
+    status = 200
+    seen: list = []
+
+    def do_GET(self):  # noqa: N802
+        type(self).seen.append((self.headers["Host"], self.path,
+                                self.headers["X-Forwarded-Proto"]))
+        self.send_response(type(self).status)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.mark.parametrize("status, ok", [(200, True), (308, True), (502, False)])
+def test_slot_smoke_playbook(tmp_path, status, ok):
+    _Answer.status, _Answer.seen = status, []
+    server = HTTPServer(("127.0.0.1", 0), _Answer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        env_dir, env = _target(tmp_path)
+        hosts = [{"service": "api", "hostname": "api.e2e.serversherpa.com", "path": "/healthz"},
+                 {"service": "portal", "hostname": "portal.e2e.serversherpa.com", "path": "/"}]
+        result, _ = _play(tmp_path, "slot_smoke.yml", {
+            **_common(env_dir), "public_hosts": hosts, "slot_port": server.server_port,
+            "slot_smoke_retries": 1, "slot_smoke_delay": 0}, env)
+    finally:
+        server.shutdown()
+    assert (result.returncode == 0) is ok, result.stdout + result.stderr
+    assert ("api.e2e.serversherpa.com", "/healthz", "https") in _Answer.seen
+    if not ok:
+        assert "api.e2e.serversherpa.com" in result.stdout
+
+
+def test_bootstrap_blocks_the_metadata_service_only_when_asked():
+    text = (PLAYBOOK_DIR / "bootstrap.yml").read_text()
+    assert "block_metadata | default(false) | bool" in text
+    assert "iptables -I DOCKER-USER -d 169.254.169.254 -j REJECT" in text
+    assert "PartOf=docker.service" in text
