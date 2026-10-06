@@ -157,7 +157,29 @@ def test_restore_says_it_stops_only_this_droplets_writers():
     assert "only on this droplet" in restore and "7b" in restore
 
 
-CA_PEM = "-----BEGIN CERTIFICATE-----\nMIIBfakeClusterCA\n-----END CERTIFICATE-----\n"
+def _real_ca_pem() -> str:
+    """A self-signed CA certificate (openssl x509 must accept it)."""
+    from datetime import UTC, datetime, timedelta
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "ss-uat9-db cluster CA")])
+    now = datetime.now(UTC)
+    cert = (
+        x509.CertificateBuilder().subject_name(name).issuer_name(name)
+        .public_key(key.public_key()).serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=30))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
+CA_PEM = _real_ca_pem()
 CA_B64 = base64.b64encode(CA_PEM.encode()).decode()
 CA_MOUNT = "/run/ss-db-ca.pem"
 # Like FAKE_DOCKER, and copies the CA file it was asked to mount (with its
@@ -224,6 +246,64 @@ def test_a_failed_dump_still_removes_the_ca_and_the_partial(tmp_path):
     assert not list((env_dir / "backups").glob("*.partial"))
     src = (tmp_path / "docker.log.src").read_text().split()[0]
     assert not Path(src).exists()
+
+
+def _b64(text: str) -> str:
+    return base64.b64encode(text.encode()).decode()
+
+
+@pytest.mark.parametrize("bad", [
+    _b64("-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n"),           # no body
+    _b64("-----BEGIN CERTIFICATE-----\n" + CA_PEM.splitlines()[1] + "\n"),     # no END
+    _b64("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"),   # not a cert
+], ids=["no-body", "no-end", "not-a-cert"])
+def test_restore_checks_the_ca_before_stopping_anything(tmp_path, bad):
+    if "AAAA" in base64.b64decode(bad).decode() and shutil.which("openssl") is None:
+        pytest.skip("needs openssl to tell a certificate from a body")
+    env_dir = _env_dir(tmp_path, external=True)
+    _with_ca(env_dir, bad)
+    (tmp_path / "db.dump").write_bytes(b"PGDMP")
+    proc, log, _ = _run_proc(tmp_path, "restore", str(env_dir), str(tmp_path / "db.dump"),
+                             check=False, extra_env={"TMPDIR": str(tmp_path)})
+    assert proc.returncode == 1 and "SS_DATABASE_CA_B64" in proc.stderr
+    assert " stop" not in log and "run " not in log       # the stack keeps running
+    assert not list(tmp_path.glob("ss-db-ca.*"))
+
+
+SLOW_DUMP_DOCKER = CA_DOCKER.replace(
+    'case "$*" in *pg_dump*) printf \'PGDMP\' ;;',
+    'case "$*" in *pg_dump*) printf \'PGD\'; touch "$DOCKER_LOG.dumping"; sleep 2 ;;')
+
+
+@pytest.mark.parametrize("signal_name, code", [("SIGTERM", 143), ("SIGHUP", 129),
+                                               ("SIGINT", 130)])
+def test_a_signal_mid_dump_removes_the_ca_and_the_partial(tmp_path, signal_name, code):
+    import signal
+    import time
+
+    assert "sleep 2" in SLOW_DUMP_DOCKER
+    env_dir = _env_dir(tmp_path, external=True)
+    _with_ca(env_dir)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "docker").write_text(SLOW_DUMP_DOCKER)
+    (bin_dir / "docker").chmod(0o755)
+    log = tmp_path / "docker.log"
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "DOCKER_LOG": str(log),
+           "TMPDIR": str(tmp_path)}
+    proc = subprocess.Popen([str(SS_STACK), "dump", str(env_dir)], env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    deadline = time.monotonic() + 10
+    while not Path(f"{log}.dumping").exists():
+        assert time.monotonic() < deadline and proc.poll() is None
+        time.sleep(0.05)
+    partials = list((env_dir / "backups").glob("*.partial"))
+    ca_files = list(tmp_path.glob("ss-db-ca.*"))
+    assert len(partials) == 1 and len(ca_files) == 1
+    proc.send_signal(getattr(signal, signal_name))
+    assert proc.wait(timeout=15) == code
+    assert not partials[0].exists() and not ca_files[0].exists()
+    assert not list((env_dir / "backups").glob("*.dump"))
 
 
 def test_local_mode_ignores_the_ca_key(tmp_path):

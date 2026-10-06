@@ -432,9 +432,10 @@ def _valid_fernet_key(value: str) -> bool:
 
 def _adopted_secrets(values: dict[str, str]) -> dict[str, str]:
     """The secrets of an adopted .env, only in shapes that render back
-    unchanged: a Fernet key for TOTP, hex for POSTGRES_PASSWORD (it goes into
-    a database URL unescaped), and the PATCH rule's safe characters for the
-    rest. A hand-built env may carry secrets Sirdar didn't generate (uat's
+    unchanged: a Fernet key for TOTP, hex for POSTGRES_PASSWORD (a local
+    stack's compose file puts it into its database URL unescaped; only the
+    DigitalOcean URL that env_extra builds quotes it), and the PATCH rule's
+    safe characters for the rest. A hand-built env may carry secrets Sirdar didn't generate (uat's
     pepper came from dev), so those are kept as they are, not forced to hex.
     An optional secret left at CHANGEME is unset. Anything else raises
     adopt_value_invalid naming the key, never the value."""

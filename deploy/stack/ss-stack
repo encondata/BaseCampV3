@@ -107,9 +107,20 @@ ca_file() {
   CA_FILE=$(mktemp "${TMPDIR:-/tmp}/ss-db-ca.XXXXXX")
   CLEANUP+=("$CA_FILE")
   chmod 600 "$CA_FILE"
-  if ! printf '%s' "$b64" | base64 -d > "$CA_FILE" 2>/dev/null \
-      || ! grep -q -- '-----BEGIN CERTIFICATE-----' "$CA_FILE"; then
+  if ! printf '%s' "$b64" | base64 -d > "$CA_FILE" 2>/dev/null || ! pem_ok "$CA_FILE"; then
     die "SS_DATABASE_CA_B64 isn't a base64 PEM certificate"
+  fi
+}
+
+# A PEM certificate: BEGIN and END lines with a body between them, and (when
+# openssl is here, as on Ubuntu) a certificate openssl can read.
+pem_ok() {
+  awk '/^-----BEGIN CERTIFICATE-----$/ { inside = 1; body = 0; next }
+       /^-----END CERTIFICATE-----$/ { if (inside && body) ok = 1; inside = 0; next }
+       inside && NF { body = 1 }
+       END { exit !ok }' "$1" || return 1
+  if command -v openssl >/dev/null 2>&1; then
+    openssl x509 -noout -in "$1" >/dev/null 2>&1 || return 1
   fi
 }
 
@@ -217,6 +228,8 @@ case $cmd in
     fi
     [[ -f $dump && -r $dump ]] || die "no such dump file: $dump"
     refuse_placeholders
+    # a bad CA must stop us while the stack still runs, not after the stop
+    if external; then ca_file; fi
     ensure_network
     # nothing may write while the database is replaced: stop the writers
     # (stopping a stack that isn't running is a no-op), keep the database up.
