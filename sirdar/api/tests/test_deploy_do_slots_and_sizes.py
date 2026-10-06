@@ -12,7 +12,14 @@ from sqlalchemy.exc import DBAPIError
 
 from sirdar_api.config import get_settings
 from sirdar_api.db.engine import get_sessionmaker
-from sirdar_api.db.models import AuditLog, DoEnvironment, DoSlot, Environment
+from sirdar_api.db.models import (
+    AuditLog,
+    DoEnvironment,
+    DoSlot,
+    Environment,
+    PermissionOverride,
+    User,
+)
 from sirdar_api.deploy import do_envs, pipeline, vms
 from sirdar_api.deploy.provision import VmOutcome
 from sirdar_api.deploy.publish import StepFailed
@@ -98,6 +105,16 @@ async def test_slot_refusals(client, db, ready):
         409, "not_digitalocean_environment")
     viewer = await auth_headers(client, db, email="v@test.example.com", roles=("admin",))
     assert (await client.post(f"{URL}/prod/slots", headers=viewer)).status_code == 403
+
+
+async def test_adding_a_slot_needs_add_too(client, db, ready):
+    await make_do_environment(db, name="solo", slots=1)
+    h = await auth_headers(client, db, email="no-add@test.example.com", roles=("developer",))
+    user = await db.scalar(select(User).where(User.email == "no-add@test.example.com"))
+    db.add(PermissionOverride(person_id=user.person_id, resource="deploy", action="add",
+                              allow=False))
+    await db.commit()
+    assert (await client.post(f"{URL}/solo/slots", headers=h)).status_code == 403
 
 
 @pytest.mark.parametrize("do, status, code", [

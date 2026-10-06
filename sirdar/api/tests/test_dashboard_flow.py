@@ -204,7 +204,7 @@ def test_the_demo_has_the_same_shape():
     for card in d["environments"]:
         assert set(card) == {"id", "label", "sub", "state", "version", "last_release",
                              "last_release_at", "action_label", "environment", "production",
-                             "primary", "flow"}
+                             "primary", "retiring", "running", "flow"}
         assert set(card["flow"]) == {"kind", "middle", "servers", "active_slot", "certificate",
                                      "deploying_slot", "failed_slot"}
     assert [c["primary"] for c in d["environments"]] == [True, False, False]
@@ -306,3 +306,31 @@ async def test_only_the_first_card_is_primary(client, db, do_cloud):
     assert [(c["id"], c["production"], c["primary"]) for c in cards
             if c["production"]] == [("prod", True, True), ("prod-old", True, False)]
     assert sum(c["primary"] for c in cards) == 1
+
+
+async def test_a_later_renew_keeps_the_failed_mark(client, db, do_cloud):
+    env = await make_do_environment(db)
+    await _do_live(db, env, active="orange")
+    db.add(Deployment(environment_id=env.id, mode="update", git_ref="main", sha=SHA,
+                      status="failed", cloud=True, slot="purple",
+                      created_at=NOW - timedelta(hours=1)))
+    db.add(Deployment(environment_id=env.id, mode="renew", git_ref="main", sha=SHA,
+                      status="succeeded", cloud=True, created_at=NOW))
+    await db.execute(update(Environment).where(Environment.id == env.id).values(status="failed"))
+    await db.commit()
+    assert (await _card(client, db, "uat9"))["flow"]["failed_slot"] == "purple"
+
+
+async def test_retiring_and_running_on_every_card(client, db, do_cloud):
+    old = await make_do_environment(db, name="prod-old", type_="production",
+                                    account="production")
+    await db.execute(update(Environment).where(Environment.id == old.id).values(retiring=True))
+    env = await make_do_environment(db)
+    await _do_live(db, env, active="orange")
+    db.add(Deployment(environment_id=env.id, mode="renew", git_ref="main", sha=SHA,
+                      status="running", cloud=True))
+    await db.commit()
+    cards = {c["id"]: c for c in (await _dashboard(client, db))["environments"]}
+    assert (cards["prod-old"]["retiring"], cards["prod-old"]["running"]) == (True, False)
+    assert (cards["uat9"]["retiring"], cards["uat9"]["running"]) == (False, True)
+    assert (cards["beta"]["retiring"], cards["beta"]["running"]) == (False, False)

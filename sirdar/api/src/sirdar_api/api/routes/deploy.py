@@ -1120,6 +1120,9 @@ async def add_slot(name: str, request: Request, db: DbSession,
     and lets it reach the database; never a seed: the shared database already
     holds the data); traffic stays where it is. Otherwise the first Update
     builds it."""
+    # And deploy:add, as Retry needs it: anyone who starts the deploy can retry it.
+    if not actor.access.can("deploy", "add"):
+        raise _forbidden()
     env = await _environment(db, name)
     if not _on_do(env):
         raise _refuse(409, "not_digitalocean_environment")

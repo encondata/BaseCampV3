@@ -45,7 +45,7 @@ def _card(id_, label, sub, state, version, release, action, production, flow) ->
     return {"id": id_, "label": label, "sub": sub, "state": state, "version": version,
             "last_release": release, "last_release_at": None, "action_label": action,
             "environment": None, "production": production, "primary": production,
-            "flow": flow}
+            "retiring": False, "running": False, "flow": flow}
 
 
 def demo_dashboard() -> dict:

@@ -36,6 +36,7 @@ from sirdar_api.deploy import (
     vms,
 )
 from sirdar_api.deploy.integrations import IntegrationError
+from sirdar_api.deploy.pipeline import KEEPS_STATUS, RETRYABLE_STATUSES
 
 log = logging.getLogger(__name__)
 
@@ -49,10 +50,6 @@ _DROPLET = {"active": ("running", "Running"), "off": ("stopped", "Stopped"),
 _TYPE_LABELS = {"dev": "Development", "beta": "Beta", "custom": "Custom",
                 "production": "Production"}
 _RELEASED = ("succeeded", "adopted")
-# pipeline.RETRYABLE_STATUSES (not imported: the dashboard stays light).
-_RETRYABLE = ("failed", "cancelled", "interrupted")
-# pipeline.KEEPS_STATUS: modes that leave the environment's status alone.
-_KEEPS_STATUS = ("snapshot", "publish")
 
 
 def clear_cache() -> None:
@@ -234,18 +231,18 @@ def _empty_flow() -> dict:
 
 async def _marks(db: AsyncSession, env: Environment, lan: bool) -> tuple[str | None, str | None]:
     """(deploying slot, failed slot) from the environment's latest deployment
-    in a mode that sets its status (a later snapshot or publish doesn't
-    clear a failed Update's mark)."""
+    in a mode that sets its status (a later snapshot, publish or renew
+    doesn't clear a failed Update's mark)."""
     latest = await db.scalar(select(Deployment)
                              .where(Deployment.environment_id == env.id,
-                                    Deployment.mode.not_in(_KEEPS_STATUS))
+                                    Deployment.mode.not_in(KEEPS_STATUS))
                              .order_by(Deployment.created_at.desc()).limit(1))
     if latest is None:
         return None, None
     slot = "host" if lan else latest.slot
     if env.status in ("deploying", "deleting") and latest.status == "running":
         return slot, None
-    if env.status == "failed" and latest.status in _RETRYABLE:
+    if env.status == "failed" and latest.status in RETRYABLE_STATUSES:
         return None, slot
     return None, None
 
@@ -337,20 +334,23 @@ async def _environment_card(db: AsyncSession, settings: Settings, env: Environme
                 if row else _empty_flow())
     else:
         flow = await _lan_flow(db, settings, env)
+    running = await db.scalar(select(Deployment.id).where(
+        Deployment.environment_id == env.id, Deployment.status == "running").limit(1))
     return {"id": env.name, "label": env.name,
             "sub": _TYPE_LABELS.get(env.type, env.type.title()), "state": _env_state(env),
             "version": _version(env), "last_release": last.sha[:8] if last else None,
             "last_release_at": (last.finished_at.isoformat()
                                 if last and last.finished_at else None),
             "action_label": f"Deploy {env.name}", "environment": env.name,
-            "production": env.type == "production", "primary": False, "flow": flow}
+            "production": env.type == "production", "primary": False,
+            "retiring": bool(env.retiring), "running": running is not None, "flow": flow}
 
 
 def _placeholder(env: str, action_label: str, *, production: bool = False) -> dict:
     return {"id": env, "label": _label(env), "sub": None, "state": "empty", "version": None,
             "last_release": None, "last_release_at": None, "action_label": action_label,
             "environment": None, "production": production, "primary": False,
-            "flow": _empty_flow()}
+            "retiring": False, "running": False, "flow": _empty_flow()}
 
 
 async def environment_cards(db: AsyncSession | None, settings: Settings, tagged: list[str],
