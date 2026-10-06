@@ -370,6 +370,7 @@ async def _create_on_do(db: AsyncSession, settings: Settings, *, name: str, type
         status="new", current_sha=None, image_tag=None, secrets=vault.generate_env_secrets(),
         actor_id=actor_id, seed_snapshot_id=snapshot_id, publish=True,
         public_services=certs.PUBLIC_SERVICES, slots=list(spec["slots"]))
+    env.auto_activate = spec["auto_activate"]
     env.spaces_bucket = do_envs.bucket_name(env.name, env.id)
     await do_envs.add(db, settings, env, spec, region=account.region,
                       team_uuid=account.team_uuid)
@@ -549,6 +550,11 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
             if await do_envs.production_exists(db, other_than=env.id):
                 raise EnvError("production_exists")     # at most one live production
         put("retiring", bool(fields["retiring"]))
+    if fields.get("auto_activate") is not None:
+        # Off is always fine; on only for a non-production DigitalOcean environment.
+        if fields["auto_activate"] and (not on_do or env.type == "production"):
+            raise EnvError("auto_activate_not_allowed")
+        put("auto_activate", bool(fields["auto_activate"]))
     if fields.get("target") is not None:
         # An environment never moves to or from a host Sirdar builds, nor
         # between them.
@@ -636,6 +642,11 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
             changed += await vms.update(db, machine, fields["vm"])
         except vms.VmError as e:
             raise EnvError(e.code, **e.extra) from None
+    if fields.get("do_checked") is not None:       # checked by the route (it asks DigitalOcean)
+        row = await do_envs.get(db, env.id) if on_do else None
+        if row is None:
+            raise EnvError("do_not_allowed")
+        changed += do_envs.apply_sizes(row, fields["do_checked"])
 
     if changed:
         env.updated_at = _now()

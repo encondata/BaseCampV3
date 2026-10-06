@@ -1,10 +1,10 @@
 /** Settings › Integrations: the credentials Sirdar publishes environments
  *  with (Cloudflare DNS, Nginx Proxy Manager), builds VMs with (VMware
- *  ESXi; Proxmox under Other hosts) and reads DigitalOcean with (its token
- *  falls back to SIRDAR_DEPLOY_DO_TOKEN when none is stored). Secrets are
- *  write-only: a card shows only whether one is set. Test checks the saved
- *  settings; Remove forgets them (nothing changes in Cloudflare, NPM, ESXi,
- *  Proxmox or DigitalOcean). */
+ *  ESXi; Proxmox under Other hosts) and builds DigitalOcean environments
+ *  with (two accounts, Production and Development, each with an API token and
+ *  the renewal token its droplets use). Secrets are write-only: a card shows
+ *  only whether one is set. Test checks the saved settings; Remove forgets
+ *  them (nothing changes in Cloudflare, NPM, ESXi, Proxmox or DigitalOcean). */
 import { Fragment, useCallback, useEffect, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -12,31 +12,28 @@ import { useAuth } from '@portal/auth/AuthContext';
 import Breakable from '../../components/Breakable';
 import CheckList from '../../components/CheckList';
 import {
-  INTEGRATION_LABEL, deployErrorText, getIntegrations, removeIntegration, testIntegration,
-  type IntegrationCheck, type IntegrationKind, type Integrations,
+  INTEGRATION_LABEL, clearDoAccount, deployErrorText, getDoAccounts, getIntegrations, removeIntegration, testDoAccount,
+  testIntegration, type DoAccount, type DoAccountKey, type IntegrationCheck, type IntegrationKind, type Integrations,
 } from '../../lib/sirdarApi';
 import { when } from '../environments/labels';
 
-import DigitalOceanModal from './DigitalOceanModal';
+import DoAccountModal from './DoAccountModal';
 import EsxiModal from './EsxiModal';
 import IntegrationModal from './IntegrationModal';
 import ProxmoxModal from './ProxmoxModal';
 
 /** The main cards; Proxmox waits under "Other hosts". */
-const KINDS: IntegrationKind[] = ['cloudflare', 'npm', 'esxi', 'digitalocean'];
-const PURPOSE: Record<IntegrationKind, string> = {
+const KINDS: IntegrationKind[] = ['cloudflare', 'npm', 'esxi'];
+const PURPOSE: Partial<Record<IntegrationKind, string>> = {
   esxi: 'The VMware ESXi host Sirdar builds a VM on for each ESXi environment.',
   proxmox: 'The Proxmox host Sirdar builds a VM on for each Proxmox environment.',
   cloudflare: 'DNS records for every public service of an environment that publishes.',
   npm: 'Proxy hosts and certificates for every public service of an environment that publishes.',
-  digitalocean: "The Deploy page's DigitalOcean connection test and regions, and the dashboard's infrastructure.",
 };
-const DO_SOURCE = { stored: 'Set', environment: 'From the server environment' } as const;
 
-/** Whether Sirdar stores this integration's credentials (what Remove forgets).
- *  DigitalOcean can be configured from the server environment alone. */
+/** Whether Sirdar stores this integration's credentials (what Remove forgets). */
 function stored(data: Integrations, kind: IntegrationKind): boolean {
-  return kind === 'digitalocean' ? data.digitalocean.token_set : data[kind].configured;
+  return data[kind].configured;
 }
 
 function settingsOf(data: Integrations, kind: IntegrationKind): [string, string][] {
@@ -58,10 +55,6 @@ function settingsOf(data: Integrations, kind: IntegrationKind): [string, string]
             ['Certificate', p.tls_fingerprint ? `${p.tls_fingerprint.slice(0, 23)}…` : '—'],
             ['API token', p.token_set ? `Set (${p.token_id})` : 'Not set']];
   }
-  if (kind === 'digitalocean') {
-    const source = data.digitalocean.source;
-    return [['API token', source ? DO_SOURCE[source] : 'Not set']];
-  }
   if (kind === 'cloudflare') {
     const c = data.cloudflare;
     return [['Zone', c.zone ?? '—'], ['Public IP', c.public_ip ?? '—'], ['API token', set(c.token_set)]];
@@ -81,11 +74,53 @@ export default function IntegrationsSection() {
   const [problems, setProblems] = useState<Partial<Record<IntegrationKind, string>>>({});
   const [busy, setBusy] = useState<IntegrationKind | null>(null);
   const [othersOpen, setOthersOpen] = useState(false);
+  const [accounts, setAccounts] = useState<DoAccount[] | null>(null);
+  const [accountsError, setAccountsError] = useState('');
+  const [editingAccount, setEditingAccount] = useState<DoAccount | null>(null);
+  const [accountResults, setAccountResults] = useState<Partial<Record<DoAccountKey, IntegrationCheck>>>({});
+  const [accountProblems, setAccountProblems] = useState<Partial<Record<DoAccountKey, string>>>({});
+  const [busyAccount, setBusyAccount] = useState<DoAccountKey | ''>('');
 
   const load = useCallback(() => getIntegrations()
     .then((d) => { setData(d); setError(''); })
     .catch((e) => setError(deployErrorText(e, "Couldn't load the integrations."))), []);
-  useEffect(() => { void load(); }, [load]);
+  // A failure leaves the account cards out; the section shows why.
+  const loadAccounts = useCallback(() => getDoAccounts()
+    .then((r) => { setAccounts(r.accounts); setAccountsError(''); })
+    .catch((e) => setAccountsError(deployErrorText(e, "Couldn't load the DigitalOcean accounts."))), []);
+  useEffect(() => { void load(); void loadAccounts(); }, [load, loadAccounts]);
+
+  const forgetAccount = (key: DoAccountKey) => {
+    setAccountResults((r) => ({ ...r, [key]: undefined }));
+    setAccountProblems((p) => ({ ...p, [key]: '' }));
+  };
+
+  const testAccount = async (a: DoAccount) => {
+    forgetAccount(a.key);
+    setBusyAccount(a.key);
+    try {
+      const result = await testDoAccount(a.key);
+      setAccountResults((r) => ({ ...r, [a.key]: result }));
+    } catch (e) {
+      setAccountProblems((p) => ({ ...p, [a.key]: deployErrorText(e, "Couldn't test the account.") }));
+    } finally {
+      setBusyAccount('');
+    }
+  };
+
+  const clearAccount = async (a: DoAccount) => {
+    if (!window.confirm(`Clear the ${a.label} account's tokens? Nothing changes in DigitalOcean itself.`)) return;
+    forgetAccount(a.key);
+    setBusyAccount(a.key);
+    try {
+      await clearDoAccount(a.key);
+      await loadAccounts();
+    } catch (e) {
+      setAccountProblems((p) => ({ ...p, [a.key]: deployErrorText(e, "Couldn't clear the account's tokens.") }));
+    } finally {
+      setBusyAccount('');
+    }
+  };
 
   const forget = (kind: IntegrationKind) => {
     setResults((r) => ({ ...r, [kind]: undefined }));
@@ -111,10 +146,7 @@ export default function IntegrationsSection() {
   const remove = async (kind: IntegrationKind) => {
     const label = INTEGRATION_LABEL[kind];
     const vmHost = kind === 'proxmox' || kind === 'esxi';
-    if (!window.confirm(kind === 'digitalocean'
-      ? 'Remove the stored DigitalOcean API token? Sirdar then uses SIRDAR_DEPLOY_DO_TOKEN from the server '
-        + 'environment, if it is set; nothing changes in DigitalOcean itself.'
-      : vmHost
+    if (!window.confirm(vmHost
       ? `Remove the ${label} credentials? Nothing changes on ${kind === 'esxi' ? 'ESXi' : 'Proxmox'} itself.`
       : `Remove the ${label} credentials? Publishing stops until they are set again; `
         + `nothing changes in ${label} itself.`)) return;
@@ -180,15 +212,66 @@ export default function IntegrationsSection() {
     );
   };
 
+  /** One DigitalOcean account's card, after the other integrations. */
+  const accountCard = (a: DoAccount) => {
+    const name = `DigitalOcean · ${a.label}`;
+    const rows: [string, string][] = [
+      ['Region', a.region ?? '—'], ['Team', a.team_name ?? '—'],
+      ['API token', a.source === 'environment' ? 'From the server environment' : a.token_set ? 'Set' : 'Not set'],
+      ['Renewal token', a.renewal_token_set ? 'Set' : 'Not set'],
+      ['Environments', a.environments.length ? a.environments.join(', ') : 'None'],
+    ];
+    return (
+      <div key={a.key} className="sirdar-card" role="group" aria-label={name}>
+        <div className="sirdar-card-head">
+          <h3>{name}</h3>
+          <span className={`chip ${a.configured ? 'c-green' : 'tag'}`}>{a.configured ? 'Configured' : 'Not set up'}</span>
+        </div>
+        <p className="page-hint">
+          {a.key === 'production' ? 'Production environments are built here.' : 'Development, UAT and test environments.'}
+        </p>
+        <dl className="sirdar-kv">
+          {rows.map(([k, v]) => <Fragment key={k}><dt>{k}</dt><dd><Breakable text={v} /></dd></Fragment>)}
+        </dl>
+        {a.updated_at && (
+          <p className="page-hint">Updated {when(a.updated_at)}{a.updated_by_name ? ` by ${a.updated_by_name}` : ''}</p>
+        )}
+        {mayChange && (
+          <div className="sirdar-actions">
+            {a.token_set && (
+              <button type="button" className="mini-btn danger" aria-label={`Remove ${name}`}
+                      disabled={busyAccount === a.key || a.environments.length > 0}
+                      title={a.environments.length ? 'Environments are built in this account. Delete them first.' : undefined}
+                      onClick={() => void clearAccount(a)}>Remove</button>
+            )}
+            {a.configured && (
+              <button type="button" className="mini-btn" aria-label={`Test ${name}`} disabled={busyAccount === a.key}
+                      onClick={() => void testAccount(a)}>{busyAccount === a.key ? 'Testing…' : 'Test'}</button>
+            )}
+            <button type="button" className="mini-btn" aria-label={`${a.token_set ? 'Edit' : 'Set up'} ${name}`}
+                    disabled={!data?.secrets_key_configured || busyAccount === a.key}
+                    onClick={() => setEditingAccount(a)}>
+              {a.token_set ? 'Edit' : 'Set up'}
+            </button>
+          </div>
+        )}
+        {accountProblems[a.key] && <p className="form-error" role="alert">{accountProblems[a.key]}</p>}
+        {accountResults[a.key] && <CheckList label={`${name} test`} checks={accountResults[a.key]!.checks} />}
+      </div>
+    );
+  };
+
   return (
     <section className="sirdar-section">
       <h2>Integrations</h2>
       <p className="page-hint">
         Environments with Publish on use Cloudflare and Nginx Proxy Manager for their DNS records and proxy hosts;
-        ESXi environments are built on VMware ESXi. The Deploy page and the dashboard read DigitalOcean. Tokens and
-        passwords are stored encrypted and never shown again.
+        ESXi environments are built on VMware ESXi. DigitalOcean environments are built in the Production or Development
+        account; each has its own token and the renewal token its droplets use. Tokens and passwords are stored
+        encrypted and never shown again.
       </p>
       {error && <p className="form-error" role="alert">{error}</p>}
+      {accountsError && <p className="form-error" role="alert">{accountsError}</p>}
       {data && !data.secrets_key_configured && (
         <p className="page-hint">
           SIRDAR_SECRETS_KEY isn't set on the Sirdar host, so credentials can't be stored. Add it to sirdar/.env and
@@ -198,6 +281,7 @@ export default function IntegrationsSection() {
       {data && (
         <div className="sirdar-cards sirdar-integration-cards">
           {KINDS.map(card)}
+          {accounts?.map(accountCard)}
         </div>
       )}
       {data && (
@@ -230,9 +314,9 @@ export default function IntegrationsSection() {
         <IntegrationModal kind={editing} current={data} onClose={() => setEditing(null)}
                           onSaved={(saved) => { setData(saved); forget(editing); setEditing(null); }} />
       )}
-      {editing === 'digitalocean' && data && (
-        <DigitalOceanModal current={data} onClose={() => setEditing(null)}
-                           onSaved={(saved) => { setData(saved); forget('digitalocean'); setEditing(null); }} />
+      {editingAccount && (
+        <DoAccountModal account={editingAccount} onClose={() => setEditingAccount(null)}
+                        onSaved={(next) => { setAccounts(next); forgetAccount(editingAccount.key); setEditingAccount(null); }} />
       )}
       {editing === 'esxi' && data && (
         <EsxiModal current={data} onClose={() => setEditing(null)}

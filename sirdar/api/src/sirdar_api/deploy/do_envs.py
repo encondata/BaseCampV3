@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sirdar_api.config import Settings
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import DoEnvironment, DoResource, DoSlot, Environment
-from sirdar_api.deploy import acme, do_accounts, envfile, spaces, vault, vms
+from sirdar_api.deploy import acme, certs, do_accounts, envfile, spaces, vault, vms
 from sirdar_api.deploy.integrations import IntegrationError
 from sirdar_api.deploy.ssh import SshTargetConfig
 
@@ -97,8 +97,118 @@ def check_spec(fields, *, production: bool) -> dict:
     standby, staging = fields.get("db_standby", False), fields.get("acme_staging", False)
     if not isinstance(standby, bool) or not isinstance(staging, bool):
         raise DoEnvError("do_invalid")
+    auto = fields.get("auto_activate", False)
+    if not isinstance(auto, bool):
+        raise DoEnvError("do_invalid")
+    if production and auto:
+        raise DoEnvError("auto_activate_not_allowed")    # production waits for Activate
     return {"account": account, "slots": slots, "droplet_size": droplet, "db_size": db_size,
-            "db_standby": standby, "acme_staging": staging}
+            "db_standby": standby, "acme_staging": staging, "auto_activate": auto}
+
+
+def _size_of(catalog: list[dict], slug: str | None) -> dict | None:
+    return next((s for s in catalog if isinstance(s, dict) and s.get("slug") == slug), None)
+
+
+_SLUG_RE = re.compile(r"(?P<family>[a-z0-9_]+(?:-[a-z0-9_]+)*?-)(?P<cpu>\d+)vcpu-"
+                      r"(?P<mem>\d+)gb(?P<tail>(?:-[a-z0-9_]+)*)")
+
+
+def size_parts(slug: str | None) -> tuple[str, int, int] | None:
+    """(family, vCPUs, memory GB) read from a size slug: `s-4vcpu-8gb` is
+    ("s-*", 4, 8), `db-s-2vcpu-4gb` ("db-s-*", 2, 4), `s-2vcpu-4gb-amd`
+    ("s-*-amd", 2, 4). None when the slug doesn't read that way."""
+    found = _SLUG_RE.fullmatch(slug or "")
+    if found is None:
+        return None
+    return f"{found['family']}*{found['tail']}", int(found["cpu"]), int(found["mem"])
+
+
+def grows(old: str | None, new: str | None) -> bool:
+    """`new` is `old` or larger, in the same family (both readable)."""
+    a, b = size_parts(old), size_parts(new)
+    return a is not None and b is not None and a[0] == b[0] and b[1] >= a[1] and b[2] >= a[2]
+
+
+def _check_droplet_grow(catalog: list, row: DoEnvironment, want: str) -> None:
+    new = _size_of(catalog, want)
+    if new is None or not new.get("available", True) \
+            or row.region not in (new.get("regions") or []):
+        raise DoEnvError("do_size_invalid")           # not offered (here)
+    new_parts, old_parts = size_parts(want), size_parts(row.droplet_size)
+    if new_parts and old_parts and new_parts[0] != old_parts[0]:
+        raise DoEnvError("do_size_invalid")           # another family
+    old = _size_of(catalog, row.droplet_size)
+    if old is not None:
+        mine = [(int(new.get(k) or 0), int(old.get(k) or 0)) for k in ("vcpus", "memory", "disk")]
+    elif old_parts is not None:                       # retired from the catalog: its slug
+        mine = [(int(new.get("vcpus") or 0), old_parts[1]),
+                (int(new.get("memory") or 0), old_parts[2] * 1024)]
+    else:
+        raise DoEnvError("do_shrink_refused")         # nothing to prove it grows
+    if any(n < o for n, o in mine) or not any(n > o for n, o in mine):
+        raise DoEnvError("do_shrink_refused")
+
+
+def _db_layout(options: dict, nodes: int) -> list:
+    layouts = ((options.get("pg") or {}).get("layouts")) or []
+    return next((lay.get("sizes") or [] for lay in layouts
+                 if isinstance(lay, dict) and lay.get("num_nodes") == nodes), [])
+
+
+async def check_grow(api, row: DoEnvironment, fields: dict) -> dict:
+    """The sizes a PATCH asks for, checked against DigitalOcean's catalogs: a
+    droplet size offered in the environment's region, in the same family,
+    with at least the vCPUs, memory and disk of the current one and more of
+    one; a database size offered for the node count, in the same family, at
+    least as large (vCPUs and memory from the slug); a standby node that is
+    never removed and only on a size that can have one. Returns only what
+    changes."""
+    if not isinstance(fields, dict) or set(fields) - {"droplet_size", "db_size", "db_standby"}:
+        raise DoEnvError("do_invalid")
+    out: dict = {}
+    want = fields.get("droplet_size")
+    if want is not None and want != row.droplet_size:
+        if not isinstance(want, str) or not _SIZE_RE.fullmatch(want) or want.startswith("db-"):
+            raise DoEnvError("do_size_invalid")
+        _check_droplet_grow(await api.sizes(), row, want)
+        out["droplet_size"] = want
+    standby = fields.get("db_standby")
+    if standby is not None and not isinstance(standby, bool):
+        raise DoEnvError("do_invalid")
+    if standby is False and row.db_standby:
+        raise DoEnvError("do_shrink_refused")
+    adding_standby = standby is True and not row.db_standby
+    db_size = fields.get("db_size") or row.db_size
+    if not isinstance(db_size, str) or not _DB_SIZE_RE.fullmatch(db_size):
+        raise DoEnvError("do_db_size_invalid")
+    if db_size != row.db_size or adding_standby:
+        nodes = 2 if (adding_standby or row.db_standby) else 1
+        options = await api.database_options()
+        if db_size not in _db_layout(options, nodes):
+            if adding_standby and db_size in _db_layout(options, 1):
+                raise DoEnvError("db_standby_size_invalid")   # that size has no standby
+            raise DoEnvError("do_db_size_invalid")
+        new_parts, old_parts = size_parts(db_size), size_parts(row.db_size)
+        if new_parts is None or (old_parts is not None and old_parts[0] != new_parts[0]):
+            raise DoEnvError("do_db_size_invalid")    # unreadable, or another family
+        if not grows(row.db_size, db_size):
+            raise DoEnvError("do_shrink_refused")
+        if db_size != row.db_size:
+            out["db_size"] = db_size
+    if adding_standby:
+        out["db_standby"] = True
+    return out
+
+
+def apply_sizes(row: DoEnvironment, values: dict) -> list[str]:
+    """Store checked sizes; step 0 applies them on the next deploy."""
+    changed = [f"do.{k}" for k, v in values.items() if getattr(row, k) != v]
+    for key, value in values.items():
+        setattr(row, key, value)
+    if changed:
+        row.updated_at = datetime.now(UTC)
+    return changed
 
 
 async def add_slot(db: AsyncSession, settings: Settings, env: Environment, slot: str) -> DoSlot:
@@ -201,12 +311,23 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
     missing=[...]) until step 0 has recorded them. POSTGRES_PASSWORD is the
     managed role's password too (step 0 sets it); it is URL-quoted. The
     cluster's CA goes in base64 (SS_DATABASE_CA_B64, one line) so the api,
-    migrate and ss-stack's client verify the server (verify-full)."""
+    migrate and ss-stack's client verify the server (verify-full). Then the
+    cert-worker's keys: the account's renewal token, the load balancer, the
+    public names, the ACME directory and this environment's ACME key
+    (base64). A droplet id that isn't a number counts as missing (the
+    cert-worker would idle)."""
     import base64
     from urllib.parse import quote
 
     row = await get(db, env.id)
     slot_row = await db.get(DoSlot, (env.id, slot), populate_existing=True)
+    try:
+        account = await do_accounts.load(db, settings, row.account_key) if row else None
+    except IntegrationError:              # a token that won't open: reported as missing
+        account = None
+    lb_id = await db.scalar(select(DoResource.do_id).where(
+        DoResource.environment_id == env.id, DoResource.kind == "load_balancer").limit(1))
+    droplet = slot_row.droplet_id if slot_row else None
     missing = [label for label, value in (
         ("load balancer address", row.lb_ip if row else None),
         ("VPC range", row.vpc_ip_range if row else None),
@@ -214,7 +335,9 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
         ("database port", row.db_port if row else None),
         ("database CA", row.db_ca_cert if row else None),
         ("Spaces key", row.spaces_key_id if row and row.spaces_secret_enc else None),
-        ("droplet", slot_row.droplet_id if slot_row else None)) if not value]
+        ("droplet", droplet if droplet and droplet.isdecimal() else None),
+        ("load balancer", lb_id),
+        ("renewal token", account.renewal_token if account else None)) if not value]
     if missing:
         raise DoEnvError("do_not_ready", missing=missing)
     spaces_secret = vault.decrypt(settings, row.spaces_secret_enc)
@@ -229,9 +352,16 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
         "SS_DATABASE_URL": url, "SS_DATABASE_SSL": "require", "SS_DATABASE_CA_B64": ca_b64,
         "SS_SPACES_ENDPOINT": spaces.endpoint(row.region), "SS_SPACES_REGION": row.region,
         "SS_SPACES_ACCESS_KEY": row.spaces_key_id, "SS_SPACES_SECRET_KEY": spaces_secret,
-        "SS_SPACES_USE_PATH_STYLE": "false", "STACK_DROPLET_ID": slot_row.droplet_id,
+        "SS_SPACES_USE_PATH_STYLE": "false", "STACK_DROPLET_ID": droplet,
     }
-    found = [url, spaces_secret, ca_b64]
+    acme_key = base64.b64encode(vault.decrypt(settings, row.acme_key_enc).encode()).decode()
+    extra |= {   # the cert-worker's (Task 3); STACK_ENV and STACK_DROPLET_ID come with the rest
+        "SS_CERT_DO_TOKEN": account.renewal_token, "SS_CERT_LB_ID": lb_id,
+        "SS_CERT_NAMES": ",".join(certs.public_names(env.base_domain)),
+        "SS_CERT_ACME_DIRECTORY": (settings.acme_staging_directory if row.acme_staging
+                                   else settings.acme_directory),
+        "SS_CERT_ACME_KEY": acme_key}
+    found = [url, spaces_secret, ca_b64, account.renewal_token, acme_key]
     if password != secrets["POSTGRES_PASSWORD"]:
         found.append(password)          # the URL carries it quoted: a secret too
     return extra, found
@@ -240,10 +370,13 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
 async def secret_values(db: AsyncSession, settings: Settings, env: Environment) -> list[str]:
     """Every DigitalOcean secret of this environment Sirdar holds now, for a
     deployment's redactor: the account's tokens (the renewal token reaches the
-    droplet), the cert-worker's ACME key, the Spaces secret and the doadmin
-    password (step 0 makes the last two, after the run's context was built,
-    so each host step reads them again). Values that don't open are left out:
-    whatever needs them fails on its own."""
+    droplet), the cert-worker's ACME key (as PEM and as the base64 the .env
+    carries), the Spaces secret and the doadmin password (step 0 makes the
+    last two, after the run's context was built, so each host step reads them
+    again). Values that don't open are left out: whatever needs them fails on
+    its own."""
+    import base64
+
     row = await get(db, env.id)
     if row is None:
         return []
@@ -251,9 +384,12 @@ async def secret_values(db: AsyncSession, settings: Settings, env: Environment) 
     for blob in (row.acme_key_enc, row.spaces_secret_enc, row.db_admin_password_enc):
         if blob is not None:
             try:
-                found.append(vault.decrypt(settings, blob))
+                value = vault.decrypt(settings, blob)
             except (vault.SecretsKeyMissing, vault.SecretUnreadable):
-                pass
+                continue
+            found.append(value)
+            if blob is row.acme_key_enc:
+                found.append(base64.b64encode(value.encode()).decode())
     try:
         account = await do_accounts.load(db, settings, row.account_key)
     except IntegrationError:              # unreadable: the step that needs it says so

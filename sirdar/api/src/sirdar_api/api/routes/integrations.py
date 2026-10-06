@@ -381,7 +381,8 @@ async def test_do_account(key: str, request: Request, db: DbSession,
             region = None
         result = await do_accounts.test(
             db, settings, key, token=body.token if body else None,
-            renewal_token=body.renewal_token if body else None, region=region)
+            renewal_token=body.renewal_token if body else None, region=region,
+            clear_renewal=bool(body and body.clear_renewal_token))
     except IntegrationError as e:
         raise _http(e) from None
     except Exception as e:

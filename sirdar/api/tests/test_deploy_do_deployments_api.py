@@ -690,3 +690,33 @@ async def test_create_with_an_unreadable_account_answers_409(client, db, ready, 
         "do": {"account": "development", "slots": 2}})
     assert (resp.status_code, resp.json()["detail"]) == (
         409, {"code": "integration_unreadable", "kind": "digitalocean"})
+
+
+# ---- Sirdar's renew jobs and Retry ---------------------------------------------------
+
+async def test_a_renew_job_never_blocks_retrying_an_update(client, db, ready, fake_runner):
+    env = await ready()
+    await _deployed(db, env)
+    h = await auth_headers(client, db)
+    fake_runner.results["up"] = RunResult(status="failed", rc=2)
+    failed = (await _start(client, h, "uat9", mode="update")).json()
+    del fake_runner.results["up"]
+    # Sirdar's backup renewal ran after it (both outcomes)
+    for status in ("failed", "succeeded"):
+        db.add(Deployment(environment_id=env.id, mode="renew", git_ref="main", sha=SHA,
+                          status=status, cloud=True, finished_at=datetime.now(UTC)))
+        await db.commit()
+    resp = await _retry(client, h, failed["id"])
+    assert resp.status_code == 201, resp.text
+
+
+async def test_a_renew_retry_must_be_the_latest(client, db, ready, fake_runner):
+    env = await ready()
+    await _deployed(db, env)
+    h = await auth_headers(client, db)
+    renew = Deployment(environment_id=env.id, mode="renew", git_ref="main", sha=SHA,
+                       status="failed", cloud=True, finished_at=datetime.now(UTC))
+    db.add(renew)
+    await db.commit()
+    assert (await _start(client, h, "uat9", mode="update")).status_code == 201
+    assert _code(await _retry(client, h, renew.id)) == (409, "retry_not_latest")

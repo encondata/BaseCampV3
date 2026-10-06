@@ -1,7 +1,18 @@
 /** Small shared pieces of the Deployments dashboard. */
 import type { ReactNode } from 'react';
 
+import type { DashFlow } from '../../lib/sirdarApi';
+import { slotTitle, stillLiveText } from '../environments/labels';
+
 export const SOON = 'Coming later';
+export const RUNNING = 'A deployment is running.';
+
+/** "Failed — <live> still live" when a slot's deploy or Activate failed while another slot still serves. */
+export function flowStillLive(f: DashFlow): string | null {
+  if (!f.failed_slot) return null;
+  const live = f.servers.find((s) => s.id === f.active_slot && s.state === 'live');
+  return live && live.id !== f.failed_slot ? stillLiveText(live.label || slotTitle(live.id)) : null;
+}
 
 /** A button for an action that can't run (not built yet, demo data, or busy):
  *  focusable and titled (a native `disabled` button hides its tooltip), but inert. */
@@ -16,7 +27,7 @@ export function SoonButton({ className = '', title = SOON, children }: {
   );
 }
 
-export type Tone = 'ok' | 'warn' | 'muted' | 'blue';
+export type Tone = 'ok' | 'warn' | 'bad' | 'muted' | 'blue';
 
 export function Dot({ tone }: { tone: Tone }) {
   return <span className={`sd-dot is-${tone}`} aria-hidden="true" />;

@@ -7,8 +7,13 @@ after a few GETs, like the real thing.
 
 Stricter than a mock: a droplet without `vpc_uuid` lands in the region's
 default VPC (kept in `default_vpcs`, not `vpcs`); `user_data` over 64 KiB is
-refused; droplet actions can stay `in-progress` for `action_polls` GETs, and
-`power_on` is refused while a resize is pending; the database firewall
+refused; droplet actions can stay `in-progress` for `action_polls` GETs (end
+`errored` for a type in `action_errors`, never end for one in
+`action_stall`), a resize is refused unless the
+droplet is off, and `power_on` is refused while a resize is pending; sizes
+carry the regions that offer them; the 2-node database layout lacks the
+smallest size; a database resize stays `resizing` for `db_resize_polls` GETs
+(a resize PUT is refused meanwhile); the database firewall
 refuses droplets that don't exist (on create too, where `rules` apply from
 the start); VPC names are unique; a load balancer's and a cloud firewall's
 PUT replaces the whole body; a load balancer refuses an unknown `certificate_id` and `droplet_ids`
@@ -72,6 +77,9 @@ class FakeDigitalOcean:
         self.lb_apply_polls = 0       # GETs a load balancer stays "new" after a PUT
         self.cert_in_use_polls = 0    # certificate DELETEs refused (in use) after its LB went
         self.action_polls = 0         # action GETs before a droplet action completes
+        self.action_errors: set[str] = set()   # action types that end "errored"
+        self.action_stall: set[str] = set()    # action types that never finish
+        self.db_resize_polls = 0      # GETs a database stays "resizing" (0: applied at once)
         self.public_ip = "127.0.0.1"  # the tests' SSH server plays every droplet
         self.down = False
         self.fail: dict[tuple[str, str], int] = {}   # (method, path) -> status
@@ -138,11 +146,19 @@ class FakeDigitalOcean:
             "meta": {"total": 2}})
 
     def _sizes(self, method, rest, body, request, token):
-        sizes = [{"slug": "s-1vcpu-2gb", "vcpus": 1, "memory": 2048, "disk": 50},
-                 {"slug": "s-2vcpu-4gb", "vcpus": 2, "memory": 4096, "disk": 80},
-                 {"slug": "s-4vcpu-8gb", "vcpus": 4, "memory": 8192, "disk": 160}]
+        both = ["nyc3", "sfo3"]
+        sizes = [{"slug": "s-1vcpu-2gb", "vcpus": 1, "memory": 2048, "disk": 50,
+                  "regions": both},
+                 {"slug": "s-2vcpu-4gb", "vcpus": 2, "memory": 4096, "disk": 80,
+                  "regions": both},
+                 {"slug": "s-4vcpu-8gb", "vcpus": 4, "memory": 8192, "disk": 160,
+                  "regions": both},
+                 {"slug": "c-4vcpu-8gb", "vcpus": 4, "memory": 8192, "disk": 50,
+                  "regions": both},
+                 {"slug": "s-8vcpu-16gb", "vcpus": 8, "memory": 16384, "disk": 320,
+                  "regions": ["sfo3"]}]                   # not offered in nyc3
         return httpx.Response(200, json={"sizes": [{**s, "available": True} for s in sizes],
-                                         "links": {}, "meta": {"total": 3}})
+                                         "links": {}, "meta": {"total": len(sizes)}})
 
     # ---- VPCs ------------------------------------------------------------------------------
 
@@ -253,7 +269,7 @@ class FakeDigitalOcean:
             action = self.actions.get(rest[2])
             if action is None or action["_droplet"] != did:
                 return _err(404, "not_found")
-            if action["status"] == "in-progress":
+            if action["status"] == "in-progress" and action["type"] not in self.action_stall:
                 action["_polls"] += 1
                 if action["_polls"] >= self.action_polls:
                     self._finish_action(action)
@@ -267,15 +283,20 @@ class FakeDigitalOcean:
     def _start_action(self, did: str, body: dict) -> httpx.Response:
         if body["type"] == "power_on" and self._pending(did, "resize"):
             return _err(422, "unprocessable_entity", "a resize is in progress")
+        if body["type"] == "resize" and self.droplets[did]["status"] != "off":
+            return _err(422, "unprocessable_entity", "Droplet must be powered off to resize")
         aid = str(next(self._ids))
         action = {"id": int(aid), "status": "in-progress", "type": body["type"],
                   "_droplet": did, "_body": body, "_polls": 0}
         self.actions[aid] = action
-        if self.action_polls <= 0:
+        if self.action_polls <= 0 and body["type"] not in self.action_stall:
             self._finish_action(action)
         return httpx.Response(201, json={"action": self._public_action(action)})
 
     def _finish_action(self, action: dict) -> None:
+        if action["type"] in self.action_errors:
+            action["status"] = "errored"
+            return
         action["status"] = "completed"
         d = self.droplets.get(action["_droplet"])
         if d is None:
@@ -321,10 +342,13 @@ class FakeDigitalOcean:
             self.db_rules[dbid] = [{"type": r["type"], "value": r["value"]} for r in rules]
             return httpx.Response(201, json={"database": self._public_db(dbid)})
         if method == "GET" and rest == ["options"]:
-            sizes = ["db-s-1vcpu-1gb", "db-s-1vcpu-2gb", "db-s-2vcpu-4gb", "db-s-4vcpu-8gb"]
+            sizes = ["db-s-1vcpu-1gb", "db-s-1vcpu-2gb", "db-s-2vcpu-4gb", "db-s-4vcpu-8gb",
+                     "db-amd-2vcpu-4gb"]
             return httpx.Response(200, json={"options": {"pg": {
                 "versions": ["14", "15", "16", "17"],
-                "layouts": [{"num_nodes": 1, "sizes": sizes}, {"num_nodes": 2, "sizes": sizes}]}}})
+                # Like DigitalOcean: the smallest size has no standby.
+                "layouts": [{"num_nodes": 1, "sizes": sizes},
+                            {"num_nodes": 2, "sizes": sizes[1:]}]}}})
         if method == "GET" and not rest:
             tag = request.url.params.get("tag_name")
             rows = [self._public_db(k) for k, d in self.databases.items()
@@ -339,6 +363,11 @@ class FakeDigitalOcean:
             d["_polls"] += 1
             if d["status"] == "creating" and d["_polls"] >= self.db_polls:
                 d["status"] = "online"
+            elif d["status"] == "resizing":
+                d["_resize_left"] -= 1
+                if d["_resize_left"] <= 0:
+                    d["size"], d["num_nodes"] = d.pop("_resize")
+                    d["status"] = "online"
             return httpx.Response(200, json={"database": self._public_db(dbid)})
         if sub == ["firewall"] and method == "PUT":
             if self.firewall_wait:
@@ -356,7 +385,13 @@ class FakeDigitalOcean:
             return httpx.Response(200, json={"ca": {
                 "certificate": base64.b64encode(CA_PEM.encode()).decode()}})
         if sub == ["resize"] and method == "PUT":
-            d["size"], d["num_nodes"] = body["size"], body["num_nodes"]
+            if d["status"] != "online":
+                return _err(422, "unprocessable_entity", "cluster is not online")
+            if self.db_resize_polls > 0:
+                d["status"], d["_resize_left"] = "resizing", self.db_resize_polls
+                d["_resize"] = (body["size"], body["num_nodes"])
+            else:
+                d["size"], d["num_nodes"] = body["size"], body["num_nodes"]
             return httpx.Response(202)
         if method == "DELETE" and not sub:
             del self.databases[dbid]

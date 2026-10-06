@@ -10,6 +10,7 @@ vi.mock('@portal/auth/AuthContext', () => ({
 const api = vi.hoisted(() => ({
   getDeployTargets: vi.fn(), getEnvironmentDefaults: vi.fn(), createEnvironment: vi.fn(),
   adoptEnvironment: vi.fn(), trustKnownHost: vi.fn(), listSnapshots: vi.fn(), getIntegrations: vi.fn(),
+  getDoAccounts: vi.fn(),
 }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 
@@ -17,7 +18,7 @@ import { ApiError } from '@portal/lib/api';
 
 import NewEnvironmentModal from './NewEnvironmentModal';
 import {
-  DEFAULTS, ENV, ESXI_NEW_ENV, ESXI_TARGETS, INTEGRATIONS, NO_INTEGRATIONS, PX_NEW_ENV, PX_TARGETS, SNAP,
+  DEFAULTS, DO_ACCOUNTS, DO_ACCOUNTS_BOTH, DO_ENV, DO_TARGETS, ENV, ESXI_NEW_ENV, ESXI_TARGETS, INTEGRATIONS, NO_INTEGRATIONS, PX_NEW_ENV, PX_TARGETS, SNAP,
   SNAP_TAKING, TARGETS,
 } from './testData';
 
@@ -30,6 +31,7 @@ beforeEach(() => {
   api.createEnvironment.mockResolvedValue(ENV);
   api.listSnapshots.mockResolvedValue({ snapshots: [SNAP, SNAP_TAKING] });
   api.getIntegrations.mockResolvedValue(INTEGRATIONS);
+  api.getDoAccounts.mockResolvedValue({ accounts: DO_ACCOUNTS_BOTH });
 });
 afterEach(cleanup);
 
@@ -697,4 +699,240 @@ it('ESXi: an unconfigured ESXi integration is reported on Basics', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
   expect(await screen.findByText('Set up VMware ESXi in Settings › Integrations first.')).toBeTruthy();
   expect(screen.getByLabelText('Name')).toBeTruthy();
+});
+
+async function pickDigitalOcean() {
+  await userEvent.click(screen.getByRole('combobox', { name: 'Target' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'DigitalOcean' }));
+}
+const radioIn = (group: string, name: string) =>
+  within(screen.getByRole('radiogroup', { name: group })).getByRole('radio', { name });
+
+it('DigitalOcean: a DigitalOcean step instead of the proxy, and the request carries do', async () => {
+  api.getDeployTargets.mockResolvedValue(DO_TARGETS);
+  api.createEnvironment.mockResolvedValue(DO_ENV);
+  const { onCreated } = await open();
+  await userEvent.type(screen.getByLabelText('Name'), 'uat9');
+  await pickDigitalOcean();
+  expect(screen.queryByLabelText('Proxy IP')).toBeNull();
+  expect(screen.queryByLabelText('Bind IP')).toBeNull();
+  expect(['Basics', 'DigitalOcean', 'Services', 'Data', 'Review']
+    .every((s) => screen.getByText(s, { selector: '.rgm-step-label' }))).toBe(true);
+  await next();
+  expect(screen.getByText('DigitalOcean', { selector: '.rgm-step.on .rgm-step-label' })).toBeTruthy();
+  await userEvent.click(radioIn('Account', 'Development'));
+  await userEvent.click(radioIn('Slots', 'Two slots (orange + purple)'));
+  await userEvent.click(radioIn('Certificate', "Let's Encrypt staging"));
+  await userEvent.click(radioIn('Activate automatically', 'On'));
+  await next();
+  expect(screen.queryByRole('radiogroup', { name: 'Publish DNS and proxy' })).toBeNull();   // always publishes
+  await next();
+  await next();
+  expect(screen.getByText('Development · nyc3')).toBeTruthy();
+  expect(screen.queryByText('Proxy IP')).toBeNull();
+  expect(screen.queryByText('Publishing')).toBeNull();
+  expect(screen.getByText('Orange + Purple')).toBeTruthy();
+  expect(screen.getByText('s-2vcpu-4gb · db-s-2vcpu-4gb')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  await waitFor(() => expect(onCreated).toHaveBeenCalledWith(DO_ENV));
+  const body = api.createEnvironment.mock.calls[0][0];
+  expect(body).toMatchObject({
+    name: 'uat9', type: 'dev', target: 'digitalocean',
+    do: { account: 'development', slots: 2, droplet_size: 's-2vcpu-4gb', db_size: 'db-s-2vcpu-4gb',
+          db_standby: false, acme_staging: true, auto_activate: true },
+  });
+  for (const key of ['proxy_ip', 'bind_ip', 'publish', 'vm']) expect(body).not.toHaveProperty(key);
+});
+
+it('DigitalOcean production: the Production account, Blue and Green, no staging or auto-activate', async () => {
+  api.getDeployTargets.mockResolvedValue(DO_TARGETS);
+  await open();
+  expect(screen.queryByRole('radio', { name: 'Production' })).toBeNull();     // only on DigitalOcean
+  await userEvent.type(screen.getByLabelText('Name'), 'prod');
+  await pickDigitalOcean();
+  await userEvent.click(radioIn('Type', 'Production'));
+  await next();
+  expect(radioIn('Account', 'Production').getAttribute('aria-checked')).toBe('true');
+  expect(screen.getByText(/Blue and Green, always/)).toBeTruthy();
+  expect(screen.queryByRole('radiogroup', { name: 'Slots' })).toBeNull();
+  expect(screen.queryByRole('radiogroup', { name: 'Certificate' })).toBeNull();
+  expect(screen.queryByRole('radiogroup', { name: 'Activate automatically' })).toBeNull();
+});
+
+it("DigitalOcean: an account that isn't set up can't be chosen", async () => {
+  api.getDoAccounts.mockResolvedValue({ accounts: DO_ACCOUNTS });
+  api.getDeployTargets.mockResolvedValue(DO_TARGETS);
+  await open();
+  await userEvent.type(screen.getByLabelText('Name'), 'uat9');
+  await pickDigitalOcean();
+  await next();
+  expect((radioIn('Account', 'Development') as HTMLButtonElement).disabled).toBe(true);
+  expect(radioIn('Account', 'Production').getAttribute('aria-checked')).toBe('true');
+});
+
+it('DigitalOcean: a base domain outside the Cloudflare zone goes back to Basics', async () => {
+  api.getDeployTargets.mockResolvedValue(DO_TARGETS);
+  api.createEnvironment.mockRejectedValue(new ApiError(422, 'base_domain_not_in_zone', { code: 'base_domain_not_in_zone' }));
+  await open();
+  await userEvent.type(screen.getByLabelText('Name'), 'uat9');
+  await pickDigitalOcean();
+  await next();
+  await next();
+  await next();
+  await next();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  expect(await screen.findByText("That base domain isn't in the Cloudflare zone Sirdar manages.")).toBeTruthy();
+  expect(screen.getByLabelText('Base domain')).toBeTruthy();
+});
+
+async function toCloud(name = 'uat9') {
+  api.getDeployTargets.mockResolvedValue(DO_TARGETS);
+  const opened = await open();
+  await userEvent.type(screen.getByLabelText('Name'), name);
+  await pickDigitalOcean();
+  return opened;
+}
+const DO_SIZES = { droplet_size: 's-2vcpu-4gb', db_size: 'db-s-2vcpu-4gb', db_standby: false };
+
+it('DigitalOcean: Adopt neither offers nor keeps it', async () => {
+  api.adoptEnvironment.mockRejectedValue(new ApiError(422, 'stop', { code: 'stop' }));
+  await toCloud();
+  await userEvent.click(screen.getByRole('radio', { name: 'Adopt existing' }));
+  await waitFor(() => expect((screen.getByRole('combobox', { name: 'Target' }) as HTMLInputElement).value)
+    .toBe('Lab box'));
+  await userEvent.click(screen.getByRole('combobox', { name: 'Target' }));
+  expect(screen.queryByRole('button', { name: 'DigitalOcean' })).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Adopt' }));
+  await waitFor(() => expect(api.adoptEnvironment).toHaveBeenCalled());
+  expect(api.adoptEnvironment.mock.calls[0][0].target).toBe('ssh:lab');
+});
+
+const SHARED_TOKEN_WARNING = 'Production in the Development account shares its renewal token with every development droplet. Set up the Production account instead if you can.';
+
+it("DigitalOcean production: without the Production account it uses Development and warns", async () => {
+  api.getDoAccounts.mockResolvedValue({ accounts: [
+    { ...DO_ACCOUNTS[0], configured: false, token_set: false, region: null }, DO_ACCOUNTS_BOTH[1],
+  ] });
+  await toCloud('prod');
+  await userEvent.click(radioIn('Type', 'Production'));
+  await next();
+  expect(radioIn('Account', 'Development').getAttribute('aria-checked')).toBe('true');
+  expect(screen.getByText(SHARED_TOKEN_WARNING)).toBeTruthy();
+  expect(screen.queryByText(/isn't set up, so this uses/)).toBeNull();
+});
+
+it('DigitalOcean production: choosing the Development account warns, and it is still allowed', async () => {
+  await toCloud('prod');
+  await userEvent.click(radioIn('Type', 'Production'));
+  await next();
+  expect(screen.queryByText(SHARED_TOKEN_WARNING)).toBeNull();
+  await userEvent.click(radioIn('Account', 'Development'));
+  expect(screen.getByText(SHARED_TOKEN_WARNING)).toBeTruthy();
+  await next();
+  await next();
+  await next();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  await waitFor(() => expect(api.createEnvironment).toHaveBeenCalled());
+  expect(api.createEnvironment.mock.calls[0][0].do.account).toBe('development');
+});
+
+it('DigitalOcean: a development environment in the Development account has no warning', async () => {
+  await toCloud();
+  await next();
+  await userEvent.click(radioIn('Account', 'Development'));
+  expect(screen.queryByText(SHARED_TOKEN_WARNING)).toBeNull();
+});
+
+it('DigitalOcean production: the request has the Production account and no slots, staging or auto-activate', async () => {
+  await toCloud('prod');
+  await userEvent.click(radioIn('Type', 'Production'));
+  await next();
+  expect(screen.queryByText(SHARED_TOKEN_WARNING)).toBeNull();
+  await next();
+  await next();
+  await next();
+  expect(screen.getByText('Blue + Green')).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  await waitFor(() => expect(api.createEnvironment).toHaveBeenCalled());
+  const body = api.createEnvironment.mock.calls[0][0];
+  expect(body.type).toBe('production');
+  expect(body.do).toEqual({ account: 'production', ...DO_SIZES });
+});
+
+it('DigitalOcean: one droplet sends slots 1 and no auto_activate', async () => {
+  await toCloud();
+  await next();
+  await userEvent.click(radioIn('Account', 'Development'));
+  await next();
+  await next();
+  await next();
+  expect(screen.getByText('Orange')).toBeTruthy();
+  expect(screen.queryByText('Activates')).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  await waitFor(() => expect(api.createEnvironment).toHaveBeenCalled());
+  expect(api.createEnvironment.mock.calls[0][0].do)
+    .toEqual({ account: 'development', slots: 1, ...DO_SIZES, acme_staging: false });
+});
+
+it('DigitalOcean: an account error from the API goes back to the DigitalOcean step', async () => {
+  api.createEnvironment.mockRejectedValue(
+    new ApiError(422, 'do_account_not_configured', { code: 'do_account_not_configured' }));
+  await toCloud();
+  await next();
+  await next();
+  await next();
+  await next();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  expect(await screen.findByText('That DigitalOcean account has no API token yet. Add it in Settings › Integrations.'))
+    .toBeTruthy();
+  expect(screen.getByRole('radiogroup', { name: 'Account' })).toBeTruthy();
+});
+
+it('DigitalOcean: the step checks the sizes before going on', async () => {
+  await toCloud();
+  await next();
+  const droplet = screen.getByLabelText('Droplet size');
+  await userEvent.clear(droplet);
+  await userEvent.type(droplet, 'db-s-2vcpu-4gb');
+  await next();
+  expect(screen.getByText("That isn't a DigitalOcean droplet size.")).toBeTruthy();
+  await userEvent.clear(droplet);
+  await userEvent.type(droplet, 's-4vcpu-8gb');
+  const db = screen.getByLabelText('Database size');
+  await userEvent.clear(db);
+  await userEvent.type(db, 's-2vcpu-4gb');
+  await next();
+  expect(screen.getByText("That isn't a DigitalOcean database size.")).toBeTruthy();
+  await userEvent.clear(db);
+  await userEvent.type(db, 'db-s-4vcpu-8gb');
+  await next();
+  expect(await screen.findByRole('table', { name: 'Services' })).toBeTruthy();
+});
+
+it('DigitalOcean: without the accounts the step says to set one up', async () => {
+  api.getDoAccounts.mockRejectedValue(new Error('down'));
+  await toCloud();
+  await next();
+  await next();
+  expect(screen.getByText('Set up the DigitalOcean account (token and region) in Settings › Integrations first.'))
+    .toBeTruthy();
+});
+
+it('DigitalOcean: Back from Services returns to the DigitalOcean step', async () => {
+  await toCloud();
+  await next();
+  await next();
+  expect(await screen.findByRole('table', { name: 'Services' })).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(screen.getByRole('radiogroup', { name: 'Account' })).toBeTruthy();
+  expect(screen.getByText('DigitalOcean', { selector: '.rgm-step.on .rgm-step-label' })).toBeTruthy();
+});
+
+it('DigitalOcean: leaving it sets a Production type back to Dev', async () => {
+  await toCloud('prod');
+  await userEvent.click(radioIn('Type', 'Production'));
+  await userEvent.click(screen.getByRole('combobox', { name: 'Target' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Lab box' }));
+  await waitFor(() => expect(radioIn('Type', 'Dev').getAttribute('aria-checked')).toBe('true'));
+  expect(screen.queryByRole('radio', { name: 'Production' })).toBeNull();
 });

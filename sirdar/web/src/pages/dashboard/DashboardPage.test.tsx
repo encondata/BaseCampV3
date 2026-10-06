@@ -4,14 +4,17 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-const perms = vi.hoisted(() => ({ deploy: true, view: true }));
+const perms = vi.hoisted(() => ({ deploy: true, view: true, change: true }));
 vi.mock('@portal/auth/AuthContext', () => ({
   useAuth: () => ({
-    can: (r: string, a?: string) => r !== 'deploy' || (a === 'view' ? perms.view : perms.deploy),
+    can: (r: string, a?: string) => r !== 'deploy'
+      || (a === 'change' ? perms.change : a === 'view' ? perms.view : perms.deploy),
     preferences: { motion: false },
   }),
 }));
-const api = vi.hoisted(() => ({ getDashboard: vi.fn(), getEnvironment: vi.fn(), startDeployment: vi.fn(), trustKnownHost: vi.fn() }));
+const api = vi.hoisted(() => ({
+  getDashboard: vi.fn(), getEnvironment: vi.fn(), startDeployment: vi.fn(), trustKnownHost: vi.fn(), activateSlot: vi.fn(),
+}));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 
 import { ApiError } from '@portal/lib/api';
@@ -19,7 +22,7 @@ import { ApiError } from '@portal/lib/api';
 import { ENV, RUNNING } from '../environments/testData';
 
 import DashboardPage from './DashboardPage';
-import { DEMO, EMPTY, REAL } from './testData';
+import { CLOUD, DEMO, EMPTY, FAILED_DO_CARD, REAL } from './testData';
 
 let loc = '';
 let path = '';
@@ -35,7 +38,8 @@ function show(at = '/') {
 }
 
 beforeEach(() => {
-  perms.deploy = true; perms.view = true;
+  perms.deploy = true; perms.view = true; perms.change = true;
+  window.localStorage.clear();
   Object.values(api).forEach((f) => f.mockReset());
   api.getDashboard.mockImplementation(async (o: { demo?: boolean }) => (o?.demo ? DEMO : EMPTY));
 });
@@ -63,43 +67,13 @@ it('shows a loading skeleton, then content', async () => {
   expect(container.querySelector('.sd-skeleton')).toBeNull();
 });
 
-it('production inactive: gray pill, empty slots, no Activate button', async () => {
-  show();
-  const prod = await screen.findByRole('region', { name: 'Production' });
-  expect(within(prod).getByText('No active deployment').closest('.sd-pill')!.className).toMatch(/is-muted/);
-  expect(within(prod).getAllByText('Not deployed')).toHaveLength(2);
-  expect(within(prod).getByText('Not configured')).toBeTruthy();
-  expect(within(prod).queryByRole('button', { name: /Activate/ })).toBeNull();
-  expect(prod.querySelector('.sd-slot-tag')).toBeNull();
-});
-
-it('production active (demo): active and standby slots, Activate Green coming later', async () => {
-  show('/?demo=1');
-  const prod = await screen.findByRole('region', { name: 'Production' });
-  expect(within(prod).getByText('Deployment active').closest('.sd-pill')!.className).toMatch(/is-ok/);
-  const blue = within(prod).getByText('Production Blue').closest('.sd-slot') as HTMLElement;
-  expect(blue.className).toMatch(/is-active/);
-  expect(within(blue).getByText('Active')).toBeTruthy();
-  expect(within(blue).getByText('v2.8.0')).toBeTruthy();
-  expect(within(blue).getByText('Healthy')).toBeTruthy();
-  expect(within(blue).getByText('3 / 3 instances')).toBeTruthy();
-  expect(within(blue).getByText('100% traffic')).toBeTruthy();
-  const green = within(prod).getByText('Production Green').closest('.sd-slot') as HTMLElement;
-  expect(green.className).toMatch(/is-standby/);
-  expect(within(green).getByText('0 / 3 instances')).toBeTruthy();
-  const act = within(green).getByRole('button', { name: 'Activate Green' });
-  expect(act.getAttribute('aria-disabled')).toBe('true');
-  expect(act.getAttribute('title')).toBe('Coming later');
-  expect(within(prod).getByText('Blue active')).toBeTruthy();
-});
-
 it('cards with no environment yet offer Set up, which opens the Deploy page', async () => {
   show();
   const dev = await screen.findByRole('region', { name: 'Development' });
-  expect(within(dev).getByText('No active deployment')).toBeTruthy();
+  expect(within(dev).getByText('Not built yet')).toBeTruthy();
   expect(within(dev).getByText('No releases yet')).toBeTruthy();
   expect(screen.getByRole('region', { name: 'Qa East' })).toBeTruthy();
-  await userEvent.click(within(dev).getByRole('button', { name: 'Set up Dev' }));
+  await userEvent.click(within(dev).getByRole('button', { name: 'Set up Development' }));
   expect(path).toBe('/deploy');
 });
 
@@ -107,7 +81,6 @@ it('environment cards show the type, version, state and last release', async () 
   api.getDashboard.mockResolvedValue(REAL);
   show();
   const uat = await screen.findByRole('region', { name: 'uat' });
-  expect(within(uat).getByRole('link', { name: 'uat' }).getAttribute('href')).toBe('/deploy/environments/uat');
   expect(within(uat).getByText('Development')).toBeTruthy();
   expect(within(uat).getByText('e73b99ca')).toBeTruthy();
   expect(within(uat).getByText('Running')).toBeTruthy();
@@ -133,11 +106,11 @@ it("an environment card's Deploy opens the Deploy modal and follows the new depl
 });
 
 it('a card whose environment is deploying has an inert Deploy', async () => {
-  api.getDashboard.mockResolvedValue({ ...REAL, environments: [{ ...REAL.environments[0], state: 'deploying' }] });
+  api.getDashboard.mockResolvedValue({ ...REAL, environments: [{ ...REAL.environments[1], state: 'deploying' }] });
   show();
   const uat = await screen.findByRole('region', { name: 'uat' });
   expect(within(uat).getByText('Deploying')).toBeTruthy();
-  const btn = within(uat).getByRole('button', { name: 'Deploy uat' });
+  const btn = within(uat).getByRole('button', { name: 'Deploy' });
   expect(btn.getAttribute('aria-disabled')).toBe('true');
   expect(btn.getAttribute('title')).toBe('A deployment is running.');
 });
@@ -145,7 +118,7 @@ it('a card whose environment is deploying has an inert Deploy', async () => {
 it('demo cards are inert, and without deploy:add cards have no actions', async () => {
   show('/?demo=1');
   const dev = await screen.findByRole('region', { name: 'Development' });
-  const btn = within(dev).getByRole('button', { name: 'Deploy to Dev' });
+  const btn = within(dev).getByRole('button', { name: 'Deploy' });
   expect(btn.getAttribute('aria-disabled')).toBe('true');
   expect(btn.getAttribute('title')).toBe('Demo data');
   cleanup();
@@ -153,8 +126,9 @@ it('demo cards are inert, and without deploy:add cards have no actions', async (
   api.getDashboard.mockResolvedValue(REAL);
   show();
   const uat = await screen.findByRole('region', { name: 'uat' });
-  expect(within(uat).queryByRole('button')).toBeNull();
-  expect(within(screen.getByRole('region', { name: 'Beta' })).queryByRole('button')).toBeNull();
+  expect(within(uat).queryByRole('button', { name: /^(Deploy|Set up)/ })).toBeNull();
+  expect(within(screen.getByRole('region', { name: 'Beta' })).queryByRole('button', { name: /^(Deploy|Set up)/ })).toBeNull();
+  expect(within(uat).getByRole('button', { name: 'Show uat' })).toBeTruthy();
 });
 
 it('the demo toggle sets ?demo=1, calls the API with demo and shows the strip', async () => {
@@ -205,11 +179,271 @@ it('the Deploy modal and its host-key prompt render outside .sd-dash', async () 
   expect(container.contains(hostKey)).toBe(true);
 });
 
-it("an environment card's heading links to its page only with deploy:view", async () => {
+const spot = () => screen.getByRole('region', { name: 'Selected environment' });
+const findSpot = () => screen.findByRole('region', { name: 'Selected environment' });
+const cardToggle = (label: string) => screen.getByRole('button', { name: `Show ${label}` });
+
+it('Production is the first card; without one the spotlight says Not built yet with Set up', async () => {
+  show();
+  await screen.findByText('No environments deployed');
+  const cards = screen.getAllByRole('button', { name: /^Show / });
+  expect(cards[0].getAttribute('aria-label')).toBe('Show Production');
+  expect(cards[0].getAttribute('aria-pressed')).toBe('true');
+  expect(cards[0].closest('.sd-env')!.className).toMatch(/is-production/);
+  expect(cards[1].closest('.sd-env')!.className).not.toMatch(/is-production/);
+  expect(within(spot()).getByRole('heading', { name: 'Production' })).toBeTruthy();
+  expect(within(spot()).getAllByText('Not built yet').length).toBeGreaterThan(0);
+  await userEvent.click(within(spot()).getByRole('button', { name: 'Set up' }));
+  expect(path).toBe('/deploy');
+});
+
+it('selects the production environment by default and shows its flow and certificate', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  show();
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+  expect(within(spot()).getByText('Running')).toBeTruthy();
+  expect(within(spot()).getByText('Certificate: 64 days left').className).toMatch(/is-ok/);
+  expect(within(spot()).getByText('Blue')).toBeTruthy();
+  expect(within(spot()).getByRole('link', { name: 'Open' }).getAttribute('href')).toBe('/deploy/environments/prod');
+});
+
+it('without a production environment the first real environment is selected, not the placeholder', async () => {
   api.getDashboard.mockResolvedValue(REAL);
-  perms.view = false;
+  show();
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'uat' })).toBeTruthy());
+  expect(cardToggle('uat').getAttribute('aria-pressed')).toBe('true');
+  expect(cardToggle('Production').getAttribute('aria-pressed')).toBe('false');
+});
+
+it('clicking a card changes the spotlight, the URL and the remembered pick', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  show();
+  await screen.findByRole('button', { name: 'Show uat9' });
+  await userEvent.click(cardToggle('uat9'));
+  expect(within(spot()).getByRole('heading', { name: 'uat9' })).toBeTruthy();
+  expect(within(spot()).getByText('Certificate: 10 days left').className).toMatch(/is-warn/);
+  expect(cardToggle('uat9').getAttribute('aria-pressed')).toBe('true');
+  expect(cardToggle('prod').getAttribute('aria-pressed')).toBe('false');
+  expect(loc).toBe('?env=uat9');
+  expect(window.localStorage.getItem('sirdar.dashboard.env')).toBe('uat9');
+});
+
+it('?env= picks the spotlight; a remembered pick is used without it; an unknown one falls back', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  show('/?env=uat');
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'uat' })).toBeTruthy());
+  expect(within(spot()).getByText('Nginx Proxy Manager')).toBeTruthy();
+  cleanup();
+  window.localStorage.setItem('sirdar.dashboard.env', 'uat9');
+  show();
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'uat9' })).toBeTruthy());
+  cleanup();
+  window.localStorage.setItem('sirdar.dashboard.env', 'gone');
+  show();
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+});
+
+it('blocked storage still selects and follows clicks', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+  const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+  try {
+    show();
+    await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+    await userEvent.click(cardToggle('uat'));
+    expect(within(spot()).getByRole('heading', { name: 'uat' })).toBeTruthy();
+    expect(loc).toBe('?env=uat');
+  } finally {
+    get.mockRestore();
+    set.mockRestore();
+  }
+});
+
+it("a card's Deploy opens the Deploy modal without changing the selection", async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  api.getEnvironment.mockResolvedValue(ENV);
   show();
   const uat = await screen.findByRole('region', { name: 'uat' });
-  expect(within(uat).queryByRole('link')).toBeNull();
-  expect(within(uat).getByRole('heading', { name: 'uat' })).toBeTruthy();
+  await userEvent.click(within(uat).getByRole('button', { name: 'Deploy uat' }));
+  expect(await screen.findByRole('dialog', { name: 'Deploy uat' })).toBeTruthy();
+  expect(cardToggle('prod').getAttribute('aria-pressed')).toBe('true');
+});
+
+it("Activate on production's idle slot asks for the name, then follows the deployment", async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  api.activateSlot.mockResolvedValue({ ...RUNNING, id: 'd7' });
+  show();
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+  expect(within(spot()).queryByRole('button', { name: 'Activate Blue' })).toBeNull();     // the live one
+  await userEvent.click(within(spot()).getByRole('button', { name: 'Activate Green' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Activate Green' });
+  expect(dialog.closest('.sd-dash')).toBeNull();
+  await userEvent.type(within(dialog).getByLabelText('Type prod to confirm'), 'prod');
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Activate Green' }));
+  await waitFor(() => expect(api.activateSlot).toHaveBeenCalledWith('prod', 'green', 'prod'));
+  await waitFor(() => expect(path).toBe('/deploy/environments/prod'));
+  expect(loc).toBe('?deployment=d7');
+});
+
+it('a non-production environment activates without a typed name', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  api.activateSlot.mockResolvedValue({ ...RUNNING, id: 'd8' });
+  show('/?env=uat9');
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'uat9' })).toBeTruthy());
+  await userEvent.click(within(spot()).getByRole('button', { name: 'Activate Purple' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Activate Purple' });
+  expect(within(dialog).queryByLabelText(/to confirm/)).toBeNull();
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Activate Purple' }));
+  await waitFor(() => expect(api.activateSlot).toHaveBeenCalledWith('uat9', 'purple', undefined));
+});
+
+it('Activate needs deploy:add and deploy:change, a deployed idle slot and no running deployment', async () => {
+  const prod = CLOUD.environments[0];
+  const notDeployed = { ...prod, flow: { ...prod.flow,
+    servers: prod.flow.servers.map((s) => (s.id === 'green' ? { ...s, deployed: false, version: null } : s)) } };
+  const deploying = { ...prod, state: 'deploying', flow: { ...prod.flow, deploying_slot: 'green' } };
+  for (const env of [notDeployed, deploying]) {
+    api.getDashboard.mockResolvedValue({ ...CLOUD, environments: [env, ...CLOUD.environments.slice(1)] });
+    show();
+    await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+    expect(within(spot()).queryByRole('button', { name: /Activate/ })).toBeNull();
+    cleanup();
+  }
+  api.getDashboard.mockResolvedValue(CLOUD);
+  for (const p of ['change', 'deploy'] as const) {
+    perms.change = p !== 'change';
+    perms.deploy = p !== 'deploy';
+    show();
+    await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+    expect(within(spot()).queryByRole('button', { name: /Activate/ })).toBeNull();
+    cleanup();
+  }
+});
+
+it('a failed deploy on a two-slot environment says the live slot still serves', async () => {
+  api.getDashboard.mockResolvedValue({ ...CLOUD, environments: [CLOUD.environments[0], FAILED_DO_CARD] });
+  show('/?env=uat9');
+  expect(await within(await findSpot()).findByText('Failed — Orange still live')).toBeTruthy();
+  cleanup();
+  // the environment itself still runs (a failed Activate leaves it active): the mark still shows
+  api.getDashboard.mockResolvedValue({ ...CLOUD, environments: [CLOUD.environments[0], { ...FAILED_DO_CARD, state: 'active' }] });
+  show('/?env=uat9');
+  expect(await within(await findSpot()).findByText('Failed — Orange still live')).toBeTruthy();
+  cleanup();
+  // a one-server environment just says its last deploy failed
+  api.getDashboard.mockResolvedValue(REAL);
+  show('/?env=qa-east');
+  expect(await within(await findSpot()).findByText('Last deploy failed')).toBeTruthy();
+});
+
+it('demo data: every spotlight action is inert', async () => {
+  show('/?demo=1');
+  await screen.findByText('All systems healthy');
+  for (const name of [/^Deploy/, 'Open', 'Activate Green']) {
+    const btn = within(spot()).getByRole('button', { name });
+    expect(btn.getAttribute('aria-disabled')).toBe('true');
+  }
+});
+
+it('Open shows only with deploy:view', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  perms.view = false;
+  show();
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+  expect(within(spot()).queryByRole('link', { name: 'Open' })).toBeNull();
+});
+
+it('a pick made on demo data is not remembered, and leaving demo drops it from the URL', async () => {
+  api.getDashboard.mockImplementation(async (o: { demo?: boolean }) => (o?.demo ? DEMO : CLOUD));
+  show('/?demo=1');
+  await screen.findByText('All systems healthy');
+  await userEvent.click(cardToggle('Development'));
+  expect(within(spot()).getByRole('heading', { name: 'Development' })).toBeTruthy();
+  await userEvent.click(cardToggle('UAT'));     // demo's "uat" id is also a real environment
+  expect(loc).toBe('?demo=1&env=uat');
+  expect(window.localStorage.getItem('sirdar.dashboard.env')).toBeNull();
+  await userEvent.click(screen.getByLabelText('Demo data'));
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+  expect(loc).toBe('');
+});
+
+it('an unknown ?env= falls back to the remembered pick before the default', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  window.localStorage.setItem('sirdar.dashboard.env', 'uat9');
+  show('/?env=gone');
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'uat9' })).toBeTruthy());
+});
+
+it('the certificate pill: red when expired, singular at one day', async () => {
+  const prod = CLOUD.environments[0];
+  const withCert = (certificate: typeof prod.flow.certificate) =>
+    ({ ...CLOUD, environments: [{ ...prod, flow: { ...prod.flow, certificate } }] });
+  api.getDashboard.mockResolvedValue(withCert({ days_left: 0, expires_at: '2026-10-01T00:00:00+00:00', tone: 'bad' }));
+  show();
+  expect((await within(await findSpot()).findByText('Certificate expired')).className).toMatch(/is-bad/);
+  cleanup();
+  api.getDashboard.mockResolvedValue(withCert({ days_left: 1, expires_at: '2026-10-07T00:00:00+00:00', tone: 'warn' }));
+  show();
+  expect((await within(await findSpot()).findByText('Certificate: 1 day left')).className).toMatch(/is-warn/);
+});
+
+it('switching cards remounts the flow, so it re-measures and restarts', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  show();
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+  const before = spot().querySelector('.sd-flow')!;
+  await userEvent.click(cardToggle('uat9'));
+  expect(before.isConnected).toBe(false);
+  expect(spot().querySelector('.sd-flow')).toBeTruthy();
+});
+
+it("a demo card's Deploy is inert and leaves the selection alone", async () => {
+  show('/?demo=1');
+  const dev = await screen.findByRole('region', { name: 'Development' });
+  await userEvent.click(within(dev).getByRole('button', { name: 'Deploy' }));
+  expect(cardToggle('Production').getAttribute('aria-pressed')).toBe('true');
+  expect(cardToggle('Development').getAttribute('aria-pressed')).toBe('false');
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('Deploying reads the same on the card and in the spotlight', async () => {
+  const prod = { ...CLOUD.environments[0], state: 'deploying' };
+  api.getDashboard.mockResolvedValue({ ...CLOUD, environments: [prod, ...CLOUD.environments.slice(1)] });
+  show();
+  const spotPill = (await within(await findSpot()).findByText('Deploying', { selector: '.sd-pill' }));
+  const card = screen.getByRole('button', { name: 'Show prod' }).closest('.sd-env') as HTMLElement;
+  const cardPill = within(card).getByText('Deploying', { selector: '.sd-pill' });
+  expect(cardPill.className).toBe(spotPill.className);
+});
+
+it("a card says a failed slot leaves the live one serving, as the spotlight does", async () => {
+  api.getDashboard.mockResolvedValue({ ...CLOUD, environments: [CLOUD.environments[0], { ...FAILED_DO_CARD, state: 'active' }] });
+  show();
+  const card = await screen.findByRole('region', { name: 'uat9' });
+  expect(within(card).getByText('Failed — Orange still live').className).toMatch(/is-warn/);
+  expect(within(card).queryByText('Running')).toBeNull();
+});
+
+it('a retiring production offers no Activate', async () => {
+  const prod = { ...CLOUD.environments[0], retiring: true };
+  api.getDashboard.mockResolvedValue({ ...CLOUD, environments: [prod, ...CLOUD.environments.slice(1)] });
+  show();
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+  expect(within(spot()).queryByRole('button', { name: /Activate/ })).toBeNull();
+});
+
+it('a running deployment (a renew included) makes Deploy and Activate inert, saying why', async () => {
+  const prod = { ...CLOUD.environments[0], running: true };   // the state still reads active during a renew
+  api.getDashboard.mockResolvedValue({ ...CLOUD, environments: [prod, ...CLOUD.environments.slice(1)] });
+  show();
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+  for (const btn of [within(spot()).getByRole('button', { name: 'Deploy' }),
+                     within(spot()).getByRole('button', { name: 'Activate Green' }),
+                     within(screen.getByRole('region', { name: 'prod' })).getByRole('button', { name: 'Deploy' })]) {
+    expect(btn.getAttribute('aria-disabled')).toBe('true');
+    expect(btn.getAttribute('title')).toBe('A deployment is running.');
+    await userEvent.click(btn);
+  }
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(api.getEnvironment).not.toHaveBeenCalled();
 });

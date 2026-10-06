@@ -14,6 +14,7 @@ const api = vi.hoisted(() => ({
   getEnvironment: vi.fn(), getDeployTargets: vi.fn(), startDeployment: vi.fn(), trustKnownHost: vi.fn(),
   listDeployments: vi.fn(), updateEnvironment: vi.fn(), getEnvironmentDefaults: vi.fn(),
   listSnapshots: vi.fn(), listBackups: vi.fn(), getPublishPlan: vi.fn(), claimPublish: vi.fn(),
+  activateSlot: vi.fn(),
 }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 vi.mock('./DeploymentView', () => ({ default: ({ id }: { id: string }) => <div>deployment view {id}</div> }));
@@ -22,7 +23,7 @@ import { ApiError } from '@portal/lib/api';
 
 import EnvironmentDetail, { ENV_POLL_MS } from './EnvironmentDetail';
 import {
-  ADOPTED, BACKUPS, DEFAULTS, ENV, PUBLISHED_ENV, PUBLISHING, PUBLISH_PLAN, RUNNING, TARGETS, TEARDOWN, summary,
+  ADOPTED, BACKUPS, DEFAULTS, DO_ENV, ENV, FAILED, PUBLISHED_ENV, PUBLISHING, PUBLISH_PLAN, RUNNING, TARGETS, TEARDOWN, summary,
 } from './testData';
 
 Element.prototype.scrollIntoView = () => {};
@@ -301,4 +302,23 @@ it('the Overview says who keeps the public names', async () => {
   api.getEnvironment.mockResolvedValue({ ...ENV, publish: true });
   show();
   expect(await screen.findByText(/Sirdar keeps their DNS records and proxy hosts up to date/)).toBeTruthy();
+});
+
+it('DigitalOcean: Overview shows the slots; Activate opens its dialog, then follows the deployment', async () => {
+  api.getEnvironment.mockResolvedValue(DO_ENV);
+  api.activateSlot.mockResolvedValue(RUNNING);
+  show('/deploy/environments/uat9');
+  const section = await screen.findByRole('region', { name: 'DigitalOcean' });
+  await userEvent.click(within(section).getByRole('button', { name: 'Activate Purple' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Activate Purple' });
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Activate Purple' }));
+  await waitFor(() => expect(api.activateSlot).toHaveBeenCalledWith('uat9', 'purple', undefined));
+  expect(await screen.findByRole('tab', { name: 'Deployments', selected: true })).toBeTruthy();
+});
+
+it('DigitalOcean: the header says a failed slot leaves the live one serving', async () => {
+  api.getEnvironment.mockResolvedValue({ ...DO_ENV, last_deployment: { ...summary(FAILED), mode: 'activate', slot: 'purple' } });
+  show('/deploy/environments/uat9');
+  const chip = await screen.findByText('Failed — Orange still live', { selector: '.page-title *' });
+  expect(chip.className).toMatch(/c-amber/);
 });

@@ -27,9 +27,11 @@ DigitalOcean builds what is missing; the host steps run on the slot's
 droplet; 12 DNS records point at the load balancer; 13 Smoke test (slot)
 checks the slot through Caddy on the droplet; 14 Switch traffic moves the
 load balancer to the slot (a first deploy, a one-slot environment, an
-auto-activating one, or Activate). Delete is [11 Take snapshot], 17 Remove
-DNS records, 18 Remove DigitalOcean resources. Reset, Restore backup, Roll
-back and Restore VM snapshot have no DigitalOcean plan."""
+auto-activating one, or Activate). Activate is 13 then 14; Deactivate (a
+retiring production, no slot) is 14 alone. Delete is [11 Take snapshot], 17
+Remove DNS records, 18 Remove DigitalOcean resources. Reset, Restore backup, Roll
+back and Restore VM snapshot have no DigitalOcean plan. 19 Renew certificate
+is Sirdar's backup renewal, a job of its own (renewals.py)."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,7 +39,7 @@ from typing import Literal
 
 PLAYBOOK_DIR = Path(__file__).resolve().parent / "ansible"
 MODES = ("update", "reset", "snapshot", "restore_dump", "rollback", "publish", "teardown",
-         "vm_restore", "activate")
+         "vm_restore", "activate", "renew")
 # Modes that change what runs on the host: they publish afterwards when asked.
 PUBLISHING_MODES = ("update", "reset", "restore_dump", "rollback")
 PUBLISH_KEYS = ("dns", "proxy", "smoke")
@@ -81,6 +83,7 @@ STEPS: tuple[StepDef, ...] = (
     StepDef(16, "unproxy", "Remove proxy hosts", "", 15 * 60, "python"),
     StepDef(17, "undns", "Remove DNS records", "", 10 * 60, "python"),
     StepDef(18, "do_destroy", "Remove DigitalOcean resources", "", 60 * 60, "vm"),
+    StepDef(19, "do_renew", "Renew certificate", "", 30 * 60, "vm"),
 )
 STEPS_BY_KEY = {s.key: s for s in STEPS}
 ANSIBLE_STEPS = tuple(s for s in STEPS if s.runs == "ansible")
@@ -120,17 +123,22 @@ _CLOUD_PLANS: dict[tuple[str, bool], tuple[str, ...]] = {
     ("teardown", False): ("undns", "do_destroy"),
     ("teardown", True): ("export", "undns", "do_destroy"),
     ("activate", False): ("slot_smoke", "go_live"),
+    ("renew", False): ("do_renew",),
 }
 
 
 def _cloud_plan(mode: str, *, restore: bool, publish: bool, vm: bool, go_live: bool,
-                snapshot: bool) -> tuple[str, ...]:
+                snapshot: bool, smoke: bool = True) -> tuple[str, ...]:
     if publish or vm:
         raise ValueError("a DigitalOcean plan has its own DNS step and no VM steps")
     key = (mode, snapshot if mode == "teardown" else restore)
     if key not in _CLOUD_PLANS:
         raise ValueError(f"no DigitalOcean plan for mode {mode!r}")
     keys = _CLOUD_PLANS[key]
+    if not smoke:
+        if mode != "activate":
+            raise ValueError("only Deactivate skips the slot smoke test")
+        return ("go_live",)                     # Deactivate: no slot to test
     if go_live and mode != "activate":
         if mode != "update":
             raise ValueError(f"mode {mode!r} doesn't switch traffic")
@@ -139,16 +147,18 @@ def _cloud_plan(mode: str, *, restore: bool, publish: bool, vm: bool, go_live: b
 
 
 def plan_for(mode: str, *, restore: bool = False, publish: bool = False, vm: bool = False,
-             cloud: bool = False, go_live: bool = False, snapshot: bool = False
-             ) -> list[StepDef]:
+             cloud: bool = False, go_live: bool = False, snapshot: bool = False,
+             smoke: bool = True) -> list[StepDef]:
     if cloud:
         keys = _cloud_plan(mode, restore=restore, publish=publish, vm=vm, go_live=go_live,
-                           snapshot=snapshot)
+                           snapshot=snapshot, smoke=smoke)
         return [STEPS_BY_KEY[k] for k in keys]
     if mode == "activate":
         raise ValueError("only a DigitalOcean environment activates a slot")
     if go_live or snapshot:
         raise ValueError("only a DigitalOcean plan switches traffic or snapshots on delete")
+    if not smoke:
+        raise ValueError("only Deactivate skips the slot smoke test")
     try:
         keys = _PLANS[(mode, restore)]
     except KeyError:

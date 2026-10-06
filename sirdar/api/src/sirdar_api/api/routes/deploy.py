@@ -17,12 +17,13 @@ from starlette.requests import ClientDisconnect
 
 from sirdar_api.api.deps import AuthContext, DbSession, client_ip, require_permission
 from sirdar_api.config import get_settings
-from sirdar_api.db.models import (Deployment, DeploymentStep, Environment, EsxiVm, Snapshot,
-                                  SshKnownHost)
+from sirdar_api.db.models import (Deployment, DeploymentStep, DoAccount, DoEnvironment,
+                                  Environment, EsxiVm, Snapshot, SshKnownHost)
 from sirdar_api.deploy import (
     ConnectFailed,
     digitalocean,
     do_accounts,
+    do_api,
     do_envs,
     envfile,
     environments,
@@ -51,6 +52,7 @@ router = APIRouter(prefix="/deploy", tags=["deploy"])
 
 TARGET_ID_PATTERN = r"^(aws|gcp|digitalocean|ssh|ssh:[a-z0-9]+(-[a-z0-9]+)*)$"
 DeployType = Literal["blue", "green", "dev", "beta", "custom"]
+DoAccountKey = Literal["production", "development"]
 
 
 class ConnectIn(BaseModel):
@@ -58,6 +60,7 @@ class ConnectIn(BaseModel):
     type: DeployType
     region: str | None = Field(default=None, pattern=r"^[a-z0-9-]{2,20}$")
     name: str | None = None
+    account: DoAccountKey | None = None         # the DigitalOcean account (default Production)
 
 
 class TrustIn(BaseModel):
@@ -114,10 +117,14 @@ def _known_host_out(row: SshKnownHost, trusted_by_name: str | None) -> KnownHost
 async def list_targets(db: DbSession, actor: AuthContext = require_permission("deploy", "view")):
     s = get_settings()
     writable = targets.can_add_ssh(s)
+    do_on = False
+    for key in do_accounts.KEYS:                     # either account makes it usable
+        row = await db.get(DoAccount, key, populate_existing=True)
+        do_on = do_on or (row is not None and do_accounts.source_of(row, s) is not None)
     listed = targets.public_targets(
         s, proxmox_configured=await integrations.is_configured(db, "proxmox"),
         esxi_configured=await integrations.is_configured(db, "esxi"),
-        digitalocean_configured=await integrations.digitalocean_source(db, s) is not None)
+        digitalocean_configured=do_on)
     return {"targets": listed, "types": targets.DEPLOY_TYPES,
             "can_add_ssh": writable, "ssh_store_hint": None if writable else targets.STORE_HINT}
 
@@ -225,11 +232,11 @@ async def list_key_files(actor: AuthContext = require_permission("deploy", "chan
     return {"files": await asyncio.to_thread(_key_file_names, get_settings().deploy_keys_dir)}
 
 
-async def _digitalocean_settings(db) -> tuple:
-    """(settings carrying the DigitalOcean token Sirdar uses, None) or
-    (None, IntegrationError) when the stored token can't be read."""
+async def _digitalocean_settings(db, account: str = "production") -> tuple:
+    """(settings carrying that DigitalOcean account's token, None) or (None,
+    IntegrationError) when its stored token can't be read."""
     try:
-        return await digitalocean.resolve(db, get_settings()), None
+        return await digitalocean.resolve(db, get_settings(), account), None
     except integrations.IntegrationError as e:
         return None, e
 
@@ -241,8 +248,9 @@ def _unreadable(e: integrations.IntegrationError) -> HTTPException:
 
 @router.get("/digitalocean/regions")
 async def digitalocean_regions(db: DbSession,
+                               account: DoAccountKey = Query(default="production"),
                                actor: AuthContext = require_permission("deploy", "view")):
-    settings, problem = await _digitalocean_settings(db)
+    settings, problem = await _digitalocean_settings(db, account)
     if problem is not None:
         raise _unreadable(problem)
     if not targets.is_configured("digitalocean", settings):
@@ -275,6 +283,8 @@ async def connect(body: ConnectIn, request: Request, db: DbSession,
             changes["name"] = name
         if body.region:
             changes["region"] = body.region
+        if body.account and body.target == "digitalocean":
+            changes["account"] = body.account
         if code:
             changes["code"] = code
         audit(db, actor_id=actor.user.person_id, action="deploy.connect",
@@ -288,7 +298,7 @@ async def connect(body: ConnectIn, request: Request, db: DbSession,
 
     ssh_config = None
     if body.target == "digitalocean":
-        resolved, problem = await _digitalocean_settings(db)
+        resolved, problem = await _digitalocean_settings(db, body.account or "production")
         if problem is not None:
             await record(False, problem.code)
             raise _unreadable(problem)
@@ -415,6 +425,8 @@ class DoIn(BaseModel):
     db_size: str | None = Field(default=None, max_length=40)
     db_standby: bool | None = None
     acme_staging: bool | None = None
+    # Non-production only: an Update to the idle slot goes live by itself.
+    auto_activate: bool | None = None
 
 
 class EnvironmentIn(BaseModel):
@@ -444,6 +456,13 @@ class ServicePatch(BaseModel):
     proxied: bool | None = None
 
 
+class DoPatch(BaseModel):
+    """PATCH's `do`: sizes only grow; step 0 applies them on the next deploy."""
+    droplet_size: str | None = Field(default=None, max_length=40)
+    db_size: str | None = Field(default=None, max_length=40)
+    db_standby: bool | None = None
+
+
 class EnvironmentPatch(BaseModel):
     git_ref: str | None = Field(default=None, max_length=200)
     target: str | None = Field(default=None, pattern=ENV_TARGET_PATTERN, max_length=36)
@@ -460,6 +479,10 @@ class EnvironmentPatch(BaseModel):
     # Needs confirm_name (the environment's name).
     retiring: bool | None = None
     confirm_name: str | None = Field(default=None, max_length=64)
+    # Non-production DigitalOcean only: an Update to the idle slot goes live by itself.
+    auto_activate: bool | None = None
+    # DigitalOcean only: grow the droplet and database sizes.
+    do: DoPatch | None = None
     # Write-only. No pydantic constraint on the values, so no validation error
     # can describe one; the service answers secret_invalid / secret_not_editable.
     secrets: dict[str, str] | None = None
@@ -600,6 +623,29 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
     return out
 
 
+async def _checked_sizes(db, env: Environment, wanted: dict) -> dict:
+    """PATCH `do`, checked against DigitalOcean's catalogs (sizes only grow)."""
+    if not _on_do(env):
+        raise _refuse(422, "do_not_allowed")
+    # Locked until the PATCH commits: check and apply are one step, so a
+    # concurrent PATCH checks against what this one stores.
+    row = await db.get(DoEnvironment, env.id, with_for_update=True, populate_existing=True)
+    if row is None:
+        raise _refuse(409, "do_not_ready")
+    try:
+        account = await do_accounts.require(db, get_settings(), row.account_key)
+    except integrations.IntegrationError as e:
+        status = 409 if e.code in ("do_account_not_configured", "integration_unreadable") else 400
+        raise HTTPException(status_code=status, detail={"code": e.code, **e.extra}) from None
+    try:
+        async with do_api.connect(account.token) as api:
+            return await do_envs.check_grow(api, row, wanted)
+    except do_envs.DoEnvError as e:
+        raise _refuse(422, e.code) from None
+    except do_api.DoError as e:
+        raise _refuse(502, "connect_failed", reason=e.reason) from None
+
+
 @router.patch("/environments/{name}")
 async def update_environment(name: str, body: EnvironmentPatch, request: Request,
                              db: DbSession,
@@ -609,6 +655,10 @@ async def update_environment(name: str, body: EnvironmentPatch, request: Request
         raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
     fields = body.model_dump(exclude_unset=True)
     fields.pop("confirm_name", None)
+    wanted = fields.pop("do", None)
+    if wanted is not None:
+        fields["do_checked"] = await _checked_sizes(
+            db, env, {k: v for k, v in wanted.items() if v is not None})
     try:
         changed = await environments.update(db, get_settings(), env, fields)
         if changed:
@@ -680,8 +730,10 @@ class RollbackIn(BaseModel):
 
 # Modes that replace data: deploy:change and the environment's name typed back.
 GATED_MODES = ("reset", "restore_dump", "rollback", "teardown", "vm_restore")
+# Modes that need deploy:change (production's Activate also needs its name typed).
+CHANGE_MODES = (*GATED_MODES, "activate")
 RETRY_MODES = ("update", "reset", "restore_dump", "rollback", "publish", "teardown",
-               "vm_restore")
+               "vm_restore", "activate", "renew")
 # Modes a deploy request may ask a VM snapshot for (rollback has its own route).
 VM_SNAPSHOT_MODES = ("update", "reset", "restore_dump")
 
@@ -692,8 +744,8 @@ def _forbidden() -> HTTPException:
 
 def _require_mode(actor: AuthContext, mode: str) -> None:
     """Update needs deploy:add (the route's guard); the modes that replace
-    data also need change."""
-    if mode in GATED_MODES and not actor.access.can("deploy", "change"):
+    data, and Activate, also need change."""
+    if mode in CHANGE_MODES and not actor.access.can("deploy", "change"):
         raise _forbidden()
 
 
@@ -888,6 +940,8 @@ async def _start_do_update(db, env: Environment, body: DeploymentIn, request: Re
     of the DigitalOcean plan."""
     if not vault.is_configured(get_settings()):
         raise HTTPException(status_code=400, detail={"code": "secrets_key_missing"})
+    await _read_production(db, env)
+    _retiring_refused(env)         # a deactivated, retiring production stays dark
     await _require_account(db, env)
     await _require_integrations(db, env)
     ref = body.git_ref or env.git_ref
@@ -982,6 +1036,127 @@ async def _start_do_teardown(db, env: Environment, body: DeploymentIn, request: 
     return await _launch(db, env, request, actor, action="deploy.deployment_start",
                          mode="teardown", git_ref=env.git_ref, sha=env.current_sha or "",
                          snapshot=snap, cloud=True, slot=slot)
+
+
+async def _read_production(db, env: Environment) -> None:
+    """Production's retiring flag and live slot, read under the production
+    lock (an un-retire takes it too), so an Activate, Deactivate or Update
+    never acts on a stale copy."""
+    if env.type == "production":
+        await environments.lock_production(db)
+        await db.refresh(env)
+
+
+def _retiring_refused(env: Environment) -> None:
+    """A retiring production only goes dark: no slot goes live on it."""
+    if env.type == "production" and env.retiring:
+        raise HTTPException(status_code=409, detail={"code": "production_retiring"})
+
+
+def _check_deactivate(env: Environment) -> None:
+    """Deactivate (no slot): a retiring production with a live slot only."""
+    if not (env.type == "production" and env.retiring):
+        raise _refuse(422, "slot_required")
+    if env.active_slot is None:
+        raise _refuse(409, "already_inactive")
+
+
+class ActivateIn(BaseModel):
+    # The slot to send traffic to; None deactivates (a retiring production only).
+    slot: str | None = Field(default=None, max_length=10)
+    confirm_name: str | None = Field(default=None, max_length=64)
+
+
+def _refuse(status: int, code: str, **extra) -> HTTPException:
+    return HTTPException(status_code=status, detail={"code": code, **extra})
+
+
+@router.post("/environments/{name}/activate", status_code=201)
+async def activate(name: str, body: ActivateIn, request: Request, db: DbSession,
+                   actor: AuthContext = require_permission("deploy", "change")):
+    """Blue/Green: smoke-test a slot on its droplet, then move the load
+    balancer to it without a gap (a deployment, so it shares the lock, the
+    log and Retry). Going back is activating the other slot. A retiring
+    production can be deactivated (slot None) so Delete can remove it."""
+    # And deploy:add, as Retry needs it: anyone who starts an Activate can retry it.
+    if not actor.access.can("deploy", "add"):
+        raise _forbidden()
+    env = await _environment(db, name)
+    if not _on_do(env):
+        raise _refuse(409, "not_digitalocean_environment")
+    if env.type == "production" and body.confirm_name != env.name:
+        raise _refuse(422, "confirm_name_mismatch")
+    if await environments.is_deploying(db, env.id):
+        raise _refuse(409, "deploy_in_progress")
+    if not vault.is_configured(get_settings()):
+        raise _refuse(400, "secrets_key_missing")
+    await _require_account(db, env)
+    await _read_production(db, env)
+    if body.slot is None:
+        _check_deactivate(env)
+        return await _launch(db, env, request, actor, action="deploy.activate", mode="activate",
+                             git_ref=env.git_ref, sha=env.current_sha or "", cloud=True,
+                             slot=None, go_live=True)
+    if body.slot not in env.slots:
+        raise _refuse(422, "slot_invalid")
+    _retiring_refused(env)
+    if body.slot == env.active_slot:
+        raise _refuse(409, "slot_already_active")
+    row = (await do_envs.slots_of(db, env.id)).get(body.slot)
+    if row is None or not row.sha:
+        raise _refuse(409, "slot_not_deployed", slot=body.slot)
+    if await _host_target(db, env, slot=body.slot) is None:
+        raise _refuse(409, "do_not_ready")           # the slot's droplet has no address
+    return await _launch(db, env, request, actor, action="deploy.activate", mode="activate",
+                         git_ref=row.sha, sha=row.sha, cloud=True, slot=body.slot,
+                         go_live=True)
+
+
+@router.post("/environments/{name}/slots", status_code=201)
+async def add_slot(name: str, request: Request, db: DbSession,
+                   actor: AuthContext = require_permission("deploy", "change")):
+    """A one-slot environment gets its second slot (purple). Once anything was
+    deployed, the running commit is deployed to it (step 0 builds its droplet
+    and lets it reach the database; never a seed: the shared database already
+    holds the data); traffic stays where it is. Otherwise the first Update
+    builds it."""
+    # And deploy:add, as Retry needs it: anyone who starts the deploy can retry it.
+    if not actor.access.can("deploy", "add"):
+        raise _forbidden()
+    env = await _environment(db, name)
+    if not _on_do(env):
+        raise _refuse(409, "not_digitalocean_environment")
+    if env.type == "production":
+        raise _refuse(422, "slot_not_allowed")
+    await db.refresh(env, with_for_update=True)      # one add at a time
+    if len(env.slots) != 1:
+        raise _refuse(409, "slots_full")
+    if await environments.is_deploying(db, env.id):
+        raise _refuse(409, "deploy_in_progress")
+    settings = get_settings()
+    if not vault.is_configured(settings):
+        raise _refuse(400, "secrets_key_missing")
+    await _require_account(db, env)
+    sha = env.current_sha
+    if sha is not None:
+        await _require_integrations(db, env)
+    env_name = env.name
+    await do_envs.add_slot(db, settings, env, "purple")
+    env.slots = [*env.slots, "purple"]
+    env.updated_at = datetime.now(UTC)
+    audit(db, actor_id=actor.user.person_id, action="deploy.slot_add", entity_type="environment",
+          entity_id=env_name, ip=client_ip(request),
+          changes={"environment": env_name, "slot": "purple"})
+    deployment = None
+    if sha is None:
+        await db.commit()
+    else:
+        # One commit for the slot, its audit row and the deployment.
+        deployment = await _launch(db, env, request, actor, action="deploy.deployment_start",
+                                   mode="update", git_ref=sha, sha=sha, cloud=True,
+                                   slot="purple", go_live=False)
+    await db.refresh(env)
+    return {"environment": await serialize.environment_out(db, env), "deployment": deployment}
 
 
 async def _vm_snapshot_restorable(db, env: Environment, name: str) -> None:
@@ -1161,9 +1336,20 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     env = await db.get(Environment, dep.environment_id)
     if _on_do(env) and dep.mode in pipeline.NOT_ON_DIGITALOCEAN:
         raise _not_on_do()
-    if dep.mode in GATED_MODES and body.confirm_name != env.name:
+    typed = dep.mode in GATED_MODES or (dep.mode == "activate" and env.type == "production")
+    if typed and body.confirm_name != env.name:
         raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
-    latest = await serialize.latest_deployment(db, env.id)
+    if dep.cloud and dep.mode in ("activate", "update"):
+        await _read_production(db, env)
+        if dep.mode == "activate" and dep.slot is None:
+            _check_deactivate(env)
+        else:
+            _retiring_refused(env)
+    # Sirdar's own renew jobs never stand in the way of retrying anything else.
+    latest = await db.scalar(
+        select(Deployment).where(Deployment.environment_id == env.id,
+                                 *(() if dep.mode == "renew" else (Deployment.mode != "renew",)))
+        .order_by(Deployment.created_at.desc()).limit(1))
     if latest is None or latest.id != dep.id:
         raise HTTPException(status_code=409, detail={"code": "retry_not_latest"})
     production_delete = dep.cloud and dep.mode == "teardown" and env.type == "production"
@@ -1179,7 +1365,8 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     # A DigitalOcean Delete that took a snapshot first (step 11).
     taking = dep.mode == "teardown" and dep.cloud and await _has_step(db, dep.id, "export")
     plan = plan_for(dep.mode, restore=restoring, publish=dep.publish, vm=dep.vm,
-                    cloud=dep.cloud, go_live=dep.go_live, snapshot=taking)
+                    cloud=dep.cloud, go_live=dep.go_live, snapshot=taking,
+                    smoke=pipeline.smokes(dep.mode, dep.slot))
     if from_step not in [s.number for s in plan] or from_step > stopped:
         raise HTTPException(status_code=422, detail={"code": "from_step_invalid"})
     # The Publish switch as it is now: a retry never publishes an environment

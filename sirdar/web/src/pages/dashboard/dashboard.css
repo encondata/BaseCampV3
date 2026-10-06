@@ -129,12 +129,13 @@
 .sd-dash .sd-dot.is-ok { background: var(--sd-green); }
 .sd-dash .sd-dot.is-warn { background: var(--sd-amber); }
 .sd-dash .sd-dot.is-blue { background: var(--sd-blue); }
+.sd-dash .sd-dot.is-bad { background: var(--sd-red-text); }
 .sd-dash .sd-badge {
   display: inline-flex; align-items: center; padding: 0 7px; border: 1px solid var(--sd-blue); border-radius: 999px;
   color: var(--sd-blue); font-size: 11px; font-weight: 500; line-height: 16px; white-space: nowrap;
 }
 
-/* ---- production flow ---- */
+/* ---- the spotlight's flow ---- */
 .sd-dash .sd-flow { container-type: inline-size; }
 .sd-dash .sd-flow-diagram {
   position: relative; display: grid; align-items: center; min-height: 232px;
@@ -157,6 +158,9 @@
 .sd-dash .sd-node-traffic { grid-column: 1; }
 .sd-dash .sd-node-lb { grid-column: 3; }
 .sd-dash .sd-node-icon { color: var(--sd-blue); flex: none; }
+/* nothing built: a muted middle box */
+.sd-dash .sd-node.is-muted { border-style: dashed; border-color: var(--sd-guide); box-shadow: none; color: var(--sd-muted); }
+.sd-dash .sd-node-icon.is-muted { color: var(--sd-gray-dot); }
 .sd-dash .sd-slots { grid-column: 5; display: flex; flex-direction: column; gap: 22px; }
 
 .sd-dash .sd-slot {
@@ -179,12 +183,11 @@
 }
 .sd-dash .sd-slot-tag.is-active { color: var(--sd-blue); }
 .sd-dash .sd-slot-tag.is-standby { color: var(--sd-gray-text); }
+/* the idle slot: dimmed, but its Activate button stays at full strength */
+.sd-dash .sd-slot.is-idle { border-style: dashed; box-shadow: none; }
+.sd-dash .sd-slot.is-idle > :not(.sd-slot-action) { opacity: 0.65; }
 .sd-dash .sd-slot-version { color: var(--sd-text); }
 .sd-dash .sd-slot-health { display: flex; align-items: center; gap: 6px; color: var(--sd-text); }
-.sd-dash .sd-vdivider { flex: none; align-self: stretch; width: 1px; background: var(--sd-border); }
-.sd-dash .sd-slot-stats { flex: none; display: flex; flex-direction: column; gap: 4px; font-size: 13px; white-space: nowrap; }
-.sd-dash .sd-slot-traffic { color: var(--sd-muted); font-weight: 600; }
-.sd-dash .sd-slot-traffic.is-active { color: var(--sd-blue); }
 .sd-dash .sd-slot-action { height: 34px; padding: 0 12px; font-size: 13px; }
 
 @container (max-width: 820px) {
@@ -200,7 +203,7 @@
 .sd-dash .sd-env-body { display: flex; align-items: center; gap: 16px; }
 .sd-dash .sd-env-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .sd-dash .sd-env-state { display: flex; align-items: center; gap: 10px; font-size: 14px; }
-.sd-dash .sd-env-action { flex: none; min-width: 180px; }
+.sd-dash .sd-env-action { flex: none; }
 
 /* ---- infrastructure treegrid ---- */
 .sd-dash .sd-tree { font-size: 13px; overflow-x: auto; }
@@ -247,5 +250,31 @@
   .sd-dash .sd-tree-chev { transition: none; }
 }
 .sd-dash .sd-pill.is-warn { background: var(--sd-amber-soft); color: var(--sd-amber-text); border-color: color-mix(in srgb, var(--sd-amber) 45%, transparent); }
-.sd-dash .sd-env h3 a { color: inherit; text-decoration: none; }
-.sd-dash .sd-env h3 a:hover, .sd-dash .sd-env h3 a:focus-visible { text-decoration: underline; }
+
+/* ---- the spotlight ---- */
+.sd-dash .sd-spot-head { align-items: center; }
+.sd-dash .sd-spot-actions { margin-left: auto; display: inline-flex; gap: 8px; }
+.sd-dash .sd-pill.is-bad { background: var(--sd-red-soft); color: var(--sd-red-text); border-color: color-mix(in srgb, var(--sd-red-text) 35%, transparent); }
+.sd-dash .sd-pill.is-blue { background: var(--sd-blue-soft); color: var(--sd-blue); border-color: color-mix(in srgb, var(--sd-blue) 35%, transparent); }
+.sd-dash .sd-node-status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--sd-muted); }
+.sd-dash .sd-node-lb.is-down { border-color: var(--sd-red-text); }
+.sd-dash .sd-slot-tag.is-deploying { color: var(--sd-blue); }
+.sd-dash .sd-slot-tag.is-failed { color: var(--sd-red-text); }
+.sd-dash .sd-slot.is-failed { border: 2px solid var(--sd-red-text); padding: 13px 15px; }
+.sd-dash .sd-slot.is-deploying { border: 2px solid var(--sd-blue); padding: 13px 15px; animation: sd-pulse 1.6s ease-in-out infinite; }
+@keyframes sd-pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--sd-blue) 18%, transparent); } }
+.portal-shell[data-motion='off'] .sd-dash .sd-slot.is-deploying { animation: none; }
+@media (prefers-reduced-motion: reduce) { .sd-dash .sd-slot.is-deploying { animation: none; } }
+
+/* ---- selectable environment cards ---- */
+.sd-dash .sd-env { position: relative; }
+.sd-dash .sd-env-select {
+  position: absolute; inset: 0; z-index: 0; border: 0; border-radius: inherit; background: transparent; cursor: pointer;
+}
+.sd-dash .sd-env-select:focus-visible { outline: 2px solid var(--sd-blue); outline-offset: 2px; }
+.sd-dash .sd-env > :not(.sd-env-select) { position: relative; z-index: 1; pointer-events: none; }
+.sd-dash .sd-env .sd-btn { pointer-events: auto; }
+.sd-dash .sd-env:hover:not(.is-selected) { border-color: var(--sd-guide); }
+.sd-dash .sd-env.is-selected { border-color: var(--sd-blue); box-shadow: 0 0 0 2px var(--sd-blue), var(--sd-shadow-strong); }
+.sd-dash .sd-env.is-production { border-top: 3px solid var(--sd-blue); }
+.sd-dash .sd-env.is-production:hover { border-top-color: var(--sd-blue); }

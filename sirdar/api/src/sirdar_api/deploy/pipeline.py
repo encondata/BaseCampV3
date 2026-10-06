@@ -100,7 +100,7 @@ FLUSH_SECONDS = 2.0             # how often a running step's log is saved
 MIN_MEMORY_MB = 1800            # "2 GB" as the kernel reports it
 RETRYABLE_STATUSES = ("failed", "cancelled", "interrupted")
 # Jobs that leave the environment's status, commit and image tag as they are.
-KEEPS_STATUS = ("snapshot", "publish")
+KEEPS_STATUS = ("snapshot", "publish", "renew")
 # App shutdown waits this long: a cancelled runner may take its full grace
 # to stop and still write its outcome before the engine is disposed.
 SHUTDOWN_SECONDS = CANCEL_GRACE_SECONDS + 5
@@ -221,6 +221,12 @@ def takes_snapshot(dep: Deployment) -> bool:
     return dep.mode == "teardown" and dep.cloud and dep.snapshot_id is not None
 
 
+def smokes(mode: str, slot: str | None) -> bool:
+    """Activate smoke-tests its slot before the switch; Deactivate (no slot)
+    has nothing to test."""
+    return not (mode == "activate" and slot is None)
+
+
 def _exports_now(dep: Deployment) -> bool:
     """The deployment runs Take snapshot itself (not skipped by a retry)."""
     return dep.mode == "snapshot" or (takes_snapshot(dep)
@@ -230,7 +236,7 @@ def _exports_now(dep: Deployment) -> bool:
 def plan_of(dep: Deployment) -> list[StepDef]:
     return plan_for(dep.mode, restore=restores(dep.mode, dep.snapshot_id), publish=dep.publish,
                     vm=dep.vm, cloud=dep.cloud, go_live=dep.go_live,
-                    snapshot=takes_snapshot(dep))
+                    snapshot=takes_snapshot(dep), smoke=smokes(dep.mode, dep.slot))
 
 
 # ---- records -----------------------------------------------------------------
@@ -250,8 +256,8 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     for a publish job, 15 for a teardown). Raises DeployInProgress (only the
     insert is rolled back, through a savepoint: the caller's session and
     objects stay usable), or ValueError when start_step isn't a step of this
-    mode's plan (or the mode can't publish). Snapshot and publish jobs leave
-    the environment's status alone; a teardown marks it deleting.
+    mode's plan (or the mode can't publish). Snapshot, publish and renew jobs
+    leave the environment's status alone; a teardown marks it deleting.
 
     cloud: a DigitalOcean environment's deployment (it must match the
     environment's target); `slot` is the slot it deploys, snapshots or
@@ -270,7 +276,8 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                            retry_of=retry_of)
     taking_on_delete = mode == "teardown" and cloud and snapshot_id is not None
     plan = plan_for(mode, restore=restores(mode, snapshot_id), publish=publish, vm=vm,
-                    cloud=cloud, go_live=go_live, snapshot=taking_on_delete)
+                    cloud=cloud, go_live=go_live, snapshot=taking_on_delete,
+                    smoke=smokes(mode, slot))
     if start_step is None:
         start_step = plan[0].number
     if start_step not in {step.number for step in plan}:
@@ -457,8 +464,8 @@ async def _close(deployment_id: uuid.UUID, env_id: uuid.UUID, step_number: int |
     """End a deployment that didn't succeed, in a fresh session (the run's own
     session may be mid-transaction or cancelled). A snapshot job's (or a
     DigitalOcean Delete's) pending snapshot becomes failed (and its
-    half-fetched bundle goes); any mode but a snapshot or publish job leaves
-    the environment failed."""
+    half-fetched bundle goes); any mode but a snapshot, publish or renew job
+    leaves the environment failed."""
     now = _now()
     taken: uuid.UUID | None = None
     async with get_sessionmaker()() as s:
@@ -485,8 +492,8 @@ async def _close(deployment_id: uuid.UUID, env_id: uuid.UUID, step_number: int |
             await s.execute(update(Snapshot).where(Snapshot.id == snapshot_id,
                                                    Snapshot.status == "pending")
                             .values(status="failed"))
-        if mode not in ("snapshot", "publish"):
-            # a snapshot job and a publish job leave the environment as it was
+        if mode not in KEEPS_STATUS:
+            # a snapshot, publish or renew job leaves the environment as it was
             await s.execute(update(Environment).where(Environment.id == env_id)
                             .values(status="failed", updated_at=now))
         await s.commit()
@@ -641,9 +648,16 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
         try:
             extra, cloud_secrets = await do_envs.env_extra(db, settings, env, dep.slot, secrets)
         except do_envs.DoEnvError as e:
-            missing = ", ".join(e.extra.get("missing") or [])
+            found = e.extra.get("missing") or []
+            if found == ["renewal token"]:       # the account's, not something step 0 builds
+                raise PrepareError("The DigitalOcean account has no renewal token (the token "
+                                   "droplets renew their certificate with). Add it in Settings "
+                                   "› Integrations, then retry.") from None
+            missing = ", ".join(found)
+            tail = (" Add the account's renewal token in Settings › Integrations too."
+                    if "renewal token" in found else "")
             raise PrepareError(f"This environment isn't fully built yet (missing: {missing}). "
-                               "Retry from step 0 (Prepare DigitalOcean).") from None
+                               f"Retry from step 0 (Prepare DigitalOcean).{tail}") from None
         except (vault.SecretsKeyMissing, vault.SecretUnreadable):
             raise PrepareError("Sirdar can't read this environment's DigitalOcean secrets "
                                "with the current SIRDAR_SECRETS_KEY.") from None

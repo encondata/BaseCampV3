@@ -1,7 +1,7 @@
 /** Fixtures shaped like the /api/deploy environment and deployment endpoints. */
 import type {
-  Backup, Deployment, DeploymentStatus, DeploymentStep, DeploymentSummary, DeployTarget, EnvVm, Environment,
-  EnvironmentDefaults, EnvService, IntegrationCheck, Integrations, PublishPlan, Snapshot, StepStatus, TlsCertificate,
+  Backup, Deployment, DeploymentStatus, DeploymentStep, DeploymentSummary, DeployTarget, DoAccount, EnvDoSlot, EnvVm,
+  Environment, EnvironmentDefaults, EnvService, IntegrationCheck, Integrations, PublishPlan, Snapshot, StepStatus, TlsCertificate,
   VmSnapshot,
 } from '../../lib/sirdarApi';
 
@@ -16,7 +16,7 @@ const svc = (service: string, port: number): EnvService => ({
 export const ADOPTED: DeploymentSummary = {
   id: 'd0', mode: 'adopt', git_ref: 'main', sha: SHA, status: 'adopted', start_step: 1, retry_of: null,
   failed_step: null, dump_path: null, snapshot: null, restore_dump: null, rollback_available: false, publish: false,
-  vm: false, take_vm_snapshot: false, vm_snapshot: null,
+  vm: false, take_vm_snapshot: false, vm_snapshot: null, cloud: false, slot: null, go_live: false,
   previous_sha: null, error: null, actor_name: 'Jimmy Henderson',
   started_at: '2026-10-03T12:00:00Z', finished_at: '2026-10-03T12:00:00Z', created_at: '2026-10-03T12:00:00Z',
 };
@@ -31,6 +31,7 @@ export const ENV: Environment = {
              svc('spaces', 9000), svc('status', 8095), svc('mailpit', 8025)],
   secrets_set: { SS_ANTHROPIC_API_KEY: true, SS_DB_TESTING_PASSWORD: false },
   seed_snapshot: null, publish: false, managed_records: [],
+  slots: [], active_slot: null, auto_activate: false, retiring: false, do: null,
   last_deployment: ADOPTED, created_at: '2026-10-03T12:00:00Z', updated_at: '2026-10-03T12:00:00Z',
 };
 
@@ -41,6 +42,11 @@ export const TARGETS = {
     { id: 'ssh:lab', label: 'Lab box', kind: 'ssh', source: 'saved', available: true, configured: true },
   ] as DeployTarget[],
   types: [], can_add_ssh: true, ssh_store_hint: null,
+};
+
+export const DO_DEFAULTS = {
+  droplet_size: 's-2vcpu-4gb', db_size: 'db-s-2vcpu-4gb', db_standby: false,
+  production_slots: ['blue', 'green'], one_slot: ['orange'], two_slots: ['orange', 'purple'],
 };
 
 export const DEFAULTS: EnvironmentDefaults = {
@@ -55,6 +61,7 @@ export const DEFAULTS: EnvironmentDefaults = {
   optional_secrets: ['SS_ANTHROPIC_API_KEY', 'SS_DB_TESTING_PASSWORD'],
   vm: { cores: 4, memory_mb: 8192, disk_gb: 64, keep_snapshots: 3,
         limits: { cores: [1, 64], memory_mb: [2048, 262144], disk_gb: [20, 4096], keep_snapshots: [1, 10] } },
+  do: DO_DEFAULTS,
 };
 
 const UPDATE_PLAN: [number, string, string][] = [
@@ -91,7 +98,7 @@ function deployment(status: DeploymentStatus, statuses: StepStatus[], logs: Reco
   return {
     id: 'd1', mode, git_ref: 'main', sha: NEW_SHA, status, start_step: 1, retry_of: null, failed_step: null,
     dump_path: null, snapshot: null, restore_dump: null, rollback_available: false, publish: false,
-    vm: false, take_vm_snapshot: false, vm_snapshot: null,
+    vm: false, take_vm_snapshot: false, vm_snapshot: null, cloud: false, slot: null, go_live: false,
     previous_sha: SHA, error: null, actor_name: 'Jimmy Henderson',
     started_at: '2026-10-03T13:00:00Z', finished_at: status === 'running' ? null : '2026-10-03T13:10:00Z',
     created_at: '2026-10-03T13:00:00Z', environment: 'uat',
@@ -153,6 +160,7 @@ export function summary(d: Deployment): DeploymentSummary {
     retry_of: d.retry_of, failed_step: d.failed_step, dump_path: d.dump_path, snapshot: d.snapshot,
     restore_dump: d.restore_dump, rollback_available: d.rollback_available, publish: d.publish,
     vm: d.vm, take_vm_snapshot: d.take_vm_snapshot, vm_snapshot: d.vm_snapshot,
+    cloud: d.cloud, slot: d.slot, go_live: d.go_live,
     previous_sha: d.previous_sha,
     error: d.error, actor_name: d.actor_name, started_at: d.started_at, finished_at: d.finished_at,
     created_at: d.created_at,
@@ -348,4 +356,63 @@ export const ESXI_ENV: Environment = {
 export const ESXI_NEW_ENV: Environment = {
   ...ESXI_ENV, status: 'new', current_sha: null, image_tag: null, last_deployment: null,
   vm: { ...ESXI_VM, stage: 'none', moref: null, ip: null, created: false },
+};
+
+export const DO_ACCOUNTS: DoAccount[] = [
+  { key: 'production', label: 'Production', region: 'nyc3', configured: true, token_set: true, source: 'stored',
+    renewal_token_set: true, team_name: 'Encon Production', environments: ['prod'],
+    updated_at: '2026-10-05T12:00:00Z', updated_by_name: 'Jimmy Henderson' },
+  { key: 'development', label: 'Development', region: null, configured: false, token_set: false, source: null,
+    renewal_token_set: false, team_name: null, environments: [], updated_at: null, updated_by_name: null },
+];
+export const DO_ACCOUNTS_BOTH: DoAccount[] = [
+  DO_ACCOUNTS[0],
+  { ...DO_ACCOUNTS[1], region: 'nyc3', configured: true, token_set: true, source: 'stored', renewal_token_set: true,
+    team_name: 'Encon Development', environments: ['uat9'], updated_at: '2026-10-05T12:00:00Z',
+    updated_by_name: 'Jimmy Henderson' },
+];
+const doSlot = (slot: string, active: boolean, sha: string | null, n: number): EnvDoSlot => ({
+  slot, droplet_id: String(4000 + n), public_ip: `203.0.113.${10 + n}`, private_ip: `10.116.0.${1 + n}`, sha,
+  image_tag: sha ? sha.slice(0, 8) : null, active, last_check_ok: sha ? true : null,
+  last_check_at: sha ? '2026-10-05T12:00:00Z' : null,
+});
+/** uat9 on DigitalOcean (Development account): orange live, purple deployed and idle. */
+export const DO_ENV: Environment = {
+  ...ENV, id: 'e9', name: 'uat9', target: 'digitalocean', target_kind: 'digitalocean',
+  base_domain: 'uat9.serversherpa.com', env_dir: '/opt/serversherpa/uat9', proxy_ip: '172.30.0.2',
+  bind_ip: '127.0.0.1', spaces_bucket: 'ss-uat9-0a1b2c3d', publish: true,
+  slots: ['orange', 'purple'], active_slot: 'orange',
+  do: {
+    account: 'development', account_label: 'Development', region: 'nyc3', droplet_size: 's-2vcpu-4gb',
+    db_size: 'db-s-2vcpu-4gb', db_standby: false, acme_staging: true, vpc_ip_range: '10.116.0.0/20',
+    lb_ip: '203.0.113.50', db_host: 'private-ss-uat9-db-do-user-1.db.ondigitalocean.com',
+    bucket: 'ss-uat9-0a1b2c3d', cert_not_after: '2027-01-03T12:00:00Z',
+    slots: [doSlot('orange', true, SHA, 1), doSlot('purple', false, NEW_SHA, 2)],
+    resources: [
+      { kind: 'vpc', name: 'ss-uat9', slot: null }, { kind: 'droplet', name: 'ss-uat9-orange', slot: 'orange' },
+      { kind: 'droplet', name: 'ss-uat9-purple', slot: 'purple' }, { kind: 'database', name: 'ss-uat9-db', slot: null },
+      { kind: 'load_balancer', name: 'ss-uat9-lb', slot: null },
+    ],
+  },
+};
+/** solo: a one-slot DigitalOcean environment (orange). */
+export const ONE_SLOT_ENV: Environment = {
+  ...DO_ENV, id: 'e10', name: 'solo', slots: ['orange'],
+  do: { ...DO_ENV.do!, slots: [doSlot('orange', true, SHA, 1)] },
+};
+/** prod (Production account): blue live, green deployed and idle. */
+export const PROD_ENV: Environment = {
+  ...DO_ENV, id: 'p1', name: 'prod', type: 'production', base_domain: 'serversherpa.com',
+  slots: ['blue', 'green'], active_slot: 'blue',
+  do: { ...DO_ENV.do!, account: 'production', account_label: 'Production', acme_staging: false,
+        slots: [doSlot('blue', true, SHA, 1), doSlot('green', false, NEW_SHA, 2)] },
+};
+export const DO_TARGETS = {
+  ...TARGETS,
+  targets: [...TARGETS.targets,
+            { id: 'digitalocean', label: 'DigitalOcean', kind: 'digitalocean', available: true, configured: true }] as DeployTarget[],
+};
+/** A DigitalOcean Update that deployed to purple and left traffic on orange. */
+export const DO_UPDATE: DeploymentSummary = {
+  ...summary(SUCCEEDED), id: 'd9', cloud: true, slot: 'purple', go_live: false,
 };

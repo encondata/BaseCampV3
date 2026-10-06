@@ -15,13 +15,14 @@ const api = vi.hoisted(() => ({
   getDeployTargets: vi.fn(), getDoRegions: vi.fn(), connectDeploy: vi.fn(), listKnownHosts: vi.fn(),
   trustKnownHost: vi.fn(), forgetKnownHost: vi.fn(), deleteSshTarget: vi.fn(),
   getSshTarget: vi.fn(), listKeyFiles: vi.fn(), createSshTarget: vi.fn(), updateSshTarget: vi.fn(),
-  listEnvironments: vi.fn(), listSnapshots: vi.fn(),
+  listEnvironments: vi.fn(), listSnapshots: vi.fn(), getDoAccounts: vi.fn(),
 }));
 vi.mock('../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../lib/sirdarApi')>()), ...api }));
 
 import { ApiError } from '@portal/lib/api';
 
 import Deploy from './Deploy';
+import { DO_ACCOUNTS, DO_ACCOUNTS_BOTH } from './environments/testData';
 
 const TARGETS = {
   targets: [
@@ -54,6 +55,7 @@ beforeEach(() => {
   api.listKnownHosts.mockResolvedValue([]);
   api.listEnvironments.mockResolvedValue({ environments: [] });
   api.listSnapshots.mockResolvedValue({ snapshots: [] });
+  api.getDoAccounts.mockResolvedValue({ accounts: DO_ACCOUNTS_BOTH });
 });
 Element.prototype.scrollIntoView = () => {};   // jsdom lacks it (ComboBox calls it)
 afterEach(cleanup);
@@ -83,7 +85,7 @@ it('a not-configured target lists the env keys to set', async () => {
   await userEvent.click(screen.getByRole('radio', { name: /DigitalOcean/ }));
   expect(screen.getByText(/SIRDAR_DEPLOY_DO_TOKEN/)).toBeTruthy();
   expect(screen.getByText(/re-run the installer/i)).toBeTruthy();
-  expect(screen.getByText(/Add the API token in Settings › Integrations › DigitalOcean, or set/)).toBeTruthy();
+  expect(screen.getByText(/Set up a DigitalOcean account in Settings › Integrations, or set/)).toBeTruthy();
   expect(testBtn().disabled).toBe(true);
 });
 
@@ -92,7 +94,7 @@ it('Test connection stays disabled until a configured target and a type are chos
   expect(testBtn().disabled).toBe(true);
   await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
   expect(testBtn().disabled).toBe(true);
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   expect(testBtn().disabled).toBe(false);
 });
 
@@ -100,7 +102,7 @@ it('a successful test shows each check and the facts', async () => {
   api.connectDeploy.mockResolvedValue(OK);
   await ready();
   await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   await userEvent.click(testBtn());
   expect(api.connectDeploy).toHaveBeenCalledWith('ssh', 'dev');
   await waitFor(() => expect(screen.getByText('Connected as deploy')).toBeTruthy());
@@ -113,7 +115,7 @@ it('connect_failed shows the reason inline', async () => {
   api.connectDeploy.mockRejectedValue(new ApiError(502, 'connect_failed', { code: 'connect_failed', reason: 'Connection timed out.' }));
   await ready();
   await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   await userEvent.click(testBtn());
   await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Connection timed out.'));
 });
@@ -123,7 +125,7 @@ it('an unknown host key opens the trust modal; trusting calls trust then connect
   api.trustKnownHost.mockResolvedValue({});
   await ready();
   await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   await userEvent.click(testBtn());
   const dialog = await screen.findByRole('dialog');
   expect(within(dialog).getByText('SHA256:abc')).toBeTruthy();
@@ -139,7 +141,7 @@ it('host_key_changed while trusting closes the modal and shows the retry message
   api.trustKnownHost.mockRejectedValue(new ApiError(409, 'host_key_changed', { code: 'host_key_changed' }));
   await ready();
   await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   await userEvent.click(testBtn());
   const dialog = await screen.findByRole('dialog');
   await userEvent.click(within(dialog).getByRole('button', { name: 'Trust and connect' }));
@@ -152,7 +154,7 @@ it('changing the target or type clears the result, mismatch and error', async ()
     .mockRejectedValueOnce(new ApiError(502, 'connect_failed', { code: 'connect_failed', reason: 'Timed out.' }));
   await ready();
   await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   await userEvent.click(testBtn());
   await waitFor(() => expect(screen.getByText('Connected as deploy')).toBeTruthy());
   await userEvent.click(screen.getByRole('radio', { name: /^Beta/ }));
@@ -172,7 +174,7 @@ it('a double click on Test connection sends one request', async () => {
   api.connectDeploy.mockReturnValue(new Promise((r) => { release = r; }));
   await ready();
   await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   const btn = testBtn();
   act(() => { btn.click(); btn.click(); });
   expect(api.connectDeploy).toHaveBeenCalledTimes(1);
@@ -186,7 +188,7 @@ it('forgetting after a mismatch deletes the key; the next test asks to trust aga
   vi.spyOn(window, 'confirm').mockReturnValue(true);
   await ready();
   await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   await userEvent.click(testBtn());
   await userEvent.click(await screen.findByRole('button', { name: 'Forget the old key' }));
   expect(api.forgetKnownHost).toHaveBeenCalledWith('srv.example.com', 22);
@@ -201,7 +203,7 @@ it('a key mismatch shows both fingerprints and offers Forget with deploy:change'
   vi.spyOn(window, 'confirm').mockReturnValue(true);
   await ready();
   await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   await userEvent.click(testBtn());
   await waitFor(() => expect(screen.getByText(/doesn't match the one Sirdar trusted/)).toBeTruthy());
   expect(screen.getByText('SHA256:old')).toBeTruthy();
@@ -215,7 +217,7 @@ it('without deploy:change the mismatch panel has no forget button', async () => 
   api.connectDeploy.mockRejectedValue(MISMATCH);
   await ready();
   await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   await userEvent.click(testBtn());
   await waitFor(() => expect(screen.getByText('SHA256:old')).toBeTruthy());
   expect(screen.queryByRole('button', { name: 'Forget the old key' })).toBeNull();
@@ -225,7 +227,7 @@ it('a view-only admin sees the page but the button is disabled with a note', asy
   perms.add = false; perms.change = false;
   await ready();
   await userEvent.click(screen.getByRole('radio', { name: /Custom \(SSH\)/ }));
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   expect(testBtn().disabled).toBe(true);
   expect(screen.getByText(/you can view deployments but not run tests/i)).toBeTruthy();
 });
@@ -268,9 +270,9 @@ it('DigitalOcean: loads regions, preselects the default, and sends the chosen re
   await waitFor(() => expect(box.value).toContain('New York 3 (nyc3)'));
   await userEvent.click(box);
   await userEvent.click(await screen.findByText('San Francisco 3 (sfo3)'));
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   await userEvent.click(testBtn());
-  expect(api.connectDeploy).toHaveBeenCalledWith('digitalocean', 'dev', 'sfo3');
+  expect(api.connectDeploy).toHaveBeenCalledWith('digitalocean', 'dev', 'sfo3', undefined, 'production');
   await waitFor(() => expect(screen.getByText(/sfo3 ·/)).toBeTruthy());
 });
 
@@ -284,9 +286,62 @@ it('DigitalOcean: sends the preselected default, and switching targets reuses th
   await userEvent.click(screen.getByRole('radio', { name: /DigitalOcean/ }));
   await screen.findByRole('combobox', { name: 'Region' });
   expect(api.getDoRegions).toHaveBeenCalledTimes(1);
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  expect(api.getDoRegions).toHaveBeenCalledWith('production');
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   await userEvent.click(testBtn());
-  expect(api.connectDeploy).toHaveBeenCalledWith('digitalocean', 'dev', 'nyc3');
+  expect(api.connectDeploy).toHaveBeenCalledWith('digitalocean', 'dev', 'nyc3', undefined, 'production');
+});
+
+it('DigitalOcean: the account choice picks its regions and the account the test reads', async () => {
+  api.getDoRegions.mockResolvedValue(REGIONS);
+  api.connectDeploy.mockResolvedValue(DO_OK);
+  await pickDo();
+  const accounts = await screen.findByRole('radiogroup', { name: 'Account' });
+  expect(within(accounts).getByRole('radio', { name: 'Production' }).getAttribute('aria-checked')).toBe('true');
+  await userEvent.click(within(accounts).getByRole('radio', { name: 'Development' }));
+  await waitFor(() => expect(api.getDoRegions).toHaveBeenLastCalledWith('development'));
+  await screen.findByRole('combobox', { name: 'Region' });
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
+  await userEvent.click(testBtn());
+  expect(api.connectDeploy).toHaveBeenLastCalledWith('digitalocean', 'dev', 'nyc3', undefined, 'development');
+});
+
+it("DigitalOcean: an account that isn't set up can't be chosen", async () => {
+  api.getDoAccounts.mockResolvedValue({ accounts: DO_ACCOUNTS });
+  api.getDoRegions.mockResolvedValue(REGIONS);
+  await pickDo();
+  const accounts = await screen.findByRole('radiogroup', { name: 'Account' });
+  expect((within(accounts).getByRole('radio', { name: 'Development' }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it("DigitalOcean: a late region failure for the account left behind doesn't show", async () => {
+  let rejectProd: (e: unknown) => void = () => {};
+  api.getDoRegions.mockImplementation((key: string) => (key === 'production'
+    ? new Promise((_, reject) => { rejectProd = reject; }) : Promise.resolve(REGIONS)));
+  await pickDo();
+  const accounts = await screen.findByRole('radiogroup', { name: 'Account' });
+  await waitFor(() => expect(api.getDoRegions).toHaveBeenCalledWith('production'));
+  await userEvent.click(within(accounts).getByRole('radio', { name: 'Development' }));
+  await screen.findByRole('combobox', { name: 'Region' });
+  await act(async () => {
+    rejectProd(new ApiError(502, 'connect_failed', { code: 'connect_failed', reason: 'Production regions failed.' }));
+  });
+  expect(screen.queryByText(/Production regions failed/)).toBeNull();
+  expect(screen.queryByText('Loading regions…')).toBeNull();
+  expect(screen.getByRole('combobox', { name: 'Region' })).toBeTruthy();
+});
+
+it("DigitalOcean: when the accounts can't load, the test reads Production", async () => {
+  api.getDoAccounts.mockRejectedValue(new ApiError(500, 'internal', { code: 'internal' }));
+  api.getDoRegions.mockResolvedValue(REGIONS);
+  api.connectDeploy.mockResolvedValue(DO_OK);
+  await pickDo();
+  await screen.findByRole('combobox', { name: 'Region' });
+  expect(screen.queryByRole('radiogroup', { name: 'Account' })).toBeNull();
+  expect(api.getDoRegions).toHaveBeenCalledWith('production');
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
+  await userEvent.click(testBtn());
+  expect(api.connectDeploy).toHaveBeenLastCalledWith('digitalocean', 'dev', 'nyc3', undefined, 'production');
 });
 
 it('DigitalOcean: a region load error shows inline with Retry', async () => {
@@ -308,15 +363,17 @@ async function pickSsh() {
 it('shows Custom as the fifth type with its description', async () => {
   await ready();
   const radios = screen.getAllByRole('radio', { name: /Blue|Green|Dev|Beta|Custom$|Your own/ });
-  const custom = screen.getByRole('radio', { name: /^Custom\s*Your own named environment/ });
+  const custom = screen.getByRole('radio', { name: 'Custom' });
   expect(custom.textContent).toContain('Your own named environment');
+  // The name is the type alone; the description describes it.
+  expect(document.getElementById(custom.getAttribute('aria-describedby')!)!.textContent).toBe('Your own named environment');
   expect(radios.length).toBeGreaterThanOrEqual(5);
 });
 
 it('shows the name field only for Custom, validates it and gates the button', async () => {
   await pickSsh();
   expect(screen.queryByLabelText('Environment name')).toBeNull();
-  await userEvent.click(screen.getByRole('radio', { name: /^Custom\s*Your own/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Custom' }));
   const input = screen.getByLabelText('Environment name');
   expect(screen.getByText('Lowercase letters, numbers and hyphens; starts with a letter; 2–32 characters.')).toBeTruthy();
   expect(testBtn().disabled).toBe(true);
@@ -338,20 +395,20 @@ it('shows the name field only for Custom, validates it and gates the button', as
 it('sends the name and shows it in the results header; other types do not send it', async () => {
   api.connectDeploy.mockResolvedValue({ ...OK, type: 'custom', name: 'demo-acme' });
   await pickSsh();
-  await userEvent.click(screen.getByRole('radio', { name: /^Custom\s*Your own/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Custom' }));
   await userEvent.type(screen.getByLabelText('Environment name'), 'demo-acme');
   await userEvent.click(testBtn());
   await waitFor(() => expect(api.connectDeploy).toHaveBeenCalledWith('ssh', 'custom', undefined, 'demo-acme'));
   expect(await screen.findByText(/Custom \(SSH\) · Custom: demo-acme/)).toBeTruthy();
   // switching away clears results, hides the field, and does not send the name
   api.connectDeploy.mockResolvedValue(OK);
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   expect(screen.queryByText(/demo-acme/)).toBeNull();
   expect(screen.queryByLabelText('Environment name')).toBeNull();
   await userEvent.click(testBtn());
   await waitFor(() => expect(api.connectDeploy).toHaveBeenLastCalledWith('ssh', 'dev'));
   // the typed name is kept when switching back
-  await userEvent.click(screen.getByRole('radio', { name: /^Custom\s*Your own/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Custom' }));
   expect((screen.getByLabelText('Environment name') as HTMLInputElement).value).toBe('demo-acme');
 });
 
@@ -454,7 +511,7 @@ it('connects with the saved target id, and trusts with it', async () => {
   api.trustKnownHost.mockResolvedValue({});
   await ready();
   await userEvent.click(screen.getByRole('radio', { name: /Edge Box/ }));
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   await userEvent.click(testBtn());
   expect(api.connectDeploy).toHaveBeenCalledWith('ssh:edge-box', 'dev');
   await userEvent.click(await screen.findByRole('button', { name: 'Trust and connect' }));
@@ -482,7 +539,7 @@ it('the Proxmox card points to Settings and New environment instead of testing h
   const card = await screen.findByRole('radio', { name: /Proxmox/ });
   expect(within(card).getByText('PVE')).toBeTruthy();
   await userEvent.click(card);
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   expect(screen.getByText(/Test Proxmox in Settings › Integrations/)).toBeTruthy();
   expect((screen.getByRole('button', { name: 'Test connection' }) as HTMLButtonElement).disabled).toBe(true);
 });
@@ -494,7 +551,7 @@ it('the ESXi card points to Settings and New environment instead of testing here
   const card = await screen.findByRole('radio', { name: /VMware ESXi/ });
   expect(within(card).getByText('ESXi')).toBeTruthy();
   await userEvent.click(card);
-  await userEvent.click(screen.getByRole('radio', { name: /^Dev/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Dev' }));
   expect(screen.getByText('Test VMware ESXi in Settings › Integrations. Environments on it are made with New '
     + 'environment, which builds their VM on the first deploy.')).toBeTruthy();
   expect((screen.getByRole('button', { name: 'Test connection' }) as HTMLButtonElement).disabled).toBe(true);
