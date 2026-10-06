@@ -55,11 +55,20 @@ def upgrade() -> None:
           ADD COLUMN auto_activate boolean NOT NULL DEFAULT false,
           ADD COLUMN retiring boolean NOT NULL DEFAULT false,
           ADD CONSTRAINT environments_slots_check
-            CHECK (slots <@ ARRAY['blue', 'green', 'orange', 'purple']::text[]),
+            CHECK (slots <@ ARRAY['blue', 'green', 'orange', 'purple']::text[]
+                   AND cardinality(array_positions(slots, 'blue')) <= 1
+                   AND cardinality(array_positions(slots, 'green')) <= 1
+                   AND cardinality(array_positions(slots, 'orange')) <= 1
+                   AND cardinality(array_positions(slots, 'purple')) <= 1),
           ADD CONSTRAINT environments_active_slot_check
             CHECK (active_slot IS NULL OR active_slot = ANY (slots)),
           ADD CONSTRAINT environments_production_check
-            CHECK (type <> 'production' OR (target_id = 'digitalocean' AND NOT auto_activate));
+            CHECK (type <> 'production' OR (target_id = 'digitalocean' AND NOT auto_activate
+                                            AND slots = ARRAY['blue', 'green']::text[]));
+        -- At most one production environment that isn't being retired: a
+        -- cutover builds the next one while the old one retires.
+        CREATE UNIQUE INDEX environments_one_production ON environments ((true))
+          WHERE type = 'production' AND NOT retiring;
 
         ALTER TABLE deployments
           ADD COLUMN cloud boolean NOT NULL DEFAULT false,
@@ -116,13 +125,15 @@ def upgrade() -> None:
 
         CREATE TABLE do_resources (
           id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-          environment_id uuid NOT NULL REFERENCES environments(id) ON DELETE CASCADE,
+          -- RESTRICT: an environment can't be deleted while it still owns
+          -- DigitalOcean resources (step 18 forgets each row as it removes it).
+          environment_id uuid NOT NULL REFERENCES environments(id) ON DELETE RESTRICT,
           kind text NOT NULL CHECK (kind IN ('vpc', 'droplet', 'database', 'spaces_key',
                                              'bucket', 'certificate', 'load_balancer',
                                              'firewall')),
           do_id text NOT NULL,
           name text NOT NULL,
-          slot text,
+          slot text CHECK (slot IN ('blue', 'green', 'orange', 'purple')),
           origin text NOT NULL DEFAULT 'created' CHECK (origin IN ('created', 'claimed')),
           created_at timestamptz NOT NULL DEFAULT now(),
           UNIQUE (kind, do_id)
@@ -145,7 +156,9 @@ def downgrade() -> None:
     # Development token has nowhere to go and is dropped.
     op.execute(f"""
         DO $$ BEGIN
-          IF EXISTS (SELECT 1 FROM do_environments) OR EXISTS (SELECT 1 FROM do_resources) THEN
+          IF EXISTS (SELECT 1 FROM do_environments) OR EXISTS (SELECT 1 FROM do_resources)
+             OR EXISTS (SELECT 1 FROM environments
+                        WHERE type = 'production' OR target_id = 'digitalocean') THEN
             RAISE EXCEPTION 'Can''t downgrade below 0010 while Sirdar manages DigitalOcean '
                             'environments: delete them first.';
           END IF;
@@ -163,6 +176,7 @@ def downgrade() -> None:
           DROP COLUMN cloud, DROP COLUMN slot, DROP COLUMN go_live,
           DROP CONSTRAINT deployments_mode_check,
           ADD CONSTRAINT deployments_mode_check CHECK (mode IN ({_MODES_9}));
+        DROP INDEX environments_one_production;
         ALTER TABLE environments
           DROP CONSTRAINT environments_production_check,
           DROP CONSTRAINT environments_active_slot_check,

@@ -531,8 +531,9 @@ class DoResource(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, server_default=text("gen_random_uuid()"))
+    # RESTRICT: an environment can't be deleted while it still owns resources.
     environment_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("environments.id", ondelete="CASCADE"))
+        ForeignKey("environments.id", ondelete="RESTRICT"))
     # vpc | droplet | database | spaces_key | bucket | certificate | load_balancer | firewall
     kind: Mapped[str]
     do_id: Mapped[str]
