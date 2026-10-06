@@ -305,7 +305,9 @@ it('loads a handed-off file, shows the note, clears the handoff, and validates i
   await screen.findByText('NAP11 Move');
 
   expect(screen.getByText('acme-converted.xlsx')).toBeTruthy();
-  expect(screen.getByText('This file came from Convert Raw F-T.')).toBeTruthy();
+  const note = screen.getByText('This file came from Convert Raw F-T.');
+  // right under the drop zone it describes, above the import options
+  expect(note.previousElementSibling?.classList.contains('imp-dropzone')).toBe(true);
   expect(peekHandedOffImportFile('i1')).toBeNull();      // consumed by the mount effect
 
   await userEvent.click(screen.getByRole('button', { name: /Validate file/ }));

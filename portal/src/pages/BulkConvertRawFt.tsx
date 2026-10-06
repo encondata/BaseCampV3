@@ -55,10 +55,11 @@ export default function BulkConvertRawFt() {
 }
 
 function Chrome({ steps, step, children }: { steps: Steps; step: number; children: ReactNode }) {
-  const meta = steps[step]!;
+  const current = Math.min(step, steps.length - 1);    // never past the steps this person has
+  const meta = steps[current]!;
   return (
     <div className="portal-page">
-      <WizardHeader steps={steps} current={step} title={meta.title} description={meta.description} />
+      <WizardHeader steps={steps} current={current} title={meta.title} description={meta.description} />
       <div className="wiz-body">{children}</div>
     </div>
   );

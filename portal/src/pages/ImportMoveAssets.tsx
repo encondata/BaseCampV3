@@ -205,11 +205,10 @@ export default function ImportMoveAssets() {
               <ImportUploadFields file={file} onFile={setFile} mode={mode} onMode={setMode}
                                   generateSerials={generateSerials}
                                   onGenerateSerials={setGenerateSerials}
-                                  busy={busy} inputRef={fileInputRef} />
-
-              {handedOff && file === handedOff && (
-                <p className="page-hint">This file came from Convert Raw F-T.</p>
-              )}
+                                  busy={busy} inputRef={fileInputRef}
+                                  fileNote={handedOff && file === handedOff && (
+                                    <p className="page-hint">This file came from Convert Raw F-T.</p>
+                                  )} />
 
               <div className="imp-card-foot">
                 <button className="btn-solid" type="button"
