@@ -276,5 +276,3 @@
 .sd-dash .sd-env .sd-btn { pointer-events: auto; }
 .sd-dash .sd-env:hover:not(.is-selected) { border-color: var(--sd-guide); }
 .sd-dash .sd-env.is-selected { border-color: var(--sd-blue); box-shadow: 0 0 0 2px var(--sd-blue), var(--sd-shadow-strong); }
-.sd-dash .sd-env.is-production { border-top: 3px solid var(--sd-blue); }
-.sd-dash .sd-env.is-production:hover { border-top-color: var(--sd-blue); }

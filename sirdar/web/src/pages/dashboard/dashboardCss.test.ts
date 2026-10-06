@@ -6,8 +6,8 @@ import { expect, it } from 'vitest';
 
 const css = readFileSync(fileURLToPath(new URL('./dashboard.css', import.meta.url)), 'utf8');
 
-it('the Production stripe stays blue on hover', () => {
-  expect(css).toMatch(/\.sd-env\.is-production:hover[^{]*\{[^}]*border-top-color:\s*var\(--sd-blue\)/);
+it('only selection draws the blue edge: the Production card has no stripe of its own', () => {
+  expect(css).not.toMatch(/\.sd-env\.is-production[^{]*\{[^}]*border/);
 });
 
 it('the idle server box is dimmed', () => {
