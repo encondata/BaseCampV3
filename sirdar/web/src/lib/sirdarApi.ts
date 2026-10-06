@@ -309,6 +309,7 @@ const MESSAGES: Record<string, string> = {
   do_slots_invalid: 'Choose one droplet or two slots. Production always has blue and green.',
   do_size_invalid: "That isn't a DigitalOcean droplet size.",
   do_db_size_invalid: "That isn't a DigitalOcean database size.",
+  db_standby_size_invalid: "That database size can't have a standby node. Choose a larger size first.",
   do_field_locked: "That can't change on a DigitalOcean environment after it's created.",
   do_not_allowed: 'DigitalOcean settings only apply to an environment on DigitalOcean.',
   do_not_ready: "Nothing is built on DigitalOcean for this environment yet. Deploy it first.",
