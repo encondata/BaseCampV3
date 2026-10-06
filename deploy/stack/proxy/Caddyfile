@@ -1,0 +1,54 @@
+# The edge on a DigitalOcean droplet (STACK_CADDY=1): plain HTTP on :80
+# behind the load balancer, which terminates HTTPS. One route list, in this
+# order: Caddy's own health, the load balancer's health check (any host
+# outside the environment's domain: the API's health), Let's Encrypt
+# HTTP-01 for the cert-worker, plain HTTP to HTTPS, then each public name.
+# Client IPs come only from the load balancer (the VPC's range).
+{
+	auto_https off
+	admin off
+	servers {
+		trusted_proxies static {$STACK_TRUSTED_PROXIES}
+		client_ip_headers X-Forwarded-For
+	}
+}
+
+:80 {
+	@self {
+		path /caddy-health
+		remote_ip 127.0.0.1
+	}
+	@lbhealth {
+		path /healthz
+		not host *.{$STACK_DOMAIN}
+	}
+	@plain header X-Forwarded-Proto http
+	@api host api.{$STACK_DOMAIN}
+	@portal host portal.{$STACK_DOMAIN}
+	@kiosk host kiosk.{$STACK_DOMAIN}
+	@wiki host wiki.{$STACK_DOMAIN}
+	@status host status.{$STACK_DOMAIN}
+
+	route {
+		respond @self "ok" 200
+		reverse_proxy @lbhealth api:8000
+		reverse_proxy /.well-known/acme-challenge/* cert-worker:8089
+		redir @plain https://{host}{uri} 308
+		reverse_proxy @api api:8000 {
+			header_up X-Forwarded-For {client_ip}
+		}
+		reverse_proxy @portal portal:8080 {
+			header_up X-Forwarded-For {client_ip}
+		}
+		reverse_proxy @kiosk kiosk:8080 {
+			header_up X-Forwarded-For {client_ip}
+		}
+		reverse_proxy @wiki wiki:8080 {
+			header_up X-Forwarded-For {client_ip}
+		}
+		reverse_proxy @status status:8080 {
+			header_up X-Forwarded-For {client_ip}
+		}
+		respond 404
+	}
+}

@@ -1,6 +1,7 @@
 # deploy/stack — one ServerSherpa environment on one host
 
-Five Compose stacks run one environment on a Docker host:
+Five Compose stacks (six on a DigitalOcean droplet) run one environment on
+a Docker host:
 
 | Stack | Services | Published |
 |---|---|---|
@@ -9,9 +10,33 @@ Five Compose stacks run one environment on a Docker host:
 | `api` | migrate (job), api, 10 workers | 8000 |
 | `web` | portal, kiosk, wiki | 8091, 8090, 8096 |
 | `status` | status | 8095 |
+| `proxy` | caddy | 80 (DigitalOcean droplets only) |
 
 All of them share the Docker network `ss-<env>`. `ss-stack` runs them in
 order; Sirdar's deploy pipeline (phase 2) will run the same commands.
+
+## DigitalOcean droplets (Sirdar phase 7)
+
+On a DigitalOcean droplet, Sirdar writes the droplet keys at the end of
+`env.example` (`STACK_EXTERNAL_DATA=1`, `STACK_CADDY=1`,
+`STACK_NETWORK_SUBNET`, `STACK_HOSTS_IP`, `STACK_TRUSTED_PROXIES`, the
+`STACK_DB_*` connection, `SS_DATABASE_URL` / `SS_DATABASE_SSL`, the
+`SS_SPACES_*` bucket settings and `STACK_DROPLET_ID`). `ss-stack` then:
+
+- skips the `db` and `storage` stacks: the database is a managed PostgreSQL
+  and objects live in DigitalOcean Spaces (mailpit still runs from the
+  `storage` stack);
+- dumps and restores through a one-off `postgres:16-alpine` container
+  against the managed database (`PGSSLMODE=require`, the password from
+  `POSTGRES_PASSWORD`, passed through the environment and never on a
+  command line);
+- creates `ss-<env>` with `STACK_NETWORK_SUBNET`, so Caddy's fixed address
+  (`STACK_PROXY_IP`) is inside it;
+- starts the `proxy` stack (Caddy on :80, behind the load balancer) last.
+
+`ss-stack pgdump <env-dir> <out.dump>` (custom format, no owners or ACLs)
+and `ss-stack revision <env-dir>` (the Alembic revision) serve snapshots in
+both modes.
 
 ## Accepted risk: staging CORS
 

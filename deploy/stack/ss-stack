@@ -1,29 +1,36 @@
 #!/usr/bin/env bash
-# ss-stack — run one ServerSherpa environment's five Compose stacks
-# (db, storage, api, web, status) on this host, in dependency order.
+# ss-stack — run one ServerSherpa environment's Compose stacks (db, storage,
+# api, web, status, and proxy on a DigitalOcean droplet) on this host, in
+# dependency order.
 #
-#   ss-stack build <env-dir>              build every image at STACK_IMAGE_TAG
-#   ss-stack up    <env-dir>              start or update everything, waiting on health
-#   ss-stack down  <env-dir> [--volumes]  stop everything; --volumes also deletes the data
-#   ss-stack ps    <env-dir>              list every stack's containers
-#   ss-stack dump  <env-dir>              pg_dump into <env-dir>/backups (keeps STACK_KEEP_DUMPS)
-#   ss-stack data  <env-dir>              start only the database and storage, waiting on health
+#   ss-stack build   <env-dir>              build every image at STACK_IMAGE_TAG
+#   ss-stack up      <env-dir>              start or update everything, waiting on health
+#   ss-stack down    <env-dir> [--volumes]  stop everything; --volumes also deletes the data
+#   ss-stack ps      <env-dir>              list every stack's containers
+#   ss-stack dump    <env-dir>              pg_dump into <env-dir>/backups (keeps STACK_KEEP_DUMPS)
+#   ss-stack data    <env-dir>              start only the database and storage, waiting on health
 #   ss-stack restore <env-dir> <file.dump> [--clear-sessions]
-#                                         stop the app stacks, empty the database, pg_restore the
-#                                         dump; --clear-sessions also signs everyone out
+#                                           stop the app stacks, empty the database, pg_restore the
+#                                           dump; --clear-sessions also signs everyone out
+#   ss-stack pgdump  <env-dir> <out.dump>   pg_dump (custom, no owner or ACLs) to one file
+#   ss-stack revision <env-dir>             print the database's Alembic revision
 #
 # <env-dir> holds the environment's .env (see env.example) and backups/.
+# With STACK_EXTERNAL_DATA=1 (DigitalOcean) the database is a managed
+# PostgreSQL and objects live in DigitalOcean Spaces: the db and storage
+# stacks don't run (mailpit does), and the database commands use one-off
+# postgres containers. With STACK_CADDY=1 the proxy stack (Caddy) runs last.
 # Sirdar's deploy pipeline runs exactly these commands over SSH.
 set -euo pipefail
 # dumps hold every secret in the database: backups/ and its files are owner-only
 umask 077
 
 STACK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STACKS=(db storage api web status)
 WAIT=(--wait --wait-timeout 300 --remove-orphans)
+PG_IMAGE=postgres:16-alpine
 
 die() { echo "ss-stack: $*" >&2; exit 1; }
-usage() { sed -n '4,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '6,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 [[ $# -ge 2 ]] || usage
 cmd=$1
@@ -44,6 +51,12 @@ STACK_ENV=$(env_value STACK_ENV)
 [[ $STACK_ENV =~ ^[a-z][a-z0-9-]{0,30}[a-z0-9]$ ]] \
   || die "STACK_ENV must be 2-32 lowercase letters, digits and hyphens (got '$STACK_ENV')"
 NETWORK="ss-$STACK_ENV"
+SUBNET=$(env_value STACK_NETWORK_SUBNET)
+external() { [[ $(env_value STACK_EXTERNAL_DATA) == 1 ]]; }
+caddy() { [[ $(env_value STACK_CADDY) == 1 ]]; }
+
+if external; then STACKS=(storage api web status); else STACKS=(db storage api web status); fi
+if caddy; then STACKS+=(proxy); fi
 
 dc() {  # dc <stack> <compose args…>
   local stack=$1; shift
@@ -51,7 +64,54 @@ dc() {  # dc <stack> <compose args…>
 }
 
 ensure_network() {
-  docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK" >/dev/null
+  if docker network inspect "$NETWORK" >/dev/null 2>&1; then
+    if [[ -n $SUBNET ]]; then
+      local have
+      have=$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$NETWORK")
+      [[ $have == "$SUBNET" ]] \
+        || die "network $NETWORK has subnet '$have', not $SUBNET: remove it (docker network rm $NETWORK) and run again"
+    fi
+    return
+  fi
+  if [[ -n $SUBNET ]]; then
+    docker network create --subnet "$SUBNET" "$NETWORK" >/dev/null
+  else
+    docker network create "$NETWORK" >/dev/null
+  fi
+}
+
+# The managed database: a one-off client container on the environment's
+# network. The password reaches docker through the environment, never argv.
+pg() {  # pg <client> [args…] — stdin and stdout pass through
+  local client=$1; shift
+  PGPASSWORD=$(env_value POSTGRES_PASSWORD) docker run --rm -i --network "$NETWORK" \
+    -e PGPASSWORD -e PGSSLMODE=require \
+    -e PGHOST="$(env_value STACK_DB_HOST)" -e PGPORT="$(env_value STACK_DB_PORT)" \
+    -e PGUSER="$(env_value STACK_DB_USER)" -e PGDATABASE="$(env_value STACK_DB_NAME)" \
+    "$PG_IMAGE" "$client" "$@"
+}
+
+# The local database container (db stack).
+pg_local() {  # pg_local <client> [args…]
+  local client=$1; shift
+  dc db exec -T postgres "$client" -U serversherpa -d serversherpa "$@"
+}
+
+psql_run() {  # psql_run <sql> — on whichever database this environment uses
+  if external; then
+    pg psql -v ON_ERROR_STOP=1 -q -c "$1" </dev/null
+  else
+    pg_local psql -v ON_ERROR_STOP=1 -q -c "$1" </dev/null
+  fi
+}
+
+data_up() {
+  if external; then
+    dc storage up -d "${WAIT[@]}" mailpit
+  else
+    dc db up -d "${WAIT[@]}"
+    dc storage up -d "${WAIT[@]}"
+  fi
 }
 
 # A restored copy's sessions and remembered browsers belong to the source.
@@ -61,6 +121,15 @@ refuse_placeholders() {
   local left
   left=$(grep -oE '^[A-Z0-9_]+=CHANGEME' "$env_file" | cut -d= -f1 | tr '\n' ' ' || true)
   [[ -z $left ]] || die "replace the CHANGEME values in $env_file: $left"
+}
+
+# pg_dump to stdout, custom format; extra args pass through.
+dump_db() {
+  if external; then
+    pg pg_dump -Fc "$@" </dev/null
+  else
+    pg_local pg_dump -Fc "$@"
+  fi
 }
 
 case $cmd in
@@ -73,12 +142,12 @@ case $cmd in
     [[ $# -eq 0 ]] || usage
     refuse_placeholders
     ensure_network
-    dc db up -d "${WAIT[@]}"
-    dc storage up -d "${WAIT[@]}"
+    data_up
     dc api run --rm migrate
     dc api up -d "${WAIT[@]}"
     dc web up -d "${WAIT[@]}"
     dc status up -d "${WAIT[@]}"
+    if caddy; then dc proxy up -d "${WAIT[@]}"; fi
     ;;
   down)
     volumes=""
@@ -95,8 +164,7 @@ case $cmd in
     [[ $# -eq 0 ]] || usage
     refuse_placeholders
     ensure_network
-    dc db up -d "${WAIT[@]}"
-    dc storage up -d "${WAIT[@]}"
+    data_up
     ;;
   restore)
     [[ $# -eq 1 || $# -eq 2 ]] || usage
@@ -112,16 +180,20 @@ case $cmd in
     # nothing may write while the database is replaced: stop the writers
     # (stopping a stack that isn't running is a no-op), keep the database up
     for s in status web api; do dc "$s" stop </dev/null; done
-    dc db up -d "${WAIT[@]}" </dev/null
-    psql=(exec -T postgres psql -U serversherpa -d serversherpa -v ON_ERROR_STOP=1 -q)
+    if ! external; then dc db up -d "${WAIT[@]}" </dev/null; fi
     # an empty schema, never pg_restore --clean: tables a newer migration
     # created aren't in the dump, and --clean would leave them behind
-    dc db "${psql[@]}" -c 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' </dev/null \
+    psql_run 'DROP SCHEMA public CASCADE; CREATE SCHEMA public;' \
       || die "couldn't empty the database"
-    dc db exec -T postgres pg_restore --exit-on-error --no-owner --no-acl \
-      -U serversherpa -d serversherpa < "$dump" || die "pg_restore failed"
+    if external; then
+      pg pg_restore --exit-on-error --no-owner --no-acl -d "$(env_value STACK_DB_NAME)" \
+        < "$dump" || die "pg_restore failed"
+    else
+      dc db exec -T postgres pg_restore --exit-on-error --no-owner --no-acl \
+        -U serversherpa -d serversherpa < "$dump" || die "pg_restore failed"
+    fi
     if [[ -n $clear ]]; then
-      dc db "${psql[@]}" -c "$CLEAR_SESSIONS" </dev/null || die "couldn't clear the sessions"
+      psql_run "$CLEAR_SESSIONS" || die "couldn't clear the sessions"
     fi
     echo "restored $dump"
     ;;
@@ -145,7 +217,7 @@ case $cmd in
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    if ! dc db exec -T postgres pg_dump -U serversherpa -d serversherpa -Fc > "$partial"; then
+    if ! dump_db > "$partial"; then
       die "pg_dump failed"
     fi
     mv "$partial" "$out"
@@ -156,6 +228,22 @@ case $cmd in
       rm -f "$old"
     done
     echo "$out"
+    ;;
+  pgdump)
+    [[ $# -eq 1 ]] || usage
+    out=$1
+    partial="$out.partial"
+    trap 'rm -f "$partial"' EXIT
+    dump_db --no-owner --no-acl > "$partial" || die "pg_dump failed"
+    mv "$partial" "$out"
+    ;;
+  revision)
+    [[ $# -eq 0 ]] || usage
+    if external; then
+      pg psql -tAc 'SELECT version_num FROM alembic_version' </dev/null
+    else
+      pg_local psql -tAc 'SELECT version_num FROM alembic_version'
+    fi
     ;;
   *)
     usage
