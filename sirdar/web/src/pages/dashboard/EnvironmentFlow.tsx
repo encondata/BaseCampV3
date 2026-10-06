@@ -104,15 +104,19 @@ function ServerBox({ server, flow, action, boxRef }: {
   );
 }
 
-export default function EnvironmentFlow({ flow, motion, serverAction }: {
+export default function EnvironmentFlow({ flow, motion, serverAction, trafficLabel = 'Live traffic', trafficHref = null }: {
   flow: DashFlow; motion: boolean; serverAction?: (server: DashServer) => ReactNode;
+  /** "Live traffic" for production, "<env> traffic" otherwise. */
+  trafficLabel?: string;
+  /** The environment's portal, opened in a new tab from the traffic box. */
+  trafficHref?: string | null;
 }) {
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const liveIdx = flow.kind === 'none' ? -1 : flow.servers.findIndex((s) => s.state === 'live');
   const showDots = liveIdx >= 0;
 
   const diagramRef = useRef<HTMLDivElement>(null);
-  const trafficRef = useRef<HTMLDivElement>(null);
+  const trafficRef = useRef<HTMLDivElement & HTMLAnchorElement>(null);
   const lbRef = useRef<HTMLDivElement>(null);
   const boxEls = useRef<(HTMLDivElement | null)[]>([]);
   const segPathRef = useRef<SVGPathElement>(null);
@@ -232,13 +236,24 @@ export default function EnvironmentFlow({ flow, motion, serverAction }: {
           ))}
         </svg>
 
-        <div className="sd-node sd-node-traffic" ref={trafficRef}>
-          <CloudIcon size={40} className="sd-node-icon" />
-          <div>
-            <b>Live traffic</b>
-            <div className="sd-muted">External users</div>
+        {trafficHref ? (
+          <a className="sd-node sd-node-traffic is-link" ref={trafficRef} href={trafficHref}
+             target="_blank" rel="noopener noreferrer" title={`Open ${trafficHref} in a new tab`}>
+            <CloudIcon size={40} className="sd-node-icon" />
+            <div>
+              <b>{trafficLabel}</b>
+              <div className="sd-muted">Open the portal</div>
+            </div>
+          </a>
+        ) : (
+          <div className="sd-node sd-node-traffic" ref={trafficRef}>
+            <CloudIcon size={40} className="sd-node-icon" />
+            <div>
+              <b>{trafficLabel}</b>
+              <div className="sd-muted">External users</div>
+            </div>
           </div>
-        </div>
+        )}
 
         <div className={`sd-node sd-node-lb is-${flow.middle.status}${nothing ? ' is-muted' : ''}`} ref={lbRef}>
           <LoadBalancerIcon size={34} className={`sd-node-icon${nothing ? ' is-muted' : ''}`} />

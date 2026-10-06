@@ -794,6 +794,8 @@ export interface DashEnvironment {
   retiring: boolean;
   /** Any deployment of it is running, a renew included (its state may still read active). */
   running: boolean;
+  /** The environment's portal address, opened from the spotlight's traffic box; null without one. */
+  portal_url: string | null;
   flow: DashFlow;
 }
 export interface DashNode {

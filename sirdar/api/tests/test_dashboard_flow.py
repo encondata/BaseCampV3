@@ -13,7 +13,8 @@ from sqlalchemy import update
 from sirdar_api.config import get_settings
 from sirdar_api.dashboard import service
 from sirdar_api.dashboard.demo import demo_dashboard
-from sirdar_api.db.models import Deployment, DoEnvironment, DoSlot, Environment
+from sirdar_api.db.models import (
+    Deployment, DoEnvironment, DoSlot, Environment, EnvironmentService)
 from sirdar_api.deploy import do_envs, targets, vms
 
 from .api_helpers import auth_headers
@@ -204,7 +205,7 @@ def test_the_demo_has_the_same_shape():
     for card in d["environments"]:
         assert set(card) == {"id", "label", "sub", "state", "version", "last_release",
                              "last_release_at", "action_label", "environment", "production",
-                             "primary", "retiring", "running", "flow"}
+                             "primary", "retiring", "running", "portal_url", "flow"}
         assert set(card["flow"]) == {"kind", "middle", "servers", "active_slot", "certificate",
                                      "deploying_slot", "failed_slot"}
     assert [c["primary"] for c in d["environments"]] == [True, False, False]
@@ -334,3 +335,22 @@ async def test_retiring_and_running_on_every_card(client, db, do_cloud):
     assert (cards["prod-old"]["retiring"], cards["prod-old"]["running"]) == (True, False)
     assert (cards["uat9"]["retiring"], cards["uat9"]["running"]) == (False, True)
     assert (cards["beta"]["retiring"], cards["beta"]["running"]) == (False, False)
+
+
+async def test_every_card_links_its_portal(client, db, do_cloud):
+    """The traffic box opens the environment's portal: https://<portal hostname>, or null
+    when the environment has no portal hostname or is a placeholder."""
+    await make_environment(db, name="uat", current_sha=SHA, secrets={})
+    bare = await make_environment(db, name="lab", current_sha=SHA, secrets={})
+    await db.execute(update(EnvironmentService).where(
+        EnvironmentService.environment_id == bare.id,
+        EnvironmentService.service == "portal").values(hostname=None))
+    await db.commit()
+    cards = {c["id"]: c for c in (await _dashboard(client, db))["environments"]}
+    assert cards["uat"]["portal_url"] == "https://portal.uat.serversherpa.com"
+    assert cards["lab"]["portal_url"] is None
+    assert cards["production"]["portal_url"] is None          # the placeholder
+
+
+def test_demo_cards_have_no_portal_link():
+    assert {c["portal_url"] for c in demo_dashboard()["environments"]} == {None}

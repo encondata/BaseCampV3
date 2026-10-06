@@ -53,7 +53,8 @@ const card = (id: string, label: string, sub: string | null, state: string, vers
               environment: string | null, production: boolean, flow: DashFlow, action: string,
               primary = false): DashEnvironment => ({
   id, label, sub, state, version, last_release: version, last_release_at: version ? '2026-10-03T12:00:00+00:00' : null,
-  action_label: action, environment, production, primary, retiring: false, running: false, flow,
+  action_label: action, environment, production, primary, retiring: false, running: false,
+  portal_url: environment ? `https://portal.${environment}.serversherpa.com` : null, flow,
 });
 export const PLACEHOLDER_PROD = card('production', 'Production', null, 'empty', null, null, true, NONE_FLOW,
                                      'Set up Production', true);

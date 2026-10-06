@@ -179,13 +179,14 @@ async def test_real_environments(client, db):
         {"id": "uat", "label": "uat", "sub": "Development", "state": "active",
          "version": "e73b99ca", "last_release": "e73b99ca",
          "last_release_at": "2026-10-03T12:00:00+00:00", "action_label": "Deploy uat",
-         "environment": "uat"},
+         "environment": "uat", "portal_url": "https://portal.uat.serversherpa.com"},
         {"id": "beta", "label": "Beta", "sub": None, "state": "empty", "version": None,
          "last_release": None, "last_release_at": None, "action_label": "Set up Beta",
-         "environment": None},
+         "environment": None, "portal_url": None},
         {"id": "qa-east", "label": "qa-east", "sub": "Custom", "state": "failed",
          "version": None, "last_release": None, "last_release_at": None,
-         "action_label": "Deploy qa-east", "environment": "qa-east"}]
+         "action_label": "Deploy qa-east", "environment": "qa-east",
+         "portal_url": "https://portal.qa-east.serversherpa.com"}]
     assert d["health"] == {"status": "degraded", "label": "A deployment failed"}
 
 

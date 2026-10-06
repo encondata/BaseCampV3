@@ -156,6 +156,10 @@
   border: 1px solid var(--sd-border); border-radius: 6px; box-shadow: var(--sd-shadow); font-size: 15px;
 }
 .sd-dash .sd-node-traffic { grid-column: 1; }
+/* With a portal address the traffic box opens it in a new tab. */
+.sd-dash a.sd-node-traffic.is-link { color: inherit; text-decoration: none; cursor: pointer; }
+.sd-dash a.sd-node-traffic.is-link:hover { border-color: var(--sd-blue); }
+.sd-dash a.sd-node-traffic.is-link:focus-visible { outline: 2px solid var(--sd-blue); outline-offset: 2px; }
 .sd-dash .sd-node-lb { grid-column: 3; }
 .sd-dash .sd-node-icon { color: var(--sd-blue); flex: none; }
 /* nothing built: a muted middle box */

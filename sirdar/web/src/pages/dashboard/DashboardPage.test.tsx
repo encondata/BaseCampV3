@@ -447,3 +447,32 @@ it('a running deployment (a renew included) makes Deploy and Activate inert, say
   expect(screen.queryByRole('dialog')).toBeNull();
   expect(api.getEnvironment).not.toHaveBeenCalled();
 });
+
+it("the traffic box names the environment's traffic and opens its portal in a new tab", async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  show();
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+  const live = within(spot()).getByRole('link', { name: /Live traffic/ });
+  expect(live.getAttribute('href')).toBe('https://portal.prod.serversherpa.com');
+  expect(live.getAttribute('target')).toBe('_blank');
+  expect(live.getAttribute('rel')).toBe('noopener noreferrer');
+  await userEvent.click(cardToggle('uat9'));
+  const dev = within(spot()).getByRole('link', { name: /uat9 traffic/ });
+  expect(dev.getAttribute('href')).toBe('https://portal.uat9.serversherpa.com');
+  expect(within(spot()).queryByText('Live traffic')).toBeNull();
+});
+
+it('without a portal address the traffic box is not a link', async () => {
+  api.getDashboard.mockResolvedValue(REAL);
+  show();
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'uat' })).toBeTruthy());
+  await userEvent.click(cardToggle('Production'));
+  expect(within(spot()).getByText('Live traffic')).toBeTruthy();
+  expect(within(spot()).queryByRole('link', { name: /traffic/ })).toBeNull();
+});
+
+it('demo data: the traffic box is not a link', async () => {
+  show('/?demo=1');
+  await screen.findByText('All systems healthy');
+  expect(within(spot()).queryByRole('link', { name: /traffic/ })).toBeNull();
+});

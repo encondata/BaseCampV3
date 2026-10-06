@@ -22,7 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
 from sirdar_api.dashboard.demo import demo_dashboard, node
-from sirdar_api.db.models import Deployment, DoAccount, DoEnvironment, DoResource, Environment
+from sirdar_api.db.models import (
+    Deployment, DoAccount, DoEnvironment, DoResource, Environment, EnvironmentService)
 from sirdar_api.deploy import (
     ConnectFailed,
     certs,
@@ -325,6 +326,13 @@ def _version(env: Environment) -> str | None:
     return env.image_tag or (env.current_sha[:8] if env.current_sha else None)
 
 
+async def _portal_url(db: AsyncSession, env_id) -> str | None:
+    """The environment's portal address, for the spotlight's traffic box to open."""
+    host = await db.scalar(select(EnvironmentService.hostname).where(
+        EnvironmentService.environment_id == env_id, EnvironmentService.service == "portal"))
+    return f"https://{host}" if host else None
+
+
 async def _environment_card(db: AsyncSession, settings: Settings, env: Environment,
                             inventories: dict[str, dict], now: datetime) -> dict:
     last = await _last_release(db, env.id)
@@ -343,14 +351,15 @@ async def _environment_card(db: AsyncSession, settings: Settings, env: Environme
                                 if last and last.finished_at else None),
             "action_label": f"Deploy {env.name}", "environment": env.name,
             "production": env.type == "production", "primary": False,
-            "retiring": bool(env.retiring), "running": running is not None, "flow": flow}
+            "retiring": bool(env.retiring), "running": running is not None,
+            "portal_url": await _portal_url(db, env.id), "flow": flow}
 
 
 def _placeholder(env: str, action_label: str, *, production: bool = False) -> dict:
     return {"id": env, "label": _label(env), "sub": None, "state": "empty", "version": None,
             "last_release": None, "last_release_at": None, "action_label": action_label,
             "environment": None, "production": production, "primary": False,
-            "retiring": False, "running": False, "flow": _empty_flow()}
+            "retiring": False, "running": False, "portal_url": None, "flow": _empty_flow()}
 
 
 async def environment_cards(db: AsyncSession | None, settings: Settings, tagged: list[str],

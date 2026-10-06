@@ -74,7 +74,9 @@ export default function Spotlight({ card, demo, motion, canDeploy, canView, canA
         <CertPill card={card} />
         <span className="sd-spot-actions">{deploy}{open}</span>
       </header>
-      <EnvironmentFlow key={card.id} flow={f} motion={motion} serverAction={serverAction} />
+      <EnvironmentFlow key={card.id} flow={f} motion={motion} serverAction={serverAction}
+                       trafficLabel={card.production ? 'Live traffic' : `${card.label} traffic`}
+                       trafficHref={demo ? null : card.portal_url} />
     </section>
   );
 }
