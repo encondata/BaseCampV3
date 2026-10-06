@@ -10,6 +10,10 @@
  *      entry must still match a rounded scroll rule;
  *  (c) the chrome.css track rule keeps its `margin-block`, the part that
  *      stops the bar short of the rounded ends.
+ * Limits: only the `border-radius` shorthand, and `overflow` / `overflow-x` /
+ * `overflow-y` set to `auto` or `scroll` in the SAME rule, are detected. Not
+ * seen: per-corner longhands (`border-top-left-radius`...), `overlay`,
+ * declarations split across rules, and inline style props.
  * Scans every .css under portal/src, kiosk/src and wiki/web/src (skipping
  * node_modules), comments stripped.
  */
@@ -33,8 +37,6 @@ const NOT_IN_A_DIALOG: Record<string, string> = {
   '.lbl-code': 'label builder code panel on a page',
   '.sys-log-body': 'process logs page',
   '.wiki-search-menu': 'wiki search dropdown',
-  '.segmented': 'inline segmented control that scrolls sideways only when too narrow',
-  '.wiki-prose pre': 'code block inside wiki page content',
 };
 
 export interface Rule { selector: string; decls: string[]; }
@@ -86,8 +88,9 @@ export function isRoundedScrollRule(decls: string[]): boolean {
   });
   if (!scrolls) return false;
   const radius = declValue(decls, 'border-radius');
-  return radius !== undefined && !/^0(px)?(\s*\/\s*0(px)?)?$/.test(radius.replace(/\s+/g, ' ').replace(/\s*!important$/, ''))
-    && !/^(0(px)?\s*)+$/.test(radius);
+  // Not rounded: `0`, `0px`, every corner zero, or a zero `a / b` pair.
+  const zero = /^0(px)?(\s*\/?\s*0(px)?)*$/;
+  return radius !== undefined && !zero.test(radius.replace(/\s*!important$/, '').trim());
 }
 
 /** Selectors (one entry per comma part) of every rounded scroll rule. */
@@ -130,6 +133,9 @@ describe('rounded scroll boxes: parser', () => {
   it('ignores border-radius: 0 and boxes that do not scroll', () => {
     expect(roundedScrollSelectors('.a { overflow: auto; border-radius: 0; }')).toEqual([]);
     expect(roundedScrollSelectors('.a { overflow: auto; border-radius: 0px; }')).toEqual([]);
+    expect(roundedScrollSelectors('.a { overflow: auto; border-radius: 0 0 0 0; }')).toEqual([]);
+    expect(roundedScrollSelectors('.a { overflow: auto; border-radius: 0px / 0px !important; }')).toEqual([]);
+    expect(roundedScrollSelectors('.a { overflow: auto; border-radius: 0 0 8px 0; }')).toEqual(['.a']);
     expect(roundedScrollSelectors('.a { overflow: hidden; border-radius: 8px; }')).toEqual([]);
     expect(roundedScrollSelectors('.a { border-radius: 8px; }')).toEqual([]);
   });
