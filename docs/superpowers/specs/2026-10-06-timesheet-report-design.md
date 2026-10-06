@@ -28,9 +28,11 @@ per day) and a **punch view** (every entry) — plus a summary, and V3
 | `views` | non-empty subset of `day`, `punch` | `["day","punch"]` |
 | `format` | `xlsx` / `pdf` | `xlsx` |
 
-The **Job** filter is the run's own `initiative_id` (optional): a job-filtered
-timesheet is then also saved to that job's Files by the existing worker
-path, and History's Initiative column shows it. `create_run` accepts a
+The **Job** filter is the run's own `initiative_id` (optional), so History's
+Initiative column shows it. A timesheet is **never** saved to the job's
+Files (no Attachment row): Files are readable with `attachments:view`,
+which would expose hours to people without `time:view`. The file lives only
+in the report run (History download, gated below). `create_run` accepts a
 `timesheet` run with no initiative.
 
 Definition options (Edit on the Available tab): `default_format`
