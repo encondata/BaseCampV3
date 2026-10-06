@@ -38,6 +38,16 @@ async def test_run_command_returns_output_and_status(db, ssh_server):
     assert result.exit_status == 1
 
 
+async def test_run_command_sends_input_on_stdin_never_argv(db, ssh_server):
+    await _trust(db, ssh_server)
+    ssh_server.stdin_echo.add("read-secret")
+    result = await ssh.run_command(ssh_config(ssh_server), db, "read-secret",
+                                   input="s3cr3t-on-stdin\nSELECT 1;\n")
+    assert (result.exit_status, result.stdout) == (0, "s3cr3t-on-stdin\nSELECT 1;\n")
+    assert ssh_server.stdins == ["s3cr3t-on-stdin\nSELECT 1;\n"]
+    assert all("s3cr3t" not in c for c in ssh_server.commands)
+
+
 async def test_run_command_refuses_an_untrusted_host(db, ssh_server):
     with pytest.raises(ssh.HostKeyUnknown):
         await ssh.run_command(ssh_config(ssh_server), db, "true")

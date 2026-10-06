@@ -9,7 +9,10 @@ our own copy, never httpx's text.
 Every check opens its own client, with keep-alive off: all checks share the
 origin https://<proxy_ip>, and httpcore reads sni_hostname only when it
 opens a connection, so a pooled connection would skip the next host's SNI
-and certificate verification."""
+and certificate verification.
+
+With insecure (a DigitalOcean environment on Let's Encrypt staging) the
+certificate isn't verified."""
 
 import asyncio
 import ssl
@@ -48,13 +51,13 @@ def _is_tls(error: BaseException) -> bool:
 
 
 async def _check(transport: httpx.AsyncBaseTransport | None, proxy_ip: str, service: str,
-                 hostname: str) -> SmokeResult:
+                 hostname: str, insecure: bool = False) -> SmokeResult:
     path = PATHS.get(service, "/")
     url = f"https://{hostname}{path}"
     host = f"[{proxy_ip}]" if ":" in proxy_ip else proxy_ip
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT, transport=transport,
-                                     follow_redirects=False,
+                                     follow_redirects=False, verify=not insecure,
                                      limits=httpx.Limits(max_keepalive_connections=0)) as client:
             resp = await client.get(f"https://{host}{path}",
                                     headers={"Host": hostname, "Connection": "close"},
@@ -74,7 +77,8 @@ async def run(targets: list[tuple[str, str]], proxy_ip: str, *,
               transport: httpx.AsyncBaseTransport | None = None,
               sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
               attempts: int = ATTEMPTS, delay: float = DELAY,
-              out: Callable[[str], None] | None = None) -> list[SmokeResult]:
+              out: Callable[[str], None] | None = None,
+              insecure: bool = False) -> list[SmokeResult]:
     """Check each (service, hostname); failures are asked again, up to
     `attempts` rounds `delay` seconds apart (NPM may still be reloading)."""
     results: dict[str, SmokeResult] = {}
@@ -82,7 +86,7 @@ async def run(targets: list[tuple[str, str]], proxy_ip: str, *,
     for attempt in range(1, attempts + 1):
         failed = []
         for service, hostname in pending:
-            result = await _check(transport, proxy_ip, service, hostname)
+            result = await _check(transport, proxy_ip, service, hostname, insecure)
             results[service] = result
             if not result.ok:
                 failed.append((service, hostname))

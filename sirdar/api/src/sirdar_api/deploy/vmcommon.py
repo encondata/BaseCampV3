@@ -217,12 +217,13 @@ async def settle_address(settings: Settings, *, model, env_id: uuid.UUID,
 
 
 async def resolve_ref(settings: Settings, resolve, *, env_id: uuid.UUID, git_ref: str,
-                      repo_url: str, out: Output) -> str:
-    """The commit `git_ref` names, resolved on the VM over its SSH connection."""
+                      repo_url: str, out: Output, slot: str | None = None) -> str:
+    """The commit `git_ref` names, resolved on the VM over its SSH connection
+    (on DigitalOcean, `slot`'s droplet; default the active slot, else the first)."""
     async with get_sessionmaker()() as s:
         env = await s.get(Environment, env_id)
         try:
-            cfg = await vms.host_config(s, settings, env)
+            cfg = await vms.host_config(s, settings, env, slot=slot)
         except (vault.SecretsKeyMissing, vault.SecretUnreadable):
             raise StepFailed("Sirdar can't read the VM's SSH key. Is SIRDAR_SECRETS_KEY the "
                              "one it was made with?") from None

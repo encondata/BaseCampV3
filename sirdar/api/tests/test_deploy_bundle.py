@@ -415,3 +415,30 @@ def test_a_write_phase_read_error_names_the_file(tmp_path, monkeypatch):
         bundle.pack(tmp_path / "b.tar.gz", source="uat", revision="1", bucket="serversherpa",
                     db_dump=parts["db"], objects_tar=parts["objects"], keys_file=parts["keys"])
     assert exc.value.reason == "Couldn't read the database dump file."
+
+
+def test_objects_commands_take_the_spaces_secret_and_region(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_client(endpoint, key_id, secret, region="us-east-1"):
+        seen.update(endpoint=endpoint, key_id=key_id, secret=secret, region=region)
+        raise bundle.BundleError("stop here")
+
+    monkeypatch.setattr(bundle, "s3_client", fake_client)
+    monkeypatch.delenv("SNAP_S3_SECRET", raising=False)
+    monkeypatch.setenv("SPACES_SECRET_KEY", "local-seaweed")
+    monkeypatch.setenv("SS_SPACES_SECRET_KEY", "do-spaces")
+    assert bundle.main(["export-objects", "--out", str(tmp_path / "o.tar"), "--endpoint",
+                        "https://nyc3.digitaloceanspaces.com", "--key-id", "DO00KEY",
+                        "--region", "nyc3"]) == 1
+    assert seen == {"endpoint": "https://nyc3.digitaloceanspaces.com", "key_id": "DO00KEY",
+                    "secret": "do-spaces", "region": "nyc3"}
+
+
+def test_objects_commands_name_every_secret_variable(monkeypatch, tmp_path, capsys):
+    for name in ("SNAP_S3_SECRET", "SS_SPACES_SECRET_KEY", "SPACES_SECRET_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    assert bundle.main(["export-objects", "--out", str(tmp_path / "o.tar")]) == 1
+    err = capsys.readouterr().err
+    assert all(name in err for name in ("SNAP_S3_SECRET", "SS_SPACES_SECRET_KEY",
+                                        "SPACES_SECRET_KEY"))

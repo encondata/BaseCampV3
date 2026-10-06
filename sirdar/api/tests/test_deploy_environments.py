@@ -80,7 +80,7 @@ async def test_create_new_custom_values(db, target):
     ({"name": "Bad"}, "name_invalid"),
     ({"name": "dev"}, "name_reserved"),
     ({"type_": "prod"}, "type_invalid"),
-    ({"target_id": "digitalocean"}, "target_invalid"),
+    ({"target_id": "aws"}, "target_invalid"),
     ({"target_id": "ssh:nope"}, "target_not_configured"),
     ({"git_ref": "a..b"}, "ref_invalid"),
     ({"base_domain": "not a domain"}, "base_domain_invalid"),
@@ -128,6 +128,18 @@ async def test_adopt_imports_settings_and_secrets(db, target):
                                  imported_secrets=sorted(envfile.REQUIRED_SECRETS),
                                  ignored_keys=["MINIO_ROOT_PASSWORD"])
     assert await _secrets(db, env.id) == ENV_SECRETS
+
+
+async def test_adopt_reports_digitalocean_keys_as_ignored(db, target):
+    """A hand-built .env never carries a droplet's keys into the record:
+    adopting one lists them as ignored."""
+    await trust_fake(db, target)
+    serve_remote_env(target, remote_env_text(STACK_EXTERNAL_DATA="1",
+                                             SS_SPACES_SECRET_KEY="spaces-secret"))
+    _, _, report = await environments.adopt(db, get_settings(), name="uat", type_="dev",
+                                            target_id="ssh")
+    assert report.ignored_keys == ["MINIO_ROOT_PASSWORD", "SS_SPACES_SECRET_KEY",
+                                   "STACK_EXTERNAL_DATA"]
 
 
 async def test_adopted_record_renders_the_same_env(db, target):

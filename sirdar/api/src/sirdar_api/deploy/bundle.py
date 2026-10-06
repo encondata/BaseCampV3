@@ -427,14 +427,14 @@ def _remove(dest: Path, partials: list[str], finals: list[str]) -> None:
 
 # ---- objects (boto3, only where a command needs it) ----------------------------
 
-def s3_client(endpoint: str, key_id: str, secret: str):
+def s3_client(endpoint: str, key_id: str, secret: str, region: str = "us-east-1"):
     try:
         import boto3
         from botocore.config import Config
     except ImportError:
         raise BundleError("Moving objects needs boto3, which isn't installed here.") from None
 
-    return boto3.client("s3", endpoint_url=endpoint, region_name="us-east-1",
+    return boto3.client("s3", endpoint_url=endpoint, region_name=region,
                         aws_access_key_id=key_id, aws_secret_access_key=secret,
                         config=Config(s3={"addressing_style": "path"},
                                       retries={"max_attempts": 5, "mode": "standard"}))
@@ -510,11 +510,15 @@ def import_objects(client, bucket: str, src, workers: int = 8) -> tuple[int, int
 # ---- command line ------------------------------------------------------------
 
 def _s3_from_args(args):
-    secret = os.environ.get("SNAP_S3_SECRET") or os.environ.get("SPACES_SECRET_KEY")
+    # SS_SPACES_SECRET_KEY (a DigitalOcean droplet's bucket key) before
+    # SPACES_SECRET_KEY (the local SeaweedFS secret every .env also has).
+    secret = (os.environ.get("SNAP_S3_SECRET") or os.environ.get("SS_SPACES_SECRET_KEY")
+              or os.environ.get("SPACES_SECRET_KEY"))
     if not secret:
-        raise BundleError("Set SNAP_S3_SECRET (or SPACES_SECRET_KEY) to the bucket's secret key.")
+        raise BundleError("Set SNAP_S3_SECRET (or SS_SPACES_SECRET_KEY, or SPACES_SECRET_KEY) "
+                          "to the bucket's secret key.")
     bucket = args.bucket or os.environ.get("SS_SPACES_BUCKET") or DEFAULT_BUCKET
-    return s3_client(args.endpoint, args.key_id, secret), bucket
+    return s3_client(args.endpoint, args.key_id, secret, args.region), bucket
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -544,6 +548,7 @@ def main(argv: list[str] | None = None) -> int:
         o.add_argument("--endpoint", default=DEFAULT_ENDPOINT)
         o.add_argument("--key-id", default=DEFAULT_KEY_ID)
         o.add_argument("--bucket", default="")
+        o.add_argument("--region", default="us-east-1")
     args = parser.parse_args(argv)
     try:
         if args.command == "pack":

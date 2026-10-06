@@ -12,6 +12,11 @@
   vars:
     work: "{{ env_dir }}/restore-work"
     bundle_python: "{{ snapshot_python | default('python3') }}"
+    # DigitalOcean: the objects go to the environment's Spaces bucket
+    # (ss-stack restore already handles the managed database).
+    spaces_args: >-
+      {{ ['--endpoint', spaces_endpoint, '--key-id', spaces_key_id, '--region', spaces_region]
+         if external_data | default(false) | bool else [] }}
   tasks:
     - name: This commit's migrations
       ansible.builtin.find:
@@ -92,10 +97,11 @@
 
         - name: Upload the objects
           ansible.builtin.command:
-            argv: [docker, run, --rm, --network, "ss-{{ env_name }}",
-                   --env-file, "{{ env_dir }}/.env", --user, "{{ uid.stdout }}:{{ gid.stdout }}",
-                   -e, HOME=/tmp, -v, "{{ work }}:/work:ro", "{{ api_image }}",
-                   python, /work/bundle.py, import-objects, --in, /work/objects.tar]
+            argv: "{{ ['docker', 'run', '--rm', '--network', 'ss-' + env_name,
+                   '--env-file', env_dir + '/.env', '--user', uid.stdout + ':' + gid.stdout,
+                   '-e', 'HOME=/tmp', '-v', work + ':/work:ro', api_image,
+                   'python', '/work/bundle.py', 'import-objects', '--in', '/work/objects.tar']
+                   + spaces_args }}"
       always:
         - name: Remove the work folder
           ansible.builtin.file:

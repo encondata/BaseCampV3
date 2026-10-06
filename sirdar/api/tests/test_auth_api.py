@@ -144,7 +144,8 @@ async def test_old_access_token_dies_after_refresh(client, db):
     old = (await _login(client)).json()["access_token"]
     # After refresh, the old access token still works (rotation alone doesn't end it)
     await client.post("/api/auth/refresh")
-    h = lambda t: {"Authorization": f"Bearer {t}"}
+    def h(t):
+        return {"Authorization": f"Bearer {t}"}
     still_works = await client.get("/api/auth/me", headers=h(old))
     assert still_works.status_code == 200
     # After logout, the old token is revoked along with the family

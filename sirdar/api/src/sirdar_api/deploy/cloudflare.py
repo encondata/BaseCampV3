@@ -1,7 +1,8 @@
 """Cloudflare DNS for publishing (spec Section 2 step 12): read the zone's
-records, and create, change and delete A records by id. The API token goes
-only into the Authorization header; errors carry our own copy, never
-Cloudflare's or httpx's text (either may echo request details)."""
+records, and create, change and delete A records (and ACME challenge TXT
+records) by id. The API token goes only into the Authorization header;
+errors carry our own copy, never Cloudflare's or httpx's text (either may
+echo request details)."""
 
 import asyncio
 from collections.abc import Awaitable, Callable
@@ -173,13 +174,17 @@ class Cloudflare:
                 return out
         raise CloudflareError("The zone has more DNS records than Sirdar reads.")
 
-    async def create_a(self, name: str, content: str, *, proxied: bool,
-                       comment: str) -> DnsRecord:
+    async def create_record(self, type_: str, name: str, content: str, *, proxied: bool = False,
+                            comment: str) -> DnsRecord:
         zone = await self.zone_id()
         body = await self._call("POST", f"/zones/{zone}/dns_records", json={
-            "type": "A", "name": name, "content": content, "ttl": 1, "proxied": proxied,
+            "type": type_, "name": name, "content": content, "ttl": 1, "proxied": proxied,
             "comment": comment})
         return _record(body.get("result"))
+
+    async def create_a(self, name: str, content: str, *, proxied: bool,
+                       comment: str) -> DnsRecord:
+        return await self.create_record("A", name, content, proxied=proxied, comment=comment)
 
     async def update_a(self, record_id: str, *, name: str, content: str,
                        proxied: bool) -> DnsRecord:

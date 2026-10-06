@@ -100,10 +100,11 @@ function deployCodes(): string[] {
   const found = new Set<string>(['sudo_password_too_long']);
   for (const file of ['api/routes/deploy.py', 'api/routes/integrations.py', 'deploy/environments.py',
                        'deploy/gitref.py', 'deploy/ssh_targets.py', 'deploy/snapshots.py', 'deploy/integrations.py',
-                       'deploy/vms.py']) {
+                       'deploy/vms.py', 'deploy/do_accounts.py', 'deploy/do_envs.py', 'deploy/pipeline.py']) {
     const src = readFileSync(join(root, file), 'utf8');
     for (const re of [/"code": "([a-z_]+)"/g,
-                      /(?:EnvError|RefError|TargetError|SnapshotError|IntegrationError|VmError)\("([a-z_]+)"/g,
+                      /(?:EnvError|RefError|TargetError|SnapshotError|IntegrationError|VmError|DoEnvError)\("([a-z_]+)"/g,
+                      /^\s+code = "([a-z_]+)"$/gm,
                       /"(vm_[a-z_]+_invalid)"/g, /, "([a-z_]+_invalid)"\)/g,
                       /"([a-z]+_too_long)"/g, /_check_ipv4\([^()]*,\s*"([a-z]+_[a-z_]+)"\)/g]) {
       for (const m of src.matchAll(re)) found.add(m[1]);
@@ -127,11 +128,20 @@ it('every error code the deploy routes can return has its own message', () => {
                       'vm_ip_invalid', 'ip_in_use', 'adopt_not_allowed', 'host_ip_managed', 'target_kind_locked',
                       'vm_snapshot_not_found', 'vm_snapshot_keys_changed', 'not_vm_environment', 'vm_not_ready',
                       'esxi_url_invalid', 'source_vm_invalid', 'dns_servers_invalid', 'vm_name_invalid',
-                      'do_token_invalid']) {
+                      'do_token_invalid', 'do_account_invalid', 'label_invalid', 'region_invalid',
+                      'not_supported_on_digitalocean', 'seed_not_allowed', 'slot_not_deployed',
+                      'snapshot_slot_unreachable', 'do_account_changed']) {
     expect(codes).toContain(code);
   }
   const missing = codes.filter((c) => sirdar.errorText(new ApiError(400, c), '__none__') === '__none__');
   expect(missing).toEqual([]);
+});
+
+it('a production snapshot that can\'t be taken says to retry, not to untick', () => {
+  expect(sirdar.deployErrorText(new ApiError(409, 'snapshot_slot_unreachable',
+    { code: 'snapshot_slot_unreachable', production: true }), 'x')).toMatch(/Retry once the droplet is back/);
+  expect(sirdar.deployErrorText(new ApiError(409, 'snapshot_slot_unreachable',
+    { code: 'snapshot_slot_unreachable' }), 'x')).toMatch(/Untick 'Save a snapshot first'/);
 });
 
 it('deployErrorText adds the reason, the missing keys or the named key', () => {

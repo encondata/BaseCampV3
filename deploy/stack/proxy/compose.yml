@@ -1,0 +1,31 @@
+# Caddy, the edge on a DigitalOcean droplet (STACK_CADDY=1): the only
+# published port on the droplet (:80, reachable only from the load balancer
+# through the cloud firewall). It sits at a fixed address on the ss-<env>
+# network (STACK_PROXY_IP, in STACK_NETWORK_SUBNET), which is what
+# FORWARDED_ALLOW_IPS trusts. Pinned by digest.
+name: ss-${STACK_ENV:?set STACK_ENV}-proxy
+
+services:
+  caddy:
+    image: caddy:2.11.7-alpine@sha256:d76116d819d5162f464b0f2cd09bd28c568a86148c7bc539ce17c33eb22d8bbb
+    environment:
+      STACK_DOMAIN: ${STACK_DOMAIN:?set STACK_DOMAIN}
+      STACK_TRUSTED_PROXIES: ${STACK_TRUSTED_PROXIES:?set STACK_TRUSTED_PROXIES}
+    ports:
+      - "0.0.0.0:80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      default:
+        ipv4_address: ${STACK_PROXY_IP:?set STACK_PROXY_IP}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/caddy-health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    restart: unless-stopped
+
+networks:
+  default:
+    name: ss-${STACK_ENV}
+    external: true

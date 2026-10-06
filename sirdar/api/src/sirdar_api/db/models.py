@@ -1,4 +1,4 @@
-"""Sirdar's own tables (migrations 0001–0008). `users` mirrors the portal's
+"""Sirdar's own tables (migrations 0001–0010). `users` mirrors the portal's
 user_accounts + people for the people it copies; Sirdar-only data
 (overrides, sessions, audit, lockout counters) never comes from the portal."""
 
@@ -187,8 +187,8 @@ class Environment(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, server_default=text("gen_random_uuid()"))
     name: Mapped[str] = mapped_column(unique=True)
-    type: Mapped[str]                              # dev | beta | custom
-    target_id: Mapped[str]                         # "ssh" | "ssh:<slug>"
+    type: Mapped[str]                              # dev | beta | custom | production
+    target_id: Mapped[str]  # "ssh" | "ssh:<slug>" | "proxmox" | "esxi" | "digitalocean"
     base_domain: Mapped[str]
     git_ref: Mapped[str] = mapped_column(server_default=text("'main'"))
     current_sha: Mapped[str | None]
@@ -204,6 +204,14 @@ class Environment(Base):
         ForeignKey("snapshots.id", ondelete="SET NULL"))
     # Deploys add steps 12–14 (DNS, proxy, smoke test) when on (migration 0006).
     publish: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    # Blue/Green (migration 0010, DigitalOcean environments): the slots it
+    # has, the one the load balancer sends traffic to, whether a good deploy
+    # of a non-production environment activates itself, and production's
+    # "being retired" mark (Delete needs it).
+    slots: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default=text("'{}'"))
+    active_slot: Mapped[str | None]
+    auto_activate: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    retiring: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     created_by: Mapped[uuid.UUID | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
@@ -241,7 +249,7 @@ class Deployment(Base):
     environment_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("environments.id", ondelete="CASCADE"))
     # update | reset | adopt | snapshot | restore_dump | rollback | publish | teardown
-    # | vm_restore
+    # | vm_restore | activate | renew
     mode: Mapped[str]
     git_ref: Mapped[str]
     sha: Mapped[str]
@@ -265,6 +273,12 @@ class Deployment(Base):
     vm: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     take_vm_snapshot: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     vm_snapshot: Mapped[str | None]
+    # DigitalOcean (migration 0010): its plan is a DigitalOcean plan; the slot
+    # it deploys, smoke-tests or switches to; whether it ends with 14 Switch
+    # traffic. Retries keep all three.
+    cloud: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    slot: Mapped[str | None]
+    go_live: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     previous_sha: Mapped[str | None]
     error: Mapped[str | None]
     actor_id: Mapped[uuid.UUID | None]
@@ -425,3 +439,117 @@ class EsxiVm(Base):
     created: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class DoAccount(Base):
+    """One of the two DigitalOcean accounts (migration 0010), keyed
+    "production" or "development". The API token and the droplets' renewal
+    token are Fernet-encrypted with SIRDAR_SECRETS_KEY and never returned;
+    team_uuid is the DigitalOcean team the token answered for when Sirdar
+    last checked."""
+
+    __tablename__ = "do_accounts"
+
+    key: Mapped[str] = mapped_column(primary_key=True)
+    label: Mapped[str]
+    region: Mapped[str | None]
+    token_enc: Mapped[bytes | None] = mapped_column(BYTEA)
+    renewal_token_enc: Mapped[bytes | None] = mapped_column(BYTEA)
+    team_uuid: Mapped[str | None]
+    team_name: Mapped[str | None]
+    updated_by: Mapped[uuid.UUID | None]
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class DoEnvironment(Base):
+    """An environment Sirdar builds on DigitalOcean (migration 0010): the
+    account and sizes frozen at create (step 0 builds from these), the
+    per-environment SSH key pair and the cert-worker's ACME account key, and
+    what step 0 learned (VPC range, load balancer address, database
+    connection, bucket key, certificate expiry). Secrets are
+    Fernet-encrypted with SIRDAR_SECRETS_KEY and never returned."""
+
+    __tablename__ = "do_environments"
+
+    environment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("environments.id", ondelete="CASCADE"), primary_key=True)
+    account_key: Mapped[str] = mapped_column(ForeignKey("do_accounts.key", ondelete="RESTRICT"))
+    team_uuid: Mapped[str | None]
+    region: Mapped[str]
+    droplet_size: Mapped[str]
+    droplet_image: Mapped[str] = mapped_column(server_default=text("'ubuntu-24-04-x64'"))
+    db_size: Mapped[str]
+    db_standby: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    acme_staging: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    ssh_public_key: Mapped[str]
+    ssh_private_key_enc: Mapped[bytes] = mapped_column(BYTEA)
+    acme_key_enc: Mapped[bytes] = mapped_column(BYTEA)
+    vpc_ip_range: Mapped[str | None]
+    lb_ip: Mapped[str | None]
+    db_host: Mapped[str | None]
+    db_port: Mapped[int | None] = mapped_column(Integer)
+    db_admin_password_enc: Mapped[bytes | None] = mapped_column(BYTEA)
+    db_ca_cert: Mapped[str | None]
+    bucket: Mapped[str] = mapped_column(unique=True)
+    spaces_key_id: Mapped[str | None]
+    spaces_secret_enc: Mapped[bytes | None] = mapped_column(BYTEA)
+    cert_not_after: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class DoSlot(Base):
+    """One slot of a DigitalOcean environment (migration 0010): its droplet,
+    the SSH host key Sirdar generated for it (the private half only until
+    step 0 has delivered it), the commit deployed on it, and the last slot
+    smoke test."""
+
+    __tablename__ = "do_slots"
+
+    environment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("do_environments.environment_id", ondelete="CASCADE"), primary_key=True)
+    slot: Mapped[str] = mapped_column(primary_key=True)
+    host_key_public: Mapped[str]
+    host_key_private_enc: Mapped[bytes | None] = mapped_column(BYTEA)
+    droplet_id: Mapped[str | None]
+    public_ip: Mapped[str | None]
+    private_ip: Mapped[str | None]
+    sha: Mapped[str | None]
+    image_tag: Mapped[str | None]
+    last_check_ok: Mapped[bool | None] = mapped_column(Boolean)
+    last_check_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class DoResource(Base):
+    """Something Sirdar made on DigitalOcean for one environment (migration
+    0010), and the record that it is Sirdar's: Sirdar changes or deletes only
+    what a row names and what still matches (its tag, or its exact name)."""
+
+    __tablename__ = "do_resources"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True, server_default=text("gen_random_uuid()"))
+    # RESTRICT: an environment can't be deleted while it still owns resources.
+    environment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("environments.id", ondelete="RESTRICT"))
+    # vpc | droplet | database | spaces_key | bucket | certificate | load_balancer | firewall
+    kind: Mapped[str]
+    do_id: Mapped[str]
+    name: Mapped[str]
+    slot: Mapped[str | None]
+    origin: Mapped[str] = mapped_column(server_default=text("'created'"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class AcmeAccount(Base):
+    """Sirdar's own ACME account for one directory URL (migration 0010): an
+    ES256 key, Fernet-encrypted, and the account URL (kid) once registered."""
+
+    __tablename__ = "acme_accounts"
+
+    directory: Mapped[str] = mapped_column(primary_key=True)
+    key_enc: Mapped[bytes] = mapped_column(BYTEA)
+    kid: Mapped[str | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

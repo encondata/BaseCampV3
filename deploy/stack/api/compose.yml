@@ -12,18 +12,23 @@ x-ss-env: &ss-env
   SS_WIKI_ORIGIN: https://wiki.${STACK_DOMAIN}
   SS_ALLOWED_ORIGINS: https://portal.${STACK_DOMAIN},https://kiosk.${STACK_DOMAIN},https://wiki.${STACK_DOMAIN}
   SS_COOKIE_DOMAIN: ""
-  SS_DATABASE_URL: postgresql+asyncpg://serversherpa:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/serversherpa
-  SS_DATABASE_SSL: disable
+  # Local stacks: the db stack's postgres; a DigitalOcean droplet's .env sets
+  # SS_DATABASE_URL (the managed database) and SS_DATABASE_SSL=require.
+  SS_DATABASE_URL: ${SS_DATABASE_URL:-postgresql+asyncpg://serversherpa:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/serversherpa}
+  SS_DATABASE_SSL: ${SS_DATABASE_SSL:-disable}
+  # the managed database's own CA (base64 PEM): verify-full when set
+  SS_DATABASE_CA_B64: ${SS_DATABASE_CA_B64:-}
   SS_JWT_SECRET: ${SS_JWT_SECRET:?set SS_JWT_SECRET}
   SS_TOTP_ENCRYPTION_KEY: ${SS_TOTP_ENCRYPTION_KEY:?set SS_TOTP_ENCRYPTION_KEY}
   SS_PASSWORD_PEPPER: ${SS_PASSWORD_PEPPER:?set SS_PASSWORD_PEPPER}
-  # presigned URLs are signed for this host, so it must be the public name
-  SS_SPACES_ENDPOINT: https://spaces.${STACK_DOMAIN}
-  SS_SPACES_REGION: us-east-1
+  # presigned URLs are signed for this host, so it must be the public name;
+  # a DigitalOcean droplet's .env points these at its Spaces bucket
+  SS_SPACES_ENDPOINT: ${SS_SPACES_ENDPOINT:-https://spaces.${STACK_DOMAIN}}
+  SS_SPACES_REGION: ${SS_SPACES_REGION:-us-east-1}
   SS_SPACES_BUCKET: ${SS_SPACES_BUCKET:-serversherpa}
-  SS_SPACES_ACCESS_KEY: serversherpa
-  SS_SPACES_SECRET_KEY: ${SPACES_SECRET_KEY:?set SPACES_SECRET_KEY}
-  SS_SPACES_USE_PATH_STYLE: "true"
+  SS_SPACES_ACCESS_KEY: ${SS_SPACES_ACCESS_KEY:-serversherpa}
+  SS_SPACES_SECRET_KEY: ${SS_SPACES_SECRET_KEY:-${SPACES_SECRET_KEY:?set SPACES_SECRET_KEY}}
+  SS_SPACES_USE_PATH_STYLE: ${SS_SPACES_USE_PATH_STYLE:-true}
   SS_SMTP_HOST: mailpit
   SS_SMTP_PORT: "1025"
   SS_SMTP_STARTTLS: "false"
@@ -42,15 +47,16 @@ x-ss-env: &ss-env
 x-ss-service: &ss-service
   image: ${STACK_API_IMAGE:-serversherpa-api}:${STACK_IMAGE_TAG:?set STACK_IMAGE_TAG}
   environment: *ss-env
-  # the public names go straight to NPM on the LAN, never out and back
+  # the public names go straight to NPM on the LAN (or, on a DigitalOcean
+  # droplet, to the load balancer: STACK_HOSTS_IP), never out and back
   # through the router (hairpin NAT is not a given)
   extra_hosts:
-    - "api.${STACK_DOMAIN}:${STACK_PROXY_IP:?set STACK_PROXY_IP}"
-    - "portal.${STACK_DOMAIN}:${STACK_PROXY_IP}"
-    - "kiosk.${STACK_DOMAIN}:${STACK_PROXY_IP}"
-    - "wiki.${STACK_DOMAIN}:${STACK_PROXY_IP}"
-    - "spaces.${STACK_DOMAIN}:${STACK_PROXY_IP}"
-    - "status.${STACK_DOMAIN}:${STACK_PROXY_IP}"
+    - "api.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP:?set STACK_PROXY_IP}}"
+    - "portal.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+    - "kiosk.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+    - "wiki.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+    - "spaces.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+    - "status.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
   restart: unless-stopped
 
 services:
@@ -97,6 +103,23 @@ services:
   db-testing-worker:
     <<: *ss-service
     command: ["serversherpa", "db-testing-worker"]
+  # DigitalOcean droplets only (ss-stack adds --profile certs when
+  # STACK_CADDY=1): renews the load balancer's certificate by HTTP-01 from
+  # the active slot; Caddy sends /.well-known/acme-challenge/* to :8089.
+  # Only this service gets the renewal token and the ACME key.
+  cert-worker:
+    <<: *ss-service
+    profiles: ["certs"]
+    command: ["serversherpa", "cert-worker"]
+    environment:
+      <<: *ss-env
+      SS_CERT_DO_TOKEN: ${SS_CERT_DO_TOKEN:-}
+      SS_CERT_LB_ID: ${SS_CERT_LB_ID:-}
+      SS_CERT_NAMES: ${SS_CERT_NAMES:-}
+      SS_CERT_ENV: ${STACK_ENV}
+      SS_CERT_ACME_DIRECTORY: ${SS_CERT_ACME_DIRECTORY:-https://acme-v02.api.letsencrypt.org/directory}
+      SS_CERT_ACME_KEY: ${SS_CERT_ACME_KEY:-}
+      SS_CERT_DROPLET_ID: ${STACK_DROPLET_ID:-}
   # two wiki workers so a long export never holds up previews and search
   # text (same split as wiki/docker-compose.yml)
   wiki-worker:

@@ -160,6 +160,8 @@ def test_api_environment_points_at_the_stack() -> None:
     assert env["SS_SPACES_USE_PATH_STYLE"] == "true"
     assert env["SS_SMTP_HOST"] == "mailpit"
     assert env["SS_DATABASE_SSL"] == "disable"
+    # a droplet's .env sets the managed database's CA; a local stack has none
+    assert env["SS_DATABASE_CA_B64"] == ""
     assert env["SS_DATABASE_URL"].endswith("@postgres:5432/serversherpa")
     assert env["SS_WIKI_RENDER_URL"] == "http://wiki:8080"
     assert set(env["SS_ALLOWED_ORIGINS"].split(",")) == {

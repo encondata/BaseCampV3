@@ -11,24 +11,32 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from serversherpa.config import get_settings
+from serversherpa.db import tls
 
 _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
+
+
+def connect_args(settings) -> dict:
+    """asyncpg's ssl: verified against the managed database's CA when
+    SS_DATABASE_CA_B64 is set, else the system store for "require"."""
+    args: dict = {}
+    if settings.database_ssl == "require":
+        args["ssl"] = True
+    args.update(tls.asyncpg_kwargs(settings))
+    return args
 
 
 def get_engine() -> AsyncEngine:
     global _engine, _sessionmaker
     if _engine is None:
         settings = get_settings()
-        connect_args = {}
-        if settings.database_ssl == "require":
-            connect_args["ssl"] = True
         _engine = create_async_engine(
             settings.database_url.get_secret_value(),
             pool_size=settings.database_pool_size,
             max_overflow=settings.database_pool_max_overflow,
             pool_pre_ping=True,
-            connect_args=connect_args,
+            connect_args=connect_args(settings),
         )
         _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine

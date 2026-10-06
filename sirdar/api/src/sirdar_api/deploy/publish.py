@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sirdar_api.config import Settings
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import Environment, ManagedRecord
-from sirdar_api.deploy import integrations, npm, outbound, smoke
+from sirdar_api.deploy import do_envs, integrations, npm, outbound, smoke, targets
 from sirdar_api.deploy.cloudflare import Cloudflare, CloudflareError, DnsRecord
 from sirdar_api.deploy.environments import services_of
 from sirdar_api.deploy.integrations import CloudflareConfig, IntegrationError, NpmConfig
@@ -70,12 +70,17 @@ class ServicePlan:
         return f"{self.host_ip}:{self.port}"
 
 
+NO_LB_YET = ("No load balancer yet: step 0 (Prepare DigitalOcean) makes it, and the records "
+             "point at its address.")
+
+
 @dataclass(frozen=True)
 class PublishContext:
     env_id: uuid.UUID
     env_name: str
     proxy_ip: str
     services: tuple[ServicePlan, ...]
+    cloud: bool = False             # DigitalOcean: DNS at the load balancer, no NPM
     cloudflare: CloudflareConfig | None = field(default=None, repr=False)
     npm: NpmConfig | None = field(default=None, repr=False)
 
@@ -103,13 +108,15 @@ async def service_plans(db: AsyncSession, env: Environment) -> tuple[ServicePlan
 
 
 async def prepare(db: AsyncSession, env: Environment, settings: Settings) -> PublishContext:
+    cloud = env.target_id == targets.DO_TARGET
     try:
         cf = await integrations.load_cloudflare(db, settings)
-        proxy = await integrations.load_npm(db, settings)
+        proxy = None if cloud else await integrations.load_npm(db, settings)
     except IntegrationError as e:
         raise PublishError(e.reason) from None
     return PublishContext(env_id=env.id, env_name=env.name, proxy_ip=env.proxy_ip,
-                          services=await service_plans(db, env), cloudflare=cf, npm=proxy)
+                          services=await service_plans(db, env), cloud=cloud, cloudflare=cf,
+                          npm=proxy)
 
 
 # ---- managed rows ----------------------------------------------------------------
@@ -164,10 +171,13 @@ def stale_rows(rows: dict, services) -> list[ManagedRecord]:
 async def missing_integrations(db: AsyncSession, env: Environment, *,
                                teardown: bool = False) -> list[str]:
     """Integrations a publish (both) or a teardown (those whose created
-    entries it must delete) needs but which aren't configured."""
+    entries it must delete) needs but which aren't configured. A
+    DigitalOcean environment never uses NPM."""
     if teardown:
         rows = await rows_of(db, env.id)
         wanted = {KIND_INTEGRATION[r.kind] for r in rows.values() if r.origin == "created"}
+    elif env.target_id == targets.DO_TARGET:
+        wanted = {"cloudflare"}
     else:
         wanted = {"cloudflare", "npm"}
     return sorted([k for k in wanted if not await integrations.is_configured(db, k)])
@@ -351,8 +361,15 @@ def _cert_entry(status: Status | None) -> dict:
 async def inspect(db: AsyncSession, env: Environment, settings: Settings) -> dict:
     """What publishing this environment would do now, per service. Reads
     Cloudflare and NPM, changes nothing. A section whose integration isn't
-    configured or can't be read reports "unknown" and says why."""
+    configured or can't be read reports "unknown" and says why. A
+    DigitalOcean environment's records point at its load balancer, and it
+    has no NPM section to read."""
     transports = outbound.transports()
+    cloud = env.target_id == targets.DO_TARGET
+    lb = None
+    if cloud:
+        do_row = await do_envs.get(db, env.id)
+        lb = do_row.lb_ip if do_row is not None else None
     services = await service_plans(db, env)
     rows = await rows_of(db, env.id)
     now = datetime.now(UTC)
@@ -368,8 +385,12 @@ async def inspect(db: AsyncSession, env: Environment, settings: Settings) -> dic
         cf = await integrations.load_cloudflare(db, settings)
     except IntegrationError as e:
         cf, out["cloudflare"]["error"] = None, e.reason
-    if cf is not None:
-        out["cloudflare"].update(configured=True, zone=cf.zone, public_ip=cf.public_ip)
+    if cf is not None and cloud and lb is None:
+        # Before step 0 there is no address to point the records at.
+        out["cloudflare"].update(configured=True, zone=cf.zone, public_ip=None)
+        dns = {s.service: Status("unknown", NO_LB_YET) for s in services}
+    elif cf is not None:
+        out["cloudflare"].update(configured=True, zone=cf.zone, public_ip=lb or cf.public_ip)
         try:
             async with Cloudflare(cf, transport=transports["cloudflare"]) as api:
                 records = await api.records()
@@ -379,13 +400,15 @@ async def inspect(db: AsyncSession, env: Environment, settings: Settings) -> dic
             owners = await owners_of(db, env.id, DNS)
             dns = {s.service: _waits_for_stale(
                        dns_status(s, records, current_row(rows, s, DNS), owners,
-                                  zone=cf.zone, public_ip=cf.public_ip), rows, s, DNS)
+                                  zone=cf.zone, public_ip=lb or cf.public_ip), rows, s, DNS)
                    for s in services}
 
-    try:
-        proxy_cfg = await integrations.load_npm(db, settings)
-    except IntegrationError as e:
-        proxy_cfg, out["npm"]["error"] = None, e.reason
+    proxy_cfg = None
+    if not cloud:
+        try:
+            proxy_cfg = await integrations.load_npm(db, settings)
+        except IntegrationError as e:
+            out["npm"]["error"] = e.reason
     if proxy_cfg is not None:
         out["npm"].update(configured=True, url=proxy_cfg.url)
         try:
@@ -567,8 +590,12 @@ async def _drop_dns(api: Cloudflare | None, row: ManagedRecord, out: Output,
     return gone
 
 
-async def ensure_dns(ctx: PublishContext, out: Output, *, transport) -> None:
+async def ensure_dns(ctx: PublishContext, out: Output, *, transport,
+                     target: str | None = None) -> None:
+    """A records at `target` (DigitalOcean: the load balancer), else at
+    Cloudflare's configured public IP."""
     cfg = _need_to_publish(ctx.cloudflare, "Cloudflare")
+    public_ip = target or cfg.public_ip
     rows, owners = await _rows_and_owners(ctx.env_id, DNS)
     async with Cloudflare(cfg, transport=transport) as api:
         records = await api.records()
@@ -582,20 +609,32 @@ async def ensure_dns(ctx: PublishContext, out: Output, *, transport) -> None:
             dropped.add((row.service, row.kind))
         rows = {k: r for k, r in rows.items() if k not in dropped}
         plan = [(s, dns_status(s, records, current_row(rows, s, DNS), owners, zone=cfg.zone,
-                               public_ip=cfg.public_ip)) for s in ctx.services]
+                               public_ip=public_ip)) for s in ctx.services]
         _stop_on_blockers(plan, "DNS records")
         for s, st in plan:
             if st.state == "ok":
-                out(f"{s.hostname}: A {cfg.public_ip}, unchanged\n")
+                out(f"{s.hostname}: A {public_ip}, unchanged\n")
             elif st.state == "update":
-                await api.update_a(st.current.id, name=s.hostname, content=cfg.public_ip,
+                await api.update_a(st.current.id, name=s.hostname, content=public_ip,
                                    proxied=s.proxied)
-                out(f"{s.hostname}: updated to A {cfg.public_ip}\n")
+                out(f"{s.hostname}: updated to A {public_ip}\n")
             else:
-                made = await api.create_a(s.hostname, cfg.public_ip, proxied=s.proxied,
+                made = await api.create_a(s.hostname, public_ip, proxied=s.proxied,
                                           comment=f"Managed by Sirdar ({ctx.env_name}/{s.service})")
                 await _remember(ctx.env_id, s.service, DNS, made.id, s.hostname)
-                out(f"{s.hostname}: created A {cfg.public_ip}\n")
+                out(f"{s.hostname}: created A {public_ip}\n")
+
+
+async def _check_removable(ctx: PublishContext) -> None:
+    """Step 17, read fresh as step 18 does: a production environment's
+    records go only once it is retiring and serves no slot (an un-retire
+    after the Delete started keeps them). Before any record is touched."""
+    async with get_sessionmaker()() as s:
+        env = await s.get(Environment, ctx.env_id)
+    if env is not None and env.type == "production" and (not env.retiring or env.active_slot):
+        raise StepFailed("This production environment is still live (not retiring, or still "
+                         "serving a slot). Sirdar removes production's DNS records only once "
+                         "it is retiring and serves no slot. Sirdar changed nothing.")
 
 
 async def remove_dns(ctx: PublishContext, out: Output, *, transport) -> None:
@@ -856,7 +895,13 @@ class HttpPublisher:
         try:
             match step:
                 case "dns":
-                    await ensure_dns(ctx, out, transport=transports["cloudflare"])
+                    target = None
+                    if ctx.cloud:
+                        target = await do_envs.lb_ip(ctx.env_id)
+                        if not target:
+                            raise StepFailed("The load balancer has no address yet. Retry from "
+                                             "step 0 (Prepare DigitalOcean).")
+                    await ensure_dns(ctx, out, transport=transports["cloudflare"], target=target)
                 case "proxy":
                     await ensure_proxy(ctx, out, transport=transports["npm"], sleep=self._sleep,
                                        now=self._now(), backoff=self._backoff)
@@ -866,6 +911,7 @@ class HttpPublisher:
                 case "unproxy":
                     await remove_proxy(ctx, out, transport=transports["npm"])
                 case "undns":
+                    await _check_removable(ctx)
                     await remove_dns(ctx, out, transport=transports["cloudflare"])
                 case _:
                     raise ValueError(f"{step!r} isn't a publish step")

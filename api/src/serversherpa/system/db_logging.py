@@ -70,11 +70,11 @@ class DbLogHandler(logging.Handler):
     # ── flusher thread ─────────────────────────────────────────
     def _get_engine(self):
         if self._engine is None:
-            from sqlalchemy import create_engine
-
             from serversherpa.config import get_settings
-            self._engine = create_engine(
-                get_settings().sync_database_url, pool_size=1,
+            from serversherpa.db import tls
+            settings = get_settings()
+            self._engine = tls.create_sync_engine(
+                settings.sync_database_url, settings, pool_size=1,
                 max_overflow=0, pool_pre_ping=True)
         return self._engine
 

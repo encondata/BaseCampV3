@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # ── Database ───────────────────────────────────────────
     database_url: SecretStr
     database_ssl: Literal["require", "disable"] = "require"
+    # A managed database's own CA (base64 PEM, one .env line): when set,
+    # every connection verifies the server against it (see db/tls.py).
+    database_ca_b64: SecretStr | None = None
     database_pool_size: int = 10
     database_pool_max_overflow: int = 20
 
@@ -144,6 +147,17 @@ class Settings(BaseSettings):
     # the files and page images it includes
     wiki_export_max_pages: int = 1000
     wiki_export_max_bytes: int = 2 * 1024 ** 3
+
+    # ── cert-worker (environments Sirdar builds on DigitalOcean) ─────
+    # The account's renewal token: certificates and load balancers only.
+    cert_do_token: SecretStr | None = None
+    cert_lb_id: str = ""
+    cert_names: str = ""                   # the public names, comma-separated
+    cert_env: str = ""                     # certificates are named ss-<env>-<UTC time>
+    cert_acme_directory: str = "https://acme-v02.api.letsencrypt.org/directory"
+    cert_acme_key: SecretStr | None = None  # base64 of this environment's ACME account key
+    cert_droplet_id: str = ""              # the droplet this worker runs on
+    cert_challenge_port: int = 8089
 
     @property
     def sync_database_url(self) -> str:

@@ -39,7 +39,7 @@ SIRDAR_TABLES = ("users, user_roles, permission_overrides, totp_backup_codes, "
                  "auth_sessions, audit_log, import_runs, ssh_known_hosts, "
                  "environments, environment_services, environment_secrets, deployments, "
                  "deployment_steps, snapshots, integrations, managed_records, proxmox_vms, "
-                 "esxi_vms")
+                 "esxi_vms, do_environments, do_slots, do_resources, acme_accounts")
 SOURCE_TABLES = ("people, user_accounts, roles, person_roles, access_groups, "
                  "access_group_members, totp_backup_codes, system_config")
 
@@ -81,6 +81,11 @@ async def clean_db():
         if not str(connected).startswith("sirdar_test"):
             raise RuntimeError(f"refusing to TRUNCATE: connected to {connected!r}")
         await session.execute(text(f"TRUNCATE {SIRDAR_TABLES} CASCADE"))
+        # The two DigitalOcean accounts are fixed rows: reset them, never drop them.
+        await session.execute(text(
+            "UPDATE do_accounts SET label = CASE key WHEN 'production' THEN 'Production' "
+            "ELSE 'Development' END, region = NULL, token_enc = NULL, "
+            "renewal_token_enc = NULL, team_uuid = NULL, team_name = NULL, updated_by = NULL"))
         await restore_default_roles(session)
         await session.commit()
     with psycopg.connect(SOURCE_PSYCOPG_URL, autocommit=True) as conn:

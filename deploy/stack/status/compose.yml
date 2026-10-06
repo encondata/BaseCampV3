@@ -1,7 +1,8 @@
 # The status page. It checks the PUBLIC names (what users see), which
 # resolve to NPM on the LAN via extra_hosts. Its own volume, so it can
 # move to its own host later untouched. Outage alerts (ntfy) stay off
-# for UAT environments.
+# for UAT environments. On a DigitalOcean droplet they resolve to the load
+# balancer (STACK_HOSTS_IP).
 name: ss-${STACK_ENV:?set STACK_ENV}-status
 
 services:
@@ -14,12 +15,12 @@ services:
       STATUS_WIKI_URL: https://wiki.${STACK_DOMAIN}
       STATUS_PUBLIC_URL: https://status.${STACK_DOMAIN}
     extra_hosts:
-      - "api.${STACK_DOMAIN}:${STACK_PROXY_IP:?set STACK_PROXY_IP}"
-      - "portal.${STACK_DOMAIN}:${STACK_PROXY_IP}"
-      - "kiosk.${STACK_DOMAIN}:${STACK_PROXY_IP}"
-      - "wiki.${STACK_DOMAIN}:${STACK_PROXY_IP}"
-      - "spaces.${STACK_DOMAIN}:${STACK_PROXY_IP}"
-      - "status.${STACK_DOMAIN}:${STACK_PROXY_IP}"
+      - "api.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP:?set STACK_PROXY_IP}}"
+      - "portal.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+      - "kiosk.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+      - "wiki.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+      - "spaces.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
+      - "status.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP}}"
     ports:
       - "${STACK_BIND_IP:-0.0.0.0}:${STACK_STATUS_PORT:-8095}:8080"
     volumes:

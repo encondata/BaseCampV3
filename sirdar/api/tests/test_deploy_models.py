@@ -1,5 +1,7 @@
 import os
 import subprocess
+import uuid
+from datetime import datetime, timezone
 
 import psycopg
 import pytest
@@ -422,7 +424,7 @@ async def test_migration_0007_downgrade_refuses_while_vms_are_managed():
     assert b"Can't downgrade below 0007 while Sirdar manages Proxmox VMs" in err.value.stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
         # The refused downgrade rolls back as a whole: still at head.
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0009"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0010"
         assert conn.execute("SELECT count(*) FROM proxmox_vms").fetchone()[0] == 1
         assert conn.execute("SELECT count(*) FROM integrations WHERE kind = 'proxmox'"
                             ).fetchone()[0] == 1
@@ -511,13 +513,14 @@ async def test_migration_0008_downgrade_refuses_while_esxi_vms_are_managed():
 
 
 async def test_migration_0009_round_trip():
-    """The digitalocean integration kind: downgrading drops a stored token
-    (SIRDAR_DEPLOY_DO_TOKEN is the only source below 0009) and refuses the kind."""
+    """Below 0010 the Production account's token is the digitalocean
+    integration row; below 0009 it is dropped (SIRDAR_DEPLOY_DO_TOKEN is the
+    only source) and the kind is refused. At head the kind is refused too:
+    the token lives in do_accounts."""
     from sirdar_api.db.engine import dispose_engine
     await dispose_engine()
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        conn.execute("INSERT INTO integrations (kind, config, secret_enc) "
-                     "VALUES ('digitalocean', '{}', 'enc')")
+        conn.execute("UPDATE do_accounts SET token_enc = 'enc' WHERE key = 'production'")
         conn.execute("INSERT INTO integrations (kind, config) VALUES ('esxi', '{}')")
     _alembic("downgrade", "0008")
     try:
@@ -530,6 +533,215 @@ async def test_migration_0009_round_trip():
     finally:
         _alembic("upgrade", "head")
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        conn.execute("INSERT INTO integrations (kind, config) VALUES ('digitalocean', '{}')")
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute("INSERT INTO integrations (kind, config) VALUES ('digitalocean', '{}')")
         with pytest.raises(psycopg.errors.CheckViolation):
             conn.execute("INSERT INTO integrations (kind, config) VALUES ('aws', '{}')")
+
+
+async def test_migration_0010_moves_the_token_both_ways():
+    """0010 moves the stored DigitalOcean token into the Production account
+    (same ciphertext); its downgrade moves it back. The Development account's
+    token has nowhere to go below 0010 and is dropped. Who saved it, and
+    when, travel with it."""
+    from sirdar_api.db.engine import dispose_engine
+    await dispose_engine()
+    actor = uuid.UUID("11111111-2222-3333-4444-555555555555")
+    stamp = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        assert conn.execute("SELECT key, label FROM do_accounts ORDER BY key").fetchall() == [
+            ("development", "Development"), ("production", "Production")]
+        conn.execute("UPDATE do_accounts SET token_enc = 'prod-enc', region = 'nyc3', "
+                     "updated_by = %s, updated_at = %s WHERE key = 'production'",
+                     (actor, stamp))
+        conn.execute("UPDATE do_accounts SET token_enc = 'dev-enc' WHERE key = 'development'")
+    _alembic("downgrade", "0009")
+    try:
+        with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+            row = conn.execute("SELECT secret_enc, updated_by, updated_at FROM integrations "
+                               "WHERE kind = 'digitalocean'").fetchone()
+            assert bytes(row[0]) == b"prod-enc"
+            assert (row[1], row[2]) == (actor, stamp)
+            assert not conn.execute("SELECT to_regclass('do_accounts') IS NOT NULL").fetchone()[0]
+    finally:
+        _alembic("upgrade", "head")
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        rows = dict(conn.execute("SELECT key, token_enc FROM do_accounts").fetchall())
+        assert bytes(rows["production"]) == b"prod-enc"
+        assert conn.execute("SELECT updated_by, updated_at FROM do_accounts "
+                            "WHERE key = 'production'").fetchone() == (actor, stamp)
+        assert rows["development"] is None
+        assert conn.execute("SELECT count(*) FROM integrations WHERE kind = 'digitalocean'"
+                            ).fetchone()[0] == 0
+
+
+async def test_migration_0010_downgrade_refuses_while_do_environments_exist():
+    from sirdar_api.db.engine import dispose_engine
+    await dispose_engine()
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        env_id = conn.execute(
+            "INSERT INTO environments (name, type, target_id, base_domain, proxy_ip, slots) "
+            "VALUES ('do1', 'dev', 'digitalocean', 'do1.serversherpa.com', '172.30.0.2', "
+            "'{orange}') RETURNING id").fetchone()[0]
+        conn.execute(
+            "INSERT INTO do_environments (environment_id, account_key, region, droplet_size, "
+            "db_size, ssh_public_key, ssh_private_key_enc, acme_key_enc, bucket) VALUES "
+            "(%s, 'development', 'nyc3', 's-2vcpu-4gb', 'db-s-2vcpu-4gb', 'ssh-ed25519 x', "
+            "'k', 'a', 'ss-do1-12345678')", (env_id,))
+    with pytest.raises(subprocess.CalledProcessError) as err:
+        _alembic("downgrade", "0009")
+    assert b"while Sirdar manages DigitalOcean environments" in err.value.stderr
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0010"
+        conn.execute("DELETE FROM environments WHERE id = %s", (env_id,))
+
+
+async def test_do_constraints(db):
+    """Production lives only on DigitalOcean and never auto-activates; the
+    active slot is one of the slots; slot names are the four colors; a
+    DigitalOcean resource is recorded once."""
+    from sirdar_api.db.models import DoResource, Environment
+
+    def env(**kw) -> Environment:
+        base = dict(name="p1", type="production", target_id="digitalocean",
+                    base_domain="p1.serversherpa.com", proxy_ip="172.30.0.2",
+                    slots=["blue", "green"])
+        return Environment(**{**base, **kw})
+
+    for bad in (env(target_id="ssh"), env(auto_activate=True), env(active_slot="orange")):
+        db.add(bad)
+        with pytest.raises(IntegrityError):
+            await db.commit()
+        await db.rollback()
+    good = env(active_slot="blue")
+    db.add(good)
+    await db.commit()
+    # Read once: a rollback below expires `good`, and async can't lazy-load.
+    env_id = good.id
+    db.add(DoResource(environment_id=env_id, kind="droplet", do_id="1", name="ss-p1-blue",
+                      slot="blue"))
+    await db.commit()
+    db.add(DoResource(environment_id=env_id, kind="droplet", do_id="1", name="ss-p1-blue",
+                      slot="blue"))
+    with pytest.raises(IntegrityError):
+        await db.commit()
+    await db.rollback()
+    db.add(DoResource(environment_id=env_id, kind="kettle", do_id="2", name="x"))
+    with pytest.raises(IntegrityError):
+        await db.commit()
+    await db.rollback()
+
+
+def _do_env_row(conn, name="do1", type_="dev", slots="{orange}"):
+    return conn.execute(
+        "INSERT INTO environments (name, type, target_id, base_domain, proxy_ip, slots) "
+        "VALUES (%s, %s, 'digitalocean', %s, '172.30.0.2', %s) RETURNING id",
+        (name, type_, f"{name}.serversherpa.com", slots)).fetchone()[0]
+
+
+def _assert_downgrade_refused() -> None:
+    try:
+        _alembic("downgrade", "0009")
+    except subprocess.CalledProcessError as err:
+        stderr = err.stderr
+    else:
+        _alembic("upgrade", "head")  # leave the database at head for the next test
+        pytest.fail("the downgrade below 0010 wasn't refused")
+    assert b"while Sirdar manages DigitalOcean environments" in stderr
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0010"
+
+
+async def test_migration_0010_downgrade_refuses_with_only_do_resources():
+    """A leftover ownership record is enough: dropping it would orphan what it names."""
+    from sirdar_api.db.engine import dispose_engine
+    await dispose_engine()
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        env_id = _do_env_row(conn)
+        conn.execute("INSERT INTO do_resources (environment_id, kind, do_id, name) "
+                     "VALUES (%s, 'vpc', 'v-1', 'ss-do1')", (env_id,))
+    _assert_downgrade_refused()
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        assert conn.execute("SELECT count(*) FROM do_resources").fetchone()[0] == 1
+        conn.execute("DELETE FROM do_resources")
+        conn.execute("DELETE FROM environments WHERE id = %s", (env_id,))
+
+
+@pytest.mark.parametrize("type_,slots", [("dev", "{orange}"), ("production", "{blue,green}")])
+async def test_migration_0010_downgrade_refuses_with_a_digitalocean_environment(type_, slots):
+    """A DigitalOcean or production environment can't exist below 0010, even
+    one with no records yet."""
+    from sirdar_api.db.engine import dispose_engine
+    await dispose_engine()
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        env_id = _do_env_row(conn, type_=type_, slots=slots)
+    _assert_downgrade_refused()
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        conn.execute("DELETE FROM environments WHERE id = %s", (env_id,))
+
+
+async def test_do_resources_are_owned_once_and_block_deleting_the_environment(db):
+    """(kind, do_id) is one owner's, across environments; a resource's slot
+    is one of the four names; an environment can't be deleted while it still
+    owns DigitalOcean resources (step 18 forgets each one as it removes it)."""
+    from sirdar_api.db.models import DoResource, Environment
+
+    def env(name: str) -> Environment:
+        return Environment(name=name, type="dev", target_id="digitalocean",
+                           base_domain=f"{name}.serversherpa.com", proxy_ip="172.30.0.2",
+                           slots=["orange"])
+
+    first, second = env("do1"), env("do2")
+    db.add_all([first, second])
+    await db.commit()
+    first_id, second_id = first.id, second.id
+    db.add(DoResource(environment_id=first_id, kind="droplet", do_id="7", name="ss-do1-orange",
+                      slot="orange"))
+    await db.commit()
+    db.add(DoResource(environment_id=second_id, kind="droplet", do_id="7",
+                      name="ss-do2-orange", slot="orange"))
+    with pytest.raises(IntegrityError):
+        await db.commit()
+    await db.rollback()
+    db.add(DoResource(environment_id=second_id, kind="droplet", do_id="8",
+                      name="ss-do2-red", slot="red"))
+    with pytest.raises(IntegrityError):
+        await db.commit()
+    await db.rollback()
+    with pytest.raises(IntegrityError):  # RESTRICT refuses at the statement
+        await db.execute(delete(Environment).where(Environment.id == first_id))
+    await db.rollback()
+    await db.execute(delete(DoResource).where(DoResource.environment_id == first_id))
+    await db.execute(delete(Environment).where(Environment.id == first_id))
+    await db.commit()
+
+
+async def test_environment_slot_and_production_rules(db):
+    """Slots never repeat; production is always blue + green; at most one
+    production environment isn't retiring (a cutover builds the next one
+    while the old one retires)."""
+    from sirdar_api.db.models import Environment
+
+    def env(name: str, **kw) -> Environment:
+        base = dict(name=name, type="production", target_id="digitalocean",
+                    base_domain=f"{name}.serversherpa.com", proxy_ip="172.30.0.2",
+                    slots=["blue", "green"])
+        return Environment(**{**base, **kw})
+
+    for bad in (env("d1", type="dev", slots=["orange", "orange"]),
+                env("p1", slots=["blue"]), env("p1", slots=["orange", "purple"]),
+                env("p1", slots=["green", "blue"])):
+        db.add(bad)
+        with pytest.raises(IntegrityError):
+            await db.commit()
+        await db.rollback()
+    db.add(env("d1", type="dev", slots=["orange", "purple"]))
+    db.add(env("p1"))
+    await db.commit()
+    db.add(env("p2"))
+    with pytest.raises(IntegrityError):
+        await db.commit()
+    await db.rollback()
+    await db.execute(text("UPDATE environments SET retiring = true WHERE name = 'p1'"))
+    db.add(env("p2"))
+    await db.commit()

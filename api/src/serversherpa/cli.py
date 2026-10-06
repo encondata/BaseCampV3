@@ -732,6 +732,36 @@ def db_testing_worker(
     asyncio.run(_run())
 
 
+@app.command(name="cert-worker")
+def cert_worker(
+    once: bool = typer.Option(False, help="One check now, print its outcome, then exit "
+                                          "(stop the cert-worker service first: it owns :8089)"),
+    renew_days: float = typer.Option(30.0, help="Renew at this many days left or fewer "
+                                                "(raise it to force a renewal)"),
+) -> None:
+    """Run the cert-worker on a DigitalOcean droplet (Sirdar phase 7):
+    renews the load balancer's Let's Encrypt certificate from the active
+    slot. Idles where SS_CERT_* aren't set."""
+
+    async def _run() -> None:
+        from serversherpa.certs import acme, worker
+
+        try:
+            outcome = await worker.run_forever(once=once, renew_days=renew_days)
+            if once:
+                typer.echo(outcome)
+        except (worker.CertWorkerError, acme.AcmeError) as e:
+            typer.secho(e.reason, fg="red", err=True)   # our own copy, never a secret
+            raise typer.Exit(code=1) from None
+        except Exception as e:  # noqa: BLE001 — never print an unknown error's text
+            typer.secho(f"cert-worker: check failed ({type(e).__name__})", fg="red", err=True)
+            raise typer.Exit(code=1) from None
+        finally:
+            await dispose_engine()
+
+    asyncio.run(_run())
+
+
 def _run_log_service_process(poll_seconds: float) -> None:
     """Reload-mode child entry point (picklable, like the import
     worker's)."""

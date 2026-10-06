@@ -268,6 +268,36 @@ const MESSAGES: Record<string, string> = {
   not_vm_environment: "This environment isn't on a VM host.",
   vm_not_ready: "This environment's VM isn't built yet. Deploy it first.",
   vm_key_unreadable: "Sirdar's key for this VM doesn't open with the current SIRDAR_SECRETS_KEY.",
+  // DigitalOcean environments
+  base_domain_not_in_zone: "That base domain isn't in the Cloudflare zone Sirdar manages.",
+  do_account_not_configured: "That DigitalOcean account has no API token yet. Add it in Settings › Integrations.",
+  do_invalid: 'Those DigitalOcean settings are incomplete or not valid.',
+  do_slots_invalid: 'Choose one droplet or two slots. Production always has blue and green.',
+  do_size_invalid: "That isn't a DigitalOcean droplet size.",
+  do_db_size_invalid: "That isn't a DigitalOcean database size.",
+  do_field_locked: "That can't change on a DigitalOcean environment after it's created.",
+  do_not_allowed: 'DigitalOcean settings only apply to an environment on DigitalOcean.',
+  do_not_ready: "Nothing is built on DigitalOcean for this environment yet. Deploy it first.",
+  snapshot_slot_unreachable: "The droplet Sirdar would take the snapshot on isn't reachable. Untick 'Save a snapshot first' to delete without one.",
+  do_account_invalid: 'That isn\'t one of the DigitalOcean accounts (Production or Development).',
+  do_account_changed: 'An environment started using this account while it was being saved. Save it again.',
+  label_invalid: 'Give the account a name of 1 to 40 characters, with no control characters.',
+  region_invalid: "That isn't a DigitalOcean region slug, like nyc3.",
+  do_team_changed: 'That token belongs to a different DigitalOcean team than the environments using this account.',
+  do_token_shared: 'The Production and Development accounts need different tokens.',
+  renewal_token_invalid: "That doesn't look like a DigitalOcean renewal token.",
+  renewal_token_shared: "The renewal token can't be the same as an account token.",
+  account_in_use: 'Environments still use this DigitalOcean account.',
+  production_exists: 'Another production environment is already live. Mark it retiring first.',
+  production_requires_digitalocean: 'A production environment must run on DigitalOcean.',
+  retiring_not_allowed: 'Only a production environment can be marked retiring.',
+  production_not_retiring: 'Mark this production environment retiring before deleting it.',
+  production_slot_active: 'Deactivate this production environment before deleting it.',
+  confirm_production_mismatch: 'Type "delete production" and the environment\'s name exactly.',
+  snapshot_required: 'Deleting production always saves a snapshot first, and that snapshot is missing.',
+  not_supported_on_digitalocean: "That isn't offered on DigitalOcean. Activate the other slot to go back.",
+  seed_not_allowed: 'This environment already runs a deploy, so it can no longer be seeded from a snapshot.',
+  slot_not_deployed: "That slot has never run a deploy. Deploy to it first.",
 };
 
 export function errorText(err: unknown, fallback: string): string {
@@ -288,6 +318,7 @@ export function errorDetail<T extends object = Record<string, unknown>>(err: unk
 export function deployErrorText(err: unknown, fallback: string): string {
   const d = errorDetail<{
     reason?: unknown; missing?: unknown; key?: unknown; service?: unknown; kinds?: unknown; environments?: unknown;
+    production?: unknown;
   }>(err);
   if (d && typeof d.reason === 'string' && d.reason) return d.reason;
   if (d && Array.isArray(d.environments) && d.environments.length && err instanceof ApiError
@@ -298,6 +329,10 @@ export function deployErrorText(err: unknown, fallback: string): string {
       && err.code === 'integration_not_configured') {
     const names = d.kinds.map((k) => INTEGRATION_LABEL[k as IntegrationKind] ?? String(k));
     return `Set up ${names.join(' and ')} in Settings › Integrations first.`;
+  }
+  if (d && d.production === true && err instanceof ApiError && err.code === 'snapshot_slot_unreachable') {
+    return "The droplet Sirdar would take the snapshot on isn't reachable, and production never goes "
+      + 'without its snapshot. Retry once the droplet is back.';
   }
   const base = errorText(err, fallback);
   let extra = '';

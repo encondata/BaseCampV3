@@ -30,10 +30,21 @@ DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_KEEP_DUMPS = 5
 PLACEHOLDER = "CHANGEME"
 
+# Extra keys a DigitalOcean droplet's .env carries (deploy phase 7), in the
+# order they are written. deploy/stack reads them with defaults, so a .env
+# without them still means "local data, NPM on the LAN".
+EXTRA_KEYS = (
+    "STACK_EXTERNAL_DATA", "STACK_CADDY", "STACK_NETWORK_SUBNET", "STACK_HOSTS_IP",
+    "STACK_TRUSTED_PROXIES", "STACK_DB_HOST", "STACK_DB_PORT", "STACK_DB_NAME", "STACK_DB_USER",
+    "SS_DATABASE_URL", "SS_DATABASE_SSL", "SS_DATABASE_CA_B64", "SS_SPACES_ENDPOINT",
+    "SS_SPACES_REGION", "SS_SPACES_ACCESS_KEY", "SS_SPACES_SECRET_KEY", "SS_SPACES_USE_PATH_STYLE",
+    "STACK_DROPLET_ID",
+)
+
 KNOWN_KEYS = (
     "STACK_ENV", "STACK_DOMAIN", "STACK_IMAGE_TAG", "STACK_REPO_DIR", "STACK_PROXY_IP",
     "STACK_BIND_IP", *(PORT_KEYS[s] for s in SERVICES), "STACK_KEEP_DUMPS",
-    *REQUIRED_SECRETS, "SS_SPACES_BUCKET", "SS_LOG_LEVEL", *OPTIONAL_SECRETS,
+    *REQUIRED_SECRETS, "SS_SPACES_BUCKET", "SS_LOG_LEVEL", *OPTIONAL_SECRETS, *EXTRA_KEYS,
 )
 
 _KEY_RE = re.compile(r"^([A-Z][A-Z0-9_]*)=(.*)$")
@@ -75,6 +86,8 @@ class EnvConfig:
     spaces_bucket: str
     log_level: str
     secrets: dict[str, str] = field(repr=False)
+    # EXTRA_KEYS only, written after the optional secrets in this order
+    extra: dict[str, str] = field(default_factory=dict, repr=False)
 
 
 def render_env(cfg: EnvConfig) -> str:
@@ -95,6 +108,10 @@ def render_env(cfg: EnvConfig) -> str:
         "SS_LOG_LEVEL": cfg.log_level,
         **{k: cfg.secrets.get(k, "") for k in OPTIONAL_SECRETS},
     }
+    for key, value in cfg.extra.items():
+        if key not in EXTRA_KEYS:
+            raise RenderError(f"unknown key {key}")
+        values[key] = value
     for key, value in values.items():
         if unsafe_value(value):
             raise RenderError(f"{key} contains a control or line-break character")

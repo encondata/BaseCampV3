@@ -90,7 +90,9 @@ async def test_requests_carry_the_pinned_target_and_step_vars(db, env, fake_runn
     common = {"env_name": "uat", "env_dir": "/opt/serversherpa/uat",
               "repo_url": "https://github.com/encondata/BaseCampV3.git", "sha": SHA,
               "ss_stack": "/opt/serversherpa/uat/repo/deploy/stack/ss-stack",
-              "min_disk_gb": 10, "min_memory_mb": 1800}
+              "min_disk_gb": 10, "min_memory_mb": 1800,
+              # DigitalOcean only (test_deploy_pipeline_do.py)
+              "external_data": False, "block_metadata": False, "public_hosts": []}
     for request in fake_runner.requests:
         assert request.playbook == STEPS_BY_KEY[request.step].playbook
         assert request.timeout == STEPS_BY_KEY[request.step].timeout

@@ -48,6 +48,7 @@ async def deployment_summary(db: AsyncSession, dep: Deployment) -> dict:
             "publish": dep.publish,
             "vm": dep.vm, "take_vm_snapshot": dep.take_vm_snapshot,
             "vm_snapshot": dep.vm_snapshot,
+            "cloud": dep.cloud, "slot": dep.slot, "go_live": dep.go_live,
             "previous_sha": dep.previous_sha, "error": dep.error,
             "actor_name": await _actor_name(db, dep.actor_id),
             "started_at": dep.started_at, "finished_at": dep.finished_at,
@@ -76,6 +77,20 @@ async def managed_records_out(db: AsyncSession, env_id) -> list[dict]:
             for r in rows]
 
 
+async def _do_out(db: AsyncSession, env: Environment) -> dict | None:
+    """A DigitalOcean environment's `do` block (no secrets), else None."""
+    if env.target_id != targets.DO_TARGET:
+        return None
+    from sirdar_api.db.models import DoAccount
+    from sirdar_api.deploy import do_envs
+    row = await do_envs.get(db, env.id)
+    if row is None:
+        return None
+    account = await db.get(DoAccount, row.account_key)
+    return do_envs.public(env, row, await do_envs.slots_of(db, env.id),
+                          await do_envs.resources_of(db, env.id), account.label)
+
+
 async def environment_out(db: AsyncSession, env: Environment) -> dict:
     services = await services_of(db, env.id)
     keys = await secret_keys_of(db, env.id)
@@ -84,8 +99,11 @@ async def environment_out(db: AsyncSession, env: Environment) -> dict:
     vm = await vms.get_for(db, env) if on_vm else None
     return {
         "id": str(env.id), "name": env.name, "type": env.type, "target": env.target_id,
-        "target_kind": env.target_id if on_vm else "ssh",
+        "target_kind": env.target_id if targets.is_built_target(env.target_id) else "ssh",
         "vm": vms.public(vm) if vm is not None else None,
+        "do": await _do_out(db, env), "slots": list(env.slots),
+        "active_slot": env.active_slot, "auto_activate": env.auto_activate,
+        "retiring": env.retiring,
         "base_domain": env.base_domain, "env_dir": envfile.env_dir(env.name),
         "git_ref": env.git_ref, "current_sha": env.current_sha, "image_tag": env.image_tag,
         "status": env.status, "proxy_ip": env.proxy_ip, "bind_ip": env.bind_ip,

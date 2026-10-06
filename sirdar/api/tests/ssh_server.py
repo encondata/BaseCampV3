@@ -37,6 +37,8 @@ class FakeSshServer:
     commands: list = field(default_factory=list)
     delays: dict = field(default_factory=dict)   # command -> seconds to sleep first
     exits: dict = field(default_factory=dict)    # command -> exit status for an override
+    stdin_echo: set = field(default_factory=set)  # commands that answer with their stdin
+    stdins: list = field(default_factory=list)    # what those commands read
 
     @property
     def fingerprint(self) -> str:
@@ -80,6 +82,13 @@ async def ssh_server(tmp_path):
 
     async def process_factory(process: asyncssh.SSHServerProcess) -> None:
         fake = state["fake"]
+        if process.command in fake.stdin_echo:
+            fake.commands.append(process.command)
+            data = await process.stdin.read()
+            fake.stdins.append(data.decode())
+            process.stdout.write(data)
+            process.exit(0)
+            return
         out, err, code = fake.answer(process.command or "")
         if process.command in fake.delays:
             await asyncio.sleep(fake.delays[process.command])

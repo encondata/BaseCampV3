@@ -5,11 +5,12 @@ import sys
 from pathlib import Path
 
 from alembic import context
-from sqlalchemy import create_engine, pool
+from sqlalchemy import pool
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from serversherpa.config import get_settings  # noqa: E402
+from serversherpa.db import tls  # noqa: E402
 
 config = context.config
 
@@ -30,7 +31,10 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    engine = create_engine(get_settings().sync_database_url, poolclass=pool.NullPool)
+    settings = get_settings()
+    # a managed database: verify-full against its CA (empty otherwise)
+    engine = tls.create_sync_engine(settings.sync_database_url, settings,
+                                    poolclass=pool.NullPool)
     with engine.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():

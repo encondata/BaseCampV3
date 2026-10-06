@@ -1,9 +1,10 @@
 """Integration credentials: the Cloudflare API token and the Nginx Proxy
 Manager login Sirdar publishes with (phase 4), the Proxmox API token it
 builds VMs with (phase 5), the ESXi password it builds VMs with (phase 6) and
-the DigitalOcean API token (SIRDAR_DEPLOY_DO_TOKEN is its fallback when none
-is stored), plus their non-secret settings. The Proxmox and ESXi configs also hold the
-pinned TLS certificate (tls_pin); Proxmox's holds the token's id part.
+(since phase 7) a facade over the Production DigitalOcean account in
+do_accounts (SIRDAR_DEPLOY_DO_TOKEN is its fallback), plus their non-secret
+settings. The Proxmox and ESXi configs also hold the pinned TLS certificate
+(tls_pin); Proxmox's holds the token's id part.
 
 The secret is Fernet-encrypted with SIRDAR_SECRETS_KEY in
 integrations.secret_enc and write-only: public() reports only whether one is
@@ -19,7 +20,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
-from sirdar_api.db.models import Environment, Integration, User
+from sirdar_api.db.models import DoAccount, Environment, Integration, User
 from sirdar_api.deploy import envfile, tls_pin, vault
 
 KINDS = ("cloudflare", "npm", "proxmox", "esxi", "digitalocean")
@@ -386,6 +387,9 @@ def _check_same_target(kind: str, checked: dict, row: Integration) -> None:
 
 
 async def is_configured(db: AsyncSession, kind: str) -> bool:
+    if kind == "digitalocean":
+        from sirdar_api.deploy import do_accounts
+        return await do_accounts.has_token(db, "production")
     row = await _row(db, kind)
     return row is not None and row.secret_enc is not None
 
@@ -418,25 +422,23 @@ async def load_esxi(db: AsyncSession, settings: Settings) -> EsxiConfig | None:
 
 
 async def load_digitalocean(db: AsyncSession, settings: Settings) -> DigitalOceanConfig | None:
-    """The one DigitalOcean token Sirdar uses: the stored one, else
+    """The Production account's token (do_accounts): the stored one, else
     SIRDAR_DEPLOY_DO_TOKEN; None when neither is set. A stored token that
     won't decrypt raises IntegrationError: it is never silently replaced by
     the environment's."""
-    row = await _row(db, "digitalocean")
-    if row is not None and row.secret_enc is not None:
-        return DigitalOceanConfig(token=_decrypt(settings, row), source="stored")
-    if settings.deploy_do_token is not None:
-        return DigitalOceanConfig(token=settings.deploy_do_token.get_secret_value(),
-                                  source="environment")
-    return None
+    from sirdar_api.deploy import do_accounts
+    account = await do_accounts.load(db, settings, "production")
+    if account is None:
+        return None
+    return DigitalOceanConfig(token=account.token, source=account.source)
 
 
 async def digitalocean_source(db: AsyncSession, settings: Settings) -> str | None:
-    """Where the DigitalOcean token comes from, without decrypting it:
-    "stored", "environment" or None."""
-    if await is_configured(db, "digitalocean"):
-        return "stored"
-    return "environment" if settings.deploy_do_token is not None else None
+    """Where the Production account's token comes from, without decrypting
+    it: "stored", "environment" or None."""
+    from sirdar_api.deploy import do_accounts
+    row = await db.get(DoAccount, "production", populate_existing=True)
+    return do_accounts.source_of(row, settings)
 
 
 async def config_of(db: AsyncSession, kind: str) -> dict:
@@ -447,7 +449,11 @@ async def config_of(db: AsyncSession, kind: str) -> dict:
 
 async def in_use(db: AsyncSession, kind: str) -> list[str]:
     """Environments that can't lose this integration: those built on this
-    VM host (their VMs could no longer be destroyed)."""
+    VM host (their VMs could no longer be destroyed), and for DigitalOcean
+    those built in the Production account."""
+    if kind == "digitalocean":
+        from sirdar_api.deploy import do_accounts
+        return await do_accounts.in_use(db, "production")
     if kind not in VM_HOST_KINDS:
         return []
     return list(await db.scalars(select(Environment.name)
@@ -472,6 +478,13 @@ async def check_url_change(db: AsyncSession, kind: str, url: str) -> None:
 async def candidate(db: AsyncSession, settings: Settings, kind: str, values: dict,
                     secret: str | None) -> Config:
     """Unsaved values for a Test: the given secret, else the stored one."""
+    if kind == "digitalocean":
+        if secret is not None:
+            return DigitalOceanConfig(token=check_secret(kind, secret))
+        from sirdar_api.deploy import do_accounts
+        if not await do_accounts.has_token(db, "production"):
+            raise IntegrationError("secret_required")
+        return await load_digitalocean(db, settings)
     checked = check_fields(kind, values)
     if secret is not None:
         return _config(kind, checked, check_secret(kind, secret))
@@ -485,7 +498,18 @@ async def candidate(db: AsyncSession, settings: Settings, kind: str, values: dic
 async def save(db: AsyncSession, settings: Settings, kind: str, values: dict,
                secret: str | None, actor_id) -> list[str]:
     """Store the settings, and the secret when given (None keeps the stored
-    one). Returns the names of what changed (the secret as token/password)."""
+    one). Returns the names of what changed (the secret as token/password).
+    DigitalOcean saves the Production account's token (do_accounts)."""
+    if kind == "digitalocean":
+        from sirdar_api.deploy import do_accounts
+        row = await db.get(DoAccount, "production", populate_existing=True)
+        if secret is None:
+            if row.token_enc is None:
+                raise IntegrationError("secret_required")
+            return []
+        return [c for c in await do_accounts.save(
+            db, settings, "production", label=row.label, region=row.region, token=secret,
+            actor_id=actor_id) if c == "token"]
     checked = check_fields(kind, values)
     if secret is not None:
         check_secret(kind, secret)
@@ -516,6 +540,9 @@ async def save(db: AsyncSession, settings: Settings, kind: str, values: dict,
 
 
 async def remove(db: AsyncSession, kind: str) -> bool:
+    if kind == "digitalocean":                     # the Production account's tokens
+        from sirdar_api.deploy import do_accounts
+        return await do_accounts.clear(db, "production")
     result = await db.execute(delete(Integration).where(Integration.kind == kind))
     return result.rowcount > 0
 
@@ -524,6 +551,15 @@ async def public(db: AsyncSession, settings: Settings) -> dict:
     """What the Settings page shows: settings and whether a secret is set."""
     out: dict = {"secrets_key_configured": vault.is_configured(settings)}
     for kind in KINDS:
+        if kind == "digitalocean":                 # the Production account (do_accounts)
+            account = await db.get(DoAccount, "production", populate_existing=True)
+            by = await db.get(User, account.updated_by) if account.updated_by else None
+            source = await digitalocean_source(db, settings)
+            out[kind] = {"configured": source is not None,
+                         "token_set": account.token_enc is not None, "source": source,
+                         "updated_at": account.updated_at if account.token_enc else None,
+                         "updated_by_name": by.display_name if by else None}
+            continue
         row = await _row(db, kind)
         config = dict(row.config) if row else {}
         by = await db.get(User, row.updated_by) if row and row.updated_by else None
@@ -536,9 +572,4 @@ async def public(db: AsyncSession, settings: Settings) -> dict:
         }
         if kind == "esxi":                         # a list even before it is set up
             out[kind]["dns_servers"] = list(config.get("dns_servers") or [])
-        if kind == "digitalocean":                 # SIRDAR_DEPLOY_DO_TOKEN is the fallback
-            source = await digitalocean_source(db, settings)
-            out[kind] = {"configured": source is not None, "token_set": source == "stored",
-                         "source": source, "updated_at": out[kind]["updated_at"],
-                         "updated_by_name": out[kind]["updated_by_name"]}
     return out
