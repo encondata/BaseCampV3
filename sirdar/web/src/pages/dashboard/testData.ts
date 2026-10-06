@@ -1,5 +1,5 @@
 /** Test fixtures shaped like GET /api/dashboard (demo and real/empty). */
-import type { DashboardData, DashEnvironment, DashFlow, DashNode, DashServer } from '../../lib/sirdarApi';
+import type { DashboardData, DashCert, DashEnvironment, DashFlow, DashNode, DashServer } from '../../lib/sirdarApi';
 
 /** A card with nothing built (a placeholder). */
 export const NONE_FLOW: DashFlow = {
@@ -39,9 +39,14 @@ export const DEMO_TREE: DashNode[] = [
 
 const server = (id: string, label: string, sub: string, state: DashServer['state'], health: string,
                 version: string | null): DashServer => ({ id, label, sub, state, health, version, deployed: version !== null });
+/** Every host of `domain` answering with the same date. */
+export const certFor = (domain: string, days: number, expires: string, tone: 'ok' | 'warn' | 'bad' = 'ok'): DashCert => ({
+  days_left: days, expires_at: expires, tone,
+  hosts: ['api', 'portal'].map((s) => ({ hostname: `${s}.${domain}`, expires_at: expires, days_left: days, error: null })),
+});
 export const lbFlow = (servers: DashServer[], active: string | null, extra: Partial<DashFlow> = {}): DashFlow => ({
   kind: 'load_balancer', middle: { label: 'Load balancer', sub: '203.0.113.50', status: 'ok' }, servers,
-  active_slot: active, certificate: { days_left: 64, expires_at: '2026-12-09T12:00:00+00:00', tone: 'ok' },
+  active_slot: active, certificate: certFor('serversherpa.com', 64, '2026-12-09T12:00:00+00:00'),
   deploying_slot: null, failed_slot: null, ...extra,
 });
 export const lanFlow = (version: string | null, extra: Partial<DashFlow> = {}): DashFlow => ({
@@ -66,10 +71,15 @@ export const PROD_CARD = card('prod', 'prod', 'Production', 'active', 'e73b99ca'
 export const DO_CARD = card('uat9', 'uat9', 'Development', 'active', 'e73b99ca', 'uat9', false, lbFlow([
   server('orange', 'Orange', '203.0.113.21', 'live', 'healthy', 'e73b99ca'),
   server('purple', 'Purple', '203.0.113.22', 'idle', 'healthy', 'f00dbabe')], 'orange',
-  { certificate: { days_left: 10, expires_at: '2026-10-16T12:00:00+00:00', tone: 'warn' } }), 'Deploy uat9');
+  { certificate: certFor('uat9.serversherpa.com', 10, '2026-10-16T12:00:00+00:00', 'warn') }), 'Deploy uat9');
 /** uat9's Activate of purple failed: orange still serves. */
 export const FAILED_DO_CARD: DashEnvironment = { ...DO_CARD, state: 'failed', flow: { ...DO_CARD.flow, failed_slot: 'purple' } };
-export const LAN_CARD = card('uat', 'uat', 'Development', 'active', 'e73b99ca', 'uat', false, lanFlow('e73b99ca'), 'Deploy uat');
+/** A LAN environment behind Nginx Proxy Manager: its portal answers, its kiosk didn't. */
+export const LAN_CARD = card('uat', 'uat', 'Development', 'active', 'e73b99ca', 'uat', false, lanFlow('e73b99ca', {
+  certificate: { days_left: 47, expires_at: '2026-11-22T12:00:00+00:00', tone: 'ok', hosts: [
+    { hostname: 'portal.uat.serversherpa.com', expires_at: '2026-11-22T12:00:00+00:00', days_left: 47, error: null },
+    { hostname: 'kiosk.uat.serversherpa.com', expires_at: null, days_left: null, error: 'Timed out' }] },
+}), 'Deploy uat');
 const placeholder = (id: string, label: string, action: string) =>
   card(id, label, null, 'empty', null, null, false, NONE_FLOW, action);
 

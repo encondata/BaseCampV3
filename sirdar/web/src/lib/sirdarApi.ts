@@ -761,7 +761,13 @@ export const claimPublish = (name: string) =>
 
 /* ---- Dashboard (GET /api/dashboard) ---- */
 export interface DashHealth { status: 'healthy' | 'degraded' | 'unknown' | string; label: string }
-export interface DashCert { days_left: number; expires_at: string; tone: 'ok' | 'warn' | 'bad' | string }
+/** One public hostname's certificate from Sirdar's live TLS check; `error` is set when it couldn't be read. */
+export interface DashCertHost { hostname: string; expires_at: string | null; days_left: number | null; error: string | null }
+/** The soonest expiry among an environment's public hostnames that answered; tone 'unknown' (dates null) when none did. */
+export interface DashCert {
+  days_left: number | null; expires_at: string | null; tone: 'ok' | 'warn' | 'bad' | 'unknown' | string;
+  hosts: DashCertHost[];
+}
 export interface DashServer {
   /** A slot ("blue", "orange"…), "host" on the LAN, "none" on a placeholder. */
   id: string; label: string; sub: string;

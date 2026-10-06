@@ -378,13 +378,87 @@ it('the certificate pill: red when expired, singular at one day', async () => {
   const prod = CLOUD.environments[0];
   const withCert = (certificate: typeof prod.flow.certificate) =>
     ({ ...CLOUD, environments: [{ ...prod, flow: { ...prod.flow, certificate } }] });
-  api.getDashboard.mockResolvedValue(withCert({ days_left: 0, expires_at: '2026-10-01T00:00:00+00:00', tone: 'bad' }));
+  api.getDashboard.mockResolvedValue(withCert({ days_left: 0, expires_at: '2026-10-01T00:00:00+00:00', tone: 'bad', hosts: [] }));
   show();
   expect((await within(await findSpot()).findByText('Certificate expired')).className).toMatch(/is-bad/);
   cleanup();
-  api.getDashboard.mockResolvedValue(withCert({ days_left: 1, expires_at: '2026-10-07T00:00:00+00:00', tone: 'warn' }));
+  api.getDashboard.mockResolvedValue(withCert({ days_left: 1, expires_at: '2026-10-07T00:00:00+00:00', tone: 'warn', hosts: [] }));
   show();
   expect((await within(await findSpot()).findByText('Certificate: 1 day left')).className).toMatch(/is-warn/);
+});
+
+const envCard = (label: string) => screen.getByRole('region', { name: label });
+
+it('every environment card shows its certificate pill, LAN and DigitalOcean alike', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  show();
+  await screen.findByRole('button', { name: 'Show uat9' });
+  expect(within(envCard('prod')).getByText('Certificate: 64 days left').className).toMatch(/is-ok/);
+  expect(within(envCard('uat9')).getByText('Certificate: 10 days left').className).toMatch(/is-warn/);
+  expect(within(envCard('uat')).getByText('Certificate: 47 days left').className).toMatch(/is-ok/);
+});
+
+it('placeholder cards have no certificate pill', async () => {
+  show();
+  await screen.findByRole('region', { name: 'Development' });
+  expect(screen.queryByText(/^Certificate/)).toBeNull();
+});
+
+it('a LAN environment shows its certificate in the spotlight', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  show();
+  await screen.findByRole('button', { name: 'Show uat' });
+  await userEvent.click(cardToggle('uat'));
+  expect(within(spot()).getByRole('heading', { name: 'uat' })).toBeTruthy();
+  expect(within(spot()).getByText('Certificate: 47 days left').className).toMatch(/is-ok/);
+});
+
+it("a certificate no host answered for is gray: couldn't check", async () => {
+  const lan = CLOUD.environments[2];
+  const unknown = { ...lan, flow: { ...lan.flow, certificate: {
+    days_left: null, expires_at: null, tone: 'unknown' as const,
+    hosts: [{ hostname: 'portal.uat.serversherpa.com', expires_at: null, days_left: null, error: "Couldn't connect" }] } } };
+  api.getDashboard.mockResolvedValue({ ...CLOUD, environments: [unknown] });
+  show();
+  const pill = await within(await findSpot()).findByText("Certificate: couldn't check");
+  expect(pill.className).toMatch(/is-muted/);
+  expect(pill.getAttribute('title')).toBe("portal.uat.serversherpa.com — Couldn't connect");
+  expect(within(envCard('uat')).getByText("Certificate: couldn't check").className).toMatch(/is-muted/);
+});
+
+it('hovering the pill lists every host: days left, singular at one, expired, or why it couldn\'t be checked', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  show();
+  await screen.findByRole('button', { name: 'Show uat' });
+  expect(within(envCard('uat')).getByText('Certificate: 47 days left').getAttribute('title')).toBe(
+    'portal.uat.serversherpa.com — 47 days left\nkiosk.uat.serversherpa.com — Timed out');
+  cleanup();
+  const prod = CLOUD.environments[0];
+  const hosts = [
+    { hostname: 'api.serversherpa.com', expires_at: '2026-10-07T00:00:00+00:00', days_left: 1, error: null },
+    { hostname: 'portal.serversherpa.com', expires_at: '2026-10-01T00:00:00+00:00', days_left: 0, error: null }];
+  api.getDashboard.mockResolvedValue({ ...CLOUD, environments: [{ ...prod, flow: { ...prod.flow, certificate: {
+    days_left: 0, expires_at: '2026-10-01T00:00:00+00:00', tone: 'bad' as const, hosts } } }] });
+  show();
+  const pill = await within(await findSpot()).findByText('Certificate expired');
+  expect(pill.getAttribute('title')).toBe('api.serversherpa.com — 1 day left\nportal.serversherpa.com — expired');
+});
+
+it('the host list is reachable by keyboard, on the card and in the spotlight', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  show();
+  await screen.findByRole('button', { name: 'Show uat' });
+  await userEvent.click(cardToggle('uat'));
+  const hosts = 'portal.uat.serversherpa.com — 47 days left. kiosk.uat.serversherpa.com — Timed out.';
+  for (const where of [envCard('uat'), spot()]) {
+    const pill = within(where).getByText('Certificate: 47 days left');
+    expect(pill.tabIndex).toBe(0);
+    const described = document.getElementById(pill.getAttribute('aria-describedby') ?? '');
+    expect(described?.textContent).toBe(hosts);
+  }
+  // focusing the card's pill doesn't select anything; the card's own button still does
+  within(envCard('prod')).getByText('Certificate: 64 days left').focus();
+  expect(cardToggle('prod').getAttribute('aria-pressed')).toBe('false');
 });
 
 it('switching cards remounts the flow, so it re-measures and restarts', async () => {

@@ -1,7 +1,7 @@
 /** Small shared pieces of the Deployments dashboard. */
-import type { ReactNode } from 'react';
+import { useId, type ReactNode } from 'react';
 
-import type { DashFlow } from '../../lib/sirdarApi';
+import type { DashCert, DashCertHost, DashFlow } from '../../lib/sirdarApi';
 import { slotTitle, stillLiveText } from '../environments/labels';
 
 export const SOON = 'Coming later';
@@ -24,6 +24,38 @@ export function SoonButton({ className = '', title = SOON, children }: {
             onClick={(e) => e.preventDefault()}>
       {children}
     </button>
+  );
+}
+
+const daysText = (n: number) => `${n} day${n === 1 ? '' : 's'} left`;
+
+function hostLine(h: DashCertHost): string {
+  if (h.days_left === null || h.expires_at === null) return `${h.hostname} — ${h.error ?? "Couldn't check"}`;
+  const expired = h.days_left === 0 && new Date(h.expires_at).getTime() <= Date.now();
+  return `${h.hostname} — ${expired ? 'expired' : daysText(h.days_left)}`;
+}
+
+/** The certificate pill (spotlight and cards): the soonest expiry among the
+ *  environment's public hostnames, amber at 14 days, red once expired, gray
+ *  when none could be checked. Its tooltip lists every host; so does its
+ *  description, read when the pill takes keyboard focus. */
+export function CertPill({ cert, onClick }: { cert: DashCert | null; onClick?: () => void }) {
+  const descId = useId();
+  if (!cert) return null;
+  const lines = cert.hosts.map(hostLine);
+  const title = lines.join('\n') || undefined;
+  let cls = 'is-ok';
+  let text = `Certificate: ${daysText(cert.days_left ?? 0)}`;
+  if (cert.tone === 'unknown' || cert.days_left === null) { cls = 'is-muted'; text = "Certificate: couldn't check"; }
+  else if (cert.tone === 'bad') { cls = 'is-bad'; text = 'Certificate expired'; }
+  else if (cert.tone === 'warn') cls = 'is-warn';
+  if (!lines.length) return <span className={`sd-pill sd-cert ${cls}`} onClick={onClick}>{text}</span>;
+  return (
+    <>
+      <span className={`sd-pill sd-cert ${cls}`} title={title} tabIndex={0} aria-describedby={descId}
+            onClick={onClick}>{text}</span>
+      <span id={descId} hidden>{lines.map((l) => `${l}.`).join(' ')}</span>
+    </>
   );
 }
 

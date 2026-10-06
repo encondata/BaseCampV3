@@ -278,5 +278,9 @@
 .sd-dash .sd-env-select:focus-visible { outline: 2px solid var(--sd-blue); outline-offset: 2px; }
 .sd-dash .sd-env > :not(.sd-env-select) { position: relative; z-index: 1; pointer-events: none; }
 .sd-dash .sd-env .sd-btn { pointer-events: auto; }
+/* the certificate pill takes the pointer for its host tooltip (its click selects the card) */
+.sd-dash .sd-env .sd-cert { pointer-events: auto; cursor: pointer; }
+.sd-dash .sd-env-cert { display: flex; margin-top: 2px; }
+.sd-dash .sd-cert:focus-visible { outline: 2px solid var(--sd-blue); outline-offset: 2px; }
 .sd-dash .sd-env:hover:not(.is-selected) { border-color: var(--sd-guide); }
 .sd-dash .sd-env.is-selected { border-color: var(--sd-blue); box-shadow: 0 0 0 2px var(--sd-blue), var(--sd-shadow-strong); }

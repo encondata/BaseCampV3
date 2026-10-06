@@ -10,6 +10,7 @@ same inventories fill the infrastructure tree). LAN values come from the
 environment's target and the NPM integration's URL. No token reaches the
 response or a cache key."""
 
+import asyncio
 import hashlib
 import logging
 import math
@@ -21,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
+from sirdar_api.dashboard import certcheck
 from sirdar_api.dashboard.demo import demo_dashboard, node
 from sirdar_api.db.models import (
     Deployment, DoAccount, DoEnvironment, DoResource, Environment, EnvironmentService)
@@ -30,6 +32,7 @@ from sirdar_api.deploy import (
     digitalocean,
     do_accounts,
     do_envs,
+    envfile,
     integrations,
     names,
     outbound,
@@ -51,10 +54,12 @@ _DROPLET = {"active": ("running", "Running"), "off": ("stopped", "Stopped"),
 _TYPE_LABELS = {"dev": "Development", "beta": "Beta", "custom": "Custom",
                 "production": "Production"}
 _RELEASED = ("succeeded", "adopted")
+cert_checker = certcheck.Checker()
 
 
 def clear_cache() -> None:
     _cache.clear()
+    cert_checker.clear()
 
 
 def _label(env: str) -> str:
@@ -211,14 +216,51 @@ def _health(cards: list[dict]) -> dict:
 
 
 def cert_info(when: datetime | None, now: datetime) -> dict | None:
-    """A load balancer certificate for the spotlight: amber at 14 days or
-    fewer, red once expired."""
+    """A certificate's expiry for the spotlight: amber at 14 days or fewer,
+    red once expired."""
     if when is None:
         return None
     left = certs.days_left(when, now)
     days = math.floor(left)
     tone = "bad" if left <= 0 else "warn" if days <= certs.SIRDAR_RENEW_DAYS else "ok"
     return {"days_left": max(0, days), "expires_at": when.isoformat(), "tone": tone}
+
+
+def certificate_of(results: list[certcheck.HostCert], now: datetime) -> dict | None:
+    """An environment's certificate from the live check of its public
+    hostnames: the soonest expiry among the hosts that answered (tone
+    "unknown" when none did), each host listed. None without hostnames."""
+    if not results:
+        return None
+    hosts = []
+    for r in results:
+        info = cert_info(r.not_after, now)
+        hosts.append({"hostname": r.hostname,
+                      "expires_at": info["expires_at"] if info else None,
+                      "days_left": info["days_left"] if info else None,
+                      "error": None if info else (r.error or certcheck.NO_CONNECT)})
+    answered = [r.not_after for r in results if r.not_after is not None]
+    summary = (cert_info(min(answered), now) if answered
+               else {"days_left": None, "expires_at": None, "tone": "unknown"})
+    return {**summary, "hosts": hosts}
+
+
+async def _public_hostnames(db: AsyncSession, env_ids: list) -> dict:
+    """{environment id: [hostname, ...]} in the services' usual order, set values only."""
+    order = {s: i for i, s in enumerate(envfile.SERVICES)}
+    rows = (await db.execute(select(EnvironmentService.environment_id,
+                                    EnvironmentService.service, EnvironmentService.hostname)
+                             .where(EnvironmentService.environment_id.in_(env_ids),
+                                    EnvironmentService.hostname.is_not(None),
+                                    EnvironmentService.hostname != ""))).all()
+    found: dict = {}
+    for env_id, service, host in sorted(rows, key=lambda r: (order.get(r[1], 99), r[1])):
+        found.setdefault(env_id, []).append(host)
+    return found
+
+
+async def _no_checks() -> dict:
+    return {}
 
 
 def _empty_flow() -> dict:
@@ -285,7 +327,7 @@ async def _do_flow(db: AsyncSession, env: Environment, row: DoEnvironment, inv: 
             "middle": {"label": "Load balancer", "sub": row.lb_ip or "Built by the first deploy",
                        "status": status},
             "servers": servers, "active_slot": env.active_slot,
-            "certificate": cert_info(row.cert_not_after, now),
+            "certificate": None,    # from the live check (_certificates)
             "deploying_slot": deploying, "failed_slot": failed}
 
 
@@ -363,33 +405,53 @@ def _placeholder(env: str, action_label: str, *, production: bool = False) -> di
 
 
 async def environment_cards(db: AsyncSession | None, settings: Settings, tagged: list[str],
-                            inventories: dict[str, dict], now: datetime) -> list[dict]:
+                            inventories: dict[str, dict], now: datetime, *,
+                            refresh: bool = False) -> list[dict]:
     """Production first (the live one, else a retiring one, else a
     placeholder), Dev / Beta (placeholders until one exists), the rest by
     name, then DigitalOcean env tags no environment answers to."""
     rows: list[Environment] = []
+    hostnames: dict = {}
     if db is not None:
         rows = list(await db.scalars(select(Environment).order_by(Environment.name)))
+        hostnames = await _public_hostnames(db, [e.id for e in rows])
+    # One bounded, concurrent check of every card's public hostnames, running
+    # while the cards are built (it never touches the session).
+    checking = asyncio.ensure_future(
+        cert_checker.check_all([h for hs in hostnames.values() for h in hs], refresh=refresh)
+        if hostnames else _no_checks())
+
+    built: list[tuple[Environment, dict]] = []
 
     async def card(e: Environment) -> dict:
-        return await _environment_card(db, settings, e, inventories, now)
+        c = await _environment_card(db, settings, e, inventories, now)
+        built.append((e, c))
+        return c
 
-    prods = sorted((e for e in rows if e.type == "production"), key=lambda e: e.retiring)
-    first = prods[0] if prods else None
-    cards = [await card(first) if first else
-             _placeholder("production", "Set up Production", production=True)]
-    # Only card 0 is the Production card; a retiring production listed later
-    # keeps production: true but isn't primary.
-    cards[0]["primary"] = True
-    for type_, short in (("dev", "Dev"), ("beta", "Beta")):
-        typed = [e for e in rows if e.type == type_]
-        if typed:
-            cards += [await card(e) for e in typed]
-        else:
-            cards.append(_placeholder(type_, f"Set up {short}"))
-    cards += [await card(e) for e in rows if e.type not in ("dev", "beta") and e is not first]
-    known = {e.name for e in rows}
-    cards += [_placeholder(e, f"Set up {_label(e)}") for e in tagged if e not in known]
+    try:
+        prods = sorted((e for e in rows if e.type == "production"), key=lambda e: e.retiring)
+        first = prods[0] if prods else None
+        cards = [await card(first) if first else
+                 _placeholder("production", "Set up Production", production=True)]
+        # Only card 0 is the Production card; a retiring production listed later
+        # keeps production: true but isn't primary.
+        cards[0]["primary"] = True
+        for type_, short in (("dev", "Dev"), ("beta", "Beta")):
+            typed = [e for e in rows if e.type == type_]
+            if typed:
+                cards += [await card(e) for e in typed]
+            else:
+                cards.append(_placeholder(type_, f"Set up {short}"))
+        cards += [await card(e) for e in rows if e.type not in ("dev", "beta") and e is not first]
+        known = {e.name for e in rows}
+        cards += [_placeholder(e, f"Set up {_label(e)}") for e in tagged if e not in known]
+    except BaseException:
+        checking.cancel()            # its checks still finish and fill the cache
+        raise
+    checked = await checking
+    for env, c in built:
+        c["flow"]["certificate"] = certificate_of(
+            [checked[h] for h in hostnames.get(env.id, [])], now)
     return cards
 
 
@@ -461,6 +523,7 @@ async def build_dashboard(settings: Settings, *, db: AsyncSession | None = None,
     every = [r for _, _, inv in read for kind in ("droplets", "databases", "load_balancers")
              for r in inv[kind]]
     tagged = sorted({e for r in every if (e := _env_of(r)) and e not in _FIXED})
-    envs = await environment_cards(db, settings, tagged, inventories, datetime.now(UTC))
+    envs = await environment_cards(db, settings, tagged, inventories, datetime.now(UTC),
+                                   refresh=refresh)
     return {"demo": False, "generated_at": datetime.now(UTC).isoformat(),
             "health": _health(envs), "environments": envs, "infrastructure": infra}

@@ -32,12 +32,18 @@ def _server(id_, label, sub, state, health, version) -> dict:
             "version": version, "deployed": version is not None}
 
 
-def _do_flow(lb_ip, servers, active, days) -> dict:
+def _cert(domain, days, expires_at) -> dict:
+    """A fixed certificate: every public hostname answers with the same date."""
+    return {"days_left": days, "expires_at": expires_at, "tone": "ok" if days > 14 else "warn",
+            "hosts": [{"hostname": f"{svc}.{domain}", "expires_at": expires_at,
+                       "days_left": days, "error": None}
+                      for svc in ("api", "portal", "kiosk", "wiki")]}
+
+
+def _do_flow(lb_ip, servers, active, cert) -> dict:
     return {"kind": "load_balancer",
             "middle": {"label": "Load balancer", "sub": lb_ip, "status": "ok"},
-            "servers": servers, "active_slot": active,
-            "certificate": {"days_left": days, "expires_at": "2027-01-04T12:00:00+00:00",
-                            "tone": "ok" if days > 14 else "warn"},
+            "servers": servers, "active_slot": active, "certificate": cert,
             "deploying_slot": None, "failed_slot": None}
 
 
@@ -76,19 +82,23 @@ def demo_dashboard() -> dict:
                   "Deploy production", True, _do_flow("203.0.113.10", [
                       _server("blue", "Blue", "10.20.0.10", "live", "healthy", "v2.8.0"),
                       _server("green", "Green", "10.20.0.20", "idle", "unknown", "v2.7.9")],
-                      "blue", 64)),
+                      "blue", _cert("serversherpa.com", 64, "2026-12-09T12:00:00+00:00"))),
             _card("dev", "Development", "Development", "active", "v2.8.1-dev", "v2.8.1-dev",
                   "Deploy to Dev", False, _do_flow("203.0.113.20", [
                       _server("orange", "Orange", "10.30.0.10", "live", "healthy", "v2.8.1-dev"),
                       _server("purple", "Purple", "10.30.0.11", "idle", "healthy", "v2.8.2-dev")],
-                      "orange", 12)),
+                      "orange", _cert("dev.serversherpa.com", 12,
+                                      "2026-10-18T12:00:00+00:00"))),
             _card("uat", "UAT", "Custom", "active", "v2.8.1-rc.2", "v2.8.1-rc.2", "Deploy to UAT",
                   False, {"kind": "proxy",
                           "middle": {"label": "Nginx Proxy Manager", "sub": "10.10.48.6",
                                      "status": "ok"},
                           "servers": [_server("host", "Lab box", "10.10.48.63", "live",
                                               "healthy", "v2.8.1-rc.2")],
-                          "active_slot": "host", "certificate": None, "deploying_slot": None,
+                          "active_slot": "host",
+                          "certificate": _cert("uat.serversherpa.com", 47,
+                                               "2026-11-22T12:00:00+00:00"),
+                          "deploying_slot": None,
                           "failed_slot": None}),
         ],
         "infrastructure": {"source": "demo", "error": None, "tree": tree, "accounts": []},
