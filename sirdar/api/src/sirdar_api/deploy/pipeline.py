@@ -764,6 +764,25 @@ async def _keep_snapshot_keys(db: AsyncSession, env_id: uuid.UUID, settings: Set
             row.value_enc, row.updated_at = vault.encrypt(settings, value), _now()
 
 
+IN_PLACE_NOTE = "The droplet already runs the new commit; retry {step}."
+
+
+def _ran_in_place(env: Environment, dep: Deployment, key: str) -> bool:
+    """A one-slot DigitalOcean Update that failed after up (its slot smoke
+    test or Switch traffic): the only droplet already runs the new commit."""
+    return (dep.cloud and dep.mode == "update" and dep.slot is not None
+            and len(env.slots or ()) == 1 and key in ("slot_smoke", "go_live"))
+
+
+async def _serving(env_id: uuid.UUID, sha: str) -> None:
+    """The environment's commit is the one its only droplet runs."""
+    async with get_sessionmaker()() as s:
+        await s.execute(update(Environment).where(Environment.id == env_id)
+                        .values(current_sha=sha, image_tag=envfile.image_tag(sha),
+                                updated_at=_now()))
+        await s.commit()
+
+
 def _failure_reason(step: DeploymentStep, result: RunResult) -> str:
     if result.status == "timeout":
         minutes = STEPS_BY_KEY[step.key].timeout // 60
@@ -948,9 +967,17 @@ async def _run(deployment_id: uuid.UUID) -> None:
                         # Before the rollback, which may expire `step`: reloading
                         # it would need a greenlet.
                         reason = _failure_reason(step, result)
+                        in_place = _ran_in_place(env, dep, step.key)
+                        sha = dep.sha
+                        note = IN_PLACE_NOTE.format(step=step.name) if in_place else ""
                         await db.rollback()
                         await _close(deployment_id, env_id, current, step_status="failed",
-                                     dep_status="failed", error=reason, failed_step=current)
+                                     dep_status="failed",
+                                     error=f"{reason} {note}" if note else reason,
+                                     failed_step=current,
+                                     append_log=note + "\n" if note else "")
+                        if in_place:
+                            await _serving(env_id, sha)
                         return
                     step.status, step.finished_at = "succeeded", _now()
                     if step.key in ("provision", "do_prepare"):

@@ -12,7 +12,8 @@ from sqlalchemy import delete, select, update
 from sirdar_api.api.routes import deploy as deploy_routes
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import AuditLog, Deployment, DoAccount, DoSlot, Environment, Snapshot
-from sirdar_api.deploy import do_envs, environments, pipeline, publish, vms
+from sirdar_api.deploy import do_accounts, do_envs, envfile, environments, pipeline, publish, vms
+from sirdar_api.deploy.integrations import IntegrationError
 from sirdar_api.deploy.provision import VmOutcome
 from sirdar_api.deploy.runner import RunResult
 
@@ -130,9 +131,10 @@ async def test_an_update_never_publishes(client, db, ready):
     assert resp.json()["publish"] is False
 
 
-async def test_seeding_after_a_slot_ran_answers_409(client, db, ready, tmp_path):
-    """pipeline's DoEnvError seed_not_allowed: the managed database is
-    shared, so a slot that already ran means no seeding again."""
+async def test_an_update_after_a_slot_ran_drops_the_seed(client, db, ready, tmp_path):
+    """The managed database is shared: once a slot ran, the seed is spent.
+    (pipeline's seed_not_allowed stays as the backstop; its 409 mapping is
+    test_a_digitalocean_refusal_carries_its_extra.)"""
     snap = await ready_snapshot(db, tmp_path)
     env = await ready(snapshot_id=snap.id)
     await db.execute(update(DoSlot).where(DoSlot.environment_id == env.id,
@@ -140,7 +142,8 @@ async def test_seeding_after_a_slot_ran_answers_409(client, db, ready, tmp_path)
     await db.commit()
     h = await auth_headers(client, db)
     resp = await _start(client, h, "uat9", mode="update")
-    assert (resp.status_code, resp.json()["detail"]) == (409, {"code": "seed_not_allowed"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["snapshot"] is None
 
 
 async def test_a_digitalocean_refusal_carries_its_extra(client, db, ready, monkeypatch):
@@ -527,7 +530,7 @@ async def test_a_delete_retried_before_the_snapshot_needs_the_droplet(client, db
     await db.commit()
     before = len((await db.scalars(select(Snapshot))).all())
     resp = await _retry(client, h, failed["id"], confirm_name="uat9")
-    assert _code(resp) == (409, "do_not_ready")
+    assert _code(resp) == (409, "snapshot_slot_unreachable")
     assert len((await db.scalars(select(Snapshot))).all()) == before
 
 
@@ -581,3 +584,109 @@ async def test_backups_before_any_droplet(client, db, ready):
     h = await auth_headers(client, db)
     resp = await client.get(f"{URL}/uat9/backups", headers=h)
     assert (resp.status_code, resp.json()) == (200, {"backups": []})
+
+
+# ---- the phase review ----------------------------------------------------------------
+
+NEW = "f00d" * 10
+
+
+async def test_a_seeded_first_deploy_that_failed_after_up_moves_on(client, db, ready,
+                                                                   fake_runner,
+                                                                   fake_provisioner, tmp_path):
+    """The database is seeded and migrated once up ran: the next Update
+    drops the seed rather than being refused (seed_not_allowed)."""
+    snap = await ready_snapshot(db, tmp_path)
+    env = await ready(snapshot_id=snap.id)
+    h = await auth_headers(client, db)
+    fake_runner.results["slot_smoke"] = RunResult(status="failed", rc=2)
+    first = (await _start(client, h, "uat9", mode="update")).json()
+    assert first["snapshot"]["id"] == str(snap.id)
+    assert (await _dep(db, first["id"])).failed_step == 13
+    del fake_runner.results["slot_smoke"]
+    fake_provisioner.outcomes["do_prepare"] = VmOutcome(sha=NEW)
+    resp = await _start(client, h, "uat9", mode="update", git_ref="v2")
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["snapshot"] is None
+    assert "restore" not in [s["key"] for s in body["steps"]]
+    assert (await _dep(db, body["id"])).status == "succeeded"
+    env = await db.get(Environment, env.id, populate_existing=True)
+    assert (env.active_slot, env.current_sha) == ("orange", NEW)
+
+
+async def test_a_one_slot_switch_that_fails_still_names_the_running_commit(
+        client, db, ready, fake_provisioner):
+    env = await ready(slots=1)
+    await _deployed(db, env)
+    h = await auth_headers(client, db)
+    fake_provisioner.outcomes["do_prepare"] = VmOutcome(sha=NEW)
+    fake_provisioner.fail["go_live"] = "The public smoke test failed."
+    body = (await _start(client, h, "uat9", mode="update")).json()
+    dep = await _dep(db, body["id"])
+    assert (dep.status, dep.failed_step) == ("failed", 14)
+    assert dep.error.endswith("The droplet already runs the new commit; retry Switch traffic.")
+    env = await db.get(Environment, env.id, populate_existing=True)
+    assert (env.current_sha, env.image_tag, env.active_slot) == (
+        NEW, envfile.image_tag(NEW), "orange")
+
+
+async def test_a_two_slot_switch_that_fails_keeps_the_live_commit(client, db, ready,
+                                                                  fake_provisioner):
+    env = await ready()
+    await _deployed(db, env)
+    await db.execute(update(Environment).where(Environment.id == env.id)
+                     .values(auto_activate=True))
+    await db.commit()
+    h = await auth_headers(client, db)
+    fake_provisioner.outcomes["do_prepare"] = VmOutcome(sha=NEW)
+    fake_provisioner.fail["go_live"] = "The public smoke test failed. Traffic stays where it was."
+    body = (await _start(client, h, "uat9", mode="update")).json()
+    dep = await _dep(db, body["id"])
+    assert (dep.slot, dep.go_live, dep.failed_step) == ("purple", True, 14)
+    assert "already runs" not in dep.error
+    env = await db.get(Environment, env.id, populate_existing=True)
+    assert (env.current_sha, env.active_slot) == (SHA, "orange")
+
+
+async def test_delete_when_the_snapshot_droplet_is_unreachable(client, db, ready):
+    env = await ready()
+    await _deployed(db, env)
+    await db.execute(update(DoSlot).where(DoSlot.environment_id == env.id)
+                     .values(public_ip=None))
+    await db.commit()
+    h = await auth_headers(client, db)
+    resp = await _start(client, h, "uat9", mode="teardown", confirm_name="uat9")
+    assert _code(resp) == (409, "snapshot_slot_unreachable")
+    # Without the snapshot it goes ahead.
+    resp = await _start(client, h, "uat9", mode="teardown", confirm_name="uat9",
+                        snapshot=False)
+    assert resp.status_code == 201, resp.text
+
+
+async def test_production_delete_when_the_snapshot_droplet_is_unreachable(client, db, ready):
+    env = await ready(name="prod", type_="production", account="production")
+    await _deployed(db, env, active=None)
+    await db.execute(update(Environment).where(Environment.id == env.id).values(retiring=True))
+    await db.execute(update(DoSlot).where(DoSlot.environment_id == env.id)
+                     .values(public_ip=None))
+    await db.commit()
+    h = await auth_headers(client, db)
+    resp = await _start(client, h, "prod", mode="teardown", confirm_name="prod",
+                        confirm_production=PHRASE)
+    assert (resp.status_code, resp.json()["detail"]) == (
+        409, {"code": "snapshot_slot_unreachable", "production": True})
+
+
+async def test_create_with_an_unreadable_account_answers_409(client, db, ready, monkeypatch):
+    await ready(name="uat8")                     # Cloudflare and the account saved
+
+    async def unreadable(db_, settings, key):
+        raise IntegrationError("integration_unreadable", kind="digitalocean")
+    monkeypatch.setattr(do_accounts, "require", unreadable)
+    h = await auth_headers(client, db)
+    resp = await client.post(URL, headers=h, json={
+        "mode": "new", "name": "uat9", "type": "dev", "target": "digitalocean",
+        "do": {"account": "development", "slots": 2}})
+    assert (resp.status_code, resp.json()["detail"]) == (
+        409, {"code": "integration_unreadable", "kind": "digitalocean"})

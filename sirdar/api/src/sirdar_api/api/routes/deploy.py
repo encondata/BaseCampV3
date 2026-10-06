@@ -382,7 +382,8 @@ _ENV_STATUS = {"environment_exists": 409, "deploy_in_progress": 409,
                "snapshot_not_found": 404, "snapshot_not_ready": 409,
                "integration_not_configured": 409, "ip_in_use": 409,
                "ssh_targets_unreadable": 409, "vm_invalid": 422,
-               "do_account_not_configured": 409, "production_exists": 409}
+               "do_account_not_configured": 409, "production_exists": 409,
+               "integration_unreadable": 409}
 _NAME_CONSTRAINT = "environments_name_key"
 _PRODUCTION_CONSTRAINT = "environments_one_production"
 
@@ -728,6 +729,15 @@ def _on_do(env: Environment) -> bool:
     return env.target_id == targets.DO_TARGET
 
 
+def _snapshot_slot_unreachable(env: Environment) -> HTTPException:
+    """A Delete's snapshot would be taken on a droplet with no address.
+    `production`: it can't go without the snapshot (the copy differs)."""
+    detail: dict = {"code": "snapshot_slot_unreachable"}
+    if env.type == "production":
+        detail["production"] = True
+    return HTTPException(status_code=409, detail=detail)
+
+
 def _not_on_do() -> HTTPException:
     return HTTPException(status_code=409,
                          detail={"code": pipeline.NotSupportedOnDigitalOcean.code})
@@ -884,7 +894,7 @@ async def _start_do_update(db, env: Environment, body: DeploymentIn, request: Re
     if not gitref.valid_ref(ref):
         raise HTTPException(status_code=422, detail={"code": "ref_invalid"})
     snapshot = None
-    if env.current_sha is None and env.seed_snapshot_id is not None:
+    if env.seed_snapshot_id is not None and not await _do_ran(db, env):
         try:
             snapshot = await snapshots.ready_snapshot(db, env.seed_snapshot_id)
         except snapshots.SnapshotError as e:
@@ -894,6 +904,15 @@ async def _start_do_update(db, env: Environment, body: DeploymentIn, request: Re
                          mode="update", git_ref=ref,
                          sha=ref.lower() if gitref.is_full_sha(ref) else "", snapshot=snapshot,
                          cloud=True, slot=slot, go_live=do_envs.goes_live(env, slot))
+
+
+async def _do_ran(db, env: Environment) -> bool:
+    """Whether a deploy has already run on DigitalOcean: anything live, or a
+    slot whose up step ran. The shared database is then seeded (and
+    migrated), so the next Update doesn't seed again."""
+    if env.current_sha is not None or env.active_slot is not None:
+        return True
+    return any(row.sha for row in (await do_envs.slots_of(db, env.id)).values())
 
 
 async def _snapshot_slot(db, env: Environment) -> str | None:
@@ -957,7 +976,7 @@ async def _start_do_teardown(db, env: Environment, body: DeploymentIn, request: 
     if body.snapshot is not False and env.current_sha is not None:
         cfg = await _host_target(db, env, slot=slot) if slot else None
         if cfg is None:
-            raise HTTPException(status_code=409, detail={"code": "do_not_ready"})
+            raise _snapshot_slot_unreachable(env)
         await _pinned(db, cfg)
         snap = await _begin_delete_snapshot(db, env, actor)
     return await _launch(db, env, request, actor, action="deploy.deployment_start",
@@ -1203,7 +1222,7 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     if taking:
         if from_step <= STEPS_BY_KEY["export"].number:
             if cfg is None:             # the slot's droplet has no address
-                raise HTTPException(status_code=409, detail={"code": "do_not_ready"})
+                raise _snapshot_slot_unreachable(env)
             # A new pending snapshot; the failed attempt's stays failed.
             snapshot = await _begin_delete_snapshot(db, env, actor)
         elif dep.snapshot_id is not None:

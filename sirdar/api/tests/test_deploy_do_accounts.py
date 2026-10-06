@@ -431,3 +431,50 @@ async def test_clear_records_who(db, no_env_token):
     await db.commit()
     row = await _account_row(db, "development")
     assert row.updated_by == user.person_id and row.token_enc is None
+
+
+async def test_the_team_is_read_before_the_rows_are_locked(db, no_env_token, monkeypatch):
+    """DigitalOcean's answer can take seconds: neither account row is held
+    FOR UPDATE meanwhile (an environment create, or the other account's
+    save, isn't blocked behind it)."""
+    from sqlalchemy import text
+
+    from sirdar_api.db.engine import get_sessionmaker
+    await configure_account(db)
+    await _in_use(db, "development", team="team-dev-0002")
+    free: list[bool] = []
+
+    async def team_of(token):
+        async with get_sessionmaker()() as s:
+            for key in ("production", "development"):
+                got = await s.execute(text(
+                    "SELECT key FROM do_accounts WHERE key = :k FOR UPDATE NOWAIT"), {"k": key})
+                free.append(got.scalar() == key)
+            await s.rollback()
+        return "team-dev-0002", "Encon Development"
+    monkeypatch.setattr(do_accounts, "team_of", team_of)
+    other = "dop_v1_" + "78" * 32
+    assert await do_accounts.save(db, get_settings(), "development", label="Development",
+                                  region="nyc3", token=other) == ["token"]
+    assert free == [True, True]
+    row = await db.get(DoAccount, "development", populate_existing=True)
+    assert (row.team_uuid, row.team_name) == ("team-dev-0002", "Encon Development")
+
+
+async def test_environments_that_appear_while_saving_are_checked(db, no_env_token, monkeypatch):
+    """No environment used the account when the save began, so no team was
+    read; one appeared before the lock: the save is refused, not stored
+    with an unchecked team."""
+    await configure_account(db)
+    await _in_use(db, "development", team="team-dev-0002")
+    real = do_accounts.in_use
+    calls: list[int] = []
+
+    async def in_use(db_, key):          # the first (unlocked) read is from before it
+        calls.append(1)
+        return [] if len(calls) == 1 else await real(db_, key)
+    monkeypatch.setattr(do_accounts, "in_use", in_use)
+    with pytest.raises(IntegrationError) as e:
+        await do_accounts.save(db, get_settings(), "development", label="Development",
+                               region="nyc3", token="dop_v1_" + "79" * 32)
+    assert e.value.code == "do_account_changed"

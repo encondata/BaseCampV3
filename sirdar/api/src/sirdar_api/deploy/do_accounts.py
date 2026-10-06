@@ -226,6 +226,11 @@ async def save(db: AsyncSession, settings: Settings, key: str, *, label, region,
         check_token(renewal_token, "renewal_token_invalid")
     if (token is not None or renewal_token is not None) and not vault.is_configured(settings):
         raise IntegrationError("secrets_key_missing")
+    # DigitalOcean is asked (seconds, maybe) before the rows are locked; under
+    # the lock only the database checks and the writes.
+    checked = None
+    if token is not None and await in_use(db, key):
+        checked = await team_of(token)
     rows = await _lock_both(db)
     row, other = rows[key], rows[_other(key)]
     if token is not None or renewal_token is not None:
@@ -247,7 +252,11 @@ async def save(db: AsyncSession, settings: Settings, key: str, *, label, region,
     if token is not None:
         users = await in_use(db, key)
         if users:
-            team, team_name = await team_of(token)
+            if checked is None:
+                # An environment started using the account after the
+                # unlocked look: its team wasn't checked. Save again.
+                raise IntegrationError("do_account_changed")
+            team, team_name = checked
             known = await _frozen_teams(db, key) | ({row.team_uuid} if row.team_uuid else set())
             if known and team not in known:
                 raise IntegrationError("do_team_changed", environments=users)

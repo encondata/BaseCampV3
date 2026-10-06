@@ -277,7 +277,12 @@ const MESSAGES: Record<string, string> = {
   do_db_size_invalid: "That isn't a DigitalOcean database size.",
   do_field_locked: "That can't change on a DigitalOcean environment after it's created.",
   do_not_allowed: 'DigitalOcean settings only apply to an environment on DigitalOcean.',
-  do_not_ready: "This environment's DigitalOcean resources aren't built yet. Deploy it first.",
+  do_not_ready: "Nothing is built on DigitalOcean for this environment yet. Deploy it first.",
+  snapshot_slot_unreachable: "The droplet Sirdar would take the snapshot on isn't reachable. Untick 'Save a snapshot first' to delete without one.",
+  do_account_invalid: 'That isn\'t one of the DigitalOcean accounts (Production or Development).',
+  do_account_changed: 'An environment started using this account while it was being saved. Save it again.',
+  label_invalid: 'Give the account a name of 1 to 40 characters, with no control characters.',
+  region_invalid: "That isn't a DigitalOcean region slug, like nyc3.",
   do_team_changed: 'That token belongs to a different DigitalOcean team than the environments using this account.',
   do_token_shared: 'The Production and Development accounts need different tokens.',
   renewal_token_invalid: "That doesn't look like a DigitalOcean renewal token.",
@@ -313,6 +318,7 @@ export function errorDetail<T extends object = Record<string, unknown>>(err: unk
 export function deployErrorText(err: unknown, fallback: string): string {
   const d = errorDetail<{
     reason?: unknown; missing?: unknown; key?: unknown; service?: unknown; kinds?: unknown; environments?: unknown;
+    production?: unknown;
   }>(err);
   if (d && typeof d.reason === 'string' && d.reason) return d.reason;
   if (d && Array.isArray(d.environments) && d.environments.length && err instanceof ApiError
@@ -323,6 +329,10 @@ export function deployErrorText(err: unknown, fallback: string): string {
       && err.code === 'integration_not_configured') {
     const names = d.kinds.map((k) => INTEGRATION_LABEL[k as IntegrationKind] ?? String(k));
     return `Set up ${names.join(' and ')} in Settings › Integrations first.`;
+  }
+  if (d && d.production === true && err instanceof ApiError && err.code === 'snapshot_slot_unreachable') {
+    return "The droplet Sirdar would take the snapshot on isn't reachable, and production never goes "
+      + 'without its snapshot. Retry once the droplet is back.';
   }
   const base = errorText(err, fallback);
   let extra = '';
