@@ -5,7 +5,7 @@ the secret only feeds the HMAC chain and is never returned."""
 
 import hashlib
 import hmac
-from datetime import datetime
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
@@ -27,6 +27,11 @@ def _encode(value: str) -> str:
     return quote(value, safe="-_.~")
 
 
+def canonical_path(path: str) -> str:
+    """The URI-encoded path, as both the canonical request and the URL use it."""
+    return quote(path, safe="/-_.~")
+
+
 def canonical_query(query: dict[str, str]) -> str:
     return "&".join(f"{_encode(k)}={_encode(v)}" for k, v in sorted(query.items()))
 
@@ -34,13 +39,16 @@ def canonical_query(query: dict[str, str]) -> str:
 def sign(*, method: str, host: str, path: str, query: dict[str, str], headers: dict[str, str],
          payload_sha256: str, access_key: str, secret_key: str, region: str, now: datetime,
          service: str = "s3") -> dict[str, str]:
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    now = now.astimezone(UTC)
     amz_date = now.strftime("%Y%m%dT%H%M%SZ")
     date = now.strftime("%Y%m%d")
     canon = {k.lower(): " ".join(str(v).split()) for k, v in headers.items()}
     canon |= {"host": host, "x-amz-date": amz_date, "x-amz-content-sha256": payload_sha256}
     names = sorted(canon)
     signed = ";".join(names)
-    request = "\n".join([method, quote(path, safe="/-_.~"), canonical_query(query),
+    request = "\n".join([method, canonical_path(path), canonical_query(query),
                          "".join(f"{n}:{canon[n]}\n" for n in names), signed, payload_sha256])
     scope = f"{date}/{region}/{service}/aws4_request"
     to_sign = "\n".join([ALGORITHM, amz_date, scope,

@@ -1,19 +1,32 @@
 """A stand-in for the DigitalOcean Spaces S3 calls deploy/spaces.py makes
 (virtual-hosted: <bucket>.<region>.digitaloceanspaces.com): create, HEAD,
-list (v2, paged), multi-object delete and delete. A request must carry a
-SigV4 Authorization whose access key is a Spaces key FakeDigitalOcean
-issued, and the key's grants must cover the bucket."""
+list (v2, paged), multi-object delete, list and abort multipart uploads,
+and delete. A request must carry a SigV4 Authorization whose access key is
+a Spaces key FakeDigitalOcean issued. The fake re-computes the signature
+from the request as received, with its own canonicalization and the secret
+in `do.keys`, and the key's grants must cover the bucket.
+
+Knobs: `foreign` (buckets another account owns: PUT gives 409
+BucketAlreadyExists, anything else 403), `recreate_conflict` (re-creating
+your own bucket gives BucketAlreadyExists, as Spaces does, instead of
+BucketAlreadyOwnedByYou), `undeletable` (keys a multi-delete reports as a
+per-key AccessDenied with HTTP 200) and `down`."""
 
 import base64
 import hashlib
+import hmac
+import itertools
 import re
 import xml.etree.ElementTree as ET
+from urllib.parse import quote, unquote
 from xml.sax.saxutils import escape
 
 import httpx
 
 NS = "http://s3.amazonaws.com/doc/2006-03-01/"
-_CRED_RE = re.compile(r"AWS4-HMAC-SHA256 Credential=([^/]+)/")
+_AUTH_RE = re.compile(r"AWS4-HMAC-SHA256 Credential=([^/,]+)/(\d{8})/([a-z0-9-]+)/s3/aws4_request, "
+                      r"SignedHeaders=([a-z0-9;-]+), Signature=([0-9a-f]{64})$")
+_HOST_RE = re.compile(r"^([a-z0-9-]+)\.([a-z0-9-]+)\.digitaloceanspaces\.com$")
 
 
 def _xml_error(status: int, code: str) -> httpx.Response:
@@ -21,46 +34,103 @@ def _xml_error(status: int, code: str) -> httpx.Response:
                           headers={"content-type": "application/xml"})
 
 
+def _hmac(key: bytes, msg: str) -> bytes:
+    return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+
+
+def _canonical_query(raw: bytes) -> str:
+    """Decode the query as sent, then re-encode each part (RFC 3986), sorted."""
+    pairs = []
+    for part in raw.decode().split("&") if raw else []:
+        name, _, value = part.partition("=")
+        pairs.append((quote(unquote(name), safe="-_.~"), quote(unquote(value), safe="-_.~")))
+    return "&".join(f"{n}={v}" for n, v in sorted(pairs))
+
+
 class FakeSpaces:
     def __init__(self, do_fake):
         self.do = do_fake
         self.buckets: dict[str, dict[str, bytes]] = {}
+        self.uploads: dict[str, dict[str, str]] = {}  # bucket -> {upload id: key}
         self.requests: list[httpx.Request] = []
         self.page_size = 1000
         self.down = False
+        self.foreign: set[str] = set()
+        self.recreate_conflict = False
+        self.undeletable: set[str] = set()
+        self._ids = itertools.count(1)
 
     def put(self, bucket: str, key: str, data: bytes) -> None:
         self.buckets.setdefault(bucket, {})[key] = data
 
+    def start_upload(self, bucket: str, key: str) -> str:
+        upload_id = f"upload-{next(self._ids):04d}"
+        self.uploads.setdefault(bucket, {})[upload_id] = key
+        return upload_id
+
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handler)
 
-    def _allowed(self, access_key: str, bucket: str) -> bool:
+    def _signature_ok(self, request: httpx.Request, region: str, auth: re.Match) -> bool:
+        access_key, date, scope_region, signed, signature = auth.groups()
         key = self.do.keys.get(access_key)
-        if key is None:
+        amz_date = request.headers.get("x-amz-date", "")
+        sent_hash = request.headers.get("x-amz-content-sha256", "")
+        if (key is None or scope_region != region or not amz_date.startswith(date)
+                or sent_hash != hashlib.sha256(request.content).hexdigest()):
             return False
+        names = signed.split(";")
+        if not {"host", "x-amz-date", "x-amz-content-sha256"} <= set(names):
+            return False
+        if any(n not in request.headers for n in names):
+            return False
+        raw_path, _, raw_query = request.url.raw_path.partition(b"?")
+        block = "".join(f"{n}:{' '.join(request.headers[n].split())}\n" for n in names)
+        canonical = "\n".join([request.method, raw_path.decode(), _canonical_query(raw_query),
+                               block, signed, sent_hash])
+        scope = f"{date}/{region}/s3/aws4_request"
+        to_sign = "\n".join(["AWS4-HMAC-SHA256", amz_date, scope,
+                             hashlib.sha256(canonical.encode()).hexdigest()])
+        k = _hmac(("AWS4" + key["secret_key"]).encode(), date)
+        for part in (region, "s3", "aws4_request"):
+            k = _hmac(k, part)
+        expected = hmac.new(k, to_sign.encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, signature)
+
+    def _allowed(self, access_key: str, bucket: str) -> bool:
+        key = self.do.keys[access_key]
         return any(g["permission"] == "fullaccess" or g["bucket"] == bucket for g in key["grants"])
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         if self.down:
             raise httpx.ConnectError("unreachable", request=request)
-        host = request.url.host
-        bucket = host.split(".", 1)[0]
-        auth = _CRED_RE.match(request.headers.get("authorization", ""))
-        if auth is None or not self._allowed(auth.group(1), bucket):
+        host = _HOST_RE.match(request.url.host)
+        if host is None:
+            return _xml_error(400, "InvalidRequest")
+        bucket, region = host.groups()
+        auth = _AUTH_RE.match(request.headers.get("authorization", ""))
+        if auth is None or auth.group(1) not in self.do.keys:
             return _xml_error(403, "AccessDenied")
-        if "x-amz-date" not in request.headers or "x-amz-content-sha256" not in request.headers:
-            return _xml_error(400, "AuthorizationHeaderMalformed")
+        if not self._signature_ok(request, region, auth):
+            return _xml_error(403, "SignatureDoesNotMatch")
         method, path, params = request.method, request.url.path, request.url.params
         if path == "/" and method == "PUT":
+            if bucket in self.foreign:
+                return _xml_error(409, "BucketAlreadyExists")
+            if not self._allowed(auth.group(1), bucket):
+                return _xml_error(403, "AccessDenied")
             if bucket in self.buckets:
-                return _xml_error(409, "BucketAlreadyOwnedByYou")
+                return _xml_error(409, "BucketAlreadyExists" if self.recreate_conflict
+                                  else "BucketAlreadyOwnedByYou")
             self.buckets[bucket] = {}
             return httpx.Response(200)
+        if bucket in self.foreign or not self._allowed(auth.group(1), bucket):
+            return _xml_error(403, "AccessDenied")
         if bucket not in self.buckets:
             return _xml_error(404, "NoSuchBucket")
         objects = self.buckets[bucket]
+        uploads = self.uploads.setdefault(bucket, {})
         if path == "/" and method == "HEAD":
             return httpx.Response(200)
         if path == "/" and method == "GET" and params.get("list-type") == "2":
@@ -77,17 +147,42 @@ class FakeSpaces:
                             "</NextContinuationToken>")
             body.append("</ListBucketResult>")
             return httpx.Response(200, content="".join(body).encode())
+        if path == "/" and method == "GET" and "uploads" in params:
+            page = sorted(uploads.items())[:self.page_size]
+            more = len(uploads) > self.page_size
+            body = [f'<ListMultipartUploadsResult xmlns="{NS}">'
+                    f"<IsTruncated>{str(more).lower()}</IsTruncated>"]
+            body += [f"<Upload><Key>{escape(k)}</Key><UploadId>{u}</UploadId></Upload>"
+                     for u, k in page]
+            body.append("</ListMultipartUploadsResult>")
+            return httpx.Response(200, content="".join(body).encode())
         if path == "/" and method == "POST" and "delete" in params:
             md5 = base64.b64encode(hashlib.md5(request.content).digest()).decode()
             if request.headers.get("content-md5") != md5:
                 return _xml_error(400, "InvalidDigest")
             root = ET.fromstring(request.content)
+            quiet = (root.findtext("Quiet") or "").strip() == "true"
+            body = [f'<DeleteResult xmlns="{NS}">']
             for key in root.iter("Key"):
-                objects.pop(key.text, None)
-            return httpx.Response(200, content=f'<DeleteResult xmlns="{NS}"/>'.encode())
+                name = key.text or ""
+                if name in self.undeletable:
+                    body.append(f"<Error><Key>{escape(name)}</Key><Code>AccessDenied</Code>"
+                                "<Message>Access Denied</Message></Error>")
+                    continue
+                objects.pop(name, None)
+                if not quiet:
+                    body.append(f"<Deleted><Key>{escape(name)}</Key></Deleted>")
+            body.append("</DeleteResult>")
+            return httpx.Response(200, content="".join(body).encode())
+        if path != "/" and method == "DELETE" and "uploadId" in params:
+            if uploads.get(params["uploadId"]) != path[1:]:
+                return _xml_error(404, "NoSuchUpload")
+            del uploads[params["uploadId"]]
+            return httpx.Response(204)
         if path == "/" and method == "DELETE":
-            if objects:
+            if objects or uploads:
                 return _xml_error(409, "BucketNotEmpty")
             del self.buckets[bucket]
+            self.uploads.pop(bucket, None)
             return httpx.Response(204)
         return _xml_error(405, "MethodNotAllowed")
