@@ -8,6 +8,7 @@ from sirdar_api.config import get_settings
 from sirdar_api.deploy import do_accounts, outbound
 
 from .fake_digitalocean import DEV_RENEW_TOKEN, DEV_TOKEN, FakeDigitalOcean
+from .fake_spaces import FakeSpaces
 
 
 class Cloud:
@@ -15,7 +16,7 @@ class Cloud:
 
     def __init__(self):
         self.do = FakeDigitalOcean()
-        self.spaces = None
+        self.spaces = FakeSpaces(self.do)
         self.acme = None
         self.cloudflare = None
         self.smoke = None
