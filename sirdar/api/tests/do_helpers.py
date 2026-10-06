@@ -160,3 +160,82 @@ async def do_build(db, do_cloud, secrets_key, ssh_server, monkeypatch, deploy_en
     build = Build(db, do_cloud, env, get_settings(), Remote())
     build.host_key_private = private
     return build
+
+
+# ---- a built, deployed environment (pipeline and route tests) ----------------------
+
+SPACES_SECRET = "spaces-SECRET-pipeline-1"
+DOADMIN = "doadmin-SECRET-pipeline-1"
+CA = "-----BEGIN CERTIFICATE-----\nMIIBcaPIPELINE\n-----END CERTIFICATE-----\n"
+
+
+async def built(ctx) -> None:
+    """What a real step 0 leaves behind (ctx: env_id, env_name, slots)."""
+    from sirdar_api.deploy import do_envs, vault
+    settings = get_settings()
+    await do_envs.set_do(ctx.env_id, lb_ip="203.0.113.50", vpc_ip_range="10.116.0.0/20",
+                         db_host="private-ss-uat9-db.db.ondigitalocean.com", db_port=25060,
+                         db_ca_cert=CA, spaces_key_id="DO00KEY000001",
+                         spaces_secret_enc=vault.encrypt(settings, SPACES_SECRET),
+                         db_admin_password_enc=vault.encrypt(settings, DOADMIN))
+    for i, slot in enumerate(ctx.slots):
+        await do_envs.set_slot(ctx.env_id, slot, droplet_id=str(4001 + i), public_ip="127.0.0.1")
+    await do_envs.record(ctx.env_id, "vpc", f"vpc-{ctx.env_id}", f"ss-{ctx.env_name}")
+
+
+async def built_env(env) -> None:
+    """built() for an Environment row."""
+    await built(SimpleNamespace(env_id=env.id, env_name=env.name, slots=list(env.slots)))
+
+
+def fetched(tmp_path):
+    """What export.yml leaves on Sirdar: the bundle at snapshot_dest."""
+    import base64
+
+    from .bundle_helpers import make_bundle
+
+    def effect(request):
+        keys = base64.b64decode(request.extravars["keys_enc_b64"])
+        src = make_bundle(tmp_path, name="fetched-src.tar.gz", source="uat9", keys=keys)
+        src.replace(request.extravars["snapshot_dest"])
+    return effect
+
+
+async def deployed(db, env, active: str | None = "orange", *, sha: str) -> None:
+    """As if a deploy of `sha` ran on every slot and went live on `active`:
+    each slot's droplet at 127.0.0.1 with the commit and its image."""
+    from sqlalchemy import update
+
+    from sirdar_api.db.models import DoSlot, Environment
+    from sirdar_api.deploy import envfile
+    tag = envfile.image_tag(sha)
+    await db.execute(update(Environment).where(Environment.id == env.id).values(
+        active_slot=active, current_sha=sha, image_tag=tag, status="ready"))
+    for i, slot in enumerate(env.slots):
+        await db.execute(update(DoSlot).where(DoSlot.environment_id == env.id,
+                                              DoSlot.slot == slot)
+                         .values(droplet_id=str(4001 + i), public_ip="127.0.0.1", sha=sha,
+                                 image_tag=tag))
+    await db.commit()
+
+
+async def ready_snapshot(db, tmp_path, name="seed-2026-10-05"):
+    """An uploaded snapshot, ready to restore (needs snapshots_dir)."""
+    from cryptography.fernet import Fernet
+
+    from sirdar_api.db.models import Snapshot
+    from sirdar_api.deploy import snapshots
+
+    from .bundle_helpers import make_bundle
+    settings = get_settings()
+    snapshots.ensure_dirs(settings)
+    snap = Snapshot(name=name, origin="upload", source="mac-dev", status="pending")
+    db.add(snap)
+    await db.flush()
+    src = make_bundle(tmp_path, name=f"{name}.tar.gz",
+                      keys=snapshots.encrypt_keys(settings, {
+                          "SS_PASSWORD_PEPPER": "seed-pepper-SECRET-0123456789",
+                          "SS_TOTP_ENCRYPTION_KEY": Fernet.generate_key().decode()}))
+    snapshots.mark_ready(snap, snapshots.store_bundle(settings, src, snap.id))
+    await db.commit()
+    return snap

@@ -625,6 +625,18 @@ async def ensure_dns(ctx: PublishContext, out: Output, *, transport,
                 out(f"{s.hostname}: created A {public_ip}\n")
 
 
+async def _check_removable(ctx: PublishContext) -> None:
+    """Step 17, read fresh as step 18 does: a production environment's
+    records go only once it is retiring and serves no slot (an un-retire
+    after the Delete started keeps them). Before any record is touched."""
+    async with get_sessionmaker()() as s:
+        env = await s.get(Environment, ctx.env_id)
+    if env is not None and env.type == "production" and (not env.retiring or env.active_slot):
+        raise StepFailed("This production environment is still live (not retiring, or still "
+                         "serving a slot). Sirdar removes production's DNS records only once "
+                         "it is retiring and serves no slot. Sirdar changed nothing.")
+
+
 async def remove_dns(ctx: PublishContext, out: Output, *, transport) -> None:
     rows = sorted(await _all_rows(ctx.env_id, (DNS,)), key=lambda r: r.name)
     if not rows:
@@ -899,6 +911,7 @@ class HttpPublisher:
                 case "unproxy":
                     await remove_proxy(ctx, out, transport=transports["npm"])
                 case "undns":
+                    await _check_removable(ctx)
                     await remove_dns(ctx, out, transport=transports["cloudflare"])
                 case _:
                     raise ValueError(f"{step!r} isn't a publish step")

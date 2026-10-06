@@ -7,7 +7,6 @@ DigitalOcean; its step 0 effect records what a real one would."""
 import base64
 
 import pytest
-from cryptography.fernet import Fernet
 from sqlalchemy import func, select
 
 from sirdar_api.config import get_settings
@@ -24,7 +23,6 @@ from sirdar_api.deploy import do_envs, envfile, pipeline, snapshots, vault, vms
 from sirdar_api.deploy.provision import VmOutcome
 from sirdar_api.deploy.runner import RunResult
 
-from .bundle_helpers import make_bundle
 from .deploy_factories import (  # noqa: F401
     fake_provisioner,
     fake_publisher,
@@ -34,30 +32,17 @@ from .deploy_factories import (  # noqa: F401
     stop_pipeline,
     trust_fake,
 )
-from .do_helpers import make_do_environment
+from .do_helpers import CA, DOADMIN, SPACES_SECRET, make_do_environment
+from .do_helpers import built as _built
+from .do_helpers import fetched as _fetched
+from .do_helpers import ready_snapshot as _ready_snapshot
 from .publish_helpers import publish_fakes  # noqa: F401
 from .fake_digitalocean import DEV_RENEW_TOKEN
 from .ssh_server import ssh_server  # noqa: F401
 from .test_deploy_api import deploy_env  # noqa: F401
 from .test_deploy_pipeline import SHA, _load
 
-SPACES_SECRET = "spaces-SECRET-pipeline-1"
-DOADMIN = "doadmin-SECRET-pipeline-1"
-CA = "-----BEGIN CERTIFICATE-----\nMIIBcaPIPELINE\n-----END CERTIFICATE-----\n"
 UNTRUSTED_IP = "192.0.2.10"
-
-
-async def _built(ctx) -> None:
-    """What a real step 0 leaves behind."""
-    settings = get_settings()
-    await do_envs.set_do(ctx.env_id, lb_ip="203.0.113.50", vpc_ip_range="10.116.0.0/20",
-                         db_host="private-ss-uat9-db.db.ondigitalocean.com", db_port=25060,
-                         db_ca_cert=CA, spaces_key_id="DO00KEY000001",
-                         spaces_secret_enc=vault.encrypt(settings, SPACES_SECRET),
-                         db_admin_password_enc=vault.encrypt(settings, DOADMIN))
-    for i, slot in enumerate(ctx.slots):
-        await do_envs.set_slot(ctx.env_id, slot, droplet_id=str(4001 + i), public_ip="127.0.0.1")
-    await do_envs.record(ctx.env_id, "vpc", f"vpc-{ctx.env_id}", f"ss-{ctx.env_name}")
 
 
 async def _destroyed(ctx) -> None:
@@ -270,15 +255,6 @@ async def test_cloud_must_match_the_target(db, do_env):
                                          actor_id=None)
 
 
-def _fetched(tmp_path):
-    """What export.yml leaves on Sirdar: the bundle at snapshot_dest."""
-    def effect(request):
-        keys = base64.b64decode(request.extravars["keys_enc_b64"])
-        src = make_bundle(tmp_path, name="fetched-src.tar.gz", source="uat9", keys=keys)
-        src.replace(request.extravars["snapshot_dest"])
-    return effect
-
-
 async def _take_for_delete(db, env):
     snap = await snapshots.begin_take(db, get_settings(), env, name="uat9-before-delete-x",
                                       notes="", actor_id=None)
@@ -484,21 +460,6 @@ async def test_after_success_refuses_an_activate_of_a_slot_never_deployed(db, do
         await do_envs.after_success(db, env, dep)
     assert e.value.code == "slot_not_deployed"
     assert env.current_sha is None
-
-
-async def _ready_snapshot(db, tmp_path, name="seed-2026-10-05"):
-    settings = get_settings()
-    snapshots.ensure_dirs(settings)
-    snap = Snapshot(name=name, origin="upload", source="mac-dev", status="pending")
-    db.add(snap)
-    await db.flush()
-    src = make_bundle(tmp_path, name=f"{name}.tar.gz",
-                      keys=snapshots.encrypt_keys(settings, {
-                          "SS_PASSWORD_PEPPER": "seed-pepper-SECRET-0123456789",
-                          "SS_TOTP_ENCRYPTION_KEY": Fernet.generate_key().decode()}))
-    snapshots.mark_ready(snap, snapshots.store_bundle(settings, src, snap.id))
-    await db.commit()
-    return snap
 
 
 async def test_a_seeding_update_carries_the_external_vars(db, do_env, snapshots_dir,

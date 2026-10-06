@@ -668,6 +668,8 @@ class DeploymentIn(BaseModel):
 class RetryIn(BaseModel):
     from_step: int | None = Field(default=None, ge=0, le=99)
     confirm_name: str | None = Field(default=None, max_length=64)
+    # A DigitalOcean production Delete: "delete production <name>", typed again.
+    confirm_production: str | None = Field(default=None, max_length=100)
 
 
 class RollbackIn(BaseModel):
@@ -793,6 +795,9 @@ async def _launch(db, env: Environment, request: Request, actor: AuthContext, *,
         raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"}) from None
     except pipeline.NotSupportedOnDigitalOcean as e:
         raise HTTPException(status_code=409, detail={"code": e.code}) from None
+    except do_envs.DoEnvError as e:      # slot_not_deployed {slot}, seed_not_allowed
+        await db.rollback()
+        raise HTTPException(status_code=409, detail={"code": e.code, **e.extra}) from None
     except snapshots.SnapshotError as e:
         # The locked re-check: the snapshot went (or stopped being ready, or a
         # pending one isn't pending any more) since this request looked at it.
@@ -856,6 +861,8 @@ async def _require_account(db, env: Environment) -> None:
     """409 do_account_not_configured {account} when the environment's
     DigitalOcean account has no token (or it can't be read)."""
     row = await do_envs.get(db, env.id)
+    if row is None:                     # no DigitalOcean record: nothing to deploy to
+        raise HTTPException(status_code=409, detail={"code": "do_not_ready"})
     try:
         await do_accounts.require(db, get_settings(), row.account_key)
     except integrations.IntegrationError as e:
@@ -918,6 +925,20 @@ async def _begin_delete_snapshot(db, env: Environment, actor: AuthContext) -> Sn
             raise _snapshot_http(e) from None
 
 
+async def _production_removable(db, env: Environment, phrase: str | None) -> None:
+    """Production's rules for every attempt at Delete, read under the
+    production lock (an un-retire takes it too, so neither races the
+    other): retiring, serving no slot, and the phrase typed."""
+    await environments.lock_production(db)
+    await db.refresh(env)
+    if not env.retiring:
+        raise HTTPException(status_code=409, detail={"code": "production_not_retiring"})
+    if env.active_slot is not None:
+        raise HTTPException(status_code=409, detail={"code": "production_slot_active"})
+    if phrase != f"delete production {env.name}":
+        raise HTTPException(status_code=422, detail={"code": "confirm_production_mismatch"})
+
+
 async def _start_do_teardown(db, env: Environment, body: DeploymentIn, request: Request,
                              actor: AuthContext) -> dict:
     """Delete on DigitalOcean: a snapshot first (unless turned off; never for
@@ -926,12 +947,7 @@ async def _start_do_teardown(db, env: Environment, body: DeploymentIn, request: 
     if not vault.is_configured(get_settings()):
         raise HTTPException(status_code=400, detail={"code": "secrets_key_missing"})
     if env.type == "production":
-        if not env.retiring:
-            raise HTTPException(status_code=409, detail={"code": "production_not_retiring"})
-        if env.active_slot is not None:
-            raise HTTPException(status_code=409, detail={"code": "production_slot_active"})
-        if body.confirm_production != f"delete production {env.name}":
-            raise HTTPException(status_code=422, detail={"code": "confirm_production_mismatch"})
+        await _production_removable(db, env, body.confirm_production)
         if body.snapshot is False:
             raise HTTPException(status_code=422, detail={"code": "snapshot_required"})
     await _require_account(db, env)
@@ -1131,12 +1147,9 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     latest = await serialize.latest_deployment(db, env.id)
     if latest is None or latest.id != dep.id:
         raise HTTPException(status_code=409, detail={"code": "retry_not_latest"})
-    if dep.cloud and dep.mode == "teardown" and env.type == "production":
-        # Production's rules hold for every attempt at Delete.
-        if not env.retiring:
-            raise HTTPException(status_code=409, detail={"code": "production_not_retiring"})
-        if env.active_slot is not None:
-            raise HTTPException(status_code=409, detail={"code": "production_slot_active"})
+    production_delete = dep.cloud and dep.mode == "teardown" and env.type == "production"
+    if production_delete:
+        await _production_removable(db, env, body.confirm_production)
     stopped = await _stopped_step(db, dep.id)
     if stopped is None:
         raise HTTPException(status_code=409, detail={"code": "not_retryable"})
@@ -1172,6 +1185,7 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     await _require_vm_host(db, env)
     if dep.cloud:
         await _require_account(db, env)
+    cfg = None
     if any(s.runs == "ansible" for s in plan if s.number >= from_step):
         cfg = await _host_target(db, env, slot=dep.slot if dep.cloud else None)
         if not dep.vm and not dep.cloud:    # a built target's step 0 pins the key
@@ -1188,6 +1202,8 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
         await _require_integrations(db, env)
     if taking:
         if from_step <= STEPS_BY_KEY["export"].number:
+            if cfg is None:             # the slot's droplet has no address
+                raise HTTPException(status_code=409, detail={"code": "do_not_ready"})
             # A new pending snapshot; the failed attempt's stays failed.
             snapshot = await _begin_delete_snapshot(db, env, actor)
         elif dep.snapshot_id is not None:
@@ -1195,6 +1211,10 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
                 snapshot = await snapshots.ready_snapshot(db, dep.snapshot_id)
             except snapshots.SnapshotError:
                 snapshot = None         # gone or not ready: the plan drops step 11
+        if snapshot is None and production_delete:
+            # Production never goes without its snapshot: Delete it again
+            # (from the start) to take a new one.
+            raise HTTPException(status_code=409, detail={"code": "snapshot_required"})
     return await _launch(db, env, request, actor, action="deploy.deployment_retry",
                          mode=dep.mode, git_ref=dep.git_ref, sha=dep.sha,
                          start_step=from_step, retry_of=dep.id, snapshot=snapshot,
@@ -1406,7 +1426,8 @@ async def take_snapshot(name: str, body: TakeSnapshotIn, request: Request, db: D
         raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"})
     cfg = await _host_target(db, env)
     if cfg is None:
-        raise HTTPException(status_code=409, detail={"code": "vm_not_ready"})
+        code = "do_not_ready" if _on_do(env) else "vm_not_ready"
+        raise HTTPException(status_code=409, detail={"code": code})
     await _pinned(db, cfg)
     try:
         snap = await snapshots.begin_take(db, get_settings(), env, name=body.name,
