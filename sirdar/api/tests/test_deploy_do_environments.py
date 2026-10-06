@@ -3,12 +3,14 @@ account and sizes, a key pair, one host key per slot), production's rules,
 the locked fields, the slot an Update targets and whether it goes live, and
 the SSH connection to a slot's droplet."""
 
+import asyncssh
 import pytest
 from sqlalchemy import select
 
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import DoEnvironment, DoSlot, Environment
 from sirdar_api.deploy import do_envs, environments, vms
+from sirdar_api.deploy import vault
 from sirdar_api.deploy.environments import EnvError
 
 from .api_helpers import auth_headers
@@ -20,6 +22,25 @@ pytestmark = pytest.mark.usefixtures("secrets_key")
 URL = "/api/deploy/environments"
 
 
+def _pair(private: str, public: str) -> bool:
+    """The stored private key is an OpenSSH key whose public half is `public`."""
+    key = asyncssh.import_private_key(private)
+    return key.export_public_key("openssh").decode().split()[:2] == public.split()[:2]
+
+
+async def _private_keys(db) -> list[str]:
+    """Every generated private key (decrypted): the droplets' SSH key, each
+    slot's host key and the cert-worker's ACME key."""
+    settings = get_settings()
+    found = []
+    for row in await db.scalars(select(DoEnvironment)):
+        found += [vault.decrypt(settings, row.ssh_private_key_enc),
+                  vault.decrypt(settings, row.acme_key_enc)]
+    for slot in await db.scalars(select(DoSlot)):
+        found.append(vault.decrypt(settings, slot.host_key_private_enc))
+    return found
+
+
 async def test_create_two_slots(db):
     env = await make_do_environment(db)
     assert (env.type, env.target_id, env.slots, env.active_slot) == (
@@ -29,10 +50,12 @@ async def test_create_two_slots(db):
     row = await db.get(DoEnvironment, env.id)
     assert (row.account_key, row.region, row.droplet_size, row.db_size, row.db_standby) == (
         "development", "nyc3", "s-2vcpu-4gb", "db-s-2vcpu-4gb", False)
-    assert row.bucket == env.spaces_bucket and b"PRIVATE" not in bytes(row.ssh_private_key_enc)
+    assert row.bucket == env.spaces_bucket
+    assert _pair(vault.decrypt(get_settings(), row.ssh_private_key_enc), row.ssh_public_key)
     slots = (await db.scalars(select(DoSlot).where(DoSlot.environment_id == env.id))).all()
     assert sorted(s.slot for s in slots) == ["orange", "purple"]
-    assert all(s.host_key_private_enc is not None for s in slots)
+    for s in slots:
+        assert _pair(vault.decrypt(get_settings(), s.host_key_private_enc), s.host_key_public)
     hostnames = {s.service: s.hostname for s in await environments.services_of(db, env.id)}
     assert hostnames["api"] == "api.uat9.serversherpa.com"
     assert hostnames["spaces"] is None and hostnames["mailpit"] is None
@@ -75,8 +98,11 @@ async def test_create_refusals(db):
         await create(base_domain="uat9.example.org")
     assert e.value.code == "base_domain_not_in_zone"
     with pytest.raises(EnvError) as e:
-        await create(type_="production", target_id="ssh", do=None)
-    assert e.value.code in ("production_requires_digitalocean", "target_not_configured")
+        await create(type_="production", target_id="proxmox", do=None)
+    assert e.value.code == "production_requires_digitalocean"
+    with pytest.raises(EnvError) as e:
+        await create(target_id="proxmox")
+    assert e.value.code == "do_not_allowed"
     for do, code in (({"account": "development", "droplet_size": "Huge!"}, "do_size_invalid"),
                      ({"account": "development", "db_size": "s-2vcpu-4gb"}, "do_db_size_invalid"),
                      ({"account": "development", "slots": 3}, "do_slots_invalid"),
@@ -141,6 +167,9 @@ async def test_the_api(client, db, leak_guard):
     assert (do["account"], do["account_label"], do["acme_staging"], do["lb_ip"]) == (
         "development", "Development", True, None)
     assert [s["slot"] for s in do["slots"]] == ["orange", "purple"]
+    keys = await _private_keys(db)
+    assert len(keys) == 4
+    leak_guard.extend(keys)
     resp = await client.patch(f"{URL}/uat9", headers=h, json={"proxy_ip": "10.0.0.9"})
     assert (resp.status_code, resp.json()["detail"]) == (
         422, {"code": "do_field_locked", "field": "proxy_ip"})

@@ -383,6 +383,7 @@ _ENV_STATUS = {"environment_exists": 409, "deploy_in_progress": 409,
                "ssh_targets_unreadable": 409, "vm_invalid": 422,
                "do_account_not_configured": 409, "production_exists": 409}
 _NAME_CONSTRAINT = "environments_name_key"
+_PRODUCTION_CONSTRAINT = "environments_one_production"
 
 
 class VmIn(BaseModel):
@@ -561,6 +562,10 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
         if _NAME_CONSTRAINT in str(e.orig):
             raise HTTPException(status_code=409,
                                 detail={"code": "environment_exists"}) from None
+        if _PRODUCTION_CONSTRAINT in str(e.orig):
+            # Lost a race the advisory lock didn't cover: another live production.
+            raise HTTPException(status_code=409,
+                                detail={"code": "production_exists"}) from None
         raise
     if report is None:
         changes = {"name": env.name, "type": env.type, "target": env.target_id,
@@ -604,15 +609,23 @@ async def update_environment(name: str, body: EnvironmentPatch, request: Request
     fields.pop("confirm_name", None)
     try:
         changed = await environments.update(db, get_settings(), env, fields)
+        if changed:
+            audit(db, actor_id=actor.user.person_id, action="deploy.environment_update",
+                  entity_type="environment", entity_id=env.name, ip=client_ip(request),
+                  changes={"changed": changed})
+            await db.commit()
     except environments.EnvError as e:
         # update() edits the rows before every check has run: undo the lot.
         await db.rollback()
         raise _env_http(e) from None
+    except IntegrityError as e:
+        await db.rollback()
+        if _PRODUCTION_CONSTRAINT in str(e.orig):
+            # Un-retiring lost a race: another production is live.
+            raise HTTPException(status_code=409,
+                                detail={"code": "production_exists"}) from None
+        raise
     if changed:
-        audit(db, actor_id=actor.user.person_id, action="deploy.environment_update",
-              entity_type="environment", entity_id=env.name, ip=client_ip(request),
-              changes={"changed": changed})
-        await db.commit()
         await db.refresh(env)
     return await serialize.environment_out(db, env)
 

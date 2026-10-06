@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
 from cryptography.fernet import Fernet
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
@@ -63,6 +63,9 @@ _FERNET_KEY_RE = re.compile(r"[A-Za-z0-9_-]{43}=")
 _NO_ANSWER = "The target didn't answer in time."
 # The names `ss-stack dump` gives pre-deploy dumps (UTC timestamps).
 BACKUP_RE = re.compile(r"[0-9]{8}T[0-9]{6}Z\.dump")
+# pg_advisory_xact_lock key serializing "is there a live production?" with
+# the write that depends on it (create, un-retire). Fixed and arbitrary.
+PRODUCTION_LOCK = 0x5D0_0001
 
 
 class EnvError(Exception):
@@ -270,6 +273,11 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         if snap.status != "ready":
             raise EnvError("snapshot_not_ready")
     domain = _check_domain(base_domain or f"{name}.{DEFAULT_DOMAIN_SUFFIX}")
+    if not on_do:                       # DigitalOcean sets its own proxy and bind
+        if not proxy_ip:
+            raise EnvError("proxy_ip_required")
+        proxy = _check_ipv4(proxy_ip, "proxy_ip_invalid")
+        bind = _check_ipv4(bind_ip, "bind_ip_invalid")
     given = ports or {}
     unknown = sorted(set(given) - set(envfile.SERVICES))
     if unknown:
@@ -281,10 +289,6 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         return await _create_on_do(db, settings, name=name, type_=type_, git_ref=git_ref,
                                    domain=domain, ports=all_ports, actor_id=actor_id,
                                    snapshot_id=snapshot_id, do=do or {})
-    if not proxy_ip:
-        raise EnvError("proxy_ip_required")
-    proxy = _check_ipv4(proxy_ip, "proxy_ip_invalid")
-    bind = _check_ipv4(bind_ip, "bind_ip_invalid")
     spec = None
     host = cfg.host if cfg is not None else ""
     if targets.is_vm_target(target_id):
@@ -321,6 +325,14 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     return env
 
 
+async def lock_production(db: AsyncSession) -> None:
+    """Held until the transaction ends: two creates (even in different
+    accounts), or a create and an un-retire, can't both see no live
+    production. The partial unique index environments_one_production is the
+    backstop; routes map it to production_exists."""
+    await db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": PRODUCTION_LOCK})
+
+
 async def _create_on_do(db: AsyncSession, settings: Settings, *, name: str, type_: str,
                         git_ref: str, domain: str, ports: dict[str, int], actor_id,
                         snapshot_id, do: dict) -> Environment:
@@ -346,8 +358,10 @@ async def _create_on_do(db: AsyncSession, settings: Settings, *, name: str, type
     zone = (await integrations.config_of(db, "cloudflare")).get("zone") or ""
     if not (domain == zone or domain.endswith("." + zone)):
         raise EnvError("base_domain_not_in_zone")
-    if type_ == "production" and await do_envs.production_exists(db):
-        raise EnvError("production_exists")
+    if type_ == "production":
+        await lock_production(db)
+        if await do_envs.production_exists(db):
+            raise EnvError("production_exists")
     env = await _insert(
         db, settings, name=name, type_=type_, target_id=targets.DO_TARGET, git_ref=git_ref,
         host="0.0.0.0", domain=domain, proxy_ip=do_envs.CADDY_IP, bind_ip=do_envs.BIND_IP,
@@ -527,9 +541,10 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
     if fields.get("retiring") is not None:
         if env.type != "production":
             raise EnvError("retiring_not_allowed")
-        if (env.retiring and not fields["retiring"]
-                and await do_envs.production_exists(db, other_than=env.id)):
-            raise EnvError("production_exists")     # at most one live production
+        if env.retiring and not fields["retiring"]:
+            await lock_production(db)
+            if await do_envs.production_exists(db, other_than=env.id):
+                raise EnvError("production_exists")     # at most one live production
         put("retiring", bool(fields["retiring"]))
     if fields.get("target") is not None:
         # An environment never moves to or from a host Sirdar builds, nor
