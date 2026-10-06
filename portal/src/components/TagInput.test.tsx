@@ -34,7 +34,7 @@ describe('inside a .modal-card', () => {
     expect(menu.style.position).toBe('fixed');
   });
 
-  it('adds a suggestion by mousedown (the outside-click guard sees the portaled menu as inside)', () => {
+  it('adds a suggestion by mousedown', () => {
     const onChange = vi.fn();
     renderInCard(onChange);
     fireEvent.focus(screen.getByPlaceholderText('Tags'));
@@ -69,6 +69,46 @@ describe('inside a .modal-card', () => {
     expect(screen.getByText('Alpha')).toBeTruthy();
     fireEvent(window, new Event('resize'));
     expect(screen.queryByText('Alpha')).toBeNull();
+  });
+
+  it('after a scroll dismisses it, clicking the still-focused input reopens it', () => {
+    renderInCard();
+    const input = screen.getByPlaceholderText('Tags');
+    fireEvent.focus(input);
+    fireEvent.scroll(window);
+    expect(screen.queryByText('Alpha')).toBeNull();
+    fireEvent.click(input);
+    const menu = screen.getByText('Alpha').closest('.combo-menu') as HTMLElement;
+    expect(menu.parentElement).toBe(document.body);
+  });
+
+  it('re-places the menu when a new tag changes the field (a chip can wrap it onto another row)', () => {
+    let rect = { left: 10, width: 300, top: 70, bottom: 100 };
+    const onChange = vi.fn();
+    const { container, rerender } = render(
+      <div className="modal-card">
+        <TagInput value={[]} onChange={onChange} suggestions={SUGGESTIONS} placeholder="Tags" />
+      </div>,
+    );
+    const wrap = container.querySelector('.tag-input-wrap') as HTMLElement;
+    wrap.getBoundingClientRect = () => ({
+      ...rect, right: rect.left + rect.width, height: rect.bottom - rect.top,
+      x: rect.left, y: rect.top, toJSON: () => ({}),
+    } as DOMRect);
+    fireEvent.focus(screen.getByPlaceholderText('Tags'));
+    const menu = () => screen.getByText('Bravo').closest('.combo-menu') as HTMLElement;
+    expect(menu().style.top).toBe('106px');
+
+    // the chip wraps the field onto a second row: the wrapper is taller now
+    fireEvent.mouseDown(screen.getByText('Alpha'));
+    expect(onChange).toHaveBeenCalledWith(['Alpha']);
+    rect = { left: 10, width: 300, top: 70, bottom: 130 };
+    rerender(
+      <div className="modal-card">
+        <TagInput value={['Alpha']} onChange={onChange} suggestions={SUGGESTIONS} placeholder="Tags" />
+      </div>,
+    );
+    expect(menu().style.top).toBe('136px');
   });
 
   it('scrolling the card closes it', () => {

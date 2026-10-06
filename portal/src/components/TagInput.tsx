@@ -76,9 +76,12 @@ export default function TagInput({
   const showMenu = open && visible.length > 0;
 
   // Drop-up flip, plus the portal inside a modal card, its placement, and
-  // its close-on-scroll/resize (the typed text stays in the field).
+  // its close-on-scroll/resize (the typed text stays in the field). It
+  // re-measures when the text, the tag count (a new chip can wrap the field
+  // onto another row), or the number of suggestions (the menu's height)
+  // changes.
   const { portaled, dropUp, menuStyle } = useMenuPlacement({
-    wrapRef, menuRef, open: showMenu, remeasure: text,
+    wrapRef, menuRef, open: showMenu, remeasure: `${text}|${value.length}|${visible.length}`,
     onDismiss: () => setOpen(false),
   });
 
@@ -175,6 +178,7 @@ export default function TagInput({
           value={text}
           placeholder={value.length === 0 ? placeholder : ''}
           onFocus={() => setOpen(true)}
+          onClick={() => setOpen(true)}
           onChange={(e) => { setText(e.target.value); setOpen(true); }}
           onKeyDown={onKey}
           onBlur={() => { if (!restricted && text.trim()) commitValue(text.trim()); }}

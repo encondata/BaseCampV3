@@ -19,9 +19,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, RefObject } from 'react';
 
 /** Height (px) reserved for the menu when there's no room to measure it yet — mirrors .combo-menu's max-height. */
-export const MENU_NEEDED_HEIGHT = 260;
+const MENU_NEEDED_HEIGHT = 260;
 /** Gap (px) between the trigger and a portaled menu — mirrors .combo-menu's calc(100% + 6px). */
-export const MENU_GAP = 6;
+const MENU_GAP = 6;
 
 /** Viewport placement of a portaled menu: below (top) or above (bottom) the trigger. */
 interface Anchor { left: number; width: number; top?: number; bottom?: number }
