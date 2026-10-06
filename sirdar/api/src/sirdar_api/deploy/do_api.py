@@ -301,6 +301,9 @@ class DigitalOceanApi:
 
     # certificates
 
+    async def certificates(self) -> list[dict]:
+        return await self._list("/certificates", "certificates")
+
     async def certificate(self, certificate_id: str) -> dict | None:
         return await self._one(f"/certificates/{_id(certificate_id)}", "certificate")
 

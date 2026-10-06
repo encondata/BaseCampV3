@@ -80,6 +80,7 @@ WAITS = {"droplet": 10 * 60, "database": 30 * 60, "lb": 10 * 60, "ssh": 10 * 60,
          "vpc": 10 * 60, "health": 5 * 60}
 HEALTH_MARGIN = 10             # seconds on top of the load balancer's health checks
 _HEALTHZ = "curl -fsS -o /dev/null --max-time 5 http://127.0.0.1/healthz"
+CORS_SERVICES = ("portal", "kiosk", "wiki")   # the apps that upload straight to the bucket
 SQL_TIMEOUT = 15 * 60          # cloud-init may still be installing psql
 # Runs as `bash -c _PSQL <host> <port>` on the droplet. Stdin: the doadmin
 # password, the cluster's CA (base64, one line), then the SQL. The password
@@ -306,7 +307,10 @@ def _firewall_body(name: str, env_tag: str, lb_id: str) -> dict:
 def _rule_key(rule: dict, where: str) -> tuple:
     ends = rule.get(where) or {}
     protocol = rule.get("protocol")
-    return (protocol, "" if protocol == "icmp" else str(rule.get("ports") or ""),
+    ports = "" if protocol == "icmp" else str(rule.get("ports") or "")
+    if ports in ("", "0", "all"):          # DigitalOcean answers "0" for "all"
+        ports = "all"
+    return (protocol, "" if protocol == "icmp" else ports,
             *(tuple(sorted(str(v) for v in ends.get(k) or []))
               for k in ("addresses", "load_balancer_uids", "tags", "droplet_ids",
                         "kubernetes_ids")))
@@ -509,7 +513,8 @@ class DoProvisioner:
         setup_name = do_envs.resource_name(ctx.env_name, "-setup")
         app_name = do_envs.resource_name(ctx.env_name)
         live_keys = {k.get("access_key"): k for k in await api.spaces_keys()}
-        for rec in (await load_records(ctx.env_id)).find("spaces_key"):
+        recorded_keys = (await load_records(ctx.env_id)).find("spaces_key")
+        for rec in recorded_keys:
             live = live_keys.get(rec.do_id)
             if live is None:
                 await do_envs.forget(ctx.env_id, "spaces_key", rec.do_id)
@@ -522,8 +527,9 @@ class DoProvisioner:
             if rec.name == setup_name:              # a run stopped before deleting it
                 await self._drop_setup_key(api, ctx, rec.do_id)
                 out("Removed a temporary Spaces key a stopped run left behind.\n")
-        records = await load_records(ctx.env_id)
         row = await self._row(ctx)
+        await self._lost_keys(api, ctx, live_keys, {r.do_id for r in recorded_keys}, row, out)
+        records = await load_records(ctx.env_id)
         app_keys = [r for r in records.find("spaces_key") if r.name == app_name]
         app_key = None
         if row.spaces_secret_enc is not None and row.spaces_key_id in {r.do_id for r in app_keys}:
@@ -542,6 +548,7 @@ class DoProvisioner:
             await self._make_bucket(api, ctx, recorded, out)
         if app_key is not None:
             out(f"Bucket key {app_key.access_key}: in place.\n")
+            await self._bucket_cors(api, ctx, app_key, out)
             return
         for rec in app_keys:          # its secret was never saved: DigitalOcean shows it once
             await api.delete_spaces_key(rec.do_id)
@@ -553,6 +560,73 @@ class DoProvisioner:
         await do_envs.set_do(ctx.env_id, spaces_key_id=key["access_key"],
                              spaces_secret_enc=vault.encrypt(self._settings, key["secret_key"]))
         out(f"Made the bucket's own key {key['access_key']}.\n")
+        await self._bucket_cors(api, ctx, spaces.SpacesKey(key["access_key"], key["secret_key"]),
+                                out)
+
+    async def _lost_keys(self, api: DigitalOceanApi, ctx: DoContext, live_keys: dict,
+                         recorded: set[str], row, out: Output) -> None:
+        """A key whose create answer was lost: DigitalOcean lists it under
+        Sirdar's exact name but nothing recorded it. The bucket's own key
+        is adopted when its secret was saved; otherwise (DigitalOcean shows a
+        secret once) it, or a temporary key, is deleted."""
+        setup_name = do_envs.resource_name(ctx.env_name, "-setup")
+        app_name = do_envs.resource_name(ctx.env_name)
+        for access, live in live_keys.items():
+            name = live.get("name")
+            if access in recorded or name not in (setup_name, app_name):
+                continue
+            if name == app_name and not any(g.get("bucket") == ctx.bucket
+                                            for g in live.get("grants") or []):
+                continue                     # named like ours, but for another bucket
+            if (name == app_name and row.spaces_key_id == access
+                    and row.spaces_secret_enc is not None):
+                await do_envs.record(ctx.env_id, "spaces_key", access, app_name)
+                out(f"Bucket key {access}: recorded it again (its record was lost).\n")
+                continue
+            await api.delete_spaces_key(access)
+            out(f"Removed the Spaces key {access} ({name}): Sirdar never recorded it or its "
+                "secret.\n")
+
+    async def _apply_cors(self, ctx: DoContext, key: spaces.SpacesKey,
+                          wanted: list[spaces.CorsRule]) -> bool:
+        if await spaces.bucket_cors(ctx.bucket, ctx.region, key) == wanted:
+            return False
+        await spaces.put_bucket_cors(ctx.bucket, ctx.region, key, wanted)
+        return True
+
+    async def _bucket_cors(self, api: DigitalOceanApi, ctx: DoContext, key: spaces.SpacesKey,
+                           out: Output) -> None:
+        """The apps' browsers PUT to presigned URLs: PUT, GET and HEAD from
+        their origins. Set with the bucket's own key, or with a temporary
+        full-access key when Spaces refuses that one; only when it differs."""
+        origins = sorted(f"https://{h}" for s, h in ctx.hosts if s in CORS_SERVICES)
+        wanted = [spaces.cors_rule(origins)]
+        used = "the bucket's own key"
+        try:
+            changed = await self._apply_cors(ctx, key, wanted)
+        except spaces.SpacesDenied:
+            used = "the temporary full-access key"
+            setup = await self._setup_key(api, ctx)
+            failure: spaces.SpacesError | None = None
+            try:
+                changed = await self._apply_cors(ctx, setup, wanted)
+            except spaces.SpacesError as e:
+                failure = e
+            try:
+                await self._drop_setup_key(api, ctx, setup.access_key)
+            except DoError as e:
+                if failure is None:
+                    raise
+                raise StepFailed(f"{failure.reason} Sirdar also couldn't delete the temporary "
+                                 f"Spaces key {setup.access_key} ({e.reason}); the next run "
+                                 "removes it.") from None
+            if failure is not None:
+                raise StepFailed(failure.reason) from None
+        if changed:
+            out(f"Bucket {ctx.bucket}: CORS now lets {', '.join(origins)} upload (set with "
+                f"{used}).\n")
+        else:
+            out(f"Bucket {ctx.bucket}: CORS in place (checked with {used}).\n")
 
     async def _make_bucket(self, api: DigitalOceanApi, ctx: DoContext, recorded: bool,
                            out: Output) -> None:
@@ -803,6 +877,12 @@ class DoProvisioner:
                     await do_envs.record(ctx.env_id, "certificate", current, cert["name"])
                     recorded.add(current)
                     out(f"Recorded the certificate {cert['name']} the cert-worker uploaded.\n")
+        for cert in await api.certificates():     # an upload whose answer was lost
+            cert_id = str(cert.get("id"))
+            if cert_id not in recorded and certs.is_ours(cert, ctx.env_name, ctx.names):
+                await do_envs.record(ctx.env_id, "certificate", cert_id, cert["name"])
+                recorded.add(cert_id)
+                out(f"Recorded the certificate {cert['name']} (its record was lost).\n")
         live = []
         for cert_id in sorted(recorded):
             cert = await api.certificate(cert_id)
@@ -1067,8 +1147,10 @@ class DoProvisioner:
             out(f"Load balancer {name}: already sends traffic to {ctx.slot}.\n")
             failed = await self._public_smoke(ctx, lb["ip"], out)
             if failed:
-                raise StepFailed(f"{self._smoke_failure(ctx, failed)} Traffic stays where "
-                                 "it was.")
+                # One slot: the deploy replaced the very droplet that serves traffic.
+                tail = (" The droplet already runs the new commit; retry Switch traffic."
+                        if len(ctx.slots) == 1 else " Traffic stays where it was.")
+                raise StepFailed(f"{self._smoke_failure(ctx, failed)}{tail}")
             return
         both = previous if new in previous else previous + [new]
         try:
@@ -1082,11 +1164,39 @@ class DoProvisioner:
             failed = await self._public_smoke(ctx, lb["ip"], out, settle)
             if failed:
                 raise StepFailed(self._smoke_failure(ctx, failed))
-            await self._put_targets(api, lb_id, name, [new])
+            if both != [new]:
+                await self._put_targets(api, lb_id, name, [new])
+                out(f"Load balancer {name}: only {ctx.slot} now; checking it alone.\n")
+                await self._sleep(settle)
+            await self._prove_switch(api, ctx, records, lb, new)
+            if both != [new]:
+                failed = await self._public_smoke(ctx, lb["ip"], out)
+                if failed:
+                    raise StepFailed(self._smoke_failure(ctx, failed))
         except (StepFailed, DoError) as e:
             await self._put_back(api, lb_id, name, previous, before, e.reason, out)
             raise StepFailed(f"{e.reason} Traffic stays where it was.") from None
         out(f"Load balancer {name}: traffic now goes to {ctx.slot}{was}.\n")
+
+    async def _prove_switch(self, api: DigitalOceanApi, ctx: DoContext, records: Records,
+                            lb: dict, new: int) -> None:
+        """Read the load balancer again: only the new droplet, and a
+        certificate of ours (another writer, the cert-worker, may have raced
+        the switch)."""
+        final = await api.load_balancer(lb["id"])
+        if final is None:
+            raise StepFailed(f"Load balancer {lb['name']} disappeared during the switch.")
+        ids = sorted(int(d) for d in final.get("droplet_ids") or [])
+        if ids != [new]:
+            raise StepFailed(f"Load balancer {lb['name']}'s targets changed during the switch "
+                             f"(now {', '.join(map(str, ids)) or 'none'}): something else "
+                             "updated it.")
+        cert_id = https_certificate(final)
+        cert = await api.certificate(cert_id) if cert_id else None
+        if cert is None or not (certs.is_ours(cert, ctx.env_name, ctx.names)
+                                or cert_id in {r.do_id for r in records.find("certificate")}):
+            raise StepFailed(f"Load balancer {lb['name']} serves a certificate that isn't one of "
+                             f"Sirdar's for {ctx.env_name}. Run step 0 again to put one back.")
 
     async def _put_back(self, api: DigitalOceanApi, lb_id: str, name: str,
                         previous: list[int], before: str | None, reason: str,

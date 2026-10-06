@@ -559,3 +559,100 @@ async def test_remove_deletes_a_tagged_database_it_lost(db, do_build):
     await _destroy(do_build)
     assert fake.databases == {}
     assert "ss-uat9-db: tagged for this environment but not recorded" in do_build.log()
+
+
+# ---- whole-phase review: the final switch is proven ------------------------------------------
+
+def _good_then(status: int, good: int):
+    seen: list[httpx.Request] = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200 if len(seen) <= good else status)
+
+    return httpx.MockTransport(handler), seen
+
+
+async def test_a_slot_that_fails_once_alone_puts_traffic_back(db, do_build):
+    await do_build.run()
+    do_build.cloud.smoke, _ = _answer(200)
+    await do_build.run("go_live", slot="orange")
+    fake = do_build.cloud.do
+    do_build.cloud.smoke, seen = _good_then(502, len(do_envs_hosts()))
+    since = len(fake.requests)
+    with pytest.raises(StepFailed) as err:
+        await do_build.run("go_live", slot="purple")
+    orange, purple = _droplet_id(fake, "orange"), _droplet_id(fake, "purple")
+    assert _lb_puts(fake, since) == [[orange, purple], [purple], [orange]]
+    assert "didn't answer through the load balancer" in err.value.reason
+    assert len(seen) == 2 * len(do_envs_hosts())       # once with both, once alone
+    assert _lb(fake)["droplet_ids"] == [orange]
+
+
+async def test_targets_changed_under_the_switch_put_traffic_back(db, do_build):
+    await do_build.run()
+    do_build.cloud.smoke, _ = _answer(200)
+    await do_build.run("go_live", slot="orange")
+    fake = do_build.cloud.do
+    orange, purple = _droplet_id(fake, "orange"), _droplet_id(fake, "purple")
+    real = fake.handler
+
+    def racing(request):
+        response = real(request)
+        if request.method == "PUT" and json.loads(request.content)["droplet_ids"] == [purple]:
+            _lb(fake)["droplet_ids"] = [orange, purple]          # someone else's PUT
+        return response
+
+    fake.handler = racing
+    since = len(fake.requests)
+    with pytest.raises(StepFailed) as err:
+        await do_build.run("go_live", slot="purple")
+    assert "changed" in err.value.reason
+    assert _lb_puts(fake, since)[-1] == [orange]
+    assert _lb(fake)["droplet_ids"] == [orange]
+
+
+async def test_a_foreign_certificate_on_the_load_balancer_fails_the_switch(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    (cert,) = fake.certificates.values()
+    fake.certificates["foreign-1"] = {**cert, "id": "foreign-1", "name": "someone-elses",
+                                      "dns_names": ["x.example.com"]}
+    for rule in _lb(fake)["forwarding_rules"]:
+        if rule.get("certificate_id"):
+            rule["certificate_id"] = "foreign-1"
+    do_build.cloud.smoke, _ = _answer(200)
+    with pytest.raises(StepFailed) as err:
+        await do_build.run("go_live", slot="orange")
+    assert "certificate" in err.value.reason
+    assert _lb(fake)["droplet_ids"] == []
+
+
+def do_envs_hosts():
+    from sirdar_api.deploy import certs
+    return certs.PUBLIC_SERVICES
+
+
+async def test_a_one_slot_environment_says_the_droplet_already_runs_the_commit(db, do_build):
+    await do_build.run()
+    do_build.cloud.smoke, _ = _answer(200)
+    await do_build.run("go_live", slot="orange")
+    await db.execute(update(Environment).where(Environment.id == do_build.env.id)
+                     .values(slots=["orange"], active_slot="orange"))
+    await db.commit()
+    do_build.cloud.smoke, _ = _answer(502)
+    with pytest.raises(StepFailed) as err:
+        await do_build.run("go_live", slot="orange")
+    assert err.value.reason.endswith(
+        " The droplet already runs the new commit; retry Switch traffic.")
+    assert "Traffic stays where it was" not in err.value.reason
+
+
+async def test_a_two_slot_environment_keeps_traffic_where_it_was(db, do_build):
+    await do_build.run()
+    do_build.cloud.smoke, _ = _answer(200)
+    await do_build.run("go_live", slot="orange")
+    do_build.cloud.smoke, _ = _answer(502)
+    with pytest.raises(StepFailed) as err:
+        await do_build.run("go_live", slot="orange")
+    assert err.value.reason.endswith(" Traffic stays where it was.")

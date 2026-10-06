@@ -628,7 +628,9 @@ async def test_a_second_run_only_reads_spaces(db, do_build):
     await do_build.run()
     seen = len(do_build.cloud.spaces.requests)
     await do_build.run()
-    assert [r.method for r in do_build.cloud.spaces.requests[seen:]] == ["HEAD"]
+    later = do_build.cloud.spaces.requests[seen:]
+    assert [(r.method, "cors" in r.url.params) for r in later] == [("HEAD", False),
+                                                                    ("GET", True)]
 
 
 async def test_a_recorded_bucket_that_is_gone_is_made_again(db, do_build):
@@ -838,3 +840,85 @@ async def test_ssh_remote_maps_errors_to_our_copy(db, monkeypatch, error):
         await do_provision._ssh_remote(cfg, "true", "s3cret-stdin")
     assert "s3cret-stdin" not in err.value.reason and "raw" not in err.value.reason
     assert "203.0.113.9" in err.value.reason
+
+
+# ---- whole-phase review: CORS, firewall ports, lost creates ---------------------------------
+
+def _origins(build) -> set[str]:
+    return {f"https://{s}.uat9.serversherpa.com" for s in ("portal", "kiosk", "wiki")}
+
+
+async def test_the_bucket_lets_the_apps_upload_from_the_browser(db, do_build):
+    await do_build.run()
+    cors = do_build.cloud.spaces.cors[do_build.env.spaces_bucket]
+    (rule,) = cors
+    assert set(rule["origins"]) == _origins(do_build)
+    assert set(rule["methods"]) == {"GET", "HEAD", "PUT"}
+    puts = len([r for r in do_build.cloud.spaces.requests
+                if r.method == "PUT" and "cors" in r.url.params])
+    await do_build.run()
+    assert len([r for r in do_build.cloud.spaces.requests
+                if r.method == "PUT" and "cors" in r.url.params]) == puts == 1
+    assert "CORS" in do_build.log()
+
+
+async def test_cors_falls_back_to_the_setup_key(db, do_build):
+    do_build.cloud.spaces.cors_needs_fullaccess = True
+    await do_build.run()
+    assert do_build.env.spaces_bucket in do_build.cloud.spaces.cors
+    assert "temporary full-access key" in do_build.log()
+    assert not [k for k in do_build.cloud.do.keys.values() if k["name"] == "ss-uat9-setup"]
+
+
+async def test_firewall_ports_all_and_0_are_the_same(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    (fw,) = fake.firewalls.values()
+    for rule in fw["outbound_rules"]:
+        if rule.get("ports") == "all":
+            rule["ports"] = "0"
+        if rule["protocol"] == "icmp":
+            rule["ports"] = "0"
+    before = len(fake.writes())
+    await do_build.run()
+    assert not [w for w in fake.writes()[before:] if w[1].startswith("/firewalls")]
+
+
+async def test_an_app_key_whose_create_answer_was_lost_is_replaced(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    (old,) = [k for k in fake.keys.values() if k["name"] == "ss-uat9"]
+    await db.execute(DoResource.__table__.delete().where(DoResource.kind == "spaces_key"))
+    await db.commit()
+    await do_envs.set_do(do_build.env.id, spaces_key_id=None, spaces_secret_enc=None)
+    await do_build.run()
+    keys = [k for k in fake.keys.values() if k["name"] == "ss-uat9"]
+    assert len(keys) == 1 and keys[0]["access_key"] != old["access_key"]
+    rows = (await db.scalars(select(DoResource).where(DoResource.kind == "spaces_key"))).all()
+    assert [r.do_id for r in rows] == [keys[0]["access_key"]]
+
+
+async def test_an_app_key_with_a_known_secret_is_adopted_by_name(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    (old,) = [k for k in fake.keys.values() if k["name"] == "ss-uat9"]
+    await db.execute(DoResource.__table__.delete().where(DoResource.kind == "spaces_key"))
+    await db.commit()
+    await do_build.run()
+    keys = [k for k in fake.keys.values() if k["name"] == "ss-uat9"]
+    assert [k["access_key"] for k in keys] == [old["access_key"]]
+    rows = (await db.scalars(select(DoResource).where(DoResource.kind == "spaces_key"))).all()
+    assert [r.do_id for r in rows] == [old["access_key"]]
+
+
+async def test_a_certificate_whose_create_answer_was_lost_is_adopted(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    (cert,) = fake.certificates.values()
+    fake.certificates["lost-1"] = {**cert, "id": "lost-1", "name": "ss-uat9-20991231000000"}
+    await do_build.run()
+    recorded = {r.do_id for r in (await db.scalars(
+        select(DoResource).where(DoResource.kind == "certificate"))).all()}
+    assert set(fake.certificates) == recorded          # nothing orphaned
+    assert "lost-1" not in fake.certificates           # adopted, then retired
+    assert "ss-uat9-20991231000000" in do_build.log()

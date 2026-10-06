@@ -303,3 +303,42 @@ async def test_the_secret_never_leaves_in_a_request_or_an_error(fakes):
         assert SECRET not in seen
     assert all(SECRET not in r for r in reasons)
     assert SECRET not in repr(setup)
+
+
+# ---- CORS ------------------------------------------------------------------------------
+
+ORIGINS = ("https://portal.uat9.example.com", "https://wiki.uat9.example.com")
+
+
+async def test_cors_round_trip(fakes):
+    do, fake = fakes
+    setup, t = _setup(do), fake.transport()
+    await spaces.create_bucket(BUCKET, "nyc3", setup, transport=t)
+    assert await spaces.bucket_cors(BUCKET, "nyc3", setup, transport=t) == []
+    rule = spaces.cors_rule(ORIGINS)
+    await spaces.put_bucket_cors(BUCKET, "nyc3", setup, [rule], transport=t)
+    assert await spaces.bucket_cors(BUCKET, "nyc3", setup, transport=t) == [rule]
+    assert set(rule.methods) == {"GET", "HEAD", "PUT"}
+    assert "Content-Type" in rule.headers or "*" in rule.headers
+    assert rule.max_age > 0
+    put = next(r for r in fake.requests if r.method == "PUT" and "cors" in r.url.params)
+    assert put.headers["content-md5"] == base64.b64encode(
+        hashlib.md5(put.content).digest()).decode()
+    assert b"https://wiki.uat9.example.com" in put.content
+
+
+async def test_cors_on_a_missing_bucket_is_an_error(fakes):
+    do, fake = fakes
+    with pytest.raises(SpacesError):
+        await spaces.bucket_cors(BUCKET, "nyc3", _setup(do), transport=fake.transport())
+
+
+async def test_cors_refused_to_a_scoped_key_is_spaces_denied(fakes):
+    do, fake = fakes
+    t = fake.transport()
+    await spaces.create_bucket(BUCKET, "nyc3", _setup(do), transport=t)
+    app = _key(do, "app", [{"bucket": BUCKET, "permission": "readwrite"}])
+    fake.cors_needs_fullaccess = True
+    with pytest.raises(spaces.SpacesDenied):
+        await spaces.put_bucket_cors(BUCKET, "nyc3", app, [spaces.cors_rule(ORIGINS)],
+                                     transport=t)

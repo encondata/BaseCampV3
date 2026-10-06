@@ -10,7 +10,11 @@ uploads, but doesn't remove old versions or delete markers; a bucket someone
 versioned by hand will refuse delete_bucket with BucketNotEmpty.
 
 Responses are parsed with the stdlib ElementTree (it never fetches external
-entities); a body carrying a DOCTYPE is refused before parsing."""
+entities); a body carrying a DOCTYPE is refused before parsing.
+
+CORS: bucket_cors reads the bucket's rules and put_bucket_cors replaces
+them (the browser's presigned PUTs need a rule for the apps' origins). A
+403 is SpacesDenied, so a caller can retry with a key that may do more."""
 
 import base64
 import hashlib
@@ -35,6 +39,10 @@ class SpacesError(Exception):
     def __init__(self, reason: str):
         super().__init__(reason)
         self.reason = reason
+
+
+class SpacesDenied(SpacesError):
+    """Spaces answered 403 to the key."""
 
 
 @dataclass(frozen=True)
@@ -104,7 +112,7 @@ async def _send(method: str, bucket: str, region: str, key: SpacesKey, *, path: 
     except httpx.HTTPError:
         raise SpacesError("Couldn't reach DigitalOcean Spaces.") from None
     if resp.status_code == 403 and raise_on_403:
-        raise SpacesError(f"Spaces refused the key ({_code(resp) or 'HTTP 403'}).")
+        raise SpacesDenied(f"Spaces refused the key ({_code(resp) or 'HTTP 403'}).")
     return resp
 
 
@@ -229,3 +237,72 @@ async def delete_bucket(bucket: str, region: str, key: SpacesKey, *, transport=N
     if resp.status_code == 404:
         return False
     raise _refused(resp)
+
+
+# ---- CORS ----------------------------------------------------------------------------------
+
+CORS_METHODS = ("GET", "HEAD", "PUT")
+CORS_HEADERS = ("*",)          # the presign signs what matters; any request header may pass
+CORS_EXPOSE = ("ETag",)
+CORS_MAX_AGE = 3000
+_NS = "http://s3.amazonaws.com/doc/2006-03-01/"
+
+
+@dataclass(frozen=True)
+class CorsRule:
+    origins: tuple[str, ...]
+    methods: tuple[str, ...]
+    headers: tuple[str, ...]
+    expose: tuple[str, ...] = ()
+    max_age: int = 0
+
+
+def cors_rule(origins) -> CorsRule:
+    """PUT, GET and HEAD from `origins` (sorted, so rules compare)."""
+    return CorsRule(tuple(sorted(origins)), tuple(sorted(CORS_METHODS)),
+                    tuple(sorted(CORS_HEADERS)), tuple(sorted(CORS_EXPOSE)), CORS_MAX_AGE)
+
+
+def _cors_xml(rules: list[CorsRule]) -> bytes:
+    parts = [f'<CORSConfiguration xmlns="{_NS}">']
+    for r in rules:
+        parts.append("<CORSRule>")
+        parts += [f"<AllowedOrigin>{escape(v)}</AllowedOrigin>" for v in r.origins]
+        parts += [f"<AllowedMethod>{escape(v)}</AllowedMethod>" for v in r.methods]
+        parts += [f"<AllowedHeader>{escape(v)}</AllowedHeader>" for v in r.headers]
+        parts += [f"<ExposeHeader>{escape(v)}</ExposeHeader>" for v in r.expose]
+        parts.append(f"<MaxAgeSeconds>{int(r.max_age)}</MaxAgeSeconds></CORSRule>")
+    parts.append("</CORSConfiguration>")
+    return "".join(parts).encode()
+
+
+async def bucket_cors(bucket: str, region: str, key: SpacesKey, *, transport=None,
+                      now: datetime | None = None) -> list[CorsRule]:
+    """The bucket's CORS rules ([] when it has none)."""
+    resp = await _send("GET", bucket, region, key, query={"cors": ""}, transport=transport,
+                       now=now)
+    if resp.status_code == 404 and _code(resp) == "NoSuchCORSConfiguration":
+        return []
+    if resp.status_code != 200:
+        raise _refused(resp)
+    rules = []
+    for el in _elements(_parse(resp, "a CORS configuration"), "CORSRule"):
+        def texts(name: str, el=el) -> tuple[str, ...]:
+            return tuple(sorted((e.text or "").strip() for e in _elements(el, name)))
+        age = _child_text(el, "MaxAgeSeconds").strip()
+        rules.append(CorsRule(texts("AllowedOrigin"), texts("AllowedMethod"),
+                              texts("AllowedHeader"), texts("ExposeHeader"),
+                              int(age) if age.isdigit() else 0))
+    return rules
+
+
+async def put_bucket_cors(bucket: str, region: str, key: SpacesKey, rules: list[CorsRule], *,
+                          transport=None, now: datetime | None = None) -> None:
+    """Replace the bucket's CORS rules."""
+    doc = _cors_xml(rules)
+    md5 = base64.b64encode(hashlib.md5(doc).digest()).decode()
+    resp = await _send("PUT", bucket, region, key, query={"cors": ""}, body=doc,
+                       headers={"Content-MD5": md5, "Content-Type": "application/xml"},
+                       transport=transport, now=now)
+    if resp.status_code not in (200, 204):
+        raise _refused(resp)

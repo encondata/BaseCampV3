@@ -10,7 +10,9 @@ Knobs: `foreign` (buckets another account owns: PUT gives 409
 BucketAlreadyExists, anything else 403), `recreate_conflict` (re-creating
 your own bucket gives BucketAlreadyExists, as Spaces does, instead of
 BucketAlreadyOwnedByYou), `undeletable` (keys a multi-delete reports as a
-per-key AccessDenied with HTTP 200) and `down`."""
+per-key AccessDenied with HTTP 200), `cors_needs_fullaccess` (a bucket-scoped
+key gets AccessDenied on ?cors) and `down`. `cors` holds each bucket's CORS
+rules as dicts."""
 
 import base64
 import hashlib
@@ -58,6 +60,8 @@ class FakeSpaces:
         self.foreign: set[str] = set()
         self.recreate_conflict = False
         self.undeletable: set[str] = set()
+        self.cors: dict[str, list[dict]] = {}
+        self.cors_needs_fullaccess = False
         self._ids = itertools.count(1)
 
     def put(self, bucket: str, key: str, data: bytes) -> None:
@@ -101,6 +105,48 @@ class FakeSpaces:
         key = self.do.keys[access_key]
         return any(g["permission"] == "fullaccess" or g["bucket"] == bucket for g in key["grants"])
 
+    def _cors(self, request: httpx.Request, bucket: str, access_key: str) -> httpx.Response:
+        if bucket in self.foreign or not self._allowed(access_key, bucket):
+            return _xml_error(403, "AccessDenied")
+        if bucket not in self.buckets:
+            return _xml_error(404, "NoSuchBucket")
+        full = any(g["permission"] == "fullaccess" for g in self.do.keys[access_key]["grants"])
+        if self.cors_needs_fullaccess and not full:
+            return _xml_error(403, "AccessDenied")
+        if request.method == "GET":
+            if bucket not in self.cors:
+                return _xml_error(404, "NoSuchCORSConfiguration")
+            body = [f'<CORSConfiguration xmlns="{NS}">']
+            for r in self.cors[bucket]:
+                body.append("<CORSRule>")
+                for tag, k in (("AllowedOrigin", "origins"), ("AllowedMethod", "methods"),
+                               ("AllowedHeader", "headers"), ("ExposeHeader", "expose")):
+                    body += [f"<{tag}>{escape(v)}</{tag}>" for v in r[k]]
+                body.append(f"<MaxAgeSeconds>{r['max_age']}</MaxAgeSeconds></CORSRule>")
+            body.append("</CORSConfiguration>")
+            return httpx.Response(200, content="".join(body).encode())
+        if request.method == "PUT":
+            md5 = base64.b64encode(hashlib.md5(request.content).digest()).decode()
+            if request.headers.get("content-md5") != md5:
+                return _xml_error(400, "InvalidDigest")
+            root = ET.fromstring(request.content)
+
+            def texts(el, tag):
+                return [(e.text or "").strip() for e in el if e.tag.rsplit("}", 1)[-1] == tag]
+            rules = []
+            for el in root:
+                if el.tag.rsplit("}", 1)[-1] != "CORSRule":
+                    continue
+                age = texts(el, "MaxAgeSeconds")
+                rules.append({"origins": texts(el, "AllowedOrigin"),
+                              "methods": texts(el, "AllowedMethod"),
+                              "headers": texts(el, "AllowedHeader"),
+                              "expose": texts(el, "ExposeHeader"),
+                              "max_age": int(age[0]) if age else 0})
+            self.cors[bucket] = rules
+            return httpx.Response(200)
+        return _xml_error(405, "MethodNotAllowed")
+
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         if self.down:
@@ -115,6 +161,8 @@ class FakeSpaces:
         if not self._signature_ok(request, region, auth):
             return _xml_error(403, "SignatureDoesNotMatch")
         method, path, params = request.method, request.url.path, request.url.params
+        if path == "/" and "cors" in params:
+            return self._cors(request, bucket, auth.group(1))
         if path == "/" and method == "PUT":
             if bucket in self.foreign:
                 return _xml_error(409, "BucketAlreadyExists")
