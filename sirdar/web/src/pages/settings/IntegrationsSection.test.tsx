@@ -242,3 +242,22 @@ it('Test on an account card lists the checks in the card', async () => {
   expect(api.testDoAccount).toHaveBeenCalledWith('production');
   expect(await within(prod).findByText('serversherpa.com (zone-1)')).toBeTruthy();
 });
+
+it("a failed Remove says why in the account's card", async () => {
+  api.getDoAccounts.mockResolvedValue({ accounts: [DO_ACCOUNTS[0], { ...DO_ACCOUNTS_BOTH[1], environments: [] }] });
+  api.clearDoAccount.mockRejectedValue(new ApiError(409, 'account_in_use', { code: 'account_in_use', environments: ['uat9'] }));
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  render(<IntegrationsSection />);
+  const dev = await screen.findByRole('group', { name: 'DigitalOcean · Development' });
+  await userEvent.click(within(dev).getByRole('button', { name: 'Remove DigitalOcean · Development' }));
+  expect(await within(dev).findByText('Environments still use this DigitalOcean account.')).toBeTruthy();
+  expect(api.getDoAccounts).toHaveBeenCalledTimes(1);
+});
+
+it("when the accounts can't load, the other cards stay and the error shows", async () => {
+  api.getDoAccounts.mockRejectedValue(new ApiError(500, 'internal', { code: 'internal' }));
+  render(<IntegrationsSection />);
+  await screen.findByRole('group', { name: 'Cloudflare' });
+  await waitFor(() => expect(screen.getAllByRole('alert').length).toBeGreaterThan(0));
+  expect(screen.queryByRole('group', { name: /^DigitalOcean/ })).toBeNull();
+});

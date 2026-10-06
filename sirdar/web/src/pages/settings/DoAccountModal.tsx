@@ -1,7 +1,10 @@
 /** One DigitalOcean account (Production or Development): its label, default
  *  region, API token and the renewal token droplets renew their certificate
- *  with. Tokens are write-only: kept unless replaced, never shown. Test tries
- *  the form's values without saving. */
+ *  with. Tokens are write-only: kept unless replaced, never shown. The API
+ *  token is required only while nothing configures the account (an account
+ *  can run on SIRDAR_DEPLOY_DO_TOKEN from the server environment); the
+ *  renewal token can be cleared on its own. Test tries the form's values
+ *  without saving. */
 import { useEffect, useRef, useState } from 'react';
 
 import ComboBox from '@portal/components/ComboBox';
@@ -65,7 +68,8 @@ export default function DoAccountModal({ account, onSaved, onClose }: {
     const e: Errors = {};
     if (!label.trim() || label.trim().length > 40) e.label = 'Use a label of 1 to 40 characters.';
     if (region && !REGION_RE.test(region)) e.region = "That isn't a DigitalOcean region slug, like nyc3.";
-    if (tokenAction === 'set' && !tokenOk(token)) {
+    // Required only when nothing configures the account; otherwise checked once typed.
+    if (tokenAction === 'set' && (token || !account.configured) && !tokenOk(token)) {
       e.token = token ? "That doesn't look like a DigitalOcean API token." : 'Enter the API token.';
     }
     if (renewAction === 'set' && renewal && !tokenOk(renewal)) e.renewal = "That doesn't look like a DigitalOcean token.";
@@ -76,6 +80,7 @@ export default function DoAccountModal({ account, onSaved, onClose }: {
     label: label.trim(), region: region || null,
     ...(tokenAction === 'set' && token ? { token } : {}),
     ...(renewAction === 'set' && renewal ? { renewal_token: renewal } : {}),
+    ...(renewAction === 'clear' ? { clear_renewal_token: true } : {}),
   });
 
   const run = async (what: 'test' | 'save') => {
@@ -140,11 +145,16 @@ export default function DoAccountModal({ account, onSaved, onClose }: {
             <SecretField id="doacct-token" label="API token" isSet={account.token_set} adding={!account.token_set}
                          action={tokenAction} value={token} error={errors.token} clearable={false}
                          onAction={(a) => { setTokenAction(a); setToken(''); }} onValue={setToken} />
+            {account.source === 'environment' && (
+              <p className="page-hint">
+                This account uses the token from the server environment. Leave this empty to keep using it.
+              </p>
+            )}
           </div>
           <div className="sirdar-span2">
             <SecretField id="doacct-renewal" label="Renewal token" isSet={account.renewal_token_set}
                          adding={!account.renewal_token_set} action={renewAction} value={renewal}
-                         error={errors.renewal} clearable={false}
+                         error={errors.renewal}
                          onAction={(a) => { setRenewAction(a); setRenewal(''); }} onValue={setRenewal} />
           </div>
           {result && <div className="sirdar-span2"><CheckList label={`${name} test`} checks={result.checks} /></div>}

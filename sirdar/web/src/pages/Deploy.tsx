@@ -64,6 +64,9 @@ export default function Deploy() {
   const [doAccounts, setDoAccounts] = useState<DoAccount[]>([]);
   const [account, setAccount] = useState<DoAccountKey>('production');
   const [regionsBy, setRegionsBy] = useState<Partial<Record<DoAccountKey, DoRegions>>>({});   // each fetched once, reused
+  // The chosen account, for region responses that arrive after it changed.
+  const accountRef = useRef<DoAccountKey>('production');
+  accountRef.current = account;
   const [regionsLoading, setRegionsLoading] = useState(false);
   const [regionsError, setRegionsError] = useState('');
   const [region, setRegion] = useState('');
@@ -95,7 +98,10 @@ export default function Deploy() {
         const sorted = [...r.accounts].sort((a, b) => Number(b.key === 'production') - Number(a.key === 'production'));
         setDoAccounts(sorted);
         const first = sorted.find((a) => a.configured);
-        if (first) setAccount(first.key);
+        if (first && first.key !== accountRef.current) {
+          accountRef.current = first.key;
+          setAccount(first.key); setRegion(''); setRegionsLoading(false); setRegionsError('');
+        }
       })
       .catch(() => { if (live) setDoAccounts([]); });
     return () => { live = false; };
@@ -110,10 +116,11 @@ export default function Deploy() {
     getDoRegions(key)
       .then((r) => setRegionsBy((by) => ({ ...by, [key]: r })))
       .catch((e) => {
+        if (accountRef.current !== key) return;   // another account is chosen now
         const d = errorDetail<{ reason?: string }>(e);
         setRegionsError(d?.reason || errorText(e, "Couldn't load DigitalOcean regions."));
       })
-      .finally(() => setRegionsLoading(false));
+      .finally(() => { if (accountRef.current === key) setRegionsLoading(false); });
   }, [account]);
 
   const doRegions = regionsBy[account];
@@ -280,11 +287,11 @@ export default function Deploy() {
         <div className="segmented sirdar-types" role="radiogroup" aria-label="Deployment type">
           {types.map((t) => (
             <button key={t.id} type="button" role="radio" className={t.id === type ? 'on' : ''}
-                    aria-checked={t.id === type} tabIndex={t.id === type || (!type && t === types[0]) ? 0 : -1}
+                    aria-label={t.label} aria-describedby={`deploy-type-desc-${t.id}`} aria-checked={t.id === type} tabIndex={t.id === type || (!type && t === types[0]) ? 0 : -1}
                     onKeyDown={arrowNav} onClick={() => pick(setType, t.id, type)}>
               <span className="sirdar-type-label">
                 <b>{t.label}</b>
-                <span className="cell-sub">{t.description}</span>
+                <span className="cell-sub" id={`deploy-type-desc-${t.id}`}>{t.description}</span>
               </span>
             </button>
           ))}
@@ -318,7 +325,9 @@ export default function Deploy() {
                         className={account === a.key ? 'on' : ''} tabIndex={account === a.key ? 0 : -1}
                         disabled={!a.configured} onKeyDown={arrowNav}
                         onClick={() => {
-                          if (a.key !== account) { setAccount(a.key); setRegion(''); setRegionsError(''); clearOutcome(); }
+                          if (a.key === account) return;
+                          accountRef.current = a.key;
+                          setAccount(a.key); setRegion(''); setRegionsLoading(false); setRegionsError(''); clearOutcome();
                         }}>
                   {a.label}
                 </button>
