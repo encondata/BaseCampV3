@@ -9,8 +9,9 @@ import SshTargetModal from '../components/SshTargetModal';
 import { arrowNav } from '../lib/arrowNav';
 import { NAME_HELP, nameProblem } from '../lib/envRules';
 import {
-  connectDeploy, deleteSshTarget, errorDetail, errorText, forgetKnownHost, getDeployTargets, getDoRegions, listKnownHosts,
-  trustKnownHost, type ConnectResult, type DeployCheck, type DeployTarget, type DeployType, type DoRegions, type KnownHost,
+  connectDeploy, deleteSshTarget, errorDetail, errorText, forgetKnownHost, getDeployTargets, getDoAccounts, getDoRegions,
+  listKnownHosts, trustKnownHost, type ConnectResult, type DeployCheck, type DeployTarget, type DeployType, type DoAccount,
+  type DoAccountKey, type DoRegions, type KnownHost,
 } from '../lib/sirdarApi';
 
 import EnvironmentsSection from './environments/EnvironmentsSection';
@@ -18,7 +19,7 @@ import SnapshotsSection from './snapshots/SnapshotsSection';
 
 /** .env keys (names only) each target needs; the API never reports which are missing.
  *  Keep in sync with sirdar/api/src/sirdar_api/config.py and the Deploy spec. DigitalOcean's
- *  token can instead be saved in Settings › Integrations (it wins over the .env one). */
+ *  accounts can instead be set up in Settings › Integrations (a saved token wins over the .env one). */
 const ENV_KEYS: Record<string, string[]> = {
   digitalocean: ['SIRDAR_DEPLOY_DO_TOKEN'],
   ssh: ['SIRDAR_DEPLOY_SSH_HOST', 'SIRDAR_DEPLOY_SSH_USER',
@@ -60,7 +61,9 @@ export default function Deploy() {
   const [mismatch, setMismatch] = useState<KeyInfo | null>(null);
   const [trusting, setTrusting] = useState(false);
   const [trustError, setTrustError] = useState('');
-  const [doRegions, setDoRegions] = useState<DoRegions | null>(null);   // fetched once, reused
+  const [doAccounts, setDoAccounts] = useState<DoAccount[]>([]);
+  const [account, setAccount] = useState<DoAccountKey>('production');
+  const [regionsBy, setRegionsBy] = useState<Partial<Record<DoAccountKey, DoRegions>>>({});   // each fetched once, reused
   const [regionsLoading, setRegionsLoading] = useState(false);
   const [regionsError, setRegionsError] = useState('');
   const [region, setRegion] = useState('');
@@ -83,20 +86,37 @@ export default function Deploy() {
 
   useEffect(() => { loadTargets(); loadHosts(); }, [loadTargets, loadHosts]);
 
+  // The accounts the DigitalOcean test can read; the first configured one (Production first) is chosen.
+  useEffect(() => {
+    let live = true;
+    getDoAccounts()
+      .then((r) => {
+        if (!live) return;
+        const sorted = [...r.accounts].sort((a, b) => Number(b.key === 'production') - Number(a.key === 'production'));
+        setDoAccounts(sorted);
+        const first = sorted.find((a) => a.configured);
+        if (first) setAccount(first.key);
+      })
+      .catch(() => { if (live) setDoAccounts([]); });
+    return () => { live = false; };
+  }, []);
+
   const selected = targets.find((t) => t.id === target);
   const doReady = !!selected && kindOf(selected) === 'digitalocean' && selected.available && selected.configured;
 
   const loadRegions = useCallback(() => {
     setRegionsLoading(true); setRegionsError('');
-    getDoRegions()
-      .then((r) => { setDoRegions(r); setRegion((cur) => cur || r.default || ''); })
+    const key = account;
+    getDoRegions(key)
+      .then((r) => setRegionsBy((by) => ({ ...by, [key]: r })))
       .catch((e) => {
         const d = errorDetail<{ reason?: string }>(e);
         setRegionsError(d?.reason || errorText(e, "Couldn't load DigitalOcean regions."));
       })
       .finally(() => setRegionsLoading(false));
-  }, []);
+  }, [account]);
 
+  const doRegions = regionsBy[account];
   useEffect(() => {
     if (!doReady) { setRegion(''); return; }
     if (doRegions) setRegion((cur) => cur || doRegions.default || '');
@@ -126,7 +146,8 @@ export default function Deploy() {
     try {
       const sent = doReady && region ? region : undefined;
       const sentName = isCustom ? trimmedName : undefined;
-      const r = sentName ? await connectDeploy(target, type, sent, sentName)
+      const r = doReady ? await connectDeploy(target, type, sent, sentName, account)
+        : sentName ? await connectDeploy(target, type, sent, sentName)
         : sent ? await connectDeploy(target, type, sent) : await connectDeploy(target, type);
       setResult({ ...r, region: sent, at: new Date().toISOString() });
     } catch (e) {
@@ -246,7 +267,7 @@ export default function Deploy() {
         )}
         {selected && selected.available && !selected.configured && selected.source !== 'saved' && (
           <p className="page-hint sirdar-envnote">
-            {kindOf(selected) === 'digitalocean' && 'Add the API token in Settings › Integrations › DigitalOcean, or '}
+            {kindOf(selected) === 'digitalocean' && 'Set up a DigitalOcean account in Settings › Integrations, or '}
             {kindOf(selected) === 'digitalocean' ? 'set' : 'Set'} {ENV_KEYS[kindOf(selected)]?.map((k, i) => (
               <span key={k}>{i > 0 && ', '}<code>{k}</code></span>
             ))} in the .env file, then re-run the installer.
@@ -288,6 +309,23 @@ export default function Deploy() {
             {running ? 'Connecting…' : 'Test connection'}
           </button>
         </div>
+        {doReady && doAccounts.length > 0 && (
+          <div className="sirdar-region">
+            <span className="field-label" id="do-account-label">Account</span>
+            <div className="segmented" role="radiogroup" aria-labelledby="do-account-label">
+              {doAccounts.map((a) => (
+                <button key={a.key} type="button" role="radio" aria-checked={account === a.key}
+                        className={account === a.key ? 'on' : ''} tabIndex={account === a.key ? 0 : -1}
+                        disabled={!a.configured} onKeyDown={arrowNav}
+                        onClick={() => {
+                          if (a.key !== account) { setAccount(a.key); setRegion(''); setRegionsError(''); clearOutcome(); }
+                        }}>
+                  {a.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {doReady && (
           <div className="sirdar-region">
             <label className="field-label" htmlFor="do-region">Region</label>

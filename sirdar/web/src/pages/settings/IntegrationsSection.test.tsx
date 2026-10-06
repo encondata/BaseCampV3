@@ -9,12 +9,13 @@ vi.mock('@portal/auth/AuthContext', () => ({
 }));
 const api = vi.hoisted(() => ({
   getIntegrations: vi.fn(), testIntegration: vi.fn(), removeIntegration: vi.fn(), saveIntegration: vi.fn(),
+  getDoAccounts: vi.fn(), clearDoAccount: vi.fn(), testDoAccount: vi.fn(),
 }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 
 import { ApiError } from '@portal/lib/api';
 
-import { CF_CHECK, INTEGRATIONS, NO_INTEGRATIONS } from '../environments/testData';
+import { CF_CHECK, DO_ACCOUNTS, DO_ACCOUNTS_BOTH, INTEGRATIONS, NO_INTEGRATIONS } from '../environments/testData';
 
 import IntegrationsSection from './IntegrationsSection';
 
@@ -30,6 +31,9 @@ beforeEach(() => {
   api.getIntegrations.mockResolvedValue(INTEGRATIONS);
   api.testIntegration.mockResolvedValue(CF_CHECK);
   api.removeIntegration.mockResolvedValue(undefined);
+  api.getDoAccounts.mockResolvedValue({ accounts: DO_ACCOUNTS });
+  api.clearDoAccount.mockResolvedValue(undefined);
+  api.testDoAccount.mockResolvedValue(CF_CHECK);
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -198,55 +202,43 @@ it('Proxmox, when not set up, is one line with Set up', async () => {
   expect(screen.getByRole('dialog', { name: 'Proxmox' })).toBeTruthy();
 });
 
-it('shows the DigitalOcean card in the main grid: whether a token is stored, never the token', async () => {
+it('shows both DigitalOcean accounts, never a token', async () => {
   render(<IntegrationsSection />);
-  const dig = await screen.findByRole('group', { name: 'DigitalOcean' });
-  expect(dig.parentElement!.classList).toContain('sirdar-integration-cards');
-  expect(dig.querySelector('.sirdar-card-head > h3')?.textContent).toBe('DigitalOcean');
-  expect(dig.querySelector('.sirdar-card-head > .chip')?.textContent).toBe('Configured');
-  expect(dig.querySelector('dl.sirdar-kv')).toBeTruthy();
-  const dt = within(dig).getByText('API token', { selector: 'dt' });
-  expect(dt.nextElementSibling!.textContent).toBe('Set');
-  expect(within(dig).getByText(/by Jimmy Henderson/)).toBeTruthy();
-  expect(dig.textContent).not.toMatch(/dop_v1_/);
-  await userEvent.click(within(dig).getByRole('button', { name: 'Test DigitalOcean' }));
-  expect(api.testIntegration).toHaveBeenCalledWith('digitalocean');
-  await userEvent.click(within(dig).getByRole('button', { name: 'Edit DigitalOcean' }));
-  expect(screen.getByRole('dialog', { name: 'DigitalOcean' })).toBeTruthy();
+  const prod = await screen.findByRole('group', { name: 'DigitalOcean · Production' });
+  expect(within(prod).getByText('Configured')).toBeTruthy();
+  expect(within(prod).getByText('nyc3')).toBeTruthy();
+  expect(within(prod).getByText('Encon Production')).toBeTruthy();
+  expect(within(prod).getByText('prod')).toBeTruthy();
+  const dev = screen.getByRole('group', { name: 'DigitalOcean · Development' });
+  expect(within(dev).getByText('Not set up')).toBeTruthy();
+  await userEvent.click(within(dev).getByRole('button', { name: 'Set up DigitalOcean · Development' }));
+  expect(screen.getByRole('dialog', { name: 'DigitalOcean · Development' })).toBeTruthy();
+  expect(screen.queryByRole('group', { name: 'DigitalOcean' })).toBeNull();      // the old single card is gone
 });
 
-it("a DigitalOcean token from the server environment: Test works, nothing to remove", async () => {
-  api.getIntegrations.mockResolvedValue({
-    ...NO_INTEGRATIONS,
-    digitalocean: { configured: true, token_set: false, source: 'environment', updated_at: null, updated_by_name: null },
-  });
+it('an account with environments can\'t be removed', async () => {
   render(<IntegrationsSection />);
-  const dig = await screen.findByRole('group', { name: 'DigitalOcean' });
-  expect(within(dig).getByText('Configured')).toBeTruthy();
-  const dt = within(dig).getByText('API token', { selector: 'dt' });
-  expect(dt.nextElementSibling!.textContent).toBe('From the server environment');
-  expect(within(dig).getByRole('button', { name: 'Test DigitalOcean' })).toBeTruthy();
-  expect(within(dig).queryByRole('button', { name: 'Remove DigitalOcean' })).toBeNull();
-  await userEvent.click(within(dig).getByRole('button', { name: 'Set up DigitalOcean' }));
-  expect(screen.getByRole('dialog', { name: 'DigitalOcean' })).toBeTruthy();
+  const prod = await screen.findByRole('group', { name: 'DigitalOcean · Production' });
+  const remove = within(prod).getByRole('button', { name: 'Remove DigitalOcean · Production' }) as HTMLButtonElement;
+  expect(remove.disabled).toBe(true);
+  expect(remove.title).toBe('Environments are built in this account. Delete them first.');
 });
 
-it('no DigitalOcean token anywhere: Not set up, Set up only', async () => {
-  api.getIntegrations.mockResolvedValue(NO_INTEGRATIONS);
-  render(<IntegrationsSection />);
-  const dig = await screen.findByRole('group', { name: 'DigitalOcean' });
-  expect(within(dig).getByText('Not set up')).toBeTruthy();
-  expect(within(dig).getByText('API token', { selector: 'dt' }).nextElementSibling!.textContent).toBe('Not set');
-  expect(within(dig).queryByRole('button', { name: 'Test DigitalOcean' })).toBeNull();
-  expect(within(dig).queryByRole('button', { name: 'Remove DigitalOcean' })).toBeNull();
-});
-
-it('removing the stored DigitalOcean token says it falls back to the environment', async () => {
+it('removing an account asks first, then clears its tokens', async () => {
+  api.getDoAccounts.mockResolvedValue({ accounts: [DO_ACCOUNTS[0], { ...DO_ACCOUNTS_BOTH[1], environments: [] }] });
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
   render(<IntegrationsSection />);
-  const dig = await screen.findByRole('group', { name: 'DigitalOcean' });
-  await userEvent.click(within(dig).getByRole('button', { name: 'Remove DigitalOcean' }));
-  await waitFor(() => expect(api.removeIntegration).toHaveBeenCalledWith('digitalocean'));
-  expect(confirm.mock.calls[0][0]).toBe('Remove the stored DigitalOcean API token? Sirdar then uses '
-    + "SIRDAR_DEPLOY_DO_TOKEN from the server environment, if it is set; nothing changes in DigitalOcean itself.");
+  const dev = await screen.findByRole('group', { name: 'DigitalOcean · Development' });
+  await userEvent.click(within(dev).getByRole('button', { name: 'Remove DigitalOcean · Development' }));
+  expect(confirm.mock.calls[0][0]).toBe(
+    "Clear the Development account's tokens? Nothing changes in DigitalOcean itself.");
+  await waitFor(() => expect(api.clearDoAccount).toHaveBeenCalledWith('development'));
+});
+
+it('Test on an account card lists the checks in the card', async () => {
+  render(<IntegrationsSection />);
+  const prod = await screen.findByRole('group', { name: 'DigitalOcean · Production' });
+  await userEvent.click(within(prod).getByRole('button', { name: 'Test DigitalOcean · Production' }));
+  expect(api.testDoAccount).toHaveBeenCalledWith('production');
+  expect(await within(prod).findByText('serversherpa.com (zone-1)')).toBeTruthy();
 });
