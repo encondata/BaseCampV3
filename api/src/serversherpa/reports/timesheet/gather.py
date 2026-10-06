@@ -66,13 +66,12 @@ _OVER_10_MINUTES = 600
 _OVER_16_MINUTES = 960
 
 # The spec's day-status labels, by entry status key.
-_DAY_STATUS_LABELS = {
+STATUS_LABELS = {
     "approved": "Approved",
     "pending": "Pending",
     "rejected": "Rejected",
     "open": "On the clock",
 }
-STATUS_LABELS = _DAY_STATUS_LABELS
 _MIXED = "Mixed"
 _NO_JOB = "No job"
 
@@ -236,7 +235,7 @@ def day_rows(entries: list[EntryRow]) -> list[DayRow]:
         statuses = {e.status for e in group}
         if len(statuses) == 1:
             status = next(iter(statuses))
-            label = _DAY_STATUS_LABELS.get(status, status)
+            label = STATUS_LABELS.get(status, status)
         else:
             label = _MIXED
         any_open = any(e.status == "open" for e in group)

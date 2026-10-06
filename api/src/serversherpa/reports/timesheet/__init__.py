@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import ReportDefinition, ReportRun
+from serversherpa.reports.move_scan_history.xlsx import XLSX_MIME
 from serversherpa.reports.registry import OptionsError, ReportResult
 
 # `gather` stays the submodule on the package (tests and callers import it
@@ -18,7 +19,7 @@ from serversherpa.reports.registry import OptionsError, ReportResult
 from serversherpa.reports.timesheet import gather as gather_mod
 from serversherpa.reports.timesheet.gather import TimesheetFilters
 from serversherpa.reports.timesheet.pdf import render_html, render_pdf
-from serversherpa.reports.timesheet.xlsx import XLSX_MIME, build_workbook
+from serversherpa.reports.timesheet.xlsx import build_workbook
 from serversherpa.services.timezone import report_timezone
 
 report_type = "timesheet"
@@ -45,6 +46,8 @@ def _subset_problem(options: dict, key: str, allowed: tuple[str, ...]) -> str | 
     value = options[key]
     if not isinstance(value, list) or not value:
         return f"option {key!r} must be a non-empty list"
+    if not all(isinstance(v, str) for v in value):
+        return f"option {key!r} must be a list of strings"
     bad = [v for v in value if v not in allowed]
     if bad:
         return f"option {key!r} has unknown values {bad}; allowed: {list(allowed)}"
@@ -58,6 +61,8 @@ def _dedupe(values: list[str]) -> list[str]:
 def validate_options(options: dict) -> dict:
     """Definition-level options. Unknown keys are rejected; missing keys
     default in. Returns the normalized dict (every key present)."""
+    if not isinstance(options, dict):
+        raise OptionsError(["options must be an object"])
     problems = [f"unknown option {k!r}" for k in options if k not in _DEFINITION_KEYS]
     if "default_format" in options and options["default_format"] not in FORMATS:
         problems.append(f"option 'default_format' must be one of {FORMATS}")
@@ -101,11 +106,13 @@ def _uuid_option(options: dict, key: str, problems: list[str]) -> str | None:
 
 def validate_run_options(options: dict) -> dict:
     """Run-level options: `from`, `to` (required), `person_id`, `site_id`,
-    `statuses`, `views`, `format`. Only keys the run actually gives are
-    returned (null / empty filters are dropped and unknown keys ignored);
+    `statuses`, `views`, `format`; any other key is a problem. Only keys the
+    run actually gives are returned (null / empty filters are dropped);
     nothing is defaulted in — `parse_run` merges the definition's defaults,
     so "the run didn't say" stays distinct from "the run chose the default"."""
-    problems: list[str] = []
+    if not isinstance(options, dict):
+        raise OptionsError(["options must be an object"])
+    problems = [f"unknown option {k!r}" for k in options if k not in _RUN_KEYS]
     from_day = _parse_day(options, "from", problems)
     to_day = _parse_day(options, "to", problems)
     if from_day and to_day:

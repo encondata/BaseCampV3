@@ -6,7 +6,6 @@ from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
-from serversherpa.reports.move_scan_history.xlsx import XLSX_MIME  # noqa: F401
 from serversherpa.reports.timesheet import fmt
 from serversherpa.reports.timesheet.gather import TimesheetData
 
@@ -21,6 +20,17 @@ DAY_HEADERS = ["Date", "Person", "Entries", "First in", "Last out", "Worked",
 PUNCH_HEADERS = ["Date", "Person", "Job", "Site", "Clock in", "Clock out",
                  "Break (min)", "Worked", "Hours", "Status", "Source",
                  "Approved by", "Flags", "Adjust reason", "Notes"]
+
+
+def _as_text(ws) -> None:
+    """Store every string cell as text. openpyxl turns a string starting
+    with `=` into a formula, so a note or a name typed as `=HYPERLINK(...)`
+    would run when the workbook is opened; forcing the cell type to string
+    keeps it inert (and `+`, `-`, `@` openers too)."""
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell.value, str):
+                cell.data_type = "s"
 
 
 def _autofit(ws) -> None:
@@ -87,9 +97,8 @@ def _summary(wb: Workbook, data: TimesheetData, generated_at: datetime) -> None:
         ws.append([j.job_name, j.people, j.entries, fmt.hours(j.approved_minutes),
                    fmt.hours(j.pending_minutes), fmt.hours(j.total_minutes)])
         _hours_cells(ws, ws.max_row, [4, 5, 6])
+    _as_text(ws)
     _autofit(ws)
-    # The title and the zone note are long single-cell lines; let them run.
-    ws.column_dimensions["A"].width = max(ws.column_dimensions["A"].width, 18)
 
 
 def _by_day(wb: Workbook, data: TimesheetData) -> None:
@@ -103,6 +112,7 @@ def _by_day(wb: Workbook, data: TimesheetData) -> None:
         ws.cell(row=ws.max_row, column=1).number_format = _DATE_FMT
         _hours_cells(ws, ws.max_row, [7])
     ws.freeze_panes = "A2"
+    _as_text(ws)
     _autofit(ws)
 
 
@@ -121,6 +131,7 @@ def _punches(wb: Workbook, data: TimesheetData) -> None:
         ws.cell(row=ws.max_row, column=1).number_format = _DATE_FMT
         _hours_cells(ws, ws.max_row, [9])
     ws.freeze_panes = "A2"
+    _as_text(ws)
     _autofit(ws)
 
 

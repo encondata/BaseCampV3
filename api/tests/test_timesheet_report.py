@@ -11,6 +11,7 @@ import pytest
 
 from serversherpa.db.models import Person, ReportDefinition, ReportRun, TimeEntry
 from serversherpa.reports import timesheet
+from serversherpa.reports.move_scan_history.xlsx import XLSX_MIME
 from serversherpa.reports.registry import OptionsError, get_module
 from serversherpa.reports.timesheet import pdf as ts_pdf
 from serversherpa.reports.timesheet import xlsx as ts_xlsx
@@ -62,10 +63,35 @@ def test_validate_run_options_good_input_passes_through_unchanged():
     assert timesheet.validate_run_options(GOOD) == GOOD
 
 
-def test_validate_run_options_drops_unknown_keys_and_empty_filters():
-    out = timesheet.validate_run_options(
-        {**GOOD, "person_id": None, "site_id": "", "colour": "red"})
+def test_validate_run_options_drops_empty_filters():
+    out = timesheet.validate_run_options({**GOOD, "person_id": None, "site_id": ""})
     assert out == GOOD
+
+
+def test_validate_run_options_rejects_unknown_keys():
+    with pytest.raises(OptionsError) as exc:
+        timesheet.validate_run_options({**GOOD, "colour": "red"})
+    assert "unknown option 'colour'" in exc.value.problems
+
+
+def test_validate_run_options_non_dict_and_bad_members_are_problems_not_errors():
+    for bad in (None, [], "from=2026-10-01", 5):
+        with pytest.raises(OptionsError):
+            timesheet.validate_run_options(bad)
+    for key, value in (("statuses", [["approved"]]), ("views", [{"a": 1}]),
+                       ("statuses", [None]), ("views", [1])):
+        with pytest.raises(OptionsError, match=key):
+            timesheet.validate_run_options({**GOOD, key: value})
+    for key in ("from", "to"):
+        with pytest.raises(OptionsError):
+            timesheet.validate_run_options({**GOOD, key: ["2026-10-01"]})
+    with pytest.raises(OptionsError, match="person_id"):
+        timesheet.validate_run_options({**GOOD, "person_id": {"x": 1}})
+    with pytest.raises(OptionsError):
+        timesheet.validate_options(["x"])
+    for key in ("default_views", "default_statuses"):
+        with pytest.raises(OptionsError):
+            timesheet.validate_options({key: [["day"]]})
 
 
 def test_validate_run_options_lists_every_problem():
@@ -287,6 +313,27 @@ def test_xlsx_column_width_is_capped_at_forty():
     assert ws.column_dimensions["O"].width <= 40
 
 
+def test_xlsx_free_text_is_stored_as_text_never_a_formula():
+    evil = _row(name="+cmd", notes="=1+1", reason="@SUM(A1)", job_name="-job",
+                site="=HYPERLINK(\"http://x\")", adjusted=True, approver="=boss")
+    wb = _wb(data=_data([evil], person_label="=who", job_label="+job"))
+    punches = wb["Punches"]
+    row = {h: c for h, c in zip(
+        [c.value for c in punches[1]], punches[2], strict=True)}
+    assert row["Notes"].value == "=1+1" and row["Notes"].data_type == "s"
+    assert row["Person"].value == "+cmd" and row["Person"].data_type == "s"
+    assert row["Adjust reason"].value == "@SUM(A1)"
+    assert row["Job"].value == "-job" and row["Job"].data_type == "s"
+    assert row["Site"].data_type == "s" and row["Approved by"].data_type == "s"
+    assert wb["By day"]["B2"].value == "+cmd" and wb["By day"]["B2"].data_type == "s"
+    summary = wb["Summary"]
+    texts = {r[0].value: r[1] for r in summary.iter_rows(min_row=3, max_row=4)}
+    assert texts["Person"].value == "=who" and texts["Person"].data_type == "s"
+    assert texts["Job"].value == "+job" and texts["Job"].data_type == "s"
+    for ws in wb.worksheets:
+        assert not any(c.data_type == "f" for r in ws.iter_rows() for c in r)
+
+
 def test_xlsx_empty_result_still_builds():
     wb = _wb(data=_data([]))
     assert wb.sheetnames == ["Summary", "By day", "Punches"]
@@ -364,7 +411,7 @@ async def _seed(db, *, run_options, definition_options=None, with_job=False):
 async def test_build_xlsx_default_filename(db):
     run = await _seed(db, run_options=dict(GOOD))
     result = await timesheet.build(db, run)
-    assert result.content_type == ts_xlsx.XLSX_MIME
+    assert result.content_type == XLSX_MIME
     import re
     assert re.fullmatch(
         r"Timesheet - 2026-10-01 to 2026-10-31 - \d{4}-\d{2}-\d{2} \d{4}\.xlsx",
