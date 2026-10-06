@@ -4,6 +4,9 @@
  * overflow-y:auto would clip an in-place menu, so TagInput portals it to
  * document.body there (fixed positioning, placed by the shared
  * useMenuPlacement hook). Outside a card the menu stays in place, as before.
+ * A portaled menu closes on a resize or on a scroll that moves its trigger;
+ * a scroll that leaves the trigger in place (focus scrolling the field into
+ * view) keeps it open.
  */
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -12,6 +15,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import TagInput from './TagInput';
 
 const SUGGESTIONS = ['Alpha', 'Bravo'];
+
+interface Box { left: number; top: number; width: number; height: number }
+
+/** jsdom lays nothing out: pin an element's rect to whatever `get()` says now. */
+function pinRect(el: Element, get: () => Box) {
+  el.getBoundingClientRect = () => {
+    const { left, top, width, height } = get();
+    return {
+      left, top, width, height, right: left + width, bottom: top + height,
+      x: left, y: top, toJSON: () => ({}),
+    } as DOMRect;
+  };
+}
 
 afterEach(cleanup);
 
@@ -73,12 +89,15 @@ describe('inside a .modal-card', () => {
     expect(screen.queryByText('Alpha')).toBeNull();
   });
 
-  it('a window scroll or resize closes it; scrolling the menu itself does not', () => {
-    renderInCard();
+  it('a window scroll that moves the field, or a resize, closes it; scrolling the menu itself does not', () => {
+    const { container } = renderInCard();
+    let top = 200;
+    pinRect(container.querySelector('.tag-input-wrap')!, () => ({ left: 10, top, width: 300, height: 30 }));
     const input = screen.getByPlaceholderText('Tags');
     fireEvent.focus(input);
     fireEvent.scroll(screen.getByText('Alpha').closest('.combo-menu')!);
     expect(screen.getByText('Alpha')).toBeTruthy();
+    top = 150;   // the page scrolled the field up by 50px
     fireEvent.scroll(window);
     expect(screen.queryByText('Alpha')).toBeNull();
 
@@ -89,9 +108,12 @@ describe('inside a .modal-card', () => {
   });
 
   it('after a scroll dismisses it, clicking the still-focused input reopens it', () => {
-    renderInCard();
+    const { container } = renderInCard();
+    let top = 200;
+    pinRect(container.querySelector('.tag-input-wrap')!, () => ({ left: 10, top, width: 300, height: 30 }));
     const input = screen.getByPlaceholderText('Tags');
     fireEvent.focus(input);
+    top = 150;
     fireEvent.scroll(window);
     expect(screen.queryByText('Alpha')).toBeNull();
     fireEvent.click(input);
@@ -128,11 +150,25 @@ describe('inside a .modal-card', () => {
     expect(menu().style.top).toBe('136px');
   });
 
-  it('scrolling the card closes it', () => {
-    renderInCard();
+  it('a card scroll that moves the field closes it', () => {
+    const { container } = renderInCard();
+    let top = 300;
+    pinRect(container.querySelector('.tag-input-wrap')!, () => ({ left: 10, top, width: 300, height: 30 }));
     fireEvent.focus(screen.getByPlaceholderText('Tags'));
+    top = 240;   // the card scrolled the field up by 60px
     fireEvent.scroll(screen.getByTestId('card'));
     expect(screen.queryByText('Alpha')).toBeNull();
+  });
+
+  // Tabbing to a field below the card's visible part scrolls the card during
+  // focus; the scroll event lands a frame after the menu was placed from the
+  // already-scrolled field, so the field hasn't moved since. Keep it open.
+  it('a card scroll that leaves the field where it was (focus scrolled it into view) keeps it open', () => {
+    const { container } = renderInCard();
+    pinRect(container.querySelector('.tag-input-wrap')!, () => ({ left: 10, top: 300, width: 300, height: 30 }));
+    fireEvent.focus(screen.getByPlaceholderText('Tags'));
+    fireEvent.scroll(screen.getByTestId('card'));
+    expect(screen.getByText('Alpha')).toBeTruthy();
   });
 });
 

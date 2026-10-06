@@ -18,9 +18,14 @@
  * child of the shell is not clipped by the shell's overflow.
  *
  * A portaled menu is placed once per open (and again when `remeasure`
- * changes) and closes on any scroll or resize rather than tracking its
- * trigger: `onDismiss` is called for a window or ancestor scroll and for a
- * resize, but not for a scroll of the menu's own list.
+ * changes or it moves into the shell) and closes rather than tracking its
+ * trigger: `onDismiss` is called for every resize, and for a window or
+ * ancestor scroll that moved the trigger since the menu was placed. A
+ * scroll that left the trigger where it was does not dismiss — focusing a
+ * field below a scrolling dialog's visible part makes the browser scroll
+ * the dialog during focus, and that scroll event arrives a frame after the
+ * menu was already placed from the scrolled trigger. A scroll of the menu's
+ * own list never dismisses.
  */
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
@@ -89,13 +94,22 @@ export function useMenuPlacement({
   const dismiss = useRef(onDismiss);
   dismiss.current = onDismiss;
 
+  // The trigger's viewport position when a portaled menu was last placed: a
+  // scroll that leaves the trigger there hasn't moved it out from under the
+  // menu, so it isn't a reason to close.
+  const placedAt = useRef<{ top: number; left: number } | null>(null);
+
   // Decide the card question and the drop direction on open, and re-check
   // whenever `remeasure` changes while open (fewer/more matches can change
   // the menu's natural height). A portaled menu is also placed here, from
-  // the same measurements.
+  // the same measurements. The first open of an explicit `portal` menu
+  // renders under document.body before the shell is known; `host` in the
+  // deps measures it again once it has moved into the shell (setting the
+  // same host again is a no-op, so this can't loop).
   useLayoutEffect(() => {
     if (!open) {
       setAnchor(null);
+      placedAt.current = null;
       return;
     }
     const el = wrapRef.current;
@@ -115,21 +129,30 @@ export function useMenuPlacement({
     const neededHeight = Math.min(MENU_NEEDED_HEIGHT, actualHeight || MENU_NEEDED_HEIGHT);
     const up = shouldDropUp({ spaceBelow, spaceAbove, neededHeight });
     setDropUp(up);
+    placedAt.current = placed ? { top: rect.top, left: rect.left } : null;
     if (placed) {
       setAnchor(up
         ? { left: rect.left, width: rect.width, bottom: window.innerHeight - rect.top + MENU_GAP }
         : { left: rect.left, width: rect.width, top: rect.bottom + MENU_GAP });
     }
-  }, [open, remeasure, portaled, portal, wrapRef, menuRef]);
+  }, [open, remeasure, portaled, portal, host, wrapRef, menuRef]);
 
-  // A portaled menu does not follow its trigger, so any scroll (the page or
-  // a scrolling ancestor — the capture phase sees both) or resize closes
-  // it. Scrolling the menu's own list is not a reason to close.
+  // A portaled menu does not follow its trigger, so a resize closes it, and
+  // so does a scroll (the page or a scrolling ancestor — the capture phase
+  // sees both) that moved the trigger since the menu was placed. A scroll
+  // that left the trigger in place (the browser scrolling a dialog to bring
+  // the focused field into view, its event arriving after the placement)
+  // and a scroll of the menu's own list are not reasons to close.
   useEffect(() => {
     if (!open || !portaled) return undefined;
     const close = (e: Event) => {
-      const t = e.target;
-      if (e.type === 'scroll' && t instanceof Node && menuRef.current?.contains(t)) return;
+      if (e.type === 'scroll') {
+        const t = e.target;
+        if (t instanceof Node && menuRef.current?.contains(t)) return;
+        const at = placedAt.current;
+        const r = wrapRef.current?.getBoundingClientRect();
+        if (at && r && r.top === at.top && r.left === at.left) return;
+      }
       dismiss.current();
     };
     window.addEventListener('scroll', close, true);
@@ -138,7 +161,7 @@ export function useMenuPlacement({
       window.removeEventListener('scroll', close, true);
       window.removeEventListener('resize', close);
     };
-  }, [open, portaled, menuRef]);
+  }, [open, portaled, menuRef, wrapRef]);
 
   // Until the layout effect places it, a portaled menu renders hidden at
   // the viewport origin — so it can be measured just like the in-place one.

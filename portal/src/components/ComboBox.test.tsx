@@ -7,7 +7,9 @@
  * for Escape itself and hosts ComboBoxes needs Escape, while the list is
  * open, to close only the list and not bubble up as a "close the whole
  * dialog" keypress too. Last, the opt-in `portal` menu: rendered under
- * document.body, selectable by mousedown, closed by an outside scroll.
+ * document.body, selectable by mousedown, closed by a scroll that moves its
+ * trigger (a scroll that leaves the trigger in place — focus scrolling the
+ * field into view — keeps it open).
  */
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -17,6 +19,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import ComboBox, { shouldDropUp } from './ComboBox';
 
 if (!Element.prototype.scrollIntoView) Element.prototype.scrollIntoView = () => {};
+
+interface Box { left: number; top: number; width: number; height: number }
+
+const domRect = ({ left, top, width, height }: Box) => ({
+  left, top, width, height, right: left + width, bottom: top + height,
+  x: left, y: top, toJSON: () => ({}),
+} as DOMRect);
+
+/** jsdom lays nothing out: pin an element's rect to whatever `get()` says now. */
+function pinRect(el: Element, get: () => Box) {
+  el.getBoundingClientRect = () => domRect(get());
+}
 
 describe('shouldDropUp', () => {
   it('stays down when there is plenty of room below', () => {
@@ -132,12 +146,16 @@ describe('portal', () => {
     expect(screen.queryByText('Alpha')).not.toBeNull();
   });
 
-  it('a window scroll or resize closes it; scrolling the list itself does not', () => {
-    render(<ComboBox portal value="" onChange={() => {}} options={OPTIONS} ariaLabel="Pick" />);
+  it('a window scroll that moves the trigger, or a resize, closes it; scrolling the list itself does not', () => {
+    const { container } = render(
+      <ComboBox portal value="" onChange={() => {}} options={OPTIONS} ariaLabel="Pick" />);
+    let top = 100;
+    pinRect(container.querySelector('.combo-wrap')!, () => ({ left: 10, top, width: 200, height: 30 }));
     const input = screen.getByLabelText('Pick');
     fireEvent.focus(input);
     fireEvent.scroll(screen.getByText('Alpha').closest('.combo-menu')!);
     expect(screen.getByText('Alpha')).toBeTruthy();
+    top = 60;   // the page scrolled the trigger up by 40px
     fireEvent.scroll(window);
     expect(screen.queryByText('Alpha')).toBeNull();
 
@@ -145,6 +163,47 @@ describe('portal', () => {
     expect(screen.getByText('Alpha')).toBeTruthy();
     fireEvent(window, new Event('resize'));
     expect(screen.queryByText('Alpha')).toBeNull();
+  });
+
+  it('a window scroll that leaves the trigger where it was keeps it open', () => {
+    const { container } = render(
+      <ComboBox portal value="" onChange={() => {}} options={OPTIONS} ariaLabel="Pick" />);
+    pinRect(container.querySelector('.combo-wrap')!, () => ({ left: 10, top: 100, width: 200, height: 30 }));
+    fireEvent.focus(screen.getByLabelText('Pick'));
+    fireEvent.scroll(window);
+    expect(screen.getByText('Alpha')).toBeTruthy();
+  });
+
+  // The first open portals to document.body (the shell isn't known until the
+  // layout effect finds it) and then moves into the .portal-shell. The drop
+  // direction must be measured again there: under document.body the shell's
+  // styles don't reach the menu, so its first measurement is not its real one.
+  it('inside a .portal-shell (no card), the menu ends up in the shell and is measured there', () => {
+    const below = 238;   // room under the trigger: short of 260, plenty for a 100px menu
+    const wrapBox = { left: 10, top: window.innerHeight - below - 30, width: 200, height: 30 };
+    const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function rect(this: HTMLElement) {
+        if (this.classList.contains('combo-wrap')) return domRect(wrapBox);
+        if (this.classList.contains('combo-menu') && this.parentElement?.classList.contains('portal-shell')) {
+          return domRect({ left: 0, top: 0, width: 200, height: 100 });
+        }
+        return domRect({ left: 0, top: 0, width: 0, height: 0 });
+      });
+    try {
+      render(
+        <div className="portal-shell" data-testid="shell">
+          <ComboBox portal value="" onChange={() => {}} options={OPTIONS} ariaLabel="Pick" />
+        </div>,
+      );
+      fireEvent.focus(screen.getByLabelText('Pick'));
+      const menu = screen.getByText('Alpha').closest('.combo-menu') as HTMLElement;
+      expect(menu.parentElement).toBe(screen.getByTestId('shell'));
+      // measured in the shell (100px fits in 238px): it opens downward
+      expect(menu.classList.contains('drop-up')).toBe(false);
+      expect(menu.style.top).toBe(`${wrapBox.top + wrapBox.height + 6}px`);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
@@ -200,13 +259,29 @@ describe('inside a .modal-card', () => {
     expect(screen.queryByText('Alpha')).toBeNull();
   });
 
-  it('scrolling the menu list keeps it open; scrolling the card closes it', () => {
-    renderInCard();
+  it('scrolling the menu list keeps it open; a card scroll that moves the trigger closes it', () => {
+    const { container } = renderInCard();
+    let top = 300;
+    pinRect(container.querySelector('.combo-wrap')!, () => ({ left: 40, top, width: 240, height: 34 }));
     fireEvent.focus(screen.getByLabelText('Pick'));
     fireEvent.scroll(screen.getByText('Alpha').closest('.combo-menu')!);
     expect(screen.getByText('Alpha')).toBeTruthy();
+    top = 220;   // the card scrolled the trigger up by 80px
     fireEvent.scroll(screen.getByTestId('card'));
     expect(screen.queryByText('Alpha')).toBeNull();
+  });
+
+  // Tabbing to a field below the card's visible part makes the browser
+  // scroll the card during focus; that scroll event arrives a frame later,
+  // after the menu was placed from the already-scrolled trigger. The trigger
+  // hasn't moved since, so the menu must not flash open and shut.
+  it('a card scroll that leaves the trigger where it was (focus scrolled it into view) keeps it open', () => {
+    const { container } = renderInCard();
+    pinRect(container.querySelector('.combo-wrap')!, () => ({ left: 40, top: 300, width: 240, height: 34 }));
+    fireEvent.focus(screen.getByLabelText('Pick'));
+    fireEvent.scroll(screen.getByTestId('card'));
+    expect(screen.getByText('Alpha')).toBeTruthy();
+    expect(screen.getByLabelText('Pick').getAttribute('aria-expanded')).toBe('true');
   });
 
   it('typing into the input while closed still opens a portaled menu', () => {
