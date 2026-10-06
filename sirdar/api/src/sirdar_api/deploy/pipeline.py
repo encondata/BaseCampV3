@@ -8,7 +8,11 @@ playbook; a publish job is only those. Delete environment (teardown) runs
 environment's deployment (vm; on Proxmox or ESXi) adds the VM steps, run by
 a Provisioner: 0 Prepare VM before the host steps (the SSH host is prepared
 after it, once the VM has an address), 0 Restore VM snapshot alone, and 15
-Destroy VM.
+Destroy VM. A DigitalOcean environment's deployment (cloud) runs its own
+plans (steps.plan_for(cloud=True)); its steps 0, 14 and 18 go through the
+same provisioner seam, its host steps run on the slot's droplet, and Reset,
+Restore backup and Roll back are refused (the managed database is shared by
+both slots).
 
 One asyncio task per running deployment, registered in _tasks; each task
 uses its own database sessions. Steps run in plan order through a Runner,
@@ -40,7 +44,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,6 +53,7 @@ from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import (
     Deployment,
     DeploymentStep,
+    DoResource,
     Environment,
     EnvironmentSecret,
     EnvironmentService,
@@ -56,12 +61,17 @@ from sirdar_api.db.models import (
 )
 from sirdar_api.deploy import (
     ConnectFailed,
+    certs,
+    do_envs,
+    do_provision,
     envfile,
     esxi_provision,
     known_hosts,
     provision,
     publish,
+    smoke,
     snapshots,
+    spaces,
     ssh,
     targets,
     terraform,
@@ -108,6 +118,22 @@ class DeployInProgress(Exception):
     """Another deployment of this environment is running."""
 
 
+# Modes a DigitalOcean environment doesn't offer: the managed database is
+# shared by both slots, so each would change the live slot too (Roll back is
+# "Activate the other slot"), and there is no VM snapshot.
+NOT_ON_DIGITALOCEAN = ("reset", "restore_dump", "rollback", "vm_restore")
+
+
+class NotSupportedOnDigitalOcean(Exception):
+    """The mode isn't offered on DigitalOcean (routes answer 409 `code`)."""
+
+    code = "not_supported_on_digitalocean"
+
+    def __init__(self, mode: str):
+        super().__init__(self.code)
+        self.mode = mode
+
+
 NO_COMMIT = ("This deployment has no commit yet (step 0 resolves it on the VM), so Sirdar "
              "won't run the host steps. Retry from step 0 (Prepare VM).")
 
@@ -139,7 +165,8 @@ def make_provisioner(settings: Settings) -> provision.Provisioner:
     return vmsteps.HostProvisioner(
         proxmox=provision.ProxmoxProvisioner(terraform_runner=make_terraform(settings),
                                              settings=settings),
-        esxi=esxi_provision.EsxiProvisioner(settings=settings))
+        esxi=esxi_provision.EsxiProvisioner(settings=settings),
+        digitalocean=do_provision.DoProvisioner(settings=settings))
 
 
 async def sweep_runs() -> int:
@@ -186,9 +213,21 @@ def restores(mode: str, snapshot_id: uuid.UUID | None) -> bool:
     return snapshot_id is not None and mode in ("update", "reset")
 
 
+def takes_snapshot(dep: Deployment) -> bool:
+    """A DigitalOcean Delete that saves a snapshot first (step 11)."""
+    return dep.mode == "teardown" and dep.cloud and dep.snapshot_id is not None
+
+
+def _exports_now(dep: Deployment) -> bool:
+    """The deployment runs Take snapshot itself (not skipped by a retry)."""
+    return dep.mode == "snapshot" or (takes_snapshot(dep)
+                                      and dep.start_step <= STEPS_BY_KEY["export"].number)
+
+
 def plan_of(dep: Deployment) -> list[StepDef]:
     return plan_for(dep.mode, restore=restores(dep.mode, dep.snapshot_id), publish=dep.publish,
-                    vm=dep.vm)
+                    vm=dep.vm, cloud=dep.cloud, go_live=dep.go_live,
+                    snapshot=takes_snapshot(dep))
 
 
 # ---- records -----------------------------------------------------------------
@@ -201,15 +240,31 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                             restore_dump: str | None = None,
                             publish: bool = False, vm: bool = False,
                             take_vm_snapshot: bool = False,
-                            vm_snapshot: str | None = None) -> Deployment:
+                            vm_snapshot: str | None = None, cloud: bool = False,
+                            slot: str | None = None, go_live: bool = False) -> Deployment:
     """Add a running deployment and its step rows. The caller commits, then
     calls launch(). start_step None means the plan's first step (1, or 12
     for a publish job, 15 for a teardown). Raises DeployInProgress (only the
     insert is rolled back, through a savepoint: the caller's session and
     objects stay usable), or ValueError when start_step isn't a step of this
     mode's plan (or the mode can't publish). Snapshot and publish jobs leave
-    the environment's status alone; a teardown marks it deleting."""
-    plan = plan_for(mode, restore=restores(mode, snapshot_id), publish=publish, vm=vm)
+    the environment's status alone; a teardown marks it deleting.
+
+    cloud: a DigitalOcean environment's deployment (it must match the
+    environment's target); `slot` is the slot it deploys, snapshots or
+    switches to, and `go_live` ends it with 14 Switch traffic (always, for
+    activate). A cloud teardown with a snapshot takes it first (step 11).
+    Raises NotSupportedOnDigitalOcean for Reset, Restore backup, Roll back
+    and Restore VM snapshot there."""
+    on_do = env.target_id == targets.DO_TARGET
+    if on_do and mode in NOT_ON_DIGITALOCEAN:
+        raise NotSupportedOnDigitalOcean(mode)
+    if cloud != on_do:
+        raise ValueError("cloud must be set exactly for a DigitalOcean environment")
+    go_live = go_live or mode == "activate"
+    taking_on_delete = mode == "teardown" and cloud and snapshot_id is not None
+    plan = plan_for(mode, restore=restores(mode, snapshot_id), publish=publish, vm=vm,
+                    cloud=cloud, go_live=go_live, snapshot=taking_on_delete)
     if start_step is None:
         start_step = plan[0].number
     if start_step not in {step.number for step in plan}:
@@ -224,7 +279,9 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                                .execution_options(populate_existing=True))
         if snap is None:
             raise snapshots.SnapshotError("snapshot_not_found")
-        wanted = "pending" if mode == "snapshot" else "ready"
+        export = STEPS_BY_KEY["export"].number
+        taking = mode == "snapshot" or (taking_on_delete and start_step <= export)
+        wanted = "pending" if taking else "ready"
         if snap.status != wanted:
             raise snapshots.SnapshotError("snapshot_not_ready")
     previous_sha, dump_path = env.current_sha, None
@@ -243,7 +300,8 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                      previous_sha=previous_sha, actor_id=actor_id,
                      snapshot_id=snapshot_id, restore_dump=restore_dump,
                      dump_path=dump_path, publish=publish, vm=vm,
-                     take_vm_snapshot=take_vm_snapshot, vm_snapshot=vm_snapshot)
+                     take_vm_snapshot=take_vm_snapshot, vm_snapshot=vm_snapshot,
+                     cloud=cloud, slot=slot, go_live=go_live)
     try:
         async with db.begin_nested():
             db.add(dep)
@@ -333,7 +391,9 @@ async def recover_orphans() -> int:
                                Environment.status.in_(("deploying", "deleting")))
                         .values(status="failed", updated_at=now))
         taken = list(await s.scalars(select(Deployment.snapshot_id).where(
-            Deployment.id.in_(ids), Deployment.mode == "snapshot",
+            Deployment.id.in_(ids),
+            or_(Deployment.mode == "snapshot",
+                and_(Deployment.mode == "teardown", Deployment.cloud)),
             Deployment.snapshot_id.is_not(None))))
         if taken:
             await s.execute(update(Snapshot).where(Snapshot.id.in_(taken),
@@ -365,14 +425,15 @@ async def _close(deployment_id: uuid.UUID, env_id: uuid.UUID, step_number: int |
                  step_status: str, dep_status: str, error: str, failed_step: int | None = None,
                  append_log: str = "") -> None:
     """End a deployment that didn't succeed, in a fresh session (the run's own
-    session may be mid-transaction or cancelled). A snapshot job's pending
-    snapshot becomes failed (and its half-fetched bundle goes); any other
-    mode leaves the environment failed."""
+    session may be mid-transaction or cancelled). A snapshot job's (or a
+    DigitalOcean Delete's) pending snapshot becomes failed (and its
+    half-fetched bundle goes); any mode but a snapshot or publish job leaves
+    the environment failed."""
     now = _now()
     taken: uuid.UUID | None = None
     async with get_sessionmaker()() as s:
-        mode, snapshot_id = (await s.execute(
-            select(Deployment.mode, Deployment.snapshot_id)
+        mode, snapshot_id, cloud = (await s.execute(
+            select(Deployment.mode, Deployment.snapshot_id, Deployment.cloud)
             .where(Deployment.id == deployment_id))).one()
         if step_number is not None:
             values: dict = {"status": step_status, "finished_at": now}
@@ -389,13 +450,13 @@ async def _close(deployment_id: uuid.UUID, env_id: uuid.UUID, step_number: int |
         await s.execute(update(Deployment).where(Deployment.id == deployment_id)
                         .values(status=dep_status, finished_at=now, error=error,
                                 failed_step=failed_step))
-        if mode == "snapshot":
+        if (mode == "snapshot" or (mode == "teardown" and cloud)) and snapshot_id is not None:
             taken = snapshot_id
-            if snapshot_id is not None:
-                await s.execute(update(Snapshot).where(Snapshot.id == snapshot_id,
-                                                       Snapshot.status == "pending")
-                                .values(status="failed"))
-        elif mode != "publish":          # a publish job leaves the environment as it was
+            await s.execute(update(Snapshot).where(Snapshot.id == snapshot_id,
+                                                   Snapshot.status == "pending")
+                            .values(status="failed"))
+        if mode not in ("snapshot", "publish"):
+            # a snapshot job and a publish job leave the environment as it was
             await s.execute(update(Environment).where(Environment.id == env_id)
                             .values(status="failed", updated_at=now))
         await s.commit()
@@ -509,13 +570,17 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
     if not dep.sha and dep.mode != "teardown":   # the .env names the commit's image
         raise PrepareError(NO_COMMIT)
     try:
-        cfg = await vms.host_config(db, settings, env)
+        # DigitalOcean: the slot this deployment works on (an Update targets
+        # the idle slot), not the active one.
+        cfg = await vms.host_config(db, settings, env, slot=dep.slot if dep.cloud else None)
     except (vault.SecretsKeyMissing, vault.SecretUnreadable):
         raise PrepareError("Sirdar can't read its key for this environment's VM with the "
                            "current SIRDAR_SECRETS_KEY.") from None
-    if cfg is None and targets.is_vm_target(env.target_id):
-        raise PrepareError("This environment's VM has no address yet. Retry from step 0 "
-                           "(Prepare VM).")
+    if cfg is None and targets.is_built_target(env.target_id):
+        raise PrepareError(
+            "This environment's droplet has no address yet. Retry from step 0 (Prepare "
+            "DigitalOcean)." if env.target_id == targets.DO_TARGET else
+            "This environment's VM has no address yet. Retry from step 0 (Prepare VM).")
     if cfg is None:
         raise PrepareError("This environment's SSH target isn't configured any more. "
                            "Pick another target, then retry.")
@@ -537,6 +602,22 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
     step_vars, snapshot_keys, extra_secrets = await _snapshot_vars(db, env, dep, settings,
                                                                    secrets)
     secrets = {**secrets, **snapshot_keys}
+    extra: dict[str, str] = {}
+    if dep.cloud:
+        # Read again here, not only at the start: step 0 may have just made
+        # the Spaces secret and the doadmin password.
+        extra_secrets = [*extra_secrets, *await do_envs.secret_values(db, settings, env)]
+    if dep.cloud and dep.mode == "update":           # only Update renders .env
+        try:
+            extra, cloud_secrets = await do_envs.env_extra(db, settings, env, dep.slot, secrets)
+        except do_envs.DoEnvError as e:
+            missing = ", ".join(e.extra.get("missing") or [])
+            raise PrepareError(f"This environment isn't fully built yet (missing: {missing}). "
+                               "Retry from step 0 (Prepare DigitalOcean).") from None
+        except (vault.SecretsKeyMissing, vault.SecretUnreadable):
+            raise PrepareError("Sirdar can't read this environment's DigitalOcean secrets "
+                               "with the current SIRDAR_SECRETS_KEY.") from None
+        extra_secrets = [*extra_secrets, *cloud_secrets]
     rows = await db.scalars(select(EnvironmentService)
                             .where(EnvironmentService.environment_id == env.id))
     ports = {**envfile.DEFAULT_PORTS, **{r.service: r.port for r in rows}}
@@ -545,7 +626,7 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
             name=env.name, domain=env.base_domain, image_tag=envfile.image_tag(dep.sha),
             proxy_ip=env.proxy_ip, bind_ip=env.bind_ip, ports=ports,
             keep_dumps=env.keep_dumps, spaces_bucket=env.spaces_bucket,
-            log_level=env.log_level, secrets=secrets))
+            log_level=env.log_level, secrets=secrets, extra=extra))
     except envfile.RenderError as e:
         raise PrepareError(f"Sirdar couldn't write this environment's .env: {e.reason}.") \
             from None
@@ -560,7 +641,13 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
         become_password=cfg.sudo_password or cfg.password)
     common = {"env_name": env.name, "env_dir": folder, "repo_url": settings.deploy_repo_url,
               "sha": dep.sha, "ss_stack": f"{folder}/repo/deploy/stack/ss-stack",
-              "min_disk_gb": ssh.MIN_DISK_GB, "min_memory_mb": MIN_MEMORY_MB}
+              "min_disk_gb": ssh.MIN_DISK_GB, "min_memory_mb": MIN_MEMORY_MB,
+              "external_data": dep.cloud, "block_metadata": dep.cloud,
+              # the slot smoke test's names: no spaces (objects live in
+              # Spaces; Caddy has no route for it)
+              "public_hosts": ([{"service": s, "hostname": f"{s}.{env.base_domain}",
+                                 "path": smoke.PATHS.get(s, "/")} for s in certs.PUBLIC_SERVICES]
+                               if dep.cloud else [])}
     redactor = Redactor(_redaction_values([*secrets.values(), env_b64, cfg.password,
                                            cfg.passphrase, cfg.sudo_password, private_key,
                                            *extra_secrets, *more_secrets]))
@@ -591,7 +678,7 @@ async def _snapshot_vars(db: AsyncSession, env: Environment, dep: Deployment,
                 "api_image": f"serversherpa-api:{envfile.image_tag(dep.sha)}"}
             # Reset data refuses a too-new snapshot before it wipes anything.
             step_vars["reset"] = {"snapshot_revision": snap.alembic_revision}
-        if dep.mode == "snapshot":
+        if _exports_now(dep):
             if snap is None or snap.status != "pending":
                 raise PrepareError("This snapshot job's record is gone. Take the snapshot "
                                    "again.")
@@ -608,6 +695,16 @@ async def _snapshot_vars(db: AsyncSession, env: Environment, dep: Deployment,
         raise PrepareError(e.reason) from None
     if dep.restore_dump:
         step_vars["restore_dump"] = {"dump_name": dep.restore_dump}
+    if dep.cloud:
+        # The managed database and the Spaces bucket (the secret comes from
+        # the droplet's .env).
+        row = await do_envs.get(db, env.id)
+        if row is not None:
+            external = {"external_data": True, "spaces_endpoint": spaces.endpoint(row.region),
+                        "spaces_key_id": row.spaces_key_id or "", "spaces_region": row.region}
+            for key in ("export", "restore"):
+                if key in step_vars:
+                    step_vars[key] |= external
     return step_vars, keys, extra
 
 
@@ -750,6 +847,10 @@ async def _run(deployment_id: uuid.UUID) -> None:
                               if "vm" in runs else None)
                     more = (*(publishing.secret_values if publishing else ()),
                             *(vm_ctx.secret_values if vm_ctx else ()))
+                    if dep.cloud:
+                        # The renewal token, Spaces secret, doadmin password and
+                        # ACME key aren't all in the DigitalOcean context.
+                        more = (*more, *await do_envs.secret_values(db, settings, env))
                     # Step 0 first: the SSH host is prepared once the VM is up.
                     host_now = "ansible" in runs and STEPS_BY_KEY[todo[0].key].runs != "vm"
                     ctx = await _prepare(db, env, dep, settings, needs_host=host_now,
@@ -796,6 +897,10 @@ async def _run(deployment_id: uuid.UUID) -> None:
                         result = await _run_vm_step(provisioner, ctx, step)
                     else:
                         result = await _run_step(runner, ctx, step)
+                    if step.key == "slot_smoke" and dep.slot:
+                        await do_envs.set_slot(env.id, dep.slot,
+                                               last_check_ok=result.status == "successful",
+                                               last_check_at=_now())
                     if result.status != "successful":
                         # Before the rollback, which may expire `step`: reloading
                         # it would need a greenlet.
@@ -805,12 +910,15 @@ async def _run(deployment_id: uuid.UUID) -> None:
                                      dep_status="failed", error=reason, failed_step=current)
                         return
                     step.status, step.finished_at = "succeeded", _now()
-                    if step.key == "provision":
+                    if step.key in ("provision", "do_prepare"):
                         # The commit step 0 resolved on the VM, and its VM snapshot.
                         if result.data.get("sha"):
                             dep.sha = result.data["sha"]
                         if result.data.get("vm_snapshot"):
                             dep.vm_snapshot = result.data["vm_snapshot"]
+                    elif step.key == "go_live":
+                        # The load balancer points at the slot now (None: Deactivate).
+                        env.active_slot = dep.slot
                     elif step.key == "dump":
                         dep.dump_path = result.data.get("dump_path") or None
                     elif step.key == "restore":
@@ -831,6 +939,22 @@ async def _run(deployment_id: uuid.UUID) -> None:
             current = None
             now = _now()
             dep.status, dep.finished_at = "succeeded", now
+            if dep.mode == "teardown" and dep.cloud:
+                left = await db.scalar(select(func.count()).select_from(DoResource)
+                                       .where(DoResource.environment_id == env.id))
+                if left:
+                    # do_resources is ON DELETE RESTRICT, and each row is
+                    # something on DigitalOcean that still costs money.
+                    destroy = STEPS_BY_KEY["do_destroy"]
+                    reason = (f"Sirdar still records {left} DigitalOcean resource"
+                              f"{'' if left == 1 else 's'} for this environment, so it kept "
+                              f"the environment. Retry from step {destroy.number} "
+                              f"({destroy.name}).")
+                    await db.rollback()
+                    await _close(deployment_id, env_id, destroy.number, step_status="failed",
+                                 dep_status="failed", error=reason,
+                                 failed_step=destroy.number, append_log=reason + "\n")
+                    return
             if dep.mode == "teardown":
                 # Its deployments, steps, services, secrets and managed
                 # records go with it (ON DELETE CASCADE); the audit row stays.
@@ -838,6 +962,8 @@ async def _run(deployment_id: uuid.UUID) -> None:
                       entity_type="environment", entity_id=env.name,
                       changes={"environment": env.name, "deployment": str(dep.id)})
                 await db.delete(env)
+            elif dep.cloud and dep.mode in ("update", "activate"):
+                await do_envs.after_success(db, env, dep)
             elif dep.mode not in KEEPS_STATUS:
                 env.current_sha, env.image_tag = dep.sha, envfile.image_tag(dep.sha)
                 env.status, env.updated_at = "ready", now

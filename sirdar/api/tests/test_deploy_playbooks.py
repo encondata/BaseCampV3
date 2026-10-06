@@ -89,7 +89,8 @@ def test_plans():
         with pytest.raises(ValueError):
             steps.plan_for(mode, restore=restore)
     for mode in steps.MODES:
-        numbers = [s.number for s in steps.plan_for(mode, vm=mode == "vm_restore")]
+        cloud = mode == "activate"
+        numbers = [s.number for s in steps.plan_for(mode, vm=mode == "vm_restore", cloud=cloud)]
         assert numbers == sorted(set(numbers)), f"{mode}: numbers must rise"
     assert steps.STEPS_BY_KEY["up"].timeout >= 30 * 60
     assert steps.STEPS_BY_KEY["build"].timeout >= 60 * 60
@@ -812,3 +813,32 @@ def test_bootstrap_blocks_the_metadata_service_only_when_asked():
     assert "PartOf=docker.service" in text
     # comes back with every Docker start, not only at boot
     assert "WantedBy=docker.service" in text and "WantedBy=multi-user.target" not in text
+
+
+def _cloud(mode, **kw):
+    return [s.key for s in steps.plan_for(mode, cloud=True, **kw)]
+
+
+def test_digitalocean_plans():
+    build = ["do_prepare", "preflight", "bootstrap", "fetch", "render", "build"]
+    assert _cloud("update") == [*build, "dump", "up", "dns", "slot_smoke"]
+    assert _cloud("update", go_live=True)[-1] == "go_live"
+    assert _cloud("update", restore=True) == [*build, "dump", "restore", "up", "dns",
+                                              "slot_smoke"]
+    assert [s.number for s in steps.plan_for("update", cloud=True, restore=True,
+                                             go_live=True)] == [0, 1, 2, 3, 4, 5, 6, 9, 10, 12,
+                                                                13, 14]
+    assert _cloud("teardown") == ["undns", "do_destroy"]
+    assert _cloud("teardown", snapshot=True) == ["export", "undns", "do_destroy"]
+    assert [s.number for s in steps.plan_for("teardown", cloud=True, snapshot=True)] == [
+        11, 17, 18]
+    assert _cloud("activate") == ["slot_smoke", "go_live"]
+    assert _cloud("activate", go_live=True) == ["slot_smoke", "go_live"]
+    assert _cloud("publish") == ["dns"] and _cloud("snapshot") == ["preflight", "export"]
+    for mode, kw in (("reset", {}), ("restore_dump", {}), ("rollback", {}), ("vm_restore", {}),
+                     ("update", {"publish": True}), ("update", {"vm": True}),
+                     ("teardown", {"go_live": True}), ("snapshot", {"go_live": True})):
+        with pytest.raises(ValueError):
+            steps.plan_for(mode, cloud=True, **kw)
+    with pytest.raises(ValueError):
+        steps.plan_for("activate")                       # only DigitalOcean activates

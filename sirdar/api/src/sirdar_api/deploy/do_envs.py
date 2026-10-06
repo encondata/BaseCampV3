@@ -18,7 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sirdar_api.config import Settings
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import DoEnvironment, DoResource, DoSlot, Environment
-from sirdar_api.deploy import acme, spaces, vault, vms
+from sirdar_api.deploy import acme, do_accounts, envfile, spaces, vault, vms
+from sirdar_api.deploy.integrations import IntegrationError
 from sirdar_api.deploy.ssh import SshTargetConfig
 
 DO_TARGET = "digitalocean"
@@ -231,6 +232,47 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
         "SS_SPACES_USE_PATH_STYLE": "false", "STACK_DROPLET_ID": slot_row.droplet_id,
     }
     return extra, [url, spaces_secret, ca_b64]
+
+
+async def secret_values(db: AsyncSession, settings: Settings, env: Environment) -> list[str]:
+    """Every DigitalOcean secret of this environment Sirdar holds now, for a
+    deployment's redactor: the account's tokens (the renewal token reaches the
+    droplet), the cert-worker's ACME key, the Spaces secret and the doadmin
+    password (step 0 makes the last two, after the run's context was built,
+    so each host step reads them again). Values that don't open are left out:
+    whatever needs them fails on its own."""
+    row = await get(db, env.id)
+    if row is None:
+        return []
+    found: list[str | None] = []
+    for blob in (row.acme_key_enc, row.spaces_secret_enc, row.db_admin_password_enc):
+        if blob is not None:
+            try:
+                found.append(vault.decrypt(settings, blob))
+            except (vault.SecretsKeyMissing, vault.SecretUnreadable):
+                pass
+    try:
+        account = await do_accounts.load(db, settings, row.account_key)
+    except IntegrationError:              # unreadable: the step that needs it says so
+        account = None
+    if account is not None:
+        found += [account.token, account.renewal_token]
+    return [v for v in found if v]
+
+
+async def after_success(db: AsyncSession, env: Environment, dep) -> None:
+    """A DigitalOcean Update or Activate that finished: the slot keeps the
+    commit it now runs; if traffic moved, the slot is the active one (None:
+    Deactivate) and its commit is the environment's. The caller commits."""
+    now = datetime.now(UTC)
+    slot = await db.get(DoSlot, (env.id, dep.slot), populate_existing=True) if dep.slot else None
+    if dep.mode == "update" and slot is not None:
+        slot.sha, slot.image_tag, slot.updated_at = dep.sha, envfile.image_tag(dep.sha), now
+    if dep.go_live:
+        env.active_slot = dep.slot
+        if slot is not None and slot.sha:
+            env.current_sha, env.image_tag = slot.sha, slot.image_tag
+    env.status, env.updated_at = "ready", now
 
 
 # ---- own-session writers -------------------------------------------------------------------
