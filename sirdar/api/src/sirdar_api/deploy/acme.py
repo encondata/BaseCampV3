@@ -26,7 +26,6 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
-from cryptography.x509.oid import NameOID
 
 LETSENCRYPT = "https://acme-v02.api.letsencrypt.org/directory"
 LETSENCRYPT_STAGING = "https://acme-staging-v02.api.letsencrypt.org/directory"
@@ -35,6 +34,8 @@ POLL_TRIES = 100
 TIMEOUT = 30
 _TYPE_RE = re.compile(r"urn:ietf:params:acme:error:([A-Za-z]{1,40})")
 _PEM_RE = re.compile(r"-----BEGIN CERTIFICATE-----[^-]+-----END CERTIFICATE-----\n?")
+# RFC 8555 tokens are base64url; anything else could escape an HTTP-01 path.
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_-]{16,256}")
 
 Solver = Callable[[str, str, str, str], AbstractAsyncContextManager[None]]
 
@@ -94,11 +95,12 @@ def dns01_value(key_auth: str) -> str:
 
 
 def make_csr(names) -> tuple[str, bytes]:
-    """(the certificate's new private key as PEM, the CSR as DER)."""
+    """(the certificate's new private key as PEM, the CSR as DER). SAN-only:
+    the subject is empty (a CN is optional, and limited to 64 characters)."""
     names = list(names)
     key = ec.generate_private_key(ec.SECP256R1())
     csr = (x509.CertificateSigningRequestBuilder()
-           .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, names[0])]))
+           .subject_name(x509.Name([]))
            .add_extension(x509.SubjectAlternativeName([x509.DNSName(n) for n in names]), False)
            .sign(key, hashes.SHA256()))
     key_pem = key.private_bytes(serialization.Encoding.PEM,
@@ -108,11 +110,24 @@ def make_csr(names) -> tuple[str, bytes]:
 
 
 def split_chain(pem: str) -> tuple[str, str]:
-    """(leaf, the rest of the chain) from a PEM chain."""
+    """(leaf, the rest of the chain) from a PEM chain; every block must parse."""
     blocks = [b if b.endswith("\n") else b + "\n" for b in _PEM_RE.findall(pem or "")]
     if not blocks:
         raise AcmeError("The ACME server sent no certificate.")
+    for block in blocks:
+        try:
+            x509.load_pem_x509_certificate(block.encode())
+        except ValueError:
+            raise AcmeError("The ACME server sent a certificate Sirdar can't read.") from None
     return blocks[0], "".join(blocks[1:])
+
+
+def _text(body, key: str, what: str) -> str:
+    """body[key] as a non-empty string, or AcmeError naming `what`."""
+    value = body.get(key) if isinstance(body, dict) else None
+    if not isinstance(value, str) or not value:
+        raise AcmeError(f"The ACME server sent {what} Sirdar didn't understand.")
+    return value
 
 
 def _error_type(resp: httpx.Response) -> str | None:
@@ -262,27 +277,38 @@ async def issue(client: AcmeClient, names, challenge_type: str, solve: Solver) -
     `solve(challenge_type, name, token, key_authorization)`, an async context
     manager that publishes the answer while it is open."""
     names = list(dict.fromkeys(names))
+    if not names:
+        raise AcmeError("A certificate needs at least one name.")
     await client.register()
     order_url, order = await client.new_order(names)
-    for authz_url in order.get("authorizations") or []:
+    authz_urls = order.get("authorizations")
+    if not isinstance(authz_urls, list) or not all(isinstance(u, str) and u for u in authz_urls):
+        raise AcmeError("The ACME server sent an order Sirdar didn't understand.")
+    for authz_url in authz_urls:
         authz = await client.get_json(authz_url)
         if authz.get("status") == "valid":
             continue
-        name = (authz.get("identifier") or {}).get("value")
-        challenge = next((c for c in authz.get("challenges") or []
-                          if isinstance(c, dict) and c.get("type") == challenge_type), None)
+        identifier = authz.get("identifier")
+        name = identifier.get("value") if isinstance(identifier, dict) else None
+        challenges = authz.get("challenges")
+        challenge = next((c for c in challenges if isinstance(c, dict)
+                          and c.get("type") == challenge_type),
+                         None) if isinstance(challenges, list) else None
         if challenge is None or not isinstance(name, str):
             raise AcmeError(f"The ACME server offered no {challenge_type} challenge.")
-        key_auth = key_authorization(str(challenge["token"]), client.key)
-        async with solve(challenge_type, name, str(challenge["token"]), key_auth):
-            await client.post(challenge["url"], {})
+        token = challenge.get("token")
+        if not isinstance(token, str) or not _TOKEN_RE.fullmatch(token):
+            raise AcmeError("The ACME server sent a challenge Sirdar didn't understand.")
+        challenge_url = _text(challenge, "url", "a challenge")
+        async with solve(challenge_type, name, token, key_authorization(token, client.key)):
+            await client.post(challenge_url, {})
             await client.wait_for(authz_url, ("valid",), name)
     order = await client.wait_for(order_url, ("ready", "valid"), "the order")
     key_pem, csr = make_csr(names)
     if order.get("status") == "ready":
-        await client.post(order["finalize"], {"csr": b64url(csr)})
+        await client.post(_text(order, "finalize", "an order"), {"csr": b64url(csr)})
         order = await client.wait_for(order_url, ("valid",), "the certificate")
-    leaf, rest = split_chain(await client.certificate(order["certificate"]))
+    leaf, rest = split_chain(await client.certificate(_text(order, "certificate", "an order")))
     not_after = x509.load_pem_x509_certificate(leaf.encode()).not_valid_after_utc
     return Issued(key_pem=key_pem, leaf_pem=leaf, chain_pem=rest, not_after=not_after,
                   names=tuple(names))

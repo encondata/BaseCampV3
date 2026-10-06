@@ -11,6 +11,8 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
 from sirdar_api.config import Settings
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import AcmeAccount
@@ -42,7 +44,9 @@ def cert_name(env_name: str, now: datetime) -> str:
 def is_ours(cert: dict, env_name: str, names) -> bool:
     """A DigitalOcean certificate named for this environment that covers
     exactly its public names (what Sirdar or its cert-worker uploads)."""
-    found = cert.get("dns_names") if isinstance(cert, dict) else None
+    if not isinstance(cert, dict):
+        return False
+    found = cert.get("dns_names")
     return (isinstance(cert.get("name"), str) and cert["name"].startswith(f"ss-{env_name}-")
             and isinstance(found, list) and sorted(found) == sorted(names))
 
@@ -59,19 +63,33 @@ def days_left(when: datetime, now: datetime) -> float:
     return (when - now).total_seconds() / 86400
 
 
-async def _account_key(settings: Settings, directory: str) -> tuple[str, str | None]:
+async def _load_account(directory: str) -> AcmeAccount | None:
     async with get_sessionmaker()() as s:
-        row = await s.get(AcmeAccount, directory)
+        return await s.get(AcmeAccount, directory)
+
+
+async def _insert_account(directory: str, key_enc: bytes) -> None:
+    """Insert unless another task got there first (then its key wins)."""
+    async with get_sessionmaker()() as s:
+        await s.execute(pg_insert(AcmeAccount).values(directory=directory, key_enc=key_enc)
+                        .on_conflict_do_nothing(index_elements=["directory"]))
+        await s.commit()
+
+
+async def _account_key(settings: Settings, directory: str) -> tuple[str, str | None]:
+    """Sirdar's account key for `directory` (made on first use) and its kid."""
+    try:
+        row = await _load_account(directory)
         if row is None:
-            pem = acme.new_key_pem()
-            s.add(AcmeAccount(directory=directory, key_enc=vault.encrypt(settings, pem)))
-            await s.commit()
-            return pem, None
-        try:
-            return vault.decrypt(settings, row.key_enc), row.kid
-        except (vault.SecretsKeyMissing, vault.SecretUnreadable):
-            raise CertError("Sirdar's ACME account key doesn't open with the current "
-                            "SIRDAR_SECRETS_KEY.") from None
+            await _insert_account(directory, vault.encrypt(settings, acme.new_key_pem()))
+            row = await _load_account(directory)
+        return vault.decrypt(settings, row.key_enc), row.kid
+    except vault.SecretsKeyMissing:
+        raise CertError("Set SIRDAR_SECRETS_KEY before Sirdar can keep an ACME account "
+                        "key.") from None
+    except vault.SecretUnreadable:
+        raise CertError("Sirdar's ACME account key doesn't open with the current "
+                        "SIRDAR_SECRETS_KEY.") from None
 
 
 async def _remember_kid(directory: str, kid: str) -> None:
