@@ -1,9 +1,12 @@
 /**
- * RAW_FT_STEPS — the three steps of Bulk Actions › Convert Raw F-T
+ * RAW_FT_STEPS — the steps of Bulk Actions › Convert Raw F-T
  * (/bulk/convert-raw-ft): key, step-row label, page title and description.
- * Spec: docs/superpowers/specs/2026-10-06-convert-raw-ft-steps-design.md
+ * The fourth, Import, is only shown to people who can change moves at super
+ * admin rank and above; everyone else gets the first three.
+ * Specs: docs/superpowers/specs/2026-10-06-convert-raw-ft-steps-design.md,
+ *        docs/superpowers/specs/2026-10-06-raw-ft-import-handoff-design.md
  */
-export type RawFtStepKey = 'upload' | 'match' | 'download';
+export type RawFtStepKey = 'upload' | 'match' | 'download' | 'import';
 
 export const RAW_FT_STEPS: readonly { key: RawFtStepKey; label: string; title: string; description: string }[] = [
   {
@@ -17,5 +20,9 @@ export const RAW_FT_STEPS: readonly { key: RawFtStepKey; label: string; title: s
   {
     key: 'download', label: 'Download', title: 'Preview and download',
     description: 'Check the converted rows, then download a file ready for the From-To import.',
+  },
+  {
+    key: 'import', label: 'Import', title: 'Choose the move',
+    description: 'Pick the move to import into. Its From-To import opens with the converted file already loaded.',
   },
 ];
