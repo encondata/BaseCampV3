@@ -6,6 +6,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@portal/auth/AuthContext';
 import { ApiError } from '@portal/lib/api';
 
+import ActivateModal from '../../components/ActivateModal';
 import {
   errorText, getDeployTargets, getEnvironment, type DeployTarget, type Deployment, type Environment,
 } from '../../lib/sirdarApi';
@@ -47,6 +48,7 @@ function EnvironmentPage({ name }: { name: string }) {
   const [selected, setSelected] = useState<string | null>(linked);
   const [tab, setTab] = useState<Tab>(linked ? 'deployments' : 'overview');
   const [deploying, setDeploying] = useState(false);
+  const [activating, setActivating] = useState<{ slot: string | null } | null>(null);
   // A teardown ends by deleting the environment: a 404 after it loaded means gone.
   const [gone, setGone] = useState(false);
   const loaded = useRef(false);
@@ -135,7 +137,10 @@ function EnvironmentPage({ name }: { name: string }) {
                   className={tab === key ? 'on' : ''} onClick={() => setTab(key)}>{label}</button>
         ))}
       </div>
-      {tab === 'overview' && <EnvOverview env={env} />}
+      {tab === 'overview' && (
+        <EnvOverview env={env} canActivate={can('deploy', 'add') && can('deploy', 'change') && !running}
+                     onActivate={(slot) => setActivating({ slot })} />
+      )}
       {tab === 'deployments' && (
         <DeploymentsTab env={env} selected={selected} onSelect={setSelected} onChanged={() => void load()} />
       )}
@@ -143,6 +148,13 @@ function EnvironmentPage({ name }: { name: string }) {
       {tab === 'backups' && <BackupsTab env={env} onStarted={started} />}
       {tab === 'settings' && <EnvSettings env={env} targets={targets} onSaved={setEnv} onDeleteStarted={started} />}
       {deploying && <DeployModal env={env} onStarted={started} onClose={() => setDeploying(false)} />}
+      {activating && (
+        <ActivateModal envName={env.name} production={env.type === 'production'} slot={activating.slot}
+                       fromSlot={env.active_slot}
+                       version={env.do?.slots.find((s) => s.slot === activating.slot)?.image_tag ?? null}
+                       onStarted={(dep) => { setActivating(null); started(dep); }}
+                       onClose={() => setActivating(null)} />
+      )}
     </div>
   );
 }

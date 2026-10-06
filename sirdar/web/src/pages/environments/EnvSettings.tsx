@@ -14,8 +14,9 @@ import {
 } from '../../lib/sirdarApi';
 
 import DeleteEnvironmentModal from './DeleteEnvironmentModal';
+import DoSettingsSection from './DoSettingsSection';
 import {
-  deploymentRunning, gbOf, hostLabel, mbOf, onVmHost, sshTargets, targetLabel, vmRef, vmStage,
+  deploymentRunning, gbOf, hostLabel, mbOf, onDo, onVmHost, sshTargets, targetLabel, vmRef, vmStage,
 } from './labels';
 
 const SECRET_LABELS: Record<string, string> = {
@@ -71,6 +72,10 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
   const [deleting, setDeleting] = useState(false);
   const off = locked || deploying;
   const onVm = onVmHost(env);
+  // DigitalOcean: its target, names, proxy and bucket belong to what Sirdar built (the API's do_field_locked).
+  const cloud = onDo(env);
+  // A VM's or the droplets' service addresses are set by step 0 (the API's host_ip_managed).
+  const managedAddr = onVm || cloud;
   const esxi = env.target_kind === 'esxi';
   // The API's teardown needs both.
   const mayDelete = can('deploy', 'add') && can('deploy', 'change');
@@ -108,17 +113,19 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
     const e: Record<string, string> = {};
     const put = (key: string, message: string) => { if (message) e[key] = message; };
     put('ref', refProblem(form.ref));
-    put('domain', form.domain.trim() ? '' : 'Enter a base domain.');
-    put('proxy', ipv4Problem(form.proxy, 'proxy IP'));
-    put('bind', ipv4Problem(form.bind, 'bind IP'));
+    if (!cloud) {
+      put('domain', form.domain.trim() ? '' : 'Enter a base domain.');
+      put('proxy', ipv4Problem(form.proxy, 'proxy IP'));
+      put('bind', ipv4Problem(form.bind, 'bind IP'));
+      put('bucket', BUCKET_RE.test(form.bucket.trim()) ? ''
+        : "That bucket name isn't valid (3–63 lowercase letters, numbers, dots and hyphens).");
+    }
     const keep = Number(form.keep);
     put('keep', /^\d+$/.test(form.keep.trim()) && keep >= 1 && keep <= 100 ? '' : 'Keep 1 to 100 dumps.');
-    put('bucket', BUCKET_RE.test(form.bucket.trim()) ? ''
-      : "That bucket name isn't valid (3–63 lowercase letters, numbers, dots and hyphens).");
     for (const s of env.services) {
       const v = form.services[s.service];
-      // A VM environment's addresses are the VM's: only the ports are edited.
-      const problem = (!onVm && ipv4Problem(v.host_ip, `${s.service} address`))
+      // A VM's or DigitalOcean environment's addresses are managed: only the ports are edited.
+      const problem = (!managedAddr && ipv4Problem(v.host_ip, `${s.service} address`))
         || (portProblem(v.port) && `${s.service}: ${portProblem(v.port)}`);
       if (problem) { e.services = problem; break; }
     }
@@ -162,19 +169,21 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
     const t = (s: string) => s.trim();
     const patch: EnvironmentPatch = {};
     if (t(form.ref) !== env.git_ref) patch.git_ref = t(form.ref);
-    if (form.target !== env.target) patch.target = form.target;
-    if (t(form.domain) !== env.base_domain) patch.base_domain = t(form.domain);
-    if (t(form.proxy) !== env.proxy_ip) patch.proxy_ip = t(form.proxy);
-    if (t(form.bind) !== env.bind_ip) patch.bind_ip = t(form.bind);
+    if (!cloud) {
+      if (form.target !== env.target) patch.target = form.target;
+      if (t(form.domain) !== env.base_domain) patch.base_domain = t(form.domain);
+      if (t(form.proxy) !== env.proxy_ip) patch.proxy_ip = t(form.proxy);
+      if (t(form.bind) !== env.bind_ip) patch.bind_ip = t(form.bind);
+      if (t(form.bucket) !== env.spaces_bucket) patch.spaces_bucket = t(form.bucket);
+    }
     if (Number(form.keep) !== env.keep_dumps) patch.keep_dumps = Number(form.keep);
-    if (t(form.bucket) !== env.spaces_bucket) patch.spaces_bucket = t(form.bucket);
     if (form.level !== env.log_level) patch.log_level = form.level;
     const services: NonNullable<EnvironmentPatch['services']> = {};
     for (const s of env.services) {
       const v = form.services[s.service];
       const change: { port?: number; host_ip?: string } = {};
       if (Number(v.port) !== s.port) change.port = Number(v.port);
-      if (!onVm && t(v.host_ip) !== s.host_ip) change.host_ip = t(v.host_ip);
+      if (!managedAddr && t(v.host_ip) !== s.host_ip) change.host_ip = t(v.host_ip);
       if (Object.keys(change).length) services[s.service] = change;
     }
     if (Object.keys(services).length) patch.services = services;
@@ -223,10 +232,16 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
     <section className="sirdar-section">
       {locked && <p className="page-hint">You can view these settings but not change them.</p>}
       {!locked && deploying && <p className="page-hint">Settings can't change while a deployment is running.</p>}
+      {cloud && (
+        <dl className="sirdar-kv">
+          <dt>Base domain</dt><dd className="mono">{env.base_domain}</dd>
+          <dt>Bucket</dt><dd className="mono">{env.do?.bucket ?? env.spaces_bucket}</dd>
+        </dl>
+      )}
       <div className="pf-form sirdar-env-grid">
         <TextField id="env-set-ref" label="Default git ref" value={form.ref} error={errors.ref} disabled={off}
                    onChange={(v) => set('ref', v)} />
-        {onVm ? (
+        {cloud ? null : onVm ? (
           <TextField id="env-set-target" label="Target" value={`${hostLabel(env)} · ${env.vm?.name ?? ''}`} disabled
                      error={errors.target} hint="It stays on the VM Sirdar built for it."
                      onChange={() => {}} />
@@ -238,16 +253,23 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
             {errors.target && <p className="form-error" role="alert">{errors.target}</p>}
           </div>
         )}
-        <TextField id="env-set-domain" label="Base domain" value={form.domain} error={errors.domain} disabled={off}
-                   hint={'Each service is named <service>.<base domain>.'} onChange={(v) => set('domain', v)} />
-        <TextField id="env-set-proxy" label="Proxy IP" value={form.proxy} error={errors.proxy} disabled={off}
-                   onChange={(v) => set('proxy', v)} />
-        <TextField id="env-set-bind" label="Bind IP" value={form.bind} error={errors.bind} disabled={off}
-                   onChange={(v) => set('bind', v)} />
+        {!cloud && (
+          <>
+            <TextField id="env-set-domain" label="Base domain" value={form.domain} error={errors.domain}
+                       disabled={off} hint={'Each service is named <service>.<base domain>.'}
+                       onChange={(v) => set('domain', v)} />
+            <TextField id="env-set-proxy" label="Proxy IP" value={form.proxy} error={errors.proxy} disabled={off}
+                       onChange={(v) => set('proxy', v)} />
+            <TextField id="env-set-bind" label="Bind IP" value={form.bind} error={errors.bind} disabled={off}
+                       onChange={(v) => set('bind', v)} />
+          </>
+        )}
         <TextField id="env-set-keep" label="Dumps to keep" value={form.keep} error={errors.keep} disabled={off}
                    hint="Pre-deploy database dumps kept on the target." onChange={(v) => set('keep', v)} />
-        <TextField id="env-set-bucket" label="Spaces bucket" value={form.bucket} error={errors.bucket} disabled={off}
-                   onChange={(v) => set('bucket', v)} />
+        {!cloud && (
+          <TextField id="env-set-bucket" label="Spaces bucket" value={form.bucket} error={errors.bucket}
+                     disabled={off} onChange={(v) => set('bucket', v)} />
+        )}
         <div>
           <label className="field-label" htmlFor="env-set-level">Log level</label>
           <ComboBox inputId="env-set-level" ariaLabel="Log level" portal value={form.level} disabled={off}
@@ -296,7 +318,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
           cells: [
             <b className="cell-top">{s.service}</b>,
             s.hostname ?? '—',
-            onVm
+            managedAddr
               ? <span className="mono">{s.host_ip}</span>
               : <input type="text" aria-label={`${s.service} address`} value={form.services[s.service]?.host_ip ?? ''}
                        disabled={off} onChange={(e) => setSvc(s.service, 'host_ip', e.target.value)} />,
@@ -329,11 +351,18 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
           </button>
         </div>
       )}
+      {cloud && env.do && (
+        <DoSettingsSection env={env} disabled={off} onSaved={onSaved} onDeployStarted={(dep) => onDeleteStarted?.(dep)} />
+      )}
       {mayDelete && onDeleteStarted && (
         <div className="sirdar-danger-zone">
           <h3 className="sirdar-sub">Delete environment</h3>
           <p className="page-hint">
-            {onVm && env.vm && vmStage(env.vm) === 'none'
+            {cloud
+              ? 'Saves a snapshot first (optional, except for production), removes the DNS records Sirdar made and '
+                + 'everything it built on DigitalOcean (droplets, database, bucket, load balancer, certificate and '
+                + 'firewall), and removes it from Sirdar.'
+              : onVm && env.vm && vmStage(env.vm) === 'none'
               ? `No VM was created yet; nothing on ${hostLabel(env)} is removed. Deleting it removes the DNS records `
                 + 'and proxy hosts Sirdar made, and removes it from Sirdar.'
               : onVm && env.vm && vmStage(env.vm) === 'partial'

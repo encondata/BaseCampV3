@@ -16,7 +16,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import EnvSettings from './EnvSettings';
-import { DEFAULTS, ENV, ESXI_ENV, ESXI_TARGETS, PX_ENV, PX_NEW_ENV, PX_TARGETS, TARGETS } from './testData';
+import { DEFAULTS, DO_ENV, ENV, ESXI_ENV, ESXI_TARGETS, PX_ENV, PX_NEW_ENV, PX_TARGETS, TARGETS } from './testData';
 
 Element.prototype.scrollIntoView = () => {};
 beforeEach(() => {
@@ -249,4 +249,12 @@ it('Proxmox: the Machine hint is unchanged and a bigger disk shows no ESXi warni
   await userEvent.type(disk, '80');
   expect(screen.queryByText(/can't grow a disk that has snapshots/)).toBeNull();
   expect(screen.getByText(/Destroys its VM on Proxmox with everything on it, VM snapshots included, /)).toBeTruthy();
+});
+
+it("DigitalOcean: what Sirdar built can't change here; the DigitalOcean section can", () => {
+  open(DO_ENV);
+  for (const label of ['Target', 'Proxy IP', 'Bind IP', 'Base domain', 'Spaces bucket']) {
+    expect(screen.queryByLabelText(label)).toBeNull();
+  }
+  expect(screen.getByRole('region', { name: 'DigitalOcean' })).toBeTruthy();
 });

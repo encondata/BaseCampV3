@@ -14,9 +14,8 @@ import {
 } from '../../lib/sirdarApi';
 
 import {
-  DEPLOYMENT_STATUS, GATED_MODES, MODE_LABEL, RETRY_MODES, RETRYABLE, STEP_STATUS, StatusChip, baseName, dumpTakenAt,
-  duration, shortSha,
-  stoppedStep, when,
+  CHANGE_MODES, DEPLOYMENT_STATUS, RETRY_MODES, RETRYABLE, STEP_STATUS, StatusChip, baseName, deploymentLabel,
+  dumpTakenAt, duration, onDo, retryNeedsName, shortSha, stoppedStep, when,
 } from './labels';
 
 export const POLL_MS = 2000;
@@ -26,7 +25,7 @@ export const MAX_BACKOFF_MS = 30000;
 const STICK_PX = 40;
 
 /** A retry or a rollback, kept whole so a host-key prompt replays exactly it. */
-type Attempt = { kind: 'retry'; fromStep: number; confirm: string; gated: boolean }
+type Attempt = { kind: 'retry'; fromStep: number; confirm: string; gated: boolean; phrase: string | null }
   | { kind: 'rollback'; confirm: string }
   | { kind: 'vm_restore'; confirm: string; snapshot: string };
 
@@ -43,6 +42,7 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   const [cancelling, setCancelling] = useState(false);
   const [fromStep, setFromStep] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [phrase, setPhrase] = useState('');
   const [rollbackConfirm, setRollbackConfirm] = useState('');
   const [vmConfirm, setVmConfirm] = useState('');
   const [retrying, setRetrying] = useState(false);
@@ -104,12 +104,16 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
     stick.current = el.scrollHeight - el.scrollTop - el.clientHeight <= STICK_PX;
   };
 
-  // Reset, Restore backup and Roll back replace data: change permission and the typed name.
-  const gated = !!dep && GATED_MODES.includes(dep.mode);
+  // Reset, Restore backup and Roll back replace data, and production's Activate moves its traffic: the typed name.
+  const gated = !!dep && retryNeedsName(dep.mode, env);
+  // A production Delete on DigitalOcean also needs "delete production <name>" again.
+  const phraseWanted = `delete production ${env.name}`;
+  const phraseNeeded = !!dep && dep.cloud && dep.mode === 'teardown' && env.type === 'production';
   const allowed = !dep || !RETRY_MODES.includes(dep.mode) ? false
-    : gated ? can('deploy', 'add') && can('deploy', 'change') : can('deploy', 'add');
+    : CHANGE_MODES.includes(dep.mode) ? can('deploy', 'add') && can('deploy', 'change') : can('deploy', 'add');
   const mayRetry = !!dep && RETRYABLE.includes(dep.status) && allowed && stopped !== null;
-  const mayRollBack = !!dep && dep.rollback_available && can('deploy', 'add') && can('deploy', 'change');
+  // Roll back isn't offered on DigitalOcean: activate the other slot instead.
+  const mayRollBack = !!dep && dep.rollback_available && can('deploy', 'add') && can('deploy', 'change') && !onDo(env);
   // A failed deployment whose step 0 took a VM snapshot: put the whole VM back.
   const mayRestoreVm = !!dep && !!dep.vm_snapshot && dep.mode !== 'vm_restore' && RETRYABLE.includes(dep.status)
     && can('deploy', 'add') && can('deploy', 'change');
@@ -129,9 +133,11 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
         onRetried(await startDeployment(env.name, {
           mode: 'vm_restore', vm_snapshot: attempt.snapshot, confirm_name: attempt.confirm }));
       } else {
-        onRetried(await retryDeployment(id, attempt.gated
-          ? { from_step: attempt.fromStep, confirm_name: attempt.confirm }
-          : { from_step: attempt.fromStep }));
+        onRetried(await retryDeployment(id, {
+          from_step: attempt.fromStep,
+          ...(attempt.gated ? { confirm_name: attempt.confirm } : {}),
+          ...(attempt.phrase ? { confirm_production: attempt.phrase } : {}),
+        }));
       }
     } catch (e) {
       if (!hostKey.handle(e, env.target, attempt)) {
@@ -151,7 +157,9 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   const retry = () => {
     if (!dep || stopped === null) return;
     if (gated && confirm !== env.name) { setActionError(`Type ${env.name} to confirm.`); return; }
-    void run({ kind: 'retry', fromStep: fromStep === '' ? stopped : Number(fromStep), confirm, gated });
+    if (phraseNeeded && phrase !== phraseWanted) { setActionError(`Type ${phraseWanted} to confirm.`); return; }
+    void run({ kind: 'retry', fromStep: fromStep === '' ? stopped : Number(fromStep), confirm, gated,
+               phrase: phraseNeeded ? phrase : null });
   };
 
   const cancel = async () => {
@@ -180,7 +188,7 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   return (
     <section className="sirdar-section sirdar-card sirdar-deployment" aria-label="Deployment">
       <div className="sirdar-section-head">
-        <h2>{MODE_LABEL[dep.mode] ?? dep.mode} · <span className="mono">{shortSha(dep.sha)}</span></h2>
+        <h2>{deploymentLabel(dep)} · <span className="mono">{shortSha(dep.sha)}</span></h2>
         <div className="sirdar-target-actions">
           {running && can('deploy', 'change') && (
             <button type="button" className="btn-ghost" disabled={cancelling} onClick={() => void cancel()}>
@@ -250,7 +258,16 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
                      spellCheck={false} onChange={(e) => setConfirm(e.target.value)} />
             </div>
           )}
-          <button type="button" className="btn-solid" disabled={retrying || hostKey.open || (gated && confirm !== env.name)}
+          {phraseNeeded && (
+            <div>
+              <label className="field-label" htmlFor="retry-phrase">Type {phraseWanted} to confirm</label>
+              <input id="retry-phrase" type="text" value={phrase} maxLength={100} autoComplete="off"
+                     spellCheck={false} onChange={(e) => setPhrase(e.target.value)} />
+            </div>
+          )}
+          <button type="button" className="btn-solid"
+                  disabled={retrying || hostKey.open || (gated && confirm !== env.name)
+                    || (phraseNeeded && phrase !== phraseWanted)}
                   onClick={retry}>
             {retrying ? 'Retrying…' : 'Retry'}
           </button>

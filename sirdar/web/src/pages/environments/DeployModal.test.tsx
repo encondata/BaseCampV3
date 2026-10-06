@@ -15,7 +15,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import DeployModal from './DeployModal';
-import { ENV, ESXI_ENV, PX_ENV, PX_NEW_ENV, RUNNING, SNAP, SNAP_TAKING } from './testData';
+import { DO_ENV, ENV, ESXI_ENV, ONE_SLOT_ENV, PX_ENV, PX_NEW_ENV, RUNNING, SNAP, SNAP_TAKING } from './testData';
 
 beforeEach(() => {
   perms.add = true; perms.change = true;
@@ -262,4 +262,22 @@ it('ESXi: prepares the VM on ESXi and offers a VM snapshot first', async () => {
   await userEvent.click(deployBtn());
   await waitFor(() => expect(onStarted).toHaveBeenCalledWith(RUNNING));
   expect(api.startDeployment).toHaveBeenLastCalledWith('uat3', { mode: 'update', git_ref: 'main', take_vm_snapshot: true });
+});
+
+it('DigitalOcean: Update only, to the idle slot; traffic stays until Activate', async () => {
+  const { onStarted } = open(DO_ENV);
+  expect(screen.queryByRole('radio', { name: 'Reset data' })).toBeNull();
+  expect(screen.getByText('Deploys to Purple. Traffic stays on Orange until you activate Purple.')).toBeTruthy();
+  expect(screen.getByText(/Migrations must work with the code still live on Orange/)).toBeTruthy();
+  await userEvent.click(deployBtn());
+  await waitFor(() => expect(onStarted).toHaveBeenCalledWith(RUNNING));
+  expect(api.startDeployment).toHaveBeenCalledWith('uat9', { mode: 'update', git_ref: 'main' });
+});
+
+it('DigitalOcean: one slot, or auto-activate, goes live by itself', () => {
+  open(ONE_SLOT_ENV);
+  expect(screen.getByText('Deploys to Orange and goes live when its smoke test passes.')).toBeTruthy();
+  cleanup();
+  open({ ...DO_ENV, auto_activate: true });
+  expect(screen.getByText('Deploys to Purple and goes live when its smoke test passes.')).toBeTruthy();
 });

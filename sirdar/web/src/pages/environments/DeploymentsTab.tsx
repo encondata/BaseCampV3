@@ -6,7 +6,7 @@ import DataTable from '@portal/components/DataTable';
 import { errorText, listDeployments, type DeploymentSummary, type Environment } from '../../lib/sirdarApi';
 
 import DeploymentView from './DeploymentView';
-import { DEPLOYMENT_STATUS, MODE_LABEL, StatusChip, shortSha, when } from './labels';
+import { DEPLOYMENT_STATUS, StatusChip, deploymentLabel, shortSha, when } from './labels';
 
 export default function DeploymentsTab({ env, selected, onSelect, onChanged }: {
   env: Environment; selected: string | null; onSelect: (id: string | null) => void; onChanged: () => void;
@@ -50,7 +50,7 @@ export default function DeploymentsTab({ env, selected, onSelect, onChanged }: {
           rows={(rows ?? []).map((d) => ({
             key: d.id,
             cells: [
-              when(d.started_at), MODE_LABEL[d.mode] ?? d.mode, `${d.git_ref} · ${shortSha(d.sha)}`,
+              when(d.started_at), deploymentLabel(d), `${d.git_ref} · ${shortSha(d.sha)}`,
               <StatusChip map={DEPLOYMENT_STATUS} status={d.status} />, d.actor_name ?? '—',
               d.id === selected
                 ? <span className="cell-sub">Open</span>
