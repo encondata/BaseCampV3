@@ -49,7 +49,8 @@ UNEXPECTED_REASON = "Sirdar couldn't reach it."
 _STATUS = {"secrets_key_missing": 400, "integration_unreadable": 409,
            "integration_in_use": 409, "tls_untrusted": 409, "tls_fingerprint_invalid": 422,
            "do_token_shared": 409, "do_team_changed": 409, "account_in_use": 409,
-           "do_account_not_configured": 409, "renewal_token_shared": 409}
+           "do_account_changed": 409, "do_account_not_configured": 409,
+           "renewal_token_shared": 409}
 PROXMOX_FIELDS = ("url", "node", "pool", "storage", "bridge", "vlan_tag", "template_vmid",
                   "tls_fingerprint")
 ESXI_FIELDS = ("url", "user", "datastore", "network", "resource_pool", "source_vm",
