@@ -18,6 +18,7 @@ import * as XLSX from 'xlsx';
 
 import type { ImportJobOut, InitiativeDetail } from '../lib/api';
 import type { ImportReportFile } from '../lib/importReport';
+import { clearHandedOffImportFile, handOffImportFile, peekHandedOffImportFile } from '../lib/importHandoff';
 import { LIST_FIT } from '../lib/listTools';
 import ImportMoveAssets from './ImportMoveAssets';
 
@@ -63,6 +64,8 @@ vi.mock('../lib/api', async (importActual) => ({
 
 afterEach(() => {
   cleanup();
+  clearHandedOffImportFile('i1');
+  clearHandedOffImportFile('i2');
   vi.clearAllMocks();
   auth.can = () => true;
 });
@@ -289,4 +292,53 @@ it('Generate serial numbers is on by default, with the gnrtd copy, and the check
   await userEvent.click(await screen.findByRole('button', { name: /Validate file/ }));
   await waitFor(() => expect(api.createMoveAssetImportJob).toHaveBeenCalledWith(
     'i1', file, { makeModelMode: 'fuzzy', generateSerials: true }));
+});
+
+// ── File handed off from Convert Raw F-T ─────────────────────────────
+
+it('loads a handed-off file, shows the note, clears the handoff, and validates it', async () => {
+  api.getInitiative.mockResolvedValue(INITIATIVE);
+  api.createMoveAssetImportJob.mockResolvedValue(commitJob({ phase: 'validate' }));
+  const handed = new File(['a,b'], 'acme-converted.xlsx');
+  handOffImportFile('i1', handed);
+  render(<MemoryRouter><ImportMoveAssets /></MemoryRouter>);
+  await screen.findByText('NAP11 Move');
+
+  expect(screen.getByText('acme-converted.xlsx')).toBeTruthy();
+  const note = screen.getByText('This file came from Convert Raw F-T.');
+  // right under the drop zone it describes, above the import options
+  expect(note.previousElementSibling?.classList.contains('imp-dropzone')).toBe(true);
+  expect(peekHandedOffImportFile('i1')).toBeNull();      // consumed by the mount effect
+
+  await userEvent.click(screen.getByRole('button', { name: /Validate file/ }));
+  await waitFor(() => expect(api.createMoveAssetImportJob).toHaveBeenCalledWith(
+    'i1', handed, { makeModelMode: 'fuzzy', generateSerials: true }));
+});
+
+it('shows no note when nothing was handed off', async () => {
+  api.getInitiative.mockResolvedValue(INITIATIVE);
+  render(<MemoryRouter><ImportMoveAssets /></MemoryRouter>);
+  await screen.findByText('NAP11 Move');
+  expect(screen.queryByText('This file came from Convert Raw F-T.')).toBeNull();
+  expect((screen.getByRole('button', { name: /Validate file/ }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+it('ignores a file handed off for a different move', async () => {
+  api.getInitiative.mockResolvedValue(INITIATIVE);
+  handOffImportFile('i2', new File(['a,b'], 'other.xlsx'));
+  render(<MemoryRouter><ImportMoveAssets /></MemoryRouter>);
+  await screen.findByText('NAP11 Move');
+  expect(screen.queryByText('other.xlsx')).toBeNull();
+  expect(screen.queryByText('This file came from Convert Raw F-T.')).toBeNull();
+  expect(peekHandedOffImportFile('i2')).not.toBeNull();
+});
+
+it('drops the note once a different file is picked', async () => {
+  api.getInitiative.mockResolvedValue(INITIATIVE);
+  handOffImportFile('i1', new File(['a,b'], 'acme-converted.xlsx'));
+  render(<MemoryRouter><ImportMoveAssets /></MemoryRouter>);
+  await screen.findByText('NAP11 Move');
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  await userEvent.upload(input, new File(['c,d'], 'mine.csv', { type: 'text/csv' }));
+  expect(screen.queryByText('This file came from Convert Raw F-T.')).toBeNull();
 });

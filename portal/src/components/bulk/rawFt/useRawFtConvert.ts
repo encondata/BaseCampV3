@@ -14,6 +14,8 @@ import {
   sourceColumns, suggestMapping, type ColumnMapping, type SheetData,
 } from '../../../lib/ftConvert';
 
+const XLSX_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
 export function useRawFtConvert(template: MoveAssetTemplateColumn[]) {
   const [file, setFile] = useState<File | null>(null);
   const [sheets, setSheets] = useState<SheetData[]>([]);
@@ -111,6 +113,14 @@ export function useRawFtConvert(template: MoveAssetTemplateColumn[]) {
     XLSX.writeFile(convertedWorkbook(conversion), convertedFilename(file.name), { compression: true });
   };
 
+  /** The converted workbook as a File (what `download` writes), for handing to another page. */
+  const toFile = (): File | null => {
+    if (!file || !conversion) return null;
+    const bytes = XLSX.write(convertedWorkbook(conversion),
+      { type: 'array', bookType: 'xlsx', compression: true }) as ArrayBuffer;
+    return new File([bytes], convertedFilename(file.name), { type: XLSX_TYPE });
+  };
+
   /** Start over: drop the file and everything read from it (and the input's DOM value). */
   const reset = () => {
     void onFile(null);
@@ -120,6 +130,6 @@ export function useRawFtConvert(template: MoveAssetTemplateColumn[]) {
   return {
     file, busy, error, sheets, sheet, sheetName, headerRow, headerText, rows, columns, mapping, suggested,
     conversion, matched, serialMatched, usedHeaders, previewColumns, inputRef,
-    onFile, pickSheet, changeHeaderRow, blurHeaderRow, setTarget, clearAll, useSuggestions, download, reset,
+    onFile, pickSheet, changeHeaderRow, blurHeaderRow, setTarget, clearAll, useSuggestions, download, toFile, reset,
   };
 }

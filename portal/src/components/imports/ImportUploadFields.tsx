@@ -1,7 +1,7 @@
 /** The move-assets import's upload fields — the template links, the
  *  dropzone, and the make/model + serial-number options. Shared by the
  *  move import page and the Create-a-move-in-steps assets step. */
-import type { MutableRefObject } from 'react';
+import type { MutableRefObject, ReactNode } from 'react';
 
 import { downloadMoveAssetTemplate } from '../../lib/api';
 import FileDropzone from '../FileDropzone';
@@ -45,14 +45,17 @@ interface Props {
   onGenerateSerials: (v: boolean) => void;
   busy: boolean;
   inputRef: MutableRefObject<HTMLInputElement | null>;
+  /** Optional line right under the drop zone (e.g. where the file came from). */
+  fileNote?: ReactNode;
 }
 
 export default function ImportUploadFields({
-  file, onFile, mode, onMode, generateSerials, onGenerateSerials, busy, inputRef,
+  file, onFile, mode, onMode, generateSerials, onGenerateSerials, busy, inputRef, fileNote,
 }: Props) {
   return (
     <>
       <FileDropzone file={file} onFile={onFile} busy={busy} inputRef={inputRef} />
+      {fileNote}
 
       <div className="imp-options">
         <p className="imp-options-label">Options</p>

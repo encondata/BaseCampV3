@@ -24,6 +24,7 @@ import {
   countDetails, etaSeconds, IMPORT_ERRORS, importErrorMessage, jobIsActive,
   rowsPerSecond, type SpeedSample,
 } from '../lib/moveAssetImport';
+import { clearHandedOffImportFile, peekHandedOffImportFile } from '../lib/importHandoff';
 import '../styles/directory.css';
 import '../styles/initiatives.css';
 import '../styles/profile.css';
@@ -82,7 +83,11 @@ export default function ImportMoveAssets() {
   const canAddModels = can('asset_models', 'add');
   const canChangeModels = can('asset_models', 'change');
   const [initiative, setInitiative] = useState<InitiativeDetail | null>(null);
-  const [file, setFile] = useState<File | null>(null);
+  // A file Convert Raw F-T handed off for this move: peeked (not consumed) so a
+  // StrictMode double-init sees it, then cleared in the mount effect below.
+  const [handedOff] = useState(() => peekHandedOffImportFile(id));
+  const [file, setFile] = useState<File | null>(() => handedOff);
+  useEffect(() => { clearHandedOffImportFile(id); }, [id]);
   const [mode, setMode] = useState('fuzzy');
   const [generateSerials, setGenerateSerials] = useState(true);
   const [job, setJob] = useState<ImportJobOut | null>(null);
@@ -200,7 +205,10 @@ export default function ImportMoveAssets() {
               <ImportUploadFields file={file} onFile={setFile} mode={mode} onMode={setMode}
                                   generateSerials={generateSerials}
                                   onGenerateSerials={setGenerateSerials}
-                                  busy={busy} inputRef={fileInputRef} />
+                                  busy={busy} inputRef={fileInputRef}
+                                  fileNote={handedOff && file === handedOff && (
+                                    <p className="page-hint">This file came from Convert Raw F-T.</p>
+                                  )} />
 
               <div className="imp-card-foot">
                 <button className="btn-solid" type="button"

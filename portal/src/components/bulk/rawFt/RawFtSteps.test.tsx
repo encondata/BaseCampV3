@@ -5,6 +5,7 @@
  * template, preview, and download the converted .xlsx.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -25,6 +26,8 @@ const TEMPLATE: MoveAssetTemplateColumn[] = HEADERS.map((header, i) => ({
 
 const apiMock = vi.hoisted(() => ({ getMoveAssetTemplateColumns: vi.fn(), downloadMoveAssetTemplate: vi.fn() }));
 vi.mock('../../../lib/api', async (orig) => ({ ...(await orig<typeof import('../../../lib/api')>()), ...apiMock }));
+
+vi.mock('../../../auth/AuthContext', () => ({ useAuth: () => ({ maxRank: 60, can: () => true }) }));
 
 const { default: BulkConvertRawFt } = await import('../../../pages/BulkConvertRawFt');
 const { useRawFtConvert } = await import('./useRawFtConvert');
@@ -68,7 +71,7 @@ const click = (name: string) => fireEvent.click(screen.getByRole('button', { nam
 /** Render the page at step 1, with no file yet. */
 async function open() {
   apiMock.getMoveAssetTemplateColumns.mockResolvedValue(TEMPLATE);
-  render(<BulkConvertRawFt />);
+  render(<MemoryRouter><BulkConvertRawFt /></MemoryRouter>);
   await screen.findByText('Drop your file here, or click to browse');
   return document.querySelector('input[type="file"]') as HTMLInputElement;
 }
