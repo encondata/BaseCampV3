@@ -93,3 +93,17 @@ it('names a DigitalOcean deployment by its slot', async () => {
   render(<DeploymentsTab env={DO_ENV} selected={null} onSelect={vi.fn()} onChanged={vi.fn()} />);
   expect(await screen.findByText('Update to Purple, not live')).toBeTruthy();
 });
+
+it("a renew newer than a failed Update doesn't stop the Update counting as latest (as the API's retry does)", async () => {
+  const renew = { ...summary(FAILED), id: 'r1', mode: 'renew', status: 'succeeded' };
+  const renew2 = { ...renew, id: 'r0' };
+  api.listDeployments.mockResolvedValue({ deployments: [renew, summary(FAILED), renew2, ADOPTED] });
+  const props = { env: DO_ENV, onSelect: vi.fn(), onChanged: vi.fn() };
+  const { rerender } = render(<DeploymentsTab {...props} selected="d1" />);
+  expect(await screen.findByText('view d1 latest')).toBeTruthy();
+  // a renew itself is latest only against everything
+  rerender(<DeploymentsTab {...props} selected="r1" />);
+  expect(await screen.findByText('view r1 latest')).toBeTruthy();
+  rerender(<DeploymentsTab {...props} selected="r0" />);
+  expect(await screen.findByText('view r0 older')).toBeTruthy();
+});

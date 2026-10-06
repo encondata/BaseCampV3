@@ -1,6 +1,6 @@
 /** Settings of a DigitalOcean environment: Activate automatically
  *  (non-production, two slots), Add a second slot (non-production, one slot),
- *  grow the sizes, and mark a production environment retiring. */
+ *  grow the sizes, and mark a production environment retiring (or un-retire it). */
 import { useEffect, useRef, useState } from 'react';
 
 import { Switch } from '@portal/components/Switch';
@@ -103,8 +103,10 @@ export default function DoSettingsSection({ env, disabled, onSaved, onDeployStar
             <input id="do-retire-confirm" type="text" value={confirm} autoComplete="off" spellCheck={false}
                    disabled={off} onChange={(e) => setConfirm(e.target.value)} />
             <button type="button" className="mini-btn danger" disabled={off || confirm !== env.name}
-                    onClick={() => void act(async () => onSaved(await updateEnvironment(
-                      env.name, { retiring: true, confirm_name: env.name })), "Couldn't mark it retiring.")}>
+                    onClick={() => void act(async () => {
+                      onSaved(await updateEnvironment(env.name, { retiring: true, confirm_name: env.name }));
+                      setConfirm('');   // the other action's gate starts empty
+                    }, "Couldn't mark it retiring.")}>
               Mark retiring
             </button>
             <p className="page-hint">
@@ -113,7 +115,19 @@ export default function DoSettingsSection({ env, disabled, onSaved, onDeployStar
           </div>
         )}
         {production && env.retiring && (
-          <p className="page-hint sirdar-span2">Retiring. Deactivate it on the Overview, then Delete.</p>
+          <div className="sirdar-span2">
+            <p className="page-hint">Retiring. Deactivate it on the Overview, then Delete; or un-retire it to deploy it again.</p>
+            <label className="field-label" htmlFor="do-unretire-confirm">Type {env.name} to confirm</label>
+            <input id="do-unretire-confirm" type="text" value={confirm} autoComplete="off" spellCheck={false}
+                   disabled={off} onChange={(e) => setConfirm(e.target.value)} />
+            <button type="button" className="mini-btn" disabled={off || confirm !== env.name}
+                    onClick={() => void act(async () => {
+                      onSaved(await updateEnvironment(env.name, { retiring: false, confirm_name: env.name }));
+                      setConfirm('');   // the other action's gate starts empty
+                    }, "Couldn't un-retire it.")}>
+              Un-retire
+            </button>
+          </div>
         )}
         {error && <p className="form-error sirdar-span2" role="alert">{error}</p>}
       </div>

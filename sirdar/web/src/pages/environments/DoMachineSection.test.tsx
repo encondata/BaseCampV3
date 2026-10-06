@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import DoMachineSection from './DoMachineSection';
-import { DO_ENV, ONE_SLOT_ENV, PROD_ENV } from './testData';
+import { DO_ENV, FAILED, ONE_SLOT_ENV, PROD_ENV, summary } from './testData';
 
 afterEach(cleanup);
 
@@ -41,4 +41,14 @@ it('one slot: no Activate, and the hint says it updates in place', () => {
   render(<DoMachineSection env={ONE_SLOT_ENV} canActivate onActivate={vi.fn()} />);
   expect(screen.queryByRole('button', { name: /Activate/ })).toBeNull();
   expect(screen.getByText(/updates in place/)).toBeTruthy();
+});
+
+it('marks the slot the latest deployment failed on', () => {
+  render(<DoMachineSection env={{ ...DO_ENV, last_deployment: { ...summary(FAILED), mode: 'activate', slot: 'purple' } }}
+                           canActivate onActivate={vi.fn()} />);
+  const table = screen.getByRole('table', { name: 'Slots' });
+  const purple = within(table).getByText('Purple').closest('tr')!;
+  expect(within(purple).getByText('Failed — Orange still live').className).toMatch(/c-red/);
+  const orange = within(table).getByText('Orange').closest('tr')!;
+  expect(within(orange).queryByText(/Failed/)).toBeNull();
 });

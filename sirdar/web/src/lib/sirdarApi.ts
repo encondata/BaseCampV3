@@ -570,7 +570,7 @@ export interface EnvironmentPatch {
   secrets?: Record<string, string>;
   publish?: boolean;
   vm?: { cores?: number; memory_mb?: number; disk_gb?: number; keep_snapshots?: number };
-  /** Production only: mark it retiring (needs confirm_name). */
+  /** Production only: mark it retiring, or un-retire it (both need confirm_name). */
   retiring?: boolean; confirm_name?: string;
   auto_activate?: boolean;
   do?: DoSizes;
@@ -790,6 +790,10 @@ export interface DashEnvironment {
   production: boolean;
   /** The Production card: true on the first card only. */
   primary: boolean;
+  /** A production environment marked retiring: it can't be activated or deployed. */
+  retiring: boolean;
+  /** Any deployment of it is running, a renew included (its state may still read active). */
+  running: boolean;
   flow: DashFlow;
 }
 export interface DashNode {

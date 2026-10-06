@@ -6,10 +6,14 @@ import { useId, type ReactNode } from 'react';
 import type { DashEnvironment } from '../../lib/sirdarApi';
 
 import { ServerRackIcon } from './icons';
-import { Dot, SoonButton } from './parts';
+import { Dot, RUNNING, SoonButton, flowStillLive } from './parts';
 
 function State({ env }: { env: DashEnvironment }) {
   const version = env.version && <b>{env.version}</b>;
+  const stillLive = flowStillLive(env.flow);
+  if (env.state !== 'deploying' && stillLive) {
+    return <div className="sd-env-state">{version}<span className="sd-pill is-warn"><Dot tone="warn" />{stillLive}</span></div>;
+  }
   if (env.state === 'active') return <div className="sd-env-state">{version}<span className="sd-pill is-ok"><Dot tone="ok" />Running</span></div>;
   if (env.state === 'deploying') return <div className="sd-env-state">{version}<span className="sd-pill is-blue"><Dot tone="blue" />Deploying</span></div>;
   if (env.state === 'failed') return <div className="sd-env-state">{version}<span className="sd-pill is-warn"><Dot tone="warn" />Last deploy failed</span></div>;
@@ -32,8 +36,8 @@ export default function EnvCard({ env, demo, canDeploy, selected, onSelect, onDe
 
   let action: ReactNode = null;
   if (demo) action = <SoonButton className="sd-btn-outline sd-btn-sm sd-env-action" title="Demo data">{short}</SoonButton>;
-  else if (canDeploy && name && env.state === 'deploying') {
-    action = <SoonButton className="sd-btn-outline sd-btn-sm sd-env-action" title="A deployment is running.">{short}</SoonButton>;
+  else if (canDeploy && name && (env.state === 'deploying' || env.running)) {
+    action = <SoonButton className="sd-btn-outline sd-btn-sm sd-env-action" title={RUNNING}>{short}</SoonButton>;
   } else if (canDeploy) {
     action = (
       <button type="button" className="sd-btn sd-btn-outline sd-btn-sm sd-env-action" aria-label={label}

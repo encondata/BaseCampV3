@@ -23,7 +23,7 @@ import { ApiError } from '@portal/lib/api';
 
 import EnvironmentDetail, { ENV_POLL_MS } from './EnvironmentDetail';
 import {
-  ADOPTED, BACKUPS, DEFAULTS, DO_ENV, ENV, PUBLISHED_ENV, PUBLISHING, PUBLISH_PLAN, RUNNING, TARGETS, TEARDOWN, summary,
+  ADOPTED, BACKUPS, DEFAULTS, DO_ENV, ENV, FAILED, PUBLISHED_ENV, PUBLISHING, PUBLISH_PLAN, RUNNING, TARGETS, TEARDOWN, summary,
 } from './testData';
 
 Element.prototype.scrollIntoView = () => {};
@@ -314,4 +314,11 @@ it('DigitalOcean: Overview shows the slots; Activate opens its dialog, then foll
   await userEvent.click(within(dialog).getByRole('button', { name: 'Activate Purple' }));
   await waitFor(() => expect(api.activateSlot).toHaveBeenCalledWith('uat9', 'purple', undefined));
   expect(await screen.findByRole('tab', { name: 'Deployments', selected: true })).toBeTruthy();
+});
+
+it('DigitalOcean: the header says a failed slot leaves the live one serving', async () => {
+  api.getEnvironment.mockResolvedValue({ ...DO_ENV, last_deployment: { ...summary(FAILED), mode: 'activate', slot: 'purple' } });
+  show('/deploy/environments/uat9');
+  const chip = await screen.findByText('Failed — Orange still live', { selector: '.page-title *' });
+  expect(chip.className).toMatch(/c-amber/);
 });

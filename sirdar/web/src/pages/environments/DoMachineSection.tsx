@@ -6,7 +6,7 @@ import DataTable from '@portal/components/DataTable';
 import Breakable from '../../components/Breakable';
 import type { Environment } from '../../lib/sirdarApi';
 
-import { certDaysLeft, shortSha, slotTitle, when } from './labels';
+import { certDaysLeft, failedSlot, failedStillLive, shortSha, slotTitle, when } from './labels';
 
 export default function DoMachineSection({ env, canActivate, onActivate }: {
   env: Environment; canActivate: boolean; onActivate: (slot: string | null) => void;
@@ -15,6 +15,8 @@ export default function DoMachineSection({ env, canActivate, onActivate }: {
   if (!d) return null;
   const days = certDaysLeft(d.cert_not_after);
   const retiringProduction = env.type === 'production' && env.retiring;
+  const failed = failedSlot(env);
+  const failedText = failedStillLive(env) ?? 'Failed';
   const cert = d.cert_not_after
     ? `${new Date(d.cert_not_after).toLocaleDateString()} (${Math.max(days ?? 0, 0)} days)`
       + (d.acme_staging ? " · Let's Encrypt staging" : '')
@@ -43,7 +45,8 @@ export default function DoMachineSection({ env, canActivate, onActivate }: {
         rows={d.slots.map((s) => ({
           key: s.slot,
           cells: [
-            <b className="cell-top">{slotTitle(s.slot)}</b>,
+            <span className="cell-top"><b>{slotTitle(s.slot)}</b>
+              {s.slot === failed && <> <span className="chip c-red">{failedText}</span></>}</span>,
             s.public_ip ? `${s.droplet_id} · ${s.public_ip}` : 'Not built yet',
             shortSha(s.sha),
             s.last_check_ok === null ? '—' : `${s.last_check_ok ? 'Passed' : 'Failed'} · ${when(s.last_check_at)}`,

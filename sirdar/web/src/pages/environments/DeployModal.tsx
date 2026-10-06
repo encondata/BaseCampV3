@@ -281,7 +281,7 @@ export default function DeployModal({ env, onStarted, onClose }: {
                 {errors.confirm && <p className="form-error" role="alert">{errors.confirm}</p>}
               </div>
             )}
-            {retiring && <p className="form-error">Retiring production can't be deployed; un-retire it first.</p>}
+            {retiring && <p className="form-error">Retiring production can't be deployed; un-retire it first in Settings.</p>}
             {!canAdd && <p className="page-hint">You can view deployments but not start them.</p>}
             {errors.form && <p className="form-error" role="alert">{errors.form}</p>}
           </div>

@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
+import type { DeploymentMode, DeploymentStatus } from '../../lib/sirdarApi';
+
 import {
   CERT_STATE, CHANGE_MODES, DEPLOYMENT_STATUS, ENV_STATUS, GATED_MODES, MODE_LABEL, PUBLISH_STATE, RETRY_MODES,
-  STEP_STATUS, certDaysLeft, deploymentLabel, deploymentRunning, goesLive, idleSlot, onDo, retryNeedsName, slotTitle, dumpTakenAt, duration, envTargets, formatBytes, hostLabel, isVmTarget, onProxmox, onVmHost,
+  STEP_STATUS, certDaysLeft, deploymentLabel, failedSlot, failedStillLive, deploymentRunning, goesLive, idleSlot, onDo, retryNeedsName, slotTitle, dumpTakenAt, duration, envTargets, formatBytes, hostLabel, isVmTarget, onProxmox, onVmHost,
   snapshotLabel, sshTargets, stoppedStep, VM_HOST_LABEL, vmBuilt, vmNetwork, vmRef, vmSize, vmStage,
 } from './labels';
 import {
@@ -167,4 +169,19 @@ describe('DigitalOcean helpers', () => {
     expect(retryNeedsName('reset', ENV)).toBe(true);
     expect(retryNeedsName('update', ENV)).toBe(false);
   });
+});
+
+it('failedSlot / failedStillLive: a failed, canceled or interrupted deploy on another slot while one still serves', () => {
+  const last = (status: DeploymentStatus, slot: string | null, mode: DeploymentMode = 'activate') =>
+    ({ ...DO_ENV, last_deployment: { ...summary(FAILED), status, slot, mode } });
+  expect(failedSlot(last('failed', 'purple'))).toBe('purple');
+  expect(failedStillLive(last('failed', 'purple'))).toBe('Failed — Orange still live');
+  expect(failedStillLive(last('cancelled', 'purple'))).toBe('Failed — Orange still live');
+  expect(failedStillLive(last('interrupted', 'purple', 'update'))).toBe('Failed — Orange still live');
+  expect(failedStillLive(last('succeeded', 'purple'))).toBeNull();
+  expect(failedStillLive(last('failed', null))).toBeNull();
+  expect(failedSlot(last('failed', 'orange'))).toBe('orange');
+  expect(failedStillLive(last('failed', 'orange'))).toBeNull();                 // the live slot itself failed
+  expect(failedStillLive({ ...last('failed', 'purple'), active_slot: null })).toBeNull();
+  expect(failedStillLive({ ...DO_ENV, last_deployment: null })).toBeNull();
 });

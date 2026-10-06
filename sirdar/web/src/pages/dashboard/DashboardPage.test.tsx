@@ -415,3 +415,35 @@ it('Deploying reads the same on the card and in the spotlight', async () => {
   const cardPill = within(card).getByText('Deploying', { selector: '.sd-pill' });
   expect(cardPill.className).toBe(spotPill.className);
 });
+
+it("a card says a failed slot leaves the live one serving, as the spotlight does", async () => {
+  api.getDashboard.mockResolvedValue({ ...CLOUD, environments: [CLOUD.environments[0], { ...FAILED_DO_CARD, state: 'active' }] });
+  show();
+  const card = await screen.findByRole('region', { name: 'uat9' });
+  expect(within(card).getByText('Failed — Orange still live').className).toMatch(/is-warn/);
+  expect(within(card).queryByText('Running')).toBeNull();
+});
+
+it('a retiring production offers no Activate', async () => {
+  const prod = { ...CLOUD.environments[0], retiring: true };
+  api.getDashboard.mockResolvedValue({ ...CLOUD, environments: [prod, ...CLOUD.environments.slice(1)] });
+  show();
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+  expect(within(spot()).queryByRole('button', { name: /Activate/ })).toBeNull();
+});
+
+it('a running deployment (a renew included) makes Deploy and Activate inert, saying why', async () => {
+  const prod = { ...CLOUD.environments[0], running: true };   // the state still reads active during a renew
+  api.getDashboard.mockResolvedValue({ ...CLOUD, environments: [prod, ...CLOUD.environments.slice(1)] });
+  show();
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+  for (const btn of [within(spot()).getByRole('button', { name: 'Deploy' }),
+                     within(spot()).getByRole('button', { name: 'Activate Green' }),
+                     within(screen.getByRole('region', { name: 'prod' })).getByRole('button', { name: 'Deploy' })]) {
+    expect(btn.getAttribute('aria-disabled')).toBe('true');
+    expect(btn.getAttribute('title')).toBe('A deployment is running.');
+    await userEvent.click(btn);
+  }
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(api.getEnvironment).not.toHaveBeenCalled();
+});

@@ -134,7 +134,8 @@ function deployCodes(): string[] {
                       /(?:EnvError|RefError|TargetError|SnapshotError|IntegrationError|VmError|DoEnvError)\("([a-z_]+)"/g,
                       /^\s+code = "([a-z_]+)"$/gm,
                       /"(vm_[a-z_]+_invalid)"/g, /, "([a-z_]+_invalid)"\)/g,
-                      /"([a-z]+_too_long)"/g, /_check_ipv4\([^()]*,\s*"([a-z]+_[a-z_]+)"\)/g]) {
+                      /"([a-z]+_too_long)"/g, /_check_ipv4\([^()]*,\s*"([a-z]+_[a-z_]+)"\)/g,
+                      /_refuse\(\s*\d+,\s*"([a-z_]+)"/g]) {
       for (const m of src.matchAll(re)) found.add(m[1]);
     }
   }
@@ -149,6 +150,9 @@ it('every error code the deploy routes can return has its own message', () => {
   expect(codes).toContain('ref_lookup_failed');
   expect(codes).toContain('snapshot_in_use');
   expect(codes).toContain('rollback_not_latest');
+  for (const code of ['slot_required', 'already_inactive', 'do_not_allowed', 'connect_failed', 'slots_full']) {
+    expect(codes).toContain(code);                // routes/deploy.py's _refuse(status, "code")
+  }
   for (const code of ['integration_not_configured', 'publish_off', 'nothing_to_claim', 'claim_conflict',
                       'token_invalid', 'npm_url_invalid', 'secret_required', 'publish_not_allowed',
                       'proxmox_url_invalid', 'node_invalid', 'template_vmid_invalid', 'proxmox_token_invalid',

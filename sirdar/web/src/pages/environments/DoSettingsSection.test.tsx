@@ -98,3 +98,25 @@ it('a refreshed environment re-seeds the sizes unless they were edited', async (
   expect((screen.getByLabelText('Database size') as HTMLInputElement).value).toBe('db-s-4vcpu-8gb');
   expect((screen.getByLabelText('Droplet size') as HTMLInputElement).value).toBe('s-4vcpu-8gb');
 });
+
+it('a retiring production can be un-retired behind the typed name', async () => {
+  api.updateEnvironment.mockResolvedValue(PROD_ENV);
+  const { section, onSaved } = show({ ...PROD_ENV, retiring: true });
+  expect(within(section).queryByRole('button', { name: 'Mark retiring' })).toBeNull();
+  const undo = within(section).getByRole('button', { name: 'Un-retire' }) as HTMLButtonElement;
+  expect(undo.disabled).toBe(true);
+  await userEvent.type(within(section).getByLabelText('Type prod to confirm'), 'prod');
+  expect(undo.disabled).toBe(false);
+  await userEvent.click(undo);
+  expect(api.updateEnvironment).toHaveBeenCalledWith('prod', { retiring: false, confirm_name: 'prod' });
+  await waitFor(() => expect(onSaved).toHaveBeenCalledWith(PROD_ENV));
+});
+
+it("un-retiring shows the API's copy when another production is live", async () => {
+  api.updateEnvironment.mockRejectedValue(new ApiError(409, 'production_exists', { code: 'production_exists' }));
+  const { section } = show({ ...PROD_ENV, retiring: true });
+  await userEvent.type(within(section).getByLabelText('Type prod to confirm'), 'prod');
+  await userEvent.click(within(section).getByRole('button', { name: 'Un-retire' }));
+  expect(await within(section).findByText('Another production environment is already live. Mark it retiring first.'))
+    .toBeTruthy();
+});

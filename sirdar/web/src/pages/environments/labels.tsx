@@ -159,6 +159,19 @@ export const vmNetwork = (vm: Pick<EnvVm, 'ip_mode' | 'ip_cidr' | 'gateway'>) =>
 export const onDo = (env: Pick<Environment, 'target_kind'>) => env.target_kind === 'digitalocean';
 export const isDoTarget = (id: string) => id === 'digitalocean';
 export const slotTitle = (slot: string | null | undefined) => (slot ? slot[0].toUpperCase() + slot.slice(1) : '');
+/** Wording for a failed deploy or Activate on one slot while another still serves (page, card and spotlight). */
+export const stillLiveText = (live: string) => `Failed — ${live} still live`;
+const FAILED_STATUSES = new Set(['failed', 'cancelled', 'interrupted']);
+/** The slot the latest deployment failed on (DigitalOcean), else null. */
+export function failedSlot(env: Pick<Environment, 'last_deployment'>): string | null {
+  const d = env.last_deployment;
+  return d && d.slot && FAILED_STATUSES.has(d.status) ? d.slot : null;
+}
+/** "Failed — <live> still live" when the latest deployment failed on a slot other than the live one. */
+export function failedStillLive(env: Pick<Environment, 'last_deployment' | 'active_slot'>): string | null {
+  const failed = failedSlot(env);
+  return failed && env.active_slot && env.active_slot !== failed ? stillLiveText(slotTitle(env.active_slot)) : null;
+}
 /** The slot an Update deploys to (the API's do_envs.target_slot); undefined with no slots. */
 export const idleSlot = (env: Pick<Environment, 'slots' | 'active_slot'>): string | undefined =>
   env.active_slot === null || env.slots.length < 2 ? env.slots[0]

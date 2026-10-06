@@ -284,7 +284,7 @@ it('DigitalOcean: one slot, or auto-activate, goes live by itself', () => {
 
 it('a retiring production says why and does not deploy', () => {
   open({ ...PROD_ENV, retiring: true });
-  expect(screen.getByText("Retiring production can't be deployed; un-retire it first.")).toBeTruthy();
+  expect(screen.getByText("Retiring production can't be deployed; un-retire it first in Settings.")).toBeTruthy();
   expect(deployBtn().disabled).toBe(true);
 });
 

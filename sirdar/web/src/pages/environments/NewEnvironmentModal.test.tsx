@@ -807,7 +807,9 @@ it('DigitalOcean: Adopt neither offers nor keeps it', async () => {
   expect(api.adoptEnvironment.mock.calls[0][0].target).toBe('ssh:lab');
 });
 
-it("DigitalOcean production: without the Production account it says it uses Development", async () => {
+const SHARED_TOKEN_WARNING = 'Production in the Development account shares its renewal token with every development droplet. Set up the Production account instead if you can.';
+
+it("DigitalOcean production: without the Production account it uses Development and warns", async () => {
   api.getDoAccounts.mockResolvedValue({ accounts: [
     { ...DO_ACCOUNTS[0], configured: false, token_set: false, region: null }, DO_ACCOUNTS_BOTH[1],
   ] });
@@ -815,14 +817,37 @@ it("DigitalOcean production: without the Production account it says it uses Deve
   await userEvent.click(radioIn('Type', 'Production'));
   await next();
   expect(radioIn('Account', 'Development').getAttribute('aria-checked')).toBe('true');
-  expect(screen.getByText("The Production account isn't set up, so this uses Development.")).toBeTruthy();
+  expect(screen.getByText(SHARED_TOKEN_WARNING)).toBeTruthy();
+  expect(screen.queryByText(/isn't set up, so this uses/)).toBeNull();
+});
+
+it('DigitalOcean production: choosing the Development account warns, and it is still allowed', async () => {
+  await toCloud('prod');
+  await userEvent.click(radioIn('Type', 'Production'));
+  await next();
+  expect(screen.queryByText(SHARED_TOKEN_WARNING)).toBeNull();
+  await userEvent.click(radioIn('Account', 'Development'));
+  expect(screen.getByText(SHARED_TOKEN_WARNING)).toBeTruthy();
+  await next();
+  await next();
+  await next();
+  await userEvent.click(screen.getByRole('button', { name: 'Create environment' }));
+  await waitFor(() => expect(api.createEnvironment).toHaveBeenCalled());
+  expect(api.createEnvironment.mock.calls[0][0].do.account).toBe('development');
+});
+
+it('DigitalOcean: a development environment in the Development account has no warning', async () => {
+  await toCloud();
+  await next();
+  await userEvent.click(radioIn('Account', 'Development'));
+  expect(screen.queryByText(SHARED_TOKEN_WARNING)).toBeNull();
 });
 
 it('DigitalOcean production: the request has the Production account and no slots, staging or auto-activate', async () => {
   await toCloud('prod');
   await userEvent.click(radioIn('Type', 'Production'));
   await next();
-  expect(screen.queryByText(/isn't set up, so this uses/)).toBeNull();
+  expect(screen.queryByText(SHARED_TOKEN_WARNING)).toBeNull();
   await next();
   await next();
   await next();

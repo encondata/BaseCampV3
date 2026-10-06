@@ -18,7 +18,7 @@ import EnvOverview from './EnvOverview';
 import EnvSettings from './EnvSettings';
 import PublishTab from './PublishTab';
 
-import { ENV_STATUS, StatusChip, TYPE_LABEL, deploymentRunning, targetLabel } from './labels';
+import { ENV_STATUS, StatusChip, TYPE_LABEL, deploymentRunning, failedStillLive, targetLabel } from './labels';
 
 /** While a deployment runs (the environment is deploying or deleting, or a
  *  publish or snapshot job is running) it is reloaded this often, on every tab,
@@ -115,12 +115,16 @@ function EnvironmentPage({ name }: { name: string }) {
     );
   }
   const running = deploymentRunning(env);
+  const stillLive = failedStillLive(env);
   return (
     <div className="portal-page">
       {crumb}
       <div className="dir-head sirdar-env-head">
         <div>
-          <div className="page-title"><h1>{env.name}</h1><StatusChip map={ENV_STATUS} status={env.status} /></div>
+          <div className="page-title">
+            <h1>{env.name}</h1><StatusChip map={ENV_STATUS} status={env.status} />
+            {stillLive && <span className="chip c-amber">{stillLive}</span>}
+          </div>
           <p>{`${TYPE_LABEL[env.type] ?? env.type} · ${targetLabel(targets, env.target)} · ${env.base_domain}`}</p>
         </div>
         {can('deploy', 'add') && (

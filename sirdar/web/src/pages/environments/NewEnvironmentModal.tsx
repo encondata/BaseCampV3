@@ -538,9 +538,12 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                     {accountOf(doAccount)?.region ? `Built in ${accountOf(doAccount)!.region}. ` : ''}
                     An environment stays in the account it is built in.
                   </p>
-                  {production && doAccount !== 'production' && accountOf('production')?.configured === false && (
-                    <p className="page-hint">
-                      The {accountOf('production')!.label} account isn't set up, so this uses {accountOf(doAccount)?.label}.
+                  {/* Allowed, but never silently: chosen here, or the fallback above when Production isn't set up. */}
+                  {production && doAccount === 'development' && (
+                    <p className="page-hint" role="note">
+                      <span className="chip c-amber">Warning</span>{' '}
+                      Production in the Development account shares its renewal token with every development droplet.
+                      {' '}Set up the Production account instead if you can.
                     </p>
                   )}
                 </div>

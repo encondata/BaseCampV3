@@ -28,7 +28,9 @@ export default function DeploymentsTab({ env, selected, onSelect, onChanged }: {
   useEffect(() => { void load(); }, [load, selected, env.status, env.updated_at]);
   useEffect(() => () => { seq.current += 1; }, []);
 
-  const latestId = rows?.[0]?.id ?? null;
+  // As the API's retry decides it: Sirdar's own renew jobs don't count, unless the open one is a renew.
+  const openIsRenew = rows?.find((d) => d.id === selected)?.mode === 'renew';
+  const latestId = rows?.find((d) => openIsRenew || d.mode !== 'renew')?.id ?? null;
   return (
     <>
       {selected && (
