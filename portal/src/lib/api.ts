@@ -3340,6 +3340,22 @@ export async function downloadMoveAssetTemplate(
   URL.revokeObjectURL(url);
 }
 
+/** One From-To template column, as GET /initiatives/assets/import-template?format=json serves it. */
+export interface MoveAssetTemplateColumn {
+  header: string;
+  field: string;
+  aliases: string[];
+  required: boolean;
+  accepts: string;
+  example: string;
+}
+
+export async function getMoveAssetTemplateColumns(): Promise<MoveAssetTemplateColumn[]> {
+  const resp = await apiFetch('/initiatives/assets/import-template?format=json');
+  if (!resp.ok) throw await errorFrom(resp);
+  return (await resp.json() as { columns: MoveAssetTemplateColumn[] }).columns;
+}
+
 // ── Bulk Actions › Create a move in steps ───────────────────────────
 // One server-side draft holds every step; nothing real is created until
 // createMoveFromSetup, which the import worker runs as one transaction.
