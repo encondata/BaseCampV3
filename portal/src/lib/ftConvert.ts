@@ -23,13 +23,13 @@ const pad = (n: number) => String(n).padStart(2, '0');
 /** One cell as the text the From-To import would read. Numbers use the raw
  *  value (formatted text turns long serials into 1.2E+11); date-formatted
  *  numbers become YYYY-MM-DD straight from the serial, no time zone. */
-export function cellText(cell: XLSX.CellObject | undefined): string {
+export function cellText(cell: XLSX.CellObject | undefined, date1904 = false): string {
   if (!cell || cell.v === undefined || cell.v === null || cell.t === 'e') return '';
   const v = cell.v;
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
   if (typeof v === 'number') {
-    if (cell.z !== undefined && XLSX.SSF.is_date(cell.z)) {
-      const d = XLSX.SSF.parse_date_code(v);
+    // a value under 1 has no date part (a time-only format): keep its number
+    if (v >= 1 && cell.z !== undefined && XLSX.SSF.is_date(cell.z)) {
+      const d = XLSX.SSF.parse_date_code(v, { date1904 });
       return `${d.y}-${pad(d.m)}-${pad(d.d)}`;
     }
     return String(v);
@@ -38,7 +38,7 @@ export function cellText(cell: XLSX.CellObject | undefined): string {
   return String(v).trim();
 }
 
-function sheetRows(ws: XLSX.WorkSheet | undefined): string[][] {
+function sheetRows(ws: XLSX.WorkSheet | undefined, date1904 = false): string[][] {
   if (!ws || !ws['!ref']) return [];
   const range = XLSX.utils.decode_range(ws['!ref']);
   const rows: string[][] = [];
@@ -46,7 +46,7 @@ function sheetRows(ws: XLSX.WorkSheet | undefined): string[][] {
   for (let r = 0; r <= range.e.r; r++) {
     const row: string[] = [];
     for (let c = 0; c <= range.e.c; c++) {
-      row.push(cellText(ws[XLSX.utils.encode_cell({ r, c })] as XLSX.CellObject | undefined));
+      row.push(cellText(ws[XLSX.utils.encode_cell({ r, c })] as XLSX.CellObject | undefined, date1904));
     }
     rows.push(row);
   }
@@ -55,8 +55,10 @@ function sheetRows(ws: XLSX.WorkSheet | undefined): string[][] {
 }
 
 export function readWorkbook(data: ArrayBuffer): SheetData[] {
-  const wb = XLSX.read(data, { type: 'array', cellNF: true, raw: true });
-  return wb.SheetNames.map((name) => ({ name, rows: sheetRows(wb.Sheets[name]) }));
+  // codepage 65001 reads CSV bytes as UTF-8 (xlsx/xls ignore it)
+  const wb = XLSX.read(data, { type: 'array', cellNF: true, raw: true, codepage: 65001 });
+  const date1904 = !!wb.Workbook?.WBProps?.date1904;
+  return wb.SheetNames.map((name) => ({ name, rows: sheetRows(wb.Sheets[name], date1904) }));
 }
 
 export function sheetHasData(s: SheetData): boolean {
@@ -74,7 +76,8 @@ export function detectHeaderRow(rows: string[][]): number {
 export function sourceColumns(rows: string[][], headerIndex: number): SourceColumn[] {
   const header = rows[headerIndex] ?? [];
   const body = rows.slice(headerIndex + 1);
-  const width = Math.max(header.length, 0, ...body.map((r) => r.length));
+  let width = header.length;
+  for (const r of body) if (r.length > width) width = r.length;
   const seen = new Map<string, number>();
   const out: SourceColumn[] = [];
   for (let c = 0; c < width; c++) {

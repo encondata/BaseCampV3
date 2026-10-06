@@ -61,6 +61,41 @@ describe('readWorkbook', () => {
     expect(rows[3][0]).toBe('web-01');
   });
 
+  it('reads UTF-8 CSV text and drops a leading BOM', () => {
+    const enc = (t: string) => new TextEncoder().encode(t).buffer as ArrayBuffer;
+    expect(readWorkbook(enc('Name,City\ncafé,Zürich\n'))[0].rows)
+      .toEqual([['Name', 'City'], ['café', 'Zürich']]);
+    expect(readWorkbook(enc('\uFEFFName,City\ncafé,Zürich\n'))[0].rows[0][0]).toBe('Name');
+  });
+
+  it('reads a legacy .xls workbook', () => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Serial', 'Name'], ['00123', 'web-01']]), 'Old');
+    const buf = XLSX.write(wb, { type: 'array', bookType: 'biff8' }) as ArrayBuffer;
+    expect(readWorkbook(buf)).toEqual([
+      { name: 'Old', rows: [['Serial', 'Name'], ['00123', 'web-01']] }]);
+  });
+
+  it('returns time-only numbers as their value, not a date', () => {
+    const ws = XLSX.utils.aoa_to_sheet([['t'], [0]]);
+    ws.A2 = { t: 'n', v: 0.5, z: 'h:mm' };
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'S');
+    const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+    expect(readWorkbook(buf)[0].rows[1][0]).toBe('0.5');
+  });
+
+  it('honors the 1904 date system', () => {
+    const ws = XLSX.utils.aoa_to_sheet([['d'], [0]]);
+    ws.A2 = { t: 'n', v: 43196, z: 'yyyy-mm-dd' };
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'S');
+    wb.Workbook = { WBProps: { date1904: true } };
+    const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+    // serial 43196 is 2018-04-06 in the 1900 system, 1462 days later in the 1904 one
+    expect(readWorkbook(buf)[0].rows[1][0]).toBe('2022-04-07');
+  });
+
   it('keeps CSV text as typed', () => {
     const buf = new TextEncoder().encode('Serial,Name\n00123,web-01\n').buffer as ArrayBuffer;
     expect(readWorkbook(buf)[0].rows).toEqual([['Serial', 'Name'], ['00123', 'web-01']]);
@@ -93,6 +128,14 @@ describe('sourceColumns', () => {
     expect(cols[0].samples).toEqual(['s1', 's2', 's4']);
     expect(cols[1].samples).toEqual(['x', 'y', 'z']);
     expect(cols[2].samples).toEqual(['s1', 's3', 's4']);
+  });
+
+  it('handles hundreds of thousands of rows', () => {
+    const rows: string[][] = [['Serial', 'Name']];
+    for (let i = 0; i < 300000; i++) rows.push([`s${i}`, 'x']);
+    const cols = sourceColumns(rows, 0);
+    expect(cols.map((c) => c.header)).toEqual(['Serial', 'Name']);
+    expect(cols[0].samples).toEqual(['s0', 's1', 's2']);
   });
 
   it('numbers a duplicate exactly', () => {
