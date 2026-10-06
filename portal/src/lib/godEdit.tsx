@@ -62,13 +62,13 @@ export function useGodEdit() {
   };
 }
 
-export function GodEditToggle({ editing, onToggle, visible }: {
-  editing: boolean; onToggle: () => void; visible: boolean;
+export function GodEditToggle({ editing, onToggle, visible, title = 'God mode: edit table directly' }: {
+  editing: boolean; onToggle: () => void; visible: boolean; title?: string;
 }) {
   if (!visible) return null;
   return (
     <button className={`btn-ghost god-edit-toggle ${editing ? 'on' : ''}`}
-            aria-pressed={editing} title="God mode: edit table directly"
+            aria-pressed={editing} title={title}
             onClick={onToggle}>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"
            strokeLinecap="round" strokeLinejoin="round" width="14" height="14">

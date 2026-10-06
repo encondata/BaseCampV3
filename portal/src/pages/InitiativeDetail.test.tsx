@@ -495,6 +495,13 @@ it('people list: Edit table shows for developer (100)', async () => {
   expect(within(await peopleToolbar()).getByRole('button', { name: 'Edit table' })).not.toBeNull();
 });
 
+it('people list: the Edit table toggle carries the neutral tooltip, not the god-mode one', async () => {
+  auth.maxRank = 80;
+  renderPage();
+  const toggle = within(await peopleToolbar()).getByRole('button', { name: 'Edit table' });
+  expect(toggle.getAttribute('title')).toBe('Edit table directly');
+});
+
 it('people list: Edit table is hidden for admin (60)', async () => {
   auth.maxRank = 60;
   renderPage();

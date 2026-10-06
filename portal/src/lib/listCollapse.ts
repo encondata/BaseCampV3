@@ -3,6 +3,8 @@
  * the account's `list_view` preference (expanded / collapsed / last).
  * Every toggle is recorded in list_prefs.open_state[listKey] so "Remember
  * last" can restore it; the save merges onto the latest preferences.
+ * `open_state` is a reserved list_prefs key: no page may use it as its
+ * usePersistentListState pageKey.
  * A new list opts in with its own stable key — see the List view spec
  * (docs/superpowers/specs/2026-10-05-list-view-and-people-edit-design.md).
  */

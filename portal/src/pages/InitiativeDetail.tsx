@@ -199,6 +199,7 @@ export default function InitiativeDetail() {
   // People edit table: gated on rank (super admin 80+) plus change
   // permission, not god mode.
   const [peopleEditing, setPeopleEditing] = useState(false);
+  const peopleEditGate = maxRank >= SUPER_ADMIN_RANK && canChange;
 
   const [initiative, setInitiative] = useState<InitiativeDetailOut | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -286,6 +287,7 @@ export default function InitiativeDetail() {
   // Inline edit-table mode for Assets — a separate toggle from the People
   // section's peopleEditing, gated on maxRank/canChange rather than godMode.
   const [assetsEditing, setAssetsEditing] = useState(false);
+  const assetsEditGate = maxRank >= ADMIN_RANK && canChange;
   const assetsPanel = useListCollapse('initiative-assets');
   // Rack elevation modal (Task 6) — opened from a Source/Destination Rack
   // cell button in read-only display mode; null when closed.
@@ -549,11 +551,11 @@ export default function InitiativeDetail() {
    *  for the duration of the edit. */
   const peopleRowStyle = {
     gridTemplateColumns: peopleGrid.gridTemplateColumns,
-    minWidth: peopleEditing ? undefined : peopleGrid.minWidth,
+    minWidth: (peopleEditing && peopleEditGate) ? undefined : peopleGrid.minWidth,
   };
 
   const personCellFor = (p: InitiativePersonRow, key: string) => {
-    if (peopleEditing) {
+    if (peopleEditing && peopleEditGate) {
       const gf = godFieldFor(key);
       if (gf) {
         return (
@@ -589,14 +591,14 @@ export default function InitiativeDetail() {
   /** Same drop-the-minimum-while-editing treatment as peopleRowStyle. */
   const assetsRowStyle = {
     gridTemplateColumns: assetsGrid.gridTemplateColumns,
-    minWidth: assetsEditing ? undefined : assetsGrid.minWidth,
+    minWidth: (assetsEditing && assetsEditGate) ? undefined : assetsGrid.minWidth,
   };
 
   /** Status/Asset Status render as chips (move-status and the asset's own
    *  status, respectively); every other column reuses moveAssetCellText's
    *  display text verbatim — it already carries the '—' blank convention. */
   const assetCellFor = (a: InitiativeAssetRow, key: string) => {
-    if (assetsEditing) {
+    if (assetsEditing && assetsEditGate) {
       const gf = assetGodFieldFor(key);
       if (gf) {
         return (
@@ -813,11 +815,11 @@ export default function InitiativeDetail() {
                   )}
                   <GodEditToggle editing={assetsEditing}
                                  onToggle={() => setAssetsEditing((e) => !e)}
-                                 visible={maxRank >= ADMIN_RANK && canChange} />
+                                 visible={assetsEditGate} title="Edit table directly" />
                 </div>
               </div>
 
-              <div className={`dir-list idet-assets-list list-scroll${assetsEditing ? ' editing' : ''}`}>
+              <div className={`dir-list idet-assets-list list-scroll${(assetsEditing && assetsEditGate) ? ' editing' : ''}`}>
                 <div className="list-head" style={assetsRowStyle}>
                   {assetsShownCols.map((c) => (
                     <ColHead key={c.key} col={c}
@@ -1022,11 +1024,11 @@ export default function InitiativeDetail() {
                                    onReorder={setPeopleColOrder} />
                     <GodEditToggle editing={peopleEditing}
                                    onToggle={() => setPeopleEditing((e) => !e)}
-                                   visible={maxRank >= SUPER_ADMIN_RANK && canChange} />
+                                   visible={peopleEditGate} title="Edit table directly" />
                   </div>
                 </div>
 
-                <div className={`dir-list idet-people-list list-scroll${peopleEditing ? ' editing' : ''}`}>
+                <div className={`dir-list idet-people-list list-scroll${(peopleEditing && peopleEditGate) ? ' editing' : ''}`}>
                   <div className="list-head" style={peopleRowStyle}>
                     {peopleShownCols.map((c) => (
                       <ColHead key={c.key} col={c}
