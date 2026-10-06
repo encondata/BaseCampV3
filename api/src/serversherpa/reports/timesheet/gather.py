@@ -337,8 +337,9 @@ def _window(f: TimesheetFilters) -> tuple[datetime, datetime]:
 
 async def gather(db: AsyncSession, filters: TimesheetFilters, *,
                  now: datetime | None = None,
-                 limit: int = MAX_ENTRIES) -> TimesheetData:
+                 limit: int | None = None) -> TimesheetData:
     now = now or datetime.now(UTC)
+    limit = MAX_ENTRIES if limit is None else limit     # read at call time
     start, end = _window(filters)
 
     conds = [TimeEntry.clock_in_at >= start, TimeEntry.clock_in_at < end,
