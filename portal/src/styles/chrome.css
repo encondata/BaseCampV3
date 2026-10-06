@@ -392,6 +392,48 @@ kbd {
   border-radius: 16px;
   box-shadow: 0 40px 90px -30px rgba(0, 0, 0, 0.6);
 }
+/* Dialog scrollbars stay inside the rounded corners. Chromium doesn't clip a
+   scrollbar to border-radius, so a scrolling dialog showed a square bar
+   through its rounded corners. A transparent track that stops 18px short of
+   each end (past every radius here) and a slim, padded thumb fix it. One
+   list for every rounded scroll box that lives in a dialog, in the portal,
+   kiosk and wiki (both load this file); styles/roundedScrollbars.test.ts
+   makes every new rounded scroll box join this list or say why not. */
+:is(.modal-card, .otp-card, .ini-picker-list, .zp-log pre,
+    .wiki-template-preview, .wiki-picker-box, .wiki-import-list, .pm-scroll, .segmented, .wiki-prose pre)::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+:is(.modal-card, .otp-card, .ini-picker-list, .zp-log pre,
+    .wiki-template-preview, .wiki-picker-box, .wiki-import-list, .pm-scroll, .segmented, .wiki-prose pre)::-webkit-scrollbar-track {
+  background: transparent;
+  margin-block: 18px;
+  margin-inline: 18px;
+}
+:is(.modal-card, .otp-card, .ini-picker-list, .zp-log pre,
+    .wiki-template-preview, .wiki-picker-box, .wiki-import-list, .pm-scroll, .segmented, .wiki-prose pre)::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 999px;
+}
+:is(.modal-card, .otp-card, .ini-picker-list, .zp-log pre,
+    .wiki-template-preview, .wiki-picker-box, .wiki-import-list, .pm-scroll, .segmented, .wiki-prose pre)::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--muted, #51606f) 65%, transparent);
+}
+:is(.modal-card, .otp-card, .ini-picker-list, .zp-log pre,
+    .wiki-template-preview, .wiki-picker-box, .wiki-import-list, .pm-scroll, .segmented, .wiki-prose pre)::-webkit-scrollbar-corner {
+  background: transparent;
+}
+/* Firefox has no ::-webkit-scrollbar; give it the slim, trackless bar. Only
+   there: in Chromium, scrollbar-width/color would override the rules above. */
+@supports not selector(::-webkit-scrollbar) {
+  :is(.modal-card, .otp-card, .ini-picker-list, .zp-log pre,
+      .wiki-template-preview, .wiki-picker-box, .wiki-import-list, .pm-scroll, .segmented, .wiki-prose pre) {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--muted, #51606f) 45%, transparent) transparent;
+  }
+}
 .modal-head {
   display: flex;
   align-items: center;
