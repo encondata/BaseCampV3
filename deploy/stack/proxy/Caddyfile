@@ -9,6 +9,10 @@
 	admin off
 	servers {
 		trusted_proxies static {$STACK_TRUSTED_PROXIES}
+		# right to left: the client sends whatever X-Forwarded-For it likes and
+		# the load balancer appends the real address, so the left-most entry
+		# is never to be trusted
+		trusted_proxies_strict
 		client_ip_headers X-Forwarded-For
 	}
 }
@@ -22,7 +26,11 @@
 		path /healthz
 		not host *.{$STACK_DOMAIN}
 	}
-	@plain header X-Forwarded-Proto http
+	# only the environment's own names are redirected; anything else is a 404
+	@plain {
+		header X-Forwarded-Proto http
+		host *.{$STACK_DOMAIN}
+	}
 	@api host api.{$STACK_DOMAIN}
 	@portal host portal.{$STACK_DOMAIN}
 	@kiosk host kiosk.{$STACK_DOMAIN}

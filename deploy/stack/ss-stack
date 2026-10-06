@@ -55,6 +55,14 @@ SUBNET=$(env_value STACK_NETWORK_SUBNET)
 external() { [[ $(env_value STACK_EXTERNAL_DATA) == 1 ]]; }
 caddy() { [[ $(env_value STACK_CADDY) == 1 ]]; }
 
+# A droplet keeps objects in Spaces (SS_SPACES_SECRET_KEY) and never runs
+# SeaweedFS, but Compose still interpolates the storage file's
+# ${SPACES_SECRET_KEY:?} when it starts mailpit from it: give it a
+# placeholder when the .env has none. Local stacks are untouched.
+if external && [[ -z $(env_value SPACES_SECRET_KEY) ]]; then
+  export SPACES_SECRET_KEY=unused-external-data
+fi
+
 if external; then STACKS=(storage api web status); else STACKS=(db storage api web status); fi
 if caddy; then STACKS+=(proxy); fi
 
@@ -84,6 +92,7 @@ ensure_network() {
 # network. The password reaches docker through the environment, never argv.
 pg() {  # pg <client> [args…] — stdin and stdout pass through
   local client=$1; shift
+  ensure_network
   PGPASSWORD=$(env_value POSTGRES_PASSWORD) docker run --rm -i --network "$NETWORK" \
     -e PGPASSWORD -e PGSSLMODE=require \
     -e PGHOST="$(env_value STACK_DB_HOST)" -e PGPORT="$(env_value STACK_DB_PORT)" \
@@ -178,7 +187,10 @@ case $cmd in
     refuse_placeholders
     ensure_network
     # nothing may write while the database is replaced: stop the writers
-    # (stopping a stack that isn't running is a no-op), keep the database up
+    # (stopping a stack that isn't running is a no-op), keep the database up.
+    # This stops writers only on this droplet (this host). Once two slots
+    # share one managed database (phase 7b), the other slot must be stopped
+    # before restoring, or it keeps writing into the database mid-restore.
     for s in status web api; do dc "$s" stop </dev/null; done
     if ! external; then dc db up -d "${WAIT[@]}" </dev/null; fi
     # an empty schema, never pg_restore --clean: tables a newer migration
@@ -233,7 +245,11 @@ case $cmd in
     [[ $# -eq 1 ]] || usage
     out=$1
     partial="$out.partial"
+    # as in dump: a signal becomes an exit, so the EXIT trap removes the partial
     trap 'rm -f "$partial"' EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     dump_db --no-owner --no-acl > "$partial" || die "pg_dump failed"
     mv "$partial" "$out"
     ;;

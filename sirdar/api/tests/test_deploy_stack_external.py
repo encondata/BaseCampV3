@@ -64,17 +64,30 @@ def _env_dir(tmp_path: Path, external: bool) -> Path:
     return env_dir
 
 
-def _run(tmp_path: Path, *args, stdin: bytes | None = None) -> tuple[str, str]:
+def _run_proc(
+    tmp_path: Path, *args, check: bool = True, fake: str = FAKE_DOCKER, extra_env=None
+) -> tuple[subprocess.CompletedProcess, str, str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     docker = bin_dir / "docker"
-    docker.write_text(FAKE_DOCKER)
+    docker.write_text(fake)
     docker.chmod(0o755)
     log = tmp_path / "docker.log"
-    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "DOCKER_LOG": str(log)}
-    subprocess.run([str(SS_STACK), *args], env=env, check=True, input=stdin, capture_output=True)
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "DOCKER_LOG": str(log), **(extra_env or {})}
+    proc = subprocess.run(
+        [str(SS_STACK), *args], env=env, check=check, capture_output=True, text=True
+    )
     pw = Path(f"{log}.pw")
-    return log.read_text(), pw.read_text() if pw.exists() else ""
+    return (
+        proc,
+        log.read_text() if log.exists() else "",
+        pw.read_text() if pw.exists() else "",
+    )
+
+
+def _run(tmp_path: Path, *args) -> tuple[str, str]:
+    _, log, pw = _run_proc(tmp_path, *args)
+    return log, pw
 
 
 def test_ss_stack_parses_and_documents_the_new_commands():
@@ -111,7 +124,8 @@ def test_restore_external(tmp_path):
     env_dir = _env_dir(tmp_path, external=True)
     dump = tmp_path / "db.dump"
     dump.write_bytes(b"PGDMP")
-    log, _ = _run(tmp_path, "restore", str(env_dir), str(dump), "--clear-sessions")
+    log, pw = _run(tmp_path, "restore", str(env_dir), str(dump), "--clear-sessions")
+    assert PASSWORD not in log and PASSWORD in pw
     assert "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" in log
     assert re.search(r"pg_restore --exit-on-error --no-owner --no-acl -d serversherpa", log)
     assert "DELETE FROM auth_sessions" in log
@@ -123,7 +137,79 @@ def test_pgdump_and_revision(tmp_path):
     out = tmp_path / "snap.dump"
     log, _ = _run(tmp_path, "pgdump", str(env_dir), str(out))
     assert out.read_bytes() == b"PGDMP" and "--no-owner --no-acl" in log
-    _run(tmp_path, "revision", str(env_dir))
+    # the one-off client needs the network: pg() makes sure it exists first
+    assert log.index("network create --subnet 172.30.0.0/24 ss-uat9") < log.index("pg_dump")
+    proc, log, pw = _run_proc(tmp_path, "revision", str(env_dir))
+    assert proc.stdout.strip() == "0089"
+    assert "postgres:16-alpine psql -tAc SELECT version_num FROM alembic_version" in log
+    assert PASSWORD not in log and PASSWORD in pw
+
+
+def test_pgdump_has_the_signal_traps():
+    pgdump = SS_STACK.read_text().split("  pgdump)", 1)[1].split(";;", 1)[0]
+    for trap in ("trap 'exit 129' HUP", "trap 'exit 130' INT", "trap 'exit 143' TERM"):
+        assert trap in pgdump
+
+
+def test_restore_says_it_stops_only_this_droplets_writers():
+    restore = SS_STACK.read_text().split("  restore)", 1)[1].split(";;", 1)[0]
+    assert "only on this droplet" in restore and "7b" in restore
+
+
+def test_a_network_with_another_subnet_is_refused(tmp_path):
+    env_dir = _env_dir(tmp_path, external=True)
+    env = env_dir / ".env"
+    env.write_text(env.read_text().replace("172.30.0.0/24", "172.31.0.0/24"))
+    (tmp_path / "docker.log.net").touch()  # the fake network exists, at 172.30.0.0/24
+    proc, log, _ = _run_proc(tmp_path, "up", str(env_dir), check=False)
+    assert proc.returncode == 1
+    assert "network ss-uat9 has subnet '172.30.0.0/24', not 172.31.0.0/24" in proc.stderr
+    assert "compose" not in log
+
+
+# Runs every `docker compose` call ss-stack makes as `docker compose … config -q`
+# against the real Docker, so interpolation errors (a missing `:?` variable)
+# fail the command; every other docker call succeeds.
+COMPOSE_CHECKING_DOCKER = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$DOCKER_LOG"
+if [[ $1 == compose ]]; then
+  shift
+  args=()
+  while [[ $# -gt 0 ]]; do
+    case $1 in --env-file|-f) args+=("$1" "$2"); shift 2 ;; *) break ;; esac
+  done
+  exec "$REAL_DOCKER" compose "${args[@]}" config -q
+fi
+case "$1 $2" in "network inspect") exit 1 ;; esac
+exit 0
+"""
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="needs docker")
+def test_up_external_without_spaces_secret_key(tmp_path):
+    """A droplet's .env has SS_SPACES_SECRET_KEY (the bucket's key) and no
+    SPACES_SECRET_KEY (SeaweedFS never runs there); every compose file
+    must still interpolate."""
+    env_dir = _env_dir(tmp_path, external=True)
+    env = env_dir / ".env"
+    text = env.read_text().replace("SPACES_SECRET_KEY=x\n", "")
+    assert "\nSPACES_SECRET_KEY" not in text
+    text += (
+        "SS_DATABASE_URL=postgresql+asyncpg://serversherpa:pw@db.example:25060/serversherpa\n"
+        "SS_DATABASE_SSL=require\nSTACK_TRUSTED_PROXIES=10.116.0.0/20\n"
+        "SS_SPACES_ENDPOINT=https://nyc3.digitaloceanspaces.com\nSS_SPACES_SECRET_KEY=do\n"
+    )
+    env.write_text(text)
+    proc, log, _ = _run_proc(
+        tmp_path,
+        "up",
+        str(env_dir),
+        check=False,
+        fake=COMPOSE_CHECKING_DOCKER,
+        extra_env={"REAL_DOCKER": shutil.which("docker"), "HOME": os.environ["HOME"]},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "proxy/compose.yml up -d" in log
 
 
 def test_caddyfile_routes_in_order():
@@ -193,19 +279,41 @@ def test_compose_nested_defaults(tmp_path, external):
 @needs_docker
 @pytest.mark.skipif(os.environ.get("SS_STACK_E2E") != "1", reason="set SS_STACK_E2E=1")
 def test_caddy_routes_in_a_container(tmp_path):
-    """Caddy with the real Caddyfile in front of a busybox 'api' and
-    'portal': health, host routing, the HTTPS redirect and the 404."""
+    """Caddy with the real Caddyfile in front of busybox stand-ins for the
+    api, portal and cert-worker: health, host routing, ACME, the HTTPS
+    redirect (only for the domain), the 404, and client IPs that a caller
+    can't spoof through X-Forwarded-For."""
     net = "ss-sirdar-caddy-e2e"
+    lb_ip = "172.30.9.20"  # the stand-in load balancer: the only trusted proxy
     subprocess.run(
         ["docker", "network", "create", "--subnet", "172.30.9.0/24", net],
         check=True,
         capture_output=True,
     )
     names = []
+    # the api echoes the X-Forwarded-For it receives at /cgi-bin/xff
+    xff_cgi = (
+        "mkdir -p /www/cgi-bin && printf '#!/bin/sh\\necho Content-Type: text/plain\\n"
+        'echo\\necho "$HTTP_X_FORWARDED_FOR"\\n\' > /www/cgi-bin/xff && '
+        "chmod +x /www/cgi-bin/xff && "
+    )
+    upstreams = (
+        (10, "api", 8000, xff_cgi),
+        (11, "portal", 8080, ""),
+        (
+            12,
+            "cert-worker",
+            8089,
+            (
+                "mkdir -p /www/.well-known/acme-challenge && "
+                "echo acme-token > /www/.well-known/acme-challenge/tok && "
+            ),
+        ),
+    )
     try:
         # fixed addresses away from .2, which Caddy takes (an automatic one
         # would hand .2 to the first busybox)
-        for octet, name in ((10, "api"), (11, "portal")):
+        for octet, name, port, extra in upstreams:
             names.append(f"{net}-{name}")
             subprocess.run(
                 [
@@ -225,9 +333,8 @@ def test_caddy_routes_in_a_container(tmp_path):
                     "sh",
                     "-c",
                     (
-                        f"mkdir -p /www && echo {name} > /www/index.html && "
-                        f"echo ok > /www/healthz && httpd -f -p "
-                        f"{8000 if name == 'api' else 8080} -h /www"
+                        f"mkdir -p /www && {extra}echo {name} > /www/index.html && "
+                        f"echo ok > /www/healthz && httpd -f -p {port} -h /www"
                     ),
                 ],
                 check=True,
@@ -250,7 +357,7 @@ def test_caddy_routes_in_a_container(tmp_path):
                 "-e",
                 "STACK_DOMAIN=uat9.serversherpa.com",
                 "-e",
-                "STACK_TRUSTED_PROXIES=10.116.0.0/20",
+                f"STACK_TRUSTED_PROXIES={lb_ip}/32",
                 "-v",
                 f"{STACK / 'proxy' / 'Caddyfile'}:/etc/caddy/Caddyfile:ro",
                 image,
@@ -259,7 +366,8 @@ def test_caddy_routes_in_a_container(tmp_path):
             capture_output=True,
         )
 
-        def curl(*args) -> str:
+        def curl(*args, ip: str | None = None, body: bool = False) -> str:
+            fmt = [] if body else ["-o", "/dev/null", "-w", "%{http_code} %{redirect_url}"]
             return subprocess.run(
                 [
                     "docker",
@@ -267,12 +375,10 @@ def test_caddy_routes_in_a_container(tmp_path):
                     "--rm",
                     "--network",
                     net,
+                    *(["--ip", ip] if ip else []),
                     "curlimages/curl:8.10.1",
                     "-s",
-                    "-o",
-                    "/dev/null",
-                    "-w",
-                    "%{http_code} %{redirect_url}",
+                    *fmt,
                     *args,
                 ],
                 capture_output=True,
@@ -280,21 +386,61 @@ def test_caddy_routes_in_a_container(tmp_path):
                 check=False,
             ).stdout
 
+        portal = ("-H", "Host: portal.uat9.serversherpa.com")
+        api = ("-H", "Host: api.uat9.serversherpa.com")
         assert curl("http://172.30.9.2/healthz").startswith("200")
-        assert curl("-H", "Host: portal.uat9.serversherpa.com", "http://172.30.9.2/").startswith(
-            "200"
+        assert curl(*portal, "http://172.30.9.2/").startswith("200")
+        assert curl(*portal, "http://172.30.9.2/", body=True).strip() == "portal"
+        assert curl(*api, "http://172.30.9.2/", body=True).strip() == "api"
+        assert curl(*portal, "-H", "X-Forwarded-Proto: http", "http://172.30.9.2/x") == (
+            "308 https://portal.uat9.serversherpa.com/x"
         )
+        # the redirect is only for the domain: other hosts get the 404
+        assert curl(
+            "-H", "Host: other.example", "-H", "X-Forwarded-Proto: http", "http://172.30.9.2/x"
+        ).startswith("404")
+        assert curl("-H", "Host: other.example", "http://172.30.9.2/").startswith("404")
+        # ACME HTTP-01 reaches the cert-worker, before the HTTPS redirect
         assert (
             curl(
-                "-H",
-                "Host: portal.uat9.serversherpa.com",
+                *api,
                 "-H",
                 "X-Forwarded-Proto: http",
-                "http://172.30.9.2/x",
-            )
-            == "308 https://portal.uat9.serversherpa.com/x"
+                "http://172.30.9.2/.well-known/acme-challenge/tok",
+                body=True,
+            ).strip()
+            == "acme-token"
         )
-        assert curl("-H", "Host: other.example", "http://172.30.9.2/").startswith("404")
+        # Caddy's own health answers only on 127.0.0.1
+        assert curl("http://172.30.9.2/caddy-health").startswith("404")
+        inside = subprocess.run(
+            [
+                "docker",
+                "exec",
+                f"{net}-caddy",
+                "wget",
+                "-q",
+                "-O",
+                "-",
+                "http://127.0.0.1/caddy-health",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        assert inside.strip() == "ok"
+        # client IPs: the load balancer appends the real client to whatever
+        # X-Forwarded-For the client sent; only that right-most entry counts
+        xff = ("http://172.30.9.2/cgi-bin/xff",)
+        got = curl(
+            *api, "-H", "X-Forwarded-For: 6.6.6.6, 203.0.113.7", *xff, ip=lb_ip, body=True
+        ).strip()
+        assert got == "203.0.113.7"
+        # a caller that isn't the load balancer can't set it at all
+        got = curl(
+            *api, "-H", "X-Forwarded-For: 6.6.6.6", *xff, ip="172.30.9.30", body=True
+        ).strip()
+        assert got == "172.30.9.30"
     finally:
         for name in names:
             subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
