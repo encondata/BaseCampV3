@@ -19,7 +19,7 @@ SHA = "e73b99ca" + "1" * 32
 
 def _plain(card: dict) -> dict:
     """A card without the spotlight fields (test_dashboard_flow covers them)."""
-    return {k: v for k, v in card.items() if k not in ("flow", "production")}
+    return {k: v for k, v in card.items() if k not in ("flow", "production", "primary")}
 
 
 @pytest.fixture(autouse=True)

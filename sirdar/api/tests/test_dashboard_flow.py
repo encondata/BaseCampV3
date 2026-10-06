@@ -91,6 +91,7 @@ async def test_without_production_the_first_card_is_a_placeholder(client, db):
                                   "production")} == {
         "id": "production", "label": "Production", "state": "empty",
         "action_label": "Set up Production", "environment": None, "production": True}
+    assert first["primary"] is True
     assert first["flow"] == {
         "kind": "none", "middle": {"label": "Not built yet", "sub": "", "status": "unknown"},
         "servers": [{"id": "none", "label": "Server", "sub": "Not built yet", "state": "empty",
@@ -203,6 +204,105 @@ def test_the_demo_has_the_same_shape():
     for card in d["environments"]:
         assert set(card) == {"id", "label", "sub", "state", "version", "last_release",
                              "last_release_at", "action_label", "environment", "production",
-                             "flow"}
+                             "primary", "flow"}
         assert set(card["flow"]) == {"kind", "middle", "servers", "active_slot", "certificate",
                                      "deploying_slot", "failed_slot"}
+    assert [c["primary"] for c in d["environments"]] == [True, False, False]
+
+
+async def _card(client, db, name: str, h: dict | None = None) -> dict:
+    return next(c for c in (await _dashboard(client, db, h))["environments"] if c["id"] == name)
+
+
+async def test_a_slot_with_a_droplet_but_no_commit_is_idle_not_deployed(client, db, do_cloud):
+    env = await make_do_environment(db)
+    await db.execute(update(DoSlot).where(DoSlot.environment_id == env.id, DoSlot.slot == "orange")
+                     .values(droplet_id="4001", public_ip="127.0.0.1"))
+    await db.commit()
+    orange, purple = (await _card(client, db, "uat9"))["flow"]["servers"]
+    assert (orange["state"], orange["deployed"], orange["sub"]) == ("idle", False, "127.0.0.1")
+    assert (purple["state"], purple["deployed"]) == ("empty", False)
+
+
+async def test_a_droplet_the_inventory_shows_stopped_is_degraded(client, db, do_cloud):
+    env = await make_do_environment(db)
+    await _do_live(db, env, active="orange", checks={"orange": True, "purple": True})
+    _lb(do_cloud, "lb-1")
+    do_cloud.do.droplets["4001"] = {**do_cloud.do.add_droplet("ss-uat9-orange", ["sirdar"]),
+                                    "id": 4001, "status": "off"}
+    orange, purple = (await _card(client, db, "uat9"))["flow"]["servers"]
+    assert (orange["health"], purple["health"]) == ("degraded", "healthy")
+
+
+async def test_a_load_balancer_that_is_not_active_is_warn(client, db, do_cloud):
+    env = await make_do_environment(db)
+    await _do_live(db, env, active="orange")
+    _lb(do_cloud, "lb-1", status="new")
+    assert (await _card(client, db, "uat9"))["flow"]["middle"]["status"] == "warn"
+
+
+@pytest.mark.parametrize("status", ["cancelled", "interrupted"])
+async def test_a_stopped_deployment_marks_its_slot_failed(client, db, do_cloud, status):
+    env = await make_do_environment(db)
+    await _do_live(db, env, active="orange")
+    db.add(Deployment(environment_id=env.id, mode="update", git_ref="main", sha=SHA,
+                      status=status, cloud=True, slot="purple"))
+    await db.execute(update(Environment).where(Environment.id == env.id).values(status="failed"))
+    await db.commit()
+    flow = (await _card(client, db, "uat9"))["flow"]
+    assert (flow["failed_slot"], flow["deploying_slot"]) == ("purple", None)
+
+
+async def test_a_later_snapshot_keeps_the_failed_mark(client, db, do_cloud):
+    env = await make_do_environment(db)
+    await _do_live(db, env, active="orange")
+    db.add(Deployment(environment_id=env.id, mode="update", git_ref="main", sha=SHA,
+                      status="failed", cloud=True, slot="purple",
+                      created_at=NOW - timedelta(hours=1)))
+    db.add(Deployment(environment_id=env.id, mode="snapshot", git_ref="main", sha=SHA,
+                      status="succeeded", cloud=True, created_at=NOW))
+    await db.execute(update(Environment).where(Environment.id == env.id).values(status="failed"))
+    await db.commit()
+    assert (await _card(client, db, "uat9"))["flow"]["failed_slot"] == "purple"
+
+
+async def test_two_accounts_one_failing_keeps_the_grouped_tree(client, db, do_cloud):
+    await make_do_environment(db, name="prod", type_="production", account="production")
+    await configure_account(db)
+    do_cloud.do.add_droplet("ss-prod-blue", ["sirdar", "sirdar-env:prod"])
+    del do_cloud.do.tokens[DEV_TOKEN]                    # the Development token now 401s
+    d = await _dashboard(client, db)
+    infra = d["infrastructure"]
+    reason = "DigitalOcean rejected the API token."
+    assert infra["error"] == f"Development account: {reason}"
+    assert [(a["key"], a["error"]) for a in infra["accounts"]] == [
+        ("production", None), ("development", reason)]
+    prod_node, dev_node = infra["tree"]
+    assert (prod_node["name"], dev_node["name"]) == ("Production account", "Development account")
+    assert prod_node["children"]
+    assert (dev_node["children"], dev_node["status_label"], dev_node["endpoint"]) == (
+        [], "Unavailable", reason)
+    assert d["environments"][0]["id"] == "prod"
+    assert d["environments"][0]["flow"]["kind"] == "load_balancer"
+
+
+async def test_a_lan_server_version_falls_back_to_the_commit(client, db, monkeypatch):
+    env = await make_environment(db, name="uat", current_sha=SHA, secrets={})
+    await db.execute(update(Environment).where(Environment.id == env.id).values(image_tag=None))
+    await db.commit()
+    monkeypatch.setattr(targets, "ssh_config_for",
+                        lambda tid, s: SimpleNamespace(host="10.10.48.63"))
+    card = await _card(client, db, "uat")
+    assert card["flow"]["servers"][0]["version"] == card["version"] == SHA[:8]
+
+
+async def test_only_the_first_card_is_primary(client, db, do_cloud):
+    old = await make_do_environment(db, name="prod-old", type_="production",
+                                    account="production")
+    await db.execute(update(Environment).where(Environment.id == old.id).values(retiring=True))
+    await db.commit()
+    await make_do_environment(db, name="prod", type_="production", account="production")
+    cards = (await _dashboard(client, db))["environments"]
+    assert [(c["id"], c["production"], c["primary"]) for c in cards
+            if c["production"]] == [("prod", True, True), ("prod-old", True, False)]
+    assert sum(c["primary"] for c in cards) == 1

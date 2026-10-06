@@ -32,7 +32,6 @@ from sirdar_api.deploy import (
     integrations,
     names,
     outbound,
-    serialize,
     targets,
     vms,
 )
@@ -52,6 +51,8 @@ _TYPE_LABELS = {"dev": "Development", "beta": "Beta", "custom": "Custom",
 _RELEASED = ("succeeded", "adopted")
 # pipeline.RETRYABLE_STATUSES (not imported: the dashboard stays light).
 _RETRYABLE = ("failed", "cancelled", "interrupted")
+# pipeline.KEEPS_STATUS: modes that leave the environment's status alone.
+_KEEPS_STATUS = ("snapshot", "publish")
 
 
 def clear_cache() -> None:
@@ -232,8 +233,13 @@ def _empty_flow() -> dict:
 
 
 async def _marks(db: AsyncSession, env: Environment, lan: bool) -> tuple[str | None, str | None]:
-    """(deploying slot, failed slot) from the environment's latest deployment."""
-    latest = await serialize.latest_deployment(db, env.id)
+    """(deploying slot, failed slot) from the environment's latest deployment
+    in a mode that sets its status (a later snapshot or publish doesn't
+    clear a failed Update's mark)."""
+    latest = await db.scalar(select(Deployment)
+                             .where(Deployment.environment_id == env.id,
+                                    Deployment.mode.not_in(_KEEPS_STATUS))
+                             .order_by(Deployment.created_at.desc()).limit(1))
     if latest is None:
         return None, None
     slot = "host" if lan else latest.slot
@@ -313,15 +319,18 @@ async def _lan_flow(db: AsyncSession, settings: Settings, env: Environment) -> d
                        "status": "ok" if npm_host else "unknown"},
             "servers": [{"id": "host", "label": label, "sub": sub,
                          "state": "live" if live else "empty", "health": health,
-                         "version": env.image_tag, "deployed": live}],
+                         "version": _version(env), "deployed": live}],
             "active_slot": "host" if live else None, "certificate": None,
             "deploying_slot": deploying, "failed_slot": failed}
+
+
+def _version(env: Environment) -> str | None:
+    return env.image_tag or (env.current_sha[:8] if env.current_sha else None)
 
 
 async def _environment_card(db: AsyncSession, settings: Settings, env: Environment,
                             inventories: dict[str, dict], now: datetime) -> dict:
     last = await _last_release(db, env.id)
-    version = env.image_tag or (env.current_sha[:8] if env.current_sha else None)
     if env.target_id == targets.DO_TARGET:
         row = await do_envs.get(db, env.id)
         flow = (await _do_flow(db, env, row, inventories.get(row.account_key), now)
@@ -330,17 +339,18 @@ async def _environment_card(db: AsyncSession, settings: Settings, env: Environme
         flow = await _lan_flow(db, settings, env)
     return {"id": env.name, "label": env.name,
             "sub": _TYPE_LABELS.get(env.type, env.type.title()), "state": _env_state(env),
-            "version": version, "last_release": last.sha[:8] if last else None,
+            "version": _version(env), "last_release": last.sha[:8] if last else None,
             "last_release_at": (last.finished_at.isoformat()
                                 if last and last.finished_at else None),
             "action_label": f"Deploy {env.name}", "environment": env.name,
-            "production": env.type == "production", "flow": flow}
+            "production": env.type == "production", "primary": False, "flow": flow}
 
 
 def _placeholder(env: str, action_label: str, *, production: bool = False) -> dict:
     return {"id": env, "label": _label(env), "sub": None, "state": "empty", "version": None,
             "last_release": None, "last_release_at": None, "action_label": action_label,
-            "environment": None, "production": production, "flow": _empty_flow()}
+            "environment": None, "production": production, "primary": False,
+            "flow": _empty_flow()}
 
 
 async def environment_cards(db: AsyncSession | None, settings: Settings, tagged: list[str],
@@ -359,6 +369,9 @@ async def environment_cards(db: AsyncSession | None, settings: Settings, tagged:
     first = prods[0] if prods else None
     cards = [await card(first) if first else
              _placeholder("production", "Set up Production", production=True)]
+    # Only card 0 is the Production card; a retiring production listed later
+    # keeps production: true but isn't primary.
+    cards[0]["primary"] = True
     for type_, short in (("dev", "Dev"), ("beta", "Beta")):
         typed = [e for e in rows if e.type == type_]
         if typed:
@@ -395,6 +408,20 @@ async def _read_accounts(db: AsyncSession, settings: Settings, refresh: bool,
     return read
 
 
+def _account_node(account: dict, inv: dict | None) -> dict:
+    """One account's group in a two-account tree. An account that couldn't
+    be read keeps its node (no children, its error as the endpoint), so the
+    tree never flips between grouped and flat."""
+    name = f"{account['label']} account"
+    if inv is None:
+        return node(f"account-{account['key']}", name, "group", "DigitalOcean account",
+                    "unknown", "Unavailable", region="—", endpoint=account["error"] or "—")
+    children = build_tree(inv)
+    status, status_label = _rollup(children)
+    return node(f"account-{account['key']}", name, "group", "DigitalOcean account", status,
+                status_label, children=children)
+
+
 async def build_dashboard(settings: Settings, *, db: AsyncSession | None = None,
                           demo: bool = False, refresh: bool = False) -> dict:
     if demo:
@@ -417,20 +444,14 @@ async def build_dashboard(settings: Settings, *, db: AsyncSession | None = None,
         infra["error"] = failed[0]["error"]
     elif failed:
         infra["error"] = " ".join(f"{a['label']} account: {a['error']}" for a in failed)
-    if len(read) == 1:
-        infra["tree"] = build_tree(read[0][2])
+    inventories = {key: inv for key, _, inv in read}
+    if len(infra["accounts"]) > 1:
+        infra["tree"] = [_account_node(a, inventories.get(a["key"])) for a in infra["accounts"]]
     elif read:
-        groups = []
-        for key, label, inv in read:
-            children = build_tree(inv)
-            status, status_label = _rollup(children)
-            groups.append(node(f"account-{key}", f"{label} account", "group",
-                               "DigitalOcean account", status, status_label, children=children))
-        infra["tree"] = groups
+        infra["tree"] = build_tree(read[0][2])
     every = [r for _, _, inv in read for kind in ("droplets", "databases", "load_balancers")
              for r in inv[kind]]
     tagged = sorted({e for r in every if (e := _env_of(r)) and e not in _FIXED})
-    envs = await environment_cards(db, settings, tagged, {key: inv for key, _, inv in read},
-                                   datetime.now(UTC))
+    envs = await environment_cards(db, settings, tagged, inventories, datetime.now(UTC))
     return {"demo": False, "generated_at": datetime.now(UTC).isoformat(),
             "health": _health(envs), "environments": envs, "infrastructure": infra}
