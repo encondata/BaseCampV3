@@ -103,6 +103,8 @@ const CODE_FIELD: Record<string, Field> = {
   do_db_size_invalid: 'cloud', auto_activate_not_allowed: 'cloud', production_exists: 'name',
   production_requires_digitalocean: 'target', base_domain_not_in_zone: 'domain',
 };
+/** A VM or DigitalOcean target: Sirdar builds environments there, so they can't be adopted. */
+const builtBySirdar = (id: string) => isVmTarget(id) || isDoTarget(id);
 const only = (e: Errors): Errors => Object.fromEntries(Object.entries(e).filter(([, v]) => v)) as Errors;
 
 export default function NewEnvironmentModal({ onCreated, onClose }: {
@@ -247,10 +249,10 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
     if (ready) setDoAccount(ready.key);
   }, [accounts, doAccount]);
   const hostName = isVmTarget(target) ? VM_HOST_LABEL[target as VmHostKind] : '';
-  // Adopt reads a hand-built environment over SSH: VM environments are only ones Sirdar builds.
-  const offered = (targets ?? []).filter((t) => mode === 'new' || !isVmTarget(t.id));
+  // Adopt reads a hand-built environment over SSH: VM and DigitalOcean environments are only ones Sirdar builds.
+  const offered = (targets ?? []).filter((t) => mode === 'new' || !builtBySirdar(t.id));
   useEffect(() => {
-    if (mode === 'adopt' && isVmTarget(target)) setTarget(sshTargets(targets ?? [])[0]?.id ?? '');
+    if (mode === 'adopt' && builtBySirdar(target)) setTarget(sshTargets(targets ?? [])[0]?.id ?? '');
   }, [mode, target, targets]);
   const limits = defaults?.vm.limits;
   const machine = { cores: Number(cores), memory_mb: mbOf(memoryGb), disk_gb: Number(diskGb),
@@ -536,6 +538,11 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                     {accountOf(doAccount)?.region ? `Built in ${accountOf(doAccount)!.region}. ` : ''}
                     An environment stays in the account it is built in.
                   </p>
+                  {production && doAccount !== 'production' && accountOf('production')?.configured === false && (
+                    <p className="page-hint">
+                      The {accountOf('production')!.label} account isn't set up, so this uses {accountOf(doAccount)?.label}.
+                    </p>
+                  )}
                 </div>
                 {production ? (
                   <p className="page-hint sirdar-span2">

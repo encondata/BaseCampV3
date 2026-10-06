@@ -291,7 +291,8 @@ const MESSAGES: Record<string, string> = {
   vm_disk_shrink: "A VM's disk can grow but never shrink.",
   ip_in_use: 'That address is already used: by the proxy, an SSH target, a VM host or another environment.',
   ssh_targets_unreadable: "Sirdar couldn't read the saved SSH targets, so it can't check that address is free.",
-  adopt_not_allowed: 'Only environments on SSH targets can be adopted. Environments on Proxmox or ESXi are ones Sirdar builds.',
+  adopt_not_allowed: 'Only environments on SSH targets can be adopted. Sirdar builds environments on Proxmox, ESXi and '
+    + "DigitalOcean itself, so they can't be adopted.",
   host_ip_managed: "A VM environment's services always run on its VM.",
   target_kind_locked: "An environment can't move between an SSH target and a VM host, or between VM hosts.",
   vm_snapshot_not_allowed: 'Only an environment on a VM host takes VM snapshots.',
