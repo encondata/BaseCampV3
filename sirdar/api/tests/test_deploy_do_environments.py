@@ -204,22 +204,34 @@ async def test_unretiring_needs_no_other_production(client, db):
     assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "production_exists")
 
 
+CA_PEM = "-----BEGIN CERTIFICATE-----\nMIIBfakeCA\n-----END CERTIFICATE-----\n"
+
+
+async def _ready_for_extras(env, **over):
+    from sirdar_api.deploy import vault
+    values = {"lb_ip": "203.0.113.50", "vpc_ip_range": "10.116.0.0/20",
+              "db_host": "private-ss-uat9-db.db.ondigitalocean.com", "db_port": 25060,
+              "db_ca_cert": CA_PEM, "spaces_key_id": "DO00KEY000001",
+              "spaces_secret_enc": vault.encrypt(get_settings(), "spaces-SECRET-1"), **over}
+    await do_envs.set_do(env.id, **values)
+    await do_envs.set_slot(env.id, "orange", droplet_id="4001", public_ip="127.0.0.1")
+
+
 async def test_env_extra(db):
+    import base64
+
     from .deploy_factories import ENV_SECRETS
     env = await make_do_environment(db)
     with pytest.raises(do_envs.DoEnvError) as e:
         await do_envs.env_extra(db, get_settings(), env, "orange", ENV_SECRETS)
     assert e.value.code == "do_not_ready"
     assert e.value.extra["missing"] == ["load balancer address", "VPC range", "database host",
-                                        "Spaces key", "droplet"]
-    from sirdar_api.deploy import vault
-    await do_envs.set_do(env.id, lb_ip="203.0.113.50", vpc_ip_range="10.116.0.0/20",
-                         db_host="private-ss-uat9-db.db.ondigitalocean.com", db_port=25060,
-                         spaces_key_id="DO00KEY000001",
-                         spaces_secret_enc=vault.encrypt(get_settings(), "spaces-SECRET-1"))
-    await do_envs.set_slot(env.id, "orange", droplet_id="4001", public_ip="127.0.0.1")
+                                        "database port", "database CA", "Spaces key",
+                                        "droplet"]
+    await _ready_for_extras(env)
     extra, secrets = await do_envs.env_extra(db, get_settings(), env, "orange", ENV_SECRETS)
     password = ENV_SECRETS["POSTGRES_PASSWORD"]
+    ca_b64 = base64.b64encode(CA_PEM.encode()).decode()
     assert extra == {
         "STACK_EXTERNAL_DATA": "1", "STACK_CADDY": "1", "STACK_NETWORK_SUBNET": "172.30.0.0/24",
         "STACK_HOSTS_IP": "203.0.113.50", "STACK_TRUSTED_PROXIES": "10.116.0.0/20",
@@ -227,9 +239,34 @@ async def test_env_extra(db):
         "STACK_DB_NAME": "serversherpa", "STACK_DB_USER": "serversherpa",
         "SS_DATABASE_URL": "postgresql+asyncpg://serversherpa:"
                            f"{password}@private-ss-uat9-db.db.ondigitalocean.com:25060/serversherpa",
-        "SS_DATABASE_SSL": "require", "SS_SPACES_ENDPOINT": "https://nyc3.digitaloceanspaces.com",
+        "SS_DATABASE_SSL": "require", "SS_DATABASE_CA_B64": ca_b64,
+        "SS_SPACES_ENDPOINT": "https://nyc3.digitaloceanspaces.com",
         "SS_SPACES_REGION": "nyc3", "SS_SPACES_ACCESS_KEY": "DO00KEY000001",
         "SS_SPACES_SECRET_KEY": "spaces-SECRET-1", "SS_SPACES_USE_PATH_STYLE": "false",
         "STACK_DROPLET_ID": "4001"}
-    assert set(secrets) == {extra["SS_DATABASE_URL"], "spaces-SECRET-1"}
+    assert set(secrets) == {extra["SS_DATABASE_URL"], "spaces-SECRET-1", ca_b64}
     assert list(extra) == [k for k in envfile.EXTRA_KEYS if k in extra]
+    # the rendered .env takes every value as it is (one line each)
+    assert envfile.parse_env(envfile.render_env(envfile.EnvConfig(
+        name=env.name, domain=env.base_domain, image_tag="0123abcd", proxy_ip=env.proxy_ip,
+        bind_ip=env.bind_ip, ports=dict(envfile.DEFAULT_PORTS), keep_dumps=5,
+        spaces_bucket=env.spaces_bucket, log_level="INFO", secrets=ENV_SECRETS,
+        extra=extra)))["SS_DATABASE_CA_B64"] == ca_b64
+
+
+async def test_env_extra_quotes_the_password_in_the_url(db):
+    from .deploy_factories import ENV_SECRETS
+    env = await make_do_environment(db)
+    await _ready_for_extras(env)
+    extra, _ = await do_envs.env_extra(db, get_settings(), env, "orange",
+                                       {**ENV_SECRETS, "POSTGRES_PASSWORD": "p@ss/w:rd%"})
+    assert extra["SS_DATABASE_URL"].startswith(
+        "postgresql+asyncpg://serversherpa:p%40ss%2Fw%3Ard%25@private-ss-uat9-db.")
+
+
+async def test_the_droplet_env_names_the_environments_own_bucket(db):
+    """Render writes SS_SPACES_BUCKET from env.spaces_bucket: on DigitalOcean
+    that is the environment's own Spaces bucket, never the default."""
+    env = await make_do_environment(db)
+    row = await do_envs.get(db, env.id)
+    assert env.spaces_bucket == row.bucket != envfile.DEFAULT_SPACES_BUCKET

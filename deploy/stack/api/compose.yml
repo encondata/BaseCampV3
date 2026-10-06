@@ -16,6 +16,8 @@ x-ss-env: &ss-env
   # SS_DATABASE_URL (the managed database) and SS_DATABASE_SSL=require.
   SS_DATABASE_URL: ${SS_DATABASE_URL:-postgresql+asyncpg://serversherpa:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/serversherpa}
   SS_DATABASE_SSL: ${SS_DATABASE_SSL:-disable}
+  # the managed database's own CA (base64 PEM): verify-full when set
+  SS_DATABASE_CA_B64: ${SS_DATABASE_CA_B64:-}
   SS_JWT_SECRET: ${SS_JWT_SECRET:?set SS_JWT_SECRET}
   SS_TOTP_ENCRYPTION_KEY: ${SS_TOTP_ENCRYPTION_KEY:?set SS_TOTP_ENCRYPTION_KEY}
   SS_PASSWORD_PEPPER: ${SS_PASSWORD_PEPPER:?set SS_PASSWORD_PEPPER}

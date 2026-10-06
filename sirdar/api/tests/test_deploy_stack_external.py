@@ -7,6 +7,7 @@ ss-stack runs against a fake `docker` on PATH that logs its argv (and the
 PGPASSWORD it was given, separately). The compose and Caddy checks need a
 real Docker and skip without one; the Caddy run also needs SS_STACK_E2E=1."""
 
+import base64
 import os
 import re
 import shutil
@@ -154,6 +155,85 @@ def test_pgdump_has_the_signal_traps():
 def test_restore_says_it_stops_only_this_droplets_writers():
     restore = SS_STACK.read_text().split("  restore)", 1)[1].split(";;", 1)[0]
     assert "only on this droplet" in restore and "7b" in restore
+
+
+CA_PEM = "-----BEGIN CERTIFICATE-----\nMIIBfakeClusterCA\n-----END CERTIFICATE-----\n"
+CA_B64 = base64.b64encode(CA_PEM.encode()).decode()
+CA_MOUNT = "/run/ss-db-ca.pem"
+# Like FAKE_DOCKER, and copies the CA file it was asked to mount (with its
+# mode) next to the log, so the test sees what the client container got.
+CA_DOCKER = FAKE_DOCKER.replace(
+    'case "$*" in *pg_dump*)',
+    """args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  if [[ ${args[i]} == -v && ${args[i+1]} == *:/run/ss-db-ca.pem:ro ]]; then
+    src=${args[i+1]%%:*}
+    cp "$src" "$DOCKER_LOG.ca"; stat -f %Lp "$src" 2>/dev/null >> "$DOCKER_LOG.mode" \\
+      || stat -c %a "$src" >> "$DOCKER_LOG.mode"
+    printf '%s\\n' "$src" >> "$DOCKER_LOG.src"
+  fi
+done
+case "$*" in *pg_dump*)""")
+
+
+def _with_ca(env_dir: Path, value: str = CA_B64) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(f"SS_DATABASE_CA_B64={value}\n")
+
+
+@pytest.mark.parametrize("command", ["dump", "pgdump", "revision", "restore"])
+def test_the_one_off_client_verifies_the_cluster_ca(tmp_path, command):
+    env_dir = _env_dir(tmp_path, external=True)
+    _with_ca(env_dir)
+    args = {"dump": [], "pgdump": [str(tmp_path / "snap.dump")], "revision": [],
+            "restore": [str(tmp_path / "db.dump"), "--clear-sessions"]}[command]
+    (tmp_path / "db.dump").write_bytes(b"PGDMP")
+    proc, log, _ = _run_proc(tmp_path, command, str(env_dir), *args, fake=CA_DOCKER,
+                             extra_env={"TMPDIR": str(tmp_path)})
+    runs = [line for line in log.splitlines() if line.startswith("run ")]
+    assert runs
+    for line in runs:
+        assert "-e PGSSLMODE=verify-full" in line and f"-e PGSSLROOTCERT={CA_MOUNT}" in line
+        assert "PGSSLMODE=require" not in line
+        assert f":{CA_MOUNT}:ro" in line
+    assert CA_B64 not in log and CA_PEM.splitlines()[1] not in log
+    assert (tmp_path / "docker.log.ca").read_text() == CA_PEM
+    assert set((tmp_path / "docker.log.mode").read_text().split()) == {"600"}
+    # one file for the whole command, gone when ss-stack exits
+    sources = set((tmp_path / "docker.log.src").read_text().split())
+    assert len(sources) == 1 and not Path(sources.pop()).exists()
+
+
+def test_a_bad_cluster_ca_stops_before_any_client_runs(tmp_path):
+    env_dir = _env_dir(tmp_path, external=True)
+    _with_ca(env_dir, "not base64 at all!")
+    proc, log, _ = _run_proc(tmp_path, "revision", str(env_dir), check=False,
+                             extra_env={"TMPDIR": str(tmp_path)})
+    assert proc.returncode != 0 and "SS_DATABASE_CA_B64" in proc.stderr
+    assert "run " not in log
+    assert not list(tmp_path.glob("ss-db-ca.*"))
+
+
+def test_a_failed_dump_still_removes_the_ca_and_the_partial(tmp_path):
+    env_dir = _env_dir(tmp_path, external=True)
+    _with_ca(env_dir)
+    failing = CA_DOCKER.replace("exit 0\n", "[[ $* == *pg_dump* ]] && exit 1\nexit 0\n")
+    proc, _, _ = _run_proc(tmp_path, "dump", str(env_dir), check=False, fake=failing,
+                           extra_env={"TMPDIR": str(tmp_path)})
+    assert proc.returncode != 0
+    assert not list((env_dir / "backups").glob("*.partial"))
+    src = (tmp_path / "docker.log.src").read_text().split()[0]
+    assert not Path(src).exists()
+
+
+def test_local_mode_ignores_the_ca_key(tmp_path):
+    env_dir = _env_dir(tmp_path, external=False)
+    _with_ca(env_dir)
+    log, _ = _run(tmp_path, "revision", str(env_dir))
+    assert log.splitlines()[-1] == ("compose --env-file " + str(env_dir / ".env") + " -f "
+                                    + str(STACK / "db/compose.yml") + " exec -T postgres psql "
+                                    "-U serversherpa -d serversherpa -tAc "
+                                    "SELECT version_num FROM alembic_version")
 
 
 def test_a_network_with_another_subnet_is_refused(tmp_path):

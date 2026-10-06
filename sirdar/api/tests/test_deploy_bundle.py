@@ -433,3 +433,12 @@ def test_objects_commands_take_the_spaces_secret_and_region(monkeypatch, tmp_pat
                         "--region", "nyc3"]) == 1
     assert seen == {"endpoint": "https://nyc3.digitaloceanspaces.com", "key_id": "DO00KEY",
                     "secret": "do-spaces", "region": "nyc3"}
+
+
+def test_objects_commands_name_every_secret_variable(monkeypatch, tmp_path, capsys):
+    for name in ("SNAP_S3_SECRET", "SS_SPACES_SECRET_KEY", "SPACES_SECRET_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    assert bundle.main(["export-objects", "--out", str(tmp_path / "o.tar")]) == 1
+    err = capsys.readouterr().err
+    assert all(name in err for name in ("SNAP_S3_SECRET", "SS_SPACES_SECRET_KEY",
+                                        "SPACES_SECRET_KEY"))

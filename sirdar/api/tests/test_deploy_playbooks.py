@@ -784,8 +784,25 @@ def test_slot_smoke_playbook(tmp_path, status, ok):
         server.shutdown()
     assert (result.returncode == 0) is ok, result.stdout + result.stderr
     assert ("api.e2e.serversherpa.com", "/healthz", "https") in _Answer.seen
+    # every name is tried; a failing one once, then once more (retries=1)
+    assert len(_Answer.seen) == (1 if ok else 2) * len(hosts)
     if not ok:
         assert "api.e2e.serversherpa.com" in result.stdout
+        assert "Status code was 502" in result.stdout
+
+
+def test_slot_smoke_fits_its_step_with_five_names():
+    """The worst case (every name failing every attempt with its full
+    timeout) for the five public names stays well inside the step's limit."""
+    _, tasks = _tasks("slot_smoke.yml")
+    task = tasks[0]
+
+    def default(expr):
+        return int(expr.split("default(")[1].split(")")[0])
+
+    attempts = default(task["retries"]) + 1
+    per_try = task["ansible.builtin.uri"]["timeout"] + default(task["delay"])
+    assert 5 * attempts * per_try <= 0.75 * steps.STEPS_BY_KEY["slot_smoke"].timeout
 
 
 def test_bootstrap_blocks_the_metadata_service_only_when_asked():
@@ -793,3 +810,5 @@ def test_bootstrap_blocks_the_metadata_service_only_when_asked():
     assert "block_metadata | default(false) | bool" in text
     assert "iptables -I DOCKER-USER -d 169.254.169.254 -j REJECT" in text
     assert "PartOf=docker.service" in text
+    # comes back with every Docker start, not only at boot
+    assert "WantedBy=docker.service" in text and "WantedBy=multi-user.target" not in text

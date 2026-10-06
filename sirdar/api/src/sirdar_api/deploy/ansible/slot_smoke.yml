@@ -1,7 +1,9 @@
 # Step 13 — Smoke test (slot), DigitalOcean: every public name answers
 # through Caddy on this droplet (http://127.0.0.1 with its Host), before the
 # load balancer sends it any traffic. Sirdar isn't in the VPC, so the check
-# runs on the droplet. 200–399 passes; redirects aren't followed.
+# runs on the droplet. 200–399 passes; redirects aren't followed. Worst
+# case for the five public names: 5 × 5 tries × (5 s + 10 s) = 375 s,
+# inside the step's 10 minutes.
 - name: Smoke test (slot)
   hosts: target
   gather_facts: false
@@ -14,10 +16,10 @@
           X-Forwarded-Proto: https
         follow_redirects: none
         status_code: [200, 201, 202, 203, 204, 301, 302, 303, 304, 307, 308]
-        timeout: 10
+        timeout: 5
       register: answer
       until: answer is not failed
-      retries: "{{ slot_smoke_retries | default(6) }}"
+      retries: "{{ slot_smoke_retries | default(4) }}"
       delay: "{{ slot_smoke_delay | default(10) }}"
       loop: "{{ public_hosts }}"
       loop_control:

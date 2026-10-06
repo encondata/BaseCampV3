@@ -508,7 +508,9 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
                      finished_at=now)
     db.add(dep)
     await db.flush()
-    ignored = sorted(k for k in values if k not in envfile.KNOWN_KEYS)
+    # a droplet's keys (EXTRA_KEYS) never come from a hand-built .env
+    adoptable = set(envfile.KNOWN_KEYS) - set(envfile.EXTRA_KEYS)
+    ignored = sorted(k for k in values if k not in adoptable)
     return env, dep, AdoptReport(sha=sha, imported_secrets=sorted(secrets),
                                  ignored_keys=ignored)
 

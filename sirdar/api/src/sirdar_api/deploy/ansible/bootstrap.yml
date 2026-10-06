@@ -78,7 +78,7 @@
               ExecStart=/bin/sh -c 'iptables -C DOCKER-USER -d 169.254.169.254 -j REJECT 2>/dev/null || iptables -I DOCKER-USER -d 169.254.169.254 -j REJECT'
 
               [Install]
-              WantedBy=multi-user.target
+              WantedBy=docker.service
 
         - name: The rule is on, and comes back with Docker
           ansible.builtin.systemd_service:

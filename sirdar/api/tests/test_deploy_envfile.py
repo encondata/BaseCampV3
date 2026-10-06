@@ -132,3 +132,8 @@ def test_extras_are_checked(extra, reason):
 def test_extras_stay_out_of_repr():
     cfg = _cfg(extra={"SS_SPACES_SECRET_KEY": "spaces-SECRET"})
     assert "spaces-SECRET" not in repr(cfg)
+
+
+def test_the_cluster_ca_rides_one_line_after_the_ssl_mode():
+    keys = envfile.EXTRA_KEYS
+    assert keys.index("SS_DATABASE_CA_B64") == keys.index("SS_DATABASE_SSL") + 1

@@ -515,7 +515,8 @@ def _s3_from_args(args):
     secret = (os.environ.get("SNAP_S3_SECRET") or os.environ.get("SS_SPACES_SECRET_KEY")
               or os.environ.get("SPACES_SECRET_KEY"))
     if not secret:
-        raise BundleError("Set SNAP_S3_SECRET (or SPACES_SECRET_KEY) to the bucket's secret key.")
+        raise BundleError("Set SNAP_S3_SECRET (or SS_SPACES_SECRET_KEY, or SPACES_SECRET_KEY) "
+                          "to the bucket's secret key.")
     bucket = args.bucket or os.environ.get("SS_SPACES_BUCKET") or DEFAULT_BUCKET
     return s3_client(args.endpoint, args.key_id, secret, args.region), bucket
 
