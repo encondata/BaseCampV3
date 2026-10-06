@@ -35,7 +35,6 @@ const NOT_IN_A_DIALOG: Record<string, string> = {
   '.wiki-search-menu': 'wiki search dropdown',
   '.segmented': 'inline segmented control that scrolls sideways only when too narrow',
   '.wiki-prose pre': 'code block inside wiki page content',
-  '.pm-scroll': 'permission matrix card on the Access page (also shown inside the override modal)',
 };
 
 export interface Rule { selector: string; decls: string[]; }
