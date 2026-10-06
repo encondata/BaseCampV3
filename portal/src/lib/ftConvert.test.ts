@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { MoveAssetTemplateColumn } from './api';
 import {
@@ -68,6 +68,59 @@ describe('readWorkbook', () => {
     expect(readWorkbook(enc('\uFEFFName,City\ncafé,Zürich\n'))[0].rows[0][0]).toBe('Name');
   });
 
+  it('reads a Windows-1252 CSV that is not valid UTF-8', () => {
+    // caf\xe9,Z\xfcrich as single bytes
+    const bytes = Uint8Array.from([...'Name,City\ncaf', 0xe9, ',Z', 0xfc, 'rich\n']
+      .flatMap((x) => (typeof x === 'number' ? [x] : [...x].map((ch) => ch.charCodeAt(0)))));
+    expect(readWorkbook(bytes.buffer as ArrayBuffer)[0].rows)
+      .toEqual([['Name', 'City'], ['café', 'Zürich']]);
+  });
+
+  it('reads a UTF-16LE CSV with a BOM', () => {
+    const text = 'Name,City\ncafé,Zürich\n';
+    const bytes = new Uint8Array(2 + text.length * 2);
+    bytes[0] = 0xff; bytes[1] = 0xfe;
+    for (let i = 0; i < text.length; i++) {
+      bytes[2 + i * 2] = text.charCodeAt(i) & 0xff;
+      bytes[3 + i * 2] = text.charCodeAt(i) >> 8;
+    }
+    expect(readWorkbook(bytes.buffer as ArrayBuffer)[0].rows)
+      .toEqual([['Name', 'City'], ['café', 'Zürich']]);
+  });
+
+  it('does not log a codepage warning when reading', () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    readWorkbook(new TextEncoder().encode('a,b\n1,2\n').buffer as ArrayBuffer);
+    readWorkbook(xlsxBuffer({ S: [['a', 'b'], ['1', '2']] }));
+    const calls = [...warn.mock.calls, ...log.mock.calls].flat().join(' ');
+    warn.mockRestore(); log.mockRestore();
+    expect(calls).not.toContain('Codepage');
+  });
+
+  it('reads only the real extent of a sheet that declares A1:XFD1048576', () => {
+    const ws = XLSX.utils.aoa_to_sheet([['Serial', 'Name'], ['s1', 'a'], ['s2', 'b']]);
+    // The writer loops over the declared range, so declare the huge one only for the
+    // <dimension> element (the writer's 5th read of !ref) and the real one everywhere else.
+    let reads = 0;
+    Object.defineProperty(ws, '!ref', {
+      enumerable: true,
+      get: () => (++reads === 5 ? 'A1:XFD1048576' : 'A1:B3'),
+    });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'S');
+    reads = 0;
+    const buf = XLSX.write(wb, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+    // precondition: the file really declares the oversized range
+    expect(XLSX.read(buf, { type: 'array' }).Sheets.S['!ref']).toBe('A1:XFD1048576');
+    const t0 = Date.now();
+    const rows = readWorkbook(buf)[0].rows;
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toHaveLength(2);
+    expect(rows).toEqual([['Serial', 'Name'], ['s1', 'a'], ['s2', 'b']]);
+  });
+
   it('reads a legacy .xls workbook', () => {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Serial', 'Name'], ['00123', 'web-01']]), 'Old');
@@ -105,6 +158,16 @@ describe('readWorkbook', () => {
 describe('detectHeaderRow', () => {
   it('skips title and blank rows', () => {
     expect(detectHeaderRow([['Acme Corp move list'], [], ['Hostname', 'Serial'], ['a', 'b']])).toBe(2);
+  });
+  it('picks the row with the most filled cells, not a merged group row above it', () => {
+    expect(detectHeaderRow([
+      ['', 'From', '', 'To', ''],
+      ['Hostname', 'Rack', 'U', 'Rack', 'U'],
+      ['web-01', 'R1', '4', 'R2', '8'],
+    ])).toBe(1);
+  });
+  it('breaks ties toward the earliest row', () => {
+    expect(detectHeaderRow([['a', 'b'], ['c', 'd']])).toBe(0);
   });
   it('falls back to the first row', () => {
     expect(detectHeaderRow([['a'], ['b'], ['c']])).toBe(0);
@@ -176,6 +239,9 @@ describe('keywordField', () => {
     ['Management 2', 'mgmt_2'],
     ['Wave', 'priority'],
     ['Notes', null],
+    ['U Height', null],
+    ['Rack Size', 'source_rack'],
+    ['Owner Name', 'asset_name'],
   ];
   it.each(table)('%s -> %s', (header, field) => {
     expect(keywordField(header)).toBe(field);
@@ -192,6 +258,18 @@ describe('suggestMapping', () => {
   it('gives each target to one column', () => {
     expect(suggestMapping([col(0, 'Serial'), col(1, 'Serial (2)')], TEMPLATE))
       .toEqual({ 0: 'Serial Number' });
+  });
+  it('a specific Hostname beats the generic Name word, whatever the column order', () => {
+    expect(suggestMapping([col(0, 'Owner Name'), col(1, 'Hostname')], TEMPLATE))
+      .toEqual({ 0: 'Owner', 1: 'Asset Name' });
+    expect(suggestMapping([col(0, 'Hostname'), col(1, 'Owner Name')], TEMPLATE))
+      .toEqual({ 0: 'Asset Name', 1: 'Owner' });
+  });
+  it('a plain Name column still matches Asset Name when no host column exists', () => {
+    expect(suggestMapping([col(0, 'Name')], TEMPLATE)).toEqual({ 0: 'Asset Name' });
+  });
+  it('does not take U Height for RU', () => {
+    expect(suggestMapping([col(0, 'U Height'), col(1, 'U')], TEMPLATE)).toEqual({ 1: 'Source RU' });
   });
   it('matches Pod # to Source Pod by alias', () => {
     expect(suggestMapping([col(0, 'Pod #')], TEMPLATE)).toEqual({ 0: 'Source Pod' });
@@ -229,6 +307,25 @@ describe('convertRows + convertedWorkbook', () => {
     expect(out[0]).toEqual(HEADERS);
     expect(out[1][0]).toBe('SN1');
     expect(out[1][1]).toBe('web-01');
+  });
+
+  it('omits blank data cells but writes every header', () => {
+    const conv = convertRows(rows, 1, cols, mapping, TEMPLATE);
+    const ws = convertedWorkbook(conv).Sheets[CONVERTED_SHEET];
+    HEADERS.forEach((h, c) => expect(ws[XLSX.utils.encode_cell({ r: 0, c })]?.v).toBe(h));
+    expect(ws.A2.v).toBe('SN1');
+    expect(ws.C2).toBeUndefined();               // Asset Make is blank
+    expect(ws.A3).toBeUndefined();               // web-02 has no serial
+    expect(ws.B3.v).toBe('web-02');
+    expect(ws['!ref']).toBe('A1:Y3');
+  });
+
+  it('round-trips through write and read with blanks as empty text', () => {
+    const conv = convertRows(rows, 1, cols, mapping, TEMPLATE);
+    const buf = XLSX.write(convertedWorkbook(conv), { type: 'array', bookType: 'xlsx', compression: true }) as ArrayBuffer;
+    const back = readWorkbook(buf);
+    expect(back.map((s) => s.name)).toEqual([CONVERTED_SHEET]);
+    expect(back[0].rows).toEqual([conv.header, ...conv.rows]);
   });
 });
 

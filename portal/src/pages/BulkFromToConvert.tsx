@@ -8,17 +8,17 @@ import { useEffect, useState } from 'react';
 
 import BulkToolPage from '../components/bulk/BulkToolPage';
 import FromToConvert from '../components/bulk/FromToConvert';
-import { downloadMoveAssetTemplate, getMoveAssetTemplateColumns, type MoveAssetTemplateColumn } from '../lib/api';
+import { ApiError, downloadMoveAssetTemplate, getMoveAssetTemplateColumns, type MoveAssetTemplateColumn } from '../lib/api';
 
 export default function BulkFromToConvert() {
   const [columns, setColumns] = useState<MoveAssetTemplateColumn[] | null>(null);
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<'forbidden' | 'error' | null>(null);
 
   useEffect(() => {
     let live = true;
     getMoveAssetTemplateColumns()
       .then((c) => { if (live) setColumns(c); })
-      .catch(() => { if (live) setFailed(true); });
+      .catch((e) => { if (live) setFailed(e instanceof ApiError && e.status === 403 ? 'forbidden' : 'error'); });
     return () => { live = false; };
   }, []);
 
@@ -37,7 +37,8 @@ export default function BulkFromToConvert() {
       ]}
       limitNote="The converted file is built in your browser. The From-To import accepts files up to 20 MB."
     >
-      {failed ? <p className="pf-error">Couldn't load our template columns. Reload the page to try again.</p>
+      {failed === 'forbidden' ? <p className="pf-error">This tool needs company-wide access to moves. Ask an administrator.</p>
+        : failed ? <p className="pf-error">Couldn't load our template columns. Reload the page to try again.</p>
         : columns === null ? <p className="page-hint">Loading our template columns…</p>
         : <FromToConvert columns={columns} />}
     </BulkToolPage>

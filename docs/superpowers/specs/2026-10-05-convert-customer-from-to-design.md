@@ -69,18 +69,37 @@ Import assets page, or Create a move in steps).
      file**, disabled until at least one column is matched. It saves
      `<customer file base name>-converted.xlsx` with one sheet named
      **Move Assets**: row 1 is every template header in template order,
-     then one row per non-blank data row, unmatched columns blank.
+     then one row per non-blank data row, unmatched columns blank. The
+     file is written **compressed** (`compression: true`) and blank data
+     cells are **omitted** rather than written as empty strings, so a
+     20,000-row file stays well under the import's 20 MB limit (SheetJS
+     writes uncompressed by default). While a file is read, the pane shows
+     **Reading the file…** and the drop zone is disabled. With no column
+     matched, the preview shows its empty text instead of blank rows.
 
 ## Reading the file
 
-- Read with `XLSX.read(buffer, { type: 'array', cellNF: true, raw: true })` (`raw` keeps CSV text such as `00123` as typed).
+- Read with `XLSX.read(..., { cellNF: true, raw: true, nodim: true })`: `raw`
+  keeps CSV text such as `00123` as typed; `nodim` reads a sheet's real
+  cells instead of its declared range, so a file that declares
+  `A1:XFD1048576` over 8 real rows reads as 8 rows. No `codepage` option
+  (it logs a warning on every read and changes old .xls defaults).
+- **Decoding:** a file that is neither a zip (`PK\x03\x04`, .xlsx) nor an OLE
+  container (`D0 CF 11 E0 A1 B1 1A E1`, .xls) is text (CSV). Text with a
+  UTF-16 BOM is handed to SheetJS as bytes (`type: 'array'`). Other text is
+  decoded as UTF-8 (strict; a leading BOM dropped), falling back to
+  Windows-1252 when the bytes are not valid UTF-8 (Excel's "CSV" save on
+  Western Windows), then read with `type: 'string'`. .xlsx/.xls are read
+  with `type: 'array'`.
 - Cell → text: blank/null → `''`; a number cell whose number format is a date → `YYYY-MM-DD` via `XLSX.SSF.parse_date_code` (no time zone involved); a number →
   `String(v)` (integers print without `.0`; never the formatted text, which
   turns long serials into `1.2E+11`); a boolean → `TRUE`/`FALSE`; a string →
   trimmed.
 - A sheet "has data" when any cell is non-blank.
-- **Header row detection:** the first row (within the first 20) with at
-  least two non-blank cells; else row 1.
+- **Header row detection:** the row with the most non-blank cells within the
+  first 20 rows (ties go to the earliest), needing at least two; else row 1.
+  A merged group row (`From`, `To`) above the real headers has fewer cells
+  than they do, so it loses.
 - **Customer columns:** every column index from the header row's first to
   last used cell across the sheet. Header text = the header cell's text; a
   blank header cell whose column has data below becomes **Column {letter}**;
@@ -107,7 +126,7 @@ one space; trim. Tokens = normalized split on spaces.
 | make | `make`, `manufacturer`, `mfr`, `mfg`, `brand`, or `vendor` | asset_make |
 | data n | `data` + a token `1`–`6` | data_n |
 | mgmt n | `mgmt` or `management`, + `1` or `2` | mgmt_n |
-| ru | `ru`, `u`, `elevation`, or (`rack` and `position`) | {side}_ru |
+| ru | `ru`, `u`, `elevation`, or (`rack` and `position`), unless the tokens contain `height` or `size` | {side}_ru |
 | position | `position`, `orientation`, `face`, or `side` | {side}_position |
 | rack | `rack`, `cabinet`, or `cab` | {side}_rack |
 | pod | `pod` | {side}_pod |
@@ -116,13 +135,19 @@ one space; trim. Tokens = normalized split on spaces.
 | disposition | `disposition` | disposition |
 | owner | `owner` | owner |
 
-   The name rule sits below rack and pod so "Rack Name" stays a rack.
+   The name rule sits below rack and pod so "Rack Name" stays a rack. "U
+   Height" and "Rack Size" are measurements, so they are never RU.
    `{side}` is `destination` when the tokens contain any of `to`, `dest`,
    `destination`, `dst`, `new`, `target`; otherwise `source` (matching the
    import's rule that a lone Pod column is the source pod).
-3. **Assignment:** all exact matches first, then keyword matches, each pass
-   in customer-column order; a match is skipped when its target is already
-   taken or its customer column already has one. Everything else is Skip.
+3. **Assignment:** three passes, each in customer-column order: exact
+   matches; then a **specific** tier, a column whose tokens contain
+   `hostname` or `host` (and that the table maps to asset_name) takes Asset
+   Name; then the keyword table above, where the name rule matches only the
+   token `name` and is passed over once Asset Name is taken (so "Owner Name"
+   before "Hostname" gives Hostname → Asset Name and Owner Name → Owner).
+   A match is skipped when its target is already taken or its customer
+   column already has one. Everything else is Skip.
 
 ## Testing
 
@@ -136,6 +161,11 @@ one space; trim. Tokens = normalized split on spaces.
   output layout; filename.
 - Portal page: suggestions pre-filled; a taken column is missing from other
   dropdowns; Skip frees it; Serial note; preview counts; download builds the
-  expected workbook (mock `XLSX.writeFile`); the card shows only with
+  expected workbook (mock `XLSX.writeFile`, called with `{ compression: true }`);
+  blank output cells are absent and a write → read round trip returns the
+  same values; CSV decoding (UTF-8, UTF-8 with BOM, Windows-1252, UTF-16
+  with BOM); an oversized declared range reads only the real rows; header
+  detection prefers the fullest row; "U Height" is not RU; Hostname beats
+  Owner Name; a 403 on the template columns shows the access message; the card shows only with
   initiatives:change; the From-To import's drop zone still works after the
   extraction.

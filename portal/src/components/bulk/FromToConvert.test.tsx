@@ -132,8 +132,9 @@ describe('FromToConvert', () => {
     await upload(workbookFile({ Sheet1: MAIN }));
     fireEvent.click(screen.getByRole('button', { name: 'Download converted file' }));
     expect(XLSX.writeFile).toHaveBeenCalledTimes(1);
-    const [wb, filename] = vi.mocked(XLSX.writeFile).mock.calls[0] as [XLSX.WorkBook, string];
+    const [wb, filename, opts] = vi.mocked(XLSX.writeFile).mock.calls[0] as [XLSX.WorkBook, string, XLSX.WritingOptions];
     expect(filename).toBe('Acme FT-converted.xlsx');
+    expect(opts).toEqual({ compression: true });
     expect(wb.SheetNames).toEqual(['Move Assets']);
     const aoa = XLSX.utils.sheet_to_json<string[]>(wb.Sheets['Move Assets'], { header: 1, defval: '' });
     expect(aoa[0]).toEqual(HEADERS);
@@ -145,6 +146,33 @@ describe('FromToConvert', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Clear all' }));
     expect((screen.getByRole('button', { name: 'Download converted file' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText('0 of 4 columns matched')).toBeTruthy();
+  });
+
+  it('shows the preview empty text, not cell-less rows, after Clear all', async () => {
+    await upload(workbookFile({ Sheet1: MAIN }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all' }));
+    expect(screen.getByText('Match at least one column to see the converted rows.')).toBeTruthy();
+    const preview = screen.getByRole('table', { name: 'Converted preview' });
+    // the only body row is the empty-text row, not one row per converted line
+    expect(preview.querySelectorAll('tbody tr')).toHaveLength(1);
+  });
+
+  it('shows Reading the file… while the file is being read, then the columns', async () => {
+    render(<FromToConvert columns={TEMPLATE} />);
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = workbookFile({ Sheet1: MAIN });
+    let release!: (b: ArrayBuffer) => void;
+    const pending = new Promise<ArrayBuffer>((r) => { release = r; });
+    Object.defineProperty(file, 'arrayBuffer', { value: () => pending });
+    const real = await workbookFile({ Sheet1: MAIN }).arrayBuffer();
+    fireEvent.change(input, { target: { files: [file] } });
+    expect(await screen.findByText('Reading the file…')).toBeTruthy();
+    expect(input.disabled).toBe(true);
+    expect(screen.queryByRole('table', { name: 'Column matches' })).toBeNull();
+    release(real);
+    await screen.findByRole('table', { name: 'Column matches' });
+    expect(screen.queryByText('Reading the file…')).toBeNull();
+    expect(input.disabled).toBe(false);
   });
 
   it('shows a Sheet picker only for a workbook with two data sheets, and re-reads on change', async () => {

@@ -30,6 +30,7 @@ export default function FromToConvert({ columns: template }: { columns: MoveAsse
   const [mapping, setMapping] = useState<ColumnMapping>({});
   const [suggested, setSuggested] = useState<ColumnMapping>({});
   const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);                     // a file is being read and parsed
   const inputRef = useRef<HTMLInputElement | null>(null);
   const readToken = useRef(0);
 
@@ -59,15 +60,20 @@ export default function FromToConvert({ columns: template }: { columns: MoveAsse
     setSheetName('');
     setMapping({});
     setSuggested({});
+    setBusy(!!f);
     if (!f) return;
     let read: SheetData[];
     try {
-      read = readWorkbook(await f.arrayBuffer());
+      const buffer = await f.arrayBuffer();
+      await new Promise((r) => setTimeout(r, 0));             // let "Reading the file…" paint before the parse blocks
+      if (token !== readToken.current) return;                // a newer file replaced this one
+      read = readWorkbook(buffer);
     } catch {
-      if (token === readToken.current) setError('That file could not be read.');
+      if (token === readToken.current) { setError('That file could not be read.'); setBusy(false); }
       return;
     }
-    if (token !== readToken.current) return;                  // a newer file replaced this one
+    if (token !== readToken.current) return;
+    setBusy(false);
     const withData = read.filter(sheetHasData);
     if (!withData.length) { setError('That file has no data.'); return; }
     setSheets(withData);
@@ -104,12 +110,13 @@ export default function FromToConvert({ columns: template }: { columns: MoveAsse
 
   const download = () => {
     if (!file || !conversion) return;
-    XLSX.writeFile(convertedWorkbook(conversion), convertedFilename(file.name));
+    XLSX.writeFile(convertedWorkbook(conversion), convertedFilename(file.name), { compression: true });
   };
 
   return (
     <div className="bulk-import ftc-pane">
-      <FileDropzone file={file} onFile={(f) => void onFile(f)} busy={false} inputRef={inputRef} />
+      <FileDropzone file={file} onFile={(f) => void onFile(f)} busy={busy} inputRef={inputRef} />
+      {busy && <p className="page-hint">Reading the file…</p>}
       {error && <p className="pf-error">{error}</p>}
 
       {sheet && conversion && (
@@ -176,7 +183,7 @@ export default function FromToConvert({ columns: template }: { columns: MoveAsse
           <DataTable
             ariaLabel="Converted preview"
             columns={previewColumns.map(({ t }) => ({ key: t.field, label: t.header }))}
-            rows={conversion.rows.slice(0, PREVIEW_ROWS).map((r, i) => ({
+            rows={(previewColumns.length ? conversion.rows.slice(0, PREVIEW_ROWS) : []).map((r, i) => ({
               key: String(i),
               cells: previewColumns.map(({ position }) => r[position] || '—'),
             }))}
