@@ -73,8 +73,8 @@ Import assets page, or Create a move in steps).
 
 ## Reading the file
 
-- Read with `XLSX.read(buffer, { type: 'array', cellDates: true })`.
-- Cell → text: blank/null → `''`; a date cell → `YYYY-MM-DD`; a number →
+- Read with `XLSX.read(buffer, { type: 'array', cellNF: true, raw: true })` (`raw` keeps CSV text such as `00123` as typed).
+- Cell → text: blank/null → `''`; a number cell whose number format is a date → `YYYY-MM-DD` via `XLSX.SSF.parse_date_code` (no time zone involved); a number →
   `String(v)` (integers print without `.0`; never the formatted text, which
   turns long serials into `1.2E+11`); a boolean → `TRUE`/`FALSE`; a string →
   trimmed.
@@ -84,7 +84,7 @@ Import assets page, or Create a move in steps).
 - **Customer columns:** every column index from the header row's first to
   last used cell across the sheet. Header text = the header cell's text; a
   blank header cell whose column has data below becomes **Column {letter}**;
-  a blank header with no data below is dropped. Duplicate header texts get
+  a blank header with no data below is dropped. Duplicate header texts (compared ignoring case) get
   ` (2)`, ` (3)`… in order.
 - **Data rows:** every row after the header row; a row whose customer
   columns are all blank is dropped and counted as a blank row.
@@ -105,17 +105,18 @@ one space; trim. Tokens = normalized split on spaces.
 | rfid | `rfid` or `epc` | rfid_tag |
 | model | `model` | asset_model |
 | make | `make`, `manufacturer`, `mfr`, `mfg`, `brand`, or `vendor` | asset_make |
-| name | `hostname`, `host`, or `name` | asset_name |
 | data n | `data` + a token `1`–`6` | data_n |
 | mgmt n | `mgmt` or `management`, + `1` or `2` | mgmt_n |
 | ru | `ru`, `u`, `elevation`, or (`rack` and `position`) | {side}_ru |
 | position | `position`, `orientation`, `face`, or `side` | {side}_position |
 | rack | `rack`, `cabinet`, or `cab` | {side}_rack |
 | pod | `pod` | {side}_pod |
+| name | `hostname`, `host`, or `name` | asset_name |
 | priority | `priority` or `wave` | priority |
 | disposition | `disposition` | disposition |
 | owner | `owner` | owner |
 
+   The name rule sits below rack and pod so "Rack Name" stays a rack.
    `{side}` is `destination` when the tokens contain any of `to`, `dest`,
    `destination`, `dst`, `new`, `target`; otherwise `source` (matching the
    import's rule that a lone Pod column is the source pod).
