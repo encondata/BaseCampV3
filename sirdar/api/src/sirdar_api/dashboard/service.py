@@ -1,22 +1,44 @@
-"""Dashboard data. Environment cards come from Sirdar's environments (deploy
-step 2), with Dev / Beta placeholders until environments of those types
-exist; DigitalOcean inventory (grouped by sirdar-* tags) fills the
-infrastructure tree, read with the token digitalocean.resolve() picks (the
-stored integration token, else SIRDAR_DEPLOY_DO_TOKEN). Production
-Blue/Green has no records yet, so it stays empty."""
+"""Dashboard data (the Deployments page's spotlight). Every card has one
+shape: Production first (or a placeholder), Dev / Beta (placeholders until an
+environment of that type exists), the other environments by name, then
+DigitalOcean env tags no environment answers to. Each card carries its flow:
+live traffic → the middle box (a DigitalOcean load balancer, or Nginx Proxy
+Manager on the LAN) → its server(s). DigitalOcean values come from Sirdar's
+records (do_environments, do_slots, do_resources) and each account's
+inventory (read with that account's token, cached by the token's hash; the
+same inventories fill the infrastructure tree). LAN values come from the
+environment's target and the NPM integration's URL. No token reaches the
+response or a cache key."""
 
 import hashlib
+import logging
+import math
 import time
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
 from sirdar_api.dashboard.demo import demo_dashboard, node
-from sirdar_api.db.models import Deployment, Environment
-from sirdar_api.deploy import ConnectFailed, digitalocean, names, outbound, targets
+from sirdar_api.db.models import Deployment, DoAccount, DoEnvironment, DoResource, Environment
+from sirdar_api.deploy import (
+    ConnectFailed,
+    certs,
+    digitalocean,
+    do_accounts,
+    do_envs,
+    integrations,
+    names,
+    outbound,
+    serialize,
+    targets,
+    vms,
+)
 from sirdar_api.deploy.integrations import IntegrationError
+
+log = logging.getLogger(__name__)
 
 CACHE_SECONDS = 30
 FAILURE_SECONDS = 10
@@ -25,8 +47,11 @@ _FIXED = ("production", "dev", "beta")
 _LABELS = {"production": "Production", "dev": "Development", "beta": "Beta"}
 _DROPLET = {"active": ("running", "Running"), "off": ("stopped", "Stopped"),
             "new": ("provisioning", "Provisioning")}
-_TYPE_LABELS = {"dev": "Development", "beta": "Beta", "custom": "Custom"}
+_TYPE_LABELS = {"dev": "Development", "beta": "Beta", "custom": "Custom",
+                "production": "Production"}
 _RELEASED = ("succeeded", "adopted")
+# pipeline.RETRYABLE_STATUSES (not imported: the dashboard stays light).
+_RETRYABLE = ("failed", "cancelled", "interrupted")
 
 
 def clear_cache() -> None:
@@ -177,42 +202,6 @@ async def _last_release(db: AsyncSession, env_id) -> Deployment | None:
                            .limit(1))
 
 
-async def _environment_card(db: AsyncSession, env: Environment) -> dict:
-    last = await _last_release(db, env.id)
-    version = env.image_tag or (env.current_sha[:8] if env.current_sha else None)
-    return {"id": env.name, "label": env.name,
-            "sub": _TYPE_LABELS.get(env.type, env.type.title()), "state": _env_state(env),
-            "version": version, "last_release": last.sha[:8] if last else None,
-            "last_release_at": (last.finished_at.isoformat()
-                                if last and last.finished_at else None),
-            "action_label": f"Deploy {env.name}", "environment": env.name}
-
-
-def _placeholder(env: str, action_label: str) -> dict:
-    return {"id": env, "label": _label(env), "sub": None, "state": "empty", "version": None,
-            "last_release": None, "last_release_at": None, "action_label": action_label,
-            "environment": None}
-
-
-async def environment_cards(db: AsyncSession | None, tagged: list[str]) -> list[dict]:
-    """Sirdar environments, a Dev / Beta placeholder while no environment has
-    that type, then DigitalOcean env tags no environment answers to."""
-    rows: list[Environment] = []
-    if db is not None:
-        rows = list(await db.scalars(select(Environment).order_by(Environment.name)))
-    cards: list[dict] = []
-    for type_, short in (("dev", "Dev"), ("beta", "Beta")):
-        typed = [e for e in rows if e.type == type_]
-        if typed:
-            cards += [await _environment_card(db, e) for e in typed]
-        else:
-            cards.append(_placeholder(type_, f"Set up {short}"))
-    cards += [await _environment_card(db, e) for e in rows if e.type not in ("dev", "beta")]
-    known = {e.name for e in rows}
-    cards += [_placeholder(e, f"Set up {_label(e)}") for e in tagged if e not in known]
-    return cards
-
-
 def _health(cards: list[dict]) -> dict:
     states = {c["state"] for c in cards if c["environment"]}
     if "failed" in states:
@@ -222,42 +211,226 @@ def _health(cards: list[dict]) -> dict:
     return {"status": "unknown", "label": "No environments deployed"}
 
 
+def cert_info(when: datetime | None, now: datetime) -> dict | None:
+    """A load balancer certificate for the spotlight: amber at 14 days or
+    fewer, red once expired."""
+    if when is None:
+        return None
+    left = certs.days_left(when, now)
+    days = math.floor(left)
+    tone = "bad" if left <= 0 else "warn" if days <= certs.SIRDAR_RENEW_DAYS else "ok"
+    return {"days_left": max(0, days), "expires_at": when.isoformat(), "tone": tone}
+
+
+def _empty_flow() -> dict:
+    return {"kind": "none", "middle": {"label": "Not built yet", "sub": "", "status": "unknown"},
+            "servers": [{"id": "none", "label": "Server", "sub": "Not built yet",
+                         "state": "empty", "health": "unknown", "version": None,
+                         "deployed": False}],
+            "active_slot": None, "certificate": None, "deploying_slot": None,
+            "failed_slot": None}
+
+
+async def _marks(db: AsyncSession, env: Environment, lan: bool) -> tuple[str | None, str | None]:
+    """(deploying slot, failed slot) from the environment's latest deployment."""
+    latest = await serialize.latest_deployment(db, env.id)
+    if latest is None:
+        return None, None
+    slot = "host" if lan else latest.slot
+    if env.status in ("deploying", "deleting") and latest.status == "running":
+        return slot, None
+    if env.status == "failed" and latest.status in _RETRYABLE:
+        return None, slot
+    return None, None
+
+
+def _slot_health(row, droplet: dict | None) -> str:
+    if droplet is not None and droplet.get("status") != "active":
+        return "degraded"
+    if row is None or row.last_check_ok is None:
+        return "unknown"
+    return "healthy" if row.last_check_ok else "degraded"
+
+
+async def _do_flow(db: AsyncSession, env: Environment, row: DoEnvironment, inv: dict | None,
+                   now: datetime) -> dict:
+    slots = await do_envs.slots_of(db, env.id)
+    lb_id = await db.scalar(select(DoResource.do_id).where(
+        DoResource.environment_id == env.id, DoResource.kind == "load_balancer")
+        .order_by(DoResource.created_at.desc()).limit(1))
+    lbs = {str(x.get("id")): x for x in (inv or {}).get("load_balancers", [])}
+    droplets = {str(x.get("id")): x for x in (inv or {}).get("droplets", [])}
+    if lb_id is None or inv is None:
+        status = "unknown"
+    elif lb_id not in lbs:
+        status = "down"
+    else:
+        status = "ok" if lbs[lb_id].get("status") == "active" else "warn"
+    servers = []
+    for slot in env.slots:
+        r = slots.get(slot)
+        built = bool(r and (r.droplet_id or r.sha))
+        state = "live" if slot == env.active_slot else "idle" if built else "empty"
+        servers.append({
+            "id": slot, "label": slot.title(),
+            "sub": r.public_ip if r and r.public_ip else "Not built yet", "state": state,
+            "health": _slot_health(r, droplets.get(r.droplet_id) if r and r.droplet_id else None),
+            "version": r.image_tag if r else None, "deployed": bool(r and r.sha)})
+    deploying, failed = await _marks(db, env, lan=False)
+    return {"kind": "load_balancer",
+            "middle": {"label": "Load balancer", "sub": row.lb_ip or "Built by the first deploy",
+                       "status": status},
+            "servers": servers, "active_slot": env.active_slot,
+            "certificate": cert_info(row.cert_not_after, now),
+            "deploying_slot": deploying, "failed_slot": failed}
+
+
+async def _lan_server(db: AsyncSession, settings: Settings, env: Environment) -> tuple[str, str]:
+    """(label, address) of a LAN environment's one host: its VM, or its SSH target."""
+    if targets.is_vm_target(env.target_id):
+        vm = await vms.get_for(db, env)
+        return (vm.name, vm.ip or "No address yet") if vm else ("VM", "Not built yet")
+    try:
+        cfg = targets.ssh_config_for(env.target_id, settings)
+        labels = {t["id"]: t["label"] for t in targets.public_targets(settings)}
+    # An unreadable deploy-targets.env must not break the dashboard.
+    except Exception as e:  # noqa: BLE001
+        log.warning("dashboard couldn't read the SSH targets: %s", type(e).__name__)
+        cfg, labels = None, {}
+    return labels.get(env.target_id, "Host"), cfg.host if cfg else "—"
+
+
+async def _lan_flow(db: AsyncSession, settings: Settings, env: Environment) -> dict:
+    url = (await integrations.config_of(db, "npm")).get("url")
+    npm_host = urlsplit(url).hostname if url else None
+    label, sub = await _lan_server(db, settings, env)
+    live = env.current_sha is not None
+    health = ("degraded" if env.status == "failed"
+              else "healthy" if live and env.status == "ready" else "unknown")
+    deploying, failed = await _marks(db, env, lan=True)
+    return {"kind": "proxy",
+            "middle": {"label": "Nginx Proxy Manager", "sub": npm_host or "Not set up",
+                       "status": "ok" if npm_host else "unknown"},
+            "servers": [{"id": "host", "label": label, "sub": sub,
+                         "state": "live" if live else "empty", "health": health,
+                         "version": env.image_tag, "deployed": live}],
+            "active_slot": "host" if live else None, "certificate": None,
+            "deploying_slot": deploying, "failed_slot": failed}
+
+
+async def _environment_card(db: AsyncSession, settings: Settings, env: Environment,
+                            inventories: dict[str, dict], now: datetime) -> dict:
+    last = await _last_release(db, env.id)
+    version = env.image_tag or (env.current_sha[:8] if env.current_sha else None)
+    if env.target_id == targets.DO_TARGET:
+        row = await do_envs.get(db, env.id)
+        flow = (await _do_flow(db, env, row, inventories.get(row.account_key), now)
+                if row else _empty_flow())
+    else:
+        flow = await _lan_flow(db, settings, env)
+    return {"id": env.name, "label": env.name,
+            "sub": _TYPE_LABELS.get(env.type, env.type.title()), "state": _env_state(env),
+            "version": version, "last_release": last.sha[:8] if last else None,
+            "last_release_at": (last.finished_at.isoformat()
+                                if last and last.finished_at else None),
+            "action_label": f"Deploy {env.name}", "environment": env.name,
+            "production": env.type == "production", "flow": flow}
+
+
+def _placeholder(env: str, action_label: str, *, production: bool = False) -> dict:
+    return {"id": env, "label": _label(env), "sub": None, "state": "empty", "version": None,
+            "last_release": None, "last_release_at": None, "action_label": action_label,
+            "environment": None, "production": production, "flow": _empty_flow()}
+
+
+async def environment_cards(db: AsyncSession | None, settings: Settings, tagged: list[str],
+                            inventories: dict[str, dict], now: datetime) -> list[dict]:
+    """Production first (the live one, else a retiring one, else a
+    placeholder), Dev / Beta (placeholders until one exists), the rest by
+    name, then DigitalOcean env tags no environment answers to."""
+    rows: list[Environment] = []
+    if db is not None:
+        rows = list(await db.scalars(select(Environment).order_by(Environment.name)))
+
+    async def card(e: Environment) -> dict:
+        return await _environment_card(db, settings, e, inventories, now)
+
+    prods = sorted((e for e in rows if e.type == "production"), key=lambda e: e.retiring)
+    first = prods[0] if prods else None
+    cards = [await card(first) if first else
+             _placeholder("production", "Set up Production", production=True)]
+    for type_, short in (("dev", "Dev"), ("beta", "Beta")):
+        typed = [e for e in rows if e.type == type_]
+        if typed:
+            cards += [await card(e) for e in typed]
+        else:
+            cards.append(_placeholder(type_, f"Set up {short}"))
+    cards += [await card(e) for e in rows if e.type not in ("dev", "beta") and e is not first]
+    known = {e.name for e in rows}
+    cards += [_placeholder(e, f"Set up {_label(e)}") for e in tagged if e not in known]
+    return cards
+
+
+async def _read_accounts(db: AsyncSession, settings: Settings, refresh: bool,
+                         infra: dict) -> list[tuple[str, str, dict]]:
+    """(key, label, inventory) for each account whose inventory was read;
+    every account with a token (or an unreadable one) is listed in
+    infra["accounts"] with its error."""
+    read: list[tuple[str, str, dict]] = []
+    for key in do_accounts.KEYS:
+        row = await db.get(DoAccount, key)
+        label = row.label if row else key.title()
+        try:
+            resolved = await digitalocean.resolve(db, settings, key)
+        except IntegrationError as e:          # a stored token that won't decrypt
+            infra["accounts"].append({"key": key, "label": label, "error": e.reason})
+            continue
+        if not targets.is_configured("digitalocean", resolved):
+            continue
+        try:
+            read.append((key, label, await _inventory(resolved, refresh)))
+            infra["accounts"].append({"key": key, "label": label, "error": None})
+        except ConnectFailed as e:
+            infra["accounts"].append({"key": key, "label": label, "error": e.reason})
+    return read
+
+
 async def build_dashboard(settings: Settings, *, db: AsyncSession | None = None,
                           demo: bool = False, refresh: bool = False) -> dict:
     if demo:
         return demo_dashboard()
-    infra: dict = {"source": "none", "error": None, "tree": []}
-    inv: dict = {"droplets": [], "databases": [], "load_balancers": []}
+    infra: dict = {"source": "none", "error": None, "tree": [], "accounts": []}
+    read: list[tuple[str, str, dict]] = []
     if db is not None:
+        read = await _read_accounts(db, settings, refresh, infra)
+    elif targets.is_configured("digitalocean", settings):
+        # No database (unit callers): the server's SIRDAR_DEPLOY_DO_TOKEN only.
+        infra["accounts"].append({"key": "production", "label": "Production", "error": None})
         try:
-            settings = await digitalocean.resolve(db, settings)
-        except IntegrationError as e:          # a stored token that won't decrypt
-            infra.update(source="digitalocean", error=e.reason)
-    if infra["error"] is None and targets.is_configured("digitalocean", settings):
-        infra["source"] = "digitalocean"
-        try:
-            inv = await _inventory(settings, refresh)
-            infra["tree"] = build_tree(inv)
+            read = [("production", "Production", await _inventory(settings, refresh))]
         except ConnectFailed as e:
-            infra["error"] = e.reason
-    has_lb = any(_env_of(lb) == "production" for lb in inv["load_balancers"])
-    tagged = sorted({e for r in (*inv["droplets"], *inv["databases"], *inv["load_balancers"])
-                     if (e := _env_of(r)) and e not in _FIXED})
-    envs = await environment_cards(db, tagged)
-    slots = [{"id": s, "label": f"Production {s.title()}", "state": "empty", "health": "unknown",
-              "version": None, "instances": {"running": 0, "total": 0}, "traffic_pct": 0}
-             for s in ("blue", "green")]
-    return {
-        "demo": False,
-        "generated_at": datetime.now(UTC).isoformat(),
-        "health": _health(envs),
-        "production": {
-            "status": "inactive", "active_slot": None,
-            "traffic": {"label": "Live traffic", "sub": "External users"},
-            "load_balancer": {"label": "Load balancer",
-                              "sub": "Configured" if has_lb else "Not configured",
-                              "present": has_lb},
-            "slots": slots},
-        "environments": envs,
-        "infrastructure": infra,
-    }
+            infra["accounts"][0]["error"] = e.reason
+    if infra["accounts"]:
+        infra["source"] = "digitalocean"
+    failed = [a for a in infra["accounts"] if a["error"]]
+    if len(infra["accounts"]) == 1 and failed:
+        infra["error"] = failed[0]["error"]
+    elif failed:
+        infra["error"] = " ".join(f"{a['label']} account: {a['error']}" for a in failed)
+    if len(read) == 1:
+        infra["tree"] = build_tree(read[0][2])
+    elif read:
+        groups = []
+        for key, label, inv in read:
+            children = build_tree(inv)
+            status, status_label = _rollup(children)
+            groups.append(node(f"account-{key}", f"{label} account", "group",
+                               "DigitalOcean account", status, status_label, children=children))
+        infra["tree"] = groups
+    every = [r for _, _, inv in read for kind in ("droplets", "databases", "load_balancers")
+             for r in inv[kind]]
+    tagged = sorted({e for r in every if (e := _env_of(r)) and e not in _FIXED})
+    envs = await environment_cards(db, settings, tagged, {key: inv for key, _, inv in read},
+                                   datetime.now(UTC))
+    return {"demo": False, "generated_at": datetime.now(UTC).isoformat(),
+            "health": _health(envs), "environments": envs, "infrastructure": infra}
