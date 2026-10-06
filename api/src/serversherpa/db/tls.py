@@ -52,6 +52,11 @@ def ssl_context(pem: str) -> ssl.SSLContext:
         raise ValueError(f"{_SETTING} isn't a base64 PEM certificate") from None
     ctx.check_hostname = True
     ctx.verify_mode = ssl.CERT_REQUIRED
+    # Python 3.13's default adds RFC 5280 strictness (e.g. an Authority Key
+    # Identifier on the server certificate) that libpq doesn't ask for; a
+    # cluster CA libpq accepts must work here too. Trust and the host name
+    # are still checked.
+    ctx.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
     return ctx
 
 
@@ -87,6 +92,21 @@ def libpq_env(settings) -> dict[str, str]:
     """Environment for pg_dump/psql: verify-full against the CA, else {}."""
     path = ca_file(settings)
     return {"PGSSLMODE": "verify-full", "PGSSLROOTCERT": path} if path else {}
+
+
+def create_sync_engine(url: str, settings, **kwargs):
+    """A psycopg engine that adds libpq_params on every connect, so a CA
+    file removed under a long-lived process (a tmp cleaner) is written
+    again rather than failing every later connection."""
+    from sqlalchemy import create_engine, event
+
+    engine = create_engine(url, **kwargs)
+
+    @event.listens_for(engine, "do_connect")
+    def _verify(dialect, conn_rec, cargs, cparams):
+        cparams.update(libpq_params(settings))
+
+    return engine
 
 
 def remove_files() -> None:
