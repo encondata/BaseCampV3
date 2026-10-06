@@ -53,6 +53,8 @@ class FakeDo:
         self.calls: list[tuple[str, str]] = []
         self.bodies: dict[tuple[str, str], dict] = {}
         self.fail: dict[tuple[str, str], int] = {}
+        self.busy_reads = 0         # GETs of the load balancer before it is active again
+        self.lb_puts: list[list[int]] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == f"Bearer {TOKEN}"
@@ -64,8 +66,12 @@ class FakeDo:
             return httpx.Response(self.fail[(method, path)], json={
                 "id": "server_error", "message": f"boom {TOKEN}"})
         if path == "/load_balancers/lb-1" and method == "GET":
+            if self.busy_reads:
+                self.busy_reads -= 1
+                self.lb = {**self.lb, "status": "update_pending" if self.busy_reads else "active"}
             return httpx.Response(200, json={"load_balancer": self.lb})
         if path == "/load_balancers/lb-1" and method == "PUT":
+            self.lb_puts.append(list(json.loads(request.content)["droplet_ids"]))
             self.lb = {**self.lb, **json.loads(request.content)}
             return httpx.Response(200, json={"load_balancer": self.lb})
         if path.startswith("/certificates/") and method == "GET":
@@ -104,13 +110,21 @@ async def _lock(got: bool = True):
     yield got
 
 
-async def _check(fake: FakeDo, monkeypatch, *, locked=False, chain=True):
+async def _nosleep(seconds):
+    return None
+
+
+async def _check(fake: FakeDo, monkeypatch, *, locked=False, chain=True, on_issue=None):
     async def fake_issue(client, names, kind, solve):
         assert kind == "http-01" and tuple(names) == NAMES
+        fake.issued = True
+        if on_issue:
+            on_issue()
         return _issued(chain)
+    fake.issued = False
     monkeypatch.setattr(acme, "issue", fake_issue)
     return await worker.check_once(
-        _cfg(), challenges=worker.Challenges(), now=NOW,
+        _cfg(), challenges=worker.Challenges(), now=NOW, sleep=_nosleep,
         transports={"digitalocean": httpx.MockTransport(fake.handler)},
         try_lock=lambda: _lock(not locked))
 
@@ -308,3 +322,201 @@ async def test_a_foreign_certificate_is_never_deleted(monkeypatch):
     fake.certs["old"]["name"] = "someone-elses"
     assert await _check(fake, monkeypatch) == "renewed"
     assert ("DELETE", "/certificates/old") not in fake.calls
+
+
+# ── review fixes: switches, the PUT, the lock connection, the challenge server, --once ──
+
+async def test_two_targets_mean_a_switch_is_running(monkeypatch):
+    fake = FakeDo(days_left=5, targets=[4001, 4002])
+    assert await _check(fake, monkeypatch) == "switching"
+    assert not fake.issued and ("POST", "/certificates") not in fake.calls
+
+
+async def test_a_busy_load_balancer_means_a_switch_is_running(monkeypatch):
+    fake = FakeDo(days_left=5, targets=[4001])
+    fake.lb["status"] = "update_pending"
+    assert await _check(fake, monkeypatch) == "switching"
+    assert not fake.issued
+
+
+async def test_a_switch_starting_under_the_lock_stops_the_renewal(monkeypatch):
+    fake = FakeDo(days_left=5, targets=[4001])
+
+    @asynccontextmanager
+    async def lock_then_switch():
+        fake.lb["droplet_ids"] = [4001, 4002]
+        yield True
+
+    async def fake_issue(*a):
+        raise AssertionError("issued during a switch")
+    monkeypatch.setattr(acme, "issue", fake_issue)
+    assert await worker.check_once(
+        _cfg(), challenges=worker.Challenges(), now=NOW, sleep=_nosleep,
+        transports={"digitalocean": httpx.MockTransport(fake.handler)},
+        try_lock=lock_then_switch) == "switching"
+
+
+async def test_a_refused_put_deletes_the_uploaded_certificate(monkeypatch):
+    fake = FakeDo(days_left=5, targets=[4001])
+    fake.fail[("PUT", "/load_balancers/lb-1")] = 422
+    with pytest.raises(worker.CertWorkerError):
+        await _check(fake, monkeypatch)
+    assert ("DELETE", "/certificates/new") in fake.calls and "new" not in fake.certs
+    assert ("PUT", "/load_balancers/lb-1") in fake.calls
+    assert "old" in fake.certs and fake.lb["droplet_ids"] == [4001]
+
+
+async def test_the_put_waits_for_a_busy_load_balancer(monkeypatch):
+    fake = FakeDo(days_left=5, targets=[4001])
+
+    def busy():
+        fake.busy_reads = 3
+        fake.lb["status"] = "update_pending"
+    assert await _check(fake, monkeypatch, on_issue=busy) == "renewed"
+    assert fake.lb_puts == [[4001]] and fake.busy_reads == 0
+    https = next(r for r in fake.lb["forwarding_rules"] if r["entry_protocol"] == "https")
+    assert https["certificate_id"] == "new"
+
+
+async def test_a_load_balancer_that_stays_busy_deletes_the_upload(monkeypatch):
+    fake = FakeDo(days_left=5, targets=[4001])
+
+    def busy():
+        fake.busy_reads = 10_000
+        fake.lb["status"] = "update_pending"
+    with pytest.raises(worker.CertWorkerError):
+        await _check(fake, monkeypatch, on_issue=busy)
+    assert ("PUT", "/load_balancers/lb-1") not in fake.calls
+    assert "new" not in fake.certs and "old" in fake.certs
+
+
+async def test_a_switch_during_issuing_deletes_the_upload_and_never_puts(monkeypatch):
+    fake = FakeDo(days_left=5, targets=[4001])
+
+    def switch():
+        fake.lb["droplet_ids"] = [4001, 4002]
+    assert await _check(fake, monkeypatch, on_issue=switch) == "switching"
+    assert ("PUT", "/load_balancers/lb-1") not in fake.calls and fake.lb_puts == []
+    assert fake.lb["droplet_ids"] == [4001, 4002]
+    assert ("DELETE", "/certificates/new") in fake.calls and "new" not in fake.certs
+    assert "old" in fake.certs
+
+
+async def test_the_lock_session_is_not_left_in_a_transaction(db):
+    from sqlalchemy import text
+
+    from serversherpa.db.engine import get_engine
+    async with worker.advisory_lock() as got:
+        assert got is True
+        async with get_engine().connect() as other:
+            states = (await other.execute(text(
+                "SELECT a.state FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid "
+                "WHERE l.locktype = 'advisory' AND l.granted "
+                "AND l.database = (SELECT oid FROM pg_database "
+                "WHERE datname = current_database())"))).scalars().all()
+    assert states == ["idle"]
+
+
+class _FakeConn:
+    def __init__(self):
+        self.options: dict = {}
+        self.invalidated = False
+
+    async def execution_options(self, **options):
+        self.options.update(options)
+        return self
+
+    async def scalar(self, statement, params=None):
+        assert "pg_try_advisory_lock" in str(statement)
+        return True
+
+    async def execute(self, statement, params=None):
+        raise ConnectionError("the server went away")
+
+    async def invalidate(self):
+        self.invalidated = True
+
+
+class _FakeEngine:
+    def __init__(self, conn):
+        self.conn = conn
+
+    @asynccontextmanager
+    async def connect(self):
+        yield self.conn
+
+
+async def test_a_failed_unlock_throws_the_connection_away(monkeypatch):
+    conn = _FakeConn()
+    monkeypatch.setattr(worker, "get_engine", lambda: _FakeEngine(conn))
+    with pytest.raises(ConnectionError):
+        async with worker.advisory_lock() as got:
+            assert got is True
+    assert conn.invalidated and conn.options == {"isolation_level": "AUTOCOMMIT"}
+
+
+async def test_a_slow_request_is_dropped():
+    challenges = worker.Challenges()
+    challenges.read_seconds = 0.3
+    server = await challenges.start("127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"GET /.well-known/acme-challenge/x HTTP/1.1\r\n")
+        await writer.drain()
+
+        async def trickle():
+            try:
+                for _ in range(20):     # a header every 0.1 s, never the blank line
+                    writer.write(b"X-Slow: 1\r\n")
+                    await writer.drain()
+                    await asyncio.sleep(0.1)
+            except ConnectionError:
+                pass
+        trickler = asyncio.create_task(trickle())
+        try:                            # closed unread: EOF or a reset, well before 1.5 s
+            data = await asyncio.wait_for(reader.read(), 1.5)
+        except ConnectionResetError:
+            data = b""
+        trickler.cancel()
+        assert data == b""
+        writer.close()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+async def test_connections_past_the_cap_are_closed():
+    challenges = worker.Challenges(max_connections=1)
+    server = await challenges.start("127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        _, first = await asyncio.open_connection("127.0.0.1", port)
+        await asyncio.sleep(0.1)        # the first holds the only slot
+        reader, second = await asyncio.open_connection("127.0.0.1", port)
+        second.write(b"GET /anything HTTP/1.1\r\n\r\n")
+        await second.drain()
+        try:                            # closed unread: EOF or a reset
+            data = await asyncio.wait_for(reader.read(), 1)
+        except ConnectionResetError:
+            data = b""
+        assert data == b""
+        first.close()
+        second.close()
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+def test_once_prints_only_an_unknown_errors_type(monkeypatch):
+    from typer.testing import CliRunner
+
+    from serversherpa.cli import app
+
+    async def boom(**kw):
+        raise RuntimeError(f"Bearer {TOKEN}")
+    monkeypatch.setattr(worker, "run_forever", boom)
+    result = CliRunner().invoke(app, ["cert-worker", "--once"])
+    assert result.exit_code == 1
+    assert "RuntimeError" in result.output and TOKEN not in result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)

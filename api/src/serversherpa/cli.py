@@ -753,6 +753,9 @@ def cert_worker(
         except (worker.CertWorkerError, acme.AcmeError) as e:
             typer.secho(e.reason, fg="red", err=True)   # our own copy, never a secret
             raise typer.Exit(code=1) from None
+        except Exception as e:  # noqa: BLE001 — never print an unknown error's text
+            typer.secho(f"cert-worker: check failed ({type(e).__name__})", fg="red", err=True)
+            raise typer.Exit(code=1) from None
         finally:
             await dispose_engine()
 

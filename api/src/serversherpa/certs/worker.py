@@ -43,6 +43,9 @@ CHALLENGE_PREFIX = "/.well-known/acme-challenge/"
 _ID_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
 _LB_READ_ONLY = ("id", "ip", "ipv6", "status", "created_at")
 _MAX_HEADER_LINES = 100
+READ_SECONDS = 15                       # the whole request, start to blank line
+MAX_CONNECTIONS = 8
+LB_WAIT_TRIES = 40                      # polls for the load balancer to be active again
 
 
 class CertWorkerError(Exception):
@@ -89,18 +92,31 @@ def config_from(settings: Settings) -> WorkerConfig | None:
 class Challenges:
     """Answers GET /.well-known/acme-challenge/<token> while a solver holds it."""
 
-    def __init__(self):
+    def __init__(self, max_connections: int = MAX_CONNECTIONS):
         self.tokens: dict[str, str] = {}
+        self.read_seconds: float = READ_SECONDS
+        self._slots = asyncio.Semaphore(max_connections)
+
+    @staticmethod
+    async def _request_line(reader: asyncio.StreamReader) -> str:
+        line = (await reader.readline()).decode("latin-1")
+        # Read the headers too: closing with unread input can reset the
+        # connection before the proxy reads the answer.
+        for _ in range(_MAX_HEADER_LINES):
+            if await reader.readline() in (b"\r\n", b"\n", b""):
+                break
+        return line
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        if self._slots.locked():            # past the cap: close, don't queue
+            writer.close()
+            return
+        async with self._slots:
+            await self._answer(reader, writer)
+
+    async def _answer(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            line = (await asyncio.wait_for(reader.readline(), 10)).decode("latin-1")
-            # Read the headers too: closing with unread input can reset the
-            # connection before the proxy reads the answer.
-            for _ in range(_MAX_HEADER_LINES):
-                header = await asyncio.wait_for(reader.readline(), 10)
-                if header in (b"\r\n", b"\n", b""):
-                    break
+            line = await asyncio.wait_for(self._request_line(reader), self.read_seconds)
             parts = line.split()
             path = parts[1] if len(parts) >= 2 else ""
             answer = (self.tokens.get(path.removeprefix(CHALLENGE_PREFIX))
@@ -135,8 +151,10 @@ class Challenges:
 async def advisory_lock():
     """True while this worker is the only renewer (both slots share the
     database); False when another holds it. A session lock on a pooled
-    connection: released on the way out, or the connection is thrown away."""
+    connection in AUTOCOMMIT (never idle in a transaction for the minutes an
+    order takes): released on the way out, or the connection is thrown away."""
     async with get_engine().connect() as conn:
+        conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
         got = bool(await conn.scalar(text("SELECT pg_try_advisory_lock(:k)"), {"k": LOCK_KEY}))
         try:
             yield got
@@ -197,10 +215,19 @@ async def _certificate(do: httpx.AsyncClient, certificate_id: str | None) -> dic
     return found if isinstance(found, dict) else None
 
 
-def _targets(lb: dict, cfg: WorkerConfig) -> bool:
+def _targets(lb: dict, cfg: WorkerConfig) -> str | None:
+    """None when this droplet is the load balancer's only target and it is
+    active; "not_active" when it isn't a target; "switching" while Sirdar
+    moves traffic (two targets, or the load balancer busy): Let's Encrypt's
+    requests would be split between the slots and the order would fail."""
     ids = lb.get("droplet_ids") or []
-    return isinstance(ids, list) and int(cfg.droplet_id) in [
-        d for d in ids if isinstance(d, int)]
+    ids = [d for d in ids if isinstance(d, int)] if isinstance(ids, list) else []
+    me = int(cfg.droplet_id)
+    if me not in ids:
+        return "not_active"
+    if ids != [me] or lb.get("status") != "active":
+        return "switching"
+    return None
 
 
 def _https_certificate(lb: dict) -> str | None:
@@ -238,10 +265,11 @@ def _days_left(cert: dict | None, now: datetime) -> float | None:
 
 async def _due(do: httpx.AsyncClient, cfg: WorkerConfig, now: datetime,
                renew_days: float) -> tuple[str | None, dict, dict | None]:
-    """(None or "not_active"/"fresh", the load balancer, its certificate)."""
+    """(None or "not_active"/"switching"/"fresh", the load balancer, its
+    certificate)."""
     lb = await _load_balancer(do, cfg)
-    if not _targets(lb, cfg):
-        return "not_active", lb, None
+    if outcome := _targets(lb, cfg):
+        return outcome, lb, None
     cert = await _certificate(do, _https_certificate(lb))
     left = _days_left(cert, now)
     if left is not None and left > renew_days:
@@ -255,8 +283,8 @@ async def check_once(cfg: WorkerConfig, *, challenges: Challenges,
                      sleep=asyncio.sleep, poll: float = acme.POLL_SECONDS,
                      renew_days: float = RENEW_DAYS) -> str:
     """One check: "not_active" (the load balancer targets another droplet),
-    "fresh" (more than `renew_days` left), "locked" (another worker is
-    renewing) or "renewed"."""
+    "switching" (Sirdar is moving traffic), "fresh" (more than `renew_days`
+    left), "locked" (another worker is renewing) or "renewed"."""
     transports = transports or {}
     now = now or datetime.now(UTC)
     async with httpx.AsyncClient(base_url=DO_API, timeout=30,
@@ -282,15 +310,45 @@ async def check_once(cfg: WorkerConfig, *, challenges: Challenges,
                 upload["certificate_chain"] = issued.chain_pem
             made = _field(await _do(do, "POST", "/certificates", upload), "certificate")
             made_id = _id(made.get("id"))
-            # Issuing takes a while: move the load balancer as it is now.
-            lb = await _load_balancer(do, cfg)
-            old_id = _https_certificate(lb)
-            old = await _certificate(do, old_id) if old_id != made_id else None
-            await _do(do, "PUT", f"/load_balancers/{cfg.lb_id}", _lb_body(lb, made_id))
+            try:
+                lb = await _settled(do, cfg, sleep, poll)
+                if outcome := _targets(lb, cfg):
+                    await _forget(do, made_id)
+                    return outcome
+                old_id = _https_certificate(lb)
+                old = await _certificate(do, old_id) if old_id != made_id else None
+                # A PUT replaces the whole load balancer, targets included.
+                # A tiny race remains between this read and the PUT: a switch
+                # Sirdar starts in between could be written back over. Sirdar's
+                # go_live checks the final targets after it switches.
+                await _do(do, "PUT", f"/load_balancers/{cfg.lb_id}", _lb_body(lb, made_id))
+            except BaseException:
+                await _forget(do, made_id)
+                raise
             # Delete only the environment's own certificates (Sirdar's or ours).
             if old and str(old.get("name", "")).startswith(f"ss-{cfg.env}-"):
                 await _do(do, "DELETE", f"/certificates/{_id(old_id)}", missing_ok=True)
             return "renewed"
+
+
+async def _settled(do: httpx.AsyncClient, cfg: WorkerConfig, sleep, poll: float) -> dict:
+    """The load balancer once it is active again (issuing takes a while, and
+    a PUT to a busy load balancer is refused or lost)."""
+    for _ in range(LB_WAIT_TRIES):
+        lb = await _load_balancer(do, cfg)
+        if lb.get("status") == "active":
+            return lb
+        await sleep(poll)
+    raise CertWorkerError("The load balancer stayed busy; the new certificate was removed.")
+
+
+async def _forget(do: httpx.AsyncClient, certificate_id: str) -> None:
+    """Delete a certificate this check uploaded and couldn't use. Best effort:
+    Sirdar's reconcile retires leftovers named ss-<env>-…"""
+    try:
+        await _do(do, "DELETE", f"/certificates/{certificate_id}", missing_ok=True)
+    except Exception:  # noqa: BLE001
+        log.warning("cert-worker: couldn't remove an unused certificate")
 
 
 async def check_logged(cfg: WorkerConfig, challenges: Challenges, **kwargs) -> str | None:
