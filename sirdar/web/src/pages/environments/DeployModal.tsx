@@ -177,6 +177,7 @@ export default function DeployModal({ env, onStarted, onClose }: {
               {errors.ref && <p className="form-error" role="alert">{errors.ref}</p>}
               {onDo(env) && (() => {
                 const target = idleSlot(env);
+                if (!target) return null;
                 const live = goesLive(env, target);
                 return (
                   <>

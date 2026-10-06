@@ -16,7 +16,7 @@ export function SoonButton({ className = '', title = SOON, children }: {
   );
 }
 
-export type Tone = 'ok' | 'warn' | 'muted' | 'blue';
+export type Tone = 'ok' | 'warn' | 'bad' | 'muted' | 'blue';
 
 export function Dot({ tone }: { tone: Tone }) {
   return <span className={`sd-dot is-${tone}`} aria-hidden="true" />;

@@ -82,6 +82,7 @@ export default function DashboardPage() {
   const setDemo = (on: boolean) => {
     const next = new URLSearchParams(params);
     if (on) next.set('demo', '1'); else next.delete('demo');
+    next.delete('env');   // the two modes' cards differ: each starts from its own default
     setParams(next, { replace: true });
   };
 
@@ -92,10 +93,11 @@ export default function DashboardPage() {
   };
 
   const cards = data?.environments ?? [];
-  const wanted = params.get('env') ?? remembered();
-  const selected = cards.find((c) => c.id === wanted) ?? defaultCard(cards);
+  // the URL, then the remembered pick (real data only), then the default; each must name a card
+  const byId = (id: string | null) => (id ? cards.find((c) => c.id === id) : undefined);
+  const selected = byId(params.get('env')) ?? (demo ? undefined : byId(remembered())) ?? defaultCard(cards);
   const select = (id: string) => {
-    remember(id);
+    if (!demo) remember(id);   // a demo pick never leaks into the real dashboard
     const next = new URLSearchParams(params);
     next.set('env', id);
     setParams(next, { replace: true });

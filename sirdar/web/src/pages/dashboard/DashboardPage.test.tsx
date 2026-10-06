@@ -352,3 +352,66 @@ it('Open shows only with deploy:view', async () => {
   await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
   expect(within(spot()).queryByRole('link', { name: 'Open' })).toBeNull();
 });
+
+it('a pick made on demo data is not remembered, and leaving demo drops it from the URL', async () => {
+  api.getDashboard.mockImplementation(async (o: { demo?: boolean }) => (o?.demo ? DEMO : CLOUD));
+  show('/?demo=1');
+  await screen.findByText('All systems healthy');
+  await userEvent.click(cardToggle('Development'));
+  expect(within(spot()).getByRole('heading', { name: 'Development' })).toBeTruthy();
+  await userEvent.click(cardToggle('UAT'));     // demo's "uat" id is also a real environment
+  expect(loc).toBe('?demo=1&env=uat');
+  expect(window.localStorage.getItem('sirdar.dashboard.env')).toBeNull();
+  await userEvent.click(screen.getByLabelText('Demo data'));
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+  expect(loc).toBe('');
+});
+
+it('an unknown ?env= falls back to the remembered pick before the default', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  window.localStorage.setItem('sirdar.dashboard.env', 'uat9');
+  show('/?env=gone');
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'uat9' })).toBeTruthy());
+});
+
+it('the certificate pill: red when expired, singular at one day', async () => {
+  const prod = CLOUD.environments[0];
+  const withCert = (certificate: typeof prod.flow.certificate) =>
+    ({ ...CLOUD, environments: [{ ...prod, flow: { ...prod.flow, certificate } }] });
+  api.getDashboard.mockResolvedValue(withCert({ days_left: 0, expires_at: '2026-10-01T00:00:00+00:00', tone: 'bad' }));
+  show();
+  expect((await within(await findSpot()).findByText('Certificate expired')).className).toMatch(/is-bad/);
+  cleanup();
+  api.getDashboard.mockResolvedValue(withCert({ days_left: 1, expires_at: '2026-10-07T00:00:00+00:00', tone: 'warn' }));
+  show();
+  expect((await within(await findSpot()).findByText('Certificate: 1 day left')).className).toMatch(/is-warn/);
+});
+
+it('switching cards remounts the flow, so it re-measures and restarts', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  show();
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'prod' })).toBeTruthy());
+  const before = spot().querySelector('.sd-flow')!;
+  await userEvent.click(cardToggle('uat9'));
+  expect(before.isConnected).toBe(false);
+  expect(spot().querySelector('.sd-flow')).toBeTruthy();
+});
+
+it("a demo card's Deploy is inert and leaves the selection alone", async () => {
+  show('/?demo=1');
+  const dev = await screen.findByRole('region', { name: 'Development' });
+  await userEvent.click(within(dev).getByRole('button', { name: 'Deploy' }));
+  expect(cardToggle('Production').getAttribute('aria-pressed')).toBe('true');
+  expect(cardToggle('Development').getAttribute('aria-pressed')).toBe('false');
+  expect(screen.queryByRole('dialog')).toBeNull();
+});
+
+it('Deploying reads the same on the card and in the spotlight', async () => {
+  const prod = { ...CLOUD.environments[0], state: 'deploying' };
+  api.getDashboard.mockResolvedValue({ ...CLOUD, environments: [prod, ...CLOUD.environments.slice(1)] });
+  show();
+  const spotPill = (await within(await findSpot()).findByText('Deploying', { selector: '.sd-pill' }));
+  const card = screen.getByRole('button', { name: 'Show prod' }).closest('.sd-env') as HTMLElement;
+  const cardPill = within(card).getByText('Deploying', { selector: '.sd-pill' });
+  expect(cardPill.className).toBe(spotPill.className);
+});

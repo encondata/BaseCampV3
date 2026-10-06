@@ -159,8 +159,8 @@ export const vmNetwork = (vm: Pick<EnvVm, 'ip_mode' | 'ip_cidr' | 'gateway'>) =>
 export const onDo = (env: Pick<Environment, 'target_kind'>) => env.target_kind === 'digitalocean';
 export const isDoTarget = (id: string) => id === 'digitalocean';
 export const slotTitle = (slot: string | null | undefined) => (slot ? slot[0].toUpperCase() + slot.slice(1) : '');
-/** The slot an Update deploys to (the API's do_envs.target_slot). */
-export const idleSlot = (env: Pick<Environment, 'slots' | 'active_slot'>): string =>
+/** The slot an Update deploys to (the API's do_envs.target_slot); undefined with no slots. */
+export const idleSlot = (env: Pick<Environment, 'slots' | 'active_slot'>): string | undefined =>
   env.active_slot === null || env.slots.length < 2 ? env.slots[0]
     : env.slots.find((s) => s !== env.active_slot) ?? env.slots[0];
 /** Whether an Update of `slot` goes live by itself (the API's do_envs.goes_live). */

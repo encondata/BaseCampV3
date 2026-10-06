@@ -136,6 +136,7 @@ describe('DigitalOcean helpers', () => {
     expect(goesLive({ ...DO_ENV, auto_activate: true }, 'purple')).toBe(true);
     expect(goesLive({ ...DO_ENV, active_slot: null }, 'orange')).toBe(true);
     expect(idleSlot(ONE_SLOT_ENV)).toBe('orange');
+    expect(idleSlot({ slots: [], active_slot: null })).toBeUndefined();
     expect(goesLive(ONE_SLOT_ENV, 'orange')).toBe(true);
     expect(goesLive({ ...PROD_ENV, auto_activate: true }, 'green')).toBe(false);
     expect(slotTitle('purple')).toBe('Purple');

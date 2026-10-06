@@ -145,3 +145,54 @@ it('renders the server action next to its box', () => {
   expect(screen.getByRole('button', { name: 'Activate Green' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Activate Blue' })).toBeNull();
 });
+
+it('the idle server box is dimmed; the live one is not', () => {
+  const { container } = render(<EnvironmentFlow flow={PROD_CARD.flow} motion={false} />);
+  const [blue, green] = Array.from(container.querySelectorAll('.sd-slot'));
+  expect(green.className).toMatch(/is-idle/);
+  expect(blue.className).not.toMatch(/is-idle/);
+});
+
+it('nothing built: the middle box and its icon are muted', () => {
+  const { container } = render(<EnvironmentFlow flow={PLACEHOLDER_PROD.flow} motion={false} />);
+  const lb = container.querySelector('.sd-node-lb')!;
+  expect(lb.className).toMatch(/is-muted/);
+  expect(lb.querySelector('.sd-node-icon')!.getAttribute('class')).toMatch(/is-muted/);
+  const live = render(<EnvironmentFlow flow={PROD_CARD.flow} motion={false} />).container.querySelector('.sd-node-lb')!;
+  expect(live.className).not.toMatch(/is-muted/);
+});
+
+it('a load balancer that is down is red: its border class and its dot', () => {
+  const flow = { ...PROD_CARD.flow, middle: { ...PROD_CARD.flow.middle, status: 'down' } };
+  const { container } = render(<EnvironmentFlow flow={flow} motion={false} />);
+  const lb = container.querySelector('.sd-node-lb')!;
+  expect(lb.className).toMatch(/is-down/);
+  expect(lb.querySelector('.sd-dot')!.className).toMatch(/is-bad/);
+  expect(lb.textContent).toContain('Not found');
+});
+
+it('a resize re-measures the connectors', () => {
+  let fire: (() => void) | undefined;
+  const original = (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = class {
+    constructor(cb: () => void) { fire = cb; }
+    observe() {}
+    disconnect() {}
+  };
+  let width = 100;
+  const rect = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+    const traffic = this.classList.contains('sd-node-traffic');
+    return { left: traffic ? 0 : width, right: traffic ? 50 : width + 50, top: 0, bottom: 20, height: 20, width: 50,
+             x: 0, y: 0, toJSON() {} } as DOMRect;
+  });
+  try {
+    const { container } = render(<EnvironmentFlow flow={LAN_CARD.flow} motion={false} />);
+    const before = container.querySelector('.sd-flow-seg')!.getAttribute('d');
+    width = 300;
+    act(() => fire!());
+    expect(container.querySelector('.sd-flow-seg')!.getAttribute('d')).not.toBe(before);
+  } finally {
+    rect.mockRestore();
+    (globalThis as { ResizeObserver?: unknown }).ResizeObserver = original;
+  }
+});

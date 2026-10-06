@@ -67,6 +67,7 @@ function useReducedMotion(): boolean {
 const title = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 const healthTone = (h: string): Tone => (h === 'healthy' ? 'ok' : h === 'degraded' ? 'warn' : 'muted');
 const MIDDLE_STATUS: Record<string, string> = { ok: 'Active', warn: 'Busy', down: 'Not found', unknown: 'Unknown' };
+const MIDDLE_TONE: Record<string, Tone> = { ok: 'ok', warn: 'warn', down: 'bad', unknown: 'muted' };
 
 function ServerBox({ server, flow, action, boxRef }: {
   server: DashServer; flow: DashFlow; action: ReactNode; boxRef: (el: HTMLDivElement | null) => void;
@@ -79,6 +80,7 @@ function ServerBox({ server, flow, action, boxRef }: {
     : live ? ['is-active', 'Live'] : server.state === 'idle' ? ['is-standby', 'Idle'] : ['', ''];
   return (
     <div ref={boxRef} className={`sd-slot is-${live ? 'active' : empty ? 'empty' : 'standby'}`
+      + `${server.state === 'idle' && !deploying && !failed ? ' is-idle' : ''}`
       + `${deploying ? ' is-deploying' : ''}${failed ? ' is-failed' : ''}`}>
       <div className="sd-slot-icon">
         <ServerRackIcon size={30} />
@@ -198,7 +200,8 @@ export default function EnvironmentFlow({ flow, motion, serverAction }: {
   }, [showDots, motion, reducedMotion, liveIdx, geo]);
 
   const markerBlue = `${uid}-ab`, markerGray = `${uid}-ag`;
-  const middleTone: Tone = flow.middle.status === 'ok' ? 'ok' : flow.middle.status === 'unknown' ? 'muted' : 'warn';
+  const middleTone: Tone = MIDDLE_TONE[flow.middle.status] ?? 'warn';
+  const nothing = flow.kind === 'none';
 
   return (
     <div className="sd-flow">
@@ -237,8 +240,8 @@ export default function EnvironmentFlow({ flow, motion, serverAction }: {
           </div>
         </div>
 
-        <div className={`sd-node sd-node-lb is-${flow.middle.status}`} ref={lbRef}>
-          <LoadBalancerIcon size={34} className="sd-node-icon" />
+        <div className={`sd-node sd-node-lb is-${flow.middle.status}${nothing ? ' is-muted' : ''}`} ref={lbRef}>
+          <LoadBalancerIcon size={34} className={`sd-node-icon${nothing ? ' is-muted' : ''}`} />
           <div>
             <b>{flow.middle.label}</b>
             {flow.middle.sub && <div className={showDots ? 'sd-accent' : 'sd-muted'}>{flow.middle.sub}</div>}

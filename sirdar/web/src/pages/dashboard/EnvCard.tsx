@@ -11,7 +11,7 @@ import { Dot, SoonButton } from './parts';
 function State({ env }: { env: DashEnvironment }) {
   const version = env.version && <b>{env.version}</b>;
   if (env.state === 'active') return <div className="sd-env-state">{version}<span className="sd-pill is-ok"><Dot tone="ok" />Running</span></div>;
-  if (env.state === 'deploying') return <div className="sd-env-state">{version}<span className="sd-pill is-muted"><Dot tone="blue" />Deploying</span></div>;
+  if (env.state === 'deploying') return <div className="sd-env-state">{version}<span className="sd-pill is-blue"><Dot tone="blue" />Deploying</span></div>;
   if (env.state === 'failed') return <div className="sd-env-state">{version}<span className="sd-pill is-warn"><Dot tone="warn" />Last deploy failed</span></div>;
   return <div className="sd-env-state sd-caps">{env.environment ? 'No active deployment' : 'Not built yet'}</div>;
 }
