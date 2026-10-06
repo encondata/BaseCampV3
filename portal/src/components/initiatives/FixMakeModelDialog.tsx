@@ -227,7 +227,9 @@ export default function FixMakeModelDialog({ text, make, model, onClose, onFixed
 
           {mode === 'map' && (
             <>
+              {/* portal: the short .modal-card scrolls its own content and would clip the list */}
               <ComboBox
+                portal
                 placeholder="Type to search models…"
                 value={selectedId}
                 onChange={setSelectedId}

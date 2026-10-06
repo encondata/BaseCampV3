@@ -170,3 +170,20 @@ it('keeps the dialog open and lets the user retry when the alias append fails af
     'm9', ['Dell Dell PowerEdge R720']);
   expect(onFixed).toHaveBeenCalledWith('Dell Dell PowerEdge R720');
 });
+
+it('map-to-existing opens the model list outside the dialog card so the card cannot clip it', async () => {
+  api.listAssetCategories.mockResolvedValue([]);
+  api.listAssetModels.mockResolvedValue([
+    { id: 'm1', make: 'Arista', model: '7050SX3-48YC8-R', aliases: [] },
+  ] as never);
+  render(<FixMakeModelDialog text="PA-3020" make="" model="PA-3020"
+    onClose={() => {}} onFixed={() => {}} />);
+
+  await userEvent.click(await screen.findByText('Map to existing'));
+  await userEvent.click(await screen.findByRole('combobox'));
+
+  const option = await screen.findByText('Arista 7050SX3-48YC8-R');
+  const menu = option.closest('.combo-menu') as HTMLElement;
+  expect(menu.closest('.modal-card')).toBeNull();
+  expect(menu.parentElement).toBe(document.body);
+});
