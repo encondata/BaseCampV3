@@ -2,8 +2,10 @@
  * WizardHeader — the page-level header every multi-screen tool shares: an
  * eyebrow, "Step x of N · Title", a one-line description, and the numbered
  * step row in Generate Report's `rgm-steps` look (done / current / upcoming).
+ * When the step changes it scrolls the heading into view and moves keyboard
+ * focus to it, since the clicked Next/Back button unmounts with its step.
  */
-import { Fragment } from 'react';
+import { Fragment, useEffect, useRef } from 'react';
 
 import '../../styles/reports.css';   // rgm-steps / rgm-step
 import '../../styles/wizard.css';
@@ -22,10 +24,21 @@ interface Props {
 export default function WizardHeader({
   steps, current, title, description, allDone = false, eyebrow = 'Bulk Actions',
 }: Props) {
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const shown = useRef(current);
+  useEffect(() => {
+    if (shown.current === current) return;      // first render, or no real change
+    shown.current = current;
+    const el = headingRef.current;
+    if (!el) return;
+    el.scrollIntoView?.({ block: 'start' });
+    el.focus({ preventScroll: true });
+  }, [current]);
+
   return (
     <div className="wiz-top">
       <div className="eyebrow">{eyebrow}</div>
-      <h1 className="page-title">Step {current + 1} of {steps.length} · {title}</h1>
+      <h1 className="page-title" ref={headingRef} tabIndex={-1}>Step {current + 1} of {steps.length} · {title}</h1>
       <p className="page-hint">{description}</p>
       <div className="rgm-steps wiz-steps">
         {steps.map((s, i) => (

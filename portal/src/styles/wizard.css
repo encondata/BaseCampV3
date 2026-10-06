@@ -10,3 +10,6 @@
   margin-top: 8px; padding-top: 14px; border-top: 1px solid var(--paper-line);
 }
 .wiz-foot .wiz-next { margin-left: auto; }
+/* the heading takes focus on step change (WizardHeader) so keyboard users
+   land on the new step; it is not an interactive control, so no ring */
+.wiz-top .page-title:focus { outline: none; }

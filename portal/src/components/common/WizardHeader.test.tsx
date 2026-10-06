@@ -25,3 +25,24 @@ it('marks every step done once the wizard has finished', () => {
     title="Review and create" description="d" allDone />);
   expect([...container.querySelectorAll('.rgm-step.done')]).toHaveLength(5);
 });
+
+it('moves focus to the step heading and scrolls it into view when the step changes, not on first render', () => {
+  const scrolled: Element[] = [];
+  const original = Element.prototype.scrollIntoView;
+  Element.prototype.scrollIntoView = function scrollIntoView(this: Element) { scrolled.push(this); };
+  try {
+    const { rerender } = render(<WizardHeader steps={MOVE_SETUP_STEPS} current={0}
+      title="The move" description="d" />);
+    const first = screen.getByRole('heading', { name: 'Step 1 of 5 · The move' });
+    expect(document.activeElement).not.toBe(first);
+    expect(scrolled).toHaveLength(0);
+
+    rerender(<WizardHeader steps={MOVE_SETUP_STEPS} current={1}
+      title="From-To assets" description="d" />);
+    const heading = screen.getByRole('heading', { name: 'Step 2 of 5 · From-To assets' });
+    expect(document.activeElement).toBe(heading);
+    expect(scrolled).toEqual([heading]);
+  } finally {
+    Element.prototype.scrollIntoView = original;
+  }
+});

@@ -18,6 +18,7 @@ import { useRawFtConvert } from '../components/bulk/rawFt/useRawFtConvert';
 import WizardFooter from '../components/common/WizardFooter';
 import WizardHeader from '../components/common/WizardHeader';
 import { ApiError, getMoveAssetTemplateColumns, type MoveAssetTemplateColumn } from '../lib/api';
+import '../styles/bulk.css';
 
 export default function BulkConvertRawFt() {
   const [columns, setColumns] = useState<MoveAssetTemplateColumn[] | null>(null);
