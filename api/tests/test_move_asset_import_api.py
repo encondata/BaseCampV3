@@ -3,6 +3,7 @@
 import uuid
 
 from serversherpa.db.models import ImportJob
+from serversherpa.imports.parsing import TEMPLATE_GUIDE, TEMPLATE_HEADERS
 from serversherpa.services.storage import get_object
 
 from .test_assets_api import login
@@ -63,6 +64,9 @@ async def test_permission_gate(client, db, seeded_user):
     resp = await _upload(client, viewer, iid)
     assert resp.status_code == 403
     resp = await client.get("/initiatives/assets/import-template",
+                            headers=viewer)
+    assert resp.status_code == 403
+    resp = await client.get("/initiatives/assets/import-template?format=json",
                             headers=viewer)
     assert resp.status_code == 403
 
@@ -156,3 +160,23 @@ async def test_template_downloads(client, seeded_user):
     resp = await client.get(
         "/initiatives/assets/import-template?format=pdf", headers=headers)
     assert resp.status_code == 422
+
+
+async def test_template_columns_json(client, seeded_user):
+    headers = await login(client)
+    resp = await client.get(
+        "/initiatives/assets/import-template?format=json", headers=headers)
+    assert resp.status_code == 200
+    cols = resp.json()["columns"]
+    assert [c["header"] for c in cols] == TEMPLATE_HEADERS
+    assert cols[0] == {
+        "header": "Serial Number", "field": "serial_number",
+        "aliases": ["serial number"], "required": True,
+        "accepts": TEMPLATE_GUIDE["Serial Number"], "example": "SN-0001",
+    }
+    pod = next(c for c in cols if c["field"] == "source_pod")
+    assert {"pod", "pod #", "source pod"} <= set(pod["aliases"])
+    vendor = next(c for c in cols if c["field"] == "vendor_involvement")
+    assert "vendor involvment" in vendor["aliases"]
+    assert all(c["accepts"] for c in cols)
+    assert sum(c["required"] for c in cols) == 1

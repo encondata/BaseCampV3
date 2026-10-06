@@ -65,6 +65,11 @@ export const BULK_TOOLS: BulkTool[] = [
     resource: 'initiatives', action: 'add', also: MOVE_SETUP_PERMISSIONS,
     to: '/bulk/new-move', button: 'Open',
   },
+  {
+    key: 'from-to-convert', title: 'Convert a customer From-To',
+    description: "Upload a customer's From-To, match its columns to ours, and download a sheet ready for the From-To import.",
+    resource: 'initiatives', action: 'change', to: '/bulk/from-to-convert', button: 'Open',
+  },
 ];
 
 export default function BulkActions() {
