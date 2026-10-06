@@ -69,8 +69,9 @@ async def _notify(db: AsyncSession, run: ReportRun, definition_name: str,
 
 async def _timesheet_inbox_body(db: AsyncSession, run: ReportRun,
                                 initiative: Initiative | None) -> str:
-    """"{from} to {to}", then " · person" and " · job" when the run is
-    filtered by either. A date-less run (never validated) shows "?" for the missing one."""
+    """The inbox body: "{from} to {to}", then " · person" and " · job" when
+    the run is filtered by either. A date-less run (never validated) shows
+    "?" for the missing one."""
     opts = run.options or {}
     body = f"{opts.get('from', '?')} to {opts.get('to', '?')}"
     raw_person = opts.get("person_id")
@@ -120,9 +121,12 @@ async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
         ext = PurePosixPath(result.filename).suffix or ".bin"
         key = f"reports/{run.initiative_id or 'standalone'}/{run_id}{ext}"
         await put_object(key, result.content, result.content_type)
-        if run.initiative_id is not None:
+        if run.initiative_id is not None and run.report_type != "timesheet":
             # no initiative to attach to when the survey was generated for
-            # a partner + manually-chosen sites — see the module docstring
+            # a partner + manually-chosen sites — see the module docstring.
+            # A timesheet is never attached: Files are readable with
+            # attachments:view, which would expose hours to people without
+            # time:view. Its file lives only on the run (History download).
             attachment = Attachment(
                 entity_type="initiative", entity_id=run.initiative_id, kind="document",
                 storage_key=key, filename=result.filename, content_type=result.content_type,

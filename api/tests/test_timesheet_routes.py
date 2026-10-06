@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from serversherpa.db.engine import get_sessionmaker
 from serversherpa.db.models import (
-    Attachment, Initiative, Notification, PermissionOverride, Person, ReportDefinition,
+    Attachment, AuditLog, Initiative, Notification, PermissionOverride, Person, ReportDefinition,
     ReportRun, TimeEntry,
 )
 from serversherpa.reports import worker
@@ -233,7 +233,9 @@ async def _queued_run(db, d, requester, *, initiative_id=None, options=None, not
     return run.id
 
 
-async def test_worker_builds_a_job_timesheet_and_attaches_it_to_the_job(db):
+async def test_worker_never_attaches_a_job_timesheet_to_the_jobs_files(db):
+    """Files are readable with attachments:view, which would expose hours to
+    people without time:view — the file lives only on the run."""
     d = await _definition(db)
     person = await _person(db, "Rae", "Requester")
     ini = await _initiative(db)
@@ -245,10 +247,13 @@ async def test_worker_builds_a_job_timesheet_and_attaches_it_to_the_job(db):
     run = await db.get(ReportRun, run_id)
     await db.refresh(run)
     assert run.status == "completed", run.error
-    assert run.attachment_id is not None
-    att = await db.get(Attachment, run.attachment_id)
-    assert att.entity_type == "initiative" and att.entity_id == ini.id
-    assert att.filename.startswith("Timesheet - 2026-10-01 to 2026-10-31 - Job A")
+    assert run.storage_key == f"reports/{ini.id}/{run_id}.xlsx"
+    assert run.filename.startswith("Timesheet - 2026-10-01 to 2026-10-31 - Job A")
+    assert run.attachment_id is None
+    assert await db.scalar(select(Attachment).where(
+        Attachment.entity_type == "initiative", Attachment.entity_id == ini.id)) is None
+    assert await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "initiative", AuditLog.action == "attachment.add")) is None
 
 
 async def test_worker_runs_a_timesheet_with_no_job_and_attaches_nothing(db):

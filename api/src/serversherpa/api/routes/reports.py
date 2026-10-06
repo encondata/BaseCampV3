@@ -21,10 +21,9 @@ from serversherpa.db.models import (
     Initiative, Partner, Person, ReportDefinition, ReportRun,
 )
 from serversherpa.db.ordering import natural
-from serversherpa.reports.move_scan_history.gather import gather as gather_scan_history
 from serversherpa.reports import timesheet as timesheet_report
+from serversherpa.reports.move_scan_history.gather import gather as gather_scan_history
 from serversherpa.reports.registry import OptionsError, get_module
-from serversherpa.reports.timesheet import gather as timesheet_gather
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.storage import presign_get
 
@@ -337,7 +336,7 @@ async def timesheet_preview(
                 cond is not None and await db.scalar(
                     select(Initiative.id).where(Initiative.id == ini.id, cond)) is None):
             raise _err(404, "initiative_not_found")
-    filters = timesheet_gather.TimesheetFilters(
+    filters = timesheet_report.gather.TimesheetFilters(
         from_day=date.fromisoformat(options["from"]), to_day=date.fromisoformat(options["to"]),
         person_id=uuid.UUID(options["person_id"]) if "person_id" in options else None,
         initiative_id=initiative_id,
@@ -345,8 +344,8 @@ async def timesheet_preview(
         statuses=tuple(options.get("statuses") or
                        timesheet_report.default_options()["default_statuses"]))
     try:
-        data = await timesheet_gather.gather(db, filters)
-    except timesheet_gather.TimesheetTooLarge:
+        data = await timesheet_report.gather.gather(db, filters)
+    except timesheet_report.gather.TimesheetTooLarge:
         return TimesheetPreviewOut(entries=0, people=0, days=0, approved_minutes=0,
                                    pending_minutes=0, flagged_entries=0, too_many=True)
     return TimesheetPreviewOut(
