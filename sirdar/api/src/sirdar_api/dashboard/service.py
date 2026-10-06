@@ -10,6 +10,7 @@ same inventories fill the infrastructure tree). LAN values come from the
 environment's target and the NPM integration's URL. No token reaches the
 response or a cache key."""
 
+import asyncio
 import hashlib
 import logging
 import math
@@ -258,18 +259,8 @@ async def _public_hostnames(db: AsyncSession, env_ids: list) -> dict:
     return found
 
 
-async def _certificates(db: AsyncSession, pairs: list[tuple[Environment, dict]],
-                        refresh: bool, now: datetime) -> None:
-    """One bounded, concurrent check of every real card's public hostnames,
-    written into each card's flow.certificate."""
-    if not pairs:
-        return
-    hostnames = await _public_hostnames(db, [e.id for e, _ in pairs])
-    checked = await cert_checker.check_all(
-        [h for hs in hostnames.values() for h in hs], refresh=refresh)
-    for env, card in pairs:
-        card["flow"]["certificate"] = certificate_of(
-            [checked[h] for h in hostnames.get(env.id, [])], now)
+async def _no_checks() -> dict:
+    return {}
 
 
 def _empty_flow() -> dict:
@@ -420,8 +411,15 @@ async def environment_cards(db: AsyncSession | None, settings: Settings, tagged:
     placeholder), Dev / Beta (placeholders until one exists), the rest by
     name, then DigitalOcean env tags no environment answers to."""
     rows: list[Environment] = []
+    hostnames: dict = {}
     if db is not None:
         rows = list(await db.scalars(select(Environment).order_by(Environment.name)))
+        hostnames = await _public_hostnames(db, [e.id for e in rows])
+    # One bounded, concurrent check of every card's public hostnames, running
+    # while the cards are built (it never touches the session).
+    checking = asyncio.ensure_future(
+        cert_checker.check_all([h for hs in hostnames.values() for h in hs], refresh=refresh)
+        if hostnames else _no_checks())
 
     built: list[tuple[Environment, dict]] = []
 
@@ -430,23 +428,30 @@ async def environment_cards(db: AsyncSession | None, settings: Settings, tagged:
         built.append((e, c))
         return c
 
-    prods = sorted((e for e in rows if e.type == "production"), key=lambda e: e.retiring)
-    first = prods[0] if prods else None
-    cards = [await card(first) if first else
-             _placeholder("production", "Set up Production", production=True)]
-    # Only card 0 is the Production card; a retiring production listed later
-    # keeps production: true but isn't primary.
-    cards[0]["primary"] = True
-    for type_, short in (("dev", "Dev"), ("beta", "Beta")):
-        typed = [e for e in rows if e.type == type_]
-        if typed:
-            cards += [await card(e) for e in typed]
-        else:
-            cards.append(_placeholder(type_, f"Set up {short}"))
-    cards += [await card(e) for e in rows if e.type not in ("dev", "beta") and e is not first]
-    known = {e.name for e in rows}
-    cards += [_placeholder(e, f"Set up {_label(e)}") for e in tagged if e not in known]
-    await _certificates(db, built, refresh, now)
+    try:
+        prods = sorted((e for e in rows if e.type == "production"), key=lambda e: e.retiring)
+        first = prods[0] if prods else None
+        cards = [await card(first) if first else
+                 _placeholder("production", "Set up Production", production=True)]
+        # Only card 0 is the Production card; a retiring production listed later
+        # keeps production: true but isn't primary.
+        cards[0]["primary"] = True
+        for type_, short in (("dev", "Dev"), ("beta", "Beta")):
+            typed = [e for e in rows if e.type == type_]
+            if typed:
+                cards += [await card(e) for e in typed]
+            else:
+                cards.append(_placeholder(type_, f"Set up {short}"))
+        cards += [await card(e) for e in rows if e.type not in ("dev", "beta") and e is not first]
+        known = {e.name for e in rows}
+        cards += [_placeholder(e, f"Set up {_label(e)}") for e in tagged if e not in known]
+    except BaseException:
+        checking.cancel()            # its checks still finish and fill the cache
+        raise
+    checked = await checking
+    for env, c in built:
+        c["flow"]["certificate"] = certificate_of(
+            [checked[h] for h in hostnames.get(env.id, [])], now)
     return cards
 
 

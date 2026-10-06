@@ -4,6 +4,7 @@ always the first card (or a placeholder); DigitalOcean values come from
 Sirdar's records and the accounts' inventories, LAN values from the target
 and the NPM integration."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -451,3 +452,18 @@ async def test_the_demo_certificates_list_their_hosts():
         assert set(cert) == {"days_left", "expires_at", "tone", "hosts"}
         for h in cert["hosts"]:
             assert set(h) == {"hostname", "expires_at", "days_left", "error"}
+
+
+async def test_certificate_checks_start_while_the_cards_are_built(
+        client, db, fake_certs, monkeypatch):
+    await make_environment(db, name="uat", current_sha=SHA, secrets={})
+    seen: list[int] = []
+    real = service._environment_card
+
+    async def slow_card(*args, **kw):
+        await asyncio.sleep(0.05)
+        seen.append(len(fake_certs.calls))
+        return await real(*args, **kw)
+    monkeypatch.setattr(service, "_environment_card", slow_card)
+    await _dashboard(client, db)
+    assert seen and seen[0] == 6

@@ -5,6 +5,7 @@ once an hour (five minutes after a failure), bounded to 16 in flight."""
 import asyncio
 import socket
 import ssl
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -58,8 +59,11 @@ async def test_a_server_that_never_handshakes_times_out():
         writer.close()
     server, port = await _serve(handler)
     async with server:
+        start = time.monotonic()
         got = await certcheck.check("127.0.0.1", port=port, timeout=0.2)
+        took = time.monotonic() - start
     assert got == HostCert("127.0.0.1", None, "Timed out")
+    assert took < 0.35                 # about the timeout: no second wait, no close handshake
 
 
 async def test_a_refused_connection_is_couldnt_connect():
@@ -140,3 +144,55 @@ async def test_a_check_that_raises_is_our_own_copy(exc, copy):
         raise exc
     got = await Checker(check=boom).check_all(["x.example"])
     assert got["x.example"] == HostCert("x.example", None, copy)
+
+
+async def test_concurrent_callers_share_checks_and_one_limit():
+    fake = _Fake(delay=0.02)
+    checker = Checker(check=fake)
+    hosts = [f"h{i}.example" for i in range(40)]
+    results = await asyncio.gather(*(checker.check_all(hosts) for _ in range(3)))
+    assert all(set(r) == set(hosts) for r in results)
+    assert len(fake.calls) == 40
+    assert 1 < fake.peak <= 16
+
+
+async def test_a_slow_check_times_out_for_this_response_and_fills_the_cache_later():
+    async def slow(hostname, **kw):
+        await asyncio.sleep(0.3)
+        return HostCert(hostname, NOT_AFTER, None)
+    fast = _Fake()
+    calls: list[str] = []
+
+    async def mixed(hostname, **kw):
+        calls.append(hostname)
+        return await (slow if hostname == "slow.example" else fast)(hostname)
+    checker = Checker(check=mixed, deadline=0.1)
+    start = time.monotonic()
+    got = await checker.check_all(["slow.example", "fast.example"])
+    assert time.monotonic() - start < 0.25
+    assert got["slow.example"] == HostCert("slow.example", None, "Timed out")
+    assert got["fast.example"].not_after == NOT_AFTER
+    await asyncio.sleep(0.35)
+    again = await checker.check_all(["slow.example", "fast.example"])
+    assert again["slow.example"].not_after == NOT_AFTER
+    assert sorted(calls) == ["fast.example", "slow.example"]      # the cache answered
+
+
+async def test_expired_cache_entries_are_pruned():
+    clock = _Clock()
+    checker = Checker(check=_Fake(), clock=clock)
+    await checker.check_all(["old.example"])
+    clock.now += 3601
+    await checker.check_all(["new.example"])
+    assert set(checker._cache) == {"new.example"}
+
+
+def test_hostnames_resolve_on_sirdars_own_executor():
+    assert certcheck._DNS is not None and certcheck._DNS._max_workers <= 8
+
+
+async def test_tests_never_dial_a_real_host(no_real_hosts):
+    with pytest.raises(AssertionError):
+        await certcheck.check("portal.example.com", timeout=0.2)
+    assert no_real_hosts == ["certcheck:portal.example.com"]
+    no_real_hosts.clear()

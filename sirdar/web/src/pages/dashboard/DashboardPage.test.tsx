@@ -422,16 +422,16 @@ it("a certificate no host answered for is gray: couldn't check", async () => {
   show();
   const pill = await within(await findSpot()).findByText("Certificate: couldn't check");
   expect(pill.className).toMatch(/is-muted/);
-  expect(pill.getAttribute('title')).toBe("portal.uat.serversherpa.com — couldn't check");
+  expect(pill.getAttribute('title')).toBe("portal.uat.serversherpa.com — Couldn't connect");
   expect(within(envCard('uat')).getByText("Certificate: couldn't check").className).toMatch(/is-muted/);
 });
 
-it('hovering the pill lists every host: days left, singular at one, expired, or couldn\'t check', async () => {
+it('hovering the pill lists every host: days left, singular at one, expired, or why it couldn\'t be checked', async () => {
   api.getDashboard.mockResolvedValue(CLOUD);
   show();
   await screen.findByRole('button', { name: 'Show uat' });
   expect(within(envCard('uat')).getByText('Certificate: 47 days left').getAttribute('title')).toBe(
-    "portal.uat.serversherpa.com — 47 days left\nkiosk.uat.serversherpa.com — couldn't check");
+    'portal.uat.serversherpa.com — 47 days left\nkiosk.uat.serversherpa.com — Timed out');
   cleanup();
   const prod = CLOUD.environments[0];
   const hosts = [
@@ -442,6 +442,23 @@ it('hovering the pill lists every host: days left, singular at one, expired, or 
   show();
   const pill = await within(await findSpot()).findByText('Certificate expired');
   expect(pill.getAttribute('title')).toBe('api.serversherpa.com — 1 day left\nportal.serversherpa.com — expired');
+});
+
+it('the host list is reachable by keyboard, on the card and in the spotlight', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  show();
+  await screen.findByRole('button', { name: 'Show uat' });
+  await userEvent.click(cardToggle('uat'));
+  const hosts = 'portal.uat.serversherpa.com — 47 days left. kiosk.uat.serversherpa.com — Timed out.';
+  for (const where of [envCard('uat'), spot()]) {
+    const pill = within(where).getByText('Certificate: 47 days left');
+    expect(pill.tabIndex).toBe(0);
+    const described = document.getElementById(pill.getAttribute('aria-describedby') ?? '');
+    expect(described?.textContent).toBe(hosts);
+  }
+  // focusing the card's pill doesn't select anything; the card's own button still does
+  within(envCard('prod')).getByText('Certificate: 64 days left').focus();
+  expect(cardToggle('prod').getAttribute('aria-pressed')).toBe('false');
 });
 
 it('switching cards remounts the flow, so it re-measures and restarts', async () => {
