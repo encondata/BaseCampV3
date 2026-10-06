@@ -39,6 +39,9 @@ EXTRA_KEYS = (
     "SS_DATABASE_URL", "SS_DATABASE_SSL", "SS_DATABASE_CA_B64", "SS_SPACES_ENDPOINT",
     "SS_SPACES_REGION", "SS_SPACES_ACCESS_KEY", "SS_SPACES_SECRET_KEY", "SS_SPACES_USE_PATH_STYLE",
     "STACK_DROPLET_ID",
+    # the cert-worker (deploy/stack/api/compose.yml, profile certs) reads only these
+    "SS_CERT_DO_TOKEN", "SS_CERT_LB_ID", "SS_CERT_NAMES", "SS_CERT_ACME_DIRECTORY",
+    "SS_CERT_ACME_KEY",
 )
 
 KNOWN_KEYS = (

@@ -1,8 +1,9 @@
 """Sirdar API. Every route lives under /api; the built SPA (when
 SIRDAR_STATIC_DIR is set) is served from / — see _mount_spa."""
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
@@ -37,7 +38,17 @@ async def _lifespan(app: FastAPI):
     # A disk problem must not stop the app starting.
     except Exception as e:  # noqa: BLE001
         log.warning("couldn't sweep stale snapshot uploads at startup: %s", type(e).__name__)
+    renewal = None
+    seconds = get_settings().cert_check_seconds
+    if seconds > 0:
+        # Sirdar's backup certificate renewal (DigitalOcean); it never raises.
+        from sirdar_api.deploy import renewals
+        renewal = asyncio.create_task(renewals.loop(seconds), name="certificate-renewals")
     yield
+    if renewal is not None:
+        renewal.cancel()
+        with suppress(asyncio.CancelledError):
+            await renewal
     await pipeline.shutdown(timeout=pipeline.SHUTDOWN_SECONDS)   # runs end "interrupted"
     await dispose_engine()
 

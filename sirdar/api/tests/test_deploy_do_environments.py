@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import DoEnvironment, DoSlot, Environment
-from sirdar_api.deploy import do_envs, envfile, environments, vms
+from sirdar_api.deploy import do_accounts, do_envs, envfile, environments, vms
 from sirdar_api.deploy import vault
 from sirdar_api.deploy.environments import EnvError
 
@@ -215,6 +215,7 @@ async def _ready_for_extras(env, **over):
               "spaces_secret_enc": vault.encrypt(get_settings(), "spaces-SECRET-1"), **over}
     await do_envs.set_do(env.id, **values)
     await do_envs.set_slot(env.id, "orange", droplet_id="4001", public_ip="127.0.0.1")
+    await do_envs.record(env.id, "load_balancer", "lb-0001", "ss-uat9-lb")
 
 
 async def test_env_extra(db):
@@ -227,11 +228,14 @@ async def test_env_extra(db):
     assert e.value.code == "do_not_ready"
     assert e.value.extra["missing"] == ["load balancer address", "VPC range", "database host",
                                         "database port", "database CA", "Spaces key",
-                                        "droplet"]
+                                        "droplet", "load balancer"]
     await _ready_for_extras(env)
     extra, secrets = await do_envs.env_extra(db, get_settings(), env, "orange", ENV_SECRETS)
     password = ENV_SECRETS["POSTGRES_PASSWORD"]
     ca_b64 = base64.b64encode(CA_PEM.encode()).decode()
+    from .fake_digitalocean import DEV_RENEW_TOKEN
+    key_pem = vault.decrypt(get_settings(), (await do_envs.get(db, env.id)).acme_key_enc)
+    acme_b64 = base64.b64encode(key_pem.encode()).decode()
     assert extra == {
         "STACK_EXTERNAL_DATA": "1", "STACK_CADDY": "1", "STACK_NETWORK_SUBNET": "172.30.0.0/24",
         "STACK_HOSTS_IP": "203.0.113.50", "STACK_TRUSTED_PROXIES": "10.116.0.0/20",
@@ -243,8 +247,15 @@ async def test_env_extra(db):
         "SS_SPACES_ENDPOINT": "https://nyc3.digitaloceanspaces.com",
         "SS_SPACES_REGION": "nyc3", "SS_SPACES_ACCESS_KEY": "DO00KEY000001",
         "SS_SPACES_SECRET_KEY": "spaces-SECRET-1", "SS_SPACES_USE_PATH_STYLE": "false",
-        "STACK_DROPLET_ID": "4001"}
-    assert set(secrets) == {extra["SS_DATABASE_URL"], "spaces-SECRET-1", ca_b64}
+        "STACK_DROPLET_ID": "4001",
+        "SS_CERT_DO_TOKEN": DEV_RENEW_TOKEN, "SS_CERT_LB_ID": "lb-0001",
+        "SS_CERT_NAMES": ",".join(f"{s}.uat9.serversherpa.com"
+                                  for s in ("api", "portal", "kiosk", "wiki", "status")),
+        "SS_CERT_ACME_DIRECTORY": "https://acme-v02.api.letsencrypt.org/directory",
+        "SS_CERT_ACME_KEY": acme_b64,
+    }
+    assert set(secrets) == {extra["SS_DATABASE_URL"], "spaces-SECRET-1", ca_b64,
+                            DEV_RENEW_TOKEN, acme_b64}
     assert list(extra) == [k for k in envfile.EXTRA_KEYS if k in extra]
     # the rendered .env takes every value as it is (one line each)
     assert envfile.parse_env(envfile.render_env(envfile.EnvConfig(
@@ -252,6 +263,27 @@ async def test_env_extra(db):
         bind_ip=env.bind_ip, ports=dict(envfile.DEFAULT_PORTS), keep_dumps=5,
         spaces_bucket=env.spaces_bucket, log_level="INFO", secrets=ENV_SECRETS,
         extra=extra)))["SS_DATABASE_CA_B64"] == ca_b64
+
+
+async def test_env_extra_wants_the_renewal_token_and_a_numeric_droplet(db):
+    from .deploy_factories import ENV_SECRETS
+    env = await make_do_environment(db)
+    await _ready_for_extras(env)
+    await do_accounts.save(db, get_settings(), "development", label="Development",
+                           region="nyc3", clear_renewal=True)
+    await db.commit()
+    await do_envs.set_slot(env.id, "orange", droplet_id="not-a-number")
+    with pytest.raises(do_envs.DoEnvError) as e:
+        await do_envs.env_extra(db, get_settings(), env, "orange", ENV_SECRETS)
+    assert e.value.extra["missing"] == ["droplet", "renewal token"]
+
+
+async def test_env_extra_uses_staging_for_a_staging_environment(db):
+    from .deploy_factories import ENV_SECRETS
+    env = await make_do_environment(db, acme_staging=True)
+    await _ready_for_extras(env)
+    extra, _ = await do_envs.env_extra(db, get_settings(), env, "orange", ENV_SECRETS)
+    assert extra["SS_CERT_ACME_DIRECTORY"] == get_settings().acme_staging_directory
 
 
 async def test_env_extra_quotes_the_password_in_the_url(db):

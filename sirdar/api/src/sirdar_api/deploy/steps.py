@@ -30,7 +30,8 @@ load balancer to the slot (a first deploy, a one-slot environment, an
 auto-activating one, or Activate). Activate is 13 then 14; Deactivate (a
 retiring production, no slot) is 14 alone. Delete is [11 Take snapshot], 17
 Remove DNS records, 18 Remove DigitalOcean resources. Reset, Restore backup, Roll
-back and Restore VM snapshot have no DigitalOcean plan."""
+back and Restore VM snapshot have no DigitalOcean plan. 19 Renew certificate
+is Sirdar's backup renewal, a job of its own (renewals.py)."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,7 +39,7 @@ from typing import Literal
 
 PLAYBOOK_DIR = Path(__file__).resolve().parent / "ansible"
 MODES = ("update", "reset", "snapshot", "restore_dump", "rollback", "publish", "teardown",
-         "vm_restore", "activate")
+         "vm_restore", "activate", "renew")
 # Modes that change what runs on the host: they publish afterwards when asked.
 PUBLISHING_MODES = ("update", "reset", "restore_dump", "rollback")
 PUBLISH_KEYS = ("dns", "proxy", "smoke")
@@ -82,6 +83,7 @@ STEPS: tuple[StepDef, ...] = (
     StepDef(16, "unproxy", "Remove proxy hosts", "", 15 * 60, "python"),
     StepDef(17, "undns", "Remove DNS records", "", 10 * 60, "python"),
     StepDef(18, "do_destroy", "Remove DigitalOcean resources", "", 60 * 60, "vm"),
+    StepDef(19, "do_renew", "Renew certificate", "", 30 * 60, "vm"),
 )
 STEPS_BY_KEY = {s.key: s for s in STEPS}
 ANSIBLE_STEPS = tuple(s for s in STEPS if s.runs == "ansible")
@@ -121,6 +123,7 @@ _CLOUD_PLANS: dict[tuple[str, bool], tuple[str, ...]] = {
     ("teardown", False): ("undns", "do_destroy"),
     ("teardown", True): ("export", "undns", "do_destroy"),
     ("activate", False): ("slot_smoke", "go_live"),
+    ("renew", False): ("do_renew",),
 }
 
 

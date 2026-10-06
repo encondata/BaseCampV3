@@ -181,6 +181,7 @@ async def built(ctx) -> None:
     for i, slot in enumerate(ctx.slots):
         await do_envs.set_slot(ctx.env_id, slot, droplet_id=str(4001 + i), public_ip="127.0.0.1")
     await do_envs.record(ctx.env_id, "vpc", f"vpc-{ctx.env_id}", f"ss-{ctx.env_name}")
+    await do_envs.record(ctx.env_id, "load_balancer", f"lb-{ctx.env_id}", f"ss-{ctx.env_name}-lb")
 
 
 async def built_env(env) -> None:

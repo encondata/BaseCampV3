@@ -1,7 +1,8 @@
-"""Steps 0, 14 and 18 of a DigitalOcean environment (deploy phase 7), run in
-Sirdar through do_api.connect with the environment's account token:
-Prepare DigitalOcean ("do_prepare"), Switch traffic ("go_live") and Remove
-DigitalOcean resources ("do_destroy").
+"""Steps 0, 14, 18 and 19 of a DigitalOcean environment (deploy phase 7),
+run in Sirdar through do_api.connect with the environment's account token:
+Prepare DigitalOcean ("do_prepare"), Switch traffic ("go_live"), Remove
+DigitalOcean resources ("do_destroy") and Renew certificate ("do_renew",
+step 19).
 
 Step 0 is idempotent: it makes what is missing and never replaces what
 exists. In order: the team check, the VPC, the bucket and its key, a droplet
@@ -352,7 +353,7 @@ class DoProvisioner:
     """The real DigitalOcean provisioner. Waits, the clock, the ref lookup
     and the commands on droplets are injectable for tests."""
 
-    STEPS = ("do_prepare", "go_live", "do_destroy")
+    STEPS = ("do_prepare", "go_live", "do_destroy", "do_renew")
 
     def __init__(self, *, settings: Settings,
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -380,6 +381,8 @@ class DoProvisioner:
                     return await self._prepare(api, ctx, out)
                 if step == "go_live":
                     await self._go_live(api, ctx, out)
+                elif step == "do_renew":
+                    await self._renew(api, ctx, out)
                 else:
                     await self._destroy(api, ctx, out)
                 return VmOutcome()
@@ -1245,6 +1248,52 @@ class DoProvisioner:
                              f"{before or 'no slot'} ({e.reason}): point load balancer "
                              f"{name} there by hand.") from None
         out(f"Put traffic back on {before or 'no slot'}.\n")
+
+    # ---- step 19: Renew certificate --------------------------------------------------------
+
+    async def _renew(self, api: DigitalOceanApi, ctx: DoContext, out: Output) -> None:
+        """Sirdar's backup renewal: what step 0 does for the certificate
+        (record what the cert-worker uploaded; renew by DNS-01 at 14 days or
+        fewer), then the load balancer's HTTPS rule on it and the old
+        certificates gone. The targets stay as they are. The load balancer is
+        read back afterwards: the cert-worker may have raced the change."""
+        await self._same_team(api, ctx)
+        records = await load_records(ctx.env_id)
+        lb = await self._live_lb(api, ctx, records)
+        cert = await self._certificate(api, ctx, out)
+        if https_certificate(lb) == cert["id"]:
+            out(f"Load balancer {lb['name']}: already uses the certificate {cert['name']}.\n")
+        else:
+            # A PUT while the load balancer applies another change is refused.
+            current = await self._lb_active(api, lb["id"], lb["name"])
+            await api.update_load_balancer(lb["id"], lb_update_body(
+                current, forwarding_rules=_rules(cert["id"])))
+            await self._lb_active(api, lb["id"], lb["name"])
+            out(f"Load balancer {lb['name']}: now uses the certificate {cert['name']}.\n")
+        keep = await self._final_certificate(api, ctx, lb, cert, out)
+        await self._retire_certificates(api, ctx, keep, out)
+
+    async def _final_certificate(self, api: DigitalOceanApi, ctx: DoContext, lb: dict,
+                                 cert: dict, out: Output) -> str:
+        """The certificate the load balancer serves now: ours (the one this
+        step chose, or a newer one the cert-worker just uploaded, which is
+        then recorded) or the step fails and deletes nothing."""
+        final = await api.load_balancer(lb["id"])
+        if final is None:
+            raise StepFailed(f"Load balancer {lb['name']} disappeared during the renewal.")
+        cert_id = https_certificate(final)
+        if cert_id == cert["id"]:
+            return cert_id
+        found = await api.certificate(cert_id) if cert_id else None
+        if found is None or not certs.is_ours(found, ctx.env_name, ctx.names):
+            raise StepFailed(f"Load balancer {lb['name']} serves a certificate that isn't one of "
+                             f"Sirdar's for {ctx.env_name}. Sirdar deleted nothing: run step 0 "
+                             "again to put one back.")
+        await do_envs.record(ctx.env_id, "certificate", cert_id, found["name"])
+        await do_envs.set_do(ctx.env_id, cert_not_after=certs.not_after(found))
+        out(f"Load balancer {lb['name']}: the cert-worker moved it to the certificate "
+            f"{found['name']} meanwhile; keeping that one.\n")
+        return cert_id
 
     # ---- step 18: Remove DigitalOcean resources -------------------------------------------
 

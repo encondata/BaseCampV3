@@ -100,7 +100,7 @@ FLUSH_SECONDS = 2.0             # how often a running step's log is saved
 MIN_MEMORY_MB = 1800            # "2 GB" as the kernel reports it
 RETRYABLE_STATUSES = ("failed", "cancelled", "interrupted")
 # Jobs that leave the environment's status, commit and image tag as they are.
-KEEPS_STATUS = ("snapshot", "publish")
+KEEPS_STATUS = ("snapshot", "publish", "renew")
 # App shutdown waits this long: a cancelled runner may take its full grace
 # to stop and still write its outcome before the engine is disposed.
 SHUTDOWN_SECONDS = CANCEL_GRACE_SECONDS + 5
@@ -256,8 +256,8 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     for a publish job, 15 for a teardown). Raises DeployInProgress (only the
     insert is rolled back, through a savepoint: the caller's session and
     objects stay usable), or ValueError when start_step isn't a step of this
-    mode's plan (or the mode can't publish). Snapshot and publish jobs leave
-    the environment's status alone; a teardown marks it deleting.
+    mode's plan (or the mode can't publish). Snapshot, publish and renew jobs
+    leave the environment's status alone; a teardown marks it deleting.
 
     cloud: a DigitalOcean environment's deployment (it must match the
     environment's target); `slot` is the slot it deploys, snapshots or
@@ -464,8 +464,8 @@ async def _close(deployment_id: uuid.UUID, env_id: uuid.UUID, step_number: int |
     """End a deployment that didn't succeed, in a fresh session (the run's own
     session may be mid-transaction or cancelled). A snapshot job's (or a
     DigitalOcean Delete's) pending snapshot becomes failed (and its
-    half-fetched bundle goes); any mode but a snapshot or publish job leaves
-    the environment failed."""
+    half-fetched bundle goes); any mode but a snapshot, publish or renew job
+    leaves the environment failed."""
     now = _now()
     taken: uuid.UUID | None = None
     async with get_sessionmaker()() as s:
@@ -492,8 +492,8 @@ async def _close(deployment_id: uuid.UUID, env_id: uuid.UUID, step_number: int |
             await s.execute(update(Snapshot).where(Snapshot.id == snapshot_id,
                                                    Snapshot.status == "pending")
                             .values(status="failed"))
-        if mode not in ("snapshot", "publish"):
-            # a snapshot job and a publish job leave the environment as it was
+        if mode not in KEEPS_STATUS:
+            # a snapshot, publish or renew job leaves the environment as it was
             await s.execute(update(Environment).where(Environment.id == env_id)
                             .values(status="failed", updated_at=now))
         await s.commit()

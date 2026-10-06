@@ -90,6 +90,8 @@ class Settings(BaseSettings):
     # environment created with acme_staging uses the staging directory.
     acme_directory: str = "https://acme-v02.api.letsencrypt.org/directory"
     acme_staging_directory: str = "https://acme-staging-v02.api.letsencrypt.org/directory"
+    # How often Sirdar looks for DigitalOcean certificates to renew (seconds; 0: never).
+    cert_check_seconds: int = Field(default=6 * 3600, ge=0)
     # The largest snapshot upload Sirdar accepts, in bytes (default 5 GiB).
     snapshot_max_bytes: int = Field(default=5 * 1024 ** 3, gt=0)
     # Proxmox environments (phase 5): one Terraform folder per environment,

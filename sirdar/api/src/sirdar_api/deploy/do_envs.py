@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sirdar_api.config import Settings
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import DoEnvironment, DoResource, DoSlot, Environment
-from sirdar_api.deploy import acme, do_accounts, envfile, spaces, vault, vms
+from sirdar_api.deploy import acme, certs, do_accounts, envfile, spaces, vault, vms
 from sirdar_api.deploy.integrations import IntegrationError
 from sirdar_api.deploy.ssh import SshTargetConfig
 
@@ -270,12 +270,23 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
     missing=[...]) until step 0 has recorded them. POSTGRES_PASSWORD is the
     managed role's password too (step 0 sets it); it is URL-quoted. The
     cluster's CA goes in base64 (SS_DATABASE_CA_B64, one line) so the api,
-    migrate and ss-stack's client verify the server (verify-full)."""
+    migrate and ss-stack's client verify the server (verify-full). Then the
+    cert-worker's keys: the account's renewal token, the load balancer, the
+    public names, the ACME directory and this environment's ACME key
+    (base64). A droplet id that isn't a number counts as missing (the
+    cert-worker would idle)."""
     import base64
     from urllib.parse import quote
 
     row = await get(db, env.id)
     slot_row = await db.get(DoSlot, (env.id, slot), populate_existing=True)
+    try:
+        account = await do_accounts.load(db, settings, row.account_key) if row else None
+    except IntegrationError:              # a token that won't open: reported as missing
+        account = None
+    lb_id = await db.scalar(select(DoResource.do_id).where(
+        DoResource.environment_id == env.id, DoResource.kind == "load_balancer").limit(1))
+    droplet = slot_row.droplet_id if slot_row else None
     missing = [label for label, value in (
         ("load balancer address", row.lb_ip if row else None),
         ("VPC range", row.vpc_ip_range if row else None),
@@ -283,7 +294,9 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
         ("database port", row.db_port if row else None),
         ("database CA", row.db_ca_cert if row else None),
         ("Spaces key", row.spaces_key_id if row and row.spaces_secret_enc else None),
-        ("droplet", slot_row.droplet_id if slot_row else None)) if not value]
+        ("droplet", droplet if droplet and droplet.isdecimal() else None),
+        ("load balancer", lb_id),
+        ("renewal token", account.renewal_token if account else None)) if not value]
     if missing:
         raise DoEnvError("do_not_ready", missing=missing)
     spaces_secret = vault.decrypt(settings, row.spaces_secret_enc)
@@ -298,9 +311,16 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
         "SS_DATABASE_URL": url, "SS_DATABASE_SSL": "require", "SS_DATABASE_CA_B64": ca_b64,
         "SS_SPACES_ENDPOINT": spaces.endpoint(row.region), "SS_SPACES_REGION": row.region,
         "SS_SPACES_ACCESS_KEY": row.spaces_key_id, "SS_SPACES_SECRET_KEY": spaces_secret,
-        "SS_SPACES_USE_PATH_STYLE": "false", "STACK_DROPLET_ID": slot_row.droplet_id,
+        "SS_SPACES_USE_PATH_STYLE": "false", "STACK_DROPLET_ID": droplet,
     }
-    found = [url, spaces_secret, ca_b64]
+    acme_key = base64.b64encode(vault.decrypt(settings, row.acme_key_enc).encode()).decode()
+    extra |= {   # the cert-worker's (Task 3); STACK_ENV and STACK_DROPLET_ID come with the rest
+        "SS_CERT_DO_TOKEN": account.renewal_token, "SS_CERT_LB_ID": lb_id,
+        "SS_CERT_NAMES": ",".join(certs.public_names(env.base_domain)),
+        "SS_CERT_ACME_DIRECTORY": (settings.acme_staging_directory if row.acme_staging
+                                   else settings.acme_directory),
+        "SS_CERT_ACME_KEY": acme_key}
+    found = [url, spaces_secret, ca_b64, account.renewal_token, acme_key]
     if password != secrets["POSTGRES_PASSWORD"]:
         found.append(password)          # the URL carries it quoted: a secret too
     return extra, found
@@ -309,10 +329,13 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
 async def secret_values(db: AsyncSession, settings: Settings, env: Environment) -> list[str]:
     """Every DigitalOcean secret of this environment Sirdar holds now, for a
     deployment's redactor: the account's tokens (the renewal token reaches the
-    droplet), the cert-worker's ACME key, the Spaces secret and the doadmin
-    password (step 0 makes the last two, after the run's context was built,
-    so each host step reads them again). Values that don't open are left out:
-    whatever needs them fails on its own."""
+    droplet), the cert-worker's ACME key (as PEM and as the base64 the .env
+    carries), the Spaces secret and the doadmin password (step 0 makes the
+    last two, after the run's context was built, so each host step reads them
+    again). Values that don't open are left out: whatever needs them fails on
+    its own."""
+    import base64
+
     row = await get(db, env.id)
     if row is None:
         return []
@@ -320,9 +343,12 @@ async def secret_values(db: AsyncSession, settings: Settings, env: Environment) 
     for blob in (row.acme_key_enc, row.spaces_secret_enc, row.db_admin_password_enc):
         if blob is not None:
             try:
-                found.append(vault.decrypt(settings, blob))
+                value = vault.decrypt(settings, blob)
             except (vault.SecretsKeyMissing, vault.SecretUnreadable):
-                pass
+                continue
+            found.append(value)
+            if blob is row.acme_key_enc:
+                found.append(base64.b64encode(value.encode()).decode())
     try:
         account = await do_accounts.load(db, settings, row.account_key)
     except IntegrationError:              # unreadable: the step that needs it says so
