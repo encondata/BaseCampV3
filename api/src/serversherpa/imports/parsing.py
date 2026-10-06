@@ -75,6 +75,52 @@ SAMPLE_ROWS: list[dict] = [
      "Data 6": "", "Mgmt 1": "", "Mgmt 2": "", "Vendor Involvement": "yes"},
 ]
 
+# One line per template column for the Bulk Actions "Convert a customer
+# From-To" column guide (served by import-template?format=json).
+TEMPLATE_GUIDE: dict[str, str] = {
+    "Serial Number": "The asset's serial number. Required unless Generate serials is on when you import.",
+    "Asset Name": "Hostname or label, free text.",
+    "Asset Make": "Manufacturer, matched against the make and model catalog.",
+    "Asset Model": "Model, matched against the make and model catalog.",
+    "RFID Tag": "The RFID tag (EPC) on the asset, if it has one.",
+    "Priority": "Move wave or priority, free text.",
+    "Disposition": "What happens to the asset (for example Relocate), free text.",
+    "Owner": "The team or customer that owns the asset, free text.",
+    "Source Pod": "Pod number where the asset is today.",
+    "Source Rack": "Rack the asset sits in today.",
+    "Source RU": "Rack unit today; halves like 3.5 are allowed.",
+    "Source Position": "Front or Rear today.",
+    "Destination Pod": "Pod number the asset moves to.",
+    "Destination Rack": "Rack the asset moves to.",
+    "Destination RU": "Rack unit it moves to; halves like 3.5 are allowed.",
+    "Destination Position": "Front or Rear after the move.",
+    "Data 1": "Data cable connection (for example a switch port), free text.",
+    "Data 2": "Data cable connection, free text.",
+    "Data 3": "Data cable connection, free text.",
+    "Data 4": "Data cable connection, free text.",
+    "Data 5": "Data cable connection, free text.",
+    "Data 6": "Data cable connection, free text.",
+    "Mgmt 1": "Management cable connection, free text.",
+    "Mgmt 2": "Management cable connection, free text.",
+    "Vendor Involvement": "yes or no: whether a vendor is involved with this asset.",
+}
+
+
+def template_columns() -> list[dict]:
+    """The From-To template's columns in order, with the header aliases the
+    import accepts for each, for tools that map other spreadsheets onto it."""
+    out: list[dict] = []
+    for header, field in zip(TEMPLATE_HEADERS, CANONICAL, strict=True):
+        out.append({
+            "header": header,
+            "field": field,
+            "aliases": sorted(k for k, v in HEADER_MAP.items() if v == field),
+            "required": field == "serial_number",
+            "accepts": TEMPLATE_GUIDE[header],
+            "example": SAMPLE_ROWS[0][header],
+        })
+    return out
+
 
 class ImportFileError(Exception):
     """Whole-file failure (not a per-row error)."""

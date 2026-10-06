@@ -33,7 +33,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.db.ordering import natural
 from serversherpa.imports.parsing import (
-    MAX_BYTES, build_template_csv, build_template_xlsx,
+    MAX_BYTES, build_template_csv, build_template_xlsx, template_columns,
 )
 from serversherpa.people import team_bulk
 from serversherpa.racks.recheck import recheck_placement
@@ -1331,4 +1331,6 @@ async def move_asset_import_template(
                        ".spreadsheetml.sheet",
             headers={"Content-Disposition":
                      'attachment; filename="move-assets-template.xlsx"'})
+    if format == "json":
+        return {"columns": template_columns()}
     raise _err(422, "unknown_format")
