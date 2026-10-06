@@ -22,6 +22,7 @@ from sirdar_api.db.models import (Deployment, DeploymentStep, Environment, EsxiV
 from sirdar_api.deploy import (
     ConnectFailed,
     digitalocean,
+    do_envs,
     envfile,
     environments,
     esxi,
@@ -372,14 +373,15 @@ async def forget_host(request: Request, db: DbSession,
 # ---- environments (deploy pipeline) -------------------------------------------
 
 # An environment's target: an SSH target, or a VM host Sirdar builds on.
-ENV_TARGET_PATTERN = r"^(ssh|ssh:[a-z0-9]+(-[a-z0-9]+)*|proxmox|esxi)$"
-EnvType = Literal["dev", "beta", "custom"]
+ENV_TARGET_PATTERN = r"^(ssh|ssh:[a-z0-9]+(-[a-z0-9]+)*|proxmox|esxi|digitalocean)$"
+EnvType = Literal["dev", "beta", "custom", "production"]
 _SSH_ERRORS = (ssh.HostKeyUnknown, ssh.HostKeyMismatch, ConnectFailed)
 _ENV_STATUS = {"environment_exists": 409, "deploy_in_progress": 409,
                "secrets_key_missing": 400, "target_not_configured": 400,
                "snapshot_not_found": 404, "snapshot_not_ready": 409,
                "integration_not_configured": 409, "ip_in_use": 409,
-               "ssh_targets_unreadable": 409, "vm_invalid": 422}
+               "ssh_targets_unreadable": 409, "vm_invalid": 422,
+               "do_account_not_configured": 409, "production_exists": 409}
 _NAME_CONSTRAINT = "environments_name_key"
 
 
@@ -402,6 +404,16 @@ class VmPatch(BaseModel):
     keep_snapshots: int | None = None
 
 
+class DoIn(BaseModel):
+    """A DigitalOcean environment (mode "new", target "digitalocean")."""
+    account: Literal["production", "development"] | None = None
+    slots: int | None = None
+    droplet_size: str | None = Field(default=None, max_length=40)
+    db_size: str | None = Field(default=None, max_length=40)
+    db_standby: bool | None = None
+    acme_staging: bool | None = None
+
+
 class EnvironmentIn(BaseModel):
     mode: Literal["new", "adopt"]
     name: str = Field(max_length=64)
@@ -419,6 +431,8 @@ class EnvironmentIn(BaseModel):
     publish: bool | None = None
     # mode "new" with a VM target only: the VM step 0 builds
     vm: VmIn | None = None
+    # mode "new" with target "digitalocean" only: account, slots and sizes
+    do: DoIn | None = None
 
 
 class ServicePatch(BaseModel):
@@ -439,6 +453,10 @@ class EnvironmentPatch(BaseModel):
     services: dict[str, ServicePatch] | None = None
     publish: bool | None = None
     vm: VmPatch | None = None
+    # Production only: lets Delete remove it and a new production be created.
+    # Needs confirm_name (the environment's name).
+    retiring: bool | None = None
+    confirm_name: str | None = Field(default=None, max_length=64)
     # Write-only. No pydantic constraint on the values, so no validation error
     # can describe one; the service answers secret_invalid / secret_not_editable.
     secrets: dict[str, str] | None = None
@@ -482,6 +500,9 @@ async def environment_defaults(actor: AuthContext = require_permission("deploy",
         "optional_secrets": list(envfile.OPTIONAL_SECRETS),
         "vm": {**vms.DEFAULTS, "keep_snapshots": vms.KEEP_SNAPSHOTS,
                "limits": {k: list(v) for k, v in vms.LIMITS.items()}},
+        "do": {"droplet_size": do_envs.DEFAULT_DROPLET_SIZE, "db_size": do_envs.DEFAULT_DB_SIZE,
+               "db_standby": False, "production_slots": list(do_envs.PRODUCTION_SLOTS),
+               "one_slot": list(do_envs.ONE_SLOT), "two_slots": list(do_envs.TWO_SLOTS)},
     }
 
 
@@ -508,6 +529,8 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
         raise HTTPException(status_code=422, detail={"code": "snapshot_not_allowed"})
     if body.mode == "adopt" and body.vm is not None:
         raise HTTPException(status_code=422, detail={"code": "vm_not_allowed"})
+    if body.mode == "adopt" and body.do is not None:
+        raise HTTPException(status_code=422, detail={"code": "do_not_allowed"})
     if body.mode == "adopt" and body.publish:
         # A hand-built environment's DNS and proxy were made by hand: turn
         # Publish on after claiming them on the Publish tab.
@@ -519,7 +542,8 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
                 git_ref=body.git_ref, base_domain=body.base_domain, proxy_ip=body.proxy_ip,
                 bind_ip=body.bind_ip, ports=body.ports, actor_id=actor_id,
                 snapshot_id=body.snapshot_id, publish=body.publish is not False,
-                vm=body.vm.model_dump(exclude_none=True) if body.vm else None)
+                vm=body.vm.model_dump(exclude_none=True) if body.vm else None,
+                do=body.do.model_dump(exclude_none=True) if body.do else None)
         else:
             env, _, report = await environments.adopt(
                 db, settings, name=body.name, type_=body.type, target_id=body.target,
@@ -547,6 +571,8 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
             changes["seed_snapshot"] = seed["name"]
         if body.vm is not None:
             changes["vm"] = body.vm.model_dump(exclude_none=True)
+        if body.do is not None:
+            changes["do"] = body.do.model_dump(exclude_none=True)
         audit(db, actor_id=actor_id, action="deploy.environment_create",
               entity_type="environment", entity_id=env.name, ip=client_ip(request),
               changes=changes)
@@ -572,9 +598,12 @@ async def update_environment(name: str, body: EnvironmentPatch, request: Request
                              db: DbSession,
                              actor: AuthContext = require_permission("deploy", "change")):
     env = await _environment(db, name)
+    if body.retiring is not None and body.confirm_name != env.name:
+        raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
+    fields = body.model_dump(exclude_unset=True)
+    fields.pop("confirm_name", None)
     try:
-        changed = await environments.update(db, get_settings(), env,
-                                            body.model_dump(exclude_unset=True))
+        changed = await environments.update(db, get_settings(), env, fields)
     except environments.EnvError as e:
         # update() edits the rows before every check has run: undo the lot.
         await db.rollback()

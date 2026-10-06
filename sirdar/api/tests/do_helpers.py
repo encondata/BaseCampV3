@@ -47,3 +47,26 @@ async def configure_account(db, key: str = "development", *, token: str = DEV_TO
     await do_accounts.save(db, get_settings(), key, label=label or key.title(), region=region,
                            token=token, renewal_token=renewal)
     await db.commit()
+
+
+async def make_do_environment(db, *, name: str = "uat9", type_: str = "dev", slots: int = 2,
+                              account: str = "development", snapshot_id=None, **do):
+    """A DigitalOcean environment through environments.create_new (needs the
+    secrets_key fixture). Saves Cloudflare and the account first."""
+    from sirdar_api.deploy import environments, integrations
+
+    from .fake_digitalocean import DO_TOKEN, RENEW_TOKEN
+    from .integration_helpers import configure
+
+    if not await integrations.is_configured(db, "cloudflare"):
+        await configure(db, npm=False)
+    if not await do_accounts.has_token(db, account):
+        if account == "production":
+            await configure_account(db, "production", token=DO_TOKEN, renewal=RENEW_TOKEN)
+        else:
+            await configure_account(db)
+    env = await environments.create_new(
+        db, get_settings(), name=name, type_=type_, target_id="digitalocean",
+        snapshot_id=snapshot_id, do={"account": account, "slots": slots, **do})
+    await db.commit()
+    return env

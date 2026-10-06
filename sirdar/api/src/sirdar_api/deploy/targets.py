@@ -20,10 +20,21 @@ PROXMOX_TARGET = "proxmox"
 ESXI_TARGET = "esxi"
 VM_TARGETS = (PROXMOX_TARGET, ESXI_TARGET)
 VM_TARGET_LABELS = {PROXMOX_TARGET: "Proxmox", ESXI_TARGET: "VMware ESXi"}
+# Environments whose hosts Sirdar builds in a DigitalOcean account (phase 7):
+# droplets per slot, a managed database, Spaces and a load balancer.
+DO_TARGET = "digitalocean"
+BUILT_TARGETS = (*VM_TARGETS, DO_TARGET)
 
 
 def is_vm_target(target_id: str | None) -> bool:
     return target_id in VM_TARGETS
+
+
+def is_built_target(target_id: str | None) -> bool:
+    """A target whose host Sirdar builds (a VM host or DigitalOcean)."""
+    return target_id in BUILT_TARGETS
+
+
 STORE_HINT = "deploy-targets.env isn't writable; see the README."
 
 

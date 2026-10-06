@@ -24,7 +24,8 @@ URL = "/api/deploy/environments"
 ENV_KEYS = {"id", "name", "type", "target", "base_domain", "env_dir", "git_ref", "current_sha",
             "image_tag", "status", "proxy_ip", "bind_ip", "keep_dumps", "spaces_bucket",
             "log_level", "services", "secrets_set", "seed_snapshot", "last_deployment",
-            "created_at", "updated_at", "publish", "managed_records", "target_kind", "vm"}
+            "created_at", "updated_at", "publish", "managed_records", "target_kind", "vm",
+            "do", "slots", "active_slot", "auto_activate", "retiring"}
 NEW = {"mode": "new", "name": "qa", "type": "custom", "target": "ssh",
        "proxy_ip": "10.10.48.6"}
 DEFAULTS_URL = "/api/deploy/environment-defaults"
@@ -71,7 +72,10 @@ async def test_environment_defaults(client, db):
         "optional_secrets": ["SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD"],
         "vm": {"cores": 4, "memory_mb": 8192, "disk_gb": 64, "keep_snapshots": 3,
                "limits": {"cores": [1, 64], "memory_mb": [2048, 262144],
-                          "disk_gb": [20, 4096], "keep_snapshots": [1, 10]}}}
+                          "disk_gb": [20, 4096], "keep_snapshots": [1, 10]}},
+        "do": {"droplet_size": "s-2vcpu-4gb", "db_size": "db-s-2vcpu-4gb", "db_standby": False,
+               "production_slots": ["blue", "green"], "one_slot": ["orange"],
+               "two_slots": ["orange", "purple"]}}
 
 
 async def test_create_new_environment(client, db, target, leak_guard):
@@ -111,8 +115,10 @@ async def test_create_errors(client, db, target, leak_guard, monkeypatch, secret
             ({**NEW, "target": "ssh:gone"}, 400, {"code": "target_not_configured"})):
         resp = await client.post(URL, headers=h, json=body)
         assert (resp.status_code, resp.json()) == (status, {"detail": detail}), body
+    resp = await client.post(URL, headers=h, json={**NEW, "target": "aws"})
+    assert resp.status_code == 422                       # pydantic: not an environment target
     resp = await client.post(URL, headers=h, json={**NEW, "target": "digitalocean"})
-    assert resp.status_code == 422                       # pydantic: not an SSH target id
+    assert (resp.status_code, resp.json()) == (422, {"detail": {"code": "do_invalid"}})
     monkeypatch.setenv("SIRDAR_SECRETS_KEY", "")
     get_settings.cache_clear()
     resp = await client.post(URL, headers=h, json=NEW)

@@ -80,7 +80,7 @@ async def test_create_new_custom_values(db, target):
     ({"name": "Bad"}, "name_invalid"),
     ({"name": "dev"}, "name_reserved"),
     ({"type_": "prod"}, "type_invalid"),
-    ({"target_id": "digitalocean"}, "target_invalid"),
+    ({"target_id": "aws"}, "target_invalid"),
     ({"target_id": "ssh:nope"}, "target_not_configured"),
     ({"git_ref": "a..b"}, "ref_invalid"),
     ({"base_domain": "not a domain"}, "base_domain_invalid"),

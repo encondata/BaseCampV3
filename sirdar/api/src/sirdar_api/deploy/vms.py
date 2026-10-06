@@ -299,12 +299,16 @@ async def add_esxi(db: AsyncSession, settings: Settings, env: Environment, spec:
     return vm
 
 
-async def host_config(db: AsyncSession, settings: Settings,
-                      env: Environment) -> SshTargetConfig | None:
-    """The SSH connection the deploy steps use: a saved target's, or for a
-    VM environment the VM's (None until step 0 has read its address).
-    The VM's key is decrypted here: vault.SecretsKeyMissing or
+async def host_config(db: AsyncSession, settings: Settings, env: Environment, *,
+                      slot: str | None = None) -> SshTargetConfig | None:
+    """The SSH connection the deploy steps use: a saved target's, for a VM
+    environment the VM's (None until step 0 has read its address), and for
+    a DigitalOcean environment the slot's droplet (default: the active
+    slot). Keys are decrypted here: vault.SecretsKeyMissing or
     vault.SecretUnreadable propagate."""
+    if env.target_id == targets.DO_TARGET:
+        from sirdar_api.deploy import do_envs           # do_envs imports vms
+        return await do_envs.host_config(db, settings, env, slot)
     if not targets.is_vm_target(env.target_id):
         return targets.ssh_config_for(env.target_id, settings)
     vm = await get_for(db, env)

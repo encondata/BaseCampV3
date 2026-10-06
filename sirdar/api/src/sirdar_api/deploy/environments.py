@@ -29,11 +29,24 @@ from sirdar_api.db.models import (
     EnvironmentService,
     Snapshot,
 )
-from sirdar_api.deploy import ConnectFailed, envfile, integrations, names, ssh, targets, vault, vms
+from sirdar_api.deploy import (
+    ConnectFailed,
+    certs,
+    do_accounts,
+    do_envs,
+    envfile,
+    integrations,
+    names,
+    ssh,
+    targets,
+    vault,
+    vms,
+)
 from sirdar_api.deploy.gitref import SHA_RE, valid_ref
+from sirdar_api.deploy.integrations import IntegrationError
 from sirdar_api.deploy.ssh import SshTargetConfig
 
-ENV_TYPES = ("dev", "beta", "custom")
+ENV_TYPES = ("dev", "beta", "custom", "production")
 DEFAULT_DOMAIN_SUFFIX = "serversherpa.com"
 DEFAULT_GIT_REF = "main"
 DEFAULT_BIND_IP = "0.0.0.0"
@@ -126,9 +139,9 @@ def _check_log_level(value: str) -> str:
 
 
 def _check_target(target_id: str, settings: Settings) -> SshTargetConfig | None:
-    """An SSH target's config, or None for a VM target (the host is the VM
-    step 0 builds)."""
-    if targets.is_vm_target(target_id):
+    """An SSH target's config, or None for a host Sirdar builds (a VM or
+    DigitalOcean droplets: step 0 builds them)."""
+    if targets.is_built_target(target_id):
         return None
     if not SSH_TARGET_RE.fullmatch(target_id):
         raise EnvError("target_invalid")
@@ -193,18 +206,25 @@ async def _insert(db: AsyncSession, settings: Settings, *, name: str,
                   log_level: str, status: str, current_sha: str | None,
                   image_tag: str | None, secrets: dict[str, str],
                   actor_id, seed_snapshot_id: uuid.UUID | None = None,
-                  publish: bool = False) -> Environment:
+                  publish: bool = False,
+                  public_services: tuple[str, ...] = envfile.PUBLIC_SERVICES,
+                  slots: list[str] | None = None) -> Environment:
     env = Environment(name=name, type=type_, target_id=target_id, base_domain=domain,
                       git_ref=git_ref, current_sha=current_sha, image_tag=image_tag,
                       status=status, proxy_ip=proxy_ip, bind_ip=bind_ip,
                       keep_dumps=keep_dumps, spaces_bucket=spaces_bucket,
                       log_level=log_level, created_by=actor_id,
                       seed_snapshot_id=seed_snapshot_id, publish=publish)
+    if slots is not None:
+        # Set on the INSERT: the database checks production's slots there.
+        env.slots = slots
     db.add(env)
     await db.flush()
     for service in envfile.SERVICES:
         db.add(EnvironmentService(environment_id=env.id, service=service, host_ip=host,
-                                  port=ports[service], hostname=_hostname(service, domain),
+                                  port=ports[service],
+                                  hostname=(f"{service}.{domain}"
+                                            if service in public_services else None),
                                   proxied=False))
     for key, value in secrets.items():
         db.add(EnvironmentSecret(environment_id=env.id, key=key,
@@ -219,16 +239,26 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                      bind_ip: str = DEFAULT_BIND_IP,
                      ports: dict[str, int] | None = None, actor_id=None,
                      snapshot_id: uuid.UUID | None = None,
-                     publish: bool = True, vm: dict | None = None) -> Environment:
+                     publish: bool = True, vm: dict | None = None,
+                     do: dict | None = None) -> Environment:
     """A new environment (status "new"): default ports unless given, the
     target's host for every service, freshly generated secrets. With a
     snapshot, its first deploy restores that snapshot (and its keys). With
     publish (the default), its deploys add DNS, proxy and smoke steps. On a
     VM target ("proxmox" or "esxi"), `vm` sizes the VM step 0 builds and
     sets its network; every service points at its static address (0.0.0.0
-    for DHCP until step 0 reads it), and its VM row records it as Sirdar's."""
+    for DHCP until step 0 reads it), and its VM row records it as Sirdar's.
+    On DigitalOcean ("digitalocean"), `do` picks the account, slots and
+    sizes (see do_envs.check_spec); production lives only there."""
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
                           git_ref=git_ref)
+    on_do = target_id == targets.DO_TARGET
+    if type_ == "production" and not on_do:
+        raise EnvError("production_requires_digitalocean")
+    if do is not None and not on_do:
+        raise EnvError("do_not_allowed")
+    if on_do and vm is not None:
+        raise EnvError("vm_not_allowed")
     if snapshot_id is not None:
         # Locked until the caller commits, so a concurrent delete waits and
         # then sees this environment's seed (in use) instead of racing it.
@@ -240,10 +270,6 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         if snap.status != "ready":
             raise EnvError("snapshot_not_ready")
     domain = _check_domain(base_domain or f"{name}.{DEFAULT_DOMAIN_SUFFIX}")
-    if not proxy_ip:
-        raise EnvError("proxy_ip_required")
-    proxy = _check_ipv4(proxy_ip, "proxy_ip_invalid")
-    bind = _check_ipv4(bind_ip, "bind_ip_invalid")
     given = ports or {}
     unknown = sorted(set(given) - set(envfile.SERVICES))
     if unknown:
@@ -251,6 +277,14 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     all_ports = {s: _check_port(given.get(s, envfile.DEFAULT_PORTS[s]), s)
                  for s in envfile.SERVICES}
     _check_ports_unique(all_ports)
+    if on_do:
+        return await _create_on_do(db, settings, name=name, type_=type_, git_ref=git_ref,
+                                   domain=domain, ports=all_ports, actor_id=actor_id,
+                                   snapshot_id=snapshot_id, do=do or {})
+    if not proxy_ip:
+        raise EnvError("proxy_ip_required")
+    proxy = _check_ipv4(proxy_ip, "proxy_ip_invalid")
+    bind = _check_ipv4(bind_ip, "bind_ip_invalid")
     spec = None
     host = cfg.host if cfg is not None else ""
     if targets.is_vm_target(target_id):
@@ -284,6 +318,47 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                 await vms.add(db, settings, env, spec, stored)
         except vms.VmError as e:
             raise EnvError(e.code, **e.extra) from None
+    return env
+
+
+async def _create_on_do(db: AsyncSession, settings: Settings, *, name: str, type_: str,
+                        git_ref: str, domain: str, ports: dict[str, int], actor_id,
+                        snapshot_id, do: dict) -> Environment:
+    """A DigitalOcean environment: the account and sizes frozen, Caddy as the
+    proxy on the droplet, publishing on (its plan has DNS), and only the
+    public names its load balancer certificate covers."""
+    try:
+        spec = do_envs.check_spec(do, production=type_ == "production")
+    except do_envs.DoEnvError as e:
+        raise EnvError(e.code, **e.extra) from None
+    try:
+        # Held until the caller commits: a concurrent token clear or team
+        # change waits, so this environment never freezes an account left
+        # without a token or holding another team's token.
+        await do_accounts.lock_account(db, spec["account"])
+        account = await do_accounts.require(db, settings, spec["account"])
+    except IntegrationError as e:
+        raise EnvError(e.code, **e.extra) from None
+    if account.region is None:
+        raise EnvError("do_account_not_configured", account=spec["account"])
+    if not await integrations.is_configured(db, "cloudflare"):
+        raise EnvError("integration_not_configured", kinds=["cloudflare"])
+    zone = (await integrations.config_of(db, "cloudflare")).get("zone") or ""
+    if not (domain == zone or domain.endswith("." + zone)):
+        raise EnvError("base_domain_not_in_zone")
+    if type_ == "production" and await do_envs.production_exists(db):
+        raise EnvError("production_exists")
+    env = await _insert(
+        db, settings, name=name, type_=type_, target_id=targets.DO_TARGET, git_ref=git_ref,
+        host="0.0.0.0", domain=domain, proxy_ip=do_envs.CADDY_IP, bind_ip=do_envs.BIND_IP,
+        ports=ports, keep_dumps=envfile.DEFAULT_KEEP_DUMPS,
+        spaces_bucket=envfile.DEFAULT_SPACES_BUCKET, log_level=envfile.DEFAULT_LOG_LEVEL,
+        status="new", current_sha=None, image_tag=None, secrets=vault.generate_env_secrets(),
+        actor_id=actor_id, seed_snapshot_id=snapshot_id, publish=True,
+        public_services=certs.PUBLIC_SERVICES, slots=list(spec["slots"]))
+    env.spaces_bucket = do_envs.bucket_name(env.name, env.id)
+    await do_envs.add(db, settings, env, spec, region=account.region,
+                      team_uuid=account.team_uuid)
     return env
 
 
@@ -371,7 +446,7 @@ def _adopted_secrets(values: dict[str, str]) -> dict[str, str]:
 async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
                 target_id: str, git_ref: str = "main",
                 actor_id=None) -> tuple[Environment, Deployment, AdoptReport]:
-    if targets.is_vm_target(target_id):
+    if targets.is_built_target(target_id):
         # VM environments are only ones Sirdar built: a hand-built VM (uat)
         # stays an SSH target.
         raise EnvError("adopt_not_allowed")
@@ -442,9 +517,23 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
     if fields.get("git_ref") is not None:
         put("git_ref", _check_ref(fields["git_ref"]))
     on_vm = targets.is_vm_target(env.target_id)
+    on_do = env.target_id == targets.DO_TARGET
+    if on_do:
+        # Its names, proxy, bucket and DNS belong to what step 0 built.
+        attrs = {"target": "target_id"}
+        for key in ("target", "proxy_ip", "bind_ip", "base_domain", "spaces_bucket", "publish"):
+            if fields.get(key) is not None and fields[key] != getattr(env, attrs.get(key, key)):
+                raise EnvError("do_field_locked", field=key)
+    if fields.get("retiring") is not None:
+        if env.type != "production":
+            raise EnvError("retiring_not_allowed")
+        put("retiring", bool(fields["retiring"]))
     if fields.get("target") is not None:
-        # An environment never moves to or from a VM host, nor between hosts.
-        if fields["target"] != env.target_id and (on_vm or targets.is_vm_target(fields["target"])):
+        # An environment never moves to or from a host Sirdar builds, nor
+        # between them.
+        if fields["target"] != env.target_id and (
+                targets.is_built_target(env.target_id)
+                or targets.is_built_target(fields["target"])):
             raise EnvError("target_kind_locked")
         _check_target(fields["target"], settings)
         put("target_id", fields["target"])
@@ -477,7 +566,7 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
                 row.port = port
                 changed.append(f"services.{service}.port")
         if patch.get("host_ip") is not None:
-            if on_vm:                           # step 0 points them at the VM
+            if on_vm or on_do:                  # step 0 points them at the VM / droplets
                 raise EnvError("host_ip_managed", service=service)
             host_ip = _check_ipv4(patch["host_ip"], "host_ip_invalid")
             if row.host_ip != host_ip:
