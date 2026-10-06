@@ -250,6 +250,20 @@ async def set_do(env_id, **values) -> None:
         await s.commit()
 
 
+async def freeze_team(env_id, team_uuid: str) -> str | None:
+    """Store the DigitalOcean team the environment is built in, unless one is
+    stored already, and return the stored team (which a caller then compares:
+    a token from another team must not touch the environment)."""
+    async with get_sessionmaker()() as s:
+        await s.execute(update(DoEnvironment).where(DoEnvironment.environment_id == env_id,
+                                                    DoEnvironment.team_uuid.is_(None))
+                        .values(team_uuid=team_uuid, updated_at=datetime.now(UTC)))
+        stored = await s.scalar(select(DoEnvironment.team_uuid)
+                                .where(DoEnvironment.environment_id == env_id))
+        await s.commit()
+        return stored
+
+
 async def set_slot(env_id, slot: str, **values) -> None:
     async with get_sessionmaker()() as s:
         await s.execute(update(DoSlot).where(DoSlot.environment_id == env_id,

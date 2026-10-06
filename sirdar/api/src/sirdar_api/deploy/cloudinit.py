@@ -102,3 +102,23 @@ def guestinfo(meta: str, user: str) -> dict[str, str]:
 def scrub() -> dict[str, str]:
     """An empty value deletes an extraConfig key on ESXi."""
     return {"guestinfo.userdata": "", "guestinfo.userdata.encoding": ""}
+
+
+# A droplet's host name: "ss-", the environment and the slot (a DNS label).
+_DROPLET_HOSTNAME_RE = re.compile(r"ss-[a-z][a-z0-9-]{0,52}[a-z0-9]")
+
+
+def droplet_userdata(*, hostname: str, ssh_public_key: str, host_key_private: str,
+                     host_key_public: str) -> str:
+    """A DigitalOcean droplet's user-data (deploy phase 7): the ESXi user-data
+    (deploy user, Sirdar's key, the host key Sirdar generated) plus the
+    PostgreSQL client step 0 uses to set up the managed database."""
+    if not isinstance(hostname, str) or not _DROPLET_HOSTNAME_RE.fullmatch(hostname):
+        raise ValueError("hostname")
+    doc = yaml.safe_load(userdata(hostname=hostname, ssh_public_key=ssh_public_key,
+                                  host_key_private=host_key_private,
+                                  host_key_public=host_key_public)
+                         .removeprefix("#cloud-config\n"))
+    doc["package_update"] = True
+    doc["packages"] = ["postgresql-client"]
+    return "#cloud-config\n" + yaml.safe_dump(doc, sort_keys=False)

@@ -182,10 +182,15 @@ async def team_of(token: str) -> tuple[str, str | None]:
     also when DigitalOcean names neither."""
     try:
         async with do_api.connect(token) as api:
-            account = await api.account()
+            return await read_team(api)
     except do_api.DoError as e:
         raise ConnectFailed(e.reason) from None
-    return _team_of_account(account)
+
+
+async def read_team(api: do_api.DigitalOceanApi) -> tuple[str, str | None]:
+    """team_of through an open client: one /account read. DoError (from the
+    read) and ConnectFailed (no team or owner named) propagate."""
+    return _team_of_account(await api.account())
 
 
 def _team_of_account(account) -> tuple[str, str | None]:

@@ -251,16 +251,17 @@ class CommandResult:
 
 
 async def run_command(cfg: SshTargetConfig, db: AsyncSession, command: str, *,
-                      timeout: float = RUN_TIMEOUT) -> CommandResult:
+                      timeout: float = RUN_TIMEOUT, input: str | None = None) -> CommandResult:
     """Run one command on a pinned host and return its stdout (capped at
     OUTPUT_LIMIT) for the caller to parse. Callers quote every argument and
-    never log the output."""
+    never log the output. `input` goes to the command's stdin (for secrets:
+    never argv)."""
     pinned = await pinned_host_key(db, cfg.host, cfg.port)
     conn = await connect_pinned(cfg, pinned)
     async with conn:
         try:
             result = await asyncio.wait_for(
-                conn.run(command, check=False, errors="replace"), timeout)
+                conn.run(command, check=False, errors="replace", input=input), timeout)
         except (OSError, TimeoutError, asyncssh.Error):
             return CommandResult(None, "")
     out = result.stdout if isinstance(result.stdout, str) else ""
