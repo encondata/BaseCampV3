@@ -4,6 +4,7 @@ droplets: it builds everything once, records it the moment it exists, does
 nothing the second time, finds lost droplets by their tag, refuses what no
 longer matches, and keeps every secret out of its log."""
 
+import base64
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -97,10 +98,13 @@ async def test_the_first_run_builds_everything(db, do_build):
                for s in slots)
     assert await known_hosts.lookup(db, "127.0.0.1", vms.VM_SSH_PORT) is not None
     # The role's password reached the droplet only as a SCRAM verifier, on stdin.
-    sql = [c for c in b.remote.calls if "exec psql" in c[1]]
+    sql = [c for c in b.remote.calls if "PGPASSFILE" in c[1]]
     assert len(sql) == 1
     host, command, stdin = sql[0]
-    assert stdin.startswith(DB_ADMIN_PASSWORD + "\n") and "SCRAM-SHA-256$4096:" in stdin
+    admin_line, ca_line, rest = stdin.split("\n", 2)
+    assert admin_line == DB_ADMIN_PASSWORD and "SCRAM-SHA-256$4096:" in rest
+    assert base64.b64decode(ca_line).decode() == CA_PEM          # verify-full against it
+    assert "sslmode=verify-full" in command and "export PGPASSWORD" not in command
     password = await _db_password(db, b.env.id)
     assert ENV_SECRETS["POSTGRES_PASSWORD"] not in stdin and password not in stdin
     assert DB_ADMIN_PASSWORD not in command and password not in command
@@ -321,7 +325,7 @@ async def test_a_failed_bucket_create_leaves_no_setup_key(db, do_build):
 # ---- secrets stay out of failures --------------------------------------------------------
 
 async def test_a_refused_database_setup_names_no_secret(db, do_build):
-    do_build.remote.codes["exec psql"] = 3
+    do_build.remote.codes["PGPASSFILE"] = 3
     with pytest.raises(StepFailed) as err:
         await do_build.run()
     assert "psql exited 3" in err.value.reason
@@ -377,3 +381,460 @@ async def test_a_bucket_key_whose_secret_was_lost_is_replaced(db, do_build):
     assert list(rows) == [new]
     await do_build.run()
     assert list(fake.keys) == [new]
+
+
+# ---- review fixes ---------------------------------------------------------------------------
+
+def _body(fake, method: str, path: str) -> list[dict]:
+    import json
+    return [json.loads(r.content) for r in fake.requests
+            if r.method == method and r.url.path == "/v2" + path]
+
+
+def _env_tag(b) -> str:
+    return do_envs.env_tag(b.env.id)
+
+
+# I1: the database is locked from creation
+
+async def test_the_database_is_created_locked_to_the_droplets(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    (body,) = _body(fake, "POST", "/databases")
+    ids = sorted(str(d["id"]) for d in fake.droplets.values())
+    assert sorted(r["value"] for r in body["rules"]) == ids
+    assert all(r["type"] == "droplet" for r in body["rules"])
+    (database,) = fake.databases.values()
+    assert not [w for w in fake.writes() if w == ("PUT", f"/databases/{database['id']}/firewall")]
+
+
+async def test_a_firewall_never_accepted_says_the_database_may_be_reachable(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    (database,) = fake.databases.values()
+    fake.db_rules[database["id"]] = []                   # drifted: open to every address
+    fake.firewall_wait = 10**6
+    with pytest.raises(StepFailed) as err:
+        await do_build.run(prov={"waits": {"database": 3}})
+    assert "may be reachable" in err.value.reason and "Retry" in err.value.reason
+    puts = [w for w in fake.writes() if w == ("PUT", f"/databases/{database['id']}/firewall")]
+    assert len(puts) == 3                                # sized from the database wait
+
+
+async def test_a_refused_firewall_also_says_the_database_may_be_reachable(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    (database,) = fake.databases.values()
+    fake.db_rules[database["id"]] = []
+    fake.fail[("PUT", f"/databases/{database['id']}/firewall")] = 500
+    with pytest.raises(StepFailed) as err:
+        await do_build.run()
+    assert "may be reachable" in err.value.reason
+
+
+# M1: untaggable resources: adopted by name only when they are plainly ours
+
+async def _forget(db, env_id, kind):
+    await db.execute(DoResource.__table__.delete().where(DoResource.environment_id == env_id,
+                                                         DoResource.kind == kind))
+    await db.commit()
+
+
+async def test_a_lost_vpc_record_is_adopted_by_name_and_marker(db, do_build):
+    await do_build.run()
+    await _forget(db, do_build.env.id, "vpc")
+    await do_build.run()
+    fake = do_build.cloud.do
+    assert len(fake.vpcs) == 1 and _body(fake, "POST", "/vpcs").__len__() == 1
+    assert ("vpc", None) in await _kinds(db, do_build.env.id)
+    assert "VPC ss-uat9: found it by its name" in do_build.log()
+
+
+async def test_a_same_named_vpc_without_the_marker_is_refused(db, do_build):
+    fake = do_build.cloud.do
+    fake.vpcs["v-other"] = {"id": "v-other", "name": "ss-uat9", "region": "nyc3",
+                            "description": "someone else's", "ip_range": "10.9.0.0/20",
+                            "default": False}
+    with pytest.raises(StepFailed) as err:
+        await do_build.run()
+    assert "ss-uat9" in err.value.reason and "isn't Sirdar's" in err.value.reason
+    assert fake.writes() == []
+
+
+async def test_the_fake_refuses_a_second_vpc_with_the_same_name(do_cloud):
+    from sirdar_api.deploy import do_api
+    async with do_api.connect(DEV_TOKEN) as api:
+        await api.create_vpc("ss-dup", "nyc3", "a")
+        with pytest.raises(do_api.DoError) as err:
+            await api.create_vpc("ss-dup", "nyc3", "b")
+    assert err.value.status == 422
+
+
+async def test_a_lost_load_balancer_record_is_adopted_in_our_vpc(db, do_build):
+    await do_build.run()
+    await _forget(db, do_build.env.id, "load_balancer")
+    await do_build.run()
+    fake = do_build.cloud.do
+    assert len(fake.load_balancers) == 1 and len(_body(fake, "POST", "/load_balancers")) == 1
+    assert ("load_balancer", None) in await _kinds(db, do_build.env.id)
+
+
+async def test_a_same_named_load_balancer_elsewhere_is_refused(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    await _forget(db, do_build.env.id, "load_balancer")
+    (lb,) = fake.load_balancers.values()
+    lb["vpc_uuid"] = "some-other-vpc"
+    before = len(fake.writes())
+    with pytest.raises(StepFailed) as err:
+        await do_build.run()
+    assert "ss-uat9-lb" in err.value.reason and "isn't in this environment's VPC" in \
+        err.value.reason
+    assert ("POST", "/load_balancers") not in fake.writes()[before:]
+
+
+async def test_a_lost_firewall_record_is_adopted_by_its_tag(db, do_build):
+    await do_build.run()
+    await _forget(db, do_build.env.id, "firewall")
+    await do_build.run()
+    fake = do_build.cloud.do
+    assert len(fake.firewalls) == 1 and len(_body(fake, "POST", "/firewalls")) == 1
+    assert ("firewall", None) in await _kinds(db, do_build.env.id)
+
+
+async def test_a_same_named_firewall_on_other_droplets_is_refused(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    await _forget(db, do_build.env.id, "firewall")
+    (fw,) = fake.firewalls.values()
+    fw["tags"] = ["someone-else"]
+    before = len(fake.writes())
+    with pytest.raises(StepFailed) as err:
+        await do_build.run()
+    assert "ss-uat9-fw" in err.value.reason
+    assert fake.writes()[before:] == []
+
+
+# M2/M3: both tags, and what is refused
+
+async def test_a_foreign_untagged_droplet_named_like_ours_is_never_adopted(db, do_build):
+    fake = do_build.cloud.do
+    foreign = fake.add_droplet("ss-uat9-orange", ["someone-else"])
+    await do_build.run()
+    rows = await db.scalars(select(DoResource.do_id).where(DoResource.kind == "droplet"))
+    assert str(foreign["id"]) not in set(rows)
+    assert foreign["tags"] == ["someone-else"] and str(foreign["id"]) in fake.droplets
+
+
+async def test_a_droplet_with_only_the_env_tag_is_refused_not_adopted(db, do_build):
+    fake = do_build.cloud.do
+    fake.add_droplet("ss-uat9-orange", [_env_tag(do_build)])
+    with pytest.raises(StepFailed) as err:
+        await do_build.run()
+    assert "Sirdar's own tag" in err.value.reason
+    assert ("POST", "/droplets") not in fake.writes()
+
+
+async def test_a_recorded_droplet_without_the_sirdar_tag_is_refused(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    droplet = next(d for d in fake.droplets.values() if d["name"] == "ss-uat9-purple")
+    droplet["tags"] = [t for t in droplet["tags"] if t != "sirdar"]
+    before = len(fake.writes())
+    with pytest.raises(StepFailed) as err:
+        await do_build.run()
+    assert "no longer carries Sirdar's tag" in err.value.reason
+    assert fake.writes()[before:] == []
+
+
+def _foreign_db(fake, tags):
+    fake.databases["db-foreign"] = {
+        "id": "db-foreign", "name": "ss-uat9-db", "engine": "pg", "version": "16",
+        "status": "online", "region": "nyc3", "size": "db-s-1vcpu-1gb", "num_nodes": 1,
+        "tags": tags, "private_network_uuid": None, "connection": {}, "private_connection": {},
+        "_polls": 0}
+    fake.db_rules["db-foreign"] = []
+
+
+async def test_a_foreign_untagged_cluster_named_like_ours_is_never_adopted(db, do_build):
+    fake = do_build.cloud.do
+    _foreign_db(fake, ["someone-else"])
+    await do_build.run()
+    rows = set(await db.scalars(select(DoResource.do_id).where(DoResource.kind == "database")))
+    assert "db-foreign" not in rows and len(rows) == 1
+    assert fake.db_rules["db-foreign"] == []
+
+
+async def test_a_cluster_with_only_the_env_tag_is_refused(db, do_build):
+    fake = do_build.cloud.do
+    _foreign_db(fake, [_env_tag(do_build)])
+    with pytest.raises(StepFailed) as err:
+        await do_build.run()
+    assert "Sirdar's own tag" in err.value.reason
+    assert ("POST", "/databases") not in fake.writes()
+
+
+async def test_a_database_found_by_its_tag_is_recorded(db, do_build):
+    await do_build.run()
+    await _forget(db, do_build.env.id, "database")
+    await do_build.run()
+    fake = do_build.cloud.do
+    assert len(fake.databases) == 1 and len(_body(fake, "POST", "/databases")) == 1
+    assert ("database", None) in await _kinds(db, do_build.env.id)
+    assert "Database ss-uat9-db: found it by its tag" in do_build.log()
+
+
+async def test_a_database_that_lost_its_tag_is_refused(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    (database,) = fake.databases.values()
+    database["tags"] = ["sirdar"]
+    before = len(fake.writes())
+    with pytest.raises(StepFailed) as err:
+        await do_build.run()
+    assert "no longer carries Sirdar's tag" in err.value.reason
+    assert fake.writes()[before:] == []
+
+
+async def test_a_vpc_whose_marker_changed_is_refused(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    (vpc,) = fake.vpcs.values()
+    vpc["description"] = "edited by hand"
+    before = len(fake.writes())
+    with pytest.raises(StepFailed) as err:
+        await do_build.run()
+    assert "no longer looks like Sirdar's" in err.value.reason
+    assert fake.writes()[before:] == []
+
+
+@pytest.mark.parametrize("kind, store", [("load_balancer", "load_balancers"),
+                                         ("firewall", "firewalls")])
+async def test_a_renamed_load_balancer_or_firewall_is_refused(db, do_build, kind, store):
+    await do_build.run()
+    fake = do_build.cloud.do
+    (found,) = getattr(fake, store).values()
+    found["name"] = "renamed-by-hand"
+    before = len(fake.writes())
+    with pytest.raises(StepFailed) as err:
+        await do_build.run()
+    assert "no longer named" in err.value.reason
+    assert fake.writes()[before:] == []
+
+
+# M4: live checks of the bucket and the keys
+
+async def test_a_second_run_only_reads_spaces(db, do_build):
+    await do_build.run()
+    seen = len(do_build.cloud.spaces.requests)
+    await do_build.run()
+    assert [r.method for r in do_build.cloud.spaces.requests[seen:]] == ["HEAD"]
+
+
+async def test_a_recorded_bucket_that_is_gone_is_made_again(db, do_build):
+    await do_build.run()
+    del do_build.cloud.spaces.buckets[do_build.env.spaces_bucket]
+    await do_build.run()
+    assert do_build.env.spaces_bucket in do_build.cloud.spaces.buckets
+    assert "is gone; making it again" in do_build.log()
+    assert len(do_build.cloud.do.keys) == 1                 # the setup key went again
+
+
+async def test_a_recorded_app_key_gone_from_digitalocean_is_replaced(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    (old,) = fake.keys
+    del fake.keys[old]
+    await do_build.run()
+    (new,) = fake.keys
+    assert new != old
+    row = await db.get(DoEnvironment, do_build.env.id, populate_existing=True)
+    assert row.spaces_key_id == new
+    rows = await db.scalars(select(DoResource.do_id).where(DoResource.kind == "spaces_key"))
+    assert list(rows) == [new]
+
+
+async def test_a_recorded_setup_key_renamed_by_hand_is_not_deleted(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    fake.keys["DO00LEFT"] = {"name": "someone-elses", "access_key": "DO00LEFT",
+                             "secret_key": "x", "grants": []}
+    await do_envs.record(do_build.env.id, "spaces_key", "DO00LEFT", "ss-uat9-setup")
+    with pytest.raises(StepFailed) as err:
+        await do_build.run()
+    assert "DO00LEFT" in err.value.reason and "DO00LEFT" in fake.keys
+
+
+async def test_a_recorded_setup_key_already_gone_is_forgotten(db, do_build):
+    await do_build.run()
+    await do_envs.record(do_build.env.id, "spaces_key", "DO00GONE", "ss-uat9-setup")
+    await do_build.run()
+    rows = set(await db.scalars(select(DoResource.do_id).where(DoResource.kind == "spaces_key")))
+    assert "DO00GONE" not in rows
+
+
+# M5: the cloud firewall's rules, fixed in place
+
+def _fw(fake) -> dict:
+    (fw,) = fake.firewalls.values()
+    return fw
+
+
+@pytest.mark.parametrize("drift", ["https", "ssh_closed", "tags", "lb_uid", "droplets"])
+async def test_firewall_drift_is_fixed_in_place(db, do_build, drift):
+    await do_build.run()
+    fake = do_build.cloud.do
+    fw = _fw(fake)
+    good = {k: fw[k] for k in ("inbound_rules", "outbound_rules", "tags")}
+    if drift == "https":
+        fw["inbound_rules"] = fw["inbound_rules"] + [
+            {"protocol": "tcp", "ports": "443", "sources": {"addresses": ["0.0.0.0/0"]}}]
+    elif drift == "ssh_closed":
+        fw["inbound_rules"] = [r for r in fw["inbound_rules"] if r["ports"] != "22"]
+    elif drift == "tags":
+        fw["tags"] = ["someone-else", _env_tag(do_build)]
+    elif drift == "lb_uid":
+        fw["inbound_rules"] = [r if r["ports"] != "80" else
+                               {**r, "sources": {"addresses": ["0.0.0.0/0"]}}
+                               for r in fw["inbound_rules"]]
+    else:
+        fw["droplet_ids"] = [12345]
+    await do_build.run()
+    fw2 = _fw(fake)
+    assert fw2["id"] == fw["id"] and {k: fw2[k] for k in good} == good
+    assert fw2["droplet_ids"] == []
+    assert ("PUT", f"/firewalls/{fw['id']}") in fake.writes()
+    assert not [w for w in fake.writes() if w[0] == "DELETE" and w[1].startswith("/firewalls")]
+
+
+async def test_a_rebuilt_load_balancer_updates_the_firewall_in_place(db, do_build):
+    await do_build.run()
+    fake = do_build.cloud.do
+    fw_id = _fw(fake)["id"]
+    fake.load_balancers.clear()
+    await do_build.run()
+    (lb,) = fake.load_balancers.values()
+    port80 = next(r for r in _fw(fake)["inbound_rules"] if r["ports"] == "80")
+    assert _fw(fake)["id"] == fw_id and port80["sources"] == {"load_balancer_uids": [lb["id"]]}
+    assert not [w for w in fake.writes() if w[0] == "DELETE" and w[1].startswith("/firewalls")]
+
+
+# M6: psql through a pgpass file and verify-full
+
+async def test_the_psql_script_uses_a_private_pgpass_and_the_ca(tmp_path):
+    import os
+    import shlex as sh
+    import subprocess
+
+    from sirdar_api.deploy import do_provision
+    seen = tmp_path / "seen"
+    seen.mkdir()
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "psql").write_text(
+        "#!/bin/bash\n"
+        f'S={sh.quote(str(seen))}\n'
+        'printf "%s\\n" "$@" > "$S/argv"\n'
+        'env > "$S/env"\n'
+        'cp "$PGPASSFILE" "$S/pgpass"\n'
+        'stat -f %Lp "$PGPASSFILE" 2>/dev/null > "$S/mode" '
+        '|| stat -c %a "$PGPASSFILE" > "$S/mode"\n'
+        'echo "$PGPASSFILE" > "$S/path"\n'
+        'for a in "$@"; do case "$a" in *sslrootcert=*) '
+        'cp "${a##*sslrootcert=}" "$S/ca";; esac; done\n'
+        'cat > "$S/stdin"\n'
+        "exit 7\n")
+    (stub / "psql").chmod(0o755)
+    password = "FAKE_p:a\\ss"
+    ca = "-----BEGIN CERTIFICATE-----\nMIIBca\n-----END CERTIFICATE-----\n"
+    command = do_provision.psql_command("private-db.example", 25060)
+    stdin = f"{password}\n{base64.b64encode(ca.encode()).decode()}\nSELECT 1;\n"
+    env = {"PATH": f"{stub}:{os.environ['PATH']}", "PGPASSWORD": ""}
+    done = subprocess.run(["bash", "-c", command], input=stdin, text=True, env=env,
+                          capture_output=True, check=False)
+    assert done.returncode == 7, done.stderr
+    argv = (seen / "argv").read_text()
+    assert "host=private-db.example port=25060" in argv and "sslmode=verify-full" in argv
+    assert password not in argv and password not in command
+    assert (seen / "pgpass").read_text() == \
+        "private-db.example:25060:defaultdb:doadmin:FAKE_p\\:a\\\\ss\n"
+    assert (seen / "mode").read_text().strip() == "600"
+    assert (seen / "ca").read_text() == ca
+    assert (seen / "stdin").read_text() == "SELECT 1;\n"
+    environ = (seen / "env").read_text()
+    assert "PGPASSWORD" not in environ and password not in environ
+    assert not os.path.exists((seen / "path").read_text().strip())   # removed on exit
+
+
+# M7: addresses are checked; a gone droplet's pin is forgotten
+
+async def test_pinning_checks_the_address_first(db, do_build, monkeypatch):
+    calls = []
+
+    async def taken(s, settings, ip, *, proxy_ip, env_id=None):
+        calls.append((ip, env_id))
+        return True
+    monkeypatch.setattr(vms, "address_in_use", taken)
+    with pytest.raises(StepFailed) as err:
+        await do_build.run()
+    assert "127.0.0.1" in err.value.reason
+    assert calls and calls[0] == ("127.0.0.1", do_build.env.id)
+    assert await known_hosts.lookup(db, "127.0.0.1", vms.VM_SSH_PORT) is None
+
+
+async def test_a_gone_droplets_pin_is_forgotten(db, do_build):
+    from sirdar_api.db.models import SshKnownHost
+    await do_build.run()
+    fake = do_build.cloud.do
+    await do_envs.set_slot(do_build.env.id, "orange", public_ip="203.0.113.9")
+    pin = await known_hosts.lookup(db, "127.0.0.1", vms.VM_SSH_PORT)
+    db.add(SshKnownHost(host="203.0.113.9", port=vms.VM_SSH_PORT, key_type=pin.key_type,
+                        fingerprint_sha256=pin.fingerprint_sha256, public_key=pin.public_key))
+    await db.commit()
+    gone = next(k for k, d in fake.droplets.items() if d["name"] == "ss-uat9-orange")
+    del fake.droplets[gone]
+    await do_build.run()
+    assert await known_hosts.lookup(db, "203.0.113.9", vms.VM_SSH_PORT) is None
+    assert "Forgot 203.0.113.9's SSH host key" in do_build.log()
+
+
+# M8: distinct host keys per slot; _ssh_remote's errors
+
+async def test_a_droplet_answering_with_another_slots_key_is_refused(db, do_build):
+    """Each slot has its own generated host key. The tests' one SSH server
+    answers with orange's; purple, given a key of its own, must not be
+    pinned at an address answering with orange's."""
+    import asyncssh
+    other = asyncssh.generate_private_key("ssh-ed25519")
+    await do_envs.set_slot(do_build.env.id, "purple",
+                           host_key_public=other.export_public_key("openssh").decode().strip(),
+                           host_key_private_enc=vault.encrypt(
+                               get_settings(), other.export_private_key("openssh").decode()))
+    with pytest.raises(StepFailed) as err:
+        await do_build.run()
+    assert "ss-uat9-purple answered SSH with a host key Sirdar didn't generate" in \
+        err.value.reason
+    pin = await known_hosts.lookup(db, "127.0.0.1", vms.VM_SSH_PORT)
+    assert pin.fingerprint_sha256 != known_hosts.fingerprint(other)        # orange's stays
+    slots = await do_envs.slots_of(db, do_build.env.id)
+    assert slots["orange"].host_key_private_enc is None
+    assert slots["purple"].host_key_private_enc is not None    # never confirmed: kept
+
+
+@pytest.mark.parametrize("error", ["connect", "unknown", "mismatch"])
+async def test_ssh_remote_maps_errors_to_our_copy(db, monkeypatch, error):
+    from sirdar_api.deploy import ConnectFailed, do_provision, ssh
+    from sirdar_api.deploy.ssh import SshTargetConfig
+
+    async def boom(cfg, s, command, *, input=None, timeout=None):
+        raise {"connect": ConnectFailed("Couldn't connect to 203.0.113.9."),
+               "unknown": ssh.HostKeyUnknown(cfg.host, 22, "raw-" + input, "SHA256:x"),
+               "mismatch": ssh.HostKeyMismatch(cfg.host, 22, "SHA256:a", "raw-" + input,
+                                               "ssh-ed25519")}[error]
+    monkeypatch.setattr(ssh, "run_command", boom)
+    cfg = SshTargetConfig(host="203.0.113.9", port=22, user="deploy", private_key="k",
+                          key_name="n")
+    with pytest.raises(StepFailed) as err:
+        await do_provision._ssh_remote(cfg, "true", "s3cret-stdin")
+    assert "s3cret-stdin" not in err.value.reason and "raw" not in err.value.reason
+    assert "203.0.113.9" in err.value.reason

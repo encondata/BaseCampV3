@@ -12,13 +12,22 @@ database role and database (SQL on the slot's droplet, as doadmin), the
 certificate, the load balancer and the cloud firewall.
 
 Every resource is recorded in do_resources the moment DigitalOcean answers,
-in its own transaction. Sirdar acts only on what is recorded and still
-matches (its tag, or its exact name); droplets and databases tagged
-sirdar-env-<id> but not recorded are Sirdar's (the tag holds the
-environment's UUID) and are recorded again. Failures raise
-publish.StepFailed with our own copy."""
+in its own transaction, before Sirdar waits for it. Sirdar acts only on what
+is recorded and still matches: droplets and databases carry both `sirdar` and
+sirdar-env-<id>; the rest have the exact name (the VPC also Sirdar's marker
+in its description). What isn't recorded is adopted only when it is plainly
+this environment's: droplets and databases by both tags (the env tag alone is
+refused, never duplicated), the VPC by its name and marker, the load balancer
+by its name inside the environment's VPC, the cloud firewall by its name and
+the environment's tag. Anything else with one of our names stops the step.
+Failures raise publish.StepFailed with our own copy.
+
+Not step 0's: growing a droplet or the cluster (7b resizes the slot being
+deployed), and the load balancer's targets (step 14, go_live, owns them; step
+0 sets them only on the load balancer it creates)."""
 
 import asyncio
+import base64
 import shlex
 import uuid
 from collections.abc import Awaitable, Callable
@@ -68,11 +77,29 @@ from sirdar_api.deploy.vmcommon import Output, VmOutcome, VmPrepareError
 POLL_SECONDS = 10
 WAITS = {"droplet": 10 * 60, "database": 30 * 60, "lb": 10 * 60, "ssh": 10 * 60,
          "vpc": 10 * 60}
-FIREWALL_TRIES = 60
 SQL_TIMEOUT = 15 * 60          # cloud-init may still be installing psql
-_PSQL = ('IFS= read -r PGPASSWORD; export PGPASSWORD; exec psql '
-         '"host=$0 port=$1 dbname=defaultdb user=doadmin sslmode=require" '
-         '-v ON_ERROR_STOP=1 -q -f -')
+# Runs as `bash -c _PSQL <host> <port>` on the droplet. Stdin: the doadmin
+# password, the cluster's CA (base64, one line), then the SQL. The password
+# goes into a mode-600 pgpass file (escaped for its format) in a private
+# temporary folder that is removed on exit; never argv, never the environment.
+# The server is verified against the CA (verify-full on the private host).
+_PSQL = r"""set -eu
+umask 077
+d=$(mktemp -d)
+trap 'rm -rf "$d"' EXIT
+IFS= read -r pw
+IFS= read -r ca
+bs='\'
+pw=${pw//"$bs"/"$bs$bs"}
+pw=${pw//:/"$bs:"}
+printf '%s:%s:defaultdb:doadmin:%s\n' "$0" "$1" "$pw" > "$d/pgpass"
+unset pw
+unset PGPASSWORD || true
+printf '%s' "$ca" | base64 -d > "$d/ca.pem"
+export PGPASSFILE="$d/pgpass"
+psql "host=$0 port=$1 dbname=defaultdb user=doadmin sslmode=verify-full sslrootcert=$d/ca.pem" \
+  -v ON_ERROR_STOP=1 -q -f -
+"""
 _READY = "cloud-init status --wait > /dev/null 2>&1; command -v psql > /dev/null"
 _UNREADABLE = ("Sirdar can't read this environment's DigitalOcean secrets with the current "
                "SIRDAR_SECRETS_KEY.")
@@ -245,6 +272,47 @@ def https_certificate(lb: dict) -> str | None:
                  if r.get("entry_protocol") == "https"), None)
 
 
+def psql_command(host: str, port: int) -> str:
+    """The command step 0 runs on a droplet to set up the managed database."""
+    return f"bash -c {shlex.quote(_PSQL)} {shlex.quote(host)} {int(port)}"
+
+
+_EVERYWHERE = {"addresses": ["0.0.0.0/0", "::/0"]}
+
+
+def _firewall_body(name: str, env_tag: str, lb_id: str) -> dict:
+    """The cloud firewall, whole: SSH from anywhere, HTTP only from the load
+    balancer, nothing else in; everything out; applied by the env tag."""
+    return {"name": name, "tags": [env_tag], "droplet_ids": [],
+            "inbound_rules": [
+                {"protocol": "tcp", "ports": "22", "sources": _EVERYWHERE},
+                {"protocol": "tcp", "ports": "80", "sources": {"load_balancer_uids": [lb_id]}}],
+            "outbound_rules": [
+                {"protocol": "tcp", "ports": "all", "destinations": _EVERYWHERE},
+                {"protocol": "udp", "ports": "all", "destinations": _EVERYWHERE},
+                {"protocol": "icmp", "destinations": _EVERYWHERE}]}
+
+
+def _rule_key(rule: dict, where: str) -> tuple:
+    ends = rule.get(where) or {}
+    protocol = rule.get("protocol")
+    return (protocol, "" if protocol == "icmp" else str(rule.get("ports") or ""),
+            *(tuple(sorted(str(v) for v in ends.get(k) or []))
+              for k in ("addresses", "load_balancer_uids", "tags", "droplet_ids",
+                        "kubernetes_ids")))
+
+
+def _firewall_matches(live: dict, body: dict) -> bool:
+    def rules(fw: dict, key: str, where: str) -> list:
+        return sorted(_rule_key(r, where) for r in fw.get(key) or [])
+    return (live.get("name") == body["name"]
+            and sorted(live.get("tags") or []) == sorted(body["tags"])
+            and not (live.get("droplet_ids") or [])
+            and rules(live, "inbound_rules", "sources") == rules(body, "inbound_rules", "sources")
+            and rules(live, "outbound_rules", "destinations")
+            == rules(body, "outbound_rules", "destinations"))
+
+
 # ---- the provisioner ---------------------------------------------------------------------
 
 Remote = Callable[[SshTargetConfig, str, str | None], Awaitable[int | None]]
@@ -333,6 +401,8 @@ class DoProvisioner:
         vpc = await self._vpc(api, ctx, out)
         await self._bucket(api, ctx, out)
         host_keys = {s.slot: s.host_key_public for s in ctx.slot_states}
+        # Sizes are as frozen at create: step 0 never resizes a droplet or the
+        # cluster (growing them is 7b's, on the slot being deployed).
         droplets = await self._droplets(api, ctx, vpc, host_keys, out)
         database = await self._database(api, ctx, vpc, droplets, out)
         await self._pin(ctx, droplets, host_keys, out)
@@ -341,6 +411,8 @@ class DoProvisioner:
                                          slot=ctx.slot)
         await self._grants(ctx, droplets, database, out)
         cert = await self._certificate(api, ctx, out)
+        # The load balancer's targets are step 14's (go_live): step 0 sets them
+        # only on a load balancer it creates.
         lb = await self._load_balancer(api, ctx, vpc, cert, droplets, out)
         await self._firewall(api, ctx, lb, out)
         return VmOutcome(sha=sha)
@@ -365,23 +437,39 @@ class DoProvisioner:
     async def _vpc(self, api: DigitalOceanApi, ctx: DoContext, out: Output) -> dict:
         name = do_envs.resource_name(ctx.env_name)
         marker = f"sirdar:{ctx.env_id}"
-        vpc = None
+
+        def ours(found: dict) -> bool:
+            return found.get("name") == name and marker in str(found.get("description") or "")
+        vpc, adopted = None, False
         for rec in (await load_records(ctx.env_id)).find("vpc"):
             found = await api.vpc(rec.do_id)
             if found is None:
                 await do_envs.forget(ctx.env_id, "vpc", rec.do_id)
                 out(f"The VPC {name} Sirdar recorded is gone; making it again.\n")
                 continue
-            if found.get("name") != name or marker not in str(found.get("description") or ""):
+            if not ours(found):
                 raise StepFailed(f"VPC {rec.do_id} no longer looks like Sirdar's {name}. Sirdar "
                                  "changed nothing: fix it by hand, then retry.")
             vpc = found
+        if vpc is None:
+            # Names are unique in an account: a VPC with ours is either this
+            # environment's (its marker) or in the way.
+            same = [v for v in await api.vpcs() if v.get("name") == name]
+            if same and not ours(same[0]):
+                raise StepFailed(f"A VPC named {name} ({same[0].get('id')}) already exists and "
+                                 "isn't Sirdar's for this environment. Sirdar changed nothing: "
+                                 "rename or remove it, then retry.")
+            if same:
+                vpc, adopted = same[0], True
+                await do_envs.record(ctx.env_id, "vpc", vpc["id"], name)
+                out(f"VPC {name}: found it by its name and Sirdar's marker; recorded it "
+                    f"({vpc.get('ip_range')}).\n")
         if vpc is None:
             vpc = await api.create_vpc(name, ctx.region, f"{marker} Built by Sirdar for the "
                                                          f"environment {ctx.env_name}.")
             await do_envs.record(ctx.env_id, "vpc", vpc["id"], name)
             out(f"Created the VPC {name} ({vpc.get('ip_range')}).\n")
-        else:
+        elif not adopted:
             out(f"VPC {name}: in place ({vpc.get('ip_range')}).\n")
         await do_envs.set_do(ctx.env_id, vpc_ip_range=vpc.get("ip_range"))
         return vpc
@@ -396,31 +484,54 @@ class DoProvisioner:
         await api.delete_spaces_key(access_key)
         await do_envs.forget(ctx.env_id, "spaces_key", access_key)
 
+    def _open(self, blob: bytes) -> str:
+        try:
+            return vault.decrypt(self._settings, blob)
+        except (vault.SecretsKeyMissing, vault.SecretUnreadable):
+            raise StepFailed(_UNREADABLE) from None
+
     async def _bucket(self, api: DigitalOceanApi, ctx: DoContext, out: Output) -> None:
+        """The bucket and its own readwrite key, both checked live: a recorded
+        key DigitalOcean no longer has is forgotten (and replaced); a recorded
+        bucket is checked with a HEAD under that key and made again when gone.
+        A key is deleted only when DigitalOcean still lists it under the name
+        Sirdar recorded."""
         setup_name = do_envs.resource_name(ctx.env_name, "-setup")
         app_name = do_envs.resource_name(ctx.env_name)
-        records = await load_records(ctx.env_id)
-        for rec in records.find("spaces_key"):
+        live_keys = {k.get("access_key"): k for k in await api.spaces_keys()}
+        for rec in (await load_records(ctx.env_id)).find("spaces_key"):
+            live = live_keys.get(rec.do_id)
+            if live is None:
+                await do_envs.forget(ctx.env_id, "spaces_key", rec.do_id)
+                if rec.name == app_name:
+                    out(f"Bucket key {rec.do_id} is gone from DigitalOcean; making a new one.\n")
+                continue
+            if live.get("name") != rec.name:
+                raise StepFailed(f"Spaces key {rec.do_id} is no longer named {rec.name}. Sirdar "
+                                 "changed nothing: fix it by hand, then retry.")
             if rec.name == setup_name:              # a run stopped before deleting it
                 await self._drop_setup_key(api, ctx, rec.do_id)
                 out("Removed a temporary Spaces key a stopped run left behind.\n")
-        if not records.find("bucket"):
-            setup = await self._setup_key(api, ctx)
-            try:
-                made = await spaces.create_bucket(ctx.bucket, ctx.region, setup)
-            finally:
-                await self._drop_setup_key(api, ctx, setup.access_key)
-            await do_envs.record(ctx.env_id, "bucket", ctx.bucket, ctx.bucket)
-            out(f"Created the bucket {ctx.bucket}.\n" if made
-                else f"Bucket {ctx.bucket}: already this account's; recorded it.\n")
-        else:
-            out(f"Bucket {ctx.bucket}: in place.\n")
+        records = await load_records(ctx.env_id)
         row = await self._row(ctx)
         app_keys = [r for r in records.find("spaces_key") if r.name == app_name]
-        usable = row.spaces_secret_enc is not None and row.spaces_key_id in {
-            r.do_id for r in app_keys}
-        if usable:
-            out(f"Bucket key {row.spaces_key_id}: in place.\n")
+        app_key = None
+        if row.spaces_secret_enc is not None and row.spaces_key_id in {r.do_id for r in app_keys}:
+            app_key = spaces.SpacesKey(row.spaces_key_id, self._open(row.spaces_secret_enc))
+        recorded = bool(records.find("bucket"))
+        if recorded and app_key is not None:
+            if await spaces.bucket_exists(ctx.bucket, ctx.region, app_key):
+                out(f"Bucket {ctx.bucket}: in place.\n")
+            else:
+                await do_envs.forget(ctx.env_id, "bucket", ctx.bucket)
+                out(f"The bucket {ctx.bucket} Sirdar recorded is gone; making it again.\n")
+                recorded = False
+                await self._make_bucket(api, ctx, False, out)
+        else:
+            # No key to look with: the create is idempotent (ours answers "already").
+            await self._make_bucket(api, ctx, recorded, out)
+        if app_key is not None:
+            out(f"Bucket key {app_key.access_key}: in place.\n")
             return
         for rec in app_keys:          # its secret was never saved: DigitalOcean shows it once
             await api.delete_spaces_key(rec.do_id)
@@ -432,6 +543,20 @@ class DoProvisioner:
         await do_envs.set_do(ctx.env_id, spaces_key_id=key["access_key"],
                              spaces_secret_enc=vault.encrypt(self._settings, key["secret_key"]))
         out(f"Made the bucket's own key {key['access_key']}.\n")
+
+    async def _make_bucket(self, api: DigitalOceanApi, ctx: DoContext, recorded: bool,
+                           out: Output) -> None:
+        setup = await self._setup_key(api, ctx)
+        try:
+            made = await spaces.create_bucket(ctx.bucket, ctx.region, setup)
+        finally:
+            await self._drop_setup_key(api, ctx, setup.access_key)
+        await do_envs.record(ctx.env_id, "bucket", ctx.bucket, ctx.bucket)
+        if made:
+            out(f"Created the bucket {ctx.bucket}.\n")
+        else:
+            out(f"Bucket {ctx.bucket}: in place.\n" if recorded
+                else f"Bucket {ctx.bucket}: already this account's; recorded it.\n")
 
     async def _row(self, ctx: DoContext):
         async with get_sessionmaker()() as s:
@@ -447,7 +572,9 @@ class DoProvisioner:
     async def _droplets(self, api: DigitalOceanApi, ctx: DoContext, vpc: dict,
                         host_keys: dict[str, str], out: Output) -> dict[str, dict]:
         records = await load_records(ctx.env_id)
-        tagged = {d.get("name"): d for d in await api.droplets_tagged(do_envs.env_tag(ctx.env_id))}
+        recorded = {r.do_id for r in records.find("droplet")}
+        tagged = [d for d in await api.droplets_tagged(do_envs.env_tag(ctx.env_id))
+                  if str(d.get("id")) not in recorded]
         found: dict[str, dict] = {}
         for slot in ctx.slots:
             name = do_envs.droplet_name(ctx.env_name, slot)
@@ -456,14 +583,17 @@ class DoProvisioner:
                 live = await api.droplet(rec.do_id)
                 if live is None:
                     await do_envs.forget(ctx.env_id, "droplet", rec.do_id)
+                    await self._forget_slot_pin(ctx, records, slot, out)
                     out(f"{name}: the droplet Sirdar recorded is gone; building it again.\n")
                     continue
-                self._check_tagged(ctx, live, name, "droplet")
+                self._check_owned(ctx, live, name, "droplet")
                 droplet = live
-            if droplet is None and name in tagged:
-                droplet = tagged[name]
-                await do_envs.record(ctx.env_id, "droplet", droplet["id"], name, slot)
-                out(f"{name}: found it by its tag and recorded it.\n")
+            if droplet is None:
+                droplet = self._adoptable(ctx, [d for d in tagged if d.get("name") == name],
+                                          name, "droplet")
+                if droplet is not None:
+                    await do_envs.record(ctx.env_id, "droplet", droplet["id"], name, slot)
+                    out(f"{name}: found it by its tag and recorded it.\n")
             if droplet is None:
                 droplet = await self._create_droplet(api, ctx, slot, vpc, host_keys, out)
             else:
@@ -480,6 +610,31 @@ class DoProvisioner:
                                    public_ip=public, private_ip=private)
             found[slot] = ready
         return found
+
+    def _adoptable(self, ctx: DoContext, named: list[dict], name: str, what: str) -> dict | None:
+        """An unrecorded droplet or cluster carrying this environment's tag and
+        one of our names: adopted only with Sirdar's own tag too. The env tag
+        alone is refused (never adopted, never duplicated)."""
+        for found in named:
+            if "sirdar" not in (found.get("tags") or []):
+                raise StepFailed(f"The {what} {name} ({found.get('id')}) carries this "
+                                 "environment's tag but not Sirdar's own tag, so Sirdar won't "
+                                 "adopt it or build a second one. Sirdar changed nothing: tag it "
+                                 "sirdar or remove it, then retry.")
+        return named[0] if named else None
+
+    async def _forget_slot_pin(self, ctx: DoContext, records: Records, slot: str,
+                               out: Output) -> None:
+        """A recorded droplet is gone: its address and pinned host key go too
+        (unless another slot of this environment, another environment's
+        droplet or a saved SSH target uses the address)."""
+        row = records.slots.get(slot)
+        ip = row.public_ip if row else None
+        await do_envs.set_slot(ctx.env_id, slot, droplet_id=None, public_ip=None,
+                               private_ip=None)
+        others = {r.public_ip for s, r in records.slots.items() if s != slot and r.public_ip}
+        if ip and ip not in others:
+            await self._forget_pins(ctx, {ip}, out)
 
     async def _create_droplet(self, api: DigitalOceanApi, ctx: DoContext, slot: str, vpc: dict,
                               host_keys: dict[str, str], out: Output) -> dict:
@@ -514,27 +669,31 @@ class DoProvisioner:
                 await do_envs.forget(ctx.env_id, "database", rec.do_id)
                 out(f"The database {name} Sirdar recorded is gone; creating it again.\n")
                 continue
-            self._check_tagged(ctx, live, name, "database")
+            self._check_owned(ctx, live, name, "database")
             database = live
         if database is None:
-            tagged = [d for d in await api.databases_tagged(env_tag) if d.get("name") == name]
-            if tagged:
-                database = tagged[0]
+            database = self._adoptable(
+                ctx, [d for d in await api.databases_tagged(env_tag) if d.get("name") == name],
+                name, "database")
+            if database is not None:
                 await do_envs.record(ctx.env_id, "database", database["id"], name)
                 out(f"Database {name}: found it by its tag and recorded it.\n")
+        droplet_ids = [str(d["id"]) for d in droplets.values()]
         if database is None:
+            # Locked to the droplets from creation (trusted sources in the
+            # create body): never open to every address, not even briefly.
             database = await api.create_database({
                 "name": name, "engine": "pg", "version": "16", "region": ctx.region,
                 "size": ctx.db_size, "num_nodes": 2 if ctx.db_standby else 1,
                 "private_network_uuid": vpc["id"],
-                "tags": do_envs.tags(ctx.env_id, ctx.env_name)})
+                "tags": do_envs.tags(ctx.env_id, ctx.env_name),
+                "rules": [{"type": "droplet", "value": d} for d in droplet_ids]})
             await do_envs.record(ctx.env_id, "database", database["id"], name)
             out(f"Creating the database cluster {name} (PostgreSQL 16, {ctx.db_size}"
                 f"{', with a standby node' if ctx.db_standby else ''}).\n")
         else:
             out(f"Database {name}: in place.\n")
-        await self._db_firewall(api, database["id"], [str(d["id"]) for d in droplets.values()],
-                                out)
+        await self._db_firewall(api, database["id"], droplet_ids, name, out)
         online = await self._wait(lambda: api.database(database["id"]),
                                   lambda d: d.get("status") == "online",
                                   self._waits["database"], f"The database {name}")
@@ -546,18 +705,23 @@ class DoProvisioner:
                  or (database.get("connection") or {}).get("password") or ctx.db_admin_password)
         if not admin:
             raise StepFailed("DigitalOcean didn't give Sirdar the database's admin password.")
-        await do_envs.set_do(ctx.env_id, db_host=host, db_port=int(port),
-                             db_ca_cert=await api.database_ca(database["id"]),
+        ca = await api.database_ca(database["id"])
+        await do_envs.set_do(ctx.env_id, db_host=host, db_port=int(port), db_ca_cert=ca,
                              db_admin_password_enc=vault.encrypt(self._settings, admin))
         out(f"Database {name}: online at {host}:{port}.\n")
-        return {"id": database["id"], "host": host, "port": int(port), "admin": admin}
+        return {"id": database["id"], "host": host, "port": int(port), "admin": admin, "ca": ca}
 
     async def _db_firewall(self, api: DigitalOceanApi, database_id: str,
-                           droplet_ids: list[str], out: Output) -> None:
-        """Only this environment's droplets, by droplet ID: set right after the
-        cluster is created, retried while DigitalOcean isn't ready for it."""
+                           droplet_ids: list[str], name: str, out: Output) -> None:
+        """The reconcile: only this environment's droplets, by droplet ID (the
+        create already set them; this puts them back after a drift or a slot
+        change), retried while DigitalOcean isn't ready for it, for as long as
+        Sirdar waits for the database."""
+        open_copy = (f"so the database {name} may be reachable from any address. Retry from "
+                     "step 0: Sirdar sets the firewall again before anything uses the database.")
         wanted = sorted(("droplet", d) for d in droplet_ids)
-        for _ in range(FIREWALL_TRIES):
+        seconds = self._waits["database"]
+        for _ in range(self._tries(seconds)):
             current = sorted((r["type"], str(r["value"]))
                              for r in await api.database_firewall(database_id))
             if current == wanted:
@@ -568,11 +732,12 @@ class DoProvisioner:
                 if e.status in (409, 422):
                     await self._sleep(self._poll)
                     continue
-                raise
+                raise StepFailed(f"{e.reason} Sirdar couldn't set the database firewall, "
+                                 f"{open_copy}") from None
             out("Database firewall: only this environment's droplets may connect.\n")
             return
-        raise StepFailed("DigitalOcean didn't accept the database firewall in time. Sirdar "
-                         "won't go on while the database isn't locked to the droplets.")
+        raise StepFailed(f"DigitalOcean didn't accept the database firewall in {seconds // 60} "
+                         f"minutes, {open_copy}")
 
     async def _pin(self, ctx: DoContext, droplets: dict[str, dict], host_keys: dict[str, str],
                    out: Output) -> None:
@@ -583,6 +748,10 @@ class DoProvisioner:
             if ip in saved:
                 raise StepFailed(f"{ip} is a saved SSH target's address. Sirdar won't pin a "
                                  "droplet's key there.")
+            # As on ESXi: an address another environment, an SSH target or the
+            # proxy uses is refused before any key is trusted there.
+            await vmcommon.check_address(self._settings, ctx.env_id, ip,
+                                         host_label="DigitalOcean")
             expected = known_hosts.fingerprint(asyncssh.import_public_key(host_keys[slot]))
             await vmcommon.confirm_pin(
                 ip=ip, expected=expected, actor_id=ctx.actor_id, target_id="digitalocean",
@@ -603,9 +772,9 @@ class DoProvisioner:
                              "Retry from step 0.")
         sql = pgauth.setup_sql(role=do_envs.DB_USER, database=do_envs.DB_NAME,
                                verifier=pgauth.scram_sha256(ctx.db_password))
-        command = (f"bash -c {shlex.quote(_PSQL)} {shlex.quote(database['host'])} "
-                   f"{int(database['port'])}")
-        code = await self._remote(cfg, command, f"{database['admin']}\n{sql}")
+        command = psql_command(database["host"], database["port"])
+        ca_b64 = base64.b64encode(database["ca"].encode()).decode()
+        code = await self._remote(cfg, command, f"{database['admin']}\n{ca_b64}\n{sql}")
         if code != 0:
             raise StepFailed("The managed database didn't accept Sirdar's setup (psql exited "
                              f"{code}). Retry from step 0.")
@@ -676,6 +845,18 @@ class DoProvisioner:
                                  "changed nothing: fix it by hand, then retry.")
             lb = live
         if lb is None:
+            same = [x for x in await api.load_balancers() if x.get("name") == name]
+            for found in same:
+                if found.get("vpc_uuid") != vpc["id"]:
+                    raise StepFailed(f"A load balancer named {name} ({found.get('id')}) already "
+                                     "exists and isn't in this environment's VPC. Sirdar changed "
+                                     "nothing: rename or remove it, then retry.")
+            if same:
+                lb = same[0]
+                await do_envs.record(ctx.env_id, "load_balancer", lb["id"], name)
+                out(f"Load balancer {name}: found it by its name in this environment's VPC; "
+                    "recorded it.\n")
+        if lb is None:
             active = droplets.get(ctx.active_slot) if ctx.active_slot else None
             lb = await api.create_load_balancer(lb_body(ctx, vpc["id"], cert["id"],
                                                         [int(active["id"])] if active else []))
@@ -708,7 +889,12 @@ class DoProvisioner:
 
     async def _firewall(self, api: DigitalOceanApi, ctx: DoContext, lb: dict,
                         out: Output) -> None:
+        """The whole rule set is checked each run; drift (a rebuilt load
+        balancer included) is fixed in place with a PUT, never delete+create."""
         name = do_envs.resource_name(ctx.env_name, "-fw")
+        env_tag = do_envs.env_tag(ctx.env_id)
+        body = _firewall_body(name, env_tag, lb["id"])
+        fw = None
         for rec in (await load_records(ctx.env_id)).find("firewall"):
             live = await api.firewall(rec.do_id)
             if live is None:
@@ -717,24 +903,28 @@ class DoProvisioner:
             if live.get("name") != name:
                 raise StepFailed(f"Cloud firewall {rec.do_id} is no longer named {name}. Sirdar "
                                  "changed nothing: fix it by hand, then retry.")
-            sources = [r.get("sources") or {} for r in live.get("inbound_rules") or []]
-            if any(lb["id"] in (s.get("load_balancer_uids") or []) for s in sources):
-                out(f"Cloud firewall {name}: in place.\n")
-                return
-            await api.delete_firewall(rec.do_id)         # its load balancer was rebuilt
-            await do_envs.forget(ctx.env_id, "firewall", rec.do_id)
-        everywhere = {"addresses": ["0.0.0.0/0", "::/0"]}
-        made = await api.create_firewall({
-            "name": name, "tags": [do_envs.env_tag(ctx.env_id)],
-            "inbound_rules": [
-                {"protocol": "tcp", "ports": "22", "sources": everywhere},
-                {"protocol": "tcp", "ports": "80", "sources": {"load_balancer_uids": [lb["id"]]}}],
-            "outbound_rules": [
-                {"protocol": "tcp", "ports": "all", "destinations": everywhere},
-                {"protocol": "udp", "ports": "all", "destinations": everywhere},
-                {"protocol": "icmp", "destinations": everywhere}]})
-        await do_envs.record(ctx.env_id, "firewall", made["id"], name)
-        out(f"Cloud firewall {name}: SSH from anywhere, HTTP only from the load balancer.\n")
+            fw = live
+        if fw is None:
+            same = [f for f in await api.firewalls() if f.get("name") == name]
+            for found in same:
+                if env_tag not in (found.get("tags") or []):
+                    raise StepFailed(f"A cloud firewall named {name} ({found.get('id')}) already "
+                                     "exists and doesn't apply to this environment's droplets. "
+                                     "Sirdar changed nothing: rename or remove it, then retry.")
+            if same:
+                fw = same[0]
+                await do_envs.record(ctx.env_id, "firewall", fw["id"], name)
+                out(f"Cloud firewall {name}: found it by its name and tag; recorded it.\n")
+        if fw is None:
+            made = await api.create_firewall(body)
+            await do_envs.record(ctx.env_id, "firewall", made["id"], name)
+            out(f"Cloud firewall {name}: SSH from anywhere, HTTP only from the load balancer.\n")
+        elif _firewall_matches(fw, body):
+            out(f"Cloud firewall {name}: in place.\n")
+        else:
+            await api.update_firewall(fw["id"], body)
+            out(f"Cloud firewall {name}: put its rules back (SSH from anywhere, HTTP only from "
+                "the load balancer).\n")
 
     # ---- step 14: Switch traffic ---------------------------------------------------------
 

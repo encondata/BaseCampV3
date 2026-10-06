@@ -9,8 +9,9 @@ Stricter than a mock: a droplet without `vpc_uuid` lands in the region's
 default VPC (kept in `default_vpcs`, not `vpcs`); `user_data` over 64 KiB is
 refused; droplet actions can stay `in-progress` for `action_polls` GETs, and
 `power_on` is refused while a resize is pending; the database firewall
-refuses droplets that don't exist; a load balancer's PUT replaces the whole
-body; a load balancer refuses an unknown `certificate_id` and `droplet_ids`
+refuses droplets that don't exist (on create too, where `rules` apply from
+the start); VPC names are unique; a load balancer's and a cloud firewall's
+PUT replaces the whole body; a load balancer refuses an unknown `certificate_id` and `droplet_ids`
 together with `tag`."""
 
 import base64
@@ -163,7 +164,14 @@ class FakeDigitalOcean:
         return self.default_vpcs[region]["id"]
 
     def _vpcs(self, method, rest, body, request, token):
+        if method == "GET" and not rest:
+            rows = [*self.vpcs.values(), *self.default_vpcs.values()]
+            return httpx.Response(200, json={"vpcs": rows, "links": {},
+                                             "meta": {"total": len(rows)}})
         if method == "POST" and not rest:
+            names = {v["name"] for v in [*self.vpcs.values(), *self.default_vpcs.values()]}
+            if body["name"] in names:      # VPC names are unique in an account
+                return _err(422, "unprocessable_entity", "name is already in use")
             vid = str(uuid.uuid4())
             self.vpcs[vid] = {"id": vid, "urn": f"do:vpc:{vid}", "name": body["name"],
                               "region": body["region"], "description": body.get("description", ""),
@@ -279,6 +287,11 @@ class FakeDigitalOcean:
 
     def _databases(self, method, rest, body, request, token):
         if method == "POST" and not rest:
+            rules = body.get("rules") or []
+            unknown = [r["value"] for r in rules
+                       if r["type"] == "droplet" and str(r["value"]) not in self.droplets]
+            if unknown:
+                return _err(422, "unprocessable_entity", "unknown droplet " + unknown[0])
             dbid = str(uuid.uuid4())
             name = body["name"]
             conn = {"user": "doadmin", "password": DB_ADMIN_PASSWORD, "port": 25060,
@@ -292,7 +305,8 @@ class FakeDigitalOcean:
                 "private_connection": {**conn,
                                        "host": f"private-{name}-do-user-1.db.ondigitalocean.com"},
                 "_polls": 0}
-            self.db_rules[dbid] = []
+            # Trusted sources given at create apply from the start.
+            self.db_rules[dbid] = [{"type": r["type"], "value": r["value"]} for r in rules]
             return httpx.Response(201, json={"database": self._public_db(dbid)})
         if method == "GET" and rest == ["options"]:
             sizes = ["db-s-1vcpu-1gb", "db-s-1vcpu-2gb", "db-s-2vcpu-4gb", "db-s-4vcpu-8gb"]
@@ -461,11 +475,24 @@ class FakeDigitalOcean:
                                    "outbound_rules": body["outbound_rules"],
                                    "tags": body.get("tags") or [], "droplet_ids": []}
             return httpx.Response(202, json={"firewall": self.firewalls[fid]})
+        if method == "GET" and not rest:
+            rows = list(self.firewalls.values())
+            return httpx.Response(200, json={"firewalls": rows, "links": {},
+                                             "meta": {"total": len(rows)}})
         fid = rest[0] if rest else None
         if fid not in self.firewalls:
             return _err(404, "not_found")
         if method == "GET":
             return httpx.Response(200, json={"firewall": self.firewalls[fid]})
+        if method == "PUT":                 # replaces the whole firewall
+            if "name" not in body:
+                return _err(422, "unprocessable_entity", "missing name")
+            fw = self.firewalls[fid]
+            for k in ("name", "inbound_rules", "outbound_rules"):
+                fw[k] = body.get(k) or []
+            fw["tags"] = body.get("tags") or []
+            fw["droplet_ids"] = body.get("droplet_ids") or []
+            return httpx.Response(200, json={"firewall": fw})
         if method == "DELETE":
             del self.firewalls[fid]
             return httpx.Response(204)

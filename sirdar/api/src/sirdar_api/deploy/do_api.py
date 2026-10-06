@@ -204,6 +204,9 @@ class DigitalOceanApi:
     async def vpc(self, vpc_id: str) -> dict | None:
         return await self._one(f"/vpcs/{_id(vpc_id)}", "vpc")
 
+    async def vpcs(self) -> list[dict]:
+        return await self._list("/vpcs", "vpcs")
+
     async def create_vpc(self, name: str, region: str, description: str) -> dict:
         body = await self.call("POST", "/vpcs", json={"name": name, "region": region,
                                                       "description": description})
@@ -312,6 +315,9 @@ class DigitalOceanApi:
     async def load_balancer(self, lb_id: str) -> dict | None:
         return await self._one(f"/load_balancers/{_id(lb_id)}", "load_balancer")
 
+    async def load_balancers(self) -> list[dict]:
+        return await self._list("/load_balancers", "load_balancers")
+
     async def create_load_balancer(self, body: dict) -> dict:
         return self._field(await self.call("POST", "/load_balancers", json=body), "load_balancer")
 
@@ -327,8 +333,16 @@ class DigitalOceanApi:
     async def firewall(self, firewall_id: str) -> dict | None:
         return await self._one(f"/firewalls/{_id(firewall_id)}", "firewall")
 
+    async def firewalls(self) -> list[dict]:
+        return await self._list("/firewalls", "firewalls")
+
     async def create_firewall(self, body: dict) -> dict:
         return self._field(await self.call("POST", "/firewalls", json=body), "firewall")
+
+    async def update_firewall(self, firewall_id: str, body: dict) -> dict:
+        """A PUT replaces the whole firewall (name, rules, tags, droplets)."""
+        return self._field(await self.call("PUT", f"/firewalls/{_id(firewall_id)}", json=body),
+                           "firewall")
 
     async def delete_firewall(self, firewall_id: str) -> bool:
         return await self._delete(f"/firewalls/{_id(firewall_id)}")
