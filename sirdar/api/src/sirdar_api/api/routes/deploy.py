@@ -731,7 +731,7 @@ GATED_MODES = ("reset", "restore_dump", "rollback", "teardown", "vm_restore")
 # Modes that need deploy:change (production's Activate also needs its name typed).
 CHANGE_MODES = (*GATED_MODES, "activate")
 RETRY_MODES = ("update", "reset", "restore_dump", "rollback", "publish", "teardown",
-               "vm_restore", "activate")
+               "vm_restore", "activate", "renew")
 # Modes a deploy request may ask a VM snapshot for (rollback has its own route).
 VM_SNAPSHOT_MODES = ("update", "reset", "restore_dump")
 
@@ -938,6 +938,8 @@ async def _start_do_update(db, env: Environment, body: DeploymentIn, request: Re
     of the DigitalOcean plan."""
     if not vault.is_configured(get_settings()):
         raise HTTPException(status_code=400, detail={"code": "secrets_key_missing"})
+    await _read_production(db, env)
+    _retiring_refused(env)         # a deactivated, retiring production stays dark
     await _require_account(db, env)
     await _require_integrations(db, env)
     ref = body.git_ref or env.git_ref
@@ -1034,6 +1036,29 @@ async def _start_do_teardown(db, env: Environment, body: DeploymentIn, request: 
                          snapshot=snap, cloud=True, slot=slot)
 
 
+async def _read_production(db, env: Environment) -> None:
+    """Production's retiring flag and live slot, read under the production
+    lock (an un-retire takes it too), so an Activate, Deactivate or Update
+    never acts on a stale copy."""
+    if env.type == "production":
+        await environments.lock_production(db)
+        await db.refresh(env)
+
+
+def _retiring_refused(env: Environment) -> None:
+    """A retiring production only goes dark: no slot goes live on it."""
+    if env.type == "production" and env.retiring:
+        raise HTTPException(status_code=409, detail={"code": "production_retiring"})
+
+
+def _check_deactivate(env: Environment) -> None:
+    """Deactivate (no slot): a retiring production with a live slot only."""
+    if not (env.type == "production" and env.retiring):
+        raise _refuse(422, "slot_required")
+    if env.active_slot is None:
+        raise _refuse(409, "already_inactive")
+
+
 class ActivateIn(BaseModel):
     # The slot to send traffic to; None deactivates (a retiring production only).
     slot: str | None = Field(default=None, max_length=10)
@@ -1051,6 +1076,9 @@ async def activate(name: str, body: ActivateIn, request: Request, db: DbSession,
     balancer to it without a gap (a deployment, so it shares the lock, the
     log and Retry). Going back is activating the other slot. A retiring
     production can be deactivated (slot None) so Delete can remove it."""
+    # And deploy:add, as Retry needs it: anyone who starts an Activate can retry it.
+    if not actor.access.can("deploy", "add"):
+        raise _forbidden()
     env = await _environment(db, name)
     if not _on_do(env):
         raise _refuse(409, "not_digitalocean_environment")
@@ -1061,18 +1089,15 @@ async def activate(name: str, body: ActivateIn, request: Request, db: DbSession,
     if not vault.is_configured(get_settings()):
         raise _refuse(400, "secrets_key_missing")
     await _require_account(db, env)
+    await _read_production(db, env)
     if body.slot is None:
-        if not (env.type == "production" and env.retiring):
-            raise _refuse(422, "slot_required")
-        if env.active_slot is None:
-            raise _refuse(409, "already_inactive")
+        _check_deactivate(env)
         return await _launch(db, env, request, actor, action="deploy.activate", mode="activate",
                              git_ref=env.git_ref, sha=env.current_sha or "", cloud=True,
                              slot=None, go_live=True)
     if body.slot not in env.slots:
         raise _refuse(422, "slot_invalid")
-    if env.type == "production" and env.retiring:
-        raise _refuse(409, "production_retiring")
+    _retiring_refused(env)
     if body.slot == env.active_slot:
         raise _refuse(409, "slot_already_active")
     row = (await do_envs.slots_of(db, env.id)).get(body.slot)
@@ -1309,8 +1334,12 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     typed = dep.mode in GATED_MODES or (dep.mode == "activate" and env.type == "production")
     if typed and body.confirm_name != env.name:
         raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
-    if dep.mode == "activate" and dep.slot and env.type == "production" and env.retiring:
-        raise HTTPException(status_code=409, detail={"code": "production_retiring"})
+    if dep.cloud and dep.mode in ("activate", "update"):
+        await _read_production(db, env)
+        if dep.mode == "activate" and dep.slot is None:
+            _check_deactivate(env)
+        else:
+            _retiring_refused(env)
     latest = await serialize.latest_deployment(db, env.id)
     if latest is None or latest.id != dep.id:
         raise HTTPException(status_code=409, detail={"code": "retry_not_latest"})

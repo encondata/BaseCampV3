@@ -551,7 +551,8 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
                 raise EnvError("production_exists")     # at most one live production
         put("retiring", bool(fields["retiring"]))
     if fields.get("auto_activate") is not None:
-        if not on_do or env.type == "production":
+        # Off is always fine; on only for a non-production DigitalOcean environment.
+        if fields["auto_activate"] and (not on_do or env.type == "production"):
             raise EnvError("auto_activate_not_allowed")
         put("auto_activate", bool(fields["auto_activate"]))
     if fields.get("target") is not None:
