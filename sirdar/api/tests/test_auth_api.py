@@ -26,6 +26,7 @@ async def test_login_returns_portal_session_shape_and_cookie(client, db):
     assert body["scope"] == {"global": True, "client_ids": [], "partner_ids": []}
     assert body["perms"]["users"]["add"] is True
     assert body["preferences"]["nav_mode"] == "expanded"
+    assert body["preferences"]["list_view"] == "expanded"
     cookie = resp.headers["set-cookie"]
     assert "sirdar_refresh=" in cookie and "Path=/api/auth" in cookie and "HttpOnly" in cookie
 
@@ -64,11 +65,14 @@ async def test_refresh_me_preferences_logout(client, db):
     assert me.status_code == 200 and me.json()["person"]["email"] == "alice@test.example.com"
     prefs = await client.put("/api/auth/me/preferences",
                              headers={"Authorization": f"Bearer {token}"},
-                             json={**login.json()["preferences"], "nav_mode": "rail"})
+                             json={**login.json()["preferences"], "nav_mode": "rail",
+                                   "list_view": "last"})
     assert prefs.status_code == 200 and prefs.json()["nav_mode"] == "rail"
+    assert prefs.json()["list_view"] == "last"
     refreshed = await client.post("/api/auth/refresh")       # httpx keeps the cookie jar
     assert refreshed.status_code == 200
     assert refreshed.json()["preferences"]["nav_mode"] == "rail"
+    assert refreshed.json()["preferences"]["list_view"] == "last"
     # Capture the refresh cookie value before logout
     refresh_token = client.cookies.get("sirdar_refresh")
     assert refresh_token is not None
