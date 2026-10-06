@@ -28,6 +28,7 @@ deployed), and the load balancer's targets (step 14, go_live, owns them; step
 
 import asyncio
 import base64
+import re
 import shlex
 import uuid
 from collections.abc import Awaitable, Callable
@@ -76,7 +77,9 @@ from sirdar_api.deploy.vmcommon import Output, VmOutcome, VmPrepareError
 
 POLL_SECONDS = 10
 WAITS = {"droplet": 10 * 60, "database": 30 * 60, "lb": 10 * 60, "ssh": 10 * 60,
-         "vpc": 10 * 60}
+         "vpc": 10 * 60, "health": 5 * 60}
+HEALTH_MARGIN = 10             # seconds on top of the load balancer's health checks
+_HEALTHZ = "curl -fsS -o /dev/null --max-time 5 http://127.0.0.1/healthz"
 SQL_TIMEOUT = 15 * 60          # cloud-init may still be installing psql
 # Runs as `bash -c _PSQL <host> <port>` on the droplet. Stdin: the doadmin
 # password, the cluster's CA (base64, one line), then the SQL. The password
@@ -255,16 +258,23 @@ def lb_body(ctx: DoContext, vpc_id: str, certificate_id: str, droplet_ids: list[
             "redirect_http_to_https": False, "droplet_ids": droplet_ids}
 
 
+_LB_READ_ONLY = ("id", "ip", "ipv6", "status", "created_at")
+
+
 def lb_update_body(lb: dict, **changes) -> dict:
-    """A PUT replaces the whole load balancer: what it has, plus `changes`."""
-    region = lb.get("region")
-    body = {"name": lb.get("name"),
-            "region": region.get("slug") if isinstance(region, dict) else region,
-            "size_unit": lb.get("size_unit") or 1, "vpc_uuid": lb.get("vpc_uuid"),
-            "forwarding_rules": lb.get("forwarding_rules") or [],
-            "health_check": lb.get("health_check"), "droplet_ids": lb.get("droplet_ids") or [],
-            "redirect_http_to_https": bool(lb.get("redirect_http_to_https"))}
-    return {**body, **changes}
+    """A PUT replaces the whole load balancer: its live body (read-only and
+    empty fields left out, so settings Sirdar doesn't manage stay), plus
+    `changes`."""
+    body = {k: v for k, v in lb.items()
+            if k not in _LB_READ_ONLY and not k.startswith("_") and v is not None}
+    if isinstance(body.get("region"), dict):
+        body["region"] = body["region"].get("slug")
+    if "size_unit" in body:
+        body.pop("size", None)                 # size is the older spelling; never both
+    body.update(changes)
+    if body.get("droplet_ids") is not None or not body.get("tag"):
+        body.pop("tag", None)                  # droplet_ids and tag are exclusive
+    return body
 
 
 def https_certificate(lb: dict) -> str | None:
@@ -936,6 +946,19 @@ class DoProvisioner:
                              "longer carries Sirdar's tag and name for this environment. Sirdar "
                              "changed nothing: put them back or remove it by hand, then retry.")
 
+    async def _same_team(self, api: DigitalOceanApi, ctx: DoContext) -> None:
+        """Steps 14 and 18 refuse a token from another team, as step 0 does,
+        before they write anything."""
+        try:
+            team, _ = await do_accounts.read_team(api)
+        except ConnectFailed as e:
+            raise StepFailed(e.reason) from None
+        if await do_envs.freeze_team(ctx.env_id, team) != team:
+            raise StepFailed(f"The {ctx.account_label} DigitalOcean token now answers for "
+                             "another team than the one this environment was built in. Sirdar "
+                             "changed nothing. Put back a token for that team in Settings › "
+                             "Integrations, then retry.")
+
     async def _live_lb(self, api: DigitalOceanApi, ctx: DoContext, records: Records) -> dict:
         name = do_envs.resource_name(ctx.env_name, "-lb")
         recs = records.find("load_balancer")
@@ -950,68 +973,150 @@ class DoProvisioner:
                              "changed nothing: fix it by hand, then retry.")
         return lb
 
-    async def _public_smoke(self, ctx: DoContext, lb_ip: str, out: Output) -> list[str]:
+    async def _lb_active(self, api: DigitalOceanApi, lb_id: str, name: str) -> dict:
+        return await self._wait(lambda: api.load_balancer(lb_id),
+                                lambda x: x.get("status") == "active", self._waits["lb"],
+                                f"The load balancer {name}")
+
+    async def _put_targets(self, api: DigitalOceanApi, lb_id: str, name: str,
+                           droplet_ids: list[int]) -> dict:
+        """Wait until the load balancer isn't applying a change (a PUT then is
+        refused), send the targets on top of its live body, wait again."""
+        current = await self._lb_active(api, lb_id, name)
+        await api.update_load_balancer(lb_id, lb_update_body(current, droplet_ids=droplet_ids))
+        return await self._lb_active(api, lb_id, name)
+
+    @staticmethod
+    def _settle_seconds(lb: dict) -> int:
+        """How long the load balancer takes to mark a healthy droplet healthy."""
+        check = lb.get("health_check") or {}
+        try:
+            n = int(check.get("healthy_threshold") or 3)
+            every = int(check.get("check_interval_seconds") or 10)
+        except (TypeError, ValueError):
+            n, every = 3, 10
+        return n * every + HEALTH_MARGIN
+
+    async def _slot_healthy(self, ctx: DoContext, droplet: dict, out: Output) -> None:
+        """The slot's droplet answers its own /healthz (what the load
+        balancer's health check asks) before it carries any traffic.
+        DigitalOcean doesn't report per-droplet health, so this asks the
+        droplet itself over SSH."""
+        name = do_envs.droplet_name(ctx.env_name, ctx.slot)
+        ip, _ = do_api.droplet_ips(droplet)
+        if not ip:
+            raise StepFailed(f"{name} has no public address, so Sirdar can't check it.")
+        cfg = self._slot_config(ctx, ctx.slot, ip)
+        for _ in range(self._tries(self._waits["health"])):
+            if await self._remote(cfg, _HEALTHZ, None) == 0:
+                out(f"{name} answers /healthz.\n")
+                return
+            await self._sleep(self._poll)
+        raise StepFailed(f"{name} didn't answer /healthz within "
+                         f"{self._waits['health'] // 60} minutes.")
+
+    async def _public_smoke(self, ctx: DoContext, lb_ip: str, out: Output,
+                            outlast: float = 0) -> list[str]:
+        """`outlast`: the rounds together last longer than that many seconds
+        (the load balancer's health checks)."""
+        attempts = self._smoke_attempts
+        if self._smoke_delay > 0:
+            # the waits between rounds, (attempts - 1) x delay, exceed `outlast`
+            attempts = max(attempts, int(outlast // self._smoke_delay) + 2)
         results = await smoke.run(list(ctx.hosts), lb_ip,
                                   transport=outbound.transports().get("smoke"),
-                                  sleep=self._sleep, attempts=self._smoke_attempts,
+                                  sleep=self._sleep, attempts=attempts,
                                   delay=self._smoke_delay, out=out, insecure=ctx.acme_staging)
         for r in results:
             out(f"{r.url}: {r.detail}\n")
         return [r.service for r in results if not r.ok]
 
+    def _smoke_failure(self, ctx: DoContext, failed: list[str]) -> str:
+        return (f"{len(failed)} of {len(ctx.hosts)} public URLs didn't answer through the "
+                f"load balancer: {', '.join(failed)}.")
+
     async def _go_live(self, api: DigitalOceanApi, ctx: DoContext, out: Output) -> None:
-        """Point the load balancer at ctx.slot's droplet (no slot: at none),
-        then check every public URL through the load balancer; on a failure
-        the previous targets go back."""
+        """Point the load balancer at ctx.slot's droplet (no slot: at none)
+        without a gap: the new droplet joins the old one, is healthy, passes
+        the public smoke test through the load balancer, and only then is
+        the old one dropped. On any failure the previous targets go back."""
+        await self._same_team(api, ctx)
         records = await load_records(ctx.env_id)
         lb = await self._live_lb(api, ctx, records)
-        name = lb["name"]
+        name, lb_id = lb["name"], lb["id"]
         previous = [int(d) for d in lb.get("droplet_ids") or []]
         before = next((r.slot for r in records.find("droplet")
                        if r.do_id.isdigit() and int(r.do_id) in previous), None)
+        was = f" (was {before})" if before else ""
         if ctx.slot is None:
-            wanted: list[int] = []
-        else:
-            if not lb.get("ip"):
-                raise StepFailed(f"Load balancer {name} has no IP address yet. Retry from "
-                                 "step 0.")
-            recs = records.find("droplet", ctx.slot)
-            droplet = await api.droplet(recs[0].do_id) if recs else None
-            if droplet is None:
-                raise StepFailed(f"The {ctx.slot} slot has no droplet. Deploy to it first.")
-            self._check_owned(ctx, droplet, do_envs.droplet_name(ctx.env_name, ctx.slot),
-                              "droplet")
-            wanted = [int(droplet["id"])]
-        if sorted(previous) != wanted:
-            await api.update_load_balancer(lb["id"], lb_update_body(lb, droplet_ids=wanted))
-            out(f"Load balancer {name}: traffic now goes to {ctx.slot or 'no slot'}"
-                f"{f' (was {before})' if before else ''}.\n")
-        else:
-            out(f"Load balancer {name}: already sends traffic to {ctx.slot or 'no slot'}.\n")
-        if ctx.slot is None:
+            if previous:
+                await self._put_targets(api, lb_id, name, [])
+                out(f"Load balancer {name}: traffic now goes to no slot{was}.\n")
+            else:
+                out(f"Load balancer {name}: already sends traffic to no slot.\n")
             return
-        failed = await self._public_smoke(ctx, lb["ip"], out)
-        if not failed:
+        if not lb.get("ip"):
+            raise StepFailed(f"Load balancer {name} has no IP address yet. Retry from step 0.")
+        recs = records.find("droplet", ctx.slot)
+        droplet = await api.droplet(recs[0].do_id) if recs else None
+        if droplet is None:
+            raise StepFailed(f"The {ctx.slot} slot has no droplet. Deploy to it first.")
+        self._check_owned(ctx, droplet, do_envs.droplet_name(ctx.env_name, ctx.slot), "droplet")
+        new = int(droplet["id"])
+        if previous == [new]:
+            out(f"Load balancer {name}: already sends traffic to {ctx.slot}.\n")
+            failed = await self._public_smoke(ctx, lb["ip"], out)
+            if failed:
+                raise StepFailed(f"{self._smoke_failure(ctx, failed)} Traffic stays where "
+                                 "it was.")
             return
-        reason = (f"{len(failed)} of {len(ctx.hosts)} public URLs didn't answer through the "
-                  f"load balancer: {', '.join(failed)}.")
-        if sorted(previous) != wanted:
-            try:
-                current = await api.load_balancer(lb["id"]) or lb
-                await api.update_load_balancer(lb["id"], lb_update_body(current,
-                                                                        droplet_ids=previous))
-            except DoError as e:
-                raise StepFailed(f"{reason} Sirdar couldn't put traffic back on "
-                                 f"{before or 'no slot'} ({e.reason}): point load balancer "
-                                 f"{name} there by hand.") from None
-            out(f"Put traffic back on {before or 'no slot'}.\n")
-        raise StepFailed(f"{reason} Traffic stays where it was.")
+        both = previous if new in previous else previous + [new]
+        try:
+            if both != previous:
+                await self._put_targets(api, lb_id, name, both)
+                out(f"Load balancer {name}: {ctx.slot} joins {before or 'no slot'}.\n")
+            await self._slot_healthy(ctx, droplet, out)
+            settle = self._settle_seconds(lb)
+            out(f"Waiting {settle} s for the load balancer's health checks.\n")
+            await self._sleep(settle)
+            failed = await self._public_smoke(ctx, lb["ip"], out, settle)
+            if failed:
+                raise StepFailed(self._smoke_failure(ctx, failed))
+            await self._put_targets(api, lb_id, name, [new])
+        except (StepFailed, DoError) as e:
+            await self._put_back(api, lb_id, name, previous, before, e.reason, out)
+            raise StepFailed(f"{e.reason} Traffic stays where it was.") from None
+        out(f"Load balancer {name}: traffic now goes to {ctx.slot}{was}.\n")
+
+    async def _put_back(self, api: DigitalOceanApi, lb_id: str, name: str,
+                        previous: list[int], before: str | None, reason: str,
+                        out: Output) -> None:
+        try:
+            await self._put_targets(api, lb_id, name, previous)
+        except (StepFailed, DoError) as e:
+            raise StepFailed(f"{reason} Sirdar couldn't put traffic back on "
+                             f"{before or 'no slot'} ({e.reason}): point load balancer "
+                             f"{name} there by hand.") from None
+        out(f"Put traffic back on {before or 'no slot'}.\n")
 
     # ---- step 18: Remove DigitalOcean resources -------------------------------------------
 
     _FETCH = {"vpc": "vpc", "droplet": "droplet", "database": "database",
               "certificate": "certificate", "load_balancer": "load_balancer",
               "firewall": "firewall"}
+
+    async def _removable(self, ctx: DoContext) -> None:
+        """Read fresh: a production environment goes only once it is retiring
+        and serves no slot."""
+        async with get_sessionmaker()() as s:
+            env = await s.get(Environment, ctx.env_id)
+        if env is None:
+            raise StepFailed("This environment is gone from Sirdar's records. Sirdar changed "
+                             "nothing.")
+        if env.type == "production" and (not env.retiring or env.active_slot):
+            raise StepFailed("This production environment is still live (not retiring, or "
+                             "still serving a slot). Sirdar removes production only once it is "
+                             "retiring and serves no slot. Sirdar changed nothing.")
 
     def _stray(self, ctx: DoContext, found: dict, recorded: set[str]) -> bool:
         """Tagged for this environment, not recorded, and plainly Sirdar's:
@@ -1022,12 +1127,15 @@ class DoProvisioner:
                 and str(found.get("name") or "").startswith(
                     do_envs.resource_name(ctx.env_name) + "-"))
 
-    async def _check_all(self, api: DigitalOceanApi, ctx: DoContext,
-                         records: Records) -> list[dict]:
+    async def _check_all(self, api: DigitalOceanApi, ctx: DoContext, records: Records,
+                         out: Output) -> list[dict]:
         """Before anything is deleted: every recorded resource that still
         exists must still match (both tags and the exact name, or the exact
-        name). Returns the live recorded droplets."""
+        name). The certificate the load balancer serves now (the cert-worker
+        may have renewed it) is recorded when it is ours. Returns the live
+        recorded droplets."""
         droplets = []
+        certificates = {r.do_id for r in records.find("certificate")}
         for rec in records.resources:
             if rec.kind == "bucket":
                 if rec.do_id != ctx.bucket:
@@ -1045,7 +1153,8 @@ class DoProvisioner:
                 if rec.kind == "droplet":
                     droplets.append(live)
             elif rec.kind == "certificate":
-                if not str(live.get("name") or "").startswith(f"ss-{ctx.env_name}-"):
+                if not (certs.is_ours(live, ctx.env_name, ctx.names)
+                        or live.get("name") == rec.name):
                     raise StepFailed(f"Certificate {rec.do_id} is no longer one of Sirdar's for "
                                      f"{ctx.env_name}. Sirdar changed nothing.")
             elif rec.kind == "vpc":
@@ -1056,6 +1165,15 @@ class DoProvisioner:
             elif live.get("name") != rec.name:
                 raise StepFailed(f"The {what} {rec.do_id} is no longer named {rec.name}. "
                                  "Sirdar changed nothing.")
+            if rec.kind == "load_balancer":
+                current = https_certificate(live)
+                if current and current not in certificates:
+                    cert = await api.certificate(current)
+                    if cert is not None and certs.is_ours(cert, ctx.env_name, ctx.names):
+                        await do_envs.record(ctx.env_id, "certificate", current, cert["name"])
+                        certificates.add(current)
+                        out(f"Recorded the certificate {cert['name']} the load balancer "
+                            "serves now.\n")
         if records.find("spaces_key"):
             keys = {k.get("access_key"): k for k in await api.spaces_keys()}
             for rec in records.find("spaces_key"):
@@ -1070,21 +1188,78 @@ class DoProvisioner:
         await do_envs.forget(ctx.env_id, rec.kind, rec.do_id)
         out(f"{rec.name}: {'deleted' if gone else 'already gone'}.\n")
 
-    async def _remove_when_free(self, ctx: DoContext, rec: DoResource, delete, seconds: int,
-                                failure: str, out: Output) -> None:
-        """A VPC can't go while it has members, nor a certificate while a load
-        balancer uses it; deleted droplets, databases and load balancers let go
-        a little later."""
-        for _ in range(self._tries(seconds)):
+    async def _remove_certificate(self, ctx: DoContext, api: DigitalOceanApi, rec: DoResource,
+                                  out: Output) -> None:
+        """A certificate stays in use a little after its load balancer goes
+        (DigitalOcean answers 403 "in use", as step 0 expects): a bounded
+        retry."""
+        for _ in range(self._tries(self._waits["lb"])):
             try:
-                await self._remove(ctx, rec, delete, out)
+                await self._remove(ctx, rec, api.delete_certificate, out)
                 return
             except DoError as e:
-                if e.status in (403, 409, 422):
-                    await self._sleep(self._poll)
-                    continue
+                if e.status not in (403, 409, 422):
+                    raise
+            await self._sleep(self._poll)
+        raise StepFailed(f"The certificate {rec.name} is still in use after "
+                         f"{self._waits['lb'] // 60} minutes. Retry Delete in a few minutes.")
+
+    @staticmethod
+    def _member(member: dict) -> str:
+        """`droplet 4001 (ss-uat9-orange)` from a VPC member's urn and name,
+        cut to safe characters (DigitalOcean's text never reaches the log raw)."""
+        parts = str(member.get("urn") or "").split(":")
+        kind = re.sub(r"[^a-z]", "", parts[1] if len(parts) > 1 else "")[:20] or "member"
+        ident = re.sub(r"[^A-Za-z0-9-]", "", parts[2] if len(parts) > 2 else "")[:40]
+        name = re.sub(r"[^A-Za-z0-9._-]", "", str(member.get("name") or ""))[:63]
+        return " ".join(p for p in (kind, ident, f"({name})" if name else "") if p)
+
+    async def _remove_vpc(self, api: DigitalOceanApi, ctx: DoContext, rec: DoResource,
+                          out: Output) -> None:
+        """A VPC can't go while it has members; deleted droplets and databases
+        leave it a little later. A refusal while it has none (a missing scope,
+        a default VPC) stops at once."""
+        for _ in range(self._tries(self._waits["vpc"])):
+            try:
+                await self._remove(ctx, rec, api.delete_vpc, out)
+                return
+            except DoError as e:
+                if e.status not in (403, 409, 422):
+                    raise
+                status = e.status
+            if status == 403 and not await api.vpc_members(rec.do_id):
+                raise StepFailed(f"DigitalOcean refused to delete the VPC {rec.name} although "
+                                 "nothing is in it (HTTP 403: check the token's scopes). Sirdar "
+                                 "stopped there.")
+            await self._sleep(self._poll)
+        left = [self._member(m) for m in await api.vpc_members(rec.do_id)]
+        named = f": {', '.join(left[:10])}{' and more' if len(left) > 10 else ''}" if left else ""
+        raise StepFailed(f"The VPC {rec.name} still has members after "
+                         f"{self._waits['vpc'] // 60} minutes{named}. Remove what isn't this "
+                         "environment's, or retry Delete in a few minutes.")
+
+    async def _empty_and_delete_bucket(self, api: DigitalOceanApi, ctx: DoContext,
+                                       rec: DoResource, out: Output) -> None:
+        setup = await self._setup_key(api, ctx)
+        failure: spaces.SpacesError | None = None
+        try:
+            count = await spaces.empty_bucket(rec.do_id, ctx.region, setup)
+            gone = await spaces.delete_bucket(rec.do_id, ctx.region, setup)
+        except spaces.SpacesError as e:
+            failure = e
+        try:
+            await self._drop_setup_key(api, ctx, setup.access_key)
+        except DoError as e:
+            if failure is None:
                 raise
-        raise StepFailed(failure)
+            raise StepFailed(f"{failure.reason} Sirdar also couldn't delete the temporary "
+                             f"Spaces key {setup.access_key} ({e.reason}); the next Delete "
+                             "removes it.") from None
+        if failure is not None:
+            raise StepFailed(failure.reason) from None
+        await do_envs.forget(ctx.env_id, "bucket", rec.do_id)
+        out(f"Bucket {rec.name}: emptied ({count} objects) and "
+            f"{'deleted' if gone else 'already gone'}.\n")
 
     async def _forget_pins(self, ctx: DoContext, ips: set[str], out: Output) -> None:
         """Forget each removed droplet's pinned host key, unless the address is
@@ -1098,10 +1273,12 @@ class DoProvisioner:
                 out(f"Forgot {ip}'s SSH host key.\n")
 
     async def _destroy(self, api: DigitalOceanApi, ctx: DoContext, out: Output) -> None:
-        records = await load_records(ctx.env_id)
+        await self._removable(ctx)
+        await self._same_team(api, ctx)
         env_tag = do_envs.env_tag(ctx.env_id)
         # Everything is checked (and the strays found) before anything is deleted.
-        live_droplets = await self._check_all(api, ctx, records)
+        live_droplets = await self._check_all(api, ctx, await load_records(ctx.env_id), out)
+        records = await load_records(ctx.env_id)        # with an adopted certificate
         recorded = {r.do_id for r in records.find("droplet")}
         tagged = await api.droplets_tagged(env_tag)
         stray_droplets = [d for d in tagged if self._stray(ctx, d, recorded)]
@@ -1119,10 +1296,7 @@ class DoProvisioner:
         for rec in records.find("load_balancer"):
             await self._remove(ctx, rec, api.delete_load_balancer, out)
         for rec in records.find("certificate"):
-            await self._remove_when_free(
-                ctx, rec, api.delete_certificate, self._waits["lb"],
-                f"The certificate {rec.name} is still in use after "
-                f"{self._waits['lb'] // 60} minutes. Retry Delete in a few minutes.", out)
+            await self._remove_certificate(ctx, api, rec, out)
         for rec in records.find("firewall"):
             await self._remove(ctx, rec, api.delete_firewall, out)
         for rec in records.find("droplet"):
@@ -1141,18 +1315,7 @@ class DoProvisioner:
         for rec in records.find("spaces_key"):
             await self._remove(ctx, rec, api.delete_spaces_key, out)
         for rec in records.find("bucket"):
-            setup = await self._setup_key(api, ctx)
-            try:
-                count = await spaces.empty_bucket(rec.do_id, ctx.region, setup)
-                gone = await spaces.delete_bucket(rec.do_id, ctx.region, setup)
-            finally:
-                await self._drop_setup_key(api, ctx, setup.access_key)
-            await do_envs.forget(ctx.env_id, "bucket", rec.do_id)
-            out(f"Bucket {rec.name}: emptied ({count} objects) and "
-                f"{'deleted' if gone else 'already gone'}.\n")
+            await self._empty_and_delete_bucket(api, ctx, rec, out)
         for rec in records.find("vpc"):
-            await self._remove_when_free(
-                ctx, rec, api.delete_vpc, self._waits["vpc"],
-                f"The VPC {rec.name} still has members after {self._waits['vpc'] // 60} "
-                "minutes. Retry Delete in a few minutes.", out)
+            await self._remove_vpc(api, ctx, rec, out)
         out("Nothing of this environment is left on DigitalOcean.\n")

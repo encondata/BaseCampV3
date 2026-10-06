@@ -222,6 +222,10 @@ class DigitalOceanApi:
         except (KeyError, TypeError, ValueError):
             raise DoError(_UNEXPECTED) from None
 
+    async def vpc_members(self, vpc_id: str) -> list[dict]:
+        """What still sits in the VPC: each member's urn and name."""
+        return await self._list(f"/vpcs/{_id(vpc_id)}/members", "members")
+
     # droplets
 
     async def droplet(self, droplet_id: str) -> dict | None:

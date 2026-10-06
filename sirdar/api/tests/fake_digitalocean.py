@@ -69,6 +69,8 @@ class FakeDigitalOcean:
         self.lb_polls = 1             # GETs before a load balancer is active
         self.firewall_wait = 0        # database firewall PUTs refused before one is accepted
         self.vpc_lingering = 0        # VPC deletes refused after its members went
+        self.lb_apply_polls = 0       # GETs a load balancer stays "new" after a PUT
+        self.cert_in_use_polls = 0    # certificate DELETEs refused (in use) after its LB went
         self.action_polls = 0         # action GETs before a droplet action completes
         self.public_ip = "127.0.0.1"  # the tests' SSH server plays every droplet
         self.down = False
@@ -181,8 +183,18 @@ class FakeDigitalOcean:
         if vpc is None:
             return _err(404, "not_found")
         if method == "GET" and rest[1:] == ["members"]:
-            n = self._vpc_members(vpc["id"])
-            return httpx.Response(200, json={"members": [{"urn": "x"}] * n,
+            vid = vpc["id"]
+            members = ([{"urn": f"do:droplet:{d['id']}", "name": d["name"]}
+                        for d in self.droplets.values() if d.get("vpc_uuid") == vid]
+                       + [{"urn": f"do:dbaas:{d['id']}", "name": d["name"]}
+                          for d in self.databases.values()
+                          if d.get("private_network_uuid") == vid]
+                       + [{"urn": f"do:loadbalancer:{lb['id']}", "name": lb["name"]}
+                          for lb in self.load_balancers.values() if lb.get("vpc_uuid") == vid]
+                       + [{"urn": "do:droplet:9999", "name": "leaving"}] * bool(
+                           self.vpc_lingering))
+            n = len(members)
+            return httpx.Response(200, json={"members": members,
                                              "links": {}, "meta": {"total": n}})
         if method == "GET":
             return httpx.Response(200, json={"vpc": vpc})
@@ -403,6 +415,9 @@ class FakeDigitalOcean:
             if any(r.get("certificate_id") == cid for lb in self.load_balancers.values()
                    for r in lb["forwarding_rules"]):
                 return _err(403, "forbidden", "certificate is in use")
+            if self.cert_in_use_polls:
+                self.cert_in_use_polls -= 1
+                return _err(403, "forbidden", "certificate is in use")
             del self.certificates[cid]
             return httpx.Response(204)
         return _err(405, "method_not_allowed")
@@ -412,6 +427,7 @@ class FakeDigitalOcean:
 
     # ---- load balancers ----------------------------------------------------------------------
 
+    _LB_READ_ONLY = ("id", "ip", "ipv6", "status", "created_at")
     _LB_FIELDS = ("name", "region", "size_unit", "vpc_uuid", "forwarding_rules", "health_check",
                   "droplet_ids", "tag", "redirect_http_to_https", "sticky_sessions")
 
@@ -429,8 +445,10 @@ class FakeDigitalOcean:
             if (refused := self._lb_refusal(body)) is not None:
                 return refused
             lid = str(uuid.uuid4())
-            self.load_balancers[lid] = {"id": lid, "ip": "", "status": "new", "_polls": 0,
-                                        **{k: body.get(k) for k in self._LB_FIELDS}}
+            self.load_balancers[lid] = {
+                **{k: body.get(k) for k in self._LB_FIELDS},
+                **{k: v for k, v in body.items() if k not in self._LB_READ_ONLY},
+                "id": lid, "ip": "", "status": "new", "_polls": 0, "_apply": 0}
             self.load_balancers[lid]["region"] = {"slug": body["region"]}
             return httpx.Response(202, json={"load_balancer": self._public_lb(lid)})
         if method == "GET" and not rest:
@@ -443,7 +461,11 @@ class FakeDigitalOcean:
         lb = self.load_balancers[lid]
         if method == "GET":
             lb["_polls"] += 1
-            if lb["status"] == "new" and lb["_polls"] >= self.lb_polls:
+            if lb["_apply"] > 0:
+                lb["_apply"] -= 1
+                if lb["_apply"] == 0:
+                    lb["status"] = "active"
+            elif lb["status"] == "new" and lb["_polls"] >= self.lb_polls:
                 lb["status"], lb["ip"] = "active", LB_IP
             return httpx.Response(200, json={"load_balancer": self._public_lb(lid)})
         if method == "PUT":
@@ -452,8 +474,15 @@ class FakeDigitalOcean:
                 return _err(422, "unprocessable_entity", "missing " + ",".join(missing))
             if (refused := self._lb_refusal(body)) is not None:
                 return refused
-            for k in self._LB_FIELDS:       # what the body leaves out is gone
-                lb[k] = body.get(k)
+            if lb["_apply"] > 0:            # still applying the previous PUT
+                return _err(422, "unprocessable_entity", "load balancer is being updated")
+            kept = {k: v for k, v in lb.items() if k in self._LB_READ_ONLY or k.startswith("_")}
+            lb.clear()                      # what the body leaves out is gone
+            lb.update({k: None for k in self._LB_FIELDS})
+            lb.update({k: v for k, v in body.items() if k not in self._LB_READ_ONLY})
+            lb.update(kept)
+            if self.lb_apply_polls:
+                lb["status"], lb["_apply"] = "new", self.lb_apply_polls
             lb["region"] = {"slug": body["region"]} if isinstance(body["region"], str) \
                 else body["region"]
             return httpx.Response(200, json={"load_balancer": self._public_lb(lid)})
