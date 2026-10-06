@@ -2,9 +2,10 @@
 token. The token goes only into the Authorization header; errors carry
 our own copy, never httpx's message (it can echo request details).
 
-The token is the one integrations.load_digitalocean resolves: the one stored
-in Settings › Integrations, else SIRDAR_DEPLOY_DO_TOKEN. Callers pass
-resolve()'s settings, whose deploy_do_token is that token."""
+The token is a DigitalOcean account's (do_accounts; the Production account,
+which the Settings › Integrations card shows, falls back to
+SIRDAR_DEPLOY_DO_TOKEN). Callers pass resolve()'s settings, whose
+deploy_do_token is that token."""
 
 import re
 
@@ -13,7 +14,7 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings, get_settings
-from sirdar_api.deploy import Check, ConnectFailed, ConnectResult, integrations
+from sirdar_api.deploy import Check, ConnectFailed, ConnectResult
 from sirdar_api.deploy.integrations import DigitalOceanConfig
 
 BASE_URL = "https://api.digitalocean.com/v2"
@@ -29,12 +30,16 @@ def with_token(settings: Settings, token: str | None) -> Settings:
         update={"deploy_do_token": SecretStr(token) if token is not None else None})
 
 
-async def resolve(db: AsyncSession, settings: Settings) -> Settings:
-    """settings with the token Sirdar uses: the stored integration token,
-    else SIRDAR_DEPLOY_DO_TOKEN, else none. IntegrationError when the stored
-    token can't be decrypted."""
-    cfg = await integrations.load_digitalocean(db, settings)
-    return with_token(settings, cfg.token if cfg else None)
+async def resolve(db: AsyncSession, settings: Settings, account: str = "production") -> Settings:
+    """settings with the token of the given DigitalOcean account (do_accounts;
+    the Production account falls back to SIRDAR_DEPLOY_DO_TOKEN), else none.
+    IntegrationError when a stored token can't be decrypted."""
+    from sirdar_api.deploy import do_accounts
+    found = await do_accounts.load(db, settings, account)
+    resolved = with_token(settings, found.token if found else None)
+    if found is not None and found.region:
+        resolved = resolved.model_copy(update={"deploy_do_region": found.region})
+    return resolved
 
 
 async def _get(client: httpx.AsyncClient, path: str, **params) -> dict:

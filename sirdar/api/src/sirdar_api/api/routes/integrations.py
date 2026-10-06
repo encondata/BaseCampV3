@@ -22,6 +22,7 @@ from sirdar_api.deploy import (
     ConnectFailed,
     cloudflare,
     digitalocean,
+    do_accounts,
     esxi,
     integrations,
     npm,
@@ -46,7 +47,9 @@ UNEXPECTED_REASON = "Sirdar couldn't reach it."
 # Everything else is a 422 (tls_fingerprint_invalid among them); tls_untrusted
 # only comes from integrations when the route's own pin check was bypassed.
 _STATUS = {"secrets_key_missing": 400, "integration_unreadable": 409,
-           "integration_in_use": 409, "tls_untrusted": 409, "tls_fingerprint_invalid": 422}
+           "integration_in_use": 409, "tls_untrusted": 409, "tls_fingerprint_invalid": 422,
+           "do_token_shared": 409, "do_team_changed": 409, "account_in_use": 409,
+           "do_account_not_configured": 409}
 PROXMOX_FIELDS = ("url", "node", "pool", "storage", "bridge", "vlan_tag", "template_vmid",
                   "tls_fingerprint")
 ESXI_FIELDS = ("url", "user", "datastore", "network", "resource_pool", "source_vm",
@@ -311,3 +314,102 @@ async def check_digitalocean(request: Request, db: DbSession,
     """No token: the token Sirdar uses (stored, else SIRDAR_DEPLOY_DO_TOKEN)."""
     token = body.token if body else None
     return await _test("digitalocean", None if token is None else {}, token, request, db, actor)
+
+
+# ---- DigitalOcean accounts (deploy phase 7) ----------------------------------------
+
+class DoAccountIn(BaseModel):
+    label: str = Field(max_length=80)
+    region: str | None = Field(default=None, max_length=20)
+    token: str | None = None
+    renewal_token: str | None = None
+    clear_renewal_token: bool = False
+
+
+async def _accounts_out(db) -> dict:
+    return {"accounts": await do_accounts.public(db, get_settings())}
+
+
+@router.get("/digitalocean/accounts")
+async def read_do_accounts(db: DbSession,
+                           actor: AuthContext = require_permission("deploy", "view")):
+    return await _accounts_out(db)
+
+
+@router.put("/digitalocean/accounts/{key}")
+async def save_do_account(key: str, body: DoAccountIn, request: Request, db: DbSession,
+                          actor: AuthContext = require_permission("deploy", "change")):
+    try:
+        changed = await do_accounts.save(
+            db, get_settings(), key, label=body.label, region=body.region, token=body.token,
+            renewal_token=body.renewal_token, clear_renewal=body.clear_renewal_token,
+            actor_id=actor.user.person_id)
+    except IntegrationError as e:
+        await db.rollback()
+        raise _http(e) from None
+    except ConnectFailed as e:
+        await db.rollback()
+        raise HTTPException(status_code=502, detail={"code": "connect_failed",
+                                                     "reason": e.reason}) from None
+    if changed:
+        audit(db, actor_id=actor.user.person_id, action="deploy.do_account_update",
+              entity_type="do_account", entity_id=key, ip=client_ip(request),
+              changes={"account": key, "changed": changed})
+    await db.commit()
+    return await _accounts_out(db)
+
+
+@router.post("/digitalocean/accounts/{key}/test")
+async def test_do_account(key: str, request: Request, db: DbSession,
+                          body: DoAccountIn | None = None,
+                          actor: AuthContext = require_permission("deploy", "change")):
+    settings = get_settings()
+    try:
+        do_accounts.check_key(key)
+        if body is not None:
+            if body.token is not None:
+                do_accounts.check_token(body.token)
+            if body.renewal_token is not None:
+                do_accounts.check_token(body.renewal_token, "renewal_token_invalid")
+            region = do_accounts.check_region(body.region)
+        else:
+            region = None
+        result = await do_accounts.test(
+            db, settings, key, token=body.token if body else None,
+            renewal_token=body.renewal_token if body else None, region=region)
+    except IntegrationError as e:
+        raise _http(e) from None
+    except ConnectFailed as e:
+        audit(db, actor_id=actor.user.person_id, action="deploy.do_account_test",
+              entity_type="do_account", entity_id=key, ip=client_ip(request),
+              changes={"account": key, "ok": False})
+        await db.commit()
+        raise HTTPException(status_code=502, detail={"code": "connect_failed",
+                                                     "reason": e.reason}) from None
+    if body is None or body.token is None:      # the stored token: remember its team
+        team_name = result.facts.get("team_name")
+        if team_name and not await do_accounts.in_use(db, key):
+            team, _ = await do_accounts.team_of(
+                (await do_accounts.require(db, settings, key)).token)
+            await do_accounts.remember_team(db, key, team, team_name)
+    audit(db, actor_id=actor.user.person_id, action="deploy.do_account_test",
+          entity_type="do_account", entity_id=key, ip=client_ip(request),
+          changes={"account": key, "ok": True})
+    await db.commit()
+    return result.as_dict()
+
+
+@router.delete("/digitalocean/accounts/{key}", status_code=204)
+async def clear_do_account(key: str, request: Request, db: DbSession,
+                           actor: AuthContext = require_permission("deploy", "change")):
+    try:
+        do_accounts.check_key(key)
+        await do_accounts.clear(db, key)
+    except IntegrationError as e:
+        await db.rollback()
+        raise _http(e) from None
+    audit(db, actor_id=actor.user.person_id, action="deploy.do_account_clear",
+          entity_type="do_account", entity_id=key, ip=client_ip(request),
+          changes={"account": key})
+    await db.commit()
+    return Response(status_code=204)

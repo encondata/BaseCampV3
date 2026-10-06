@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from sirdar_api.config import get_settings
 from sirdar_api.dashboard import service
-from sirdar_api.db.models import AuditLog, Integration
+from sirdar_api.db.models import AuditLog, DoAccount
 from sirdar_api.deploy import digitalocean, integrations, outbound, targets
 from sirdar_api.deploy.integrations import IntegrationError
 
@@ -121,9 +121,8 @@ async def test_save_load_and_the_public_view(db, do_env):
                                       user.person_id)
     await db.commit()
     assert changed == ["token"]
-    row = await db.get(Integration, "digitalocean")
-    assert row.config == {}
-    assert STORED.encode() not in bytes(row.secret_enc)
+    row = await db.get(DoAccount, "production", populate_existing=True)
+    assert STORED.encode() not in bytes(row.token_enc)
     cfg = await integrations.load_digitalocean(db, get_settings())
     assert (cfg.token, cfg.source) == (STORED, "stored")
     assert STORED not in repr(cfg)
@@ -233,7 +232,7 @@ async def test_test_route(client, db, do_env, do_api, leaks):
     assert body["checks"][0] == {"label": "Account", "status": "pass",
                                  "value": "ops@example.com · active"}
     assert _bearers(do_api["seen"]) == {f"Bearer {OTHER}"}
-    assert await db.get(Integration, "digitalocean") is None
+    assert (await db.get(DoAccount, "production", populate_existing=True)).token_enc is None
 
     resp = await client.post(f"{URL}/digitalocean/test", headers=h, json={"token": "a b"})
     assert (resp.status_code, resp.json()["detail"]["code"]) == (422, "do_token_invalid")
@@ -313,8 +312,8 @@ async def test_connect_without_any_token(client, db, do_env, do_api, leaks):
 
 async def test_an_unreadable_stored_token(client, db, do_env, do_api, leaks):
     do_env(ENV_TOKEN)          # never used instead of a stored token that won't open
-    db.add(Integration(kind="digitalocean", config={},
-                       secret_enc=Fernet(Fernet.generate_key()).encrypt(STORED.encode())))
+    row = await db.get(DoAccount, "production")
+    row.token_enc = Fernet(Fernet.generate_key()).encrypt(STORED.encode())
     await db.commit()
     h = await auth_headers(client, db)
     view = (await client.get(URL, headers=h)).json()["digitalocean"]
