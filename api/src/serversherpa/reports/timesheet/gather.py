@@ -32,6 +32,7 @@ __all__ = [
     "FLAG_OVER_10",
     "FLAG_OVER_16",
     "MAX_ENTRIES",
+    "STATUS_LABELS",
     "DayRow",
     "EntryRow",
     "JobTotal",
@@ -71,6 +72,7 @@ _DAY_STATUS_LABELS = {
     "rejected": "Rejected",
     "open": "On the clock",
 }
+STATUS_LABELS = _DAY_STATUS_LABELS
 _MIXED = "Mixed"
 _NO_JOB = "No job"
 
