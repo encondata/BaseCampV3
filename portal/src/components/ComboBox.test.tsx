@@ -148,6 +148,75 @@ describe('portal', () => {
   });
 });
 
+describe('inside a .modal-card', () => {
+  afterEach(cleanup);
+
+  const OPTIONS = [{ value: 'a', label: 'Alpha' }, { value: 'b', label: 'Bravo' }];
+
+  // No `portal` prop: the card's overflow-y:auto would clip an in-place
+  // menu, so the ComboBox portals itself whenever it sits inside one.
+  const renderInCard = (onChange: (v: string) => void = () => {}) => render(
+    <div>
+      <div className="modal-card" data-testid="card">
+        <ComboBox value="" onChange={onChange} options={OPTIONS} ariaLabel="Pick" />
+      </div>
+      <button type="button">outside</button>
+    </div>,
+  );
+
+  it('renders the menu under document.body with fixed positioning, outside the card', () => {
+    renderInCard();
+    fireEvent.focus(screen.getByLabelText('Pick'));
+    const menu = screen.getByText('Alpha').closest('.combo-menu') as HTMLElement;
+    expect(menu.parentElement).toBe(document.body);
+    expect(screen.getByTestId('card').contains(menu)).toBe(false);
+    expect(menu.style.position).toBe('fixed');
+  });
+
+  it('selects an option by mousedown and closes the menu', () => {
+    const onChange = vi.fn();
+    renderInCard(onChange);
+    fireEvent.focus(screen.getByLabelText('Pick'));
+    fireEvent.mouseDown(screen.getByText('Bravo'));
+    expect(onChange).toHaveBeenCalledWith('b');
+    expect(screen.queryByText('Alpha')).toBeNull();
+  });
+
+  it('ArrowDown then Enter selects the second option', () => {
+    const onChange = vi.fn();
+    renderInCard(onChange);
+    const input = screen.getByLabelText('Pick');
+    fireEvent.focus(input);
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onChange).toHaveBeenCalledWith('b');
+  });
+
+  it('a mousedown outside the ComboBox and the menu closes it', () => {
+    renderInCard();
+    fireEvent.focus(screen.getByLabelText('Pick'));
+    expect(screen.getByText('Alpha')).toBeTruthy();
+    fireEvent.mouseDown(screen.getByText('outside'));
+    expect(screen.queryByText('Alpha')).toBeNull();
+  });
+
+  it('scrolling the menu list keeps it open; scrolling the card closes it', () => {
+    renderInCard();
+    fireEvent.focus(screen.getByLabelText('Pick'));
+    fireEvent.scroll(screen.getByText('Alpha').closest('.combo-menu')!);
+    expect(screen.getByText('Alpha')).toBeTruthy();
+    fireEvent.scroll(screen.getByTestId('card'));
+    expect(screen.queryByText('Alpha')).toBeNull();
+  });
+
+  it('typing into the input while closed still opens a portaled menu', () => {
+    renderInCard();
+    fireEvent.change(screen.getByLabelText('Pick'), { target: { value: 'br' } });
+    const menu = screen.getByText('Bravo').closest('.combo-menu') as HTMLElement;
+    expect(menu.parentElement).toBe(document.body);
+  });
+});
+
 describe('onSearch (the caller searches the server)', () => {
   afterEach(cleanup);
 

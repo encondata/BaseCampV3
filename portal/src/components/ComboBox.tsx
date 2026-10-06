@@ -4,10 +4,12 @@
  * House rule: any dropdown over records (people, orgs, …) uses this;
  * native <select> is only for tiny fixed enums.
  *
- * `portal` (opt-in) renders the menu under document.body with fixed
- * positioning, so a ComboBox inside a sideways-scrolling container (a
- * DataTable cell) is not clipped by it. A portaled menu is placed once per
- * open and closes on any scroll or resize rather than tracking its trigger.
+ * The menu portals — renders under document.body with fixed positioning —
+ * when `portal` is set (opt-in, for a ComboBox inside a sideways-scrolling
+ * container such as a DataTable cell) OR automatically when the ComboBox
+ * sits inside a `.modal-card`, whose `overflow-y: auto` would otherwise clip
+ * it. A portaled menu is placed once per open and closes on any scroll or
+ * resize rather than tracking its trigger.
  *
  * `onSearch` (opt-in) hands the typed text to the caller, who searches the
  * server and passes the matches back as `options`; the list then shows
@@ -58,7 +60,7 @@ interface Props {
   disabled?: boolean;
   inputId?: string;
   ariaLabel?: string;
-  portal?: boolean;                    // menu under document.body — escapes overflow clipping
+  portal?: boolean;                    // always portal the menu (it portals by itself inside a .modal-card)
   onSearch?: (text: string) => void;   // the caller filters `options` (server search)
 }
 
@@ -71,9 +73,13 @@ export default function ComboBox({
   const [active, setActive] = useState(0);
   const [dropUp, setDropUp] = useState(false);
   const [anchor, setAnchor] = useState<Anchor | null>(null);
+  const [inModalCard, setInModalCard] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // The menu portals when asked to, or when the list opened inside a modal card.
+  const portaled = portal || inModalCard;
 
   const selected = options.find((o) => o.value === value);
 
@@ -102,7 +108,7 @@ export default function ComboBox({
   // A portaled menu is also placed here, from the same measurements.
   useLayoutEffect(() => {
     if (!open) {
-      if (portal) setAnchor(null);
+      if (portaled) setAnchor(null);
       return;
     }
     const el = wrapRef.current;
@@ -118,18 +124,18 @@ export default function ComboBox({
     const neededHeight = Math.min(MENU_NEEDED_HEIGHT, actualHeight || MENU_NEEDED_HEIGHT);
     const up = shouldDropUp({ spaceBelow, spaceAbove, neededHeight });
     setDropUp(up);
-    if (portal) {
+    if (portaled) {
       setAnchor(up
         ? { left: rect.left, width: rect.width, bottom: window.innerHeight - rect.top + MENU_GAP }
         : { left: rect.left, width: rect.width, top: rect.bottom + MENU_GAP });
     }
-  }, [open, filter, portal]);
+  }, [open, filter, portaled]);
 
   // A portaled menu does not follow its trigger, so any scroll (the page or
   // a scrolling ancestor — the capture phase sees both) or resize closes
   // it. Scrolling the menu's own list is not a reason to close.
   useEffect(() => {
-    if (!open || !portal) return;
+    if (!open || !portaled) return;
     const close = (e: Event) => {
       const t = e.target;
       if (e.type === 'scroll' && t instanceof Node && listRef.current?.contains(t)) return;
@@ -142,7 +148,7 @@ export default function ComboBox({
       window.removeEventListener('scroll', close, true);
       window.removeEventListener('resize', close);
     };
-  }, [open, portal]);
+  }, [open, portaled]);
 
   useEffect(() => {
     listRef.current
@@ -166,10 +172,17 @@ export default function ComboBox({
     return () => document.removeEventListener('mousedown', onDown, true);
   }, [open]);
 
+  // Open the list, checking for a surrounding `.modal-card` at open time
+  // rather than once on mount (the ComboBox can be re-parented).
+  const openMenu = () => {
+    setInModalCard(!!wrapRef.current?.closest('.modal-card'));
+    setOpen(true);
+  };
+
   const openList = () => {
     if (disabled) return;
     onOpen?.();
-    setOpen(true);
+    openMenu();
   };
 
   const select = (v: string) => {
@@ -209,7 +222,7 @@ export default function ComboBox({
 
   // Until the layout effect places it, a portaled menu renders hidden at
   // the viewport origin — so it can be measured just like the in-place one.
-  const portalStyle: CSSProperties | undefined = !portal ? undefined : anchor
+  const portalStyle: CSSProperties | undefined = !portaled ? undefined : anchor
     ? {
       position: 'fixed', left: anchor.left, width: anchor.width, right: 'auto',
       top: anchor.top ?? 'auto', bottom: anchor.bottom ?? 'auto', zIndex: 1200,
@@ -247,7 +260,7 @@ export default function ComboBox({
         disabled={disabled}
         onFocus={openList}
         onClick={openList}
-        onChange={(e) => { setFilter(e.target.value); setOpen(true); }}
+        onChange={(e) => { setFilter(e.target.value); openMenu(); }}
         onKeyDown={onKey}
         role="combobox"
         aria-expanded={open}
@@ -266,7 +279,7 @@ export default function ComboBox({
         </span>
       )}
 
-      {open && (portal ? createPortal(menu, document.body) : menu)}
+      {open && (portaled ? createPortal(menu, document.body) : menu)}
     </div>
   );
 }
