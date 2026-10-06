@@ -86,7 +86,7 @@ Import assets page, or Create a move in steps).
   (it logs a warning on every read and changes old .xls defaults).
 - **Decoding:** a file that is neither a zip (`PK\x03\x04`, .xlsx) nor an OLE
   container (`D0 CF 11 E0 A1 B1 1A E1`, .xls) is text (CSV). Text with a
-  UTF-16 BOM is handed to SheetJS as bytes (`type: 'array'`). Other text is
+  UTF-16 BOM (`FF FE` or `FE FF`) is decoded as UTF-16 LE or BE. Other text is
   decoded as UTF-8 (strict; a leading BOM dropped), falling back to
   Windows-1252 when the bytes are not valid UTF-8 (Excel's "CSV" save on
   Western Windows), then read with `type: 'string'`. .xlsx/.xls are read
@@ -96,10 +96,11 @@ Import assets page, or Create a move in steps).
   turns long serials into `1.2E+11`); a boolean → `TRUE`/`FALSE`; a string →
   trimmed.
 - A sheet "has data" when any cell is non-blank.
-- **Header row detection:** the row with the most non-blank cells within the
-  first 20 rows (ties go to the earliest), needing at least two; else row 1.
-  A merged group row (`From`, `To`) above the real headers has fewer cells
-  than they do, so it loses.
+- **Header row detection:** within the first 20 rows, the earliest row with
+  at least two non-blank cells and at least 60% as many as the fullest row;
+  else row 1. A merged group row (`From`, `To`) above the real headers falls
+  short, and a header with a few blank cells still beats a fuller data row
+  below it.
 - **Customer columns:** every column index from the header row's first to
   last used cell across the sheet. Header text = the header cell's text; a
   blank header cell whose column has data below becomes **Column {letter}**;
@@ -165,7 +166,7 @@ one space; trim. Tokens = normalized split on spaces.
   blank output cells are absent and a write → read round trip returns the
   same values; CSV decoding (UTF-8, UTF-8 with BOM, Windows-1252, UTF-16
   with BOM); an oversized declared range reads only the real rows; header
-  detection prefers the fullest row; "U Height" is not RU; Hostname beats
+  detection skips a group row and keeps a header over a fuller data row; "U Height" is not RU; Hostname beats
   Owner Name; a 403 on the template columns shows the access message; the card shows only with
   initiatives:change; the From-To import's drop zone still works after the
   extraction.

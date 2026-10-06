@@ -76,6 +76,18 @@ describe('readWorkbook', () => {
       .toEqual([['Name', 'City'], ['café', 'Zürich']]);
   });
 
+  it('reads a UTF-16BE CSV with a BOM', () => {
+    const text = 'Name,City\ncafé,Zürich\n';
+    const bytes = new Uint8Array(2 + text.length * 2);
+    bytes[0] = 0xfe; bytes[1] = 0xff;
+    for (let i = 0; i < text.length; i++) {
+      bytes[2 + i * 2] = text.charCodeAt(i) >> 8;
+      bytes[3 + i * 2] = text.charCodeAt(i) & 0xff;
+    }
+    expect(readWorkbook(bytes.buffer as ArrayBuffer)[0].rows)
+      .toEqual([['Name', 'City'], ['café', 'Zürich']]);
+  });
+
   it('reads a UTF-16LE CSV with a BOM', () => {
     const text = 'Name,City\ncafé,Zürich\n';
     const bytes = new Uint8Array(2 + text.length * 2);
@@ -165,6 +177,12 @@ describe('detectHeaderRow', () => {
       ['Hostname', 'Rack', 'U', 'Rack', 'U'],
       ['web-01', 'R1', '4', 'R2', '8'],
     ])).toBe(1);
+  });
+  it('keeps a header with a few blank cells over a fuller data row below it', () => {
+    expect(detectHeaderRow([
+      ['Hostname', 'Serial', 'Rack', '', 'U', 'Notes', '', 'Owner'],
+      ['web-01', 'SN1', 'R1', 'x', '4', 'n', 'y', 'ops'],
+    ])).toBe(0);
   });
   it('breaks ties toward the earliest row', () => {
     expect(detectHeaderRow([['a', 'b'], ['c', 'd']])).toBe(0);

@@ -62,9 +62,12 @@ function isText(b: Uint8Array): boolean {
     && !startsWith(b, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
 }
 
-/** CSV bytes → text: UTF-8 when valid (a leading BOM dropped), else Windows-1252,
- *  which is what Excel's "CSV" save writes on a Western Windows machine. */
+/** CSV bytes → text: UTF-16 when it opens with a byte-order mark; else UTF-8
+ *  when valid (a leading BOM dropped); else Windows-1252, which is what
+ *  Excel's "CSV" save writes on a Western Windows machine. */
 function decodeText(b: Uint8Array): string {
+  if (startsWith(b, [0xff, 0xfe])) return new TextDecoder('utf-16le').decode(b);
+  if (startsWith(b, [0xfe, 0xff])) return new TextDecoder('utf-16be').decode(b);
   let text: string;
   try {
     text = new TextDecoder('utf-8', { fatal: true }).decode(b);
@@ -79,9 +82,8 @@ export function readWorkbook(data: ArrayBuffer): SheetData[] {
   // not a declared range (some files claim A1:XFD1048576).
   const opts = { cellNF: true, raw: true, nodim: true };
   const bytes = new Uint8Array(data);
-  const utf16 = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff);
-  const wb = isText(bytes) && !utf16
-    ? XLSX.read(decodeText(bytes), { ...opts, type: 'string' })   // SheetJS reads a UTF-16 BOM file itself
+  const wb = isText(bytes)
+    ? XLSX.read(decodeText(bytes), { ...opts, type: 'string' })
     : XLSX.read(data, { ...opts, type: 'array' });
   const date1904 = !!wb.Workbook?.WBProps?.date1904;
   return wb.SheetNames.map((name) => ({ name, rows: sheetRows(wb.Sheets[name], date1904) }));
@@ -91,17 +93,15 @@ export function sheetHasData(s: SheetData): boolean {
   return s.rows.some((r) => r.some((v) => v !== ''));
 }
 
-/** The row with the most filled cells within the first 20 (ties go to the
- *  earliest), needing at least two; else row 1. A merged group row above the
- *  real headers has fewer cells than they do. */
+/** The header row, within the first 20: the earliest row with at least two
+ *  filled cells and at least 60% as many as the fullest row. A merged group
+ *  row above the real headers falls short, and a header with a few blank
+ *  cells still beats a fuller data row below it. Else row 1. */
 export function detectHeaderRow(rows: string[][]): number {
-  let best = 0;
-  let bestCount = 1;
-  for (let i = 0; i < Math.min(rows.length, 20); i++) {
-    const n = rows[i].filter((v) => v !== '').length;
-    if (n > bestCount) { best = i; bestCount = n; }
-  }
-  return best;
+  const counts = rows.slice(0, 20).map((r) => r.filter((v) => v !== '').length);
+  const most = Math.max(0, ...counts);
+  const at = counts.findIndex((n) => n >= 2 && n >= most * 0.6);
+  return at === -1 ? 0 : at;
 }
 
 export function sourceColumns(rows: string[][], headerIndex: number): SourceColumn[] {
