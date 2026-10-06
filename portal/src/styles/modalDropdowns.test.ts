@@ -37,11 +37,21 @@
  * an expression (`cond ? 'pop-menu open' : ''`, `cx({ 'pop-menu': x })`),
  * split on whitespace and compared as whole class tokens.
  *
- * Known limit: the scan is per file and lexical. A shared component that
- * renders an in-place popup, used inside a dialog from another file, is
- * not seen (ComboBox and TagInput cover themselves by auto-portaling), and
- * neither is a className held in a variable or built from a substitution
- * (`pop-${kind}`).
+ * Known limits:
+ *   - Coverage is only as wide as POPUP_NAME. An absolutely positioned
+ *     popup whose class name doesn't match it is not checked at all. The
+ *     known example is `rack-tooltip` (styles/initiatives.css), a hover
+ *     tooltip rendered inside RackViewModal's modal card.
+ *   - The scan is lexical, element by element. A component that renders
+ *     an in-place popup and is used inside a card is not seen, whether it
+ *     lives in another file or in the same file (`<Menu />` inside the
+ *     card, defined further down). ComboBox and TagInput cover themselves
+ *     by auto-portaling.
+ *   - The createPortal exemption covers the whole call subtree and never
+ *     looks at the portal target, so `createPortal(menu, cardRef.current)`
+ *     (a portal back INTO the card) is exempt too.
+ *   - A className held in a variable or built from a substitution
+ *     (`pop-${kind}`) is not seen.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -98,7 +108,7 @@ function popupClassesFromCss(css: string): Set<string> {
 
 function classTokens(el: ts.JsxOpeningLikeElement): string[] {
   const attr = el.attributes.properties.find(
-    (p): p is ts.JsxAttribute => ts.isJsxAttribute(p) && p.name.getText() === 'className',
+    (p): p is ts.JsxAttribute => ts.isJsxAttribute(p) && ts.isIdentifier(p.name) && p.name.text === 'className',
   );
   if (!attr?.initializer) return [];
   const fragments: string[] = [];
@@ -239,6 +249,25 @@ describe('modal dropdowns guardrail — scanner fixtures', () => {
       expect.stringMatching(/^f\.tsx:4: combo-menu inside \.modal-card/),
       expect.stringMatching(/^f\.tsx:5: pop-menu inside \.modal-card/),
     ]);
+  });
+
+  it('still flags an in-place menu inside a card that is itself portaled', () => {
+    const src = [
+      "import { createPortal } from 'react-dom';",
+      'export function M() {',
+      '  return createPortal(',
+      '    <div className="modal-scrim">',
+      '      <div className="modal-card">',
+      '        <div className="pop-menu">x</div>',
+      '      </div>',
+      '    </div>,',
+      '    document.body,',
+      '  );',
+      '}',
+    ].join('\n');
+    const out = findViolations(src, POPUPS, 'f.tsx');
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatch(/^f\.tsx:6: pop-menu inside \.modal-card can be clipped/);
   });
 
   it('matches whole class tokens only', () => {
