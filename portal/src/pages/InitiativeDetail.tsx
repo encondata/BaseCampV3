@@ -15,6 +15,7 @@ import {
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
+import CollapsePanel from '../components/CollapsePanel';
 import ComboBox, { type ComboOption } from '../components/ComboBox';
 import AssetEditDialog from '../components/initiatives/AssetEditDialog';
 import InitiativeEditModal from '../components/initiatives/InitiativeEditModal';
@@ -58,9 +59,10 @@ import {
   type TimeSummaryOut,
   type WorkerOption,
 } from '../lib/api';
-import { ADMIN_RANK } from '../lib/access';
+import { ADMIN_RANK, SUPER_ADMIN_RANK } from '../lib/access';
 import { statusChip as chip } from '../lib/chips';
 import { relativeTime } from '../lib/format';
+import { useListCollapse } from '../lib/listCollapse';
 import {
   INITIATIVE_ERRORS, MOVE_ASSET_COLUMNS, MOVE_ASSET_EDIT_FIELDS, MOVE_ASSET_ERRORS,
   initiativeCellText, moveAssetCellText, moveAssetProgress, moveAssetStatusBreakdown,
@@ -70,7 +72,7 @@ import {
   usePersistentListState,
 } from '../lib/columnMenu';
 import {
-  GodCell, GodEditToggle, numberToPatch, useGodEdit, type GodField,
+  GodCell, GodEditToggle, numberToPatch, type GodField,
 } from '../lib/godEdit';
 import {
   ACTIONS_TRACK, applyColumnOrder,
@@ -185,7 +187,7 @@ function personRatingValue(row: InitiativePersonRow): number {
 export default function InitiativeDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { can, godMode, maxRank, preferences } = useAuth();
+  const { can, maxRank, preferences } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
   const toast = useToast();
   const canChange = can('initiatives', 'change');
@@ -194,7 +196,10 @@ export default function InitiativeDetail() {
   const canViewPartners = can('partners', 'view');
   const canViewWorkers = can('workers', 'view');
   const isAdmin = maxRank >= ADMIN_RANK;
-  const god = useGodEdit();
+  // People edit table: gated on rank (super admin 80+) plus change
+  // permission, not god mode.
+  const [peopleEditing, setPeopleEditing] = useState(false);
+  const peopleEditGate = maxRank >= SUPER_ADMIN_RANK && canChange;
 
   const [initiative, setInitiative] = useState<InitiativeDetailOut | null>(null);
   const [notFound, setNotFound] = useState(false);
@@ -280,9 +285,10 @@ export default function InitiativeDetail() {
   const canViewScans = can('scans', 'view');
   const [assetsActionError, setAssetsActionError] = useState('');
   // Inline edit-table mode for Assets — a separate toggle from the People
-  // section's god.editing (Task 5b): gated on maxRank/canChange, not
-  // godMode, so it isn't tied to useGodEdit()'s godMode-derived `editing`.
+  // section's peopleEditing, gated on maxRank/canChange rather than godMode.
   const [assetsEditing, setAssetsEditing] = useState(false);
+  const assetsEditGate = maxRank >= ADMIN_RANK && canChange;
+  const assetsPanel = useListCollapse('initiative-assets');
   // Rack elevation modal (Task 6) — opened from a Source/Destination Rack
   // cell button in read-only display mode; null when closed.
   const [rackView, setRackView] = useState<
@@ -545,11 +551,11 @@ export default function InitiativeDetail() {
    *  for the duration of the edit. */
   const peopleRowStyle = {
     gridTemplateColumns: peopleGrid.gridTemplateColumns,
-    minWidth: god.editing ? undefined : peopleGrid.minWidth,
+    minWidth: (peopleEditing && peopleEditGate) ? undefined : peopleGrid.minWidth,
   };
 
   const personCellFor = (p: InitiativePersonRow, key: string) => {
-    if (god.editing) {
+    if (peopleEditing && peopleEditGate) {
       const gf = godFieldFor(key);
       if (gf) {
         return (
@@ -585,14 +591,14 @@ export default function InitiativeDetail() {
   /** Same drop-the-minimum-while-editing treatment as peopleRowStyle. */
   const assetsRowStyle = {
     gridTemplateColumns: assetsGrid.gridTemplateColumns,
-    minWidth: assetsEditing ? undefined : assetsGrid.minWidth,
+    minWidth: (assetsEditing && assetsEditGate) ? undefined : assetsGrid.minWidth,
   };
 
   /** Status/Asset Status render as chips (move-status and the asset's own
    *  status, respectively); every other column reuses moveAssetCellText's
    *  display text verbatim — it already carries the '—' blank convention. */
   const assetCellFor = (a: InitiativeAssetRow, key: string) => {
-    if (assetsEditing) {
+    if (assetsEditing && assetsEditGate) {
       const gf = assetGodFieldFor(key);
       if (gf) {
         return (
@@ -756,7 +762,8 @@ export default function InitiativeDetail() {
         )}
 
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
-          <p className="eyebrow-sm">Assets{isMove ? ` — ${assets.length}` : ''}</p>
+          <CollapsePanel title={`Assets${isMove ? ` — ${assets.length}` : ''}`}
+                         open={assetsPanel.open} onToggle={assetsPanel.setOpen}>
           {!isMove && <p className="page-hint">Asset tracking lands here next.</p>}
           {isMove && assetsError && (
             <div className="dir-empty" style={{ marginBottom: 12 }}>
@@ -808,11 +815,11 @@ export default function InitiativeDetail() {
                   )}
                   <GodEditToggle editing={assetsEditing}
                                  onToggle={() => setAssetsEditing((e) => !e)}
-                                 visible={maxRank >= ADMIN_RANK && canChange} />
+                                 visible={assetsEditGate} title="Edit table directly" />
                 </div>
               </div>
 
-              <div className={`dir-list idet-assets-list list-scroll${assetsEditing ? ' editing' : ''}`}>
+              <div className={`dir-list idet-assets-list list-scroll${(assetsEditing && assetsEditGate) ? ' editing' : ''}`}>
                 <div className="list-head" style={assetsRowStyle}>
                   {assetsShownCols.map((c) => (
                     <ColHead key={c.key} col={c}
@@ -841,7 +848,11 @@ export default function InitiativeDetail() {
                   </div>
                 )}
 
-                <VirtualRows rows={visibleAssets}
+                {/* Remounted on open/close: VirtualRows measures its offset in a
+                    layout effect, which reads zeros while the panel body is
+                    hidden, so a list that mounted (or last measured) collapsed
+                    would window against a wrong scroll margin. */}
+                <VirtualRows key={assetsPanel.open ? 'open' : 'closed'} rows={visibleAssets}
                   renderRow={(a, vp) => {
                     const open = openAssetId === a.id;
                     return (
@@ -901,6 +912,7 @@ export default function InitiativeDetail() {
               {assetsActionError && <span className="pf-error">{assetsActionError}</span>}
             </>
           )}
+          </CollapsePanel>
         </div>
 
         <div className="init-panel" style={{ gridColumn: '1 / -1' }}>
@@ -1010,12 +1022,13 @@ export default function InitiativeDetail() {
                     <ColumnsButton columns={peopleOrderedCols} visible={peopleVisibleCols}
                                    onChange={setPeopleVisibleCols}
                                    onReorder={setPeopleColOrder} />
-                    <GodEditToggle editing={god.editing} onToggle={god.toggle}
-                                   visible={godMode && canChange} />
+                    <GodEditToggle editing={peopleEditing}
+                                   onToggle={() => setPeopleEditing((e) => !e)}
+                                   visible={peopleEditGate} title="Edit table directly" />
                   </div>
                 </div>
 
-                <div className={`dir-list idet-people-list list-scroll${god.editing ? ' editing' : ''}`}>
+                <div className={`dir-list idet-people-list list-scroll${(peopleEditing && peopleEditGate) ? ' editing' : ''}`}>
                   <div className="list-head" style={peopleRowStyle}>
                     {peopleShownCols.map((c) => (
                       <ColHead key={c.key} col={c}

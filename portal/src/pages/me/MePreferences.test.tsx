@@ -21,6 +21,7 @@ vi.mock('../../auth/AuthContext', () => ({
       nav_mode: 'expanded',
       nav_bg: 'default',
       nav_size: 'default',
+      list_view: 'expanded',
       notif: { critical: true, email: true, maint: true, digest: false, sound: 'chime' },
       list_prefs: {},
     } satisfies UiPreferences,
@@ -119,4 +120,19 @@ it('shows the "saved" hint after a successful update', async () => {
   fireEvent.click(screen.getByText('Rail'));
 
   await waitFor(() => expect(screen.getByText('saved')).toBeTruthy());
+});
+
+it('List view row updates list_view', async () => {
+  render(<MePreferences />);
+  const r = row('List view');
+  expect(within(r).getByText('How collapsible lists start when you open a page.')).not.toBeNull();
+  expect(within(r).getByRole('button', { name: 'Start expanded' }).className).toBe('on');
+  fireEvent.click(within(r).getByRole('button', { name: 'Remember last' }));
+  await waitFor(() => expect(auth.updatePreferences).toHaveBeenCalledWith(
+    expect.objectContaining({ list_view: 'last' }),
+  ));
+  fireEvent.click(within(r).getByRole('button', { name: 'Start collapsed' }));
+  await waitFor(() => expect(auth.updatePreferences).toHaveBeenCalledWith(
+    expect.objectContaining({ list_view: 'collapsed' }),
+  ));
 });

@@ -65,6 +65,9 @@ class UiPreferences(BaseModel):
     nav_mode: Literal["expanded", "rail", "hidden"] = "expanded"
     nav_bg: str = "default"
     nav_size: Literal["small", "default", "large", "xlarge"] = "default"
+    # How collapsible lists start: always open, always closed, or each
+    # list's last state (kept in list_prefs["open_state"]).
+    list_view: Literal["expanded", "collapsed", "last"] = "expanded"
 
     @field_validator("accent")
     @classmethod

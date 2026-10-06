@@ -17,6 +17,7 @@ export const DEFAULT_PREFERENCES: UiPreferences = {
   nav_mode: 'expanded',
   nav_bg: 'default',
   nav_size: 'default',
+  list_view: 'expanded',
   notif: { critical: true, email: true, maint: true, digest: false, sound: 'chime' },
   list_prefs: {},
 };
@@ -24,6 +25,8 @@ export const DEFAULT_PREFERENCES: UiPreferences = {
 export type NavMode = UiPreferences['nav_mode'];
 
 export const NAV_MODES: NavMode[] = ['expanded', 'rail', 'hidden'];
+
+export const LIST_VIEWS: UiPreferences['list_view'][] = ['expanded', 'collapsed', 'last'];
 
 /** Cycles the sidebar mode: expanded -> rail -> hidden -> expanded. */
 export function nextNavMode(mode: NavMode): NavMode {

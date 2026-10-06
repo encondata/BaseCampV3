@@ -18,7 +18,7 @@ vi.mock('../auth/AuthContext', () => ({
     person: { id: 'p-me', first_name: 'Mo', last_name: 'Manager' },
     godMode: false,
     preferences: {
-      accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default', motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default',
+      accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default', motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', list_view: 'expanded',
       notif: { critical: true, email: true, maint: true, digest: true, sound: 'chime' },
       list_prefs: {},
     } satisfies UiPreferences,

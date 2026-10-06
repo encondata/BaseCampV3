@@ -37,17 +37,19 @@ const auth = vi.hoisted(() => {
 
 const updatePreferences = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 
+const prefs = vi.hoisted(() => ({
+  accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default',
+  motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', list_view: 'expanded',
+  notif: { critical: true, email: true, maint: true, digest: true, sound: 'chime' },
+  list_prefs: {},
+} as UiPreferences));
+
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({
     can: auth.can,
     godMode: false,
     maxRank: auth.maxRank,
-    preferences: {
-      accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default',
-      motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default',
-      notif: { critical: true, email: true, maint: true, digest: true, sound: 'chime' },
-      list_prefs: {},
-    } satisfies UiPreferences,
+    preferences: prefs,
     updatePreferences,
   }),
 }));
@@ -146,6 +148,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   auth.can = () => true;
   auth.maxRank = 0;
+  prefs.list_view = 'expanded';
+  prefs.list_prefs = {};
   api.getInitiative.mockResolvedValue(INITIATIVE);
   api.listInitiativeAssets.mockResolvedValue([ASSET]);
   api.listAssetStatuses.mockResolvedValue([]);
@@ -192,6 +196,35 @@ const personRow = async () =>
   (await screen.findByText('Ada Lovelace')).closest('.dir-row') as HTMLElement;
 
 /* ── assets list ─────────────────────────────────────────────────── */
+
+const assetsPanelHead = async () =>
+  (await screen.findByRole('button', { name: /^Assets/ }));
+
+it('assets panel: starts open with List view = expanded, and the chevron saves the state', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  const head = await assetsPanelHead();
+  expect(head.getAttribute('aria-expanded')).toBe('true');
+  expect(await screen.findByText('switch-01')).not.toBeNull();
+  await user.click(head);
+  expect(head.getAttribute('aria-expanded')).toBe('false');
+  expect(updatePreferences).toHaveBeenCalledWith(expect.objectContaining({
+    list_prefs: expect.objectContaining({ open_state: { 'initiative-assets': false } }),
+  }));
+});
+
+it('assets panel: starts collapsed with List view = collapsed', async () => {
+  prefs.list_view = 'collapsed';
+  renderPage();
+  expect((await assetsPanelHead()).getAttribute('aria-expanded')).toBe('false');
+});
+
+it('assets panel: Remember last restores the saved state', async () => {
+  prefs.list_view = 'last';
+  prefs.list_prefs = { open_state: { 'initiative-assets': false } };
+  renderPage();
+  expect((await assetsPanelHead()).getAttribute('aria-expanded')).toBe('false');
+});
 
 it('assets row: one Actions trigger replaces the inline Edit/Remove buttons', async () => {
   renderPage();
@@ -431,6 +464,55 @@ it('without initiatives:change there is no Actions trigger on either list', asyn
   expect(within(arow).queryByRole('button', { name: /Actions/ })).toBeNull();
   const prow = await personRow();
   expect(within(prow).queryByRole('button', { name: /Actions/ })).toBeNull();
+});
+
+/* ── people edit table (rank-gated, independent of god mode) ─────── */
+
+const peopleToolbar = async () =>
+  (await screen.findByPlaceholderText('Filter people…')).closest('.dir-toolbar') as HTMLElement;
+
+it('people list: Edit table shows for super admin (80) without god mode and edits Work type', async () => {
+  auth.maxRank = 80;
+  api.listInitiativeWorkTypes.mockResolvedValue([{
+    record_type: 'work_type', key: 'tech', label: 'Tech', description: '', color: '#178a4c',
+    sort_order: 1, is_active: true, usage_count: null,
+  }]);
+  const user = userEvent.setup();
+  renderPage();
+  await user.click(within(await peopleToolbar()).getByRole('button', { name: 'Edit table' }));
+  const row = await personRow();
+  expect(row.closest('.dir-list')!.classList.contains('editing')).toBe(true);
+  const workType = within(row).getAllByRole('combobox')
+    .find((el) => within(el).queryByRole('option', { name: 'Tech' })) as HTMLSelectElement;
+  expect(workType).toBeDefined();
+  expect(workType.value).toBe('tech');
+  expect(within(row).getByRole('spinbutton')).not.toBeNull();
+});
+
+it('people list: Edit table shows for developer (100)', async () => {
+  auth.maxRank = 100;
+  renderPage();
+  expect(within(await peopleToolbar()).getByRole('button', { name: 'Edit table' })).not.toBeNull();
+});
+
+it('people list: the Edit table toggle carries the neutral tooltip, not the god-mode one', async () => {
+  auth.maxRank = 80;
+  renderPage();
+  const toggle = within(await peopleToolbar()).getByRole('button', { name: 'Edit table' });
+  expect(toggle.getAttribute('title')).toBe('Edit table directly');
+});
+
+it('people list: Edit table is hidden for admin (60)', async () => {
+  auth.maxRank = 60;
+  renderPage();
+  expect(within(await peopleToolbar()).queryByRole('button', { name: 'Edit table' })).toBeNull();
+});
+
+it('people list: Edit table is hidden without change permission', async () => {
+  auth.maxRank = 100;
+  auth.can = (resource, action) => !(resource === 'initiatives' && action === 'change');
+  renderPage();
+  expect(within(await peopleToolbar()).queryByRole('button', { name: 'Edit table' })).toBeNull();
 });
 
 /* ── kiosk password line ─────────────────────────────────────────── */

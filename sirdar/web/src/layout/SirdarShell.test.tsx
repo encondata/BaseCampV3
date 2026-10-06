@@ -10,7 +10,7 @@ vi.mock('@portal/auth/AuthContext', () => ({
     roles: ['admin'], logout: vi.fn(), updatePreferences, can: () => true,
     preferences: { nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', accent: 'amber',
                    theme: 'light', density: 'comfortable', list_size: 'default', motion: true,
-                   notif: {}, list_prefs: {} },
+                   notif: {}, list_prefs: {}, list_view: 'expanded' },
   }),
 }));
 

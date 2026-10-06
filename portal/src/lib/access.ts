@@ -11,6 +11,10 @@ export const ACTIONS: Action[] = ['view', 'add', 'change', 'delete'];
  *  GATE_BYPASS_RANK — the minimum rank treated as admin client-side. */
 export const ADMIN_RANK = 60;
 
+/** Mirrors roles.rank for "super_admin" — the minimum rank for the People
+ *  Edit table on initiatives (super admin and developer). */
+export const SUPER_ADMIN_RANK = 80;
+
 /** Mirrors api/src/serversherpa/access/resources.py routes. */
 export const ROUTE_RESOURCE: Record<string, string> = {
   '/': 'dashboard',

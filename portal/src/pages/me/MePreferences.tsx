@@ -7,7 +7,7 @@
  */
 
 import { Switch } from '../../components/Switch';
-import { ACCENTS, NAV_BACKGROUNDS, NAV_MODES } from '../../lib/settings';
+import { ACCENTS, LIST_VIEWS, NAV_BACKGROUNDS, NAV_MODES } from '../../lib/settings';
 import SaveHint from './SaveHint';
 import { usePreferenceSave } from './usePreferenceSave';
 import '../../styles/settings.css';
@@ -103,6 +103,21 @@ export default function MePreferences({ appName = 'portal' }: { appName?: string
                 <button key={key} className={preferences.list_size === key ? 'on' : ''}
                         onClick={() => update({ list_size: key })}>
                   {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="eyebrow" style={{ padding: '18px 20px 0' }}>Lists</div>
+          <div className="set-row">
+            <div className="set-label">
+              <b>List view</b>
+              <span>How collapsible lists start when you open a page.</span>
+            </div>
+            <div className="seg-mini">
+              {LIST_VIEWS.map((v) => (
+                <button key={v} className={(preferences.list_view ?? 'expanded') === v ? 'on' : ''}
+                        onClick={() => update({ list_view: v })}>
+                  {v === 'expanded' ? 'Start expanded' : v === 'collapsed' ? 'Start collapsed' : 'Remember last'}
                 </button>
               ))}
             </div>
