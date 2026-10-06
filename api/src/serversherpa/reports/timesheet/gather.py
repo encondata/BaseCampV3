@@ -7,6 +7,7 @@ The flag, day-row and rollup helpers are pure (no DB) so they can be tested
 on their own; `gather` is the only async part.
 """
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
@@ -19,6 +20,8 @@ from serversherpa.db.models import Initiative, Person, Site, StatusValue, TimeEn
 from serversherpa.db.ordering import natural_key
 from serversherpa.services.timeclock import worked_minutes
 from serversherpa.services.timezone import report_timezone
+
+log = logging.getLogger(__name__)
 
 __all__ = [
     "CLOSED_COUNTED",
@@ -183,22 +186,26 @@ def flags_for(entries: list[EntryRow], now: datetime) -> None:
 
     Overlap is judged per person over the entries given: sorted by clock-in,
     an entry overlaps when it starts before the latest end seen so far
-    (an open entry ends `now`). Touching spans (out == next in) do not
-    overlap. Only the later entry of a pair is flagged."""
-    overlapping: set[int] = set()
-    by_person: dict[uuid.UUID, list[EntryRow]] = {}
-    for e in entries:
-        by_person.setdefault(e.person_id, []).append(e)
-    for rows in by_person.values():
+    (an open entry ends `now`). Both entries of a pair are flagged: the
+    later one and the earlier one holding that latest end. Touching spans
+    (out == next in) do not overlap."""
+    overlapping: set[int] = set()   # indexes into `entries`
+    by_person: dict[uuid.UUID, list[int]] = {}
+    for i, e in enumerate(entries):
+        by_person.setdefault(e.person_id, []).append(i)
+    for idxs in by_person.values():
         latest_end: datetime | None = None
-        for e in sorted(rows, key=lambda r: r.clock_in):
+        holder: int | None = None
+        for i in sorted(idxs, key=lambda k: entries[k].clock_in):
+            e = entries[i]
             if latest_end is not None and e.clock_in < latest_end:
-                overlapping.add(id(e))
+                overlapping.add(i)
+                overlapping.add(holder)
             end = e.clock_out if e.clock_out is not None else now
             if latest_end is None or end > latest_end:
-                latest_end = end
+                latest_end, holder = end, i
 
-    for e in entries:
+    for i, e in enumerate(entries):
         flags: list[str] = []
         if e.adjusted:
             flags.append(FLAG_ADJUSTED)
@@ -208,7 +215,7 @@ def flags_for(entries: list[EntryRow], now: datetime) -> None:
             flags.append(FLAG_OVER_16)
         elif e.worked_minutes >= _OVER_10_MINUTES:
             flags.append(FLAG_OVER_10)
-        if id(e) in overlapping:
+        if i in overlapping:
             flags.append(FLAG_OVERLAP)
         if e.status == "open":
             flags.append(FLAG_OPEN)
@@ -230,7 +237,7 @@ def day_rows(entries: list[EntryRow]) -> list[DayRow]:
             label = _DAY_STATUS_LABELS.get(status, status)
         else:
             label = _MIXED
-        any_open = any(e.clock_out is None for e in group)
+        any_open = any(e.status == "open" for e in group)
         union = {f for e in group for f in e.flags}
         rows.append(DayRow(
             day=day, person_id=person_id, person_name=group[0].person_name,
@@ -302,6 +309,8 @@ def rollups(entries: list[EntryRow]) -> tuple[
 
 def _zone(name: str | None, default: ZoneInfo,
           cache: dict[str, ZoneInfo]) -> ZoneInfo:
+    """A site's zone, or the report default when it has none or the stored
+    name is not a valid IANA zone (warned about once per name per gather)."""
     if not name:
         return default
     zone = cache.get(name)
@@ -309,6 +318,8 @@ def _zone(name: str | None, default: ZoneInfo,
         try:
             zone = ZoneInfo(name)
         except (ZoneInfoNotFoundError, ValueError, OSError):
+            log.warning("timesheet: site time zone %r is not a valid IANA "
+                        "zone; using %s", name, default.key)
             zone = default
         cache[name] = zone
     return zone
@@ -337,6 +348,8 @@ async def gather(db: AsyncSession, filters: TimesheetFilters, *,
     if filters.site_id is not None:
         conds.append(TimeEntry.site_id == filters.site_id)
 
+    # Counted over the padded UTC window, before local-day trimming, so
+    # boundary entries outside [from, to] may count toward the limit.
     total = await db.scalar(select(func.count()).select_from(TimeEntry).where(*conds))
     if (total or 0) > limit:
         raise TimesheetTooLarge(f"{total} entries match; the limit is {limit}")
@@ -395,7 +408,7 @@ async def gather(db: AsyncSession, filters: TimesheetFilters, *,
                                 "Unknown site"),
         entries=entries, days=days, by_person=by_person, by_job=by_job,
         approved_minutes=approved, pending_minutes=pending,
-        people=len(by_person), day_count=len(days),
+        people=len(by_person), day_count=len({d.day for d in days}),
         flagged_entries=sum(1 for e in entries if e.flags),
         default_tz=default.key)
 

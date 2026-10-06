@@ -76,10 +76,21 @@ def test_over_16_replaces_over_10():
     assert b.flags == ["Over 16 h"]
 
 
-def test_overlap_flags_the_later_entry_only():
+def test_overlap_flags_both_entries_of_the_pair():
     a, b = flagged(row(start_h=8, end_h=12), row(start_h=11, end_h=14))
-    assert a.flags == []
+    assert a.flags == ["Overlap"]
     assert b.flags == ["Overlap"]
+
+
+def test_overlap_across_midnight_flags_the_earlier_day_too():
+    # 22:00 -> 02:00 next day, then a punch starting 01:00 on the next day.
+    first = row(day=date(2026, 10, 1), start_h=22, end_h=26)
+    second = row(day=date(2026, 10, 2), start_h=1, end_h=3)
+    flagged(first, second)
+    assert first.flags == ["Overlap"] and second.flags == ["Overlap"]
+    d1, d2 = day_rows([first, second])
+    assert (d1.day, d1.flags) == (date(2026, 10, 1), ["Overlap"])
+    assert (d2.day, d2.flags) == (date(2026, 10, 2), ["Overlap"])
 
 
 def test_touching_entries_do_not_overlap():
@@ -96,9 +107,17 @@ def test_overlap_is_per_person():
 def test_overlap_against_longest_earlier_entry():
     a, b, c = flagged(row(start_h=8, end_h=18), row(start_h=9, end_h=10),
                       row(start_h=11, end_h=12))
-    assert a.flags == ["Over 10 h"]
+    assert a.flags == ["Over 10 h", "Overlap"]
     assert b.flags == ["Overlap"]
     assert c.flags == ["Overlap"]
+
+
+def test_overlap_pairs_with_the_latest_ending_entry():
+    # b sits inside a (both flagged); c starts after a ends, so it is clean.
+    a, b, c = flagged(row(start_h=8, end_h=12), row(start_h=9, end_h=10),
+                      row(start_h=13, end_h=14))
+    assert a.flags == ["Overlap"] and b.flags == ["Overlap"]
+    assert c.flags == []
 
 
 def test_open_entry_ends_now_for_overlap():
@@ -107,7 +126,7 @@ def test_open_entry_ends_now_for_overlap():
     day = date(2026, 10, 6)
     op, later = flagged(row(day=day, start_h=8, open_=True),
                         row(day=day, start_h=12, end_h=13))
-    assert op.flags == ["Still clocked in"]
+    assert op.flags == ["Overlap", "Still clocked in"]
     assert later.flags == ["Overlap"]
 
 
@@ -123,7 +142,7 @@ def test_flag_order():
     a, b = flagged(
         row(start_h=0, end_h=17, adjusted=True, source="manual"),
         row(start_h=2, end_h=3))
-    assert a.flags == ["Adjusted", "Manual entry", "Over 16 h"]
+    assert a.flags == ["Adjusted", "Manual entry", "Over 16 h", "Overlap"]
     assert b.flags == ["Overlap"]
     full = row(start_h=1, end_h=13, adjusted=True, source="manual", open_=True)
     full.worked_minutes = 700
@@ -154,6 +173,14 @@ def test_day_row_status_labels(status, label):
 def test_day_row_open_is_on_the_clock_with_no_last_out():
     (d,) = day_rows(flagged(row(open_=True)))
     assert d.status_label == "On the clock"
+    assert d.last_out is None
+
+
+def test_day_row_last_out_follows_open_status():
+    # An "open" status row is the open test, whatever its clock_out says.
+    e = row(start_h=8, end_h=9)
+    e.status = "open"
+    (d,) = day_rows(flagged(e))
     assert d.last_out is None
 
 
@@ -364,6 +391,63 @@ async def test_gather_statuses_and_totals(db):
     d = await gather(db, _filters(statuses=("rejected",)), now=NOW)
     assert [e.status for e in d.entries] == ["rejected"]
     assert (d.approved_minutes, d.pending_minutes) == (0, 0)
+
+
+async def test_gather_day_count_is_distinct_dates(db):
+    ann = await _person(db)
+    bob = await _person(db, "Bob", "Jones")
+    t = datetime(2026, 10, 10, 14, 0, tzinfo=UTC)
+    db.add_all([_entry(ann, t), _entry(bob, t),
+                _entry(bob, t + timedelta(days=1))])
+    await db.commit()
+    d = await gather(db, _filters(), now=NOW)
+    assert len(d.days) == 3          # person-days
+    assert d.day_count == 2          # distinct dates
+    by = {p.person_name: p.days for p in d.by_person}
+    assert by == {"Ann Smith": 1, "Bob Jones": 2}
+
+
+async def test_gather_invalid_site_timezone_falls_back_and_warns(db, caplog):
+    p = await _person(db)
+    bad = await _site(db, "Bad", "Mars/Olympus")
+    t = datetime(2026, 10, 10, 14, 0, tzinfo=UTC)
+    db.add_all([_entry(p, t, site_id=bad.id),
+                _entry(p, t + timedelta(days=1), site_id=bad.id)])
+    await db.commit()
+    with caplog.at_level("WARNING", logger=g.__name__):
+        d = await gather(db, _filters(), now=NOW)
+    assert {e.tz_name for e in d.entries} == {"America/New_York"}
+    warnings = [r for r in caplog.records if "Mars/Olympus" in r.getMessage()]
+    assert len(warnings) == 1
+
+
+async def test_gather_auckland_site_includes_local_from_day(db):
+    p = await _person(db)
+    nz = await _site(db, "NZ", "Pacific/Auckland")
+    # 2026-10-01 00:30 NZDT (UTC+13) = 2026-09-30 11:30Z.
+    db.add(_entry(p, datetime(2026, 9, 30, 11, 30, tzinfo=UTC), hours=1,
+                  site_id=nz.id))
+    await db.commit()
+    d = await gather(db, _filters(), now=NOW)
+    (e,) = d.entries
+    assert e.local_day == date(2026, 10, 1)
+    assert e.tz_name == "Pacific/Auckland"
+    assert (e.clock_in.hour, e.clock_in.minute) == (0, 30)
+    assert e.clock_in.tzname() == "NZDT"
+
+
+async def test_gather_new_york_fall_back(db):
+    p = await _person(db)
+    # DST ended 2026-11-01 06:00Z; 06:30Z is 01:30 EST (second 01:30 that night).
+    db.add(_entry(p, datetime(2026, 11, 1, 6, 30, tzinfo=UTC), hours=1))
+    db.add(_entry(p, datetime(2026, 11, 1, 5, 30, tzinfo=UTC), hours=0.25))
+    await db.commit()
+    d = await gather(db, _filters(from_day=date(2026, 11, 1),
+                                  to_day=date(2026, 11, 1)), now=NOW)
+    edt, est = d.entries
+    assert (edt.clock_in.tzname(), edt.clock_in.hour) == ("EDT", 1)
+    assert (est.clock_in.tzname(), est.clock_in.hour) == ("EST", 1)
+    assert est.local_day == date(2026, 11, 1) and est.tz_name == "America/New_York"
 
 
 async def test_gather_sorts_and_includes_archived_people(db):
