@@ -8,6 +8,7 @@ import * as XLSX from 'xlsx';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { MoveAssetTemplateColumn } from '../../../lib/api';
+import { readWorkbook } from '../../../lib/ftConvert';
 
 vi.mock('xlsx', async (orig) => ({ ...(await orig<typeof import('xlsx')>()), writeFile: vi.fn() }));
 
@@ -123,6 +124,25 @@ describe('useRawFtConvert', () => {
     const [, filename, opts] = vi.mocked(XLSX.writeFile).mock.calls[0] as [XLSX.WorkBook, string, XLSX.WritingOptions];
     expect(filename).toBe('Acme FT-converted.xlsx');
     expect(opts).toEqual({ compression: true });
+  });
+
+  it('toFile is null before a file is read', () => {
+    const { result } = renderHook(() => useRawFtConvert(TEMPLATE));
+    expect(result.current.toFile()).toBeNull();
+  });
+
+  it('toFile returns the converted workbook as a named xlsx File', async () => {
+    const { result } = await loaded();
+    const out = result.current.toFile();
+    expect(out).toBeInstanceOf(File);
+    expect(out!.name).toBe('Acme FT-converted.xlsx');
+    expect(out!.type).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    const back = readWorkbook(await out!.arrayBuffer());
+    expect(back).toHaveLength(1);
+    const { header, rows } = result.current.conversion!;
+    expect(back[0].rows[0]).toEqual(header);
+    expect(back[0].rows.slice(1).map((r) => header.map((_, i) => r[i] ?? '')))
+      .toEqual(rows);
   });
 
   it('download does nothing before a file is read', () => {
