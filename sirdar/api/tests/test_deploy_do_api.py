@@ -453,3 +453,16 @@ async def test_load_balancer_refuses_droplet_ids_and_tag_together(fake):
         assert lb["tag"] == "sirdar"
         lb2 = await api.load_balancer(lb["id"])
     assert lb2["status"] == "active" and lb2["ip"] == LB_IP
+
+
+async def test_get_action_reads_a_droplet_action(fake):
+    fake.action_polls = 2                        # it completes on the second GET
+    d = fake.add_droplet("ss-uat9-orange", ["sirdar"])
+    did = str(d["id"])
+    async with do_api.connect(DO_TOKEN) as api:
+        action = await api.droplet_action(did, "power_off")
+        assert action["status"] == "in-progress"
+        first = await api.get_action(did, str(action["id"]))
+        second = await api.get_action(did, str(action["id"]))
+        assert (first["status"], second["status"]) == ("in-progress", "completed")
+        assert await api.get_action(did, "999999") is None

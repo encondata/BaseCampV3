@@ -641,6 +641,11 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
             changed += await vms.update(db, machine, fields["vm"])
         except vms.VmError as e:
             raise EnvError(e.code, **e.extra) from None
+    if fields.get("do_checked") is not None:       # checked by the route (it asks DigitalOcean)
+        row = await do_envs.get(db, env.id) if on_do else None
+        if row is None:
+            raise EnvError("do_not_allowed")
+        changed += do_envs.apply_sizes(row, fields["do_checked"])
 
     if changed:
         env.updated_at = _now()

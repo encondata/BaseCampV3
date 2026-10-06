@@ -254,9 +254,10 @@ case $cmd in
     ensure_network
     # nothing may write while the database is replaced: stop the writers
     # (stopping a stack that isn't running is a no-op), keep the database up.
-    # This stops writers only on this droplet (this host). Once two slots
-    # share one managed database (phase 7b), the other slot must be stopped
-    # before restoring, or it keeps writing into the database mid-restore.
+    # This stops writers only on this host. On DigitalOcean two slots share
+    # one managed database, so Sirdar restores only while no slot has run a
+    # deploy (pipeline: seed_not_allowed; an added slot's first deploy never
+    # seeds): no other slot is writing.
     for s in status web api; do dc "$s" stop </dev/null; done
     if ! external; then dc db up -d "${WAIT[@]}" </dev/null; fi
     # an empty schema, never pg_restore --clean: tables a newer migration

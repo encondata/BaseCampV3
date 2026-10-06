@@ -22,9 +22,11 @@ by its name inside the environment's VPC, the cloud firewall by its name and
 the environment's tag. Anything else with one of our names stops the step.
 Failures raise publish.StepFailed with our own copy.
 
-Not step 0's: growing a droplet or the cluster (7b resizes the slot being
-deployed), and the load balancer's targets (step 14, go_live, owns them; step
-0 sets them only on the load balancer it creates)."""
+Step 0 grows the droplet of the slot it deploys (only that one: the other
+may be live; it grows on its own next deploy) and the cluster to the recorded
+sizes; PATCH `do` only ever grows them. Not step 0's: the load balancer's
+targets (step 14, go_live, owns them; step 0 sets them only on the load
+balancer it creates)."""
 
 import asyncio
 import base64
@@ -415,8 +417,7 @@ class DoProvisioner:
         vpc = await self._vpc(api, ctx, out)
         await self._bucket(api, ctx, out)
         host_keys = {s.slot: s.host_key_public for s in ctx.slot_states}
-        # Sizes are as frozen at create: step 0 never resizes a droplet or the
-        # cluster (growing them is 7b's, on the slot being deployed).
+        # The deploy slot's droplet and the cluster grow to the recorded sizes here.
         droplets = await self._droplets(api, ctx, vpc, host_keys, out)
         database = await self._database(api, ctx, vpc, droplets, out)
         await self._pin(ctx, droplets, host_keys, out)
@@ -693,6 +694,8 @@ class DoProvisioner:
             await do_envs.set_slot(ctx.env_id, slot, droplet_id=str(ready["id"]),
                                    public_ip=public, private_ip=private)
             found[slot] = ready
+        if ctx.slot in found and found[ctx.slot].get("size_slug") != ctx.droplet_size:
+            found[ctx.slot] = await self._resize_droplet(api, ctx, found[ctx.slot], out)
         return found
 
     def _adoptable(self, ctx: DoContext, named: list[dict], name: str, what: str) -> dict | None:
@@ -742,6 +745,35 @@ class DoProvisioner:
         out(f"{name}: created droplet {made['id']} ({ctx.droplet_size}, {ctx.droplet_image}).\n")
         return made
 
+    async def _droplet_action(self, api: DigitalOceanApi, did: str, type_: str, what: str,
+                              **extra) -> None:
+        """Start a droplet action and wait until DigitalOcean reports it done."""
+        action = await api.droplet_action(did, type_, **extra)
+        aid = str(action.get("id"))
+        done = await self._wait(lambda: api.get_action(did, aid),
+                                lambda a: a.get("status") in ("completed", "errored"),
+                                self._waits["droplet"], what)
+        if done.get("status") != "completed":
+            raise StepFailed(f"{what} failed on DigitalOcean. Retry from step 0.")
+
+    async def _resize_droplet(self, api: DigitalOceanApi, ctx: DoContext, droplet: dict,
+                              out: Output) -> dict:
+        """The slot being deployed (never the live one of two): power off,
+        resize with its disk (a disk only grows), power on."""
+        name, did = droplet["name"], str(droplet["id"])
+        out(f"Resizing {name} to {ctx.droplet_size} (the droplet stops for a few minutes).\n")
+        if droplet.get("status") != "off":
+            await self._droplet_action(api, did, "power_off", f"The power-off of {name}")
+        await self._droplet_action(api, did, "resize", f"The resize of {name}",
+                                   size=ctx.droplet_size, disk=True)
+        await self._droplet_action(api, did, "power_on", f"The power-on of {name}")
+        ready = await self._wait(
+            lambda: api.droplet(did),
+            lambda d: d.get("status") == "active" and all(do_api.droplet_ips(d)),
+            self._waits["droplet"], f"The droplet {name}")
+        out(f"{name}: now {ready.get('size_slug')}.\n")
+        return ready
+
     async def _database(self, api: DigitalOceanApi, ctx: DoContext, vpc: dict,
                         droplets: dict[str, dict], out: Output) -> dict:
         name = do_envs.resource_name(ctx.env_name, "-db")
@@ -778,6 +810,11 @@ class DoProvisioner:
         else:
             out(f"Database {name}: in place.\n")
         await self._db_firewall(api, database["id"], droplet_ids, name, out)
+        nodes = 2 if ctx.db_standby else 1
+        if database.get("size") != ctx.db_size or int(database.get("num_nodes") or 1) != nodes:
+            await api.resize_database(database["id"], ctx.db_size, nodes)
+            out(f"Database {name}: resizing to {ctx.db_size}, {nodes} node"
+                f"{'s' if nodes > 1 else ''}.\n")
         online = await self._wait(lambda: api.database(database["id"]),
                                   lambda d: d.get("status") == "online",
                                   self._waits["database"], f"The database {name}")
