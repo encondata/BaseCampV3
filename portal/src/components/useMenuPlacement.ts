@@ -1,0 +1,141 @@
+/**
+ * useMenuPlacement — where a dropdown menu (ComboBox, TagInput) opens.
+ *
+ * Decides the drop-up flip from the room around the trigger, and whether
+ * the menu portals: rendered under document.body with fixed positioning,
+ * either because the caller asks (`portal`) or because the trigger sits
+ * inside a `.modal-card`, whose `overflow-y: auto` would otherwise clip it.
+ * The `.modal-card` check runs each time the menu opens (in a layout
+ * effect, so the corrected render lands before the first paint) rather
+ * than once on mount, since the component can be re-parented.
+ *
+ * A portaled menu is placed once per open (and again when `remeasure`
+ * changes) and closes on any scroll or resize rather than tracking its
+ * trigger: `onDismiss` is called for a window or ancestor scroll and for a
+ * resize, but not for a scroll of the menu's own list.
+ */
+
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { CSSProperties, RefObject } from 'react';
+
+/** Height (px) reserved for the menu when there's no room to measure it yet — mirrors .combo-menu's max-height. */
+export const MENU_NEEDED_HEIGHT = 260;
+/** Gap (px) between the trigger and a portaled menu — mirrors .combo-menu's calc(100% + 6px). */
+export const MENU_GAP = 6;
+
+/** Viewport placement of a portaled menu: below (top) or above (bottom) the trigger. */
+interface Anchor { left: number; width: number; top?: number; bottom?: number }
+
+/**
+ * Pure flip decision: open the menu upward only when there isn't enough
+ * room below the trigger AND there's more room above than below. Keeping
+ * this pure (no DOM reads) makes it directly unit-testable.
+ */
+export function shouldDropUp({
+  spaceBelow, spaceAbove, neededHeight = MENU_NEEDED_HEIGHT,
+}: {
+  spaceBelow: number;
+  spaceAbove: number;
+  neededHeight?: number;
+}): boolean {
+  return spaceBelow < neededHeight && spaceAbove > spaceBelow;
+}
+
+interface Options {
+  /** the trigger's wrapper (its rect places the menu; its ancestry decides `.modal-card`) */
+  wrapRef: RefObject<HTMLElement | null>;
+  /** the rendered menu (measured for height; its own scroll never dismisses) */
+  menuRef: RefObject<HTMLElement | null>;
+  /** whether the menu is showing */
+  open: boolean;
+  /** always portal the menu, card or not */
+  portal?: boolean;
+  /** re-measure when this changes while open (the filter text: fewer matches, shorter menu) */
+  remeasure?: unknown;
+  /** close the menu: a portaled menu was scrolled away from or the window resized */
+  onDismiss: () => void;
+}
+
+export interface MenuPlacement {
+  /** render the menu through createPortal to document.body */
+  portaled: boolean;
+  /** add the `drop-up` class */
+  dropUp: boolean;
+  /** the menu's inline style: fixed placement when portaled, undefined in place */
+  menuStyle: CSSProperties | undefined;
+}
+
+export function useMenuPlacement({
+  wrapRef, menuRef, open, portal = false, remeasure, onDismiss,
+}: Options): MenuPlacement {
+  const [dropUp, setDropUp] = useState(false);
+  const [anchor, setAnchor] = useState<Anchor | null>(null);
+  const [inModalCard, setInModalCard] = useState(false);
+
+  // The menu portals when asked to, or when it opened inside a modal card.
+  const portaled = portal || inModalCard;
+
+  const dismiss = useRef(onDismiss);
+  dismiss.current = onDismiss;
+
+  // Decide the card question and the drop direction on open, and re-check
+  // whenever `remeasure` changes while open (fewer/more matches can change
+  // the menu's natural height). A portaled menu is also placed here, from
+  // the same measurements.
+  useLayoutEffect(() => {
+    if (!open) {
+      setAnchor(null);
+      return;
+    }
+    const el = wrapRef.current;
+    if (!el) return;
+    const inCard = !!el.closest('.modal-card');
+    setInModalCard(inCard);
+    const placed = portal || inCard;
+    const rect = el.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    // Use the menu's actual rendered height when it's already in the DOM
+    // with real content (shorter filtered lists need less room), capped at
+    // the CSS max-height reference; fall back to the full reference height
+    // if the list isn't measurable yet (e.g. momentarily empty).
+    const actualHeight = menuRef.current?.getBoundingClientRect().height;
+    const neededHeight = Math.min(MENU_NEEDED_HEIGHT, actualHeight || MENU_NEEDED_HEIGHT);
+    const up = shouldDropUp({ spaceBelow, spaceAbove, neededHeight });
+    setDropUp(up);
+    if (placed) {
+      setAnchor(up
+        ? { left: rect.left, width: rect.width, bottom: window.innerHeight - rect.top + MENU_GAP }
+        : { left: rect.left, width: rect.width, top: rect.bottom + MENU_GAP });
+    }
+  }, [open, remeasure, portaled, portal, wrapRef, menuRef]);
+
+  // A portaled menu does not follow its trigger, so any scroll (the page or
+  // a scrolling ancestor — the capture phase sees both) or resize closes
+  // it. Scrolling the menu's own list is not a reason to close.
+  useEffect(() => {
+    if (!open || !portaled) return undefined;
+    const close = (e: Event) => {
+      const t = e.target;
+      if (e.type === 'scroll' && t instanceof Node && menuRef.current?.contains(t)) return;
+      dismiss.current();
+    };
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => {
+      window.removeEventListener('scroll', close, true);
+      window.removeEventListener('resize', close);
+    };
+  }, [open, portaled, menuRef]);
+
+  // Until the layout effect places it, a portaled menu renders hidden at
+  // the viewport origin — so it can be measured just like the in-place one.
+  const menuStyle: CSSProperties | undefined = !portaled ? undefined : anchor
+    ? {
+      position: 'fixed', left: anchor.left, width: anchor.width, right: 'auto',
+      top: anchor.top ?? 'auto', bottom: anchor.bottom ?? 'auto', zIndex: 1200,
+    }
+    : { position: 'fixed', left: 0, top: 0, visibility: 'hidden', zIndex: 1200 };
+
+  return { portaled, dropUp, menuStyle };
+}
