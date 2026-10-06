@@ -161,7 +161,7 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
             {!cloud && made.length === 0 && claimed.length === 0 && (
               <p className="page-hint">Sirdar manages no DNS records or proxy hosts for it.</p>
             )}
-            {cloud && (production ? (
+            {cloud && (production && deployed ? (
               <p className="page-hint">A snapshot is always saved first for production.</p>
             ) : deployed ? (
               <div className="sirdar-switch-row">

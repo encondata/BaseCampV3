@@ -1,7 +1,9 @@
 /** Publish tab: whether deploys publish this environment (a DNS record and a
  *  proxy host per public name, then a smoke test), what publishing would do
  *  now for each name (read live from Cloudflare and Nginx Proxy Manager),
- *  Claim for hand-made records and hosts, and Publish now (steps 12–14 alone). */
+ *  Claim for hand-made records and hosts, and Publish now (steps 12–14 alone).
+ *  DigitalOcean: DNS only (records at the load balancer, no proxy hosts), and
+ *  the switch can't change (the API's do_field_locked). */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -14,7 +16,7 @@ import {
   type Deployment, type Environment, type PublishEntry, type PublishPlan,
 } from '../../lib/sirdarApi';
 
-import { CERT_STATE, PUBLISH_STATE, StatusChip, deploymentRunning } from './labels';
+import { CERT_STATE, PUBLISH_STATE, StatusChip, deploymentRunning, onDo } from './labels';
 
 const SWITCH: [boolean, string][] = [[true, 'On'], [false, 'Off']];
 
@@ -56,9 +58,11 @@ export default function PublishTab({ env, onStarted, onChanged }: {
 
   const mayChange = can('deploy', 'change');
   const mayDeploy = can('deploy', 'add');
-  const configured = !!plan && plan.cloudflare.configured && plan.npm.configured;
+  const cloud = onDo(env);
+  // DigitalOcean never uses Nginx Proxy Manager: Cloudflare alone publishes it.
+  const configured = !!plan && plan.cloudflare.configured && (cloud || plan.npm.configured);
   const claimable = !!plan && plan.services.some((s) => s.dns.state === 'claimable' || s.proxy.state === 'claimable');
-  const switchLocked = !mayChange || running || busy !== '';
+  const switchLocked = cloud || !mayChange || running || busy !== '';
 
   const act = async (what: 'switch' | 'claim' | 'publish', work: () => Promise<void>, fallback: string) => {
     setBusy(what);
@@ -99,9 +103,9 @@ export default function PublishTab({ env, onStarted, onChanged }: {
         </button>
       </div>
       <div className="sirdar-publish-switch">
-        <span className="field-label" id="publish-switch-label">Publish DNS and proxy</span>
+        <span className="field-label" id="publish-switch-label">{cloud ? 'Publish DNS' : 'Publish DNS and proxy'}</span>
         <div className="segmented" role="radiogroup" aria-labelledby="publish-switch-label"
-             title={mayChange && running ? 'A deployment is running.' : undefined}>
+             title={!cloud && mayChange && running ? 'A deployment is running.' : undefined}>
           {SWITCH.map(([value, label]) => (
             <button key={label} type="button" role="radio" aria-checked={env.publish === value}
                     aria-disabled={switchLocked} className={env.publish === value ? 'on' : ''}
@@ -110,15 +114,17 @@ export default function PublishTab({ env, onStarted, onChanged }: {
           ))}
         </div>
         <p className="page-hint">
-          {env.publish
+          {cloud
+            ? 'DigitalOcean environments publish their DNS during each deploy.'
+            : env.publish
             ? 'Each deploy ends by bringing the DNS records and proxy hosts below up to date, then checks every public URL.'
             : 'Deploys leave DNS and the proxy as they are.'}
         </p>
-        {mayChange && running && <p className="page-hint">Publish can't change while a deployment is running.</p>}
+        {!cloud && mayChange && running && <p className="page-hint">Publish can't change while a deployment is running.</p>}
       </div>
       {plan && !configured && (
         <p className="page-hint">
-          Set up Cloudflare and Nginx Proxy Manager in <Link to="/settings">Settings › Integrations</Link> to publish.
+          Set up {cloud ? 'Cloudflare' : 'Cloudflare and Nginx Proxy Manager'} in <Link to="/settings">Settings › Integrations</Link> to publish.
         </p>
       )}
       {plan?.cloudflare.error && <p className="form-error" role="alert">Cloudflare: {plan.cloudflare.error}</p>}
@@ -129,17 +135,20 @@ export default function PublishTab({ env, onStarted, onChanged }: {
         columns={[
           { key: 'service', label: 'Service' }, { key: 'host', label: 'Public name', mono: true },
           { key: 'fwd', label: 'Forwards to', mono: true }, { key: 'dns', label: 'DNS record' },
-          { key: 'proxy', label: 'Proxy host' }, { key: 'cert', label: 'Certificate' },
+          ...(cloud ? [] : [{ key: 'proxy', label: 'Proxy host' }, { key: 'cert', label: 'Certificate' }]),
         ]}
         rows={(plan?.services ?? []).map((s) => ({
           key: s.service,
           cells: [
             <b className="cell-top">{s.service}</b>, s.hostname, s.forward,
-            <Entry entry={s.dns} />, <Entry entry={s.proxy} />,
-            <div>
-              <StatusChip map={CERT_STATE} status={s.certificate.state} />
-              {s.certificate.detail && <div className="cell-sub">{s.certificate.detail}</div>}
-            </div>,
+            <Entry entry={s.dns} />,
+            ...(cloud ? [] : [
+              <Entry entry={s.proxy} />,
+              <div>
+                <StatusChip map={CERT_STATE} status={s.certificate.state} />
+                {s.certificate.detail && <div className="cell-sub">{s.certificate.detail}</div>}
+              </div>,
+            ]),
           ],
         }))}
         emptyText={plan !== null ? 'This environment has no public services.'

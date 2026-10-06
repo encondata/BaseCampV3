@@ -15,7 +15,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import DeployModal from './DeployModal';
-import { DO_ENV, ENV, ESXI_ENV, ONE_SLOT_ENV, PX_ENV, PX_NEW_ENV, RUNNING, SNAP, SNAP_TAKING } from './testData';
+import { DO_ENV, ENV, ESXI_ENV, ONE_SLOT_ENV, PROD_ENV, PX_ENV, PX_NEW_ENV, RUNNING, SNAP, SNAP_TAKING } from './testData';
 
 beforeEach(() => {
   perms.add = true; perms.change = true;
@@ -280,4 +280,24 @@ it('DigitalOcean: one slot, or auto-activate, goes live by itself', () => {
   cleanup();
   open({ ...DO_ENV, auto_activate: true });
   expect(screen.getByText('Deploys to Purple and goes live when its smoke test passes.')).toBeTruthy();
+});
+
+it('a retiring production says why and does not deploy', () => {
+  open({ ...PROD_ENV, retiring: true });
+  expect(screen.getByText("Retiring production can't be deployed; un-retire it first.")).toBeTruthy();
+  expect(deployBtn().disabled).toBe(true);
+});
+
+it("DigitalOcean: the seed line follows the API's rule (no live slot, no slot commit, no running commit)", () => {
+  const seed = { id: 's1', name: 'dev-2026-10-04' };
+  const fresh = {
+    ...DO_ENV, current_sha: null, active_slot: null, seed_snapshot: seed,
+    do: { ...DO_ENV.do!, slots: DO_ENV.do!.slots.map((s) => ({ ...s, sha: null, image_tag: null, active: false })) },
+  };
+  open(fresh);
+  expect(screen.getByText(/This first deploy restores the snapshot/)).toBeTruthy();
+  cleanup();
+  // A slot already ran a deploy (its up step set its commit): the database is seeded, no second seed.
+  open({ ...fresh, do: { ...fresh.do, slots: [{ ...fresh.do.slots[0], sha: 'f00dbabe'.repeat(5) }, fresh.do.slots[1]] } });
+  expect(screen.queryByText(/This first deploy restores the snapshot/)).toBeNull();
 });

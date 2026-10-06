@@ -159,3 +159,9 @@ it('production: retiring first, then deactivated, then both phrases and always a
   expect(api.startDeployment).toHaveBeenCalledWith('prod', {
     mode: 'teardown', confirm_name: 'prod', confirm_production: 'delete production prod' });
 });
+
+it('production that was never deployed: no snapshot to save', () => {
+  const { dialog } = show({ ...PROD_ENV, retiring: true, active_slot: null, current_sha: null });
+  expect(within(dialog).getByText('Nothing was deployed, so there is no snapshot to save.')).toBeTruthy();
+  expect(within(dialog).queryByText(/always saved first/)).toBeNull();
+});

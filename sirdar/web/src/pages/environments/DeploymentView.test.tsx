@@ -491,3 +491,24 @@ it('DigitalOcean offers no Roll back', async () => {
   await screen.findByRole('button', { name: 'Retry' });
   expect(screen.queryByText('Roll back', { selector: 'h3' })).toBeNull();
 });
+
+it("a failed production Activate isn't retried once the environment is retiring", async () => {
+  api.getDeployment.mockResolvedValue({ ...FAILED, mode: 'activate', cloud: true, slot: 'green', go_live: true });
+  show({ env: { ...PROD_ENV, retiring: true } });
+  await screen.findByText('Activate Green', { exact: false });
+  expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  expect(screen.getByText(/retiring: it can only be deactivated/)).toBeTruthy();
+});
+
+it("a production Delete isn't retried unless it is retiring with no live slot, and says why", async () => {
+  api.getDeployment.mockResolvedValue({ ...FAILED, mode: 'teardown', cloud: true, slot: 'blue' });
+  show({ env: PROD_ENV });
+  await screen.findByText(/Delete environment/);
+  expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  expect(screen.getByText('Mark this production environment retiring first (Settings).')).toBeTruthy();
+  cleanup();
+  show({ env: { ...PROD_ENV, retiring: true } });
+  await screen.findByText(/Delete environment/);
+  expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  expect(screen.getByText(/Deactivate it first/)).toBeTruthy();
+});

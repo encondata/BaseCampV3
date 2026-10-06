@@ -20,7 +20,7 @@ import { ApiError } from '@portal/lib/api';
 import type { Environment, PublishPlan } from '../../lib/sirdarApi';
 
 import PublishTab from './PublishTab';
-import { ENV, PUBLISHED_ENV, PUBLISHING, PUBLISH_PLAN, summary } from './testData';
+import { DO_ENV, ENV, PUBLISHED_ENV, PUBLISHING, PUBLISH_PLAN, summary } from './testData';
 
 beforeEach(() => {
   perms.add = true; perms.change = true;
@@ -181,4 +181,44 @@ it('while a deployment runs the switch is locked and says why', async () => {
   await userEvent.click(within(group).getByRole('radio', { name: 'Off' }));
   expect(api.updateEnvironment).not.toHaveBeenCalled();
   expect((screen.getByRole('button', { name: 'Publish now' }) as HTMLButtonElement).title).toBe('A deployment is running.');
+});
+
+/** A DigitalOcean environment's plan: DNS at the load balancer, no Nginx Proxy Manager section. */
+const DO_PLAN: PublishPlan = {
+  ...PUBLISH_PLAN, publish: true,
+  cloudflare: { configured: true, zone: 'serversherpa.com', public_ip: '203.0.113.50', error: null },
+  npm: { configured: false, url: null, error: null },
+  services: PUBLISH_PLAN.services.map((s) => ({
+    ...s, proxy: { state: 'unknown', detail: '', origin: null, host_id: null },
+    certificate: { state: 'unknown', detail: '', expires_on: null },
+  })),
+};
+
+it('DigitalOcean: the switch is read-only, DNS only, and Claim and Publish now still work', async () => {
+  api.getPublishPlan.mockResolvedValue(DO_PLAN);
+  api.claimPublish.mockResolvedValue({ ...DO_PLAN, claimed: ['dns:api.uat.serversherpa.com'] });
+  const { onStarted } = show(DO_ENV);
+  const table = await screen.findByRole('table', { name: 'Public names' });
+  expect(within(table).queryByRole('columnheader', { name: 'Proxy host' })).toBeNull();
+  expect(within(table).queryByRole('columnheader', { name: 'Certificate' })).toBeNull();
+  const group = screen.getByRole('radiogroup', { name: 'Publish DNS' });
+  expect(within(group).getByRole('radio', { name: 'On' }).getAttribute('aria-disabled')).toBe('true');
+  await userEvent.click(within(group).getByRole('radio', { name: 'Off' }));
+  expect(api.updateEnvironment).not.toHaveBeenCalled();
+  expect(screen.getByText('DigitalOcean environments publish their DNS during each deploy.')).toBeTruthy();
+  expect(screen.queryByRole('link', { name: 'Settings › Integrations' })).toBeNull();
+  await userEvent.click(screen.getByRole('button', { name: 'Claim existing' }));
+  await waitFor(() => expect(api.claimPublish).toHaveBeenCalledWith('uat9'));
+  const now = screen.getByRole('button', { name: 'Publish now' }) as HTMLButtonElement;
+  expect(now.disabled).toBe(false);
+  await userEvent.click(now);
+  await waitFor(() => expect(onStarted).toHaveBeenCalledWith(PUBLISHING));
+  expect(api.startDeployment).toHaveBeenCalledWith('uat9', { mode: 'publish' });
+});
+
+it('DigitalOcean: without Cloudflare it asks for Cloudflare only', async () => {
+  api.getPublishPlan.mockResolvedValue({ ...DO_PLAN, cloudflare: { ...DO_PLAN.cloudflare, configured: false } });
+  show(DO_ENV);
+  expect(await screen.findByText(/Set up Cloudflare in/)).toBeTruthy();
+  expect((screen.getByRole('button', { name: 'Publish now' }) as HTMLButtonElement).disabled).toBe(true);
 });

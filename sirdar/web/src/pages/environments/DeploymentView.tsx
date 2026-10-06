@@ -112,6 +112,15 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
   const allowed = !dep || !RETRY_MODES.includes(dep.mode) ? false
     : CHANGE_MODES.includes(dep.mode) ? can('deploy', 'add') && can('deploy', 'change') : can('deploy', 'add');
   const mayRetry = !!dep && RETRYABLE.includes(dep.status) && allowed && stopped !== null;
+  // Production retries the API would refuse: an Activate once retiring (production_retiring), and a Delete
+  // unless it is retiring with no live slot (production_not_retiring, production_slot_active).
+  const retryRefusal = !dep || env.type !== 'production' ? null
+    : dep.mode === 'activate' && dep.slot && env.retiring
+      ? 'This production environment is retiring: it can only be deactivated.'
+    : phraseNeeded && !env.retiring ? 'Mark this production environment retiring first (Settings).'
+    : phraseNeeded && env.active_slot !== null
+      ? "Deactivate it first (Overview › DigitalOcean): a live slot can't be deleted."
+    : null;
   // Roll back isn't offered on DigitalOcean: activate the other slot instead.
   const mayRollBack = !!dep && dep.rollback_available && can('deploy', 'add') && can('deploy', 'change') && !onDo(env);
   // A failed deployment whose step 0 took a VM snapshot: put the whole VM back.
@@ -244,7 +253,8 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
         })}
       </ol>
 
-      {mayRetry && isLatest === true && (
+      {mayRetry && isLatest === true && retryRefusal && <p className="form-error">{retryRefusal}</p>}
+      {mayRetry && isLatest === true && !retryRefusal && (
         <div className="sirdar-retry pf-form">
           <div>
             <label className="field-label" htmlFor="retry-step">Retry from step</label>

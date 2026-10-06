@@ -75,3 +75,26 @@ it('production: no auto-activate or second slot; Mark retiring needs the name', 
   await userEvent.click(mark);
   expect(api.updateEnvironment).toHaveBeenCalledWith('prod', { retiring: true, confirm_name: 'prod' });
 });
+
+it('both sizes are required: an emptied one disables Save and says so', async () => {
+  const { section } = show();
+  const droplet = within(section).getByLabelText('Droplet size');
+  await userEvent.clear(droplet);
+  expect((within(section).getByRole('button', { name: 'Save sizes' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(within(section).getByText('Enter both sizes.')).toBeTruthy();
+});
+
+it('a refreshed environment re-seeds the sizes unless they were edited', async () => {
+  const props = { disabled: false, onSaved: vi.fn(), onDeployStarted: vi.fn() };
+  const { rerender } = render(<DoSettingsSection env={DO_ENV} {...props} />);
+  const grown = { ...DO_ENV, do: { ...DO_ENV.do!, droplet_size: 's-4vcpu-8gb', db_standby: true } };
+  rerender(<DoSettingsSection env={grown} {...props} />);
+  expect((screen.getByLabelText('Droplet size') as HTMLInputElement).value).toBe('s-4vcpu-8gb');
+  expect((screen.getByRole('checkbox', { name: 'Standby node' }) as HTMLInputElement).checked).toBe(true);
+  const db = screen.getByLabelText('Database size');
+  await userEvent.clear(db);
+  await userEvent.type(db, 'db-s-4vcpu-8gb');
+  rerender(<DoSettingsSection env={{ ...grown, do: { ...grown.do, droplet_size: 's-8vcpu-16gb' } }} {...props} />);
+  expect((screen.getByLabelText('Database size') as HTMLInputElement).value).toBe('db-s-4vcpu-8gb');
+  expect((screen.getByLabelText('Droplet size') as HTMLInputElement).value).toBe('s-4vcpu-8gb');
+});

@@ -137,6 +137,7 @@ function EnvironmentPage({ name }: { name: string }) {
                   className={tab === key ? 'on' : ''} onClick={() => setTab(key)}>{label}</button>
         ))}
       </div>
+      {/* Activate needs add + change: the same permissions as the API's activate route. */}
       {tab === 'overview' && (
         <EnvOverview env={env} canActivate={can('deploy', 'add') && can('deploy', 'change') && !running}
                      onActivate={(slot) => setActivating({ slot })} />

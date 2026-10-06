@@ -100,8 +100,15 @@ export default function DeployModal({ env, onStarted, onClose }: {
 
   const reset = mode === 'reset';
   const restoring = reset && after === 'snapshot';
-  const ready = canAdd && !busy && (!reset || (canChange && confirm === env.name)) && (!restoring || !!snapshotId);
-  const seeded = mode === 'update' && env.current_sha === null ? env.seed_snapshot : null;
+  // The API refuses an Update of a retiring production (production_retiring).
+  const retiring = env.type === 'production' && env.retiring;
+  const ready = canAdd && !busy && !retiring && (!reset || (canChange && confirm === env.name))
+    && (!restoring || !!snapshotId);
+  // A first deploy restores the seed. On DigitalOcean that is the API's _do_ran rule: nothing live, no
+  // running commit, and no slot whose up step ran (its sha is set then); the database is shared by both slots.
+  const firstDeploy = env.current_sha === null
+    && (!onDo(env) || (env.active_slot === null && !(env.do?.slots ?? []).some((s) => s.sha)));
+  const seeded = mode === 'update' && firstDeploy ? env.seed_snapshot : null;
 
   // Replays exactly the attempt that hit the host-key prompt, whatever the form says now.
   const run = async (attempt: Attempt) => {
@@ -273,6 +280,7 @@ export default function DeployModal({ env, onStarted, onClose }: {
                 {errors.confirm && <p className="form-error" role="alert">{errors.confirm}</p>}
               </div>
             )}
+            {retiring && <p className="form-error">Retiring production can't be deployed; un-retire it first.</p>}
             {!canAdd && <p className="page-hint">You can view deployments but not start them.</p>}
             {errors.form && <p className="form-error" role="alert">{errors.form}</p>}
           </div>
