@@ -26,7 +26,12 @@ FAKE_DOCKER = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$DOCKER_LOG"
 if [[ -n ${PGPASSWORD:-} ]]; then printf '%s\\n' "$PGPASSWORD" >> "$DOCKER_LOG.pw"; fi
 case "$1 $2" in
-  "network inspect") [[ -f "$DOCKER_LOG.net" ]] && { echo 172.30.0.0/24; exit 0; }; exit 1 ;;
+  "network inspect")
+    # an existing network answers with the subnet and ip-range in
+    # $DOCKER_LOG.net, or the expected pair when that file is empty
+    [[ -f "$DOCKER_LOG.net" ]] || exit 1
+    if [[ -s "$DOCKER_LOG.net" ]]; then cat "$DOCKER_LOG.net"; else echo "172.30.0.0/24 172.30.0.128/25"; fi
+    exit 0 ;;
   "network create") touch "$DOCKER_LOG.net" ;;
 esac
 case "$*" in *pg_dump*) printf 'PGDMP' ;; *"SELECT version_num"*) echo 0089 ;; esac
@@ -102,7 +107,7 @@ def test_up_external_skips_local_data_and_starts_caddy(tmp_path):
     log, _ = _run(tmp_path, "up", str(_env_dir(tmp_path, external=True)))
     assert "db/compose.yml" not in log
     assert re.search(r"storage/compose.yml up -d .* mailpit", log)
-    assert "network create --subnet 172.30.0.0/24 ss-uat9" in log
+    assert "network create --subnet 172.30.0.0/24 --ip-range 172.30.0.128/25 ss-uat9" in log
     assert log.index("api/compose.yml --profile certs run --rm migrate") < log.index(
         "proxy/compose.yml up -d"
     )
@@ -142,7 +147,9 @@ def test_pgdump_and_revision(tmp_path):
     log, _ = _run(tmp_path, "pgdump", str(env_dir), str(out))
     assert out.read_bytes() == b"PGDMP" and "--no-owner --no-acl" in log
     # the one-off client needs the network: pg() makes sure it exists first
-    assert log.index("network create --subnet 172.30.0.0/24 ss-uat9") < log.index("pg_dump")
+    assert log.index(
+        "network create --subnet 172.30.0.0/24 --ip-range 172.30.0.128/25 ss-uat9"
+    ) < log.index("pg_dump")
     proc, log, pw = _run_proc(tmp_path, "revision", str(env_dir))
     assert proc.stdout.strip() == "0089"
     assert "postgres:16-alpine psql -tAc SELECT version_num FROM alembic_version" in log
@@ -173,9 +180,13 @@ def _real_ca_pem() -> str:
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "ss-uat9-db cluster CA")])
     now = datetime.now(UTC)
     cert = (
-        x509.CertificateBuilder().subject_name(name).issuer_name(name)
-        .public_key(key.public_key()).serial_number(x509.random_serial_number())
-        .not_valid_before(now - timedelta(days=1)).not_valid_after(now + timedelta(days=30))
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(days=1))
+        .not_valid_after(now + timedelta(days=30))
         .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
         .sign(key, hashes.SHA256())
     )
@@ -198,7 +209,8 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     printf '%s\\n' "$src" >> "$DOCKER_LOG.src"
   fi
 done
-case "$*" in *pg_dump*)""")
+case "$*" in *pg_dump*)""",
+)
 
 
 def _with_ca(env_dir: Path, value: str = CA_B64) -> None:
@@ -210,11 +222,16 @@ def _with_ca(env_dir: Path, value: str = CA_B64) -> None:
 def test_the_one_off_client_verifies_the_cluster_ca(tmp_path, command):
     env_dir = _env_dir(tmp_path, external=True)
     _with_ca(env_dir)
-    args = {"dump": [], "pgdump": [str(tmp_path / "snap.dump")], "revision": [],
-            "restore": [str(tmp_path / "db.dump"), "--clear-sessions"]}[command]
+    args = {
+        "dump": [],
+        "pgdump": [str(tmp_path / "snap.dump")],
+        "revision": [],
+        "restore": [str(tmp_path / "db.dump"), "--clear-sessions"],
+    }[command]
     (tmp_path / "db.dump").write_bytes(b"PGDMP")
-    proc, log, _ = _run_proc(tmp_path, command, str(env_dir), *args, fake=CA_DOCKER,
-                             extra_env={"TMPDIR": str(tmp_path)})
+    _proc, log, _ = _run_proc(
+        tmp_path, command, str(env_dir), *args, fake=CA_DOCKER, extra_env={"TMPDIR": str(tmp_path)}
+    )
     runs = [line for line in log.splitlines() if line.startswith("run ")]
     assert runs
     for line in runs:
@@ -232,8 +249,9 @@ def test_the_one_off_client_verifies_the_cluster_ca(tmp_path, command):
 def test_a_bad_cluster_ca_stops_before_any_client_runs(tmp_path):
     env_dir = _env_dir(tmp_path, external=True)
     _with_ca(env_dir, "not base64 at all!")
-    proc, log, _ = _run_proc(tmp_path, "revision", str(env_dir), check=False,
-                             extra_env={"TMPDIR": str(tmp_path)})
+    proc, log, _ = _run_proc(
+        tmp_path, "revision", str(env_dir), check=False, extra_env={"TMPDIR": str(tmp_path)}
+    )
     assert proc.returncode != 0 and "SS_DATABASE_CA_B64" in proc.stderr
     assert "run " not in log
     assert not list(tmp_path.glob("ss-db-ca.*"))
@@ -243,8 +261,14 @@ def test_a_failed_dump_still_removes_the_ca_and_the_partial(tmp_path):
     env_dir = _env_dir(tmp_path, external=True)
     _with_ca(env_dir)
     failing = CA_DOCKER.replace("exit 0\n", "[[ $* == *pg_dump* ]] && exit 1\nexit 0\n")
-    proc, _, _ = _run_proc(tmp_path, "dump", str(env_dir), check=False, fake=failing,
-                           extra_env={"TMPDIR": str(tmp_path)})
+    proc, _, _ = _run_proc(
+        tmp_path,
+        "dump",
+        str(env_dir),
+        check=False,
+        fake=failing,
+        extra_env={"TMPDIR": str(tmp_path)},
+    )
     assert proc.returncode != 0
     assert not list((env_dir / "backups").glob("*.partial"))
     src = (tmp_path / "docker.log.src").read_text().split()[0]
@@ -255,31 +279,41 @@ def _b64(text: str) -> str:
     return base64.b64encode(text.encode()).decode()
 
 
-@pytest.mark.parametrize("bad", [
-    _b64("-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n"),           # no body
-    _b64("-----BEGIN CERTIFICATE-----\n" + CA_PEM.splitlines()[1] + "\n"),     # no END
-    _b64("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"),   # not a cert
-], ids=["no-body", "no-end", "not-a-cert"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        _b64("-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE-----\n"),  # no body
+        _b64("-----BEGIN CERTIFICATE-----\n" + CA_PEM.splitlines()[1] + "\n"),  # no END
+        _b64("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n"),  # not a cert
+    ],
+    ids=["no-body", "no-end", "not-a-cert"],
+)
 def test_restore_checks_the_ca_before_stopping_anything(tmp_path, bad):
     if "AAAA" in base64.b64decode(bad).decode() and shutil.which("openssl") is None:
         pytest.skip("needs openssl to tell a certificate from a body")
     env_dir = _env_dir(tmp_path, external=True)
     _with_ca(env_dir, bad)
     (tmp_path / "db.dump").write_bytes(b"PGDMP")
-    proc, log, _ = _run_proc(tmp_path, "restore", str(env_dir), str(tmp_path / "db.dump"),
-                             check=False, extra_env={"TMPDIR": str(tmp_path)})
+    proc, log, _ = _run_proc(
+        tmp_path,
+        "restore",
+        str(env_dir),
+        str(tmp_path / "db.dump"),
+        check=False,
+        extra_env={"TMPDIR": str(tmp_path)},
+    )
     assert proc.returncode == 1 and "SS_DATABASE_CA_B64" in proc.stderr
-    assert " stop" not in log and "run " not in log       # the stack keeps running
+    assert " stop" not in log and "run " not in log  # the stack keeps running
     assert not list(tmp_path.glob("ss-db-ca.*"))
 
 
 SLOW_DUMP_DOCKER = CA_DOCKER.replace(
-    'case "$*" in *pg_dump*) printf \'PGDMP\' ;;',
-    'case "$*" in *pg_dump*) printf \'PGD\'; touch "$DOCKER_LOG.dumping"; sleep 2 ;;')
+    "case \"$*\" in *pg_dump*) printf 'PGDMP' ;;",
+    'case "$*" in *pg_dump*) printf \'PGD\'; touch "$DOCKER_LOG.dumping"; sleep 2 ;;',
+)
 
 
-@pytest.mark.parametrize("signal_name, code", [("SIGTERM", 143), ("SIGHUP", 129),
-                                               ("SIGINT", 130)])
+@pytest.mark.parametrize("signal_name, code", [("SIGTERM", 143), ("SIGHUP", 129), ("SIGINT", 130)])
 def test_a_signal_mid_dump_removes_the_ca_and_the_partial(tmp_path, signal_name, code):
     import signal
     import time
@@ -292,10 +326,17 @@ def test_a_signal_mid_dump_removes_the_ca_and_the_partial(tmp_path, signal_name,
     (bin_dir / "docker").write_text(SLOW_DUMP_DOCKER)
     (bin_dir / "docker").chmod(0o755)
     log = tmp_path / "docker.log"
-    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "DOCKER_LOG": str(log),
-           "TMPDIR": str(tmp_path)}
-    proc = subprocess.Popen([str(SS_STACK), "dump", str(env_dir)], env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    env = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "DOCKER_LOG": str(log),
+        "TMPDIR": str(tmp_path),
+    }
+    proc = subprocess.Popen(
+        [str(SS_STACK), "dump", str(env_dir)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
     deadline = time.monotonic() + 10
     while not Path(f"{log}.dumping").exists():
         assert time.monotonic() < deadline and proc.poll() is None
@@ -313,10 +354,15 @@ def test_local_mode_ignores_the_ca_key(tmp_path):
     env_dir = _env_dir(tmp_path, external=False)
     _with_ca(env_dir)
     log, _ = _run(tmp_path, "revision", str(env_dir))
-    assert log.splitlines()[-1] == ("compose --env-file " + str(env_dir / ".env") + " -f "
-                                    + str(STACK / "db/compose.yml") + " exec -T postgres psql "
-                                    "-U serversherpa -d serversherpa -tAc "
-                                    "SELECT version_num FROM alembic_version")
+    assert log.splitlines()[-1] == (
+        "compose --env-file "
+        + str(env_dir / ".env")
+        + " -f "
+        + str(STACK / "db/compose.yml")
+        + " exec -T postgres psql "
+        "-U serversherpa -d serversherpa -tAc "
+        "SELECT version_num FROM alembic_version"
+    )
 
 
 def test_a_network_with_another_subnet_is_refused(tmp_path):
@@ -326,8 +372,36 @@ def test_a_network_with_another_subnet_is_refused(tmp_path):
     (tmp_path / "docker.log.net").touch()  # the fake network exists, at 172.30.0.0/24
     proc, log, _ = _run_proc(tmp_path, "up", str(env_dir), check=False)
     assert proc.returncode == 1
-    assert "network ss-uat9 has subnet '172.30.0.0/24', not 172.31.0.0/24" in proc.stderr
+    assert (
+        "network ss-uat9 has subnet 172.30.0.0/24 and ip-range 172.30.0.128/25, "
+        "not 172.31.0.0/24 and 172.31.0.128/25"
+    ) in proc.stderr
     assert "compose" not in log
+
+
+def test_a_network_without_the_ip_range_is_refused(tmp_path):
+    """A network from before the ip-range (or made by hand) would hand
+    Caddy's .2 to whichever container starts first."""
+    env_dir = _env_dir(tmp_path, external=True)
+    (tmp_path / "docker.log.net").write_text("172.30.0.0/24 \n")
+    proc, log, _ = _run_proc(tmp_path, "up", str(env_dir), check=False)
+    assert proc.returncode == 1
+    assert (
+        "network ss-uat9 has subnet 172.30.0.0/24 and ip-range (none), "
+        "not 172.30.0.0/24 and 172.30.0.128/25"
+    ) in proc.stderr
+    assert "docker network rm ss-uat9" in proc.stderr
+    assert "compose" not in log
+
+
+def test_the_subnet_must_be_a_24(tmp_path):
+    env_dir = _env_dir(tmp_path, external=True)
+    env = env_dir / ".env"
+    env.write_text(env.read_text().replace("172.30.0.0/24", "172.30.0.0/16"))
+    proc, log, _ = _run_proc(tmp_path, "up", str(env_dir), check=False)
+    assert proc.returncode == 1
+    assert "STACK_NETWORK_SUBNET must be a /24" in proc.stderr
+    assert "network create" not in log
 
 
 # Runs every `docker compose` call ss-stack makes as `docker compose … config -q`
@@ -640,14 +714,26 @@ def test_only_the_cert_worker_gets_the_renewal_token(tmp_path):
             "SS_CERT_NAMES=api.uat9.serversherpa.com,portal.uat9.serversherpa.com\n"
             "SS_CERT_ACME_KEY=YWNtZS1rZXk=\n"
         )
-    base = ["docker", "compose", "--env-file", str(env_dir / ".env"),
-            "-f", str(STACK / "api" / "compose.yml")]
-    plain = subprocess.run([*base, "config", "--format", "json"], check=True,
-                           capture_output=True, text=True).stdout
+    base = [
+        "docker",
+        "compose",
+        "--env-file",
+        str(env_dir / ".env"),
+        "-f",
+        str(STACK / "api" / "compose.yml"),
+    ]
+    plain = subprocess.run(
+        [*base, "config", "--format", "json"], check=True, capture_output=True, text=True
+    ).stdout
     assert "cert-worker" not in plain and "dop_v1_renewal" not in plain
-    services = json.loads(subprocess.run(
-        [*base, "--profile", "certs", "config", "--format", "json"],
-        check=True, capture_output=True, text=True).stdout)["services"]
+    services = json.loads(
+        subprocess.run(
+            [*base, "--profile", "certs", "config", "--format", "json"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    )["services"]
     cert = services["cert-worker"]
     assert cert["command"] == ["serversherpa", "cert-worker"]
     env = cert["environment"]
@@ -659,3 +745,101 @@ def test_only_the_cert_worker_gets_the_renewal_token(tmp_path):
     for name, service in services.items():
         if name != "cert-worker":
             assert not any(k.startswith("SS_CERT_") for k in service.get("environment", {})), name
+
+
+@needs_docker
+@pytest.mark.skipif(os.environ.get("SS_STACK_E2E") != "1", reason="set SS_STACK_E2E=1")
+def test_caddy_keeps_its_address_when_others_start_first(tmp_path):
+    """`ss-stack data` makes the network and starts mailpit (an automatic
+    address) before the proxy stack; another automatic container joins too.
+    Caddy must still get its fixed .2, and the automatic ones must land in
+    the upper half (.128/25), away from fixed addresses."""
+    env_dir = _env_dir(tmp_path, external=True)
+    env = env_dir / ".env"
+    text = env.read_text().replace("STACK_ENV=uat9", "STACK_ENV=sirdar-iprange-e2e")
+    text = text.replace("172.30.0.", "172.30.7.")
+    env.write_text(text + "STACK_MAILPIT_PORT=0\n")
+    net = "ss-sirdar-iprange-e2e"
+    project = "ss-sirdar-iprange-e2e-storage"
+    docker = {"PATH": os.environ["PATH"], "HOME": os.environ["HOME"]}
+
+    def ip_of(name: str) -> str:
+        return subprocess.run(
+            [
+                "docker",
+                "inspect",
+                "-f",
+                '{{(index .NetworkSettings.Networks "' + net + '").IPAddress}}',
+                name,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    names = []
+    try:
+        subprocess.run(
+            [str(SS_STACK), "data", str(env_dir)], env=docker, check=True, capture_output=True
+        )
+        mailpit = subprocess.run(
+            ["docker", "ps", "-q", "--filter", f"label=com.docker.compose.project={project}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+        assert len(mailpit) == 1
+        names.append(f"{net}-other")
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                f"{net}-other",
+                "--network",
+                net,
+                "busybox:1.36",
+                "sleep",
+                "300",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        image = re.search(r"image: (\S+)", (STACK / "proxy" / "compose.yml").read_text()).group(1)
+        names.append(f"{net}-caddy")
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                f"{net}-caddy",
+                "--network",
+                net,
+                "--ip",
+                "172.30.7.2",
+                "-e",
+                "STACK_DOMAIN=uat9.serversherpa.com",
+                "-e",
+                "STACK_TRUSTED_PROXIES=10.116.0.0/20",
+                "-v",
+                f"{STACK / 'proxy' / 'Caddyfile'}:/etc/caddy/Caddyfile:ro",
+                image,
+            ],
+            check=True,
+            capture_output=True,
+        )
+        assert ip_of(f"{net}-caddy") == "172.30.7.2"
+        for auto in (mailpit[0], f"{net}-other"):
+            last = int(ip_of(auto).rsplit(".", 1)[1])
+            assert ip_of(auto).startswith("172.30.7.") and 128 <= last <= 255
+    finally:
+        for name in names:
+            subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
+        subprocess.run(
+            ["docker", "compose", "-p", project, "down", "-v"], capture_output=True, check=False
+        )
+        subprocess.run(["docker", "network", "rm", net], capture_output=True, check=False)

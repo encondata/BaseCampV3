@@ -62,6 +62,17 @@ SUBNET=$(env_value STACK_NETWORK_SUBNET)
 external() { [[ $(env_value STACK_EXTERNAL_DATA) == 1 ]]; }
 caddy() { [[ $(env_value STACK_CADDY) == 1 ]]; }
 
+# On a droplet the network is a fixed /24 whose lower half is for fixed
+# addresses (Caddy's STACK_PROXY_IP is .2) and whose upper half (.128/25) is
+# where Docker hands out automatic ones. Without the ip-range, whichever
+# container starts first (mailpit) takes .2 and Caddy can't start.
+IP_RANGE=""
+if external && [[ -n $SUBNET ]]; then
+  [[ $SUBNET =~ ^([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})\.0/24$ ]] \
+    || die "STACK_NETWORK_SUBNET must be a /24 ending in .0/24 (got '$SUBNET')"
+  IP_RANGE="${BASH_REMATCH[1]}.128/25"
+fi
+
 # A droplet keeps objects in Spaces (SS_SPACES_SECRET_KEY) and never runs
 # SeaweedFS, but Compose still interpolates the storage file's
 # ${SPACES_SECRET_KEY:?} when it starts mailpit from it: give it a
@@ -82,7 +93,13 @@ dc() {  # dc <stack> <compose args…>
 
 ensure_network() {
   if docker network inspect "$NETWORK" >/dev/null 2>&1; then
-    if [[ -n $SUBNET ]]; then
+    if [[ -n $IP_RANGE ]]; then
+      local have have_subnet have_range
+      have=$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{.IPRange}}{{end}}' "$NETWORK")
+      read -r have_subnet have_range <<<"$have" || true
+      [[ $have_subnet == "$SUBNET" && $have_range == "$IP_RANGE" ]] \
+        || die "network $NETWORK has subnet ${have_subnet:-(none)} and ip-range ${have_range:-(none)}, not $SUBNET and $IP_RANGE: remove it (docker network rm $NETWORK, after ss-stack down) and run again"
+    elif [[ -n $SUBNET ]]; then
       local have
       have=$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' "$NETWORK")
       [[ $have == "$SUBNET" ]] \
@@ -90,7 +107,9 @@ ensure_network() {
     fi
     return
   fi
-  if [[ -n $SUBNET ]]; then
+  if [[ -n $IP_RANGE ]]; then
+    docker network create --subnet "$SUBNET" --ip-range "$IP_RANGE" "$NETWORK" >/dev/null
+  elif [[ -n $SUBNET ]]; then
     docker network create --subnet "$SUBNET" "$NETWORK" >/dev/null
   else
     docker network create "$NETWORK" >/dev/null

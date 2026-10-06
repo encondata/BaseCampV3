@@ -30,8 +30,11 @@ On a DigitalOcean droplet, Sirdar writes the droplet keys at the end of
   against the managed database (`PGSSLMODE=require`, the password from
   `POSTGRES_PASSWORD`, passed through the environment and never on a
   command line);
-- creates `ss-<env>` with `STACK_NETWORK_SUBNET`, so Caddy's fixed address
-  (`STACK_PROXY_IP`) is inside it;
+- creates `ss-<env>` with `STACK_NETWORK_SUBNET` (a `/24`) and the ip-range
+  `.128/25`: automatic addresses come from the upper half, so Caddy's fixed
+  address in the lower half (`STACK_PROXY_IP`, `.2`) is always free. An
+  existing network with another subnet or ip-range is refused (`ss-stack
+  down`, `docker network rm ss-<env>`, then run again);
 - starts the `proxy` stack (Caddy on :80, behind the load balancer) last.
 
 `ss-stack pgdump <env-dir> <out.dump>` (custom format, no owners or ACLs)
