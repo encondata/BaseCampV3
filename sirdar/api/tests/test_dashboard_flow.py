@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from sirdar_api.config import get_settings
 from sirdar_api.dashboard import service
@@ -60,15 +60,23 @@ async def _do_live(db, env, *, active, days=40, checks=None, lb="lb-1"):
         await do_envs.record(env.id, "load_balancer", lb, f"ss-{env.name}-lb")
 
 
+async def _hostnames(db, env) -> list[str]:
+    rows = await db.scalars(select(EnvironmentService.hostname).where(
+        EnvironmentService.environment_id == env.id, EnvironmentService.hostname.is_not(None)))
+    return sorted(rows)
+
+
 def _lb(do_cloud, lb_id: str, status: str = "active") -> None:
     do_cloud.do.load_balancers[lb_id] = {
         "id": lb_id, "name": "lb", "ip": "203.0.113.50", "status": status,
         "region": {"slug": "nyc3"}, "droplet_ids": [], "forwarding_rules": [], "tags": []}
 
 
-async def test_a_two_slot_production_is_the_first_card(client, db, do_cloud):
+async def test_a_two_slot_production_is_the_first_card(client, db, do_cloud, fake_certs):
     prod = await make_do_environment(db, name="prod", type_="production", account="production")
     await _do_live(db, prod, active="blue", days=10, checks={"blue": True})
+    for host in await _hostnames(db, prod):
+        fake_certs.dates[host] = datetime.now(UTC) + timedelta(days=10, hours=1)
     _lb(do_cloud, "lb-1")
     card = (await _dashboard(client, db))["environments"][0]
     assert (card["id"], card["production"], card["environment"], card["state"]) == (
@@ -109,7 +117,7 @@ async def test_a_one_slot_environment_without_a_load_balancer_yet(client, db, do
                               "status": "unknown"}
     assert [(s["id"], s["sub"], s["state"]) for s in flow["servers"]] == [
         ("orange", "Not built yet", "empty")]
-    assert flow["certificate"] is None
+    assert flow["certificate"]["tone"] == "unknown"      # nothing answers yet
 
 
 async def test_a_load_balancer_missing_from_the_inventory_is_down(client, db, do_cloud):
@@ -150,13 +158,14 @@ async def test_a_lan_ssh_environment_is_proxy_then_one_host(client, db, monkeypa
     monkeypatch.setattr(targets, "public_targets",
                         lambda s, **kw: [{"id": "ssh", "label": "Lab box"}])
     card = next(c for c in (await _dashboard(client, db))["environments"] if c["id"] == "uat")
+    cert = card["flow"].pop("certificate")
     assert card["flow"] == {
         "kind": "proxy",
         "middle": {"label": "Nginx Proxy Manager", "sub": "10.10.48.6", "status": "ok"},
         "servers": [{"id": "host", "label": "Lab box", "sub": "10.10.48.63", "state": "live",
                      "health": "healthy", "version": SHA[:8], "deployed": True}],
-        "active_slot": "host", "certificate": None, "deploying_slot": None,
-        "failed_slot": None}
+        "active_slot": "host", "deploying_slot": None, "failed_slot": None}
+    assert cert["tone"] == "unknown"           # the fake check: nothing answers
 
 
 async def test_a_vm_environment_shows_its_vm(client, db):
@@ -354,3 +363,91 @@ async def test_every_card_links_its_portal(client, db, do_cloud):
 
 def test_demo_cards_have_no_portal_link():
     assert {c["portal_url"] for c in demo_dashboard()["environments"]} == {None}
+
+
+# ---- certificate expiry from the live check ------------------------------------------
+
+def _in(days: float) -> datetime:
+    return datetime.now(UTC) + timedelta(days=days, hours=1)
+
+
+async def test_the_soonest_answering_host_wins_and_every_host_is_listed(
+        client, db, fake_certs):
+    await make_environment(db, name="uat", current_sha=SHA, secrets={})
+    portal, api = "portal.uat.serversherpa.com", "api.uat.serversherpa.com"
+    fake_certs.dates.update({portal: _in(40), api: _in(20),
+                             "kiosk.uat.serversherpa.com": "Timed out"})
+    cert = (await _card(client, db, "uat"))["flow"]["certificate"]
+    assert (cert["days_left"], cert["tone"], cert["expires_at"]) == (
+        20, "ok", fake_certs.dates[api].isoformat())
+    hosts = {h["hostname"]: h for h in cert["hosts"]}
+    assert [h["hostname"] for h in cert["hosts"]] == [
+        f"{s}.uat.serversherpa.com" for s in ("api", "portal", "kiosk", "wiki", "spaces",
+                                              "status")]
+    assert hosts[portal] == {"hostname": portal, "expires_at": fake_certs.dates[portal]
+                             .isoformat(), "days_left": 40, "error": None}
+    assert hosts["kiosk.uat.serversherpa.com"] == {
+        "hostname": "kiosk.uat.serversherpa.com", "expires_at": None, "days_left": None,
+        "error": "Timed out"}
+    assert hosts["wiki.uat.serversherpa.com"]["error"] == "Couldn't connect"
+
+
+@pytest.mark.parametrize("days, left, tone", [
+    (30, 30, "ok"), (14, 14, "warn"), (0, 0, "warn"), (-1, 0, "bad")])
+async def test_live_certificate_tones(client, db, fake_certs, days, left, tone):
+    env = await make_environment(db, name="uat", current_sha=SHA, secrets={})
+    for host in await _hostnames(db, env):
+        fake_certs.dates[host] = (datetime.now(UTC) - timedelta(hours=1) if days < 0
+                                  else _in(days))
+    cert = (await _card(client, db, "uat"))["flow"]["certificate"]
+    assert (cert["days_left"], cert["tone"]) == (left, tone)
+
+
+async def test_no_host_answering_is_unknown(client, db, fake_certs):
+    await make_environment(db, name="uat", current_sha=SHA, secrets={})
+    cert = (await _card(client, db, "uat"))["flow"]["certificate"]
+    assert (cert["days_left"], cert["expires_at"], cert["tone"]) == (None, None, "unknown")
+    assert {h["error"] for h in cert["hosts"]} == {"Couldn't connect"}
+
+
+async def test_no_public_hostnames_is_no_certificate(client, db, fake_certs):
+    env = await make_environment(db, name="uat", current_sha=SHA, secrets={})
+    await db.execute(update(EnvironmentService).where(
+        EnvironmentService.environment_id == env.id).values(hostname=None))
+    await db.commit()
+    assert (await _card(client, db, "uat"))["flow"]["certificate"] is None
+    assert fake_certs.calls == []
+
+
+async def test_checks_are_cached_and_refresh_rechecks(client, db, fake_certs):
+    await make_environment(db, name="uat", current_sha=SHA, secrets={})
+    await make_environment(db, name="lab", current_sha=SHA, secrets={})
+    h = await auth_headers(client, db)
+    await _dashboard(client, db, h)
+    first = sorted(fake_certs.calls)
+    assert len(first) == 12 and len(set(first)) == 12        # both environments, once each
+    await _dashboard(client, db, h)
+    assert sorted(fake_certs.calls) == first
+    resp = await client.get("/api/dashboard?refresh=1", headers=h)
+    assert resp.status_code == 200
+    assert sorted(fake_certs.calls) == sorted(first * 2)
+
+
+async def test_digitalocean_uses_the_live_check(client, db, do_cloud, fake_certs):
+    env = await make_do_environment(db)
+    await _do_live(db, env, active="orange", days=10)
+    for host in await _hostnames(db, env):
+        fake_certs.dates[host] = _in(50)
+    cert = (await _card(client, db, "uat9"))["flow"]["certificate"]
+    assert (cert["days_left"], cert["tone"]) == (50, "ok")
+    row = await do_envs.get(db, env.id)
+    assert row.cert_not_after is not None                  # Sirdar's own record is untouched
+
+
+async def test_the_demo_certificates_list_their_hosts():
+    for card in demo_dashboard()["environments"]:
+        cert = card["flow"]["certificate"]
+        assert cert is not None and cert["hosts"]
+        assert set(cert) == {"days_left", "expires_at", "tone", "hosts"}
+        for h in cert["hosts"]:
+            assert set(h) == {"hostname", "expires_at", "days_left", "error"}

@@ -155,6 +155,21 @@ def no_real_http():
 
 
 @pytest.fixture(autouse=True)
+def fake_certs():
+    """The dashboard's live certificate check never dials out: every test
+    gets a fresh checker around a FakeCerts (set `fake_certs.dates[host]`).
+    Its own MonkeyPatch, like no_real_http."""
+    from sirdar_api.dashboard import certcheck, service
+
+    from .fake_certs import FakeCerts
+
+    fake = FakeCerts()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(service, "cert_checker", certcheck.Checker(check=fake))
+        yield fake
+
+
+@pytest.fixture(autouse=True)
 def no_real_hosts():
     """No test reaches a real Proxmox host outside httpx: the raw TLS
     certificate fetch may only dial 127.0.0.1 (the tests' own TLS server),
