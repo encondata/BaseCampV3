@@ -2,12 +2,20 @@
  * useMenuPlacement — where a dropdown menu (ComboBox, TagInput) opens.
  *
  * Decides the drop-up flip from the room around the trigger, and whether
- * the menu portals: rendered under document.body with fixed positioning,
+ * the menu portals: rendered under the enclosing .portal-shell (document.body
+ * without one) with fixed positioning,
  * either because the caller asks (`portal`) or because the trigger sits
  * inside a `.modal-card`, whose `overflow-y: auto` would otherwise clip it.
  * The `.modal-card` check runs each time the menu opens (in a layout
  * effect, so the corrected render lands before the first paint) rather
  * than once on mount, since the component can be re-parented.
+ *
+ * The menu portals into the trigger's enclosing `.portal-shell` when there
+ * is one (document.body otherwise): the theme tokens (--surface,
+ * --paper-line, --text-dark, --accent-rgb, the dark palette) are declared on
+ * the shell, not on :root, so a menu parked under document.body would lose
+ * its border, its active highlight and its dark surface. A fixed-position
+ * child of the shell is not clipped by the shell's overflow.
  *
  * A portaled menu is placed once per open (and again when `remeasure`
  * changes) and closes on any scroll or resize rather than tracking its
@@ -57,8 +65,10 @@ interface Options {
 }
 
 export interface MenuPlacement {
-  /** render the menu through createPortal to document.body */
+  /** render the menu through createPortal into `portalHost` */
   portaled: boolean;
+  /** where a portaled menu goes: the enclosing .portal-shell (theme tokens), else document.body */
+  portalHost: HTMLElement;
   /** add the `drop-up` class */
   dropUp: boolean;
   /** the menu's inline style: fixed placement when portaled, undefined in place */
@@ -71,6 +81,7 @@ export function useMenuPlacement({
   const [dropUp, setDropUp] = useState(false);
   const [anchor, setAnchor] = useState<Anchor | null>(null);
   const [inModalCard, setInModalCard] = useState(false);
+  const [host, setHost] = useState<HTMLElement | null>(null);
 
   // The menu portals when asked to, or when it opened inside a modal card.
   const portaled = portal || inModalCard;
@@ -91,6 +102,7 @@ export function useMenuPlacement({
     if (!el) return;
     const inCard = !!el.closest('.modal-card');
     setInModalCard(inCard);
+    setHost(el.closest<HTMLElement>('.portal-shell'));
     const placed = portal || inCard;
     const rect = el.getBoundingClientRect();
     const spaceBelow = window.innerHeight - rect.bottom;
@@ -137,5 +149,5 @@ export function useMenuPlacement({
     }
     : { position: 'fixed', left: 0, top: 0, visibility: 'hidden', zIndex: 1200 };
 
-  return { portaled, dropUp, menuStyle };
+  return { portaled, portalHost: host ?? document.body, dropUp, menuStyle };
 }

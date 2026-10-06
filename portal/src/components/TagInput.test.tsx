@@ -34,6 +34,23 @@ describe('inside a .modal-card', () => {
     expect(menu.style.position).toBe('fixed');
   });
 
+  it('portals into the enclosing .portal-shell so the theme tokens still apply', () => {
+    // --surface, --paper-line, --accent-rgb and the dark palette live on
+    // .portal-shell, not :root: a menu under document.body would be unthemed.
+    render(
+      <div className="portal-shell" data-testid="shell">
+        <div className="modal-card" data-testid="card">
+          <TagInput value={[]} onChange={() => {}} suggestions={SUGGESTIONS} placeholder="Tags" />
+        </div>
+      </div>,
+    );
+    fireEvent.focus(screen.getByPlaceholderText('Tags'));
+    const menu = screen.getByText('Alpha').closest('.combo-menu') as HTMLElement;
+    expect(menu.parentElement).toBe(screen.getByTestId('shell'));
+    expect(screen.getByTestId('card').contains(menu)).toBe(false);
+    expect(menu.style.position).toBe('fixed');
+  });
+
   it('adds a suggestion by mousedown', () => {
     const onChange = vi.fn();
     renderInCard(onChange);

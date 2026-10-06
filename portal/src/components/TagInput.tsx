@@ -16,7 +16,8 @@
  * adds it straight away. Read-only (chips only, no input) when disabled.
  *
  * Inside a `.modal-card`, whose `overflow-y: auto` would clip it, the
- * suggestion menu portals to document.body with fixed positioning
+ * suggestion menu portals to the enclosing .portal-shell (document.body
+ * without one) with fixed positioning
  * (useMenuPlacement) and closes on any scroll or resize.
  */
 
@@ -80,7 +81,7 @@ export default function TagInput({
   // re-measures when the text, the tag count (a new chip can wrap the field
   // onto another row), or the number of suggestions (the menu's height)
   // changes.
-  const { portaled, dropUp, menuStyle } = useMenuPlacement({
+  const { portaled, portalHost, dropUp, menuStyle } = useMenuPlacement({
     wrapRef, menuRef, open: showMenu, remeasure: `${text}|${value.length}|${visible.length}`,
     onDismiss: () => setOpen(false),
   });
@@ -184,7 +185,7 @@ export default function TagInput({
           onBlur={() => { if (!restricted && text.trim()) commitValue(text.trim()); }}
         />
       </div>
-      {showMenu && (portaled ? createPortal(menu, document.body) : menu)}
+      {showMenu && (portaled ? createPortal(menu, portalHost) : menu)}
     </div>
   );
 }

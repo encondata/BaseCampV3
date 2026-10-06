@@ -4,7 +4,8 @@
  * House rule: any dropdown over records (people, orgs, …) uses this;
  * native <select> is only for tiny fixed enums.
  *
- * The menu portals — renders under document.body with fixed positioning —
+ * The menu portals — renders under the enclosing .portal-shell (document.body
+ * without one), with fixed positioning —
  * when `portal` is set (opt-in, for a ComboBox inside a sideways-scrolling
  * container such as a DataTable cell) OR automatically when the ComboBox
  * sits inside a `.modal-card`, whose `overflow-y: auto` would otherwise clip
@@ -59,7 +60,7 @@ export default function ComboBox({
 
   // Drop-up flip, plus the portal (asked for, or inside a modal card) and
   // its placement and close-on-scroll/resize.
-  const { portaled, dropUp, menuStyle } = useMenuPlacement({
+  const { portaled, portalHost, dropUp, menuStyle } = useMenuPlacement({
     wrapRef, menuRef: listRef, open, portal, remeasure: filter,
     onDismiss: () => { setOpen(false); setFilter(''); },
   });
@@ -199,7 +200,7 @@ export default function ComboBox({
         </span>
       )}
 
-      {open && (portaled ? createPortal(menu, document.body) : menu)}
+      {open && (portaled ? createPortal(menu, portalHost) : menu)}
     </div>
   );
 }
