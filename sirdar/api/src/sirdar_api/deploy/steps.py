@@ -27,8 +27,9 @@ DigitalOcean builds what is missing; the host steps run on the slot's
 droplet; 12 DNS records point at the load balancer; 13 Smoke test (slot)
 checks the slot through Caddy on the droplet; 14 Switch traffic moves the
 load balancer to the slot (a first deploy, a one-slot environment, an
-auto-activating one, or Activate). Delete is [11 Take snapshot], 17 Remove
-DNS records, 18 Remove DigitalOcean resources. Reset, Restore backup, Roll
+auto-activating one, or Activate). Activate is 13 then 14; Deactivate (a
+retiring production, no slot) is 14 alone. Delete is [11 Take snapshot], 17
+Remove DNS records, 18 Remove DigitalOcean resources. Reset, Restore backup, Roll
 back and Restore VM snapshot have no DigitalOcean plan."""
 
 from dataclasses import dataclass
@@ -124,13 +125,17 @@ _CLOUD_PLANS: dict[tuple[str, bool], tuple[str, ...]] = {
 
 
 def _cloud_plan(mode: str, *, restore: bool, publish: bool, vm: bool, go_live: bool,
-                snapshot: bool) -> tuple[str, ...]:
+                snapshot: bool, smoke: bool = True) -> tuple[str, ...]:
     if publish or vm:
         raise ValueError("a DigitalOcean plan has its own DNS step and no VM steps")
     key = (mode, snapshot if mode == "teardown" else restore)
     if key not in _CLOUD_PLANS:
         raise ValueError(f"no DigitalOcean plan for mode {mode!r}")
     keys = _CLOUD_PLANS[key]
+    if not smoke:
+        if mode != "activate":
+            raise ValueError("only Deactivate skips the slot smoke test")
+        return ("go_live",)                     # Deactivate: no slot to test
     if go_live and mode != "activate":
         if mode != "update":
             raise ValueError(f"mode {mode!r} doesn't switch traffic")
@@ -139,16 +144,18 @@ def _cloud_plan(mode: str, *, restore: bool, publish: bool, vm: bool, go_live: b
 
 
 def plan_for(mode: str, *, restore: bool = False, publish: bool = False, vm: bool = False,
-             cloud: bool = False, go_live: bool = False, snapshot: bool = False
-             ) -> list[StepDef]:
+             cloud: bool = False, go_live: bool = False, snapshot: bool = False,
+             smoke: bool = True) -> list[StepDef]:
     if cloud:
         keys = _cloud_plan(mode, restore=restore, publish=publish, vm=vm, go_live=go_live,
-                           snapshot=snapshot)
+                           snapshot=snapshot, smoke=smoke)
         return [STEPS_BY_KEY[k] for k in keys]
     if mode == "activate":
         raise ValueError("only a DigitalOcean environment activates a slot")
     if go_live or snapshot:
         raise ValueError("only a DigitalOcean plan switches traffic or snapshots on delete")
+    if not smoke:
+        raise ValueError("only Deactivate skips the slot smoke test")
     try:
         keys = _PLANS[(mode, restore)]
     except KeyError:

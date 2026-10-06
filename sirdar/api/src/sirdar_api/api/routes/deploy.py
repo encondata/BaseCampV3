@@ -415,6 +415,8 @@ class DoIn(BaseModel):
     db_size: str | None = Field(default=None, max_length=40)
     db_standby: bool | None = None
     acme_staging: bool | None = None
+    # Non-production only: an Update to the idle slot goes live by itself.
+    auto_activate: bool | None = None
 
 
 class EnvironmentIn(BaseModel):
@@ -460,6 +462,8 @@ class EnvironmentPatch(BaseModel):
     # Needs confirm_name (the environment's name).
     retiring: bool | None = None
     confirm_name: str | None = Field(default=None, max_length=64)
+    # Non-production DigitalOcean only: an Update to the idle slot goes live by itself.
+    auto_activate: bool | None = None
     # Write-only. No pydantic constraint on the values, so no validation error
     # can describe one; the service answers secret_invalid / secret_not_editable.
     secrets: dict[str, str] | None = None
@@ -680,8 +684,10 @@ class RollbackIn(BaseModel):
 
 # Modes that replace data: deploy:change and the environment's name typed back.
 GATED_MODES = ("reset", "restore_dump", "rollback", "teardown", "vm_restore")
+# Modes that need deploy:change (production's Activate also needs its name typed).
+CHANGE_MODES = (*GATED_MODES, "activate")
 RETRY_MODES = ("update", "reset", "restore_dump", "rollback", "publish", "teardown",
-               "vm_restore")
+               "vm_restore", "activate")
 # Modes a deploy request may ask a VM snapshot for (rollback has its own route).
 VM_SNAPSHOT_MODES = ("update", "reset", "restore_dump")
 
@@ -692,8 +698,8 @@ def _forbidden() -> HTTPException:
 
 def _require_mode(actor: AuthContext, mode: str) -> None:
     """Update needs deploy:add (the route's guard); the modes that replace
-    data also need change."""
-    if mode in GATED_MODES and not actor.access.can("deploy", "change"):
+    data, and Activate, also need change."""
+    if mode in CHANGE_MODES and not actor.access.can("deploy", "change"):
         raise _forbidden()
 
 
@@ -984,6 +990,57 @@ async def _start_do_teardown(db, env: Environment, body: DeploymentIn, request: 
                          snapshot=snap, cloud=True, slot=slot)
 
 
+class ActivateIn(BaseModel):
+    # The slot to send traffic to; None deactivates (a retiring production only).
+    slot: str | None = Field(default=None, max_length=10)
+    confirm_name: str | None = Field(default=None, max_length=64)
+
+
+def _refuse(status: int, code: str, **extra) -> HTTPException:
+    return HTTPException(status_code=status, detail={"code": code, **extra})
+
+
+@router.post("/environments/{name}/activate", status_code=201)
+async def activate(name: str, body: ActivateIn, request: Request, db: DbSession,
+                   actor: AuthContext = require_permission("deploy", "change")):
+    """Blue/Green: smoke-test a slot on its droplet, then move the load
+    balancer to it without a gap (a deployment, so it shares the lock, the
+    log and Retry). Going back is activating the other slot. A retiring
+    production can be deactivated (slot None) so Delete can remove it."""
+    env = await _environment(db, name)
+    if not _on_do(env):
+        raise _refuse(409, "not_digitalocean_environment")
+    if env.type == "production" and body.confirm_name != env.name:
+        raise _refuse(422, "confirm_name_mismatch")
+    if await environments.is_deploying(db, env.id):
+        raise _refuse(409, "deploy_in_progress")
+    if not vault.is_configured(get_settings()):
+        raise _refuse(400, "secrets_key_missing")
+    await _require_account(db, env)
+    if body.slot is None:
+        if not (env.type == "production" and env.retiring):
+            raise _refuse(422, "slot_required")
+        if env.active_slot is None:
+            raise _refuse(409, "already_inactive")
+        return await _launch(db, env, request, actor, action="deploy.activate", mode="activate",
+                             git_ref=env.git_ref, sha=env.current_sha or "", cloud=True,
+                             slot=None, go_live=True)
+    if body.slot not in env.slots:
+        raise _refuse(422, "slot_invalid")
+    if env.type == "production" and env.retiring:
+        raise _refuse(409, "production_retiring")
+    if body.slot == env.active_slot:
+        raise _refuse(409, "slot_already_active")
+    row = (await do_envs.slots_of(db, env.id)).get(body.slot)
+    if row is None or not row.sha:
+        raise _refuse(409, "slot_not_deployed", slot=body.slot)
+    if await _host_target(db, env, slot=body.slot) is None:
+        raise _refuse(409, "do_not_ready")           # the slot's droplet has no address
+    return await _launch(db, env, request, actor, action="deploy.activate", mode="activate",
+                         git_ref=row.sha, sha=row.sha, cloud=True, slot=body.slot,
+                         go_live=True)
+
+
 async def _vm_snapshot_restorable(db, env: Environment, name: str) -> None:
     """409 vm_snapshot_keys_changed when a snapshot restore replaced the
     sign-in keys after the VM snapshot was taken."""
@@ -1161,8 +1218,11 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     env = await db.get(Environment, dep.environment_id)
     if _on_do(env) and dep.mode in pipeline.NOT_ON_DIGITALOCEAN:
         raise _not_on_do()
-    if dep.mode in GATED_MODES and body.confirm_name != env.name:
+    typed = dep.mode in GATED_MODES or (dep.mode == "activate" and env.type == "production")
+    if typed and body.confirm_name != env.name:
         raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
+    if dep.mode == "activate" and dep.slot and env.type == "production" and env.retiring:
+        raise HTTPException(status_code=409, detail={"code": "production_retiring"})
     latest = await serialize.latest_deployment(db, env.id)
     if latest is None or latest.id != dep.id:
         raise HTTPException(status_code=409, detail={"code": "retry_not_latest"})
@@ -1179,7 +1239,8 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     # A DigitalOcean Delete that took a snapshot first (step 11).
     taking = dep.mode == "teardown" and dep.cloud and await _has_step(db, dep.id, "export")
     plan = plan_for(dep.mode, restore=restoring, publish=dep.publish, vm=dep.vm,
-                    cloud=dep.cloud, go_live=dep.go_live, snapshot=taking)
+                    cloud=dep.cloud, go_live=dep.go_live, snapshot=taking,
+                    smoke=pipeline.smokes(dep.mode, dep.slot))
     if from_step not in [s.number for s in plan] or from_step > stopped:
         raise HTTPException(status_code=422, detail={"code": "from_step_invalid"})
     # The Publish switch as it is now: a retry never publishes an environment

@@ -97,8 +97,13 @@ def check_spec(fields, *, production: bool) -> dict:
     standby, staging = fields.get("db_standby", False), fields.get("acme_staging", False)
     if not isinstance(standby, bool) or not isinstance(staging, bool):
         raise DoEnvError("do_invalid")
+    auto = fields.get("auto_activate", False)
+    if not isinstance(auto, bool):
+        raise DoEnvError("do_invalid")
+    if production and auto:
+        raise DoEnvError("auto_activate_not_allowed")    # production waits for Activate
     return {"account": account, "slots": slots, "droplet_size": droplet, "db_size": db_size,
-            "db_standby": standby, "acme_staging": staging}
+            "db_standby": standby, "acme_staging": staging, "auto_activate": auto}
 
 
 async def add_slot(db: AsyncSession, settings: Settings, env: Environment, slot: str) -> DoSlot:

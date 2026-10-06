@@ -221,6 +221,12 @@ def takes_snapshot(dep: Deployment) -> bool:
     return dep.mode == "teardown" and dep.cloud and dep.snapshot_id is not None
 
 
+def smokes(mode: str, slot: str | None) -> bool:
+    """Activate smoke-tests its slot before the switch; Deactivate (no slot)
+    has nothing to test."""
+    return not (mode == "activate" and slot is None)
+
+
 def _exports_now(dep: Deployment) -> bool:
     """The deployment runs Take snapshot itself (not skipped by a retry)."""
     return dep.mode == "snapshot" or (takes_snapshot(dep)
@@ -230,7 +236,7 @@ def _exports_now(dep: Deployment) -> bool:
 def plan_of(dep: Deployment) -> list[StepDef]:
     return plan_for(dep.mode, restore=restores(dep.mode, dep.snapshot_id), publish=dep.publish,
                     vm=dep.vm, cloud=dep.cloud, go_live=dep.go_live,
-                    snapshot=takes_snapshot(dep))
+                    snapshot=takes_snapshot(dep), smoke=smokes(dep.mode, dep.slot))
 
 
 # ---- records -----------------------------------------------------------------
@@ -270,7 +276,8 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                            retry_of=retry_of)
     taking_on_delete = mode == "teardown" and cloud and snapshot_id is not None
     plan = plan_for(mode, restore=restores(mode, snapshot_id), publish=publish, vm=vm,
-                    cloud=cloud, go_live=go_live, snapshot=taking_on_delete)
+                    cloud=cloud, go_live=go_live, snapshot=taking_on_delete,
+                    smoke=smokes(mode, slot))
     if start_step is None:
         start_step = plan[0].number
     if start_step not in {step.number for step in plan}:

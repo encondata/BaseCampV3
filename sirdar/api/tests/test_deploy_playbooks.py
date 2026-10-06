@@ -842,3 +842,11 @@ def test_digitalocean_plans():
             steps.plan_for(mode, cloud=True, **kw)
     with pytest.raises(ValueError):
         steps.plan_for("activate")                       # only DigitalOcean activates
+
+
+def test_deactivate_has_no_slot_smoke_test():
+    assert _cloud("activate", smoke=False) == ["go_live"]
+    assert _cloud("activate") == ["slot_smoke", "go_live"]
+    for mode in ("update", "teardown"):
+        with pytest.raises(ValueError):
+            steps.plan_for(mode, cloud=True, smoke=False)   # only Deactivate skips it

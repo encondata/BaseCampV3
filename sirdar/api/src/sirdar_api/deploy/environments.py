@@ -370,6 +370,7 @@ async def _create_on_do(db: AsyncSession, settings: Settings, *, name: str, type
         status="new", current_sha=None, image_tag=None, secrets=vault.generate_env_secrets(),
         actor_id=actor_id, seed_snapshot_id=snapshot_id, publish=True,
         public_services=certs.PUBLIC_SERVICES, slots=list(spec["slots"]))
+    env.auto_activate = spec["auto_activate"]
     env.spaces_bucket = do_envs.bucket_name(env.name, env.id)
     await do_envs.add(db, settings, env, spec, region=account.region,
                       team_uuid=account.team_uuid)
@@ -549,6 +550,10 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
             if await do_envs.production_exists(db, other_than=env.id):
                 raise EnvError("production_exists")     # at most one live production
         put("retiring", bool(fields["retiring"]))
+    if fields.get("auto_activate") is not None:
+        if not on_do or env.type == "production":
+            raise EnvError("auto_activate_not_allowed")
+        put("auto_activate", bool(fields["auto_activate"]))
     if fields.get("target") is not None:
         # An environment never moves to or from a host Sirdar builds, nor
         # between them.
