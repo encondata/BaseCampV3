@@ -7,7 +7,7 @@ import DataTable from '@portal/components/DataTable';
 
 import { deployErrorText, listBackups, type Backup, type Deployment, type Environment } from '../../lib/sirdarApi';
 
-import { deploymentRunning, formatBytes, onVmHost, when } from './labels';
+import { deploymentRunning, formatBytes, onDo, onVmHost, when } from './labels';
 import RestoreBackupModal from './RestoreBackupModal';
 import VmSnapshots from './VmSnapshots';
 
@@ -32,7 +32,9 @@ export default function BackupsTab({ env, onStarted }: {
   useEffect(() => () => { seq.current += 1; }, []);
 
   const running = deploymentRunning(env);
-  const mayRestore = can('deploy', 'change');
+  // DigitalOcean: both slots share the managed database, so a restore would change the live slot too.
+  const cloud = onDo(env);
+  const mayRestore = can('deploy', 'change') && !cloud;
   return (
     <>
     {onVmHost(env) && <VmSnapshots env={env} onStarted={onStarted} />}
@@ -43,7 +45,10 @@ export default function BackupsTab({ env, onStarted }: {
       </div>
       <p className="page-hint">
         Each Update dumps the database before it migrates; the newest {env.keep_dumps} stay in {env.env_dir}/backups.
-        Restoring one puts the database back. Uploaded files are not rolled back.
+        {cloud
+          ? "Restore backup isn't offered on DigitalOcean: both slots share the managed database. To go back, "
+            + 'activate the other slot.'
+          : 'Restoring one puts the database back. Uploaded files are not rolled back.'}
       </p>
       {error && <p className="form-error" role="alert">{error}</p>}
       {!(error && (rows ?? []).length === 0) && <DataTable
@@ -56,7 +61,8 @@ export default function BackupsTab({ env, onStarted }: {
           key: b.name,
           cells: [
             b.name, when(b.modified_at), formatBytes(b.size_bytes),
-            !b.restorable
+            cloud ? ''
+              : !b.restorable
               ? <span className="sirdar-backup-blocked">{b.reason ?? "Can't be restored."}</span>
               : mayRestore
               ? <button type="button" className="mini-btn" aria-label={`Restore ${b.name}`} disabled={running}

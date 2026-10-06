@@ -90,6 +90,9 @@ async def test_a_first_deploy_goes_live(db, do_env, fake_runner, fake_publisher,
     render = next(r for r in fake_runner.requests if r.step == "render")
     text = base64.b64decode(render.extravars["env_file_b64"]).decode()
     assert "STACK_EXTERNAL_DATA=1\n" in text and "STACK_DROPLET_ID=4001\n" in text
+    assert f"SS_CERT_LB_ID=lb-{do_env.id}\n" in text
+    assert f"SS_CERT_DO_TOKEN={DEV_RENEW_TOKEN}\n" in text
+    assert "SS_CERT_NAMES=api.uat9.serversherpa.com,portal.uat9.serversherpa.com," in text
     assert f"SS_SPACES_SECRET_KEY={SPACES_SECRET}\n" in text
     assert "SS_DATABASE_URL=postgresql+asyncpg://serversherpa:" in text
     smoke = next(r for r in fake_runner.requests if r.step == "slot_smoke")
@@ -127,7 +130,8 @@ async def test_every_cloud_secret_is_redacted(db, do_env, fake_runner, fake_publ
             EnvironmentSecret, (do_env.id, "POSTGRES_PASSWORD"))).value_enc)
     assert acme_key.startswith("-----BEGIN")
     ca_b64 = base64.b64encode(CA.encode()).decode()
-    leaks = [SPACES_SECRET, DOADMIN, DEV_RENEW_TOKEN, ca_b64, acme_key, password]
+    leaks = [SPACES_SECRET, DOADMIN, DEV_RENEW_TOKEN, ca_b64, acme_key, password,
+             base64.b64encode(acme_key.encode()).decode()]
     lines = [f"leak {v}\n" for v in leaks]
     fake_runner.output["render"] = lines
     fake_runner.output["slot_smoke"] = lines
@@ -321,7 +325,7 @@ async def test_delete_keeps_the_environment_while_resources_are_recorded(
     assert env is not None and env.status == "failed"
     left = await db.scalar(select(func.count()).select_from(DoResource)
                            .where(DoResource.environment_id == do_env.id))
-    assert left == 1
+    assert left == 2                     # the VPC and the load balancer
 
 
 async def _noop() -> None:
@@ -641,3 +645,21 @@ async def test_inspect_before_step_0_says_no_load_balancer_yet(db, secrets_key, 
         assert svc["dns"]["state"] == "unknown"
         assert "load balancer" in svc["dns"]["detail"]
     assert publish_fakes.cf.writes() == []
+
+
+async def test_an_update_without_a_renewal_token_says_where_to_add_it(
+        db, do_env, fake_runner, fake_publisher, fake_provisioner):
+    """Step 0 refuses it; a retry from step 1 (no step 0) reaches the .env
+    and says the same, not "Retry from step 0"."""
+    from sirdar_api.deploy import do_accounts
+    await _start(db, do_env, slot="orange", go_live=True)
+    await do_accounts.save(db, get_settings(), "development", label="Development",
+                           region="nyc3", clear_renewal=True)
+    await db.commit()
+    env = await db.get(Environment, do_env.id, populate_existing=True)
+    dep_id = await _start(db, env, slot="orange", sha=SHA, start_step=1)
+    dep, _, _ = await _load(dep_id)
+    assert dep.status == "failed"
+    assert "renewal token" in dep.error and "Settings › Integrations" in dep.error
+    assert "Retry from step 0" not in dep.error
+

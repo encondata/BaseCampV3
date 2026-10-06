@@ -17,9 +17,11 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 
 import { ApiError } from '@portal/lib/api';
 
+import type { Environment } from '../../lib/sirdarApi';
+
 import DeploymentView, { POLL_MS } from './DeploymentView';
 import {
-  ENV, FAILED, PX_ENV, RESET_FAILED, RESTORE_FAILED, ROLLBACKABLE, RUNNING, RUNNING_MORE, SNAP, SUCCEEDED,
+  DO_ENV, ENV, FAILED, PROD_ENV, PX_ENV, RESET_FAILED, RESTORE_FAILED, ROLLBACKABLE, RUNNING, RUNNING_MORE, SNAP, SUCCEEDED,
   VM_ROLLBACKABLE,
 } from './testData';
 
@@ -33,9 +35,9 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
-function show(props: { id?: string; isLatest?: boolean | null } = {}) {
+function show(props: { id?: string; isLatest?: boolean | null; env?: Environment } = {}) {
   const handlers = { onFinished: vi.fn(), onRetried: vi.fn(), onClose: vi.fn() };
-  render(<DeploymentView id={props.id ?? 'd1'} env={ENV} isLatest={props.isLatest === undefined ? true : props.isLatest} {...handlers} />);
+  render(<DeploymentView id={props.id ?? 'd1'} env={props.env ?? ENV} isLatest={props.isLatest === undefined ? true : props.isLatest} {...handlers} />);
   return handlers;
 }
 const tick = (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
@@ -453,4 +455,60 @@ it('a failed Proxmox deploy can be retried from step 0', async () => {
   await user.click(await screen.findByText('0. Prepare VM'));
   await user.click(screen.getByRole('button', { name: 'Retry' }));
   await waitFor(() => expect(api.retryDeployment).toHaveBeenCalledWith('d11', { from_step: 0 }));
+});
+
+it("retrying production's Activate needs its name; another environment's doesn't", async () => {
+  api.getDeployment.mockResolvedValue({ ...FAILED, mode: 'activate', cloud: true, slot: 'green', go_live: true });
+  api.retryDeployment.mockResolvedValue({ ...RUNNING, id: 'd2' });
+  show({ env: PROD_ENV });
+  const btn = (await screen.findByRole('button', { name: 'Retry' })) as HTMLButtonElement;
+  expect(btn.disabled).toBe(true);
+  await user.type(screen.getByLabelText('Type prod to confirm'), 'prod');
+  await user.click(btn);
+  await waitFor(() => expect(api.retryDeployment).toHaveBeenCalledWith('d1', { from_step: 5, confirm_name: 'prod' }));
+  cleanup();
+  show({ env: DO_ENV });
+  await user.click(await screen.findByRole('button', { name: 'Retry' }));
+  await waitFor(() => expect(api.retryDeployment).toHaveBeenLastCalledWith('d1', { from_step: 5 }));
+});
+
+it("retrying production's Delete asks for both phrases again", async () => {
+  api.getDeployment.mockResolvedValue({ ...FAILED, mode: 'teardown', cloud: true, slot: 'blue' });
+  api.retryDeployment.mockResolvedValue({ ...RUNNING, id: 'd2' });
+  show({ env: { ...PROD_ENV, retiring: true, active_slot: null } });
+  const btn = (await screen.findByRole('button', { name: 'Retry' })) as HTMLButtonElement;
+  await user.type(screen.getByLabelText('Type prod to confirm'), 'prod');
+  expect(btn.disabled).toBe(true);
+  await user.type(screen.getByLabelText('Type delete production prod to confirm'), 'delete production prod');
+  await user.click(btn);
+  await waitFor(() => expect(api.retryDeployment).toHaveBeenCalledWith('d1', {
+    from_step: 5, confirm_name: 'prod', confirm_production: 'delete production prod' }));
+});
+
+it('DigitalOcean offers no Roll back', async () => {
+  api.getDeployment.mockResolvedValue({ ...ROLLBACKABLE, cloud: true, slot: 'purple' });
+  show({ id: 'd4', env: DO_ENV });
+  await screen.findByRole('button', { name: 'Retry' });
+  expect(screen.queryByText('Roll back', { selector: 'h3' })).toBeNull();
+});
+
+it("a failed production Activate isn't retried once the environment is retiring", async () => {
+  api.getDeployment.mockResolvedValue({ ...FAILED, mode: 'activate', cloud: true, slot: 'green', go_live: true });
+  show({ env: { ...PROD_ENV, retiring: true } });
+  await screen.findByText('Activate Green', { exact: false });
+  expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  expect(screen.getByText(/retiring: it can only be deactivated/)).toBeTruthy();
+});
+
+it("a production Delete isn't retried unless it is retiring with no live slot, and says why", async () => {
+  api.getDeployment.mockResolvedValue({ ...FAILED, mode: 'teardown', cloud: true, slot: 'blue' });
+  show({ env: PROD_ENV });
+  await screen.findByText(/Delete environment/);
+  expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  expect(screen.getByText('Mark this production environment retiring first (Settings).')).toBeTruthy();
+  cleanup();
+  show({ env: { ...PROD_ENV, retiring: true } });
+  await screen.findByText(/Delete environment/);
+  expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  expect(screen.getByText(/Deactivate it first/)).toBeTruthy();
 });

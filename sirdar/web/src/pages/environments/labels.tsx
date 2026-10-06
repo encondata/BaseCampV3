@@ -1,5 +1,7 @@
 /** Labels, status chips and small helpers shared by the environment pages. */
-import type { DeployTarget, DeploymentStep, EnvVm, Environment, Snapshot, VmHostKind } from '../../lib/sirdarApi';
+import type {
+  DeployTarget, DeploymentStep, DeploymentSummary, EnvVm, Environment, Snapshot, VmHostKind,
+} from '../../lib/sirdarApi';
 
 /** status → [chip class, label] */
 type ChipMap = Record<string, [string, string]>;
@@ -23,11 +25,11 @@ export const STEP_STATUS: ChipMap = {
   failed: ['c-red', 'Failed'], skipped: ['tag', 'Skipped'], not_run: ['tag', 'Not run'],
   cancelled: ['c-amber', 'Canceled'], interrupted: ['c-amber', 'Interrupted'],
 };
-export const TYPE_LABEL: Record<string, string> = { dev: 'Dev', beta: 'Beta', custom: 'Custom' };
+export const TYPE_LABEL: Record<string, string> = { dev: 'Dev', beta: 'Beta', custom: 'Custom', production: 'Production' };
 export const MODE_LABEL: Record<string, string> = {
   update: 'Update', reset: 'Reset data', adopt: 'Adopt', snapshot: 'Take snapshot',
   restore_dump: 'Restore backup', rollback: 'Roll back', publish: 'Publish', teardown: 'Delete environment',
-  vm_restore: 'Restore VM snapshot',
+  vm_restore: 'Restore VM snapshot', activate: 'Activate', renew: 'Renew certificate',
 };
 /** A Publish tab entry's state (the API's PublishPlan). */
 export const PUBLISH_STATE: ChipMap = {
@@ -45,7 +47,12 @@ export const RETRYABLE = ['failed', 'cancelled', 'interrupted'];
 /** Modes that replace data: they need deploy:change and the environment's name typed back
  *  (the API's GATED_MODES). A snapshot job is never retried. */
 export const GATED_MODES = ['reset', 'restore_dump', 'rollback', 'teardown', 'vm_restore'];
-export const RETRY_MODES = ['update', 'reset', 'restore_dump', 'rollback', 'publish', 'teardown', 'vm_restore'];
+/** Modes that need deploy:change (the API's CHANGE_MODES). */
+export const CHANGE_MODES = [...GATED_MODES, 'activate'];
+export const RETRY_MODES = ['update', 'reset', 'restore_dump', 'rollback', 'publish', 'teardown', 'vm_restore',
+  'activate', 'renew'];
+/** Modes a DigitalOcean environment doesn't offer: both slots share the managed database. */
+export const NOT_ON_DO = ['reset', 'restore_dump', 'rollback', 'vm_restore'];
 
 /** 1,536 → "1.5 KB"; null → "—". Binary steps, as the file sizes people see. */
 export function formatBytes(n: number | null | undefined): string {
@@ -108,9 +115,10 @@ export const VM_HOST_LABEL: Record<VmHostKind, string> = { proxmox: 'Proxmox', e
 /** A target whose host is a VM Sirdar builds. */
 export const isVmTarget = (id: string) => id === 'proxmox' || id === 'esxi';
 
-/** Targets a new environment can use: configured SSH targets, then the VM hosts once set up. */
+/** Targets a new environment can use: configured SSH targets, then the VM hosts and DigitalOcean once set up. */
 export const envTargets = (targets: DeployTarget[]) =>
-  [...sshTargets(targets), ...targets.filter((t) => isVmTarget(t.id) && t.configured)];
+  [...sshTargets(targets),
+   ...targets.filter((t) => (isVmTarget(t.id) || isDoTarget(t.id)) && t.available && t.configured)];
 
 /** Its host is a VM Sirdar builds, on Proxmox or ESXi. */
 export const onVmHost = (env: Environment) => env.target_kind === 'proxmox' || env.target_kind === 'esxi';
@@ -145,4 +153,50 @@ export const vmNetwork = (vm: Pick<EnvVm, 'ip_mode' | 'ip_cidr' | 'gateway'>) =>
   if (vm.ip_mode !== 'static') return 'DHCP';
   if (!vm.ip_cidr) return 'Static, no address yet';
   return vm.gateway ? `${vm.ip_cidr} via ${vm.gateway}` : vm.ip_cidr;
+};
+
+/** Its hosts are droplets Sirdar builds in a DigitalOcean account. */
+export const onDo = (env: Pick<Environment, 'target_kind'>) => env.target_kind === 'digitalocean';
+export const isDoTarget = (id: string) => id === 'digitalocean';
+export const slotTitle = (slot: string | null | undefined) => (slot ? slot[0].toUpperCase() + slot.slice(1) : '');
+/** Wording for a failed deploy or Activate on one slot while another still serves (page, card and spotlight). */
+export const stillLiveText = (live: string) => `Failed — ${live} still live`;
+const FAILED_STATUSES = new Set(['failed', 'cancelled', 'interrupted']);
+/** The slot the latest deployment failed on (DigitalOcean), else null. */
+export function failedSlot(env: Pick<Environment, 'last_deployment'>): string | null {
+  const d = env.last_deployment;
+  return d && d.slot && FAILED_STATUSES.has(d.status) ? d.slot : null;
+}
+/** "Failed — <live> still live" when the latest deployment failed on a slot other than the live one. */
+export function failedStillLive(env: Pick<Environment, 'last_deployment' | 'active_slot'>): string | null {
+  const failed = failedSlot(env);
+  return failed && env.active_slot && env.active_slot !== failed ? stillLiveText(slotTitle(env.active_slot)) : null;
+}
+/** The slot an Update deploys to (the API's do_envs.target_slot); undefined with no slots. */
+export const idleSlot = (env: Pick<Environment, 'slots' | 'active_slot'>): string | undefined =>
+  env.active_slot === null || env.slots.length < 2 ? env.slots[0]
+    : env.slots.find((s) => s !== env.active_slot) ?? env.slots[0];
+/** Whether an Update of `slot` goes live by itself (the API's do_envs.goes_live). */
+export const goesLive = (env: Pick<Environment, 'slots' | 'active_slot' | 'auto_activate' | 'type'>, slot: string) =>
+  env.active_slot === null || env.slots.length === 1 || env.active_slot === slot
+  || (env.auto_activate && env.type !== 'production');
+/** Whole days until a certificate expires; null without one. */
+export function certDaysLeft(iso: string | null | undefined, now = Date.now()): number | null {
+  if (!iso) return null;
+  const at = Date.parse(iso);
+  return Number.isNaN(at) ? null : Math.floor((at - now) / 86_400_000);
+}
+/** "Update to Purple, not live", "Activate Green", "Deactivate", else the mode's label. */
+export function deploymentLabel(d: Pick<DeploymentSummary, 'mode' | 'cloud' | 'slot' | 'go_live'>): string {
+  if (d.mode === 'activate') return d.slot ? `Activate ${slotTitle(d.slot)}` : 'Deactivate';
+  if (d.cloud && d.mode === 'update' && d.slot) return `Update to ${slotTitle(d.slot)}${d.go_live ? '' : ', not live'}`;
+  return MODE_LABEL[d.mode] ?? d.mode;
+}
+/** A retry needs the environment's name typed: the modes that replace data, and production's Activate. */
+export const retryNeedsName = (mode: string, env: Pick<Environment, 'type'>) =>
+  GATED_MODES.includes(mode) || (mode === 'activate' && env.type === 'production');
+/** What Delete removes on DigitalOcean, by do_resources kind. */
+export const DO_RESOURCE_LABEL: Record<string, string> = {
+  vpc: 'VPC', droplet: 'Droplet', database: 'Database', spaces_key: 'Spaces key', bucket: 'Bucket',
+  certificate: 'Certificate', load_balancer: 'Load balancer', firewall: 'Cloud firewall',
 };

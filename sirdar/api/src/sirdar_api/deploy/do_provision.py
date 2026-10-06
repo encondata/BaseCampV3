@@ -1,7 +1,8 @@
-"""Steps 0, 14 and 18 of a DigitalOcean environment (deploy phase 7), run in
-Sirdar through do_api.connect with the environment's account token:
-Prepare DigitalOcean ("do_prepare"), Switch traffic ("go_live") and Remove
-DigitalOcean resources ("do_destroy").
+"""Steps 0, 14, 18 and 19 of a DigitalOcean environment (deploy phase 7),
+run in Sirdar through do_api.connect with the environment's account token:
+Prepare DigitalOcean ("do_prepare"), Switch traffic ("go_live"), Remove
+DigitalOcean resources ("do_destroy") and Renew certificate ("do_renew",
+step 19).
 
 Step 0 is idempotent: it makes what is missing and never replaces what
 exists. In order: the team check, the VPC, the bucket and its key, a droplet
@@ -22,12 +23,15 @@ by its name inside the environment's VPC, the cloud firewall by its name and
 the environment's tag. Anything else with one of our names stops the step.
 Failures raise publish.StepFailed with our own copy.
 
-Not step 0's: growing a droplet or the cluster (7b resizes the slot being
-deployed), and the load balancer's targets (step 14, go_live, owns them; step
-0 sets them only on the load balancer it creates)."""
+Step 0 grows the droplet of the slot it deploys (only that one: the other
+may be live; it grows on its own next deploy) and the cluster to the recorded
+sizes; PATCH `do` only ever grows them. Not step 0's: the load balancer's
+targets (step 14, go_live, owns them; step 0 sets them only on the load
+balancer it creates)."""
 
 import asyncio
 import base64
+import contextlib
 import re
 import shlex
 import uuid
@@ -81,6 +85,7 @@ WAITS = {"droplet": 10 * 60, "database": 30 * 60, "lb": 10 * 60, "ssh": 10 * 60,
 HEALTH_MARGIN = 10             # seconds on top of the load balancer's health checks
 _HEALTHZ = "curl -fsS -o /dev/null --max-time 5 http://127.0.0.1/healthz"
 CORS_SERVICES = ("portal", "kiosk", "wiki")   # the apps that upload straight to the bucket
+DB_RESIZE_FLIP = 60            # seconds a resized cluster gets to leave "online"
 SQL_TIMEOUT = 15 * 60          # cloud-init may still be installing psql
 # Runs as `bash -c _PSQL <host> <port>` on the droplet. Stdin: the doadmin
 # password, the cluster's CA (base64, one line), then the SQL. The password
@@ -350,7 +355,7 @@ class DoProvisioner:
     """The real DigitalOcean provisioner. Waits, the clock, the ref lookup
     and the commands on droplets are injectable for tests."""
 
-    STEPS = ("do_prepare", "go_live", "do_destroy")
+    STEPS = ("do_prepare", "go_live", "do_destroy", "do_renew")
 
     def __init__(self, *, settings: Settings,
                  sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -378,6 +383,8 @@ class DoProvisioner:
                     return await self._prepare(api, ctx, out)
                 if step == "go_live":
                     await self._go_live(api, ctx, out)
+                elif step == "do_renew":
+                    await self._renew(api, ctx, out)
                 else:
                     await self._destroy(api, ctx, out)
                 return VmOutcome()
@@ -415,8 +422,7 @@ class DoProvisioner:
         vpc = await self._vpc(api, ctx, out)
         await self._bucket(api, ctx, out)
         host_keys = {s.slot: s.host_key_public for s in ctx.slot_states}
-        # Sizes are as frozen at create: step 0 never resizes a droplet or the
-        # cluster (growing them is 7b's, on the slot being deployed).
+        # The deploy slot's droplet and the cluster grow to the recorded sizes here.
         droplets = await self._droplets(api, ctx, vpc, host_keys, out)
         database = await self._database(api, ctx, vpc, droplets, out)
         await self._pin(ctx, droplets, host_keys, out)
@@ -683,8 +689,17 @@ class DoProvisioner:
             else:
                 out(f"{name}: in place (droplet {droplet['id']}).\n")
             found[slot] = droplet
+        resize = ctx.slot in found and self._should_resize(ctx, found[ctx.slot], out)
         for slot, droplet in list(found.items()):
             name = do_envs.droplet_name(ctx.env_name, slot)
+            if slot == ctx.slot and droplet.get("status") == "off":
+                # A run that stopped mid-resize (or a cancel) left it off.
+                if resize:
+                    droplet, resize = await self._resize_droplet(api, ctx, droplet, out), False
+                else:
+                    out(f"{name} is off; starting it.\n")
+                    await self._droplet_action(api, str(droplet["id"]), "power_on",
+                                               f"The power-on of {name}")
             ready = await self._wait(
                 lambda d=droplet: api.droplet(str(d["id"])),
                 lambda d: d.get("status") == "active" and all(do_api.droplet_ips(d)),
@@ -693,7 +708,27 @@ class DoProvisioner:
             await do_envs.set_slot(ctx.env_id, slot, droplet_id=str(ready["id"]),
                                    public_ip=public, private_ip=private)
             found[slot] = ready
+        if resize:
+            found[ctx.slot] = await self._resize_droplet(api, ctx, found[ctx.slot], out)
         return found
+
+    def _should_resize(self, ctx: DoContext, droplet: dict, out: Output) -> bool:
+        """The deploy slot's droplet grows to the recorded size; never the
+        live slot of two (it grows when a deploy goes to it as the idle one)
+        and never down (a size Sirdar can't prove smaller stays)."""
+        current = droplet.get("size_slug")
+        if current == ctx.droplet_size:
+            return False
+        name = do_envs.droplet_name(ctx.env_name, ctx.slot)
+        if len(ctx.slots) > 1 and ctx.slot == ctx.active_slot:
+            out(f"{name} is live, so it stays {current}; it grows to {ctx.droplet_size} on a "
+                "deploy to it as the idle slot.\n")
+            return False
+        if not do_envs.grows(current, ctx.droplet_size):
+            out(f"{name} is {current}, which {ctx.droplet_size} wouldn't grow; Sirdar leaves "
+                "its size alone.\n")
+            return False
+        return True
 
     def _adoptable(self, ctx: DoContext, named: list[dict], name: str, what: str) -> dict | None:
         """An unrecorded droplet or cluster carrying this environment's tag and
@@ -742,6 +777,51 @@ class DoProvisioner:
         out(f"{name}: created droplet {made['id']} ({ctx.droplet_size}, {ctx.droplet_image}).\n")
         return made
 
+    async def _droplet_action(self, api: DigitalOceanApi, did: str, type_: str, what: str,
+                              **extra) -> None:
+        """Start a droplet action and wait until DigitalOcean reports it done."""
+        action = await api.droplet_action(did, type_, **extra)
+        aid = str(action.get("id"))
+        done = await self._wait(lambda: api.get_action(did, aid),
+                                lambda a: a.get("status") in ("completed", "errored"),
+                                self._waits["droplet"], what)
+        if done.get("status") != "completed":
+            raise StepFailed(f"{what} failed on DigitalOcean. Retry from step 0.")
+
+    async def _resize_droplet(self, api: DigitalOceanApi, ctx: DoContext, droplet: dict,
+                              out: Output) -> dict:
+        """The slot being deployed (never the live one of two): power off,
+        resize with its disk (a disk only grows), power on."""
+        name, did = droplet["name"], str(droplet["id"])
+        out(f"Resizing {name} to {ctx.droplet_size} (the droplet stops for a few minutes).\n")
+        if droplet.get("status") != "off":
+            await self._droplet_action(api, did, "power_off", f"The power-off of {name}")
+        try:
+            await self._droplet_action(api, did, "resize", f"The resize of {name}",
+                                       size=ctx.droplet_size, disk=True)
+        except Exception:
+            # Never leave it stopped: start it on its old size, then fail.
+            with contextlib.suppress(Exception):
+                await self._droplet_action(api, did, "power_on", f"The power-on of {name}")
+            raise
+        await self._droplet_action(api, did, "power_on", f"The power-on of {name}")
+        ready = await self._wait(
+            lambda: api.droplet(did),
+            lambda d: d.get("status") == "active" and all(do_api.droplet_ips(d)),
+            self._waits["droplet"], f"The droplet {name}")
+        out(f"{name}: now {ready.get('size_slug')}.\n")
+        return ready
+
+    async def _resize_started(self, api: DigitalOceanApi, database_id: str) -> None:
+        """Give DigitalOcean a moment to show the resize (status leaves
+        "online"), so the wait for "online" that follows isn't answered by
+        the state before it. Bounded: a cluster that never flips is fine."""
+        for _ in range(self._tries(DB_RESIZE_FLIP)):
+            found = await api.database(database_id)
+            if found is None or found.get("status") != "online":
+                return
+            await self._sleep(self._poll)
+
     async def _database(self, api: DigitalOceanApi, ctx: DoContext, vpc: dict,
                         droplets: dict[str, dict], out: Output) -> dict:
         name = do_envs.resource_name(ctx.env_name, "-db")
@@ -778,9 +858,23 @@ class DoProvisioner:
         else:
             out(f"Database {name}: in place.\n")
         await self._db_firewall(api, database["id"], droplet_ids, name, out)
+        # Online first: a resize still running (a retry) is waited for, not sent again.
         online = await self._wait(lambda: api.database(database["id"]),
                                   lambda d: d.get("status") == "online",
                                   self._waits["database"], f"The database {name}")
+        nodes, live_nodes = 2 if ctx.db_standby else 1, int(online.get("num_nodes") or 1)
+        if online.get("size") != ctx.db_size or live_nodes != nodes:
+            if live_nodes > nodes or not do_envs.grows(online.get("size"), ctx.db_size):
+                out(f"Database {name} is {online.get('size')} with {live_nodes} node(s), which "
+                    f"{ctx.db_size} with {nodes} wouldn't grow; Sirdar leaves it alone.\n")
+            else:
+                await api.resize_database(database["id"], ctx.db_size, nodes)
+                out(f"Database {name}: resizing to {ctx.db_size}, {nodes} node"
+                    f"{'s' if nodes > 1 else ''}.\n")
+                await self._resize_started(api, database["id"])
+                online = await self._wait(lambda: api.database(database["id"]),
+                                          lambda d: d.get("status") == "online",
+                                          self._waits["database"], f"The database {name}")
         private = online.get("private_connection") or {}
         host, port = private.get("host"), private.get("port")
         if not host or not port:
@@ -864,7 +958,11 @@ class DoProvisioner:
                              f"{code}). Retry from step 0.")
         out(f"Database: {do_envs.DB_USER} owns {do_envs.DB_NAME}.\n")
 
-    async def _certificate(self, api: DigitalOceanApi, ctx: DoContext, out: Output) -> dict:
+    async def _certificate(self, api: DigitalOceanApi, ctx: DoContext, out: Output, *,
+                           record_date: bool = True) -> dict:
+        """The certificate to serve (recorded, renewed at 14 days or fewer).
+        record_date: its expiry becomes cert_not_after now; step 19 passes
+        False and records the date of what the load balancer then serves."""
         records = await load_records(ctx.env_id)
         recorded = {r.do_id for r in records.find("certificate")}
         current = None
@@ -917,7 +1015,8 @@ class DoProvisioner:
                                                 issued.chain_pem)
             await do_envs.record(ctx.env_id, "certificate", best["id"], name)
             out(f"Uploaded the certificate {name} (valid until {issued.not_after:%Y-%m-%d}).\n")
-        await do_envs.set_do(ctx.env_id, cert_not_after=certs.not_after(best))
+        if record_date:
+            await do_envs.set_do(ctx.env_id, cert_not_after=certs.not_after(best))
         return best
 
     async def _load_balancer(self, api: DigitalOceanApi, ctx: DoContext, vpc: dict, cert: dict,
@@ -1208,6 +1307,61 @@ class DoProvisioner:
                              f"{before or 'no slot'} ({e.reason}): point load balancer "
                              f"{name} there by hand.") from None
         out(f"Put traffic back on {before or 'no slot'}.\n")
+
+    # ---- step 19: Renew certificate --------------------------------------------------------
+
+    async def _renew(self, api: DigitalOceanApi, ctx: DoContext, out: Output) -> None:
+        """Sirdar's backup renewal: what step 0 does for the certificate
+        (record what the cert-worker uploaded; renew by DNS-01 at 14 days or
+        fewer), then the load balancer's HTTPS rule on it and the old
+        certificates gone. The targets stay as they are. The load balancer is
+        read back afterwards: the cert-worker may have raced the change."""
+        await self._same_team(api, ctx)
+        records = await load_records(ctx.env_id)
+        lb = await self._live_lb(api, ctx, records)
+        # Its date is recorded only once the load balancer serves it: a renew
+        # that fails before then stays due (renewals.due).
+        cert = await self._certificate(api, ctx, out, record_date=False)
+        if https_certificate(lb) == cert["id"]:
+            out(f"Load balancer {lb['name']}: already uses the certificate {cert['name']}.\n")
+        else:
+            # A PUT while the load balancer applies another change is refused.
+            current = await self._lb_active(api, lb["id"], lb["name"])
+            await api.update_load_balancer(lb["id"], lb_update_body(
+                current, forwarding_rules=_rules(cert["id"])))
+            await self._lb_active(api, lb["id"], lb["name"])
+            out(f"Load balancer {lb['name']}: now uses the certificate {cert['name']}.\n")
+        keep = await self._final_certificate(api, ctx, lb, cert, out)
+        await self._retire_certificates(api, ctx, keep, out)
+
+    async def _final_certificate(self, api: DigitalOceanApi, ctx: DoContext, lb: dict,
+                                 cert: dict, out: Output) -> str:
+        """The certificate the load balancer serves now, whose date becomes
+        cert_not_after: the one this step chose, or a certificate of ours at
+        least as new (the cert-worker raced the PUT; it is recorded and
+        kept). Anything else fails the step, and nothing is deleted."""
+        final = await api.load_balancer(lb["id"])
+        if final is None:
+            raise StepFailed(f"Load balancer {lb['name']} disappeared during the renewal.")
+        cert_id = https_certificate(final)
+        served = cert
+        if cert_id != cert["id"]:
+            found = await api.certificate(cert_id) if cert_id else None
+            if found is None or not certs.is_ours(found, ctx.env_name, ctx.names):
+                raise StepFailed(f"Load balancer {lb['name']} serves a certificate that isn't "
+                                 f"one of Sirdar's for {ctx.env_name}. Sirdar deleted nothing: "
+                                 "run step 0 again to put one back.")
+            oldest = datetime.min.replace(tzinfo=UTC)
+            if (certs.not_after(found) or oldest) < (certs.not_after(cert) or oldest):
+                raise StepFailed(f"Load balancer {lb['name']} went back to the older certificate "
+                                 f"{found['name']} while Sirdar renewed (something else updated "
+                                 "it). Sirdar deleted nothing: retry.")
+            await do_envs.record(ctx.env_id, "certificate", cert_id, found["name"])
+            out(f"Load balancer {lb['name']}: the cert-worker moved it to the certificate "
+                f"{found['name']} meanwhile; keeping that one.\n")
+            served = found
+        await do_envs.set_do(ctx.env_id, cert_not_after=certs.not_after(served))
+        return served["id"]
 
     # ---- step 18: Remove DigitalOcean resources -------------------------------------------
 

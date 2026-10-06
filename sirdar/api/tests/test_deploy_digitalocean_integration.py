@@ -342,7 +342,7 @@ async def test_dashboard_uses_the_stored_token(client, db, do_env, monkeypatch,
                         lambda: {"digitalocean": inventory_transport(seen=seen)})
     h = await auth_headers(client, db)
     infra = (await client.get("/api/dashboard", headers=h)).json()["infrastructure"]
-    assert infra == {"source": "none", "error": None, "tree": []}
+    assert infra == {"source": "none", "error": None, "tree": [], "accounts": []}
     await _store(db)
     d = (await client.get("/api/dashboard", headers=h)).json()
     assert d["infrastructure"]["source"] == "digitalocean"

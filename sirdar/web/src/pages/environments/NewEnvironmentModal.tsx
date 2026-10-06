@@ -1,7 +1,9 @@
 /** New environment: Create (Basics › Services › Data › Review) makes a new
  *  environment record with generated secrets, empty or seeded from a snapshot
  *  its first deploy restores; on a VM host (Proxmox or ESXi) a Machine step
- *  sizes the VM the first deploy builds and sets its address. Adopt (Basics › Result) reads a
+ *  sizes the VM the first deploy builds and sets its address; on DigitalOcean a
+ *  DigitalOcean step picks the account, the slots, the sizes and the certificate
+ *  (production is always Blue and Green). Adopt (Basics › Result) reads a
  *  hand-built environment's .env and checkout over SSH and changes nothing. */
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
@@ -13,21 +15,22 @@ import { useHostKeyTrust } from '../../components/useHostKeyTrust';
 import { arrowNav } from '../../lib/arrowNav';
 import { NAME_HELP, ipv4Problem, nameProblem, portProblem, refProblem } from '../../lib/envRules';
 import {
-  adoptEnvironment, createEnvironment, deployErrorText, getDeployTargets, getEnvironmentDefaults, getIntegrations,
-  listSnapshots,
-  type AdoptEnvironmentBody, type AdoptedEnvironment, type DeployTarget, type EnvType, type Environment,
+  adoptEnvironment, createEnvironment, deployErrorText, getDeployTargets, getDoAccounts, getEnvironmentDefaults,
+  getIntegrations, listSnapshots,
+  type AdoptEnvironmentBody, type AdoptedEnvironment, type DeployTarget, type DoAccount, type DoAccountKey,
+  type EnvType, type Environment,
   type EnvironmentDefaults, type NewEnvironmentBody, type Snapshot, type VmHostKind,
 } from '../../lib/sirdarApi';
 
 import {
-  TYPE_LABEL, VM_HOST_LABEL, envTargets, gbOf, isVmTarget, mbOf, snapshotLabel, sshTargets, vmNetwork, vmSize,
+  TYPE_LABEL, VM_HOST_LABEL, envTargets, gbOf, isDoTarget, isVmTarget, mbOf, snapshotLabel, sshTargets, vmNetwork, vmSize,
 } from './labels';
 
 type Mode = 'new' | 'adopt';
-type Step = 'basics' | 'machine' | 'services' | 'data' | 'review' | 'result';
+type Step = 'basics' | 'cloud' | 'machine' | 'services' | 'data' | 'review' | 'result';
 type DataMode = 'empty' | 'snapshot';
 type IpMode = 'static' | 'dhcp';
-type Field = 'name' | 'target' | 'ref' | 'domain' | 'proxy' | 'bind' | 'machine' | 'services' | 'data' | 'form';
+type Field = 'name' | 'target' | 'ref' | 'domain' | 'proxy' | 'bind' | 'cloud' | 'machine' | 'services' | 'data' | 'form';
 type Errors = Partial<Record<Field, string>>;
 /** One submission, kept whole so a host-key retry replays exactly what failed. */
 type Attempt = { mode: 'new'; body: NewEnvironmentBody } | { mode: 'adopt'; body: AdoptEnvironmentBody };
@@ -41,6 +44,17 @@ const STEPS: Record<Mode, [Step, string][]> = {
 const VM_STEPS: [Step, string][] = [
   ['basics', 'Basics'], ['machine', 'Machine'], ['services', 'Services'], ['data', 'Data'], ['review', 'Review'],
 ];
+const DO_STEPS: [Step, string][] = [
+  ['basics', 'Basics'], ['cloud', 'DigitalOcean'], ['services', 'Services'], ['data', 'Data'], ['review', 'Review'],
+];
+type SlotChoice = '1' | '2';
+type OnOff = 'on' | 'off';
+type CertChoice = 'production' | 'staging';
+const SLOT_CHOICES: [SlotChoice, string][] = [['1', 'One droplet'], ['2', 'Two slots (orange + purple)']];
+const ON_OFF: [OnOff, string][] = [['on', 'On'], ['off', 'Off']];
+const CERT_CHOICES: [CertChoice, string][] = [['production', "Let's Encrypt"], ['staging', "Let's Encrypt staging"]];
+const DROPLET_SIZE_RE = /^[a-z0-9][a-z0-9-]{2,39}$/;
+const DB_SIZE_RE = /^db-[a-z0-9][a-z0-9-]{2,36}$/;
 const IP_MODES: [IpMode, string][] = [['static', 'Static'], ['dhcp', 'DHCP']];
 const CIDR_RE = /^(\d{1,3}(?:\.\d{1,3}){3})\/(\d{1,2})$/;
 // The API's messages for vm_ip_invalid and vm_gateway_invalid.
@@ -71,8 +85,8 @@ const DATA_MODES: [DataMode, string][] = [['empty', 'Start empty'], ['snapshot',
 type PublishChoice = 'on' | 'off';
 const PUBLISH_CHOICES: [PublishChoice, string][] = [['on', 'On'], ['off', 'Off']];
 const HINT: Record<Mode, string> = {
-  new: 'Create an environment on an SSH target, or on a VM Sirdar builds on ESXi or Proxmox. Sirdar generates its '
-    + 'secrets; the first deploy builds it.',
+  new: 'Create an environment on an SSH target, on a VM Sirdar builds on ESXi or Proxmox, or on DigitalOcean. Sirdar '
+    + 'generates its secrets; the first deploy builds it.',
   adopt: "Adopt an environment set up by hand. Sirdar reads its .env and git checkout over SSH and changes nothing.",
 };
 /** API error code → the field (and so the step) it belongs to. */
@@ -85,7 +99,12 @@ const CODE_FIELD: Record<string, Field> = {
   integration_not_configured: 'target', adopt_not_allowed: 'target', vm_not_allowed: 'target',
   vm_cores_invalid: 'machine', vm_memory_invalid: 'machine', vm_disk_invalid: 'machine',
   vm_ip_mode_invalid: 'machine', vm_ip_invalid: 'machine', vm_gateway_invalid: 'machine', ip_in_use: 'machine',
+  do_account_not_configured: 'cloud', do_invalid: 'cloud', do_slots_invalid: 'cloud', do_size_invalid: 'cloud',
+  do_db_size_invalid: 'cloud', auto_activate_not_allowed: 'cloud', production_exists: 'name',
+  production_requires_digitalocean: 'target', base_domain_not_in_zone: 'domain',
 };
+/** A VM or DigitalOcean target: Sirdar builds environments there, so they can't be adopted. */
+const builtBySirdar = (id: string) => isVmTarget(id) || isDoTarget(id);
 const only = (e: Errors): Errors => Object.fromEntries(Object.entries(e).filter(([, v]) => v)) as Errors;
 
 export default function NewEnvironmentModal({ onCreated, onClose }: {
@@ -115,6 +134,14 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
   const [ipMode, setIpMode] = useState<IpMode>('static');
   const [ipCidr, setIpCidr] = useState('');
   const [gateway, setGateway] = useState('');
+  const [accounts, setAccounts] = useState<DoAccount[]>([]);
+  const [doAccount, setDoAccount] = useState<DoAccountKey>('development');
+  const [slotChoice, setSlotChoice] = useState<SlotChoice>('1');
+  const [dropletSize, setDropletSize] = useState('');
+  const [dbSize, setDbSize] = useState('');
+  const [dbStandby, setDbStandby] = useState<OnOff>('off');
+  const [certChoice, setCertChoice] = useState<CertChoice>('production');
+  const [autoActivate, setAutoActivate] = useState<OnOff>('off');
   // Both integrations set up (null until known). Without them Publish starts Off.
   const [canPublish, setCanPublish] = useState<boolean | null>(null);
   const publishChosen = useRef(false);
@@ -168,6 +195,9 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
       setDiskGb(String(d.vm.disk_gb));
       setRef(d.git_ref);
       setBind(d.bind_ip);
+      setDropletSize(d.do.droplet_size);
+      setDbSize(d.do.db_size);
+      setDbStandby(d.do.db_standby ? 'on' : 'off');
       setPorts(Object.fromEntries(d.services.map((s) => [s.service, String(s.port)])));
     }).catch((e) => { if (live) setLoadError(deployErrorText(e, "Couldn't load the targets and defaults.")); });
     return () => { live = false; };
@@ -180,6 +210,12 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
       setCanPublish(ready);
       if (!publishChosen.current) setPublish(ready ? 'on' : 'off');
     }).catch(() => { /* the API's default (on) stands; a deploy says what's missing */ });
+    return () => { live = false; };
+  }, []);
+  useEffect(() => {
+    let live = true;
+    // Without the accounts the DigitalOcean step says to set one up first.
+    getDoAccounts().then((r) => { if (live) setAccounts(r.accounts); }).catch(() => {});
     return () => { live = false; };
   }, []);
   useEffect(() => { if (defaults) nameRef.current?.focus(); }, [defaults]);
@@ -200,11 +236,23 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
   const effectiveDomain = domain.trim() || `${trimmed || '<name>'}.${defaults?.domain_suffix ?? 'serversherpa.com'}`;
   const targetName = (id: string) => targets?.find((t) => t.id === id)?.label ?? id;
   const onVm = mode === 'new' && isVmTarget(target);
-  const hostName = isVmTarget(target) ? VM_HOST_LABEL[target as VmHostKind] : '';
-  // Adopt reads a hand-built environment over SSH: VM environments are only ones Sirdar builds.
-  const offered = (targets ?? []).filter((t) => mode === 'new' || !isVmTarget(t.id));
+  const onDo = mode === 'new' && isDoTarget(target);
+  const production = type === 'production';
+  const accountOf = (k: DoAccountKey) => accounts.find((a) => a.key === k);
+  // Production lives in the Production account by default, and only on DigitalOcean.
+  useEffect(() => { if (production) setDoAccount('production'); }, [production]);
+  useEffect(() => { if (!onDo && production) setType('dev'); }, [onDo, production]);
+  // An account that isn't set up can't be chosen: fall back to the first one that is.
   useEffect(() => {
-    if (mode === 'adopt' && isVmTarget(target)) setTarget(sshTargets(targets ?? [])[0]?.id ?? '');
+    if (!accounts.length || accounts.find((a) => a.key === doAccount)?.configured) return;
+    const ready = accounts.find((a) => a.configured);
+    if (ready) setDoAccount(ready.key);
+  }, [accounts, doAccount]);
+  const hostName = isVmTarget(target) ? VM_HOST_LABEL[target as VmHostKind] : '';
+  // Adopt reads a hand-built environment over SSH: VM and DigitalOcean environments are only ones Sirdar builds.
+  const offered = (targets ?? []).filter((t) => mode === 'new' || !builtBySirdar(t.id));
+  useEffect(() => {
+    if (mode === 'adopt' && builtBySirdar(target)) setTarget(sshTargets(targets ?? [])[0]?.id ?? '');
   }, [mode, target, targets]);
   const limits = defaults?.vm.limits;
   const machine = { cores: Number(cores), memory_mb: mbOf(memoryGb), disk_gb: Number(diskGb),
@@ -214,9 +262,18 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
     name: trimmed ? nameProblem(trimmed) : 'Enter a name.',
     target: target ? '' : 'Choose a target.',
     ref: refProblem(ref),
-    proxy: mode === 'new' ? ipv4Problem(proxy, 'proxy IP') : '',
-    bind: mode === 'new' ? ipv4Problem(bind, 'bind IP') : '',
+    proxy: mode === 'new' && !onDo ? ipv4Problem(proxy, 'proxy IP') : '',
+    bind: mode === 'new' && !onDo ? ipv4Problem(bind, 'bind IP') : '',
   });
+  const cloudErrors = (): Errors => {
+    const a = accountOf(doAccount);
+    if (!a || !a.configured || !a.region) {
+      return { cloud: `Set up the ${a?.label ?? 'DigitalOcean'} account (token and region) in Settings › Integrations first.` };
+    }
+    if (!DROPLET_SIZE_RE.test(dropletSize) || dropletSize.startsWith('db-')) return { cloud: "That isn't a DigitalOcean droplet size." };
+    if (!DB_SIZE_RE.test(dbSize)) return { cloud: "That isn't a DigitalOcean database size." };
+    return {};
+  };
   const servicesErrors = (): Errors => {
     for (const s of services) {
       const p = portProblem(ports[s.service] ?? '');
@@ -244,6 +301,7 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
     return problem ? { machine: problem } : {};
   };
 
+  const twoSlots = !production && slotChoice === '2';
   const dataErrors = (): Errors => (dataMode === 'snapshot' && !snapshotId ? { data: 'Choose a snapshot.' } : {});
   // Only a snapshot the Data step still says to use: going Back to "Start empty" keeps
   // snapshotId but must not show (or send) it.
@@ -251,16 +309,16 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
 
   const next = () => {
     const e = step === 'basics' ? basicsErrors() : step === 'machine' ? machineErrors()
-      : step === 'services' ? servicesErrors() : dataErrors();
+      : step === 'cloud' ? cloudErrors() : step === 'services' ? servicesErrors() : dataErrors();
     setErrors(e);
     if (Object.keys(e).length) return;
-    setStep(step === 'basics' ? (onVm ? 'machine' : 'services') : step === 'machine' ? 'services'
-      : step === 'services' ? 'data' : 'review');
+    setStep(step === 'basics' ? (onDo ? 'cloud' : onVm ? 'machine' : 'services')
+      : step === 'machine' || step === 'cloud' ? 'services' : step === 'services' ? 'data' : 'review');
   };
   const back = () => {
     setErrors({});
     setStep(step === 'review' ? 'data' : step === 'data' ? 'services'
-      : step === 'services' ? (onVm ? 'machine' : 'basics') : 'basics');
+      : step === 'services' ? (onDo ? 'cloud' : onVm ? 'machine' : 'basics') : 'basics');
   };
 
   const fail = (err: unknown, attempt: Attempt) => {
@@ -274,7 +332,7 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
       setSnapshotId('');
       setSnapshots((list) => list.filter((s) => s.id !== gone));
     }
-    if (field === 'services' || field === 'data' || field === 'machine') setStep(field);
+    if (field === 'services' || field === 'data' || field === 'machine' || field === 'cloud') setStep(field);
     else if (field !== 'form') setStep('basics');
   };
 
@@ -309,13 +367,24 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
       void run({ mode, body: { name: trimmed, type, target, git_ref: ref.trim() } });
       return;
     }
-    void run({ mode, body: {
+    const common = {
       name: trimmed, type, target, git_ref: ref.trim(),
       ...(domain.trim() ? { base_domain: domain.trim() } : {}),
-      proxy_ip: proxy.trim(), bind_ip: bind.trim(),
       ports: Object.fromEntries(services.map((s) => [s.service, Number(ports[s.service])])),
       ...(chosen ? { snapshot_id: chosen.id } : {}),
-      publish: publish === 'on',
+    };
+    if (onDo) {
+      // DigitalOcean: no proxy or bind address, and the environment always publishes its own DNS records.
+      void run({ mode, body: { ...common, do: {
+        account: doAccount, ...(production ? {} : { slots: twoSlots ? 2 : 1 }),
+        droplet_size: dropletSize, db_size: dbSize, db_standby: dbStandby === 'on',
+        ...(production ? {} : { acme_staging: certChoice === 'staging' }),
+        ...(twoSlots ? { auto_activate: autoActivate === 'on' } : {}),
+      } } });
+      return;
+    }
+    void run({ mode, body: {
+      ...common, proxy_ip: proxy.trim(), bind_ip: bind.trim(), publish: publish === 'on',
       ...(onVm ? { vm: {
         cores: machine.cores, memory_mb: machine.memory_mb, disk_gb: machine.disk_gb, ip_mode: ipMode,
         ...(ipMode === 'static' ? { ip_cidr: ipCidr.trim(), gateway: gateway.trim() } : {}),
@@ -323,7 +392,8 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
     } });
   };
 
-  const stepList = onVm ? VM_STEPS : STEPS[mode];
+  const stepList = onDo ? DO_STEPS : onVm ? VM_STEPS : STEPS[mode];
+  const slotsText = production ? 'Blue + Green' : twoSlots ? 'Orange + Purple' : 'Orange';
   const at = stepList.findIndex(([s]) => s === step);
 
   const radios = <T extends string>(items: [T, string][], value: T, set: (v: T) => void) => items.map(([v, label]) => (
@@ -383,7 +453,8 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                 <div>
                   <span className="field-label" id="env-type-label">Type</span>
                   <div className="segmented" role="radiogroup" aria-labelledby="env-type-label">
-                    {radios(TYPES.map((t) => [t, TYPE_LABEL[t]] as [EnvType, string]), type, setType)}
+                    {radios((onDo ? [...TYPES, 'production'] as EnvType[] : TYPES)
+                      .map((t) => [t, TYPE_LABEL[t]] as [EnvType, string]), type, setType)}
                   </div>
                 </div>
                 <div>
@@ -399,6 +470,12 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                     </p>
                   )}
                   {onVm && <p className="page-hint">Sirdar builds a VM for it on {hostName} on the first deploy.</p>}
+                  {onDo && (
+                    <p className="page-hint">
+                      Sirdar builds a load balancer, droplets, a managed database and a Spaces bucket in a
+                      DigitalOcean account on the first deploy.
+                    </p>
+                  )}
                   {errors.target && <p className="form-error" role="alert">{errors.target}</p>}
                 </div>
                 <div>
@@ -415,9 +492,17 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                       <input id="env-new-domain" type="text" value={domain} maxLength={253} autoComplete="off"
                              spellCheck={false} placeholder={effectiveDomain} aria-invalid={!!errors.domain}
                              onChange={(e) => setDomain(e.target.value)} />
-                      <p className="page-hint">Leave empty for {effectiveDomain}.</p>
+                      <p className="page-hint">
+                        {onDo
+                          ? `Leave empty for ${effectiveDomain}. It must be in the Cloudflare zone; DNS points at the load balancer.`
+                          : `Leave empty for ${effectiveDomain}.`}
+                      </p>
                       {errors.domain && <p className="form-error" role="alert">{errors.domain}</p>}
                     </div>
+                  </>
+                )}
+                {mode === 'new' && !onDo && (
+                  <>
                     <div>
                       <label className="field-label" htmlFor="env-new-proxy">Proxy IP</label>
                       <input id="env-new-proxy" type="text" value={proxy} maxLength={45} autoComplete="off"
@@ -434,6 +519,88 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                     </div>
                   </>
                 )}
+              </div>
+            )}
+
+            {defaults && step === 'cloud' && (
+              <div className="sirdar-docloud-form">
+                <div className="sirdar-span2">
+                  <span className="field-label" id="env-do-account-label">Account</span>
+                  <div className="segmented" role="radiogroup" aria-labelledby="env-do-account-label">
+                    {accounts.map((a) => (
+                      <button key={a.key} type="button" role="radio" aria-checked={doAccount === a.key}
+                              className={doAccount === a.key ? 'on' : ''} tabIndex={doAccount === a.key ? 0 : -1}
+                              disabled={!a.configured} onKeyDown={arrowNav}
+                              onClick={() => { setDoAccount(a.key); setErrors({}); }}>{a.label}</button>
+                    ))}
+                  </div>
+                  <p className="page-hint">
+                    {accountOf(doAccount)?.region ? `Built in ${accountOf(doAccount)!.region}. ` : ''}
+                    An environment stays in the account it is built in.
+                  </p>
+                  {/* Allowed, but never silently: chosen here, or the fallback above when Production isn't set up. */}
+                  {production && doAccount === 'development' && (
+                    <p className="page-hint" role="note">
+                      <span className="chip c-amber">Warning</span>{' '}
+                      Production in the Development account shares its renewal token with every development droplet.
+                      {' '}Set up the Production account instead if you can.
+                    </p>
+                  )}
+                </div>
+                {production ? (
+                  <p className="page-hint sirdar-span2">
+                    Blue and Green, always. Each deploy goes to the idle slot; Activate moves traffic to it.
+                  </p>
+                ) : (
+                  <div className="sirdar-span2">
+                    <span className="field-label" id="env-do-slots-label">Slots</span>
+                    <div className="segmented" role="radiogroup" aria-labelledby="env-do-slots-label">
+                      {radios(SLOT_CHOICES, slotChoice, setSlotChoice)}
+                    </div>
+                    <p className="page-hint">
+                      {slotChoice === '1'
+                        ? 'One droplet: each deploy updates it in place. A second slot can be added later in Settings.'
+                        : 'Each deploy goes to the idle slot; traffic moves when you activate it (or by itself, below).'}
+                    </p>
+                  </div>
+                )}
+                <div>
+                  <label className="field-label" htmlFor="env-do-droplet">Droplet size</label>
+                  <input id="env-do-droplet" type="text" value={dropletSize} spellCheck={false} autoComplete="off"
+                         onChange={(e) => setDropletSize(e.target.value.trim())} />
+                  <p className="page-hint">Default: V2 production, 2 vCPU · 4 GB · 80 GB. Sizes only grow later.</p>
+                </div>
+                <div>
+                  <label className="field-label" htmlFor="env-do-db">Database size</label>
+                  <input id="env-do-db" type="text" value={dbSize} spellCheck={false} autoComplete="off"
+                         onChange={(e) => setDbSize(e.target.value.trim())} />
+                  <p className="page-hint">Managed PostgreSQL 16; default 2 vCPU · 4 GB · 60 GB.</p>
+                </div>
+                <div>
+                  <span className="field-label" id="env-do-standby-label">Standby node</span>
+                  <div className="segmented" role="radiogroup" aria-labelledby="env-do-standby-label">
+                    {radios(ON_OFF, dbStandby, setDbStandby)}
+                  </div>
+                </div>
+                {!production && (
+                  <div>
+                    <span className="field-label" id="env-do-cert-label">Certificate</span>
+                    <div className="segmented" role="radiogroup" aria-labelledby="env-do-cert-label">
+                      {radios(CERT_CHOICES, certChoice, setCertChoice)}
+                    </div>
+                    <p className="page-hint">Staging certificates aren't trusted by browsers: for test environments.</p>
+                  </div>
+                )}
+                {twoSlots && (
+                  <div className="sirdar-span2">
+                    <span className="field-label" id="env-do-auto-label">Activate automatically</span>
+                    <div className="segmented" role="radiogroup" aria-labelledby="env-do-auto-label">
+                      {radios(ON_OFF, autoActivate, setAutoActivate)}
+                    </div>
+                    <p className="page-hint">On: a deploy whose smoke test passes takes traffic by itself.</p>
+                  </div>
+                )}
+                {errors.cloud && <p className="form-error sirdar-span2" role="alert">{errors.cloud}</p>}
               </div>
             )}
 
@@ -492,26 +659,31 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
             {defaults && step === 'services' && (
               <>
                 <p className="page-hint">
-                  Every service runs on the chosen target. Public names point at the proxy; mailpit stays on the LAN.
+                  {onDo
+                    ? 'Every service runs on each droplet. Public names point at the load balancer, and each deploy '
+                      + 'keeps their DNS records; mailpit stays private.'
+                    : 'Every service runs on the chosen target. Public names point at the proxy; mailpit stays on the LAN.'}
                 </p>
-                <div>
-                  <span className="field-label" id="env-publish-label">Publish DNS and proxy</span>
-                  <div className="segmented" role="radiogroup" aria-labelledby="env-publish-label">
-                    {radios(PUBLISH_CHOICES, publish, (v) => { publishChosen.current = true; setPublish(v); })}
-                  </div>
-                  <p className="page-hint">
-                    {publish === 'on'
-                      ? 'Each deploy creates or updates a DNS record and a proxy host for every public name (Settings › '
-                        + 'Integrations has the credentials). Hand-made records or proxy hosts already at those names '
-                        + 'must be claimed on the Publish tab first.'
-                      : 'DNS records and proxy hosts stay as they are: set them up by hand, or turn Publish on later.'}
-                  </p>
-                  {canPublish === false && (
+                {!onDo && (
+                  <div>
+                    <span className="field-label" id="env-publish-label">Publish DNS and proxy</span>
+                    <div className="segmented" role="radiogroup" aria-labelledby="env-publish-label">
+                      {radios(PUBLISH_CHOICES, publish, (v) => { publishChosen.current = true; setPublish(v); })}
+                    </div>
                     <p className="page-hint">
-                      Set up Cloudflare and Nginx Proxy Manager in Settings › Integrations to publish.
+                      {publish === 'on'
+                        ? 'Each deploy creates or updates a DNS record and a proxy host for every public name (Settings › '
+                          + 'Integrations has the credentials). Hand-made records or proxy hosts already at those names '
+                          + 'must be claimed on the Publish tab first.'
+                        : 'DNS records and proxy hosts stay as they are: set them up by hand, or turn Publish on later.'}
                     </p>
-                  )}
-                </div>
+                    {canPublish === false && (
+                      <p className="page-hint">
+                        Set up Cloudflare and Nginx Proxy Manager in Settings › Integrations to publish.
+                      </p>
+                    )}
+                  </div>
+                )}
                 <DataTable
                   ariaLabel="Services"
                   columns={[
@@ -523,7 +695,7 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                     cells: [
                       <b className="cell-top">{s.service}</b>,
                       s.public ? `${s.service}.${effectiveDomain}` : '—',
-                      <span className="cell-sub">{onVm ? "The VM's address" : "Target's address"}</span>,
+                      <span className="cell-sub">{onDo ? "The droplet's address" : onVm ? "The VM's address" : "Target's address"}</span>,
                       <input className="sirdar-port-input" type="text" inputMode="numeric" aria-label={`${s.service} port`}
                              value={ports[s.service] ?? ''}
                              onChange={(e) => setPorts((p) => ({ ...p, [s.service]: e.target.value }))} />,
@@ -586,28 +758,51 @@ export default function NewEnvironmentModal({ onCreated, onClose }: {
                   <dt>Git ref</dt><dd className="mono">{ref.trim()}</dd>
                   <dt>Folder on the target</dt><dd className="mono">{`${defaults.env_root}/${trimmed}`}</dd>
                   <dt>Base domain</dt><dd className="mono">{effectiveDomain}</dd>
-                  <dt>Proxy IP</dt><dd className="mono">{proxy.trim()}</dd>
-                  <dt>Bind IP</dt><dd className="mono">{bind.trim()}</dd>
+                  {onDo ? (
+                    <>
+                      <dt>Account</dt>
+                      <dd>{`${accountOf(doAccount)?.label ?? doAccount} · ${accountOf(doAccount)?.region ?? '—'}`}</dd>
+                      <dt>Slots</dt><dd>{slotsText}</dd>
+                      <dt>Sizes</dt>
+                      <dd className="mono">{`${dropletSize} · ${dbSize}${dbStandby === 'on' ? ' · standby node' : ''}`}</dd>
+                      <dt>Certificate</dt>
+                      <dd>{!production && certChoice === 'staging' ? "Let's Encrypt staging" : "Let's Encrypt"}</dd>
+                      {twoSlots && (
+                        <>
+                          <dt>Activates</dt><dd>{autoActivate === 'on' ? 'Automatically' : 'With Activate'}</dd>
+                        </>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <dt>Proxy IP</dt><dd className="mono">{proxy.trim()}</dd>
+                      <dt>Bind IP</dt><dd className="mono">{bind.trim()}</dd>
+                    </>
+                  )}
                   <dt>Secrets</dt><dd>Generated by Sirdar and never shown</dd>
                   <dt>Data</dt>
                   <dd>{chosen ? `Snapshot ${chosen.name} (migration ${chosen.alembic_revision ?? '—'}), restored by the first deploy` : 'Empty'}</dd>
-                  <dt>Publishing</dt>
-                  <dd>{publish === 'on' ? 'On: Sirdar publishes the public names' : 'Off: DNS and the proxy are set up by hand'}</dd>
+                  {!onDo && (
+                    <>
+                      <dt>Publishing</dt>
+                      <dd>{publish === 'on' ? 'On: Sirdar publishes the public names' : 'Off: DNS and the proxy are set up by hand'}</dd>
+                    </>
+                  )}
                 </dl>
                 <h4 className="sirdar-sub">Services</h4>
                 <DataTable
                   ariaLabel="Services to create"
                   columns={[{ key: 'service', label: 'Service' }, { key: 'host', label: 'Public name', mono: true },
                             { key: 'port', label: 'Port', mono: true },
-                            { key: 'pub', label: 'DNS record and proxy host' }]}
+                            { key: 'pub', label: onDo ? 'DNS record' : 'DNS record and proxy host' }]}
                   rows={services.map((s) => ({
                     key: s.service,
                     cells: [<b className="cell-top">{s.service}</b>, s.public ? `${s.service}.${effectiveDomain}` : '—',
-                            ports[s.service], s.public && publish === 'on' ? 'On the first deploy' : '—'],
+                            ports[s.service], s.public && (onDo || publish === 'on') ? 'On the first deploy' : '—'],
                   }))}
                 />
                 <p className="page-hint">
-                  {publish === 'on'
+                  {onDo || publish === 'on'
                     ? 'Nothing is installed until the first deploy, which also publishes the public names.'
                     : 'Nothing is installed until the first deploy. DNS records and proxy hosts are set up by hand.'}
                 </p>

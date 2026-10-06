@@ -245,6 +245,11 @@ class DigitalOceanApi:
                                json={"type": type_, **extra})
         return self._field(body, "action")
 
+    async def get_action(self, droplet_id: str, action_id: str) -> dict | None:
+        """A droplet action's state ("in-progress", "completed", "errored")."""
+        return await self._one(f"/droplets/{_id(droplet_id)}/actions/{_id(action_id)}",
+                               "action")
+
     # managed databases
 
     async def database(self, database_id: str) -> dict | None:

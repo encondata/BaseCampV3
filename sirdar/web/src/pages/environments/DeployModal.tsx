@@ -1,7 +1,7 @@
 /** Deploy an environment: a git ref and Update (default) or Reset data
  *  (needs deploy:change and the typed environment name; it can restore a
- *  snapshot after the reset). Opened from the environment page and from the
- *  Dashboard. */
+ *  snapshot after the reset). DigitalOcean offers Update only, to the idle
+ *  slot. Opened from the environment page and from the Dashboard. */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -14,7 +14,7 @@ import {
   deployErrorText, listSnapshots, startDeployment, type Deployment, type Environment, type Snapshot,
 } from '../../lib/sirdarApi';
 
-import { ESXI_GROW_NOTE, hostLabel, onVmHost, snapshotLabel } from './labels';
+import { ESXI_GROW_NOTE, goesLive, hostLabel, idleSlot, onDo, onVmHost, slotTitle, snapshotLabel } from './labels';
 
 type Mode = 'update' | 'reset';
 type Field = 'ref' | 'confirm' | 'snapshot' | 'form';
@@ -100,8 +100,15 @@ export default function DeployModal({ env, onStarted, onClose }: {
 
   const reset = mode === 'reset';
   const restoring = reset && after === 'snapshot';
-  const ready = canAdd && !busy && (!reset || (canChange && confirm === env.name)) && (!restoring || !!snapshotId);
-  const seeded = mode === 'update' && env.current_sha === null ? env.seed_snapshot : null;
+  // The API refuses an Update of a retiring production (production_retiring).
+  const retiring = env.type === 'production' && env.retiring;
+  const ready = canAdd && !busy && !retiring && (!reset || (canChange && confirm === env.name))
+    && (!restoring || !!snapshotId);
+  // A first deploy restores the seed. On DigitalOcean that is the API's _do_ran rule: nothing live, no
+  // running commit, and no slot whose up step ran (its sha is set then); the database is shared by both slots.
+  const firstDeploy = env.current_sha === null
+    && (!onDo(env) || (env.active_slot === null && !(env.do?.slots ?? []).some((s) => s.sha)));
+  const seeded = mode === 'update' && firstDeploy ? env.seed_snapshot : null;
 
   // Replays exactly the attempt that hit the host-key prompt, whatever the form says now.
   const run = async (attempt: Attempt) => {
@@ -168,27 +175,52 @@ export default function DeployModal({ env, onStarted, onClose }: {
                      spellCheck={false} aria-invalid={!!errors.ref} onChange={(e) => setRef(e.target.value)} />
               <p className="page-hint">A branch, tag or full commit SHA. The target resolves it to a commit before anything runs.</p>
               {errors.ref && <p className="form-error" role="alert">{errors.ref}</p>}
+              {onDo(env) && (() => {
+                const target = idleSlot(env);
+                if (!target) return null;
+                const live = goesLive(env, target);
+                return (
+                  <>
+                    <p className="page-hint">
+                      {live ? `Deploys to ${slotTitle(target)} and goes live when its smoke test passes.`
+                        : `Deploys to ${slotTitle(target)}. Traffic stays on ${slotTitle(env.active_slot)} until you activate ${slotTitle(target)}.`}
+                    </p>
+                    {env.slots.length > 1 && env.active_slot && (
+                      <p className="page-hint">
+                        Migrations must work with the code still live on {slotTitle(env.active_slot)}: add columns and tables
+                        first, remove them in a later release.
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
             </div>
-            <div>
-              <span className="field-label" id="deploy-mode-label">Mode</span>
-              <div className="segmented" role="radiogroup" aria-labelledby="deploy-mode-label">
-                {MODES.map(([m, label]) => {
-                  const locked = m === 'reset' && !canChange;
-                  return (
-                    <button key={m} type="button" role="radio" aria-checked={mode === m} aria-disabled={locked}
-                            className={mode === m ? 'on' : ''} tabIndex={mode === m ? 0 : -1} onKeyDown={arrowNav}
-                            onClick={() => { if (!locked) { setMode(m); setErrors({}); } }}>{label}</button>
-                  );
-                })}
+            {(!onDo(env) || seeded) && (
+              <div>
+                {!onDo(env) && (
+                  <>
+                    <span className="field-label" id="deploy-mode-label">Mode</span>
+                    <div className="segmented" role="radiogroup" aria-labelledby="deploy-mode-label">
+                      {MODES.map(([m, label]) => {
+                        const locked = m === 'reset' && !canChange;
+                        return (
+                          <button key={m} type="button" role="radio" aria-checked={mode === m} aria-disabled={locked}
+                                  className={mode === m ? 'on' : ''} tabIndex={mode === m ? 0 : -1} onKeyDown={arrowNav}
+                                  onClick={() => { if (!locked) { setMode(m); setErrors({}); } }}>{label}</button>
+                        );
+                      })}
+                    </div>
+                    <p className="page-hint">{MODES.find(([m]) => m === mode)?.[2]}</p>
+                    {!canChange && <p className="page-hint">Reset data needs permission to change deployments.</p>}
+                  </>
+                )}
+                {seeded && (
+                  <p className="page-hint">
+                    This first deploy restores the snapshot <b>{seeded.name}</b>: its database, files and sign-in keys.
+                  </p>
+                )}
               </div>
-              <p className="page-hint">{MODES.find(([m]) => m === mode)?.[2]}</p>
-              {!canChange && <p className="page-hint">Reset data needs permission to change deployments.</p>}
-              {seeded && (
-                <p className="page-hint">
-                  This first deploy restores the snapshot <b>{seeded.name}</b>: its database, files and sign-in keys.
-                </p>
-              )}
-            </div>
+            )}
             {onVmHost(env) && (
               <div>
                 {choosesVmSnapshot ? (
@@ -249,6 +281,7 @@ export default function DeployModal({ env, onStarted, onClose }: {
                 {errors.confirm && <p className="form-error" role="alert">{errors.confirm}</p>}
               </div>
             )}
+            {retiring && <p className="form-error">Retiring production can't be deployed; un-retire it first in Settings.</p>}
             {!canAdd && <p className="page-hint">You can view deployments but not start them.</p>}
             {errors.form && <p className="form-error" role="alert">{errors.form}</p>}
           </div>

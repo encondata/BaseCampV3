@@ -83,6 +83,34 @@ const CALLS: { name: string; call: () => Promise<unknown>; path: string; method?
                                                  confirm_name: 'uat3' }),
     path: '/deploy/environments/uat3/deployments', method: 'POST',
     body: { mode: 'vm_restore', vm_snapshot: 'sirdar-20261004T120000Z', confirm_name: 'uat3' } },
+  { name: 'getDoAccounts', call: () => sirdar.getDoAccounts(), path: '/deploy/integrations/digitalocean/accounts' },
+  { name: 'saveDoAccount', call: () => sirdar.saveDoAccount('development', { label: 'Development', region: 'nyc3', token: 't' }),
+    path: '/deploy/integrations/digitalocean/accounts/development', method: 'PUT',
+    body: { label: 'Development', region: 'nyc3', token: 't' } },
+  { name: 'testDoAccount', call: () => sirdar.testDoAccount('production'),
+    path: '/deploy/integrations/digitalocean/accounts/production/test', method: 'POST' },
+  { name: 'clearDoAccount', call: () => sirdar.clearDoAccount('development'),
+    path: '/deploy/integrations/digitalocean/accounts/development', method: 'DELETE' },
+  { name: 'getDoRegions', call: () => sirdar.getDoRegions('development'),
+    path: '/deploy/digitalocean/regions?account=development' },
+  { name: 'getDoRegions (default)', call: () => sirdar.getDoRegions(), path: '/deploy/digitalocean/regions?account=production' },
+  { name: 'connectDeploy (account)', call: () => sirdar.connectDeploy('digitalocean', 'dev', 'nyc3', undefined, 'development'),
+    path: '/deploy/connect', method: 'POST', body: { target: 'digitalocean', type: 'dev', region: 'nyc3', account: 'development' } },
+  { name: 'activateSlot', call: () => sirdar.activateSlot('uat9', 'purple'), path: '/deploy/environments/uat9/activate',
+    method: 'POST', body: { slot: 'purple' } },
+  { name: 'activateSlot (deactivate)', call: () => sirdar.activateSlot('prod', null, 'prod'),
+    path: '/deploy/environments/prod/activate', method: 'POST', body: { slot: null, confirm_name: 'prod' } },
+  { name: 'addSlot', call: () => sirdar.addSlot('solo'), path: '/deploy/environments/solo/slots', method: 'POST' },
+  { name: 'updateEnvironment (sizes)', call: () => sirdar.updateEnvironment('uat9', { do: { droplet_size: 's-4vcpu-8gb' } }),
+    path: '/deploy/environments/uat9', method: 'PATCH', body: { do: { droplet_size: 's-4vcpu-8gb' } } },
+  { name: 'startDeployment (production delete)',
+    call: () => sirdar.startDeployment('prod', { mode: 'teardown', confirm_name: 'prod', confirm_production: 'delete production prod' }),
+    path: '/deploy/environments/prod/deployments', method: 'POST',
+    body: { mode: 'teardown', confirm_name: 'prod', confirm_production: 'delete production prod' } },
+  { name: 'retryDeployment (production delete)',
+    call: () => sirdar.retryDeployment('d1', { from_step: 18, confirm_name: 'prod', confirm_production: 'delete production prod' }),
+    path: '/deploy/deployments/d1/retry', method: 'POST',
+    body: { from_step: 18, confirm_name: 'prod', confirm_production: 'delete production prod' } },
 ];
 
 it.each(CALLS)('$name calls $path', async ({ call, path, method, body }) => {
@@ -106,7 +134,8 @@ function deployCodes(): string[] {
                       /(?:EnvError|RefError|TargetError|SnapshotError|IntegrationError|VmError|DoEnvError)\("([a-z_]+)"/g,
                       /^\s+code = "([a-z_]+)"$/gm,
                       /"(vm_[a-z_]+_invalid)"/g, /, "([a-z_]+_invalid)"\)/g,
-                      /"([a-z]+_too_long)"/g, /_check_ipv4\([^()]*,\s*"([a-z]+_[a-z_]+)"\)/g]) {
+                      /"([a-z]+_too_long)"/g, /_check_ipv4\([^()]*,\s*"([a-z]+_[a-z_]+)"\)/g,
+                      /_refuse\(\s*\d+,\s*"([a-z_]+)"/g]) {
       for (const m of src.matchAll(re)) found.add(m[1]);
     }
   }
@@ -121,6 +150,9 @@ it('every error code the deploy routes can return has its own message', () => {
   expect(codes).toContain('ref_lookup_failed');
   expect(codes).toContain('snapshot_in_use');
   expect(codes).toContain('rollback_not_latest');
+  for (const code of ['slot_required', 'already_inactive', 'do_not_allowed', 'connect_failed', 'slots_full']) {
+    expect(codes).toContain(code);                // routes/deploy.py's _refuse(status, "code")
+  }
   for (const code of ['integration_not_configured', 'publish_off', 'nothing_to_claim', 'claim_conflict',
                       'token_invalid', 'npm_url_invalid', 'secret_required', 'publish_not_allowed',
                       'proxmox_url_invalid', 'node_invalid', 'template_vmid_invalid', 'proxmox_token_invalid',
@@ -233,4 +265,12 @@ it('the VM-host codes read host-neutral', () => {
   expect(text('tls_untrusted')).toBe("Sirdar doesn't trust this server's certificate yet.");
   expect(text('not_vm_environment')).toBe("This environment isn't on a VM host.");
   expect(text('vm_name_invalid')).toBe("The environment name can't be used as a VM host name.");
+});
+
+it('the phase 7b DigitalOcean codes have copy', () => {
+  for (const code of ['not_digitalocean_environment', 'slot_invalid', 'slot_required', 'slot_already_active',
+    'production_retiring', 'already_inactive', 'auto_activate_not_allowed', 'slots_full', 'slot_not_allowed',
+    'do_shrink_refused']) {
+    expect(sirdar.errorText(new ApiError(409, code), '__none__')).not.toBe('__none__');
+  }
 });

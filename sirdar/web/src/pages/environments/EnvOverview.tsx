@@ -3,10 +3,16 @@ import DataTable from '@portal/components/DataTable';
 
 import type { Environment } from '../../lib/sirdarApi';
 
-import { DEPLOYMENT_STATUS, MODE_LABEL, StatusChip, onVmHost, vmNetwork, vmRef, vmSize, when } from './labels';
+import DoMachineSection from './DoMachineSection';
+import {
+  DEPLOYMENT_STATUS, StatusChip, deploymentLabel, onDo, onVmHost, vmNetwork, vmRef, vmSize, when,
+} from './labels';
 
-export default function EnvOverview({ env }: { env: Environment }) {
+export default function EnvOverview({ env, canActivate = false, onActivate }: {
+  env: Environment; canActivate?: boolean; onActivate?: (slot: string | null) => void;
+}) {
   const last = env.last_deployment;
+  const cloud = onDo(env);
   return (
     <>
       <section className="sirdar-section">
@@ -26,7 +32,7 @@ export default function EnvOverview({ env }: { env: Environment }) {
           <dd>
             {last ? (
               <>
-                <StatusChip map={DEPLOYMENT_STATUS} status={last.status} /> {MODE_LABEL[last.mode] ?? last.mode} ·{' '}
+                <StatusChip map={DEPLOYMENT_STATUS} status={last.status} /> {deploymentLabel(last)} ·{' '}
                 <span className="mono">{when(last.finished_at ?? last.started_at)}</span>
                 {last.actor_name && <> · {last.actor_name}</>}
               </>
@@ -34,6 +40,9 @@ export default function EnvOverview({ env }: { env: Environment }) {
           </dd>
         </dl>
       </section>
+      {cloud && (
+        <DoMachineSection env={env} canActivate={canActivate && !!onActivate} onActivate={(s) => onActivate?.(s)} />
+      )}
       {onVmHost(env) && env.vm && (
         <section className="sirdar-section">
           <h2>Machine</h2>
@@ -63,17 +72,22 @@ export default function EnvOverview({ env }: { env: Environment }) {
               s.hostname
                 ? <a href={`https://${s.hostname}`} target="_blank" rel="noreferrer">{`https://${s.hostname}`}</a>
                 : <span className="cell-sub">LAN only</span>,
-              s.service === 'mailpit'
+              cloud
+                ? `:${s.port} on each droplet`
+                : s.service === 'mailpit'
                 ? <a href={`http://${s.host_ip}:${s.port}`} target="_blank" rel="noreferrer">{`${s.host_ip}:${s.port}`}</a>
                 : `${s.host_ip}:${s.port}`,
             ],
           }))}
         />
         <p className="page-hint">
-          {env.publish
+          {cloud
+            ? "The load balancer serves the public names; DNS points at it. Mailpit catches this environment's email "
+              + 'on each droplet.'
+            : env.publish
             ? 'Sirdar keeps their DNS records and proxy hosts up to date on every deploy (Publish tab). '
             : 'Public URLs answer once their DNS records and proxy hosts exist: set up by hand, or turn Publish on. '}
-          Mailpit catches this environment's email on the LAN.
+          {!cloud && "Mailpit catches this environment's email on the LAN."}
         </p>
       </section>
     </>

@@ -137,3 +137,12 @@ def test_extras_stay_out_of_repr():
 def test_the_cluster_ca_rides_one_line_after_the_ssl_mode():
     keys = envfile.EXTRA_KEYS
     assert keys.index("SS_DATABASE_CA_B64") == keys.index("SS_DATABASE_SSL") + 1
+
+
+def test_the_cert_worker_keys_close_the_extras():
+    assert envfile.EXTRA_KEYS[-6:] == ("STACK_DROPLET_ID", "SS_CERT_DO_TOKEN", "SS_CERT_LB_ID",
+                                       "SS_CERT_NAMES", "SS_CERT_ACME_DIRECTORY",
+                                       "SS_CERT_ACME_KEY")
+    text = ENV_EXAMPLE.read_text()
+    for key in envfile.EXTRA_KEYS:
+        assert f"# {key}=" in text or f" {key}=" in text, key     # listed, commented out

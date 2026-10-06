@@ -13,7 +13,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import DeleteEnvironmentModal from './DeleteEnvironmentModal';
-import { ENV, ESXI_ENV, ESXI_NEW_ENV, ESXI_VM, PUBLISHED_ENV, PX_ENV, PX_NEW_ENV, TEARDOWN } from './testData';
+import { DO_ENV, ENV, ESXI_ENV, ESXI_NEW_ENV, ESXI_VM, PUBLISHED_ENV, PX_ENV, PROD_ENV, PX_NEW_ENV, TEARDOWN } from './testData';
 
 beforeEach(() => {
   perms.add = true; perms.change = true;
@@ -26,7 +26,7 @@ function show(env = PUBLISHED_ENV) {
   const onStarted = vi.fn();
   const onClose = vi.fn();
   render(<DeleteEnvironmentModal env={env} onStarted={onStarted} onClose={onClose} />);
-  return { onStarted, onClose, dialog: screen.getByRole('dialog', { name: 'Delete uat' }) };
+  return { onStarted, onClose, dialog: screen.getByRole('dialog', { name: `Delete ${env.name}` }) };
 }
 
 it('says what goes and what stays, and needs the typed name', async () => {
@@ -117,4 +117,51 @@ it('an ESXi environment names ESXi: built, never created, and partly built', () 
                                  onStarted={vi.fn()} onClose={vi.fn()} />);
   expect(screen.getByText(/Removes the partly built VM ss-uat3 \(VM 12\) if ESXi has it\./)).toBeTruthy();
   expect(screen.queryByText(/Destroys the VM/)).toBeNull();
+});
+
+it('DigitalOcean: lists what goes there and saves a snapshot first unless unticked', async () => {
+  const { dialog } = show(DO_ENV);
+  const removes = within(dialog).getByRole('list', { name: 'Sirdar removes' });
+  expect(within(removes).getAllByRole('listitem').map((li) => li.textContent)).toEqual(
+    expect.arrayContaining(['VPC ss-uat9', 'Droplet ss-uat9-orange', 'Database ss-uat9-db', 'Load balancer ss-uat9-lb']));
+  const snap = within(dialog).getByRole('checkbox', { name: 'Save a snapshot first' }) as HTMLInputElement;
+  expect(snap.checked).toBe(true);
+  await userEvent.click(snap);
+  await userEvent.type(within(dialog).getByLabelText('Type uat9 to confirm'), 'uat9');
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Delete environment' }));
+  expect(api.startDeployment).toHaveBeenCalledWith('uat9', { mode: 'teardown', confirm_name: 'uat9', snapshot: false });
+});
+
+it('DigitalOcean: with the snapshot kept on, the default is sent', async () => {
+  const { dialog } = show(DO_ENV);
+  await userEvent.type(within(dialog).getByLabelText('Type uat9 to confirm'), 'uat9');
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Delete environment' }));
+  expect(api.startDeployment).toHaveBeenCalledWith('uat9', { mode: 'teardown', confirm_name: 'uat9' });
+});
+
+it('production: retiring first, then deactivated, then both phrases and always a snapshot', async () => {
+  let dialog = show(PROD_ENV).dialog;
+  expect(within(dialog).getByText('Mark this production environment retiring first (Settings).')).toBeTruthy();
+  expect((within(dialog).getByRole('button', { name: 'Delete environment' }) as HTMLButtonElement).disabled).toBe(true);
+  cleanup();
+  dialog = show({ ...PROD_ENV, retiring: true }).dialog;
+  expect(within(dialog).getByText(/Deactivate it first/)).toBeTruthy();
+  expect((within(dialog).getByRole('button', { name: 'Delete environment' }) as HTMLButtonElement).disabled).toBe(true);
+  cleanup();
+  dialog = show({ ...PROD_ENV, retiring: true, active_slot: null }).dialog;
+  expect(within(dialog).queryByRole('checkbox', { name: 'Save a snapshot first' })).toBeNull();
+  expect(within(dialog).getByText(/A snapshot is always saved first/)).toBeTruthy();
+  const del = within(dialog).getByRole('button', { name: 'Delete environment' }) as HTMLButtonElement;
+  await userEvent.type(within(dialog).getByLabelText('Type prod to confirm'), 'prod');
+  expect(del.disabled).toBe(true);
+  await userEvent.type(within(dialog).getByLabelText('Type delete production prod to confirm'), 'delete production prod');
+  await userEvent.click(del);
+  expect(api.startDeployment).toHaveBeenCalledWith('prod', {
+    mode: 'teardown', confirm_name: 'prod', confirm_production: 'delete production prod' });
+});
+
+it('production that was never deployed: no snapshot to save', () => {
+  const { dialog } = show({ ...PROD_ENV, retiring: true, active_slot: null, current_sha: null });
+  expect(within(dialog).getByText('Nothing was deployed, so there is no snapshot to save.')).toBeTruthy();
+  expect(within(dialog).queryByText(/always saved first/)).toBeNull();
 });

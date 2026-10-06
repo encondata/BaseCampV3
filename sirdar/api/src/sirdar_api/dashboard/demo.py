@@ -27,6 +27,27 @@ def _env_resources(env: str) -> list[dict]:
                  endpoint=f"{env}-assets")]
 
 
+def _server(id_, label, sub, state, health, version) -> dict:
+    return {"id": id_, "label": label, "sub": sub, "state": state, "health": health,
+            "version": version, "deployed": version is not None}
+
+
+def _do_flow(lb_ip, servers, active, days) -> dict:
+    return {"kind": "load_balancer",
+            "middle": {"label": "Load balancer", "sub": lb_ip, "status": "ok"},
+            "servers": servers, "active_slot": active,
+            "certificate": {"days_left": days, "expires_at": "2027-01-04T12:00:00+00:00",
+                            "tone": "ok" if days > 14 else "warn"},
+            "deploying_slot": None, "failed_slot": None}
+
+
+def _card(id_, label, sub, state, version, release, action, production, flow) -> dict:
+    return {"id": id_, "label": label, "sub": sub, "state": state, "version": version,
+            "last_release": release, "last_release_at": None, "action_label": action,
+            "environment": None, "production": production, "primary": production,
+            "retiring": False, "running": False, "portal_url": None, "flow": flow}
+
+
 def demo_dashboard() -> dict:
     tree = [
         node("env-production", "Production", "environment", "Environment", "active", "Active",
@@ -50,24 +71,25 @@ def demo_dashboard() -> dict:
         "demo": True,
         "generated_at": datetime.now(UTC).isoformat(),
         "health": {"status": "healthy", "label": "All systems healthy"},
-        "production": {
-            "status": "active", "active_slot": "blue",
-            "traffic": {"label": "Live traffic", "sub": "External users"},
-            "load_balancer": {"label": "Load balancer", "sub": "Blue active", "present": True},
-            "slots": [
-                {"id": "blue", "label": "Production Blue", "state": "active", "health": "healthy",
-                 "version": "v2.8.0", "instances": {"running": 3, "total": 3}, "traffic_pct": 100},
-                {"id": "green", "label": "Production Green", "state": "standby",
-                 "health": "unknown", "version": "v2.7.9",
-                 "instances": {"running": 0, "total": 3}, "traffic_pct": 0},
-            ]},
         "environments": [
-            {"id": "dev", "label": "Development", "sub": None, "state": "empty",
-             "version": None, "last_release": "v2.8.1-dev", "last_release_at": None,
-             "action_label": "Deploy to Dev", "environment": None},
-            {"id": "beta", "label": "Beta", "sub": None, "state": "empty", "version": None,
-             "last_release": "v2.8.1-rc.2", "last_release_at": None,
-             "action_label": "Deploy to Beta", "environment": None},
+            _card("production", "Production", "Production", "active", "v2.8.0", "v2.8.0",
+                  "Deploy production", True, _do_flow("203.0.113.10", [
+                      _server("blue", "Blue", "10.20.0.10", "live", "healthy", "v2.8.0"),
+                      _server("green", "Green", "10.20.0.20", "idle", "unknown", "v2.7.9")],
+                      "blue", 64)),
+            _card("dev", "Development", "Development", "active", "v2.8.1-dev", "v2.8.1-dev",
+                  "Deploy to Dev", False, _do_flow("203.0.113.20", [
+                      _server("orange", "Orange", "10.30.0.10", "live", "healthy", "v2.8.1-dev"),
+                      _server("purple", "Purple", "10.30.0.11", "idle", "healthy", "v2.8.2-dev")],
+                      "orange", 12)),
+            _card("uat", "UAT", "Custom", "active", "v2.8.1-rc.2", "v2.8.1-rc.2", "Deploy to UAT",
+                  False, {"kind": "proxy",
+                          "middle": {"label": "Nginx Proxy Manager", "sub": "10.10.48.6",
+                                     "status": "ok"},
+                          "servers": [_server("host", "Lab box", "10.10.48.63", "live",
+                                              "healthy", "v2.8.1-rc.2")],
+                          "active_slot": "host", "certificate": None, "deploying_slot": None,
+                          "failed_slot": None}),
         ],
-        "infrastructure": {"source": "demo", "error": None, "tree": tree},
+        "infrastructure": {"source": "demo", "error": None, "tree": tree, "accounts": []},
     }

@@ -17,6 +17,12 @@ from .test_deploy_digitalocean import TOKEN
 SHA = "e73b99ca" + "1" * 32
 
 
+def _plain(card: dict) -> dict:
+    """A card without the spotlight fields (test_dashboard_flow covers them)."""
+    return {k: v for k, v in card.items()
+            if k not in ("flow", "production", "primary", "retiring", "running")}
+
+
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch):
     service.clear_cache()
@@ -48,17 +54,12 @@ async def test_real_no_token(client, db):
     d = r.json()
     assert d["demo"] is False
     assert d["health"] == {"status": "unknown", "label": "No environments deployed"}
-    assert d["infrastructure"] == {"source": "none", "error": None, "tree": []}
-    p = d["production"]
-    assert (p["status"], p["active_slot"]) == ("inactive", None)
-    assert p["load_balancer"] == {"label": "Load balancer", "sub": "Not configured",
-                                  "present": False}
-    assert [s["id"] for s in p["slots"]] == ["blue", "green"]
-    assert all(s["state"] == "empty" and s["version"] is None and s["traffic_pct"] == 0
-               and s["instances"] == {"running": 0, "total": 0} for s in p["slots"])
+    assert d["infrastructure"] == {"source": "none", "error": None, "tree": [], "accounts": []}
+    assert "production" not in d
     assert [(e["id"], e["state"], e["last_release"], e["environment"], e["action_label"])
             for e in d["environments"]] == \
-        [("dev", "empty", None, None, "Set up Dev"), ("beta", "empty", None, None, "Set up Beta")]
+        [("production", "empty", None, None, "Set up Production"),
+         ("dev", "empty", None, None, "Set up Dev"), ("beta", "empty", None, None, "Set up Beta")]
 
 
 async def test_real_with_inventory(client, db, with_token):
@@ -67,9 +68,10 @@ async def test_real_with_inventory(client, db, with_token):
     assert d["infrastructure"]["source"] == "digitalocean"
     assert d["infrastructure"]["error"] is None
     assert [n["name"] for n in d["infrastructure"]["tree"]][-1] == "Untagged"
-    assert d["production"]["load_balancer"]["present"] is True
-    assert [e["id"] for e in d["environments"]] == ["dev", "beta", "qa-team"]
-    assert d["environments"][2]["label"] == "Qa Team"
+    assert [e["id"] for e in d["environments"]] == ["production", "dev", "beta", "qa-team"]
+    assert d["environments"][3]["label"] == "Qa Team"
+    assert d["infrastructure"]["accounts"] == [
+        {"key": "production", "label": "Production", "error": None}]
     assert TOKEN not in json.dumps(d)
 
 
@@ -90,6 +92,8 @@ async def test_do_401_still_200(client, db, with_token):
     infra = r.json()["infrastructure"]
     assert infra["source"] == "digitalocean" and infra["tree"] == []
     assert infra["error"] == "DigitalOcean rejected the API token."
+    assert infra["accounts"] == [{"key": "production", "label": "Production",
+                                  "error": "DigitalOcean rejected the API token."}]
     assert TOKEN not in r.text
 
 
@@ -98,14 +102,12 @@ async def test_demo(client, db):
     d = (await client.get("/api/dashboard?demo=1", headers=h)).json()
     assert d["demo"] is True and d["infrastructure"]["source"] == "demo"
     assert d["health"] == {"status": "healthy", "label": "All systems healthy"}
-    blue, green = d["production"]["slots"]
-    assert (blue["version"], blue["traffic_pct"], blue["instances"]) == \
-        ("v2.8.0", 100, {"running": 3, "total": 3})
-    assert (green["state"], green["version"], green["instances"]["total"]) == ("standby", "v2.7.9", 3)
-    assert [(e["id"], e["last_release"]) for e in d["environments"]] == \
-        [("dev", "v2.8.1-dev"), ("beta", "v2.8.1-rc.2")]
-    assert all(e["environment"] is None and e["sub"] is None and e["last_release_at"] is None
-               for e in d["environments"])
+    prod, dev, uat = d["environments"]
+    blue, green = prod["flow"]["servers"]
+    assert (blue["state"], blue["version"], green["state"], green["version"]) == (
+        "live", "v2.8.0", "idle", "v2.7.9")
+    assert (prod["flow"]["active_slot"], dev["flow"]["active_slot"]) == ("blue", "orange")
+    assert uat["flow"]["middle"]["label"] == "Nginx Proxy Manager"
     tree = d["infrastructure"]["tree"]
     assert [n["name"] for n in tree] == ["Production", "Development", "Beta"]
     blue_n, green_n, shared = tree[0]["children"]
@@ -118,8 +120,7 @@ async def test_demo(client, db):
 
 def test_demo_shape_is_stable():
     d = demo_dashboard()
-    assert set(d) == {"demo", "generated_at", "health", "production", "environments",
-                      "infrastructure"}
+    assert set(d) == {"demo", "generated_at", "health", "environments", "infrastructure"}
 
     def walk(n):
         assert set(n) == {"id", "name", "kind", "type_label", "status", "status_label", "region",
@@ -172,17 +173,20 @@ async def test_real_environments(client, db):
     await db.commit()
     h = await auth_headers(client, db)
     d = (await client.get("/api/dashboard", headers=h)).json()
-    assert d["environments"] == [
+    assert (d["environments"][0]["id"], d["environments"][0]["environment"]) == (
+        "production", None)
+    assert [_plain(c) for c in d["environments"][1:]] == [
         {"id": "uat", "label": "uat", "sub": "Development", "state": "active",
          "version": "e73b99ca", "last_release": "e73b99ca",
          "last_release_at": "2026-10-03T12:00:00+00:00", "action_label": "Deploy uat",
-         "environment": "uat"},
+         "environment": "uat", "portal_url": "https://portal.uat.serversherpa.com"},
         {"id": "beta", "label": "Beta", "sub": None, "state": "empty", "version": None,
          "last_release": None, "last_release_at": None, "action_label": "Set up Beta",
-         "environment": None},
+         "environment": None, "portal_url": None},
         {"id": "qa-east", "label": "qa-east", "sub": "Custom", "state": "failed",
          "version": None, "last_release": None, "last_release_at": None,
-         "action_label": "Deploy qa-east", "environment": "qa-east"}]
+         "action_label": "Deploy qa-east", "environment": "qa-east",
+         "portal_url": "https://portal.qa-east.serversherpa.com"}]
     assert d["health"] == {"status": "degraded", "label": "A deployment failed"}
 
 
@@ -192,7 +196,7 @@ async def test_health_when_an_environment_is_deployed(client, db):
     d = (await client.get("/api/dashboard", headers=h)).json()
     assert d["health"] == {"status": "healthy", "label": "Environments deployed"}
     assert [(e["id"], e["state"]) for e in d["environments"]] == [
-        ("uat", "active"), ("beta", "empty")]
+        ("production", "empty"), ("uat", "active"), ("beta", "empty")]
 
 
 async def test_a_tagged_droplet_with_an_environment_gets_one_card(client, db, with_token):
@@ -202,4 +206,4 @@ async def test_a_tagged_droplet_with_an_environment_gets_one_card(client, db, wi
     h = await auth_headers(client, db)
     d = (await client.get("/api/dashboard", headers=h)).json()
     assert [(e["id"], e["environment"]) for e in d["environments"]] == [
-        ("dev", None), ("beta", None), ("qa-team", "qa-team")]
+        ("production", None), ("dev", None), ("beta", None), ("qa-team", "qa-team")]

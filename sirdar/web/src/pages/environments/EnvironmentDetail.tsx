@@ -6,6 +6,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useAuth } from '@portal/auth/AuthContext';
 import { ApiError } from '@portal/lib/api';
 
+import ActivateModal from '../../components/ActivateModal';
 import {
   errorText, getDeployTargets, getEnvironment, type DeployTarget, type Deployment, type Environment,
 } from '../../lib/sirdarApi';
@@ -17,7 +18,7 @@ import EnvOverview from './EnvOverview';
 import EnvSettings from './EnvSettings';
 import PublishTab from './PublishTab';
 
-import { ENV_STATUS, StatusChip, TYPE_LABEL, deploymentRunning, targetLabel } from './labels';
+import { ENV_STATUS, StatusChip, TYPE_LABEL, deploymentRunning, failedStillLive, targetLabel } from './labels';
 
 /** While a deployment runs (the environment is deploying or deleting, or a
  *  publish or snapshot job is running) it is reloaded this often, on every tab,
@@ -47,6 +48,7 @@ function EnvironmentPage({ name }: { name: string }) {
   const [selected, setSelected] = useState<string | null>(linked);
   const [tab, setTab] = useState<Tab>(linked ? 'deployments' : 'overview');
   const [deploying, setDeploying] = useState(false);
+  const [activating, setActivating] = useState<{ slot: string | null } | null>(null);
   // A teardown ends by deleting the environment: a 404 after it loaded means gone.
   const [gone, setGone] = useState(false);
   const loaded = useRef(false);
@@ -113,12 +115,16 @@ function EnvironmentPage({ name }: { name: string }) {
     );
   }
   const running = deploymentRunning(env);
+  const stillLive = failedStillLive(env);
   return (
     <div className="portal-page">
       {crumb}
       <div className="dir-head sirdar-env-head">
         <div>
-          <div className="page-title"><h1>{env.name}</h1><StatusChip map={ENV_STATUS} status={env.status} /></div>
+          <div className="page-title">
+            <h1>{env.name}</h1><StatusChip map={ENV_STATUS} status={env.status} />
+            {stillLive && <span className="chip c-amber">{stillLive}</span>}
+          </div>
           <p>{`${TYPE_LABEL[env.type] ?? env.type} · ${targetLabel(targets, env.target)} · ${env.base_domain}`}</p>
         </div>
         {can('deploy', 'add') && (
@@ -135,7 +141,11 @@ function EnvironmentPage({ name }: { name: string }) {
                   className={tab === key ? 'on' : ''} onClick={() => setTab(key)}>{label}</button>
         ))}
       </div>
-      {tab === 'overview' && <EnvOverview env={env} />}
+      {/* Activate needs add + change: the same permissions as the API's activate route. */}
+      {tab === 'overview' && (
+        <EnvOverview env={env} canActivate={can('deploy', 'add') && can('deploy', 'change') && !running}
+                     onActivate={(slot) => setActivating({ slot })} />
+      )}
       {tab === 'deployments' && (
         <DeploymentsTab env={env} selected={selected} onSelect={setSelected} onChanged={() => void load()} />
       )}
@@ -143,6 +153,13 @@ function EnvironmentPage({ name }: { name: string }) {
       {tab === 'backups' && <BackupsTab env={env} onStarted={started} />}
       {tab === 'settings' && <EnvSettings env={env} targets={targets} onSaved={setEnv} onDeleteStarted={started} />}
       {deploying && <DeployModal env={env} onStarted={started} onClose={() => setDeploying(false)} />}
+      {activating && (
+        <ActivateModal envName={env.name} production={env.type === 'production'} slot={activating.slot}
+                       fromSlot={env.active_slot}
+                       version={env.do?.slots.find((s) => s.slot === activating.slot)?.image_tag ?? null}
+                       onStarted={(dep) => { setActivating(null); started(dep); }}
+                       onClose={() => setActivating(null)} />
+      )}
     </div>
   );
 }

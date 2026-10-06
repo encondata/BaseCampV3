@@ -478,3 +478,15 @@ async def test_environments_that_appear_while_saving_are_checked(db, no_env_toke
         await do_accounts.save(db, get_settings(), "development", label="Development",
                                region="nyc3", token="dop_v1_" + "79" * 32)
     assert e.value.code == "do_account_changed"
+
+
+async def test_a_test_that_clears_the_renewal_token_skips_it(client, db, no_env_token, do_cloud):
+    await configure_account(db)                          # with DEV_RENEW_TOKEN stored
+    h = await auth_headers(client, db)
+    resp = await client.post(f"{URL}/development/test", headers=h, json={
+        "label": "Development", "region": "nyc3", "clear_renewal_token": True})
+    assert resp.status_code == 200, resp.text
+    check = next(c for c in resp.json()["checks"] if c["label"] == "Renewal token")
+    assert check["status"] == "warn" and "cleared" in check["value"]
+    assert f"Bearer {DEV_RENEW_TOKEN}" not in {
+        r.headers.get("authorization") for r in do_cloud.do.requests}

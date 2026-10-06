@@ -14,7 +14,7 @@ const api = vi.hoisted(() => ({ listDeployments: vi.fn() }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
 
 import DeploymentsTab from './DeploymentsTab';
-import { ADOPTED, ENV, FAILED, RUNNING, summary } from './testData';
+import { ADOPTED, DO_ENV, DO_UPDATE, ENV, FAILED, RUNNING, summary } from './testData';
 
 beforeEach(() => {
   api.listDeployments.mockReset();
@@ -86,4 +86,24 @@ it('a reloaded environment whose deploy ended reloads the history', async () => 
   rerender(<DeploymentsTab {...props} env={{ ...ENV, status: 'failed', updated_at: '2026-10-03T14:00:00Z' }} />);
   expect(await within(table).findByText('Failed')).toBeTruthy();
   expect(api.listDeployments).toHaveBeenCalledTimes(2);
+});
+
+it('names a DigitalOcean deployment by its slot', async () => {
+  api.listDeployments.mockResolvedValue({ deployments: [DO_UPDATE] });
+  render(<DeploymentsTab env={DO_ENV} selected={null} onSelect={vi.fn()} onChanged={vi.fn()} />);
+  expect(await screen.findByText('Update to Purple, not live')).toBeTruthy();
+});
+
+it("a renew newer than a failed Update doesn't stop the Update counting as latest (as the API's retry does)", async () => {
+  const renew = { ...summary(FAILED), id: 'r1', mode: 'renew', status: 'succeeded' };
+  const renew2 = { ...renew, id: 'r0' };
+  api.listDeployments.mockResolvedValue({ deployments: [renew, summary(FAILED), renew2, ADOPTED] });
+  const props = { env: DO_ENV, onSelect: vi.fn(), onChanged: vi.fn() };
+  const { rerender } = render(<DeploymentsTab {...props} selected="d1" />);
+  expect(await screen.findByText('view d1 latest')).toBeTruthy();
+  // a renew itself is latest only against everything
+  rerender(<DeploymentsTab {...props} selected="r1" />);
+  expect(await screen.findByText('view r1 latest')).toBeTruthy();
+  rerender(<DeploymentsTab {...props} selected="r0" />);
+  expect(await screen.findByText('view r0 older')).toBeTruthy();
 });

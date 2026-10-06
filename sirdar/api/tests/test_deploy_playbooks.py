@@ -70,7 +70,7 @@ def test_publish_and_teardown_plans():
 
 def test_plans():
     assert [s.number for s in steps.STEPS] == [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11,
-                                               12, 13, 13, 14, 14, 15, 15, 16, 17, 18]
+                                               12, 13, 13, 14, 14, 15, 15, 16, 17, 18, 19]
     assert [s.number for s in steps.plan_for("update")] == [1, 2, 3, 4, 5, 6, 10]
     build = ["preflight", "bootstrap", "fetch", "render", "build"]
     # a seeded first deploy backs up whatever database is already there
@@ -89,7 +89,7 @@ def test_plans():
         with pytest.raises(ValueError):
             steps.plan_for(mode, restore=restore)
     for mode in steps.MODES:
-        cloud = mode == "activate"
+        cloud = mode in ("activate", "renew")
         numbers = [s.number for s in steps.plan_for(mode, vm=mode == "vm_restore", cloud=cloud)]
         assert numbers == sorted(set(numbers)), f"{mode}: numbers must rise"
     assert steps.STEPS_BY_KEY["up"].timeout >= 30 * 60
@@ -833,6 +833,7 @@ def test_digitalocean_plans():
     assert [s.number for s in steps.plan_for("teardown", cloud=True, snapshot=True)] == [
         11, 17, 18]
     assert _cloud("activate") == ["slot_smoke", "go_live"]
+    assert _cloud("renew") == ["do_renew"]
     assert _cloud("activate", go_live=True) == ["slot_smoke", "go_live"]
     assert _cloud("publish") == ["dns"] and _cloud("snapshot") == ["preflight", "export"]
     for mode, kw in (("reset", {}), ("restore_dump", {}), ("rollback", {}), ("vm_restore", {}),
@@ -842,3 +843,13 @@ def test_digitalocean_plans():
             steps.plan_for(mode, cloud=True, **kw)
     with pytest.raises(ValueError):
         steps.plan_for("activate")                       # only DigitalOcean activates
+    with pytest.raises(ValueError):
+        steps.plan_for("renew")                          # nor renews a certificate
+
+
+def test_deactivate_has_no_slot_smoke_test():
+    assert _cloud("activate", smoke=False) == ["go_live"]
+    assert _cloud("activate") == ["slot_smoke", "go_live"]
+    for mode in ("update", "teardown"):
+        with pytest.raises(ValueError):
+            steps.plan_for(mode, cloud=True, smoke=False)   # only Deactivate skips it

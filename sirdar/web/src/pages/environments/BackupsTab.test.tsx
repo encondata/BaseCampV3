@@ -13,7 +13,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import BackupsTab from './BackupsTab';
-import { BACKUPS, BLOCKED_BACKUP, ENV, KEYS_CHANGED_REASON, PUBLISHING, RUNNING, summary } from './testData';
+import { BACKUPS, BLOCKED_BACKUP, DO_ENV, ENV, KEYS_CHANGED_REASON, PUBLISHING, RUNNING, summary } from './testData';
 
 beforeEach(() => {
   perms.change = true;
@@ -139,4 +139,12 @@ it('a refused key-changed restore shows the dated reason', async () => {
   await userEvent.type(screen.getByLabelText('Type uat to confirm'), 'uat');
   await userEvent.click(screen.getByRole('button', { name: 'Restore backup' }));
   expect((await screen.findByRole('alert')).textContent).toBe(KEYS_CHANGED_REASON);
+});
+
+it('DigitalOcean: backups are listed but not restored here', async () => {
+  api.listBackups.mockResolvedValue({ backups: BACKUPS });
+  render(<BackupsTab env={DO_ENV} onStarted={vi.fn()} />);
+  await screen.findByText(BACKUPS[0].name);
+  expect(screen.queryByRole('button', { name: /^Restore / })).toBeNull();
+  expect(screen.getByText(/Restore backup isn't offered on DigitalOcean/)).toBeTruthy();
 });

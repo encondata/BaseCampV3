@@ -326,14 +326,16 @@ async def _status(api: do_api.DigitalOceanApi, path: str) -> int:
 
 
 async def test(db: AsyncSession, settings: Settings, key: str, *, token: str | None = None,
-               renewal_token: str | None = None, region: str | None = None) -> ConnectResult:
+               renewal_token: str | None = None, region: str | None = None,
+               clear_renewal: bool = False) -> ConnectResult:
     """Read-only checks with the given tokens, else the stored ones:
-    Account, Team, Droplets, Region, Renewal token. Facts carry no secret."""
+    Account, Team, Droplets, Region, Renewal token. Facts carry no secret.
+    clear_renewal: the save will clear the renewal token, so none is tested."""
     stored = await load(db, settings, key)
     token = token if token is not None else (stored.token if stored else None)
     if token is None:
         raise IntegrationError("do_account_not_configured", account=key)
-    renewal = renewal_token if renewal_token is not None else (
+    renewal = None if clear_renewal else renewal_token if renewal_token is not None else (
         stored.renewal_token if stored else None)
     region = region if region is not None else (stored.region if stored else None)
     try:
@@ -375,7 +377,11 @@ async def test(db: AsyncSession, settings: Settings, key: str, *, token: str | N
         ok = bool(match and match.get("available"))
         checks.append(Check("Region", "pass" if ok else "fail",
                             f"{region} available" if ok else f"{region} not available"))
-    if renewal_status is None:
+    if clear_renewal:
+        checks.append(Check("Renewal token", "warn",
+                            "Will be cleared: Sirdar can't build environments in this "
+                            "account after you save."))
+    elif renewal_status is None:
         checks.append(Check("Renewal token", "warn",
                             "Not set: Sirdar can't build environments in this account yet."))
     else:
