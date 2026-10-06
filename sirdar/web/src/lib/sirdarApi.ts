@@ -760,18 +760,6 @@ export const claimPublish = (name: string) =>
 
 /* ---- Dashboard (GET /api/dashboard) ---- */
 export interface DashHealth { status: 'healthy' | 'degraded' | 'unknown' | string; label: string }
-export interface DashSlot {
-  id: 'blue' | 'green' | string; label: string;
-  state: 'active' | 'standby' | 'empty' | string;
-  health: 'healthy' | 'degraded' | 'unknown' | string;
-  version: string | null; instances: { running: number; total: number }; traffic_pct: number;
-}
-export interface DashProduction {
-  status: 'active' | 'inactive' | string; active_slot: string | null;
-  traffic: { label: string; sub: string };
-  load_balancer: { label: string; sub: string; present: boolean };
-  slots: DashSlot[];
-}
 export interface DashCert { days_left: number; expires_at: string; tone: 'ok' | 'warn' | 'bad' | string }
 export interface DashServer {
   /** A slot ("blue", "orange"…), "host" on the LAN, "none" on a placeholder. */
@@ -797,8 +785,10 @@ export interface DashEnvironment {
   action_label: string;
   /** The environment the card's action deploys; null means there's nothing to deploy yet. */
   environment: string | null;
-  /** The production card (always first). */
+  /** A production environment, or the Production placeholder (a retiring production listed later too). */
   production: boolean;
+  /** The Production card: true on the first card only. */
+  primary: boolean;
   flow: DashFlow;
 }
 export interface DashNode {
@@ -809,7 +799,7 @@ export interface DashNode {
   tone: 'shared' | null; children: DashNode[];
 }
 export interface DashboardData {
-  demo: boolean; generated_at: string; health: DashHealth; production: DashProduction;
+  demo: boolean; generated_at: string; health: DashHealth;
   environments: DashEnvironment[];
   infrastructure: {
     source: 'none' | 'digitalocean' | 'demo' | string; error: string | null; tree: DashNode[];

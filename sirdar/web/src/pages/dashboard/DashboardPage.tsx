@@ -1,22 +1,39 @@
-/** Sirdar Dashboard — the Deployments overview: health, production Blue/Green
- *  routing, the environments and the infrastructure tree. `?demo=1` swaps in
- *  the API's fixed sample. An environment card's Deploy opens the Deploy
- *  modal; production actions are still to come. */
+/** Sirdar Dashboard — the Deployments overview: health, the spotlight (the
+ *  selected environment's flow: live traffic → load balancer or Nginx Proxy
+ *  Manager → its servers, with Activate, Deploy and Open), the environment
+ *  cards (Production first) and the infrastructure tree. `?demo=1` swaps in
+ *  the API's sample; `?env=<id>` picks the spotlight, remembered per viewer. */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '@portal/auth/AuthContext';
 import { Switch } from '@portal/components/Switch';
 
-import { errorText, getDashboard, getEnvironment, type DashboardData, type Environment } from '../../lib/sirdarApi';
+import ActivateModal from '../../components/ActivateModal';
+import {
+  errorText, getDashboard, getEnvironment, type DashboardData, type DashEnvironment, type DashServer, type Environment,
+} from '../../lib/sirdarApi';
 import DeployModal from '../environments/DeployModal';
 
 import EnvCard from './EnvCard';
 import { RocketIcon } from './icons';
 import InfraTree from './InfraTree';
 import { Dot, SoonButton } from './parts';
-import ProductionFlow from './ProductionFlow';
+import Spotlight from './Spotlight';
 import './dashboard.css';
+
+const STORAGE_KEY = 'sirdar.dashboard.env';
+function remembered(): string | null {
+  try { return window.localStorage.getItem(STORAGE_KEY); } catch { return null; }
+}
+function remember(id: string): void {
+  try { window.localStorage.setItem(STORAGE_KEY, id); } catch { /* storage blocked: the URL still carries it */ }
+}
+
+/** The production environment, else the first real one, else the first card (a placeholder). */
+function defaultCard(cards: DashEnvironment[]): DashEnvironment | undefined {
+  return cards.find((c) => c.production && c.environment) ?? cards.find((c) => c.environment) ?? cards[0];
+}
 
 function Skeleton() {
   return (
@@ -42,6 +59,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [deployEnv, setDeployEnv] = useState<Environment | null>(null);
   const [deployError, setDeployError] = useState('');
+  const [activating, setActivating] = useState<{ card: DashEnvironment; server: DashServer } | null>(null);
   const seq = useRef(0);
 
   const load = useCallback(async (refresh: boolean) => {
@@ -72,6 +90,17 @@ export default function DashboardPage() {
     try { setDeployEnv(await getEnvironment(name)); }
     catch (e) { setDeployError(errorText(e, "Couldn't open that environment.")); }
   };
+
+  const cards = data?.environments ?? [];
+  const wanted = params.get('env') ?? remembered();
+  const selected = cards.find((c) => c.id === wanted) ?? defaultCard(cards);
+  const select = (id: string) => {
+    remember(id);
+    const next = new URLSearchParams(params);
+    next.set('env', id);
+    setParams(next, { replace: true });
+  };
+  const canDeploy = can('deploy', 'add');
 
   const health = data?.health;
   const healthTone = health?.status === 'healthy' ? 'ok' : health?.status === 'degraded' ? 'warn' : 'muted';
@@ -116,10 +145,16 @@ export default function DashboardPage() {
 
         {data && (
           <div className="sd-stack">
-            <ProductionFlow production={data.production} motion={motion} />
+            {selected && (
+              <Spotlight card={selected} demo={data.demo} motion={motion} canDeploy={canDeploy}
+                         canView={can('deploy', 'view')} canActivate={canDeploy && can('deploy', 'change')}
+                         onDeploy={(name) => void openDeploy(name)} onSetUp={() => navigate('/deploy')}
+                         onActivate={(server) => setActivating({ card: selected, server })} />
+            )}
             <div className="sd-env-grid">
-              {data.environments.map((env) => (
-                <EnvCard key={env.id} env={env} demo={data.demo} canDeploy={can('deploy', 'add')}
+              {cards.map((env) => (
+                <EnvCard key={env.id} env={env} demo={data.demo} canDeploy={canDeploy}
+                         selected={env.id === selected?.id} onSelect={() => select(env.id)}
                          onDeploy={(name) => void openDeploy(name)} onSetUp={() => navigate('/deploy')} />
               ))}
             </div>
@@ -134,6 +169,12 @@ export default function DashboardPage() {
       {deployEnv && (
         <DeployModal env={deployEnv} onClose={() => setDeployEnv(null)}
                      onStarted={(dep) => navigate(`/deploy/environments/${encodeURIComponent(deployEnv.name)}?deployment=${dep.id}`)} />
+      )}
+      {activating && activating.card.environment && (
+        <ActivateModal envName={activating.card.environment} production={activating.card.production}
+                       slot={activating.server.id} fromSlot={activating.card.flow.active_slot}
+                       version={activating.server.version} onClose={() => setActivating(null)}
+                       onStarted={(dep) => navigate(`/deploy/environments/${encodeURIComponent(activating.card.environment!)}?deployment=${dep.id}`)} />
       )}
     </>
   );

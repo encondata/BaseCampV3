@@ -1,7 +1,7 @@
 /** Test fixtures shaped like GET /api/dashboard (demo and real/empty). */
-import type { DashboardData, DashFlow, DashNode } from '../../lib/sirdarApi';
+import type { DashboardData, DashEnvironment, DashFlow, DashNode, DashServer } from '../../lib/sirdarApi';
 
-/** A card with nothing built (placeholders, and every card until Task 10's fixtures). */
+/** A card with nothing built (a placeholder). */
 export const NONE_FLOW: DashFlow = {
   kind: 'none', middle: { label: 'Not built yet', sub: '', status: 'unknown' },
   servers: [{ id: 'none', label: 'Server', sub: 'Not built yet', state: 'empty', health: 'unknown', version: null,
@@ -37,73 +37,65 @@ export const DEMO_TREE: DashNode[] = [
   ], { dot: 'gray' }),
 ];
 
+const server = (id: string, label: string, sub: string, state: DashServer['state'], health: string,
+                version: string | null): DashServer => ({ id, label, sub, state, health, version, deployed: version !== null });
+export const lbFlow = (servers: DashServer[], active: string | null, extra: Partial<DashFlow> = {}): DashFlow => ({
+  kind: 'load_balancer', middle: { label: 'Load balancer', sub: '203.0.113.50', status: 'ok' }, servers,
+  active_slot: active, certificate: { days_left: 64, expires_at: '2026-12-09T12:00:00+00:00', tone: 'ok' },
+  deploying_slot: null, failed_slot: null, ...extra,
+});
+export const lanFlow = (version: string | null, extra: Partial<DashFlow> = {}): DashFlow => ({
+  kind: 'proxy', middle: { label: 'Nginx Proxy Manager', sub: '10.10.48.6', status: 'ok' },
+  servers: [server('host', 'Lab box', '10.10.48.63', version ? 'live' : 'empty', version ? 'healthy' : 'unknown', version)],
+  active_slot: version ? 'host' : null, certificate: null, deploying_slot: null, failed_slot: null, ...extra,
+});
+const card = (id: string, label: string, sub: string | null, state: string, version: string | null,
+              environment: string | null, production: boolean, flow: DashFlow, action: string,
+              primary = false): DashEnvironment => ({
+  id, label, sub, state, version, last_release: version, last_release_at: version ? '2026-10-03T12:00:00+00:00' : null,
+  action_label: action, environment, production, primary, flow,
+});
+export const PLACEHOLDER_PROD = card('production', 'Production', null, 'empty', null, null, true, NONE_FLOW,
+                                     'Set up Production', true);
+/** A real two-slot production: blue live, green deployed and idle. */
+export const PROD_CARD = card('prod', 'prod', 'Production', 'active', 'e73b99ca', 'prod', true, lbFlow([
+  server('blue', 'Blue', '203.0.113.11', 'live', 'healthy', 'e73b99ca'),
+  server('green', 'Green', '203.0.113.12', 'idle', 'healthy', 'f00dbabe')], 'blue'), 'Deploy prod', true);
+/** A two-slot dev environment: orange live, purple idle, its certificate inside 14 days. */
+export const DO_CARD = card('uat9', 'uat9', 'Development', 'active', 'e73b99ca', 'uat9', false, lbFlow([
+  server('orange', 'Orange', '203.0.113.21', 'live', 'healthy', 'e73b99ca'),
+  server('purple', 'Purple', '203.0.113.22', 'idle', 'healthy', 'f00dbabe')], 'orange',
+  { certificate: { days_left: 10, expires_at: '2026-10-16T12:00:00+00:00', tone: 'warn' } }), 'Deploy uat9');
+/** uat9's Activate of purple failed: orange still serves. */
+export const FAILED_DO_CARD: DashEnvironment = { ...DO_CARD, state: 'failed', flow: { ...DO_CARD.flow, failed_slot: 'purple' } };
+export const LAN_CARD = card('uat', 'uat', 'Development', 'active', 'e73b99ca', 'uat', false, lanFlow('e73b99ca'), 'Deploy uat');
+const placeholder = (id: string, label: string, action: string) =>
+  card(id, label, null, 'empty', null, null, false, NONE_FLOW, action);
+
 export const DEMO: DashboardData = {
-  demo: true,
-  generated_at: '2026-10-02T00:52:43Z',
-  health: { status: 'healthy', label: 'All systems healthy' },
-  production: {
-    status: 'active', active_slot: 'blue',
-    traffic: { label: 'Live traffic', sub: 'External users' },
-    load_balancer: { label: 'Load balancer', sub: 'Blue active', present: true },
-    slots: [
-      { id: 'blue', label: 'Production Blue', state: 'active', health: 'healthy', version: 'v2.8.0',
-        instances: { running: 3, total: 3 }, traffic_pct: 100 },
-      { id: 'green', label: 'Production Green', state: 'standby', health: 'unknown', version: 'v2.7.9',
-        instances: { running: 0, total: 3 }, traffic_pct: 0 },
-    ],
-  },
+  demo: true, generated_at: '2026-10-02T00:52:43Z', health: { status: 'healthy', label: 'All systems healthy' },
   environments: [
-    { id: 'dev', label: 'Development', sub: null, state: 'empty', version: null, last_release: 'v2.8.1-dev',
-      last_release_at: null, action_label: 'Deploy to Dev', environment: null,
-      production: false, flow: NONE_FLOW },
-    { id: 'beta', label: 'Beta', sub: null, state: 'empty', version: null, last_release: 'v2.8.1-rc.2',
-      last_release_at: null, action_label: 'Deploy to Beta', environment: null,
-      production: false, flow: NONE_FLOW },
+    { ...PROD_CARD, id: 'production', label: 'Production', environment: null, action_label: 'Deploy production' },
+    { ...DO_CARD, id: 'dev', label: 'Development', environment: null, action_label: 'Deploy to Dev' },
+    { ...LAN_CARD, label: 'UAT', sub: 'Custom', environment: null, action_label: 'Deploy to UAT' },
   ],
   infrastructure: { source: 'demo', error: null, tree: DEMO_TREE },
 };
-
 export const EMPTY: DashboardData = {
-  demo: false,
-  generated_at: '2026-10-02T00:52:43Z',
-  health: { status: 'unknown', label: 'No environments deployed' },
-  production: {
-    status: 'inactive', active_slot: null,
-    traffic: { label: 'Live traffic', sub: 'External users' },
-    load_balancer: { label: 'Load balancer', sub: 'Not configured', present: false },
-    slots: ['blue', 'green'].map((s) => ({
-      id: s, label: `Production ${s[0].toUpperCase()}${s.slice(1)}`, state: 'empty', health: 'unknown',
-      version: null, instances: { running: 0, total: 0 }, traffic_pct: 0,
-    })),
-  },
-  environments: [
-    { id: 'dev', label: 'Development', sub: null, state: 'empty', version: null, last_release: null,
-      last_release_at: null, action_label: 'Set up Dev', environment: null,
-      production: false, flow: NONE_FLOW },
-    { id: 'beta', label: 'Beta', sub: null, state: 'empty', version: null, last_release: null,
-      last_release_at: null, action_label: 'Set up Beta', environment: null,
-      production: false, flow: NONE_FLOW },
-    { id: 'qa-east', label: 'Qa East', sub: null, state: 'empty', version: null, last_release: null,
-      last_release_at: null, action_label: 'Set up Qa East', environment: null,
-      production: false, flow: NONE_FLOW },
-  ],
-  infrastructure: { source: 'none', error: null, tree: [] },
+  demo: false, generated_at: '2026-10-02T00:52:43Z', health: { status: 'unknown', label: 'No environments deployed' },
+  environments: [PLACEHOLDER_PROD, placeholder('dev', 'Development', 'Set up Dev'), placeholder('beta', 'Beta', 'Set up Beta'),
+                 placeholder('qa-east', 'Qa East', 'Set up Qa East')],
+  infrastructure: { source: 'none', error: null, tree: [], accounts: [] },
 };
-
-/** Real mode with Sirdar environments: uat (dev type, deployed), a Beta
- *  placeholder and a custom environment whose last deploy failed. */
+/** Real mode: no production yet, uat (LAN, deployed), a Beta placeholder, a custom environment whose deploy failed. */
 export const REAL: DashboardData = {
-  ...EMPTY,
-  health: { status: 'degraded', label: 'A deployment failed' },
-  environments: [
-    { id: 'uat', label: 'uat', sub: 'Development', state: 'active', version: 'e73b99ca', last_release: 'e73b99ca',
-      last_release_at: '2026-10-03T12:00:00+00:00', action_label: 'Deploy uat', environment: 'uat',
-      production: false, flow: NONE_FLOW },
-    { id: 'beta', label: 'Beta', sub: null, state: 'empty', version: null, last_release: null,
-      last_release_at: null, action_label: 'Set up Beta', environment: null,
-      production: false, flow: NONE_FLOW },
-    { id: 'qa-east', label: 'qa-east', sub: 'Custom', state: 'failed', version: null, last_release: null,
-      last_release_at: null, action_label: 'Deploy qa-east', environment: 'qa-east',
-      production: false, flow: NONE_FLOW },
-  ],
+  ...EMPTY, health: { status: 'degraded', label: 'A deployment failed' },
+  environments: [PLACEHOLDER_PROD, LAN_CARD, placeholder('beta', 'Beta', 'Set up Beta'),
+                 card('qa-east', 'qa-east', 'Custom', 'failed', null, 'qa-east', false,
+                      lanFlow(null, { failed_slot: 'host' }), 'Deploy qa-east')],
+};
+/** Real mode with DigitalOcean: production first, then uat9 and uat. */
+export const CLOUD: DashboardData = {
+  ...EMPTY, health: { status: 'healthy', label: 'Environments deployed' },
+  environments: [PROD_CARD, DO_CARD, LAN_CARD],
 };
