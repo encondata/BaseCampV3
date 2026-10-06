@@ -103,6 +103,23 @@ services:
   db-testing-worker:
     <<: *ss-service
     command: ["serversherpa", "db-testing-worker"]
+  # DigitalOcean droplets only (ss-stack adds --profile certs when
+  # STACK_CADDY=1): renews the load balancer's certificate by HTTP-01 from
+  # the active slot; Caddy sends /.well-known/acme-challenge/* to :8089.
+  # Only this service gets the renewal token and the ACME key.
+  cert-worker:
+    <<: *ss-service
+    profiles: ["certs"]
+    command: ["serversherpa", "cert-worker"]
+    environment:
+      <<: *ss-env
+      SS_CERT_DO_TOKEN: ${SS_CERT_DO_TOKEN:-}
+      SS_CERT_LB_ID: ${SS_CERT_LB_ID:-}
+      SS_CERT_NAMES: ${SS_CERT_NAMES:-}
+      SS_CERT_ENV: ${STACK_ENV}
+      SS_CERT_ACME_DIRECTORY: ${SS_CERT_ACME_DIRECTORY:-https://acme-v02.api.letsencrypt.org/directory}
+      SS_CERT_ACME_KEY: ${SS_CERT_ACME_KEY:-}
+      SS_CERT_DROPLET_ID: ${STACK_DROPLET_ID:-}
   # two wiki workers so a long export never holds up previews and search
   # text (same split as wiki/docker-compose.yml)
   wiki-worker:

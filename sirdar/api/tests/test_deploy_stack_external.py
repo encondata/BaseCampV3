@@ -8,6 +8,7 @@ PGPASSWORD it was given, separately). The compose and Caddy checks need a
 real Docker and skip without one; the Caddy run also needs SS_STACK_E2E=1."""
 
 import base64
+import json
 import os
 import re
 import shutil
@@ -102,7 +103,9 @@ def test_up_external_skips_local_data_and_starts_caddy(tmp_path):
     assert "db/compose.yml" not in log
     assert re.search(r"storage/compose.yml up -d .* mailpit", log)
     assert "network create --subnet 172.30.0.0/24 ss-uat9" in log
-    assert log.index("api/compose.yml run --rm migrate") < log.index("proxy/compose.yml up -d")
+    assert log.index("api/compose.yml --profile certs run --rm migrate") < log.index(
+        "proxy/compose.yml up -d"
+    )
 
 
 def test_up_local_is_unchanged(tmp_path):
@@ -605,3 +608,54 @@ def test_caddy_routes_in_a_container(tmp_path):
         for name in names:
             subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
         subprocess.run(["docker", "network", "rm", net], capture_output=True, check=False)
+
+
+def test_the_api_stack_runs_the_cert_worker_only_on_droplets(tmp_path):
+    log, _ = _run(tmp_path, "up", str(_env_dir(tmp_path, external=True)))
+    assert re.search(r"api/compose.yml --profile certs up -d", log)
+    assert "api/compose.yml --profile certs run --rm migrate" in log
+    local = tmp_path / "local"
+    local.mkdir()
+    log, _ = _run(local, "up", str(_env_dir(local, external=False)))
+    assert "--profile certs" not in log
+
+
+def test_down_on_a_droplet_stops_the_cert_worker_too(tmp_path):
+    log, _ = _run(tmp_path, "down", str(_env_dir(tmp_path, external=True)))
+    assert "api/compose.yml --profile certs down" in log
+
+
+def test_the_acme_copies_match():
+    sirdar = REPO / "sirdar" / "api" / "src" / "sirdar_api" / "deploy" / "acme.py"
+    api = REPO / "api" / "src" / "serversherpa" / "certs" / "acme.py"
+    assert sirdar.read_bytes() == api.read_bytes(), "change both copies of acme.py together"
+
+
+@needs_docker
+def test_only_the_cert_worker_gets_the_renewal_token(tmp_path):
+    env_dir = _env_dir(tmp_path, external=True)
+    with (env_dir / ".env").open("a") as f:
+        f.write(
+            "STACK_DROPLET_ID=4001\nSS_CERT_DO_TOKEN=dop_v1_renewal\nSS_CERT_LB_ID=lb-1\n"
+            "SS_CERT_NAMES=api.uat9.serversherpa.com,portal.uat9.serversherpa.com\n"
+            "SS_CERT_ACME_KEY=YWNtZS1rZXk=\n"
+        )
+    base = ["docker", "compose", "--env-file", str(env_dir / ".env"),
+            "-f", str(STACK / "api" / "compose.yml")]
+    plain = subprocess.run([*base, "config", "--format", "json"], check=True,
+                           capture_output=True, text=True).stdout
+    assert "cert-worker" not in plain and "dop_v1_renewal" not in plain
+    services = json.loads(subprocess.run(
+        [*base, "--profile", "certs", "config", "--format", "json"],
+        check=True, capture_output=True, text=True).stdout)["services"]
+    cert = services["cert-worker"]
+    assert cert["command"] == ["serversherpa", "cert-worker"]
+    env = cert["environment"]
+    assert env["SS_CERT_DO_TOKEN"] == "dop_v1_renewal" and env["SS_CERT_LB_ID"] == "lb-1"
+    assert env["SS_CERT_ENV"] == "uat9" and env["SS_CERT_DROPLET_ID"] == "4001"
+    assert env["SS_CERT_ACME_KEY"] == "YWNtZS1rZXk="
+    assert env["SS_CERT_ACME_DIRECTORY"] == "https://acme-v02.api.letsencrypt.org/directory"
+    assert "ports" not in cert
+    for name, service in services.items():
+        if name != "cert-worker":
+            assert not any(k.startswith("SS_CERT_") for k in service.get("environment", {})), name

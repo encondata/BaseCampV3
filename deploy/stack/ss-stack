@@ -75,6 +75,8 @@ if caddy; then STACKS+=(proxy); fi
 
 dc() {  # dc <stack> <compose args…>
   local stack=$1; shift
+  # On a droplet the api stack also runs the cert-worker (profile certs).
+  if [[ $stack == api ]] && caddy; then set -- --profile certs "$@"; fi
   docker compose --env-file "$env_file" -f "$STACK_DIR/$stack/compose.yml" "$@"
 }
 
