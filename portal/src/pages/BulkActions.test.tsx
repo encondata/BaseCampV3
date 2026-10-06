@@ -49,7 +49,7 @@ it('renders the empty state until tools are added', () => {
 it('lists the sites card when the viewer can add sites', () => {
   render(<MemoryRouter><BulkActions /></MemoryRouter>);
   expect(screen.getByText('Add or update sites in bulk')).toBeTruthy();
-  expect(screen.getAllByRole('button', { name: 'Open' })).toHaveLength(7);
+  expect(screen.getAllByRole('button', { name: 'Open' })).toHaveLength(8);
 });
 
 it('lists the workers card only when the viewer can add workers', () => {
@@ -143,4 +143,25 @@ it('lists the time punches card only for time:add', () => {
   render(<MemoryRouter><BulkActions /></MemoryRouter>);
   expect(screen.getByText('Add time punches in bulk')).toBeTruthy();
   expect(screen.getByText('Load shifts from a spreadsheet or another timekeeping system. Workers, jobs, and sites are matched by name; review every shift before adding.')).toBeTruthy();
+});
+
+it('lists the "Convert a customer From-To" card for initiatives:change and links it to /bulk/from-to-convert', () => {
+  authMock.denied.add('initiatives:change');
+  render(<MemoryRouter><BulkActions /></MemoryRouter>);
+  expect(screen.queryByText('Convert a customer From-To')).toBeNull();
+  cleanup();
+  authMock.denied.clear();
+  render(
+    <MemoryRouter initialEntries={['/bulk']}>
+      <Routes>
+        <Route path="/bulk" element={<BulkActions />} />
+        <Route path="/bulk/from-to-convert" element={<div>from-to convert page</div>} />
+      </Routes>
+    </MemoryRouter>,
+  );
+  const card = screen.getByText('Convert a customer From-To').closest('.bulk-card') as HTMLElement;
+  expect(within(card).getByText(
+    "Upload a customer's From-To, match its columns to ours, and download a sheet ready for the From-To import.")).toBeTruthy();
+  fireEvent.click(within(card).getByRole('button', { name: 'Open' }));
+  expect(screen.getByText('from-to convert page')).toBeTruthy();
 });

@@ -57,3 +57,14 @@
 .bulk-summary .bulk-row-update td:nth-child(4),
 .bulk-summary .bulk-row-unchanged td:nth-child(4),
 .bulk-summary .bulk-row-skipped td:nth-child(4) { color: inherit; }
+
+/* ── /bulk/from-to-convert pane ───────────────────────────────── */
+
+/* Sheet + Header row: two fields at a field's width, not the form's full grid */
+.ftc-setup { grid-template-columns: repeat(auto-fit, minmax(160px, 240px)); }
+/* the match counts and the preview counts sit inline with their buttons */
+.ftc-pane .set-note { padding: 0; margin: 0; }
+/* a table cell's ComboBox with its Suggested chip beside it */
+.ftc-target { display: flex; align-items: center; gap: 8px; min-width: 200px; }
+.ftc-target .combo-wrap { flex: 1; min-width: 0; }
+.ftc-target .chip { flex: none; }

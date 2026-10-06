@@ -15,6 +15,7 @@ import BulkActions from './pages/BulkActions';
 import BulkAssets from './pages/BulkAssets';
 import BulkInitiativePeople from './pages/BulkInitiativePeople';
 import BulkNewMove from './pages/BulkNewMove';
+import BulkFromToConvert from './pages/BulkFromToConvert';
 import BulkSites from './pages/BulkSites';
 import BulkTime from './pages/BulkTime';
 import BulkTrucks from './pages/BulkTrucks';
@@ -230,6 +231,9 @@ export default function App() {
                 } />
                 <Route path="/bulk/new-move" element={
                   <ProtectedRoute resource="initiatives" minRank={ADMIN_RANK}><BulkNewMove /></ProtectedRoute>
+                } />
+                <Route path="/bulk/from-to-convert" element={
+                  <ProtectedRoute resource="initiatives" minRank={ADMIN_RANK}><BulkFromToConvert /></ProtectedRoute>
                 } />
                 <Route path="/system/processes/:name/logs" element={
                   <ProtectedRoute resource="devtools"><ProcessLogs /></ProtectedRoute>
