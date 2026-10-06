@@ -1426,8 +1426,8 @@ async def take_snapshot(name: str, body: TakeSnapshotIn, request: Request, db: D
         raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"})
     cfg = await _host_target(db, env)
     if cfg is None:
-        code = "do_not_ready" if _on_do(env) else "vm_not_ready"
-        raise HTTPException(status_code=409, detail={"code": code})
+        detail = {"code": "do_not_ready"} if _on_do(env) else {"code": "vm_not_ready"}
+        raise HTTPException(status_code=409, detail=detail)
     await _pinned(db, cfg)
     try:
         snap = await snapshots.begin_take(db, get_settings(), env, name=body.name,

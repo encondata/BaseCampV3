@@ -613,6 +613,83 @@ Update's dump. Uploaded files are never rolled back.
 Deployments run inside Sirdar's single API process. Restarting Sirdar marks
 running deployments `interrupted`; retry them.
 
+#### DigitalOcean environments
+
+An environment whose target is **DigitalOcean** is built entirely in a
+DigitalOcean account. Each one gets:
+
+- a VPC `ss-<env>`;
+- one droplet per slot, `ss-<env>-<slot>` (Ubuntu 24.04, its SSH host key
+  delivered through cloud-init and pinned before the first connection);
+- a managed Postgres 16 cluster `ss-<env>-db`. Its trusted sources are this
+  environment's droplets only, set when the cluster is created, so it is never
+  open to the internet. The app connects over the VPC and checks the cluster's
+  own certificate (`SS_DATABASE_CA_B64` in the droplet's `.env`);
+- a Spaces bucket and a Spaces key scoped to that bucket;
+- a load balancer `ss-<env>-lb` (HTTPS 443 and HTTP 80 to the droplet's port
+  80, health check `/healthz`) and its Let's Encrypt certificate;
+- a cloud firewall `ss-<env>-fw` (SSH from anywhere, key only; port 80 only
+  from the load balancer);
+- Cloudflare A records for the public names, pointing at the load balancer.
+
+Droplets and the database carry the tags `sirdar`, `sirdar-env-<id>`,
+`sirdar-env:<name>` and `sirdar-slot:<slot>`. Sirdar acts only on resources it
+recorded **and** that still carry both `sirdar` and `sirdar-env-<id>`. Load
+balancers, firewalls and certificates can't be tagged, so those are matched by
+their recorded ID and exact name.
+
+On the droplet the stack runs without its `db` and `storage` stacks
+(`STACK_EXTERNAL_DATA=1`) and adds a Caddy `proxy` stack that routes the public
+names on port 80 behind the load balancer.
+
+**Accounts.** Settings › Integrations › DigitalOcean holds two accounts,
+*Production* and *Development*, each with its own API token, default region and
+**renewal token**. A new environment picks its account and keeps it. Sirdar
+refuses to remove an account that environments use, or to swap its token for one
+from a different DigitalOcean team.
+
+To make a renewal token, in that account's control panel go to **API ›
+Generate New Token › Custom Scopes**, and choose `certificate` (create, read,
+delete) and `load_balancer` (read, update). Give it no expiry or a long one.
+Make one per account. Droplets only ever get this token, never the account
+token.
+
+**Sizes.** The defaults match V2 production: droplet `s-2vcpu-4gb` (2 vCPU /
+4 GB / 80 GB) and database `db-s-2vcpu-4gb` (2 vCPU / 4 GB / 60 GB), single
+node. Both can be changed at create, and a standby database node can be added.
+Test environments can use Let's Encrypt **staging** certificates, which aren't
+trusted by browsers but don't count against the production rate limits.
+
+**Slots (Blue/Green).** Production always has two slots, **blue** and
+**green**. Every other environment chooses at create between one droplet
+(**orange**) and two slots (**orange** and **purple**). An Update deploys to
+the idle slot and smoke-tests that droplet directly through Caddy. It goes live
+by itself on the first deploy, on a one-slot environment, or when a non-prod
+environment has "activate automatically" on; otherwise the dashboard's
+**Activate** switches the load balancer. Switching adds the new droplet next to
+the old one, waits for it to be healthy, runs the public smoke test, then
+removes the old one. For a minute or two both slots serve visitors.
+
+Both slots share one database and one bucket, so **every migration must be
+expand/contract**: the old slot keeps running against the migrated database
+until Activate (and during the switch). Add columns and tables first; remove
+them in a later release.
+
+Reset, Restore backup and Roll back aren't offered on DigitalOcean. Activating
+the other slot is the instant way back.
+
+**Delete.** Sirdar takes a snapshot (`<env>-before-delete-<UTC stamp>`) on a
+droplet first, then removes the DNS records, the load balancer, the
+certificates, the firewall, the droplets, the database, the Spaces keys, the
+bucket and the VPC. It forgets each one as it goes, so a retry carries on where
+it stopped. Production must be marked **retiring** and have no active slot
+first, and Delete asks for the environment's name and the phrase
+`delete production <name>`. A retry asks again.
+
+**Out of scope** for now: V2 production on DigitalOcean (a later cutover gets
+its own plan), Reset on DigitalOcean, separate api and web droplets per slot,
+and real SMTP (droplets keep Mailpit).
+
 ### Supported systems
 
 | Family | Detected from `/etc/os-release` (`ID`, else `ID_LIKE`) | Prerequisites with | Docker Engine + compose v2 |
