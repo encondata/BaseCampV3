@@ -958,7 +958,11 @@ class DoProvisioner:
                              f"{code}). Retry from step 0.")
         out(f"Database: {do_envs.DB_USER} owns {do_envs.DB_NAME}.\n")
 
-    async def _certificate(self, api: DigitalOceanApi, ctx: DoContext, out: Output) -> dict:
+    async def _certificate(self, api: DigitalOceanApi, ctx: DoContext, out: Output, *,
+                           record_date: bool = True) -> dict:
+        """The certificate to serve (recorded, renewed at 14 days or fewer).
+        record_date: its expiry becomes cert_not_after now; step 19 passes
+        False and records the date of what the load balancer then serves."""
         records = await load_records(ctx.env_id)
         recorded = {r.do_id for r in records.find("certificate")}
         current = None
@@ -1011,7 +1015,8 @@ class DoProvisioner:
                                                 issued.chain_pem)
             await do_envs.record(ctx.env_id, "certificate", best["id"], name)
             out(f"Uploaded the certificate {name} (valid until {issued.not_after:%Y-%m-%d}).\n")
-        await do_envs.set_do(ctx.env_id, cert_not_after=certs.not_after(best))
+        if record_date:
+            await do_envs.set_do(ctx.env_id, cert_not_after=certs.not_after(best))
         return best
 
     async def _load_balancer(self, api: DigitalOceanApi, ctx: DoContext, vpc: dict, cert: dict,
@@ -1314,7 +1319,9 @@ class DoProvisioner:
         await self._same_team(api, ctx)
         records = await load_records(ctx.env_id)
         lb = await self._live_lb(api, ctx, records)
-        cert = await self._certificate(api, ctx, out)
+        # Its date is recorded only once the load balancer serves it: a renew
+        # that fails before then stays due (renewals.due).
+        cert = await self._certificate(api, ctx, out, record_date=False)
         if https_certificate(lb) == cert["id"]:
             out(f"Load balancer {lb['name']}: already uses the certificate {cert['name']}.\n")
         else:
@@ -1329,25 +1336,32 @@ class DoProvisioner:
 
     async def _final_certificate(self, api: DigitalOceanApi, ctx: DoContext, lb: dict,
                                  cert: dict, out: Output) -> str:
-        """The certificate the load balancer serves now: ours (the one this
-        step chose, or a newer one the cert-worker just uploaded, which is
-        then recorded) or the step fails and deletes nothing."""
+        """The certificate the load balancer serves now, whose date becomes
+        cert_not_after: the one this step chose, or a certificate of ours at
+        least as new (the cert-worker raced the PUT; it is recorded and
+        kept). Anything else fails the step, and nothing is deleted."""
         final = await api.load_balancer(lb["id"])
         if final is None:
             raise StepFailed(f"Load balancer {lb['name']} disappeared during the renewal.")
         cert_id = https_certificate(final)
-        if cert_id == cert["id"]:
-            return cert_id
-        found = await api.certificate(cert_id) if cert_id else None
-        if found is None or not certs.is_ours(found, ctx.env_name, ctx.names):
-            raise StepFailed(f"Load balancer {lb['name']} serves a certificate that isn't one of "
-                             f"Sirdar's for {ctx.env_name}. Sirdar deleted nothing: run step 0 "
-                             "again to put one back.")
-        await do_envs.record(ctx.env_id, "certificate", cert_id, found["name"])
-        await do_envs.set_do(ctx.env_id, cert_not_after=certs.not_after(found))
-        out(f"Load balancer {lb['name']}: the cert-worker moved it to the certificate "
-            f"{found['name']} meanwhile; keeping that one.\n")
-        return cert_id
+        served = cert
+        if cert_id != cert["id"]:
+            found = await api.certificate(cert_id) if cert_id else None
+            if found is None or not certs.is_ours(found, ctx.env_name, ctx.names):
+                raise StepFailed(f"Load balancer {lb['name']} serves a certificate that isn't "
+                                 f"one of Sirdar's for {ctx.env_name}. Sirdar deleted nothing: "
+                                 "run step 0 again to put one back.")
+            oldest = datetime.min.replace(tzinfo=UTC)
+            if (certs.not_after(found) or oldest) < (certs.not_after(cert) or oldest):
+                raise StepFailed(f"Load balancer {lb['name']} went back to the older certificate "
+                                 f"{found['name']} while Sirdar renewed (something else updated "
+                                 "it). Sirdar deleted nothing: retry.")
+            await do_envs.record(ctx.env_id, "certificate", cert_id, found["name"])
+            out(f"Load balancer {lb['name']}: the cert-worker moved it to the certificate "
+                f"{found['name']} meanwhile; keeping that one.\n")
+            served = found
+        await do_envs.set_do(ctx.env_id, cert_not_after=certs.not_after(served))
+        return served["id"]
 
     # ---- step 18: Remove DigitalOcean resources -------------------------------------------
 

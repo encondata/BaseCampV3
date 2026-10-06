@@ -1342,7 +1342,11 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
             _check_deactivate(env)
         else:
             _retiring_refused(env)
-    latest = await serialize.latest_deployment(db, env.id)
+    # Sirdar's own renew jobs never stand in the way of retrying anything else.
+    latest = await db.scalar(
+        select(Deployment).where(Deployment.environment_id == env.id,
+                                 *(() if dep.mode == "renew" else (Deployment.mode != "renew",)))
+        .order_by(Deployment.created_at.desc()).limit(1))
     if latest is None or latest.id != dep.id:
         raise HTTPException(status_code=409, detail={"code": "retry_not_latest"})
     production_delete = dep.cloud and dep.mode == "teardown" and env.type == "production"

@@ -648,9 +648,16 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
         try:
             extra, cloud_secrets = await do_envs.env_extra(db, settings, env, dep.slot, secrets)
         except do_envs.DoEnvError as e:
-            missing = ", ".join(e.extra.get("missing") or [])
+            found = e.extra.get("missing") or []
+            if found == ["renewal token"]:       # the account's, not something step 0 builds
+                raise PrepareError("The DigitalOcean account has no renewal token (the token "
+                                   "droplets renew their certificate with). Add it in Settings "
+                                   "› Integrations, then retry.") from None
+            missing = ", ".join(found)
+            tail = (" Add the account's renewal token in Settings › Integrations too."
+                    if "renewal token" in found else "")
             raise PrepareError(f"This environment isn't fully built yet (missing: {missing}). "
-                               "Retry from step 0 (Prepare DigitalOcean).") from None
+                               f"Retry from step 0 (Prepare DigitalOcean).{tail}") from None
         except (vault.SecretsKeyMissing, vault.SecretUnreadable):
             raise PrepareError("Sirdar can't read this environment's DigitalOcean secrets "
                                "with the current SIRDAR_SECRETS_KEY.") from None

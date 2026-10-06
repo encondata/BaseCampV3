@@ -13,26 +13,90 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sirdar_api.config import get_settings
 from sirdar_api.db.engine import get_sessionmaker
-from sirdar_api.db.models import DoEnvironment, Environment
-from sirdar_api.deploy import certs, environments, pipeline
+from sirdar_api.db.models import Deployment, DoEnvironment, DoResource, Environment
+from sirdar_api.deploy import certs, do_accounts, do_api, environments, pipeline
+from sirdar_api.deploy.do_provision import https_certificate
 from sirdar_api.services.audit import audit
 
 log = logging.getLogger(__name__)
 FIRST_DELAY_SECONDS = 5 * 60
+# A renew that failed is tried again only after this long (its log says why).
+BACKOFF = timedelta(hours=24)
+
+
+async def served_not_after(db: AsyncSession, row: DoEnvironment) -> datetime | None:
+    """When the certificate the environment's load balancer serves now
+    expires, read from DigitalOcean; None when Sirdar can't tell (no load
+    balancer recorded, no token, DigitalOcean unreachable)."""
+    lb_id = await db.scalar(select(DoResource.do_id).where(
+        DoResource.environment_id == row.environment_id,
+        DoResource.kind == "load_balancer").limit(1))
+    if lb_id is None:
+        return None
+    try:
+        account = await do_accounts.load(db, get_settings(), row.account_key)
+        if account is None:
+            return None
+        async with do_api.connect(account.token) as api:
+            lb = await api.load_balancer(lb_id)
+            cert_id = https_certificate(lb) if lb else None
+            cert = await api.certificate(cert_id) if cert_id else None
+    # Any failure means "can't tell": the stored date decides. Never its text.
+    except Exception as e:  # noqa: BLE001
+        log.warning("couldn't read a load balancer's certificate: %s", type(e).__name__)
+        return None
+    return certs.not_after(cert) if cert else None
+
+
+async def _latest(db: AsyncSession, env_id, *, renew: bool) -> Deployment | None:
+    mode = Deployment.mode == "renew" if renew else Deployment.mode != "renew"
+    return await db.scalar(select(Deployment).where(Deployment.environment_id == env_id, mode)
+                           .order_by(Deployment.created_at.desc()).limit(1))
+
+
+async def _held_back(db: AsyncSession, env_id, now: datetime) -> bool:
+    """Deploying; half deleted (its latest deployment other than a renew is
+    a Delete that didn't finish); or its latest renew failed within a day."""
+    if await environments.is_deploying(db, env_id):
+        return True
+    last = await _latest(db, env_id, renew=False)
+    if last is not None and last.mode == "teardown" \
+            and last.status in pipeline.RETRYABLE_STATUSES:
+        return True
+    renew = await _latest(db, env_id, renew=True)
+    if renew is not None and renew.status == "failed":
+        when = renew.finished_at or renew.started_at
+        if when is not None and when > now - BACKOFF:
+            return True
+    return False
 
 
 async def due(db: AsyncSession, now: datetime) -> list[Environment]:
-    """Deployed DigitalOcean environments, ready or failed, whose certificate
-    is due and that aren't deploying."""
-    rows = await db.scalars(
-        select(Environment).join(DoEnvironment, DoEnvironment.environment_id == Environment.id)
-        .where(DoEnvironment.cert_not_after.is_not(None),
-               DoEnvironment.cert_not_after <= now + timedelta(days=certs.SIRDAR_RENEW_DAYS),
-               Environment.current_sha.is_not(None),
+    """Deployed DigitalOcean environments, ready or failed and not held back,
+    whose served certificate has certs.SIRDAR_RENEW_DAYS or fewer days left.
+    The served certificate's date (when DigitalOcean answers) also becomes
+    cert_not_after, so a cert-worker renewal starts no job; the caller
+    commits."""
+    rows = await db.execute(
+        select(Environment, DoEnvironment)
+        .join(DoEnvironment, DoEnvironment.environment_id == Environment.id)
+        .where(Environment.current_sha.is_not(None),
                Environment.status.in_(("ready", "failed")))
         .order_by(Environment.name))
-    return [env for env in rows if not await environments.is_deploying(db, env.id)]
+    found: list[Environment] = []
+    limit = now + timedelta(days=certs.SIRDAR_RENEW_DAYS)
+    for env, row in rows.all():
+        if await _held_back(db, env.id, now):
+            continue
+        served = await served_not_after(db, row)
+        if served is not None and served != row.cert_not_after:
+            row.cert_not_after = served
+        when = served or row.cert_not_after
+        if when is not None and when <= limit:
+            found.append(env)
+    return found
 
 
 async def start_due(now: datetime | None = None) -> list[str]:
@@ -54,6 +118,7 @@ async def start_due(now: datetime | None = None) -> list[str]:
             await db.commit()
             pipeline.launch(dep.id)
             started.append(name)
+        await db.commit()                          # dates due() brought up to date
     return started
 
 

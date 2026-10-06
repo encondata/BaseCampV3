@@ -645,3 +645,21 @@ async def test_inspect_before_step_0_says_no_load_balancer_yet(db, secrets_key, 
         assert svc["dns"]["state"] == "unknown"
         assert "load balancer" in svc["dns"]["detail"]
     assert publish_fakes.cf.writes() == []
+
+
+async def test_an_update_without_a_renewal_token_says_where_to_add_it(
+        db, do_env, fake_runner, fake_publisher, fake_provisioner):
+    """Step 0 refuses it; a retry from step 1 (no step 0) reaches the .env
+    and says the same, not "Retry from step 0"."""
+    from sirdar_api.deploy import do_accounts
+    await _start(db, do_env, slot="orange", go_live=True)
+    await do_accounts.save(db, get_settings(), "development", label="Development",
+                           region="nyc3", clear_renewal=True)
+    await db.commit()
+    env = await db.get(Environment, do_env.id, populate_existing=True)
+    dep_id = await _start(db, env, slot="orange", sha=SHA, start_step=1)
+    dep, _, _ = await _load(dep_id)
+    assert dep.status == "failed"
+    assert "renewal token" in dep.error and "Settings › Integrations" in dep.error
+    assert "Retry from step 0" not in dep.error
+
