@@ -66,9 +66,9 @@ export const BULK_TOOLS: BulkTool[] = [
     to: '/bulk/new-move', button: 'Open',
   },
   {
-    key: 'from-to-convert', title: 'Convert a customer From-To',
-    description: "Upload a customer's From-To, match its columns to ours, and download a sheet ready for the From-To import.",
-    resource: 'initiatives', action: 'change', to: '/bulk/from-to-convert', button: 'Open',
+    key: 'convert-raw-ft', title: 'Convert Raw F-T',
+    description: "Upload a customer's raw F-T, match its columns to ours, and download a file ready for the From-To import.",
+    resource: 'initiatives', action: 'change', to: '/bulk/convert-raw-ft', button: 'Open',
   },
 ];
 

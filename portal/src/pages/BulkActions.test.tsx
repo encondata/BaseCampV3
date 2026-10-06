@@ -145,23 +145,23 @@ it('lists the time punches card only for time:add', () => {
   expect(screen.getByText('Load shifts from a spreadsheet or another timekeeping system. Workers, jobs, and sites are matched by name; review every shift before adding.')).toBeTruthy();
 });
 
-it('lists the "Convert a customer From-To" card for initiatives:change and links it to /bulk/from-to-convert', () => {
+it('lists the "Convert Raw F-T" card for initiatives:change and links it to /bulk/convert-raw-ft', () => {
   authMock.denied.add('initiatives:change');
   render(<MemoryRouter><BulkActions /></MemoryRouter>);
-  expect(screen.queryByText('Convert a customer From-To')).toBeNull();
+  expect(screen.queryByText('Convert Raw F-T')).toBeNull();
   cleanup();
   authMock.denied.clear();
   render(
     <MemoryRouter initialEntries={['/bulk']}>
       <Routes>
         <Route path="/bulk" element={<BulkActions />} />
-        <Route path="/bulk/from-to-convert" element={<div>from-to convert page</div>} />
+        <Route path="/bulk/convert-raw-ft" element={<div>convert raw ft page</div>} />
       </Routes>
     </MemoryRouter>,
   );
-  const card = screen.getByText('Convert a customer From-To').closest('.bulk-card') as HTMLElement;
+  const card = screen.getByText('Convert Raw F-T').closest('.bulk-card') as HTMLElement;
   expect(within(card).getByText(
-    "Upload a customer's From-To, match its columns to ours, and download a sheet ready for the From-To import.")).toBeTruthy();
+    "Upload a customer's raw F-T, match its columns to ours, and download a file ready for the From-To import.")).toBeTruthy();
   fireEvent.click(within(card).getByRole('button', { name: 'Open' }));
-  expect(screen.getByText('from-to convert page')).toBeTruthy();
+  expect(screen.getByText('convert raw ft page')).toBeTruthy();
 });

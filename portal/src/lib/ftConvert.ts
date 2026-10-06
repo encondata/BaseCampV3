@@ -1,6 +1,6 @@
 /**
- * ftConvert — the pure half of Bulk Actions › Convert a customer From-To
- * (/bulk/from-to-convert): read a customer's workbook into text rows, find
+ * ftConvert — the pure half of Bulk Actions › Convert Raw F-T
+ * (/bulk/convert-raw-ft): read a customer's workbook into text rows, find
  * the header row, list their columns, suggest which of our From-To template
  * columns each one is, and build the converted workbook. No React, no
  * network: the file never leaves the browser.

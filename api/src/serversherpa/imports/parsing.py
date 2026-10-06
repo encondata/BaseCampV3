@@ -75,8 +75,8 @@ SAMPLE_ROWS: list[dict] = [
      "Data 6": "", "Mgmt 1": "", "Mgmt 2": "", "Vendor Involvement": "yes"},
 ]
 
-# One line per template column for the Bulk Actions "Convert a customer
-# From-To" column guide (served by import-template?format=json).
+# One line per template column for the Bulk Actions "Convert Raw F-T"
+# column guide (served by import-template?format=json).
 TEMPLATE_GUIDE: dict[str, str] = {
     "Serial Number": "The asset's serial number. Required unless Generate serials is on when you import.",
     "Asset Name": "Hostname or label, free text.",
