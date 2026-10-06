@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 import asyncssh
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
@@ -48,6 +49,7 @@ from sirdar_api.deploy import (
     gitref,
     integrations,
     known_hosts,
+    outbound,
     pgauth,
     smoke,
     spaces,
@@ -734,9 +736,233 @@ class DoProvisioner:
         await do_envs.record(ctx.env_id, "firewall", made["id"], name)
         out(f"Cloud firewall {name}: SSH from anywhere, HTTP only from the load balancer.\n")
 
-    # Task 10: _go_live and _destroy.
+    # ---- step 14: Switch traffic ---------------------------------------------------------
+
+    def _check_owned(self, ctx: DoContext, found: dict, name: str, what: str) -> None:
+        """Both of Sirdar's tags (sirdar and sirdar-env-<id>) and the exact name."""
+        self._check_tagged(ctx, found, name, what)
+        if "sirdar" not in (found.get("tags") or []):
+            raise StepFailed(f"The {what} Sirdar recorded as {name} ({found.get('id')}) no "
+                             "longer carries Sirdar's tag and name for this environment. Sirdar "
+                             "changed nothing: put them back or remove it by hand, then retry.")
+
+    async def _live_lb(self, api: DigitalOceanApi, ctx: DoContext, records: Records) -> dict:
+        name = do_envs.resource_name(ctx.env_name, "-lb")
+        recs = records.find("load_balancer")
+        if not recs:
+            raise StepFailed("This environment has no load balancer yet. Retry from step 0.")
+        lb = await api.load_balancer(recs[0].do_id)
+        if lb is None:
+            raise StepFailed("The load balancer Sirdar recorded is gone. Deploy again: step 0 "
+                             "builds a new one.")
+        if lb.get("name") != name:
+            raise StepFailed(f"Load balancer {lb.get('id')} is no longer named {name}. Sirdar "
+                             "changed nothing: fix it by hand, then retry.")
+        return lb
+
+    async def _public_smoke(self, ctx: DoContext, lb_ip: str, out: Output) -> list[str]:
+        results = await smoke.run(list(ctx.hosts), lb_ip,
+                                  transport=outbound.transports().get("smoke"),
+                                  sleep=self._sleep, attempts=self._smoke_attempts,
+                                  delay=self._smoke_delay, out=out, insecure=ctx.acme_staging)
+        for r in results:
+            out(f"{r.url}: {r.detail}\n")
+        return [r.service for r in results if not r.ok]
+
     async def _go_live(self, api: DigitalOceanApi, ctx: DoContext, out: Output) -> None:
-        raise StepFailed("Switch traffic isn't built yet.")
+        """Point the load balancer at ctx.slot's droplet (no slot: at none),
+        then check every public URL through the load balancer; on a failure
+        the previous targets go back."""
+        records = await load_records(ctx.env_id)
+        lb = await self._live_lb(api, ctx, records)
+        name = lb["name"]
+        previous = [int(d) for d in lb.get("droplet_ids") or []]
+        before = next((r.slot for r in records.find("droplet")
+                       if r.do_id.isdigit() and int(r.do_id) in previous), None)
+        if ctx.slot is None:
+            wanted: list[int] = []
+        else:
+            if not lb.get("ip"):
+                raise StepFailed(f"Load balancer {name} has no IP address yet. Retry from "
+                                 "step 0.")
+            recs = records.find("droplet", ctx.slot)
+            droplet = await api.droplet(recs[0].do_id) if recs else None
+            if droplet is None:
+                raise StepFailed(f"The {ctx.slot} slot has no droplet. Deploy to it first.")
+            self._check_owned(ctx, droplet, do_envs.droplet_name(ctx.env_name, ctx.slot),
+                              "droplet")
+            wanted = [int(droplet["id"])]
+        if sorted(previous) != wanted:
+            await api.update_load_balancer(lb["id"], lb_update_body(lb, droplet_ids=wanted))
+            out(f"Load balancer {name}: traffic now goes to {ctx.slot or 'no slot'}"
+                f"{f' (was {before})' if before else ''}.\n")
+        else:
+            out(f"Load balancer {name}: already sends traffic to {ctx.slot or 'no slot'}.\n")
+        if ctx.slot is None:
+            return
+        failed = await self._public_smoke(ctx, lb["ip"], out)
+        if not failed:
+            return
+        reason = (f"{len(failed)} of {len(ctx.hosts)} public URLs didn't answer through the "
+                  f"load balancer: {', '.join(failed)}.")
+        if sorted(previous) != wanted:
+            try:
+                current = await api.load_balancer(lb["id"]) or lb
+                await api.update_load_balancer(lb["id"], lb_update_body(current,
+                                                                        droplet_ids=previous))
+            except DoError as e:
+                raise StepFailed(f"{reason} Sirdar couldn't put traffic back on "
+                                 f"{before or 'no slot'} ({e.reason}): point load balancer "
+                                 f"{name} there by hand.") from None
+            out(f"Put traffic back on {before or 'no slot'}.\n")
+        raise StepFailed(f"{reason} Traffic stays where it was.")
+
+    # ---- step 18: Remove DigitalOcean resources -------------------------------------------
+
+    _FETCH = {"vpc": "vpc", "droplet": "droplet", "database": "database",
+              "certificate": "certificate", "load_balancer": "load_balancer",
+              "firewall": "firewall"}
+
+    def _stray(self, ctx: DoContext, found: dict, recorded: set[str]) -> bool:
+        """Tagged for this environment, not recorded, and plainly Sirdar's:
+        both tags and the environment's name prefix."""
+        tags = found.get("tags") or []
+        return (str(found.get("id")) not in recorded and "sirdar" in tags
+                and do_envs.env_tag(ctx.env_id) in tags
+                and str(found.get("name") or "").startswith(
+                    do_envs.resource_name(ctx.env_name) + "-"))
+
+    async def _check_all(self, api: DigitalOceanApi, ctx: DoContext,
+                         records: Records) -> list[dict]:
+        """Before anything is deleted: every recorded resource that still
+        exists must still match (both tags and the exact name, or the exact
+        name). Returns the live recorded droplets."""
+        droplets = []
+        for rec in records.resources:
+            if rec.kind == "bucket":
+                if rec.do_id != ctx.bucket:
+                    raise StepFailed(f"Sirdar recorded the bucket {rec.do_id}, not this "
+                                     f"environment's {ctx.bucket}. Sirdar changed nothing.")
+                continue
+            if rec.kind not in self._FETCH:
+                continue
+            live = await getattr(api, self._FETCH[rec.kind])(rec.do_id)
+            if live is None:
+                continue
+            what = rec.kind.replace("_", " ")
+            if rec.kind in ("droplet", "database"):
+                self._check_owned(ctx, live, rec.name, what)
+                if rec.kind == "droplet":
+                    droplets.append(live)
+            elif rec.kind == "certificate":
+                if not str(live.get("name") or "").startswith(f"ss-{ctx.env_name}-"):
+                    raise StepFailed(f"Certificate {rec.do_id} is no longer one of Sirdar's for "
+                                     f"{ctx.env_name}. Sirdar changed nothing.")
+            elif rec.kind == "vpc":
+                if live.get("name") != rec.name or f"sirdar:{ctx.env_id}" not in str(
+                        live.get("description") or ""):
+                    raise StepFailed(f"VPC {rec.do_id} no longer looks like Sirdar's {rec.name}. "
+                                     "Sirdar changed nothing.")
+            elif live.get("name") != rec.name:
+                raise StepFailed(f"The {what} {rec.do_id} is no longer named {rec.name}. "
+                                 "Sirdar changed nothing.")
+        if records.find("spaces_key"):
+            keys = {k.get("access_key"): k for k in await api.spaces_keys()}
+            for rec in records.find("spaces_key"):
+                live = keys.get(rec.do_id)
+                if live is not None and live.get("name") != rec.name:
+                    raise StepFailed(f"Spaces key {rec.do_id} is no longer named {rec.name}. "
+                                     "Sirdar changed nothing.")
+        return droplets
+
+    async def _remove(self, ctx: DoContext, rec: DoResource, delete, out: Output) -> None:
+        gone = await delete(rec.do_id)
+        await do_envs.forget(ctx.env_id, rec.kind, rec.do_id)
+        out(f"{rec.name}: {'deleted' if gone else 'already gone'}.\n")
+
+    async def _remove_when_free(self, ctx: DoContext, rec: DoResource, delete, seconds: int,
+                                failure: str, out: Output) -> None:
+        """A VPC can't go while it has members, nor a certificate while a load
+        balancer uses it; deleted droplets, databases and load balancers let go
+        a little later."""
+        for _ in range(self._tries(seconds)):
+            try:
+                await self._remove(ctx, rec, delete, out)
+                return
+            except DoError as e:
+                if e.status in (403, 409, 422):
+                    await self._sleep(self._poll)
+                    continue
+                raise
+        raise StepFailed(failure)
+
+    async def _forget_pins(self, ctx: DoContext, ips: set[str], out: Output) -> None:
+        """Forget each removed droplet's pinned host key, unless the address is
+        a saved SSH target's or another DigitalOcean environment's droplet's."""
+        saved = {cfg.host for _, cfg in targets.ssh_configs(self._settings)}
+        async with get_sessionmaker()() as s:
+            others = set(await s.scalars(select(DoSlot.public_ip).where(
+                DoSlot.environment_id != ctx.env_id, DoSlot.public_ip.in_(ips or {""}))))
+        for ip in sorted(ips - saved - others):
+            if await vmcommon.forget_pin(ip, ctx.actor_id, "digitalocean"):
+                out(f"Forgot {ip}'s SSH host key.\n")
 
     async def _destroy(self, api: DigitalOceanApi, ctx: DoContext, out: Output) -> None:
-        raise StepFailed("Remove DigitalOcean resources isn't built yet.")
+        records = await load_records(ctx.env_id)
+        env_tag = do_envs.env_tag(ctx.env_id)
+        # Everything is checked (and the strays found) before anything is deleted.
+        live_droplets = await self._check_all(api, ctx, records)
+        recorded = {r.do_id for r in records.find("droplet")}
+        tagged = await api.droplets_tagged(env_tag)
+        stray_droplets = [d for d in tagged if self._stray(ctx, d, recorded)]
+        recorded_dbs = {r.do_id for r in records.find("database")}
+        stray_dbs = [d for d in await api.databases_tagged(env_tag)
+                     if self._stray(ctx, d, recorded_dbs)]
+        for found in tagged:
+            if str(found["id"]) not in recorded and found not in stray_droplets:
+                out(f"{found.get('name')} ({found['id']}) carries this environment's tag but "
+                    "not Sirdar's own; left alone.\n")
+        ips = {s.public_ip for s in records.slots.values() if s.public_ip}
+        ips |= {ip for d in live_droplets + stray_droplets
+                if (ip := do_api.droplet_ips(d)[0])}
+
+        for rec in records.find("load_balancer"):
+            await self._remove(ctx, rec, api.delete_load_balancer, out)
+        for rec in records.find("certificate"):
+            await self._remove_when_free(
+                ctx, rec, api.delete_certificate, self._waits["lb"],
+                f"The certificate {rec.name} is still in use after "
+                f"{self._waits['lb'] // 60} minutes. Retry Delete in a few minutes.", out)
+        for rec in records.find("firewall"):
+            await self._remove(ctx, rec, api.delete_firewall, out)
+        for rec in records.find("droplet"):
+            await self._remove(ctx, rec, api.delete_droplet, out)
+        for droplet in stray_droplets:
+            out(f"{droplet.get('name')}: tagged for this environment but not recorded; "
+                "deleting it too.\n")
+            await api.delete_droplet(str(droplet["id"]))
+        await self._forget_pins(ctx, ips, out)
+        for rec in records.find("database"):
+            await self._remove(ctx, rec, api.delete_database, out)
+        for database in stray_dbs:
+            out(f"{database.get('name')}: tagged for this environment but not recorded; "
+                "deleting it too.\n")
+            await api.delete_database(str(database["id"]))
+        for rec in records.find("spaces_key"):
+            await self._remove(ctx, rec, api.delete_spaces_key, out)
+        for rec in records.find("bucket"):
+            setup = await self._setup_key(api, ctx)
+            try:
+                count = await spaces.empty_bucket(rec.do_id, ctx.region, setup)
+                gone = await spaces.delete_bucket(rec.do_id, ctx.region, setup)
+            finally:
+                await self._drop_setup_key(api, ctx, setup.access_key)
+            await do_envs.forget(ctx.env_id, "bucket", rec.do_id)
+            out(f"Bucket {rec.name}: emptied ({count} objects) and "
+                f"{'deleted' if gone else 'already gone'}.\n")
+        for rec in records.find("vpc"):
+            await self._remove_when_free(
+                ctx, rec, api.delete_vpc, self._waits["vpc"],
+                f"The VPC {rec.name} still has members after {self._waits['vpc'] // 60} "
+                "minutes. Retry Delete in a few minutes.", out)
+        out("Nothing of this environment is left on DigitalOcean.\n")
