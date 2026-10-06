@@ -6,7 +6,7 @@ import { useId, type ReactNode } from 'react';
 import type { DashEnvironment } from '../../lib/sirdarApi';
 
 import { ServerRackIcon } from './icons';
-import { Dot, RUNNING, SoonButton, flowStillLive } from './parts';
+import { CertPill, Dot, RUNNING, SoonButton, flowStillLive } from './parts';
 
 function State({ env }: { env: DashEnvironment }) {
   const version = env.version && <b>{env.version}</b>;
@@ -60,6 +60,8 @@ export default function EnvCard({ env, demo, canDeploy, selected, onSelect, onDe
         <div className="sd-env-main">
           <State env={env} />
           <div className="sd-muted">{released}</div>
+          {/* hoverable for its tooltip; a click on it still selects the card */}
+          {env.flow.certificate && <div className="sd-env-cert"><CertPill cert={env.flow.certificate} onClick={onSelect} /></div>}
         </div>
         {action}
       </div>

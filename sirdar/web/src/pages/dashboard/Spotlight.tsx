@@ -9,7 +9,7 @@ import { Link } from 'react-router-dom';
 import type { DashEnvironment, DashServer } from '../../lib/sirdarApi';
 
 import EnvironmentFlow from './EnvironmentFlow';
-import { Dot, RUNNING, SoonButton, flowStillLive } from './parts';
+import { CertPill, Dot, RUNNING, SoonButton, flowStillLive } from './parts';
 
 function StatePill({ card }: { card: DashEnvironment }) {
   const f = card.flow;
@@ -21,13 +21,6 @@ function StatePill({ card }: { card: DashEnvironment }) {
   if (card.state === 'failed') return <span className="sd-pill is-warn"><Dot tone="warn" />Last deploy failed</span>;
   if (card.state === 'active') return <span className="sd-pill is-ok"><Dot tone="ok" />Running</span>;
   return <span className="sd-pill is-muted"><Dot tone="muted" />{card.environment ? 'Not deployed' : 'Not built yet'}</span>;
-}
-
-function CertPill({ card }: { card: DashEnvironment }) {
-  const c = card.flow.certificate;
-  if (!c) return null;
-  const cls = c.tone === 'bad' ? 'is-bad' : c.tone === 'warn' ? 'is-warn' : 'is-ok';
-  return <span className={`sd-pill ${cls}`}>{c.tone === 'bad' ? 'Certificate expired' : `Certificate: ${c.days_left} day${c.days_left === 1 ? '' : 's'} left`}</span>;
 }
 
 export default function Spotlight({ card, demo, motion, canDeploy, canView, canActivate, onDeploy, onSetUp, onActivate }: {
@@ -71,7 +64,7 @@ export default function Spotlight({ card, demo, motion, canDeploy, canView, canA
         <h2>{card.label}</h2>
         {card.sub && <span className="sd-muted">{card.sub}</span>}
         <StatePill card={card} />
-        <CertPill card={card} />
+        <CertPill cert={f.certificate} />
         <span className="sd-spot-actions">{deploy}{open}</span>
       </header>
       <EnvironmentFlow key={card.id} flow={f} motion={motion} serverAction={serverAction}
