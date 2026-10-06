@@ -4,10 +4,13 @@
  * House rule: any dropdown over records (people, orgs, …) uses this;
  * native <select> is only for tiny fixed enums.
  *
- * `portal` (opt-in) renders the menu under document.body with fixed
- * positioning, so a ComboBox inside a sideways-scrolling container (a
- * DataTable cell) is not clipped by it. A portaled menu is placed once per
- * open and closes on any scroll or resize rather than tracking its trigger.
+ * The menu portals — renders under the enclosing .portal-shell (document.body
+ * without one), with fixed positioning —
+ * when `portal` is set (opt-in, for a ComboBox inside a sideways-scrolling
+ * container such as a DataTable cell) OR automatically when the ComboBox
+ * sits inside a `.modal-card`, whose `overflow-y: auto` would otherwise clip
+ * it. A portaled menu is placed once per open and closes on any scroll or
+ * resize rather than tracking its trigger.
  *
  * `onSearch` (opt-in) hands the typed text to the caller, who searches the
  * server and passes the matches back as `options`; the list then shows
@@ -15,37 +18,19 @@
  * label doesn't show — an email — would otherwise disappear).
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+
+import { useMenuPlacement } from './useMenuPlacement';
+
+// The flip decision lives with the shared placement hook; re-exported here
+// for the callers and tests that import it from ComboBox.
+export { shouldDropUp } from './useMenuPlacement';
 
 export interface ComboOption {
   value: string;
   label: string;
   sub?: string | null;
-}
-
-/** Height (px) reserved for the menu when there's no room to measure it yet — mirrors .combo-menu's max-height. */
-const MENU_NEEDED_HEIGHT = 260;
-/** Gap (px) between the trigger and a portaled menu — mirrors .combo-menu's calc(100% + 6px). */
-const MENU_GAP = 6;
-
-/** Viewport placement of a portaled menu: below (top) or above (bottom) the trigger. */
-interface Anchor { left: number; width: number; top?: number; bottom?: number }
-
-/**
- * Pure flip decision: open the menu upward only when there isn't enough
- * room below the trigger AND there's more room above than below. Keeping
- * this pure (no DOM reads) makes it directly unit-testable.
- */
-export function shouldDropUp({
-  spaceBelow, spaceAbove, neededHeight = MENU_NEEDED_HEIGHT,
-}: {
-  spaceBelow: number;
-  spaceAbove: number;
-  neededHeight?: number;
-}): boolean {
-  return spaceBelow < neededHeight && spaceAbove > spaceBelow;
 }
 
 interface Props {
@@ -58,7 +43,7 @@ interface Props {
   disabled?: boolean;
   inputId?: string;
   ariaLabel?: string;
-  portal?: boolean;                    // menu under document.body — escapes overflow clipping
+  portal?: boolean;                    // always portal the menu (it portals by itself inside a .modal-card)
   onSearch?: (text: string) => void;   // the caller filters `options` (server search)
 }
 
@@ -69,11 +54,16 @@ export default function ComboBox({
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState('');
   const [active, setActive] = useState(0);
-  const [dropUp, setDropUp] = useState(false);
-  const [anchor, setAnchor] = useState<Anchor | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // Drop-up flip, plus the portal (asked for, or inside a modal card) and
+  // its placement and close-on-scroll/resize.
+  const { portaled, portalHost, dropUp, menuStyle } = useMenuPlacement({
+    wrapRef, menuRef: listRef, open, portal, remeasure: filter,
+    onDismiss: () => { setOpen(false); setFilter(''); },
+  });
 
   const selected = options.find((o) => o.value === value);
 
@@ -96,53 +86,6 @@ export default function ComboBox({
     lastSearch.current = filter;
     onSearchRef.current?.(filter);
   }, [filter]);
-
-  // Decide drop direction on open, and re-check whenever the filter changes
-  // while open (fewer/more matches can change the menu's natural height).
-  // A portaled menu is also placed here, from the same measurements.
-  useLayoutEffect(() => {
-    if (!open) {
-      if (portal) setAnchor(null);
-      return;
-    }
-    const el = wrapRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const spaceBelow = window.innerHeight - rect.bottom;
-    const spaceAbove = rect.top;
-    // Use the menu's actual rendered height when it's already in the DOM
-    // with real content (shorter filtered lists need less room), capped at
-    // the CSS max-height reference; fall back to the full reference height
-    // if the list isn't measurable yet (e.g. momentarily empty).
-    const actualHeight = listRef.current?.getBoundingClientRect().height;
-    const neededHeight = Math.min(MENU_NEEDED_HEIGHT, actualHeight || MENU_NEEDED_HEIGHT);
-    const up = shouldDropUp({ spaceBelow, spaceAbove, neededHeight });
-    setDropUp(up);
-    if (portal) {
-      setAnchor(up
-        ? { left: rect.left, width: rect.width, bottom: window.innerHeight - rect.top + MENU_GAP }
-        : { left: rect.left, width: rect.width, top: rect.bottom + MENU_GAP });
-    }
-  }, [open, filter, portal]);
-
-  // A portaled menu does not follow its trigger, so any scroll (the page or
-  // a scrolling ancestor — the capture phase sees both) or resize closes
-  // it. Scrolling the menu's own list is not a reason to close.
-  useEffect(() => {
-    if (!open || !portal) return;
-    const close = (e: Event) => {
-      const t = e.target;
-      if (e.type === 'scroll' && t instanceof Node && listRef.current?.contains(t)) return;
-      setOpen(false);
-      setFilter('');
-    };
-    window.addEventListener('scroll', close, true);
-    window.addEventListener('resize', close);
-    return () => {
-      window.removeEventListener('scroll', close, true);
-      window.removeEventListener('resize', close);
-    };
-  }, [open, portal]);
 
   useEffect(() => {
     listRef.current
@@ -207,17 +150,8 @@ export default function ComboBox({
     }
   };
 
-  // Until the layout effect places it, a portaled menu renders hidden at
-  // the viewport origin — so it can be measured just like the in-place one.
-  const portalStyle: CSSProperties | undefined = !portal ? undefined : anchor
-    ? {
-      position: 'fixed', left: anchor.left, width: anchor.width, right: 'auto',
-      top: anchor.top ?? 'auto', bottom: anchor.bottom ?? 'auto', zIndex: 1200,
-    }
-    : { position: 'fixed', left: 0, top: 0, visibility: 'hidden', zIndex: 1200 };
-
   const menu = (
-    <div className={`combo-menu ${dropUp ? 'drop-up' : ''}`} ref={listRef} style={portalStyle}>
+    <div className={`combo-menu ${dropUp ? 'drop-up' : ''}`} ref={listRef} style={menuStyle}>
       {visible.length === 0 && (
         <div className="pop-empty">No matches{filter ? ` for “${filter.trim()}”` : ''}.</div>
       )}
@@ -266,7 +200,7 @@ export default function ComboBox({
         </span>
       )}
 
-      {open && (portal ? createPortal(menu, document.body) : menu)}
+      {open && (portaled ? createPortal(menu, portalHost) : menu)}
     </div>
   );
 }

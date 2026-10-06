@@ -14,9 +14,17 @@
  *
  * Backspace on an empty field pops the last tag; clicking a suggestion
  * adds it straight away. Read-only (chips only, no input) when disabled.
+ *
+ * Inside a `.modal-card`, whose `overflow-y: auto` would clip it, the
+ * suggestion menu portals to the enclosing .portal-shell (document.body
+ * without one) with fixed positioning
+ * (useMenuPlacement) and closes on any scroll or resize.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+
+import { useMenuPlacement } from './useMenuPlacement';
 
 export interface TagOption { value: string; label: string }
 
@@ -40,6 +48,7 @@ export default function TagInput({
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const restricted = options !== undefined;
   const labelFor = useMemo(() => {
@@ -65,10 +74,26 @@ export default function TagInput({
       .map((s) => ({ value: s, label: s }));
   }, [restricted, options, suggestions, have, text]);
 
+  const showMenu = open && visible.length > 0;
+
+  // Drop-up flip, plus the portal inside a modal card, its placement, and
+  // its close-on-scroll/resize (the typed text stays in the field). It
+  // re-measures when the text, the tag count (a new chip can wrap the field
+  // onto another row), or the number of suggestions (the menu's height)
+  // changes.
+  const { portaled, portalHost, dropUp, menuStyle } = useMenuPlacement({
+    wrapRef, menuRef, open: showMenu, remeasure: `${text}|${value.length}|${visible.length}`,
+    onDismiss: () => setOpen(false),
+  });
+
+  // outside click closes — a portaled menu lives outside wrapRef, so a
+  // mousedown on it counts as inside too (otherwise this capture-phase
+  // listener would close the menu before a suggestion's mousedown adds it).
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (!wrapRef.current?.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (!wrapRef.current?.contains(target) && !menuRef.current?.contains(target)) {
         setOpen(false);
         setText('');
       }
@@ -111,6 +136,21 @@ export default function TagInput({
     }
   };
 
+  const menu = (
+    <div className={`combo-menu ${dropUp ? 'drop-up' : ''}`} ref={menuRef} style={menuStyle}>
+      {visible.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          className="kbar-item"
+          onMouseDown={(e) => { e.preventDefault(); commitValue(o.value); }}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+
   if (disabled) {
     return (
       <div className="chips">
@@ -139,25 +179,13 @@ export default function TagInput({
           value={text}
           placeholder={value.length === 0 ? placeholder : ''}
           onFocus={() => setOpen(true)}
+          onClick={() => setOpen(true)}
           onChange={(e) => { setText(e.target.value); setOpen(true); }}
           onKeyDown={onKey}
           onBlur={() => { if (!restricted && text.trim()) commitValue(text.trim()); }}
         />
       </div>
-      {open && visible.length > 0 && (
-        <div className="combo-menu">
-          {visible.map((o) => (
-            <button
-              key={o.value}
-              type="button"
-              className="kbar-item"
-              onMouseDown={(e) => { e.preventDefault(); commitValue(o.value); }}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
-      )}
+      {showMenu && (portaled ? createPortal(menu, portalHost) : menu)}
     </div>
   );
 }
