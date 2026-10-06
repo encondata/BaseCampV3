@@ -1,5 +1,13 @@
 /** Test fixtures shaped like GET /api/dashboard (demo and real/empty). */
-import type { DashboardData, DashNode } from '../../lib/sirdarApi';
+import type { DashboardData, DashFlow, DashNode } from '../../lib/sirdarApi';
+
+/** A card with nothing built (placeholders, and every card until Task 10's fixtures). */
+export const NONE_FLOW: DashFlow = {
+  kind: 'none', middle: { label: 'Not built yet', sub: '', status: 'unknown' },
+  servers: [{ id: 'none', label: 'Server', sub: 'Not built yet', state: 'empty', health: 'unknown', version: null,
+              deployed: false }],
+  active_slot: null, certificate: null, deploying_slot: null, failed_slot: null,
+};
 
 export function n(id: string, name: string, kind: string, status: string, children: DashNode[] = [],
                   extra: Partial<DashNode> = {}): DashNode {
@@ -46,9 +54,11 @@ export const DEMO: DashboardData = {
   },
   environments: [
     { id: 'dev', label: 'Development', sub: null, state: 'empty', version: null, last_release: 'v2.8.1-dev',
-      last_release_at: null, action_label: 'Deploy to Dev', environment: null },
+      last_release_at: null, action_label: 'Deploy to Dev', environment: null,
+      production: false, flow: NONE_FLOW },
     { id: 'beta', label: 'Beta', sub: null, state: 'empty', version: null, last_release: 'v2.8.1-rc.2',
-      last_release_at: null, action_label: 'Deploy to Beta', environment: null },
+      last_release_at: null, action_label: 'Deploy to Beta', environment: null,
+      production: false, flow: NONE_FLOW },
   ],
   infrastructure: { source: 'demo', error: null, tree: DEMO_TREE },
 };
@@ -68,11 +78,14 @@ export const EMPTY: DashboardData = {
   },
   environments: [
     { id: 'dev', label: 'Development', sub: null, state: 'empty', version: null, last_release: null,
-      last_release_at: null, action_label: 'Set up Dev', environment: null },
+      last_release_at: null, action_label: 'Set up Dev', environment: null,
+      production: false, flow: NONE_FLOW },
     { id: 'beta', label: 'Beta', sub: null, state: 'empty', version: null, last_release: null,
-      last_release_at: null, action_label: 'Set up Beta', environment: null },
+      last_release_at: null, action_label: 'Set up Beta', environment: null,
+      production: false, flow: NONE_FLOW },
     { id: 'qa-east', label: 'Qa East', sub: null, state: 'empty', version: null, last_release: null,
-      last_release_at: null, action_label: 'Set up Qa East', environment: null },
+      last_release_at: null, action_label: 'Set up Qa East', environment: null,
+      production: false, flow: NONE_FLOW },
   ],
   infrastructure: { source: 'none', error: null, tree: [] },
 };
@@ -84,10 +97,13 @@ export const REAL: DashboardData = {
   health: { status: 'degraded', label: 'A deployment failed' },
   environments: [
     { id: 'uat', label: 'uat', sub: 'Development', state: 'active', version: 'e73b99ca', last_release: 'e73b99ca',
-      last_release_at: '2026-10-03T12:00:00+00:00', action_label: 'Deploy uat', environment: 'uat' },
+      last_release_at: '2026-10-03T12:00:00+00:00', action_label: 'Deploy uat', environment: 'uat',
+      production: false, flow: NONE_FLOW },
     { id: 'beta', label: 'Beta', sub: null, state: 'empty', version: null, last_release: null,
-      last_release_at: null, action_label: 'Set up Beta', environment: null },
+      last_release_at: null, action_label: 'Set up Beta', environment: null,
+      production: false, flow: NONE_FLOW },
     { id: 'qa-east', label: 'qa-east', sub: 'Custom', state: 'failed', version: null, last_release: null,
-      last_release_at: null, action_label: 'Deploy qa-east', environment: 'qa-east' },
+      last_release_at: null, action_label: 'Deploy qa-east', environment: 'qa-east',
+      production: false, flow: NONE_FLOW },
   ],
 };

@@ -77,6 +77,39 @@ export interface ConnectResult {
   ok: boolean; target: string; type: string; name?: string | null; checks: DeployCheck[]; facts: Record<string, unknown>;
 }
 export interface DoRegions { regions: { slug: string; name: string }[]; default: string | null }
+/* ---- DigitalOcean accounts and environments (deploy phase 7) ---- */
+export type DoAccountKey = 'production' | 'development';
+export interface DoAccount {
+  key: DoAccountKey; label: string; region: string | null; configured: boolean; token_set: boolean;
+  source: 'stored' | 'environment' | null; renewal_token_set: boolean; team_name: string | null;
+  /** Environments built in this account: it can't be cleared while any exist. */
+  environments: string[]; updated_at: string | null; updated_by_name: string | null;
+}
+/** Omitted tokens keep the stored ones. */
+export interface DoAccountBody {
+  label: string; region: string | null; token?: string; renewal_token?: string; clear_renewal_token?: boolean;
+}
+export interface EnvDoSlot {
+  slot: string; droplet_id: string | null; public_ip: string | null; private_ip: string | null;
+  sha: string | null; image_tag: string | null; active: boolean;
+  last_check_ok: boolean | null; last_check_at: string | null;
+}
+export interface EnvDo {
+  account: DoAccountKey; account_label: string; region: string; droplet_size: string; db_size: string;
+  db_standby: boolean; acme_staging: boolean; vpc_ip_range: string | null; lb_ip: string | null;
+  db_host: string | null; bucket: string | null; cert_not_after: string | null;
+  slots: EnvDoSlot[]; resources: { kind: string; name: string; slot: string | null }[];
+}
+export interface NewDo {
+  account: DoAccountKey; slots?: 1 | 2; droplet_size?: string; db_size?: string; db_standby?: boolean;
+  acme_staging?: boolean; auto_activate?: boolean;
+}
+export interface DoDefaults {
+  droplet_size: string; db_size: string; db_standby: boolean;
+  production_slots: string[]; one_slot: string[]; two_slots: string[];
+}
+/** PATCH `do`: sizes only grow (step 0 applies them on the next deploy). */
+export interface DoSizes { droplet_size?: string; db_size?: string; db_standby?: boolean }
 export interface KnownHost {
   host: string; port: number; key_type: string; fingerprint: string;
   trusted_at: string; trusted_by_name: string | null;
@@ -298,6 +331,16 @@ const MESSAGES: Record<string, string> = {
   not_supported_on_digitalocean: "That isn't offered on DigitalOcean. Activate the other slot to go back.",
   seed_not_allowed: 'This environment already runs a deploy, so it can no longer be seeded from a snapshot.',
   slot_not_deployed: "That slot has never run a deploy. Deploy to it first.",
+  not_digitalocean_environment: "This environment isn't on DigitalOcean.",
+  slot_invalid: "That isn't one of this environment's slots.",
+  slot_required: 'Choose the slot to activate.',
+  slot_already_active: 'That slot is already live.',
+  production_retiring: 'This production environment is retiring: it can only be deactivated.',
+  already_inactive: 'No slot is live.',
+  auto_activate_not_allowed: 'Only non-production DigitalOcean environments activate automatically.',
+  slots_full: 'This environment already has two slots.',
+  slot_not_allowed: 'Production always has its Blue and Green slots.',
+  do_shrink_refused: 'Sizes can only grow.',
 };
 
 export function errorText(err: unknown, fallback: string): string {
@@ -380,10 +423,22 @@ export async function deleteSshTarget(slug: string): Promise<void> {
   if (!resp.ok) throw await errorOf(resp);
 }
 export const listKeyFiles = () => getJson<{ files: string[] }>('/deploy/key-files');
-export const connectDeploy = (target: string, type: string, region?: string, name?: string) =>
+export const connectDeploy = (target: string, type: string, region?: string, name?: string, account?: DoAccountKey) =>
   sendJson<ConnectResult>('POST', '/deploy/connect',
-    { target, type, ...(region ? { region } : {}), ...(name ? { name } : {}) });
-export const getDoRegions = () => getJson<DoRegions>('/deploy/digitalocean/regions');
+    { target, type, ...(region ? { region } : {}), ...(name ? { name } : {}), ...(account ? { account } : {}) });
+export const getDoRegions = (account: DoAccountKey = 'production') =>
+  getJson<DoRegions>(`/deploy/digitalocean/regions?account=${account}`);
+const doAccountPath = (key: DoAccountKey) => `/deploy/integrations/digitalocean/accounts/${key}`;
+export const getDoAccounts = () => getJson<{ accounts: DoAccount[] }>('/deploy/integrations/digitalocean/accounts');
+export const saveDoAccount = (key: DoAccountKey, body: DoAccountBody) =>
+  sendJson<{ accounts: DoAccount[] }>('PUT', doAccountPath(key), body);
+/** No body: the saved account. A body: those values unsaved (omitted tokens = the stored ones). */
+export const testDoAccount = (key: DoAccountKey, body?: DoAccountBody) =>
+  sendJson<IntegrationCheck>('POST', `${doAccountPath(key)}/test`, body);
+export async function clearDoAccount(key: DoAccountKey): Promise<void> {
+  const resp = await apiFetch(doAccountPath(key), { method: 'DELETE' });
+  if (!resp.ok) throw await errorOf(resp);
+}
 export const listKnownHosts = () => getJson<KnownHost[]>('/deploy/known-hosts');
 export const trustKnownHost = (host: string, port: number, fingerprint: string, target?: string) =>
   sendJson<KnownHost>('POST', '/deploy/known-hosts', { host, port, fingerprint, ...(target ? { target } : {}) });
@@ -394,13 +449,14 @@ export async function forgetKnownHost(host: string, port: number): Promise<void>
 }
 
 /* ---- Environments and deployments (/api/deploy, deploy step 2) ---- */
-export type EnvType = 'dev' | 'beta' | 'custom';
+export type EnvType = 'dev' | 'beta' | 'custom' | 'production';
 export type EnvStatus = 'new' | 'ready' | 'deploying' | 'failed' | 'deleting';
 /** Modes the Deploy modal starts. */
 export type DeployMode = 'update' | 'reset' | 'restore_dump';
 /** Every mode a deployment record can have (publish: steps 12–14 alone;
  *  teardown: Delete environment). */
-export type DeploymentMode = DeployMode | 'adopt' | 'snapshot' | 'rollback' | 'publish' | 'teardown' | 'vm_restore';
+export type DeploymentMode = DeployMode | 'adopt' | 'snapshot' | 'rollback' | 'publish' | 'teardown' | 'vm_restore'
+  | 'activate' | 'renew';
 export type DeploymentStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'adopted';
 export type StepStatus =
   'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'not_run' | 'cancelled' | 'interrupted';
@@ -425,6 +481,8 @@ export interface DeploymentSummary {
   vm_snapshot: string | null;
   previous_sha: string | null; error: string | null; actor_name: string | null;
   started_at: string; finished_at: string | null; created_at: string;
+  /** DigitalOcean: the slot it deploys or switches to, and whether it ends with Switch traffic. */
+  cloud: boolean; slot: string | null; go_live: boolean;
 }
 export interface DeploymentStep {
   number: number; key: string; name: string; status: StepStatus;
@@ -436,8 +494,11 @@ export interface Deployment extends DeploymentSummary { environment: string; ste
 export interface Environment {
   id: string; name: string; type: EnvType; target: string; base_domain: string; env_dir: string;
   /** 'proxmox' | 'esxi': its host is a VM Sirdar builds (`vm`); 'ssh': a saved SSH target. */
-  target_kind: 'ssh' | VmHostKind;
+  target_kind: 'ssh' | VmHostKind | 'digitalocean';
   vm: EnvVm | null;
+  /** DigitalOcean: its slots, the one the load balancer sends traffic to, auto-activate, retiring (production),
+   *  and what Sirdar built. */
+  slots: string[]; active_slot: string | null; auto_activate: boolean; retiring: boolean; do: EnvDo | null;
   git_ref: string; current_sha: string | null; image_tag: string | null; status: EnvStatus;
   proxy_ip: string; bind_ip: string; keep_dumps: number; spaces_bucket: string; log_level: string;
   services: EnvService[];
@@ -483,16 +544,20 @@ export interface EnvironmentDefaults {
   domain_suffix: string; env_root: string; git_ref: string; bind_ip: string; keep_dumps: number;
   spaces_bucket: string; log_levels: string[]; optional_secrets: string[];
   vm: VmDefaults;
+  do: DoDefaults;
 }
 export interface NewEnvironmentBody {
   name: string; type: EnvType; target: string; git_ref: string; base_domain?: string;
-  proxy_ip: string; bind_ip: string; ports: Record<string, number>;
+  /** DigitalOcean sends neither. */
+  proxy_ip?: string; bind_ip?: string; ports: Record<string, number>;
   /** The first deploy restores this snapshot. */
   snapshot_id?: string;
   /** Deploys publish DNS records and proxy hosts (the API's default: true). */
   publish?: boolean;
   /** a VM target ('proxmox' or 'esxi') only: the VM step 0 builds. */
   vm?: NewVm;
+  /** target 'digitalocean' only. */
+  do?: NewDo;
 }
 export interface AdoptEnvironmentBody { name: string; type: EnvType; target: string; git_ref: string }
 /** PATCH body: an omitted field is kept; a secret set to "" is cleared. */
@@ -503,6 +568,10 @@ export interface EnvironmentPatch {
   secrets?: Record<string, string>;
   publish?: boolean;
   vm?: { cores?: number; memory_mb?: number; disk_gb?: number; keep_snapshots?: number };
+  /** Production only: mark it retiring (needs confirm_name). */
+  retiring?: boolean; confirm_name?: string;
+  auto_activate?: boolean;
+  do?: DoSizes;
 }
 export interface DeploymentBody {
   mode: DeployMode | 'publish' | 'teardown' | 'vm_restore'; git_ref?: string; confirm_name?: string;
@@ -514,8 +583,12 @@ export interface DeploymentBody {
   snapshot_id?: string;
   /** Restore backup only: a file name from listBackups. */
   backup?: string;
+  /** DigitalOcean Delete: save a snapshot first (default yes; production always). */
+  snapshot?: boolean;
+  /** DigitalOcean production Delete: "delete production <name>". */
+  confirm_production?: string;
 }
-export interface RetryBody { from_step?: number; confirm_name?: string }
+export interface RetryBody { from_step?: number; confirm_name?: string; confirm_production?: string }
 export type SnapshotStatus = 'pending' | 'ready' | 'failed';
 export interface Snapshot {
   id: string; name: string; origin: 'upload' | 'environment';
@@ -554,6 +627,14 @@ export const retryDeployment = (id: string, body: RetryBody) =>
   sendJson<Deployment>('POST', `${depPath(id)}/retry`, body);
 export const rollbackDeployment = (id: string, confirmName: string) =>
   sendJson<Deployment>('POST', `${depPath(id)}/rollback`, { confirm_name: confirmName });
+/** Blue/Green: smoke-test `slot` and move the load balancer to it; null deactivates (a retiring production).
+ *  Production needs its name typed. */
+export const activateSlot = (name: string, slot: string | null, confirmName?: string) =>
+  sendJson<Deployment>('POST', `${envPath(name)}/activate`,
+    confirmName === undefined ? { slot } : { slot, confirm_name: confirmName });
+/** A one-slot environment's second slot; `deployment` deploys the running commit to it (null before any deploy). */
+export const addSlot = (name: string) =>
+  sendJson<{ environment: Environment; deployment: Deployment | null }>('POST', `${envPath(name)}/slots`);
 export const listBackups = (name: string) => getJson<{ backups: Backup[] }>(`${envPath(name)}/backups`);
 export const listVmSnapshots = (name: string) =>
   getJson<{ snapshots: VmSnapshot[] }>(`${envPath(name)}/vm-snapshots`);
@@ -690,6 +771,21 @@ export interface DashProduction {
   load_balancer: { label: string; sub: string; present: boolean };
   slots: DashSlot[];
 }
+export interface DashCert { days_left: number; expires_at: string; tone: 'ok' | 'warn' | 'bad' | string }
+export interface DashServer {
+  /** A slot ("blue", "orange"…), "host" on the LAN, "none" on a placeholder. */
+  id: string; label: string; sub: string;
+  state: 'live' | 'idle' | 'empty' | string; health: 'healthy' | 'degraded' | 'unknown' | string;
+  version: string | null;
+  /** The slot has run a deploy: it can be activated. */
+  deployed: boolean;
+}
+export interface DashFlow {
+  kind: 'load_balancer' | 'proxy' | 'none' | string;
+  middle: { label: string; sub: string; status: 'ok' | 'warn' | 'down' | 'unknown' | string };
+  servers: DashServer[]; active_slot: string | null; certificate: DashCert | null;
+  deploying_slot: string | null; failed_slot: string | null;
+}
 export interface DashEnvironment {
   /** The Sirdar environment's name, or "dev" / "beta" / a DigitalOcean env tag for a card with no environment. */
   id: string; label: string;
@@ -700,6 +796,9 @@ export interface DashEnvironment {
   action_label: string;
   /** The environment the card's action deploys; null means there's nothing to deploy yet. */
   environment: string | null;
+  /** The production card (always first). */
+  production: boolean;
+  flow: DashFlow;
 }
 export interface DashNode {
   id: string; name: string;
@@ -711,7 +810,10 @@ export interface DashNode {
 export interface DashboardData {
   demo: boolean; generated_at: string; health: DashHealth; production: DashProduction;
   environments: DashEnvironment[];
-  infrastructure: { source: 'none' | 'digitalocean' | 'demo' | string; error: string | null; tree: DashNode[] };
+  infrastructure: {
+    source: 'none' | 'digitalocean' | 'demo' | string; error: string | null; tree: DashNode[];
+    accounts?: { key: string; label: string; error: string | null }[];
+  };
 }
 export function getDashboard(opts: { demo?: boolean; refresh?: boolean } = {}) {
   const params = new URLSearchParams();

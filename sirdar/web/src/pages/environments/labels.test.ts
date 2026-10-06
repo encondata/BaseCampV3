@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  CERT_STATE, DEPLOYMENT_STATUS, ENV_STATUS, GATED_MODES, MODE_LABEL, PUBLISH_STATE, RETRY_MODES, STEP_STATUS,
-  deploymentRunning, dumpTakenAt, duration, envTargets, formatBytes, hostLabel, isVmTarget, onProxmox, onVmHost,
+  CERT_STATE, CHANGE_MODES, DEPLOYMENT_STATUS, ENV_STATUS, GATED_MODES, MODE_LABEL, PUBLISH_STATE, RETRY_MODES,
+  STEP_STATUS, certDaysLeft, deploymentLabel, deploymentRunning, goesLive, idleSlot, onDo, retryNeedsName, slotTitle, dumpTakenAt, duration, envTargets, formatBytes, hostLabel, isVmTarget, onProxmox, onVmHost,
   snapshotLabel, sshTargets, stoppedStep, VM_HOST_LABEL, vmBuilt, vmNetwork, vmRef, vmSize, vmStage,
 } from './labels';
 import {
-  ENV, ESXI_ENV, ESXI_NEW_ENV, ESXI_TARGETS, ESXI_VM, FAILED, PUBLISHING, PX_ENV, PX_NEW_ENV, PX_TARGETS, PX_VM,
-  RUNNING, SNAP, SUCCEEDED, TARGETS, summary,
+  DO_ENV, DO_TARGETS, ENV, ESXI_ENV, ESXI_NEW_ENV, ESXI_TARGETS, ESXI_VM, FAILED, ONE_SLOT_ENV, PROD_ENV, PUBLISHING,
+  PX_ENV, PX_NEW_ENV, PX_TARGETS, PX_VM, RUNNING, SNAP, SUCCEEDED, TARGETS, summary,
 } from './testData';
 
 it('stoppedStep mirrors the API: the failed/cancelled/interrupted step, else the first not run', () => {
@@ -60,7 +60,8 @@ it('labels the publish and delete modes, the deleting status and the publish sta
   expect([MODE_LABEL.publish, MODE_LABEL.teardown]).toEqual(['Publish', 'Delete environment']);
   expect(ENV_STATUS.deleting).toEqual(['c-amber', 'Deleting']);
   expect(GATED_MODES).toEqual(['reset', 'restore_dump', 'rollback', 'teardown', 'vm_restore']);
-  expect(RETRY_MODES).toEqual(['update', 'reset', 'restore_dump', 'rollback', 'publish', 'teardown', 'vm_restore']);
+  expect(RETRY_MODES).toEqual(['update', 'reset', 'restore_dump', 'rollback', 'publish', 'teardown', 'vm_restore',
+    'activate', 'renew']);
   expect(Object.keys(PUBLISH_STATE)).toEqual(['ok', 'update', 'create', 'claimable', 'conflict', 'unknown']);
   expect(PUBLISH_STATE.claimable).toEqual(['c-amber', "Not Sirdar's"]);
   expect(PUBLISH_STATE.conflict).toEqual(['c-red', 'Blocked']);
@@ -123,5 +124,46 @@ describe('VM hosts', () => {
 
   it('offers ESXi as a target once it is set up', () => {
     expect(envTargets(ESXI_TARGETS.targets).map((t) => t.id)).toEqual(['ssh:lab', 'esxi']);
+  });
+});
+
+describe('DigitalOcean helpers', () => {
+  it('knows the slot an Update targets and whether it goes live', () => {
+    expect(onDo(DO_ENV)).toBe(true);
+    expect(onDo(ENV)).toBe(false);
+    expect(idleSlot(DO_ENV)).toBe('purple');
+    expect(goesLive(DO_ENV, 'purple')).toBe(false);
+    expect(goesLive({ ...DO_ENV, auto_activate: true }, 'purple')).toBe(true);
+    expect(goesLive({ ...DO_ENV, active_slot: null }, 'orange')).toBe(true);
+    expect(idleSlot(ONE_SLOT_ENV)).toBe('orange');
+    expect(goesLive(ONE_SLOT_ENV, 'orange')).toBe(true);
+    expect(goesLive({ ...PROD_ENV, auto_activate: true }, 'green')).toBe(false);
+    expect(slotTitle('purple')).toBe('Purple');
+  });
+
+  it('counts certificate days', () => {
+    const now = Date.parse('2026-10-05T00:00:00Z');
+    expect(certDaysLeft('2026-10-15T12:00:00Z', now)).toBe(10);
+    expect(certDaysLeft(null, now)).toBeNull();
+  });
+
+  it('names DigitalOcean deployments by their slot', () => {
+    const base = summary(SUCCEEDED);
+    expect(deploymentLabel({ ...base, cloud: true, slot: 'purple', go_live: false })).toBe('Update to Purple, not live');
+    expect(deploymentLabel({ ...base, cloud: true, slot: 'purple', go_live: true })).toBe('Update to Purple');
+    expect(deploymentLabel({ ...base, mode: 'activate', cloud: true, slot: 'green', go_live: true })).toBe('Activate Green');
+    expect(deploymentLabel({ ...base, mode: 'activate', cloud: true, slot: null, go_live: true })).toBe('Deactivate');
+    expect(deploymentLabel({ ...base, mode: 'renew', cloud: true })).toBe('Renew certificate');
+    expect(deploymentLabel(base)).toBe('Update');
+  });
+
+  it('offers DigitalOcean once an account is set up, and gates Activate', () => {
+    expect(envTargets(DO_TARGETS.targets).map((t) => t.id)).toContain('digitalocean');
+    expect(envTargets(TARGETS.targets).map((t) => t.id)).not.toContain('digitalocean');
+    expect(CHANGE_MODES).toContain('activate');
+    expect(retryNeedsName('activate', PROD_ENV)).toBe(true);
+    expect(retryNeedsName('activate', DO_ENV)).toBe(false);
+    expect(retryNeedsName('reset', ENV)).toBe(true);
+    expect(retryNeedsName('update', ENV)).toBe(false);
   });
 });
