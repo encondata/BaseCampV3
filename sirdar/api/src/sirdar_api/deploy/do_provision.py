@@ -31,6 +31,7 @@ balancer it creates)."""
 
 import asyncio
 import base64
+import contextlib
 import re
 import shlex
 import uuid
@@ -84,6 +85,7 @@ WAITS = {"droplet": 10 * 60, "database": 30 * 60, "lb": 10 * 60, "ssh": 10 * 60,
 HEALTH_MARGIN = 10             # seconds on top of the load balancer's health checks
 _HEALTHZ = "curl -fsS -o /dev/null --max-time 5 http://127.0.0.1/healthz"
 CORS_SERVICES = ("portal", "kiosk", "wiki")   # the apps that upload straight to the bucket
+DB_RESIZE_FLIP = 60            # seconds a resized cluster gets to leave "online"
 SQL_TIMEOUT = 15 * 60          # cloud-init may still be installing psql
 # Runs as `bash -c _PSQL <host> <port>` on the droplet. Stdin: the doadmin
 # password, the cluster's CA (base64, one line), then the SQL. The password
@@ -687,8 +689,17 @@ class DoProvisioner:
             else:
                 out(f"{name}: in place (droplet {droplet['id']}).\n")
             found[slot] = droplet
+        resize = ctx.slot in found and self._should_resize(ctx, found[ctx.slot], out)
         for slot, droplet in list(found.items()):
             name = do_envs.droplet_name(ctx.env_name, slot)
+            if slot == ctx.slot and droplet.get("status") == "off":
+                # A run that stopped mid-resize (or a cancel) left it off.
+                if resize:
+                    droplet, resize = await self._resize_droplet(api, ctx, droplet, out), False
+                else:
+                    out(f"{name} is off; starting it.\n")
+                    await self._droplet_action(api, str(droplet["id"]), "power_on",
+                                               f"The power-on of {name}")
             ready = await self._wait(
                 lambda d=droplet: api.droplet(str(d["id"])),
                 lambda d: d.get("status") == "active" and all(do_api.droplet_ips(d)),
@@ -697,9 +708,27 @@ class DoProvisioner:
             await do_envs.set_slot(ctx.env_id, slot, droplet_id=str(ready["id"]),
                                    public_ip=public, private_ip=private)
             found[slot] = ready
-        if ctx.slot in found and found[ctx.slot].get("size_slug") != ctx.droplet_size:
+        if resize:
             found[ctx.slot] = await self._resize_droplet(api, ctx, found[ctx.slot], out)
         return found
+
+    def _should_resize(self, ctx: DoContext, droplet: dict, out: Output) -> bool:
+        """The deploy slot's droplet grows to the recorded size; never the
+        live slot of two (it grows when a deploy goes to it as the idle one)
+        and never down (a size Sirdar can't prove smaller stays)."""
+        current = droplet.get("size_slug")
+        if current == ctx.droplet_size:
+            return False
+        name = do_envs.droplet_name(ctx.env_name, ctx.slot)
+        if len(ctx.slots) > 1 and ctx.slot == ctx.active_slot:
+            out(f"{name} is live, so it stays {current}; it grows to {ctx.droplet_size} on a "
+                "deploy to it as the idle slot.\n")
+            return False
+        if not do_envs.grows(current, ctx.droplet_size):
+            out(f"{name} is {current}, which {ctx.droplet_size} wouldn't grow; Sirdar leaves "
+                "its size alone.\n")
+            return False
+        return True
 
     def _adoptable(self, ctx: DoContext, named: list[dict], name: str, what: str) -> dict | None:
         """An unrecorded droplet or cluster carrying this environment's tag and
@@ -767,8 +796,14 @@ class DoProvisioner:
         out(f"Resizing {name} to {ctx.droplet_size} (the droplet stops for a few minutes).\n")
         if droplet.get("status") != "off":
             await self._droplet_action(api, did, "power_off", f"The power-off of {name}")
-        await self._droplet_action(api, did, "resize", f"The resize of {name}",
-                                   size=ctx.droplet_size, disk=True)
+        try:
+            await self._droplet_action(api, did, "resize", f"The resize of {name}",
+                                       size=ctx.droplet_size, disk=True)
+        except Exception:
+            # Never leave it stopped: start it on its old size, then fail.
+            with contextlib.suppress(Exception):
+                await self._droplet_action(api, did, "power_on", f"The power-on of {name}")
+            raise
         await self._droplet_action(api, did, "power_on", f"The power-on of {name}")
         ready = await self._wait(
             lambda: api.droplet(did),
@@ -776,6 +811,16 @@ class DoProvisioner:
             self._waits["droplet"], f"The droplet {name}")
         out(f"{name}: now {ready.get('size_slug')}.\n")
         return ready
+
+    async def _resize_started(self, api: DigitalOceanApi, database_id: str) -> None:
+        """Give DigitalOcean a moment to show the resize (status leaves
+        "online"), so the wait for "online" that follows isn't answered by
+        the state before it. Bounded: a cluster that never flips is fine."""
+        for _ in range(self._tries(DB_RESIZE_FLIP)):
+            found = await api.database(database_id)
+            if found is None or found.get("status") != "online":
+                return
+            await self._sleep(self._poll)
 
     async def _database(self, api: DigitalOceanApi, ctx: DoContext, vpc: dict,
                         droplets: dict[str, dict], out: Output) -> dict:
@@ -813,14 +858,23 @@ class DoProvisioner:
         else:
             out(f"Database {name}: in place.\n")
         await self._db_firewall(api, database["id"], droplet_ids, name, out)
-        nodes = 2 if ctx.db_standby else 1
-        if database.get("size") != ctx.db_size or int(database.get("num_nodes") or 1) != nodes:
-            await api.resize_database(database["id"], ctx.db_size, nodes)
-            out(f"Database {name}: resizing to {ctx.db_size}, {nodes} node"
-                f"{'s' if nodes > 1 else ''}.\n")
+        # Online first: a resize still running (a retry) is waited for, not sent again.
         online = await self._wait(lambda: api.database(database["id"]),
                                   lambda d: d.get("status") == "online",
                                   self._waits["database"], f"The database {name}")
+        nodes, live_nodes = 2 if ctx.db_standby else 1, int(online.get("num_nodes") or 1)
+        if online.get("size") != ctx.db_size or live_nodes != nodes:
+            if live_nodes > nodes or not do_envs.grows(online.get("size"), ctx.db_size):
+                out(f"Database {name} is {online.get('size')} with {live_nodes} node(s), which "
+                    f"{ctx.db_size} with {nodes} wouldn't grow; Sirdar leaves it alone.\n")
+            else:
+                await api.resize_database(database["id"], ctx.db_size, nodes)
+                out(f"Database {name}: resizing to {ctx.db_size}, {nodes} node"
+                    f"{'s' if nodes > 1 else ''}.\n")
+                await self._resize_started(api, database["id"])
+                online = await self._wait(lambda: api.database(database["id"]),
+                                          lambda d: d.get("status") == "online",
+                                          self._waits["database"], f"The database {name}")
         private = online.get("private_connection") or {}
         host, port = private.get("host"), private.get("port")
         if not host or not port:

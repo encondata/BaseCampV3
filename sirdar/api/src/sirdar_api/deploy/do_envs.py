@@ -110,20 +110,60 @@ def _size_of(catalog: list[dict], slug: str | None) -> dict | None:
     return next((s for s in catalog if isinstance(s, dict) and s.get("slug") == slug), None)
 
 
-def _db_rank(options: dict, slug: str, nodes: int) -> int:
+_SLUG_RE = re.compile(r"(?P<family>[a-z0-9_]+(?:-[a-z0-9_]+)*?-)(?P<cpu>\d+)vcpu-"
+                      r"(?P<mem>\d+)gb(?P<tail>(?:-[a-z0-9_]+)*)")
+
+
+def size_parts(slug: str | None) -> tuple[str, int, int] | None:
+    """(family, vCPUs, memory GB) read from a size slug: `s-4vcpu-8gb` is
+    ("s-*", 4, 8), `db-s-2vcpu-4gb` ("db-s-*", 2, 4), `s-2vcpu-4gb-amd`
+    ("s-*-amd", 2, 4). None when the slug doesn't read that way."""
+    found = _SLUG_RE.fullmatch(slug or "")
+    if found is None:
+        return None
+    return f"{found['family']}*{found['tail']}", int(found["cpu"]), int(found["mem"])
+
+
+def grows(old: str | None, new: str | None) -> bool:
+    """`new` is `old` or larger, in the same family (both readable)."""
+    a, b = size_parts(old), size_parts(new)
+    return a is not None and b is not None and a[0] == b[0] and b[1] >= a[1] and b[2] >= a[2]
+
+
+def _check_droplet_grow(catalog: list, row: DoEnvironment, want: str) -> None:
+    new = _size_of(catalog, want)
+    if new is None or not new.get("available", True) \
+            or row.region not in (new.get("regions") or []):
+        raise DoEnvError("do_size_invalid")           # not offered (here)
+    new_parts, old_parts = size_parts(want), size_parts(row.droplet_size)
+    if new_parts and old_parts and new_parts[0] != old_parts[0]:
+        raise DoEnvError("do_size_invalid")           # another family
+    old = _size_of(catalog, row.droplet_size)
+    if old is not None:
+        mine = [(int(new.get(k) or 0), int(old.get(k) or 0)) for k in ("vcpus", "memory", "disk")]
+    elif old_parts is not None:                       # retired from the catalog: its slug
+        mine = [(int(new.get("vcpus") or 0), old_parts[1]),
+                (int(new.get("memory") or 0), old_parts[2] * 1024)]
+    else:
+        raise DoEnvError("do_shrink_refused")         # nothing to prove it grows
+    if any(n < o for n, o in mine) or not any(n > o for n, o in mine):
+        raise DoEnvError("do_shrink_refused")
+
+
+def _db_layout(options: dict, nodes: int) -> list:
     layouts = ((options.get("pg") or {}).get("layouts")) or []
-    sizes = next((lay.get("sizes") or [] for lay in layouts
-                  if isinstance(lay, dict) and lay.get("num_nodes") == nodes), [])
-    if slug not in sizes:
-        raise DoEnvError("do_db_size_invalid")
-    return sizes.index(slug)              # DigitalOcean lists them smallest first
+    return next((lay.get("sizes") or [] for lay in layouts
+                 if isinstance(lay, dict) and lay.get("num_nodes") == nodes), [])
 
 
 async def check_grow(api, row: DoEnvironment, fields: dict) -> dict:
     """The sizes a PATCH asks for, checked against DigitalOcean's catalogs: a
-    droplet size it offers with at least the vCPUs, memory and disk of the
-    current one; a database size at least as large for the node count; a
-    standby node that is never removed. Returns only what changes."""
+    droplet size offered in the environment's region, in the same family,
+    with at least the vCPUs, memory and disk of the current one and more of
+    one; a database size offered for the node count, in the same family, at
+    least as large (vCPUs and memory from the slug); a standby node that is
+    never removed and only on a size that can have one. Returns only what
+    changes."""
     if not isinstance(fields, dict) or set(fields) - {"droplet_size", "db_size", "db_standby"}:
         raise DoEnvError("do_invalid")
     out: dict = {}
@@ -131,13 +171,7 @@ async def check_grow(api, row: DoEnvironment, fields: dict) -> dict:
     if want is not None and want != row.droplet_size:
         if not isinstance(want, str) or not _SIZE_RE.fullmatch(want) or want.startswith("db-"):
             raise DoEnvError("do_size_invalid")
-        catalog = await api.sizes()
-        new, old = _size_of(catalog, want), _size_of(catalog, row.droplet_size)
-        if new is None or not new.get("available", True):
-            raise DoEnvError("do_size_invalid")
-        if old is not None and any(int(new.get(k) or 0) < int(old.get(k) or 0)
-                                   for k in ("vcpus", "memory", "disk")):
-            raise DoEnvError("do_shrink_refused")
+        _check_droplet_grow(await api.sizes(), row, want)
         out["droplet_size"] = want
     standby = fields.get("db_standby")
     if standby is not None and not isinstance(standby, bool):
@@ -151,7 +185,14 @@ async def check_grow(api, row: DoEnvironment, fields: dict) -> dict:
     if db_size != row.db_size or adding_standby:
         nodes = 2 if (adding_standby or row.db_standby) else 1
         options = await api.database_options()
-        if _db_rank(options, db_size, nodes) < _db_rank(options, row.db_size, nodes):
+        if db_size not in _db_layout(options, nodes):
+            if adding_standby and db_size in _db_layout(options, 1):
+                raise DoEnvError("db_standby_size_invalid")   # that size has no standby
+            raise DoEnvError("do_db_size_invalid")
+        new_parts, old_parts = size_parts(db_size), size_parts(row.db_size)
+        if new_parts is None or (old_parts is not None and old_parts[0] != new_parts[0]):
+            raise DoEnvError("do_db_size_invalid")    # unreadable, or another family
+        if not grows(row.db_size, db_size):
             raise DoEnvError("do_shrink_refused")
         if db_size != row.db_size:
             out["db_size"] = db_size

@@ -56,3 +56,12 @@ async def test_targets_count_either_account(client, db, do_cloud):
     await configure_account(db)
     listed = (await client.get("/api/deploy/targets", headers=h)).json()["targets"]
     assert next(t for t in listed if t["id"] == "digitalocean")["configured"] is True
+
+
+async def test_the_account_is_audited_only_for_digitalocean(client, db, do_cloud):
+    h = await auth_headers(client, db)
+    await client.post("/api/deploy/connect", headers=h, json={
+        "target": "ssh", "type": "dev", "account": "development"})
+    (changes,) = (await db.scalars(select(AuditLog.changes).where(
+        AuditLog.action == "deploy.connect"))).all()
+    assert "account" not in changes

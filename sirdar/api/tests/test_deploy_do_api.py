@@ -466,3 +466,31 @@ async def test_get_action_reads_a_droplet_action(fake):
         second = await api.get_action(did, str(action["id"]))
         assert (first["status"], second["status"]) == ("in-progress", "completed")
         assert await api.get_action(did, "999999") is None
+
+
+async def test_a_database_resize_is_refused_while_one_runs(fake):
+    fake.db_resize_polls = 2
+    async with do_api.connect(DO_TOKEN) as api:
+        made = await api.create_database({"name": "ss-uat9-db", "engine": "pg", "version": "16",
+                                          "region": "nyc3", "size": "db-s-2vcpu-4gb",
+                                          "num_nodes": 1})
+        assert (await api.database(made["id"]))["status"] == "online"
+        await api.resize_database(made["id"], "db-s-4vcpu-8gb", 1)
+        assert (await api.database(made["id"]))["status"] == "resizing"
+        with pytest.raises(DoError) as err:
+            await api.resize_database(made["id"], "db-s-4vcpu-8gb", 2)
+        assert err.value.status == 422
+        done = await api.database(made["id"])
+    assert (done["status"], done["size"], done["num_nodes"]) == ("online", "db-s-4vcpu-8gb", 1)
+
+
+async def test_a_droplet_resize_needs_it_off_and_can_error(fake):
+    fake.action_errors = {"resize"}
+    d = fake.add_droplet("ss-uat9-orange", ["sirdar"])
+    did = str(d["id"])
+    async with do_api.connect(DO_TOKEN) as api:
+        with pytest.raises(DoError):
+            await api.droplet_action(did, "resize", size="s-4vcpu-8gb")
+        await api.droplet_action(did, "power_off")
+        action = await api.droplet_action(did, "resize", size="s-4vcpu-8gb")
+    assert action["status"] == "errored" and d["size_slug"] == "s-2vcpu-4gb"

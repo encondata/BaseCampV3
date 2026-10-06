@@ -17,8 +17,8 @@ from starlette.requests import ClientDisconnect
 
 from sirdar_api.api.deps import AuthContext, DbSession, client_ip, require_permission
 from sirdar_api.config import get_settings
-from sirdar_api.db.models import (Deployment, DeploymentStep, DoAccount, Environment, EsxiVm,
-                                  Snapshot, SshKnownHost)
+from sirdar_api.db.models import (Deployment, DeploymentStep, DoAccount, DoEnvironment,
+                                  Environment, EsxiVm, Snapshot, SshKnownHost)
 from sirdar_api.deploy import (
     ConnectFailed,
     digitalocean,
@@ -283,7 +283,7 @@ async def connect(body: ConnectIn, request: Request, db: DbSession,
             changes["name"] = name
         if body.region:
             changes["region"] = body.region
-        if body.account:
+        if body.account and body.target == "digitalocean":
             changes["account"] = body.account
         if code:
             changes["code"] = code
@@ -627,7 +627,9 @@ async def _checked_sizes(db, env: Environment, wanted: dict) -> dict:
     """PATCH `do`, checked against DigitalOcean's catalogs (sizes only grow)."""
     if not _on_do(env):
         raise _refuse(422, "do_not_allowed")
-    row = await do_envs.get(db, env.id)
+    # Locked until the PATCH commits: check and apply are one step, so a
+    # concurrent PATCH checks against what this one stores.
+    row = await db.get(DoEnvironment, env.id, with_for_update=True, populate_existing=True)
     if row is None:
         raise _refuse(409, "do_not_ready")
     try:
