@@ -19,8 +19,8 @@ it('shows the server template columns as the guide, then the pane', async () => 
   expect(await screen.findByText('Drop your file here, or click to browse')).toBeTruthy();
   expect(screen.getByRole('heading', { name: 'Convert a customer From-To' })).toBeTruthy();
   expect(screen.getByRole('table', { name: 'Template columns' }).textContent).toContain('SN-1');
-  expect(screen.getByRole('button', { name: 'Template (.xlsx)' })).toBeTruthy();
-  expect(screen.getByText('The converted file is built in your browser. The From-To import accepts files up to 20 MB.')).toBeTruthy();
+  expect(screen.getAllByRole('button', { name: 'Template (.xlsx)' }).length).toBeGreaterThan(0);  // twice until the wizard page replaces this one
+  expect(screen.getAllByText('The converted file is built in your browser. The From-To import accepts files up to 20 MB.').length).toBeGreaterThan(0);
 });
 
 it('says so when the template columns cannot be loaded', async () => {
