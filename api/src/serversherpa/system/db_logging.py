@@ -73,9 +73,12 @@ class DbLogHandler(logging.Handler):
             from sqlalchemy import create_engine
 
             from serversherpa.config import get_settings
+            from serversherpa.db import tls
+            settings = get_settings()
             self._engine = create_engine(
-                get_settings().sync_database_url, pool_size=1,
-                max_overflow=0, pool_pre_ping=True)
+                settings.sync_database_url, pool_size=1,
+                max_overflow=0, pool_pre_ping=True,
+                connect_args=tls.libpq_params(settings))
         return self._engine
 
     def _refresh_config(self) -> None:

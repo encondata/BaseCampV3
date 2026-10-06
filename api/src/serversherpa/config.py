@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # ── Database ───────────────────────────────────────────
     database_url: SecretStr
     database_ssl: Literal["require", "disable"] = "require"
+    # A managed database's own CA (base64 PEM, one .env line): when set,
+    # every connection verifies the server against it (see db/tls.py).
+    database_ca_b64: SecretStr | None = None
     database_pool_size: int = 10
     database_pool_max_overflow: int = 20
 

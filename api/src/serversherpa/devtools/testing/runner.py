@@ -29,6 +29,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.config import get_settings
+from serversherpa.db import tls
 from serversherpa.db.engine import dispose_engine, get_sessionmaker
 from serversherpa.db.models import DbBackup, DbTestingSession, SystemConfig
 from serversherpa.services.audit import audit
@@ -158,7 +159,7 @@ async def _terminate_other_backends_and_dispose(database_url: str) -> None:
     url = make_url(database_url.replace("+asyncpg", ""))
     conn = await asyncpg.connect(
         user=url.username, password=url.password, host=url.host,
-        port=url.port, database=url.database)
+        port=url.port, database=url.database, **tls.asyncpg_kwargs(get_settings()))
     try:
         await conn.execute(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "

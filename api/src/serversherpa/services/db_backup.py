@@ -24,6 +24,9 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from sqlalchemy.engine import make_url
 
+from serversherpa.config import get_settings
+from serversherpa.db import tls
+
 _MAGIC = b"Salted__"
 _SALT_LEN = 8
 _PBKDF2_ITERATIONS = 10000
@@ -161,7 +164,7 @@ def _dump_argv(database_url: str) -> tuple[list[str], dict[str, str]]:
     # SQLAlchemy's asyncpg driver URL isn't a libpq URI; strip the driver
     # suffix before parsing.
     url = make_url(database_url.replace("+asyncpg", ""))
-    env = {**os.environ, "PGPASSWORD": url.password or ""}
+    env = {**os.environ, "PGPASSWORD": url.password or "", **tls.libpq_env(get_settings())}
     conninfo = _conninfo_without_password(url)
     argv = [binary, "--no-owner", "--no-privileges", "-d", conninfo]
     return argv, env
@@ -223,7 +226,7 @@ async def run_psql_restore(database_url: str, sql: bytes) -> None:
     before anything is sent."""
     binary = _resolve_psql()
     url = make_url(database_url.replace("+asyncpg", ""))
-    env = {**os.environ, "PGPASSWORD": url.password or ""}
+    env = {**os.environ, "PGPASSWORD": url.password or "", **tls.libpq_env(get_settings())}
     conninfo = _conninfo_without_password(url)
     argv = [binary, "-v", "ON_ERROR_STOP=1", "--single-transaction", "-d", conninfo]
 
