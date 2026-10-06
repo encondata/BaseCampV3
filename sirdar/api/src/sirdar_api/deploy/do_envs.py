@@ -231,7 +231,10 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
         "SS_SPACES_ACCESS_KEY": row.spaces_key_id, "SS_SPACES_SECRET_KEY": spaces_secret,
         "SS_SPACES_USE_PATH_STYLE": "false", "STACK_DROPLET_ID": slot_row.droplet_id,
     }
-    return extra, [url, spaces_secret, ca_b64]
+    found = [url, spaces_secret, ca_b64]
+    if password != secrets["POSTGRES_PASSWORD"]:
+        found.append(password)          # the URL carries it quoted: a secret too
+    return extra, found
 
 
 async def secret_values(db: AsyncSession, settings: Settings, env: Environment) -> list[str]:
@@ -263,9 +266,13 @@ async def secret_values(db: AsyncSession, settings: Settings, env: Environment) 
 async def after_success(db: AsyncSession, env: Environment, dep) -> None:
     """A DigitalOcean Update or Activate that finished: the slot keeps the
     commit it now runs; if traffic moved, the slot is the active one (None:
-    Deactivate) and its commit is the environment's. The caller commits."""
+    Deactivate) and its commit is the environment's. The caller commits.
+    DoEnvError("slot_not_deployed") for traffic moved to a slot that has
+    never run a deploy (there is no commit to make the environment's)."""
     now = datetime.now(UTC)
     slot = await db.get(DoSlot, (env.id, dep.slot), populate_existing=True) if dep.slot else None
+    if dep.go_live and dep.mode != "update" and dep.slot and (slot is None or not slot.sha):
+        raise DoEnvError("slot_not_deployed", slot=dep.slot)
     if dep.mode == "update" and slot is not None:
         slot.sha, slot.image_tag, slot.updated_at = dep.sha, envfile.image_tag(dep.sha), now
     if dep.go_live:

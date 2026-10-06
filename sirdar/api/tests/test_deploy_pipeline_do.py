@@ -7,6 +7,7 @@ DigitalOcean; its step 0 effect records what a real one would."""
 import base64
 
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import func, select
 
 from sirdar_api.config import get_settings
@@ -119,8 +120,13 @@ async def test_a_first_deploy_goes_live(db, do_env, fake_runner, fake_publisher,
 async def test_cloud_vars_reach_every_host_step(db, do_env, fake_runner,
                                                         fake_publisher, fake_provisioner):
     await _start(db, do_env, slot="orange", go_live=True)
-    preflight = next(r for r in fake_runner.requests if r.step == "preflight")
-    assert preflight.extravars["external_data"] is True
+    host_steps = ["preflight", "bootstrap", "fetch", "render", "build", "dump", "up",
+                  "slot_smoke"]
+    assert fake_runner.steps() == host_steps
+    for request in fake_runner.requests:
+        assert request.extravars["external_data"] is True, request.step
+        assert request.extravars["block_metadata"] is True, request.step
+        assert len(request.extravars["public_hosts"]) == 5, request.step
 
 
 async def test_every_cloud_secret_is_redacted(db, do_env, fake_runner, fake_publisher,
@@ -229,13 +235,25 @@ async def test_a_failed_switch_keeps_the_active_slot(db, do_env, fake_runner, fa
 
 async def test_a_failed_slot_smoke_test(db, do_env, fake_runner, fake_publisher,
                                         fake_provisioner):
+    await _start(db, do_env, slot="orange", go_live=True)
     fake_runner.results["slot_smoke"] = RunResult(status="failed", rc=2)
-    dep_id = await _start(db, do_env, slot="orange", go_live=True)
+    fake_provisioner.calls.clear()
+    dep_id = await _start(db, do_env, slot="purple", go_live=False)
     dep, steps, env = await _load(dep_id)
     assert (dep.status, dep.failed_step) == ("failed", 13)
     assert fake_provisioner.calls == ["do_prepare"]
-    slot = await db.get(DoSlot, (env.id, "orange"), populate_existing=True)
-    assert slot.last_check_ok is False and env.active_slot is None
+    purple = await db.get(DoSlot, (env.id, "purple"), populate_existing=True)
+    orange = await db.get(DoSlot, (env.id, "orange"), populate_existing=True)
+    assert purple.last_check_ok is False and orange.last_check_ok is True
+    assert (env.active_slot, env.current_sha) == ("orange", SHA)
+
+
+async def test_a_failed_first_smoke_test_leaves_nothing_live(db, do_env, fake_runner,
+                                                              fake_publisher, fake_provisioner):
+    fake_runner.results["slot_smoke"] = RunResult(status="failed", rc=2)
+    dep_id = await _start(db, do_env, slot="orange", go_live=True)
+    dep, _, env = await _load(dep_id)
+    assert (dep.status, dep.failed_step, env.active_slot) == ("failed", 13, None)
 
 
 @pytest.mark.parametrize("mode", ["reset", "restore_dump", "rollback", "vm_restore"])
@@ -396,3 +414,269 @@ async def test_dns_points_at_the_load_balancer_and_never_needs_npm(db, secrets_k
     assert state["npm"] == {"configured": False, "url": None, "error": None}
     assert {s["dns"]["state"] for s in state["services"]} == {"ok"}
     assert not [r for r in publish_fakes.npm.requests]
+
+
+# ---- review fixes: a slot's commit, seeding, the export image, retries --------------
+
+NEW = "f00d" * 10
+
+
+async def _slot(db, env_id, slot):
+    return await db.get(DoSlot, (env_id, slot), populate_existing=True)
+
+
+async def test_the_slot_records_its_commit_once_up_succeeds(db, do_env, fake_runner,
+                                                           fake_publisher, fake_provisioner):
+    """A first deploy whose Switch traffic fails: the slot runs the new code
+    (up succeeded), so it says so; Activate then makes it the environment's."""
+    fake_provisioner.fail["go_live"] = "The public smoke test failed; traffic is back."
+    dep_id = await _start(db, do_env, slot="orange", go_live=True)
+    dep, _, env = await _load(dep_id)
+    assert (dep.status, dep.failed_step) == ("failed", 14)
+    orange = await _slot(db, env.id, "orange")
+    assert (orange.sha, orange.image_tag) == (SHA, envfile.image_tag(SHA))
+    assert (env.active_slot, env.current_sha) == (None, None)
+
+    del fake_provisioner.fail["go_live"]
+    env = await db.get(Environment, do_env.id, populate_existing=True)
+    dep_id = await _start(db, env, mode="activate", slot="orange", sha=SHA)
+    dep, _, env = await _load(dep_id)
+    assert dep.status == "succeeded"
+    assert (env.active_slot, env.current_sha, env.image_tag) == (
+        "orange", SHA, envfile.image_tag(SHA))
+
+
+async def test_an_update_that_fails_after_up_then_activate(db, do_env, fake_runner,
+                                                           fake_publisher, fake_provisioner):
+    await _start(db, do_env, slot="orange", go_live=True)
+    fake_provisioner.outcomes["do_prepare"] = VmOutcome(sha=NEW)
+    fake_runner.results["slot_smoke"] = RunResult(status="failed", rc=2)
+    dep_id = await _start(db, do_env, slot="purple", go_live=False)
+    assert (await _load(dep_id))[0].failed_step == 13
+    purple = await _slot(db, do_env.id, "purple")
+    assert (purple.sha, purple.image_tag) == (NEW, envfile.image_tag(NEW))
+
+    del fake_runner.results["slot_smoke"]
+    env = await db.get(Environment, do_env.id, populate_existing=True)
+    dep_id = await _start(db, env, mode="activate", slot="purple", sha=NEW)
+    dep, _, env = await _load(dep_id)
+    assert dep.status == "succeeded"
+    assert (env.active_slot, env.current_sha, env.image_tag) == (
+        "purple", NEW, envfile.image_tag(NEW))
+
+
+async def test_activate_refuses_a_slot_never_deployed(db, do_env, fake_runner,
+                                                      fake_publisher, fake_provisioner):
+    await _start(db, do_env, slot="orange", go_live=True)
+    env = await db.get(Environment, do_env.id, populate_existing=True)
+    with pytest.raises(do_envs.DoEnvError) as e:
+        await pipeline.create_deployment(db, env, mode="activate", git_ref="main", sha=SHA,
+                                         actor_id=None, cloud=True, slot="purple")
+    assert e.value.code == "slot_not_deployed"
+
+
+async def test_after_success_refuses_an_activate_of_a_slot_never_deployed(db, do_env):
+    from types import SimpleNamespace
+
+    env = await db.get(Environment, do_env.id, populate_existing=True)
+    dep = SimpleNamespace(mode="activate", slot="purple", go_live=True, sha=SHA)
+    with pytest.raises(do_envs.DoEnvError) as e:
+        await do_envs.after_success(db, env, dep)
+    assert e.value.code == "slot_not_deployed"
+    assert env.current_sha is None
+
+
+async def _ready_snapshot(db, tmp_path, name="seed-2026-10-05"):
+    settings = get_settings()
+    snapshots.ensure_dirs(settings)
+    snap = Snapshot(name=name, origin="upload", source="mac-dev", status="pending")
+    db.add(snap)
+    await db.flush()
+    src = make_bundle(tmp_path, name=f"{name}.tar.gz",
+                      keys=snapshots.encrypt_keys(settings, {
+                          "SS_PASSWORD_PEPPER": "seed-pepper-SECRET-0123456789",
+                          "SS_TOTP_ENCRYPTION_KEY": Fernet.generate_key().decode()}))
+    snapshots.mark_ready(snap, snapshots.store_bundle(settings, src, snap.id))
+    await db.commit()
+    return snap
+
+
+async def test_a_seeding_update_carries_the_external_vars(db, do_env, snapshots_dir,
+                                                         fake_runner, fake_publisher,
+                                                         fake_provisioner, tmp_path):
+    snap = await _ready_snapshot(db, tmp_path)
+    dep_id = await _start(db, do_env, slot="orange", go_live=True, snapshot_id=snap.id)
+    dep, steps, _ = await _load(dep_id)
+    assert dep.status == "succeeded", [(s.key, s.log) for s in steps]
+    restore = next(r for r in fake_runner.requests if r.step == "restore").extravars
+    assert (restore["external_data"], restore["spaces_key_id"], restore["spaces_region"]) == (
+        True, "DO00KEY000001", "nyc3")
+    assert restore["spaces_endpoint"] == "https://nyc3.digitaloceanspaces.com"
+
+
+async def test_seeding_is_refused_once_anything_was_deployed(db, do_env, snapshots_dir,
+                                                             fake_runner, fake_publisher,
+                                                             fake_provisioner, tmp_path):
+    """The managed database is shared: re-seeding would wipe the live data."""
+    snap = await _ready_snapshot(db, tmp_path)
+    fake_provisioner.fail["go_live"] = "no"
+    await _start(db, do_env, slot="orange", go_live=True)       # orange ran up: it has a sha
+    env = await db.get(Environment, do_env.id, populate_existing=True)
+    assert env.active_slot is None and env.current_sha is None
+    with pytest.raises(do_envs.DoEnvError) as e:
+        await pipeline.create_deployment(db, env, mode="update", git_ref="main", sha="",
+                                         actor_id=None, cloud=True, slot="orange",
+                                         go_live=True, snapshot_id=snap.id)
+    assert e.value.code == "seed_not_allowed"
+
+
+async def test_a_seeding_retry_is_allowed_while_nothing_is_live(db, do_env, snapshots_dir,
+                                                               fake_runner, fake_publisher,
+                                                               fake_provisioner, tmp_path):
+    snap = await _ready_snapshot(db, tmp_path)
+    fake_runner.results["slot_smoke"] = RunResult(status="failed", rc=2)
+    first = await _start(db, do_env, slot="orange", go_live=True, snapshot_id=snap.id)
+    del fake_runner.results["slot_smoke"]
+    env = await db.get(Environment, do_env.id, populate_existing=True)
+    dep_id = await _start(db, env, slot="orange", go_live=True, snapshot_id=snap.id,
+                          sha=SHA, start_step=13, retry_of=first)
+    dep, _, env = await _load(dep_id)
+    assert dep.status == "succeeded" and env.active_slot == "orange"
+
+
+async def _two_slots_deployed(db, env_id, *, active, tags):
+    for slot, sha in tags.items():
+        await do_envs.set_slot(env_id, slot, droplet_id="4001", public_ip="127.0.0.1",
+                               sha=sha, image_tag=envfile.image_tag(sha) if sha else None)
+    async with get_sessionmaker()() as s:
+        env = await s.get(Environment, env_id)
+        green = tags.get("green") or tags.get("purple")
+        env.active_slot, env.current_sha = active, green
+        env.image_tag = envfile.image_tag(green)
+        await s.commit()
+
+
+async def test_a_production_delete_exports_with_the_slot_s_own_image(
+        db, deploy_env, secrets_key, ssh_server, monkeypatch, snapshots_dir, fake_runner,
+        fake_publisher, fake_provisioner, tmp_path):
+    """Production, nothing live (Deactivated), the snapshot taken on blue:
+    the export runs blue's image, not the environment's (green's)."""
+    monkeypatch.setattr(vms, "VM_SSH_PORT", ssh_server.port)
+    env = await make_do_environment(db, name="prod", type_="production", account="production")
+    await trust_fake(db, ssh_server)
+    await _two_slots_deployed(db, env.id, active=None, tags={"blue": SHA, "green": NEW})
+    env = await db.get(Environment, env.id, populate_existing=True)
+    snap = await _take_for_delete(db, env)
+    fake_runner.effects["export"] = _fetched(tmp_path)
+    await _start(db, env, mode="teardown", sha=env.current_sha, slot="blue",
+                 snapshot_id=snap.id)
+    export = next(r for r in fake_runner.requests if r.step == "export").extravars
+    assert export["api_image"] == f"serversherpa-api:{envfile.image_tag(SHA)}"
+    assert (await db.scalar(select(Snapshot.status).where(Snapshot.id == snap.id))) == "ready"
+
+
+async def test_an_export_from_a_slot_with_no_image_is_refused(db, do_env, snapshots_dir,
+                                                              fake_runner, fake_publisher,
+                                                              fake_provisioner, tmp_path):
+    await _two_slots_deployed(db, do_env.id, active=None, tags={"orange": None, "purple": NEW})
+    env = await db.get(Environment, do_env.id, populate_existing=True)
+    snap = await _take_for_delete(db, env)
+    dep_id = await _start(db, env, mode="teardown", sha=env.current_sha, slot="orange",
+                          snapshot_id=snap.id)
+    dep, _, env = await _load(dep_id)
+    assert (dep.status, dep.failed_step) == ("failed", 11)
+    assert "orange" in dep.error and "None" not in dep.error
+    assert fake_runner.requests == []
+
+
+async def test_a_delete_retried_past_the_snapshot(db, do_env, snapshots_dir, fake_runner,
+                                                  fake_publisher, fake_provisioner, tmp_path):
+    """The snapshot is ready (step 11 ran): a retry from 17 or 18 takes it
+    as it is; from 11 it would need a pending one."""
+    env_id = do_env.id
+    await _start(db, do_env, slot="orange", go_live=True)
+    env = await db.get(Environment, env_id, populate_existing=True)
+    snap = await _take_for_delete(db, env)
+    fake_runner.effects["export"] = _fetched(tmp_path)
+    snap_id = snap.id
+    fake_publisher.fail["undns"] = "Cloudflare said no."
+    first = await _start(db, env, mode="teardown", sha=env.current_sha, slot="orange",
+                         snapshot_id=snap.id)
+    dep, _, env = await _load(first)
+    assert (dep.status, dep.failed_step) == ("failed", 17)
+    assert (await db.scalar(select(Snapshot.status).where(Snapshot.id == snap.id))) == "ready"
+    env = await db.get(Environment, env_id, populate_existing=True)
+    with pytest.raises(snapshots.SnapshotError):
+        await pipeline.create_deployment(db, env, mode="teardown", git_ref="main",
+                                         sha=env.current_sha, actor_id=None, cloud=True,
+                                         slot="orange", snapshot_id=snap.id, start_step=11,
+                                         retry_of=first)
+    await db.rollback()
+    del fake_publisher.fail["undns"]
+    fake_runner.requests.clear()
+    env = await db.get(Environment, env_id, populate_existing=True)
+    dep = await pipeline.create_deployment(db, env, mode="teardown", git_ref="main",
+                                           sha=env.current_sha, actor_id=None, cloud=True,
+                                           slot="orange", snapshot_id=snap_id, start_step=17,
+                                           retry_of=first)
+    await db.commit()
+    pipeline.launch(dep.id)
+    await pipeline.wait(dep.id)
+    assert fake_runner.requests == []
+    assert await db.get(Environment, env_id, populate_existing=True) is None
+
+
+async def test_activate_without_a_commit_says_deploy_first(db, do_env, fake_runner,
+                                                           fake_publisher, fake_provisioner):
+    await _start(db, do_env, slot="orange", go_live=True)
+    env = await db.get(Environment, do_env.id, populate_existing=True)
+    dep_id = await _start(db, env, mode="activate", slot="orange", sha="")
+    dep, _, _ = await _load(dep_id)
+    assert dep.status == "failed"
+    assert "step 0" not in dep.error and "Deploy" in dep.error
+
+
+async def test_the_url_encoded_password_is_redacted(db, do_env, fake_runner, fake_publisher,
+                                                    fake_provisioner):
+    from urllib.parse import quote
+
+    password = "p@ss/w0rd+SECRET:x"
+    async with get_sessionmaker()() as s:
+        row = await s.get(EnvironmentSecret, (do_env.id, "POSTGRES_PASSWORD"))
+        row.value_enc = vault.encrypt(get_settings(), password)
+        await s.commit()
+    encoded = quote(password, safe="")
+    assert encoded != password
+    fake_runner.output["up"] = [f"url {encoded}\n"]
+    dep_id = await _start(db, do_env, slot="orange", go_live=True)
+    dep, steps, _ = await _load(dep_id)
+    assert dep.status == "succeeded"
+    log = next(s.log for s in steps if s.key == "up")
+    assert encoded not in log and "[redacted]" in log
+
+
+async def test_teardown_needs_cloudflare_only_for_its_dns_rows(db, secrets_key):
+    from sirdar_api.db.models import Integration
+    from sirdar_api.deploy import publish
+
+    from .publish_helpers import managed
+
+    env = await make_do_environment(db)
+    await db.execute(Integration.__table__.delete().where(Integration.kind == "cloudflare"))
+    await db.commit()
+    assert await publish.missing_integrations(db, env, teardown=True) == []
+    assert await publish.missing_integrations(db, env) == ["cloudflare"]
+    await managed(db, env, "api", publish.DNS, "rec-1")
+    assert await publish.missing_integrations(db, env, teardown=True) == ["cloudflare"]
+
+
+async def test_inspect_before_step_0_says_no_load_balancer_yet(db, secrets_key, publish_fakes):
+    from sirdar_api.deploy import publish
+
+    env = await make_do_environment(db)
+    state = await publish.inspect(db, env, get_settings())
+    assert state["cloudflare"]["public_ip"] is None
+    for svc in state["services"]:
+        assert svc["dns"]["state"] == "unknown"
+        assert "load balancer" in svc["dns"]["detail"]
+    assert publish_fakes.cf.writes() == []

@@ -54,6 +54,7 @@ from sirdar_api.db.models import (
     Deployment,
     DeploymentStep,
     DoResource,
+    DoSlot,
     Environment,
     EnvironmentSecret,
     EnvironmentService,
@@ -136,6 +137,8 @@ class NotSupportedOnDigitalOcean(Exception):
 
 NO_COMMIT = ("This deployment has no commit yet (step 0 resolves it on the VM), so Sirdar "
              "won't run the host steps. Retry from step 0 (Prepare VM).")
+NO_COMMIT_ACTIVATE = ("This Activate names no commit, so Sirdar won't check or switch to the "
+                      "slot. Deploy to the slot, then activate it again.")
 
 
 class PrepareError(Exception):
@@ -262,6 +265,9 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     if cloud != on_do:
         raise ValueError("cloud must be set exactly for a DigitalOcean environment")
     go_live = go_live or mode == "activate"
+    if cloud:
+        await _check_cloud(db, env, mode=mode, slot=slot, snapshot_id=snapshot_id,
+                           retry_of=retry_of)
     taking_on_delete = mode == "teardown" and cloud and snapshot_id is not None
     plan = plan_for(mode, restore=restores(mode, snapshot_id), publish=publish, vm=vm,
                     cloud=cloud, go_live=go_live, snapshot=taking_on_delete)
@@ -320,6 +326,30 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
         env.status, env.updated_at = "deploying", _now()
     await db.flush()
     return dep
+
+
+async def _check_cloud(db: AsyncSession, env: Environment, *, mode: str, slot: str | None,
+                       snapshot_id: uuid.UUID | None, retry_of: uuid.UUID | None) -> None:
+    """DigitalOcean's own refusals (do_envs.DoEnvError):
+    - slot_not_deployed: Activate of a slot that has never run a deploy (no
+      commit to make the environment's);
+    - seed_not_allowed: an Update that restores a snapshot (seeds) once any
+      slot has run a deploy or anything is live. The managed database is
+      shared by both slots: seeding again would wipe it. A retry of the
+      seeding deploy itself is allowed while nothing is live."""
+    if mode == "activate" and slot is not None:
+        row = await db.get(DoSlot, (env.id, slot), populate_existing=True)
+        if row is None or not row.sha:
+            raise do_envs.DoEnvError("slot_not_deployed", slot=slot)
+    if mode == "update" and restores(mode, snapshot_id):
+        deployed = await db.scalar(select(func.count()).select_from(DoSlot).where(
+            DoSlot.environment_id == env.id, DoSlot.sha.is_not(None)))
+        live = env.active_slot is not None or env.current_sha is not None
+        parent = await db.get(Deployment, retry_of) if retry_of is not None else None
+        same_seed = (parent is not None and parent.mode == "update"
+                     and parent.snapshot_id == snapshot_id)
+        if live or (deployed and not same_seed):
+            raise do_envs.DoEnvError("seed_not_allowed")
 
 
 # ---- task registry -------------------------------------------------------------
@@ -568,7 +598,7 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
         return _Context(target=None, common={"env_name": env.name}, env_file_b64="",
                         redactor=Redactor(_redaction_values(more_secrets)))
     if not dep.sha and dep.mode != "teardown":   # the .env names the commit's image
-        raise PrepareError(NO_COMMIT)
+        raise PrepareError(NO_COMMIT_ACTIVATE if dep.mode == "activate" else NO_COMMIT)
     try:
         # DigitalOcean: the slot this deployment works on (an Update targets
         # the idle slot), not the active one.
@@ -686,10 +716,23 @@ async def _snapshot_vars(db: AsyncSession, env: Environment, dep: Deployment,
             token = snapshots.encrypt_keys(settings, secrets)
             token_b64 = base64.b64encode(token).decode()
             extra += [token.decode(), token_b64]
+            image_tag = env.image_tag
+            if dep.cloud:
+                # Each droplet runs its own image: the slot's, not the
+                # environment's (the active slot's, or none).
+                slot = dep.slot or env.active_slot or (env.slots[0] if env.slots else None)
+                row = await db.get(DoSlot, (env.id, slot), populate_existing=True) \
+                    if slot else None
+                image_tag = row.image_tag if row is not None else None
+                if not image_tag:
+                    raise PrepareError(f"The {slot or 'environment'} slot has never run a "
+                                       "deploy, so there is no image to take the snapshot "
+                                       "with. Pick a deployed slot, or delete without a "
+                                       "snapshot.")
             step_vars["export"] = {
                 "snapshot_dest": str(snapshots.fetched_path(settings, snap.id)),
                 "bundle_tool": snapshots.BUNDLE_TOOL, "keys_enc_b64": token_b64,
-                "api_image": f"serversherpa-api:{env.image_tag}",
+                "api_image": f"serversherpa-api:{image_tag}",
                 "spaces_bucket": env.spaces_bucket}
     except snapshots.SnapshotError as e:
         raise PrepareError(e.reason) from None
@@ -916,6 +959,12 @@ async def _run(deployment_id: uuid.UUID) -> None:
                             dep.sha = result.data["sha"]
                         if result.data.get("vm_snapshot"):
                             dep.vm_snapshot = result.data["vm_snapshot"]
+                    elif step.key == "up" and dep.cloud and dep.slot:
+                        # The slot runs this commit now, whatever comes after.
+                        row = await db.get(DoSlot, (env.id, dep.slot), populate_existing=True)
+                        if row is not None:
+                            row.sha, row.image_tag = dep.sha, envfile.image_tag(dep.sha)
+                            row.updated_at = _now()
                     elif step.key == "go_live":
                         # The load balancer points at the slot now (None: Deactivate).
                         env.active_slot = dep.slot
@@ -963,7 +1012,16 @@ async def _run(deployment_id: uuid.UUID) -> None:
                       changes={"environment": env.name, "deployment": str(dep.id)})
                 await db.delete(env)
             elif dep.cloud and dep.mode in ("update", "activate"):
-                await do_envs.after_success(db, env, dep)
+                try:
+                    await do_envs.after_success(db, env, dep)
+                except do_envs.DoEnvError:
+                    # create_deployment refuses this; a slot emptied meanwhile
+                    reason = (f"The {dep.slot} slot has never run a deploy, so Sirdar can't "
+                              "make its commit the environment's. Deploy to it first.")
+                    await db.rollback()
+                    await _close(deployment_id, env_id, None, step_status="failed",
+                                 dep_status="failed", error=reason)
+                    return
             elif dep.mode not in KEEPS_STATUS:
                 env.current_sha, env.image_tag = dep.sha, envfile.image_tag(dep.sha)
                 env.status, env.updated_at = "ready", now

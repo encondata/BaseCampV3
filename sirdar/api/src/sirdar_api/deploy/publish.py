@@ -70,6 +70,10 @@ class ServicePlan:
         return f"{self.host_ip}:{self.port}"
 
 
+NO_LB_YET = ("No load balancer yet: step 0 (Prepare DigitalOcean) makes it, and the records "
+             "point at its address.")
+
+
 @dataclass(frozen=True)
 class PublishContext:
     env_id: uuid.UUID
@@ -169,11 +173,11 @@ async def missing_integrations(db: AsyncSession, env: Environment, *,
     """Integrations a publish (both) or a teardown (those whose created
     entries it must delete) needs but which aren't configured. A
     DigitalOcean environment never uses NPM."""
-    if env.target_id == targets.DO_TARGET:
-        wanted = {"cloudflare"}
-    elif teardown:
+    if teardown:
         rows = await rows_of(db, env.id)
         wanted = {KIND_INTEGRATION[r.kind] for r in rows.values() if r.origin == "created"}
+    elif env.target_id == targets.DO_TARGET:
+        wanted = {"cloudflare"}
     else:
         wanted = {"cloudflare", "npm"}
     return sorted([k for k in wanted if not await integrations.is_configured(db, k)])
@@ -381,7 +385,11 @@ async def inspect(db: AsyncSession, env: Environment, settings: Settings) -> dic
         cf = await integrations.load_cloudflare(db, settings)
     except IntegrationError as e:
         cf, out["cloudflare"]["error"] = None, e.reason
-    if cf is not None:
+    if cf is not None and cloud and lb is None:
+        # Before step 0 there is no address to point the records at.
+        out["cloudflare"].update(configured=True, zone=cf.zone, public_ip=None)
+        dns = {s.service: Status("unknown", NO_LB_YET) for s in services}
+    elif cf is not None:
         out["cloudflare"].update(configured=True, zone=cf.zone, public_ip=lb or cf.public_ip)
         try:
             async with Cloudflare(cf, transport=transports["cloudflare"]) as api:
