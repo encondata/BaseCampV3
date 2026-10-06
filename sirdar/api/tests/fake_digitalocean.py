@@ -3,7 +3,15 @@ httpx.MockTransport over in-memory accounts, VPCs, droplets, managed
 databases (with firewall rules and a CA), Spaces keys, certificates, load
 balancers and cloud firewalls. Tokens carry a team and, for a renewal
 token, a scope set. Droplets, databases and load balancers become ready
-after a few GETs, like the real thing."""
+after a few GETs, like the real thing.
+
+Stricter than a mock: a droplet without `vpc_uuid` lands in the region's
+default VPC (kept in `default_vpcs`, not `vpcs`); `user_data` over 64 KiB is
+refused; droplet actions can stay `in-progress` for `action_polls` GETs, and
+`power_on` is refused while a resize is pending; the database firewall
+refuses droplets that don't exist; a load balancer's PUT replaces the whole
+body; a load balancer refuses an unknown `certificate_id` and `droplet_ids`
+together with `tag`."""
 
 import base64
 import itertools
@@ -29,6 +37,8 @@ RENEWAL_SCOPES = frozenset({("GET", "certificates"), ("POST", "certificates"),
 DB_ADMIN_PASSWORD = "FAKE_doadmin-S3cr3t-0123456789"
 LB_IP = "203.0.113.50"
 VPC_RANGE = "10.116.0.0/20"
+DEFAULT_VPC_RANGE = "10.108.0.0/20"
+USER_DATA_LIMIT = 64 * 1024
 CA_PEM = "-----BEGIN CERTIFICATE-----\nMIIBfakeCA\n-----END CERTIFICATE-----\n"
 
 
@@ -50,12 +60,15 @@ class FakeDigitalOcean:
         self.certificates: dict[str, dict] = {}
         self.load_balancers: dict[str, dict] = {}
         self.firewalls: dict[str, dict] = {}
+        self.default_vpcs: dict[str, dict] = {}   # region slug -> its default VPC
+        self.actions: dict[str, dict] = {}        # action id -> action (+ _droplet, _polls)
         self.requests: list[httpx.Request] = []
         self.boot_polls = 1           # GETs before a droplet is active
         self.db_polls = 1             # GETs before a database is online
         self.lb_polls = 1             # GETs before a load balancer is active
         self.firewall_wait = 0        # database firewall PUTs refused before one is accepted
         self.vpc_lingering = 0        # VPC deletes refused after its members went
+        self.action_polls = 0         # action GETs before a droplet action completes
         self.public_ip = "127.0.0.1"  # the tests' SSH server plays every droplet
         self.down = False
         self.fail: dict[tuple[str, str], int] = {}   # (method, path) -> status
@@ -135,6 +148,20 @@ class FakeDigitalOcean:
                 + sum(d.get("private_network_uuid") == vid for d in self.databases.values())
                 + sum(lb.get("vpc_uuid") == vid for lb in self.load_balancers.values()))
 
+    def _find_vpc(self, vid: str) -> dict | None:
+        if vid in self.vpcs:
+            return self.vpcs[vid]
+        return next((v for v in self.default_vpcs.values() if v["id"] == vid), None)
+
+    def _default_vpc(self, region: str) -> str:
+        if region not in self.default_vpcs:
+            vid = str(uuid.uuid4())
+            self.default_vpcs[region] = {"id": vid, "urn": f"do:vpc:{vid}",
+                                         "name": f"default-{region}", "region": region,
+                                         "description": "", "ip_range": DEFAULT_VPC_RANGE,
+                                         "default": True}
+        return self.default_vpcs[region]["id"]
+
     def _vpcs(self, method, rest, body, request, token):
         if method == "POST" and not rest:
             vid = str(uuid.uuid4())
@@ -142,7 +169,7 @@ class FakeDigitalOcean:
                               "region": body["region"], "description": body.get("description", ""),
                               "ip_range": VPC_RANGE, "default": False}
             return httpx.Response(201, json={"vpc": self.vpcs[vid]})
-        vpc = self.vpcs.get(rest[0]) if rest else None
+        vpc = self._find_vpc(rest[0]) if rest else None
         if vpc is None:
             return _err(404, "not_found")
         if method == "GET" and rest[1:] == ["members"]:
@@ -152,6 +179,8 @@ class FakeDigitalOcean:
         if method == "GET":
             return httpx.Response(200, json={"vpc": vpc})
         if method == "DELETE":
+            if vpc["default"]:
+                return _err(403, "forbidden", "Can not delete a default VPC")
             if self._vpc_members(vpc["id"]) or self.vpc_lingering:
                 self.vpc_lingering = max(0, self.vpc_lingering - 1)
                 return _err(403, "forbidden", "Can not delete VPC with members")
@@ -163,13 +192,22 @@ class FakeDigitalOcean:
 
     def _droplets(self, method, rest, body, request, token):
         if method == "POST" and not rest:
+            user_data = body.get("user_data") or ""
+            if len(user_data.encode()) > USER_DATA_LIMIT:
+                return _err(422, "unprocessable_entity", "user_data is too long")
+            vpc_uuid = body.get("vpc_uuid")
+            if vpc_uuid is None:
+                vpc_uuid = self._default_vpc(body["region"])
+            elif self._find_vpc(vpc_uuid) is None:
+                return _err(422, "unprocessable_entity", "vpc not found")
             did = str(next(self._ids))
             self.droplets[did] = {"id": int(did), "name": body["name"], "status": "new",
                                   "tags": list(body.get("tags") or []),
                                   "region": {"slug": body["region"]},
-                                  "size_slug": body["size"], "vpc_uuid": body.get("vpc_uuid"),
+                                  "size_slug": body["size"], "vpc_uuid": vpc_uuid,
                                   "image": body["image"], "networks": {"v4": []}, "_polls": 0,
-                                  "_user_data": body.get("user_data", "")}
+                                  "_user_data": user_data,
+                                  "_ssh_keys": list(body.get("ssh_keys") or [])}
             return httpx.Response(202, json={"droplet": self._public_droplet(did)})
         if method == "GET" and not rest:
             tag = request.url.params.get("tag_name")
@@ -180,27 +218,59 @@ class FakeDigitalOcean:
         did = rest[0]
         if did not in self.droplets:
             return _err(404, "not_found")
-        if method == "GET":
+        if method == "GET" and len(rest) == 1:
             d = self.droplets[did]
             d["_polls"] += 1
             if d["status"] == "new" and d["_polls"] >= self.boot_polls:
                 d["status"], d["networks"] = "active", self._networks()
             return httpx.Response(200, json={"droplet": self._public_droplet(did)})
-        if method == "DELETE":
+        if method == "DELETE" and len(rest) == 1:
             del self.droplets[did]
             return httpx.Response(204)
         if method == "POST" and rest[1:] == ["actions"]:
-            d = self.droplets[did]
-            if body["type"] == "power_off":
-                d["status"] = "off"
-            elif body["type"] == "power_on":
-                d["status"] = "active"
-            elif body["type"] == "resize":
-                d["size_slug"] = body["size"]
-            return httpx.Response(201, json={"action": {"id": next(self._ids),
-                                                        "status": "completed",
-                                                        "type": body["type"]}})
+            return self._start_action(did, body)
+        if method == "GET" and len(rest) == 3 and rest[1] == "actions":
+            action = self.actions.get(rest[2])
+            if action is None or action["_droplet"] != did:
+                return _err(404, "not_found")
+            if action["status"] == "in-progress":
+                action["_polls"] += 1
+                if action["_polls"] >= self.action_polls:
+                    self._finish_action(action)
+            return httpx.Response(200, json={"action": self._public_action(action)})
         return _err(405, "method_not_allowed")
+
+    def _pending(self, did: str, type_: str) -> bool:
+        return any(a["_droplet"] == did and a["type"] == type_ and a["status"] == "in-progress"
+                   for a in self.actions.values())
+
+    def _start_action(self, did: str, body: dict) -> httpx.Response:
+        if body["type"] == "power_on" and self._pending(did, "resize"):
+            return _err(422, "unprocessable_entity", "a resize is in progress")
+        aid = str(next(self._ids))
+        action = {"id": int(aid), "status": "in-progress", "type": body["type"],
+                  "_droplet": did, "_body": body, "_polls": 0}
+        self.actions[aid] = action
+        if self.action_polls <= 0:
+            self._finish_action(action)
+        return httpx.Response(201, json={"action": self._public_action(action)})
+
+    def _finish_action(self, action: dict) -> None:
+        action["status"] = "completed"
+        d = self.droplets.get(action["_droplet"])
+        if d is None:
+            return
+        body = action["_body"]
+        if body["type"] == "power_off":
+            d["status"] = "off"
+        elif body["type"] == "power_on":
+            d["status"] = "active"
+        elif body["type"] == "resize":
+            d["size_slug"] = body["size"]
+
+    @staticmethod
+    def _public_action(action: dict) -> dict:
+        return {k: v for k, v in action.items() if not k.startswith("_")}
 
     def _public_droplet(self, did: str) -> dict:
         return {k: v for k, v in self.droplets[did].items() if not k.startswith("_")}
@@ -248,6 +318,10 @@ class FakeDigitalOcean:
             if self.firewall_wait:
                 self.firewall_wait -= 1
                 return _err(422, "unprocessable_entity", "cluster is not ready")
+            unknown = [r["value"] for r in body["rules"]
+                       if r["type"] == "droplet" and str(r["value"]) not in self.droplets]
+            if unknown:
+                return _err(422, "unprocessable_entity", "unknown droplet " + unknown[0])
             self.db_rules[dbid] = [{"type": r["type"], "value": r["value"]} for r in body["rules"]]
             return httpx.Response(204)
         if sub == ["firewall"] and method == "GET":
@@ -325,10 +399,21 @@ class FakeDigitalOcean:
     # ---- load balancers ----------------------------------------------------------------------
 
     _LB_FIELDS = ("name", "region", "size_unit", "vpc_uuid", "forwarding_rules", "health_check",
-                  "droplet_ids", "redirect_http_to_https", "sticky_sessions")
+                  "droplet_ids", "tag", "redirect_http_to_https", "sticky_sessions")
+
+    def _lb_refusal(self, body: dict) -> httpx.Response | None:
+        if body.get("droplet_ids") and body.get("tag"):
+            return _err(422, "unprocessable_entity", "droplet_ids and tag are exclusive")
+        for rule in body.get("forwarding_rules") or []:
+            cid = rule.get("certificate_id")
+            if cid and cid not in self.certificates:
+                return _err(422, "unprocessable_entity", "certificate not found")
+        return None
 
     def _load_balancers(self, method, rest, body, request, token):
         if method == "POST" and not rest:
+            if (refused := self._lb_refusal(body)) is not None:
+                return refused
             lid = str(uuid.uuid4())
             self.load_balancers[lid] = {"id": lid, "ip": "", "status": "new", "_polls": 0,
                                         **{k: body.get(k) for k in self._LB_FIELDS}}
@@ -351,9 +436,10 @@ class FakeDigitalOcean:
             missing = [k for k in ("name", "region", "forwarding_rules") if k not in body]
             if missing:                     # PUT replaces the whole load balancer
                 return _err(422, "unprocessable_entity", "missing " + ",".join(missing))
-            for k in self._LB_FIELDS:
-                if k in body:
-                    lb[k] = body[k]
+            if (refused := self._lb_refusal(body)) is not None:
+                return refused
+            for k in self._LB_FIELDS:       # what the body leaves out is gone
+                lb[k] = body.get(k)
             lb["region"] = {"slug": body["region"]} if isinstance(body["region"], str) \
                 else body["region"]
             return httpx.Response(200, json={"load_balancer": self._public_lb(lid)})
