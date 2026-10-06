@@ -240,7 +240,7 @@ args=("$@")
 last="${args[${#args[@]}-1]}"
 [[ -n "${FAKE_FAIL:-}" && "$*" == *"$FAKE_FAIL"* ]] && { echo "fake failure" >&2; exit 1; }
 case "$*" in
-  "network inspect -f"*) echo "${FAKE_SUBNET:-172.30.0.0/24}" ;;
+  "network inspect -f"*) echo "${FAKE_SUBNET:-172.30.0.0/24} ${FAKE_IP_RANGE:-172.30.0.128/25}" ;;
   *"SELECT version_num FROM alembic_version"*) echo "${FAKE_REVISION:-0089}" ;;
   *" cp postgres:"*) printf 'PGDMP-from-container' > "$last" ;;
   *pg_restore*) cat > "$DOCKER_LOG.restored" ;;

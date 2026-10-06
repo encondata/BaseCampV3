@@ -30,7 +30,8 @@ case "$1 $2" in
     # an existing network answers with the subnet and ip-range in
     # $DOCKER_LOG.net, or the expected pair when that file is empty
     [[ -f "$DOCKER_LOG.net" ]] || exit 1
-    if [[ -s "$DOCKER_LOG.net" ]]; then cat "$DOCKER_LOG.net"; else echo "172.30.0.0/24 172.30.0.128/25"; fi
+    if [[ -s "$DOCKER_LOG.net" ]]; then cat "$DOCKER_LOG.net"
+    else echo "172.30.0.0/24 172.30.0.128/25"; fi
     exit 0 ;;
   "network create") touch "$DOCKER_LOG.net" ;;
 esac
