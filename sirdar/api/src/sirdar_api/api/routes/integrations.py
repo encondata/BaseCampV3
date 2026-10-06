@@ -49,7 +49,7 @@ UNEXPECTED_REASON = "Sirdar couldn't reach it."
 _STATUS = {"secrets_key_missing": 400, "integration_unreadable": 409,
            "integration_in_use": 409, "tls_untrusted": 409, "tls_fingerprint_invalid": 422,
            "do_token_shared": 409, "do_team_changed": 409, "account_in_use": 409,
-           "do_account_not_configured": 409}
+           "do_account_not_configured": 409, "renewal_token_shared": 409}
 PROXMOX_FIELDS = ("url", "node", "pool", "storage", "bridge", "vlan_tag", "template_vmid",
                   "tls_fingerprint")
 ESXI_FIELDS = ("url", "user", "datastore", "network", "resource_pool", "source_vm",
@@ -185,6 +185,10 @@ async def _save(kind: str, values: dict, secret: str | None, request: Request, d
     except IntegrationError as e:
         await db.rollback()
         raise _http(e) from None
+    except ConnectFailed as e:          # the DigitalOcean team check
+        await db.rollback()
+        raise HTTPException(status_code=502, detail={"code": "connect_failed",
+                                                     "reason": e.reason}) from None
     if changed:
         audit(db, actor_id=actor.user.person_id, action="deploy.integration_update",
               entity_type="integration", entity_id=kind, ip=client_ip(request),
@@ -363,7 +367,7 @@ async def save_do_account(key: str, body: DoAccountIn, request: Request, db: DbS
 async def test_do_account(key: str, request: Request, db: DbSession,
                           body: DoAccountIn | None = None,
                           actor: AuthContext = require_permission("deploy", "change")):
-    settings = get_settings()
+    settings, actor_id = get_settings(), actor.user.person_id   # read before any rollback
     try:
         do_accounts.check_key(key)
         if body is not None:
@@ -379,20 +383,25 @@ async def test_do_account(key: str, request: Request, db: DbSession,
             renewal_token=body.renewal_token if body else None, region=region)
     except IntegrationError as e:
         raise _http(e) from None
-    except ConnectFailed as e:
-        audit(db, actor_id=actor.user.person_id, action="deploy.do_account_test",
+    except Exception as e:
+        reason = e.reason if isinstance(e, ConnectFailed) else UNEXPECTED_REASON
+        if not isinstance(e, ConnectFailed):
+            # Only the type: the message may carry a token or upstream text.
+            log.warning("DigitalOcean account test failed unexpectedly: %s", type(e).__name__)
+        await db.rollback()
+        audit(db, actor_id=actor_id, action="deploy.do_account_test",
               entity_type="do_account", entity_id=key, ip=client_ip(request),
               changes={"account": key, "ok": False})
         await db.commit()
         raise HTTPException(status_code=502, detail={"code": "connect_failed",
-                                                     "reason": e.reason}) from None
-    if body is None or body.token is None:      # the stored token: remember its team
-        team_name = result.facts.get("team_name")
-        if team_name and not await do_accounts.in_use(db, key):
-            team, _ = await do_accounts.team_of(
-                (await do_accounts.require(db, settings, key)).token)
-            await do_accounts.remember_team(db, key, team, team_name)
-    audit(db, actor_id=actor.user.person_id, action="deploy.do_account_test",
+                                                     "reason": reason}) from None
+    team_uuid, team_name = result.facts.get("team_uuid"), result.facts.get("team_name")
+    if (body is None or body.token is None) and team_uuid:
+        # The stored token answered: remember its team (from the same /account
+        # read) unless environments froze one already.
+        if not await do_accounts.in_use(db, key):
+            await do_accounts.remember_team(db, key, team_uuid, team_name)
+    audit(db, actor_id=actor_id, action="deploy.do_account_test",
           entity_type="do_account", entity_id=key, ip=client_ip(request),
           changes={"account": key, "ok": True})
     await db.commit()
@@ -404,10 +413,13 @@ async def clear_do_account(key: str, request: Request, db: DbSession,
                            actor: AuthContext = require_permission("deploy", "change")):
     try:
         do_accounts.check_key(key)
-        await do_accounts.clear(db, key)
+        cleared = await do_accounts.clear(db, key, actor_id=actor.user.person_id)
     except IntegrationError as e:
         await db.rollback()
         raise _http(e) from None
+    if not cleared:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail={"code": "integration_not_found"})
     audit(db, actor_id=actor.user.person_id, action="deploy.do_account_clear",
           entity_type="do_account", entity_id=key, ip=client_ip(request),
           changes={"account": key})

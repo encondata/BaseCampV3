@@ -11,6 +11,7 @@ another DigitalOcean team is refused while environments use the account, and
 the same token can't be both accounts. Errors are IntegrationError (codes
 only, never values). Callers audit and commit."""
 
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -23,10 +24,14 @@ from sirdar_api.db.models import DoAccount, DoEnvironment, Environment, User
 from sirdar_api.deploy import Check, ConnectFailed, ConnectResult, do_api, integrations, vault
 from sirdar_api.deploy.integrations import IntegrationError
 
+log = logging.getLogger(__name__)
+
 KEYS = ("production", "development")
 DEFAULT_LABELS = {"production": "Production", "development": "Development"}
 _REGION_RE = re.compile(r"[a-z]{3}[0-9]")
 _LABEL_BAD = re.compile(r"[\x00-\x1f\x7f]")
+_NO_TEAM = "DigitalOcean didn't say which team this token belongs to."
+_UNEXPECTED = "DigitalOcean sent a response Sirdar didn't understand."
 
 
 @dataclass(frozen=True)
@@ -77,6 +82,18 @@ async def _row(db: AsyncSession, key: str) -> DoAccount:
     return await db.get(DoAccount, check_key(key), populate_existing=True)
 
 
+async def lock_account(db: AsyncSession, key: str) -> DoAccount:
+    """The account's row, locked FOR UPDATE until the transaction ends (an
+    environment create holds it so a token save or clear can't race it)."""
+    return await db.scalar(select(DoAccount).where(DoAccount.key == check_key(key))
+                           .with_for_update().execution_options(populate_existing=True))
+
+
+async def _lock_both(db: AsyncSession) -> dict[str, DoAccount]:
+    """Both rows, locked in KEYS order (every writer takes them in this order)."""
+    return {key: await lock_account(db, key) for key in KEYS}
+
+
 def _decrypt(settings: Settings, blob: bytes) -> str:
     try:
         return vault.decrypt(settings, blob)
@@ -84,6 +101,18 @@ def _decrypt(settings: Settings, blob: bytes) -> str:
         raise IntegrationError("secrets_key_missing") from None
     except vault.SecretUnreadable:
         raise IntegrationError("integration_unreadable", kind="digitalocean") from None
+
+
+def _readable(settings: Settings, blob: bytes | None) -> str | None:
+    """A stored token for a comparison; None when absent or unreadable (a
+    token that won't open can't block another save; only its type is logged)."""
+    if blob is None:
+        return None
+    try:
+        return vault.decrypt(settings, blob)
+    except Exception as e:
+        log.warning("a stored DigitalOcean token could not be compared: %s", type(e).__name__)
+        return None
 
 
 def _env_token(settings: Settings, key: str) -> str | None:
@@ -149,18 +178,28 @@ async def in_use(db: AsyncSession, key: str) -> list[str]:
 
 async def team_of(token: str) -> tuple[str, str | None]:
     """(team uuid, team name) the token answers for; a token without a team
-    gets "personal:<account uuid>". ConnectFailed with our copy."""
+    gets "personal:<account uuid, else email>". ConnectFailed with our copy,
+    also when DigitalOcean names neither."""
     try:
         async with do_api.connect(token) as api:
             account = await api.account()
     except do_api.DoError as e:
         raise ConnectFailed(e.reason) from None
+    return _team_of_account(account)
+
+
+def _team_of_account(account) -> tuple[str, str | None]:
+    if not isinstance(account, dict):
+        raise ConnectFailed(_NO_TEAM)
     team = account.get("team") if isinstance(account.get("team"), dict) else {}
     uuid = team.get("uuid")
     if isinstance(uuid, str) and uuid:
         name = team.get("name")
         return uuid, name if isinstance(name, str) else None
-    return f"personal:{account.get('uuid')}", None
+    for owner in (account.get("uuid"), account.get("email")):
+        if isinstance(owner, str) and owner:
+            return f"personal:{owner}", None
+    raise ConnectFailed(_NO_TEAM)
 
 
 async def _frozen_teams(db: AsyncSession, key: str) -> set[str]:
@@ -182,7 +221,17 @@ async def save(db: AsyncSession, settings: Settings, key: str, *, label, region,
         check_token(renewal_token, "renewal_token_invalid")
     if (token is not None or renewal_token is not None) and not vault.is_configured(settings):
         raise IntegrationError("secrets_key_missing")
-    row = await _row(db, key)
+    rows = await _lock_both(db)
+    row, other = rows[key], rows[_other(key)]
+    if token is not None or renewal_token is not None:
+        other_token = _readable(settings, other.token_enc) or _env_token(settings, _other(key))
+        if token is not None and token == other_token:
+            raise IntegrationError("do_token_shared")
+        if renewal_token is not None:
+            own = token if token is not None else (
+                _readable(settings, row.token_enc) or _env_token(settings, key))
+            if renewal_token in (own, other_token):
+                raise IntegrationError("renewal_token_shared")
     changed: list[str] = []
     if row.label != label:
         row.label = label
@@ -191,10 +240,6 @@ async def save(db: AsyncSession, settings: Settings, key: str, *, label, region,
         row.region = region
         changed.append("region")
     if token is not None:
-        other = await _row(db, _other(key))
-        if ((other.token_enc is not None and _decrypt(settings, other.token_enc) == token)
-                or _env_token(settings, _other(key)) == token):
-            raise IntegrationError("do_token_shared")
         users = await in_use(db, key)
         if users:
             team, team_name = await team_of(token)
@@ -225,18 +270,20 @@ async def remember_team(db: AsyncSession, key: str, team: str, name: str | None)
     await db.flush()
 
 
-async def clear(db: AsyncSession, key: str) -> bool:
-    """Drop both tokens (label and region stay). False when none was stored."""
+async def clear(db: AsyncSession, key: str, *, actor_id=None) -> bool:
+    """Drop both tokens (label and region stay). False (and nothing changed)
+    when neither was stored."""
+    row = (await _lock_both(db))[check_key(key)]
     users = await in_use(db, key)
     if users:
         raise IntegrationError("account_in_use", environments=users)
-    row = await _row(db, key)
-    had = row.token_enc is not None
+    if row.token_enc is None and row.renewal_token_enc is None:
+        return False
     row.token_enc = row.renewal_token_enc = None
     row.team_uuid = row.team_name = None
-    row.updated_at = datetime.now(UTC)
+    row.updated_by, row.updated_at = actor_id, datetime.now(UTC)
     await db.flush()
-    return had
+    return True
 
 
 async def public(db: AsyncSession, settings: Settings) -> list[dict]:
@@ -281,14 +328,26 @@ async def test(db: AsyncSession, settings: Settings, key: str, *, token: str | N
             count = int((await api.call("GET", "/droplets", params={"per_page": 1}))
                         ["meta"]["total"])
             regions = (await api.call("GET", "/regions", params={"per_page": 200}))["regions"]
+        if not isinstance(regions, list):
+            raise TypeError
+        team = account.get("team") if isinstance(account.get("team"), dict) else {}
+        team_name = team.get("name") if isinstance(team.get("name"), str) else None
+        try:
+            team_uuid = _team_of_account(account)[0]
+        except ConnectFailed:
+            team_uuid = None
+        limit = int(account.get("droplet_limit") or 0)
+        status = str(account.get("status") or "")
+        renewal_status = None
+        if renewal is not None:
+            async with do_api.connect(renewal) as api:
+                renewal_status = (await _status(api, "/certificates"),
+                                  await _status(api, "/load_balancers"),
+                                  await _status(api, "/droplets"))
     except do_api.DoError as e:
         raise ConnectFailed(e.reason) from None
-    except (KeyError, TypeError, ValueError):
-        raise ConnectFailed("DigitalOcean sent a response Sirdar didn't understand.") from None
-    team = account.get("team") if isinstance(account.get("team"), dict) else {}
-    team_name = team.get("name") if isinstance(team.get("name"), str) else None
-    limit = int(account.get("droplet_limit") or 0)
-    status = str(account.get("status") or "")
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise ConnectFailed(_UNEXPECTED) from None
     checks = [
         Check("Account", "pass" if status == "active" else "warn",
               f"{account.get('email')} · {status}"),
@@ -302,14 +361,11 @@ async def test(db: AsyncSession, settings: Settings, key: str, *, token: str | N
         ok = bool(match and match.get("available"))
         checks.append(Check("Region", "pass" if ok else "fail",
                             f"{region} available" if ok else f"{region} not available"))
-    if renewal is None:
+    if renewal_status is None:
         checks.append(Check("Renewal token", "warn",
                             "Not set: Sirdar can't build environments in this account yet."))
     else:
-        async with do_api.connect(renewal) as api:
-            certs = await _status(api, "/certificates")
-            lbs = await _status(api, "/load_balancers")
-            droplets = await _status(api, "/droplets")
+        certs, lbs, droplets = renewal_status
         if certs != 200 or lbs != 200:
             checks.append(Check("Renewal token", "fail",
                                 "It can't read certificates and load balancers."))
@@ -319,8 +375,8 @@ async def test(db: AsyncSession, settings: Settings, key: str, *, token: str | N
                                 "balancer scopes."))
         else:
             checks.append(Check("Renewal token", "pass", "Certificates and load balancers only"))
-    facts = {"email": account.get("email"), "team_name": team_name, "region": region,
-             "droplet_count": count, "droplet_limit": limit}
+    facts = {"email": account.get("email"), "team_name": team_name, "team_uuid": team_uuid,
+             "region": region, "droplet_count": count, "droplet_limit": limit}
     return ConnectResult(ok=True, target="digitalocean", checks=checks, facts=facts)
 
 

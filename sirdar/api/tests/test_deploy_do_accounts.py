@@ -190,3 +190,244 @@ async def test_account_routes_need_change(client, db, no_env_token):
     resp = await client.put(f"{URL}/development", headers=viewer,
                             json={"label": "x", "region": "nyc3"})
     assert resp.status_code == 403
+
+
+# ---- review fixes ------------------------------------------------------------------
+
+FACADE = "/api/deploy/integrations/digitalocean"
+UNKNOWN = "dop_v1_" + "ab" * 32           # the fake answers 401 for it
+
+
+def _no_tokens(*texts) -> None:
+    for text in texts:
+        for token in TOKENS + (UNKNOWN,):
+            assert token not in text
+
+
+async def _account_row(db, key: str) -> DoAccount:
+    return await db.get(DoAccount, key, populate_existing=True)
+
+
+async def _locked(key: str) -> bool:
+    """Whether another transaction holds the row lock on this account."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    from sirdar_api.db.engine import get_sessionmaker
+    async with get_sessionmaker()() as other:
+        try:
+            await other.execute(text("SELECT 1 FROM do_accounts WHERE key = :k "
+                                     "FOR UPDATE NOWAIT"), {"k": key})
+        except DBAPIError:
+            return True
+        finally:
+            await other.rollback()
+    return False
+
+
+async def test_save_and_clear_lock_both_accounts(db, no_env_token):
+    await do_accounts.save(db, get_settings(), "development", label="Development",
+                           region="nyc3")
+    assert await _locked("production") and await _locked("development")
+    await db.rollback()
+    await do_accounts.clear(db, "development")
+    assert await _locked("production") and await _locked("development")
+    await db.rollback()
+    assert not await _locked("production")
+
+
+async def test_lock_account_locks_the_row(db):
+    row = await do_accounts.lock_account(db, "development")
+    assert row.key == "development"
+    assert await _locked("development") and not await _locked("production")
+    await db.rollback()
+
+
+async def test_an_unreadable_other_token_does_not_block_a_save(db, no_env_token, caplog):
+    from cryptography.fernet import Fernet
+    row = await _account_row(db, "production")
+    row.token_enc = Fernet(Fernet.generate_key()).encrypt(DO_TOKEN.encode())
+    await db.commit()
+    assert await do_accounts.save(db, get_settings(), "development", label="Development",
+                                  region="nyc3", token=DEV_TOKEN) == ["region", "token"]
+    _no_tokens(caplog.text)
+
+
+@pytest.mark.parametrize("renewal", [DO_TOKEN, DEV_TOKEN], ids=["production", "same"])
+async def test_a_renewal_token_can_not_be_an_account_token(db, no_env_token, renewal):
+    await configure_account(db, "production", token=DO_TOKEN, renewal=RENEW_TOKEN)
+    with pytest.raises(IntegrationError) as e:
+        await do_accounts.save(db, get_settings(), "development", label="Development",
+                               region="nyc3", token=DEV_TOKEN, renewal_token=renewal)
+    assert e.value.code == "renewal_token_shared"
+
+
+async def test_team_of_without_a_team(do_cloud):
+    import httpx
+
+    def account(body):
+        return lambda method, rest, b, request, token: httpx.Response(
+            200, json={"account": body})
+    do_cloud.do._account = account({"uuid": "acct-1", "email": "x@example.com"})
+    assert await do_accounts.team_of(DEV_TOKEN) == ("personal:acct-1", None)
+    do_cloud.do._account = account({"email": "x@example.com"})
+    assert await do_accounts.team_of(DEV_TOKEN) == ("personal:x@example.com", None)
+    do_cloud.do._account = account({"status": "active"})
+    from sirdar_api.deploy import ConnectFailed
+    with pytest.raises(ConnectFailed) as e:
+        await do_accounts.team_of(DEV_TOKEN)
+    assert e.value.reason == "DigitalOcean didn't say which team this token belongs to."
+
+
+async def test_resolve_takes_the_account_and_its_region(db, monkeypatch):
+    from sirdar_api.deploy import digitalocean
+    monkeypatch.setenv("SIRDAR_DEPLOY_DO_TOKEN", DO_TOKEN)
+    monkeypatch.setenv("SIRDAR_DEPLOY_DO_REGION", "sfo3")
+    get_settings.cache_clear()
+    try:
+        dev = await digitalocean.resolve(db, get_settings(), account="development")
+        assert (dev.deploy_do_token, dev.deploy_do_region) == (None, "")
+        prod = await digitalocean.resolve(db, get_settings())
+        assert (prod.deploy_do_token.get_secret_value(), prod.deploy_do_region) == (
+            DO_TOKEN, "sfo3")
+        await configure_account(db, "development", region="ams3")
+        dev = await digitalocean.resolve(db, get_settings(), account="development")
+        assert (dev.deploy_do_token.get_secret_value(), dev.deploy_do_region) == (
+            DEV_TOKEN, "ams3")
+        await configure_account(db, "production", token=DO_TOKEN, renewal=RENEW_TOKEN,
+                                region="lon1")       # a stored region beats the env one
+        prod = await digitalocean.resolve(db, get_settings())
+        assert prod.deploy_do_region == "lon1"
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_route_conflicts(client, db, no_env_token, do_cloud, caplog):
+    h = await auth_headers(client, db)
+    await configure_account(db, "production", token=DO_TOKEN, renewal=RENEW_TOKEN)
+    await configure_account(db)
+    await _in_use(db, "development")
+    texts = []
+    resp = await client.put(f"{URL}/development", headers=h, json={
+        "label": "Development", "region": "nyc3", "token": DO_TOKEN})
+    texts.append(resp.text)
+    assert (resp.status_code, resp.json()["detail"]) == (409, {"code": "do_token_shared"})
+    other = "dop_v1_" + "cd" * 32                     # answers for "team-x"
+    do_cloud.do.tokens[other] = None
+    resp = await client.put(f"{URL}/development", headers=h, json={
+        "label": "Development", "region": "nyc3", "token": other})
+    texts.append(resp.text)
+    assert (resp.status_code, resp.json()["detail"]) == (
+        409, {"code": "do_team_changed", "environments": ["do9"]})
+    resp = await client.delete(f"{URL}/development", headers=h)
+    texts.append(resp.text)
+    assert (resp.status_code, resp.json()["detail"]) == (
+        409, {"code": "account_in_use", "environments": ["do9"]})
+    row = await _account_row(db, "development")
+    assert row.token_enc is not None
+    _no_tokens(caplog.text, *texts)
+
+
+async def test_bad_gateway_paths(client, db, no_env_token, do_cloud, caplog):
+    h = await auth_headers(client, db)
+    await configure_account(db, "production", token=DO_TOKEN, renewal=RENEW_TOKEN)
+    await _in_use(db, "production", team="team-prod-0001")
+    texts = []
+    # The old facade: the team check fails (DigitalOcean answers 401).
+    resp = await client.put(FACADE, headers=h, json={"token": UNKNOWN})
+    texts.append(resp.text)
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["detail"]["code"] == "connect_failed"
+    assert (await integrations.load_digitalocean(db, get_settings())).token == DO_TOKEN
+    # The account PUT, same failure.
+    resp = await client.put(f"{URL}/production", headers=h, json={
+        "label": "Production", "region": "nyc3", "token": UNKNOWN})
+    texts.append(resp.text)
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (502, "connect_failed")
+    # Test: DigitalOcean unreachable, and something unexpected.
+    do_cloud.do.down = True
+    resp = await client.post(f"{URL}/production/test", headers=h)
+    texts.append(resp.text)
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (502, "connect_failed")
+    do_cloud.do.down = False
+
+    async def boom(*a, **k):
+        raise RuntimeError("secret " + DO_TOKEN)
+    import sirdar_api.deploy.do_accounts as mod
+    orig = mod.test
+    mod.test = boom
+    try:
+        resp = await client.post(f"{URL}/production/test", headers=h)
+    finally:
+        mod.test = orig
+    texts.append(resp.text)
+    assert (resp.status_code, resp.json()["detail"]) == (
+        502, {"code": "connect_failed", "reason": "Sirdar couldn't reach it."})
+    audits = [repr(a.changes) for a in await db.scalars(select(AuditLog))]
+    _no_tokens(caplog.text, *texts, *audits)
+
+
+async def test_the_account_test_reads_the_account_once(client, db, no_env_token, do_cloud,
+                                                        caplog):
+    h = await auth_headers(client, db)
+    await configure_account(db)
+    resp = await client.post(f"{URL}/development/test", headers=h)
+    assert resp.status_code == 200, resp.text
+    calls = [r for r in do_cloud.do.requests if r.url.path == "/v2/account"]
+    assert len(calls) == 1
+    row = await _account_row(db, "development")
+    assert (row.team_uuid, row.team_name) == ("team-dev-0002", "Encon Development")
+    # An unsaved token is tried, never stored, and doesn't change the team.
+    other = "dop_v1_" + "ef" * 32
+    do_cloud.do.tokens[other] = None
+    before = bytes(row.token_enc)
+    resp = await client.post(f"{URL}/development/test", headers=h, json={
+        "label": "Development", "region": "nyc3", "token": other})
+    assert resp.status_code == 200, resp.text
+    row = await _account_row(db, "development")
+    assert (bytes(row.token_enc), row.team_uuid, row.team_name) == (
+        before, "team-dev-0002", "Encon Development")
+    _no_tokens(caplog.text, resp.text)
+    assert other not in resp.text and other not in caplog.text
+
+
+async def test_responses_and_logs_carry_no_token(client, db, no_env_token, do_cloud, caplog):
+    import logging
+    caplog.set_level(logging.DEBUG)
+    h = await auth_headers(client, db)
+    texts = []
+    resp = await client.put(f"{URL}/production", headers=h, json={
+        "label": "Production", "region": "nyc3", "token": DO_TOKEN,
+        "renewal_token": RENEW_TOKEN})
+    texts.append(resp.text)
+    resp = await client.put(f"{URL}/development", headers=h, json={
+        "label": "Development", "region": "nyc3", "token": DEV_TOKEN,
+        "renewal_token": DEV_RENEW_TOKEN})
+    texts.append(resp.text)
+    for key in ("production", "development"):
+        resp = await client.post(f"{URL}/{key}/test", headers=h)
+        assert resp.status_code == 200, resp.text
+        texts.append(resp.text)
+    texts.append((await client.get(URL, headers=h)).text)
+    texts.append((await client.get("/api/deploy/integrations", headers=h)).text)
+    texts.append((await client.post(f"{FACADE}/test", headers=h)).text)
+    texts.append((await client.put(FACADE, headers=h, json={"token": None})).text)
+    _no_tokens(caplog.text, *texts)
+
+
+async def test_deleting_an_empty_account_is_not_found(client, db, no_env_token):
+    h = await auth_headers(client, db)
+    resp = await client.delete(f"{URL}/development", headers=h)
+    assert (resp.status_code, resp.json()["detail"]) == (404, {"code": "integration_not_found"})
+    assert not list(await db.scalars(
+        select(AuditLog).where(AuditLog.action.like("deploy.do_account%"))))
+
+
+async def test_clear_records_who(db, no_env_token):
+    from .factories import make_user
+    user = await make_user(db, email="ops@test.example.com")
+    await configure_account(db)
+    assert await do_accounts.clear(db, "development", actor_id=user.person_id) is True
+    await db.commit()
+    row = await _account_row(db, "development")
+    assert row.updated_by == user.person_id and row.token_enc is None

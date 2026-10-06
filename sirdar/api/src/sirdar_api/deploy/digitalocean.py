@@ -31,15 +31,21 @@ def with_token(settings: Settings, token: str | None) -> Settings:
 
 
 async def resolve(db: AsyncSession, settings: Settings, account: str = "production") -> Settings:
-    """settings with the token of the given DigitalOcean account (do_accounts;
-    the Production account falls back to SIRDAR_DEPLOY_DO_TOKEN), else none.
-    IntegrationError when a stored token can't be decrypted."""
+    """settings with the token and region of the given DigitalOcean account
+    (do_accounts; the Production account falls back to SIRDAR_DEPLOY_DO_TOKEN
+    and _REGION), else no token. A stored Production region beats the env
+    fallback; an account without a region gets "". IntegrationError when a
+    stored token can't be decrypted."""
     from sirdar_api.deploy import do_accounts
     found = await do_accounts.load(db, settings, account)
     resolved = with_token(settings, found.token if found else None)
-    if found is not None and found.region:
-        resolved = resolved.model_copy(update={"deploy_do_region": found.region})
-    return resolved
+    if found is not None:
+        region = found.region or ""
+    elif account == "production":
+        region = settings.deploy_do_region
+    else:
+        region = ""
+    return resolved.model_copy(update={"deploy_do_region": region})
 
 
 async def _get(client: httpx.AsyncClient, path: str, **params) -> dict:
