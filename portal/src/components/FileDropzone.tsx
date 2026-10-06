@@ -1,5 +1,5 @@
 /** The drag-and-drop / click-to-browse file zone (imp-dropzone) shared by the
- *  From-To import and Convert a customer From-To. Controlled: the caller owns
+ *  From-To import and Convert Raw F-T. Controlled: the caller owns
  *  `file`; `inputRef` lets it clear the input's DOM value. */
 import { useState, type DragEvent, type MutableRefObject } from 'react';
 

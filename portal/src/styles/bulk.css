@@ -58,7 +58,7 @@
 .bulk-summary .bulk-row-unchanged td:nth-child(4),
 .bulk-summary .bulk-row-skipped td:nth-child(4) { color: inherit; }
 
-/* ── /bulk/from-to-convert pane ───────────────────────────────── */
+/* ── /bulk/convert-raw-ft steps ───────────────────────────────── */
 
 /* Sheet + Header row: two fields at a field's width, not the form's full grid */
 .ftc-setup { grid-template-columns: repeat(auto-fit, minmax(160px, 240px)); }
