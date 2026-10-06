@@ -527,6 +527,9 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
     if fields.get("retiring") is not None:
         if env.type != "production":
             raise EnvError("retiring_not_allowed")
+        if (env.retiring and not fields["retiring"]
+                and await do_envs.production_exists(db, other_than=env.id)):
+            raise EnvError("production_exists")     # at most one live production
         put("retiring", bool(fields["retiring"]))
     if fields.get("target") is not None:
         # An environment never moves to or from a host Sirdar builds, nor

@@ -161,3 +161,15 @@ async def test_retiring_production(client, db):
     resp = await client.patch(f"{URL}/prod", headers=h,
                               json={"retiring": True, "confirm_name": "prod"})
     assert resp.status_code == 200 and resp.json()["retiring"] is True
+
+
+async def test_unretiring_needs_no_other_production(client, db):
+    await make_do_environment(db, name="prod", type_="production", account="production")
+    h = await auth_headers(client, db)
+    resp = await client.patch(f"{URL}/prod", headers=h,
+                              json={"retiring": True, "confirm_name": "prod"})
+    assert resp.status_code == 200
+    await make_do_environment(db, name="prod2", type_="production", account="production")
+    resp = await client.patch(f"{URL}/prod", headers=h,
+                              json={"retiring": False, "confirm_name": "prod"})
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (409, "production_exists")

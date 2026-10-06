@@ -132,10 +132,14 @@ async def add(db: AsyncSession, settings: Settings, env: Environment, spec: dict
     return row
 
 
-async def production_exists(db: AsyncSession) -> bool:
-    found = await db.scalar(select(Environment.id).where(
-        Environment.type == "production", Environment.retiring.is_(False)).limit(1))
-    return found is not None
+async def production_exists(db: AsyncSession, *, other_than=None) -> bool:
+    """Whether a production environment that isn't retiring exists (other
+    than `other_than`, an environment id)."""
+    query = select(Environment.id).where(Environment.type == "production",
+                                         Environment.retiring.is_(False))
+    if other_than is not None:
+        query = query.where(Environment.id != other_than)
+    return await db.scalar(query.limit(1)) is not None
 
 
 # ---- reads ---------------------------------------------------------------------------------
