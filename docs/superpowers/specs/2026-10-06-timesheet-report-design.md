@@ -58,12 +58,17 @@ the definition's, then these.
   - `Adjusted` — `adjusted` is true (the reason appears in the punch view).
   - `Manual entry` — `source` is `manual`.
   - `Over 10 h` — worked ≥ 600 minutes; `Over 16 h` — worked ≥ 960 (replaces Over 10 h).
-  - `Overlap` — overlaps another of the same person's entries in the result
-    (sorted by clock-in; an entry overlaps when it starts before the previous
-    one ends; open entries end "now").
+  - `Overlap` — overlaps another of the same person's entries in the result;
+    both entries of an overlapping pair are flagged (sorted by clock-in, an
+    entry overlaps when it starts before the latest end so far; open entries
+    end "now").
   - `Still clocked in` — status `open`.
   A day row's flags are the union of its entries' flags.
-- Limit: more than 20,000 matching entries fails the run with
+- **Days** (summary KPI and preview) = distinct calendar dates with at
+  least one listed entry; the By person table's Days = that person's
+  distinct dates.
+- Limit: more than 20,000 matching entries (counted over the padded UTC
+  query window, so a few boundary entries may count) fails the run with
   `too_many_entries` (the preview says so before anyone generates).
 
 ## Output
