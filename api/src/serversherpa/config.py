@@ -148,6 +148,17 @@ class Settings(BaseSettings):
     wiki_export_max_pages: int = 1000
     wiki_export_max_bytes: int = 2 * 1024 ** 3
 
+    # ── cert-worker (environments Sirdar builds on DigitalOcean) ─────
+    # The account's renewal token: certificates and load balancers only.
+    cert_do_token: SecretStr | None = None
+    cert_lb_id: str = ""
+    cert_names: str = ""                   # the public names, comma-separated
+    cert_env: str = ""                     # certificates are named ss-<env>-<UTC time>
+    cert_acme_directory: str = "https://acme-v02.api.letsencrypt.org/directory"
+    cert_acme_key: SecretStr | None = None  # base64 of this environment's ACME account key
+    cert_droplet_id: str = ""              # the droplet this worker runs on
+    cert_challenge_port: int = 8089
+
     @property
     def sync_database_url(self) -> str:
         """Database URL for synchronous drivers (Alembic uses psycopg)."""
