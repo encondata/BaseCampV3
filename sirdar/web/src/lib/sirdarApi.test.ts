@@ -170,7 +170,9 @@ it('every error code the deploy routes can return has its own message', () => {
                       'snapshot_slot_unreachable', 'do_account_changed',
                       'first_admin_password_too_short', 'first_admin_done', 'first_admin_with_seed',
                       'first_admin_not_set', 'first_admin_not_allowed',
-                      'vm_static_required', 'vm_ips_not_distinct', 'bluegreen_not_allowed']) {
+                      'vm_static_required', 'vm_ips_not_distinct', 'bluegreen_not_allowed',
+                      'not_supported_on_bluegreen', 'not_bluegreen_environment', 'vm_name_taken',
+                      'vm_resize_not_supported']) {
     expect(codes).toContain(code);
   }
   const missing = codes.filter((c) => sirdar.errorText(new ApiError(400, c), '__none__') === '__none__');

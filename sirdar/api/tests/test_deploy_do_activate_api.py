@@ -119,7 +119,7 @@ async def test_only_digitalocean_activates(client, db, ready):
     await make_environment(db, name="lan1", secrets={})
     h = await auth_headers(client, db)
     assert _code(await _activate(client, h, "lan1", slot="orange")) == (
-        409, "not_digitalocean_environment")
+        409, "not_bluegreen_environment")
 
 
 async def test_production_needs_the_name_and_deactivates_only_when_retiring(

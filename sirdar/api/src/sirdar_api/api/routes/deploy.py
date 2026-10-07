@@ -33,6 +33,7 @@ from sirdar_api.deploy import (
     gitref,
     integrations,
     known_hosts,
+    lan_slots,
     names,
     outbound,
     pipeline,
@@ -397,19 +398,34 @@ _ENV_STATUS = {"environment_exists": 409, "deploy_in_progress": 409,
                "ssh_targets_unreadable": 409, "vm_invalid": 422,
                "do_account_not_configured": 409, "production_exists": 409,
                "integration_unreadable": 409, "first_admin_not_set": 404,
-               "first_admin_done": 409, "vm_name_taken": 409}
+               "first_admin_done": 409, "vm_name_taken": 409,
+               "vm_resize_not_supported": 409}
 _NAME_CONSTRAINT = "environments_name_key"
 _PRODUCTION_CONSTRAINT = "environments_one_production"
 
 
+class VmSizeIn(BaseModel):
+    cores: int | None = None
+    memory_mb: int | None = None
+    disk_gb: int | None = None
+
+
 class VmIn(BaseModel):
-    """A VM environment's VM (mode "new", target "proxmox" or "esxi")."""
+    """A VM environment's VM (mode "new", target "proxmox" or "esxi"). With
+    slots 2 it is LAN Blue/Green: `ip_cidr` is orange's, plus purple's and
+    the data VM's (static, one gateway); `data` sizes the data VM."""
     cores: int | None = None
     memory_mb: int | None = None
     disk_gb: int | None = None
     ip_mode: str = Field(max_length=10)
     ip_cidr: str | None = Field(default=None, max_length=50)
     gateway: str | None = Field(default=None, max_length=45)
+    slots: int | None = None
+    purple_ip_cidr: str | None = Field(default=None, max_length=50)
+    data_ip_cidr: str | None = Field(default=None, max_length=50)
+    data: VmSizeIn | None = None
+    # Non-production Blue/Green only: an Update to the idle slot goes live by itself.
+    auto_activate: bool | None = None
 
 
 class VmPatch(BaseModel):
@@ -857,6 +873,23 @@ def _not_on_do() -> HTTPException:
                          detail={"code": pipeline.NotSupportedOnDigitalOcean.code})
 
 
+def _on_bg(env: Environment) -> bool:
+    """A LAN Blue/Green environment (two app VMs and a data VM)."""
+    return lan_slots.is_bluegreen(env)
+
+
+def _not_on_bg() -> HTTPException:
+    return HTTPException(status_code=409,
+                         detail={"code": pipeline.NotSupportedOnBlueGreen.code})
+
+
+async def _require_npm(db) -> None:
+    """Nginx Proxy Manager is a Blue/Green environment's switch, Publish on or off."""
+    if not await integrations.is_configured(db, "npm"):
+        raise HTTPException(status_code=409, detail={"code": "integration_not_configured",
+                                                     "kinds": ["npm"]})
+
+
 async def _require_vm_host(db, env: Environment) -> None:
     if _on_vm(env) and not await integrations.is_configured(db, env.target_id):
         raise HTTPException(status_code=409, detail={"code": "integration_not_configured",
@@ -903,7 +936,7 @@ async def _launch(db, env: Environment, request: Request, actor: AuthContext, *,
                   restore_dump: str | None = None, publish: bool = False, vm: bool = False,
                   take_vm_snapshot: bool = False, vm_snapshot: str | None = None,
                   cloud: bool = False, slot: str | None = None, go_live: bool = False,
-                  first_admin: bool = False) -> dict:
+                  first_admin: bool = False, bluegreen: bool = False) -> dict:
     env_name = env.name           # read now: a lock conflict rolls the session back
     snapshot_id = snapshot.id if snapshot is not None else None
     snapshot_name = snapshot.name if snapshot is not None else None
@@ -916,10 +949,10 @@ async def _launch(db, env: Environment, request: Request, actor: AuthContext, *,
                                                vm=vm, take_vm_snapshot=take_vm_snapshot,
                                                vm_snapshot=vm_snapshot, cloud=cloud,
                                                slot=slot, go_live=go_live,
-                                               first_admin=first_admin)
+                                               first_admin=first_admin, bluegreen=bluegreen)
     except pipeline.DeployInProgress:
         raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"}) from None
-    except pipeline.NotSupportedOnDigitalOcean as e:
+    except (pipeline.NotSupportedOnDigitalOcean, pipeline.NotSupportedOnBlueGreen) as e:
         raise HTTPException(status_code=409, detail={"code": e.code}) from None
     except do_envs.DoEnvError as e:      # slot_not_deployed {slot}, seed_not_allowed
         await db.rollback()
@@ -944,7 +977,7 @@ async def _launch(db, env: Environment, request: Request, actor: AuthContext, *,
         changes["take_vm_snapshot"] = True
     if vm_snapshot is not None:
         changes["vm_snapshot"] = vm_snapshot
-    if cloud:
+    if cloud or bluegreen:
         changes |= {"slot": slot, "go_live": go_live}
     if dep.first_admin:          # as planned (create_deployment drops it once done)
         changes["first_admin"] = True
@@ -1105,6 +1138,69 @@ async def _start_do_teardown(db, env: Environment, body: DeploymentIn, request: 
                          snapshot=snap, cloud=True, slot=slot)
 
 
+async def _start_lan_update(db, env: Environment, body: DeploymentIn, request: Request,
+                            actor: AuthContext) -> dict:
+    """Update on LAN Blue/Green: to the idle slot; it goes live when
+    do_envs.goes_live says so. Step 0 builds the data VM and the slot's VM
+    and resolves the ref there. No VM snapshot: the other slot is the way back."""
+    if not vault.is_configured(get_settings()):
+        raise _refuse(400, "secrets_key_missing")
+    if body.take_vm_snapshot is not None:
+        raise _refuse(422, "vm_snapshot_not_allowed")
+    await _require_vm_host(db, env)
+    await _require_npm(db)
+    if env.publish:
+        await _require_integrations(db, env)
+    ref = body.git_ref or env.git_ref
+    if not gitref.valid_ref(ref):
+        raise _refuse(422, "ref_invalid")
+    snapshot = None
+    if env.seed_snapshot_id is not None and not await lan_slots.ran(db, env):
+        try:
+            snapshot = await snapshots.ready_snapshot(db, env.seed_snapshot_id)
+        except snapshots.SnapshotError as e:
+            raise _snapshot_http(e) from None
+    slot = do_envs.target_slot(env)
+    return await _launch(db, env, request, actor, action="deploy.deployment_start",
+                         mode="update", git_ref=ref,
+                         sha=ref.lower() if gitref.is_full_sha(ref) else "", snapshot=snapshot,
+                         publish=env.publish, vm=True, bluegreen=True, slot=slot,
+                         go_live=do_envs.goes_live(env, slot),
+                         first_admin=snapshot is None and await first_admins.pending(db, env.id))
+
+
+async def _lan_snapshot_slot(db, env: Environment) -> str | None:
+    """Where a Blue/Green snapshot is taken: the live slot, else the first
+    slot that runs a commit and has an address."""
+    if env.active_slot:
+        return env.active_slot
+    rows = await lan_slots.slots_of(db, env.id)
+    ips = {m.role: m.ip for m in await vms.machines(db, env)}
+    return next((s for s in env.slots if s in rows and rows[s].sha and ips.get(s)), None)
+
+
+async def _start_lan_teardown(db, env: Environment, body: DeploymentIn, request: Request,
+                              actor: AuthContext) -> dict:
+    """Delete on LAN Blue/Green: a snapshot first (unless turned off), taken on
+    the live slot's VM against the data VM; then the three VMs, the proxy
+    hosts and the DNS records."""
+    if not vault.is_configured(get_settings()):
+        raise _refuse(400, "secrets_key_missing")
+    await _require_vm_host(db, env)
+    await _require_integrations(db, env, teardown=True)
+    slot = await _lan_snapshot_slot(db, env)
+    snap = None
+    if body.snapshot is not False and env.current_sha is not None:
+        cfg = await _host_target(db, env, slot=slot) if slot else None
+        if cfg is None:
+            raise _snapshot_slot_unreachable(env)
+        await _pinned(db, cfg)
+        snap = await _begin_delete_snapshot(db, env, actor)
+    return await _launch(db, env, request, actor, action="deploy.deployment_start",
+                         mode="teardown", git_ref=env.git_ref, sha=env.current_sha or "",
+                         snapshot=snap, vm=True, bluegreen=True, slot=slot)
+
+
 async def _read_production(db, env: Environment) -> None:
     """Production's retiring flag and live slot, read under the production
     lock (an un-retire takes it too), so an Activate, Deactivate or Update
@@ -1138,6 +1234,32 @@ def _refuse(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
+async def _activate_lan(db, env: Environment, body: ActivateIn, request: Request,
+                        actor: AuthContext) -> dict:
+    """Activate on LAN Blue/Green: smoke-test the idle slot on its VM, then
+    repoint the proxy hosts at it (14 Switch traffic, through NPM)."""
+    if await environments.is_deploying(db, env.id):
+        raise _refuse(409, "deploy_in_progress")
+    if not vault.is_configured(get_settings()):
+        raise _refuse(400, "secrets_key_missing")
+    if body.slot is None:
+        raise _refuse(422, "slot_required")              # Deactivate is production's
+    if body.slot not in env.slots:
+        raise _refuse(422, "slot_invalid")
+    if body.slot == env.active_slot:
+        raise _refuse(409, "slot_already_active")
+    row = (await lan_slots.slots_of(db, env.id)).get(body.slot)
+    if row is None or not row.sha:
+        raise _refuse(409, "slot_not_deployed", slot=body.slot)
+    await _require_vm_host(db, env)
+    await _require_npm(db)
+    if await _host_target(db, env, slot=body.slot) is None:
+        raise _refuse(409, "vm_not_ready")              # the slot's VM has no address
+    return await _launch(db, env, request, actor, action="deploy.activate", mode="activate",
+                         git_ref=row.sha, sha=row.sha, vm=True, bluegreen=True, slot=body.slot,
+                         go_live=True)
+
+
 @router.post("/environments/{name}/activate", status_code=201)
 async def activate(name: str, body: ActivateIn, request: Request, db: DbSession,
                    actor: AuthContext = require_permission("deploy", "change")):
@@ -1149,8 +1271,10 @@ async def activate(name: str, body: ActivateIn, request: Request, db: DbSession,
     if not actor.access.can("deploy", "add"):
         raise _forbidden()
     env = await _environment(db, name)
+    if _on_bg(env):
+        return await _activate_lan(db, env, body, request, actor)
     if not _on_do(env):
-        raise _refuse(409, "not_digitalocean_environment")
+        raise _refuse(409, "not_bluegreen_environment")
     if env.type == "production" and body.confirm_name != env.name:
         raise _refuse(422, "confirm_name_mismatch")
     if await environments.is_deploying(db, env.id):
@@ -1264,8 +1388,13 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
     on_vm = _on_vm(env)
     if _on_do(env) and body.mode in ("reset", "restore_dump", "vm_restore"):
         raise _not_on_do()
+    if _on_bg(env) and body.mode in ("reset", "restore_dump", "vm_restore"):
+        raise _not_on_bg()
+    # Delete's snapshot switch: DigitalOcean and Blue/Green; the production
+    # phrase: DigitalOcean only (a LAN environment is never production).
     if (body.snapshot is not None or body.confirm_production is not None) and not (
-            _on_do(env) and body.mode == "teardown"):
+            body.mode == "teardown" and (
+                _on_do(env) or (_on_bg(env) and body.confirm_production is None))):
         raise HTTPException(status_code=422, detail={"code": "snapshot_not_allowed"})
     if body.mode in GATED_MODES and body.confirm_name != env.name:
         raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
@@ -1294,6 +1423,10 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
         if body.mode == "teardown":
             return await _start_do_teardown(db, env, body, request, actor)
         return await _start_do_update(db, env, body, request, actor)
+    if _on_bg(env):          # update or teardown: every other mode was answered above
+        if body.mode == "teardown":
+            return await _start_lan_teardown(db, env, body, request, actor)
+        return await _start_lan_update(db, env, body, request, actor)
     await _require_vm_host(db, env)
     if body.mode == "teardown" and on_vm:
         # Step 15 Destroy VM needs no SSH (nor the VM's key).
@@ -1405,6 +1538,8 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     env = await db.get(Environment, dep.environment_id)
     if _on_do(env) and dep.mode in pipeline.NOT_ON_DIGITALOCEAN:
         raise _not_on_do()
+    if _on_bg(env) and dep.mode in pipeline.NOT_ON_DIGITALOCEAN:
+        raise _not_on_bg()
     typed = dep.mode in GATED_MODES or (dep.mode == "activate" and env.type == "production")
     if typed and body.confirm_name != env.name:
         raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
@@ -1432,13 +1567,15 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     # snapshot was deleted (snapshot_id is then NULL).
     restoring = dep.mode in ("update", "reset") and await _has_step(db, dep.id, "restore")
     # A DigitalOcean Delete that took a snapshot first (step 11).
-    taking = dep.mode == "teardown" and dep.cloud and await _has_step(db, dep.id, "export")
+    taking = dep.mode == "teardown" and (dep.cloud or dep.bluegreen) \
+        and await _has_step(db, dep.id, "export")
     # Step 11 again only while the first admin is still to be created, as
     # create_deployment plans it (a done record drops the step).
     first_admin = dep.first_admin and await first_admins.pending(db, env.id)
     plan = plan_for(dep.mode, restore=restoring, publish=dep.publish, vm=dep.vm,
                     cloud=dep.cloud, go_live=dep.go_live, snapshot=taking,
-                    smoke=pipeline.smokes(dep.mode, dep.slot), first_admin=first_admin)
+                    smoke=pipeline.smokes(dep.mode, dep.slot), first_admin=first_admin,
+                    bluegreen=dep.bluegreen)
     admin_step = STEPS_BY_KEY["first_admin"].number
     if dep.first_admin and not first_admin and from_step == admin_step <= stopped:
         # The admin was created since step 11 stopped: carry on with the step
@@ -1454,8 +1591,12 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     # whose switch was turned off since. A data retry drops steps 12–14; one
     # that would start at them (or a publish job's retry) is refused.
     publishing = dep.publish and env.publish
+    # On Blue/Green only step 12 publishes: 13 and 14 run without it (the
+    # plan without publish simply drops 12).
+    dns_step = STEPS_BY_KEY["dns"].number
     if not env.publish and (dep.mode == "publish" or (
-            dep.publish and from_step >= STEPS_BY_KEY["dns"].number)):
+            dep.publish and (from_step == dns_step if dep.bluegreen
+                             else from_step >= dns_step))):
         raise HTTPException(status_code=409, detail={"code": "publish_off"})
     if restoring and dep.snapshot_id is None:
         if from_step <= STEPS_BY_KEY["restore"].number:
@@ -1474,7 +1615,7 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
         await _require_account(db, env)
     cfg = None
     if any(s.runs == "ansible" for s in plan if s.number >= from_step):
-        cfg = await _host_target(db, env, slot=dep.slot if dep.cloud else None)
+        cfg = await _host_target(db, env, slot=dep.slot if dep.cloud or dep.bluegreen else None)
         if not dep.vm and not dep.cloud:    # a built target's step 0 pins the key
             await _pinned(db, cfg)
     elif not vault.is_configured(get_settings()):
@@ -1487,6 +1628,8 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
         await _require_integrations(db, env, teardown=True)
     elif dep.mode == "publish" or publishing:
         await _require_integrations(db, env)
+    if dep.bluegreen and dep.mode in ("update", "activate"):
+        await _require_npm(db)
     if taking:
         if from_step <= STEPS_BY_KEY["export"].number:
             if cfg is None:             # the slot's droplet has no address
@@ -1509,7 +1652,7 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
                          take_vm_snapshot=dep.take_vm_snapshot,
                          vm_snapshot=dep.vm_snapshot if dep.mode == "vm_restore" else None,
                          cloud=dep.cloud, slot=dep.slot, go_live=dep.go_live,
-                         first_admin=first_admin)
+                         first_admin=first_admin, bluegreen=dep.bluegreen)
 
 
 @router.post("/deployments/{deployment_id}/rollback", status_code=201)
@@ -1524,6 +1667,8 @@ async def rollback_deployment(deployment_id: uuid.UUID, body: RollbackIn, reques
     env = await db.get(Environment, dep.environment_id)
     if _on_do(env):
         raise _not_on_do()
+    if _on_bg(env):
+        raise _not_on_bg()
     if body.confirm_name != env.name:
         raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
     latest = await serialize.latest_deployment(db, env.id)
@@ -1723,10 +1868,12 @@ async def take_snapshot(name: str, body: TakeSnapshotIn, request: Request, db: D
     except snapshots.SnapshotError as e:
         await db.rollback()
         raise _snapshot_http(e) from None
-    on_do = _on_do(env)
+    on_do, on_bg = _on_do(env), _on_bg(env)
+    # Blue/Green: on the live slot's VM, against the data VM.
     dep = await _launch(db, env, request, actor, action="deploy.snapshot_take",
                         mode="snapshot", git_ref=env.git_ref, sha=env.current_sha,
-                        snapshot=snap, cloud=on_do, slot=env.active_slot if on_do else None)
+                        snapshot=snap, cloud=on_do, vm=on_bg, bluegreen=on_bg,
+                        slot=env.active_slot if on_do or on_bg else None)
     await db.refresh(snap)
     return {"snapshot": await snapshots.snapshot_out(db, snap), "deployment": dep}
 

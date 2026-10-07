@@ -635,8 +635,10 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
                 raise EnvError("production_exists")     # at most one live production
         put("retiring", bool(fields["retiring"]))
     if fields.get("auto_activate") is not None:
-        # Off is always fine; on only for a non-production DigitalOcean environment.
-        if fields["auto_activate"] and (not on_do or env.type == "production"):
+        # Off is always fine; on only for a non-production environment with
+        # two slots (DigitalOcean, or LAN Blue/Green).
+        two_slots = (on_do or lan_slots.is_bluegreen(env)) and env.type != "production"
+        if fields["auto_activate"] and not two_slots:
             raise EnvError("auto_activate_not_allowed")
         put("auto_activate", bool(fields["auto_activate"]))
     if fields.get("target") is not None:
@@ -719,6 +721,8 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
         changed.append(f"secrets.{key}")
 
     if fields.get("vm") is not None:
+        if lan_slots.is_bluegreen(env):            # three VMs: sizes are set at create
+            raise EnvError("vm_resize_not_supported")
         machine = await vms.get_for(db, env) if on_vm else None
         if machine is None:
             raise EnvError("vm_not_allowed")
