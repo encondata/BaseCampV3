@@ -6,14 +6,16 @@
  * also looks the screen up on load and turns the accent color when a guide
  * exists, so people notice it.
  */
+import { StrictMode, useLayoutEffect } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, useNavigate } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi, type MockInstance } from 'vitest';
 
 const auth = vi.hoisted(() => ({
   can: (_resource: string, _action?: string) => true as boolean,
+  person: { id: 'person-a' } as { id: string } | null,
 }));
-vi.mock('../auth/AuthContext', () => ({ useAuth: () => ({ can: auth.can }) }));
+vi.mock('../auth/AuthContext', () => ({ useAuth: () => ({ can: auth.can, person: auth.person }) }));
 vi.mock('../lib/api', () => ({ apiFetch: vi.fn() }));
 
 import { apiFetch } from '../lib/api';
@@ -31,6 +33,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   auth.can = () => true;
+  auth.person = { id: 'person-a' };
 });
 
 function renderAt(path = '/bulk/time') {
@@ -243,4 +246,141 @@ it('turns the accent on when a click finds a guide that was added since the load
   await waitFor(() => expect(open).toHaveBeenCalledWith('https://wiki.test/n/n1', '_blank'));
   expect(apiFetch).toHaveBeenCalledTimes(2);
   expect(screen.getByRole('button', { name: GUIDE_LABEL }).classList.contains('has-guide')).toBe(true);
+});
+
+// ── dedupe, per-person scope, expiry, no stale window ───────────────────
+
+it('looks a screen up once under StrictMode', async () => {
+  vi.mocked(apiFetch).mockImplementation(async () => json(200, guideBody('/bulk/time')));
+  render(<StrictMode><MemoryRouter initialEntries={['/bulk/time']}><HelpButton /></MemoryRouter></StrictMode>);
+  await screen.findByRole('button', { name: GUIDE_LABEL });
+  expect(apiFetch).toHaveBeenCalledTimes(1);
+});
+
+it('fetches A once for a quick A to B to A before A resolves', async () => {
+  const resolvers: Record<string, (r: Response) => void> = {};
+  vi.mocked(apiFetch).mockImplementation((path: string) =>
+    new Promise<Response>((res) => { resolvers[decodeURIComponent(path.split('=')[1])] = res; }));
+  render(
+    <MemoryRouter initialEntries={['/a']}>
+      <HelpButton />
+      <Go to="/b" />
+      <Go to="/a" />
+    </MemoryRouter>,
+  );
+  fireEvent.click(screen.getByText('go /b'));
+  fireEvent.click(screen.getByText('go /a'));
+  expect(apiFetch).toHaveBeenCalledTimes(2); // portal:/a once, portal:/b once
+  resolvers['portal:/a'](json(200, guideBody('/a')));
+  expect(await screen.findByRole('button', { name: GUIDE_LABEL })).toBeTruthy();
+  expect(apiFetch).toHaveBeenCalledTimes(2);
+});
+
+it('does not cache a failed lookup: the next visit asks again', async () => {
+  vi.mocked(apiFetch)
+    .mockImplementationOnce(async () => json(500, {}))
+    .mockImplementation(async () => json(200, guideBody('/a')));
+  render(
+    <MemoryRouter initialEntries={['/a']}>
+      <HelpButton />
+      <Go to="/b" />
+      <Go to="/a" />
+    </MemoryRouter>,
+  );
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
+  await new Promise((r) => setTimeout(r, 0));
+  fireEvent.click(screen.getByText('go /b'));
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+  fireEvent.click(screen.getByText('go /a'));
+  expect(await screen.findByRole('button', { name: GUIDE_LABEL })).toBeTruthy();
+  expect(apiFetch).toHaveBeenCalledTimes(3);
+});
+
+it('does not show one person’s guide to the next person who signs in', async () => {
+  vi.mocked(apiFetch)
+    .mockImplementationOnce(async () => json(200, guideBody('/bulk/time')))
+    .mockImplementationOnce(async () => json(404, {}));
+  const ui = () => <MemoryRouter initialEntries={['/bulk/time']}><HelpButton /></MemoryRouter>;
+  const { rerender } = render(ui());
+  await screen.findByRole('button', { name: GUIDE_LABEL });
+
+  auth.person = { id: 'person-b' };
+  rerender(ui());
+  const button = screen.getByRole('button', { name: 'Help for this page' });
+  expect(button.classList.contains('has-guide')).toBe(false);
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+  await new Promise((r) => setTimeout(r, 0));
+  expect(screen.getByRole('button', { name: 'Help for this page' }).classList.contains('has-guide')).toBe(false);
+});
+
+it('forgets everything on sign-out (person becomes null)', async () => {
+  vi.mocked(apiFetch).mockImplementation(async () => json(200, guideBody('/bulk/time')));
+  const ui = () => <MemoryRouter initialEntries={['/bulk/time']}><HelpButton /></MemoryRouter>;
+  const { rerender } = render(ui());
+  await screen.findByRole('button', { name: GUIDE_LABEL });
+  auth.person = null;
+  auth.can = () => false;
+  rerender(ui());
+  auth.can = () => true;
+  auth.person = { id: 'person-c' };
+  rerender(ui());
+  expect(screen.getByRole('button', { name: 'Help for this page' })).toBeTruthy();
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+});
+
+it('looks a screen up again once its cached answer is five minutes old', async () => {
+  let now = 1_000_000;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  vi.mocked(apiFetch).mockImplementation(async (path: string) =>
+    path.includes(encodeURIComponent('/bulk/time')) ? json(200, guideBody('/bulk/time')) : json(404, {}));
+  render(
+    <MemoryRouter initialEntries={['/bulk/time']}>
+      <HelpButton />
+      <Go to="/assets" />
+      <Go to="/bulk/time" />
+    </MemoryRouter>,
+  );
+  await screen.findByRole('button', { name: GUIDE_LABEL });
+  fireEvent.click(screen.getByText('go /assets'));
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+
+  now += 4 * 60_000;                      // still fresh: cache
+  fireEvent.click(screen.getByText('go /bulk/time'));
+  expect(await screen.findByRole('button', { name: GUIDE_LABEL })).toBeTruthy();
+  expect(apiFetch).toHaveBeenCalledTimes(2);
+
+  fireEvent.click(screen.getByText('go /assets'));
+  now += 2 * 60_000;                      // 6 minutes since the lookup: expired
+  fireEvent.click(screen.getByText('go /bulk/time'));
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(3));
+});
+
+it('never shows the old screen’s guide in the commit after navigating', async () => {
+  vi.mocked(apiFetch).mockImplementation((path: string) =>
+    path.includes(encodeURIComponent('/bulk/time'))
+      ? Promise.resolve(json(200, guideBody('/bulk/time')))
+      : new Promise<Response>(() => {}));   // /assets never answers
+  const seen: string[] = [];
+  function Probe() {
+    const { pathname } = useLocation();
+    useLayoutEffect(() => {
+      seen.push(`${pathname}|${document.querySelector('.icon-btn')?.getAttribute('aria-label')}`);
+    });
+    return null;
+  }
+  render(
+    <MemoryRouter initialEntries={['/bulk/time']}>
+      <HelpButton />
+      <Probe />
+      <Go to="/assets" />
+    </MemoryRouter>,
+  );
+  await screen.findByRole('button', { name: GUIDE_LABEL });
+  fireEvent.click(screen.getByText('go /assets'));
+  const after = seen.filter((x) => x.startsWith('/assets|'));
+  expect(after.length).toBeGreaterThan(0);
+  expect(new Set(after)).toEqual(new Set(['/assets|Help for this page']));
+  // and a click on the new screen asks the wiki, it doesn't open the old guide
+  fireEvent.click(screen.getByRole('button', { name: 'Help for this page' }));
+  expect(open).not.toHaveBeenCalled();
 });

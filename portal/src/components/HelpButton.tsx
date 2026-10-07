@@ -12,7 +12,7 @@
  * user's accent color and names the guide, and a click opens it at once —
  * no lookup, so the browser's permission to open a tab hasn't run out.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -22,40 +22,89 @@ import { helpContext, helpLinkAdminUrl, lookupHelp, openInNewTab } from '../lib/
 type Guide = { url: string; title: string };
 type Pop = null | 'none' | 'error' | { blocked: { url: string; title: string } };
 
-/** Per-context answers for the session: a guide, or null for "none yet". */
-const guideCache = new Map<string, Guide | null>();
+/** A cached answer lives this long, so an unlinked or retitled guide
+ *  doesn't linger for the whole session. */
+const CACHE_MS = 5 * 60_000;
+
+/** Per-context answers (a guide, or null for "none yet"), the lookups still
+ *  in flight (so StrictMode's double effect and quick back-and-forth share
+ *  one request), and whose answers they are. */
+const guideCache = new Map<string, { at: number; guide: Guide | null }>();
+const inflight = new Map<string, Promise<Guide | null>>();
+let cacheOwner: string | null | undefined;
 
 /** Forget every cached answer (for tests). */
-export function clearHelpCache(): void { guideCache.clear(); }
+export function clearHelpCache(): void {
+  guideCache.clear();
+  inflight.clear();
+  cacheOwner = undefined;
+}
+
+/** Answers are per person (what they may view differs): a new person, or
+ *  none after sign-out, starts empty. A lookup still in flight for the
+ *  old person can no longer write — it isn't in `inflight` any more. */
+function scopeCacheTo(personId: string | null): void {
+  if (cacheOwner === personId) return;
+  guideCache.clear();
+  inflight.clear();
+  cacheOwner = personId;
+}
+
+function cachedGuide(context: string): { guide: Guide | null } | undefined {
+  const hit = guideCache.get(context);
+  return hit && Date.now() - hit.at < CACHE_MS ? hit : undefined;
+}
+
+/** One request per context at a time; the answer is cached, an error isn't. */
+function lookupGuide(context: string): Promise<Guide | null> {
+  const running = inflight.get(context);
+  if (running) return running;
+  const p: Promise<Guide | null> = lookupHelp(apiFetch, context).then(
+    (found) => {
+      const guide = found.found ? { url: found.url, title: found.title } : null;
+      if (inflight.get(context) === p) {
+        guideCache.set(context, { at: Date.now(), guide });
+        inflight.delete(context);
+      }
+      return guide;
+    },
+    (err: unknown) => {
+      if (inflight.get(context) === p) inflight.delete(context);
+      throw err;
+    },
+  );
+  inflight.set(context, p);
+  return p;
+}
 
 export default function HelpButton({ onOpen }: {
   /** Called on each click — the top bar closes its other popovers. */
   onOpen?: () => void;
 }) {
-  const { can } = useAuth();
+  const { can, person } = useAuth();
   const { pathname } = useLocation();
   const [pop, setPop] = useState<Pop>(null);
   const [busy, setBusy] = useState(false);
-  const [guide, setGuide] = useState<Guide | null>(null);
+  const [, refresh] = useReducer((n: number) => n + 1, 0);
   const canView = can('wiki', 'view');
+  const personId = person?.id ?? null;
   const context = helpContext('portal', pathname);
+  scopeCacheTo(personId);
+  // read from the cache for *this* screen on every render, so the old
+  // screen's guide is never shown (or opened) after navigating
+  const guide = canView ? cachedGuide(context)?.guide ?? null : null;
   const wrapRef = useRef<HTMLDivElement>(null);
-  // the newest lookup wins: a click, or leaving the screen, retires older ones
+  // the newest click retires older ones; leaving the screen retires them too
   const seq = useRef(0);
 
   useEffect(() => {
-    const mine = ++seq.current;
+    seq.current += 1;
     setPop(null);
     setBusy(false);
-    setGuide(null);
-    if (!canView) return;
-    if (guideCache.has(context)) { setGuide(guideCache.get(context) ?? null); return; }
-    lookupHelp(apiFetch, context).then((found) => {
-      const answer = found.found ? { url: found.url, title: found.title } : null;
-      guideCache.set(context, answer);
-      if (mine === seq.current) setGuide(answer);
-    }, () => { /* not cached: the button stays normal and a click tries again */ });
-  }, [context, canView]);
+    if (!canView || cachedGuide(context)) return;
+    // the answer lands in the cache; re-render to pick it up if still here
+    lookupGuide(context).then(refresh, () => { /* a click tries again */ });
+  }, [context, canView, personId]);
 
   useEffect(() => {
     if (!pop) return undefined;
@@ -83,12 +132,11 @@ export default function HelpButton({ onOpen }: {
     const mine = ++seq.current;
     setBusy(true);
     try {
-      const found = await lookupHelp(apiFetch, context);
-      guideCache.set(context, found.found ? { url: found.url, title: found.title } : null);
+      const found = await lookupGuide(context);
+      refresh();
       if (mine !== seq.current) return;
-      if (found.found) setGuide({ url: found.url, title: found.title });
-      if (!found.found) setPop('none');
-      else if (!openInNewTab(found.url)) setPop({ blocked: { url: found.url, title: found.title } });
+      if (!found) setPop('none');
+      else if (!openInNewTab(found.url)) setPop({ blocked: found });
     } catch {
       if (mine === seq.current) setPop('error');
     } finally {
