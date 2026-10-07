@@ -19,7 +19,7 @@ export function n(id: string, name: string, kind: string, status: string, childr
 }
 
 export const DEMO_TREE: DashNode[] = [
-  n('env-production', 'Production', 'environment', 'active', [
+  n('production', 'Production', 'environment', 'active', [
     n('prod-blue', 'Blue', 'deployment', 'active', [
       n('prod-blue-api', 'prod-blue-api', 'droplet', 'running', [], { endpoint: '10.20.0.10' }),
     ]),
@@ -31,10 +31,13 @@ export const DEMO_TREE: DashNode[] = [
       n('prod-spaces', 'prod-spaces', 'spaces', 'available'),
     ], { badge: 'Blue + Green', tone: 'shared' }),
   ]),
-  n('env-dev', 'Development', 'environment', 'inactive', [
+  n('dev', 'Development', 'environment', 'inactive', [
     n('dev-web', 'dev-web', 'droplet', 'stopped', [], { dot: 'gray' }),
     n('dev-new', 'dev-new', 'droplet', 'provisioning'),
   ], { dot: 'gray' }),
+  n('uat', 'UAT', 'environment', 'active', [
+    n('uat:server', 'Lab box', 'server', 'healthy', [], { endpoint: '10.10.48.63' }),
+  ]),
 ];
 
 const server = (id: string, label: string, sub: string, state: DashServer['state'], health: string,
@@ -109,4 +112,31 @@ export const REAL: DashboardData = {
 export const CLOUD: DashboardData = {
   ...EMPTY, health: { status: 'healthy', label: 'Environments deployed' },
   environments: [PROD_CARD, DO_CARD, LAN_CARD],
+};
+
+/** The real tree for CLOUD: every environment (card ids, card order), then the
+ *  resources Sirdar doesn't manage. */
+export const CLOUD_TREE: DashNode[] = [
+  n('prod', 'prod', 'environment', 'active', [
+    n('prod:lb', 'ss-prod-lb', 'load_balancer', 'active', [], { endpoint: '203.0.113.50' }),
+    n('prod:slot-blue', 'Blue (live)', 'droplet', 'running'),
+    n('prod:slot-green', 'Green (idle)', 'droplet', 'running'),
+  ]),
+  n('uat9', 'uat9', 'environment', 'active', [
+    n('uat9:slot-orange', 'Orange (live)', 'droplet', 'running'),
+    n('uat9:slot-purple', 'Purple (idle)', 'droplet', 'running'),
+  ]),
+  n('uat', 'uat', 'environment', 'active', [
+    n('uat:npm', 'Nginx Proxy Manager', 'proxy', 'active'),
+    n('uat:server', 'Lab box', 'server', 'healthy'),
+    n('uat:certificate', 'Certificate', 'certificate', 'healthy'),
+  ]),
+  n('other:production', 'Other DigitalOcean resources', 'group', 'active', [
+    n('other:production:droplet-9', 'hand-made', 'droplet', 'running'),
+  ]),
+];
+export const CLOUD_WITH_TREE: DashboardData = {
+  ...CLOUD,
+  infrastructure: { source: 'digitalocean', error: null, tree: CLOUD_TREE,
+                    accounts: [{ key: 'production', label: 'Production', error: null }] },
 };

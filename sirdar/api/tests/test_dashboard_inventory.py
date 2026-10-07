@@ -47,7 +47,8 @@ def do_transport(*, pages=None, status=200, seen=None):
                 n = int(request.url.params.get("page", "1"))
                 body = {"droplets": pages[n - 1]}
                 if n < len(pages):
-                    body["links"] = {"pages": {"next": f"https://api.digitalocean.com/v2/droplets?page={n + 1}&per_page=200"}}
+                    nxt = f"https://api.digitalocean.com/v2/droplets?page={n + 1}&per_page=200"
+                    body["links"] = {"pages": {"next": nxt}}
                 return httpx.Response(200, json=body)
             return httpx.Response(200, json={"droplets": DROPLETS})
         if path == "/v2/databases":
@@ -67,32 +68,45 @@ def by(nodes, name):
     return next(n for n in nodes if n["name"] == name)
 
 
-async def test_tree_grouping_and_mappings():
-    tree = service.build_tree(await inv())
-    assert [n["name"] for n in tree] == ["Production", "Development", "Beta", "Qa Team", "Untagged"]
-    prod = tree[0]
-    assert prod["status"] == "active" and prod["kind"] == "environment"
-    blue, green, shared = prod["children"]
-    assert (blue["name"], blue["kind"], blue["status"]) == ("Blue", "deployment", "active")
-    assert (green["name"], green["status"]) == ("Green", "inactive")
-    api = blue["children"][0]
+PRODUCTION = {"key": "production", "label": "Production", "error": None}
+
+
+async def test_unmanaged_resources_and_their_mappings():
+    group = service.other_resources(PRODUCTION, await inv(), set(), single=True)
+    assert (group["id"], group["name"], group["kind"]) == (
+        "other:production", "Other DigitalOcean resources", "group")
+    assert [n["name"] for n in group["children"]] == [
+        "prod-blue-api", "prod-green-api", "dev-web", "qa-web", "stray", "prod-db", "beta-db",
+        "prod-lb"]
+    api = by(group["children"], "prod-blue-api")
     assert (api["status"], api["status_label"], api["endpoint"], api["region"], api["dot"]) == \
         ("running", "Running", "10.0.0.1", "NYC3", "green")
-    assert green["children"][0]["status"] == "stopped"
-    assert (shared["kind"], shared["badge"], shared["status"]) == ("group", "Blue + Green", "active")
-    assert shared["tone"] == "shared" and blue["tone"] is None and prod["tone"] is None
-    db = by(shared["children"], "prod-db")
+    assert api["id"] == "other:production:droplet-1"
+    assert by(group["children"], "prod-green-api")["status"] == "stopped"
+    assert by(group["children"], "dev-web")["endpoint"] == "5.6.7.8"      # public fallback
+    assert by(group["children"], "qa-web")["status"] == "provisioning"
+    assert by(group["children"], "stray")["status"] == "unknown"
+    db = by(group["children"], "prod-db")
     assert (db["status"], db["status_label"], db["endpoint"]) == ("healthy", "Healthy", "prv.db")
-    assert by(shared["children"], "prod-lb")["kind"] == "load_balancer"
-    dev = tree[1]
-    assert dev["status"] == "inactive"
-    assert dev["children"][0]["endpoint"] == "5.6.7.8"      # public fallback
-    beta_db = tree[2]["children"][0]
-    assert (beta_db["status"], beta_db["endpoint"]) == ("unknown", "beta.db")
-    assert tree[3]["children"][0]["status"] == "provisioning"
-    untagged = tree[4]
-    assert (untagged["kind"], untagged["type_label"]) == ("group", "Untagged resources")
-    assert untagged["children"][0]["status"] == "unknown"
+    beta_db = by(group["children"], "beta-db")          # no private host: never the public one
+    assert (beta_db["status"], beta_db["endpoint"]) == ("provisioning", "—")
+    assert by(group["children"], "prod-lb")["kind"] == "load_balancer"
+    assert group["status"] == "active"
+
+
+async def test_managed_resources_are_left_out_and_an_empty_account_has_no_group():
+    two = {**PRODUCTION, "label": "Development", "key": "development"}
+    group = service.other_resources(two, await inv(), {"1", "2", "d1", "lb1"}, single=False)
+    assert group["name"] == "Other resources · Development account"
+    assert [n["name"] for n in group["children"]] == ["dev-web", "qa-web", "stray", "beta-db"]
+    empty = {"droplets": [], "databases": [], "load_balancers": []}
+    assert service.other_resources(PRODUCTION, empty, set(), single=True) is None
+
+
+def test_a_failed_account_keeps_its_group_with_the_error():
+    group = service.other_resources({**PRODUCTION, "error": "Nope."}, None, set(), single=False)
+    assert (group["children"], group["status_label"], group["endpoint"]) == (
+        [], "Unavailable", "Nope.")
 
 
 async def test_droplet_pagination_follows_next_up_to_five_pages():
@@ -136,14 +150,11 @@ async def test_pagination_ignores_next_url_host():
     assert [r.url.params.get("page") for r in seen if r.url.path == "/v2/droplets"] == [None, "2"]
 
 
-def test_only_valid_env_tags_become_environments():
+def test_only_valid_env_tags_name_environments():
     long_name = "a" * 500
-    inv_ = {"droplets": [droplet(i, f"d{i}", tags=[f"sirdar-env:{n}"])
-                         for i, n in enumerate(["Production", "a b", long_name, "qa-team", "blue"])],
-            "databases": [], "load_balancers": []}
-    tree = service.build_tree(inv_)
-    assert [n["name"] for n in tree] == ["Qa Team", "Untagged"]
-    assert len(tree[1]["children"]) == 4
+    found = [service._env_of(droplet(i, f"d{i}", tags=[f"sirdar-env:{n}"]))
+             for i, n in enumerate(["Production", "a b", long_name, "qa-team", "blue", "dev"])]
+    assert found == [None, None, None, "qa-team", None, "dev"]
 
 
 @pytest.mark.parametrize("empty", ["databases", "load_balancers", "droplets"])

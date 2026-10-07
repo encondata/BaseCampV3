@@ -56,7 +56,7 @@ def _card(id_, label, sub, state, version, release, action, production, flow) ->
 
 def demo_dashboard() -> dict:
     tree = [
-        node("env-production", "Production", "environment", "Environment", "active", "Active",
+        node("production", "Production", "environment", "Environment", "active", "Active",
              children=[
                  node("prod-blue", "Blue", "deployment", "Deployment", "active", "Active",
                       children=_droplets("prod-blue", 10, "running", "Running")),
@@ -68,10 +68,17 @@ def demo_dashboard() -> dict:
                                "Healthy", endpoint="prod-db.internal"),
                           node("prod-spaces", "prod-spaces", "spaces", "Spaces", "available",
                                "Available", endpoint="prod-assets")])]),
-        node("env-dev", "Development", "environment", "Environment", "inactive", "Inactive",
+        node("dev", "Development", "environment", "Environment", "inactive", "Inactive",
              children=_env_resources("dev")),
-        node("env-beta", "Beta", "environment", "Environment", "inactive", "Inactive",
-             children=_env_resources("beta")),
+        node("uat", "UAT", "environment", "Custom", "active", "Active", region="LAN",
+             endpoint="portal.uat.serversherpa.com", children=[
+                 node("uat:npm", "Nginx Proxy Manager", "proxy", "Reverse proxy", "active",
+                      "Active", region="LAN", endpoint="10.10.48.6"),
+                 node("uat:server", "Lab box", "server", "SSH host", "healthy", "Healthy",
+                      region="LAN", endpoint="10.10.48.63", badge="v2.8.1-rc.2"),
+                 node("uat:certificate", "Certificate", "certificate", "TLS certificate",
+                      "healthy", "47 days left", region="—",
+                      endpoint="api.uat.serversherpa.com")]),
     ]
     return {
         "demo": True,

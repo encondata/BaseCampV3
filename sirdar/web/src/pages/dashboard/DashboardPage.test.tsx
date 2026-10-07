@@ -22,7 +22,7 @@ import { ApiError } from '@portal/lib/api';
 import { ENV, RUNNING } from '../environments/testData';
 
 import DashboardPage from './DashboardPage';
-import { CLOUD, DEMO, EMPTY, FAILED_DO_CARD, REAL } from './testData';
+import { CLOUD, CLOUD_WITH_TREE, DEMO, EMPTY, FAILED_DO_CARD, REAL } from './testData';
 
 let loc = '';
 let path = '';
@@ -549,4 +549,31 @@ it('demo data: the traffic box is not a link', async () => {
   show('/?demo=1');
   await screen.findByText('All systems healthy');
   expect(within(spot()).queryByRole('link', { name: /traffic/ })).toBeNull();
+});
+
+const treeRows = () => within(screen.getByRole('treegrid')).getAllByRole('row').slice(1)
+  .map((r) => `${r.getAttribute('aria-label')}${r.getAttribute('aria-expanded') === 'true' ? ' (open)' : ''}`);
+
+it('the infrastructure tree puts the selected environment first and follows a new pick', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD_WITH_TREE);
+  show();
+  await screen.findByRole('treegrid');
+  expect(treeRows()).toEqual([
+    'prod (open)', 'ss-prod-lb', 'Blue (live)', 'Green (idle)', 'uat9', 'uat', 'Other DigitalOcean resources']);
+  await userEvent.click(cardToggle('uat9'));
+  expect(treeRows()).toEqual([
+    'uat9 (open)', 'Orange (live)', 'Purple (idle)', 'prod', 'uat', 'Other DigitalOcean resources']);
+});
+
+it('?env= picks the environment the tree opens first', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD_WITH_TREE);
+  show('/?env=uat');
+  await screen.findByRole('treegrid');
+  expect(treeRows()[0]).toBe('uat (open)');
+});
+
+it('the demo tree follows the demo cards', async () => {
+  show('/?demo=1&env=dev');
+  await screen.findByRole('treegrid');
+  expect(treeRows()[0]).toBe('Development (open)');
 });

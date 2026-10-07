@@ -66,11 +66,13 @@ export function Dot({ tone }: { tone: Tone }) {
 }
 
 const OK = new Set(['active', 'running', 'healthy', 'available']);
-const WARN = new Set(['provisioning', 'degraded']);
+const WARN = new Set(['provisioning', 'degraded', 'expiring']);
+const BAD = new Set(['not_found', 'expired']);
 
 export function statusTone(status: string): Tone {
   if (OK.has(status)) return 'ok';
   if (WARN.has(status)) return 'warn';
+  if (BAD.has(status)) return 'bad';
   return 'muted';
 }
 

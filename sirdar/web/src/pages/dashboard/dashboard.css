@@ -125,6 +125,7 @@
 .sd-dash .sd-status.is-ok { background: var(--sd-green-soft); color: var(--sd-green-text); }
 .sd-dash .sd-status.is-muted { background: var(--sd-gray-soft); color: var(--sd-gray-text); }
 .sd-dash .sd-status.is-warn { background: var(--sd-amber-soft); color: var(--sd-amber-text); }
+.sd-dash .sd-status.is-bad { background: var(--sd-red-soft); color: var(--sd-red-text); }
 .sd-dash .sd-dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--sd-gray-dot); }
 .sd-dash .sd-dot.is-ok { background: var(--sd-green); }
 .sd-dash .sd-dot.is-warn { background: var(--sd-amber); }
