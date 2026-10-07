@@ -15,7 +15,12 @@ import {
 } from '../../lib/api';
 import type { ReportDefinition } from '../../lib/api';
 import { MOVE_REPORT_SECTIONS } from '../../lib/reports';
+import {
+  TIMESHEET_STATUS_CARDS, TIMESHEET_STATUSES, TIMESHEET_VIEW_CARDS, TIMESHEET_VIEWS,
+  timesheetDefaults, type TimesheetFormat, type TimesheetStatus, type TimesheetView,
+} from '../../lib/timesheetReport';
 import { Switch } from '../Switch';
+import { ChoiceCard } from './ReportOptionsLayout';
 
 /** Files section kind chip — the raw attachment `kind` isn't UI copy. */
 const FILE_KIND_LABEL: Record<string, string> = {
@@ -44,6 +49,7 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
 }) {
   const isSurvey = definition.report_type === 'site_move_survey';
   const isScanHistory = definition.report_type === 'move_scan_history';
+  const isTimesheet = definition.report_type === 'timesheet';
   const [name, setName] = useState(definition.name);
   const [description, setDescription] = useState(definition.description);
   const [companyName, setCompanyName] = useState(String(definition.options.company_name ?? ''));
@@ -52,7 +58,7 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
   // never end up coerced into this boolean map (it would overwrite the
   // real company_name with `true`/`false` on save).
   const [boolOptions, setBoolOptions] = useState<Record<string, boolean>>(() => {
-    if (isScanHistory) return {};
+    if (isScanHistory || isTimesheet) return {};
     const keys = isSurvey ? SURVEY_SWITCHES.map((s) => s.key) : MOVE_REPORT_SECTIONS.map((s) => s.key);
     const out: Record<string, boolean> = {};
     for (const k of keys) out[k] = !!definition.options[k];
@@ -65,6 +71,12 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
     () => (definition.options.default_format === 'pdf' ? 'pdf' : 'xlsx'));
   const [statusColumns, setStatusColumns] = useState<'pipeline' | 'all'>(
     () => (definition.options.status_columns === 'all' ? 'all' : 'pipeline'));
+  // Timesheet's three defaults (`default_format` / `default_views` /
+  // `default_statuses`), read with the same fallbacks the Generate modal uses.
+  const [tsDefaults] = useState(() => timesheetDefaults(definition));
+  const [tsFormat, setTsFormat] = useState<TimesheetFormat>(tsDefaults.format);
+  const [tsViews, setTsViews] = useState<TimesheetView[]>(tsDefaults.views);
+  const [tsStatuses, setTsStatuses] = useState<TimesheetStatus[]>(tsDefaults.statuses);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -86,10 +98,20 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
 
   const save = async () => {
     if (!name.trim()) { setError('Enter a name.'); return; }
+    if (isTimesheet && (tsViews.length === 0 || tsStatuses.length === 0)) {
+      setError('Choose at least one view and one status.');
+      return;
+    }
     setSaving(true);
     setError('');
     try {
-      const options = isSurvey
+      const options = isTimesheet
+        ? {
+          default_format: tsFormat,
+          default_views: TIMESHEET_VIEWS.filter((v) => tsViews.includes(v)),
+          default_statuses: TIMESHEET_STATUSES.filter((s) => tsStatuses.includes(s)),
+        }
+        : isSurvey
         ? { company_name: companyName.trim(), ...boolOptions }
         : isScanHistory
         ? { default_format: defaultFormat, status_columns: statusColumns }
@@ -188,7 +210,38 @@ export default function EditDefinitionModal({ definition, onClose, onSaved }: {
             </>
           )}
 
-          {!isScanHistory && (
+          {isTimesheet && (
+            <>
+              <div className="modal-section">Default format</div>
+              <div className="rgm-choice-cards" role="radiogroup" aria-label="Default format">
+                <ChoiceCard title="Excel workbook" description="Day and Punch sheets, with decimal hours"
+                            selected={tsFormat === 'xlsx'} onSelect={() => setTsFormat('xlsx')} />
+                <ChoiceCard title="PDF document"
+                            description="Landscape, printable, with a document tracking barcode"
+                            selected={tsFormat === 'pdf'} onSelect={() => setTsFormat('pdf')} />
+              </div>
+              <div className="modal-section">Default views</div>
+              <div className="rgm-choice-cards ts-choice-grid" role="group" aria-label="Default views">
+                {TIMESHEET_VIEWS.map((v) => (
+                  <ChoiceCard key={v} variant="checkbox" title={TIMESHEET_VIEW_CARDS[v].title}
+                              description={TIMESHEET_VIEW_CARDS[v].description}
+                              selected={tsViews.includes(v)}
+                              onSelect={() => setTsViews((l) => l.includes(v) ? l.filter((x) => x !== v) : [...l, v])} />
+                ))}
+              </div>
+              <div className="modal-section">Default statuses</div>
+              <div className="rgm-choice-cards ts-choice-grid" role="group" aria-label="Default statuses">
+                {TIMESHEET_STATUSES.map((s) => (
+                  <ChoiceCard key={s} variant="checkbox" title={TIMESHEET_STATUS_CARDS[s].title}
+                              description={TIMESHEET_STATUS_CARDS[s].description}
+                              selected={tsStatuses.includes(s)}
+                              onSelect={() => setTsStatuses((l) => l.includes(s) ? l.filter((x) => x !== s) : [...l, s])} />
+                ))}
+              </div>
+            </>
+          )}
+
+          {!isScanHistory && !isTimesheet && (
             <>
               <div className="modal-section">{isSurvey ? 'Default options' : 'Default sections'}</div>
               <div className="mini-list report-sections">

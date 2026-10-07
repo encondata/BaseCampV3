@@ -165,6 +165,10 @@
   background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0;
 }
 
+.ts-quick { display: flex; flex-wrap: wrap; gap: 8px; }
+/* Timesheet report: the status / view checkbox cards sit two across. */
+.rgm-choice-cards.ts-choice-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
 /* ── ChoiceCard: a big selectable card, radio semantics ──────────── */
 .rgm-choice-cards { display: flex; flex-direction: column; gap: 10px; margin-bottom: 4px; }
 .rgm-choice-card {

@@ -50,6 +50,7 @@ const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c)
 
 const TYPE_LABELS: Record<string, string> = {
   move_report: 'Move Report', site_move_survey: 'Site & Move Survey',
+  timesheet: 'Timesheet',
 };
 const TOTAL_SECTIONS = 8;
 

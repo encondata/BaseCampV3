@@ -38,6 +38,11 @@ const SCAN_HISTORY_DEF: ReportDefinition = {
 const SCAN_HISTORY_PDF_DEF: ReportDefinition = {
   ...SCAN_HISTORY_DEF, options: { default_format: 'pdf', status_columns: 'all' },
 };
+const TIMESHEET_DEF: ReportDefinition = {
+  id: 'd9', name: 'Timesheet', description: '', report_type: 'timesheet', is_system: true,
+  updated_at: '2026-10-06T10:00:00Z',
+  options: { default_format: 'xlsx', default_views: ['day', 'punch'], default_statuses: ['approved', 'pending'] },
+};
 const file = (over: Partial<AttachmentOut> = {}): AttachmentOut => ({
   id: 'f1', entity_type: 'report_definition', entity_id: 'd2', kind: 'report_asset',
   storage_key: 'k', filename: 'Transportation Standards.docx', content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -182,6 +187,49 @@ it('Move Scan History patches default_format/status_columns from the segmented c
     name: 'Move Scan History', description: '',
     options: { default_format: 'pdf', status_columns: 'all' },
   }));
+});
+
+it('Timesheet shows its three defaults and no section switches, company or Files', async () => {
+  render(<EditDefinitionModal definition={{
+    ...TIMESHEET_DEF,
+    options: { default_format: 'pdf', default_views: ['punch'], default_statuses: ['rejected', 'open'] },
+  }} onClose={() => {}} onSaved={() => {}} />);
+  expect(screen.queryByLabelText('Company name')).toBeNull();
+  expect(screen.queryByText('Files')).toBeNull();
+  expect(screen.queryByText('Default sections')).toBeNull();
+  expect(screen.getByRole('radio', { name: /PDF document/ }).getAttribute('aria-checked')).toBe('true');
+  expect(screen.getByRole('radio', { name: /Excel workbook/ }).getAttribute('aria-checked')).toBe('false');
+  expect(screen.getByRole('checkbox', { name: /^Punch view/ }).getAttribute('aria-checked')).toBe('true');
+  expect(screen.getByRole('checkbox', { name: /^Day view/ }).getAttribute('aria-checked')).toBe('false');
+  expect(screen.getByRole('checkbox', { name: /^Rejected/ }).getAttribute('aria-checked')).toBe('true');
+  expect(screen.getByRole('checkbox', { name: /^On the clock/ }).getAttribute('aria-checked')).toBe('true');
+  expect(screen.getByRole('checkbox', { name: /^Approved/ }).getAttribute('aria-checked')).toBe('false');
+});
+
+it('Timesheet saves the edited defaults in canonical order', async () => {
+  const user = userEvent.setup();
+  api.updateReportDefinition.mockResolvedValue(TIMESHEET_DEF);
+  render(<EditDefinitionModal definition={TIMESHEET_DEF} onClose={() => {}} onSaved={() => {}} />);
+  await user.click(screen.getByRole('radio', { name: /PDF document/ }));
+  await user.click(screen.getByRole('checkbox', { name: /^Day view/ }));
+  await user.click(screen.getByRole('checkbox', { name: /^Approved/ }));
+  await user.click(screen.getByRole('checkbox', { name: /^Rejected/ }));
+  await user.click(screen.getByRole('checkbox', { name: /^Approved/ }));
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  await waitFor(() => expect(api.updateReportDefinition).toHaveBeenCalledWith('d9', {
+    name: 'Timesheet', description: '',
+    options: { default_format: 'pdf', default_views: ['punch'], default_statuses: ['approved', 'pending', 'rejected'] },
+  }));
+});
+
+it('Timesheet will not save with no view or no status chosen', async () => {
+  const user = userEvent.setup();
+  render(<EditDefinitionModal definition={TIMESHEET_DEF} onClose={() => {}} onSaved={() => {}} />);
+  await user.click(screen.getByRole('checkbox', { name: /^Day view/ }));
+  await user.click(screen.getByRole('checkbox', { name: /^Punch view/ }));
+  await user.click(screen.getByRole('button', { name: 'Save' }));
+  expect(await screen.findByText('Choose at least one view and one status.')).toBeTruthy();
+  expect(api.updateReportDefinition).not.toHaveBeenCalled();
 });
 
 it('deletes a file', async () => {

@@ -5262,6 +5262,30 @@ export async function getScanHistoryPreview(initiativeId: string): Promise<ScanH
   return resp.json();
 }
 
+/** GET /reports/timesheet/preview — the Timesheet report's KPI tiles from
+ *  the same gather a run uses. `too_many` replaces the numbers (all zero)
+ *  when more entries match than the report can carry. 403
+ *  `time_view_required` without time:view; 422 `bad_options` on bad input. */
+export interface TimesheetPreview {
+  entries: number; people: number; days: number;
+  approved_minutes: number; pending_minutes: number; flagged_entries: number;
+  too_many: boolean;
+}
+
+export async function getTimesheetPreview(params: {
+  from: string; to: string; person_id?: string; initiative_id?: string;
+  site_id?: string; statuses?: string[];
+}): Promise<TimesheetPreview> {
+  const qs = new URLSearchParams({ from: params.from, to: params.to });
+  if (params.person_id) qs.set('person_id', params.person_id);
+  if (params.initiative_id) qs.set('initiative_id', params.initiative_id);
+  if (params.site_id) qs.set('site_id', params.site_id);
+  if (params.statuses) qs.set('statuses', params.statuses.join(','));
+  const resp = await apiFetch(`/reports/timesheet/preview?${qs.toString()}`);
+  if (!resp.ok) throw await errorFrom(resp);
+  return resp.json();
+}
+
 /* ── in-app inbox ─────────────────────────────────────────────────── */
 
 export interface InboxItem {

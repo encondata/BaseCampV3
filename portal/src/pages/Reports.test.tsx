@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -62,6 +62,19 @@ it('lists definitions with section counts and a System badge', async () => {
   expect(screen.getAllByText('8 of 8')[0]).toBeTruthy();
   expect(screen.getByText('2 of 8')).toBeTruthy();
   expect(screen.getAllByText('System')).toHaveLength(1);
+});
+
+it('labels a Timesheet definition by its type and shows a dash for sections', async () => {
+  api.listReportDefinitions.mockResolvedValue([...DEFS, {
+    id: 'd9', name: 'Hours by person', description: '', report_type: 'timesheet',
+    options: { default_format: 'xlsx', default_views: ['day', 'punch'], default_statuses: ['approved', 'pending'] },
+    is_system: false, updated_at: '2026-10-06T10:00:00Z',
+  }]);
+  renderPage();
+  const row = (await screen.findByText('Hours by person', { selector: '.cell-primary' }))
+    .closest('.dir-row') as HTMLElement;
+  expect(within(row).getByText('Timesheet')).toBeTruthy();
+  expect(within(row).queryByText('timesheet')).toBeNull();
 });
 
 it('definitions: column floors, shared template + minimum, sideways-scroll card', async () => {

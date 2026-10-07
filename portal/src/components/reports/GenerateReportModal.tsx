@@ -5,7 +5,8 @@
  * `MoveReportOptions`/`SiteMoveSurveyOptions`/`MoveScanHistoryOptions` by
  * report_type — all three share `ReportOptionsLayout`'s preview card and
  * option groups), then progress (poll the run every 2 s) with "Notify me
- * when it's ready" / Close, ending in Download or Try again.
+ * when it's ready" / Close, ending in Download or Try again. A Timesheet
+ * skips the pick step (its job is an optional filter) and opens on options.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
@@ -22,6 +23,7 @@ import MoveReportOptions from './MoveReportOptions';
 import MoveScanHistoryOptions from './MoveScanHistoryOptions';
 import { InitiativeSummary, PreviewCard, summaryFromInitiative } from './ReportOptionsLayout';
 import SiteMoveSurveyOptions from './SiteMoveSurveyOptions';
+import TimesheetOptions, { type TimesheetInitial } from './TimesheetOptions';
 import '../../styles/directory.css';  /* .dir-search, .org-select (picker tools) */
 
 export const MODAL_POLL_MS = 2000;
@@ -34,16 +36,21 @@ interface RunPayload {
   notify: boolean;
 }
 
-export default function GenerateReportModal({ definition, onClose, onToast }: {
+export default function GenerateReportModal({ definition, onClose, onToast, timesheetInitial }: {
   definition: ReportDefinition;
   onClose: () => void;
   onToast?: (message: string) => void;
+  /** Timesheet only: prefilled filters (the Timesheet screen's own). */
+  timesheetInitial?: Partial<TimesheetInitial>;
 }) {
   const { status: sys } = useSystemStatus();
   const isSurvey = definition.report_type === 'site_move_survey';
   const isScanHistory = definition.report_type === 'move_scan_history';
   const isContainerLabels = definition.report_type === 'container_labels';
-  const [step, setStep] = useState<Step>('pick');
+  // A Timesheet has no initiative pick step — its job is an optional filter
+  // on the options step — so it opens straight on the options.
+  const isTimesheet = definition.report_type === 'timesheet';
+  const [step, setStep] = useState<Step>(isTimesheet ? 'sections' : 'pick');
   const [initiatives, setInitiatives] = useState<InitiativeItem[] | null>(null);
   const [search, setSearch] = useState('');
   const [type, setType] = useState('');
@@ -62,8 +69,10 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
 
   useEffect(() => {
     closedRef.current = false;
+    if (isTimesheet) return () => { closedRef.current = true; };
     listInitiatives().then(setInitiatives).catch(() => setError("Couldn't load initiatives."));
     return () => { closedRef.current = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -163,18 +172,22 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
           </button>
         </div>
         <div className="rgm-steps">
-          <span className={`rgm-step ${step === 'pick' ? 'on' : ''} ${step !== 'pick' ? 'done' : ''}`}>
-            <span className="rgm-step-num">1</span>
-            <span className="rgm-step-label">Initiative</span>
-          </span>
-          <span className="rgm-step-sep" />
+          {!isTimesheet && (
+            <>
+              <span className={`rgm-step ${step === 'pick' ? 'on' : ''} ${step !== 'pick' ? 'done' : ''}`}>
+                <span className="rgm-step-num">1</span>
+                <span className="rgm-step-label">Initiative</span>
+              </span>
+              <span className="rgm-step-sep" />
+            </>
+          )}
           <span className={`rgm-step ${step === 'sections' ? 'on' : ''} ${step === 'progress' ? 'done' : ''}`}>
-            <span className="rgm-step-num">2</span>
+            <span className="rgm-step-num">{isTimesheet ? 1 : 2}</span>
             <span className="rgm-step-label">Options</span>
           </span>
           <span className="rgm-step-sep" />
           <span className={`rgm-step ${step === 'progress' ? 'on' : ''}`}>
-            <span className="rgm-step-num">3</span>
+            <span className="rgm-step-num">{isTimesheet ? 2 : 3}</span>
             <span className="rgm-step-label">Progress</span>
           </span>
         </div>
@@ -266,6 +279,14 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
           />
         )}
 
+        {step === 'sections' && isTimesheet && (
+          <TimesheetOptions
+            definition={definition}
+            initial={timesheetInitial}
+            onGenerate={(p) => void start(p)}
+          />
+        )}
+
         {step === 'sections' && isContainerLabels && (
           <ContainerLabelsOptions
             definition={definition}
@@ -275,7 +296,7 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
           />
         )}
 
-        {step === 'sections' && !isSurvey && !isScanHistory && !isContainerLabels && (
+        {step === 'sections' && !isSurvey && !isScanHistory && !isContainerLabels && !isTimesheet && (
           <MoveReportOptions
             definition={definition}
             initiative={picked}
@@ -300,7 +321,7 @@ export default function GenerateReportModal({ definition, onClose, onToast }: {
               {run?.status === 'completed' && (
                 <>
                   <div><b>{run.filename}</b></div>
-                  {run.initiative_id && (
+                  {run.initiative_id && !isTimesheet && (
                     <div className="cell-sub">Also saved to the initiative&apos;s Files</div>
                   )}
                 </>
