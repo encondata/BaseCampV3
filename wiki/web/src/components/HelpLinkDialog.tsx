@@ -3,12 +3,12 @@
  *  file that explains it, found with a search ComboBox. Opened from the
  *  Help links page, prefilled with a context (the portal's "Link a guide")
  *  or a guide (a page's "Use as help for…"). */
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
 import ComboBox, { type ComboOption } from '@portal/components/ComboBox';
 
-import type { HelpLinkOut, NodeKind, SearchHit } from '../lib/types';
-import { createHelpLink, errorMessage, search, updateHelpLink } from '../lib/wikiApi';
+import type { HelpLinkOut, NodeKind, NodeOut, SearchHit } from '../lib/types';
+import { createHelpLink, errorMessage, listRecent, search, updateHelpLink } from '../lib/wikiApi';
 
 const SEARCH_DEBOUNCE_MS = 150;
 
@@ -27,12 +27,36 @@ const fromHit = (hit: SearchHit): GuideRef => ({
   id: hit.node.id, title: hit.node.title, kind: hit.node.kind, space_name: hit.node.space_name,
 });
 
-/** The guide ComboBox: server search over pages and files, debounced. */
+const fromNode = (node: NodeOut): GuideRef => ({ id: node.id, title: node.title, kind: node.kind });
+
+/** The guide ComboBox: server search over pages and files, debounced; with
+ *  nothing typed it lists the most recently updated pages and files you can see
+ *  (loaded once, the first time the list opens). */
 function GuidePicker({ value, onChange, disabled }: {
   value: GuideRef | null; onChange: (g: GuideRef | null) => void; disabled?: boolean;
 }) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<GuideRef[]>([]);
+  const [recent, setRecent] = useState<GuideRef[]>([]);
+  const recentAsked = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
+
+  const loadRecent = () => {
+    if (recentAsked.current) return;
+    recentAsked.current = true;
+    listRecent({ limit: 10 })
+      .then((nodes) => {
+        if (alive.current) setRecent(nodes.filter((n) => n.kind !== 'folder').map(fromNode));
+      })
+      .catch(() => { /* no recent list: typing still searches */ });
+  };
+
+  // what the list shows: search hits once you type, the recent guides before
+  const shown = query.trim() ? results : recent;
 
   useEffect(() => {
     const q = query.trim();
@@ -49,11 +73,11 @@ function GuidePicker({ value, onChange, disabled }: {
   }, [query]);
 
   const options = useMemo(() => {
-    const list = results.map(guideOption);
+    const list = shown.map(guideOption);
     // the pick keeps its label after the results move on
     if (value && !list.some((o) => o.value === value.id)) list.unshift(guideOption(value));
     return list;
-  }, [results, value]);
+  }, [shown, value]);
 
   return (
     <ComboBox
@@ -64,8 +88,9 @@ function GuidePicker({ value, onChange, disabled }: {
       placeholder="Search pages and files…"
       disabled={disabled}
       portal
+      onOpen={loadRecent}
       onSearch={setQuery}
-      onChange={(id) => onChange(results.find((g) => g.id === id) ?? (value?.id === id ? value : null))}
+      onChange={(id) => onChange(shown.find((g) => g.id === id) ?? (value?.id === id ? value : null))}
     />
   );
 }

@@ -11,6 +11,7 @@ vi.mock('../lib/wikiApi', async (importOriginal) => ({
   getMe: vi.fn(),
   getNode: vi.fn(),
   search: vi.fn(),
+  listRecent: vi.fn(),
   listHelpLinks: vi.fn(),
   createHelpLink: vi.fn(),
   updateHelpLink: vi.fn(),
@@ -22,9 +23,9 @@ import { ApiError } from '@portal/lib/api';
 import { clearWikiMe } from '../lib/useWikiMe';
 import type { HelpLinkOut } from '../lib/types';
 import {
-  createHelpLink, deleteHelpLink, getMe, getNode, listHelpLinks, search, updateHelpLink,
+  createHelpLink, deleteHelpLink, getMe, getNode, listHelpLinks, listRecent, search, updateHelpLink,
 } from '../lib/wikiApi';
-import { makeDetail, makeMe, makeSearchHit } from '../testing/fixtures';
+import { makeDetail, makeMe, makeNode, makeSearchHit } from '../testing/fixtures';
 import HelpLinksPage from './HelpLinksPage';
 
 function link(over: Partial<HelpLinkOut> = {}): HelpLinkOut {
@@ -61,6 +62,7 @@ beforeEach(() => {
   vi.mocked(deleteHelpLink).mockReset();
   vi.mocked(getNode).mockReset();
   vi.mocked(search).mockReset().mockResolvedValue([]);
+  vi.mocked(listRecent).mockReset().mockResolvedValue([]);
 });
 afterEach(cleanup);
 
@@ -179,5 +181,66 @@ describe('HelpLinksPage', () => {
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete link' }));
     await waitFor(() => expect(deleteHelpLink).toHaveBeenCalledWith('h1'));
     expect(await screen.findByText('No help links yet')).toBeTruthy();
+  });
+
+  describe('the Guide picker before you type', () => {
+    const recent = () => [
+      makeNode('r1', { kind: 'page', title: 'Recent Page' }),
+      makeNode('r2', { kind: 'file', title: 'Recent File.pdf' }),
+      makeNode('r3', { kind: 'folder', title: 'Recent Folder' }),
+    ];
+
+    async function openAdd() {
+      renderAt();
+      fireEvent.click(await screen.findByRole('button', { name: 'Add help link' }));
+      const box = screen.getByRole('combobox', { name: 'Guide' });
+      fireEvent.focus(box);
+      return box as HTMLInputElement;
+    }
+
+    it('lists recent pages and files, no folders and no “No matches.”', async () => {
+      vi.mocked(listRecent).mockResolvedValue(recent());
+      await openAdd();
+      expect(await screen.findByRole('button', { name: /^Recent Page/ })).toBeTruthy();
+      expect(screen.getByRole('button', { name: /^Recent File\.pdf/ }).textContent).toContain('File');
+      expect(screen.getByRole('button', { name: /^Recent Page/ }).textContent).toContain('Page');
+      expect(screen.queryByRole('button', { name: /^Recent Folder/ })).toBeNull();
+      expect(screen.queryByText(/No matches/)).toBeNull();
+      expect(listRecent).toHaveBeenCalledWith({ limit: 10 });
+    });
+
+    it('picking a recent guide fills the field and saves its node id', async () => {
+      vi.mocked(listRecent).mockResolvedValue(recent());
+      vi.mocked(createHelpLink).mockResolvedValue(link({ id: 'h8', context: 'portal:/x' }));
+      const box = await openAdd();
+      fireEvent.mouseDown(await screen.findByRole('button', { name: /^Recent File\.pdf/ }));
+      await waitFor(() => expect(box.value).toBe('Recent File.pdf'));
+      fireEvent.change(screen.getByLabelText('Context'), { target: { value: 'portal:/x' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Add link' }));
+      await waitFor(() => expect(createHelpLink).toHaveBeenCalledWith({ context: 'portal:/x', node_id: 'r2' }));
+    });
+
+    it('typing searches and replaces the list; clearing shows recent again; recent loads once', async () => {
+      vi.mocked(listRecent).mockResolvedValue(recent());
+      vi.mocked(search).mockResolvedValue([
+        makeSearchHit({ node: { id: 'n9', kind: 'page', title: 'Enroll Guide', space_key: 'ops', space_name: 'Operations' } }),
+      ]);
+      const box = await openAdd();
+      await screen.findByRole('button', { name: /^Recent Page/ });
+      fireEvent.change(box, { target: { value: 'enroll' } });
+      expect(await screen.findByRole('button', { name: /^Enroll Guide/ })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /^Recent Page/ })).toBeNull();
+      fireEvent.change(box, { target: { value: '' } });
+      expect(await screen.findByRole('button', { name: /^Recent Page/ })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /^Enroll Guide/ })).toBeNull();
+      expect(listRecent).toHaveBeenCalledTimes(1);
+    });
+
+    it('a failed recent load leaves the list empty without crashing', async () => {
+      vi.mocked(listRecent).mockRejectedValue(new Error('boom'));
+      await openAdd();
+      expect(await screen.findByText(/No matches/)).toBeTruthy();
+      expect(screen.getByRole('dialog', { name: 'Add help link' })).toBeTruthy();
+    });
   });
 });
