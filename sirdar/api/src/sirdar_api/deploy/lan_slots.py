@@ -74,3 +74,11 @@ def public(env: Environment, rows: dict[str, VmSlot], machines: list) -> list[di
              "sha": r.sha, "image_tag": r.image_tag, "active": s == env.active_slot,
              "last_check_ok": r.last_check_ok, "last_check_at": r.last_check_at}
             for s in env.slots if (r := rows.get(s)) is not None]
+
+
+async def slot_ip(env_id, slot: str) -> str | None:
+    """The slot VM's recorded address (own session)."""
+    async with get_sessionmaker()() as s:
+        env = await s.get(Environment, env_id)
+        row = await vms.get_for(s, env, slot) if env is not None else None
+        return row.ip if row is not None else None
