@@ -1,6 +1,6 @@
 /** Pure helpers for the System Config ENV tab. */
 
-import type { EnvEntry } from './api';
+import type { EnvEntry, EnvMissingEntry } from './api';
 
 export function filterEntries(
   entries: EnvEntry[], q: string,
@@ -48,4 +48,36 @@ export function describeEntry(
   return e.set
     ? { placeholder: '••••••••  (leave blank to keep)', chip: 'set' }
     : { placeholder: 'enter a value', chip: 'not set' };
+}
+
+export function filterMissing(
+  missing: EnvMissingEntry[], q: string,
+): EnvMissingEntry[] {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return missing;
+  return missing.filter((e) => e.key.toLowerCase().includes(needle)
+    || e.description.toLowerCase().includes(needle));
+}
+
+/** Edits to settings that aren't in .env yet. A typed non-secret goes
+ *  through even when blank (the server adds `KEY=`); a secret only when
+ *  something was typed, matching "an empty secret is skipped". */
+export function changedMissing(
+  missing: EnvMissingEntry[], edits: Record<string, string>,
+): Record<string, string> {
+  const byKey = new Map(missing.map((e) => [e.key, e]));
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(edits)) {
+    const entry = byKey.get(key);
+    if (!entry) continue;
+    if (entry.secret && value === '') continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+export function describeMissing(
+  e: EnvMissingEntry,
+): { placeholder: string; chip: string } {
+  return { placeholder: e.secret ? 'secret' : (e.example ?? ''), chip: 'Not in .env' };
 }

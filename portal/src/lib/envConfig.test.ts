@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import type { EnvEntry } from './api';
-import { changedDescriptions, changedValues, describeEntry, filterEntries } from './envConfig';
+import type { EnvEntry, EnvMissingEntry } from './api';
+import {
+  changedDescriptions, changedMissing, changedValues, describeEntry, filterEntries,
+  filterMissing, describeMissing,
+} from './envConfig';
 
 const plain = (key: string, value: string, description = '', section = ''): EnvEntry =>
   ({ key, secret: false, value, description, section });
@@ -68,5 +71,32 @@ describe('describeEntry', () => {
     expect(describeEntry(secret('X')).chip).toBe('set');
     expect(describeEntry(secret('X', false)).chip).toBe('not set');
     expect(describeEntry(plain('X', 'v')).chip).toBeNull();
+  });
+});
+
+describe('missing entries', () => {
+  const missing: EnvMissingEntry[] = [
+    { key: 'SS_NEW', secret: false, section: 'Misc', description: 'A new knob', example: '5' },
+    { key: 'SS_NEW_SECRET', secret: true, section: 'Misc', description: 'A new secret' },
+  ];
+
+  it('changedMissing sends a typed non-secret, even when blank, but never an untouched or blank secret', () => {
+    expect(changedMissing(missing, {})).toEqual({});
+    expect(changedMissing(missing, { SS_NEW: '' })).toEqual({ SS_NEW: '' });
+    expect(changedMissing(missing, { SS_NEW: '7' })).toEqual({ SS_NEW: '7' });
+    expect(changedMissing(missing, { SS_NEW_SECRET: '' })).toEqual({});
+    expect(changedMissing(missing, { SS_NEW_SECRET: 's' })).toEqual({ SS_NEW_SECRET: 's' });
+    expect(changedMissing(missing, { OTHER: 'x' })).toEqual({});
+  });
+
+  it('filterMissing matches key or description', () => {
+    expect(filterMissing(missing, '')).toEqual(missing);
+    expect(filterMissing(missing, 'knob').map((m) => m.key)).toEqual(['SS_NEW']);
+    expect(filterMissing(missing, 'new_secret').map((m) => m.key)).toEqual(['SS_NEW_SECRET']);
+  });
+
+  it('describeMissing: placeholder is the example or "secret", chip is "Not in .env"', () => {
+    expect(describeMissing(missing[0])).toEqual({ placeholder: '5', chip: 'Not in .env' });
+    expect(describeMissing(missing[1])).toEqual({ placeholder: 'secret', chip: 'Not in .env' });
   });
 });
