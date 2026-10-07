@@ -55,6 +55,8 @@ class FakeNpm:
         self.cert_errors = 0           # the next N certificate calls fail some other way
         self.host_errors = 0           # the next N proxy-host calls answer a plain 500
         self.last_error: str | None = None
+        self.put_errors: set[int] = set()   # PUTs to these host ids answer a plain 500
+        self.put_replaces = False      # a PUT resets every field its body leaves out
         self._ids = itertools.count(1)
 
     def add_host(self, domain: str, forward_host: str, forward_port: int, **over) -> int:
@@ -70,6 +72,16 @@ class FakeNpm:
                      "nginx_err": None},
             **over}
         return hid
+
+    @staticmethod
+    def _blank_host() -> dict:
+        """What a field a replacing PUT leaves out goes back to."""
+        return {"domain_names": [], "forward_scheme": "http", "forward_host": "",
+                "forward_port": 0, "certificate_id": 0, "ssl_forced": False,
+                "hsts_enabled": False, "hsts_subdomains": False, "http2_support": False,
+                "block_exploits": False, "caching_enabled": False,
+                "allow_websocket_upgrade": False, "access_list_id": 0, "advanced_config": "",
+                "meta": {}, "locations": []}
 
     def add_cert(self, domains: list[str], *, days: float = 60,
                  provider: str = "letsencrypt") -> int:
@@ -178,7 +190,14 @@ class FakeNpm:
             extra = sorted(set(body) - set(npm.HOST_FIELDS))
             if extra:
                 return self._error(400, f"data should NOT have additional properties ({extra[0]})")
-            self.hosts[hid].update(body)
+            if hid in self.put_errors:
+                return self._error(500, "Internal Error")
+            if self.put_replaces:
+                old = self.hosts[hid]
+                blank = self._blank_host()
+                self.hosts[hid] = {**old, **{k: blank[k] for k in npm.HOST_FIELDS}, **body}
+            else:
+                self.hosts[hid].update(body)
             return httpx.Response(200, json=self.hosts[hid])
         if path == "/api/nginx/certificates":
             if method == "GET":
