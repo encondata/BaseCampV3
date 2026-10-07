@@ -459,3 +459,146 @@ async def test_a_retry_from_step_7_alone(db, lan, fake_runner, fake_publisher,
 
 
 FIRST_SKIPPED = ["provision", "preflight", "bootstrap", "fetch", "render", "build", "dump"]
+
+
+# ---- an unresolved switch --------------------------------------------------------
+
+import asyncio  # noqa: E402
+import dataclasses  # noqa: E402
+import inspect  # noqa: E402
+
+from sirdar_api.deploy import lan_slots, publish, steps as steps_mod  # noqa: E402
+
+PUT_BACK_FAILED = ("2 of 5 public URLs didn't answer. Sirdar couldn't put 2 of 5 proxy hosts "
+                   "back: check them in Nginx Proxy Manager.")
+
+
+async def _interrupted_switch(db, env, fake_publisher, **kw) -> object:
+    """Launch a deployment, stop Sirdar while 14 Switch traffic runs."""
+    gate = asyncio.Event()
+    fake_publisher.gates["lan_switch"] = gate
+    dep = await pipeline.create_deployment(db, env, git_ref="main", actor_id=None, vm=True,
+                                           bluegreen=True, **kw)
+    await db.commit()
+    dep_id = dep.id
+    before = len(fake_publisher.calls)
+    pipeline.launch(dep_id)
+    for _ in range(200):
+        if "lan_switch" in fake_publisher.calls[before:]:
+            break
+        await asyncio.sleep(0.05)
+    assert "lan_switch" in fake_publisher.calls[before:]
+    await pipeline.shutdown()
+    del fake_publisher.gates["lan_switch"]
+    return dep_id
+
+
+async def _env(db, env_id):
+    return await db.get(Environment, env_id, populate_existing=True)
+
+
+async def _refused(db, env, **kw):
+    with pytest.raises(DoEnvError) as e:
+        await pipeline.create_deployment(db, env, git_ref="main", actor_id=None, vm=True,
+                                         bluegreen=True, **kw)
+    await db.rollback()
+    return e.value
+
+
+async def test_an_interrupted_switch_blocks_updates_until_retried(db, lan, fake_runner,
+                                                                  fake_publisher):
+    env_id = lan.id
+    await _run(db, lan, go_live=True)                                 # orange live
+    await _run(db, await _env(db, env_id), slot="purple", sha=NEWER)  # purple idle
+    stuck = await _interrupted_switch(db, await _env(db, env_id), fake_publisher,
+                                      mode="activate", slot="purple", sha=NEWER)
+    dep, steps, env = await _load(stuck)
+    assert dep.status == "interrupted"
+    assert next(s.status for s in steps if s.key == "lan_switch") == "interrupted"
+    assert env.active_slot == "orange"
+    for slot in ("purple", "orange"):
+        e = await _refused(db, await _env(db, env_id), mode="update", sha=SHA, slot=slot)
+        assert (e.code, e.extra) == ("switch_unresolved", {"slot": "purple"})
+    # Activate of the live slot or of the stuck one puts NPM somewhere known
+    for slot in ("orange", "purple"):
+        dep = await pipeline.create_deployment(db, await _env(db, env_id), mode="activate",
+                                               git_ref="main", sha=NEWER, actor_id=None,
+                                               vm=True, bluegreen=True, slot=slot)
+        await db.rollback()
+    # the retry (from 14) succeeds: the guard lifts
+    retry = await _run(db, await _env(db, env_id), mode="activate", slot="purple", sha=NEWER,
+                       start_step=14, retry_of=stuck)
+    dep, _, env = await _load(retry)
+    assert (dep.status, env.active_slot) == ("succeeded", "purple")
+    ok = await _run(db, await _env(db, env_id), slot="orange", sha=SHA)
+    assert (await _load(ok))[0].status == "succeeded"
+
+
+async def test_an_interrupted_auto_activate_update_retries_from_14(db, lan, fake_runner,
+                                                                    fake_publisher):
+    env_id = lan.id
+    await _run(db, lan, go_live=True)
+    stuck = await _interrupted_switch(db, await _env(db, env_id), fake_publisher,
+                                      mode="update", slot="purple", sha=NEWER, go_live=True)
+    e = await _refused(db, await _env(db, env_id), mode="update", sha=NEWER, slot="purple",
+                       go_live=True)
+    assert e.code == "switch_unresolved"
+    # a retry of that Update from earlier than 14 would rebuild the slot NPM may serve
+    e = await _refused(db, await _env(db, env_id), mode="update", sha=NEWER, slot="purple",
+                       go_live=True, start_step=10, retry_of=stuck)
+    assert e.code == "switch_unresolved"
+    retry = await _run(db, await _env(db, env_id), slot="purple", sha=NEWER, go_live=True,
+                       start_step=14, retry_of=stuck)
+    dep, _, env = await _load(retry)
+    assert (dep.status, env.active_slot, env.current_sha) == ("succeeded", "purple", NEWER)
+
+
+async def test_a_switch_that_couldnt_put_npm_back_blocks_updates(db, lan, fake_runner,
+                                                                  fake_publisher):
+    env_id = lan.id
+    await _run(db, lan, go_live=True)
+    await _run(db, await _env(db, env_id), slot="purple", sha=NEWER)
+    fake_publisher.fail["lan_switch"] = PUT_BACK_FAILED
+    await _run(db, await _env(db, env_id), mode="activate", slot="purple", sha=NEWER)
+    e = await _refused(db, await _env(db, env_id), mode="update", sha=SHA, slot="purple")
+    assert e.code == "switch_unresolved"
+    # a later switch that succeeds (to the live slot) lifts it
+    del fake_publisher.fail["lan_switch"]
+    await _run(db, await _env(db, env_id), mode="activate", slot="orange", sha=SHA)
+    ok = await _run(db, await _env(db, env_id), slot="purple", sha=NEWER)
+    assert (await _load(ok))[0].status == "succeeded"
+
+
+async def test_a_switch_that_put_npm_back_blocks_nothing(db, lan, fake_runner,
+                                                         fake_publisher):
+    env_id = lan.id
+    await _run(db, lan, go_live=True)
+    await _run(db, await _env(db, env_id), slot="purple", sha=NEWER)
+    fake_publisher.fail["lan_switch"] = ("2 of 5 public URLs didn't answer. Traffic stays "
+                                         "where it was.")
+    await _run(db, await _env(db, env_id), mode="activate", slot="purple", sha=NEWER)
+    del fake_publisher.fail["lan_switch"]
+    ok = await _run(db, await _env(db, env_id), slot="purple", sha=NEWER)
+    assert (await _load(ok))[0].status == "succeeded"
+
+
+async def test_a_switch_that_timed_out_blocks_updates(db, lan, fake_runner, fake_publisher,
+                                                      monkeypatch):
+    env_id = lan.id
+    await _run(db, lan, go_live=True)
+    await _run(db, await _env(db, env_id), slot="purple", sha=NEWER)
+    monkeypatch.setitem(steps_mod.STEPS_BY_KEY, "lan_switch", dataclasses.replace(
+        steps_mod.STEPS_BY_KEY["lan_switch"], timeout=0.2))
+    fake_publisher.gates["lan_switch"] = asyncio.Event()
+    stuck = await _run(db, await _env(db, env_id), mode="activate", slot="purple", sha=NEWER)
+    dep, _, _ = await _load(stuck)
+    assert dep.status == "failed"
+    assert dep.error.startswith("Step 14 (Switch traffic) timed out after")
+    del fake_publisher.gates["lan_switch"]
+    e = await _refused(db, await _env(db, env_id), mode="update", sha=SHA, slot="purple")
+    assert e.code == "switch_unresolved"
+
+
+def test_the_put_back_marker_is_publish_s_own_copy():
+    source = inspect.getsource(publish._roll_back)
+    assert source.count(lan_slots.PUT_BACK_FAILED) == 3

@@ -13,7 +13,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.db.engine import get_sessionmaker
-from sirdar_api.db.models import Environment, VmSlot
+from sirdar_api.db.models import Deployment, DeploymentStep, Environment, VmSlot
 from sirdar_api.deploy import do_envs, envfile, targets, vms
 
 SLOTS = vms.APP_SLOTS
@@ -127,3 +127,34 @@ async def data_vars(db: AsyncSession, env: Environment, ports: dict[str, int]) -
     apps = app_ips(await vms.machines(db, env))
     return {"db_clients": apps, "spaces_clients": [*apps, env.proxy_ip], "db_port": DB_PORT,
             "spaces_port": ports["spaces"], "mailpit_port": ports["mailpit"]}
+
+
+# publish._roll_back's copy when a proxy host couldn't be put back (a test
+# pins it to publish's own text).
+PUT_BACK_FAILED = "Sirdar couldn't put"
+_SWITCH_ENDED = ("succeeded", "failed", "interrupted", "cancelled")
+
+
+async def unresolved_switch(db: AsyncSession, env_id) -> str | None:
+    """The slot Nginx Proxy Manager may still point at when the environment's
+    latest Switch traffic didn't end cleanly, else None. Unclean: Sirdar
+    stopped or was canceled during it (the put-back may not have finished),
+    it timed out (the same), or it failed and couldn't put every proxy host
+    back. A later Switch traffic that succeeds resolves it."""
+    row = (await db.execute(
+        select(Deployment.slot, Deployment.error, DeploymentStep.status, DeploymentStep.log,
+               DeploymentStep.number, DeploymentStep.name)
+        .join(DeploymentStep, DeploymentStep.deployment_id == Deployment.id)
+        .where(Deployment.environment_id == env_id, DeploymentStep.key == "lan_switch",
+               DeploymentStep.status.in_(_SWITCH_ENDED))
+        .order_by(Deployment.created_at.desc(), DeploymentStep.finished_at.desc().nulls_last())
+        .limit(1))).first()
+    if row is None:
+        return None
+    slot, error, status, text, number, name = row
+    if status in ("interrupted", "cancelled"):
+        return slot
+    if status == "failed" and (PUT_BACK_FAILED in (text or "")
+                               or (error or "").startswith(f"Step {number} ({name}) timed out")):
+        return slot
+    return None

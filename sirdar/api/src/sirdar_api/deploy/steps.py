@@ -94,7 +94,8 @@ STEPS: tuple[StepDef, ...] = (
     StepDef(13, "slot_smoke", "Smoke test (slot)", "slot_smoke.yml", 10 * 60),
     StepDef(14, "smoke", "Smoke test", "", 10 * 60, "python"),
     StepDef(14, "go_live", "Switch traffic", "", 15 * 60, "vm"),
-    StepDef(14, "lan_switch", "Switch traffic", "", 15 * 60, "python"),
+    # the first switch creates the proxy hosts and their certificates (as 13)
+    StepDef(14, "lan_switch", "Switch traffic", "", 45 * 60, "python"),
     StepDef(15, "teardown", "Remove environment", "teardown.yml", 30 * 60),
     StepDef(15, "destroy", "Destroy VM", "", 30 * 60, "vm"),
     StepDef(16, "unproxy", "Remove proxy hosts", "", 15 * 60, "python"),

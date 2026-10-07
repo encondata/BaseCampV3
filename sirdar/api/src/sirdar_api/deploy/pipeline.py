@@ -318,6 +318,8 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
             raise do_envs.DoEnvError("slot_required")
         if slot is not None and slot not in lan_slots.SLOTS:
             raise do_envs.DoEnvError("slot_invalid", slot=slot)
+        await _check_switch(db, env, mode=mode, slot=slot, start_step=start_step,
+                            retry_of=retry_of)
     go_live = go_live or mode == "activate"
     if cloud or bluegreen:
         await _check_slots(db, env, mode=mode, slot=slot, snapshot_id=snapshot_id,
@@ -385,6 +387,26 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
         env.status, env.updated_at = "deploying", _now()
     await db.flush()
     return dep
+
+
+async def _check_switch(db: AsyncSession, env: Environment, *, mode: str, slot: str | None,
+                        start_step: int | None, retry_of: uuid.UUID | None) -> None:
+    """LAN Blue/Green: while the latest Switch traffic didn't end cleanly,
+    NPM may point at its slot (lan_slots.unresolved_switch), so nothing may
+    rebuild a slot (DoEnvError switch_unresolved). Allowed: an Activate of
+    that slot or of the live one, and a retry of an Update from 14 Switch
+    traffic to that slot: each ends with NPM on a known slot."""
+    if mode not in ("update", "activate"):
+        return
+    stuck = await lan_slots.unresolved_switch(db, env.id)
+    if stuck is None:
+        return
+    if mode == "activate" and slot in (stuck, env.active_slot):
+        return
+    switch = STEPS_BY_KEY["lan_switch"].number
+    if mode == "update" and retry_of is not None and start_step == switch and slot == stuck:
+        return
+    raise do_envs.DoEnvError("switch_unresolved", slot=stuck)
 
 
 async def _check_slots(db: AsyncSession, env: Environment, *, mode: str, slot: str | None,

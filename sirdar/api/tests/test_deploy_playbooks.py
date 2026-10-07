@@ -1360,13 +1360,19 @@ def test_bluegreen_vm_steps_get_an_hour():
 
 
 RECREATED_LINE = "recreated its database or storage"
+STARTED_LINE = "The data VM started its database and storage."
 UP_TO_DATE_LINE = "already up to date"
+LINES = (RECREATED_LINE, STARTED_LINE, UP_TO_DATE_LINE)
 
 
 @pytest.mark.parametrize("compose_says, expected", [
     (" Container e2e-db-postgres-1  Recreate\n Container e2e-db-postgres-1  Recreated",
      RECREATED_LINE),
     (" Container e2e-db-postgres-1  Running", UP_TO_DATE_LINE),
+    # the first deploy: compose creates them, nothing ran before
+    (" Container e2e-db-postgres-1  Creating\n Container e2e-db-postgres-1  Created\n"
+     " Container e2e-db-postgres-1  Starting\n Container e2e-db-postgres-1  Started",
+     STARTED_LINE),
 ])
 def test_data_vm_playbook_says_whether_the_shared_stack_restarted(tmp_path, compose_says,
                                                                     expected):
@@ -1389,6 +1395,12 @@ def test_data_vm_playbook_says_whether_the_shared_stack_restarted(tmp_path, comp
     out = result.stdout + result.stderr
     assert result.returncode == 0, out
     assert expected in out
-    other = UP_TO_DATE_LINE if expected == RECREATED_LINE else RECREATED_LINE
-    assert other not in out
+    assert all(other not in out for other in LINES if other != expected)
     assert "0123abcd" not in out
+
+
+def test_switch_traffic_on_the_lan_has_the_proxy_steps_time():
+    """The first switch creates the proxy hosts and requests certificates."""
+    assert steps.STEPS_BY_KEY["lan_switch"].timeout == steps.STEPS_BY_KEY["proxy"].timeout
+    assert steps.STEPS_BY_KEY["lan_switch"].timeout == 45 * 60
+    assert steps.timeout_of("lan_switch", bluegreen=True) == 45 * 60
