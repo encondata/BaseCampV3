@@ -1,4 +1,4 @@
-"""Sirdar's own tables (migrations 0001–0011). `users` mirrors the portal's
+"""Sirdar's own tables (migrations 0001–0012). `users` mirrors the portal's
 user_accounts + people for the people it copies; Sirdar-only data
 (overrides, sessions, audit, lockout counters) never comes from the portal."""
 
@@ -301,6 +301,9 @@ class Deployment(Base):
     go_live: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     # Fresh start (migration 0011): its plan has step 11, Create the first admin.
     first_admin: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    # LAN Blue/Green (migration 0012): its plan is a LAN Blue/Green plan;
+    # `slot` and `go_live` mean what they mean on DigitalOcean.
+    bluegreen: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     previous_sha: Mapped[str | None]
     error: Mapped[str | None]
     actor_id: Mapped[uuid.UUID | None]
@@ -386,7 +389,8 @@ class ManagedRecord(Base):
 
 
 class ProxmoxVm(Base):
-    """The VM Sirdar builds on Proxmox for one environment (migration 0007),
+    """The VM Sirdar builds on Proxmox for one environment (one per role;
+    migrations 0007, 0012),
     and the record that it is Sirdar's: Sirdar changes or destroys only VM
     `vmid` named `name`. `vmid` is reserved before Terraform creates it;
     `created` turns true after the first successful apply; `ip` is the
@@ -397,6 +401,9 @@ class ProxmoxVm(Base):
 
     environment_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("environments.id", ondelete="CASCADE"), primary_key=True)
+    # main: the one VM of a single-server environment; data, orange, purple:
+    # a LAN Blue/Green environment's (migration 0012)
+    role: Mapped[str] = mapped_column(primary_key=True, server_default=text("'main'"))
     node: Mapped[str]
     vmid: Mapped[int | None] = mapped_column(Integer)
     # The clone inputs, frozen from the integration at create: step 0
@@ -424,7 +431,7 @@ class ProxmoxVm(Base):
 
 class EsxiVm(Base):
     """The VM Sirdar builds on a standalone ESXi host for one environment
-    (migration 0008), and the record that it is Sirdar's: Sirdar changes or
+    (one per role; migrations 0008, 0012), and the record that it is Sirdar's: Sirdar changes or
     destroys only the VM whose instance UUID, name and `sirdar.environment`
     extraConfig marker match this row. `moref`, `instance_uuid` and
     `vm_path` are written the moment ESXi creates it; `created` turns true
@@ -436,6 +443,9 @@ class EsxiVm(Base):
 
     environment_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("environments.id", ondelete="CASCADE"), primary_key=True)
+    # main: the one VM of a single-server environment; data, orange, purple:
+    # a LAN Blue/Green environment's (migration 0012)
+    role: Mapped[str] = mapped_column(primary_key=True, server_default=text("'main'"))
     name: Mapped[str]
     host: Mapped[str]
     datastore: Mapped[str]
@@ -459,6 +469,24 @@ class EsxiVm(Base):
     host_key_private_enc: Mapped[bytes | None] = mapped_column(BYTEA)
     keep_snapshots: Mapped[int] = mapped_column(Integer, server_default=text("3"))
     created: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
+class VmSlot(Base):
+    """One slot of a LAN Blue/Green environment (migration 0012): the commit
+    its app VM runs and its last slot smoke test. The VM itself is the
+    proxmox_vms / esxi_vms row whose role is the slot."""
+
+    __tablename__ = "vm_slots"
+
+    environment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("environments.id", ondelete="CASCADE"), primary_key=True)
+    slot: Mapped[str] = mapped_column(primary_key=True)
+    sha: Mapped[str | None]
+    image_tag: Mapped[str | None]
+    last_check_ok: Mapped[bool | None] = mapped_column(Boolean)
+    last_check_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 

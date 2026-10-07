@@ -38,7 +38,7 @@ async def esx(db, deploy_env, secrets_key, esxi_fake, leak_guard):
 async def _built(db, esx, env_id: uuid.UUID):
     """The VM step 0 would have built for uat3, on the fake ESXi."""
     vm = esx.add_vm("ss-uat3", owner=str(env_id), power_state="poweredOn")
-    record = await db.get(EsxiVm, env_id)
+    record = await db.get(EsxiVm, (env_id, "main"))
     record.moref, record.instance_uuid, record.created = vm.moref, vm.instance_uuid, True
     await db.commit()
     return vm
@@ -64,7 +64,8 @@ async def test_create_an_esxi_environment(client, db, esx):
     body = resp.json()
     assert (body["target"], body["target_kind"]) == ("esxi", "esxi")
     assert (body["vm"]["kind"], body["vm"]["stage"], body["vm"]["host"],
-            body["vm"]["moref"]) == ("esxi", "none", "10.10.48.10", None)
+            body["vm"]["moref"], body["vm"]["role"]) == ("esxi", "none", "10.10.48.10", None,
+                                                         "main")
     assert {s["host_ip"] for s in body["services"]} == {"10.10.48.71"}
     resp = await client.post(URL, headers=h,
                              json={**BODY, "name": "uat4", "mode": "adopt", "vm": None})

@@ -773,7 +773,7 @@ async def test_the_psql_script_uses_a_private_pgpass_and_the_ca(tmp_path):
 async def test_pinning_checks_the_address_first(db, do_build, monkeypatch):
     calls = []
 
-    async def taken(s, settings, ip, *, proxy_ip, env_id=None):
+    async def taken(s, settings, ip, *, proxy_ip, env_id=None, role=None):
         calls.append((ip, env_id))
         return True
     monkeypatch.setattr(vms, "address_in_use", taken)

@@ -71,7 +71,7 @@ async def run(db, env, step="provision", lines=None, **ctx_kw):
 
 
 async def row(db, env) -> EsxiVm:
-    return await db.get(EsxiVm, env.id, populate_existing=True)
+    return await db.get(EsxiVm, (env.id, "main"), populate_existing=True)
 
 
 async def test_prepare_needs_the_integration(db, esxi_env):

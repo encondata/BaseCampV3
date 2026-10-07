@@ -310,7 +310,7 @@ async def test_proxmox_vms_and_the_vm_columns(db):
                      vm_snapshot="sirdar-20261004T120000Z")
     db.add(dep)
     await db.commit()
-    vm = await db.get(ProxmoxVm, env.id)
+    vm = await db.get(ProxmoxVm, (env.id, "main"))
     assert (vm.vmid, vm.ip, vm.keep_snapshots, vm.created) == (None, None, 3, False)
     assert (vm.template_vmid, vm.storage, vm.pool, vm.bridge, vm.vlan_tag) == (
         9000, "local-lvm", "sirdar", "vmbr0", None)
@@ -424,7 +424,7 @@ async def test_migration_0007_downgrade_refuses_while_vms_are_managed():
     assert b"Can't downgrade below 0007 while Sirdar manages Proxmox VMs" in err.value.stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
         # The refused downgrade rolls back as a whole: still at head.
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0011"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0012"
         assert conn.execute("SELECT count(*) FROM proxmox_vms").fetchone()[0] == 1
         assert conn.execute("SELECT count(*) FROM integrations WHERE kind = 'proxmox'"
                             ).fetchone()[0] == 1
@@ -446,7 +446,7 @@ async def test_esxi_vms(db):
     db.add(_esxi_vm(env.id))
     db.add(Integration(kind="esxi", config={"url": "https://10.10.48.10"}, secret_enc=b"x"))
     await db.commit()
-    vm = await db.get(EsxiVm, env.id)
+    vm = await db.get(EsxiVm, (env.id, "main"))
     assert (vm.moref, vm.instance_uuid, vm.vm_path, vm.ip, vm.created, vm.keep_snapshots,
             vm.resource_pool, vm.dns_servers) == (None, None, None, None, False, 3, None, [])
     vm.moref, vm.instance_uuid = "12", "52b1c3d4-0000-0000-0000-000000000001"
@@ -472,7 +472,7 @@ async def test_esxi_vms(db):
     await db.commit()
     await db.delete(await db.get(Environment, other_id))
     await db.commit()
-    assert await db.get(EsxiVm, other_id) is None                       # cascades
+    assert await db.get(EsxiVm, (other_id, "main")) is None                       # cascades
 
 
 async def test_migration_0008_downgrade_refuses_while_esxi_vms_are_managed():
@@ -592,7 +592,7 @@ async def test_migration_0010_downgrade_refuses_while_do_environments_exist():
         _alembic("downgrade", "0009")
     assert b"while Sirdar manages DigitalOcean environments" in err.value.stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0011"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0012"
         conn.execute("DELETE FROM environments WHERE id = %s", (env_id,))
 
 
@@ -649,7 +649,7 @@ def _assert_downgrade_refused() -> None:
         pytest.fail("the downgrade below 0010 wasn't refused")
     assert b"while Sirdar manages DigitalOcean environments" in stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0011"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0012"
 
 
 async def test_migration_0010_downgrade_refuses_with_only_do_resources():

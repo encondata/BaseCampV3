@@ -1,8 +1,9 @@
 """Terraform for Proxmox environments (phase 5, step 0 and Destroy VM).
 
-One working folder per environment, SIRDAR_TERRAFORM_DIR/<environment id>/
-(mode 700, never served): main.tf.json (rendered here, no secret in it), the
-pinned Proxmox certificate, the state and .terraform/. Terraform runs with
+One working folder per VM: SIRDAR_TERRAFORM_DIR/<environment id>/ (a
+Blue/Green VM: <environment id>-<role>/; mode 700, never served):
+main.tf.json (rendered here, no secret in it), the pinned Proxmox
+certificate, the state and .terraform/. Terraform runs with
 an allowlisted environment; the API token reaches it only as
 PROXMOX_VE_API_TOKEN, never in a file or on its command line. Its TLS trust
 is the pinned certificate alone (SSL_CERT_FILE, and SSL_CERT_DIR pointed at
@@ -137,8 +138,9 @@ def plan_deletes(plan) -> bool:
     return False
 
 
-def workdir(settings: Settings, env_id: uuid.UUID) -> Path:
-    return Path(settings.terraform_dir) / str(env_id)
+def workdir(settings: Settings, env_id: uuid.UUID, role: str = "main") -> Path:
+    name = str(env_id) if role == "main" else f"{env_id}-{role}"
+    return Path(settings.terraform_dir) / name
 
 
 def _private_dir(path: Path) -> None:
@@ -154,7 +156,8 @@ def _write_private(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def prepare_workdir(settings: Settings, env_id: uuid.UUID, config: dict, ca_pem: str) -> Path:
+def prepare_workdir(settings: Settings, env_id: uuid.UUID, config: dict, ca_pem: str,
+                    role: str = "main") -> Path:
     """Write this run's config and pinned certificate; keep the state and
     .terraform/. A crash log or a plan from an earlier run is removed. The pin must
     be exactly one certificate (PinnedCertificateInvalid otherwise)."""
@@ -165,7 +168,7 @@ def prepare_workdir(settings: Settings, env_id: uuid.UUID, config: dict, ca_pem:
             "The pinned Proxmox certificate isn't one valid certificate.") from None
     try:
         _private_dir(Path(settings.terraform_dir))
-        work = workdir(settings, env_id)
+        work = workdir(settings, env_id, role)
         _private_dir(work)
         _private_dir(work / "home")
         _private_dir(work / "ca")                       # empty: SSL_CERT_DIR
@@ -191,8 +194,8 @@ def has_state(work: Path) -> bool:
     return bool(state.get("resources"))
 
 
-def remove_workdir(settings: Settings, env_id: uuid.UUID) -> None:
-    shutil.rmtree(workdir(settings, env_id), ignore_errors=True)
+def remove_workdir(settings: Settings, env_id: uuid.UUID, role: str = "main") -> None:
+    shutil.rmtree(workdir(settings, env_id, role), ignore_errors=True)
 
 
 def run_env(settings: Settings, work: Path, token: str) -> dict[str, str]:

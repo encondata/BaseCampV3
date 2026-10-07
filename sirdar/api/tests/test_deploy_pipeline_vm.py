@@ -127,7 +127,7 @@ async def test_delete_destroys_the_vm_then_the_environment(db, vm_env, fake_runn
     assert fake_publisher.calls == ["unproxy", "undns"] and fake_runner.steps() == []
     async with get_sessionmaker()() as s:
         assert await s.get(Environment, vm_env.id) is None
-        assert await s.get(ProxmoxVm, vm_env.id) is None
+        assert await s.get(ProxmoxVm, (vm_env.id, "main")) is None
         assert await s.get(Deployment, dep_id) is None          # gone with the environment
 
 

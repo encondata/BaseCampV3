@@ -86,6 +86,18 @@ def test_the_host_name_rule_is_the_vm_name_rule():
     assert cloudinit._HOSTNAME_RE.pattern == vms._VM_NAME_RE.pattern
 
 
+def test_a_bluegreen_vm_s_host_name_and_instance_id():
+    long = "a" + "b" * 31                                  # the longest environment name
+    meta = yaml.safe_load(cloudinit.metadata(env_id=ENV_ID, hostname=f"ss-{long}-purple",
+                                             ip_cidr=None, gateway=None, dns_servers=(),
+                                             role="purple"))
+    assert meta["instance-id"] == f"sirdar-{ENV_ID}-purple"
+    assert meta["local-hostname"] == f"ss-{long}-purple"
+    with pytest.raises(ValueError):
+        cloudinit.metadata(env_id=ENV_ID, hostname="ss-" + "a" * 60, ip_cidr=None,
+                           gateway=None, dns_servers=())
+
+
 def test_droplet_userdata():
     text = cloudinit.droplet_userdata(hostname="ss-uat9-purple",
                                       ssh_public_key="ssh-ed25519 AAAAuser sirdar",

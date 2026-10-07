@@ -65,9 +65,9 @@ async def tcp_open(host: str, port: int, timeout: float = 3.0) -> bool:
     return True
 
 
-async def set_vm(model, env_id: uuid.UUID, **values) -> None:
+async def set_vm(model, env_id: uuid.UUID, *, role: str = vms.MAIN, **values) -> None:
     async with get_sessionmaker()() as s:
-        await s.execute(update(model).where(model.environment_id == env_id)
+        await s.execute(update(model).where(model.environment_id == env_id, model.role == role)
                         .values(**values, updated_at=datetime.now(UTC)))
         await s.commit()
 
@@ -86,15 +86,16 @@ def _address_refused(ip: str, host_label: str) -> StepFailed:
 
 
 async def _address_free(s: AsyncSession, settings: Settings, env_id: uuid.UUID, ip: str,
-                        host_label: str, *, before_boot: bool = False) -> None:
+                        host_label: str, *, before_boot: bool = False,
+                        role: str | None = None) -> None:
     """Under the address lock (vms.lock_addresses, held until `s`'s
     transaction ends): StepFailed unless `ip` is free for this environment's
-    VM."""
+    VM (with `role`: for that VM; the environment's others count as taken)."""
     proxy_ip = await s.scalar(select(Environment.proxy_ip).where(Environment.id == env_id))
     await vms.lock_addresses(s)
     try:
         taken = await vms.address_in_use(s, settings, ip, proxy_ip=proxy_ip or "",
-                                         env_id=env_id)
+                                         env_id=env_id, role=role)
     except vms.VmError:
         raise StepFailed(TARGETS_UNREADABLE) from None
     if taken:
@@ -102,30 +103,40 @@ async def _address_free(s: AsyncSession, settings: Settings, env_id: uuid.UUID, 
 
 
 async def check_address(settings: Settings, env_id: uuid.UUID, ip: str, *,
-                        host_label: str = "Proxmox", before_boot: bool = False) -> None:
+                        host_label: str = "Proxmox", before_boot: bool = False,
+                        role: str = vms.MAIN) -> None:
     """Is the address free? Before a new VM is given its static address
     (`before_boot`), and before pinning a key at the address it came up at
     (a DHCP lease can land on an address in use)."""
     async with get_sessionmaker()() as s:
-        await _address_free(s, settings, env_id, ip, host_label, before_boot=before_boot)
+        await _address_free(s, settings, env_id, ip, host_label, before_boot=before_boot,
+                            role=role)
         await s.rollback()
 
 
 async def record_address(settings: Settings, model, env_id: uuid.UUID, previous: str | None,
-                         ip: str, *, host_label: str = "Proxmox") -> bool:
+                         ip: str, *, host_label: str = "Proxmox", role: str = vms.MAIN,
+                         services: tuple[str, ...] | None = None) -> bool:
     """Re-check the address under the lock, then write the VM's address and
-    point every service at it in the same transaction. True when a service
-    moved."""
+    point the services at it in the same transaction. True when a service
+    moved. `services`: None moves every service to the VM (a single-server
+    environment); a tuple only those (a Blue/Green data VM: spaces; an app
+    VM: none — Switch traffic moves them)."""
     async with get_sessionmaker()() as s:
-        await _address_free(s, settings, env_id, ip, host_label)
+        await _address_free(s, settings, env_id, ip, host_label, role=role)
         if ip != previous:
-            await s.execute(update(model).where(model.environment_id == env_id)
+            await s.execute(update(model).where(model.environment_id == env_id,
+                                                model.role == role)
                             .values(ip=ip, updated_at=datetime.now(UTC)))
-        result = await s.execute(update(EnvironmentService).where(
-            EnvironmentService.environment_id == env_id, EnvironmentService.host_ip != ip)
-            .values(host_ip=ip))
+        moved = 0
+        if services is None or services:
+            query = update(EnvironmentService).where(
+                EnvironmentService.environment_id == env_id, EnvironmentService.host_ip != ip)
+            if services is not None:
+                query = query.where(EnvironmentService.service.in_(services))
+            moved = (await s.execute(query.values(host_ip=ip))).rowcount
         await s.commit()
-        return result.rowcount > 0
+        return moved > 0
 
 
 async def recorded_snapshots(env_id: uuid.UUID) -> set[str]:
@@ -195,25 +206,28 @@ async def confirm_pin(*, ip: str, expected: str, actor_id: uuid.UUID | None, tar
 async def settle_address(settings: Settings, *, model, env_id: uuid.UUID,
                          previous_ip: str | None, ip: str,
                          pin: Callable[[], Awaitable[bool]], actor_id: uuid.UUID | None,
-                         target_id: str, out: Output, host_label: str = "Proxmox") -> None:
+                         target_id: str, out: Output, host_label: str = "Proxmox",
+                         role: str = vms.MAIN,
+                         services: tuple[str, ...] | None = None) -> None:
     """The address the VM came up at: refused at a saved SSH target's or one
     in use, its key pinned (`pin`), then recorded (re-checked under the lock)
-    on the VM and every service. A pin this run made is forgotten when the
-    record fails."""
+    on the VM and its services (record_address's `services`). A pin this run
+    made is forgotten when the record fails."""
     if any(cfg.host == ip for _, cfg in targets.ssh_configs(settings)):
         raise StepFailed(f"{ip} is a saved SSH target's address. Sirdar won't pin a VM's "
                          "key there.")
-    await check_address(settings, env_id, ip, host_label=host_label)
+    await check_address(settings, env_id, ip, host_label=host_label, role=role)
     made = await pin()
     try:
         moved = await record_address(settings, model, env_id, previous_ip, ip,
-                                     host_label=host_label)
+                                     host_label=host_label, role=role, services=services)
     except StepFailed:
         if made:                       # don't leave a pin for an address not recorded
             await forget_pin(ip, actor_id, target_id)
         raise
     if moved:
-        out(f"Every service now points at {ip}.\n")
+        out(f"{'Every service' if services is None else ', '.join(services)} "
+            f"now points at {ip}.\n")
 
 
 async def resolve_ref(settings: Settings, resolve, *, env_id: uuid.UUID, git_ref: str,

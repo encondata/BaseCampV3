@@ -66,7 +66,7 @@ async def test_create_a_proxmox_environment(client, db, px):
                           "name": "ss-uat3", "node": "pve", "vmid": None, "cores": 2,
                           "memory_mb": 8192, "disk_gb": 64, "ip_mode": "static",
                           "ip_cidr": "10.10.48.70/24", "gateway": "10.10.48.1", "ip": None,
-                          "keep_snapshots": 3, "created": False}
+                          "keep_snapshots": 3, "created": False, "role": "main"}
     assert {s["host_ip"] for s in body["services"]} == {"10.10.48.70"}
     [audit] = await db.scalars(select(AuditLog.changes).where(
         AuditLog.action == "deploy.environment_create"))

@@ -55,13 +55,22 @@ class VmError(Exception):
         self.extra = extra
 
 
-def vm_name(env_name: str) -> str:
-    return f"ss-{env_name}"
+# A VM row's role (migration 0012): the one VM of a single-server
+# environment is `main`; a LAN Blue/Green environment has a data VM and two
+# app VMs, one per slot.
+MAIN, DATA = "main", "data"
+APP_SLOTS = ("orange", "purple")
+ROLES = (MAIN, DATA, *APP_SLOTS)
 
 
-# A VM's name is its guest host name too (cloud-init's local-hostname): "ss-"
-# and an environment name (names.CUSTOM_NAME_RE), never ending in "-".
-_VM_NAME_RE = re.compile(r"ss-[a-z][a-z0-9-]{0,30}[a-z0-9]")
+def vm_name(env_name: str, role: str = MAIN) -> str:
+    return f"ss-{env_name}" if role == MAIN else f"ss-{env_name}-{role}"
+
+
+# A VM's name is its guest host name too (cloud-init's local-hostname): "ss-",
+# an environment name (names.CUSTOM_NAME_RE) and, for a Blue/Green VM,
+# "-data" / "-orange" / "-purple"; never ending in "-".
+_VM_NAME_RE = re.compile(r"ss-[a-z][a-z0-9-]{0,52}[a-z0-9]")
 
 
 def check_vm_hostname(name) -> str:
@@ -157,16 +166,28 @@ def new_host_keypair(env_name: str) -> tuple[str, str]:
             key.export_public_key("openssh").decode().strip())
 
 
-async def get(db: AsyncSession, env_id) -> ProxmoxVm | None:
-    return await db.get(ProxmoxVm, env_id, populate_existing=True)
+async def get(db: AsyncSession, env_id, role: str = MAIN) -> ProxmoxVm | None:
+    return await db.get(ProxmoxVm, (env_id, role), populate_existing=True)
 
 
-async def get_for(db: AsyncSession, env: Environment) -> ProxmoxVm | EsxiVm | None:
-    """The VM row of a VM environment (by its target), None otherwise."""
+async def get_for(db: AsyncSession, env: Environment,
+                  role: str = MAIN) -> ProxmoxVm | EsxiVm | None:
+    """The VM row with this role of a VM environment (by its target), None
+    otherwise."""
     model = MODELS.get(env.target_id)
     if model is None:
         return None
-    return await db.get(model, env.id, populate_existing=True)
+    return await db.get(model, (env.id, role), populate_existing=True)
+
+
+async def machines(db: AsyncSession, env: Environment) -> list[ProxmoxVm | EsxiVm]:
+    """Every VM row of a VM environment, in ROLES order."""
+    model = MODELS.get(env.target_id)
+    if model is None:
+        return []
+    rows = list(await db.scalars(select(model).where(model.environment_id == env.id)
+                                 .execution_options(populate_existing=True)))
+    return sorted(rows, key=lambda r: ROLES.index(r.role))
 
 
 def stage(vm: ProxmoxVm | EsxiVm) -> str:
@@ -216,11 +237,12 @@ def _target_hosts(settings: Settings) -> set[str]:
 
 
 async def address_in_use(db: AsyncSession, settings: Settings, ip: str, *, proxy_ip: str,
-                         env_id=None) -> bool:
+                         env_id=None, role: str | None = None) -> bool:
     """The proxy's address, any environment's proxy, every SSH target's host
     (uat's VM among them; names resolved), both VM hosts (Proxmox and ESXi),
-    another
-    environment's service address, or another VM's address. Raises
+    another environment's service address, or another VM's address. With
+    `role`, this environment's other VMs (a Blue/Green environment's) count
+    as taken too; only the VM with that role is the caller's own. Raises
     VmError("ssh_targets_unreadable"). Call lock_addresses first."""
     hosts = _target_hosts(settings)
     for kind in targets.VM_TARGETS:
@@ -242,25 +264,28 @@ async def address_in_use(db: AsyncSession, settings: Settings, ip: str, *, proxy
     if ip in set(await db.scalars(services)):
         return True
     for model in (ProxmoxVm, EsxiVm):
-        machines = select(model.ip, model.ip_cidr)
+        machines_q = select(model.ip, model.ip_cidr)
         if env_id is not None:
-            machines = machines.where(model.environment_id != env_id)
-        if any(ip in (vm_ip, static_ip(cidr)) for vm_ip, cidr in await db.execute(machines)):
+            mine = model.environment_id == env_id
+            # a Blue/Green environment's other VMs hold their addresses too
+            machines_q = machines_q.where(~mine if role is None
+                                          else ~(mine & (model.role == role)))
+        if any(ip in (vm_ip, static_ip(cidr)) for vm_ip, cidr in await db.execute(machines_q)):
             return True
     return False
 
 
 async def add(db: AsyncSession, settings: Settings, env: Environment, spec: dict,
-              proxmox: dict) -> ProxmoxVm:
+              proxmox: dict, *, role: str = MAIN) -> ProxmoxVm:
     """`proxmox`: the integration's stored settings. The node and the clone
     inputs (template, storage, pool, bridge, VLAN) are frozen into the row:
     the VM keeps them whatever the integration says later."""
     private, public_key = new_keypair(env.name)
     vlan = proxmox.get("vlan_tag")
-    vm = ProxmoxVm(environment_id=env.id, node=proxmox["node"],
+    vm = ProxmoxVm(environment_id=env.id, role=role, node=proxmox["node"],
                    template_vmid=int(proxmox["template_vmid"]), storage=proxmox["storage"],
                    pool=proxmox["pool"], bridge=proxmox["bridge"],
-                   vlan_tag=None if vlan is None else int(vlan), name=vm_name(env.name),
+                   vlan_tag=None if vlan is None else int(vlan), name=vm_name(env.name, role),
                    cores=spec["cores"], memory_mb=spec["memory_mb"], disk_gb=spec["disk_gb"],
                    ip_mode=spec["ip_mode"], ip_cidr=spec["ip_cidr"], gateway=spec["gateway"],
                    ip=None, ssh_public_key=public_key,
@@ -272,18 +297,18 @@ async def add(db: AsyncSession, settings: Settings, env: Environment, spec: dict
 
 
 async def add_esxi(db: AsyncSession, settings: Settings, env: Environment, spec: dict,
-                   esxi: dict) -> EsxiVm:
+                   esxi: dict, *, role: str = MAIN) -> EsxiVm:
     """`esxi`: the integration's stored settings. Where the VM is built (the
     host, datastore, port group, pool, seed VM and DNS servers) is frozen
     into the row. Two key pairs: Sirdar's SSH key for the deploy user, and
     the VM's own host key (private half kept only until step 0 delivers it).
     The host name and DNS servers, which reach cloud-init's metadata, are
     checked here first: VmError("vm_name_invalid" | "dns_servers_invalid")."""
-    name = check_vm_hostname(vm_name(env.name))
+    name = check_vm_hostname(vm_name(env.name, role))
     dns = check_dns_servers(esxi.get("dns_servers"))
     private, public_key = new_keypair(env.name)
     host_private, host_public = new_host_keypair(env.name)
-    vm = EsxiVm(environment_id=env.id, name=name,
+    vm = EsxiVm(environment_id=env.id, role=role, name=name,
                 host=urlsplit(esxi["url"]).hostname or "", datastore=esxi["datastore"],
                 network=esxi["network"], resource_pool=esxi.get("resource_pool"),
                 source_vm=esxi["source_vm"], dns_servers=dns,
@@ -300,9 +325,12 @@ async def add_esxi(db: AsyncSession, settings: Settings, env: Environment, spec:
 
 
 async def host_config(db: AsyncSession, settings: Settings, env: Environment, *,
-                      slot: str | None = None) -> SshTargetConfig | None:
+                      slot: str | None = None,
+                      role: str | None = None) -> SshTargetConfig | None:
     """The SSH connection the deploy steps use: a saved target's, for a VM
-    environment the VM's (None until step 0 has read its address), and for
+    environment the VM's (a Blue/Green one: `role`, else the slot's: `slot`,
+    else the active slot, else the first; None until step 0 has read its
+    address), and for
     a DigitalOcean environment the slot's droplet (default: the active
     slot). Keys are decrypted here: vault.SecretsKeyMissing or
     vault.SecretUnreadable propagate."""
@@ -311,7 +339,9 @@ async def host_config(db: AsyncSession, settings: Settings, env: Environment, *,
         return await do_envs.host_config(db, settings, env, slot)
     if not targets.is_vm_target(env.target_id):
         return targets.ssh_config_for(env.target_id, settings)
-    vm = await get_for(db, env)
+    if role is None:
+        role = (slot or env.active_slot or env.slots[0]) if env.slots else MAIN
+    vm = await get_for(db, env, role)
     if vm is None or not vm.ip:
         return None
     return SshTargetConfig(host=vm.ip, port=VM_SSH_PORT, user=VM_USER,
@@ -384,7 +414,8 @@ def public(vm: ProxmoxVm | EsxiVm) -> dict:
     common = {"stage": stage(vm), "name": vm.name, "cores": vm.cores,
               "memory_mb": vm.memory_mb, "disk_gb": vm.disk_gb, "ip_mode": vm.ip_mode,
               "ip_cidr": vm.ip_cidr, "gateway": vm.gateway, "ip": vm.ip,
-              "keep_snapshots": vm.keep_snapshots, "created": vm.created}
+              "keep_snapshots": vm.keep_snapshots, "created": vm.created,
+              "role": vm.role}
     if isinstance(vm, EsxiVm):
         return {"kind": "esxi", **common, "host": vm.host, "node": None, "vmid": None,
                 "moref": vm.moref}

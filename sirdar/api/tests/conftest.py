@@ -40,7 +40,7 @@ SIRDAR_TABLES = ("users, user_roles, permission_overrides, totp_backup_codes, "
                  "environments, environment_services, environment_secrets, deployments, "
                  "deployment_steps, snapshots, integrations, managed_records, proxmox_vms, "
                  "esxi_vms, do_environments, do_slots, do_resources, acme_accounts, "
-                 "environment_first_admins")
+                 "environment_first_admins, vm_slots")
 SOURCE_TABLES = ("people, user_accounts, roles, person_roles, access_groups, "
                  "access_group_members, totp_backup_codes, system_config")
 
