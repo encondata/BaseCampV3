@@ -226,8 +226,11 @@ async def settle_address(settings: Settings, *, model, env_id: uuid.UUID,
             await forget_pin(ip, actor_id, target_id)
         raise
     if moved:
-        out(f"{'Every service' if services is None else ', '.join(services)} "
-            f"now points at {ip}.\n")
+        if services is None:
+            out(f"Every service now points at {ip}.\n")
+        else:
+            names = ", ".join(services)
+            out(f"The {names} service{'s' if len(services) > 1 else ''} now points at {ip}.\n")
 
 
 async def resolve_ref(settings: Settings, resolve, *, env_id: uuid.UUID, git_ref: str,

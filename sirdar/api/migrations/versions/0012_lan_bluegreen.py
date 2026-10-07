@@ -45,13 +45,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Refuses while a Blue/Green environment exists: its VMs would lose their records.
+    # Refuses while any LAN Blue/Green record exists: its VMs, slots and
+    # deployments would lose what they are.
     op.execute("""
         DO $$ BEGIN
           IF EXISTS (SELECT 1 FROM proxmox_vms WHERE role <> 'main')
-             OR EXISTS (SELECT 1 FROM esxi_vms WHERE role <> 'main') THEN
-            RAISE EXCEPTION 'Can''t downgrade below 0012 while Blue/Green VMs exist: '
-                            'delete those environments first.';
+             OR EXISTS (SELECT 1 FROM esxi_vms WHERE role <> 'main')
+             OR EXISTS (SELECT 1 FROM vm_slots)
+             OR EXISTS (SELECT 1 FROM deployments WHERE bluegreen) THEN
+            RAISE EXCEPTION 'Can''t downgrade below 0012 while LAN Blue/Green records exist '
+                            '(VMs, slots or deployments): delete those environments first.';
           END IF;
         END $$;
         ALTER TABLE deployments DROP COLUMN bluegreen;

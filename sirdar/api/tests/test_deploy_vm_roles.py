@@ -20,6 +20,9 @@ def test_names():
     assert vms.vm_name("uat3", "data") == "ss-uat3-data"
     long = "a" + "b" * 31                                  # the longest environment name
     assert vms.check_vm_hostname(vms.vm_name(long, "purple")) == f"ss-{long}-purple"
+    # nothing longer than the code can produce: ss- + 32 characters + -purple
+    with pytest.raises(vms.VmError):
+        vms.check_vm_hostname(f"ss-{long}x-purple")
 
 
 async def _esxi_row(db, env, role: str, ip: str) -> EsxiVm:
@@ -40,8 +43,12 @@ async def test_three_rows_per_environment(db, secrets_key):
     assert (await vms.get_for(db, env, "orange")).name == "ss-lan1-orange"
     assert await vms.get_for(db, env) is None                 # no main VM
     assert vms.public(rows[0])["role"] == "data"
-    with pytest.raises(IntegrityError):
+    # Free the name first, so only the (environment, role) primary key can refuse.
+    rows[0].name = "ss-lan1-old"
+    await db.commit()
+    with pytest.raises(IntegrityError) as err:
         await _esxi_row(db, env, "data", "10.10.48.50")      # one row per role
+    assert "esxi_vms_pkey" in str(err.value)
     await db.rollback()
 
 
@@ -80,6 +87,20 @@ async def test_an_environments_other_vm_holds_its_address(db, secrets_key):
     assert taken is True
     assert await vms.address_in_use(db, get_settings(), "10.10.48.47", proxy_ip="10.0.0.2",
                                     env_id=env.id, role="data") is False
+
+
+async def test_without_a_role_every_vm_of_the_environment_is_its_own(db, secrets_key):
+    env = await make_environment(db, name="lan1", target_id="esxi", secrets={})
+    for role, ip in (("data", "10.10.48.47"), ("orange", "10.10.48.48")):
+        row = await _esxi_row(db, env, role, ip)
+        row.ip = ip
+    other = await make_environment(db, name="lan2", target_id="esxi", secrets={})
+    await db.commit()
+    for ip in ("10.10.48.47", "10.10.48.48"):
+        assert await vms.address_in_use(db, get_settings(), ip, proxy_ip="10.0.0.2",
+                                        env_id=env.id) is False
+        assert await vms.address_in_use(db, get_settings(), ip, proxy_ip="10.0.0.2",
+                                        env_id=other.id) is True
 
 
 async def test_host_config_follows_the_slot(db, secrets_key):
@@ -123,3 +144,28 @@ async def test_vm_slots_go_with_the_environment(db, secrets_key):
     await db.delete(env)
     await db.commit()
     assert await db.scalar(select(VmSlot)) is None
+
+
+@pytest.mark.parametrize("services,line", [
+    (None, "Every service now points at 10.10.48.47.\n"),
+    (("spaces",), "The spaces service now points at 10.10.48.47.\n"),
+])
+async def test_settle_address_names_the_services_it_moved(monkeypatch, services, line):
+    async def nothing(*args, **kwargs):
+        return None
+
+    async def moved(*args, **kwargs) -> bool:
+        return True
+
+    async def no_pin() -> bool:
+        return False
+
+    import uuid
+    monkeypatch.setattr(vmcommon, "check_address", nothing)
+    monkeypatch.setattr(vmcommon, "record_address", moved)
+    lines: list[str] = []
+    await vmcommon.settle_address(get_settings(), model=EsxiVm, env_id=uuid.uuid4(),
+                                  previous_ip=None, ip="10.10.48.47", pin=no_pin, actor_id=None,
+                                  target_id="esxi", out=lines.append, host_label="ESXi",
+                                  role="data", services=services)
+    assert lines == [line]

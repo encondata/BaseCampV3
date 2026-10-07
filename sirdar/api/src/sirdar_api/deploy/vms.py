@@ -70,7 +70,7 @@ def vm_name(env_name: str, role: str = MAIN) -> str:
 # A VM's name is its guest host name too (cloud-init's local-hostname): "ss-",
 # an environment name (names.CUSTOM_NAME_RE) and, for a Blue/Green VM,
 # "-data" / "-orange" / "-purple"; never ending in "-".
-_VM_NAME_RE = re.compile(r"ss-[a-z][a-z0-9-]{0,52}[a-z0-9]")
+_VM_NAME_RE = re.compile(r"ss-[a-z][a-z0-9-]{0,37}[a-z0-9]")    # 32 + "-purple" at most
 
 
 def check_vm_hostname(name) -> str:

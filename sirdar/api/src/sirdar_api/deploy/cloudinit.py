@@ -21,7 +21,7 @@ VM_USER = "deploy"
 MAX_DNS_SERVERS = 3
 # "ss-", an environment name and, for a Blue/Green VM, its role
 # (vms.check_vm_hostname's rule).
-_HOSTNAME_RE = re.compile(r"ss-[a-z][a-z0-9-]{0,52}[a-z0-9]")
+_HOSTNAME_RE = re.compile(r"ss-[a-z][a-z0-9-]{0,37}[a-z0-9]")
 
 
 def _checked(*, hostname, ip_cidr, gateway, dns_servers) -> None:

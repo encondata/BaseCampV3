@@ -93,9 +93,10 @@ def test_a_bluegreen_vm_s_host_name_and_instance_id():
                                              role="purple"))
     assert meta["instance-id"] == f"sirdar-{ENV_ID}-purple"
     assert meta["local-hostname"] == f"ss-{long}-purple"
-    with pytest.raises(ValueError):
-        cloudinit.metadata(env_id=ENV_ID, hostname="ss-" + "a" * 60, ip_cidr=None,
-                           gateway=None, dns_servers=())
+    for too_long in (f"ss-{long}x-purple", "ss-" + "a" * 60):
+        with pytest.raises(ValueError):
+            cloudinit.metadata(env_id=ENV_ID, hostname=too_long, ip_cidr=None,
+                               gateway=None, dns_servers=())
 
 
 def test_droplet_userdata():
