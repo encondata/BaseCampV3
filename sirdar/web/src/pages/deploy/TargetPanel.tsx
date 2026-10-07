@@ -309,7 +309,7 @@ export default function TargetPanel({ target, onTarget, connectType, connectName
         <summary>Connection test and trusted SSH hosts</summary>
         <section className="sirdar-section">
           <div className="sirdar-section-head">
-            <h2>Connect</h2>
+            <h3>Connect</h3>
             <button type="button" className="btn-solid" disabled={!canRun} onClick={run}>
               {running ? 'Connecting…' : 'Test connection'}
             </button>
@@ -401,7 +401,7 @@ export default function TargetPanel({ target, onTarget, connectType, connectName
         </section>
 
         <section className="sirdar-section">
-          <h2>Trusted SSH hosts</h2>
+          <h3>Trusted SSH hosts</h3>
           {hostsError && <p className="form-error" role="alert">{hostsError}</p>}
           <DataTable
             ariaLabel="Trusted SSH hosts"
