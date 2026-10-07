@@ -586,6 +586,7 @@ it('LAN Blue/Green: the proxy to two servers offers Activate on the deployed idl
   expect(within(spot()).queryByRole('button', { name: 'Activate Orange' })).toBeNull();
   await userEvent.click(within(spot()).getByRole('button', { name: 'Activate Purple' }));
   const dialog = await screen.findByRole('dialog', { name: 'Activate Purple' });
+  expect(within(dialog).getByText(/Nginx Proxy Manager/)).toBeTruthy();
   await userEvent.click(within(dialog).getByRole('button', { name: 'Activate Purple' }));
   await waitFor(() => expect(api.activateSlot).toHaveBeenCalledWith('lan9', 'purple', undefined));
 });

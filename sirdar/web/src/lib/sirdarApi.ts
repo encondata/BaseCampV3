@@ -351,6 +351,7 @@ const MESSAGES: Record<string, string> = {
   not_supported_on_bluegreen:
     'Both servers share one database, so that would change the live server too. Activate the other server to go back.',
   bluegreen_not_allowed: 'Blue/Green on the LAN needs an ESXi or Proxmox target.',
+  vm_name_taken: 'Another environment already uses that VM name. Choose a different environment name.',
   // the first admin
   first_admin_not_allowed: 'The first admin is only for a new environment.',
   first_admin_with_seed: 'An environment seeded from a snapshot already has its users. Start empty to add a first admin.',
@@ -382,9 +383,12 @@ export function errorDetail<T extends object = Record<string, unknown>>(err: unk
 export function deployErrorText(err: unknown, fallback: string): string {
   const d = errorDetail<{
     reason?: unknown; missing?: unknown; key?: unknown; service?: unknown; kinds?: unknown; environments?: unknown;
-    production?: unknown; min_length?: unknown;
+    production?: unknown; min_length?: unknown; name?: unknown;
   }>(err);
   if (d && typeof d.reason === 'string' && d.reason) return d.reason;
+  if (d && typeof d.name === 'string' && d.name && err instanceof ApiError && err.code === 'vm_name_taken') {
+    return `Another environment already uses the VM name ${d.name}. Choose a different environment name.`;
+  }
   if (d && Array.isArray(d.environments) && d.environments.length && err instanceof ApiError
       && err.code === 'integration_in_use') {
     return `Environments still use it: ${d.environments.join(', ')}. Delete them first.`;

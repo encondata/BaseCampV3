@@ -331,6 +331,7 @@ it('Blue/Green: Activate on the idle VM names its version, then follows the depl
   await userEvent.click(within(section).getByRole('button', { name: 'Activate Purple' }));
   const dialog = await screen.findByRole('dialog', { name: 'Activate Purple' });
   expect(within(dialog).getByText(/bbbbbbbb/)).toBeTruthy();
+  expect(within(dialog).getByText(/Nginx Proxy Manager/)).toBeTruthy();
   await userEvent.click(within(dialog).getByRole('button', { name: 'Activate Purple' }));
   await waitFor(() => expect(api.activateSlot).toHaveBeenCalledWith('lan9', 'purple', undefined));
 });

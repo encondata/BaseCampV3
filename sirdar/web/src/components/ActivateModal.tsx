@@ -1,7 +1,9 @@
-/** Blue/Green: activate a slot (Sirdar smoke-tests it on its droplet, adds it
- *  to the load balancer next to the live one, checks it through the load
- *  balancer, then sends every request to it), or deactivate a retiring
- *  production. A deployment, so it shows up in Deployments and can be
+/** Blue/Green: activate a slot (DigitalOcean: Sirdar smoke-tests it on its
+ *  droplet, adds it to the load balancer next to the live one, checks it
+ *  through the load balancer, then sends every request to it; LAN Blue/Green:
+ *  it smoke-tests the slot's VM, then points the environment's Nginx Proxy
+ *  Manager proxy hosts at it), or deactivate a retiring production.
+ *  Deactivate is DigitalOcean only. A deployment, so it shows up in Deployments and can be
  *  retried. Production needs its name typed. Used by the environment page
  *  and the dashboard spotlight. */
 import { useEffect, useRef, useState } from 'react';
@@ -9,8 +11,12 @@ import { useEffect, useRef, useState } from 'react';
 import { deployErrorText, activateSlot, type Deployment } from '../lib/sirdarApi';
 import { slotTitle } from '../pages/environments/labels';
 
-export default function ActivateModal({ envName, production, slot, fromSlot, version, onStarted, onClose }: {
+export default function ActivateModal({
+  envName, production, slot, fromSlot, version, lan = false, onStarted, onClose,
+}: {
   envName: string; production: boolean; slot: string | null; fromSlot: string | null; version: string | null;
+  /** LAN Blue/Green: the switch is Nginx Proxy Manager, not a load balancer. */
+  lan?: boolean;
   onStarted: (dep: Deployment) => void; onClose: () => void;
 }) {
   const [confirm, setConfirm] = useState('');
@@ -61,7 +67,12 @@ export default function ActivateModal({ envName, production, slot, fromSlot, ver
             <div className="eyebrow">Blue/Green</div>
             <h3 id="sirdar-activate-title">{title}</h3>
             <p className="page-hint">
-              {slot
+              {slot && lan
+                ? `Sirdar smoke-tests ${slotTitle(slot)}${version ? ` (${version})` : ''} on its VM, then points this `
+                  + "environment's Nginx Proxy Manager proxy hosts at it and checks the public names through them. "
+                  + 'If that check fails, every proxy host goes back.'
+                  + (from ? ` ${from} keeps running: activate it again to switch back.` : '')
+                : slot
                 ? `Sirdar smoke-tests ${slotTitle(slot)}${version ? ` (${version})` : ''} on its droplet, adds it to the `
                   + `load balancer${from ? ` next to ${from}` : ''}, checks it through the load balancer, then sends every `
                   + 'request to it. For a minute or two both answer.'

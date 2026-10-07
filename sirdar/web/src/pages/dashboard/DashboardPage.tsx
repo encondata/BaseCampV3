@@ -175,6 +175,7 @@ export default function DashboardPage() {
       {activating && activating.card.environment && (
         <ActivateModal envName={activating.card.environment} production={activating.card.production}
                        slot={activating.server.id} fromSlot={activating.card.flow.active_slot}
+                       lan={activating.card.flow.kind === 'proxy'}
                        version={activating.server.version} onClose={() => setActivating(null)}
                        onStarted={(dep) => navigate(`/deploy/environments/${encodeURIComponent(activating.card.environment!)}?deployment=${dep.id}`)} />
       )}

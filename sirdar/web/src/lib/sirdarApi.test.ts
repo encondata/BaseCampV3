@@ -311,3 +311,9 @@ it('LAN Blue/Green codes have their own copy', () => {
   expect(text('auto_activate_not_allowed')).toBe('Only non-production environments with two servers activate automatically.');
   expect(text('not_digitalocean_environment')).not.toBe('__none__');   // kept for older clients
 });
+
+it('vm_name_taken names the VM name already in use', () => {
+  expect(sirdar.deployErrorText(apiError(409, { code: 'vm_name_taken', name: 'ss-lan9-data' }), 'x'))
+    .toBe('Another environment already uses the VM name ss-lan9-data. Choose a different environment name.');
+  expect(sirdar.errorText(new ApiError(409, 'vm_name_taken'), '__none__')).not.toBe('__none__');
+});
