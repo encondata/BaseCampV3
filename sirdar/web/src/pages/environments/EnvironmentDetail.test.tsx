@@ -64,7 +64,7 @@ it('shows the header and the Overview: commit, image tag, services and links', a
     .toBe('https://api.uat.serversherpa.com');
   expect(within(table).getByRole('link', { name: '10.10.48.63:8025' }).getAttribute('href')).toBe('http://10.10.48.63:8025');
   expect(within(table).getByText('10.10.48.63:8000')).toBeTruthy();
-  expect(screen.getByText('Deploy', { selector: '.eyebrow a' }).getAttribute('href')).toBe('/deploy');
+  expect(screen.getByText('Deploy', { selector: '.eyebrow a' }).getAttribute('href')).toBe('/deploy?tab=environments');
 });
 
 it('Deploy opens the Deploy modal; starting reloads the environment', async () => {
@@ -242,7 +242,7 @@ describe('while the environment is deploying', () => {
     expect(await screen.findByText('Deleting')).toBeTruthy();
     await tick(ENV_POLL_MS);
     expect(await screen.findByText('uat was deleted.')).toBeTruthy();
-    expect(screen.getByRole('link', { name: 'Back to Deploy' }).getAttribute('href')).toBe('/deploy');
+    expect(screen.getByRole('link', { name: 'Back to Deploy' }).getAttribute('href')).toBe('/deploy?tab=environments');
     await tick(ENV_POLL_MS * 3);                 // gone: polling stops
     expect(api.getEnvironment).toHaveBeenCalledTimes(2);
   });
