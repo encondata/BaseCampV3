@@ -1002,6 +1002,38 @@ async def _roll_back(ctx: PublishContext, out: Output, recorded: dict[int, dict]
             "Nginx Proxy Manager.\n" + "\n".join(f"  {f}" for f in failed))
 
 
+# Put-backs still running: the strong reference that keeps one alive when
+# the switch that started it stops waiting (a second cancel, or the bound).
+_PUTTING_BACK: set[asyncio.Task] = set()
+PUT_BACK_WAIT = 120.0       # seconds a cancelled switch keeps waiting for its put-back
+
+
+async def _wait_for_put_back(rollback: Awaitable[str | None]) -> tuple[str | None, bool]:
+    """Run the put-back as its own task and wait for it through cancels, for
+    at most PUT_BACK_WAIT seconds. Returns its copy (or ours, if it is still
+    running) and whether a cancel arrived meanwhile; the caller re-raises
+    that cancel once the waiting is over."""
+    task = asyncio.ensure_future(rollback)
+    _PUTTING_BACK.add(task)
+    task.add_done_callback(_PUTTING_BACK.discard)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PUT_BACK_WAIT
+    cancelled = False
+    while not task.done():
+        left = deadline - loop.time()
+        if left <= 0:
+            break
+        try:
+            # wait() never cancels the task it waits for.
+            await asyncio.wait({task}, timeout=left)
+        except asyncio.CancelledError:
+            cancelled = True
+    if not task.done():
+        return ("Sirdar is still putting the proxy hosts back: check them in Nginx Proxy "
+                "Manager."), cancelled
+    return task.result(), cancelled
+
+
 async def switch_lan(ctx: PublishContext, out: Output, *, npm_transport, smoke_transport,
                      sleep: Callable[[float], Awaitable[None]], now: datetime,
                      backoff: tuple[int, ...], attempts: int, delay: float) -> None:
@@ -1033,13 +1065,13 @@ async def switch_lan(ctx: PublishContext, out: Output, *, npm_transport, smoke_t
             raise StepFailed("Sirdar couldn't save the new addresses in its database.") from None
     except BaseException as e:
         out("Putting traffic back.\n")
-        # Shielded: a cancel (or shutdown) still finishes putting NPM back.
-        problem = await asyncio.shield(_roll_back(ctx, out, recorded, back,
-                                                  transport=npm_transport,
-                                                  drop_new=live is None))
-        if not isinstance(e, (StepFailed, NpmError)):
+        problem, cancelled = await _wait_for_put_back(_roll_back(
+            ctx, out, recorded, back, transport=npm_transport, drop_new=live is None))
+        if cancelled or not isinstance(e, (StepFailed, NpmError)):
             if problem:
                 out(problem + "\n")
+            if cancelled and not isinstance(e, asyncio.CancelledError):
+                raise asyncio.CancelledError from None
             raise
         if problem:
             tail = problem

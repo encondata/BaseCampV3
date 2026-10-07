@@ -5,6 +5,7 @@ puts every proxy host back."""
 from dataclasses import replace
 
 import asyncio
+import gc
 import json
 
 import pytest
@@ -361,3 +362,60 @@ async def test_everything_else_on_a_host_survives(db, lan, publish_fakes):  # no
     assert api["forward_host"] == PURPLE_IP
     assert {k: api[k] for k in want_api} == want_api
     assert {k: spaces[k] for k in want_spaces} == want_spaces
+
+
+async def _switch_cancelled_twice(db, env, fakes, monkeypatch):
+    """Cancel the switch during its smoke test, then again while it puts NPM
+    back; the put-back is held at a gate until the test opens it."""
+    started, gate = asyncio.Event(), asyncio.Event()
+    smoking = asyncio.Event()
+
+    async def forever(*args, **kwargs):
+        smoking.set()
+        await asyncio.Event().wait()
+
+    real = publish._put_back
+
+    async def gated(*args, **kwargs):
+        started.set()
+        await gate.wait()
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(publish, "run_smoke", forever)
+    monkeypatch.setattr(publish, "_put_back", gated)
+    task = asyncio.create_task(
+        _publisher().run("lan_switch", await _ctx(db, env, "purple"), lambda _: None))
+    await smoking.wait()
+    task.cancel()
+    await started.wait()
+    task.cancel()                       # the second cancel, during the put-back
+    await asyncio.sleep(0)
+    return task, gate
+
+
+async def test_a_second_cancel_still_lets_the_put_back_finish(db, lan, publish_fakes,
+                                                              monkeypatch):  # noqa: F811
+    await _switched(db, lan, "orange")
+    task, gate = await _switch_cancelled_twice(db, lan, publish_fakes, monkeypatch)
+    gc.collect()
+    assert not task.done()              # still waiting for the put-back
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert _app_forwards(publish_fakes) == {ORANGE}
+    assert (await _hosts(db, lan))["api"] == ORANGE
+    assert not publish._PUTTING_BACK      # the reference goes once it is done
+
+
+async def test_the_wait_for_the_put_back_is_bounded(db, lan, publish_fakes,
+                                                    monkeypatch):  # noqa: F811
+    await _switched(db, lan, "orange")
+    monkeypatch.setattr(publish, "PUT_BACK_WAIT", 0.05)
+    task, gate = await _switch_cancelled_twice(db, lan, publish_fakes, monkeypatch)
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+    assert len(publish._PUTTING_BACK) == 1     # still held while it runs on
+    gate.set()
+    while publish._PUTTING_BACK:
+        await asyncio.sleep(0.01)
+    assert _app_forwards(publish_fakes) == {ORANGE}
