@@ -346,6 +346,7 @@ const MESSAGES: Record<string, string> = {
   // LAN Blue/Green
   vm_static_required: 'Blue/Green needs a static address for each of the three VMs.',
   vm_ips_not_distinct: 'The data VM and the two app VMs need three different addresses.',
+  vm_subnet_mismatch: 'The data VM and the two app VMs need addresses on the same network.',
   vm_resize_not_supported: "A Blue/Green environment's VM sizes can't change yet.",
   not_bluegreen_environment: "This environment has one server, so there's nothing to activate.",
   not_supported_on_bluegreen:
