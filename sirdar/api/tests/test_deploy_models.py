@@ -759,3 +759,50 @@ async def test_first_admin_password_only_for_typed(db):
             "email, password_mode, password_enc) VALUES (:e, 'A', 'B', 'a@b.co', 'invite', "
             "'\\x00')"), {"e": env.id})
     await db.rollback()
+
+
+_FA_INSERT = ("INSERT INTO environment_first_admins (environment_id, first_name, last_name, "
+              "email, password_mode, password_enc) VALUES (:e, :f, :l, :m, :mode, :p)")
+
+
+async def test_first_admin_typed_with_a_password_is_accepted(db):
+    from .deploy_factories import make_environment
+    env = await make_environment(db, name="fa2", secrets={})
+    await db.execute(text(_FA_INSERT), {"e": env.id, "f": "A", "l": "B", "m": "a@b.co",
+                                        "mode": "typed", "p": b"\x00"})
+    await db.commit()
+    assert await db.scalar(text(
+        "SELECT count(*) FROM environment_first_admins WHERE environment_id = :e"),
+        {"e": env.id}) == 1
+
+
+@pytest.mark.parametrize("over", [
+    {"f": ""}, {"f": "x" * 101}, {"l": ""}, {"l": "x" * 101},
+    {"m": "ab"}, {"m": "x" * 255}, {"mode": "sms"},
+])
+async def test_first_admin_column_checks(db, over):
+    from .deploy_factories import make_environment
+    env = await make_environment(db, name="fa3", secrets={})
+    params = {"e": env.id, "f": "A", "l": "B", "m": "a@b.co", "mode": "invite", "p": None,
+              **over}
+    with pytest.raises(IntegrityError):
+        await db.execute(text(_FA_INSERT), params)
+    await db.rollback()
+
+
+async def test_first_admin_names_at_the_limit_are_accepted(db):
+    from .deploy_factories import make_environment
+    env = await make_environment(db, name="fa4", secrets={})
+    await db.execute(text(_FA_INSERT), {"e": env.id, "f": "x" * 100, "l": "y" * 100,
+                                        "m": "a" * 242 + "@example.com", "mode": "invite",
+                                        "p": None})
+    await db.commit()
+
+
+async def test_deployment_first_admin_defaults_to_false(db):
+    env = await _env(db)
+    dep = _dep(env)
+    db.add(dep)
+    await db.commit()
+    await db.refresh(dep)
+    assert dep.first_admin is False

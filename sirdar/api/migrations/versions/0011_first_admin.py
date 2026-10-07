@@ -35,6 +35,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Dropping the rows is deliberate: environment_first_admins is transient
+    # setup state (a pending first admin, or a done marker with no password),
+    # not a record anything else needs. A pending one is simply re-entered.
     op.execute("""
         ALTER TABLE deployments DROP COLUMN first_admin;
         DROP TABLE environment_first_admins;

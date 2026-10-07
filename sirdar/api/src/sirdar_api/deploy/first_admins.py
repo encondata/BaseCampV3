@@ -72,7 +72,8 @@ def check(fields) -> dict:
             raise FirstAdminError("first_admin_password_not_allowed")
         password = None
     else:
-        if password is None or not isinstance(password, str) \
+        # A blank (all-whitespace) password counts as none at all.
+        if password is None or not isinstance(password, str) or not password.strip() \
                 or len(password) < portal_policy.PASSWORD_MIN_LENGTH:
             raise FirstAdminError("first_admin_password_too_short",
                                   min_length=portal_policy.PASSWORD_MIN_LENGTH)
@@ -94,8 +95,12 @@ async def pending(db: AsyncSession, env_id: uuid.UUID) -> bool:
 
 async def put(db: AsyncSession, settings: Settings, env_id: uuid.UUID,
               spec: dict) -> EnvironmentFirstAdmin:
-    """Insert or replace the first admin (a checked spec)."""
+    """Insert or replace the first admin (a checked spec). Once step 11 has
+    created them (done_at set) it refuses with first_admin_done: a password
+    stored then would have nothing to use or clear it."""
     row = await get(db, env_id)
+    if row is not None and row.done_at is not None:
+        raise FirstAdminError("first_admin_done")
     if row is None:
         row = EnvironmentFirstAdmin(environment_id=env_id)
         db.add(row)
