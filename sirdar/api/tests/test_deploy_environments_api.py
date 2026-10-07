@@ -25,7 +25,7 @@ ENV_KEYS = {"id", "name", "type", "target", "base_domain", "env_dir", "git_ref",
             "image_tag", "status", "proxy_ip", "bind_ip", "keep_dumps", "spaces_bucket",
             "log_level", "services", "secrets_set", "seed_snapshot", "last_deployment",
             "created_at", "updated_at", "publish", "managed_records", "target_kind", "vm",
-            "do", "slots", "active_slot", "auto_activate", "retiring"}
+            "do", "slots", "active_slot", "auto_activate", "retiring", "first_admin"}
 NEW = {"mode": "new", "name": "qa", "type": "custom", "target": "ssh",
        "proxy_ip": "10.10.48.6"}
 DEFAULTS_URL = "/api/deploy/environment-defaults"
@@ -47,7 +47,10 @@ async def test_permissions(client, db, target, leak_guard):
     assert (await client.get(URL)).status_code == 401
     admin = await auth_headers(client, db, email="admin@test.example.com", roles=("admin",))
     assert (await client.get(URL, headers=admin)).json() == {"environments": []}
-    for method, url, body in (("POST", URL, NEW), ("PATCH", f"{URL}/qa", {"keep_dumps": 3})):
+    admin_body = {"first_name": "Ada", "last_name": "Lovelace", "email": "ada@test.example.com",
+                  "password_mode": "invite"}
+    for method, url, body in (("POST", URL, NEW), ("PATCH", f"{URL}/qa", {"keep_dumps": 3}),
+                              ("PUT", f"{URL}/qa/first-admin", admin_body)):
         resp = await client.request(method, url, headers=admin, json=body)
         assert resp.status_code == 403, url
         assert resp.json()["detail"]["code"] == "forbidden"
@@ -75,7 +78,8 @@ async def test_environment_defaults(client, db):
                           "disk_gb": [20, 4096], "keep_snapshots": [1, 10]}},
         "do": {"droplet_size": "s-2vcpu-4gb", "db_size": "db-s-2vcpu-4gb", "db_standby": False,
                "production_slots": ["blue", "green"], "one_slot": ["orange"],
-               "two_slots": ["orange", "purple"]}}
+               "two_slots": ["orange", "purple"]},
+        "first_admin": {"password_min_length": 8, "role": "super_admin", "link_minutes": 240}}
 
 
 async def test_create_new_environment(client, db, target, leak_guard):

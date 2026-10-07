@@ -18,7 +18,8 @@ from starlette.requests import ClientDisconnect
 from sirdar_api.api.deps import AuthContext, DbSession, client_ip, require_permission
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import (Deployment, DeploymentStep, DoAccount, DoEnvironment,
-                                  Environment, EsxiVm, Snapshot, SshKnownHost)
+                                  Environment, EnvironmentFirstAdmin, EsxiVm, Snapshot,
+                                  SshKnownHost)
 from sirdar_api.deploy import (
     ConnectFailed,
     digitalocean,
@@ -28,6 +29,7 @@ from sirdar_api.deploy import (
     envfile,
     environments,
     esxi,
+    first_admins,
     gitref,
     integrations,
     known_hosts,
@@ -46,6 +48,7 @@ from sirdar_api.deploy import (
 from sirdar_api.deploy.ssh import SshTargetConfig
 from sirdar_api.deploy.ssh_targets import SavedSshTarget, TargetError
 from sirdar_api.deploy.steps import STEPS_BY_KEY, plan_for
+from sirdar_api.services import portal_policy
 from sirdar_api.services.audit import audit
 
 router = APIRouter(prefix="/deploy", tags=["deploy"])
@@ -393,7 +396,8 @@ _ENV_STATUS = {"environment_exists": 409, "deploy_in_progress": 409,
                "integration_not_configured": 409, "ip_in_use": 409,
                "ssh_targets_unreadable": 409, "vm_invalid": 422,
                "do_account_not_configured": 409, "production_exists": 409,
-               "integration_unreadable": 409}
+               "integration_unreadable": 409, "first_admin_not_set": 404,
+               "first_admin_done": 409}
 _NAME_CONSTRAINT = "environments_name_key"
 _PRODUCTION_CONSTRAINT = "environments_one_production"
 
@@ -429,6 +433,18 @@ class DoIn(BaseModel):
     auto_activate: bool | None = None
 
 
+class FirstAdminIn(BaseModel):
+    """The first super admin of an environment that starts empty. The
+    password is write-only (typed mode); an invite has none. No min_length:
+    the bar is ServerSherpa's, checked by first_admins.check with its own
+    code; 1024 is the transport limit of every Sirdar password field."""
+    first_name: str = Field(max_length=100)
+    last_name: str = Field(max_length=100)
+    email: str = Field(max_length=254)
+    password_mode: Literal["typed", "invite"]
+    password: str | None = Field(default=None, max_length=1024, repr=False)
+
+
 class EnvironmentIn(BaseModel):
     mode: Literal["new", "adopt"]
     name: str = Field(max_length=64)
@@ -448,6 +464,8 @@ class EnvironmentIn(BaseModel):
     vm: VmIn | None = None
     # mode "new" with target "digitalocean" only: account, slots and sizes
     do: DoIn | None = None
+    # mode "new" only, without snapshot_id: the first deploy's step 11 creates it
+    first_admin: FirstAdminIn | None = None
 
 
 class ServicePatch(BaseModel):
@@ -529,6 +547,9 @@ async def environment_defaults(actor: AuthContext = require_permission("deploy",
         "do": {"droplet_size": do_envs.DEFAULT_DROPLET_SIZE, "db_size": do_envs.DEFAULT_DB_SIZE,
                "db_standby": False, "production_slots": list(do_envs.PRODUCTION_SLOTS),
                "one_slot": list(do_envs.ONE_SLOT), "two_slots": list(do_envs.TWO_SLOTS)},
+        "first_admin": {"password_min_length": portal_policy.PASSWORD_MIN_LENGTH,
+                        "role": portal_policy.FIRST_ADMIN_ROLE,
+                        "link_minutes": portal_policy.FIRST_ADMIN_LINK_MINUTES},
     }
 
 
@@ -557,6 +578,8 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
         raise HTTPException(status_code=422, detail={"code": "vm_not_allowed"})
     if body.mode == "adopt" and body.do is not None:
         raise HTTPException(status_code=422, detail={"code": "do_not_allowed"})
+    if body.mode == "adopt" and body.first_admin is not None:
+        raise HTTPException(status_code=422, detail={"code": "first_admin_not_allowed"})
     if body.mode == "adopt" and body.publish:
         # A hand-built environment's DNS and proxy were made by hand: turn
         # Publish on after claiming them on the Publish tab.
@@ -569,7 +592,8 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
                 bind_ip=body.bind_ip, ports=body.ports, actor_id=actor_id,
                 snapshot_id=body.snapshot_id, publish=body.publish is not False,
                 vm=body.vm.model_dump(exclude_none=True) if body.vm else None,
-                do=body.do.model_dump(exclude_none=True) if body.do else None)
+                do=body.do.model_dump(exclude_none=True) if body.do else None,
+                first_admin=body.first_admin.model_dump() if body.first_admin else None)
         else:
             env, _, report = await environments.adopt(
                 db, settings, name=body.name, type_=body.type, target_id=body.target,
@@ -603,6 +627,9 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
             changes["vm"] = body.vm.model_dump(exclude_none=True)
         if body.do is not None:
             changes["do"] = body.do.model_dump(exclude_none=True)
+        if body.first_admin is not None:          # never the password
+            changes["first_admin"] = {"email": body.first_admin.email.strip(),
+                                      "password_mode": body.first_admin.password_mode}
         audit(db, actor_id=actor_id, action="deploy.environment_create",
               entity_type="environment", entity_id=env.name, ip=client_ip(request),
               changes=changes)
@@ -679,6 +706,41 @@ async def update_environment(name: str, body: EnvironmentPatch, request: Request
         raise
     if changed:
         await db.refresh(env)
+    return await serialize.environment_out(db, env)
+
+
+@router.put("/environments/{name}/first-admin")
+async def set_first_admin(name: str, body: FirstAdminIn, request: Request, db: DbSession,
+                          actor: AuthContext = require_permission("deploy", "change")):
+    """Change the first admin before step 11 used it: a new password (the
+    environment refused the last one) or an invite instead."""
+    env = await _environment(db, name)
+    # Locked until this request commits, and the running-deployment check is
+    # made under the lock: step 11 marks the record done in its own commit,
+    # so a PUT can't land between it reading the record and marking it.
+    row = await db.get(EnvironmentFirstAdmin, env.id, with_for_update=True,
+                       populate_existing=True)
+    if row is None:
+        raise _refuse(404, "first_admin_not_set")
+    if row.done_at is not None:
+        raise _refuse(409, "first_admin_done")
+    if await environments.is_deploying(db, env.id):    # step 11 may be using it
+        raise _refuse(409, "deploy_in_progress")
+    settings = get_settings()
+    if not vault.is_configured(settings):
+        raise _refuse(400, "secrets_key_missing")
+    try:
+        spec = first_admins.check(body.model_dump())
+        await first_admins.put(db, settings, env.id, spec)
+    except first_admins.FirstAdminError as e:     # first_admin_done: step 11 got there first
+        await db.rollback()
+        raise _refuse(_ENV_STATUS.get(e.code, 422), e.code, **e.extra) from None
+    audit(db, actor_id=actor.user.person_id, action="deploy.first_admin_set",
+          entity_type="environment", entity_id=env.name, ip=client_ip(request),
+          changes={"environment": env.name, "email": spec["email"],
+                   "password_mode": spec["password_mode"]})
+    await db.commit()
+    await db.refresh(env)
     return await serialize.environment_out(db, env)
 
 
@@ -840,7 +902,8 @@ async def _launch(db, env: Environment, request: Request, actor: AuthContext, *,
                   retry_of: uuid.UUID | None = None, snapshot: Snapshot | None = None,
                   restore_dump: str | None = None, publish: bool = False, vm: bool = False,
                   take_vm_snapshot: bool = False, vm_snapshot: str | None = None,
-                  cloud: bool = False, slot: str | None = None, go_live: bool = False) -> dict:
+                  cloud: bool = False, slot: str | None = None, go_live: bool = False,
+                  first_admin: bool = False) -> dict:
     env_name = env.name           # read now: a lock conflict rolls the session back
     snapshot_id = snapshot.id if snapshot is not None else None
     snapshot_name = snapshot.name if snapshot is not None else None
@@ -852,7 +915,8 @@ async def _launch(db, env: Environment, request: Request, actor: AuthContext, *,
                                                restore_dump=restore_dump, publish=publish,
                                                vm=vm, take_vm_snapshot=take_vm_snapshot,
                                                vm_snapshot=vm_snapshot, cloud=cloud,
-                                               slot=slot, go_live=go_live)
+                                               slot=slot, go_live=go_live,
+                                               first_admin=first_admin)
     except pipeline.DeployInProgress:
         raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"}) from None
     except pipeline.NotSupportedOnDigitalOcean as e:
@@ -882,6 +946,8 @@ async def _launch(db, env: Environment, request: Request, actor: AuthContext, *,
         changes["vm_snapshot"] = vm_snapshot
     if cloud:
         changes |= {"slot": slot, "go_live": go_live}
+    if dep.first_admin:          # as planned (create_deployment drops it once done)
+        changes["first_admin"] = True
     audit(db, actor_id=actor.user.person_id, action=action, entity_type="deployment",
           entity_id=str(dep.id), ip=client_ip(request), changes=changes)
     await db.commit()
@@ -957,7 +1023,8 @@ async def _start_do_update(db, env: Environment, body: DeploymentIn, request: Re
     return await _launch(db, env, request, actor, action="deploy.deployment_start",
                          mode="update", git_ref=ref,
                          sha=ref.lower() if gitref.is_full_sha(ref) else "", snapshot=snapshot,
-                         cloud=True, slot=slot, go_live=do_envs.goes_live(env, slot))
+                         cloud=True, slot=slot, go_live=do_envs.goes_live(env, slot),
+                         first_admin=snapshot is None and await first_admins.pending(db, env.id))
 
 
 async def _do_ran(db, env: Environment) -> bool:
@@ -1286,7 +1353,9 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
             raise _ssh_http(e) from None
     return await _launch(db, env, request, actor, action="deploy.deployment_start",
                          mode=body.mode, git_ref=ref, sha=sha, snapshot=snapshot,
-                         publish=env.publish, vm=on_vm, take_vm_snapshot=take)
+                         publish=env.publish, vm=on_vm, take_vm_snapshot=take,
+                         first_admin=body.mode == "update" and snapshot is None
+                         and await first_admins.pending(db, env.id))
 
 
 @router.get("/environments/{name}/deployments")
@@ -1364,9 +1433,21 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     restoring = dep.mode in ("update", "reset") and await _has_step(db, dep.id, "restore")
     # A DigitalOcean Delete that took a snapshot first (step 11).
     taking = dep.mode == "teardown" and dep.cloud and await _has_step(db, dep.id, "export")
+    # Step 11 again only while the first admin is still to be created, as
+    # create_deployment plans it (a done record drops the step).
+    first_admin = dep.first_admin and await first_admins.pending(db, env.id)
     plan = plan_for(dep.mode, restore=restoring, publish=dep.publish, vm=dep.vm,
                     cloud=dep.cloud, go_live=dep.go_live, snapshot=taking,
-                    smoke=pipeline.smokes(dep.mode, dep.slot))
+                    smoke=pipeline.smokes(dep.mode, dep.slot), first_admin=first_admin)
+    admin_step = STEPS_BY_KEY["first_admin"].number
+    if dep.first_admin and not first_admin and from_step == admin_step <= stopped:
+        # The admin was created since step 11 stopped: carry on with the step
+        # after it, or there's nothing left to retry.
+        later = [s.number for s in plan if s.number > admin_step]
+        if not later:
+            raise HTTPException(status_code=409, detail={"code": "not_retryable"})
+        from_step = later[0]
+        stopped = max(stopped, from_step)
     if from_step not in [s.number for s in plan] or from_step > stopped:
         raise HTTPException(status_code=422, detail={"code": "from_step_invalid"})
     # The Publish switch as it is now: a retry never publishes an environment
@@ -1427,7 +1508,8 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
                          restore_dump=dep.restore_dump, publish=publishing, vm=dep.vm,
                          take_vm_snapshot=dep.take_vm_snapshot,
                          vm_snapshot=dep.vm_snapshot if dep.mode == "vm_restore" else None,
-                         cloud=dep.cloud, slot=dep.slot, go_live=dep.go_live)
+                         cloud=dep.cloud, slot=dep.slot, go_live=dep.go_live,
+                         first_admin=first_admin)
 
 
 @router.post("/deployments/{deployment_id}/rollback", status_code=201)

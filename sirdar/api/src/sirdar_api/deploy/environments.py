@@ -35,6 +35,7 @@ from sirdar_api.deploy import (
     do_accounts,
     do_envs,
     envfile,
+    first_admins,
     integrations,
     names,
     ssh,
@@ -243,7 +244,8 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                      ports: dict[str, int] | None = None, actor_id=None,
                      snapshot_id: uuid.UUID | None = None,
                      publish: bool = True, vm: dict | None = None,
-                     do: dict | None = None) -> Environment:
+                     do: dict | None = None,
+                     first_admin: dict | None = None) -> Environment:
     """A new environment (status "new"): default ports unless given, the
     target's host for every service, freshly generated secrets. With a
     snapshot, its first deploy restores that snapshot (and its keys). With
@@ -252,9 +254,19 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     sets its network; every service points at its static address (0.0.0.0
     for DHCP until step 0 reads it), and its VM row records it as Sirdar's.
     On DigitalOcean ("digitalocean"), `do` picks the account, slots and
-    sizes (see do_envs.check_spec); production lives only there."""
+    sizes (see do_envs.check_spec); production lives only there.
+    first_admin: the first super admin step 11 of the first deploy creates
+    (never with a snapshot)."""
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
                           git_ref=git_ref)
+    admin_spec = None
+    if first_admin is not None:
+        if snapshot_id is not None:
+            raise EnvError("first_admin_with_seed")    # a seed already has its users
+        try:
+            admin_spec = first_admins.check(first_admin)
+        except first_admins.FirstAdminError as e:
+            raise EnvError(e.code, **e.extra) from None
     on_do = target_id == targets.DO_TARGET
     if type_ == "production" and not on_do:
         raise EnvError("production_requires_digitalocean")
@@ -286,9 +298,12 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                  for s in envfile.SERVICES}
     _check_ports_unique(all_ports)
     if on_do:
-        return await _create_on_do(db, settings, name=name, type_=type_, git_ref=git_ref,
-                                   domain=domain, ports=all_ports, actor_id=actor_id,
-                                   snapshot_id=snapshot_id, do=do or {})
+        env = await _create_on_do(db, settings, name=name, type_=type_, git_ref=git_ref,
+                                  domain=domain, ports=all_ports, actor_id=actor_id,
+                                  snapshot_id=snapshot_id, do=do or {})
+        if admin_spec is not None:
+            await first_admins.put(db, settings, env.id, admin_spec)
+        return env
     spec = None
     host = cfg.host if cfg is not None else ""
     if targets.is_vm_target(target_id):
@@ -322,6 +337,8 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                 await vms.add(db, settings, env, spec, stored)
         except vms.VmError as e:
             raise EnvError(e.code, **e.extra) from None
+    if admin_spec is not None:
+        await first_admins.put(db, settings, env.id, admin_spec)
     return env
 
 

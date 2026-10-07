@@ -168,8 +168,8 @@ it('every error code the deploy routes can return has its own message', () => {
                       'do_token_invalid', 'do_account_invalid', 'label_invalid', 'region_invalid',
                       'not_supported_on_digitalocean', 'seed_not_allowed', 'slot_not_deployed',
                       'snapshot_slot_unreachable', 'do_account_changed',
-                      // first_admin_with_seed and first_admin_not_set join this list with Task 7's backend
-                      'first_admin_password_too_short', 'first_admin_done']) {
+                      'first_admin_password_too_short', 'first_admin_done', 'first_admin_with_seed',
+                      'first_admin_not_set', 'first_admin_not_allowed']) {
     expect(codes).toContain(code);
   }
   const missing = codes.filter((c) => sirdar.errorText(new ApiError(400, c), '__none__') === '__none__');
