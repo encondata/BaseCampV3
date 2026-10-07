@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.db.models import Deployment, DeploymentStep, Environment, ManagedRecord, User
-from sirdar_api.deploy import envfile, first_admins, snapshots, targets, vms
+from sirdar_api.deploy import envfile, first_admins, lan_slots, snapshots, targets, vms
 from sirdar_api.deploy.environments import secret_keys_of, services_of
 
 LOG_TAIL_DEFAULT = 8000
@@ -97,11 +97,15 @@ async def environment_out(db: AsyncSession, env: Environment) -> dict:
     keys = await secret_keys_of(db, env.id)
     last = await latest_deployment(db, env.id)
     on_vm = targets.is_vm_target(env.target_id)
-    vm = await vms.get_for(db, env) if on_vm else None
+    machines = await vms.machines(db, env) if on_vm else []
+    main = next((m for m in machines if m.role == vms.MAIN), None)
+    lan = (lan_slots.public(env, await lan_slots.slots_of(db, env.id), machines)
+           if lan_slots.is_bluegreen(env) else None)
     return {
         "id": str(env.id), "name": env.name, "type": env.type, "target": env.target_id,
         "target_kind": env.target_id if targets.is_built_target(env.target_id) else "ssh",
-        "vm": vms.public(vm) if vm is not None else None,
+        "vm": vms.public(main) if main is not None else None,
+        "machines": [vms.public(m) for m in machines], "lan_slots": lan,
         "do": await _do_out(db, env), "slots": list(env.slots),
         "active_slot": env.active_slot, "auto_activate": env.auto_activate,
         "retiring": env.retiring,

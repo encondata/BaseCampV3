@@ -397,7 +397,7 @@ _ENV_STATUS = {"environment_exists": 409, "deploy_in_progress": 409,
                "ssh_targets_unreadable": 409, "vm_invalid": 422,
                "do_account_not_configured": 409, "production_exists": 409,
                "integration_unreadable": 409, "first_admin_not_set": 404,
-               "first_admin_done": 409}
+               "first_admin_done": 409, "vm_name_taken": 409}
 _NAME_CONSTRAINT = "environments_name_key"
 _PRODUCTION_CONSTRAINT = "environments_one_production"
 

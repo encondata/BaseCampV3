@@ -18,6 +18,8 @@ from pathlib import PurePosixPath
 
 from cryptography.fernet import Fernet
 from sqlalchemy import delete, func, select, text
+from sqlalchemy import update as sql_update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
@@ -27,6 +29,8 @@ from sirdar_api.db.models import (
     Environment,
     EnvironmentSecret,
     EnvironmentService,
+    EsxiVm,
+    ProxmoxVm,
     Snapshot,
 )
 from sirdar_api.deploy import (
@@ -37,6 +41,7 @@ from sirdar_api.deploy import (
     envfile,
     first_admins,
     integrations,
+    lan_slots,
     names,
     ssh,
     targets,
@@ -256,7 +261,9 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     On DigitalOcean ("digitalocean"), `do` picks the account, slots and
     sizes (see do_envs.check_spec); production lives only there.
     first_admin: the first super admin step 11 of the first deploy creates
-    (never with a snapshot)."""
+    (never with a snapshot). With `vm.slots: 2` (ESXi or Proxmox) the
+    environment is LAN Blue/Green: a data VM and two app VMs (orange,
+    purple), static addresses, Nginx Proxy Manager as the switch."""
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
                           git_ref=git_ref)
     admin_spec = None
@@ -268,6 +275,10 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         except first_admins.FirstAdminError as e:
             raise EnvError(e.code, **e.extra) from None
     on_do = target_id == targets.DO_TARGET
+    if vm is not None and (not isinstance(vm, dict) or vm.get("slots") not in (None, 1, 2)):
+        raise EnvError("vm_invalid")
+    if vm is not None and vm.get("slots") == 2 and not targets.is_vm_target(target_id):
+        raise EnvError("bluegreen_not_allowed")
     if type_ == "production" and not on_do:
         raise EnvError("production_requires_digitalocean")
     if do is not None and not on_do:
@@ -304,20 +315,38 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         if admin_spec is not None:
             await first_admins.put(db, settings, env.id, admin_spec)
         return env
-    spec = None
+    spec = bluegreen = None
     host = cfg.host if cfg is not None else ""
     if targets.is_vm_target(target_id):
         if not await integrations.is_configured(db, target_id):
             raise EnvError("integration_not_configured", kinds=[target_id])
         try:
-            spec = vms.check_spec({} if vm is None else vm)
-            address = vms.static_ip(spec["ip_cidr"])
-            if address:
+            if (vm or {}).get("slots") == 2:
+                if not await integrations.is_configured(db, "npm"):
+                    # Nginx Proxy Manager is the switch between the two app VMs.
+                    raise EnvError("integration_not_configured", kinds=["npm"])
+                bluegreen = vms.check_bluegreen(vm)
+                addresses = [vms.static_ip(bluegreen[r]["ip_cidr"])
+                             for r in ("orange", "purple", "data")]
                 await vms.lock_addresses(db)        # held until the caller commits
-                if await vms.address_in_use(db, settings, address, proxy_ip=proxy):
-                    raise EnvError("ip_in_use")
+                for address in addresses:
+                    if await vms.address_in_use(db, settings, address, proxy_ip=proxy):
+                        raise EnvError("ip_in_use")
+                address = addresses[0]                 # services start on orange
+            else:
+                spec = vms.check_spec({} if vm is None else
+                                      {k: v for k, v in vm.items() if k != "slots"})
+                address = vms.static_ip(spec["ip_cidr"])
+                if address:
+                    await vms.lock_addresses(db)    # held until the caller commits
+                    if await vms.address_in_use(db, settings, address, proxy_ip=proxy):
+                        raise EnvError("ip_in_use")
         except vms.VmError as e:
             raise EnvError(e.code, **e.extra) from None
+        roles = (vms.DATA, *lan_slots.SLOTS) if bluegreen is not None else (vms.MAIN,)
+        taken = await _vm_name_taken(db, [vms.vm_name(name, r) for r in roles])
+        if taken is not None:
+            raise EnvError("vm_name_taken", name=taken)
         host = address or "0.0.0.0"
     elif vm is not None:
         raise EnvError("vm_not_allowed")
@@ -328,18 +357,48 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         log_level=envfile.DEFAULT_LOG_LEVEL, status="new", current_sha=None, image_tag=None,
         secrets=vault.generate_env_secrets(), actor_id=actor_id, seed_snapshot_id=snapshot_id,
         publish=publish)
-    if spec is not None:
+    if spec is not None or bluegreen is not None:
         stored = await integrations.config_of(db, target_id)
+        add_vm = vms.add_esxi if target_id == targets.ESXI_TARGET else vms.add
+        role = vms.MAIN
         try:
-            if target_id == targets.ESXI_TARGET:
-                await vms.add_esxi(db, settings, env, spec, stored)
+            if bluegreen is not None:
+                env.slots = list(lan_slots.SLOTS)
+                env.auto_activate = bluegreen["auto_activate"]
+                for role in (vms.DATA, *lan_slots.SLOTS):
+                    await add_vm(db, settings, env, bluegreen[role], stored, role=role)
+                await lan_slots.add(db, env.id, lan_slots.SLOTS)
+                await db.execute(sql_update(EnvironmentService).where(
+                    EnvironmentService.environment_id == env.id,
+                    EnvironmentService.service == "spaces")
+                    .values(host_ip=vms.static_ip(bluegreen["data"]["ip_cidr"])))
             else:
-                await vms.add(db, settings, env, spec, stored)
+                await add_vm(db, settings, env, spec, stored)
         except vms.VmError as e:
             raise EnvError(e.code, **e.extra) from None
+        except IntegrityError as e:
+            # Two creates both passed _vm_name_taken; the name key settled it.
+            # The session needs a rollback, as for any EnvError.
+            if any(key in str(e.orig) for key in _VM_NAME_KEYS):
+                raise EnvError("vm_name_taken", name=vms.vm_name(name, role)) from None
+            raise
+        await db.flush()
     if admin_spec is not None:
         await first_admins.put(db, settings, env.id, admin_spec)
     return env
+
+
+_VM_NAME_KEYS = ("proxmox_vms_name_key", "esxi_vms_name_key")
+
+
+async def _vm_name_taken(db: AsyncSession, names: list[str]) -> str | None:
+    """The first of these VM names another environment's VM (Proxmox or
+    ESXi) already has: vm_name("lan1", "data") and vm_name("lan1-data") are
+    both ss-lan1-data."""
+    used: set[str] = set()
+    for model in (ProxmoxVm, EsxiVm):
+        used |= set(await db.scalars(select(model.name).where(model.name.in_(names))))
+    return next((n for n in names if n in used), None)
 
 
 async def lock_production(db: AsyncSession) -> None:

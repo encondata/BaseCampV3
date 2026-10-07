@@ -150,6 +150,30 @@ def check_spec(fields: dict) -> dict:
     return {**sizes, "ip_mode": mode, "ip_cidr": cidr, "gateway": gateway}
 
 
+def check_bluegreen(fields: dict) -> dict:
+    """A LAN Blue/Green environment's three VMs: orange (`ip_cidr`) and purple
+    (`purple_ip_cidr`) with the app sizes, the data VM (`data_ip_cidr`, sizes
+    in `data`, default DEFAULTS) on the same gateway. Static addresses only:
+    the data VM's pg_hba.conf and firewall list the app VMs before they exist."""
+    if not isinstance(fields, dict):
+        raise VmError("vm_invalid")
+    if fields.get("ip_mode") != "static":
+        raise VmError("vm_static_required")
+    orange = check_spec(fields)
+    purple = check_spec({**fields, "ip_cidr": fields.get("purple_ip_cidr")})
+    data_sizes = fields.get("data") or {}
+    if not isinstance(data_sizes, dict):
+        raise VmError("vm_invalid")
+    data = check_spec({**{k: data_sizes.get(k) for k in DEFAULTS}, "ip_mode": "static",
+                       "ip_cidr": fields.get("data_ip_cidr"), "gateway": fields.get("gateway")})
+    if len({static_ip(s["ip_cidr"]) for s in (orange, purple, data)}) != 3:
+        raise VmError("vm_ips_not_distinct")
+    auto = fields.get("auto_activate", False)
+    if not isinstance(auto, bool):
+        raise VmError("vm_invalid")
+    return {"orange": orange, "purple": purple, "data": data, "auto_activate": auto}
+
+
 def new_keypair(env_name: str) -> tuple[str, str]:
     """(private, public) OpenSSH ed25519 keys for one VM."""
     key = asyncssh.generate_private_key("ssh-ed25519", comment=f"sirdar@{vm_name(env_name)}")
