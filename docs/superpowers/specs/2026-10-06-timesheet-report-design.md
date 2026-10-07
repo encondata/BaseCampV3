@@ -72,6 +72,11 @@ the definition's, then these.
 - Limit: more than 20,000 matching entries (counted over the padded UTC
   query window, so a few boundary entries may count) fails the run with
   `too_many_entries` (the preview says so before anyone generates).
+- **PDF limit: 5,000 entries** (a 20,000-entry PDF is ~1,800 pages, ~4 min and
+  ~9 GB to render — past the worker's 300 s timeout). Over it, a PDF run fails
+  with `too_many_for_pdf`; the preview takes `format` and reports
+  `too_many: true` for that format. Excel keeps the 20,000 limit.
+- Free text is cleaned of control characters Excel can't store before writing.
 
 ## Output
 
@@ -142,8 +147,17 @@ are time data, the timesheet additionally requires **`time:view`**:
   - **Views**: ChoiceCards (checkbox) Day view, Punch view.
   - **Format**: Excel workbook / PDF document; **Notify me** switch.
   - **Preview card**: KPI tiles Entries, People, Days, Approved, Pending,
-    Flagged; refreshed (debounced 400 ms) when options change; shows the
-    too-many message and disables Generate when `too_many`.
+    Flagged; refreshed (debounced 400 ms) when options change (including
+    Format); shows the too-many message and disables Generate when
+    `too_many`. For PDF the message reads **More than 5,000 entries match.
+    A PDF that long isn't practical — choose Excel or narrow the range.**
+  - People without `time:view` don't get a Generate action for the
+    Timesheet definition on Reports › Available.
+  - Run errors read in words: `too_many_entries` → **Too many entries for one
+    report (over 20,000). Narrow the date range or filters.**;
+    `too_many_for_pdf` → **Too many entries for a PDF (over 5,000). Choose
+    Excel or narrow the range.**; `time_view_required` → **You need
+    permission to view time to run this report.**
   - Generate disabled until dates are valid and at least one status and one
     view are chosen.
 - Edit definition modal: a timesheet branch for the three defaults.
@@ -152,7 +166,11 @@ are time data, the timesheet additionally requires **`time:view`**:
   `time:view`, opens the Generate modal on the Timesheet definition with the
   screen's current Person / Job / Site / From / To filters and status pill
   prefilled (pill All → Approved+Pending+Rejected+On the clock; a single
-  pill → that status; empty dates → This month).
+  pill → that status; both dates empty → This month; only From set → To is
+  today; only To set → From is the 1st of To's month). If the report
+  definitions can't be loaded, the error reads **Couldn't load the reports.
+  Try again.**; if none is a timesheet, **The Timesheet report isn't set up.
+  Ask an administrator.**
 
 ## Testing
 
