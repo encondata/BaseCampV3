@@ -7,6 +7,7 @@ which the Settings › Integrations card shows, falls back to
 SIRDAR_DEPLOY_DO_TOKEN). Callers pass resolve()'s settings, whose
 deploy_do_token is that token."""
 
+import logging
 import re
 
 import httpx
@@ -16,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sirdar_api.config import Settings, get_settings
 from sirdar_api.deploy import Check, ConnectFailed, ConnectResult
 from sirdar_api.deploy.integrations import DigitalOceanConfig
+
+log = logging.getLogger(__name__)
 
 BASE_URL = "https://api.digitalocean.com/v2"
 _UNREACHABLE = "Couldn't reach the DigitalOcean API."
@@ -104,35 +107,46 @@ async def list_regions(settings: Settings, *,
 _MAX_DROPLET_PAGES = 5
 
 
+def _items(body: dict, key: str) -> list:
+    """body[key] as a list of dicts. DigitalOcean answers null for an account with
+    none of a kind; anything else that isn't a list is a response Sirdar can't read
+    (logged by key only, never the values)."""
+    if key not in body:
+        log.warning("DigitalOcean inventory: the %s reply has no %s list", key, key)
+        raise ConnectFailed(_UNEXPECTED)
+    value = body[key]
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        log.warning("DigitalOcean inventory: %s isn't a list (%s)", key, type(value).__name__)
+        raise ConnectFailed(_UNEXPECTED)
+    return [d for d in value if isinstance(d, dict)]
+
+
 async def inventory(settings: Settings, *,
                     transport: httpx.AsyncBaseTransport | None = None) -> dict:
     """Raw read-only inventory: {droplets, databases, load_balancers}, each a list
     of DO resource dicts. Droplets follow links.pages.next up to 5 pages. Never
     carries the token; errors are sanitized ConnectFailed."""
     async with _client(settings, transport) as client:
-        try:
-            droplets: list = []
-            params: dict = {"per_page": 200}
-            for _ in range(_MAX_DROPLET_PAGES):
-                body = await _get(client, "/droplets", **params)
-                page = body["droplets"]
-                if not isinstance(page, list):
-                    raise TypeError
-                droplets += [d for d in page if isinstance(d, dict)]
-                nxt = ((body.get("links") or {}).get("pages") or {}).get("next")
+        droplets: list = []
+        params: dict = {"per_page": 200}
+        for _ in range(_MAX_DROPLET_PAGES):
+            body = await _get(client, "/droplets", **params)
+            droplets += _items(body, "droplets")
+            links = body.get("links")
+            pages = links.get("pages") if isinstance(links, dict) else None
+            nxt = pages.get("next") if isinstance(pages, dict) else None
+            try:
                 number = httpx.URL(nxt).params.get("page") if isinstance(nxt, str) else None
-                if not number:
-                    break
-                params = {"per_page": 200, "page": number}
-            databases = (await _get(client, "/databases"))["databases"]
-            lbs = (await _get(client, "/load_balancers", per_page=200))["load_balancers"]
-            if not isinstance(databases, list) or not isinstance(lbs, list):
-                raise TypeError
-        except (KeyError, TypeError, ValueError):
-            raise ConnectFailed(_UNEXPECTED) from None
-    return {"droplets": droplets,
-            "databases": [d for d in databases if isinstance(d, dict)],
-            "load_balancers": [d for d in lbs if isinstance(d, dict)]}
+            except (TypeError, ValueError):
+                number = None
+            if not number:
+                break
+            params = {"per_page": 200, "page": number}
+        databases = _items(await _get(client, "/databases"), "databases")
+        lbs = _items(await _get(client, "/load_balancers", per_page=200), "load_balancers")
+    return {"droplets": droplets, "databases": databases, "load_balancers": lbs}
 
 
 async def test_connection(settings: Settings, *, region: str | None = None,

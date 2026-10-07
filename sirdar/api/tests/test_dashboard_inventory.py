@@ -144,3 +144,30 @@ def test_only_valid_env_tags_become_environments():
     tree = service.build_tree(inv_)
     assert [n["name"] for n in tree] == ["Qa Team", "Untagged"]
     assert len(tree[1]["children"]) == 4
+
+
+@pytest.mark.parametrize("empty", ["databases", "load_balancers", "droplets"])
+async def test_an_account_with_none_of_a_kind_answers_null(empty):
+    """DigitalOcean answers {"databases": null} (and the like) for an account with
+    none: that is an empty list, not a response Sirdar doesn't understand."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        kind = request.url.path.rsplit("/", 1)[-1]
+        full = {"droplets": DROPLETS, "databases": DATABASES, "load_balancers": LBS}[kind]
+        return httpx.Response(200, json={kind: None if kind == empty else full})
+    got = await digitalocean.inventory(_settings(deploy_do_token=TOKEN),
+                                       transport=httpx.MockTransport(handler))
+    assert got[empty] == []
+
+
+async def test_a_response_it_cannot_read_logs_the_part_never_the_values(caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v2/load_balancers":
+            return httpx.Response(200, json={"load_balancers": {"secret-ish": "value-123"}})
+        kind = request.url.path.rsplit("/", 1)[-1]
+        return httpx.Response(200, json={kind: []})
+    with pytest.raises(ConnectFailed):
+        await digitalocean.inventory(_settings(deploy_do_token=TOKEN),
+                                     transport=httpx.MockTransport(handler))
+    text = caplog.text
+    assert "load_balancers" in text
+    assert "value-123" not in text and TOKEN not in text
