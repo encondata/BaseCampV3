@@ -5,10 +5,12 @@ DigitalOcean env tags no environment answers to. Each card carries its flow:
 live traffic → the middle box (a DigitalOcean load balancer, or Nginx Proxy
 Manager on the LAN) → its server(s). DigitalOcean values come from Sirdar's
 records (do_environments, do_slots, do_resources) and each account's
-inventory (read with that account's token, cached by the token's hash; the
-same inventories fill the infrastructure tree). LAN values come from the
-environment's target and the NPM integration's URL. No token reaches the
-response or a cache key."""
+inventory (read with that account's token, cached by the token's hash). LAN
+values come from the environment's target and the NPM integration's URL.
+The infrastructure tree lists every real environment (card order, `id` =
+the card's id) with its parts, from the same records and cached inventories,
+then each account's resources no Sirdar record names. No token, password or
+public database host reaches the response, and no token a cache key."""
 
 import asyncio
 import hashlib
@@ -25,7 +27,14 @@ from sirdar_api.config import Settings
 from sirdar_api.dashboard import certcheck
 from sirdar_api.dashboard.demo import demo_dashboard, node
 from sirdar_api.db.models import (
-    Deployment, DoAccount, DoEnvironment, DoResource, Environment, EnvironmentService)
+    Deployment,
+    DoAccount,
+    DoEnvironment,
+    DoResource,
+    DoSlot,
+    Environment,
+    EnvironmentService,
+)
 from sirdar_api.deploy import (
     ConnectFailed,
     certs,
@@ -82,19 +91,36 @@ def _env_of(resource: dict) -> str | None:
     return None
 
 
-def _slot_of(resource: dict) -> str | None:
-    slots = [t[len("sirdar-slot:"):] for t in _tags(resource) if t.startswith("sirdar-slot:")]
-    return slots[0] if slots and slots[0] in ("blue", "green") else None
-
-
 def _region(resource: dict) -> str:
     region = resource.get("region")
     slug = region.get("slug") if isinstance(region, dict) else region
     return str(slug).upper() if slug else "—"
 
 
+def _droplet_status(d: dict) -> tuple[str, str]:
+    return _DROPLET.get(d.get("status"), ("unknown", "Unknown"))
+
+
+def _database_status(d: dict) -> tuple[str, str]:
+    return {"online": ("healthy", "Healthy"),
+            "creating": ("provisioning", "Provisioning")}.get(d.get("status"),
+                                                              ("unknown", "Unknown"))
+
+
+def _lb_status(d: dict) -> tuple[str, str]:
+    return {"active": ("active", "Active"),
+            "new": ("provisioning", "Provisioning")}.get(d.get("status"), ("unknown", "Unknown"))
+
+
+def _private_host(d: dict | None) -> str | None:
+    """A database's private host: the public one (and the connection's
+    credentials) never reach the dashboard."""
+    conn = (d or {}).get("private_connection")
+    return conn.get("host") if isinstance(conn, dict) else None
+
+
 def _droplet_node(d: dict) -> dict:
-    status, label = _DROPLET.get(d.get("status"), ("unknown", "Unknown"))
+    status, label = _droplet_status(d)
     v4 = (d.get("networks") or {}).get("v4") or []
     ips = {n.get("type"): n.get("ip_address") for n in v4 if isinstance(n, dict)}
     name = str(d.get("name") or d.get("id"))
@@ -103,21 +129,17 @@ def _droplet_node(d: dict) -> dict:
 
 
 def _database_node(d: dict) -> dict:
-    ok = d.get("status") == "online"
-    host = ((d.get("private_connection") or {}).get("host")
-            or (d.get("connection") or {}).get("host") or "—")
+    status, label = _database_status(d)
     name = str(d.get("name") or d.get("id"))
     return node(f"database-{d.get('id')}", name, "database", "Managed PostgreSQL",
-                "healthy" if ok else "unknown", "Healthy" if ok else "Unknown",
-                region=_region(d), endpoint=host)
+                status, label, region=_region(d), endpoint=_private_host(d) or "—")
 
 
 def _lb_node(d: dict) -> dict:
-    ok = d.get("status") == "active"
+    status, label = _lb_status(d)
     name = str(d.get("name") or d.get("id"))
     return node(f"lb-{d.get('id')}", name, "load_balancer", "Load balancer",
-                "active" if ok else "unknown", "Active" if ok else "Unknown",
-                region=_region(d), endpoint=d.get("ip") or "—")
+                status, label, region=_region(d), endpoint=d.get("ip") or "—")
 
 
 def _rollup(children: list[dict]) -> tuple[str, str]:
@@ -125,49 +147,35 @@ def _rollup(children: list[dict]) -> tuple[str, str]:
     return ("active", "Active") if live else ("inactive", "Inactive")
 
 
-def build_tree(inv: dict) -> list[dict]:
-    """Environment nodes (production, dev, beta, then custom by name), then Untagged."""
-    envs: dict[str, dict] = {}
-    untagged: list[dict] = []
-    for kind, items, make in (("droplet", inv["droplets"], _droplet_node),
-                              ("database", inv["databases"], _database_node),
-                              ("lb", inv["load_balancers"], _lb_node)):
+def other_resources(account: dict, inv: dict | None, managed: set[str], *,
+                    single: bool) -> dict | None:
+    """One account's DigitalOcean resources that no Sirdar record names
+    (do_resources, do_slots), or None when there are none. An account that
+    couldn't be read keeps its group (no children, its error as the
+    endpoint) when there are two accounts; with one, the error shows above
+    the tree as before."""
+    gid = f"other:{account['key']}"
+    name = ("Other DigitalOcean resources" if single
+            else f"Other resources · {account['label']} account")
+    if inv is None:
+        if single:
+            return None
+        return node(gid, name, "group", "DigitalOcean account", "unknown", "Unavailable",
+                    region="—", endpoint=account["error"] or "—")
+    children = []
+    for items, make in ((inv["droplets"], _droplet_node), (inv["databases"], _database_node),
+                        (inv["load_balancers"], _lb_node)):
         for r in items:
-            n, env = make(r), _env_of(r)
-            if env is None:
-                untagged.append(n)
+            if str(r.get("id")) in managed:
                 continue
-            bucket = envs.setdefault(env, {"blue": [], "green": [], "shared": [], "rest": []})
-            if env == "production" and "sirdar-shared" in _tags(r):
-                bucket["shared"].append(n)
-            elif env == "production" and kind == "droplet" and _slot_of(r):
-                bucket[_slot_of(r)].append(n)
-            elif env == "production" and kind != "droplet":
-                bucket["shared"].append(n)
-            else:
-                bucket["rest"].append(n)
-    tree = []
-    for env in sorted(envs, key=lambda e: (_FIXED.index(e) if e in _FIXED else 3, e)):
-        b = envs[env]
-        children: list[dict] = []
-        if env == "production":
-            for slot in ("blue", "green"):
-                status, label = _rollup(b[slot])
-                children.append(node(f"prod-{slot}", slot.title(), "deployment", "Deployment",
-                                     status, label, children=b[slot]))
-            if b["shared"]:
-                status, label = _rollup(b["shared"])
-                children.append(node("prod-shared", "Shared production resources", "group",
-                                     "Shared resources", status, label, badge="Blue + Green",
-                                     tone="shared", children=b["shared"]))
-        children += b["rest"]
-        status, label = _rollup(children)
-        tree.append(node(f"env-{env}", _label(env), "environment", "Environment", status, label,
-                         children=children))
-    if untagged:
-        tree.append(node("untagged", "Untagged", "group", "Untagged resources", "unknown",
-                         "Unknown", children=untagged))
-    return tree
+            n = make(r)
+            n["id"] = f"{gid}:{n['id']}"
+            children.append(n)
+    if not children:
+        return None
+    status, label = _rollup(children)
+    return node(gid, name, "group", "Not managed by Sirdar", status, label, region="—",
+                children=children)
 
 
 async def _inventory(settings: Settings, refresh: bool, transport=None) -> dict:
@@ -406,10 +414,13 @@ def _placeholder(env: str, action_label: str, *, production: bool = False) -> di
 
 async def environment_cards(db: AsyncSession | None, settings: Settings, tagged: list[str],
                             inventories: dict[str, dict], now: datetime, *,
-                            refresh: bool = False) -> list[dict]:
+                            refresh: bool = False,
+                            built: list[tuple[Environment, dict]] | None = None) -> list[dict]:
     """Production first (the live one, else a retiring one, else a
     placeholder), Dev / Beta (placeholders until one exists), the rest by
-    name, then DigitalOcean env tags no environment answers to."""
+    name, then DigitalOcean env tags no environment answers to. `built`
+    (when given) receives (environment, card) for every real card, in card
+    order."""
     rows: list[Environment] = []
     hostnames: dict = {}
     if db is not None:
@@ -421,7 +432,7 @@ async def environment_cards(db: AsyncSession | None, settings: Settings, tagged:
         cert_checker.check_all([h for hs in hostnames.values() for h in hs], refresh=refresh)
         if hostnames else _no_checks())
 
-    built: list[tuple[Environment, dict]] = []
+    built = [] if built is None else built
 
     async def card(e: Environment) -> dict:
         c = await _environment_card(db, settings, e, inventories, now)
@@ -455,6 +466,150 @@ async def environment_cards(db: AsyncSession | None, settings: Settings, tagged:
     return cards
 
 
+# ---- the infrastructure tree: every environment's parts ------------------------------
+
+_BAD = ("not_found", "degraded", "stopped", "expired")
+_LIVE = ("active", "running", "healthy")
+_PART_KINDS = ("load_balancer", "database", "bucket")
+
+
+def _env_rollup(children: list[dict]) -> tuple[str, str]:
+    if any(c["status"] in _BAD for c in children):
+        return "degraded", "Degraded"
+    if any(c["status"] in _LIVE for c in children):
+        return "active", "Active"
+    return "inactive", "Inactive"
+
+
+def _found(inv: dict | None, item: dict | None, status) -> tuple[str, str]:
+    """A recorded resource's status: Unknown when its account couldn't be
+    read, Not found when the inventory doesn't have it."""
+    if inv is None:
+        return "unknown", "Unknown"
+    if item is None:
+        return "not_found", "Not found"
+    return status(item)
+
+
+def _days(n: int) -> str:
+    return f"{n} day{'' if n == 1 else 's'} left"
+
+
+def _cert_node(env_name: str, cert: dict | None) -> dict | None:
+    """The certificate part: the live check's soonest expiry."""
+    if cert is None:
+        return None
+    if cert["tone"] == "unknown" or cert["days_left"] is None:
+        status, label = "unknown", "Couldn't check"
+    elif cert["tone"] == "bad":
+        status, label = "expired", "Expired"
+    else:
+        status = "degraded" if cert["tone"] == "warn" else "healthy"
+        label = _days(cert["days_left"])
+    soonest = next((h["hostname"] for h in cert["hosts"]
+                    if h["expires_at"] and h["expires_at"] == cert["expires_at"]), "—")
+    return node(f"{env_name}:certificate", "Certificate", "certificate", "TLS certificate",
+                status, label, region="—", endpoint=soonest)
+
+
+async def _records(db: AsyncSession, env_id) -> dict[str, DoResource]:
+    """The newest record of each single part (load balancer, database, bucket)."""
+    rows = await db.scalars(select(DoResource).where(
+        DoResource.environment_id == env_id, DoResource.kind.in_(_PART_KINDS))
+        .order_by(DoResource.created_at))
+    return {r.kind: r for r in rows}
+
+
+async def _do_parts(db: AsyncSession, env: Environment, row: DoEnvironment,
+                    inv: dict | None) -> list[dict]:
+    """Sirdar's records for the environment joined to its account's cached
+    inventory: no DigitalOcean call of its own."""
+    region = row.region.upper()
+    by_id = {kind: {str(x.get("id")): x for x in (inv or {}).get(kind, [])}
+             for kind in ("droplets", "databases", "load_balancers")}
+    recs = await _records(db, env.id)
+    parts: list[dict] = []
+    if lb := recs.get("load_balancer"):
+        found = by_id["load_balancers"].get(lb.do_id)
+        status, label = _found(inv, found, _lb_status)
+        parts.append(node(f"{env.name}:lb", lb.name, "load_balancer", "Load balancer", status,
+                          label, region=region,
+                          endpoint=(found or {}).get("ip") or row.lb_ip or "—"))
+    slots = await do_envs.slots_of(db, env.id)
+    for slot in env.slots:
+        r = slots.get(slot)
+        if r is None or not r.droplet_id:
+            parts.append(node(f"{env.name}:slot-{slot}", slot.title(), "droplet",
+                              f"Droplet · {row.droplet_size}", "inactive", "Not built yet",
+                              region=region))
+            continue
+        found = by_id["droplets"].get(r.droplet_id)
+        status, label = _found(inv, found, _droplet_status)
+        word = "live" if slot == env.active_slot else "idle"
+        size = (found or {}).get("size_slug") or row.droplet_size
+        parts.append(node(f"{env.name}:slot-{slot}", f"{slot.title()} ({word})", "droplet",
+                          f"Droplet · {size}", status, label, region=region,
+                          endpoint=r.public_ip or "—", badge=r.image_tag))
+    if database := recs.get("database"):
+        found = by_id["databases"].get(database.do_id)
+        status, label = _found(inv, found, _database_status)
+        size = (found or {}).get("size") or row.db_size
+        parts.append(node(f"{env.name}:database", database.name, "database",
+                          f"Managed PostgreSQL · {size}", status, label, region=region,
+                          endpoint=_private_host(found) or row.db_host or "—"))
+    if bucket := recs.get("bucket"):
+        # Spaces isn't in the inventory: the bucket is listed, not checked.
+        parts.append(node(f"{env.name}:bucket", bucket.name, "spaces", "Spaces bucket",
+                          "unknown", "Not checked", region=region))
+    return parts
+
+
+def _lan_parts(env: Environment, flow: dict) -> list[dict]:
+    """Nginx Proxy Manager and the one host, as the card's flow shows them."""
+    middle, server = flow["middle"], flow["servers"][0]
+    ok = middle["status"] == "ok"
+    health = {"healthy": ("healthy", "Healthy"), "degraded": ("degraded", "Degraded")}.get(
+        server["health"], ("unknown", "Unknown"))
+    kind = "VM" if targets.is_vm_target(env.target_id) else "SSH host"
+    return [node(f"{env.name}:npm", "Nginx Proxy Manager", "proxy", "Reverse proxy",
+                 "active" if ok else "unknown", "Active" if ok else "Not set up", region="LAN",
+                 endpoint=middle["sub"] if ok else "—"),
+            node(f"{env.name}:server", server["label"], "server", kind, *health, region="LAN",
+                 endpoint=server["sub"] or "—", badge=server["version"])]
+
+
+async def environment_nodes(db: AsyncSession, built: list[tuple[Environment, dict]],
+                            inventories: dict[str, dict], labels: dict[str, str]) -> list[dict]:
+    """One node per real card, in card order, `id` = the card's id."""
+    out = []
+    for env, card in built:
+        type_label = _TYPE_LABELS.get(env.type, env.type.title())
+        if env.target_id == targets.DO_TARGET:
+            row = await do_envs.get(db, env.id)
+            children = (await _do_parts(db, env, row, inventories.get(row.account_key))
+                        if row else [])
+            region = row.region.upper() if row else "—"
+            if row:
+                type_label += f" · {labels.get(row.account_key, row.account_key.title())} account"
+        else:
+            children, region = _lan_parts(env, card["flow"]), "LAN"
+        if cert := _cert_node(env.name, card["flow"]["certificate"]):
+            children.append(cert)
+        status, label = _env_rollup(children)
+        portal = urlsplit(card["portal_url"]).hostname if card["portal_url"] else None
+        out.append(node(card["id"], card["label"], "environment", type_label, status, label,
+                        region=region, endpoint=portal or "—", children=children))
+    return out
+
+
+async def _managed_ids(db: AsyncSession) -> set[str]:
+    """Every DigitalOcean id a Sirdar record names (do_resources, do_slots)."""
+    ids = set(await db.scalars(select(DoResource.do_id).where(
+        DoResource.kind.in_(("droplet", "database", "load_balancer")))))
+    ids |= set(await db.scalars(select(DoSlot.droplet_id).where(DoSlot.droplet_id.is_not(None))))
+    return {str(i) for i in ids}
+
+
 async def _read_accounts(db: AsyncSession, settings: Settings, refresh: bool,
                          infra: dict) -> list[tuple[str, str, dict]]:
     """(key, label, inventory) for each account whose inventory was read;
@@ -477,20 +632,6 @@ async def _read_accounts(db: AsyncSession, settings: Settings, refresh: bool,
         except ConnectFailed as e:
             infra["accounts"].append({"key": key, "label": label, "error": e.reason})
     return read
-
-
-def _account_node(account: dict, inv: dict | None) -> dict:
-    """One account's group in a two-account tree. An account that couldn't
-    be read keeps its node (no children, its error as the endpoint), so the
-    tree never flips between grouped and flat."""
-    name = f"{account['label']} account"
-    if inv is None:
-        return node(f"account-{account['key']}", name, "group", "DigitalOcean account",
-                    "unknown", "Unavailable", region="—", endpoint=account["error"] or "—")
-    children = build_tree(inv)
-    status, status_label = _rollup(children)
-    return node(f"account-{account['key']}", name, "group", "DigitalOcean account", status,
-                status_label, children=children)
 
 
 async def build_dashboard(settings: Settings, *, db: AsyncSession | None = None,
@@ -516,14 +657,21 @@ async def build_dashboard(settings: Settings, *, db: AsyncSession | None = None,
     elif failed:
         infra["error"] = " ".join(f"{a['label']} account: {a['error']}" for a in failed)
     inventories = {key: inv for key, _, inv in read}
-    if len(infra["accounts"]) > 1:
-        infra["tree"] = [_account_node(a, inventories.get(a["key"])) for a in infra["accounts"]]
-    elif read:
-        infra["tree"] = build_tree(read[0][2])
     every = [r for _, _, inv in read for kind in ("droplets", "databases", "load_balancers")
              for r in inv[kind]]
     tagged = sorted({e for r in every if (e := _env_of(r)) and e not in _FIXED})
+    built: list[tuple[Environment, dict]] = []
     envs = await environment_cards(db, settings, tagged, inventories, datetime.now(UTC),
-                                   refresh=refresh)
+                                   refresh=refresh, built=built)
+    if db is not None:
+        labels = {a.key: a.label for a in await db.scalars(select(DoAccount))}
+        infra["tree"] = await environment_nodes(db, built, inventories, labels)
+    managed = await _managed_ids(db) if db is not None else set()
+    single = len(infra["accounts"]) == 1
+    for account in infra["accounts"]:
+        group = other_resources(account, inventories.get(account["key"]), managed,
+                                single=single)
+        if group:
+            infra["tree"].append(group)
     return {"demo": False, "generated_at": datetime.now(UTC).isoformat(),
             "health": _health(envs), "environments": envs, "infrastructure": infra}

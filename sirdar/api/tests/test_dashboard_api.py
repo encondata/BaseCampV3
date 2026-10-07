@@ -67,7 +67,7 @@ async def test_real_with_inventory(client, db, with_token):
     d = (await client.get("/api/dashboard", headers=h)).json()
     assert d["infrastructure"]["source"] == "digitalocean"
     assert d["infrastructure"]["error"] is None
-    assert [n["name"] for n in d["infrastructure"]["tree"]][-1] == "Untagged"
+    assert [n["name"] for n in d["infrastructure"]["tree"]] == ["Other DigitalOcean resources"]
     assert [e["id"] for e in d["environments"]] == ["production", "dev", "beta", "qa-team"]
     assert d["environments"][3]["label"] == "Qa Team"
     assert d["infrastructure"]["accounts"] == [

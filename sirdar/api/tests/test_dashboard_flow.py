@@ -5,6 +5,7 @@ Sirdar's records and the accounts' inventories, LAN values from the target
 and the NPM integration."""
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -21,7 +22,7 @@ from sirdar_api.deploy import do_envs, targets, vms
 from .api_helpers import auth_headers
 from .deploy_factories import make_environment, secrets_key  # noqa: F401
 from .do_helpers import configure_account, deployed, do_cloud, make_do_environment  # noqa: F401
-from .fake_digitalocean import DEV_TOKEN, DO_TOKEN, RENEW_TOKEN
+from .fake_digitalocean import DB_ADMIN_PASSWORD, DEV_TOKEN, DO_TOKEN, RENEW_TOKEN
 from .integration_helpers import configure, configure_proxmox
 from .test_deploy_pipeline import SHA
 from .vm_helpers import make_vm_environment
@@ -200,7 +201,9 @@ async def test_both_accounts_in_the_infrastructure(client, db, do_cloud):
     infra = (await _dashboard(client, db))["infrastructure"]
     assert [(a["key"], a["error"]) for a in infra["accounts"]] == [
         ("production", None), ("development", None)]
-    assert [n["name"] for n in infra["tree"]] == ["Production account", "Development account"]
+    # The fake answers both tokens with the same droplets: each account's group lists it.
+    assert [n["name"] for n in infra["tree"]] == [
+        "Other resources · Production account", "Other resources · Development account"]
     assert {r.headers["authorization"] for r in do_cloud.do.requests} == {
         f"Bearer {DO_TOKEN}", f"Bearer {DEV_TOKEN}"}
 
@@ -280,7 +283,7 @@ async def test_a_later_snapshot_keeps_the_failed_mark(client, db, do_cloud):
 async def test_two_accounts_one_failing_keeps_the_grouped_tree(client, db, do_cloud):
     await make_do_environment(db, name="prod", type_="production", account="production")
     await configure_account(db)
-    do_cloud.do.add_droplet("ss-prod-blue", ["sirdar", "sirdar-env:prod"])
+    do_cloud.do.add_droplet("ss-stray", ["sirdar", "sirdar-env:prod"])
     del do_cloud.do.tokens[DEV_TOKEN]                    # the Development token now 401s
     d = await _dashboard(client, db)
     infra = d["infrastructure"]
@@ -288,9 +291,11 @@ async def test_two_accounts_one_failing_keeps_the_grouped_tree(client, db, do_cl
     assert infra["error"] == f"Development account: {reason}"
     assert [(a["key"], a["error"]) for a in infra["accounts"]] == [
         ("production", None), ("development", reason)]
-    prod_node, dev_node = infra["tree"]
-    assert (prod_node["name"], dev_node["name"]) == ("Production account", "Development account")
-    assert prod_node["children"]
+    env_node, prod_node, dev_node = infra["tree"]
+    assert env_node["id"] == "prod"
+    assert (prod_node["name"], dev_node["name"]) == (
+        "Other resources · Production account", "Other resources · Development account")
+    assert [c["name"] for c in prod_node["children"]] == ["ss-stray"]
     assert (dev_node["children"], dev_node["status_label"], dev_node["endpoint"]) == (
         [], "Unavailable", reason)
     assert d["environments"][0]["id"] == "prod"
@@ -467,3 +472,187 @@ async def test_certificate_checks_start_while_the_cards_are_built(
     monkeypatch.setattr(service, "_environment_card", slow_card)
     await _dashboard(client, db)
     assert seen and seen[0] == 6
+
+
+# ---- the infrastructure tree: every environment, then what Sirdar doesn't manage ------
+
+def _parts(n: dict) -> list[tuple]:
+    return [(c["name"], c["kind"], c["status_label"], c["endpoint"]) for c in n["children"]]
+
+
+async def _tree(client, db, h: dict | None = None) -> tuple[dict, dict]:
+    d = await _dashboard(client, db, h)
+    return d, {n["id"]: n for n in d["infrastructure"]["tree"]}
+
+
+def _database(do_cloud, db_id: str, name: str, status: str = "online") -> None:
+    secret = {"user": "doadmin", "password": DB_ADMIN_PASSWORD, "port": 25060}
+    do_cloud.do.databases[db_id] = {
+        "id": db_id, "name": name, "status": status, "region": "nyc3",
+        "size": "db-s-1vcpu-1gb", "tags": ["sirdar"],
+        "connection": {**secret, "host": f"{name}.db.ondigitalocean.com"},
+        "private_connection": {**secret, "host": f"private-{name}.db.ondigitalocean.com"}}
+
+
+async def test_a_two_slot_environment_lists_its_parts(client, db, do_cloud, fake_certs):
+    env = await make_do_environment(db, name="prod", type_="production", account="production")
+    await _do_live(db, env, active="blue", checks={"blue": True})
+    blue = do_cloud.do.add_droplet("ss-prod-blue", ["sirdar"])          # id 4001, as recorded
+    do_cloud.do.add_droplet("ss-prod-green", ["sirdar"], status="off")   # id 4002
+    assert blue["id"] == 4001
+    _lb(do_cloud, "lb-1")
+    _database(do_cloud, "db-1", "ss-prod-db")
+    await do_envs.record(env.id, "database", "db-1", "ss-prod-db")
+    row = await do_envs.get(db, env.id)
+    await do_envs.record(env.id, "bucket", row.bucket, row.bucket)
+    for host in await _hostnames(db, env):
+        fake_certs.dates[host] = _in(47)
+    d, tree = await _tree(client, db)
+    assert list(tree) == ["prod"]                     # everything recorded: nothing "other"
+    node = tree["prod"]
+    card = d["environments"][0]
+    assert (node["kind"], node["name"], node["type_label"], node["region"]) == (
+        "environment", "prod", "Production · Production account", "NYC3")
+    assert node["id"] == card["id"]
+    assert _parts(node) == [
+        ("ss-prod-lb", "load_balancer", "Active", "203.0.113.50"),
+        ("Blue (live)", "droplet", "Running", "127.0.0.1"),
+        ("Green (idle)", "droplet", "Stopped", "127.0.0.1"),
+        ("ss-prod-db", "database", "Healthy", "private-ss-prod-db.db.ondigitalocean.com"),
+        (row.bucket, "spaces", "Not checked", "—"),
+        ("Certificate", "certificate", "47 days left",
+         card["flow"]["certificate"]["hosts"][0]["hostname"])]
+    lb, blue_n, green_n, database, bucket, cert = node["children"]
+    assert blue_n["type_label"] == "Droplet · s-2vcpu-4gb"
+    assert blue_n["badge"] == card["flow"]["servers"][0]["version"]
+    assert database["type_label"] == "Managed PostgreSQL · db-s-1vcpu-1gb"
+    assert bucket["region"] == "NYC3"
+    assert cert["status"] == "healthy"
+    assert node["status"] == "degraded"               # green is stopped
+    assert len({c["id"] for c in node["children"]}) == 6
+    text = json.dumps(d)
+    assert DB_ADMIN_PASSWORD not in text
+    # only the private host: the public one never shows
+    assert text.count("ss-prod-db.db.ondigitalocean.com") == text.count(
+        "private-ss-prod-db.db.ondigitalocean.com") == 1
+
+
+async def test_a_one_slot_environment_not_built_yet(client, db, do_cloud):
+    await make_do_environment(db, name="solo", slots=1)
+    _, tree = await _tree(client, db)
+    node = tree["solo"]
+    assert node["type_label"] == "Development · Development account"
+    assert _parts(node) == [("Orange", "droplet", "Not built yet", "—"),
+                            ("Certificate", "certificate", "Couldn't check", "—")]
+    assert node["status"] == "inactive"
+
+
+async def test_recorded_parts_missing_from_the_inventory_are_not_found(client, db, do_cloud):
+    env = await make_do_environment(db)
+    await _do_live(db, env, active="orange", lb="lb-gone")
+    await do_envs.record(env.id, "database", "db-gone", "ss-uat9-db")
+    _, tree = await _tree(client, db)
+    statuses = [(c["name"], c["status"], c["status_label"]) for c in tree["uat9"]["children"]
+                if c["kind"] != "certificate"]
+    assert statuses == [("ss-uat9-lb", "not_found", "Not found"),
+                        ("Orange (live)", "not_found", "Not found"),
+                        ("Purple (idle)", "not_found", "Not found"),
+                        ("ss-uat9-db", "not_found", "Not found")]
+    assert tree["uat9"]["status"] == "degraded"
+
+
+async def test_a_lan_ssh_environment_lists_its_proxy_server_and_certificate(
+        client, db, monkeypatch, fake_certs):
+    await configure(db)                        # Cloudflare and NPM (http://10.10.48.6:81)
+    env = await make_environment(db, name="uat", current_sha=SHA, secrets={})
+    monkeypatch.setattr(targets, "ssh_config_for",
+                        lambda tid, s: SimpleNamespace(host="10.10.48.63"))
+    monkeypatch.setattr(targets, "public_targets",
+                        lambda s, **kw: [{"id": "ssh", "label": "Lab box"}])
+    for host in await _hostnames(db, env):
+        fake_certs.dates[host] = _in(10)
+    d, tree = await _tree(client, db)
+    node = tree["uat"]
+    card = next(c for c in d["environments"] if c["id"] == "uat")
+    assert (node["type_label"], node["region"], node["status"]) == (
+        "Development", "LAN", "degraded")
+    assert _parts(node) == [
+        ("Nginx Proxy Manager", "proxy", "Active", "10.10.48.6"),
+        ("Lab box", "server", "Healthy", "10.10.48.63"),
+        ("Certificate", "certificate", "10 days left",
+         card["flow"]["certificate"]["hosts"][0]["hostname"])]
+    assert node["children"][1]["badge"] == card["version"]
+    assert node["children"][2]["status"] == "degraded"     # inside 14 days
+
+
+async def test_a_vm_environment_lists_its_vm(client, db):
+    await configure_proxmox(db)
+    env = await make_vm_environment(db, name="uat3")
+    vm = await vms.get_for(db, env)
+    _, tree = await _tree(client, db)
+    proxy, server, _cert = tree["uat3"]["children"]
+    assert (proxy["status_label"], proxy["endpoint"]) == ("Not set up", "—")
+    assert (server["name"], server["endpoint"], server["status_label"]) == (
+        vm.name, vm.ip or "No address yet", "Unknown")
+
+
+async def test_environments_follow_card_order_and_placeholders_are_absent(client, db):
+    await make_environment(db, name="uat", current_sha=SHA, secrets={})
+    qa = await make_environment(db, name="qa-east", secrets={})
+    qa.type = "custom"
+    await db.commit()
+    d, _ = await _tree(client, db)
+    assert [n["id"] for n in d["infrastructure"]["tree"]] == ["uat", "qa-east"]
+    assert [c["id"] for c in d["environments"] if c["environment"]] == ["uat", "qa-east"]
+    assert d["infrastructure"]["tree"][1]["type_label"] == "Custom"
+
+
+async def test_unmanaged_resources_are_grouped_per_account(client, db, do_cloud):
+    env = await make_do_environment(db, name="prod", type_="production", account="production")
+    await _do_live(db, env, active="blue")
+    await configure_account(db)
+    do_cloud.do.add_droplet("ss-prod-blue", ["sirdar"])                 # 4001: recorded
+    do_cloud.do.add_droplet("ss-prod-green", ["sirdar"])                # 4002: recorded
+    do_cloud.do.add_droplet("hand-made", [])                            # nobody's
+    _lb(do_cloud, "lb-1")                                               # recorded
+    _lb(do_cloud, "lb-other")
+    _database(do_cloud, "db-other", "reporting")
+    _, tree = await _tree(client, db)
+    assert list(tree) == ["prod", "other:production", "other:development"]
+    group = tree["other:production"]
+    assert (group["kind"], group["name"]) == ("group", "Other resources · Production account")
+    assert [(c["name"], c["kind"]) for c in group["children"]] == [
+        ("hand-made", "droplet"), ("reporting", "database"), ("lb", "load_balancer")]
+    assert group["children"][1]["endpoint"] == "private-reporting.db.ondigitalocean.com"
+    ids = [c["id"] for g in tree.values() for c in g["children"]]
+    assert len(ids) == len(set(ids))
+
+
+async def test_one_account_names_its_group_plainly(client, db, do_cloud):
+    await configure_account(db)
+    do_cloud.do.add_droplet("hand-made", [])
+    _, tree = await _tree(client, db)
+    assert [n["name"] for n in tree.values()] == ["Other DigitalOcean resources"]
+
+
+async def test_a_failing_account_leaves_its_environments_unknown(client, db, do_cloud):
+    prod = await make_do_environment(db, name="prod", type_="production", account="production")
+    await _do_live(db, prod, active="blue")
+    env = await make_do_environment(db)
+    await _do_live(db, env, active="orange", lb="lb-dev")
+    await do_envs.record(env.id, "database", "db-1", "ss-uat9-db")
+    _lb(do_cloud, "lb-1")
+    del do_cloud.do.tokens[DEV_TOKEN]
+    _, tree = await _tree(client, db)
+    assert list(tree) == ["prod", "uat9", "other:development"]
+    assert {c["status_label"] for c in tree["uat9"]["children"]
+            if c["kind"] != "certificate"} == {"Unknown"}
+    assert tree["prod"]["children"][0]["status_label"] == "Active"
+    assert tree["other:development"]["endpoint"] == "DigitalOcean rejected the API token."
+
+
+def test_demo_environment_nodes_use_the_card_ids():
+    d = demo_dashboard()
+    cards = {c["id"] for c in d["environments"]}
+    assert [n["id"] for n in d["infrastructure"]["tree"] if n["id"] in cards] == [
+        "production", "dev"]
