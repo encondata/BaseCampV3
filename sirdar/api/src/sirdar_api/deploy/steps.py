@@ -4,6 +4,9 @@ Numbers follow the spec's order: 8 starts the data services, 9 restores
 data and 10 ("Start services": `ss-stack up` runs migrate, then the app)
 covers spec steps 10–11. Restore snapshot and Restore backup share number
 9 and never meet in one plan. Take snapshot (11) is a job of its own.
+11 Create the first admin follows Start services in the first Update of an
+environment that starts empty (spec 2026-10-07 §3); it shares 11 with Take
+snapshot, which never meets an Update.
 
 12–14 publish (DNS records, proxy hosts, smoke test). They run in Sirdar
 itself (runs="python", see publish.py) and a deployment has them when it
@@ -73,6 +76,7 @@ STEPS: tuple[StepDef, ...] = (
     StepDef(9, "restore_dump", "Restore backup", "restore_dump.yml", 60 * 60),
     StepDef(10, "up", "Start services", "up.yml", 45 * 60),
     StepDef(11, "export", "Take snapshot", "export.yml", 120 * 60),
+    StepDef(11, "first_admin", "Create the first admin", "first_admin.yml", 10 * 60),
     StepDef(12, "dns", "DNS records", "", 10 * 60, "python"),
     StepDef(13, "proxy", "Proxy hosts", "", 45 * 60, "python"),
     StepDef(13, "slot_smoke", "Smoke test (slot)", "slot_smoke.yml", 10 * 60),
@@ -127,6 +131,13 @@ _CLOUD_PLANS: dict[tuple[str, bool], tuple[str, ...]] = {
 }
 
 
+def _with_first_admin(keys: tuple[str, ...]) -> tuple[str, ...]:
+    """Step 11 right after Start services: the api is up, and nothing has
+    published the environment yet."""
+    at = keys.index("up") + 1
+    return (*keys[:at], "first_admin", *keys[at:])
+
+
 def _cloud_plan(mode: str, *, restore: bool, publish: bool, vm: bool, go_live: bool,
                 snapshot: bool, smoke: bool = True) -> tuple[str, ...]:
     if publish or vm:
@@ -148,10 +159,14 @@ def _cloud_plan(mode: str, *, restore: bool, publish: bool, vm: bool, go_live: b
 
 def plan_for(mode: str, *, restore: bool = False, publish: bool = False, vm: bool = False,
              cloud: bool = False, go_live: bool = False, snapshot: bool = False,
-             smoke: bool = True) -> list[StepDef]:
+             smoke: bool = True, first_admin: bool = False) -> list[StepDef]:
+    if first_admin and (mode != "update" or restore):
+        raise ValueError("only an Update that starts empty creates the first admin")
     if cloud:
         keys = _cloud_plan(mode, restore=restore, publish=publish, vm=vm, go_live=go_live,
                            snapshot=snapshot, smoke=smoke)
+        if first_admin:
+            keys = _with_first_admin(keys)
         return [STEPS_BY_KEY[k] for k in keys]
     if mode == "activate":
         raise ValueError("only a DigitalOcean environment activates a slot")
@@ -173,4 +188,6 @@ def plan_for(mode: str, *, restore: bool = False, publish: bool = False, vm: boo
         if mode not in PUBLISHING_MODES:
             raise ValueError(f"mode {mode!r} doesn't publish")
         keys = (*keys, *PUBLISH_KEYS)
+    if first_admin:
+        keys = _with_first_admin(keys)
     return [STEPS_BY_KEY[k] for k in keys]

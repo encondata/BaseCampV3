@@ -1,0 +1,48 @@
+# Step 11 — Create the first admin: the first Update of an environment that
+# starts empty runs `serversherpa bootstrap-admin` in its api container
+# (ss-stack admin). A typed password reaches the command only as stdin, and
+# the task is no_log; an invite has no password. Exit 1 (the account exists)
+# counts as done. The exit code goes to Sirdar through set_stats, which
+# explains the others in the step's log.
+- name: Create the first admin
+  hosts: target
+  gather_facts: false
+  tasks:
+    - name: Does this checkout's ss-stack have the admin command?
+      ansible.builtin.command:
+        argv: [grep, -q, "^  admin)", "{{ ss_stack }}"]
+      register: knows_admin
+      changed_when: false
+      failed_when: false
+
+    - name: Stop when it doesn't
+      ansible.builtin.fail:
+        msg: >-
+          This commit's ss-stack has no admin command, so Sirdar can't create the
+          first admin. Deploy a newer commit.
+      when: knows_admin.rc != 0
+
+    - name: serversherpa bootstrap-admin
+      ansible.builtin.command:
+        argv: >-
+          {{ [ss_stack, 'admin', env_dir, '--email', admin_email,
+              '--first-name', admin_first_name, '--last-name', admin_last_name,
+              '--role', admin_role, '--link-minutes', admin_link_minutes | string]
+             + (['--invite'] if admin_invite | bool else ['--password-stdin']) }}
+        stdin: "{{ omit if admin_invite | bool else admin_password }}"
+      register: created
+      changed_when: created.rc == 0
+      failed_when: false
+      no_log: true
+
+    - name: Report bootstrap-admin's exit code
+      ansible.builtin.set_stats:
+        data:
+          first_admin_rc: "{{ created.rc }}"
+        per_host: false
+        aggregate: true
+
+    - name: Stop when it refused
+      ansible.builtin.fail:
+        msg: "serversherpa bootstrap-admin exited with {{ created.rc }}."
+      when: created.rc not in [0, 1]

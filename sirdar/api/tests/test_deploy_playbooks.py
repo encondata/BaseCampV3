@@ -70,7 +70,7 @@ def test_publish_and_teardown_plans():
 
 def test_plans():
     assert [s.number for s in steps.STEPS] == [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11,
-                                               12, 13, 13, 14, 14, 15, 15, 16, 17, 18, 19]
+                                               11, 12, 13, 13, 14, 14, 15, 15, 16, 17, 18, 19]
     assert [s.number for s in steps.plan_for("update")] == [1, 2, 3, 4, 5, 6, 10]
     build = ["preflight", "bootstrap", "fetch", "render", "build"]
     # a seeded first deploy backs up whatever database is already there
@@ -119,7 +119,8 @@ def test_playbook_shape(step):
         assert task.get("name"), f"{step.playbook}: every task needs a name"
         assert not SHELL_MODULES & set(task), f"{step.playbook}: {task['name']} uses a shell"
         text = yaml.safe_dump(task)
-        if ("env_file_b64" in text or "keys_enc_b64" in text) and "block" not in task:
+        if (("env_file_b64" in text or "keys_enc_b64" in text or "admin_password" in text)
+                and "block" not in task):
             assert task.get("no_log") is True, f"{step.playbook}: {task['name']} needs no_log"
 
 
@@ -853,3 +854,93 @@ def test_deactivate_has_no_slot_smoke_test():
     for mode in ("update", "teardown"):
         with pytest.raises(ValueError):
             steps.plan_for(mode, cloud=True, smoke=False)   # only Deactivate skips it
+
+
+UPDATE_PLAN = ["preflight", "bootstrap", "fetch", "render", "build", "dump", "up"]
+
+
+def test_first_admin_step_follows_start_services():
+    def keys(**kw):
+        return [s.key for s in steps.plan_for("update", first_admin=True, **kw)]
+    assert keys() == [*UPDATE_PLAN, "first_admin"]
+    assert keys(publish=True) == [*UPDATE_PLAN, "first_admin", "dns", "proxy", "smoke"]
+    assert keys(vm=True) == ["provision", *UPDATE_PLAN, "first_admin"]
+    assert keys(cloud=True) == ["do_prepare", *UPDATE_PLAN, "first_admin", "dns",
+                                "slot_smoke"]
+    assert keys(cloud=True, go_live=True)[-1] == "go_live"
+    assert [s.number for s in steps.plan_for("update", first_admin=True, publish=True)] == [
+        1, 2, 3, 4, 5, 6, 10, 11, 12, 13, 14]
+    assert steps.STEPS_BY_KEY["first_admin"].name == "Create the first admin"
+    for mode, kw in (("reset", {}), ("update", {"restore": True}), ("teardown", {}),
+                     ("snapshot", {}), ("restore_dump", {})):
+        with pytest.raises(ValueError):
+            steps.plan_for(mode, first_admin=True, **kw)
+
+
+FAKE_SS_STACK = """#!/usr/bin/env bash
+# the playbook looks for this case label, as in the real ss-stack
+case "${1:-}" in
+  admin) ;;
+esac
+printf '%s\\n' "$*" >> "$ADMIN_LOG"
+cat > "$ADMIN_LOG.stdin"
+exit "${FAKE_RC:-0}"
+"""
+
+
+def _admin_target(tmp_path: Path) -> tuple[dict, dict, Path]:
+    env_dir, env = _target(tmp_path)
+    stack = tmp_path / "fake-ss-stack"
+    stack.write_text(FAKE_SS_STACK)
+    stack.chmod(0o755)
+    (tmp_path / "admin.log").touch()
+    env = {**env, "ADMIN_LOG": str(tmp_path / "admin.log")}
+    vars_ = {**_common(env_dir), "ss_stack": str(stack), "admin_email": "ada@test.example.com",
+             "admin_first_name": "Ada", "admin_last_name": "Lovelace",
+             "admin_role": "super_admin", "admin_invite": False,
+             "admin_password": "Stdin-Only-Password-42", "admin_link_minutes": 240}
+    return vars_, env, tmp_path / "admin.log"
+
+
+def test_first_admin_playbook_puts_the_password_on_stdin_only(tmp_path):
+    vars_, env, log = _admin_target(tmp_path)
+    result, _ = _play(tmp_path, "first_admin.yml", vars_, env)
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    argv = log.read_text()
+    assert argv.split() == ["admin", vars_["env_dir"], "--email", "ada@test.example.com",
+                            "--first-name", "Ada", "--last-name", "Lovelace", "--role",
+                            "super_admin", "--link-minutes", "240", "--password-stdin"]
+    assert Path(str(log) + ".stdin").read_text() == "Stdin-Only-Password-42\n"
+    assert "Stdin-Only-Password-42" not in argv and "Stdin-Only-Password-42" not in out
+
+
+def test_first_admin_playbook_invites_without_stdin(tmp_path):
+    vars_, env, log = _admin_target(tmp_path)
+    vars_ = {**vars_, "admin_invite": True, "admin_password": ""}
+    result, _ = _play(tmp_path, "first_admin.yml", vars_, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert log.read_text().split()[-1] == "--invite"
+    assert Path(str(log) + ".stdin").read_text() == ""
+
+
+@pytest.mark.parametrize("rc, ok", [(0, True), (1, True), (2, False), (3, False), (5, False)])
+def test_first_admin_playbook_exit_codes(tmp_path, rc, ok):
+    vars_, env, _ = _admin_target(tmp_path)
+    result, _ = _play(tmp_path, "first_admin.yml", vars_, {**env, "FAKE_RC": str(rc)})
+    out = result.stdout + result.stderr
+    assert (result.returncode == 0) is ok, out
+    if not ok:
+        assert f"serversherpa bootstrap-admin exited with {rc}." in out
+    assert "Stdin-Only-Password-42" not in out
+
+
+def test_first_admin_playbook_explains_an_old_checkout(tmp_path):
+    vars_, env, log = _admin_target(tmp_path)
+    old = tmp_path / "old-ss-stack"
+    old.write_text("#!/bin/sh\nexit 2\n")
+    old.chmod(0o755)
+    result, _ = _play(tmp_path, "first_admin.yml", {**vars_, "ss_stack": str(old)}, env)
+    assert result.returncode != 0
+    assert "This commit's ss-stack has no admin command" in result.stdout
+    assert log.read_text() == ""

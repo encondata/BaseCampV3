@@ -288,3 +288,28 @@ def test_restore_arguments(env_dir: Path, fake: dict[str, str], tmp_path: Path,
     assert out.returncode == code
     assert message in out.stdout + out.stderr
     assert calls(fake) == []
+
+
+def test_admin_runs_bootstrap_admin_in_the_api_container(env_dir: Path,
+                                                         fake: dict[str, str]) -> None:
+    out = subprocess.run(["bash", str(SS_STACK), "admin", str(env_dir), "--email",
+                          "ada@test.example.com", "--password-stdin"], env=fake,
+                         capture_output=True, text=True, input="Stdin-Only-Password-42\n")
+    assert out.returncode == 0, out.stderr
+    assert calls(fake) == [dc(env_dir, "api", "exec -T api serversherpa bootstrap-admin "
+                              "--email ada@test.example.com --password-stdin")]
+    assert "Stdin-Only-Password-42" not in "\n".join(calls(fake))
+
+
+def test_admin_passes_the_exit_code_through(env_dir: Path, fake: dict[str, str],
+                                            tmp_path: Path) -> None:
+    docker = tmp_path / "bin" / "docker"
+    docker.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\nexit 3\n")
+    out = run(fake, "admin", str(env_dir), "--invite")
+    assert out.returncode == 3
+
+
+def test_admin_needs_arguments(env_dir: Path, fake: dict[str, str]) -> None:
+    out = run(fake, "admin", str(env_dir))
+    assert out.returncode == 2
+    assert calls(fake) == []

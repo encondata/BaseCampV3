@@ -14,6 +14,8 @@
 #                                           dump; --clear-sessions also signs everyone out
 #   ss-stack pgdump  <env-dir> <out.dump>   pg_dump (custom, no owner or ACLs) to one file
 #   ss-stack revision <env-dir>             print the database's Alembic revision
+#   ss-stack admin   <env-dir> <args…>      serversherpa bootstrap-admin in the running api
+#                                           container; stdin (a password) passes through
 #
 # <env-dir> holds the environment's .env (see env.example) and backups/.
 # With STACK_EXTERNAL_DATA=1 (DigitalOcean) the database is a managed
@@ -37,7 +39,7 @@ cleanup() { if (( ${#CLEANUP[@]} )); then rm -f -- "${CLEANUP[@]}"; fi; }
 trap cleanup EXIT
 
 die() { echo "ss-stack: $*" >&2; exit 1; }
-usage() { sed -n '6,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '6,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 [[ $# -ge 2 ]] || usage
 cmd=$1
@@ -327,6 +329,12 @@ case $cmd in
     else
       pg_local psql -tAc 'SELECT version_num FROM alembic_version'
     fi
+    ;;
+  admin)
+    # The first admin (Sirdar's step 11): stdin carries a typed password, never
+    # argv; the command's exit code is ss-stack's.
+    [[ $# -ge 1 ]] || usage
+    dc api exec -T api serversherpa bootstrap-admin "$@"
     ;;
   *)
     usage
