@@ -41,6 +41,13 @@ async def lan(db, secrets_key, ssh_server, monkeypatch, fake_provisioner):
     return await make_bluegreen_environment(db)
 
 
+def _pub(target) -> str:
+    """The target's SSH key, as its public half (an OpenSSH private key's
+    export differs each time: a random check value)."""
+    import asyncssh
+    return asyncssh.import_private_key(target.private_key).export_public_key().decode()
+
+
 async def _run(db, env, *, mode="update", slot="orange", go_live=False, sha=SHA, **kw):
     dep = await pipeline.create_deployment(db, env, mode=mode, git_ref="main", sha=sha,
                                            actor_id=None, vm=True, bluegreen=True, slot=slot,
@@ -119,6 +126,7 @@ async def test_a_failed_switch_keeps_the_live_slot(db, lan, fake_runner, fake_pu
     dep_id = await _run(db, lan, mode="activate", slot="purple", sha=NEWER)
     dep, _, env = await _load(dep_id)
     assert (dep.status, env.active_slot, env.status) == ("failed", "orange", "failed")
+    assert (env.current_sha, env.image_tag) == (SHA, envfile.image_tag(SHA))
 
 
 @pytest.mark.parametrize("mode", ["reset", "restore_dump", "rollback", "vm_restore"])
@@ -200,9 +208,9 @@ async def test_the_data_vm_step_runs_on_the_data_vm_and_hides_its_env(
     by_step = {r.step: r for r in fake_runner.requests}
     data, render = by_step["data_vm"], by_step["render"]
     # its own SSH key (the data VM's), the app steps the slot's
-    assert data.target.private_key and render.target.private_key
-    assert data.target.private_key != render.target.private_key
-    assert all(by_step[k].target.private_key == render.target.private_key
+    assert _pub(data.target) and _pub(render.target)
+    assert _pub(data.target) != _pub(render.target)
+    assert all(_pub(by_step[k].target) == _pub(render.target)
                for k in ("preflight", "dump", "up", "slot_smoke"))
     assert "data_env_b64" not in render.extravars
     log = next(s.log for s in steps if s.key == "data_vm")
@@ -317,6 +325,137 @@ async def test_bluegreen_step_0_and_destroy_get_an_hour(db, lan, fake_runner, fa
     monkeypatch.setattr(asyncio, "wait_for", wait_for)
     await _run(db, lan, go_live=True)
     assert seen[0] == 60 * 60                         # step 0
+    assert 3600 in seen and 1800 not in seen
     seen.clear()
     await _run(db, lan, mode="teardown", slot="orange")
     assert seen[0] == 60 * 60                         # Destroy VM
+    assert 3600 in seen and 1800 not in seen
+
+
+# ---- review follow-ups ---------------------------------------------------------
+
+from sqlalchemy import update  # noqa: E402
+
+from sirdar_api.deploy import first_admins  # noqa: E402
+
+ADMIN = {"first_name": "Ada", "last_name": "Lovelace", "email": "ada@test.example.com",
+         "password_mode": "typed", "password": "Correct-Horse-Battery-9"}
+
+
+@pytest.mark.parametrize("mode", ["update", "activate"])
+async def test_an_update_or_activate_names_a_real_slot(db, lan, mode):
+    for slot, code in ((None, "slot_required"), ("blue", "slot_invalid"),
+                       ("data", "slot_invalid"), ("main", "slot_invalid")):
+        with pytest.raises(DoEnvError) as e:
+            await pipeline.create_deployment(db, lan, mode=mode, git_ref="main", sha=SHA,
+                                             actor_id=None, vm=True, bluegreen=True,
+                                             slot=slot)
+        assert e.value.code == code, slot
+
+
+async def test_a_delete_or_snapshot_slot_must_be_real_when_given(db, lan):
+    with pytest.raises(DoEnvError) as e:
+        await pipeline.create_deployment(db, lan, mode="teardown", git_ref="main", sha=SHA,
+                                         actor_id=None, vm=True, bluegreen=True, slot="data")
+    assert e.value.code == "slot_invalid"
+
+
+async def test_a_vm_with_no_address_names_its_slot(db, lan, fake_runner, fake_publisher):
+    """Activate of a slot whose VM has no address: the copy names the slot."""
+    await db.execute(update(VmSlot).where(VmSlot.environment_id == lan.id,
+                                          VmSlot.slot == "purple").values(sha=NEWER))
+    await db.commit()
+    dep_id = await _run(db, lan, mode="activate", slot="purple", sha=NEWER)
+    dep, _, _ = await _load(dep_id)
+    assert dep.status == "failed"
+    assert dep.error.startswith("This environment's purple VM has no address yet.")
+
+
+async def test_with_no_slot_known_the_copy_says_app_vm(db, lan, snapshots_dir, fake_runner,
+                                                       fake_publisher):
+    """A snapshot job with no slot, nothing live and orange unbuilt: never
+    "VM VM"."""
+    await db.execute(update(Environment).where(Environment.id == lan.id).values(
+        current_sha=SHA, image_tag=envfile.image_tag(SHA)))
+    await db.commit()
+    env = await db.get(Environment, lan.id, populate_existing=True)
+    snap = await _take_for_delete(db, env)
+    dep = await pipeline.create_deployment(db, env, mode="snapshot", git_ref="main", sha=SHA,
+                                           actor_id=None, vm=True, bluegreen=True,
+                                           snapshot_id=snap.id)
+    await db.commit()
+    pipeline.launch(dep.id)
+    await pipeline.wait(dep.id)
+    dep, _, _ = await _load(dep.id)
+    assert dep.status == "failed"
+    assert "VM VM" not in dep.error
+    assert dep.error.startswith("This environment's app VM has no address yet.")
+
+
+async def test_a_snapshot_job_falls_back_to_the_active_slot(db, lan, snapshots_dir,
+                                                            fake_runner, fake_publisher,
+                                                            tmp_path):
+    await _run(db, lan, go_live=True)                       # orange live, at SHA
+    orange_key = _pub(next(r for r in fake_runner.requests if r.step == "render").target)
+    await _run(db, lan, slot="purple", sha=NEWER)           # purple idle, at NEWER
+    purple_key = _pub(fake_runner.requests[-1].target)
+    assert purple_key != orange_key
+    env = await db.get(Environment, lan.id, populate_existing=True)
+    snap = await _take_for_delete(db, env)
+    snap_id = snap.id
+    fake_runner.effects["export"] = _fetched(tmp_path)
+    fake_runner.requests.clear()
+    dep = await pipeline.create_deployment(db, env, mode="snapshot", git_ref="main", sha=SHA,
+                                           actor_id=None, vm=True, bluegreen=True,
+                                           snapshot_id=snap_id)
+    await db.commit()
+    pipeline.launch(dep.id)
+    await pipeline.wait(dep.id)
+    dep, _, env = await _load(dep.id)
+    assert dep.status == "succeeded" and fake_runner.steps() == ["preflight", "export"]
+    export = fake_runner.requests[-1]
+    assert _pub(export.target) == orange_key
+    assert export.extravars["api_image"] == f"serversherpa-api:{envfile.image_tag(SHA)}"
+    assert export.extravars["spaces_endpoint"].startswith(f"http://{DATA}:")
+    assert (await db.scalar(select(Snapshot.status).where(Snapshot.id == snap_id))) == "ready"
+    assert (env.active_slot, env.current_sha) == ("orange", SHA)
+
+
+async def test_step_11_runs_on_the_slot_vm(db, lan, fake_runner, fake_publisher):
+    await first_admins.put(db, get_settings(), lan.id, first_admins.check(ADMIN))
+    await db.commit()
+    fake_runner.results["first_admin"] = RunResult(status="successful", rc=0,
+                                                   data={"first_admin_rc": "0"})
+    dep_id = await _run(db, lan, go_live=True, first_admin=True)
+    dep, steps, _ = await _load(dep_id)
+    assert dep.status == "succeeded", dep.error
+    assert fake_runner.steps() == [*FIRST[:-1], "first_admin", "slot_smoke"]
+    by_step = {r.step: r for r in fake_runner.requests}
+    admin = by_step["first_admin"]
+    assert _pub(admin.target) == _pub(by_step["up"].target)
+    assert _pub(admin.target) != _pub(by_step["data_vm"].target)
+    assert not await first_admins.pending(db, lan.id)
+
+
+async def test_a_retry_from_step_7_alone(db, lan, fake_runner, fake_publisher,
+                                         fake_provisioner):
+    fake_runner.results["data_vm"] = RunResult(status="failed", rc=2)
+    first = await _run(db, lan, go_live=True)
+    dep, _, env = await _load(first)
+    assert (dep.status, dep.failed_step) == ("failed", 7)
+    del fake_runner.results["data_vm"]
+    fake_runner.requests.clear()
+    fake_provisioner.calls.clear()
+    dep_id = await _run(db, env, go_live=True, start_step=7, retry_of=first)
+    dep, steps, env = await _load(dep_id)
+    assert dep.status == "succeeded", dep.error
+    assert fake_provisioner.calls == []
+    assert fake_runner.steps() == ["data_vm", "up", "slot_smoke"]
+    assert [s.key for s in steps if s.status == "skipped"] == FIRST_SKIPPED
+    data = fake_runner.requests[0]
+    assert data.extravars["data_env_b64"] and data.extravars["db_clients"] == [ORANGE, PURPLE]
+    assert _pub(data.target) != _pub(fake_runner.requests[1].target)
+    assert (env.active_slot, env.current_sha) == ("orange", SHA)
+
+
+FIRST_SKIPPED = ["provision", "preflight", "bootstrap", "fetch", "render", "build", "dump"]

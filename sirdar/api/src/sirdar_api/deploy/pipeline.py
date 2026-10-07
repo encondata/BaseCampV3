@@ -298,7 +298,9 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     bluegreen: a LAN Blue/Green environment's deployment (it must match
     lan_slots.is_bluegreen, except a publish job: the ordinary 12–14). Slots
     as on DigitalOcean; NotSupportedOnBlueGreen for the same four modes; it
-    never takes a VM snapshot (take_vm_snapshot is dropped)."""
+    never takes a VM snapshot (take_vm_snapshot is dropped). An Update or
+    Activate names its slot (DoEnvError slot_required), and any slot given is
+    orange or purple (slot_invalid)."""
     on_do = env.target_id == targets.DO_TARGET
     if on_do and mode in NOT_ON_DIGITALOCEAN:
         raise NotSupportedOnDigitalOcean(mode)
@@ -311,6 +313,10 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
         raise ValueError("bluegreen must be set exactly for a LAN Blue/Green deployment")
     if bluegreen:
         take_vm_snapshot = False            # the other slot is the way back
+        if slot is None and mode in ("update", "activate"):
+            raise do_envs.DoEnvError("slot_required")
+        if slot is not None and slot not in lan_slots.SLOTS:
+            raise do_envs.DoEnvError("slot_invalid", slot=slot)
     go_live = go_live or mode == "activate"
     if cloud or bluegreen:
         await _check_slots(db, env, mode=mode, slot=slot, snapshot_id=snapshot_id,
@@ -710,9 +716,12 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
         if env.target_id == targets.DO_TARGET:
             raise PrepareError("This environment's droplet has no address yet. Retry from "
                                "step 0 (Prepare DigitalOcean).")
+        if dep.bluegreen and dep.slot:
+            raise PrepareError(f"This environment's {dep.slot} VM has no address yet. Retry "
+                               "from step 0 (Prepare VM).")
         if dep.bluegreen:
-            raise PrepareError(f"This environment's {dep.slot or 'VM'} VM has no address yet. "
-                               "Retry from step 0 (Prepare VM).")
+            raise PrepareError("This environment's app VM has no address yet. Retry from "
+                               "step 0 (Prepare VM).")
         raise PrepareError("This environment's VM has no address yet. Retry from step 0 "
                            "(Prepare VM).")
     if cfg is None:

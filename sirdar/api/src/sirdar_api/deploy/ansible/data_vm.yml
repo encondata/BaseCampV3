@@ -203,6 +203,21 @@
       become: true
       when: not test_mode
 
+    # Both app VMs share this stack: when compose recreates a container (a new
+    # Postgres or SeaweedFS image, or a compose change), the live server's
+    # database restarts too, before the idle server is smoke-tested. Say so;
+    # compose's own output is never shown (only whether it recreated).
     - name: ss-stack data
       ansible.builtin.command:
         argv: ["{{ ss_stack }}", data, "{{ env_dir }}"]
+      register: data_stack
+      changed_when: >-
+        (data_stack.stdout ~ '\n' ~ data_stack.stderr) is search('(?m)^\s*Container \S+\s+Recreate')
+
+    - name: Whether the shared data stack restarted
+      ansible.builtin.debug:
+        msg: >-
+          {{ "The data VM recreated its database or storage container (a new image or a
+          compose change): the live server's database restarted too."
+          if data_stack is changed else
+          "The data VM's database and storage were already up to date: nothing restarted." }}

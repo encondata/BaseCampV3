@@ -1357,3 +1357,38 @@ def test_bluegreen_vm_steps_get_an_hour():
     assert steps.timeout_of("destroy", bluegreen=True) == 60 * 60
     assert steps.timeout_of("provision") == steps.timeout_of("destroy") == 30 * 60
     assert steps.timeout_of("build", bluegreen=True) == steps.STEPS_BY_KEY["build"].timeout
+
+
+RECREATED_LINE = "recreated its database or storage"
+UP_TO_DATE_LINE = "already up to date"
+
+
+@pytest.mark.parametrize("compose_says, expected", [
+    (" Container e2e-db-postgres-1  Recreate\n Container e2e-db-postgres-1  Recreated",
+     RECREATED_LINE),
+    (" Container e2e-db-postgres-1  Running", UP_TO_DATE_LINE),
+])
+def test_data_vm_playbook_says_whether_the_shared_stack_restarted(tmp_path, compose_says,
+                                                                    expected):
+    """Both app VMs share the data VM: a new Postgres or SeaweedFS image (or
+    compose change) restarts the live slot's database too, before the idle
+    slot's smoke test. Step 7 says so in its log."""
+    env_dir, env = _target(tmp_path)
+    env[DATA_VM_TEST_ENV] = "1"
+    bin_dir = tmp_path / "bin"
+    (bin_dir / "docker").rename(bin_dir / "docker-real")
+    said = tmp_path / "compose-says"
+    said.write_text(compose_says + "\n")
+    wrapper = bin_dir / "docker"
+    wrapper.write_text('#!/usr/bin/env bash\n'
+                       'case " $* " in *" up "*) cat "$COMPOSE_SAYS" >&2 ;; esac\n'
+                       'exec "$(dirname "$0")/docker-real" "$@"\n')
+    wrapper.chmod(0o755)
+    env["COMPOSE_SAYS"] = str(said)
+    result, _ = _play(tmp_path, "data_vm.yml", _data_vm_vars(env_dir, DATA_ENV), env)
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert expected in out
+    other = UP_TO_DATE_LINE if expected == RECREATED_LINE else RECREATED_LINE
+    assert other not in out
+    assert "0123abcd" not in out
