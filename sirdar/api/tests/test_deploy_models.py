@@ -424,7 +424,7 @@ async def test_migration_0007_downgrade_refuses_while_vms_are_managed():
     assert b"Can't downgrade below 0007 while Sirdar manages Proxmox VMs" in err.value.stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
         # The refused downgrade rolls back as a whole: still at head.
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0010"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0011"
         assert conn.execute("SELECT count(*) FROM proxmox_vms").fetchone()[0] == 1
         assert conn.execute("SELECT count(*) FROM integrations WHERE kind = 'proxmox'"
                             ).fetchone()[0] == 1
@@ -592,7 +592,7 @@ async def test_migration_0010_downgrade_refuses_while_do_environments_exist():
         _alembic("downgrade", "0009")
     assert b"while Sirdar manages DigitalOcean environments" in err.value.stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0010"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0011"
         conn.execute("DELETE FROM environments WHERE id = %s", (env_id,))
 
 
@@ -649,7 +649,7 @@ def _assert_downgrade_refused() -> None:
         pytest.fail("the downgrade below 0010 wasn't refused")
     assert b"while Sirdar manages DigitalOcean environments" in stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0010"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0011"
 
 
 async def test_migration_0010_downgrade_refuses_with_only_do_resources():
@@ -745,3 +745,17 @@ async def test_environment_slot_and_production_rules(db):
     await db.execute(text("UPDATE environments SET retiring = true WHERE name = 'p1'"))
     db.add(env("p2"))
     await db.commit()
+
+
+async def test_first_admin_password_only_for_typed(db):
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    from .deploy_factories import make_environment
+    env = await make_environment(db, name="fa1", secrets={})
+    with pytest.raises(IntegrityError):
+        await db.execute(text(
+            "INSERT INTO environment_first_admins (environment_id, first_name, last_name, "
+            "email, password_mode, password_enc) VALUES (:e, 'A', 'B', 'a@b.co', 'invite', "
+            "'\\x00')"), {"e": env.id})
+    await db.rollback()

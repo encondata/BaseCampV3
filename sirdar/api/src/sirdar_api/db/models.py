@@ -1,4 +1,4 @@
-"""Sirdar's own tables (migrations 0001–0010). `users` mirrors the portal's
+"""Sirdar's own tables (migrations 0001–0011). `users` mirrors the portal's
 user_accounts + people for the people it copies; Sirdar-only data
 (overrides, sessions, audit, lockout counters) never comes from the portal."""
 
@@ -241,6 +241,26 @@ class EnvironmentSecret(Base):
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
 
 
+class EnvironmentFirstAdmin(Base):
+    """The first super admin of an environment that starts empty (migration
+    0011): step 11 of its first deploy creates them. A typed password is
+    Fernet-encrypted with SIRDAR_SECRETS_KEY until that step used it, then
+    cleared; an invite has none. Never returned."""
+
+    __tablename__ = "environment_first_admins"
+
+    environment_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("environments.id", ondelete="CASCADE"), primary_key=True)
+    first_name: Mapped[str]
+    last_name: Mapped[str]
+    email: Mapped[str]
+    password_mode: Mapped[str]                      # typed | invite
+    password_enc: Mapped[bytes | None] = mapped_column(BYTEA)
+    done_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+    updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
+
+
 class Deployment(Base):
     __tablename__ = "deployments"
 
@@ -279,6 +299,8 @@ class Deployment(Base):
     cloud: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     slot: Mapped[str | None]
     go_live: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    # Fresh start (migration 0011): its plan has step 11, Create the first admin.
+    first_admin: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     previous_sha: Mapped[str | None]
     error: Mapped[str | None]
     actor_id: Mapped[uuid.UUID | None]
