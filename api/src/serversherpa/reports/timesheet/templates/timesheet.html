@@ -1,0 +1,151 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{{ title }}</title>
+<style>
+  @page {
+    size: Letter landscape;
+    margin: 14mm 14mm 30mm 14mm;
+    @bottom-left {
+      content: "Page " counter(page) " of " counter(pages);
+      font: 8pt Helvetica, Arial, sans-serif; color: #666;
+    }
+    @bottom-center {
+      content: "Generated: {{ stamp|cssstr }}  \00B7  Document Tracking ID: {{ tracking_id|cssstr }}";
+      font: 8pt Helvetica, Arial, sans-serif; color: #666;
+    }
+    @bottom-right {
+      content: url("{{ barcode_data_uri|cssstr }}");
+      width: 55mm; height: 15mm;
+    }
+  }
+  body { font: 10pt/1.35 Helvetica, Arial, sans-serif; color: #111; }
+  h1 { font-size: 20pt; font-weight: bold; text-align: center; margin: 0 0 2mm; }
+  .title-rule { border: none; border-top: 0.75pt solid #111; margin: 0 0 6mm; }
+  h2 { font-size: 11pt; font-weight: bold; margin: 7mm 0 3mm; }
+  .info { font-size: 9pt; margin: 0 0 1mm 5mm; }
+  .footer-rule { position: fixed; left: 0; right: 0; bottom: -4mm;
+                border-top: 0.75pt solid #ccc; }
+  .tiles { margin: 4mm 0 2mm; }
+  .tile { display: inline-block; width: 38mm; margin: 0 3mm 2mm 0; padding: 2mm 3mm;
+          border: 0.75pt solid #ccc; border-radius: 1.5mm; }
+  .tile .k { font-size: 7pt; color: #555; text-transform: uppercase; letter-spacing: 0.3pt; }
+  .tile .v { font-size: 14pt; font-weight: bold; }
+  table { border-collapse: collapse; table-layout: fixed; width: 100%; margin-bottom: 4mm; font-size: 8pt; }
+  table.narrow { width: 200mm; }
+  th, td { padding: 1.2mm 1.6mm; text-align: left; vertical-align: top;
+           overflow-wrap: break-word; }
+  th { font-weight: bold; border-bottom: 0.75pt solid #111; }
+  td.num, th.num { text-align: right; }
+  td.nw { white-space: nowrap; }
+  thead { display: table-header-group; }        /* repeat header on every page */
+  tbody tr:nth-child(even) { background: #f7f7f7; }
+  tr { page-break-inside: avoid; }
+  .chip { display: inline-block; padding: 0.3mm 1.6mm; border-radius: 2mm; font-size: 7pt;
+          white-space: nowrap; border: 0.5pt solid; }
+  .chip.approved { color: #166534; background: #dcfce7; border-color: #86efac; }
+  .chip.pending  { color: #92400e; background: #fef3c7; border-color: #fcd34d; }
+  .chip.rejected { color: #991b1b; background: #fee2e2; border-color: #fca5a5; }
+  .chip.open     { color: #1e40af; background: #dbeafe; border-color: #93c5fd; }
+  .chip.mixed    { color: #374151; background: #f3f4f6; border-color: #d1d5db; }
+  .flag { display: inline-block; margin: 0 1mm 0.6mm 0; padding: 0.2mm 1.4mm; border-radius: 1.5mm;
+          font-size: 6.5pt; color: #7c2d12; background: #ffedd5; border: 0.5pt solid #fdba74;
+          white-space: nowrap; }
+  .note { color: #444; }
+  .empty-row { color: #333; }
+  .closing { font-style: italic; color: #666; margin-top: 6mm; }
+</style>
+</head>
+<body>
+
+<div class="footer-rule"></div>
+
+<h1>{{ title }}</h1>
+<hr class="title-rule">
+
+<div class="info">Person: {{ person_label }}</div>
+<div class="info">Job: {{ job_label }}</div>
+<div class="info">Site: {{ site_label }}</div>
+<div class="info">Statuses: {{ statuses }}</div>
+<div class="info">{{ zone_note }}</div>
+
+<div class="tiles">
+  {% for label, value in tiles %}<div class="tile"><div class="k">{{ label }}</div><div class="v">{{ value }}</div></div>{% endfor %}
+
+</div>
+
+<h2>By person</h2>
+{% if by_person %}
+<table class="narrow">
+  <thead><tr><th>Person</th><th class="num">Days</th><th class="num">Entries</th><th class="num">Approved</th><th class="num">Pending</th><th class="num">Total</th><th class="num">Flagged</th></tr></thead>
+  <tbody>
+    {% for r in by_person %}
+    <tr><td>{{ r.name }}</td><td class="num">{{ r.days }}</td><td class="num">{{ r.entries }}</td><td class="num nw">{{ r.approved }}</td><td class="num nw">{{ r.pending }}</td><td class="num nw">{{ r.total }}</td><td class="num">{{ r.flagged }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-row">No time entries match these filters.</p>
+{% endif %}
+
+{% if show_by_job %}
+<h2>By job</h2>
+{% if by_job %}
+<table class="narrow">
+  <thead><tr><th>Job</th><th class="num">People</th><th class="num">Entries</th><th class="num">Approved</th><th class="num">Pending</th><th class="num">Total</th></tr></thead>
+  <tbody>
+    {% for r in by_job %}
+    <tr><td>{{ r.name }}</td><td class="num">{{ r.people }}</td><td class="num">{{ r.entries }}</td><td class="num nw">{{ r.approved }}</td><td class="num nw">{{ r.pending }}</td><td class="num nw">{{ r.total }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-row">No time entries match these filters.</p>
+{% endif %}
+{% endif %}
+
+{% if show_day %}
+<h2>By day</h2>
+{% if days %}
+<table>
+  <colgroup><col style="width: 9%"><col style="width: 17%"><col style="width: 7%"><col style="width: 11%"><col style="width: 11%"><col style="width: 9%"><col style="width: 12%"><col style="width: 24%"></colgroup>
+  <thead><tr><th>Date</th><th>Person</th><th class="num">Entries</th><th>First in</th><th>Last out</th><th>Worked</th><th>Status</th><th>Flags</th></tr></thead>
+  <tbody>
+    {% for r in days %}
+    <tr><td class="nw">{{ r.date }}</td><td>{{ r.person }}</td><td class="num">{{ r.entries }}</td><td class="nw">{{ r.first_in }}</td><td class="nw">{{ r.last_out }}</td><td class="nw">{{ r.worked }}</td>
+      <td><span class="chip {{ r.status.css }}">{{ r.status.label }}</span></td>
+      <td>{% for f in r.flags %}<span class="flag">{{ f }}</span>{% endfor %}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-row">No time entries match these filters.</p>
+{% endif %}
+{% endif %}
+
+{% if show_punch %}
+<h2>Punches</h2>
+{% if punches %}
+<table style="font-size: 7pt">
+  <colgroup><col style="width: 7%"><col style="width: 10%"><col style="width: 9%"><col style="width: 7%"><col style="width: 7%"><col style="width: 7%"><col style="width: 5%"><col style="width: 6%"><col style="width: 7%"><col style="width: 5%"><col style="width: 8%"><col style="width: 10%"><col style="width: 12%"></colgroup>
+  <thead><tr><th>Date</th><th>Person</th><th>Job</th><th>Site</th><th>Clock in</th><th>Clock out</th><th class="num">Break</th><th>Worked</th><th>Status</th><th>Source</th><th>Approved by</th><th>Flags</th><th>Notes</th></tr></thead>
+  <tbody>
+    {% for r in punches %}
+    <tr><td class="nw">{{ r.date }}</td><td>{{ r.person }}</td><td>{{ r.job }}</td><td>{{ r.site }}</td>
+      <td class="nw">{{ r.clock_in }}</td><td class="nw">{{ r.clock_out }}</td><td class="num">{{ r.break_minutes }}</td><td class="nw">{{ r.worked }}</td>
+      <td><span class="chip {{ r.status.css }}">{{ r.status.label }}</span></td><td>{{ r.source }}</td><td>{{ r.approved_by }}</td>
+      <td>{% for f in r.flags %}<span class="flag">{{ f }}</span>{% endfor %}</td>
+      <td class="note">{% for n in r.notes %}{{ n }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty-row">No time entries match these filters.</p>
+{% endif %}
+{% endif %}
+
+<p class="closing">End of Report</p>
+
+</body>
+</html>

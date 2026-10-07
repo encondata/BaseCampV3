@@ -50,6 +50,7 @@ const DEFAULT_VISIBLE = new Set<string>(COLUMNS.filter((c) => c.default).map((c)
 
 const TYPE_LABELS: Record<string, string> = {
   move_report: 'Move Report', site_move_survey: 'Site & Move Survey',
+  timesheet: 'Timesheet',
 };
 const TOTAL_SECTIONS = 8;
 
@@ -71,6 +72,8 @@ export default function Reports() {
     setParams(next, { replace: true });
   };
   const canAdd = can('reports', 'add');
+  // A Timesheet run is hours data: it needs time:view on top of reports:add.
+  const canViewTime = can('time', 'view');
   const canChange = can('reports', 'change');
   const canDelete = can('reports', 'delete');
 
@@ -246,7 +249,8 @@ export default function Reports() {
                   {shownCols.map((c) => <div className="cell" key={c.key}>{cellFor(d, c.key)}</div>)}
                   <div className="cell" style={{ display: 'flex', justifyContent: 'flex-end' }}>
                     <RowActionsMenu actions={[
-                      ...(canAdd ? [{ key: 'generate', label: 'Generate', onSelect: () => setGenerating(d) }] : []),
+                      ...(canAdd && !(d.report_type === 'timesheet' && !canViewTime)
+                        ? [{ key: 'generate', label: 'Generate', onSelect: () => setGenerating(d) }] : []),
                       ...(canChange ? [{ key: 'edit', label: 'Edit', onSelect: () => setEditing(d) }] : []),
                       ...(canAdd ? [{ key: 'clone', label: 'Clone', onSelect: () => void clone(d) }] : []),
                       ...(canDelete && !d.is_system

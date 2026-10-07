@@ -26,7 +26,7 @@ from pathlib import PurePosixPath
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import (
-    Attachment, Initiative, Partner, ReportDefinition, ReportRun,
+    Attachment, Initiative, Partner, Person, ReportDefinition, ReportRun,
 )
 from serversherpa.notifications.inbox import notify
 from serversherpa.reports.container_label_renderer import ContainerLabelRendererUnavailable
@@ -35,6 +35,7 @@ from serversherpa.reports.move_report.gather import InitiativeUnavailable
 from serversherpa.reports.rack_renderer import RackRendererUnavailable
 from serversherpa.reports.registry import get_module
 from serversherpa.reports.site_move_survey.gather import SurveyGatherError
+from serversherpa.reports.timesheet.gather import TimesheetTooLarge
 from serversherpa.services.audit import audit
 from serversherpa.services.storage import put_object
 
@@ -66,6 +67,26 @@ async def _notify(db: AsyncSession, run: ReportRun, definition_name: str,
                      body=run.error or "unknown error", link=link, payload=payload)
 
 
+async def _timesheet_inbox_body(db: AsyncSession, run: ReportRun,
+                                initiative: Initiative | None) -> str:
+    """The inbox body: "{from} to {to}", then " · person" and " · job" when
+    the run is filtered by either. A date-less run (never validated) shows
+    "?" for the missing one."""
+    opts = run.options or {}
+    body = f"{opts.get('from', '?')} to {opts.get('to', '?')}"
+    raw_person = opts.get("person_id")
+    if raw_person:
+        try:
+            person = await db.get(Person, uuid.UUID(str(raw_person)))
+        except ValueError:
+            person = None
+        if person is not None:
+            body += f" · {person.display_name}"
+    if initiative is not None:
+        body += f" · {initiative.name}"
+    return body
+
+
 async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
                       renderer=None) -> str:
     """Run one claimed (status='running') run to a terminal status, and
@@ -90,6 +111,8 @@ async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
                 partner = None
         if partner is not None:
             initiative_name = partner.name
+    if run.report_type == "timesheet":
+        initiative_name = await _timesheet_inbox_body(db, run, initiative)
     error: str | None = None
     try:
         module = get_module(run.report_type)
@@ -98,9 +121,12 @@ async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
         ext = PurePosixPath(result.filename).suffix or ".bin"
         key = f"reports/{run.initiative_id or 'standalone'}/{run_id}{ext}"
         await put_object(key, result.content, result.content_type)
-        if run.initiative_id is not None:
+        if run.initiative_id is not None and run.report_type != "timesheet":
             # no initiative to attach to when the survey was generated for
-            # a partner + manually-chosen sites — see the module docstring
+            # a partner + manually-chosen sites — see the module docstring.
+            # A timesheet is never attached: Files are readable with
+            # attachments:view, which would expose hours to people without
+            # time:view. Its file lives only on the run (History download).
             attachment = Attachment(
                 entity_type="initiative", entity_id=run.initiative_id, kind="document",
                 storage_key=key, filename=result.filename, content_type=result.content_type,
@@ -120,7 +146,7 @@ async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
         await db.commit()                   # a failure here is a failed run too
     except InitiativeUnavailable:
         error = "initiative_unavailable"
-    except SurveyGatherError as exc:
+    except (SurveyGatherError, TimesheetTooLarge) as exc:
         error = exc.code
     except RackRendererUnavailable as exc:
         error = f"rack renderer unavailable: {exc}"

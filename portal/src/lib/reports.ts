@@ -16,6 +16,15 @@ export const MOVE_REPORT_SECTIONS: ReportSection[] = [
   { key: 'destination_racks', title: 'Destination Rack Elevations', description: 'Visual rack diagrams for destination racks' },
 ];
 
+/** Run error codes that read in words (a failed run's `error`, or the code of
+ *  the 403 that refuses a run). Anything else is shown as it came. */
+export const RUN_ERROR_TEXT: Record<string, string> = {
+  too_many_entries: 'Too many entries for one report (over 20,000). Narrow the date range or filters.',
+  too_many_for_pdf: 'Too many entries for a PDF (over 5,000). Choose Excel or narrow the range.',
+  time_view_required: 'You need permission to view time to run this report.',
+};
+export const runErrorText = (code: string): string => RUN_ERROR_TEXT[code] ?? code;
+
 export function sectionCount(options: Record<string, unknown>): number {
   return MOVE_REPORT_SECTIONS.filter((s) => options[s.key]).length;
 }

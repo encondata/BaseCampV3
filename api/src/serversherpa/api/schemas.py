@@ -3817,6 +3817,20 @@ class ScanHistoryPreviewOut(BaseModel):
     statuses: list[ScanHistoryPreviewStatusOut]
 
 
+class TimesheetPreviewOut(BaseModel):
+    """`GET /reports/timesheet/preview` — the Generate modal's KPI tiles,
+    from the same gather the run uses. `too_many` replaces the numbers
+    (all zero) when more entries match than the report can carry."""
+
+    entries: int
+    people: int
+    days: int
+    approved_minutes: int
+    pending_minutes: int
+    flagged_entries: int
+    too_many: bool
+
+
 # ── trucks ─────────────────────────────────────────────────────────
 
 class TruckLastUpdate(BaseModel):

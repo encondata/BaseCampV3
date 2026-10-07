@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -64,6 +64,19 @@ it('lists definitions with section counts and a System badge', async () => {
   expect(screen.getAllByText('System')).toHaveLength(1);
 });
 
+it('labels a Timesheet definition by its type and shows a dash for sections', async () => {
+  api.listReportDefinitions.mockResolvedValue([...DEFS, {
+    id: 'd9', name: 'Hours by person', description: '', report_type: 'timesheet',
+    options: { default_format: 'xlsx', default_views: ['day', 'punch'], default_statuses: ['approved', 'pending'] },
+    is_system: false, updated_at: '2026-10-06T10:00:00Z',
+  }]);
+  renderPage();
+  const row = (await screen.findByText('Hours by person', { selector: '.cell-primary' }))
+    .closest('.dir-row') as HTMLElement;
+  expect(within(row).getByText('Timesheet')).toBeTruthy();
+  expect(within(row).queryByText('timesheet')).toBeNull();
+});
+
 it('definitions: column floors, shared template + minimum, sideways-scroll card', async () => {
   renderPage();
   const row = (await screen.findByText('Move Report', { selector: '.cell-primary' }))
@@ -103,6 +116,34 @@ it('hides Edit/Delete without change/delete; Generate and Clone need add', async
   expect(screen.queryByText('Edit')).toBeNull();
   expect(screen.getByText('Clone')).toBeTruthy();
   expect(screen.queryByText('Delete')).toBeNull();
+});
+
+it('a Timesheet definition has no Generate without time:view (other rows keep it)', async () => {
+  api.listReportDefinitions.mockResolvedValue([...DEFS, {
+    id: 'd9', name: 'Hours by person', description: '', report_type: 'timesheet',
+    options: { default_format: 'xlsx', default_views: ['day', 'punch'], default_statuses: ['approved', 'pending'] },
+    is_system: false, updated_at: '2026-10-06T10:00:00Z',
+  }]);
+  const menuOf = async (name: string) => {
+    const row = (await screen.findByText(name, { selector: '.cell-primary' }))
+      .closest('.dir-row') as HTMLElement;
+    return within(row).getByRole('button', { name: /actions/i });
+  };
+  const user = userEvent.setup();
+  auth.can = (r, a) => !(r === 'time' && a === 'view');
+  renderPage();
+  await user.click(await menuOf('Hours by person'));
+  expect(screen.queryByText('Generate')).toBeNull();
+  expect(screen.getByText('Edit')).toBeTruthy();
+  await user.keyboard('{Escape}');
+  await user.click(await menuOf('Move Report'));
+  expect(screen.getByText('Generate')).toBeTruthy();
+  await user.keyboard('{Escape}');
+  cleanup();
+  auth.can = () => true;                                   // with time:view it is back
+  renderPage();
+  await user.click(await menuOf('Hours by person'));
+  expect(screen.getByText('Generate')).toBeTruthy();
 });
 
 it('clone calls the API and reloads', async () => {

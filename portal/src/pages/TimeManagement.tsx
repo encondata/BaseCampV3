@@ -22,6 +22,8 @@ import ComboBox from '../components/ComboBox';
 import DataTable from '../components/DataTable';
 import { RowActionsMenu, type RowAction } from '../components/hardware/RowActionsMenu';
 import StatusHover from '../components/StatusHover';
+import GenerateReportModal from '../components/reports/GenerateReportModal';
+import type { TimesheetInitial } from '../components/reports/TimesheetOptions';
 import TimeBulkDialog from '../components/time/TimeBulkDialog';
 import TimeEntryEditModal, { mapTimeError } from '../components/time/TimeEntryEditModal';
 import {
@@ -36,9 +38,11 @@ import {
   getPunchOptions,
   listActiveTimeEntries,
   listInitiatives,
+  listReportDefinitions,
   listTimeEntries,
   listWorkerOptions,
   type PunchOption,
+  type ReportDefinition,
   type TimeBulkFilter,
   type TimeBulkSkip,
   type TimeEntryItem,
@@ -53,8 +57,10 @@ import {
   moveKey, titleFor, useReorderDrag, useSearchHaystacks, visibleColumnsFor, type ColumnDef,
 } from '../lib/listTools';
 import { compareOrdinal } from '../lib/naturalSort';
+import { useToast } from '../lib/notificationsContext';
 import { naturalCompare } from '../lib/sites';
 import { elapsedSince, formatMinutes } from '../lib/timeFormat';
+import { TIMESHEET_STATUSES, type TimesheetStatus } from '../lib/timesheetReport';
 import {
   bulkFilter, bulkResultText, hasFilter, listQuery, NO_FILTER, timeSourceLabel,
   type TimesheetFilter,
@@ -89,6 +95,16 @@ const DEFAULT_VISIBLE = new Set<string>(TIMESHEET_COLUMNS.filter((c) => c.defaul
 // the column registry, folded into a ColumnDef so listGridStyle's minWidth
 // counts it (PrintAssetList.tsx's CHECKBOX_COL).
 const CHECKBOX_COL: ColumnDef = { key: 'select', label: '', width: '32px', default: true };
+
+const REPORT_MISSING = "The Timesheet report isn't set up. Ask an administrator.";
+const REPORT_LOAD_FAILED = "Couldn't load the reports. Try again.";
+
+/** The report's status filter for a status pill: All → every status, the
+ *  rest → that one (the pill keys are the report's status names). */
+function reportStatuses(pill: string): TimesheetStatus[] {
+  const one = TIMESHEET_STATUSES.find((s) => s === pill);
+  return one ? [one] : [...TIMESHEET_STATUSES];
+}
 
 const STATUS_PILLS: { key: string; label: string }[] = [
   { key: 'all', label: 'All' },
@@ -145,6 +161,8 @@ export default function TimeManagement() {
   const canView = can('time');
   const canAdd = can('time', 'add');
   const canChange = can('time', 'change');
+  const canReport = can('reports', 'add') && can('time', 'view');
+  const toast = useToast();
 
   const [myTime, setMyTime] = useState<{ open: TimeEntryItem | null; entries: TimeEntryItem[] } | null>(null);
   const [punchOptions, setPunchOptions] = useState<{ initiatives: PunchOption[]; sites: PunchOption[] }>(
@@ -166,6 +184,23 @@ export default function TimeManagement() {
   const [serverFilter, setServerFilter] = useState<TimesheetFilter>(NO_FILTER);
   const [jobOptions, setJobOptions] = useState<PunchOption[]>([]);
   const listSeq = useRef(0);
+
+  // "Timesheet report": the Generate modal on the live Timesheet definition,
+  // prefilled from this screen's filters and status pill.
+  const [reportDef, setReportDef] = useState<ReportDefinition | null>(null);
+  const [reportBusy, setReportBusy] = useState(false);
+  const [reportError, setReportError] = useState('');
+  const openReport = async () => {
+    setReportBusy(true); setReportError('');
+    try {
+      const def = (await listReportDefinitions()).find((d) => d.report_type === 'timesheet');
+      if (def) setReportDef(def); else setReportError(REPORT_MISSING);
+    } catch {
+      setReportError(REPORT_LOAD_FAILED);
+    } finally {
+      setReportBusy(false);
+    }
+  };
 
   // ── live elapsed ticking (block 1's open span, block 3's since-times) ──
   const [, setTick] = useState(0);
@@ -694,6 +729,12 @@ export default function TimeManagement() {
               <ColumnsButton columns={orderedCols} visible={visibleCols} onChange={setVisibleCols}
                              onReorder={setColOrder} />
               <ExportButton onExport={() => exportCsv('time-entries', CSV_COLUMNS, visibleEntries)} />
+              {canReport && (
+                <button type="button" className="mini-btn" disabled={reportBusy}
+                        onClick={() => void openReport()}>
+                  Timesheet report
+                </button>
+              )}
               {canAdd && (
                 <button className="btn-solid" onClick={() => setModal({ entry: null, mode: 'edit' })}>
                   + Add entry
@@ -737,6 +778,15 @@ export default function TimeManagement() {
               </button>
             )}
           </div>
+
+          {reportError && (
+            <div className="time-action-error">
+              <span className="pf-error">{reportError}</span>
+              <button type="button" className="mini-btn sm" onClick={() => setReportError('')}>
+                Dismiss
+              </button>
+            </div>
+          )}
 
           {canChange && (selected.size > 0 || showApproveAll) && (
             <div className="dir-toolbar time-bulk-bar" role="group" aria-label="Bulk actions">
@@ -919,6 +969,17 @@ export default function TimeManagement() {
           onClose={() => setModal(null)}
           onSaved={refreshAll}
         />
+      )}
+      {reportDef && (
+        <GenerateReportModal definition={reportDef} onClose={() => setReportDef(null)}
+                             onToast={toast}
+                             timesheetInitial={{
+                               from: serverFilter.from, to: serverFilter.to,
+                               personId: serverFilter.person_id,
+                               initiativeId: serverFilter.initiative_id,
+                               siteId: serverFilter.site_id,
+                               statuses: reportStatuses(statusPill),
+                             } satisfies Partial<TimesheetInitial>} />
       )}
       {dialog && (
         <TimeBulkDialog mode={dialog.mode} count={dialog.count} busy={bulkBusy} error={dialogError}

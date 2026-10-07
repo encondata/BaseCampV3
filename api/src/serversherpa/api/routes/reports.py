@@ -4,9 +4,9 @@ notify toggle on reports:add; edit on reports:change; delete on
 reports:delete."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 from sqlalchemy import or_, select
 
 from serversherpa.access.scope import scope_conditions
@@ -15,11 +15,13 @@ from serversherpa.api.schemas import (
     ReportDefinitionOut, ReportDefinitionUpdateIn, ReportDownloadOut,
     ReportRunCreateIn, ReportRunNotifyIn, ReportRunOut, ScanHistoryPreviewInitiativeOut,
     ScanHistoryPreviewOut, ScanHistoryPreviewStatusOut, SurveyPartnerOut,
+    TimesheetPreviewOut,
 )
 from serversherpa.db.models import (
     Initiative, Partner, Person, ReportDefinition, ReportRun,
 )
 from serversherpa.db.ordering import natural
+from serversherpa.reports import timesheet as timesheet_report
 from serversherpa.reports.move_scan_history.gather import gather as gather_scan_history
 from serversherpa.reports.registry import OptionsError, get_module
 from serversherpa.services.audit import audit, diff, snapshot
@@ -192,6 +194,10 @@ def _visible_runs(actor: AuthContext):
     cond = scope_conditions("initiatives", actor.access, actor.person.id)
     if cond is not None:
         q = q.where(cond)
+    if not actor.access.can("time", "view"):
+        # hours are time data: a timesheet run is invisible (list, get,
+        # download) to anyone who can't see the Timesheet screen
+        q = q.where(ReportRun.report_type != timesheet_report.report_type)
     return q
 
 
@@ -208,12 +214,14 @@ async def create_run(
     actor: AuthContext = require_permission("reports", "add"),
 ) -> ReportRunOut:
     d = await _definition(db, body.definition_id)
+    if d.report_type == timesheet_report.report_type and not actor.access.can("time", "view"):
+        raise _err(403, "time_view_required")
     ini: Initiative | None = None
     if body.initiative_id is None:
-        # Only Site & Move Survey can run against a partner + manually
-        # chosen sites with no initiative at all — every other type still
-        # needs one to report on.
-        if d.report_type != "site_move_survey":
+        # Site & Move Survey (partner + manually chosen sites) and the
+        # Timesheet (the job is an optional filter) can run with no
+        # initiative at all — every other type still needs one to report on.
+        if d.report_type not in ("site_move_survey", timesheet_report.report_type):
             raise _err(422, "initiative_required")
     else:
         ini = await db.get(Initiative, body.initiative_id)
@@ -297,6 +305,57 @@ async def move_scan_history_preview(
         statuses=[ScanHistoryPreviewStatusOut(
             key=s.key, label=s.label, color=s.color, in_pipeline=s.in_pipeline,
             scan_count=s.scan_count) for s in data.statuses])
+
+
+@router.get("/timesheet/preview", response_model=TimesheetPreviewOut)
+async def timesheet_preview(
+    db: DbSession,
+    from_day: str | None = Query(None, alias="from"),
+    to_day: str | None = Query(None, alias="to"),
+    person_id: str | None = None, initiative_id: uuid.UUID | None = None,
+    site_id: str | None = None, statuses: str | None = None,
+    format: str | None = None,
+    actor: AuthContext = require_permission("reports", "view"),
+) -> TimesheetPreviewOut:
+    """Feeds the Generate modal's KPI tiles from the same gather the run
+    uses. Needs time:view on top of reports:view; validates exactly like a
+    run (422 `bad_options`); an oversized range answers `too_many` instead
+    of failing; `format` (`xlsx` default, `pdf`) picks which limit applies."""
+    if not actor.access.can("time", "view"):
+        raise _err(403, "time_view_required")
+    raw: dict = {"from": from_day, "to": to_day, "person_id": person_id, "site_id": site_id}
+    if statuses is not None:
+        raw["statuses"] = [s.strip() for s in statuses.split(",") if s.strip()]
+    if format is not None:
+        raw["format"] = format
+    try:
+        options = timesheet_report.validate_run_options(raw)
+    except OptionsError as exc:
+        raise _err(422, "bad_options", problems=exc.problems) from None
+    if initiative_id is not None:
+        ini = await db.get(Initiative, initiative_id)
+        cond = scope_conditions("initiatives", actor.access, actor.person.id)
+        if ini is None or ini.archived_at is not None or (
+                cond is not None and await db.scalar(
+                    select(Initiative.id).where(Initiative.id == ini.id, cond)) is None):
+            raise _err(404, "initiative_not_found")
+    filters = timesheet_report.gather.TimesheetFilters(
+        from_day=date.fromisoformat(options["from"]), to_day=date.fromisoformat(options["to"]),
+        person_id=uuid.UUID(options["person_id"]) if "person_id" in options else None,
+        initiative_id=initiative_id,
+        site_id=uuid.UUID(options["site_id"]) if "site_id" in options else None,
+        statuses=tuple(options.get("statuses") or
+                       timesheet_report.default_options()["default_statuses"]))
+    try:
+        data = await timesheet_report.gather.gather(
+            db, filters, fmt=options.get("format", "xlsx"))
+    except timesheet_report.gather.TimesheetTooLarge:
+        return TimesheetPreviewOut(entries=0, people=0, days=0, approved_minutes=0,
+                                   pending_minutes=0, flagged_entries=0, too_many=True)
+    return TimesheetPreviewOut(
+        entries=len(data.entries), people=data.people, days=data.day_count,
+        approved_minutes=data.approved_minutes, pending_minutes=data.pending_minutes,
+        flagged_entries=data.flagged_entries, too_many=False)
 
 
 @router.get("/runs", response_model=list[ReportRunOut])

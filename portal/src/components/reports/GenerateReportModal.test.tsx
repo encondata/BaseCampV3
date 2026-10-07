@@ -18,11 +18,13 @@ vi.mock('../../lib/systemStatusContext', () => ({
 const api = vi.hoisted(() => ({
   listInitiatives: vi.fn(), createReportRun: vi.fn(), getReportRun: vi.fn(),
   getReportRunDownloadUrl: vi.fn(), setReportRunNotify: vi.fn(), listContainers: vi.fn(),
+  getTimesheetPreview: vi.fn(), listWorkerOptions: vi.fn(), getPunchOptions: vi.fn(),
 }));
 vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()), ...api,
 }));
 
+const { ApiError } = await import('../../lib/api');
 const { default: GenerateReportModal } = await import('./GenerateReportModal');
 
 const DEF: ReportDefinition = {
@@ -54,6 +56,12 @@ beforeEach(() => {
   api.getReportRunDownloadUrl.mockResolvedValue('https://spaces/x.pdf');
   api.setReportRunNotify.mockResolvedValue(run({ notify: true }));
   api.listContainers.mockResolvedValue([]);
+  api.getTimesheetPreview.mockResolvedValue({
+    entries: 3, people: 2, days: 2, approved_minutes: 60, pending_minutes: 0,
+    flagged_entries: 0, too_many: false,
+  });
+  api.listWorkerOptions.mockResolvedValue([]);
+  api.getPunchOptions.mockResolvedValue({ initiatives: [], sites: [] });
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); vi.useRealTimers(); });
 
@@ -215,4 +223,74 @@ it('delegates to ContainerLabelsOptions for report_type container_labels, and po
   await waitFor(() => expect(api.createReportRun).toHaveBeenCalledWith({
     definition_id: 'd9', initiative_id: 'i2', options: { container_ids: ['c1'], tags: {} }, notify: false,
   }));
+});
+
+const TS_DEF: ReportDefinition = {
+  id: 'd10', name: 'Timesheet', description: 'Hours worked by person and job.',
+  report_type: 'timesheet', is_system: true, updated_at: '2026-10-06T00:00:00Z',
+  options: { default_format: 'xlsx', default_views: ['day', 'punch'], default_statuses: ['approved', 'pending'] },
+};
+
+it('a Timesheet skips the pick step and opens straight on its options', async () => {
+  render(<GenerateReportModal definition={TS_DEF} onClose={() => {}} />);
+  expect(await screen.findByRole('button', { name: 'Generate Report' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Next' })).toBeNull();
+  expect(screen.queryByPlaceholderText('Search initiatives…')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
+  expect(screen.queryByText('Initiative')).toBeNull();    // no pick step in the indicator
+  expect(screen.getByText('Options')).toBeTruthy();
+  expect(screen.getByText('Progress')).toBeTruthy();
+  expect(api.listInitiatives).toHaveBeenCalledTimes(1);   // TimesheetOptions's own Job list only
+});
+
+it('a Timesheet run posts the options with no job and never mentions the job Files', async () => {
+  const user = userEvent.setup();
+  api.createReportRun.mockResolvedValue(run({
+    id: 'r9', definition_id: 'd10', report_type: 'timesheet', initiative_id: 'i2', status: 'completed',
+    filename: 'timesheet.xlsx',
+  }));
+  render(<GenerateReportModal definition={TS_DEF} onClose={() => {}} />);
+  await user.click(await screen.findByRole('button', { name: 'Generate Report' }));
+  await waitFor(() => expect(api.createReportRun).toHaveBeenCalledWith(expect.objectContaining({
+    definition_id: 'd10', initiative_id: null, notify: false,
+    options: expect.objectContaining({
+      statuses: ['approved', 'pending'], views: ['day', 'punch'], format: 'xlsx',
+    }),
+  })));
+  await screen.findByText('timesheet.xlsx');
+  expect(screen.queryByText(/saved to the initiative/)).toBeNull();
+});
+
+it.each([
+  ['too_many_entries', 'Too many entries for one report (over 20,000). Narrow the date range or filters.'],
+  ['too_many_for_pdf', 'Too many entries for a PDF (over 5,000). Choose Excel or narrow the range.'],
+  ['rack renderer unavailable: x', 'rack renderer unavailable: x'],
+])('a failed run with %s reads in words', async (code, text) => {
+  const user = userEvent.setup();
+  api.createReportRun.mockResolvedValue(run({
+    id: 'r9', definition_id: 'd10', report_type: 'timesheet', status: 'failed', error: code,
+  }));
+  api.getReportRun.mockResolvedValue(run({
+    id: 'r9', definition_id: 'd10', report_type: 'timesheet', status: 'failed', error: code,
+  }));
+  render(<GenerateReportModal definition={TS_DEF} onClose={() => {}} />);
+  await user.click(await screen.findByRole('button', { name: 'Generate Report' }));
+  await screen.findByText(text, undefined, { timeout: 6000 });
+});
+
+it('a 403 time_view_required when starting a run reads in words', async () => {
+  const user = userEvent.setup();
+  api.createReportRun.mockRejectedValue(new ApiError(403, 'time_view_required'));
+  render(<GenerateReportModal definition={TS_DEF} onClose={() => {}} />);
+  await user.click(await screen.findByRole('button', { name: 'Generate Report' }));
+  await screen.findByText('You need permission to view time to run this report.');
+});
+
+it('a Timesheet passes timesheetInitial through to the options', async () => {
+  render(<GenerateReportModal definition={TS_DEF} onClose={() => {}} timesheetInitial={{
+    from: '2026-09-01', to: '2026-09-15', statuses: ['rejected'],
+  }} />);
+  expect(((await screen.findByLabelText('From')) as HTMLInputElement).value).toBe('2026-09-01');
+  expect((screen.getByLabelText('To') as HTMLInputElement).value).toBe('2026-09-15');
+  expect(screen.getByRole('checkbox', { name: /^Rejected/ }).getAttribute('aria-checked')).toBe('true');
 });

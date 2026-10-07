@@ -48,13 +48,18 @@ def registry() -> dict[str, ReportModule]:
     global _REGISTRY
     if _REGISTRY is None:
         from serversherpa.reports import (
-            container_labels, move_report, move_scan_history, site_move_survey,
+            container_labels,
+            move_report,
+            move_scan_history,
+            site_move_survey,
+            timesheet,
         )
         _REGISTRY = {
             move_report.report_type: move_report,                # type: ignore[dict-item]
             site_move_survey.report_type: site_move_survey,      # type: ignore[dict-item]
             move_scan_history.report_type: move_scan_history,    # type: ignore[dict-item]
             container_labels.report_type: container_labels,      # type: ignore[dict-item]
+            timesheet.report_type: timesheet,                    # type: ignore[dict-item]
         }
     return _REGISTRY
 
