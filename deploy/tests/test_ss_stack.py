@@ -24,6 +24,10 @@ case "$*" in
     printf 'PGDMP-fake' ;;
   *bootstrap-admin*)
     cat > "$DOCKER_LOG.stdin" ;;
+  *"/status/compose.yml up"*)
+    # what the status page is told to check (unset: compose's default)
+    printf 'kiosk=%s wiki=%s\n' "${STATUS_KIOSK_URL-unset}" "${STATUS_WIKI_URL-unset}" \
+      >> "$DOCKER_LOG.status" ;;
   *pg_restore*)
     cat > "$DOCKER_LOG.stdin"
     [[ -n "${FAKE_FAIL_PG_RESTORE:-}" ]] && exit 1 ;;
@@ -562,6 +566,30 @@ def test_none_runs_only_the_api_and_the_portal(env_dir: Path, fake: dict[str, st
     c = calls(fake)
     assert dc(env_dir, "web", f"{WAIT} --scale kiosk=0 --scale wiki=0") in c
     assert dc(env_dir, "status", "down") in c
+
+
+def _status_targets(env: dict[str, str]) -> list[str]:
+    path = Path(env["DOCKER_LOG"] + ".status")
+    return path.read_text().splitlines() if path.exists() else []
+
+
+@pytest.mark.parametrize("apps, seen", [
+    ("", "kiosk=unset wiki=unset"),
+    ("wiki,kiosk,status,mailpit", "kiosk=unset wiki=unset"),
+    ("status,mailpit", "kiosk= wiki="),
+    ("wiki,status,mailpit", "kiosk= wiki=unset"),
+    ("kiosk,status,mailpit", "kiosk=unset wiki="),
+])
+def test_the_status_page_checks_only_the_apps_that_run(env_dir: Path, fake: dict[str, str],
+                                                       apps: str, seen: str) -> None:
+    """An app that is off gets an empty URL (the status page leaves its card
+    out); one that runs keeps compose's default. A caller's own value never
+    gets through."""
+    _apps(env_dir, f"STACK_APPS={apps}\n")
+    env = {**fake, "STATUS_KIOSK_URL": "https://elsewhere.example", "STATUS_WIKI_URL": "x"}
+    out = run(env, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert _status_targets(fake) == [seen]
 
 
 def test_every_app_runs_when_the_key_is_absent_or_lists_them_all(env_dir: Path,

@@ -19,7 +19,10 @@ PORT_KEYS = {s: f"STACK_{s.upper()}_PORT" for s in SERVICES}
 
 REQUIRED_SECRETS = ("POSTGRES_PASSWORD", "SPACES_SECRET_KEY", "SS_JWT_SECRET",
                     "SS_TOTP_ENCRYPTION_KEY", "SS_PASSWORD_PEPPER", "SS_WIKI_SERVICE_TOKEN")
-OPTIONAL_SECRETS = ("SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD")
+OPTIONAL_SECRETS = ("SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD", "SS_SMTP_PASSWORD")
+# Optional secrets set by hand (API keys, passwords): no whitespace, quotes,
+# "$" (compose interpolation), "#", backslash or backtick.
+SECRET_VALUE_RE = re.compile(r"[A-Za-z0-9._~+/=:@%^*!?,;-]{1,1024}")
 SECRET_KEYS = REQUIRED_SECRETS + OPTIONAL_SECRETS
 FERNET_SECRETS = ("SS_TOTP_ENCRYPTION_KEY",)
 HEX_SECRETS = tuple(k for k in REQUIRED_SECRETS if k not in FERNET_SECRETS)
@@ -30,10 +33,16 @@ DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_KEEP_DUMPS = 5
 PLACEHOLDER = "CHANGEME"
 
-# Extra keys a DigitalOcean droplet's .env carries (deploy phase 7), in the
-# order they are written. deploy/stack reads them with defaults, so a .env
-# without them still means "local data, NPM on the LAN".
+# Extra keys a .env carries beyond the basics: the apps and mail of any
+# environment, then a DigitalOcean droplet's (deploy phase 7) or a LAN
+# Blue/Green app VM's (phase 8b), in the order they are written.
+# deploy/stack reads them with defaults, so a .env without them still means
+# "every app, Mailpit, local data, NPM on the LAN".
 EXTRA_KEYS = (
+    # the Deploy page flow (phase 8c): the optional apps that run, and SMTP
+    # (the password is the optional secret SS_SMTP_PASSWORD)
+    "STACK_APPS", "SS_SMTP_HOST", "SS_SMTP_PORT", "SS_SMTP_USERNAME", "SS_SMTP_STARTTLS",
+    "SS_SMTP_FROM",
     "STACK_EXTERNAL_DATA", "STACK_CADDY", "STACK_NETWORK_SUBNET", "STACK_HOSTS_IP",
     "STACK_TRUSTED_PROXIES", "STACK_DB_HOST", "STACK_DB_PORT", "STACK_DB_NAME", "STACK_DB_USER",
     # disable: an app VM's database is a LAN Blue/Green data VM (phase 8b), no TLS

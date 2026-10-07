@@ -227,3 +227,9 @@ def test_the_data_vm_env_caps_its_ports(field, key, port):
 def test_the_data_vm_env_takes_the_top_port():
     values = envfile.parse_env(envfile.render_data_env(_data_cfg(db_port=65535)))
     assert values["STACK_DB_PORT"] == "65535"
+
+
+def test_apps_and_mail_keys():
+    assert "SS_SMTP_PASSWORD" in envfile.OPTIONAL_SECRETS
+    assert envfile.EXTRA_KEYS[:6] == ("STACK_APPS", "SS_SMTP_HOST", "SS_SMTP_PORT",
+                                      "SS_SMTP_USERNAME", "SS_SMTP_STARTTLS", "SS_SMTP_FROM")

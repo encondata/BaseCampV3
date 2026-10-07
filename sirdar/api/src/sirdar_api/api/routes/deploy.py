@@ -22,6 +22,7 @@ from sirdar_api.db.models import (Deployment, DeploymentStep, DoAccount, DoEnvir
                                   SshKnownHost)
 from sirdar_api.deploy import (
     ConnectFailed,
+    apps as app_rules,
     digitalocean,
     do_accounts,
     do_api,
@@ -461,6 +462,18 @@ class FirstAdminIn(BaseModel):
     password: str | None = Field(default=None, max_length=1024, repr=False)
 
 
+class MailIn(BaseModel):
+    """Where the environment's mail goes: its Mailpit, or an SMTP server.
+    The password is write-only."""
+    mode: Literal["mailpit", "smtp"] = "mailpit"
+    host: str | None = Field(default=None, max_length=253)
+    port: int | None = None
+    username: str | None = Field(default=None, max_length=254)
+    password: str | None = Field(default=None, max_length=1024, repr=False)
+    from_address: str | None = Field(default=None, max_length=254)
+    starttls: bool | None = None
+
+
 class EnvironmentIn(BaseModel):
     mode: Literal["new", "adopt"]
     name: str = Field(max_length=64)
@@ -482,6 +495,11 @@ class EnvironmentIn(BaseModel):
     do: DoIn | None = None
     # mode "new" only, without snapshot_id: the first deploy's step 11 creates it
     first_admin: FirstAdminIn | None = None
+    # mode "new" only: the optional apps it runs (absent: all), its mail
+    # (absent: Mailpit) and optional secrets (write-only)
+    apps: list[str] | None = None
+    mail: MailIn | None = None
+    secrets: dict[str, str] | None = Field(default=None, repr=False)
 
 
 class ServicePatch(BaseModel):
@@ -566,6 +584,8 @@ async def environment_defaults(actor: AuthContext = require_permission("deploy",
         "first_admin": {"password_min_length": portal_policy.PASSWORD_MIN_LENGTH,
                         "role": portal_policy.FIRST_ADMIN_ROLE,
                         "link_minutes": portal_policy.FIRST_ADMIN_LINK_MINUTES},
+        "apps": {"optional": list(app_rules.OPTIONAL_APPS), "always": list(app_rules.ALWAYS)},
+        "mail": {"smtp_port": app_rules.DEFAULT_SMTP_PORT},
     }
 
 
@@ -596,6 +616,9 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
         raise HTTPException(status_code=422, detail={"code": "do_not_allowed"})
     if body.mode == "adopt" and body.first_admin is not None:
         raise HTTPException(status_code=422, detail={"code": "first_admin_not_allowed"})
+    if body.mode == "adopt" and body.secrets:
+        # An adopted environment keeps the secrets its own .env holds.
+        raise HTTPException(status_code=422, detail={"code": "secrets_not_allowed"})
     if body.mode == "adopt" and body.publish:
         # A hand-built environment's DNS and proxy were made by hand: turn
         # Publish on after claiming them on the Publish tab.
@@ -609,7 +632,10 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
                 snapshot_id=body.snapshot_id, publish=body.publish is not False,
                 vm=body.vm.model_dump(exclude_none=True) if body.vm else None,
                 do=body.do.model_dump(exclude_none=True) if body.do else None,
-                first_admin=body.first_admin.model_dump() if body.first_admin else None)
+                first_admin=body.first_admin.model_dump() if body.first_admin else None,
+                apps=body.apps,
+                mail=body.mail.model_dump(exclude_none=True) if body.mail else None,
+                secrets=body.secrets)
         else:
             env, _, report = await environments.adopt(
                 db, settings, name=body.name, type_=body.type, target_id=body.target,
@@ -635,7 +661,12 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
     if report is None:
         changes = {"name": env.name, "type": env.type, "target": env.target_id,
                    "base_domain": env.base_domain, "git_ref": env.git_ref,
-                   "proxy_ip": env.proxy_ip, "bind_ip": env.bind_ip, "publish": env.publish}
+                   "proxy_ip": env.proxy_ip, "bind_ip": env.bind_ip, "publish": env.publish,
+                   "apps": list(env.apps),
+                   # never the SMTP password or a secret's value: names only
+                   "mail": ({"mode": "smtp", "host": env.smtp_host} if env.smtp_host
+                            else {"mode": "mailpit"}),
+                   "secrets": sorted(k for k, v in (body.secrets or {}).items() if v)}
         seed = await snapshots.snapshot_ref(db, env.seed_snapshot_id)
         if seed is not None:
             changes["seed_snapshot"] = seed["name"]

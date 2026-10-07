@@ -19,6 +19,7 @@ from sirdar_api.config import Settings
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import DoEnvironment, DoResource, DoSlot, Environment
 from sirdar_api.deploy import acme, certs, do_accounts, envfile, spaces, vault, vms
+from sirdar_api.deploy import apps as app_rules
 from sirdar_api.deploy.integrations import IntegrationError
 from sirdar_api.deploy.ssh import SshTargetConfig
 
@@ -357,7 +358,9 @@ async def env_extra(db: AsyncSession, settings: Settings, env: Environment, slot
     acme_key = base64.b64encode(vault.decrypt(settings, row.acme_key_enc).encode()).decode()
     extra |= {   # the cert-worker's (Task 3); STACK_ENV and STACK_DROPLET_ID come with the rest
         "SS_CERT_DO_TOKEN": account.renewal_token, "SS_CERT_LB_ID": lb_id,
-        "SS_CERT_NAMES": ",".join(certs.public_names(env.base_domain)),
+        # the running apps' names only (as do_provision's certificate covers)
+        "SS_CERT_NAMES": ",".join(f"{s}.{env.base_domain}" for s in certs.PUBLIC_SERVICES
+                                  if app_rules.is_public(env, s)),
         "SS_CERT_ACME_DIRECTORY": (settings.acme_staging_directory if row.acme_staging
                                    else settings.acme_directory),
         "SS_CERT_ACME_KEY": acme_key}

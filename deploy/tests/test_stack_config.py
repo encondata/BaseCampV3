@@ -192,6 +192,25 @@ def test_web_apps_point_at_the_stack() -> None:
     assert status["STATUS_PUBLIC_URL"] == f"https://status.{DOMAIN}"
 
 
+@pytest.mark.parametrize("given, kiosk, wiki", [
+    ({}, f"https://kiosk.{DOMAIN}", f"https://wiki.{DOMAIN}"),
+    ({"STATUS_KIOSK_URL": "", "STATUS_WIKI_URL": ""}, "", ""),
+])
+def test_the_status_page_targets_follow_ss_stack(given: dict[str, str], kiosk: str,
+                                                 wiki: str) -> None:
+    """ss-stack sets STATUS_KIOSK_URL / STATUS_WIKI_URL empty for an app
+    that is off (STACK_APPS); unset, each is the app's public URL."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("STATUS_KIOSK_URL", "STATUS_WIKI_URL")}
+    out = subprocess.run(
+        ["docker", "compose", "--env-file", str(ENV_EXAMPLE), "-f",
+         str(STACK_DIR / "status" / "compose.yml"), "config", "--format", "json"],
+        capture_output=True, text=True, env={**env, **given})
+    assert out.returncode == 0, out.stderr
+    status = json.loads(out.stdout)["services"]["status"]["environment"]
+    assert (status["STATUS_KIOSK_URL"], status["STATUS_WIKI_URL"]) == (kiosk, wiki)
+
+
 def test_env_example_secrets_are_placeholders() -> None:
     lines = dict(line.split("=", 1) for line in ENV_EXAMPLE.read_text().splitlines()
                  if line and not line.startswith("#"))

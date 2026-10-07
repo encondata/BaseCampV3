@@ -66,6 +66,7 @@ from sirdar_api.db.models import (
 )
 from sirdar_api.deploy import (
     ConnectFailed,
+    apps as app_rules,
     certs,
     do_envs,
     do_provision,
@@ -735,14 +736,18 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
     step_vars, snapshot_keys, extra_secrets = await _snapshot_vars(db, env, dep, settings,
                                                                    secrets, ports=ports)
     secrets = {**secrets, **snapshot_keys}
-    extra: dict[str, str] = {}
+    # every render (Update, Reset, Restore backup, Roll back; any target)
+    # carries the apps and mail
+    extra: dict[str, str] = app_rules.env_extra(env)
     if dep.cloud:
         # Read again here, not only at the start: step 0 may have just made
         # the Spaces secret and the doadmin password.
         extra_secrets = [*extra_secrets, *await do_envs.secret_values(db, settings, env)]
     if dep.cloud and dep.mode == "update":           # only Update renders .env
         try:
-            extra, cloud_secrets = await do_envs.env_extra(db, settings, env, dep.slot, secrets)
+            cloud_extra, cloud_secrets = await do_envs.env_extra(db, settings, env, dep.slot,
+                                                                 secrets)
+            extra |= cloud_extra
         except do_envs.DoEnvError as e:
             found = e.extra.get("missing") or []
             if found == ["renewal token"]:       # the account's, not something step 0 builds
@@ -762,7 +767,8 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
     data_b64, data_key = "", None
     if dep.bluegreen and dep.mode == "update":       # only Update renders .env
         try:
-            extra, lan_secrets = await lan_slots.env_extra(db, env, secrets)
+            lan_extra, lan_secrets = await lan_slots.env_extra(db, env, secrets)
+            extra |= lan_extra
         except do_envs.DoEnvError:
             raise PrepareError("This environment's data VM isn't recorded. Retry from step 0 "
                                "(Prepare VM).") from None
@@ -807,11 +813,13 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
         # (no Caddy); spaces lives on the data VM.
         hosts = [{"service": r.service, "hostname": r.hostname,
                   "path": smoke.PATHS.get(r.service, "/"), "port": r.port}
-                 for r in service_rows if r.hostname and r.service != "spaces"]
+                 for r in service_rows if r.hostname and r.service != "spaces"
+                 and app_rules.is_public(env, r.service)]
     elif dep.cloud:
         # no spaces (objects live in Spaces; Caddy has no route for it)
         hosts = [{"service": s, "hostname": f"{s}.{env.base_domain}",
-                  "path": smoke.PATHS.get(s, "/")} for s in certs.PUBLIC_SERVICES]
+                  "path": smoke.PATHS.get(s, "/")} for s in certs.PUBLIC_SERVICES
+                 if app_rules.is_public(env, s)]
     else:
         hosts = []
     common = {"env_name": env.name, "env_dir": folder, "repo_url": settings.deploy_repo_url,

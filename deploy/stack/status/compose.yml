@@ -11,8 +11,9 @@ services:
     environment:
       STATUS_API_URL: https://api.${STACK_DOMAIN:?set STACK_DOMAIN}
       STATUS_PORTAL_URL: https://portal.${STACK_DOMAIN}
-      STATUS_KIOSK_URL: https://kiosk.${STACK_DOMAIN}
-      STATUS_WIKI_URL: https://wiki.${STACK_DOMAIN}
+      # ss-stack sets these empty for an app STACK_APPS turns off (no card)
+      STATUS_KIOSK_URL: ${STATUS_KIOSK_URL-https://kiosk.${STACK_DOMAIN}}
+      STATUS_WIKI_URL: ${STATUS_WIKI_URL-https://wiki.${STACK_DOMAIN}}
       STATUS_PUBLIC_URL: https://status.${STACK_DOMAIN}
     extra_hosts:
       - "api.${STACK_DOMAIN}:${STACK_HOSTS_IP:-${STACK_PROXY_IP:?set STACK_PROXY_IP}}"

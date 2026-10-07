@@ -55,6 +55,7 @@ from sirdar_api.db.models import (
 )
 from sirdar_api.deploy import (
     ConnectFailed,
+    apps as app_rules,
     certs,
     cloudinit,
     do_accounts,
@@ -220,7 +221,8 @@ async def prepare(db: AsyncSession, env: Environment, dep: Deployment,
         droplet_size=row.droplet_size, droplet_image=row.droplet_image, db_size=row.db_size,
         db_standby=row.db_standby, acme_staging=row.acme_staging, acme_directory=directory,
         bucket=row.bucket, ssh_public_key=row.ssh_public_key, slot_states=states,
-        hosts=tuple((s, f"{s}.{env.base_domain}") for s in certs.PUBLIC_SERVICES),
+        hosts=tuple((s, f"{s}.{env.base_domain}") for s in certs.PUBLIC_SERVICES
+                    if app_rules.is_public(env, s)),
         token=account.token, db_password=_decrypt(settings, secret.value_enc),
         ssh_private_key=_decrypt(settings, row.ssh_private_key_enc),
         db_admin_password=_decrypt(settings, row.db_admin_password_enc),

@@ -34,6 +34,7 @@ from sirdar_api.config import Settings
 from sirdar_api.db.engine import get_sessionmaker
 from sirdar_api.db.models import Environment, EnvironmentService, ManagedRecord
 from sirdar_api.deploy import (
+    apps as app_rules,
     do_envs,
     envfile,
     integrations,
@@ -116,10 +117,11 @@ class Status:
 # ---- context -------------------------------------------------------------------
 
 async def service_plans(db: AsyncSession, env: Environment) -> tuple[ServicePlan, ...]:
-    """The public services (those with a hostname), in envfile order."""
+    """The public services (those with a hostname, of an app that runs), in
+    envfile order: DNS records, proxy hosts, certificates and the smoke test."""
     rows = await services_of(db, env.id)
     return tuple(ServicePlan(r.service, r.hostname, r.host_ip, r.port, r.proxied)
-                 for r in rows if r.hostname)
+                 for r in rows if r.hostname and app_rules.is_public(env, r.service))
 
 
 async def prepare(db: AsyncSession, env: Environment, settings: Settings) -> PublishContext:

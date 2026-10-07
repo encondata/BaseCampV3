@@ -26,7 +26,7 @@ ENV_KEYS = {"id", "name", "type", "target", "base_domain", "env_dir", "git_ref",
             "log_level", "services", "secrets_set", "seed_snapshot", "last_deployment",
             "created_at", "updated_at", "publish", "managed_records", "target_kind", "vm",
             "do", "slots", "active_slot", "auto_activate", "retiring", "first_admin",
-            "machines", "lan_slots"}
+            "machines", "lan_slots", "apps", "mail"}
 NEW = {"mode": "new", "name": "qa", "type": "custom", "target": "ssh",
        "proxy_ip": "10.10.48.6"}
 DEFAULTS_URL = "/api/deploy/environment-defaults"
@@ -73,14 +73,17 @@ async def test_environment_defaults(client, db):
         "domain_suffix": "serversherpa.com", "env_root": "/opt/serversherpa", "git_ref": "main",
         "bind_ip": "0.0.0.0", "keep_dumps": 5, "spaces_bucket": "serversherpa",
         "log_levels": ["DEBUG", "INFO", "WARNING", "ERROR"],
-        "optional_secrets": ["SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD"],
+        "optional_secrets": ["SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD",
+                             "SS_SMTP_PASSWORD"],
         "vm": {"cores": 4, "memory_mb": 8192, "disk_gb": 64, "keep_snapshots": 3,
                "limits": {"cores": [1, 64], "memory_mb": [2048, 262144],
                           "disk_gb": [20, 4096], "keep_snapshots": [1, 10]}},
         "do": {"droplet_size": "s-2vcpu-4gb", "db_size": "db-s-2vcpu-4gb", "db_standby": False,
                "production_slots": ["blue", "green"], "one_slot": ["orange"],
                "two_slots": ["orange", "purple"]},
-        "first_admin": {"password_min_length": 8, "role": "super_admin", "link_minutes": 240}}
+        "first_admin": {"password_min_length": 8, "role": "super_admin", "link_minutes": 240},
+        "apps": {"optional": ["wiki", "kiosk", "status", "mailpit"], "always": ["api", "portal"]},
+        "mail": {"smtp_port": 587}}
 
 
 async def test_create_new_environment(client, db, target, leak_guard):
@@ -99,10 +102,13 @@ async def test_create_new_environment(client, db, target, leak_guard):
     assert body["services"][-1]["service"] == "mailpit"
     assert body["services"][-1]["hostname"] is None
     assert body["secrets_set"] == {"SS_ANTHROPIC_API_KEY": False,
-                                   "SS_DB_TESTING_PASSWORD": False}
+                                   "SS_DB_TESTING_PASSWORD": False,
+                                   "SS_SMTP_PASSWORD": False}
     assert await _audits(db, "deploy.environment_create") == [{
         "name": "qa", "type": "custom", "target": "ssh", "base_domain": "qa.serversherpa.com",
-        "git_ref": "main", "proxy_ip": "10.10.48.6", "bind_ip": "0.0.0.0", "publish": True}]
+        "git_ref": "main", "proxy_ip": "10.10.48.6", "bind_ip": "0.0.0.0", "publish": True,
+        "apps": ["wiki", "kiosk", "status", "mailpit"], "mail": {"mode": "mailpit"},
+        "secrets": []}]
     assert (await client.get(f"{URL}/qa", headers=h)).json() == body
     listed = (await client.get(URL, headers=h)).json()["environments"]
     assert [e["name"] for e in listed] == ["qa"]
@@ -196,7 +202,8 @@ async def test_patch_environment(client, db, target, leak_guard):
     assert body["services"][0] == {"service": "api", "host_ip": "127.0.0.1", "port": 8100,
                                    "hostname": "api.uat2.serversherpa.com", "proxied": True}
     assert body["secrets_set"] == {"SS_ANTHROPIC_API_KEY": True,
-                                   "SS_DB_TESTING_PASSWORD": False}
+                                   "SS_DB_TESTING_PASSWORD": False,
+                                   "SS_SMTP_PASSWORD": False}
     assert await _audits(db, "deploy.environment_update") == [{"changed": [
         "base_domain", "services.api.port", "services.api.proxied",
         "secrets.SS_ANTHROPIC_API_KEY"]}]

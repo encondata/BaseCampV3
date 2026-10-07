@@ -344,7 +344,16 @@ case $cmd in
     app_on kiosk || web_off+=(--scale kiosk=0)
     app_on wiki || web_off+=(--scale wiki=0)
     dc web up -d "${WAIT[@]}" ${web_off[@]+"${web_off[@]}"}
-    if app_on status; then dc status up -d "${WAIT[@]}"; else dc status down; fi
+    if app_on status; then
+      # The status page leaves out an app that is off (an empty URL); one
+      # that runs gets compose's default, never a value from the caller.
+      ( unset STATUS_KIOSK_URL STATUS_WIKI_URL
+        app_on kiosk || export STATUS_KIOSK_URL=
+        app_on wiki || export STATUS_WIKI_URL=
+        dc status up -d "${WAIT[@]}" )
+    else
+      dc status down
+    fi
     if caddy; then dc proxy up -d "${WAIT[@]}"; fi
     ;;
   down)

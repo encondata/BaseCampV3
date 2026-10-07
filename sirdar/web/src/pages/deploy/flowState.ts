@@ -341,7 +341,7 @@ export const CODE_FIELD: Record<string, Field> = {
   auto_activate_not_allowed: 'hosting',
   apps_invalid: 'apps', mailpit_required: 'apps',
   mail_invalid: 'mail', smtp_host_invalid: 'mail', smtp_port_invalid: 'mail', smtp_username_invalid: 'mail',
-  smtp_password_invalid: 'mail', smtp_from_invalid: 'mail',
+  smtp_password_invalid: 'mail', smtp_from_invalid: 'mail', smtp_required_for_first_admin: 'mail',
   secret_invalid: 'aiKey', secret_not_editable: 'aiKey',
   snapshot_not_found: 'data', snapshot_not_ready: 'data', first_admin_with_seed: 'data', first_admin_invalid: 'data',
   first_admin_name_invalid: 'adminName', first_admin_email_invalid: 'adminEmail',

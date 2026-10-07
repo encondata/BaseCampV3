@@ -1,4 +1,4 @@
-"""Sirdar's own tables (migrations 0001–0012). `users` mirrors the portal's
+"""Sirdar's own tables (migrations 0001–0013). `users` mirrors the portal's
 user_accounts + people for the people it copies; Sirdar-only data
 (overrides, sessions, audit, lockout counters) never comes from the portal."""
 
@@ -212,6 +212,15 @@ class Environment(Base):
     active_slot: Mapped[str | None]
     auto_activate: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
     retiring: Mapped[bool] = mapped_column(Boolean, server_default=text("false"))
+    # The Deploy page flow (migration 0013): the optional apps it runs, and
+    # its SMTP server (smtp_host NULL: its own Mailpit).
+    apps: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), server_default=text("'{wiki,kiosk,status,mailpit}'"))
+    smtp_host: Mapped[str | None]
+    smtp_port: Mapped[int | None] = mapped_column(Integer)
+    smtp_username: Mapped[str | None]
+    smtp_from: Mapped[str | None]
+    smtp_starttls: Mapped[bool] = mapped_column(Boolean, server_default=text("true"))
     created_by: Mapped[uuid.UUID | None]
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
     updated_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

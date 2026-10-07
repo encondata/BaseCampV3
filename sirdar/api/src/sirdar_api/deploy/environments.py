@@ -35,6 +35,7 @@ from sirdar_api.db.models import (
 )
 from sirdar_api.deploy import (
     ConnectFailed,
+    apps as app_rules,
     certs,
     do_accounts,
     do_envs,
@@ -60,9 +61,8 @@ SSH_TARGET_RE = re.compile(r"ssh|ssh:[a-z0-9]+(-[a-z0-9]+)*")
 _DOMAIN_RE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
 _BUCKET_RE = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 _TAG_RE = re.compile(r"[A-Za-z0-9_.-]{1,128}")
-# Optional secrets set by hand (API keys, passwords): no whitespace, quotes,
-# "$" (compose interpolation), "#", backslash or backtick.
-_SECRET_VALUE_RE = re.compile(r"[A-Za-z0-9._~+/=:@%^*!?,;-]{1,1024}")
+# Optional secrets set by hand (API keys, passwords): envfile's rule.
+_SECRET_VALUE_RE = envfile.SECRET_VALUE_RE
 # Adopted required secrets must have the shapes create generates.
 _HEX_RE = re.compile(r"[0-9a-fA-F]{1,1024}")
 _FERNET_KEY_RE = re.compile(r"[A-Za-z0-9_-]{43}=")
@@ -160,8 +160,25 @@ def _check_target(target_id: str, settings: Settings) -> SshTargetConfig | None:
     return cfg
 
 
-def _hostname(service: str, domain: str) -> str | None:
-    return f"{service}.{domain}" if service in envfile.PUBLIC_SERVICES else None
+def _hostname(env: Environment, service: str, domain: str) -> str | None:
+    """A service's public name: none for mailpit, nor for an app that is off."""
+    return (f"{service}.{domain}" if service in envfile.PUBLIC_SERVICES
+            and app_rules.is_public(env, service) else None)
+
+
+def check_optional_secrets(secrets) -> dict[str, str]:
+    """Optional secrets as create or PATCH sends them: only OPTIONAL_SECRETS,
+    each a string the .env can carry ("" or None: leave it unset). Returns
+    the ones with a value."""
+    if not isinstance(secrets, dict):
+        raise EnvError("secret_invalid", key="secrets")
+    for key, value in secrets.items():
+        if key not in envfile.OPTIONAL_SECRETS:
+            raise EnvError("secret_not_editable", key=key)
+        if value is not None and (not isinstance(value, str)
+                                  or (value and not _SECRET_VALUE_RE.fullmatch(value))):
+            raise EnvError("secret_invalid", key=key)
+    return {k: v for k, v in secrets.items() if v}
 
 
 # ---- reads -------------------------------------------------------------------
@@ -250,7 +267,9 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                      snapshot_id: uuid.UUID | None = None,
                      publish: bool = True, vm: dict | None = None,
                      do: dict | None = None,
-                     first_admin: dict | None = None) -> Environment:
+                     first_admin: dict | None = None, apps: list[str] | None = None,
+                     mail: dict | None = None,
+                     secrets: dict | None = None) -> Environment:
     """A new environment (status "new"): default ports unless given, the
     target's host for every service, freshly generated secrets. With a
     snapshot, its first deploy restores that snapshot (and its keys). With
@@ -263,9 +282,21 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     first_admin: the first super admin step 11 of the first deploy creates
     (never with a snapshot). With `vm.slots: 2` (ESXi or Proxmox) the
     environment is LAN Blue/Green: a data VM and two app VMs (orange,
-    purple), static addresses, Nginx Proxy Manager as the switch."""
+    purple), static addresses, Nginx Proxy Manager as the switch.
+    apps: the optional apps it runs (None: all); only those get public
+    names. mail: its Mailpit (the default) or an SMTP server (apps.check_mail).
+    secrets: optional secrets (SS_ANTHROPIC_API_KEY, …), vault-encrypted with
+    the generated ones; the SMTP password joins them as SS_SMTP_PASSWORD."""
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
                           git_ref=git_ref)
+    try:
+        apps_on = app_rules.check_apps(apps)
+        mail_spec = app_rules.check_mail(mail, apps_on)
+    except app_rules.AppsError as e:
+        raise EnvError(e.code, **e.extra) from None
+    extra_secrets = check_optional_secrets(secrets or {})
+    if mail_spec["smtp_password"]:
+        extra_secrets["SS_SMTP_PASSWORD"] = mail_spec["smtp_password"]
     admin_spec = None
     if first_admin is not None:
         if snapshot_id is not None:
@@ -274,6 +305,9 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
             admin_spec = first_admins.check(first_admin)
         except first_admins.FirstAdminError as e:
             raise EnvError(e.code, **e.extra) from None
+        if type_ == "production" and not mail_spec["smtp_host"]:
+            # Production's first admin gets real mail, never a Mailpit inbox.
+            raise EnvError("smtp_required_for_first_admin")
     on_do = target_id == targets.DO_TARGET
     if vm is not None and not _slots_ok(vm):
         raise EnvError("vm_invalid")
@@ -311,7 +345,9 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     if on_do:
         env = await _create_on_do(db, settings, name=name, type_=type_, git_ref=git_ref,
                                   domain=domain, ports=all_ports, actor_id=actor_id,
-                                  snapshot_id=snapshot_id, do=do or {})
+                                  snapshot_id=snapshot_id, do=do or {}, apps_on=apps_on,
+                                  extra_secrets=extra_secrets)
+        await _set_apps_and_mail(db, env, apps_on, mail_spec)
         if admin_spec is not None:
             await first_admins.put(db, settings, env.id, admin_spec)
         return env
@@ -355,8 +391,10 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         host=host, domain=domain, proxy_ip=proxy, bind_ip=bind, ports=all_ports,
         keep_dumps=envfile.DEFAULT_KEEP_DUMPS, spaces_bucket=envfile.DEFAULT_SPACES_BUCKET,
         log_level=envfile.DEFAULT_LOG_LEVEL, status="new", current_sha=None, image_tag=None,
-        secrets=vault.generate_env_secrets(), actor_id=actor_id, seed_snapshot_id=snapshot_id,
-        publish=publish)
+        secrets=vault.generate_env_secrets() | extra_secrets, actor_id=actor_id,
+        seed_snapshot_id=snapshot_id, publish=publish,
+        public_services=app_rules.public_services(apps_on))
+    await _set_apps_and_mail(db, env, apps_on, mail_spec)
     if spec is not None or bluegreen is not None:
         stored = await integrations.config_of(db, target_id)
         add_vm = vms.add_esxi if target_id == targets.ESXI_TARGET else vms.add
@@ -385,6 +423,15 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     if admin_spec is not None:
         await first_admins.put(db, settings, env.id, admin_spec)
     return env
+
+
+async def _set_apps_and_mail(db: AsyncSession, env: Environment, apps_on: list[str],
+                             mail_spec: dict) -> None:
+    env.apps = apps_on
+    (env.smtp_host, env.smtp_port, env.smtp_username, env.smtp_from,
+     env.smtp_starttls) = (mail_spec[k] for k in ("smtp_host", "smtp_port", "smtp_username",
+                                                  "smtp_from", "smtp_starttls"))
+    await db.flush()
 
 
 def _slots_ok(vm) -> bool:
@@ -419,7 +466,8 @@ async def lock_production(db: AsyncSession) -> None:
 
 async def _create_on_do(db: AsyncSession, settings: Settings, *, name: str, type_: str,
                         git_ref: str, domain: str, ports: dict[str, int], actor_id,
-                        snapshot_id, do: dict) -> Environment:
+                        snapshot_id, do: dict, apps_on: list[str],
+                        extra_secrets: dict[str, str]) -> Environment:
     """A DigitalOcean environment: the account and sizes frozen, Caddy as the
     proxy on the droplet, publishing on (its plan has DNS), and only the
     public names its load balancer certificate covers."""
@@ -451,9 +499,11 @@ async def _create_on_do(db: AsyncSession, settings: Settings, *, name: str, type
         host="0.0.0.0", domain=domain, proxy_ip=do_envs.CADDY_IP, bind_ip=do_envs.BIND_IP,
         ports=ports, keep_dumps=envfile.DEFAULT_KEEP_DUMPS,
         spaces_bucket=envfile.DEFAULT_SPACES_BUCKET, log_level=envfile.DEFAULT_LOG_LEVEL,
-        status="new", current_sha=None, image_tag=None, secrets=vault.generate_env_secrets(),
+        status="new", current_sha=None, image_tag=None,
+        secrets=vault.generate_env_secrets() | extra_secrets,
         actor_id=actor_id, seed_snapshot_id=snapshot_id, publish=True,
-        public_services=certs.PUBLIC_SERVICES, slots=list(spec["slots"]))
+        public_services=app_rules.public_services(apps_on, base=certs.PUBLIC_SERVICES),
+        slots=list(spec["slots"]))
     env.auto_activate = spec["auto_activate"]
     env.spaces_bucket = do_envs.bucket_name(env.name, env.id)
     await do_envs.add(db, settings, env, spec, region=account.region,
@@ -691,15 +741,10 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
     _check_ports_unique({s: r.port for s, r in rows.items()})
     if env.base_domain != old_domain:
         for service, row in rows.items():
-            row.hostname = _hostname(service, env.base_domain)
+            row.hostname = _hostname(env, service, env.base_domain)
 
     secrets = fields.get("secrets") or {}
-    for key, value in secrets.items():
-        if key not in envfile.OPTIONAL_SECRETS:
-            raise EnvError("secret_not_editable", key=key)
-        if value is not None and (not isinstance(value, str)
-                                  or (value and not _SECRET_VALUE_RE.fullmatch(value))):
-            raise EnvError("secret_invalid", key=key)
+    check_optional_secrets(secrets)          # "" still clears one (below)
     if any(v for v in secrets.values()) and not vault.is_configured(settings):
         raise EnvError("secrets_key_missing")
     existing = await secret_keys_of(db, env.id)

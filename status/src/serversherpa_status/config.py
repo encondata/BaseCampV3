@@ -15,11 +15,12 @@ DEFAULT_STATIC_DIR = str(Path(__file__).parent / "static")
 # (key, display name, env var, required) — order is the display order on the
 # page. The page only ever shows the display name, never the URL. Optional
 # services are left off the page entirely while their env var is unset, so
-# adding one never breaks an existing deployment's .env.
+# adding one never breaks an existing deployment's .env. The kiosk is
+# optional too: an environment can run without it (Sirdar's STACK_APPS).
 SERVICES = (
     ("api", "API", "STATUS_API_URL", True),
     ("portal", "Portal", "STATUS_PORTAL_URL", True),
-    ("kiosk", "Kiosk", "STATUS_KIOSK_URL", True),
+    ("kiosk", "Kiosk", "STATUS_KIOSK_URL", False),
     ("wiki", "Wiki", "STATUS_WIKI_URL", False),
 )
 

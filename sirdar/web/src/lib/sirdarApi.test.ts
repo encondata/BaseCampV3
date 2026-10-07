@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -134,8 +134,6 @@ function deployCodes(): string[] {
                        'deploy/gitref.py', 'deploy/ssh_targets.py', 'deploy/snapshots.py', 'deploy/integrations.py',
                        'deploy/vms.py', 'deploy/do_accounts.py', 'deploy/do_envs.py', 'deploy/pipeline.py',
                        'deploy/first_admins.py', 'deploy/lan_slots.py', 'deploy/apps.py']) {
-    // deploy/apps.py arrives with phase 8c Task 2; until then its codes are checked by name below.
-    if (file === 'deploy/apps.py' && !existsSync(join(root, file))) continue;
     const src = readFileSync(join(root, file), 'utf8');
     for (const re of [/"code": "([a-z_]+)"/g,
                       /(?:EnvError|RefError|TargetError|SnapshotError|IntegrationError|VmError|DoEnvError|FirstAdminError|LanError|AppsError)\("([a-z_]+)"/g,
@@ -148,10 +146,6 @@ function deployCodes(): string[] {
   }
   return [...found].sort();
 }
-
-/** deploy/apps.py's codes (phase 8c), named here so their copy is checked before that file exists. */
-const APPS_CODES = ['apps_invalid', 'mailpit_required', 'mail_invalid', 'smtp_host_invalid', 'smtp_port_invalid',
-                    'smtp_username_invalid', 'smtp_password_invalid', 'smtp_from_invalid', 'secrets_not_allowed'];
 
 it('every error code the deploy routes can return has its own message', () => {
   const codes = deployCodes();
@@ -181,10 +175,12 @@ it('every error code the deploy routes can return has its own message', () => {
                       'vm_resize_not_supported']) {
     expect(codes).toContain(code);
   }
-  for (const code of ['mailpit_required', 'smtp_from_invalid', 'apps_invalid']) {
-    expect([...codes, ...APPS_CODES]).toContain(code);
+  for (const code of ['apps_invalid', 'mailpit_required', 'mail_invalid', 'smtp_host_invalid', 'smtp_port_invalid',
+                      'smtp_username_invalid', 'smtp_password_invalid', 'smtp_from_invalid', 'secrets_not_allowed',
+                      'smtp_required_for_first_admin']) {
+    expect(codes).toContain(code);                // deploy/apps.py, the create route, environments.py
   }
-  const missing = [...new Set([...codes, ...APPS_CODES])]
+  const missing = codes
     .filter((c) => sirdar.errorText(new ApiError(400, c), '__none__') === '__none__');
   expect(missing).toEqual([]);
 });

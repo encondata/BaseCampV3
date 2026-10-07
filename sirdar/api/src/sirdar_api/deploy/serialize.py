@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.db.models import Deployment, DeploymentStep, Environment, ManagedRecord, User
+from sirdar_api.deploy import apps as app_rules
 from sirdar_api.deploy import envfile, first_admins, lan_slots, snapshots, targets, vms
 from sirdar_api.deploy.environments import secret_keys_of, services_of
 
@@ -118,6 +119,8 @@ async def environment_out(db: AsyncSession, env: Environment) -> dict:
         "services": [{"service": r.service, "host_ip": r.host_ip, "port": r.port,
                       "hostname": r.hostname, "proxied": r.proxied} for r in services],
         "secrets_set": {k: k in keys for k in envfile.OPTIONAL_SECRETS},
+        "apps": list(env.apps),
+        "mail": app_rules.public(env, password_set="SS_SMTP_PASSWORD" in keys),
         "seed_snapshot": await snapshots.snapshot_ref(db, env.seed_snapshot_id),
         "publish": env.publish,
         "first_admin": first_admins.public(await first_admins.get(db, env.id)),

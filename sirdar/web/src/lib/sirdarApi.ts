@@ -368,6 +368,7 @@ const MESSAGES: Record<string, string> = {
   apps_invalid: 'Choose the apps from Wiki, Kiosk, Status page and Mailpit.',
   mailpit_required: 'Mail goes to Mailpit unless SMTP is set up: turn Mailpit on, or choose SMTP.',
   mail_invalid: 'Choose Mailpit or SMTP for mail.',
+  smtp_required_for_first_admin: "On production the first admin's email goes out through SMTP: choose SMTP in Extras › Mail, or start from a snapshot.",
   smtp_host_invalid: "Enter the SMTP server's host name or address.",
   smtp_port_invalid: 'Use an SMTP port from 1 to 65535.',
   smtp_username_invalid: "That SMTP user name can't be used: no spaces, quotes, $, # or backslashes.",
