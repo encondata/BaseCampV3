@@ -85,7 +85,7 @@ export default function InfraTree({ source, error, tree, selected, refreshing, o
   const headingId = useId();
   const allParents = useMemo(() => parentIds(tree), [tree]);
   const [open, setOpen] = useState<Set<string>>(() => new Set(autoIds(tree, selected)));
-  // ids the user opened by hand (a chevron, a key, Expand all): a new selection leaves them open
+  // ids the user opened by hand (a chevron or a key): a new selection leaves them open
   const [manual, setManual] = useState<Set<string>>(() => new Set());
   const [seenTree, setSeenTree] = useState(tree);
   const [seenSelected, setSeenSelected] = useState(selected);
@@ -96,7 +96,11 @@ export default function InfraTree({ source, error, tree, selected, refreshing, o
     setOpen(keep);
     setManual(keep);
   }
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
   if (seenSelected !== selected) {   // a new pick opens; the old pick closes unless opened by hand
+    // The rows move: unless focus is in the tree, the tab stop goes back to the first row.
+    if (!gridRef.current?.contains(document.activeElement)) setFocusId(null);
     const before = autoIds(tree, seenSelected).filter((id) => !manual.has(id));
     const after = autoIds(tree, selected);
     setSeenSelected(selected);
@@ -108,7 +112,6 @@ export default function InfraTree({ source, error, tree, selected, refreshing, o
     });
   }
   const rows = useMemo(() => visibleRows(ordered(tree, selected), open), [tree, selected, open]);
-  const [focusId, setFocusId] = useState<string | null>(null);
   const rowEls = useRef(new Map<string, HTMLDivElement>());
   const tabStop = rows.some((r) => r.node.id === focusId) ? focusId : rows[0]?.node.id ?? null;
 
@@ -172,7 +175,7 @@ export default function InfraTree({ source, error, tree, selected, refreshing, o
         </div>
         <div className="sd-head-actions">
           <button type="button" className="sd-btn sd-btn-outline sd-btn-sm"
-                  onClick={() => { setOpen(new Set(allParents)); setManual(new Set(allParents)); }}>
+                  onClick={() => setOpen(new Set(allParents))}>
             <ExpandIcon size={14} />Expand all
           </button>
           <button type="button" className="sd-btn sd-btn-outline sd-btn-sm" onClick={() => { setOpen(new Set()); setManual(new Set()); }}>
@@ -185,7 +188,7 @@ export default function InfraTree({ source, error, tree, selected, refreshing, o
         </div>
       </header>
 
-      <div className="sd-tree" role="treegrid" aria-labelledby={headingId} aria-readonly="true">
+      <div ref={gridRef} className="sd-tree" role="treegrid" aria-labelledby={headingId} aria-readonly="true">
         <div className="sd-tree-row sd-tree-headrow" role="row">
           {COLUMNS.map((c) => <div key={c} role="columnheader">{c}</div>)}
         </div>

@@ -35,6 +35,9 @@ export const DEMO_TREE: DashNode[] = [
     n('dev-web', 'dev-web', 'droplet', 'stopped', [], { dot: 'gray' }),
     n('dev-new', 'dev-new', 'droplet', 'provisioning'),
   ], { dot: 'gray' }),
+  n('uat', 'UAT', 'environment', 'active', [
+    n('uat:server', 'Lab box', 'server', 'healthy', [], { endpoint: '10.10.48.63' }),
+  ]),
 ];
 
 const server = (id: string, label: string, sub: string, state: DashServer['state'], health: string,

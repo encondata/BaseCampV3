@@ -70,8 +70,15 @@ def demo_dashboard() -> dict:
                                "Available", endpoint="prod-assets")])]),
         node("dev", "Development", "environment", "Environment", "inactive", "Inactive",
              children=_env_resources("dev")),
-        node("env-beta", "Beta", "environment", "Environment", "inactive", "Inactive",
-             children=_env_resources("beta")),
+        node("uat", "UAT", "environment", "Custom", "active", "Active", region="LAN",
+             endpoint="portal.uat.serversherpa.com", children=[
+                 node("uat:npm", "Nginx Proxy Manager", "proxy", "Reverse proxy", "active",
+                      "Active", region="LAN", endpoint="10.10.48.6"),
+                 node("uat:server", "Lab box", "server", "SSH host", "healthy", "Healthy",
+                      region="LAN", endpoint="10.10.48.63", badge="v2.8.1-rc.2"),
+                 node("uat:certificate", "Certificate", "certificate", "TLS certificate",
+                      "healthy", "47 days left", region="—",
+                      endpoint="api.uat.serversherpa.com")]),
     ]
     return {
         "demo": True,

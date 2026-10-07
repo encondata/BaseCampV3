@@ -109,7 +109,7 @@ async def test_demo(client, db):
     assert (prod["flow"]["active_slot"], dev["flow"]["active_slot"]) == ("blue", "orange")
     assert uat["flow"]["middle"]["label"] == "Nginx Proxy Manager"
     tree = d["infrastructure"]["tree"]
-    assert [n["name"] for n in tree] == ["Production", "Development", "Beta"]
+    assert [n["name"] for n in tree] == ["Production", "Development", "UAT"]
     blue_n, green_n, shared = tree[0]["children"]
     assert [c["endpoint"] for c in blue_n["children"]] == [f"10.20.0.{i}" for i in range(10, 14)]
     assert [c["endpoint"] for c in green_n["children"]] == [f"10.20.0.{i}" for i in range(20, 24)]

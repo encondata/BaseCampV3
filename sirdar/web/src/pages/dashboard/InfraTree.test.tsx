@@ -30,7 +30,7 @@ it('the selected environment comes first, expanded; the others are collapsed', (
   expect(headers).toEqual(['Instance / resource', 'Type', 'Status', 'Region', 'Endpoint']);
   expect(rowNames()).toEqual([
     'Production', 'Blue', 'prod-blue-api', 'Green', 'prod-green-api',
-    'Shared production resources', 'prod-db', 'prod-spaces', 'Development',
+    'Shared production resources', 'prod-db', 'prod-spaces', 'Development', 'UAT',
   ]);
   expect(screen.getByRole('row', { name: /^Production/ }).getAttribute('aria-level')).toBe('1');
   expect(expanded(/^Production/)).toBe('true');
@@ -106,15 +106,28 @@ it('collapses and expands one node with its chevron', async () => {
   expect(rowNames()).toContain('prod-blue-api');
 });
 
-it('Collapse all and Expand all affect every node, and survive a new selection', async () => {
-  const { rerender } = show();
+it('Collapse all and Expand all affect every node', async () => {
+  show();
   await userEvent.click(screen.getByRole('button', { name: /Collapse all/ }));
-  expect(rowNames()).toEqual(['Production', 'Development']);
+  expect(rowNames()).toEqual(['Production', 'Development', 'UAT']);
   await userEvent.click(screen.getByRole('button', { name: /Expand all/ }));
-  expect(rowNames()).toHaveLength(11);
+  expect(rowNames()).toHaveLength(13);
+});
+
+it('Expand all is not opening by hand: the old pick still closes when the selection moves', async () => {
+  const { rerender } = show();
+  await userEvent.click(screen.getByRole('button', { name: /Expand all/ }));
   rerender({ selected: 'dev' });
-  expect(rowNames()).toHaveLength(11);
-  expect(rowNames()[0]).toBe('Development');
+  expect(rowNames()).toEqual(['Development', 'dev-web', 'dev-new', 'Production', 'UAT', 'Lab box']);
+});
+
+it('Collapse all forgets what was opened by hand', async () => {
+  const { rerender } = show({ source: 'digitalocean', tree: CLOUD_TREE, selected: 'prod' });
+  await userEvent.click(screen.getByRole('button', { name: 'Expand uat' }));
+  await userEvent.click(screen.getByRole('button', { name: /Collapse all/ }));
+  rerender({ selected: 'uat' });               // the selection opens it, not the hand
+  rerender({ selected: 'prod' });
+  expect(expanded(/^uat$/)).toBe('false');
 });
 
 it('status pills get classes by status', () => {
@@ -153,9 +166,42 @@ it('keyboard: arrows move between rows, Left/Right collapse and expand', () => {
   fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' });
   expect(document.activeElement).toBe(screen.getByRole('row', { name: /^Production/ }));
   fireEvent.keyDown(document.activeElement!, { key: 'End' });
-  expect(document.activeElement).toBe(screen.getByRole('row', { name: /^Development/ }));
+  expect(document.activeElement).toBe(screen.getByRole('row', { name: /^UAT/ }));
   fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
-  expect(expanded(/^Development/)).toBe('true');
+  expect(expanded(/^UAT/)).toBe('true');
+});
+
+const tabStops = () => screen.getAllByRole('row').slice(1).filter((r) => r.tabIndex === 0)
+  .map((r) => r.getAttribute('aria-label'));
+
+it('after a reorder the tab stop goes back to the first row, and the arrows follow the new order', () => {
+  const { rerender } = show({ source: 'digitalocean', tree: CLOUD_TREE, selected: 'prod' });
+  screen.getByRole('row', { name: /^uat9/ }).focus();
+  (document.activeElement as HTMLElement).blur();           // focus has left the tree
+  rerender({ selected: 'uat' });
+  expect(tabStops()).toEqual(['uat']);
+  screen.getByRole('row', { name: /^uat$/ }).focus();
+  fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
+  expect(document.activeElement).toBe(screen.getByRole('row', { name: 'Nginx Proxy Manager' }));
+  fireEvent.keyDown(document.activeElement!, { key: 'End' });
+  expect(document.activeElement).toBe(screen.getByRole('row', { name: 'Other DigitalOcean resources' }));
+  fireEvent.keyDown(document.activeElement!, { key: 'ArrowUp' });
+  expect(document.activeElement).toBe(screen.getByRole('row', { name: /^uat9/ }));
+});
+
+it('a reorder while focus is inside the tree keeps the focused row as the tab stop', () => {
+  const { rerender } = show({ source: 'digitalocean', tree: CLOUD_TREE, selected: 'prod' });
+  screen.getByRole('row', { name: /^uat9/ }).focus();
+  rerender({ selected: 'uat' });
+  expect(tabStops()).toEqual(['uat9']);
+  expect(document.activeElement).toBe(screen.getByRole('row', { name: /^uat9/ }));
+});
+
+it('a certificate inside its renewal window is amber', () => {
+  const tree = [{ ...CLOUD_TREE[2], children: [{ ...CLOUD_TREE[2].children[2], status: 'expiring',
+                                                 status_label: '10 days left' }] }];
+  show({ source: 'digitalocean', tree, selected: 'uat' });
+  expect(screen.getByRole('row', { name: 'Certificate' }).querySelector('.sd-status')!.className).toMatch(/is-warn/);
 });
 
 it('Refresh calls back and spins while refreshing', async () => {

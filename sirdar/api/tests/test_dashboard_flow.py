@@ -575,14 +575,14 @@ async def test_a_lan_ssh_environment_lists_its_proxy_server_and_certificate(
     node = tree["uat"]
     card = next(c for c in d["environments"] if c["id"] == "uat")
     assert (node["type_label"], node["region"], node["status"]) == (
-        "Development", "LAN", "degraded")
+        "Development", "LAN", "active")         # a cert inside 14 days doesn't degrade it
     assert _parts(node) == [
         ("Nginx Proxy Manager", "proxy", "Active", "10.10.48.6"),
         ("Lab box", "server", "Healthy", "10.10.48.63"),
         ("Certificate", "certificate", "10 days left",
          card["flow"]["certificate"]["hosts"][0]["hostname"])]
     assert node["children"][1]["badge"] == card["version"]
-    assert node["children"][2]["status"] == "degraded"     # inside 14 days
+    assert node["children"][2]["status"] == "expiring"     # amber on its own row
 
 
 async def test_a_vm_environment_lists_its_vm(client, db):
@@ -649,10 +649,105 @@ async def test_a_failing_account_leaves_its_environments_unknown(client, db, do_
             if c["kind"] != "certificate"} == {"Unknown"}
     assert tree["prod"]["children"][0]["status_label"] == "Active"
     assert tree["other:development"]["endpoint"] == "DigitalOcean rejected the API token."
+    assert (tree["uat9"]["status"], tree["uat9"]["status_label"]) == ("unknown", "Unknown")
 
 
-def test_demo_environment_nodes_use_the_card_ids():
+def test_demo_tree_nodes_and_cards_line_up():
     d = demo_dashboard()
-    cards = {c["id"] for c in d["environments"]}
-    assert [n["id"] for n in d["infrastructure"]["tree"] if n["id"] in cards] == [
-        "production", "dev"]
+    assert [n["id"] for n in d["infrastructure"]["tree"]] == [
+        c["id"] for c in d["environments"]] == ["production", "dev", "uat"]
+
+
+async def test_a_droplet_that_never_became_ready_shows_under_its_slot(client, db, do_cloud):
+    env = await make_do_environment(db)
+    made = do_cloud.do.add_droplet("ss-uat9-orange", ["sirdar"], status="new")
+    await do_envs.record(env.id, "droplet", made["id"], "ss-uat9-orange", "orange")
+    _, tree = await _tree(client, db)
+    orange = tree["uat9"]["children"][0]
+    assert (orange["name"], orange["status_label"], orange["endpoint"]) == (
+        "Orange (idle)", "Provisioning", "127.0.0.1")
+    assert list(tree) == ["uat9"]                 # not also under Other resources
+
+
+async def test_an_older_load_balancer_record_lands_in_other_resources(client, db, do_cloud):
+    env = await make_do_environment(db)
+    await do_envs.record(env.id, "load_balancer", "lb-old", "ss-uat9-lb-old")
+    await _do_live(db, env, active="orange", lb="lb-new")
+    _lb(do_cloud, "lb-old")
+    _lb(do_cloud, "lb-new")
+    _, tree = await _tree(client, db)
+    assert tree["uat9"]["children"][0]["id"] == "uat9:lb"
+    assert tree["uat9"]["children"][0]["name"] == "ss-uat9-lb"
+    assert [c["id"] for c in tree["other:development"]["children"]] == [
+        "other:development:lb-lb-old"]
+
+
+async def test_a_lan_environment_never_deployed_is_not_active(client, db, monkeypatch):
+    await configure(db)                        # NPM set up: the proxy row is Active
+    await make_environment(db, name="uat", secrets={})
+    monkeypatch.setattr(targets, "ssh_config_for",
+                        lambda tid, s: SimpleNamespace(host="10.10.48.63"))
+    _, tree = await _tree(client, db)
+    assert tree["uat"]["children"][0]["status_label"] == "Active"
+    assert tree["uat"]["status"] == "inactive"
+
+
+async def test_nothing_built_with_a_valid_certificate_is_not_active(client, db, do_cloud,
+                                                                    fake_certs):
+    env = await make_do_environment(db, name="solo", slots=1)
+    for host in await _hostnames(db, env):
+        fake_certs.dates[host] = _in(60)
+    _, tree = await _tree(client, db)
+    assert tree["solo"]["children"][-1]["status_label"] == "60 days left"
+    assert tree["solo"]["status"] == "inactive"
+
+
+async def test_a_running_droplet_failing_its_health_check_is_degraded(client, db, do_cloud):
+    env = await make_do_environment(db)
+    await _do_live(db, env, active="orange", checks={"orange": False, "purple": True})
+    do_cloud.do.add_droplet("ss-uat9-orange", ["sirdar"])
+    do_cloud.do.add_droplet("ss-uat9-purple", ["sirdar"])
+    _, tree = await _tree(client, db)
+    orange, purple = tree["uat9"]["children"][1:3]
+    assert (orange["status"], orange["status_label"]) == ("degraded", "Degraded")
+    assert (purple["status"], purple["status_label"]) == ("running", "Running")
+    assert tree["uat9"]["status"] == "degraded"
+
+
+@pytest.mark.parametrize("expired, answered, status", [
+    (True, True, "degraded"),      # expired
+    (False, False, "degraded"),    # nobody answered, though the server is live
+    (False, True, "active"),
+])
+async def test_a_certificate_degrades_only_when_expired_or_unreachable(
+        client, db, monkeypatch, fake_certs, expired, answered, status):
+    env = await make_environment(db, name="uat", current_sha=SHA, secrets={})
+    monkeypatch.setattr(targets, "ssh_config_for",
+                        lambda tid, s: SimpleNamespace(host="10.10.48.63"))
+    if answered:
+        for host in await _hostnames(db, env):
+            fake_certs.dates[host] = (datetime.now(UTC) - timedelta(hours=1) if expired
+                                      else _in(5))
+    _, tree = await _tree(client, db)
+    assert tree["uat"]["status"] == status
+
+
+async def test_the_tree_reuses_the_cards_reads(client, db, do_cloud, monkeypatch):
+    env = await make_do_environment(db)
+    await _do_live(db, env, active="orange")
+    calls = {"get": 0, "slots_of": 0}
+    real_get, real_slots = do_envs.get, do_envs.slots_of
+
+    async def get(*a, **kw):
+        calls["get"] += 1
+        return await real_get(*a, **kw)
+
+    async def slots_of(*a, **kw):
+        calls["slots_of"] += 1
+        return await real_slots(*a, **kw)
+    monkeypatch.setattr(do_envs, "get", get)
+    monkeypatch.setattr(do_envs, "slots_of", slots_of)
+    d, tree = await _tree(client, db)
+    assert calls == {"get": 1, "slots_of": 1}
+    assert "uat9" in tree
+    assert all(not k.startswith("_") for c in d["environments"] for k in c)
