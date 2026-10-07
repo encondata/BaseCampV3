@@ -158,6 +158,7 @@ kbd {
   background: var(--accent);
   box-shadow: 0 0 0 2px var(--surface, #fff);
 }
+.icon-btn.has-guide, .icon-btn.has-guide:hover { color: var(--accent); }   /* the ? when this screen has a guide */
 .icon-btn.ai-glow { color: var(--accent); }
 .icon-btn.ai-glow::before {   /* ::after is the hover tip */
   content: '';
