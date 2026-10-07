@@ -49,6 +49,7 @@ async def deployment_summary(db: AsyncSession, dep: Deployment) -> dict:
             "vm": dep.vm, "take_vm_snapshot": dep.take_vm_snapshot,
             "vm_snapshot": dep.vm_snapshot,
             "cloud": dep.cloud, "slot": dep.slot, "go_live": dep.go_live,
+            "first_admin": dep.first_admin,
             "previous_sha": dep.previous_sha, "error": dep.error,
             "actor_name": await _actor_name(db, dep.actor_id),
             "started_at": dep.started_at, "finished_at": dep.finished_at,

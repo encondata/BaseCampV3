@@ -21,6 +21,9 @@ MODES = ("typed", "invite")
 _EMAIL_RE = re.compile(r"[^@\s]{1,64}@[^@\s]+\.[^@\s.]{2,}")
 _BAD_CATEGORIES = frozenset({"Cc", "Zl", "Zp"})
 ALREADY_CREATED = "The first admin was already created; nothing to do.\n"
+# bootstrap-admin's exit codes that mean done: created, or the account exists.
+CREATED, EXISTS = 0, 10
+DONE_CODES = (CREATED, EXISTS)
 EXISTS_NOTE = ("An account for {email} already exists in this environment; Sirdar left it as "
                "it is.\n")
 _REFUSALS = {
@@ -33,6 +36,11 @@ _REFUSALS = {
         "then retry."),
     5: ("The environment can't send email (SMTP isn't configured), so it can't invite the "
         "first admin. Use a typed password instead, then retry."),
+    6: ("Couldn't create the first admin: serversherpa bootstrap-admin stopped with an error. "
+        "See the step's log, then retry."),
+    7: ("A person with that email exists in this environment without an account. Give them "
+        "an account there, or set another email on the environment's Settings tab, then "
+        "retry from step 11."),
 }
 
 
@@ -145,8 +153,8 @@ def exit_code(data: dict) -> int:
 
 
 def refusal(rc: int) -> str:
-    return _REFUSALS.get(rc, f"serversherpa bootstrap-admin failed (exit {rc}). See the api "
-                             "container's log, then retry.")
+    return _REFUSALS.get(rc, f"Couldn't create the first admin (exit {rc}). See the step's "
+                             "log, then retry.")
 
 
 def public(row: EnvironmentFirstAdmin | None) -> dict | None:

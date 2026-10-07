@@ -67,6 +67,7 @@ from sirdar_api.deploy import (
     do_provision,
     envfile,
     esxi_provision,
+    first_admins,
     known_hosts,
     provision,
     publish,
@@ -107,6 +108,9 @@ SHUTDOWN_SECONDS = CANCEL_GRACE_SECONDS + 5
 INTERRUPTED = "Sirdar stopped while this deployment was running."
 CANCELLED = "Canceled."
 UNEXPECTED = "Sirdar couldn't run this step."
+FIRST_ADMIN_UNREADABLE = ("Sirdar can't read the first admin's password with the current "
+                          "SIRDAR_SECRETS_KEY. Set it again on the environment's Settings tab, "
+                          "then retry.")
 KEPT_DUMP = "Keeping the pre-deploy backup from the first attempt"
 RUNNER_DIR_UNWRITABLE = ("Sirdar can't write its runner folder (SIRDAR_RUNNER_DIR). It must "
                          "be owned by uid 10001 with mode 700.")
@@ -236,7 +240,8 @@ def _exports_now(dep: Deployment) -> bool:
 def plan_of(dep: Deployment) -> list[StepDef]:
     return plan_for(dep.mode, restore=restores(dep.mode, dep.snapshot_id), publish=dep.publish,
                     vm=dep.vm, cloud=dep.cloud, go_live=dep.go_live,
-                    snapshot=takes_snapshot(dep), smoke=smokes(dep.mode, dep.slot))
+                    snapshot=takes_snapshot(dep), smoke=smokes(dep.mode, dep.slot),
+                    first_admin=dep.first_admin)
 
 
 # ---- records -----------------------------------------------------------------
@@ -250,7 +255,8 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                             publish: bool = False, vm: bool = False,
                             take_vm_snapshot: bool = False,
                             vm_snapshot: str | None = None, cloud: bool = False,
-                            slot: str | None = None, go_live: bool = False) -> Deployment:
+                            slot: str | None = None, go_live: bool = False,
+                            first_admin: bool = False) -> Deployment:
     """Add a running deployment and its step rows. The caller commits, then
     calls launch(). start_step None means the plan's first step (1, or 12
     for a publish job, 15 for a teardown). Raises DeployInProgress (only the
@@ -264,7 +270,11 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     switches to, and `go_live` ends it with 14 Switch traffic (always, for
     activate). A cloud teardown with a snapshot takes it first (step 11).
     Raises NotSupportedOnDigitalOcean for Reset, Restore backup, Roll back
-    and Restore VM snapshot there."""
+    and Restore VM snapshot there.
+
+    first_admin: its plan has step 11 Create the first admin (an Update that
+    starts empty). Dropped when the environment's first admin is already
+    done (or gone), so a retry after step 11 succeeded doesn't plan it again."""
     on_do = env.target_id == targets.DO_TARGET
     if on_do and mode in NOT_ON_DIGITALOCEAN:
         raise NotSupportedOnDigitalOcean(mode)
@@ -274,10 +284,13 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     if cloud:
         await _check_cloud(db, env, mode=mode, slot=slot, snapshot_id=snapshot_id,
                            retry_of=retry_of)
+    if first_admin and mode == "update" and not restores(mode, snapshot_id) \
+            and not await first_admins.pending(db, env.id):
+        first_admin = False
     taking_on_delete = mode == "teardown" and cloud and snapshot_id is not None
     plan = plan_for(mode, restore=restores(mode, snapshot_id), publish=publish, vm=vm,
                     cloud=cloud, go_live=go_live, snapshot=taking_on_delete,
-                    smoke=smokes(mode, slot))
+                    smoke=smokes(mode, slot), first_admin=first_admin)
     if start_step is None:
         start_step = plan[0].number
     if start_step not in {step.number for step in plan}:
@@ -314,7 +327,7 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                      snapshot_id=snapshot_id, restore_dump=restore_dump,
                      dump_path=dump_path, publish=publish, vm=vm,
                      take_vm_snapshot=take_vm_snapshot, vm_snapshot=vm_snapshot,
-                     cloud=cloud, slot=slot, go_live=go_live)
+                     cloud=cloud, slot=slot, go_live=go_live, first_admin=first_admin)
     try:
         async with db.begin_nested():
             db.add(dep)
@@ -572,6 +585,8 @@ class _Context:
     publishing: publish.PublishContext | None = field(default=None, repr=False)
     # Steps 0 and 15 of a VM environment: its VM and the host's credentials.
     vm: vmsteps.VmContext | None = field(default=None, repr=False)
+    # The values `redactor` hides: step 11 adds the first admin's password.
+    redact_values: tuple[str, ...] = field(default=(), repr=False)
 
     def vars_for(self, step_key: str) -> dict:
         if step_key == "render":
@@ -692,13 +707,24 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
               "public_hosts": ([{"service": s, "hostname": f"{s}.{env.base_domain}",
                                  "path": smoke.PATHS.get(s, "/")} for s in certs.PUBLIC_SERVICES]
                                if dep.cloud else [])}
-    redactor = Redactor(_redaction_values([*secrets.values(), env_b64, cfg.password,
-                                           cfg.passphrase, cfg.sudo_password, private_key,
-                                           *extra_secrets, *more_secrets]))
-    return _Context(target=target, common=common, env_file_b64=env_b64, redactor=redactor,
+    redact_values = tuple(_redaction_values([*secrets.values(), env_b64, cfg.password,
+                                             cfg.passphrase, cfg.sudo_password, private_key,
+                                             *extra_secrets, *more_secrets]))
+    return _Context(target=target, common=common, env_file_b64=env_b64,
+                    redactor=Redactor(redact_values), redact_values=redact_values,
                     dump_required=env.current_sha is not None,
                     restores_snapshot=restores(dep.mode, dep.snapshot_id), step_vars=step_vars,
                     snapshot_keys=snapshot_keys)
+
+
+async def _with_first_admin(db: AsyncSession, settings: Settings, env_id: uuid.UUID,
+                            ctx: _Context) -> _Context:
+    """Step 11's vars (the typed password only there) and a redactor that
+    hides that password too. vault errors propagate."""
+    admin_vars, admin_secrets = await first_admins.step_vars(db, settings, env_id)
+    values = (*ctx.redact_values, *_redaction_values(admin_secrets))
+    return replace(ctx, step_vars={**ctx.step_vars, "first_admin": admin_vars},
+                   redactor=Redactor(values), redact_values=values)
 
 
 async def _snapshot_vars(db: AsyncSession, env: Environment, dep: Deployment,
@@ -967,6 +993,25 @@ async def _run(deployment_id: uuid.UUID) -> None:
                         step.status, step.finished_at = "succeeded", _now()
                         await db.commit()
                         continue
+                    if step.key == "first_admin":
+                        if not await first_admins.pending(db, env.id):
+                            # Done by an earlier attempt (or the record was removed).
+                            await _save_log(step.id, first_admins.ALREADY_CREATED)
+                            step.status, step.finished_at = "succeeded", _now()
+                            await db.commit()
+                            continue
+                        # Read now, not at the start: a PUT …/first-admin made
+                        # before this retry (or during the run) is what counts.
+                        try:
+                            ctx = await _with_first_admin(db, settings, env.id, ctx)
+                        except (vault.SecretsKeyMissing, vault.SecretUnreadable):
+                            await db.rollback()
+                            await _close(deployment_id, env_id, current, step_status="failed",
+                                         dep_status="failed", error=FIRST_ADMIN_UNREADABLE,
+                                         failed_step=current,
+                                         append_log=FIRST_ADMIN_UNREADABLE + "\n")
+                            return
+                        await db.commit()
                     if runs_on == "python":
                         result = await _run_python_step(publisher, ctx, step)
                     elif runs_on == "vm":
@@ -977,6 +1022,12 @@ async def _run(deployment_id: uuid.UUID) -> None:
                         await do_envs.set_slot(env.id, dep.slot,
                                                last_check_ok=result.status == "successful",
                                                last_check_at=_now())
+                    admin_rc = (first_admins.exit_code(result.data)
+                                if step.key == "first_admin" else None)
+                    if admin_rc is not None and admin_rc not in first_admins.DONE_CODES \
+                            and result.status == "successful":
+                        # Only 0 and 10 count; anything else keeps the password.
+                        result = replace(result, status="failed")
                     if result.status != "successful":
                         # Before the rollback, which may expire `step`: reloading
                         # it would need a greenlet.
@@ -984,6 +1035,11 @@ async def _run(deployment_id: uuid.UUID) -> None:
                         in_place = _ran_in_place(env, dep, step.key)
                         sha = dep.sha
                         note = IN_PLACE_NOTE.format(step=step.name) if in_place else ""
+                        if admin_rc is not None and admin_rc >= 0:
+                            # Our copy for bootstrap-admin's exit code; the
+                            # record stays pending (PUT …/first-admin, Retry).
+                            # No code reported (-1): the step failed before it.
+                            note = first_admins.refusal(admin_rc)
                         await db.rollback()
                         await _close(deployment_id, env_id, current, step_status="failed",
                                      dep_status="failed",
@@ -1011,6 +1067,17 @@ async def _run(deployment_id: uuid.UUID) -> None:
                         env.active_slot = dep.slot
                     elif step.key == "dump":
                         dep.dump_path = result.data.get("dump_path") or None
+                    elif step.key == "first_admin":
+                        if admin_rc == first_admins.EXISTS:
+                            row = await first_admins.get(db, env.id)
+                            # In this session: a second one would wait on the
+                            # step row this transaction has locked.
+                            await db.execute(
+                                update(DeploymentStep).where(DeploymentStep.id == step.id)
+                                .values(log=DeploymentStep.log + first_admins.EXISTS_NOTE
+                                        .format(email=row.email if row else "the first admin")))
+                        # Cleared in the same commit as the step's success.
+                        await first_admins.mark_done(db, env.id)
                     elif step.key == "restore":
                         await _keep_snapshot_keys(db, env.id, settings, ctx.snapshot_keys)
                     elif step.key == "export":
