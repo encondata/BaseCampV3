@@ -18,7 +18,7 @@ from pydantic import SecretStr
 from serversherpa.config import _REPO_ROOT, Settings
 
 HIDDEN_PREFIXES = ("SS_DATABASE_", "SS_SPACES_", "POSTGRES_", "MINIO_")
-_SECRET_HINT = re.compile(r"SECRET|PASSWORD|KEY|TOKEN|DSN|PEPPER|WORDS")
+_SECRET_HINT = re.compile(r"SECRET|PASSWORD|KEY|TOKEN|DSN|PEPPER|WORDS", re.IGNORECASE)
 _LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 # A standalone full-line comment — NOT a trailing " # ..." description on a
 # KEY=... line (those match _LINE instead, since they start with the key).
@@ -53,11 +53,11 @@ def _secret_keys() -> set[str]:
 
 
 def is_hidden(key: str) -> bool:
-    return key.startswith(HIDDEN_PREFIXES)
+    return key.upper().startswith(HIDDEN_PREFIXES)
 
 
 def is_secret(key: str) -> bool:
-    return key in _secret_keys() or bool(_SECRET_HINT.search(key))
+    return key.upper() in _secret_keys() or bool(_SECRET_HINT.search(key))
 
 
 def _parse(path: Path) -> tuple[list[str], dict[str, int], dict[str, str]]:
@@ -261,7 +261,9 @@ def apply_updates_detailed(
         if section:
             lines.append(f"# {section}")
         for m in items:
-            lines.append(f"{m['key']}={values[m['key']]}")
+            # same rendering as an in-place edit of a comment-less line
+            lines.append(
+                f"{m['key']}={_value_token(values[m['key']], False)}")
     changed |= set(added)
 
     changed = sorted(changed)

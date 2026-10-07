@@ -506,3 +506,84 @@ def test_apply_updates_returns_added_keys_in_changed(env_path,
     changed = apply_updates(env_path, {"SS_SMTP_PORT": "1"},
                             example_path=example_path)
     assert changed == ["SS_SMTP_PORT"]
+
+
+# ── Review follow-ups: case, value tokens, odd example lines ─────────
+
+
+def _example_for(tmp_path, text):
+    path = tmp_path / ".env.example"
+    path.write_text(text)
+    return path
+
+
+def test_classification_ignores_case():
+    assert is_hidden("ss_database_url")
+    assert is_hidden("Postgres_Password")
+    assert is_hidden("minio_root_user")
+    assert is_secret("ss_jwt_secret")
+    assert is_secret("ss_smtp_password")
+    assert is_secret("ss_sentry_dsn")
+    assert not is_secret("ss_log_level")
+
+
+def test_lowercase_hidden_example_key_not_listed_or_addable(env_path,
+                                                            tmp_path):
+    example = _example_for(
+        tmp_path, "ss_database_url=postgresql://evil\npostgres_password=x\n"
+                  "SS_OK_KEY=1\n")
+    assert [m["key"] for m in read_missing(env_path, example)] == [
+        "SS_OK_KEY"]
+    before = env_path.read_text()
+    with pytest.raises(EnvUpdateError) as exc:
+        apply_updates_detailed(env_path, {"ss_database_url": "x"},
+                               example_path=example)
+    assert exc.value.unknown == ["ss_database_url"]
+    assert env_path.read_text() == before
+
+
+def test_lowercase_secret_example_value_never_returned(env_path, tmp_path):
+    example = _example_for(tmp_path, "ss_mail_password=hunter2  # pw\n")
+    [item] = read_missing(env_path, example)
+    assert item["secret"] is True
+    assert "example" not in item
+    assert "hunter2" not in str(item)
+
+
+def test_added_value_is_written_like_an_edit(env_path, example_path):
+    value = "abc #notacomment"
+    apply_updates(env_path, {"SS_SMTP_HOST": value})      # in-place edit
+    edited = [ln for ln in env_path.read_text().splitlines()
+              if ln.startswith("SS_SMTP_HOST=")][0]
+    apply_updates_detailed(env_path, {"SS_SMTP_PORT": value},
+                           example_path=example_path)
+    added = [ln for ln in env_path.read_text().splitlines()
+             if ln.startswith("SS_SMTP_PORT=")][0]
+    assert added == edited.replace("SS_SMTP_HOST", "SS_SMTP_PORT")
+
+
+def test_duplicate_example_key_listed_once_last_value_wins(env_path,
+                                                           tmp_path):
+    example = _example_for(tmp_path, "SS_DUP=first\nSS_OTHER=1\nSS_DUP=last\n")
+    missing = read_missing(env_path, example)
+    assert [m["key"] for m in missing] == ["SS_DUP", "SS_OTHER"]
+    assert missing[0]["example"] == "last"
+
+
+def test_key_only_inside_a_comment_is_not_missing(env_path, tmp_path):
+    example = _example_for(
+        tmp_path, "# SS_COMMENTED=1\n#SS_COMMENTED2=2\nSS_REAL=1\n")
+    assert [m["key"] for m in read_missing(env_path, example)] == ["SS_REAL"]
+    with pytest.raises(EnvUpdateError) as exc:
+        apply_updates_detailed(env_path, {"SS_COMMENTED": "x"},
+                               example_path=example)
+    assert exc.value.unknown == ["SS_COMMENTED"]
+
+
+def test_key_with_leading_whitespace_is_not_missing(env_path, tmp_path):
+    example = _example_for(tmp_path, "  SS_INDENTED=1\n\tSS_TABBED=2\nSS_REAL=1\n")
+    assert [m["key"] for m in read_missing(env_path, example)] == ["SS_REAL"]
+    with pytest.raises(EnvUpdateError) as exc:
+        apply_updates_detailed(env_path, {"SS_INDENTED": "x"},
+                               example_path=example)
+    assert exc.value.unknown == ["SS_INDENTED"]
