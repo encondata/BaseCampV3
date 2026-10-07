@@ -47,6 +47,16 @@ def test_smtp_mail():
     ({"password": "has space"}, "smtp_password_invalid"),
     ({"password": "dollar$sign"}, "smtp_password_invalid"),
     ({"from_address": "nope"}, "smtp_from_invalid"),
+    ({"from_address": "ops$x@example.com"}, "smtp_from_invalid"),
+    ({"from_address": "o\"ps@example.com"}, "smtp_from_invalid"),
+    ({"from_address": "o'ps@example.com"}, "smtp_from_invalid"),
+    ({"from_address": "o`ps@example.com"}, "smtp_from_invalid"),
+    ({"from_address": "o#ps@example.com"}, "smtp_from_invalid"),
+    ({"from_address": "o\\ps@example.com"}, "smtp_from_invalid"),
+    ({"from_address": "ops@exa mple.com"}, "smtp_from_invalid"),
+    ({"from_address": "ops@example.com\x00"}, "smtp_from_invalid"),
+    ({"from_address": "o\x7fps@example.com"}, "smtp_from_invalid"),
+    ({"from_address": "ops@example\u2028.com"}, "smtp_from_invalid"),
     ({"starttls": "yes"}, "mail_invalid"),
 ])
 def test_smtp_refusals(change, code):

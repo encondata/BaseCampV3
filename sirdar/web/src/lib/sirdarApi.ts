@@ -371,6 +371,8 @@ const MESSAGES: Record<string, string> = {
   apps_invalid: 'Choose the apps from Wiki, Kiosk, Status page and Mailpit.',
   mailpit_required: 'Mail goes to Mailpit unless SMTP is set up: turn Mailpit on, or choose SMTP.',
   mail_invalid: 'Choose Mailpit or SMTP for mail.',
+  apps_not_allowed: "An adopted environment runs the apps its own .env lists (STACK_APPS).",
+  mail_not_allowed: "An adopted environment keeps the mail settings its own .env has (SS_SMTP_*).",
   smtp_required_for_first_admin: "On production the first admin's email goes out through SMTP: choose SMTP in Extras › Mail, or start from a snapshot.",
   smtp_host_invalid: "Enter the SMTP server's host name or address.",
   smtp_port_invalid: 'Use an SMTP port from 1 to 65535.',

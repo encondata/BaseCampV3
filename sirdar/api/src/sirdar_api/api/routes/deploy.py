@@ -624,6 +624,11 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
         raise HTTPException(status_code=422, detail={"code": "do_not_allowed"})
     if body.mode == "adopt" and body.first_admin is not None:
         raise HTTPException(status_code=422, detail={"code": "first_admin_not_allowed"})
+    if body.mode == "adopt" and body.apps is not None:
+        # An adopted environment's apps and mail come from its own .env.
+        raise HTTPException(status_code=422, detail={"code": "apps_not_allowed"})
+    if body.mode == "adopt" and body.mail is not None:
+        raise HTTPException(status_code=422, detail={"code": "mail_not_allowed"})
     if body.mode == "adopt" and body.secrets:
         # An adopted environment keeps the secrets its own .env holds.
         raise HTTPException(status_code=422, detail={"code": "secrets_not_allowed"})

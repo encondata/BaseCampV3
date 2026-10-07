@@ -342,6 +342,11 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     all_ports = {s: _check_port(given.get(s, envfile.DEFAULT_PORTS[s]), s)
                  for s in envfile.SERVICES}
     _check_ports_unique(all_ports)
+    if not given and cfg is not None:
+        # An SSH host can hold several environments: start from the first
+        # free port at or above each default. VMs, droplets and Blue/Green
+        # get machines of their own and keep the defaults.
+        all_ports = await _free_ports(db, cfg.host, bind)
     if on_do:
         env = await _create_on_do(db, settings, name=name, type_=type_, git_ref=git_ref,
                                   domain=domain, ports=all_ports, actor_id=actor_id,
@@ -425,6 +430,25 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     if admin_spec is not None:
         await first_admins.put(db, settings, env.id, admin_spec)
     return env
+
+
+async def _free_ports(db: AsyncSession, host: str, bind: str) -> dict[str, int]:
+    """Each service's first port at or above its default that no other
+    environment's service on this host listens on (any bind address of
+    theirs or ours being 0.0.0.0, or the same one), unique within this one."""
+    rows = await db.execute(
+        select(EnvironmentService.port, Environment.bind_ip)
+        .join(Environment, Environment.id == EnvironmentService.environment_id)
+        .where(EnvironmentService.host_ip == host))
+    used = {port for port, other_bind in rows
+            if DEFAULT_BIND_IP in (bind, other_bind) or other_bind == bind}
+    ports: dict[str, int] = {}
+    for service in envfile.SERVICES:
+        port = envfile.DEFAULT_PORTS[service]
+        while port in used or port in ports.values():
+            port += 1
+        ports[service] = _check_port(port, service)
+    return ports
 
 
 async def _set_apps_and_mail(db: AsyncSession, env: Environment, apps_on: list[str],
@@ -623,6 +647,10 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
         raise EnvError("adopt_env_incomplete", missing=missing)
     picked = _adopted_settings(values)
     secrets = _adopted_secrets(values)
+    try:
+        apps_on, mail_spec = app_rules.from_env(values, picked["domain"])
+    except app_rules.AppsError as e:
+        raise EnvError(e.code, **e.extra) from None
 
     repo = shlex.quote(folder + "/repo")
     head = await ssh.run_command(cfg, db, f"git -C {repo} rev-parse HEAD")
@@ -639,15 +667,17 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
         ports=picked["ports"], keep_dumps=picked["keep_dumps"],
         spaces_bucket=picked["spaces_bucket"], log_level=picked["log_level"],
         status="ready", current_sha=sha, image_tag=picked["image_tag"], secrets=secrets,
-        actor_id=actor_id)
+        actor_id=actor_id, public_services=app_rules.public_services(apps_on))
+    await _set_apps_and_mail(db, env, apps_on, mail_spec)
     now = _now()
     dep = Deployment(environment_id=env.id, mode="adopt", git_ref=git_ref, sha=sha,
                      status="adopted", start_step=1, actor_id=actor_id, started_at=now,
                      finished_at=now)
     db.add(dep)
     await db.flush()
-    # a droplet's keys (EXTRA_KEYS) never come from a hand-built .env
-    adoptable = set(envfile.KNOWN_KEYS) - set(envfile.EXTRA_KEYS)
+    # a droplet's keys (EXTRA_KEYS) never come from a hand-built .env; its
+    # apps and mail do
+    adoptable = (set(envfile.KNOWN_KEYS) - set(envfile.EXTRA_KEYS)) | set(app_rules.ENV_KEYS)
     ignored = sorted(k for k in values if k not in adoptable)
     return env, dep, AdoptReport(sha=sha, imported_secrets=sorted(secrets),
                                  ignored_keys=ignored)

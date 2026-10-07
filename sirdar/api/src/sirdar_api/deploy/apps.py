@@ -15,7 +15,10 @@ ALWAYS = ("api", "portal")
 _PUBLIC_APPS = ("wiki", "kiosk", "status")          # their public names go when they're off
 DEFAULT_SMTP_PORT = 587                             # ServerSherpa's smtp_port default
 _HOST_RE = re.compile(r"(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?")
-_EMAIL_RE = re.compile(r"[^@\s]{1,64}@[^@\s]+\.[^@\s.]{2,}")
+# no whitespace, quotes, "$", "#", backslash, backtick or control character:
+# the .env carries it raw and compose interpolates "$"
+_BAD = r"@\s\"'$#`\\\x00-\x1f\x7f-\x9f"
+_EMAIL_RE = re.compile(rf"[^{_BAD}]{{1,64}}@[^{_BAD}]+\.[^.{_BAD}]{{2,}}")
 _USER_RE = re.compile(r"[^\s\"'$#`\\]{1,254}")
 
 
@@ -98,3 +101,54 @@ def public(env, *, password_set: bool) -> dict:
     return {"mode": "smtp", "host": env.smtp_host, "port": env.smtp_port,
             "username": env.smtp_username, "from_address": env.smtp_from,
             "starttls": env.smtp_starttls, "password_set": password_set}
+
+
+# The .env keys an adopted environment's apps and mail come from, and what
+# compose falls back to without them (deploy/stack/api/compose.yml).
+ENV_KEYS = ("STACK_APPS", "SS_SMTP_HOST", "SS_SMTP_PORT", "SS_SMTP_USERNAME",
+            "SS_SMTP_PASSWORD", "SS_SMTP_STARTTLS", "SS_SMTP_FROM")
+_COMPOSE_SMTP_PORT = "1025"
+_COMPOSE_STARTTLS = "false"
+_TRUE = ("true", "1", "yes", "on")
+_FALSE = ("false", "0", "no", "off")
+_KEY_OF = {"apps_invalid": "STACK_APPS", "smtp_host_invalid": "SS_SMTP_HOST",
+           "smtp_port_invalid": "SS_SMTP_PORT", "smtp_username_invalid": "SS_SMTP_USERNAME",
+           "smtp_password_invalid": "SS_SMTP_PASSWORD", "smtp_from_invalid": "SS_SMTP_FROM",
+           "mail_invalid": "SS_SMTP_STARTTLS"}
+
+
+def from_env(values: dict[str, str], domain: str) -> tuple[list[str], dict]:
+    """A hand-built .env's apps and mail, checked as create checks them, with
+    compose's defaults for what it leaves out (so a deploy renders the same
+    mail back). A bad value raises AppsError("adopt_value_invalid", key=…);
+    Mailpit off without SMTP raises mailpit_required."""
+    raw = values.get("STACK_APPS", "")
+    try:
+        if not raw:
+            apps_on = check_apps(None)
+        elif raw == "none":
+            apps_on = []
+        else:
+            names = raw.split(",")
+            if "" in names:                     # ss-stack refuses empty entries too
+                raise AppsError("apps_invalid")
+            apps_on = check_apps(names)
+        host = values.get("SS_SMTP_HOST", "")
+        if not host:
+            return apps_on, check_mail(None, apps_on)       # Mailpit (needs it on)
+        port = values.get("SS_SMTP_PORT") or _COMPOSE_SMTP_PORT
+        if not (port.isascii() and port.isdecimal()):
+            raise AppsError("smtp_port_invalid")
+        starttls = (values.get("SS_SMTP_STARTTLS") or _COMPOSE_STARTTLS).lower()
+        if starttls not in _TRUE + _FALSE:
+            raise AppsError("mail_invalid")
+        return apps_on, check_mail({
+            "mode": "smtp", "host": host, "port": int(port),
+            "username": values.get("SS_SMTP_USERNAME") or None,
+            "password": values.get("SS_SMTP_PASSWORD") or None,
+            "from_address": values.get("SS_SMTP_FROM") or f"noreply@{domain}",
+            "starttls": starttls in _TRUE}, apps_on)
+    except AppsError as e:
+        if e.code in _KEY_OF:
+            raise AppsError("adopt_value_invalid", key=_KEY_OF[e.code]) from None
+        raise

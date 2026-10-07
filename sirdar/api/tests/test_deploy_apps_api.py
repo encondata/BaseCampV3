@@ -17,7 +17,10 @@ from .deploy_factories import (  # noqa: F401
     fake_publisher,
     fake_runner,
     leak_guard,
+    make_environment,
+    remote_env_text,
     secrets_key,
+    serve_remote_env,
     stop_pipeline,
     trust_fake,
 )
@@ -229,3 +232,139 @@ async def test_lan_bluegreen_smokes_only_the_running_apps(db, lan, fake_runner, 
     smoke = next(r for r in fake_runner.requests if r.step == "slot_smoke")
     assert {h["service"] for h in smoke.extravars["public_hosts"]} == {"api", "portal", "kiosk"}
     assert (await _render_values(fake_runner))["STACK_APPS"] == "kiosk,mailpit"
+
+
+# ---- free default ports on a shared SSH host -------------------------------------
+
+def _ports(body) -> dict[str, int]:
+    return {s["service"]: s["port"] for s in body["services"]}
+
+
+async def test_a_second_environment_on_the_same_ssh_host_gets_free_ports(client, db, target):
+    h = await auth_headers(client, db)
+    first = _ports((await client.post(URL, headers=h, json=NEW)).json())
+    assert first == envfile.DEFAULT_PORTS
+    resp = await client.post(URL, headers=h, json={**NEW, "name": "qa2"})
+    assert resp.status_code == 201, resp.text
+    second = _ports(resp.json())
+    assert not set(second.values()) & set(first.values())
+    assert len(set(second.values())) == len(second)
+    assert all(second[s] >= envfile.DEFAULT_PORTS[s] for s in second)
+    assert second["api"] == 8001
+    got = await client.get(f"{URL}/qa2", headers=h)
+    assert _ports(got.json()) == second
+
+
+async def test_another_host_or_bind_address_keeps_the_defaults(client, db, target):
+    await make_environment(db, name="elsewhere", host="10.0.0.9")
+    other = await make_environment(db, name="bound", host=target.host)
+    other.bind_ip = "10.0.0.5"
+    await db.commit()
+    h = await auth_headers(client, db)
+    resp = await client.post(URL, headers=h, json={**NEW, "bind_ip": "10.0.0.6"})
+    assert _ports(resp.json()) == envfile.DEFAULT_PORTS
+
+
+async def test_given_ports_are_kept_and_still_checked(client, db, target):
+    await make_environment(db, name="taken", host=target.host)
+    h = await auth_headers(client, db)
+    resp = await client.post(URL, headers=h, json={**NEW, "ports": {"api": 8000}})
+    assert resp.status_code == 201, resp.text
+    assert _ports(resp.json()) == envfile.DEFAULT_PORTS          # as given, as today
+    resp = await client.post(URL, headers=h, json={**NEW, "name": "qa2",
+                                                   "ports": {"api": 8091}})
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (422, "ports_conflict")
+
+
+# ---- adopt reads the apps and mail from the hand-built .env -----------------------
+
+ADOPT = {"mode": "adopt", "name": "uat", "type": "custom", "target": "ssh"}
+SMTP_KEYS = {"SS_SMTP_HOST": "smtp.example.com", "SS_SMTP_PORT": "2525",
+             "SS_SMTP_USERNAME": "mailer", "SS_SMTP_PASSWORD": SMTP_PASSWORD,
+             "SS_SMTP_STARTTLS": "false", "SS_SMTP_FROM": "ops@example.com"}
+
+
+async def _adopt(client, db, target, h=None, **keys):
+    await trust_fake(db, target)
+    serve_remote_env(target, remote_env_text(**keys))
+    h = h or await auth_headers(client, db)
+    return await client.post(URL, headers=h, json=ADOPT)
+
+
+async def test_adopt_reads_the_apps_and_smtp(client, db, target, leak_guard):
+    leak_guard += [SMTP_PASSWORD]
+    resp = await _adopt(client, db, target, STACK_APPS="kiosk,status", **SMTP_KEYS)
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["apps"] == ["kiosk", "status"]
+    assert body["mail"] == {"mode": "smtp", "host": "smtp.example.com", "port": 2525,
+                            "username": "mailer", "from_address": "ops@example.com",
+                            "starttls": False, "password_set": True}
+    assert "SS_SMTP_PASSWORD" in body["imported_secrets"]
+    assert not {"STACK_APPS", *SMTP_KEYS} & set(body["ignored_keys"])
+    names = {s["service"]: s["hostname"] for s in body["services"]}
+    assert names["wiki"] is None and names["kiosk"] == "kiosk.uat.serversherpa.com"
+
+
+async def test_adopt_renders_the_same_mail_back(client, db, target, fake_runner):
+    """What compose would have used: an absent port or STARTTLS is its
+    Mailpit default (1025, false), an absent From is noreply@<domain>."""
+    target.overrides[f"{LS} main"] = f"{SHA}\trefs/heads/main\n"
+    h = await auth_headers(client, db)
+    resp = await _adopt(client, db, target, h, SS_SMTP_HOST="smtp.example.com",
+                        STACK_APPS="mailpit")
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["mail"] == {"mode": "smtp", "host": "smtp.example.com", "port": 1025,
+                                   "username": None, "from_address": "noreply@uat.serversherpa.com",
+                                   "starttls": False, "password_set": False}
+    dep = await client.post(f"{URL}/uat/deployments", headers=h, json={"mode": "update"})
+    await pipeline.wait(uuid.UUID(dep.json()["id"]))
+    values = await _render_values(fake_runner)
+    assert (values["STACK_APPS"], values["SS_SMTP_HOST"], values["SS_SMTP_PORT"],
+            values["SS_SMTP_STARTTLS"], values["SS_SMTP_FROM"]) == (
+        "mailpit", "smtp.example.com", "1025", "false", "noreply@uat.serversherpa.com")
+
+
+async def test_adopt_without_the_keys_runs_every_app_on_mailpit(client, db, target):
+    body = (await _adopt(client, db, target)).json()
+    assert body["apps"] == ["wiki", "kiosk", "status", "mailpit"]
+    assert body["mail"]["mode"] == "mailpit"
+
+
+async def test_adopt_reads_none_as_no_optional_apps(client, db, target):
+    body = (await _adopt(client, db, target, STACK_APPS="none", **SMTP_KEYS)).json()
+    assert body["apps"] == []
+
+
+@pytest.mark.parametrize("keys, key", [
+    ({"STACK_APPS": "wiki,nope"}, "STACK_APPS"),
+    ({"STACK_APPS": "wiki,"}, "STACK_APPS"),
+    ({"STACK_APPS": "none,wiki"}, "STACK_APPS"),
+    ({"STACK_APPS": "Wiki"}, "STACK_APPS"),
+    ({**SMTP_KEYS, "SS_SMTP_HOST": "smtp example.com"}, "SS_SMTP_HOST"),
+    ({**SMTP_KEYS, "SS_SMTP_PORT": "x25"}, "SS_SMTP_PORT"),
+    ({**SMTP_KEYS, "SS_SMTP_PORT": "70000"}, "SS_SMTP_PORT"),
+    ({**SMTP_KEYS, "SS_SMTP_USERNAME": "has$dollar"}, "SS_SMTP_USERNAME"),
+    ({**SMTP_KEYS, "SS_SMTP_STARTTLS": "maybe"}, "SS_SMTP_STARTTLS"),
+    ({**SMTP_KEYS, "SS_SMTP_FROM": "ops$@example.com"}, "SS_SMTP_FROM"),
+])
+async def test_adopt_refuses_apps_or_mail_create_would(client, db, target, keys, key):
+    resp = await _adopt(client, db, target, **keys)
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == {"code": "adopt_value_invalid", "key": key}
+    assert SMTP_PASSWORD not in resp.text
+
+
+async def test_adopt_with_mailpit_off_and_no_smtp_is_refused(client, db, target):
+    resp = await _adopt(client, db, target, STACK_APPS="wiki")
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (422, "mailpit_required")
+
+
+@pytest.mark.parametrize("extra, code", [
+    ({"apps": ["wiki", "mailpit"]}, "apps_not_allowed"),
+    ({"mail": {"mode": "mailpit"}}, "mail_not_allowed"),
+])
+async def test_adopt_takes_no_apps_or_mail(client, db, target, extra, code):
+    h = await auth_headers(client, db)
+    resp = await client.post(URL, headers=h, json={**ADOPT, **extra})
+    assert (resp.status_code, resp.json()["detail"]["code"]) == (422, code)
