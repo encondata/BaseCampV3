@@ -13,7 +13,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import DeleteEnvironmentModal from './DeleteEnvironmentModal';
-import { DO_ENV, ENV, ESXI_ENV, ESXI_NEW_ENV, ESXI_VM, PUBLISHED_ENV, PX_ENV, PROD_ENV, PX_NEW_ENV, TEARDOWN } from './testData';
+import { DO_ENV, ENV, ESXI_ENV, LAN_ENV, ESXI_NEW_ENV, ESXI_VM, PUBLISHED_ENV, PX_ENV, PROD_ENV, PX_NEW_ENV, TEARDOWN } from './testData';
 
 beforeEach(() => {
   perms.add = true; perms.change = true;
@@ -164,4 +164,25 @@ it('production that was never deployed: no snapshot to save', () => {
   const { dialog } = show({ ...PROD_ENV, retiring: true, active_slot: null, current_sha: null });
   expect(within(dialog).getByText('Nothing was deployed, so there is no snapshot to save.')).toBeTruthy();
   expect(within(dialog).queryByText(/always saved first/)).toBeNull();
+});
+
+it('Blue/Green: names the three VMs and saves a snapshot first unless unticked', async () => {
+  const { dialog } = show(LAN_ENV);
+  const removes = within(dialog).getByRole('list', { name: 'Sirdar removes' });
+  expect(within(removes).getAllByRole('listitem').map((li) => li.textContent)).toEqual(
+    expect.arrayContaining(['VM ss-lan9-data', 'VM ss-lan9-orange', 'VM ss-lan9-purple',
+                            'Proxy host portal.lan9.serversherpa.com', 'DNS record portal.lan9.serversherpa.com']));
+  const snap = within(dialog).getByRole('checkbox', { name: 'Save a snapshot first' }) as HTMLInputElement;
+  expect(snap.checked).toBe(true);
+  await userEvent.click(snap);
+  await userEvent.type(within(dialog).getByLabelText('Type lan9 to confirm'), 'lan9');
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Delete environment' }));
+  expect(api.startDeployment).toHaveBeenCalledWith('lan9', { mode: 'teardown', confirm_name: 'lan9', snapshot: false });
+});
+
+it('Blue/Green: with the snapshot kept on, the default is sent', async () => {
+  const { dialog } = show(LAN_ENV);
+  await userEvent.type(within(dialog).getByLabelText('Type lan9 to confirm'), 'lan9');
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Delete environment' }));
+  expect(api.startDeployment).toHaveBeenCalledWith('lan9', { mode: 'teardown', confirm_name: 'lan9' });
 });

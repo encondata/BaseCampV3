@@ -339,10 +339,18 @@ const MESSAGES: Record<string, string> = {
   slot_already_active: 'That slot is already live.',
   production_retiring: 'This production environment is retiring: it can only be deactivated.',
   already_inactive: 'No slot is live.',
-  auto_activate_not_allowed: 'Only non-production DigitalOcean environments activate automatically.',
+  auto_activate_not_allowed: 'Only non-production environments with two servers activate automatically.',
   slots_full: 'This environment already has two slots.',
   slot_not_allowed: 'Production always has its Blue and Green slots.',
   do_shrink_refused: 'Sizes can only grow.',
+  // LAN Blue/Green
+  vm_static_required: 'Blue/Green needs a static address for each of the three VMs.',
+  vm_ips_not_distinct: 'The data VM and the two app VMs need three different addresses.',
+  vm_resize_not_supported: "A Blue/Green environment's VM sizes can't change yet.",
+  not_bluegreen_environment: "This environment has one server, so there's nothing to activate.",
+  not_supported_on_bluegreen:
+    'Both servers share one database, so that would change the live server too. Activate the other server to go back.',
+  bluegreen_not_allowed: 'Blue/Green on the LAN needs an ESXi or Proxmox target.',
   // the first admin
   first_admin_not_allowed: 'The first admin is only for a new environment.',
   first_admin_with_seed: 'An environment seeded from a snapshot already has its users. Start empty to add a first admin.',
@@ -510,6 +518,8 @@ export interface DeploymentSummary {
   started_at: string; finished_at: string | null; created_at: string;
   /** DigitalOcean: the slot it deploys or switches to, and whether it ends with Switch traffic. */
   cloud: boolean; slot: string | null; go_live: boolean;
+  /** A LAN Blue/Green deployment: `slot` and `go_live` as on DigitalOcean. */
+  bluegreen: boolean;
   /** Its plan has step 11, Create the first admin. */
   first_admin: boolean;
 }
@@ -524,8 +534,13 @@ export interface Environment {
   id: string; name: string; type: EnvType; target: string; base_domain: string; env_dir: string;
   /** 'proxmox' | 'esxi': its host is a VM Sirdar builds (`vm`); 'ssh': a saved SSH target. */
   target_kind: 'ssh' | VmHostKind | 'digitalocean';
+  /** The single-server VM (role main); null on SSH, DigitalOcean and LAN Blue/Green. */
   vm: EnvVm | null;
-  /** DigitalOcean: its slots, the one the load balancer sends traffic to, auto-activate, retiring (production),
+  /** Every VM Sirdar built for it: a single-server VM environment's one, or Blue/Green's data, orange and purple. */
+  machines: EnvVm[];
+  /** LAN Blue/Green: its two app slots (null otherwise). */
+  lan_slots: LanSlot[] | null;
+  /** DigitalOcean and LAN Blue/Green: its slots, the one the load balancer sends traffic to, auto-activate, retiring (production),
    *  and what Sirdar built. */
   slots: string[]; active_slot: string | null; auto_activate: boolean; retiring: boolean; do: EnvDo | null;
   git_ref: string; current_sha: string | null; image_tag: string | null; status: EnvStatus;
@@ -549,7 +564,10 @@ export interface ManagedRecordRef {
 /** A VM environment's VM. `stage`: none before step 0 starts one, partial while it isn't finished, then built.
  *  `vmid`/`node` are Proxmox's, `moref` ESXi's; `ip` is null until the VM reports it. */
 export interface EnvVm {
-  kind: VmHostKind; stage: 'none' | 'partial' | 'built'; name: string;
+  kind: VmHostKind;
+  /** main: a single-server environment's VM; data, orange, purple: LAN Blue/Green's. */
+  role: 'main' | 'data' | 'orange' | 'purple';
+  stage: 'none' | 'partial' | 'built'; name: string;
   /** The Proxmox node, or the ESXi host's address. */
   host: string; node: string | null; vmid: number | null; moref: string | null;
   cores: number; memory_mb: number; disk_gb: number;
@@ -562,6 +580,17 @@ export interface VmDefaults {
 }
 export interface NewVm {
   cores?: number; memory_mb?: number; disk_gb?: number; ip_mode: 'static' | 'dhcp'; ip_cidr?: string; gateway?: string;
+  /** 2: LAN Blue/Green (a data VM, orange at `ip_cidr`, purple; static addresses only). */
+  slots?: 1 | 2; purple_ip_cidr?: string; data_ip_cidr?: string;
+  /** Blue/Green: the data VM's size (the app VMs take the sizes above). */
+  data?: { cores?: number; memory_mb?: number; disk_gb?: number };
+  /** Blue/Green, not production: an Update goes live by itself once its smoke test passes. */
+  auto_activate?: boolean;
+}
+/** A LAN Blue/Green app slot: its VM's address and the commit it last ran. */
+export interface LanSlot {
+  slot: string; ip: string | null; sha: string | null; image_tag: string | null; active: boolean;
+  last_check_ok: boolean | null; last_check_at: string | null;
 }
 /** A VM snapshot Sirdar took (GET …/vm-snapshots): `sha` is the commit it holds. */
 export interface VmSnapshot {

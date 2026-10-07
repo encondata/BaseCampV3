@@ -156,7 +156,8 @@ function EnvironmentPage({ name }: { name: string }) {
       {activating && (
         <ActivateModal envName={env.name} production={env.type === 'production'} slot={activating.slot}
                        fromSlot={env.active_slot}
-                       version={env.do?.slots.find((s) => s.slot === activating.slot)?.image_tag ?? null}
+                       version={env.do?.slots.find((s) => s.slot === activating.slot)?.image_tag
+                         ?? env.lan_slots?.find((s) => s.slot === activating.slot)?.image_tag ?? null}
                        onStarted={(dep) => { setActivating(null); started(dep); }}
                        onClose={() => setActivating(null)} />
       )}

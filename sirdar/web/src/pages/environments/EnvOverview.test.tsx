@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen, within } from '@testing-library/react';
-import { afterEach, expect, it } from 'vitest';
+import userEvent from '@testing-library/user-event';
+import { afterEach, expect, it, vi } from 'vitest';
 
 import EnvOverview from './EnvOverview';
-import { ENV, ESXI_ENV, ESXI_NEW_ENV, PX_ENV, PX_NEW_ENV } from './testData';
+import { ENV, ESXI_ENV, ESXI_NEW_ENV, LAN_ENV, PX_ENV, PX_NEW_ENV } from './testData';
 
 afterEach(cleanup);
 
@@ -39,4 +40,27 @@ it('an ESXi environment shows its machine, on its host', () => {
   cleanup();
   render(<EnvOverview env={ESXI_NEW_ENV} />);
   expect(screen.getByText('ss-uat3 · built by the first deploy')).toBeTruthy();
+});
+
+it('Blue/Green shows its three VMs with Activate on the idle one, and no single Machine section', async () => {
+  const onActivate = vi.fn();
+  render(<EnvOverview env={LAN_ENV} canActivate onActivate={onActivate} />);
+  const section = screen.getByRole('region', { name: 'Blue/Green' });
+  expect(within(section).getByRole('table', { name: 'Blue/Green VMs' })).toBeTruthy();
+  expect(screen.queryByRole('heading', { name: 'Machine' })).toBeNull();
+  await userEvent.click(within(section).getByRole('button', { name: 'Activate Purple' }));
+  expect(onActivate).toHaveBeenCalledWith('purple');
+});
+
+it('Blue/Green: the services answer on the live app VM, spaces on the data VM', () => {
+  render(<EnvOverview env={LAN_ENV} />);
+  const services = screen.getByRole('table', { name: 'Services' });
+  expect(within(services).getByText(':8091 on the live app VM')).toBeTruthy();
+  expect(within(services).getByText('10.10.48.47:9000')).toBeTruthy();
+  expect(within(services).queryByText('10.10.48.48:8091')).toBeNull();
+});
+
+it('one-server environments have no Blue/Green section', () => {
+  render(<EnvOverview env={ESXI_ENV} canActivate onActivate={vi.fn()} />);
+  expect(screen.queryByRole('region', { name: 'Blue/Green' })).toBeNull();
 });

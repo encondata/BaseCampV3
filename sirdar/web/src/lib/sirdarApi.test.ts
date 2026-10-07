@@ -133,10 +133,10 @@ function deployCodes(): string[] {
   for (const file of ['api/routes/deploy.py', 'api/routes/integrations.py', 'deploy/environments.py',
                        'deploy/gitref.py', 'deploy/ssh_targets.py', 'deploy/snapshots.py', 'deploy/integrations.py',
                        'deploy/vms.py', 'deploy/do_accounts.py', 'deploy/do_envs.py', 'deploy/pipeline.py',
-                       'deploy/first_admins.py']) {
+                       'deploy/first_admins.py', 'deploy/lan_slots.py']) {
     const src = readFileSync(join(root, file), 'utf8');
     for (const re of [/"code": "([a-z_]+)"/g,
-                      /(?:EnvError|RefError|TargetError|SnapshotError|IntegrationError|VmError|DoEnvError|FirstAdminError)\("([a-z_]+)"/g,
+                      /(?:EnvError|RefError|TargetError|SnapshotError|IntegrationError|VmError|DoEnvError|FirstAdminError|LanError)\("([a-z_]+)"/g,
                       /^\s+code = "([a-z_]+)"$/gm,
                       /"(vm_[a-z_]+_invalid)"/g, /, "([a-z_]+_invalid)"\)/g,
                       /"([a-z]+_too_long)"/g, /_check_ipv4\([^()]*,\s*"([a-z]+_[a-z_]+)"\)/g,
@@ -169,7 +169,8 @@ it('every error code the deploy routes can return has its own message', () => {
                       'not_supported_on_digitalocean', 'seed_not_allowed', 'slot_not_deployed',
                       'snapshot_slot_unreachable', 'do_account_changed',
                       'first_admin_password_too_short', 'first_admin_done', 'first_admin_with_seed',
-                      'first_admin_not_set', 'first_admin_not_allowed']) {
+                      'first_admin_not_set', 'first_admin_not_allowed',
+                      'vm_static_required', 'vm_ips_not_distinct', 'bluegreen_not_allowed']) {
     expect(codes).toContain(code);
   }
   const missing = codes.filter((c) => sirdar.errorText(new ApiError(400, c), '__none__') === '__none__');
@@ -296,4 +297,17 @@ it('every first-admin code has its own copy', () => {
     expect(text(code)).not.toBe('__none__');
   }
   expect(text('first_admin_done')).toBe('The first admin was already created; change their password in the portal.');
+});
+
+it('LAN Blue/Green codes have their own copy', () => {
+  const text = (code: string) => sirdar.errorText(new ApiError(409, code, { code }), '__none__');
+  expect(text('vm_static_required')).toBe('Blue/Green needs a static address for each of the three VMs.');
+  expect(text('vm_ips_not_distinct')).toBe('The data VM and the two app VMs need three different addresses.');
+  expect(text('vm_resize_not_supported')).toBe("A Blue/Green environment's VM sizes can't change yet.");
+  expect(text('not_bluegreen_environment')).toBe("This environment has one server, so there's nothing to activate.");
+  expect(text('not_supported_on_bluegreen')).toBe(
+    'Both servers share one database, so that would change the live server too. Activate the other server to go back.');
+  expect(text('bluegreen_not_allowed')).toBe('Blue/Green on the LAN needs an ESXi or Proxmox target.');
+  expect(text('auto_activate_not_allowed')).toBe('Only non-production environments with two servers activate automatically.');
+  expect(text('not_digitalocean_environment')).not.toBe('__none__');   // kept for older clients
 });

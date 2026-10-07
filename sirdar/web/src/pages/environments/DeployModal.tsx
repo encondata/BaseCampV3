@@ -1,7 +1,7 @@
 /** Deploy an environment: a git ref and Update (default) or Reset data
  *  (needs deploy:change and the typed environment name; it can restore a
- *  snapshot after the reset). DigitalOcean offers Update only, to the idle
- *  slot. Opened from the environment page and from the Dashboard. */
+ *  snapshot after the reset). DigitalOcean and LAN Blue/Green offer Update
+ *  only, to the idle slot. Opened from the environment page and from the Dashboard. */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -14,7 +14,9 @@ import {
   deployErrorText, listSnapshots, startDeployment, type Deployment, type Environment, type Snapshot,
 } from '../../lib/sirdarApi';
 
-import { ESXI_GROW_NOTE, goesLive, hostLabel, idleSlot, onDo, onVmHost, slotTitle, snapshotLabel } from './labels';
+import {
+  ESXI_GROW_NOTE, goesLive, hostLabel, idleSlot, onBluegreen, onDo, onVmHost, slotTitle, snapshotLabel,
+} from './labels';
 
 type Mode = 'update' | 'reset';
 type Field = 'ref' | 'confirm' | 'snapshot' | 'form';
@@ -45,8 +47,11 @@ export default function DeployModal({ env, onStarted, onClose }: {
   const [snapshotsLoaded, setSnapshotsLoaded] = useState(false);
   const [after, setAfter] = useState<'empty' | 'snapshot'>('empty');
   const [snapshotId, setSnapshotId] = useState('');
-  // A deployed VM environment snapshots its VM in step 0 unless turned off.
-  const choosesVmSnapshot = onVmHost(env) && env.current_sha !== null;
+  // Both slots share the data VM: Update only, to the idle slot, and never a VM snapshot.
+  const bluegreen = onBluegreen(env);
+  const slotted = onDo(env) || bluegreen;
+  // A deployed single-server VM environment snapshots its VM in step 0 unless turned off.
+  const choosesVmSnapshot = onVmHost(env) && !bluegreen && env.current_sha !== null;
   const [vmSnapshot, setVmSnapshot] = useState<'on' | 'off'>('on');
   const [errors, setErrors] = useState<Partial<Record<Field, string>>>({});
   const [busy, setBusy] = useState(false);
@@ -104,10 +109,11 @@ export default function DeployModal({ env, onStarted, onClose }: {
   const retiring = env.type === 'production' && env.retiring;
   const ready = canAdd && !busy && !retiring && (!reset || (canChange && confirm === env.name))
     && (!restoring || !!snapshotId);
-  // A first deploy restores the seed. On DigitalOcean that is the API's _do_ran rule: nothing live, no
-  // running commit, and no slot whose up step ran (its sha is set then); the database is shared by both slots.
+  // A first deploy restores the seed. On DigitalOcean and LAN Blue/Green that is the API's _do_ran /
+  // lan_slots.ran rule: nothing live, no running commit, and no slot whose up step ran (its sha is set then);
+  // the database is shared by both slots.
   const firstDeploy = env.current_sha === null
-    && (!onDo(env) || (env.active_slot === null && !(env.do?.slots ?? []).some((s) => s.sha)));
+    && (!slotted || (env.active_slot === null && !(env.do?.slots ?? env.lan_slots ?? []).some((s) => s.sha)));
   const seeded = mode === 'update' && firstDeploy ? env.seed_snapshot : null;
 
   // Replays exactly the attempt that hit the host-key prompt, whatever the form says now.
@@ -157,7 +163,9 @@ export default function DeployModal({ env, onStarted, onClose }: {
               <div className="eyebrow">Deploy</div>
               <h3 id="sirdar-deploy-title">Deploy {env.name}</h3>
               <p className="page-hint">
-                {onVmHost(env) && env.vm
+                {bluegreen
+                  ? `Prepares the data VM and the idle app VM on ${hostLabel(env)}, then runs in ${env.env_dir} on them. `
+                  : onVmHost(env) && env.vm
                   ? `Prepares the VM ${env.vm.name} on ${hostLabel(env)}, then runs in ${env.env_dir} on it. `
                   : `Runs in ${env.env_dir} on the target. `}
                 You can follow each step's log while it runs.
@@ -175,7 +183,7 @@ export default function DeployModal({ env, onStarted, onClose }: {
                      spellCheck={false} aria-invalid={!!errors.ref} onChange={(e) => setRef(e.target.value)} />
               <p className="page-hint">A branch, tag or full commit SHA. The target resolves it to a commit before anything runs.</p>
               {errors.ref && <p className="form-error" role="alert">{errors.ref}</p>}
-              {onDo(env) && (() => {
+              {slotted && (() => {
                 const target = idleSlot(env);
                 if (!target) return null;
                 const live = goesLive(env, target);
@@ -195,9 +203,9 @@ export default function DeployModal({ env, onStarted, onClose }: {
                 );
               })()}
             </div>
-            {(!onDo(env) || seeded) && (
+            {(!slotted || seeded) && (
               <div>
-                {!onDo(env) && (
+                {!slotted && (
                   <>
                     <span className="field-label" id="deploy-mode-label">Mode</span>
                     <div className="segmented" role="radiogroup" aria-labelledby="deploy-mode-label">
@@ -221,7 +229,7 @@ export default function DeployModal({ env, onStarted, onClose }: {
                 )}
               </div>
             )}
-            {onVmHost(env) && (
+            {onVmHost(env) && !bluegreen && (
               <div>
                 {choosesVmSnapshot ? (
                   <>

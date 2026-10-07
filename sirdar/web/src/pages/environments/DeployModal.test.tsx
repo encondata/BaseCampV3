@@ -15,7 +15,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import DeployModal from './DeployModal';
-import { DO_ENV, ENV, ESXI_ENV, ONE_SLOT_ENV, PROD_ENV, PX_ENV, PX_NEW_ENV, RUNNING, SNAP, SNAP_TAKING } from './testData';
+import { DO_ENV, ENV, ESXI_ENV, LAN_ENV, ONE_SLOT_ENV, PROD_ENV, PX_ENV, PX_NEW_ENV, RUNNING, SNAP, SNAP_TAKING } from './testData';
 
 beforeEach(() => {
   perms.add = true; perms.change = true;
@@ -299,5 +299,34 @@ it("DigitalOcean: the seed line follows the API's rule (no live slot, no slot co
   cleanup();
   // A slot already ran a deploy (its up step set its commit): the database is seeded, no second seed.
   open({ ...fresh, do: { ...fresh.do, slots: [{ ...fresh.do.slots[0], sha: 'f00dbabe'.repeat(5) }, fresh.do.slots[1]] } });
+  expect(screen.queryByText(/This first deploy restores the snapshot/)).toBeNull();
+});
+
+it('Blue/Green: Update only, to the idle slot; no VM snapshot choice', async () => {
+  const { onStarted } = open(LAN_ENV);
+  expect(screen.queryByRole('radio', { name: 'Reset data' })).toBeNull();
+  expect(screen.queryByRole('radiogroup', { name: 'VM snapshot first' })).toBeNull();
+  expect(screen.getByText('Deploys to Purple. Traffic stays on Orange until you activate Purple.')).toBeTruthy();
+  expect(screen.getByText(/Migrations must work with the code still live on Orange/)).toBeTruthy();
+  await userEvent.click(deployBtn());
+  await waitFor(() => expect(onStarted).toHaveBeenCalledWith(RUNNING));
+  expect(api.startDeployment).toHaveBeenCalledWith('lan9', { mode: 'update', git_ref: 'main' });
+});
+
+it('Blue/Green: auto-activate goes live by itself', () => {
+  open({ ...LAN_ENV, auto_activate: true });
+  expect(screen.getByText('Deploys to Purple and goes live when its smoke test passes.')).toBeTruthy();
+});
+
+it("Blue/Green: the seed line reads the LAN slots as DigitalOcean's", () => {
+  const seed = { id: 's1', name: 'dev-2026-10-04' };
+  const fresh = {
+    ...LAN_ENV, current_sha: null, active_slot: null, seed_snapshot: seed,
+    lan_slots: LAN_ENV.lan_slots!.map((s) => ({ ...s, sha: null, image_tag: null, active: false })),
+  };
+  open(fresh);
+  expect(screen.getByText(/This first deploy restores the snapshot/)).toBeTruthy();
+  cleanup();
+  open({ ...fresh, lan_slots: [{ ...fresh.lan_slots[0], sha: 'f00dbabe'.repeat(5) }, fresh.lan_slots[1]] });
   expect(screen.queryByText(/This first deploy restores the snapshot/)).toBeNull();
 });

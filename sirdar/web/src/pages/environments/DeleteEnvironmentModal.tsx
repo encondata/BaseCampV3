@@ -4,7 +4,8 @@
  *  claimed ones in place, then removes the environment from Sirdar.
  *  DigitalOcean: removes everything Sirdar built there, after a snapshot
  *  (optional, except for production); production must be retiring and
- *  deactivated, and needs "delete production <name>" typed as well. */
+ *  deactivated, and needs "delete production <name>" typed as well.
+ *  LAN Blue/Green: destroys the data VM and both app VMs, after an optional snapshot. */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { useAuth } from '@portal/auth/AuthContext';
@@ -15,7 +16,7 @@ import {
   deployErrorText, startDeployment, type Deployment, type Environment, type ManagedRecordRef,
 } from '../../lib/sirdarApi';
 
-import { DO_RESOURCE_LABEL, hostLabel, onDo, onVmHost, vmRef, vmStage } from './labels';
+import { DO_RESOURCE_LABEL, hostLabel, onBluegreen, onDo, onVmHost, vmRef, vmStage } from './labels';
 
 /** snapshot: null when the environment doesn't choose; phrase: production's "delete production <name>". */
 type Attempt = { confirm: string; snapshot: boolean | null; phrase: string | null };
@@ -30,6 +31,9 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
   const { can } = useAuth();
   const [confirm, setConfirm] = useState('');
   const cloud = onDo(env);
+  const bluegreen = onBluegreen(env);
+  // DigitalOcean and Blue/Green save a snapshot of the shared data first (optional, except for production).
+  const snapshots = cloud || bluegreen;
   const production = cloud && env.type === 'production';
   const deployed = env.current_sha !== null;
   const [snapshot, setSnapshot] = useState(true);
@@ -87,7 +91,8 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
 
   const made = env.managed_records.filter((r) => r.origin === 'created');
   const claimed = env.managed_records.filter((r) => r.origin === 'claimed');
-  const doLines = cloud ? (env.do?.resources ?? []).map((r) => `${DO_RESOURCE_LABEL[r.kind] ?? r.kind} ${r.name}`) : [];
+  const doLines = cloud ? (env.do?.resources ?? []).map((r) => `${DO_RESOURCE_LABEL[r.kind] ?? r.kind} ${r.name}`)
+    : bluegreen ? env.machines.map((m) => `VM ${m.name}`) : [];
   // Production goes only once it is retiring and no slot is live.
   const blocked = production && (!env.retiring || env.active_slot !== null);
   // The API's teardown needs deploy:add and deploy:change.
@@ -108,6 +113,12 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
                   Removes everything Sirdar built for {env.name} on DigitalOcean (droplets, the managed database, the
                   {' '}bucket and its files, the load balancer, the certificate and the firewall), after its DNS
                   {' '}records. Snapshots taken from {env.name} are kept in Sirdar. Then Sirdar forgets the environment.
+                </p>
+              ) : bluegreen ? (
+                <p className="page-hint">
+                  Destroys the data VM and both app VMs on {hostLabel(env)} with everything on them: the database,
+                  {' '}files and backups. Then removes the proxy hosts and DNS records Sirdar made. Snapshots taken from
+                  {' '}{env.name} are kept in Sirdar. Then Sirdar forgets the environment.
                 </p>
               ) : onVmHost(env) && env.vm && vmStage(env.vm) === 'none' ? (
                 <p className="page-hint">
@@ -158,10 +169,10 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
                 <p className="page-hint">Claimed: they were made by hand, so Sirdar never deletes them.</p>
               </div>
             )}
-            {!cloud && made.length === 0 && claimed.length === 0 && (
+            {!snapshots && made.length === 0 && claimed.length === 0 && (
               <p className="page-hint">Sirdar manages no DNS records or proxy hosts for it.</p>
             )}
-            {cloud && (production && deployed ? (
+            {snapshots && (production && deployed ? (
               <p className="page-hint">A snapshot is always saved first for production.</p>
             ) : deployed ? (
               <div className="sirdar-switch-row">
@@ -197,7 +208,7 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
             <button type="button" className="btn-ghost" disabled={busy} onClick={onClose}>Cancel</button>
             <button type="button" className="btn-solid btn-danger" disabled={!ready}
                     onClick={() => void run({
-                      confirm, snapshot: cloud && !production && deployed ? snapshot : null,
+                      confirm, snapshot: snapshots && !production && deployed ? snapshot : null,
                       phrase: production ? phrase : null,
                     })}>
               {busy ? 'Starting…' : 'Delete environment'}

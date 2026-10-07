@@ -1,8 +1,8 @@
 /** Fixtures shaped like the /api/deploy environment and deployment endpoints. */
 import type {
   Backup, Deployment, DeploymentStatus, DeploymentStep, DeploymentSummary, DeployTarget, DoAccount, EnvDoSlot, EnvVm,
-  Environment, EnvironmentDefaults, EnvService, IntegrationCheck, Integrations, PublishPlan, Snapshot, StepStatus, TlsCertificate,
-  VmSnapshot,
+  Environment, EnvironmentDefaults, EnvService, IntegrationCheck, Integrations, LanSlot, PublishPlan, Snapshot, StepStatus,
+  TlsCertificate, VmSnapshot,
 } from '../../lib/sirdarApi';
 
 export const SHA = `e73b99ca${'1'.repeat(32)}`;
@@ -16,13 +16,13 @@ const svc = (service: string, port: number): EnvService => ({
 export const ADOPTED: DeploymentSummary = {
   id: 'd0', mode: 'adopt', git_ref: 'main', sha: SHA, status: 'adopted', start_step: 1, retry_of: null,
   failed_step: null, dump_path: null, snapshot: null, restore_dump: null, rollback_available: false, publish: false,
-  vm: false, take_vm_snapshot: false, vm_snapshot: null, cloud: false, slot: null, go_live: false, first_admin: false,
-  previous_sha: null, error: null, actor_name: 'Jimmy Henderson',
+  vm: false, take_vm_snapshot: false, vm_snapshot: null, cloud: false, bluegreen: false, slot: null, go_live: false,
+  first_admin: false, previous_sha: null, error: null, actor_name: 'Jimmy Henderson',
   started_at: '2026-10-03T12:00:00Z', finished_at: '2026-10-03T12:00:00Z', created_at: '2026-10-03T12:00:00Z',
 };
 
 export const ENV: Environment = {
-  id: 'e1', name: 'uat', type: 'dev', target: 'ssh:lab', target_kind: 'ssh', vm: null,
+  id: 'e1', name: 'uat', type: 'dev', target: 'ssh:lab', target_kind: 'ssh', vm: null, machines: [], lan_slots: null,
   base_domain: 'uat.serversherpa.com',
   env_dir: '/opt/serversherpa/uat', git_ref: 'main', current_sha: SHA, image_tag: 'e73b99ca',
   status: 'ready', proxy_ip: '10.10.48.6', bind_ip: '0.0.0.0', keep_dumps: 5,
@@ -99,8 +99,8 @@ function deployment(status: DeploymentStatus, statuses: StepStatus[], logs: Reco
   return {
     id: 'd1', mode, git_ref: 'main', sha: NEW_SHA, status, start_step: 1, retry_of: null, failed_step: null,
     dump_path: null, snapshot: null, restore_dump: null, rollback_available: false, publish: false,
-    vm: false, take_vm_snapshot: false, vm_snapshot: null, cloud: false, slot: null, go_live: false, first_admin: false,
-    previous_sha: SHA, error: null, actor_name: 'Jimmy Henderson',
+    vm: false, take_vm_snapshot: false, vm_snapshot: null, cloud: false, bluegreen: false, slot: null, go_live: false,
+    first_admin: false, previous_sha: SHA, error: null, actor_name: 'Jimmy Henderson',
     started_at: '2026-10-03T13:00:00Z', finished_at: status === 'running' ? null : '2026-10-03T13:10:00Z',
     created_at: '2026-10-03T13:00:00Z', environment: 'uat',
     steps: steps(mode === 'reset' ? RESET_PLAN : mode === 'restore_dump' ? RESTORE_DUMP_PLAN : UPDATE_PLAN,
@@ -161,7 +161,7 @@ export function summary(d: Deployment): DeploymentSummary {
     retry_of: d.retry_of, failed_step: d.failed_step, dump_path: d.dump_path, snapshot: d.snapshot,
     restore_dump: d.restore_dump, rollback_available: d.rollback_available, publish: d.publish,
     vm: d.vm, take_vm_snapshot: d.take_vm_snapshot, vm_snapshot: d.vm_snapshot,
-    cloud: d.cloud, slot: d.slot, go_live: d.go_live, first_admin: d.first_admin,
+    cloud: d.cloud, bluegreen: d.bluegreen, slot: d.slot, go_live: d.go_live, first_admin: d.first_admin,
     previous_sha: d.previous_sha,
     error: d.error, actor_name: d.actor_name, started_at: d.started_at, finished_at: d.finished_at,
     created_at: d.created_at,
@@ -285,7 +285,7 @@ export const PX_TARGETS = {
             { id: 'proxmox', label: 'Proxmox', kind: 'proxmox', available: true, configured: true } as DeployTarget],
 };
 export const PX_VM: EnvVm = {
-  kind: 'proxmox', stage: 'built', name: 'ss-uat3', host: 'pve', node: 'pve', vmid: 120, moref: null, cores: 4, memory_mb: 8192, disk_gb: 64, ip_mode: 'static',
+  kind: 'proxmox', role: 'main', stage: 'built', name: 'ss-uat3', host: 'pve', node: 'pve', vmid: 120, moref: null, cores: 4, memory_mb: 8192, disk_gb: 64, ip_mode: 'static',
   ip_cidr: '10.10.48.70/24', gateway: '10.10.48.1', ip: '10.10.48.70', keep_snapshots: 3, created: true,
 };
 /** uat3 on Proxmox, deployed. */
@@ -344,7 +344,7 @@ export const ESXI_TARGETS = {
             { id: 'esxi', label: 'VMware ESXi', kind: 'esxi', available: true, configured: true } as DeployTarget],
 };
 export const ESXI_VM: EnvVm = {
-  kind: 'esxi', stage: 'built', name: 'ss-uat3', host: '10.10.48.10', node: null, vmid: null, moref: '12',
+  kind: 'esxi', role: 'main', stage: 'built', name: 'ss-uat3', host: '10.10.48.10', node: null, vmid: null, moref: '12',
   cores: 4, memory_mb: 8192, disk_gb: 64, ip_mode: 'static', ip_cidr: '10.10.48.71/24', gateway: '10.10.48.1',
   ip: '10.10.48.71', keep_snapshots: 3, created: true,
 };
@@ -357,6 +357,30 @@ export const ESXI_ENV: Environment = {
 export const ESXI_NEW_ENV: Environment = {
   ...ESXI_ENV, status: 'new', current_sha: null, image_tag: null, last_deployment: null,
   vm: { ...ESXI_VM, stage: 'none', moref: null, ip: null, created: false },
+};
+
+/* ---- LAN Blue/Green (phase 8b) ---- */
+const lanVm = (role: EnvVm['role'], ip: string, disk_gb: number): EnvVm => ({
+  ...ESXI_VM, role, name: `ss-lan9-${role}`, moref: String(20 + Number(ip.slice(-1))), cores: 2, memory_mb: 4096,
+  disk_gb, ip_cidr: `${ip}/24`, ip, keep_snapshots: 0,
+});
+const lanSlot = (slot: string, ip: string, sha: string, active: boolean): LanSlot => ({
+  slot, ip, sha, image_tag: sha.slice(0, 8), active, last_check_ok: true, last_check_at: '2026-10-07T12:00:00Z',
+});
+/** lan9 on ESXi as Blue/Green: a data VM, orange live, purple deployed and idle. */
+export const LAN_ENV: Environment = {
+  ...ENV, id: 'e12', name: 'lan9', target: 'esxi', target_kind: 'esxi', vm: null,
+  base_domain: 'lan9.serversherpa.com', env_dir: '/opt/serversherpa/lan9', secrets_set: {},
+  slots: ['orange', 'purple'], active_slot: 'orange',
+  machines: [lanVm('data', '10.10.48.47', 60), lanVm('orange', '10.10.48.48', 40), lanVm('purple', '10.10.48.49', 40)],
+  lan_slots: [lanSlot('orange', '10.10.48.48', 'a'.repeat(40), true), lanSlot('purple', '10.10.48.49', 'b'.repeat(40), false)],
+  services: ENV.services.map((s) => ({
+    ...s, host_ip: s.service === 'spaces' ? '10.10.48.47' : '10.10.48.48',
+    hostname: s.hostname ? s.hostname.replace('.uat.', '.lan9.') : null })),
+  managed_records: [
+    { service: 'portal', kind: 'proxy_host', name: 'portal.lan9.serversherpa.com', origin: 'created' },
+    { service: 'portal', kind: 'dns_record', name: 'portal.lan9.serversherpa.com', origin: 'created' },
+  ],
 };
 
 export const DO_ACCOUNTS: DoAccount[] = [

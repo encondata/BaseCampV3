@@ -21,7 +21,7 @@ import type { Environment } from '../../lib/sirdarApi';
 
 import DeploymentView, { POLL_MS } from './DeploymentView';
 import {
-  DO_ENV, ENV, FAILED, PROD_ENV, PX_ENV, RESET_FAILED, RESTORE_FAILED, ROLLBACKABLE, RUNNING, RUNNING_MORE, SNAP, SUCCEEDED,
+  DO_ENV, ENV, FAILED, LAN_ENV, PROD_ENV, PX_ENV, RESET_FAILED, RESTORE_FAILED, ROLLBACKABLE, RUNNING, RUNNING_MORE, SNAP, SUCCEEDED,
   VM_ROLLBACKABLE,
 } from './testData';
 
@@ -511,4 +511,11 @@ it("a production Delete isn't retried unless it is retiring with no live slot, a
   await screen.findByText(/Delete environment/);
   expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   expect(screen.getByText(/Deactivate it first/)).toBeTruthy();
+});
+
+it('Blue/Green offers no Roll back: activate the other slot instead', async () => {
+  api.getDeployment.mockResolvedValue(ROLLBACKABLE);
+  show({ id: 'd4', env: LAN_ENV });
+  await screen.findByText(/migrate exited 1/);
+  expect(screen.queryByRole('heading', { name: 'Roll back' })).toBeNull();
 });

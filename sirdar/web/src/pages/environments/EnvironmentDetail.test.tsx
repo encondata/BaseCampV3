@@ -23,7 +23,7 @@ import { ApiError } from '@portal/lib/api';
 
 import EnvironmentDetail, { ENV_POLL_MS } from './EnvironmentDetail';
 import {
-  ADOPTED, BACKUPS, DEFAULTS, DO_ENV, ENV, FAILED, PUBLISHED_ENV, PUBLISHING, PUBLISH_PLAN, RUNNING, TARGETS, TEARDOWN, summary,
+  ADOPTED, BACKUPS, DEFAULTS, DO_ENV, ENV, LAN_ENV, FAILED, PUBLISHED_ENV, PUBLISHING, PUBLISH_PLAN, RUNNING, TARGETS, TEARDOWN, summary,
 } from './testData';
 
 Element.prototype.scrollIntoView = () => {};
@@ -321,4 +321,16 @@ it('DigitalOcean: the header says a failed slot leaves the live one serving', as
   show('/deploy/environments/uat9');
   const chip = await screen.findByText('Failed — Orange still live', { selector: '.page-title *' });
   expect(chip.className).toMatch(/c-amber/);
+});
+
+it('Blue/Green: Activate on the idle VM names its version, then follows the deployment', async () => {
+  api.getEnvironment.mockResolvedValue(LAN_ENV);
+  api.activateSlot.mockResolvedValue(RUNNING);
+  show('/deploy/environments/lan9');
+  const section = await screen.findByRole('region', { name: 'Blue/Green' });
+  await userEvent.click(within(section).getByRole('button', { name: 'Activate Purple' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Activate Purple' });
+  expect(within(dialog).getByText(/bbbbbbbb/)).toBeTruthy();
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Activate Purple' }));
+  await waitFor(() => expect(api.activateSlot).toHaveBeenCalledWith('lan9', 'purple', undefined));
 });

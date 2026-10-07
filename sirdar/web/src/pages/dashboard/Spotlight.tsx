@@ -1,6 +1,6 @@
 /** The selected environment, large: its name, type, state and certificate,
  *  Deploy and Open, and its flow. Activate sits on the idle server box of a
- *  two-slot DigitalOcean environment (deploy:add + deploy:change, only once
+ *  two-slot DigitalOcean or LAN Blue/Green environment (deploy:add + deploy:change, only once
  *  that slot has run a deploy, and not while a deployment runs). Demo data
  *  keeps every action inert. */
 import type { ReactNode } from 'react';
@@ -29,7 +29,7 @@ export default function Spotlight({ card, demo, motion, canDeploy, canView, canA
 }) {
   const name = card.environment;
   const f = card.flow;
-  const twoSlots = f.kind === 'load_balancer' && f.servers.length === 2;
+  const twoSlots = (f.kind === 'load_balancer' || f.kind === 'proxy') && f.servers.length === 2;
   // the API refuses a deploy or an Activate while any deployment runs (a renew included)
   const busy = card.state === 'deploying' || card.running;
 
