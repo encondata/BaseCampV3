@@ -70,6 +70,32 @@ external() { [[ $(env_value STACK_EXTERNAL_DATA) == 1 ]]; }
 caddy() { [[ $(env_value STACK_CADDY) == 1 ]]; }
 lan_db() { [[ $(env_value STACK_DB_PUBLISH) == 1 ]]; }
 
+# STACK_APPS is exact: comma-separated names from the list (lowercase, no
+# spaces, no empty entries), or "none" alone. Anything else is refused
+# rather than guessed at.
+check_apps() {
+  local apps app list
+  apps=$(env_value STACK_APPS)
+  [[ -z $apps || $apps == none ]] && return 0
+  [[ $apps =~ ^[^,]+(,[^,]+)*$ ]] \
+    || die "STACK_APPS must list wiki, kiosk, status or mailpit, comma-separated with no spaces (or none)"
+  IFS=, read -ra list <<<"$apps"
+  for app in "${list[@]}"; do
+    case $app in
+      wiki|kiosk|status|mailpit) ;;
+      none) die "STACK_APPS: none can't be combined with other apps" ;;
+      *) die "STACK_APPS has '$app', not one of wiki, kiosk, status, mailpit (lowercase, no spaces)" ;;
+    esac
+  done
+}
+
+# Mail goes to Mailpit unless the .env names an SMTP server.
+check_mail() {
+  if ! app_on mailpit && [[ -z $(env_value SS_SMTP_HOST) ]]; then
+    die "Mailpit is off and no SMTP host is set: mail would fail."
+  fi
+}
+
 # An optional app runs unless STACK_APPS is set and doesn't name it.
 app_on() {
   local apps
@@ -304,6 +330,8 @@ case $cmd in
   up)
     [[ $# -eq 0 ]] || usage
     refuse_placeholders
+    check_apps
+    check_mail
     if lan_db; then write_hba; fi
     ensure_network
     data_up
@@ -335,6 +363,7 @@ case $cmd in
   data)
     [[ $# -eq 0 ]] || usage
     refuse_placeholders
+    check_apps
     if lan_db; then write_hba; fi
     ensure_network
     data_up

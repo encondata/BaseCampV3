@@ -535,13 +535,17 @@ def test_a_data_vm_lets_only_its_app_servers_in(tmp_path: Path) -> None:
                        capture_output=True, text=True, check=False)
 
 
+# an SMTP server, so Mailpit may be off; the password must never reach argv
+SMTP = "SS_SMTP_HOST=smtp.example.com\nSS_SMTP_PASSWORD=Mail-Secret-1\n"
+
+
 def _apps(env_dir: Path, line: str) -> None:
     with (env_dir / ".env").open("a") as f:
         f.write(line)
 
 
 def test_apps_that_are_off_dont_run(env_dir: Path, fake: dict[str, str]) -> None:
-    _apps(env_dir, "STACK_APPS=kiosk\n")
+    _apps(env_dir, SMTP + "STACK_APPS=kiosk\n")
     out = run(fake, "up", str(env_dir))
     assert out.returncode == 0, out.stderr
     c = calls(fake)
@@ -553,7 +557,7 @@ def test_apps_that_are_off_dont_run(env_dir: Path, fake: dict[str, str]) -> None
 
 
 def test_none_runs_only_the_api_and_the_portal(env_dir: Path, fake: dict[str, str]) -> None:
-    _apps(env_dir, "STACK_APPS=none\n")
+    _apps(env_dir, SMTP + "STACK_APPS=none\n")
     assert run(fake, "up", str(env_dir)).returncode == 0
     c = calls(fake)
     assert dc(env_dir, "web", f"{WAIT} --scale kiosk=0 --scale wiki=0") in c
@@ -570,7 +574,7 @@ def test_every_app_runs_when_the_key_is_absent_or_lists_them_all(env_dir: Path,
 
 
 def test_external_data_without_mailpit_removes_it(env_dir: Path, fake: dict[str, str]) -> None:
-    _apps(env_dir, "STACK_EXTERNAL_DATA=1\nSTACK_APPS=wiki,kiosk,status\n")
+    _apps(env_dir, SMTP + "STACK_EXTERNAL_DATA=1\nSTACK_APPS=wiki,kiosk,status\n")
     assert run(fake, "up", str(env_dir)).returncode == 0
     c = calls(fake)
     assert dc(env_dir, "storage", "rm -sf mailpit") in c
@@ -591,3 +595,56 @@ def test_a_data_vm_ignores_stack_apps(env_dir: Path, fake: dict[str, str]) -> No
     assert run(fake, "data", str(env_dir)).returncode == 0
     storage = [c for c in calls(fake) if "/storage/compose.yml" in c]
     assert storage == [dc(env_dir, "storage", f"{WAIT} seaweedfs")]
+
+
+
+@pytest.mark.parametrize("apps", [
+    "wiki, kiosk", " wiki", "kiosk ", "Wiki", "KIOSK,status", "wiki,blog", "portal",
+    "wiki,", ",wiki", "wiki,,kiosk", "none,wiki", "\"wiki kiosk\""])
+@pytest.mark.parametrize("command", ["up", "data"])
+def test_a_bad_app_list_is_refused(env_dir: Path, fake: dict[str, str], apps: str,
+                                   command: str) -> None:
+    _apps(env_dir, SMTP + f"STACK_APPS={apps}\n")
+    out = run(fake, command, str(env_dir))
+    assert out.returncode != 0
+    assert "STACK_APPS" in out.stderr
+    assert calls(fake) == []
+
+
+def test_an_empty_app_list_runs_every_app(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, "STACK_APPS=\n")
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    c = calls(fake)
+    for stack in ("storage", "api", "web", "status"):
+        assert dc(env_dir, stack, WAIT) in c, stack
+
+
+@pytest.mark.parametrize("smtp", ["", "SS_SMTP_HOST=\n"])
+@pytest.mark.parametrize("extra", ["", "STACK_EXTERNAL_DATA=1\n"])
+def test_mailpit_off_without_an_smtp_host_is_refused(env_dir: Path, fake: dict[str, str],
+                                                     smtp: str, extra: str) -> None:
+    _apps(env_dir, extra + smtp + "STACK_APPS=wiki,kiosk,status\n")
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode != 0
+    assert "Mailpit is off and no SMTP host is set: mail would fail." in out.stderr
+    assert calls(fake) == []
+
+
+def test_mailpit_off_with_an_smtp_host_runs(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, SMTP + "STACK_APPS=none\n")
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert dc(env_dir, "storage", f"{WAIT} --scale mailpit=0") in calls(fake)
+
+
+@pytest.mark.parametrize("extra", ["", "STACK_EXTERNAL_DATA=1\n", "STACK_APPS=none\n"])
+def test_the_smtp_password_never_reaches_argv(env_dir: Path, fake: dict[str, str],
+                                              extra: str) -> None:
+    _apps(env_dir, SMTP + extra)
+    for command in ("up", "data", "ps", "down"):
+        out = run(fake, command, str(env_dir))
+        assert out.returncode == 0, out.stderr
+        assert "Mail-Secret-1" not in out.stdout + out.stderr
+    assert calls(fake)
+    assert not any("Mail-Secret-1" in c for c in calls(fake))
