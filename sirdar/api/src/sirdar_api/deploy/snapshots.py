@@ -280,12 +280,16 @@ async def receive_upload(db: AsyncSession, settings: Settings, *, name: str, not
 
 
 async def begin_take(db: AsyncSession, settings: Settings, env: Environment, *, name: str,
-                     notes: str | None, actor_id) -> Snapshot:
-    """The pending row a Take snapshot job fills in."""
+                     notes: str | None, actor_id, deployed: bool | None = None) -> Snapshot:
+    """The pending row a Take snapshot job fills in. `deployed`: the caller's
+    own answer to "is there data to take" (a Blue/Green Delete: a slot that
+    ran, live or not); by default, whether the environment runs a commit."""
     name, notes = check_name(name), check_notes(notes)
     if not vault.is_configured(settings):
         raise SnapshotError("secrets_key_missing")
-    if env.current_sha is None or env.image_tag is None:
+    if deployed is None:
+        deployed = env.current_sha is not None and env.image_tag is not None
+    if not deployed:
         raise SnapshotError("not_deployed")
     if await _name_taken(db, name):
         raise SnapshotError("snapshot_exists")

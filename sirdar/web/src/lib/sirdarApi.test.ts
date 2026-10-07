@@ -101,6 +101,10 @@ const CALLS: { name: string; call: () => Promise<unknown>; path: string; method?
   { name: 'activateSlot (deactivate)', call: () => sirdar.activateSlot('prod', null, 'prod'),
     path: '/deploy/environments/prod/activate', method: 'POST', body: { slot: null, confirm_name: 'prod' } },
   { name: 'addSlot', call: () => sirdar.addSlot('solo'), path: '/deploy/environments/solo/slots', method: 'POST' },
+  { name: 'setFirstAdmin', call: () => sirdar.setFirstAdmin('fresh', {
+      first_name: 'Ada', last_name: 'Lovelace', email: 'ada@test.example.com', password_mode: 'invite', password: null }),
+    path: '/deploy/environments/fresh/first-admin', method: 'PUT',
+    body: { first_name: 'Ada', last_name: 'Lovelace', email: 'ada@test.example.com', password_mode: 'invite', password: null } },
   { name: 'updateEnvironment (sizes)', call: () => sirdar.updateEnvironment('uat9', { do: { droplet_size: 's-4vcpu-8gb' } }),
     path: '/deploy/environments/uat9', method: 'PATCH', body: { do: { droplet_size: 's-4vcpu-8gb' } } },
   { name: 'startDeployment (production delete)',
@@ -128,10 +132,11 @@ function deployCodes(): string[] {
   const found = new Set<string>(['sudo_password_too_long']);
   for (const file of ['api/routes/deploy.py', 'api/routes/integrations.py', 'deploy/environments.py',
                        'deploy/gitref.py', 'deploy/ssh_targets.py', 'deploy/snapshots.py', 'deploy/integrations.py',
-                       'deploy/vms.py', 'deploy/do_accounts.py', 'deploy/do_envs.py', 'deploy/pipeline.py']) {
+                       'deploy/vms.py', 'deploy/do_accounts.py', 'deploy/do_envs.py', 'deploy/pipeline.py',
+                       'deploy/first_admins.py', 'deploy/lan_slots.py', 'deploy/apps.py']) {
     const src = readFileSync(join(root, file), 'utf8');
     for (const re of [/"code": "([a-z_]+)"/g,
-                      /(?:EnvError|RefError|TargetError|SnapshotError|IntegrationError|VmError|DoEnvError)\("([a-z_]+)"/g,
+                      /(?:EnvError|RefError|TargetError|SnapshotError|IntegrationError|VmError|DoEnvError|FirstAdminError|LanError|AppsError)\("([a-z_]+)"/g,
                       /^\s+code = "([a-z_]+)"$/gm,
                       /"(vm_[a-z_]+_invalid)"/g, /, "([a-z_]+_invalid)"\)/g,
                       /"([a-z]+_too_long)"/g, /_check_ipv4\([^()]*,\s*"([a-z]+_[a-z_]+)"\)/g,
@@ -162,10 +167,21 @@ it('every error code the deploy routes can return has its own message', () => {
                       'esxi_url_invalid', 'source_vm_invalid', 'dns_servers_invalid', 'vm_name_invalid',
                       'do_token_invalid', 'do_account_invalid', 'label_invalid', 'region_invalid',
                       'not_supported_on_digitalocean', 'seed_not_allowed', 'slot_not_deployed',
-                      'snapshot_slot_unreachable', 'do_account_changed']) {
+                      'snapshot_slot_unreachable', 'do_account_changed',
+                      'first_admin_password_too_short', 'first_admin_done', 'first_admin_with_seed',
+                      'first_admin_not_set', 'first_admin_not_allowed',
+                      'vm_static_required', 'vm_ips_not_distinct', 'bluegreen_not_allowed',
+                      'not_supported_on_bluegreen', 'not_bluegreen_environment', 'vm_name_taken',
+                      'vm_resize_not_supported', 'bluegreen_field_locked']) {
     expect(codes).toContain(code);
   }
-  const missing = codes.filter((c) => sirdar.errorText(new ApiError(400, c), '__none__') === '__none__');
+  for (const code of ['apps_invalid', 'mailpit_required', 'mail_invalid', 'smtp_host_invalid', 'smtp_port_invalid',
+                      'smtp_username_invalid', 'smtp_password_invalid', 'smtp_from_invalid', 'secrets_not_allowed',
+                      'smtp_required_for_first_admin']) {
+    expect(codes).toContain(code);                // deploy/apps.py, the create route, environments.py
+  }
+  const missing = codes
+    .filter((c) => sirdar.errorText(new ApiError(400, c), '__none__') === '__none__');
   expect(missing).toEqual([]);
 });
 
@@ -273,4 +289,53 @@ it('the phase 7b DigitalOcean codes have copy', () => {
     'do_shrink_refused']) {
     expect(sirdar.errorText(new ApiError(409, code), '__none__')).not.toBe('__none__');
   }
+});
+
+it('a short first-admin password names the bar', () => {
+  expect(sirdar.deployErrorText(new ApiError(422, 'first_admin_password_too_short',
+    { code: 'first_admin_password_too_short', min_length: 8 }), 'x'))
+    .toBe("The password is too short for ServerSherpa's password policy (at least 8 characters).");
+});
+
+it('every first-admin code has its own copy', () => {
+  const text = (code: string) => sirdar.errorText(new ApiError(422, code, { code }), '__none__');
+  for (const code of ['first_admin_not_allowed', 'first_admin_with_seed', 'first_admin_name_invalid',
+    'first_admin_email_invalid', 'first_admin_password_too_short', 'first_admin_password_invalid',
+    'first_admin_password_not_allowed', 'first_admin_invalid', 'first_admin_not_set']) {
+    expect(text(code)).not.toBe('__none__');
+  }
+  expect(text('first_admin_done')).toBe('The first admin was already created; change their password in the portal.');
+});
+
+it('LAN Blue/Green codes have their own copy', () => {
+  const text = (code: string) => sirdar.errorText(new ApiError(409, code, { code }), '__none__');
+  expect(text('vm_static_required')).toBe('Blue/Green needs a static address for each of the three VMs.');
+  expect(text('vm_ips_not_distinct')).toBe('The data VM and the two app VMs need three different addresses.');
+  expect(text('vm_resize_not_supported')).toBe("A Blue/Green environment's VM sizes can't change yet.");
+  expect(text('not_bluegreen_environment')).toBe("This environment has one server, so there's nothing to activate.");
+  expect(text('not_supported_on_bluegreen')).toBe(
+    'Both servers share one database, so that would change the live server too. Activate the other server to go back.');
+  expect(text('bluegreen_not_allowed')).toBe('Blue/Green on the LAN needs an ESXi or Proxmox target.');
+  expect(text('auto_activate_not_allowed')).toBe('Only non-production environments with two servers activate automatically.');
+  expect(text('not_digitalocean_environment')).not.toBe('__none__');   // kept for older clients
+});
+
+it('vm_name_taken names the VM name already in use', () => {
+  expect(sirdar.deployErrorText(apiError(409, { code: 'vm_name_taken', name: 'ss-lan9-data' }), 'x'))
+    .toBe('Another environment already uses the VM name ss-lan9-data. Choose a different environment name.');
+  expect(sirdar.errorText(new ApiError(409, 'vm_name_taken'), '__none__')).not.toBe('__none__');
+});
+
+it('the apps and mail codes read as the plan words them', () => {
+  const text = (code: string) => sirdar.errorText(new ApiError(422, code, { code }), '__none__');
+  expect(text('apps_invalid')).toBe('Choose the apps from Wiki, Kiosk, Status page and Mailpit.');
+  expect(text('mailpit_required')).toBe('Mail goes to Mailpit unless SMTP is set up: turn Mailpit on, or choose SMTP.');
+  expect(text('mail_invalid')).toBe('Choose Mailpit or SMTP for mail.');
+  expect(text('smtp_host_invalid')).toBe("Enter the SMTP server's host name or address.");
+  expect(text('smtp_port_invalid')).toBe('Use an SMTP port from 1 to 65535.');
+  expect(text('smtp_username_invalid')).toBe("That SMTP user name can't be used: no spaces, quotes, $, # or backslashes.");
+  expect(text('smtp_password_invalid')).toBe(
+    "That SMTP password can't be saved. Use letters, numbers and ._~+/=:@%^*!?,;- only, with no spaces or quotes.");
+  expect(text('smtp_from_invalid')).toBe('Enter the address mail is sent from, like noreply@example.com.');
+  expect(text('secrets_not_allowed')).toBe('An adopted environment keeps its own secrets; change them on its Settings tab.');
 });

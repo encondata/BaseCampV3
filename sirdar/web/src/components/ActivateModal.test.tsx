@@ -66,3 +66,20 @@ it('Escape and Cancel close it', async () => {
   await userEvent.keyboard('{Escape}');
   expect(onClose).toHaveBeenCalledTimes(2);
 });
+
+it('LAN Blue/Green: smoke-tests the slot on its VM, then points the proxy hosts at it', () => {
+  const { dialog } = show({ envName: 'lan9', lan: true });
+  const hint = within(dialog).getByText(/smoke-tests Purple \(f00dbabe\)/);
+  expect(hint.textContent).toMatch(/on its VM/);
+  expect(hint.textContent).toMatch(/Nginx Proxy Manager proxy hosts/);
+  expect(hint.textContent).toMatch(/Orange keeps running/);
+  expect(hint.textContent).not.toMatch(/droplet|load balancer/);
+});
+
+it('DigitalOcean keeps the droplet and load balancer wording', () => {
+  const { dialog } = show();
+  const hint = within(dialog).getByText(/smoke-tests Purple/);
+  expect(hint.textContent).toMatch(/on its droplet/);
+  expect(hint.textContent).toMatch(/load balancer/);
+  expect(hint.textContent).not.toMatch(/Nginx Proxy Manager/);
+});

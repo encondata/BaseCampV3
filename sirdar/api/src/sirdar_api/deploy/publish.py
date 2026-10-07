@@ -14,22 +14,37 @@ The status functions are pure: they compare what Cloudflare and NPM hold
 with the managed rows and give one Status per service. The Publish tab
 shows them (inspect), Claim records the claimable ones, and the steps
 apply them. Errors carry our own copy; credentials stay inside the
-Cloudflare and Npm clients."""
+Cloudflare and Npm clients.
+
+Step 14 Switch traffic of a LAN Blue/Green environment (lan_switch) points
+the proxy hosts at the slot's app VM, checks the public names, and puts them
+back on failure; spaces always forwards to the data VM."""
 
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
 from sirdar_api.db.engine import get_sessionmaker
-from sirdar_api.db.models import Environment, ManagedRecord
-from sirdar_api.deploy import do_envs, integrations, npm, outbound, smoke, targets
+from sirdar_api.db.models import Environment, EnvironmentService, ManagedRecord
+from sirdar_api.deploy import (
+    apps as app_rules,
+    do_envs,
+    envfile,
+    integrations,
+    lan_slots,
+    npm,
+    outbound,
+    smoke,
+    targets,
+    vms,
+)
 from sirdar_api.deploy.cloudflare import Cloudflare, CloudflareError, DnsRecord
 from sirdar_api.deploy.environments import services_of
 from sirdar_api.deploy.integrations import CloudflareConfig, IntegrationError, NpmConfig
@@ -81,6 +96,7 @@ class PublishContext:
     proxy_ip: str
     services: tuple[ServicePlan, ...]
     cloud: bool = False             # DigitalOcean: DNS at the load balancer, no NPM
+    slot: str | None = None         # LAN Blue/Green: the slot a Switch traffic moves to
     cloudflare: CloudflareConfig | None = field(default=None, repr=False)
     npm: NpmConfig | None = field(default=None, repr=False)
 
@@ -101,10 +117,11 @@ class Status:
 # ---- context -------------------------------------------------------------------
 
 async def service_plans(db: AsyncSession, env: Environment) -> tuple[ServicePlan, ...]:
-    """The public services (those with a hostname), in envfile order."""
+    """The public services (those with a hostname, of an app that runs), in
+    envfile order: DNS records, proxy hosts, certificates and the smoke test."""
     rows = await services_of(db, env.id)
     return tuple(ServicePlan(r.service, r.hostname, r.host_ip, r.port, r.proxied)
-                 for r in rows if r.hostname)
+                 for r in rows if r.hostname and app_rules.is_public(env, r.service))
 
 
 async def prepare(db: AsyncSession, env: Environment, settings: Settings) -> PublishContext:
@@ -875,6 +892,199 @@ async def run_smoke(ctx: PublishContext, out: Output, *, transport,
                          f"{', '.join(failed)}.")
 
 
+# Switch traffic on the LAN (deploy phase 8b): these follow the live app VM;
+# spaces stays on the data VM.
+APP_SERVICES = tuple(s for s in envfile.SERVICES if s != "spaces")
+
+
+async def _point(env_id, addresses: dict[str, str]) -> None:
+    async with get_sessionmaker()() as s:
+        for service, ip in addresses.items():
+            await s.execute(update(EnvironmentService).where(
+                EnvironmentService.environment_id == env_id,
+                EnvironmentService.service == service).values(host_ip=ip))
+        await s.commit()
+
+
+FORWARD_FIELDS = ("forward_scheme", "forward_host", "forward_port", "allow_websocket_upgrade")
+
+
+async def _fallback(env_id) -> tuple[str | None, dict[str, str]]:
+    """The slot live before the switch, and where each service's proxy host
+    goes back to on a failure: the live slot's VM for the app services, the
+    data VM for spaces. Read from the VM rows, never from the services'
+    host_ip, so a retry after an interrupted switch still knows the way
+    back. No live slot: the app services have nowhere to go back to."""
+    async with get_sessionmaker()() as s:
+        live = await s.scalar(select(Environment.active_slot).where(Environment.id == env_id))
+    back: dict[str, str] = {}
+    if data_ip := await lan_slots.slot_ip(env_id, vms.DATA):
+        back["spaces"] = data_ip
+    if live and (live_ip := await lan_slots.slot_ip(env_id, live)):
+        back.update({service: live_ip for service in APP_SERVICES})
+    return live, back
+
+
+async def _managed_hosts(env_id) -> dict[int, ManagedRecord]:
+    return {int(r.external_id): r for r in await _all_rows(env_id, (PROXY,))}
+
+
+async def _record(ctx: PublishContext, *, transport) -> dict[int, dict]:
+    """Host id -> the forward fields of every proxy host Sirdar manages for
+    the environment, as Nginx Proxy Manager has them now."""
+    cfg = _need_to_publish(ctx.npm, "Nginx Proxy Manager")
+    rows = await _managed_hosts(ctx.env_id)
+    if not rows:
+        return {}
+    async with Npm(cfg, transport=transport) as api:
+        return {h.id: {k: getattr(h, k) for k in FORWARD_FIELDS}
+                for h in await api.proxy_hosts()
+                if h.id in rows and rows[h.id].name in h.domain_names}
+
+
+async def _put_back(ctx: PublishContext, out: Output, recorded: dict[int, dict],
+                    back: dict[str, str], *, transport, drop_new: bool) -> list[str]:
+    """Every proxy host Sirdar manages for the environment goes back: the
+    forward fields recorded before the switch, with the forward host from
+    `back`. A host the switch created goes to `back` too, or (`drop_new`:
+    nothing was live, so a failed first switch leaves no proxy hosts behind)
+    it is deleted; the certificates it got stay managed, for the next try.
+    Each host is its own try: the answer lists the ones that couldn't be put
+    back."""
+    cfg = _need_to_publish(ctx.npm, "Nginx Proxy Manager")
+    rows = await _managed_hosts(ctx.env_id)
+    failed: list[str] = []
+    if not rows:
+        return failed
+    async with Npm(cfg, transport=transport) as api:
+        for host in await api.proxy_hosts():
+            row = rows.get(host.id)
+            if row is None or row.name not in host.domain_names:
+                continue
+            new = host.id not in recorded
+            want = dict(recorded.get(host.id, {}))
+            if row.service in back:
+                want["forward_host"] = back[row.service]
+            try:
+                if new and (drop_new or "forward_host" not in want):
+                    await _drop_npm(api, row, out)
+                    continue
+                if all(getattr(host, k) == v for k, v in want.items()):
+                    continue
+                body = {k: host.raw[k] for k in npm.HOST_FIELDS if k in host.raw}
+                body["locations"] = body.get("locations") or []
+                body.update(want)
+                await api.update_host(host.id, body)
+                out(f"{row.name}: proxy host back to {want['forward_host']}\n")
+            except NpmError as e:
+                failed.append(f"{row.name}: {e.reason}")
+    return failed
+
+
+async def _roll_back(ctx: PublishContext, out: Output, recorded: dict[int, dict],
+                     back: dict[str, str], *, transport, drop_new: bool) -> str | None:
+    """Our own copy for what couldn't be put back, None when all of it was."""
+    try:
+        failed = await _put_back(ctx, out, recorded, back, transport=transport,
+                                 drop_new=drop_new)
+    except (StepFailed, NpmError) as e:
+        return (f"Sirdar couldn't put the proxy hosts back ({e.reason}): check them in Nginx "
+                "Proxy Manager.")
+    except Exception:
+        return "Sirdar couldn't put the proxy hosts back: check them in Nginx Proxy Manager."
+    if not failed:
+        return None
+    try:
+        total = f" of {len(await _managed_hosts(ctx.env_id))}"
+    except Exception:
+        total = ""
+    return (f"Sirdar couldn't put {len(failed)}{total} proxy hosts back: check them in "
+            "Nginx Proxy Manager.\n" + "\n".join(f"  {f}" for f in failed))
+
+
+# Put-backs still running: the strong reference that keeps one alive when
+# the switch that started it stops waiting (a second cancel, or the bound).
+_PUTTING_BACK: set[asyncio.Task] = set()
+PUT_BACK_WAIT = 120.0       # seconds a cancelled switch keeps waiting for its put-back
+
+
+async def _wait_for_put_back(rollback: Awaitable[str | None]) -> tuple[str | None, bool]:
+    """Run the put-back as its own task and wait for it through cancels, for
+    at most PUT_BACK_WAIT seconds. Returns its copy (or ours, if it is still
+    running) and whether a cancel arrived meanwhile; the caller re-raises
+    that cancel once the waiting is over."""
+    task = asyncio.ensure_future(rollback)
+    _PUTTING_BACK.add(task)
+    task.add_done_callback(_PUTTING_BACK.discard)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + PUT_BACK_WAIT
+    cancelled = False
+    while not task.done():
+        left = deadline - loop.time()
+        if left <= 0:
+            break
+        try:
+            # wait() never cancels the task it waits for.
+            await asyncio.wait({task}, timeout=left)
+        except asyncio.CancelledError:
+            cancelled = True
+    if not task.done():
+        return ("Sirdar is still putting the proxy hosts back: check them in Nginx Proxy "
+                "Manager."), cancelled
+    return task.result(), cancelled
+
+
+async def switch_lan(ctx: PublishContext, out: Output, *, npm_transport, smoke_transport,
+                     sleep: Callable[[float], Awaitable[None]], now: datetime,
+                     backoff: tuple[int, ...], attempts: int, delay: float) -> None:
+    """Point the environment's proxy hosts at the slot's VM and check the
+    public names through NPM; only then record the new addresses. On any
+    exit before that (a failure, a cancel), the proxy hosts go back to the
+    slot that was live (recorded first: each host's forward fields)."""
+    if ctx.slot is None:
+        raise StepFailed("This Switch traffic names no server.")
+    ip = await lan_slots.slot_ip(ctx.env_id, ctx.slot)
+    if not ip:
+        raise StepFailed(f"The {ctx.slot} VM has no address yet. Deploy to it first.")
+    live, back = await _fallback(ctx.env_id)
+    try:
+        recorded = await _record(ctx, transport=npm_transport)
+    except (StepFailed, NpmError) as e:
+        raise StepFailed(f"{e.reason} Sirdar changed nothing.") from None
+    moved = replace(ctx, services=tuple(replace(s, host_ip=ip) if s.service in APP_SERVICES
+                                        else s for s in ctx.services))
+    out(f"Switching the proxy hosts to {ctx.slot} ({ip}).\n")
+    try:
+        await ensure_proxy(moved, out, transport=npm_transport, sleep=sleep, now=now,
+                           backoff=backoff)
+        await run_smoke(moved, out, transport=smoke_transport, sleep=sleep, attempts=attempts,
+                        delay=delay)
+        try:
+            await _point(ctx.env_id, {service: ip for service in APP_SERVICES})
+        except Exception:
+            raise StepFailed("Sirdar couldn't save the new addresses in its database.") from None
+    except BaseException as e:
+        out("Putting traffic back.\n")
+        problem, cancelled = await _wait_for_put_back(_roll_back(
+            ctx, out, recorded, back, transport=npm_transport, drop_new=live is None))
+        if cancelled or not isinstance(e, (StepFailed, NpmError)):
+            if problem:
+                out(problem + "\n")
+            if cancelled and not isinstance(e, asyncio.CancelledError):
+                raise asyncio.CancelledError from None
+            raise
+        if problem:
+            tail = problem
+        elif live is None:
+            tail = "No slot was live before, so nothing to put back."
+        elif live == ctx.slot:
+            tail = f"{ctx.slot} was already live, so traffic still goes to it."
+        else:
+            tail = "Traffic stays where it was."
+        raise StepFailed(f"{e.reason} {tail}") from None
+    out(f"Traffic goes to {ctx.slot} ({ip}).\n")
+
+
 class HttpPublisher:
     """The real publisher: steps 12–14 and 16–17 against Cloudflare, Nginx
     Proxy Manager and the public URLs, through outbound.transports(). Waits
@@ -908,6 +1118,11 @@ class HttpPublisher:
                 case "smoke":
                     await run_smoke(ctx, out, transport=transports["smoke"], sleep=self._sleep,
                                     attempts=self._smoke_attempts, delay=self._smoke_delay)
+                case "lan_switch":
+                    await switch_lan(ctx, out, npm_transport=transports["npm"],
+                                     smoke_transport=transports["smoke"], sleep=self._sleep,
+                                     now=self._now(), backoff=self._backoff,
+                                     attempts=self._smoke_attempts, delay=self._smoke_delay)
                 case "unproxy":
                     await remove_proxy(ctx, out, transport=transports["npm"])
                 case "undns":

@@ -39,7 +39,8 @@ async def test_email_on_issues_hashed_token_and_queues_mail(db, seeded_user, ema
     assert ttl == get_settings().password_reset_ttl_minutes * 60
     mail = await db.scalar(select(EmailOutbox))
     assert mail.template == "password_reset" and mail.to_address == EMAIL
-    assert f"{get_settings().portal_origin.rstrip('/')}/reset-password#token={raw}" in mail.text_body
+    origin = get_settings().portal_origin.rstrip('/')
+    assert f"{origin}/reset-password#token={raw}" in mail.text_body
     assert await db.scalar(select(AuditLog).where(AuditLog.action == "password.reset_requested"))
 
 
@@ -126,3 +127,25 @@ async def test_complete_applies_everything(client, db, seeded_user, email_on):
     assert "password_changed" in templates
     row = await db.scalar(select(AuditLog).where(AuditLog.action == "password.reset_self"))
     assert row.entity_id == str(person_id) and row.actor_person_id == person_id
+
+
+async def test_issue_token_retires_older_ones_and_keeps_only_the_hash(db, seeded_user):
+    now = datetime.now(UTC)
+    first = await svc.issue_token(db, seeded_user.id, minutes=240, now=now)
+    second = await svc.issue_token(db, seeded_user.id, minutes=240, now=now)
+    await db.commit()
+    rows = list(await db.scalars(select(PasswordResetToken)
+                                 .order_by(PasswordResetToken.created_at)))
+    assert len(rows) == 2
+    assert {r.token_hash for r in rows} == {svc.hash_token(first), svc.hash_token(second)}
+    assert all(first not in r.token_hash and second not in r.token_hash for r in rows)
+    old = next(r for r in rows if r.token_hash == svc.hash_token(first))
+    new = next(r for r in rows if r.token_hash == svc.hash_token(second))
+    assert old.used_at is not None and new.used_at is None
+    assert (new.expires_at - new.created_at).total_seconds() == 240 * 60
+    assert await svc.find_valid(db, second) is not None
+
+
+def test_portal_url_joins_the_portal_origin():
+    origin = get_settings().portal_origin.rstrip("/")
+    assert svc.portal_url("/login") == f"{origin}/login"

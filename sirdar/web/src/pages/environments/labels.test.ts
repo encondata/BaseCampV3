@@ -4,11 +4,11 @@ import type { DeploymentMode, DeploymentStatus } from '../../lib/sirdarApi';
 
 import {
   CERT_STATE, CHANGE_MODES, DEPLOYMENT_STATUS, ENV_STATUS, GATED_MODES, MODE_LABEL, PUBLISH_STATE, RETRY_MODES,
-  STEP_STATUS, certDaysLeft, deploymentLabel, failedSlot, failedStillLive, deploymentRunning, goesLive, idleSlot, onDo, retryNeedsName, slotTitle, dumpTakenAt, duration, envTargets, formatBytes, hostLabel, isVmTarget, onProxmox, onVmHost,
+  STEP_STATUS, certDaysLeft, deploymentLabel, failedSlot, failedStillLive, deploymentRunning, goesLive, idleSlot, NOT_ON_BLUEGREEN, NOT_ON_DO, onBluegreen, onDo, retryNeedsName, twoSlots, slotTitle, dumpTakenAt, duration, envTargets, formatBytes, hostLabel, isVmTarget, onProxmox, onVmHost,
   snapshotLabel, sshTargets, stoppedStep, VM_HOST_LABEL, vmBuilt, vmNetwork, vmRef, vmSize, vmStage,
 } from './labels';
 import {
-  DO_ENV, DO_TARGETS, ENV, ESXI_ENV, ESXI_NEW_ENV, ESXI_TARGETS, ESXI_VM, FAILED, ONE_SLOT_ENV, PROD_ENV, PUBLISHING,
+  DO_ENV, DO_TARGETS, ENV, ESXI_ENV, LAN_ENV, ESXI_NEW_ENV, ESXI_TARGETS, ESXI_VM, FAILED, ONE_SLOT_ENV, PROD_ENV, PUBLISHING,
   PX_ENV, PX_NEW_ENV, PX_TARGETS, PX_VM, RUNNING, SNAP, SUCCEEDED, TARGETS, summary,
 } from './testData';
 
@@ -184,4 +184,21 @@ it('failedSlot / failedStillLive: a failed, canceled or interrupted deploy on an
   expect(failedStillLive(last('failed', 'orange'))).toBeNull();                 // the live slot itself failed
   expect(failedStillLive({ ...last('failed', 'purple'), active_slot: null })).toBeNull();
   expect(failedStillLive({ ...DO_ENV, last_deployment: null })).toBeNull();
+});
+
+it('Blue/Green on the LAN counts as two slots', () => {
+  expect(onBluegreen(LAN_ENV)).toBe(true);
+  expect(twoSlots(LAN_ENV)).toBe(true);
+  expect(twoSlots(ENV)).toBe(false);
+  expect(deploymentLabel({ mode: 'update', cloud: false, bluegreen: true, slot: 'purple', go_live: false }))
+    .toBe('Update to Purple, not live');
+});
+
+it('one-server VM environments and DigitalOcean are not Blue/Green; Blue/Green offers what DigitalOcean does', () => {
+  expect(onBluegreen(ESXI_ENV)).toBe(false);
+  expect(onBluegreen(PX_ENV)).toBe(false);
+  expect(onBluegreen(DO_ENV)).toBe(false);
+  expect(twoSlots(DO_ENV)).toBe(true);
+  expect(twoSlots(ONE_SLOT_ENV)).toBe(false);
+  expect(NOT_ON_BLUEGREEN).toEqual(NOT_ON_DO);
 });

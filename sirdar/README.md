@@ -690,6 +690,85 @@ first, and Delete asks for the environment's name and the phrase
 its own plan), Reset on DigitalOcean, separate api and web droplets per slot,
 and real SMTP (droplets keep Mailpit).
 
+#### Creating an environment: the Deploy flow
+
+The Deploy page is a seven-step flow that creates **and** deploys a new
+environment: **Environment** (type and name), **Servers** (single server or
+Blue/Green), **Target** (ESXi, Proxmox, DigitalOcean or SSH, with the target's
+details and the connection test), **Extras**, **Traffic** (read-only: what
+routes the public names), **Data** (seed from a snapshot or start empty) and
+**Review & Deploy**. One Deploy button creates the environment and starts its
+first deployment. If the start fails, Deploy retries only the start; the flow
+is then locked to Review, so edit the environment on its Settings tab instead.
+Existing servers are adopted with **Adopt existing** on the Environments list.
+
+- **Types:** Production, Development, UAT (stored as `beta`) and Custom.
+  Production always runs on DigitalOcean, Blue/Green.
+- **Extras › Apps:** the API and Portal always run; Wiki, Kiosk, the Status
+  page and Mailpit can be turned off (`STACK_APPS` in the `.env`). An app that
+  is off gets no hostname, DNS record, proxy host, certificate name, smoke test
+  or status-page card. Turning an app off needs a commit from this release or
+  later: an older git ref runs every app and uses Mailpit.
+- **Extras › Mail:** Mailpit (the default) or SMTP (host, port, user, password,
+  from address, STARTTLS), written into the `.env` as `SS_SMTP_*`; the password
+  is write-only. Mailpit off needs SMTP.
+- **Ports:** SSH environments that share a host get the next free ports; VM,
+  DigitalOcean and Blue/Green environments keep the defaults. Change them later
+  on the Settings tab.
+
+**The first super admin (starting empty).** The Data step asks for the first
+admin's name and email and how they sign in:
+
+- **Typed:** you set the password (checked against the portal's password
+  policy). The first deploy creates the account and emails a change-password
+  link valid for 4 hours.
+- **Invite:** no password; the email carries a set-password link valid for
+  4 hours.
+
+No password is ever put in an email. Step 11 "Create the first admin" runs
+right after Start services on the first deploy only; the typed password reaches
+`serversherpa bootstrap-admin` on stdin, is redacted from every log, and is
+cleared from Sirdar once the account exists. If the environment refuses the
+details (for example a password shorter than its policy, or an email the
+portal can't sign in with), fix them in the **First admin** card on the
+Settings tab and retry from step 11. A production environment that starts
+empty must use SMTP, so the link doesn't sit in Mailpit. Mail goes out through
+the environment's own mail settings: on dev and UAT that's usually Mailpit.
+
+#### LAN Blue/Green (ESXi and Proxmox)
+
+A Blue/Green environment on a VM host gets three VMs: `ss-<env>-data` (Postgres
+and SeaweedFS only), and two app VMs, `ss-<env>-orange` and `ss-<env>-purple`,
+which run the app stacks against the data VM. All three need static addresses on
+one network. Nginx Proxy Manager is the switch: **Activate** smoke-tests the
+idle VM, repoints the environment's proxy hosts at it, smoke-tests the public
+names through NPM, and puts every proxy host back if anything fails. NPM is
+required even with Publish off (Publish then controls DNS only, and the switch
+still needs certificates through NPM, which the create response flags as
+`bluegreen_npm_certificates`).
+
+- **Update** deploys to the idle VM (the first deploy goes live by itself, and
+  so does every Update with "Activate automatically" on).
+- **Data VM:** Postgres accepts only the two app VMs (pg_hba and the VM's
+  firewall in `DOCKER-USER`); storage accepts the app VMs and NPM. Step 7
+  (Prepare data VM) re-applies its stack and firewall on every Update. A commit
+  that changes the Postgres or SeaweedFS image, or the data stacks' compose
+  files, recreates those containers, so the live server's database restarts
+  before the idle server is smoke-tested; step 7's log says when this happened.
+  Deploy such commits in a quiet window.
+- **Interrupted switch:** if Switch traffic is interrupted, canceled, times out
+  or can't put NPM back, Sirdar refuses Updates (`switch_unresolved`) until the
+  switch is retried or a slot is activated, so it never deploys onto the server
+  NPM is actually sending traffic to.
+- **Locked after create:** VM sizes, the spaces port, the proxy and bind IPs.
+- **Not offered:** Reset, Restore backup, Roll back and VM snapshots. Activate
+  the other server to go back.
+- **Delete** saves a snapshot first once any server has run a deploy, then
+  removes the app VMs, the data VM (kept if an app VM couldn't be removed), the
+  proxy hosts and the DNS records.
+
+Migrations must be expand/contract: both app VMs run against the same database.
+
 ### Supported systems
 
 | Family | Detected from `/etc/os-release` (`ID`, else `ID_LIKE`) | Prerequisites with | Docker Engine + compose v2 |

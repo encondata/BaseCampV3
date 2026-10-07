@@ -1,0 +1,9 @@
+Hi {{ name }},
+
+An administrator account for {{ email }} was set up for you in ServerSherpa. It has no password yet: open this link to set your password. It works once and expires in {{ ttl_text }}:
+
+{{ link }}
+
+Then sign in at {{ login_url }}. If the link expires, ask your administrator for a new invite, or use "Forgot password" on the sign-in page.
+
+If you weren't expecting this account, contact your administrator.

@@ -89,6 +89,7 @@ class VmState:
     pool: str
     bridge: str
     vlan_tag: int | None
+    role: str = vms.MAIN           # main, or a Blue/Green VM's data / orange / purple
 
     @classmethod
     def of(cls, row: ProxmoxVm) -> "VmState":
@@ -97,7 +98,7 @@ class VmState:
                    ip_cidr=row.ip_cidr, gateway=row.gateway, ip=row.ip,
                    ssh_public_key=row.ssh_public_key, keep_snapshots=row.keep_snapshots,
                    created=row.created, template_vmid=row.template_vmid, storage=row.storage,
-                   pool=row.pool, bridge=row.bridge, vlan_tag=row.vlan_tag)
+                   pool=row.pool, bridge=row.bridge, vlan_tag=row.vlan_tag, role=row.role)
 
     @property
     def static_ip(self) -> str | None:
@@ -120,6 +121,13 @@ class VmContext:
     vm_snapshot: str | None
     vm: VmState
     proxmox: ProxmoxConfig = field(repr=False)
+    # What the VM's address moves (vmcommon.record_address; None: every
+    # service), and whether step 0 resolves the ref on this VM.
+    services: tuple[str, ...] | None = None
+    resolve: bool = True
+    # Once created, leave the VM as built: step 0 only starts it and checks
+    # its address and key (a Blue/Green data VM on an Update).
+    as_built: bool = False
 
     @property
     def secret_values(self) -> list[str]:
@@ -127,8 +135,9 @@ class VmContext:
         return [self.proxmox.token, self.proxmox.token_secret]
 
 
-async def prepare(db: AsyncSession, env: Environment, dep: Deployment,
-                  settings: Settings) -> VmContext:
+async def prepare(db: AsyncSession, env: Environment, dep: Deployment, settings: Settings,
+                  *, role: str = vms.MAIN, services: tuple[str, ...] | None = None,
+                  resolve: bool = True, as_built: bool = False) -> VmContext:
     try:
         cfg = await integrations.load_proxmox(db, settings)
     except IntegrationError as e:
@@ -136,24 +145,25 @@ async def prepare(db: AsyncSession, env: Environment, dep: Deployment,
     if cfg is None:
         raise VmPrepareError("Proxmox isn't set up. Add it in Settings › Integrations, "
                              "then retry.")
-    row = await vms.get(db, env.id)
+    row = await vms.get(db, env.id, role)
     if row is None:
         raise VmPrepareError("This environment has no VM record, so Sirdar won't build or "
                              "remove a VM for it.")
     return VmContext(env_id=env.id, env_name=env.name, deployment_id=dep.id,
                      actor_id=dep.actor_id, mode=dep.mode, git_ref=dep.git_ref, sha=dep.sha,
                      repo_url=settings.deploy_repo_url, take_snapshot=dep.take_vm_snapshot,
-                     vm_snapshot=dep.vm_snapshot, vm=VmState.of(row), proxmox=cfg)
+                     vm_snapshot=dep.vm_snapshot, vm=VmState.of(row), proxmox=cfg,
+                     services=services, resolve=resolve, as_built=as_built)
 
 
-async def _set_vm(env_id: uuid.UUID, **values) -> None:
-    await vmcommon.set_vm(ProxmoxVm, env_id, **values)
+async def _set_vm(env_id: uuid.UUID, *, role: str = vms.MAIN, **values) -> None:
+    await vmcommon.set_vm(ProxmoxVm, env_id, role=role, **values)
 
 
-async def _claim_vmid(env_id: uuid.UUID, vmid: int) -> bool:
+async def _claim_vmid(env_id: uuid.UUID, vmid: int, *, role: str = vms.MAIN) -> bool:
     """Record `vmid` on the VM row; False when another row holds it."""
     try:
-        await _set_vm(env_id, vmid=vmid)
+        await _set_vm(env_id, role=role, vmid=vmid)
     except IntegrityError as e:
         if _VMID_CONSTRAINT in str(e.orig):
             return False
@@ -206,11 +216,13 @@ class ProxmoxProvisioner:
     async def _provision(self, api: Proxmox, ctx: VmContext, out: Output) -> VmOutcome:
         vm = ctx.vm
         vmid = vm.vmid
+        if vm.created and ctx.as_built:
+            return await self._keep(api, ctx, out)
         if not vm.created and vm.static_ip:
             # Before the apply that creates the VM (and before an id is
             # reserved): not an address another environment or host uses.
             await vmcommon.check_address(self._settings, ctx.env_id, vm.static_ip,
-                                         before_boot=True)
+                                         before_boot=True, role=vm.role)
         if vmid is None:
             probe = self._probe or vmcommon.tcp_open
             if vm.static_ip and await probe(vm.static_ip, vms.VM_SSH_PORT):
@@ -232,14 +244,34 @@ class ProxmoxProvisioner:
             f"{vm.memory_mb // 1024} GB, {vm.disk_gb} GB disk) with Terraform.\n")
         await self._apply(ctx, vmid, out)
         if not vm.created:
-            await _set_vm(ctx.env_id, created=True)
+            await _set_vm(ctx.env_id, role=vm.role, created=True)
             # A VM built just now had nothing before: still before step 1.
             snapshot = await self._snapshot(api, ctx, vmid, out)
         await self._settle_address(api, ctx, vmid, out)
-        sha = None if ctx.sha else await vmcommon.resolve_ref(
+        sha = None if ctx.sha or not ctx.resolve else await vmcommon.resolve_ref(
             self._settings, self._resolve, env_id=ctx.env_id, git_ref=ctx.git_ref,
-            repo_url=ctx.repo_url, out=out)
+            repo_url=ctx.repo_url, out=out,
+            slot=vm.role if vm.role in vms.APP_SLOTS else None)
         return VmOutcome(sha=sha, vm_snapshot=snapshot)
+
+    async def _keep(self, api: Proxmox, ctx: VmContext, out: Output) -> VmOutcome:
+        """A built VM left as it is (no Terraform, no snapshot): it must still
+        be Sirdar's, running, at its address with its pinned key."""
+        vm = ctx.vm
+        if vm.vmid is None or await self._identify(api, ctx) is None:
+            raise StepFailed(f"The VM Sirdar made for {ctx.env_name} ({vm.name}) is gone from "
+                             "Proxmox. Sirdar won't build a new one silently: delete the "
+                             "environment, or fix it by hand, then retry.")
+        out(f"{vm.name} is built; leaving it as it is.\n")
+        if await api.status(vm.vmid) != "running":
+            await api.start(vm.vmid)
+            out("Started the VM.\n")
+        await self._settle_address(api, ctx, vm.vmid, out)
+        sha = None if ctx.sha or not ctx.resolve else await vmcommon.resolve_ref(
+            self._settings, self._resolve, env_id=ctx.env_id, git_ref=ctx.git_ref,
+            repo_url=ctx.repo_url, out=out,
+            slot=vm.role if vm.role in vms.APP_SLOTS else None)
+        return VmOutcome(sha=sha)
 
     async def _reserve(self, api: Proxmox, ctx: VmContext) -> int:
         """Proxmox's next free id, recorded on the VM row. Another
@@ -251,7 +283,7 @@ class ProxmoxProvisioner:
             if attempt and not await api.vmid_free(candidate):
                 candidate += 1
                 continue
-            if await _claim_vmid(ctx.env_id, candidate):
+            if await _claim_vmid(ctx.env_id, candidate, role=ctx.vm.role):
                 return candidate
             candidate += 1
         raise StepFailed(NO_FREE_VMID.format(tries=VMID_TRIES, first=first))
@@ -281,7 +313,8 @@ class ProxmoxProvisioner:
         await vmcommon.settle_address(
             self._settings, model=ProxmoxVm, env_id=ctx.env_id, previous_ip=ctx.vm.ip, ip=ip,
             pin=lambda: self._pin(api, ctx, vmid, ip, out), actor_id=ctx.actor_id,
-            target_id=f"proxmox:{ctx.env_name}", out=out)
+            target_id=f"proxmox:{ctx.env_name}", out=out, role=ctx.vm.role,
+            services=ctx.services)
 
     async def _workdir(self, ctx: VmContext, vmid: int,
                        out: Output) -> tuple[Path, dict[str, str]]:
@@ -300,7 +333,7 @@ class ProxmoxProvisioner:
         try:
             work = await asyncio.to_thread(terraform.prepare_workdir, self._settings,
                                            ctx.env_id, terraform.render_config(px.url, spec),
-                                           px.tls_cert_pem)
+                                           px.tls_cert_pem, vm.role)
         except terraform.TerraformDirUnwritable:
             raise StepFailed(TERRAFORM_DIR_UNWRITABLE) from None
         except terraform.PinnedCertificateInvalid:
@@ -440,14 +473,14 @@ class ProxmoxProvisioner:
         ours = (found is not None and found["name"] == vm.name
                 and "sirdar" in found["tags"])
         if vm.vmid is None:
-            out(f"Sirdar never created a VM for {ctx.env_name}.\n")
+            out(f"Sirdar never created {vm.name}.\n")
         elif not vm.created and not ours:
             # Reserved, never built (or someone else's VM took the id since):
             # nothing of Sirdar's to remove, and the id is released.
             out(f"VM {vm.vmid} was never created by Sirdar; forgetting the id.\n")
-            await _set_vm(ctx.env_id, vmid=None)
+            await _set_vm(ctx.env_id, role=vm.role, vmid=None)
         else:
-            work = terraform.workdir(self._settings, ctx.env_id)
+            work = terraform.workdir(self._settings, ctx.env_id, vm.role)
             if found is None and vm.created and terraform.has_state(work):
                 # Terraform still has it: more likely hidden from the token
                 # than gone. Destroying blind could hit the wrong VM.
@@ -481,4 +514,5 @@ class ProxmoxProvisioner:
             if vm.ip and await vmcommon.forget_pin(vm.ip, ctx.actor_id,
                                                    f"proxmox:{ctx.env_name}"):
                 out(f"Forgot {vm.ip}'s SSH host key.\n")
-        await asyncio.to_thread(terraform.remove_workdir, self._settings, ctx.env_id)
+        await asyncio.to_thread(terraform.remove_workdir, self._settings, ctx.env_id,
+                                vm.role)

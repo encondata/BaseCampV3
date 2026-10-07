@@ -3,6 +3,7 @@ interpolation and anchors are resolved exactly as on a target)."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from functools import cache
 from typing import Any
@@ -191,6 +192,25 @@ def test_web_apps_point_at_the_stack() -> None:
     assert status["STATUS_PUBLIC_URL"] == f"https://status.{DOMAIN}"
 
 
+@pytest.mark.parametrize("given, kiosk, wiki", [
+    ({}, f"https://kiosk.{DOMAIN}", f"https://wiki.{DOMAIN}"),
+    ({"STATUS_KIOSK_URL": "", "STATUS_WIKI_URL": ""}, "", ""),
+])
+def test_the_status_page_targets_follow_ss_stack(given: dict[str, str], kiosk: str,
+                                                 wiki: str) -> None:
+    """ss-stack sets STATUS_KIOSK_URL / STATUS_WIKI_URL empty for an app
+    that is off (STACK_APPS); unset, each is the app's public URL."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("STATUS_KIOSK_URL", "STATUS_WIKI_URL")}
+    out = subprocess.run(
+        ["docker", "compose", "--env-file", str(ENV_EXAMPLE), "-f",
+         str(STACK_DIR / "status" / "compose.yml"), "config", "--format", "json"],
+        capture_output=True, text=True, env={**env, **given})
+    assert out.returncode == 0, out.stderr
+    status = json.loads(out.stdout)["services"]["status"]["environment"]
+    assert (status["STATUS_KIOSK_URL"], status["STATUS_WIKI_URL"]) == (kiosk, wiki)
+
+
 def test_env_example_secrets_are_placeholders() -> None:
     lines = dict(line.split("=", 1) for line in ENV_EXAMPLE.read_text().splitlines()
                  if line and not line.startswith("#"))
@@ -225,3 +245,52 @@ def test_readme_rollback_restores_into_a_clean_schema() -> None:
     assert "ON_ERROR_STOP=1" in drop
     assert "pg_restore --exit-on-error -U serversherpa -d serversherpa" in restore
     assert "--clean" not in restore
+
+
+def test_the_lan_override_publishes_postgres_with_the_hba_file(tmp_path) -> None:
+    hba = tmp_path / "pg_hba.conf"
+    hba.write_text("local all all trust\n")
+    env = ENV_EXAMPLE.read_text() + "STACK_DB_PUBLISH=1\nSTACK_DB_PORT=5432\n"
+    env_file = tmp_path / ".env"
+    env_file.write_text(env)
+    out = subprocess.run(
+        ["docker", "compose", "--env-file", str(env_file), "-f", str(STACK_DIR / "db/compose.yml"),
+         "-f", str(STACK_DIR / "db/lan.yml"), "config", "--format", "json"],
+        capture_output=True, text=True, env={**os.environ, "STACK_DB_HBA_FILE": str(hba)})
+    assert out.returncode == 0, out.stderr
+    pg = json.loads(out.stdout)["services"]["postgres"]
+    assert published(pg) == [5432]
+    assert pg["command"] == ["postgres", "-c", "listen_addresses=*", "-c",
+                             "hba_file=/etc/ss/pg_hba.conf"]
+    assert any(v["target"] == "/etc/ss/pg_hba.conf" and v.get("read_only") for v in pg["volumes"])
+
+
+def test_the_lan_override_needs_the_hba_file(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(ENV_EXAMPLE.read_text() + "STACK_DB_PUBLISH=1\n")
+    env = {k: v for k, v in os.environ.items() if k != "STACK_DB_HBA_FILE"}
+    out = subprocess.run(
+        ["docker", "compose", "--env-file", str(env_file), "-f", str(STACK_DIR / "db/compose.yml"),
+         "-f", str(STACK_DIR / "db/lan.yml"), "config", "--format", "json"],
+        capture_output=True, text=True, env=env)
+    assert out.returncode != 0 and "STACK_DB_HBA_FILE" in out.stderr
+
+
+def test_smtp_comes_from_the_env_file_with_mailpit_by_default(tmp_path) -> None:
+    env = rendered("api")["services"]["api"]["environment"]
+    assert (env["SS_SMTP_HOST"], env["SS_SMTP_PORT"], env["SS_SMTP_STARTTLS"]) == (
+        "mailpit", "1025", "false")
+    assert (env["SS_SMTP_USERNAME"], env["SS_SMTP_PASSWORD"]) == ("", "")
+    assert env["SS_SMTP_FROM"] == f"noreply@{DOMAIN}"
+    env_file = tmp_path / ".env"
+    env_file.write_text(ENV_EXAMPLE.read_text() + (
+        "SS_SMTP_HOST=smtp.example.com\nSS_SMTP_PORT=587\nSS_SMTP_USERNAME=mailer\n"
+        "SS_SMTP_PASSWORD=Mail-Secret-1\nSS_SMTP_STARTTLS=true\nSS_SMTP_FROM=ops@example.com\n"))
+    out = subprocess.run(
+        ["docker", "compose", "--env-file", str(env_file), "-f", str(STACK_DIR / "api/compose.yml"),
+         "config", "--format", "json"], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    smtp = json.loads(out.stdout)["services"]["api"]["environment"]
+    assert (smtp["SS_SMTP_HOST"], smtp["SS_SMTP_PORT"], smtp["SS_SMTP_USERNAME"],
+            smtp["SS_SMTP_PASSWORD"], smtp["SS_SMTP_STARTTLS"], smtp["SS_SMTP_FROM"]) == (
+        "smtp.example.com", "587", "mailer", "Mail-Secret-1", "true", "ops@example.com")

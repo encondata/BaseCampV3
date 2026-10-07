@@ -33,7 +33,8 @@ async def test_an_esxi_environment_freezes_its_inputs_and_holds_two_key_pairs(db
         "kind": "esxi", "stage": "none", "name": "ss-uat3", "host": "10.10.48.10",
         "node": None, "vmid": None, "moref": None, "cores": 4, "memory_mb": 8192,
         "disk_gb": 64, "ip_mode": "static", "ip_cidr": "127.0.0.1/8",
-        "gateway": "127.0.0.254", "ip": None, "keep_snapshots": 3, "created": False}
+        "gateway": "127.0.0.254", "ip": None, "keep_snapshots": 3, "created": False,
+        "role": "main"}
     out = await serialize.environment_out(db, env)
     assert (out["target"], out["target_kind"], out["vm"]["kind"]) == ("esxi", "esxi", "esxi")
 

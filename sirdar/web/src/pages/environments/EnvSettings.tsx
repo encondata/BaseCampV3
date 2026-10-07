@@ -15,12 +15,14 @@ import {
 
 import DeleteEnvironmentModal from './DeleteEnvironmentModal';
 import DoSettingsSection from './DoSettingsSection';
+import FirstAdminCard from './FirstAdminCard';
 import {
-  deploymentRunning, gbOf, hostLabel, mbOf, onDo, onVmHost, sshTargets, targetLabel, vmRef, vmStage,
+  deploymentRunning, gbOf, hostLabel, mbOf, onBluegreen, onDo, onVmHost, sshTargets, targetLabel, vmRef, vmStage,
 } from './labels';
 
 const SECRET_LABELS: Record<string, string> = {
   SS_ANTHROPIC_API_KEY: 'Anthropic API key', SS_DB_TESTING_PASSWORD: 'Database testing password',
+  SS_SMTP_PASSWORD: 'SMTP password',
 };
 const BUCKET_RE = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 const SECRET_RE = /^[A-Za-z0-9._~+/=:@%^*!?,;-]{1,1024}$/;
@@ -74,6 +76,9 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
   const onVm = onVmHost(env);
   // DigitalOcean: its target, names, proxy and bucket belong to what Sirdar built (the API's do_field_locked).
   const cloud = onDo(env);
+  // LAN Blue/Green: three VMs (env.machines), no single env.vm; their sizes can't change yet.
+  const bluegreen = onBluegreen(env);
+  const vmNames = env.machines.map((m) => m.name);
   // A VM's or the droplets' service addresses are set by step 0 (the API's host_ip_managed).
   const managedAddr = onVm || cloud;
   const esxi = env.target_kind === 'esxi';
@@ -86,6 +91,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
   const [optional, setOptional] = useState<string[]>(Object.keys(SECRET_LABELS));
   // The API's Machine limits; until they load, only the shape is checked here (the API checks the range).
   const [vmLimits, setVmLimits] = useState<VmDefaults['limits'] | null>(null);
+  const [passwordMin, setPasswordMin] = useState<number | undefined>(undefined);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
@@ -96,7 +102,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
   const reset = (from: Environment) => { setForm(fromEnv(from)); setSecretAction({}); setSecretValue({}); };
   useEffect(() => { reset(env); }, [env.name]);  // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    getEnvironmentDefaults().then((d) => { setLevels(d.log_levels); setOptional(d.optional_secrets); setVmLimits(d.vm?.limits ?? null); }).catch(() => { /* only the current level is offered */ });
+    getEnvironmentDefaults().then((d) => { setLevels(d.log_levels); setOptional(d.optional_secrets); setVmLimits(d.vm?.limits ?? null); setPasswordMin(d.first_admin?.password_min_length); }).catch(() => { /* only the current level is offered */ });
   }, []);
 
   const set = <K extends keyof Form>(key: K, value: Form[K]) => { setForm((f) => ({ ...f, [key]: value })); setNotice(''); };
@@ -104,7 +110,8 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
     setForm((f) => ({ ...f, services: { ...f.services, [service]: { ...f.services[service], [key]: value } } }));
     setNotice('');
   };
-  const secretKeys = Object.keys(env.secrets_set);
+  // The SMTP password only means something while mail goes through SMTP.
+  const secretKeys = Object.keys(env.secrets_set).filter((k) => k !== 'SS_SMTP_PASSWORD' || env.mail?.mode === 'smtp');
   const ssh = sshTargets(targets).map((t) => ({ value: t.id, label: t.label }));
   const targetOptions = ssh.some((o) => o.value === form.target)
     ? ssh : [{ value: form.target, label: targetLabel(targets, form.target) }, ...ssh];
@@ -242,8 +249,10 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
         <TextField id="env-set-ref" label="Default git ref" value={form.ref} error={errors.ref} disabled={off}
                    onChange={(v) => set('ref', v)} />
         {cloud ? null : onVm ? (
-          <TextField id="env-set-target" label="Target" value={`${hostLabel(env)} · ${env.vm?.name ?? ''}`} disabled
-                     error={errors.target} hint="It stays on the VM Sirdar built for it."
+          <TextField id="env-set-target" label="Target" value={bluegreen ? `${hostLabel(env)} · Blue/Green (${vmNames.join(', ')})`
+                       : `${hostLabel(env)} · ${env.vm?.name ?? ''}`} disabled
+                     error={errors.target}
+                     hint={bluegreen ? 'It stays on the VMs Sirdar built for it.' : 'It stays on the VM Sirdar built for it.'}
                      onChange={() => {}} />
         ) : (
           <div>
@@ -278,7 +287,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
         </div>
       </div>
 
-      {onVm && (
+      {onVm && !bluegreen && (
         <>
           <h3 className="sirdar-sub">Machine</h3>
           <p className="page-hint">
@@ -351,6 +360,9 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
           </button>
         </div>
       )}
+      {env.first_admin && !env.first_admin.done && (
+        <FirstAdminCard env={env} disabled={deploying} minLength={passwordMin} onSaved={onSaved} />
+      )}
       {cloud && env.do && (
         <DoSettingsSection env={env} disabled={off} onSaved={onSaved} onDeployStarted={(dep) => onDeleteStarted?.(dep)} />
       )}
@@ -362,6 +374,10 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
               ? 'Saves a snapshot first (optional, except for production), removes the DNS records Sirdar made and '
                 + 'everything it built on DigitalOcean (droplets, database, bucket, load balancer, certificate and '
                 + 'firewall), and removes it from Sirdar.'
+              : bluegreen
+              ? `Saves a snapshot first (optional), destroys its three VMs on ${hostLabel(env)} (`
+                + `${vmNames.slice(0, -1).join(', ')} and ${vmNames[vmNames.length - 1]}) with everything on them, `
+                + 'removes the DNS records and proxy hosts Sirdar made, and removes it from Sirdar.'
               : onVm && env.vm && vmStage(env.vm) === 'none'
               ? `No VM was created yet; nothing on ${hostLabel(env)} is removed. Deleting it removes the DNS records `
                 + 'and proxy hosts Sirdar made, and removes it from Sirdar.'

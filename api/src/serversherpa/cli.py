@@ -1,6 +1,7 @@
 """ServerSherpa operations CLI.
 
-    serversherpa bootstrap-admin --email you@company.com --first-name You --last-name Name
+    serversherpa bootstrap-admin --email you@company.com --first-name You --last-name Name \
+        [--role super_admin] [--password-stdin | --invite] [--link-minutes 240]
 
 Helper scripts belong here as commands sharing the service layer —
 never as standalone scripts with their own DB code.
@@ -16,7 +17,7 @@ import typer
 from sqlalchemy import select
 
 from serversherpa.db.engine import dispose_engine, get_sessionmaker
-from serversherpa.db.models import Person, PersonRole, UserAccount
+from serversherpa.db.models import UserAccount
 from serversherpa.services.password_policy import (
     PasswordReused,
     apply_password,
@@ -24,7 +25,8 @@ from serversherpa.services.password_policy import (
     load_policy,
 )
 
-app = typer.Typer(no_args_is_help=True, help="ServerSherpa operations CLI")
+app = typer.Typer(no_args_is_help=True, help="ServerSherpa operations CLI",
+                  pretty_exceptions_show_locals=False)   # a traceback never shows a password
 
 
 @app.callback()
@@ -32,42 +34,100 @@ def _main() -> None:
     """ServerSherpa operations CLI."""
 
 
+# bootstrap-admin's exit codes (Sirdar's step 11 reads them; 2 is typer's usage error).
+# 1 is never used on purpose: docker compose exec, ss-stack's die and Python's
+# uncaught exceptions all exit 1. A crash here is 6; "already there, done" is 10.
+EXIT_ACCOUNT_EXISTS = 10
+EXIT_USAGE = 2
+EXIT_PASSWORD_REFUSED = 3
+EXIT_ROLE_UNKNOWN = 4
+EXIT_MAIL_OFF = 5
+EXIT_FAILED = 6
+EXIT_PERSON_EXISTS = 7
+EXIT_EMAIL_INVALID = 8
+_EXIT_CODES = {"account_exists": EXIT_ACCOUNT_EXISTS, "password_too_short": EXIT_PASSWORD_REFUSED,
+               "role_unknown": EXIT_ROLE_UNKNOWN, "mail_not_configured": EXIT_MAIL_OFF,
+               "person_exists": EXIT_PERSON_EXISTS, "link_required": EXIT_USAGE,
+               "email_invalid": EXIT_EMAIL_INVALID}
+
+
+async def _create_first_admin(**kwargs):
+    """One session: create, commit, dispose (tests replace this)."""
+    from serversherpa.services.first_admin import create_admin
+
+    try:
+        async with get_sessionmaker()() as db:
+            result = await create_admin(db, **kwargs)
+            await db.commit()
+            return result
+    finally:
+        await dispose_engine()
+
+
 @app.command()
 def bootstrap_admin(
     email: str = typer.Option(..., help="Login email for the admin account"),
     first_name: str = typer.Option(...),
     last_name: str = typer.Option(...),
-    password: str = typer.Option(
-        ..., prompt=True, confirmation_prompt=True, hide_input=True),
+    role: str = typer.Option("admin", help="The role to grant, e.g. super_admin"),
+    password_stdin: bool = typer.Option(
+        False, "--password-stdin", help="Read the password from stdin (one line); no prompt"),
+    invite: bool = typer.Option(
+        False, "--invite", help="No password: email a set-password link (needs --link-minutes)"),
+    link_minutes: int | None = typer.Option(
+        None, "--link-minutes", min=1, max=1440,
+        help="Email a link valid this many minutes: change-password, or set-password with "
+             "--invite"),
 ) -> None:
-    """Create the first admin: person + account + admin role grant."""
+    """Create the first admin: person + account + role grant, and optionally
+    the account-ready or invite email. The password never goes in argv."""
+    from serversherpa.services.first_admin import FirstAdminError
 
-    async def _run() -> None:
-        async with get_sessionmaker()() as db:
-            existing = await db.scalar(
-                select(UserAccount).where(UserAccount.email == email))
-            if existing is not None:
-                typer.secho(f"An account for {email} already exists.", fg="red")
-                raise typer.Exit(code=1)
-
-            now = datetime.now(UTC)
-            person = Person(first_name=first_name, last_name=last_name,
-                            email=email, source="manual")
-            db.add(person)
-            await db.flush()  # person.id
-
-            account = UserAccount(person_id=person.id, email=email)
-            db.add(account)
-            await db.flush()  # the account row must exist before password_history FKs to it
-            await apply_password(db, account, password, must_change=False, now=now)
-            db.add(PersonRole(person_id=person.id, role="admin"))  # granted_by NULL = bootstrap
-            await db.commit()
-            typer.secho(
-                f"Admin created: {person.first_name} {person.last_name} "
-                f"<{email}> (person {person.id})", fg="green")
-        await dispose_engine()
-
-    asyncio.run(_run())
+    if password_stdin and invite:
+        typer.secho("Use --password-stdin or --invite, not both.", fg="red", err=True)
+        raise typer.Exit(code=EXIT_USAGE)
+    if invite and link_minutes is None:
+        typer.secho("--invite needs --link-minutes (how long the set-password link works).",
+                    fg="red", err=True)
+        raise typer.Exit(code=EXIT_USAGE)
+    password: str | None = None
+    if password_stdin:
+        password = sys.stdin.readline().rstrip("\r\n")
+        if not password:
+            typer.secho("No password was given on stdin.", fg="red", err=True)
+            raise typer.Exit(code=EXIT_USAGE)
+    elif not invite:
+        password = typer.prompt("Password", hide_input=True, confirmation_prompt=True)
+    try:
+        result = asyncio.run(_create_first_admin(
+            email=email, first_name=first_name, last_name=last_name, role=role,
+            password=password, link_minutes=link_minutes))
+    except FirstAdminError as e:
+        messages = {
+            "account_exists": f"An account for {email} already exists.",
+            "password_too_short": "The password is too short: use at least "
+                                  f"{e.extra.get('min_length')} characters.",
+            "person_exists": f"A person with the email {email} already exists but has no "
+                             "account; give them one from the portal, or use another email.",
+            "role_unknown": f"There is no global role named {role}.",
+            "mail_not_configured": "Email isn't configured (SS_SMTP_HOST and SS_SMTP_FROM), "
+                                   "so an invite can't be sent.",
+            "link_required": "--invite needs --link-minutes.",
+            "email_invalid": f"The portal can't sign in with {email}: "
+                             f"{e.extra.get('reason')}",
+        }
+        typer.secho(messages.get(e.code, e.code), fg="red", err=True)
+        raise typer.Exit(code=_EXIT_CODES.get(e.code, EXIT_USAGE)) from None
+    except Exception as e:
+        # the class name only: a message or repr can carry SQL parameters
+        typer.secho(f"Couldn't create the first admin ({type(e).__name__}); see the "
+                    "environment's API log.", fg="red", err=True)
+        raise typer.Exit(code=EXIT_FAILED) from None
+    kind = "invited" if invite else "created"
+    typer.secho(f"Admin {kind}: {first_name} {last_name} <{email}> as {role} "
+                f"(person {result.person_id})", fg="green")
+    if link_minutes and not result.emailed:
+        typer.secho("No email was sent: email isn't configured.", fg="yellow", err=True)
 
 
 @app.command()

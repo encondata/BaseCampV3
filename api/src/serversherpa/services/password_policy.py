@@ -41,6 +41,15 @@ class PasswordReused(Exception):
         self.count = count
 
 
+def length_problem(password: str) -> int | None:
+    """The one password bar every new password meets (SS_PASSWORD_MIN_LENGTH):
+    the minimum length when `password` is shorter, else None. The API's
+    routes (deps.require_password_length) and `serversherpa bootstrap-admin`
+    both use it, so ops can raise it without a deploy."""
+    min_length = get_settings().password_min_length
+    return min_length if len(password) < min_length else None
+
+
 async def load_policy(db: AsyncSession) -> PasswordPolicy:
     cfg = await read_section(db, "security")
     raw = cfg.get("password_expiry_since")

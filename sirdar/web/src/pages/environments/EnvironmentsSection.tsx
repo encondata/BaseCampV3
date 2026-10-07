@@ -1,4 +1,4 @@
-/** The Environments section at the top of /deploy. */
+/** The Environments section on /deploy, below the Deploy flow (which makes new ones). */
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -10,14 +10,14 @@ import { errorText, listEnvironments, type DeployTarget, type Environment } from
 import {
   DEPLOYMENT_STATUS, ENV_STATUS, StatusChip, TYPE_LABEL, shortSha, targetLabel, when,
 } from './labels';
-import NewEnvironmentModal from './NewEnvironmentModal';
+import AdoptEnvironmentModal from './AdoptEnvironmentModal';
 
 export default function EnvironmentsSection({ targets }: { targets: DeployTarget[] }) {
   const { can } = useAuth();
   const navigate = useNavigate();
   const [envs, setEnvs] = useState<Environment[] | null>(null);
   const [error, setError] = useState('');
-  const [creating, setCreating] = useState(false);
+  const [adopting, setAdopting] = useState(false);
 
   const load = useCallback(() => listEnvironments()
     .then((r) => { setEnvs(r.environments); setError(''); })
@@ -29,7 +29,7 @@ export default function EnvironmentsSection({ targets }: { targets: DeployTarget
       <div className="sirdar-section-head">
         <h2>Environments</h2>
         {can('deploy', 'add') && (
-          <button type="button" className="btn-solid" onClick={() => setCreating(true)}>New environment</button>
+          <button type="button" className="btn-ghost" onClick={() => setAdopting(true)}>Adopt existing</button>
         )}
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}
@@ -56,10 +56,14 @@ export default function EnvironmentsSection({ targets }: { targets: DeployTarget
         }))}
         emptyText={envs === null ? 'Loading…' : 'No environments yet.'}
       />
-      {creating && (
-        <NewEnvironmentModal
-          onClose={() => { setCreating(false); void load(); }}   // an adopt may have added one
-          onCreated={(env) => { setCreating(false); navigate(`/deploy/environments/${encodeURIComponent(env.name)}`); }} />
+      {adopting && (
+        <AdoptEnvironmentModal
+          onClose={() => { setAdopting(false); void load(); }}   // an adopt may have added one
+          onAdopted={(env) => {
+            setAdopting(false);
+            void load();
+            navigate(`/deploy/environments/${encodeURIComponent(env.name)}`);
+          }} />
       )}
     </section>
   );

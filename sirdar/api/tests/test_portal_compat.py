@@ -65,3 +65,15 @@ def test_portal_password_expiry_unchanged():
     assert "start = policy.since if changed is None else max(changed, policy.since)" in src
     assert "return start + timedelta(days=policy.days)" in src
     assert "if not policy.enabled or policy.since is None or account.password_hash is None:" in src
+
+
+def test_first_admin_password_bar_is_the_portals_default():
+    """Sirdar checks a typed first-admin password against ServerSherpa's
+    default bar; an environment Sirdar builds never overrides it."""
+    from sirdar_api.services import portal_policy
+    config = (PORTAL / "config.py").read_text()
+    assert f"password_min_length: int = {portal_policy.PASSWORD_MIN_LENGTH}" in config
+    compose = (REPO / "deploy" / "stack" / "api" / "compose.yml").read_text()
+    assert "SS_PASSWORD_MIN_LENGTH" not in compose
+    roles = (PORTAL / "access" / "defaults.py").read_text()
+    assert f'"{portal_policy.FIRST_ADMIN_ROLE}":' in roles

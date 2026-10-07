@@ -22,7 +22,7 @@ import { ApiError } from '@portal/lib/api';
 import { ENV, RUNNING } from '../environments/testData';
 
 import DashboardPage from './DashboardPage';
-import { CLOUD, CLOUD_WITH_TREE, DEMO, EMPTY, FAILED_DO_CARD, REAL } from './testData';
+import { CLOUD, CLOUD_WITH_TREE, DEMO, EMPTY, FAILED_DO_CARD, LAN_BG_CARD, REAL } from './testData';
 
 let loc = '';
 let path = '';
@@ -576,4 +576,24 @@ it('the demo tree follows the demo cards', async () => {
   show('/?demo=1&env=dev');
   await screen.findByRole('treegrid');
   expect(treeRows()[0]).toBe('Development (open)');
+});
+
+it('LAN Blue/Green: the proxy to two servers offers Activate on the deployed idle one', async () => {
+  api.getDashboard.mockResolvedValue({ ...CLOUD, environments: [...CLOUD.environments, LAN_BG_CARD] });
+  api.activateSlot.mockResolvedValue({ ...RUNNING, id: 'd8' });
+  show('/?env=lan9');
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'lan9' })).toBeTruthy());
+  expect(within(spot()).queryByRole('button', { name: 'Activate Orange' })).toBeNull();
+  await userEvent.click(within(spot()).getByRole('button', { name: 'Activate Purple' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Activate Purple' });
+  expect(within(dialog).getByText(/Nginx Proxy Manager/)).toBeTruthy();
+  await userEvent.click(within(dialog).getByRole('button', { name: 'Activate Purple' }));
+  await waitFor(() => expect(api.activateSlot).toHaveBeenCalledWith('lan9', 'purple', undefined));
+});
+
+it('a one-server LAN environment offers no Activate', async () => {
+  api.getDashboard.mockResolvedValue(CLOUD);
+  show('/?env=uat');
+  await waitFor(() => expect(within(spot()).getByRole('heading', { name: 'uat' })).toBeTruthy());
+  expect(within(spot()).queryByRole('button', { name: /Activate/ })).toBeNull();
 });

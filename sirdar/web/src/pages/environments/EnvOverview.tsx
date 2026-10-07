@@ -5,14 +5,16 @@ import type { Environment } from '../../lib/sirdarApi';
 
 import DoMachineSection from './DoMachineSection';
 import {
-  DEPLOYMENT_STATUS, StatusChip, deploymentLabel, onDo, onVmHost, vmNetwork, vmRef, vmSize, when,
+  DEPLOYMENT_STATUS, StatusChip, deploymentLabel, onBluegreen, onDo, onVmHost, vmNetwork, vmRef, vmSize, when,
 } from './labels';
+import LanMachinesSection from './LanMachinesSection';
 
 export default function EnvOverview({ env, canActivate = false, onActivate }: {
   env: Environment; canActivate?: boolean; onActivate?: (slot: string | null) => void;
 }) {
   const last = env.last_deployment;
   const cloud = onDo(env);
+  const bluegreen = onBluegreen(env);
   return (
     <>
       <section className="sirdar-section">
@@ -42,6 +44,9 @@ export default function EnvOverview({ env, canActivate = false, onActivate }: {
       </section>
       {cloud && (
         <DoMachineSection env={env} canActivate={canActivate && !!onActivate} onActivate={(s) => onActivate?.(s)} />
+      )}
+      {bluegreen && (
+        <LanMachinesSection env={env} canActivate={canActivate && !!onActivate} onActivate={(s) => onActivate?.(s)} />
       )}
       {onVmHost(env) && env.vm && (
         <section className="sirdar-section">
@@ -74,6 +79,8 @@ export default function EnvOverview({ env, canActivate = false, onActivate }: {
                 : <span className="cell-sub">LAN only</span>,
               cloud
                 ? `:${s.port} on each droplet`
+                : bluegreen && s.service !== 'spaces'
+                ? `:${s.port} on the live app VM`
                 : s.service === 'mailpit'
                 ? <a href={`http://${s.host_ip}:${s.port}`} target="_blank" rel="noreferrer">{`${s.host_ip}:${s.port}`}</a>
                 : `${s.host_ip}:${s.port}`,

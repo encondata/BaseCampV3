@@ -751,3 +751,121 @@ async def test_the_tree_reuses_the_cards_reads(client, db, do_cloud, monkeypatch
     assert calls == {"get": 1, "slots_of": 1}
     assert "uat9" in tree
     assert all(not k.startswith("_") for c in d["environments"] for k in c)
+
+
+# ---- LAN Blue/Green: proxy → two servers ----------------------------------------------
+
+async def _bluegreen(db, *, orange_ip="10.10.48.48", purple_ip="10.10.48.49",
+                     data_built=True, live=True):
+    from .integration_helpers import configure_esxi
+    from .lan_helpers import make_bluegreen_environment
+
+    from sirdar_api.db.models import EsxiVm, VmSlot
+    from sirdar_api.deploy import vmcommon
+
+    await configure_esxi(db)
+    await configure(db, cloudflare=True, npm=True)
+    env = await make_bluegreen_environment(db)
+    for n, (role, ip) in enumerate((("data", "10.10.48.47" if data_built else None),
+                                    ("orange", orange_ip), ("purple", purple_ip))):
+        if ip:
+            await vmcommon.set_vm(EsxiVm, env.id, role=role, ip=ip, created=True,
+                                  moref=f"vm-{n + 1}", instance_uuid=f"uuid-{n + 1}")
+    if live:
+        await db.execute(update(VmSlot).where(VmSlot.environment_id == env.id,
+                                              VmSlot.slot == "orange")
+                         .values(sha="a" * 40, image_tag="aaaaaaaa", last_check_ok=True))
+        env.active_slot, env.current_sha, env.status = "orange", "a" * 40, "ready"
+    await db.commit()
+    return env
+
+
+async def test_a_lan_bluegreen_card_shows_proxy_to_two_servers(db, fake_certs):
+    env = await _bluegreen(db)
+    for host in await _hostnames(db, env):
+        fake_certs.dates[host] = _in(40)
+    data = await service.build_dashboard(get_settings(), db=db)
+    card = next(c for c in data["environments"] if c["id"] == "lan9")
+    flow = card["flow"]
+    assert (flow["kind"], flow["active_slot"]) == ("proxy", "orange")
+    assert flow["middle"] == {"label": "Nginx Proxy Manager", "sub": "10.10.48.6",
+                              "status": "ok"}
+    assert [(s["id"], s["label"], s["sub"], s["state"], s["health"], s["version"], s["deployed"])
+            for s in flow["servers"]] == [
+        ("orange", "Orange", "10.10.48.48", "live", "healthy", "aaaaaaaa", True),
+        ("purple", "Purple", "10.10.48.49", "idle", "unknown", None, False)]
+    node = next(n for n in data["infrastructure"]["tree"] if n["id"] == "lan9")
+    assert [c["name"] for c in node["children"]][:4] == [
+        "Nginx Proxy Manager", "ss-lan9-data", "ss-lan9-orange", "ss-lan9-purple"]
+    npm, data_vm, orange, purple = node["children"][:4]
+    assert (data_vm["type_label"], data_vm["status_label"], data_vm["endpoint"]) == (
+        "Data VM", "Built", "10.10.48.47")
+    assert (orange["type_label"], orange["status_label"], orange["endpoint"],
+            orange["badge"]) == ("App VM (Orange, live)", "Healthy", "10.10.48.48", "aaaaaaaa")
+    assert (purple["type_label"], purple["status_label"], purple["endpoint"]) == (
+        "App VM (Purple)", "Unknown", "10.10.48.49")
+    assert node["status_label"] == "Active"
+    assert node["children"][4]["kind"] == "certificate"
+    assert all(not k.startswith("_") for c in data["environments"] for k in c)
+
+
+async def test_a_bluegreen_card_before_its_first_deploy(db):
+    await _bluegreen(db, orange_ip=None, purple_ip=None, live=False)
+    data = await service.build_dashboard(get_settings(), db=db)
+    flow = next(c for c in data["environments"] if c["id"] == "lan9")["flow"]
+    assert flow["active_slot"] is None
+    assert [(s["id"], s["sub"], s["state"], s["deployed"]) for s in flow["servers"]] == [
+        ("orange", "Not built yet", "empty", False), ("purple", "Not built yet", "empty", False)]
+    node = next(n for n in data["infrastructure"]["tree"] if n["id"] == "lan9")
+    parts = {c["id"]: c for c in node["children"]}
+    assert parts["lan9:orange"]["status_label"] == "Not built yet"
+    # NPM set up and the data VM built: Active comes only from an app VM.
+    assert node["status_label"] == "Inactive"
+
+
+async def test_a_bluegreen_slot_failing_its_check_degrades_the_environment(db):
+    from sirdar_api.db.models import VmSlot
+
+    env = await _bluegreen(db)
+    await db.execute(update(VmSlot).where(VmSlot.environment_id == env.id,
+                                          VmSlot.slot == "orange").values(last_check_ok=False))
+    await db.commit()
+    data = await service.build_dashboard(get_settings(), db=db)
+    flow = next(c for c in data["environments"] if c["id"] == "lan9")["flow"]
+    assert flow["servers"][0]["health"] == "degraded"
+    node = next(n for n in data["infrastructure"]["tree"] if n["id"] == "lan9")
+    assert node["status_label"] == "Degraded"
+
+
+async def test_bluegreen_marks_name_the_slot(db):
+    env = await _bluegreen(db)
+    db.add(Deployment(environment_id=env.id, mode="update", git_ref="main", sha=SHA,
+                      status="running", slot="purple"))
+    await db.execute(update(Environment).where(Environment.id == env.id).values(
+        status="deploying"))
+    await db.commit()
+    flow = next(c for c in (await service.build_dashboard(get_settings(), db=db))
+                ["environments"] if c["id"] == "lan9")["flow"]
+    assert (flow["deploying_slot"], flow["failed_slot"]) == ("purple", None)
+    await db.execute(update(Deployment).where(Deployment.environment_id == env.id).values(
+        status="failed"))
+    await db.execute(update(Environment).where(Environment.id == env.id).values(status="failed"))
+    await db.commit()
+    flow = next(c for c in (await service.build_dashboard(get_settings(), db=db))
+                ["environments"] if c["id"] == "lan9")["flow"]
+    assert (flow["deploying_slot"], flow["failed_slot"], flow["active_slot"]) == (
+        None, "purple", "orange")
+
+
+async def test_the_bluegreen_tree_reuses_the_cards_machines(db, monkeypatch):
+    await _bluegreen(db)
+    calls = {"machines": 0}
+    real = vms.machines
+
+    async def machines(*a, **kw):
+        calls["machines"] += 1
+        return await real(*a, **kw)
+    monkeypatch.setattr(vms, "machines", machines)
+    data = await service.build_dashboard(get_settings(), db=db)
+    assert calls == {"machines": 1}
+    assert any(n["id"] == "lan9" for n in data["infrastructure"]["tree"])

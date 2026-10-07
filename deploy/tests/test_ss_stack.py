@@ -16,11 +16,18 @@ FAKE_DOCKER = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_LOG"
 case "$*" in
   "network inspect "*) [[ -n "${FAKE_NETWORK_EXISTS:-}" ]] && exit 0 || exit 1 ;;
+  *" ps --status running -q postgres") [[ -n "${FAKE_DB_RUNNING:-}" ]] && echo 0123abcdef ;;
   *pg_dump*)
     [[ -n "${FAKE_FAIL_PG_DUMP:-}" ]] && { printf 'PGDMP-cut'; exit 1; }
     # a dump that hangs halfway, so a test can kill ss-stack mid-dump
     [[ -n "${FAKE_SLOW_PG_DUMP:-}" ]] && { printf 'PGDMP-part'; sleep 30; exit 0; }
     printf 'PGDMP-fake' ;;
+  *bootstrap-admin*)
+    cat > "$DOCKER_LOG.stdin" ;;
+  *"/status/compose.yml up"*)
+    # what the status page is told to check (unset: compose's default)
+    printf 'kiosk=%s wiki=%s\n' "${STATUS_KIOSK_URL-unset}" "${STATUS_WIKI_URL-unset}" \
+      >> "$DOCKER_LOG.status" ;;
   *pg_restore*)
     cat > "$DOCKER_LOG.stdin"
     [[ -n "${FAKE_FAIL_PG_RESTORE:-}" ]] && exit 1 ;;
@@ -288,3 +295,384 @@ def test_restore_arguments(env_dir: Path, fake: dict[str, str], tmp_path: Path,
     assert out.returncode == code
     assert message in out.stdout + out.stderr
     assert calls(fake) == []
+
+
+def test_admin_runs_bootstrap_admin_in_the_api_container(env_dir: Path,
+                                                         fake: dict[str, str]) -> None:
+    out = subprocess.run(["bash", str(SS_STACK), "admin", str(env_dir), "--email",
+                          "ada@test.example.com", "--password-stdin"], env=fake,
+                         capture_output=True, text=True, input="Stdin-Only-Password-42\n")
+    assert out.returncode == 0, out.stderr
+    assert calls(fake) == [dc(env_dir, "api", "exec -T api serversherpa bootstrap-admin "
+                              "--email ada@test.example.com --password-stdin")]
+    assert "Stdin-Only-Password-42" not in "\n".join(calls(fake))
+    # the password reaches the container's stdin byte for byte
+    assert Path(fake["DOCKER_LOG"] + ".stdin").read_bytes() == b"Stdin-Only-Password-42\n"
+    assert "Stdin-Only-Password-42" not in out.stdout + out.stderr
+
+
+def test_admin_passes_the_exit_code_through(env_dir: Path, fake: dict[str, str],
+                                            tmp_path: Path) -> None:
+    docker = tmp_path / "bin" / "docker"
+    docker.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\nexit 3\n")
+    out = run(fake, "admin", str(env_dir), "--invite")
+    assert out.returncode == 3
+
+
+def test_admin_needs_arguments(env_dir: Path, fake: dict[str, str]) -> None:
+    out = run(fake, "admin", str(env_dir))
+    assert out.returncode == 2
+    assert calls(fake) == []
+
+
+# ---- LAN Blue/Green (Sirdar phase 8b): the data VM and its app VMs ----
+
+LAN_DATA = ("STACK_DB_PUBLISH=1\nSTACK_DB_PORT=5432\n"
+            "STACK_DB_ALLOW=10.10.48.48,10.10.48.49\n")
+
+
+def test_a_data_vm_publishes_postgres_with_its_hba(env_dir: Path, fake: dict[str, str]) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    out = run(fake, "data", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    lan = f"-f {STACK_DIR}/db/lan.yml"
+    db_calls = [c for c in calls(fake) if "/db/compose.yml" in c]
+    assert db_calls and all(lan in c for c in db_calls)
+    hba = (env_dir / "pg_hba.conf").read_text()
+    assert "host serversherpa serversherpa 10.10.48.48/32 scram-sha-256" in hba
+    assert "host serversherpa serversherpa 10.10.48.49/32 scram-sha-256" in hba
+    assert "local all all trust" in hba and "0.0.0.0/0" not in hba
+    assert oct((env_dir / "pg_hba.conf").stat().st_mode & 0o777) == "0o644"
+
+
+@pytest.mark.parametrize("allow", ["", "10.10.48.48,not-an-ip", "10.10.48.48;rm -rf /",
+                                   "10.10.48.256", "10.10.48.48,", "10.10.048.48",
+                                   "010.10.48.48"])
+def test_a_bad_allow_list_is_refused(env_dir: Path, fake: dict[str, str], allow: str) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(f"STACK_DB_PUBLISH=1\nSTACK_DB_ALLOW={allow}\n")
+    out = run(fake, "data", str(env_dir))
+    assert out.returncode != 0
+    assert "STACK_DB_ALLOW" in out.stderr
+    assert not any("/db/compose.yml" in c for c in calls(fake))
+
+
+@pytest.mark.parametrize("command", ["up", "restore"])
+def test_up_and_restore_on_a_data_vm_write_the_hba_too(env_dir: Path, fake: dict[str, str],
+                                                       command: str, tmp_path: Path) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    dump = tmp_path / "x.dump"
+    dump.write_bytes(b"PGDMP")
+    out = run(fake, command, str(env_dir), *([str(dump)] if command == "restore" else []))
+    assert out.returncode == 0, out.stderr
+    assert "10.10.48.49/32" in (env_dir / "pg_hba.conf").read_text()
+    db_calls = [c for c in calls(fake) if "/db/compose.yml" in c]
+    assert db_calls and all(f"-f {STACK_DIR}/db/lan.yml" in c for c in db_calls)
+
+
+@pytest.mark.parametrize("command", ["down", "ps", "dump", "pgdump", "revision"])
+def test_every_db_call_on_a_data_vm_takes_the_override(env_dir: Path, fake: dict[str, str],
+                                                       command: str, tmp_path: Path) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    extra = [str(tmp_path / "out.dump")] if command == "pgdump" else []
+    out = run(fake, command, str(env_dir), *extra)
+    assert out.returncode == 0, out.stderr
+    db_calls = [c for c in calls(fake) if "/db/compose.yml" in c]
+    assert db_calls and all(f"-f {STACK_DIR}/db/lan.yml" in c for c in db_calls)
+    # only up, data and restore (re)write the file
+    assert not (env_dir / "pg_hba.conf").exists()
+
+
+def test_an_app_vm_on_a_lan_data_vm_talks_without_tls(env_dir: Path,
+                                                      fake: dict[str, str]) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write("STACK_EXTERNAL_DATA=1\nSTACK_DB_HOST=10.10.48.47\nSTACK_DB_PORT=5432\n"
+                "STACK_DB_NAME=serversherpa\nSTACK_DB_USER=serversherpa\n"
+                "STACK_DB_SSLMODE=disable\n")
+    out = run(fake, "dump", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    dump = next(c for c in calls(fake) if "pg_dump" in c)
+    assert "-e PGSSLMODE=disable" in dump and "PGSSLMODE=require" not in dump
+    assert "-e PGHOST=10.10.48.47" in dump
+
+
+def test_the_managed_database_still_requires_tls(env_dir: Path, fake: dict[str, str]) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write("STACK_EXTERNAL_DATA=1\nSTACK_DB_HOST=db.internal\nSTACK_DB_PORT=25060\n"
+                "STACK_DB_NAME=serversherpa\nSTACK_DB_USER=serversherpa\n")
+    run(fake, "dump", str(env_dir))
+    assert "-e PGSSLMODE=require" in next(c for c in calls(fake) if "pg_dump" in c)
+
+
+def test_an_unknown_sslmode_is_refused(env_dir: Path, fake: dict[str, str]) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write("STACK_EXTERNAL_DATA=1\nSTACK_DB_HOST=db.internal\nSTACK_DB_PORT=25060\n"
+                "STACK_DB_NAME=serversherpa\nSTACK_DB_USER=serversherpa\n"
+                "STACK_DB_SSLMODE=allow\n")
+    out = run(fake, "dump", str(env_dir))
+    assert out.returncode != 0 and "STACK_DB_SSLMODE" in out.stderr
+    assert not any("pg_dump" in c for c in calls(fake))
+
+
+RELOAD = ("exec -T postgres psql -U serversherpa -d serversherpa -v ON_ERROR_STOP=1 "
+          "-tAc SELECT pg_reload_conf()")
+
+
+def test_a_changed_allow_list_reaches_the_running_database(env_dir: Path,
+                                                           fake: dict[str, str]) -> None:
+    """The container bind-mounts the file itself, so it must keep its inode,
+    and a running Postgres rereads it (pg_reload_conf)."""
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    assert run(fake, "data", str(env_dir)).returncode == 0
+    hba = env_dir / "pg_hba.conf"
+    inode = hba.stat().st_ino
+    assert not any(RELOAD in c for c in calls(fake))   # nothing was running
+    with (env_dir / ".env").open("a") as f:
+        f.write("STACK_DB_ALLOW=10.10.48.50\n")
+    Path(fake["DOCKER_LOG"]).write_text("")
+    out = run({**fake, "FAKE_DB_RUNNING": "1"}, "data", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert hba.stat().st_ino == inode
+    assert oct(hba.stat().st_mode & 0o777) == "0o644"
+    text = hba.read_text()
+    assert "10.10.48.50/32" in text and "10.10.48.48" not in text
+    log = calls(fake)
+    reload = [i for i, c in enumerate(log) if RELOAD in c]
+    assert len(reload) == 1 and f"-f {STACK_DIR}/db/lan.yml" in log[reload[0]]
+    assert reload[0] < next(i for i, c in enumerate(log) if " up -d " in c)
+
+
+def test_an_unchanged_allow_list_doesnt_reload(env_dir: Path, fake: dict[str, str]) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    assert run(fake, "data", str(env_dir)).returncode == 0
+    out = run({**fake, "FAKE_DB_RUNNING": "1"}, "data", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert not any(RELOAD in c for c in calls(fake))
+
+
+def test_a_data_vm_starts_no_mail_catcher(env_dir: Path, fake: dict[str, str]) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    assert run(fake, "data", str(env_dir)).returncode == 0
+    storage = [c for c in calls(fake) if "/storage/compose.yml" in c]
+    wait = "up -d --wait --wait-timeout 300 --remove-orphans"
+    assert storage == [dc(env_dir, "storage", f"{wait} seaweedfs")]
+
+
+@pytest.mark.parametrize("port", ["70000", "0", "54x", "05432"])
+def test_a_bad_db_port_on_a_data_vm_is_refused(env_dir: Path, fake: dict[str, str],
+                                               port: str) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA + f"STACK_DB_PORT={port}\n")
+    out = run(fake, "data", str(env_dir))
+    assert out.returncode != 0 and "STACK_DB_PORT" in out.stderr
+    assert not any("/db/compose.yml" in c for c in calls(fake))
+
+
+def _free_port() -> int:
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.mark.e2e
+@pytest.mark.skipif(os.environ.get("SS_STACK_E2E") != "1", reason="set SS_STACK_E2E=1")
+def test_a_data_vm_lets_only_its_app_servers_in(tmp_path: Path) -> None:
+    """Real Docker: ss-stack data with db/lan.yml. Postgres initializes with
+    the override's command, and its pg_hba.conf lets in the allowed address
+    only, and only to the serversherpa database."""
+    name = f"lanhba{os.getpid() % 10000}"
+    env_dir = tmp_path / name
+    env_dir.mkdir()
+    password = "hba-e2e-0123abcd"
+    text = (ENV_EXAMPLE.read_text().replace("=CHANGEME", f"={password}")
+            .replace("STACK_ENV=uat", f"STACK_ENV={name}")
+            .replace("STACK_BIND_IP=0.0.0.0", "STACK_BIND_IP=127.0.0.1")
+            .replace("STACK_SPACES_PORT=9000", f"STACK_SPACES_PORT={_free_port()}")
+            .replace("STACK_MAILPIT_PORT=8025", f"STACK_MAILPIT_PORT={_free_port()}"))
+    text += (f"STACK_NETWORK_SUBNET=172.31.77.0/24\nSTACK_DB_PUBLISH=1\n"
+             f"STACK_DB_PORT={_free_port()}\nSTACK_DB_ALLOW=172.31.77.10\n")
+    (env_dir / ".env").write_text(text)
+
+    def client(ip: str, db: str = "serversherpa") -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["docker", "run", "--rm", "--network", f"ss-{name}", "--ip", ip,
+             "-e", "PGPASSWORD", "postgres:16-alpine", "psql", "-h", "postgres",
+             "-U", "serversherpa", "-d", db, "-tAc", "SELECT 1"],
+            capture_output=True, text=True, env={**os.environ, "PGPASSWORD": password},
+            check=False)
+
+    try:
+        up = subprocess.run(["bash", str(SS_STACK), "data", str(env_dir)],
+                            capture_output=True, text=True, check=False)
+        assert up.returncode == 0, up.stdout + up.stderr
+        allowed = client("172.31.77.10")
+        assert allowed.returncode == 0 and allowed.stdout.strip() == "1", allowed.stderr
+        other = client("172.31.77.11")
+        assert other.returncode != 0 and "no pg_hba.conf entry" in other.stderr
+        wrong_db = client("172.31.77.10", "postgres")
+        assert wrong_db.returncode != 0 and "no pg_hba.conf entry" in wrong_db.stderr
+        # the local socket still answers (ss-stack dump, the health check)
+        rev = subprocess.run(["bash", str(SS_STACK), "pgdump", str(env_dir),
+                              str(tmp_path / "out.dump")], capture_output=True, text=True,
+                             check=False)
+        assert rev.returncode == 0, rev.stderr
+        assert (tmp_path / "out.dump").read_bytes().startswith(b"PGDMP")
+        # a new allow list reaches the running database: .11 in, .10 out
+        with (env_dir / ".env").open("a") as f:
+            f.write("STACK_DB_ALLOW=172.31.77.11\n")
+        again = subprocess.run(["bash", str(SS_STACK), "data", str(env_dir)],
+                               capture_output=True, text=True, check=False)
+        assert again.returncode == 0, again.stdout + again.stderr
+        now_in = client("172.31.77.11")
+        assert now_in.returncode == 0 and now_in.stdout.strip() == "1", now_in.stderr
+        now_out = client("172.31.77.10")
+        assert now_out.returncode != 0 and "no pg_hba.conf entry" in now_out.stderr
+    finally:
+        subprocess.run(["bash", str(SS_STACK), "down", str(env_dir), "--volumes"],
+                       capture_output=True, text=True, check=False)
+
+
+# an SMTP server, so Mailpit may be off; the password must never reach argv
+SMTP = "SS_SMTP_HOST=smtp.example.com\nSS_SMTP_PASSWORD=Mail-Secret-1\n"
+
+
+def _apps(env_dir: Path, line: str) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(line)
+
+
+def test_apps_that_are_off_dont_run(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, SMTP + "STACK_APPS=kiosk\n")
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    c = calls(fake)
+    assert dc(env_dir, "storage", f"{WAIT} --scale mailpit=0") in c
+    assert dc(env_dir, "api", f"{WAIT} --scale wiki-worker=0 --scale wiki-export-worker=0") in c
+    assert dc(env_dir, "web", f"{WAIT} --scale wiki=0") in c
+    assert dc(env_dir, "status", "down") in c
+    assert dc(env_dir, "status", WAIT) not in c
+
+
+def test_none_runs_only_the_api_and_the_portal(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, SMTP + "STACK_APPS=none\n")
+    assert run(fake, "up", str(env_dir)).returncode == 0
+    c = calls(fake)
+    assert dc(env_dir, "web", f"{WAIT} --scale kiosk=0 --scale wiki=0") in c
+    assert dc(env_dir, "status", "down") in c
+
+
+def _status_targets(env: dict[str, str]) -> list[str]:
+    path = Path(env["DOCKER_LOG"] + ".status")
+    return path.read_text().splitlines() if path.exists() else []
+
+
+@pytest.mark.parametrize("apps, seen", [
+    ("", "kiosk=unset wiki=unset"),
+    ("wiki,kiosk,status,mailpit", "kiosk=unset wiki=unset"),
+    ("status,mailpit", "kiosk= wiki="),
+    ("wiki,status,mailpit", "kiosk= wiki=unset"),
+    ("kiosk,status,mailpit", "kiosk=unset wiki="),
+])
+def test_the_status_page_checks_only_the_apps_that_run(env_dir: Path, fake: dict[str, str],
+                                                       apps: str, seen: str) -> None:
+    """An app that is off gets an empty URL (the status page leaves its card
+    out); one that runs keeps compose's default. A caller's own value never
+    gets through."""
+    _apps(env_dir, f"STACK_APPS={apps}\n")
+    env = {**fake, "STATUS_KIOSK_URL": "https://elsewhere.example", "STATUS_WIKI_URL": "x"}
+    out = run(env, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert _status_targets(fake) == [seen]
+
+
+def test_every_app_runs_when_the_key_is_absent_or_lists_them_all(env_dir: Path,
+                                                                 fake: dict[str, str]) -> None:
+    _apps(env_dir, "STACK_APPS=wiki,kiosk,status,mailpit\n")
+    assert run(fake, "up", str(env_dir)).returncode == 0
+    c = calls(fake)
+    for stack in ("storage", "api", "web", "status"):
+        assert dc(env_dir, stack, WAIT) in c, stack
+
+
+def test_external_data_without_mailpit_removes_it(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, SMTP + "STACK_EXTERNAL_DATA=1\nSTACK_APPS=wiki,kiosk,status\n")
+    assert run(fake, "up", str(env_dir)).returncode == 0
+    c = calls(fake)
+    assert dc(env_dir, "storage", "rm -sf mailpit") in c
+    assert dc(env_dir, "storage", f"{WAIT} mailpit") not in c
+
+
+def test_data_without_mailpit_starts_only_seaweedfs_storage(env_dir: Path,
+                                                            fake: dict[str, str]) -> None:
+    _apps(env_dir, "STACK_APPS=wiki,kiosk,status\n")
+    assert run(fake, "data", str(env_dir)).returncode == 0
+    assert calls(fake) == ["network inspect ss-uat", "network create ss-uat",
+                           dc(env_dir, "db", WAIT),
+                           dc(env_dir, "storage", f"{WAIT} --scale mailpit=0")]
+
+
+def test_a_data_vm_ignores_stack_apps(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, LAN_DATA + "STACK_APPS=none\n")
+    assert run(fake, "data", str(env_dir)).returncode == 0
+    storage = [c for c in calls(fake) if "/storage/compose.yml" in c]
+    assert storage == [dc(env_dir, "storage", f"{WAIT} seaweedfs")]
+
+
+
+@pytest.mark.parametrize("apps", [
+    "wiki, kiosk", " wiki", "kiosk ", "Wiki", "KIOSK,status", "wiki,blog", "portal",
+    "wiki,", ",wiki", "wiki,,kiosk", "none,wiki", "\"wiki kiosk\""])
+@pytest.mark.parametrize("command", ["up", "data"])
+def test_a_bad_app_list_is_refused(env_dir: Path, fake: dict[str, str], apps: str,
+                                   command: str) -> None:
+    _apps(env_dir, SMTP + f"STACK_APPS={apps}\n")
+    out = run(fake, command, str(env_dir))
+    assert out.returncode != 0
+    assert "STACK_APPS" in out.stderr
+    assert calls(fake) == []
+
+
+def test_an_empty_app_list_runs_every_app(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, "STACK_APPS=\n")
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    c = calls(fake)
+    for stack in ("storage", "api", "web", "status"):
+        assert dc(env_dir, stack, WAIT) in c, stack
+
+
+@pytest.mark.parametrize("smtp", ["", "SS_SMTP_HOST=\n"])
+@pytest.mark.parametrize("extra", ["", "STACK_EXTERNAL_DATA=1\n"])
+def test_mailpit_off_without_an_smtp_host_is_refused(env_dir: Path, fake: dict[str, str],
+                                                     smtp: str, extra: str) -> None:
+    _apps(env_dir, extra + smtp + "STACK_APPS=wiki,kiosk,status\n")
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode != 0
+    assert "Mailpit is off and no SMTP host is set: mail would fail." in out.stderr
+    assert calls(fake) == []
+
+
+def test_mailpit_off_with_an_smtp_host_runs(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, SMTP + "STACK_APPS=none\n")
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert dc(env_dir, "storage", f"{WAIT} --scale mailpit=0") in calls(fake)
+
+
+@pytest.mark.parametrize("extra", ["", "STACK_EXTERNAL_DATA=1\n", "STACK_APPS=none\n"])
+def test_the_smtp_password_never_reaches_argv(env_dir: Path, fake: dict[str, str],
+                                              extra: str) -> None:
+    _apps(env_dir, SMTP + extra)
+    for command in ("up", "data", "ps", "down"):
+        out = run(fake, command, str(env_dir))
+        assert out.returncode == 0, out.stderr
+        assert "Mail-Secret-1" not in out.stdout + out.stderr
+    assert calls(fake)
+    assert not any("Mail-Secret-1" in c for c in calls(fake))

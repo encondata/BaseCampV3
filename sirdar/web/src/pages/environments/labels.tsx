@@ -53,6 +53,8 @@ export const RETRY_MODES = ['update', 'reset', 'restore_dump', 'rollback', 'publ
   'activate', 'renew'];
 /** Modes a DigitalOcean environment doesn't offer: both slots share the managed database. */
 export const NOT_ON_DO = ['reset', 'restore_dump', 'rollback', 'vm_restore'];
+/** Modes a LAN Blue/Green environment doesn't offer: both app VMs share the data VM. */
+export const NOT_ON_BLUEGREEN = NOT_ON_DO;
 
 /** 1,536 → "1.5 KB"; null → "—". Binary steps, as the file sizes people see. */
 export function formatBytes(n: number | null | undefined): string {
@@ -158,11 +160,17 @@ export const vmNetwork = (vm: Pick<EnvVm, 'ip_mode' | 'ip_cidr' | 'gateway'>) =>
 /** Its hosts are droplets Sirdar builds in a DigitalOcean account. */
 export const onDo = (env: Pick<Environment, 'target_kind'>) => env.target_kind === 'digitalocean';
 export const isDoTarget = (id: string) => id === 'digitalocean';
+/** A LAN environment Sirdar runs as Blue/Green: a data VM and two app VMs behind Nginx Proxy Manager. */
+export const onBluegreen = (env: Pick<Environment, 'target_kind' | 'slots'>) =>
+  (env.target_kind === 'proxmox' || env.target_kind === 'esxi') && env.slots.length === 2;
+/** Two slots and an Activate: DigitalOcean, or LAN Blue/Green. */
+export const twoSlots = (env: Pick<Environment, 'target_kind' | 'slots'>) =>
+  (onDo(env) && env.slots.length === 2) || onBluegreen(env);
 export const slotTitle = (slot: string | null | undefined) => (slot ? slot[0].toUpperCase() + slot.slice(1) : '');
 /** Wording for a failed deploy or Activate on one slot while another still serves (page, card and spotlight). */
 export const stillLiveText = (live: string) => `Failed — ${live} still live`;
 const FAILED_STATUSES = new Set(['failed', 'cancelled', 'interrupted']);
-/** The slot the latest deployment failed on (DigitalOcean), else null. */
+/** The slot the latest deployment failed on (DigitalOcean or LAN Blue/Green), else null. */
 export function failedSlot(env: Pick<Environment, 'last_deployment'>): string | null {
   const d = env.last_deployment;
   return d && d.slot && FAILED_STATUSES.has(d.status) ? d.slot : null;
@@ -187,9 +195,11 @@ export function certDaysLeft(iso: string | null | undefined, now = Date.now()): 
   return Number.isNaN(at) ? null : Math.floor((at - now) / 86_400_000);
 }
 /** "Update to Purple, not live", "Activate Green", "Deactivate", else the mode's label. */
-export function deploymentLabel(d: Pick<DeploymentSummary, 'mode' | 'cloud' | 'slot' | 'go_live'>): string {
+export function deploymentLabel(d: Pick<DeploymentSummary, 'mode' | 'cloud' | 'bluegreen' | 'slot' | 'go_live'>): string {
   if (d.mode === 'activate') return d.slot ? `Activate ${slotTitle(d.slot)}` : 'Deactivate';
-  if (d.cloud && d.mode === 'update' && d.slot) return `Update to ${slotTitle(d.slot)}${d.go_live ? '' : ', not live'}`;
+  if ((d.cloud || d.bluegreen) && d.mode === 'update' && d.slot) {
+    return `Update to ${slotTitle(d.slot)}${d.go_live ? '' : ', not live'}`;
+  }
   return MODE_LABEL[d.mode] ?? d.mode;
 }
 /** A retry needs the environment's name typed: the modes that replace data, and production's Activate. */

@@ -83,6 +83,12 @@ export const LAN_CARD = card('uat', 'uat', 'Development', 'active', 'e73b99ca', 
     { hostname: 'portal.uat.serversherpa.com', expires_at: '2026-11-22T12:00:00+00:00', days_left: 47, error: null },
     { hostname: 'kiosk.uat.serversherpa.com', expires_at: null, days_left: null, error: 'Timed out' }] },
 }), 'Deploy uat');
+/** lan9, LAN Blue/Green behind Nginx Proxy Manager: orange live, purple deployed and idle. */
+export const LAN_BG_CARD = card('lan9', 'lan9', 'Development', 'active', 'aaaaaaaa', 'lan9', false, lanFlow('aaaaaaaa', {
+  servers: [server('orange', 'Orange', '10.10.48.48', 'live', 'healthy', 'aaaaaaaa'),
+            server('purple', 'Purple', '10.10.48.49', 'idle', 'healthy', 'bbbbbbbb')],
+  active_slot: 'orange',
+}), 'Deploy lan9');
 const placeholder = (id: string, label: string, action: string) =>
   card(id, label, null, 'empty', null, null, false, NONE_FLOW, action);
 

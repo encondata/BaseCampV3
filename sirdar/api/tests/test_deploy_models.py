@@ -310,7 +310,7 @@ async def test_proxmox_vms_and_the_vm_columns(db):
                      vm_snapshot="sirdar-20261004T120000Z")
     db.add(dep)
     await db.commit()
-    vm = await db.get(ProxmoxVm, env.id)
+    vm = await db.get(ProxmoxVm, (env.id, "main"))
     assert (vm.vmid, vm.ip, vm.keep_snapshots, vm.created) == (None, None, 3, False)
     assert (vm.template_vmid, vm.storage, vm.pool, vm.bridge, vm.vlan_tag) == (
         9000, "local-lvm", "sirdar", "vmbr0", None)
@@ -424,7 +424,7 @@ async def test_migration_0007_downgrade_refuses_while_vms_are_managed():
     assert b"Can't downgrade below 0007 while Sirdar manages Proxmox VMs" in err.value.stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
         # The refused downgrade rolls back as a whole: still at head.
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0010"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0013"
         assert conn.execute("SELECT count(*) FROM proxmox_vms").fetchone()[0] == 1
         assert conn.execute("SELECT count(*) FROM integrations WHERE kind = 'proxmox'"
                             ).fetchone()[0] == 1
@@ -446,7 +446,7 @@ async def test_esxi_vms(db):
     db.add(_esxi_vm(env.id))
     db.add(Integration(kind="esxi", config={"url": "https://10.10.48.10"}, secret_enc=b"x"))
     await db.commit()
-    vm = await db.get(EsxiVm, env.id)
+    vm = await db.get(EsxiVm, (env.id, "main"))
     assert (vm.moref, vm.instance_uuid, vm.vm_path, vm.ip, vm.created, vm.keep_snapshots,
             vm.resource_pool, vm.dns_servers) == (None, None, None, None, False, 3, None, [])
     vm.moref, vm.instance_uuid = "12", "52b1c3d4-0000-0000-0000-000000000001"
@@ -472,7 +472,7 @@ async def test_esxi_vms(db):
     await db.commit()
     await db.delete(await db.get(Environment, other_id))
     await db.commit()
-    assert await db.get(EsxiVm, other_id) is None                       # cascades
+    assert await db.get(EsxiVm, (other_id, "main")) is None                       # cascades
 
 
 async def test_migration_0008_downgrade_refuses_while_esxi_vms_are_managed():
@@ -592,7 +592,7 @@ async def test_migration_0010_downgrade_refuses_while_do_environments_exist():
         _alembic("downgrade", "0009")
     assert b"while Sirdar manages DigitalOcean environments" in err.value.stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0010"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0013"
         conn.execute("DELETE FROM environments WHERE id = %s", (env_id,))
 
 
@@ -649,7 +649,7 @@ def _assert_downgrade_refused() -> None:
         pytest.fail("the downgrade below 0010 wasn't refused")
     assert b"while Sirdar manages DigitalOcean environments" in stderr
     with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0010"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0013"
 
 
 async def test_migration_0010_downgrade_refuses_with_only_do_resources():
@@ -745,3 +745,170 @@ async def test_environment_slot_and_production_rules(db):
     await db.execute(text("UPDATE environments SET retiring = true WHERE name = 'p1'"))
     db.add(env("p2"))
     await db.commit()
+
+
+async def test_first_admin_password_only_for_typed(db):
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    from .deploy_factories import make_environment
+    env = await make_environment(db, name="fa1", secrets={})
+    with pytest.raises(IntegrityError):
+        await db.execute(text(
+            "INSERT INTO environment_first_admins (environment_id, first_name, last_name, "
+            "email, password_mode, password_enc) VALUES (:e, 'A', 'B', 'a@b.co', 'invite', "
+            "'\\x00')"), {"e": env.id})
+    await db.rollback()
+
+
+_FA_INSERT = ("INSERT INTO environment_first_admins (environment_id, first_name, last_name, "
+              "email, password_mode, password_enc) VALUES (:e, :f, :l, :m, :mode, :p)")
+
+
+async def test_first_admin_typed_with_a_password_is_accepted(db):
+    from .deploy_factories import make_environment
+    env = await make_environment(db, name="fa2", secrets={})
+    await db.execute(text(_FA_INSERT), {"e": env.id, "f": "A", "l": "B", "m": "a@b.co",
+                                        "mode": "typed", "p": b"\x00"})
+    await db.commit()
+    assert await db.scalar(text(
+        "SELECT count(*) FROM environment_first_admins WHERE environment_id = :e"),
+        {"e": env.id}) == 1
+
+
+@pytest.mark.parametrize("over", [
+    {"f": ""}, {"f": "x" * 101}, {"l": ""}, {"l": "x" * 101},
+    {"m": "ab"}, {"m": "x" * 255}, {"mode": "sms"},
+])
+async def test_first_admin_column_checks(db, over):
+    from .deploy_factories import make_environment
+    env = await make_environment(db, name="fa3", secrets={})
+    params = {"e": env.id, "f": "A", "l": "B", "m": "a@b.co", "mode": "invite", "p": None,
+              **over}
+    with pytest.raises(IntegrityError):
+        await db.execute(text(_FA_INSERT), params)
+    await db.rollback()
+
+
+async def test_first_admin_names_at_the_limit_are_accepted(db):
+    from .deploy_factories import make_environment
+    env = await make_environment(db, name="fa4", secrets={})
+    await db.execute(text(_FA_INSERT), {"e": env.id, "f": "x" * 100, "l": "y" * 100,
+                                        "m": "a" * 242 + "@example.com", "mode": "invite",
+                                        "p": None})
+    await db.commit()
+
+
+async def test_deployment_first_admin_defaults_to_false(db):
+    env = await _env(db)
+    dep = _dep(env)
+    db.add(dep)
+    await db.commit()
+    await db.refresh(dep)
+    assert dep.first_admin is False
+
+
+_PROXMOX_ROW = ("INSERT INTO proxmox_vms (environment_id, {role_col}node, template_vmid, storage, "
+                "pool, bridge, name, cores, memory_mb, disk_gb, ip_mode, ssh_public_key, "
+                "ssh_private_key_enc) VALUES (%s, {role_val}'pve', 9000, 'local-lvm', "
+                "'sirdar', 'vmbr0', %s, 4, 8192, 64, 'dhcp', 'ssh-ed25519 x', 'k')")
+_ESXI_ROW = ("INSERT INTO esxi_vms (environment_id, {role_col}name, host, datastore, network, "
+             "source_vm, cores, memory_mb, disk_gb, ip_mode, ssh_public_key, "
+             "ssh_private_key_enc, host_key_public) VALUES (%s, {role_val}%s, '10.10.48.10', "
+             "'datastore1', 'VM Network', 'seed', 4, 8192, 64, 'dhcp', 'ssh-ed25519 x', 'k', "
+             "'ssh-ed25519 h')")
+
+
+def _vm_env_row(conn, name: str, target: str) -> uuid.UUID:
+    return conn.execute(
+        "INSERT INTO environments (name, type, target_id, base_domain, proxy_ip) "
+        "VALUES (%s, 'dev', %s, %s, '10.0.0.2') RETURNING id",
+        (name, target, f"{name}.example.com")).fetchone()[0]
+
+
+def _vm_row(conn, table_sql: str, env_id, name: str, role: str | None = None) -> None:
+    if role is None:                                   # below 0012: no role column
+        conn.execute(table_sql.format(role_col="", role_val=""), (env_id, name))
+    else:
+        conn.execute(table_sql.format(role_col="role, ", role_val="%s, "),
+                     (env_id, role, name))
+
+
+async def test_migration_0012_round_trip_keeps_single_server_vms():
+    """Existing VM rows become `main`; with only main rows (and no slot or
+    Blue/Green deployment) the downgrade works and keeps every VM row."""
+    from sirdar_api.db.engine import dispose_engine
+    await dispose_engine()
+    _alembic("downgrade", "0011")
+    try:
+        with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+            pve = _vm_env_row(conn, "vm12p", "proxmox")
+            esx = _vm_env_row(conn, "vm12e", "esxi")
+            _vm_row(conn, _PROXMOX_ROW, pve, "ss-vm12p")
+            _vm_row(conn, _ESXI_ROW, esx, "ss-vm12e")
+        _alembic("upgrade", "head")
+        with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+            assert conn.execute("SELECT environment_id, role FROM proxmox_vms").fetchall() == [
+                (pve, "main")]
+            assert conn.execute("SELECT environment_id, role FROM esxi_vms").fetchall() == [
+                (esx, "main")]
+            assert conn.execute("SELECT bluegreen FROM deployments").fetchall() == []
+        _alembic("downgrade", "0011")
+        with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+            assert conn.execute("SELECT environment_id, name FROM proxmox_vms").fetchall() == [
+                (pve, "ss-vm12p")]
+            assert conn.execute("SELECT environment_id, name FROM esxi_vms").fetchall() == [
+                (esx, "ss-vm12e")]
+            assert not conn.execute("SELECT to_regclass('vm_slots') IS NOT NULL").fetchone()[0]
+            cols = {r[0] for r in conn.execute(
+                "SELECT table_name || '.' || column_name FROM information_schema.columns "
+                "WHERE column_name IN ('role', 'bluegreen') AND table_name IN "
+                "('proxmox_vms', 'esxi_vms', 'deployments')")}
+            assert cols == set()
+    finally:
+        _alembic("upgrade", "head")
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0013"
+        assert conn.execute("SELECT count(*) FROM proxmox_vms WHERE role = 'main'"
+                            ).fetchone()[0] == 1
+
+
+def _blue_green_rows(conn, what: str) -> str:
+    """One Blue/Green record of kind `what`; returns the table it went into."""
+    env_id = _vm_env_row(conn, "bg12", "esxi")
+    if what == "proxmox_role":
+        pve = _vm_env_row(conn, "bg12p", "proxmox")
+        _vm_row(conn, _PROXMOX_ROW, pve, "ss-bg12p-orange", role="orange")
+        return "proxmox_vms"
+    if what == "esxi_role":
+        _vm_row(conn, _ESXI_ROW, env_id, "ss-bg12-data", role="data")
+        return "esxi_vms"
+    if what == "vm_slot":
+        conn.execute("INSERT INTO vm_slots (environment_id, slot) VALUES (%s, 'purple')",
+                     (env_id,))
+        return "vm_slots"
+    conn.execute("INSERT INTO deployments (environment_id, mode, git_ref, sha, status, "
+                 "start_step, vm, bluegreen) VALUES (%s, 'update', 'main', %s, 'succeeded', "
+                 "0, true, true)", (env_id, SHA))
+    return "deployments"
+
+
+@pytest.mark.parametrize("what", ["proxmox_role", "esxi_role", "vm_slot", "deployment"])
+async def test_migration_0012_downgrade_refuses_with_blue_green_records(what):
+    """A non-main VM, a slot record or a Blue/Green deployment can't exist
+    below 0012: the downgrade refuses as a whole and nothing changes."""
+    from sirdar_api.db.engine import dispose_engine
+    await dispose_engine()
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        table = _blue_green_rows(conn, what)
+    try:
+        _alembic("downgrade", "0011")
+    except subprocess.CalledProcessError as err:
+        stderr = err.stderr
+    else:
+        _alembic("upgrade", "head")  # leave the database at head for the next test
+        pytest.fail("the downgrade below 0012 wasn't refused")
+    assert b"Can't downgrade below 0012 while LAN Blue/Green records exist" in stderr
+    with psycopg.connect(_psycopg_url(TEST_DB), autocommit=True) as conn:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0013"
+        assert conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 1

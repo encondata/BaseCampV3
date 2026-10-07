@@ -23,11 +23,21 @@ def test_defaults_and_trailing_slashes_stripped():
     assert s.static_dir.endswith("static")
 
 
-@pytest.mark.parametrize("missing", list(BASE))
+@pytest.mark.parametrize("missing", ["STATUS_API_URL", "STATUS_PORTAL_URL"])
 def test_missing_url_names_the_variable(missing):
     env = {k: v for k, v in BASE.items() if k != missing}
     with pytest.raises(ConfigError, match=missing):
         load_settings(env)
+
+
+@pytest.mark.parametrize("off", ["", "  "])
+def test_the_kiosk_is_left_out_while_its_url_is_unset(off):
+    """An environment can run without its kiosk (Sirdar's STACK_APPS): no
+    Kiosk card then, rather than one that is always down."""
+    s = load_settings({**BASE, "STATUS_KIOSK_URL": off})
+    assert [x.key for x in s.services] == ["api", "portal"]
+    s = load_settings({k: v for k, v in BASE.items() if k != "STATUS_KIOSK_URL"})
+    assert [x.key for x in s.services] == ["api", "portal"]
 
 
 def test_blank_url_is_missing():

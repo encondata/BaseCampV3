@@ -19,8 +19,9 @@ import yaml
 
 VM_USER = "deploy"
 MAX_DNS_SERVERS = 3
-# "ss-" and an environment name (vms.check_vm_hostname's rule).
-_HOSTNAME_RE = re.compile(r"ss-[a-z][a-z0-9-]{0,30}[a-z0-9]")
+# "ss-", an environment name and, for a Blue/Green VM, its role
+# (vms.check_vm_hostname's rule).
+_HOSTNAME_RE = re.compile(r"ss-[a-z][a-z0-9-]{0,37}[a-z0-9]")
 
 
 def _checked(*, hostname, ip_cidr, gateway, dns_servers) -> None:
@@ -50,10 +51,11 @@ def _checked(*, hostname, ip_cidr, gateway, dns_servers) -> None:
 
 
 def metadata(*, env_id: uuid.UUID, hostname: str, ip_cidr: str | None, gateway: str | None,
-             dns_servers: tuple[str, ...]) -> str:
+             dns_servers: tuple[str, ...], role: str = "main") -> str:
     """A static address with its default route and DNS (the given servers,
     else the gateway), or DHCP (with the given DNS servers, if any). Every
-    value is checked first (ValueError)."""
+    value is checked first (ValueError). The instance id names the VM's
+    role unless it is the environment's one VM (`main`)."""
     _checked(hostname=hostname, ip_cidr=ip_cidr, gateway=gateway, dns_servers=dns_servers)
     if ip_cidr:
         nic: dict = {"match": {"driver": "vmxnet3"}, "dhcp4": False, "addresses": [ip_cidr],
@@ -63,7 +65,8 @@ def metadata(*, env_id: uuid.UUID, hostname: str, ip_cidr: str | None, gateway: 
         nic = {"match": {"driver": "vmxnet3"}, "dhcp4": True}
         if dns_servers:
             nic["nameservers"] = {"addresses": list(dns_servers)}
-    doc = {"instance-id": f"sirdar-{env_id}", "local-hostname": hostname,
+    instance = f"sirdar-{env_id}" if role == "main" else f"sirdar-{env_id}-{role}"
+    doc = {"instance-id": instance, "local-hostname": hostname,
            "network": {"version": 2, "ethernets": {"nic0": nic}},
            "cleanup-guestinfo": ["userdata"]}
     return yaml.safe_dump(doc, sort_keys=False)

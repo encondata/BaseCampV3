@@ -18,6 +18,8 @@ from pathlib import PurePosixPath
 
 from cryptography.fernet import Fernet
 from sqlalchemy import delete, func, select, text
+from sqlalchemy import update as sql_update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
@@ -27,15 +29,20 @@ from sirdar_api.db.models import (
     Environment,
     EnvironmentSecret,
     EnvironmentService,
+    EsxiVm,
+    ProxmoxVm,
     Snapshot,
 )
 from sirdar_api.deploy import (
     ConnectFailed,
+    apps as app_rules,
     certs,
     do_accounts,
     do_envs,
     envfile,
+    first_admins,
     integrations,
+    lan_slots,
     names,
     ssh,
     targets,
@@ -54,9 +61,8 @@ SSH_TARGET_RE = re.compile(r"ssh|ssh:[a-z0-9]+(-[a-z0-9]+)*")
 _DOMAIN_RE = re.compile(r"(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
 _BUCKET_RE = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 _TAG_RE = re.compile(r"[A-Za-z0-9_.-]{1,128}")
-# Optional secrets set by hand (API keys, passwords): no whitespace, quotes,
-# "$" (compose interpolation), "#", backslash or backtick.
-_SECRET_VALUE_RE = re.compile(r"[A-Za-z0-9._~+/=:@%^*!?,;-]{1,1024}")
+# Optional secrets set by hand (API keys, passwords): envfile's rule.
+_SECRET_VALUE_RE = envfile.SECRET_VALUE_RE
 # Adopted required secrets must have the shapes create generates.
 _HEX_RE = re.compile(r"[0-9a-fA-F]{1,1024}")
 _FERNET_KEY_RE = re.compile(r"[A-Za-z0-9_-]{43}=")
@@ -154,8 +160,25 @@ def _check_target(target_id: str, settings: Settings) -> SshTargetConfig | None:
     return cfg
 
 
-def _hostname(service: str, domain: str) -> str | None:
-    return f"{service}.{domain}" if service in envfile.PUBLIC_SERVICES else None
+def _hostname(env: Environment, service: str, domain: str) -> str | None:
+    """A service's public name: none for mailpit, nor for an app that is off."""
+    return (f"{service}.{domain}" if service in envfile.PUBLIC_SERVICES
+            and app_rules.is_public(env, service) else None)
+
+
+def check_optional_secrets(secrets) -> dict[str, str]:
+    """Optional secrets as create or PATCH sends them: only OPTIONAL_SECRETS,
+    each a string the .env can carry ("" or None: leave it unset). Returns
+    the ones with a value."""
+    if not isinstance(secrets, dict):
+        raise EnvError("secret_invalid", key="secrets")
+    for key, value in secrets.items():
+        if key not in envfile.OPTIONAL_SECRETS:
+            raise EnvError("secret_not_editable", key=key)
+        if value is not None and (not isinstance(value, str)
+                                  or (value and not _SECRET_VALUE_RE.fullmatch(value))):
+            raise EnvError("secret_invalid", key=key)
+    return {k: v for k, v in secrets.items() if v}
 
 
 # ---- reads -------------------------------------------------------------------
@@ -243,7 +266,10 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
                      ports: dict[str, int] | None = None, actor_id=None,
                      snapshot_id: uuid.UUID | None = None,
                      publish: bool = True, vm: dict | None = None,
-                     do: dict | None = None) -> Environment:
+                     do: dict | None = None,
+                     first_admin: dict | None = None, apps: list[str] | None = None,
+                     mail: dict | None = None,
+                     secrets: dict | None = None) -> Environment:
     """A new environment (status "new"): default ports unless given, the
     target's host for every service, freshly generated secrets. With a
     snapshot, its first deploy restores that snapshot (and its keys). With
@@ -252,10 +278,41 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     sets its network; every service points at its static address (0.0.0.0
     for DHCP until step 0 reads it), and its VM row records it as Sirdar's.
     On DigitalOcean ("digitalocean"), `do` picks the account, slots and
-    sizes (see do_envs.check_spec); production lives only there."""
+    sizes (see do_envs.check_spec); production lives only there.
+    first_admin: the first super admin step 11 of the first deploy creates
+    (never with a snapshot). With `vm.slots: 2` (ESXi or Proxmox) the
+    environment is LAN Blue/Green: a data VM and two app VMs (orange,
+    purple), static addresses, Nginx Proxy Manager as the switch.
+    apps: the optional apps it runs (None: all); only those get public
+    names. mail: its Mailpit (the default) or an SMTP server (apps.check_mail).
+    secrets: optional secrets (SS_ANTHROPIC_API_KEY, …), vault-encrypted with
+    the generated ones; the SMTP password joins them as SS_SMTP_PASSWORD."""
     cfg = await _precheck(db, settings, name=name, type_=type_, target_id=target_id,
                           git_ref=git_ref)
+    try:
+        apps_on = app_rules.check_apps(apps)
+        mail_spec = app_rules.check_mail(mail, apps_on)
+    except app_rules.AppsError as e:
+        raise EnvError(e.code, **e.extra) from None
+    extra_secrets = check_optional_secrets(secrets or {})
+    if mail_spec["smtp_password"]:
+        extra_secrets["SS_SMTP_PASSWORD"] = mail_spec["smtp_password"]
+    admin_spec = None
+    if first_admin is not None:
+        if snapshot_id is not None:
+            raise EnvError("first_admin_with_seed")    # a seed already has its users
+        try:
+            admin_spec = first_admins.check(first_admin)
+        except first_admins.FirstAdminError as e:
+            raise EnvError(e.code, **e.extra) from None
+        if type_ == "production" and not mail_spec["smtp_host"]:
+            # Production's first admin gets real mail, never a Mailpit inbox.
+            raise EnvError("smtp_required_for_first_admin")
     on_do = target_id == targets.DO_TARGET
+    if vm is not None and not _slots_ok(vm):
+        raise EnvError("vm_invalid")
+    if vm is not None and vm.get("slots") == 2 and not targets.is_vm_target(target_id):
+        raise EnvError("bluegreen_not_allowed")
     if type_ == "production" and not on_do:
         raise EnvError("production_requires_digitalocean")
     if do is not None and not on_do:
@@ -285,44 +342,144 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
     all_ports = {s: _check_port(given.get(s, envfile.DEFAULT_PORTS[s]), s)
                  for s in envfile.SERVICES}
     _check_ports_unique(all_ports)
+    if not given and cfg is not None:
+        # An SSH host can hold several environments: start from the first
+        # free port at or above each default. VMs, droplets and Blue/Green
+        # get machines of their own and keep the defaults.
+        all_ports = await _free_ports(db, cfg.host, bind)
     if on_do:
-        return await _create_on_do(db, settings, name=name, type_=type_, git_ref=git_ref,
-                                   domain=domain, ports=all_ports, actor_id=actor_id,
-                                   snapshot_id=snapshot_id, do=do or {})
-    spec = None
+        env = await _create_on_do(db, settings, name=name, type_=type_, git_ref=git_ref,
+                                  domain=domain, ports=all_ports, actor_id=actor_id,
+                                  snapshot_id=snapshot_id, do=do or {}, apps_on=apps_on,
+                                  extra_secrets=extra_secrets)
+        await _set_apps_and_mail(db, env, apps_on, mail_spec)
+        if admin_spec is not None:
+            await first_admins.put(db, settings, env.id, admin_spec)
+        return env
+    spec = bluegreen = None
     host = cfg.host if cfg is not None else ""
     if targets.is_vm_target(target_id):
         if not await integrations.is_configured(db, target_id):
             raise EnvError("integration_not_configured", kinds=[target_id])
         try:
-            spec = vms.check_spec({} if vm is None else vm)
-            address = vms.static_ip(spec["ip_cidr"])
-            if address:
+            if (vm or {}).get("slots") == 2:
+                if not await integrations.is_configured(db, "npm"):
+                    # Nginx Proxy Manager is the switch between the two app VMs.
+                    raise EnvError("integration_not_configured", kinds=["npm"])
+                bluegreen = vms.check_bluegreen(vm)
+                addresses = [vms.static_ip(bluegreen[r]["ip_cidr"])
+                             for r in ("orange", "purple", "data")]
                 await vms.lock_addresses(db)        # held until the caller commits
-                if await vms.address_in_use(db, settings, address, proxy_ip=proxy):
-                    raise EnvError("ip_in_use")
+                for address in addresses:
+                    if await vms.address_in_use(db, settings, address, proxy_ip=proxy):
+                        raise EnvError("ip_in_use")
+                address = addresses[0]                 # services start on orange
+            else:
+                spec = vms.check_spec({} if vm is None else
+                                      {k: v for k, v in vm.items() if k != "slots"})
+                address = vms.static_ip(spec["ip_cidr"])
+                if address:
+                    await vms.lock_addresses(db)    # held until the caller commits
+                    if await vms.address_in_use(db, settings, address, proxy_ip=proxy):
+                        raise EnvError("ip_in_use")
         except vms.VmError as e:
             raise EnvError(e.code, **e.extra) from None
+        roles = (vms.DATA, *lan_slots.SLOTS) if bluegreen is not None else (vms.MAIN,)
+        taken = await _vm_name_taken(db, [vms.vm_name(name, r) for r in roles])
+        if taken is not None:
+            raise EnvError("vm_name_taken", name=taken)
         host = address or "0.0.0.0"
     elif vm is not None:
         raise EnvError("vm_not_allowed")
     env = await _insert(
         db, settings, name=name, type_=type_, target_id=target_id, git_ref=git_ref,
-        host=host, domain=domain, proxy_ip=proxy, bind_ip=bind, ports=all_ports,
+        host=host, domain=domain, proxy_ip=proxy,
+        # Blue/Green: NPM reaches each VM on its own address, so they bind everywhere.
+        bind_ip=DEFAULT_BIND_IP if bluegreen is not None else bind, ports=all_ports,
         keep_dumps=envfile.DEFAULT_KEEP_DUMPS, spaces_bucket=envfile.DEFAULT_SPACES_BUCKET,
         log_level=envfile.DEFAULT_LOG_LEVEL, status="new", current_sha=None, image_tag=None,
-        secrets=vault.generate_env_secrets(), actor_id=actor_id, seed_snapshot_id=snapshot_id,
-        publish=publish)
-    if spec is not None:
+        secrets=vault.generate_env_secrets() | extra_secrets, actor_id=actor_id,
+        seed_snapshot_id=snapshot_id, publish=publish,
+        public_services=app_rules.public_services(apps_on))
+    await _set_apps_and_mail(db, env, apps_on, mail_spec)
+    if spec is not None or bluegreen is not None:
         stored = await integrations.config_of(db, target_id)
+        add_vm = vms.add_esxi if target_id == targets.ESXI_TARGET else vms.add
+        role = vms.MAIN
         try:
-            if target_id == targets.ESXI_TARGET:
-                await vms.add_esxi(db, settings, env, spec, stored)
+            if bluegreen is not None:
+                env.slots = list(lan_slots.SLOTS)
+                env.auto_activate = bluegreen["auto_activate"]
+                for role in (vms.DATA, *lan_slots.SLOTS):
+                    await add_vm(db, settings, env, bluegreen[role], stored, role=role)
+                await lan_slots.add(db, env.id, lan_slots.SLOTS)
+                await db.execute(sql_update(EnvironmentService).where(
+                    EnvironmentService.environment_id == env.id,
+                    EnvironmentService.service == "spaces")
+                    .values(host_ip=vms.static_ip(bluegreen["data"]["ip_cidr"])))
             else:
-                await vms.add(db, settings, env, spec, stored)
+                await add_vm(db, settings, env, spec, stored)
         except vms.VmError as e:
             raise EnvError(e.code, **e.extra) from None
+        except IntegrityError as e:
+            # Two creates both passed _vm_name_taken; the name key settled it.
+            # The session needs a rollback, as for any EnvError.
+            if any(key in str(e.orig) for key in _VM_NAME_KEYS):
+                raise EnvError("vm_name_taken", name=vms.vm_name(name, role)) from None
+            raise
+    if admin_spec is not None:
+        await first_admins.put(db, settings, env.id, admin_spec)
     return env
+
+
+async def _free_ports(db: AsyncSession, host: str, bind: str) -> dict[str, int]:
+    """Each service's first port at or above its default that no other
+    environment's service on this host listens on (any bind address of
+    theirs or ours being 0.0.0.0, or the same one), unique within this one."""
+    rows = await db.execute(
+        select(EnvironmentService.port, Environment.bind_ip)
+        .join(Environment, Environment.id == EnvironmentService.environment_id)
+        .where(EnvironmentService.host_ip == host))
+    used = {port for port, other_bind in rows
+            if DEFAULT_BIND_IP in (bind, other_bind) or other_bind == bind}
+    ports: dict[str, int] = {}
+    for service in envfile.SERVICES:
+        port = envfile.DEFAULT_PORTS[service]
+        while port in used or port in ports.values():
+            port += 1
+        ports[service] = _check_port(port, service)
+    return ports
+
+
+async def _set_apps_and_mail(db: AsyncSession, env: Environment, apps_on: list[str],
+                             mail_spec: dict) -> None:
+    env.apps = apps_on
+    (env.smtp_host, env.smtp_port, env.smtp_username, env.smtp_from,
+     env.smtp_starttls) = (mail_spec[k] for k in ("smtp_host", "smtp_port", "smtp_username",
+                                                  "smtp_from", "smtp_starttls"))
+    await db.flush()
+
+
+def _slots_ok(vm) -> bool:
+    """`vm.slots`: absent, 1 (one server) or 2 (Blue/Green); never True,
+    2.0 or "2"."""
+    if not isinstance(vm, dict):
+        return False
+    s = vm.get("slots")
+    return s is None or (not isinstance(s, bool) and isinstance(s, int) and s in (1, 2))
+
+
+_VM_NAME_KEYS = ("proxmox_vms_name_key", "esxi_vms_name_key")
+
+
+async def _vm_name_taken(db: AsyncSession, names: list[str]) -> str | None:
+    """The first of these VM names another environment's VM (Proxmox or
+    ESXi) already has: vm_name("lan1", "data") and vm_name("lan1-data") are
+    both ss-lan1-data."""
+    used: set[str] = set()
+    for model in (ProxmoxVm, EsxiVm):
+        used |= set(await db.scalars(select(model.name).where(model.name.in_(names))))
+    return next((n for n in names if n in used), None)
 
 
 async def lock_production(db: AsyncSession) -> None:
@@ -335,7 +492,8 @@ async def lock_production(db: AsyncSession) -> None:
 
 async def _create_on_do(db: AsyncSession, settings: Settings, *, name: str, type_: str,
                         git_ref: str, domain: str, ports: dict[str, int], actor_id,
-                        snapshot_id, do: dict) -> Environment:
+                        snapshot_id, do: dict, apps_on: list[str],
+                        extra_secrets: dict[str, str]) -> Environment:
     """A DigitalOcean environment: the account and sizes frozen, Caddy as the
     proxy on the droplet, publishing on (its plan has DNS), and only the
     public names its load balancer certificate covers."""
@@ -367,9 +525,11 @@ async def _create_on_do(db: AsyncSession, settings: Settings, *, name: str, type
         host="0.0.0.0", domain=domain, proxy_ip=do_envs.CADDY_IP, bind_ip=do_envs.BIND_IP,
         ports=ports, keep_dumps=envfile.DEFAULT_KEEP_DUMPS,
         spaces_bucket=envfile.DEFAULT_SPACES_BUCKET, log_level=envfile.DEFAULT_LOG_LEVEL,
-        status="new", current_sha=None, image_tag=None, secrets=vault.generate_env_secrets(),
+        status="new", current_sha=None, image_tag=None,
+        secrets=vault.generate_env_secrets() | extra_secrets,
         actor_id=actor_id, seed_snapshot_id=snapshot_id, publish=True,
-        public_services=certs.PUBLIC_SERVICES, slots=list(spec["slots"]))
+        public_services=app_rules.public_services(apps_on, base=certs.PUBLIC_SERVICES),
+        slots=list(spec["slots"]))
     env.auto_activate = spec["auto_activate"]
     env.spaces_bucket = do_envs.bucket_name(env.name, env.id)
     await do_envs.add(db, settings, env, spec, region=account.region,
@@ -487,6 +647,10 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
         raise EnvError("adopt_env_incomplete", missing=missing)
     picked = _adopted_settings(values)
     secrets = _adopted_secrets(values)
+    try:
+        apps_on, mail_spec = app_rules.from_env(values, picked["domain"])
+    except app_rules.AppsError as e:
+        raise EnvError(e.code, **e.extra) from None
 
     repo = shlex.quote(folder + "/repo")
     head = await ssh.run_command(cfg, db, f"git -C {repo} rev-parse HEAD")
@@ -503,15 +667,17 @@ async def adopt(db: AsyncSession, settings: Settings, *, name: str, type_: str,
         ports=picked["ports"], keep_dumps=picked["keep_dumps"],
         spaces_bucket=picked["spaces_bucket"], log_level=picked["log_level"],
         status="ready", current_sha=sha, image_tag=picked["image_tag"], secrets=secrets,
-        actor_id=actor_id)
+        actor_id=actor_id, public_services=app_rules.public_services(apps_on))
+    await _set_apps_and_mail(db, env, apps_on, mail_spec)
     now = _now()
     dep = Deployment(environment_id=env.id, mode="adopt", git_ref=git_ref, sha=sha,
                      status="adopted", start_step=1, actor_id=actor_id, started_at=now,
                      finished_at=now)
     db.add(dep)
     await db.flush()
-    # a droplet's keys (EXTRA_KEYS) never come from a hand-built .env
-    adoptable = set(envfile.KNOWN_KEYS) - set(envfile.EXTRA_KEYS)
+    # a droplet's keys (EXTRA_KEYS) never come from a hand-built .env; its
+    # apps and mail do
+    adoptable = (set(envfile.KNOWN_KEYS) - set(envfile.EXTRA_KEYS)) | set(app_rules.ENV_KEYS)
     ignored = sorted(k for k in values if k not in adoptable)
     return env, dep, AdoptReport(sha=sha, imported_secrets=sorted(secrets),
                                  ignored_keys=ignored)
@@ -542,6 +708,12 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
         for key in ("target", "proxy_ip", "bind_ip", "base_domain", "spaces_bucket", "publish"):
             if fields.get(key) is not None and fields[key] != getattr(env, attrs.get(key, key)):
                 raise EnvError("do_field_locked", field=key)
+    on_bg = lan_slots.is_bluegreen(env)
+    if on_bg:
+        # The data VM's firewall and NPM's proxy hosts were built for these.
+        for key in ("proxy_ip", "bind_ip"):
+            if fields.get(key) is not None and fields[key] != getattr(env, key):
+                raise EnvError("bluegreen_field_locked", field=key)
     if fields.get("retiring") is not None:
         if env.type != "production":
             raise EnvError("retiring_not_allowed")
@@ -551,8 +723,10 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
                 raise EnvError("production_exists")     # at most one live production
         put("retiring", bool(fields["retiring"]))
     if fields.get("auto_activate") is not None:
-        # Off is always fine; on only for a non-production DigitalOcean environment.
-        if fields["auto_activate"] and (not on_do or env.type == "production"):
+        # Off is always fine; on only for a non-production environment with
+        # two slots (DigitalOcean, or LAN Blue/Green).
+        two_slots = (on_do or lan_slots.is_bluegreen(env)) and env.type != "production"
+        if fields["auto_activate"] and not two_slots:
             raise EnvError("auto_activate_not_allowed")
         put("auto_activate", bool(fields["auto_activate"]))
     if fields.get("target") is not None:
@@ -589,6 +763,10 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
         row, patch = rows[service], patch or {}
         if patch.get("port") is not None:
             port = _check_port(patch["port"], service)
+            if on_bg and service == "spaces" and row.port != port:
+                # NPM forwards spaces to the data VM's port: the live slot's
+                # storage would break until the next Activate.
+                raise EnvError("bluegreen_field_locked", field="services.spaces.port")
             if row.port != port:
                 row.port = port
                 changed.append(f"services.{service}.port")
@@ -605,15 +783,10 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
     _check_ports_unique({s: r.port for s, r in rows.items()})
     if env.base_domain != old_domain:
         for service, row in rows.items():
-            row.hostname = _hostname(service, env.base_domain)
+            row.hostname = _hostname(env, service, env.base_domain)
 
     secrets = fields.get("secrets") or {}
-    for key, value in secrets.items():
-        if key not in envfile.OPTIONAL_SECRETS:
-            raise EnvError("secret_not_editable", key=key)
-        if value is not None and (not isinstance(value, str)
-                                  or (value and not _SECRET_VALUE_RE.fullmatch(value))):
-            raise EnvError("secret_invalid", key=key)
+    check_optional_secrets(secrets)          # "" still clears one (below)
     if any(v for v in secrets.values()) and not vault.is_configured(settings):
         raise EnvError("secrets_key_missing")
     existing = await secret_keys_of(db, env.id)
@@ -635,6 +808,8 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
         changed.append(f"secrets.{key}")
 
     if fields.get("vm") is not None:
+        if lan_slots.is_bluegreen(env):            # three VMs: sizes are set at create
+            raise EnvError("vm_resize_not_supported")
         machine = await vms.get_for(db, env) if on_vm else None
         if machine is None:
             raise EnvError("vm_not_allowed")

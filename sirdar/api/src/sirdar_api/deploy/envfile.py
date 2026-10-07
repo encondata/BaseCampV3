@@ -19,7 +19,10 @@ PORT_KEYS = {s: f"STACK_{s.upper()}_PORT" for s in SERVICES}
 
 REQUIRED_SECRETS = ("POSTGRES_PASSWORD", "SPACES_SECRET_KEY", "SS_JWT_SECRET",
                     "SS_TOTP_ENCRYPTION_KEY", "SS_PASSWORD_PEPPER", "SS_WIKI_SERVICE_TOKEN")
-OPTIONAL_SECRETS = ("SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD")
+OPTIONAL_SECRETS = ("SS_ANTHROPIC_API_KEY", "SS_DB_TESTING_PASSWORD", "SS_SMTP_PASSWORD")
+# Optional secrets set by hand (API keys, passwords): no whitespace, quotes,
+# "$" (compose interpolation), "#", backslash or backtick.
+SECRET_VALUE_RE = re.compile(r"[A-Za-z0-9._~+/=:@%^*!?,;-]{1,1024}")
 SECRET_KEYS = REQUIRED_SECRETS + OPTIONAL_SECRETS
 FERNET_SECRETS = ("SS_TOTP_ENCRYPTION_KEY",)
 HEX_SECRETS = tuple(k for k in REQUIRED_SECRETS if k not in FERNET_SECRETS)
@@ -30,12 +33,20 @@ DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_KEEP_DUMPS = 5
 PLACEHOLDER = "CHANGEME"
 
-# Extra keys a DigitalOcean droplet's .env carries (deploy phase 7), in the
-# order they are written. deploy/stack reads them with defaults, so a .env
-# without them still means "local data, NPM on the LAN".
+# Extra keys a .env carries beyond the basics: the apps and mail of any
+# environment, then a DigitalOcean droplet's (deploy phase 7) or a LAN
+# Blue/Green app VM's (phase 8b), in the order they are written.
+# deploy/stack reads them with defaults, so a .env without them still means
+# "every app, Mailpit, local data, NPM on the LAN".
 EXTRA_KEYS = (
+    # the Deploy page flow (phase 8c): the optional apps that run, and SMTP
+    # (the password is the optional secret SS_SMTP_PASSWORD)
+    "STACK_APPS", "SS_SMTP_HOST", "SS_SMTP_PORT", "SS_SMTP_USERNAME", "SS_SMTP_STARTTLS",
+    "SS_SMTP_FROM",
     "STACK_EXTERNAL_DATA", "STACK_CADDY", "STACK_NETWORK_SUBNET", "STACK_HOSTS_IP",
     "STACK_TRUSTED_PROXIES", "STACK_DB_HOST", "STACK_DB_PORT", "STACK_DB_NAME", "STACK_DB_USER",
+    # disable: an app VM's database is a LAN Blue/Green data VM (phase 8b), no TLS
+    "STACK_DB_SSLMODE",
     "SS_DATABASE_URL", "SS_DATABASE_SSL", "SS_DATABASE_CA_B64", "SS_SPACES_ENDPOINT",
     "SS_SPACES_REGION", "SS_SPACES_ACCESS_KEY", "SS_SPACES_SECRET_KEY", "SS_SPACES_USE_PATH_STYLE",
     "STACK_DROPLET_ID",
@@ -123,6 +134,60 @@ def render_env(cfg: EnvConfig) -> str:
     lines = ["# Written by Sirdar: edits here are replaced on the next deploy.",
              f"# Environment: {cfg.name}",
              *(f"{k}={v}" for k, v in values.items())]
+    return "\n".join(lines) + "\n"
+
+
+# A LAN Blue/Green data VM's .env (deploy phase 8b): the data stacks only, so
+# only the database and storage secrets (no JWT secret, pepper, TOTP key or
+# wiki token), and the app VMs allowed to reach Postgres.
+DATA_KEYS = ("STACK_ENV", "STACK_DOMAIN", "STACK_IMAGE_TAG", "STACK_BIND_IP",
+             "STACK_SPACES_PORT", "STACK_MAILPIT_PORT", "STACK_KEEP_DUMPS",
+             "POSTGRES_PASSWORD", "SPACES_SECRET_KEY", "SS_SPACES_BUCKET",
+             "STACK_DB_PUBLISH", "STACK_DB_PORT", "STACK_DB_ALLOW")
+DATA_SECRETS = ("POSTGRES_PASSWORD", "SPACES_SECRET_KEY")
+_OCTET = r"(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"
+_IPV4_RE = re.compile(rf"{_OCTET}(\.{_OCTET}){{3}}")
+
+
+@dataclass(frozen=True)
+class DataEnvConfig:
+    name: str
+    domain: str
+    bind_ip: str
+    spaces_port: int
+    mailpit_port: int
+    keep_dumps: int
+    spaces_bucket: str
+    db_port: int
+    allow: tuple[str, ...]
+    secrets: dict[str, str] = field(repr=False)
+
+
+def render_data_env(cfg: DataEnvConfig) -> str:
+    missing = [k for k in DATA_SECRETS if not cfg.secrets.get(k)]
+    if missing:
+        raise RenderError(f"missing secrets: {', '.join(missing)}")
+    if not cfg.allow or not all(_IPV4_RE.fullmatch(ip) for ip in cfg.allow):
+        raise RenderError("STACK_DB_ALLOW must be IPv4 addresses")
+    for key, port in (("STACK_SPACES_PORT", cfg.spaces_port),
+                      ("STACK_MAILPIT_PORT", cfg.mailpit_port), ("STACK_DB_PORT", cfg.db_port)):
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise RenderError(f"{key} must be a port number, 1-65535")
+    values = {
+        "STACK_ENV": cfg.name, "STACK_DOMAIN": cfg.domain, "STACK_IMAGE_TAG": "data",
+        "STACK_BIND_IP": cfg.bind_ip, "STACK_SPACES_PORT": str(cfg.spaces_port),
+        "STACK_MAILPIT_PORT": str(cfg.mailpit_port), "STACK_KEEP_DUMPS": str(cfg.keep_dumps),
+        **{k: cfg.secrets[k] for k in DATA_SECRETS},
+        "SS_SPACES_BUCKET": cfg.spaces_bucket, "STACK_DB_PUBLISH": "1",
+        "STACK_DB_PORT": str(cfg.db_port), "STACK_DB_ALLOW": ",".join(cfg.allow),
+    }
+    for key, value in values.items():
+        if unsafe_value(value):
+            raise RenderError(f"{key} contains a control or line-break character")
+        if value == PLACEHOLDER:
+            raise RenderError(f"{key} is still {PLACEHOLDER}")
+    lines = ["# Written by Sirdar: edits here are replaced on the next deploy.",
+             f"# Environment: {cfg.name} (data VM)", *(f"{k}={v}" for k, v in values.items())]
     return "\n".join(lines) + "\n"
 
 

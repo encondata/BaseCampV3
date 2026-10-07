@@ -31,8 +31,11 @@ def hash_token(raw: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _portal(path: str) -> str:
+def portal_url(path: str) -> str:
     return f"{get_settings().portal_origin.rstrip('/')}{path}"
+
+
+_portal = portal_url   # older callers
 
 
 def _active(account: UserAccount | None) -> bool:
@@ -55,6 +58,20 @@ async def _retire_unused(db: AsyncSession, person_id: uuid.UUID, now: datetime) 
         .values(used_at=now))
 
 
+async def issue_token(db: AsyncSession, person_id: uuid.UUID, *, minutes: int,
+                      now: datetime, ip: str | None = None) -> str:
+    """A new single-use reset token valid `minutes`, the person's older unused
+    ones retired. Only the hash is stored; the raw token is returned for the
+    email and nowhere else. Never commits."""
+    await _retire_unused(db, person_id, now)
+    raw = secrets.token_urlsafe(TOKEN_BYTES)
+    db.add(PasswordResetToken(person_id=person_id, token_hash=hash_token(raw),
+                              created_at=now, expires_at=now + timedelta(minutes=minutes),
+                              requested_ip=ip))
+    await db.flush()
+    return raw
+
+
 async def request_reset(db: AsyncSession, email: str, *, ip: str | None) -> None:
     account = await _account_by(db, email=email.strip())
     if not _active(account):
@@ -62,15 +79,11 @@ async def request_reset(db: AsyncSession, email: str, *, ip: str | None) -> None
     now = datetime.now(UTC)
     if email_enabled():
         settings = get_settings()
-        await _retire_unused(db, account.person_id, now)
-        raw = secrets.token_urlsafe(TOKEN_BYTES)
-        db.add(PasswordResetToken(
-            person_id=account.person_id, token_hash=hash_token(raw), created_at=now,
-            expires_at=now + timedelta(minutes=settings.password_reset_ttl_minutes),
-            requested_ip=ip))
+        raw = await issue_token(db, account.person_id,
+                                minutes=settings.password_reset_ttl_minutes, now=now, ip=ip)
         await enqueue(db, "password_reset", account.email, person_id=account.person_id,
                       name=account.person.first_name,
-                      link=_portal(f"/reset-password#token={raw}"),
+                      link=portal_url(f"/reset-password#token={raw}"),
                       ttl_minutes=settings.password_reset_ttl_minutes)
         via = "email"
     else:
@@ -116,4 +129,4 @@ async def complete(db: AsyncSession, token: PasswordResetToken, account: UserAcc
     audit(db, actor_id=account.person_id, entity_type="user_account",
           entity_id=str(account.person_id), action="password.reset_self", ip=ip)
     await enqueue(db, "password_changed", account.email, person_id=account.person_id,
-                  name=person.first_name, login_url=_portal("/login"))
+                  name=person.first_name, login_url=portal_url("/login"))

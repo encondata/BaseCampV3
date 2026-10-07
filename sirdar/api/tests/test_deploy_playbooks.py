@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -60,7 +61,7 @@ def test_publish_and_teardown_plans():
         assert numbers == sorted(set(numbers)), f"{mode}: numbers must rise"
     runs = {s.key: s.runs for s in steps.STEPS}
     assert [k for k, r in runs.items() if r == "python"] == [
-        "dns", "proxy", "smoke", "unproxy", "undns"]
+        "dns", "proxy", "smoke", "lan_switch", "unproxy", "undns"]
     assert all(s.playbook == "" for s in steps.STEPS if s.runs == "python")
     assert all(s.playbook for s in steps.ANSIBLE_STEPS)
     assert steps.STEPS_BY_KEY["proxy"].timeout >= 30 * 60
@@ -69,8 +70,9 @@ def test_publish_and_teardown_plans():
 
 
 def test_plans():
-    assert [s.number for s in steps.STEPS] == [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11,
-                                               12, 13, 13, 14, 14, 15, 15, 16, 17, 18, 19]
+    assert [s.number for s in steps.STEPS] == [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 7, 8, 9, 9, 10,
+                                               11, 11, 12, 13, 13, 14, 14, 14, 15, 15, 16, 17,
+                                               18, 19]
     assert [s.number for s in steps.plan_for("update")] == [1, 2, 3, 4, 5, 6, 10]
     build = ["preflight", "bootstrap", "fetch", "render", "build"]
     # a seeded first deploy backs up whatever database is already there
@@ -119,7 +121,8 @@ def test_playbook_shape(step):
         assert task.get("name"), f"{step.playbook}: every task needs a name"
         assert not SHELL_MODULES & set(task), f"{step.playbook}: {task['name']} uses a shell"
         text = yaml.safe_dump(task)
-        if ("env_file_b64" in text or "keys_enc_b64" in text) and "block" not in task:
+        if (("env_file_b64" in text or "keys_enc_b64" in text or "admin_password" in text
+                or "data_env_b64" in text) and "block" not in task):
             assert task.get("no_log") is True, f"{step.playbook}: {task['name']} needs no_log"
 
 
@@ -284,16 +287,26 @@ def _target(tmp_path: Path, *, head: int = 89) -> tuple[Path, dict]:
     return env_dir, env
 
 
-def _play(tmp_path: Path, playbook: str, extra: dict, env: dict):
-    """Run a playbook here (connection local); (result, docker calls)."""
+def _play(tmp_path: Path, playbook: str, extra: dict, env: dict, *, verbose: bool = False,
+          unsafe: bool = False):
+    """Run a playbook here (connection local); (result, docker calls).
+    verbose adds -v; unsafe passes the extra vars as the runner does
+    (runner._unsafe, from a file)."""
     cfg = tmp_path / "ansible.cfg"
     cfg.write_text("[defaults]\n")
     env = {**env, "ANSIBLE_CONFIG": str(cfg), "ANSIBLE_HOME": str(tmp_path / "ah"),
            "ANSIBLE_LOCAL_TEMP": str(tmp_path / "tmp"), "ANSIBLE_NOCOLOR": "1"}
+    extra = {"snapshot_python": sys.executable, **extra}
+    if unsafe:
+        extravars = tmp_path / "extravars.json"
+        extravars.write_text(json.dumps(runner._unsafe(extra)))
+        extra_arg = f"@{extravars}"
+    else:
+        extra_arg = json.dumps(extra)
     result = subprocess.run(
-        [str(ANSIBLE_PLAYBOOK), "-i", "target,", "-c", "local",
+        [str(ANSIBLE_PLAYBOOK), "-i", "target,", "-c", "local", *(["-v"] if verbose else []),
          "-e", f"ansible_python_interpreter={sys.executable}",
-         "-e", json.dumps({"snapshot_python": sys.executable, **extra}),
+         "-e", extra_arg,
          str(PLAYBOOK_DIR / playbook)],
         capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, check=False)
     log = Path(env["DOCKER_LOG"])
@@ -853,3 +866,541 @@ def test_deactivate_has_no_slot_smoke_test():
     for mode in ("update", "teardown"):
         with pytest.raises(ValueError):
             steps.plan_for(mode, cloud=True, smoke=False)   # only Deactivate skips it
+
+
+UPDATE_PLAN = ["preflight", "bootstrap", "fetch", "render", "build", "dump", "up"]
+
+
+def test_first_admin_step_follows_start_services():
+    def keys(**kw):
+        return [s.key for s in steps.plan_for("update", first_admin=True, **kw)]
+    assert keys() == [*UPDATE_PLAN, "first_admin"]
+    assert keys(publish=True) == [*UPDATE_PLAN, "first_admin", "dns", "proxy", "smoke"]
+    assert keys(vm=True) == ["provision", *UPDATE_PLAN, "first_admin"]
+    assert keys(cloud=True) == ["do_prepare", *UPDATE_PLAN, "first_admin", "dns",
+                                "slot_smoke"]
+    assert keys(cloud=True, go_live=True)[-1] == "go_live"
+    assert [s.number for s in steps.plan_for("update", first_admin=True, publish=True)] == [
+        1, 2, 3, 4, 5, 6, 10, 11, 12, 13, 14]
+    assert steps.STEPS_BY_KEY["first_admin"].name == "Create the first admin"
+    for mode, kw in (("reset", {}), ("update", {"restore": True}), ("teardown", {}),
+                     ("snapshot", {}), ("restore_dump", {})):
+        with pytest.raises(ValueError):
+            steps.plan_for(mode, first_admin=True, **kw)
+
+
+FAKE_SS_STACK = """#!/usr/bin/env bash
+# the playbook looks for this case label, as in the real ss-stack
+case "${1:-}" in
+  admin) ;;
+esac
+printf '%s\\n' "$*" >> "$ADMIN_LOG"
+cat > "$ADMIN_LOG.stdin"
+[[ "${FAKE_RC:-0}" == 0 ]] || echo "Error: the fake bootstrap-admin refused" >&2
+exit "${FAKE_RC:-0}"
+"""
+
+
+def _admin_target(tmp_path: Path) -> tuple[dict, dict, Path]:
+    env_dir, env = _target(tmp_path)
+    stack = tmp_path / "fake-ss-stack"
+    stack.write_text(FAKE_SS_STACK)
+    stack.chmod(0o755)
+    (tmp_path / "admin.log").touch()
+    env = {**env, "ADMIN_LOG": str(tmp_path / "admin.log")}
+    vars_ = {**_common(env_dir), "ss_stack": str(stack), "admin_email": "ada@test.example.com",
+             "admin_first_name": "Ada", "admin_last_name": "Lovelace",
+             "admin_role": "super_admin", "admin_invite": False,
+             "admin_password": "Stdin-Only-Password-42", "admin_link_minutes": 240}
+    return vars_, env, tmp_path / "admin.log"
+
+
+def test_first_admin_playbook_puts_the_password_on_stdin_only(tmp_path):
+    vars_, env, log = _admin_target(tmp_path)
+    result, _ = _play(tmp_path, "first_admin.yml", vars_, env, verbose=True)
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    argv = log.read_text()
+    assert argv.split() == ["admin", vars_["env_dir"], "--email", "ada@test.example.com",
+                            "--first-name", "Ada", "--last-name", "Lovelace", "--role",
+                            "super_admin", "--link-minutes", "240", "--password-stdin"]
+    assert Path(str(log) + ".stdin").read_text() == "Stdin-Only-Password-42\n"
+    assert "Stdin-Only-Password-42" not in argv and "Stdin-Only-Password-42" not in out
+
+
+def test_first_admin_playbook_invites_without_stdin(tmp_path):
+    vars_, env, log = _admin_target(tmp_path)
+    vars_ = {**vars_, "admin_invite": True, "admin_password": ""}
+    result, _ = _play(tmp_path, "first_admin.yml", vars_, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert log.read_text().split()[-1] == "--invite"
+    assert Path(str(log) + ".stdin").read_text() == ""
+
+
+# 0 created and 10 the account exists are done; 1 (compose exec, ss-stack's
+# die, an uncaught error) and every other code fail the step.
+@pytest.mark.parametrize("rc, ok", [(0, True), (10, True), (1, False), (2, False),
+                                    (3, False), (4, False), (5, False), (6, False),
+                                    (7, False)])
+def test_first_admin_playbook_exit_codes(tmp_path, rc, ok):
+    vars_, env, _ = _admin_target(tmp_path)
+    result, _ = _play(tmp_path, "first_admin.yml", vars_, {**env, "FAKE_RC": str(rc)},
+                      verbose=True)
+    out = result.stdout + result.stderr
+    assert (result.returncode == 0) is ok, out
+    if ok:
+        assert "the fake bootstrap-admin refused" not in out
+    else:
+        assert f"serversherpa bootstrap-admin exited with {rc}." in out
+        assert "the step's log" in out
+        # its own error text reaches the step's log
+        assert "Error: the fake bootstrap-admin refused" in out
+    assert "Stdin-Only-Password-42" not in out
+
+
+def test_first_admin_playbook_takes_the_password_literally(tmp_path):
+    """The extra vars as the runner writes them (runner._unsafe): template
+    syntax and a trailing space reach stdin as typed, and never the log."""
+    vars_, env, log = _admin_target(tmp_path)
+    password = "{{ 7*7 }}-{% if true %}x{% endif %}-Pass "
+    vars_ = {**vars_, "admin_password": password}
+    for rc in ("0", "3"):
+        result, _ = _play(tmp_path, "first_admin.yml", vars_, {**env, "FAKE_RC": rc},
+                          verbose=True, unsafe=True)
+        out = result.stdout + result.stderr
+        assert (result.returncode == 0) is (rc == "0"), out
+        assert Path(str(log) + ".stdin").read_bytes() == (password + "\n").encode()
+        assert password not in out and password.strip() not in out
+        assert "7*7" not in out and "49-" not in out
+
+
+def test_first_admin_playbook_explains_an_old_checkout(tmp_path):
+    vars_, env, log = _admin_target(tmp_path)
+    old = tmp_path / "old-ss-stack"
+    old.write_text("#!/bin/sh\nexit 2\n")
+    old.chmod(0o755)
+    result, _ = _play(tmp_path, "first_admin.yml", {**vars_, "ss_stack": str(old)}, env)
+    assert result.returncode != 0
+    assert "This commit's ss-stack has no admin command" in result.stdout
+    assert log.read_text() == ""
+
+
+def test_first_admin_play_pipelines_so_the_password_never_lands_on_disk():
+    """With pipelining, the module (and its stdin argument) goes over the
+    connection's stdin instead of a temp file on the target."""
+    plays = yaml.safe_load((PLAYBOOK_DIR / "first_admin.yml").read_text())
+    assert [play.get("vars", {}).get("ansible_pipelining") for play in plays] == [True]
+
+
+# ---- LAN Blue/Green (phase 8b): the data VM, its dump and the slot smoke test ----
+
+DATA_VM_TEST_ENV = "SIRDAR_TEST_DATA_VM"
+
+
+def test_slot_smoke_uses_each_names_port(tmp_path):
+    _Answer.status, _Answer.seen = 200, []
+    server = HTTPServer(("127.0.0.1", 0), _Answer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        env_dir, env = _target(tmp_path)
+        hosts = [{"service": "api", "hostname": "api.lan9.serversherpa.com", "path": "/healthz",
+                  "port": server.server_port}]
+        result, _ = _play(tmp_path, "slot_smoke.yml", {
+            **_common(env_dir), "public_hosts": hosts, "slot_port": 1,
+            "slot_smoke_retries": 0, "slot_smoke_delay": 0}, env)
+    finally:
+        server.shutdown()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ("api.lan9.serversherpa.com", "/healthz", "https") in _Answer.seen
+
+
+def test_dump_skips_a_brand_new_data_vm(tmp_path):
+    env_dir, env = _target(tmp_path)
+    _external(env_dir)
+    result, calls = _play(tmp_path, "dump.yml", {**_common(env_dir), "external_data": True,
+                                                "data_new": True, "dump_required": False}, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not any("pg_dump" in c for c in calls)
+
+
+def test_bootstrap_and_the_data_vm_share_the_docker_tasks():
+    _, tasks = _tasks("bootstrap.yml")
+    assert any(t.get("ansible.builtin.include_tasks") == "tasks/docker.yml" for t in tasks)
+    _, tasks = _tasks("data_vm.yml")
+    assert any(t.get("ansible.builtin.include_tasks") == "tasks/docker.yml" for t in tasks)
+    text = (PLAYBOOK_DIR / "data_vm.yml").read_text()
+    assert "--ctorigdstport" in text and "DOCKER-USER" in text and "PartOf=docker.service" in text
+
+
+def test_the_docker_tasks_ship_with_the_package():
+    folder = resources.files("sirdar_api.deploy").joinpath("ansible").joinpath("tasks")
+    assert folder.joinpath("docker.yml").is_file()
+
+
+def test_the_docker_tasks_install_docker_and_the_folder():
+    tasks = yaml.safe_load((PLAYBOOK_DIR / "tasks" / "docker.yml").read_text())
+    names = [t["name"] for t in tasks]
+    assert names[0] == "Base packages" and names[-1] == "Docker answers without sudo"
+    assert "Install Docker" in names and "Environment folder, owned by the SSH user" in names
+    for task in tasks:
+        assert not SHELL_MODULES & set(task), task["name"]
+    # the metadata block stays DigitalOcean's, in bootstrap.yml
+    assert "169.254.169.254" not in (PLAYBOOK_DIR / "tasks" / "docker.yml").read_text()
+
+
+DATA_ENV = ("STACK_ENV=e2e\nPOSTGRES_PASSWORD=0123abcd\nSPACES_SECRET_KEY=0123abcd\n"
+            "STACK_SPACES_PORT=9000\nSTACK_MAILPIT_PORT=8025\n"
+            "STACK_DB_PUBLISH=1\nSTACK_DB_PORT=5432\nSTACK_DB_ALLOW=10.10.48.48,10.10.48.49\n")
+
+
+def _data_vm_vars(env_dir, data_env, **kw):
+    return {**_common(env_dir), "data_env_b64": base64.b64encode(data_env.encode()).decode(),
+            "db_clients": ["10.10.48.48", "10.10.48.49"],
+            "spaces_clients": ["10.10.48.48", "10.10.48.49", "10.10.48.6"],
+            "db_port": 5432, "spaces_port": 9000, "mailpit_port": 8025,
+            "data_vm_test_mode": True, **kw}
+
+
+def test_data_vm_playbook_writes_its_env_and_starts_the_data_stacks(tmp_path):
+    env_dir, env = _target(tmp_path)
+    env[DATA_VM_TEST_ENV] = "1"
+    data_env = DATA_ENV
+    result, calls = _play(tmp_path, "data_vm.yml", _data_vm_vars(env_dir, data_env), env,
+                          verbose=True)
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert (env_dir / ".env").read_text() == data_env
+    assert oct((env_dir / ".env").stat().st_mode & 0o777) == "0o600"
+    assert "0123abcd" not in out
+    rules = (tmp_path / "sirdar-data-firewall").read_text()
+    assert "-s 10.10.48.48 -m conntrack --ctorigdstport 5432 -j RETURN" in rules
+    assert "-s 10.10.48.49 -m conntrack --ctorigdstport 5432 -j RETURN" in rules
+    assert "-s 10.10.48.6 -m conntrack --ctorigdstport 9000 -j RETURN" in rules
+    assert "-s 10.10.48.6 -m conntrack --ctorigdstport 5432" not in rules
+    # every allow comes before the drops, and Postgres is dropped for everyone else
+    lines = [ln.strip() for ln in rules.splitlines() if ln.strip().startswith('iptables -A "$new"')]
+    drops = [i for i, ln in enumerate(lines) if ln.endswith("-j DROP")]
+    returns = [i for i, ln in enumerate(lines) if ln.endswith("-j RETURN")]
+    assert max(returns) < min(drops)
+    assert lines[-1].endswith("--ctorigdstport 8025 -j DROP")
+    assert 'iptables -A "$new" -p tcp -m conntrack --ctorigdstport 5432 -j DROP' in lines
+    # only traffic from outside: the data VM's own containers aren't filtered
+    for bridge in ("docker0", "br-+"):
+        assert any(ln.endswith(f"-i {bridge} -j RETURN") for ln in lines[:min(drops)])
+    syntax = subprocess.run(["sh", "-n", str(tmp_path / "sirdar-data-firewall")],
+                            capture_output=True, text=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
+    # ss-stack data ran: the db stack through the LAN override
+    db = [c for c in calls if "/db/compose.yml" in c]
+    assert db and all("/db/lan.yml" in c for c in db)
+
+
+def test_data_vm_playbook_refuses_a_test_mode_without_the_test_env(tmp_path):
+    """data_vm_test_mode alone (an extravar) never turns the firewall off:
+    the controller's SIRDAR_TEST_DATA_VM must say so too, and the runner's
+    job env never carries it."""
+    env_dir, env = _target(tmp_path)
+    env.pop(DATA_VM_TEST_ENV, None)
+    result, calls = _play(tmp_path, "data_vm.yml",
+                          _data_vm_vars(env_dir, "STACK_ENV=e2e\n"), env)
+    assert result.returncode != 0
+    assert "data_vm_test_mode is for the playbook tests only" in result.stdout
+    assert calls == []
+    assert not (tmp_path / "sirdar-data-firewall").exists()
+
+
+@pytest.mark.parametrize("bad", [["10.10.48.48", "10.10.48.49; reboot"], ["0.0.0.0/0"], []])
+def test_data_vm_playbook_refuses_bad_clients(tmp_path, bad):
+    env_dir, env = _target(tmp_path)
+    env[DATA_VM_TEST_ENV] = "1"
+    result, calls = _play(tmp_path, "data_vm.yml",
+                          _data_vm_vars(env_dir, "STACK_ENV=e2e\n", db_clients=bad), env)
+    assert result.returncode != 0
+    assert "must be IPv4 addresses" in result.stdout, result.stdout
+    assert calls == [] and not (tmp_path / "sirdar-data-firewall").exists()
+
+
+def test_the_data_vm_test_mode_never_reaches_a_real_run(tmp_path, monkeypatch):
+    """Sirdar's code never sends data_vm_test_mode, and SIRDAR_TEST_DATA_VM
+    is outside the runner's job-env allowlist."""
+    from .test_deploy_runner import _request
+    src = Path(steps.__file__).resolve().parents[1]
+    senders = [p for p in src.rglob("*") if p.is_file() and p.suffix in (".py", ".yml")
+               and p.name != "data_vm.yml"
+               and ("data_vm_test_mode" in p.read_text() or DATA_VM_TEST_ENV in p.read_text())]
+    assert senders == []
+    monkeypatch.setenv(DATA_VM_TEST_ENV, "1")
+    assert DATA_VM_TEST_ENV not in runner._INHERITED_ENV
+    assert not DATA_VM_TEST_ENV.startswith(runner._INHERITED_PREFIXES)
+    ansible = runner.AnsibleRunner(str(tmp_path / "runner"))
+    run_dir = ansible.prepare(_request())
+    try:
+        built = ansible.build_runner(run_dir, _request(), lambda e: False, lambda: False)
+        assert DATA_VM_TEST_ENV not in built.config.env
+    finally:
+        import shutil
+        shutil.rmtree(run_dir)
+
+
+
+# A stand-in iptables that keeps the filter table's user chains in a JSON
+# file and, after every change, records whether traffic from outside still
+# meets a complete set of rules (a chain DOCKER-USER jumps to that ends with
+# the mail catcher's DROP, the script's last rule).
+FAKE_IPTABLES = r"""#!/usr/bin/env python3
+import json, os, sys
+path = os.environ["FAKE_IPT_STATE"]
+state = json.load(open(path)) if os.path.exists(path) else {"DOCKER-USER": []}
+args = sys.argv[1:]
+op, chain, rule = args[0], args[1], " ".join(args[2:])
+with open(path + ".log", "a") as f:
+    f.write(" ".join(args) + "\n")
+def jumped():
+    return [r.split("-j ")[1] for r in state["DOCKER-USER"] if r.startswith("-j ")]
+code = 0
+if op == "-N":
+    code = 1 if chain in state else 0
+    state.setdefault(chain, [])
+elif op == "-F":
+    code = 0 if chain in state else 1
+    if chain in state: state[chain] = []
+elif op == "-X":
+    if chain not in state: code = 1
+    elif chain in jumped(): code = 1
+    else: del state[chain]
+elif op == "-C":
+    code = 0 if rule in state.get(chain, []) else 1
+elif op == "-I":
+    state[chain].insert(0, rule)
+elif op == "-A":
+    if chain not in state: sys.exit(1)
+    state[chain].append(rule)
+elif op == "-D":
+    if rule in state.get(chain, []): state[chain].remove(rule)
+    else: code = 1
+else:
+    sys.exit(2)
+json.dump(state, open(path, "w"))
+complete = [c for c in jumped() if state.get(c) and state[c][-1].endswith(
+    "--ctorigdstport " + os.environ["FAKE_LAST_PORT"] + " -j DROP")]
+with open(path + ".safe", "a") as f:
+    f.write(("1" if complete else "0") + "\n")
+sys.exit(code)
+"""
+
+FAKE_CONNTRACK = r"""#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_CT_LOG"
+if [[ $1 == -L ]]; then
+  port=${@: -1}
+  for src in $FAKE_CT_SOURCES; do
+    orig="src=$src dst=10.10.48.47 sport=40000 dport=$port"
+    reply="src=172.31.0.2 dst=$src sport=$port dport=40000"
+    echo "tcp 6 431999 ESTABLISHED $orig $reply [ASSURED] mark=0 use=1"
+  done
+fi
+exit 0
+"""
+
+
+def _firewall(tmp_path, name, **kw):
+    """Render the firewall script through the playbook (test mode)."""
+    run_dir = tmp_path / name
+    run_dir.mkdir()
+    env_dir, env = _target(run_dir)
+    env[DATA_VM_TEST_ENV] = "1"
+    data_env = DATA_ENV
+    if "db_clients" in kw:
+        data_env = data_env.replace("STACK_DB_ALLOW=10.10.48.48,10.10.48.49",
+                                    "STACK_DB_ALLOW=" + ",".join(kw["db_clients"]))
+    result, _ = _play(run_dir, "data_vm.yml", _data_vm_vars(env_dir, data_env, **kw), env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    return run_dir / "sirdar-data-firewall"
+
+
+def _fake_bin(tmp_path, *, conntrack=True):
+    bin_dir = tmp_path / "fwbin"
+    bin_dir.mkdir(exist_ok=True)
+    ipt = bin_dir / "iptables"
+    ipt.write_text(FAKE_IPTABLES.replace("#!/usr/bin/env python3", f"#!{sys.executable}"))
+    ipt.chmod(0o755)
+    if conntrack:
+        ct = bin_dir / "conntrack"
+        ct.write_text(FAKE_CONNTRACK)
+        ct.chmod(0o755)
+    return {"PATH": f"{bin_dir}:/usr/bin:/bin", "FAKE_IPT_STATE": str(tmp_path / "ipt.json"),
+            "FAKE_LAST_PORT": "8025", "FAKE_CT_LOG": str(tmp_path / "ct.log"),
+            "FAKE_CT_SOURCES": "10.10.48.48 10.10.48.50"}
+
+
+def _run_script(script, env):
+    return subprocess.run(["sh", str(script)], env=env, capture_output=True, text=True,
+                          check=False)
+
+
+def test_the_firewall_never_leaves_the_ports_open_while_it_changes(tmp_path):
+    first = _firewall(tmp_path, "a")
+    second = _firewall(tmp_path, "b", db_clients=["10.10.48.48", "10.10.48.51"])
+    env = _fake_bin(tmp_path)
+    out = _run_script(first, env)
+    assert out.returncode == 0, out.stderr
+    safe = (tmp_path / "ipt.json.safe").read_text().split()
+    # from the moment the rules first went live, they never lapsed
+    assert "1" in safe and "0" not in safe[safe.index("1"):]
+    (tmp_path / "ipt.json.safe").write_text("")
+    for script in (second, second, first):     # changes, a rerun, and back
+        out = _run_script(script, env)
+        assert out.returncode == 0, out.stderr
+        assert "0" not in (tmp_path / "ipt.json.safe").read_text().split()
+    state = json.loads((tmp_path / "ipt.json").read_text())
+    jumps = [r for r in state["DOCKER-USER"] if r.startswith("-j ")]
+    assert len(jumps) == 1
+    live = state[jumps[0].split("-j ")[1]]
+    assert "-p tcp -s 10.10.48.49 -m conntrack --ctorigdstport 5432 -j RETURN" in live
+    # the idle chain is gone; nothing else was left behind
+    assert set(state) == {"DOCKER-USER", jumps[0].split("-j ")[1]}
+
+
+def test_the_firewall_forgets_dropped_clients_connections(tmp_path):
+    script = _firewall(tmp_path, "a")
+    env = _fake_bin(tmp_path)
+    out = _run_script(script, env)
+    assert out.returncode == 0, out.stderr
+    log = (tmp_path / "ct.log").read_text().splitlines()
+    deletes = [ln for ln in log if ln.startswith("-D")]
+    assert "-D -p tcp --orig-src 10.10.48.50 --orig-port-dst 5432" in deletes
+    assert not any("--orig-src 10.10.48.48 --orig-port-dst 5432" in ln for ln in deletes)
+    # the mail catcher has no clients: every tracked connection to it goes
+    assert "-D -p tcp --orig-src 10.10.48.48 --orig-port-dst 8025" in deletes
+
+
+def test_the_firewall_runs_without_conntrack(tmp_path):
+    script = _firewall(tmp_path, "a")
+    env = _fake_bin(tmp_path, conntrack=False)
+    if shutil.which("conntrack", path=env["PATH"]):
+        pytest.skip("this machine has a real conntrack")
+    out = _run_script(script, env)
+    assert out.returncode == 0, out.stderr
+
+
+def test_the_firewall_restarts_only_when_its_rules_change():
+    _, tasks = _tasks("data_vm.yml")
+    by_name = {t["name"]: t for t in tasks}
+    assert by_name["The firewall's rules"].get("register") == "firewall_rules"
+    unit = by_name["The firewall is on, and comes back with Docker"]
+    state = unit["ansible.builtin.systemd_service"]["state"]
+    assert "restarted" in state and "started" in state and "firewall_rules is changed" in state
+    assert "conntrack" in yaml.safe_dump(by_name["The firewall's tools"])
+
+
+@pytest.mark.parametrize("override, key", [
+    ({"db_port": 5433}, "STACK_DB_PORT"),
+    ({"spaces_port": 9001}, "STACK_SPACES_PORT"),
+    ({"mailpit_port": 8026}, "STACK_MAILPIT_PORT"),
+    ({"db_clients": ["10.10.48.48", "10.10.48.52"]}, "STACK_DB_ALLOW"),
+    ({"db_clients": ["10.10.48.48"]}, "STACK_DB_ALLOW"),
+])
+def test_data_vm_playbook_refuses_vars_the_env_disagrees_with(tmp_path, override, key):
+    env_dir, env = _target(tmp_path)
+    env[DATA_VM_TEST_ENV] = "1"
+    result, calls = _play(tmp_path, "data_vm.yml", _data_vm_vars(env_dir, DATA_ENV, **override),
+                          env)
+    assert result.returncode != 0
+    assert key in result.stdout and "0123abcd" not in result.stdout + result.stderr
+    assert calls == [] and not (tmp_path / "sirdar-data-firewall").exists()
+    assert (env_dir / ".env").read_text() != DATA_ENV
+
+
+@pytest.mark.parametrize("override", [{"db_port": 70000}, {"spaces_port": 65536},
+                                      {"mailpit_port": 0}])
+def test_data_vm_playbook_caps_its_ports(tmp_path, override):
+    env_dir, env = _target(tmp_path)
+    env[DATA_VM_TEST_ENV] = "1"
+    result, calls = _play(tmp_path, "data_vm.yml", _data_vm_vars(env_dir, DATA_ENV, **override),
+                          env)
+    assert result.returncode != 0
+    assert "1-65535" in result.stdout
+    assert calls == []
+
+
+def _bg(mode, **kw):
+    return [s.key for s in steps.plan_for(mode, vm=True, bluegreen=True, **kw)]
+
+
+def test_lan_bluegreen_plans():
+    build = ["provision", "preflight", "bootstrap", "fetch", "render", "build"]
+    assert _bg("update") == [*build, "dump", "data_vm", "up", "slot_smoke"]
+    assert _bg("update", go_live=True)[-1] == "lan_switch"
+    assert _bg("update", restore=True, publish=True, go_live=True) == [
+        *build, "dump", "data_vm", "restore", "up", "dns", "slot_smoke", "lan_switch"]
+    assert _bg("update", first_admin=True, publish=True) == [
+        *build, "dump", "data_vm", "up", "first_admin", "dns", "slot_smoke"]
+    assert [s.number for s in steps.plan_for("update", vm=True, bluegreen=True, restore=True,
+                                             publish=True, go_live=True)] == [
+        0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14]
+    assert _bg("activate") == ["slot_smoke", "lan_switch"]
+    assert _bg("snapshot") == ["preflight", "export"]
+    assert _bg("teardown") == ["destroy", "unproxy", "undns"]
+    assert _bg("teardown", snapshot=True) == ["export", "destroy", "unproxy", "undns"]
+    assert steps.STEPS_BY_KEY["data_vm"].name == "Prepare data VM"
+    assert steps.STEPS_BY_KEY["lan_switch"].runs == "python"
+    for mode in ("reset", "restore_dump", "rollback", "vm_restore", "publish", "renew"):
+        with pytest.raises(ValueError):
+            steps.plan_for(mode, vm=True, bluegreen=True)
+    with pytest.raises(ValueError):
+        steps.plan_for("update", bluegreen=True)           # a VM plan only
+    with pytest.raises(ValueError):
+        steps.plan_for("update", vm=True, bluegreen=True, cloud=True)
+
+
+def test_bluegreen_vm_steps_get_an_hour():
+    assert steps.timeout_of("provision", bluegreen=True) == 60 * 60
+    assert steps.timeout_of("destroy", bluegreen=True) == 60 * 60
+    assert steps.timeout_of("provision") == steps.timeout_of("destroy") == 30 * 60
+    assert steps.timeout_of("build", bluegreen=True) == steps.STEPS_BY_KEY["build"].timeout
+
+
+RECREATED_LINE = "recreated its database or storage"
+STARTED_LINE = "The data VM started its database and storage."
+UP_TO_DATE_LINE = "already up to date"
+LINES = (RECREATED_LINE, STARTED_LINE, UP_TO_DATE_LINE)
+
+
+@pytest.mark.parametrize("compose_says, expected", [
+    (" Container e2e-db-postgres-1  Recreate\n Container e2e-db-postgres-1  Recreated",
+     RECREATED_LINE),
+    (" Container e2e-db-postgres-1  Running", UP_TO_DATE_LINE),
+    # the first deploy: compose creates them, nothing ran before
+    (" Container e2e-db-postgres-1  Creating\n Container e2e-db-postgres-1  Created\n"
+     " Container e2e-db-postgres-1  Starting\n Container e2e-db-postgres-1  Started",
+     STARTED_LINE),
+])
+def test_data_vm_playbook_says_whether_the_shared_stack_restarted(tmp_path, compose_says,
+                                                                    expected):
+    """Both app VMs share the data VM: a new Postgres or SeaweedFS image (or
+    compose change) restarts the live slot's database too, before the idle
+    slot's smoke test. Step 7 says so in its log."""
+    env_dir, env = _target(tmp_path)
+    env[DATA_VM_TEST_ENV] = "1"
+    bin_dir = tmp_path / "bin"
+    (bin_dir / "docker").rename(bin_dir / "docker-real")
+    said = tmp_path / "compose-says"
+    said.write_text(compose_says + "\n")
+    wrapper = bin_dir / "docker"
+    wrapper.write_text('#!/usr/bin/env bash\n'
+                       'case " $* " in *" up "*) cat "$COMPOSE_SAYS" >&2 ;; esac\n'
+                       'exec "$(dirname "$0")/docker-real" "$@"\n')
+    wrapper.chmod(0o755)
+    env["COMPOSE_SAYS"] = str(said)
+    result, _ = _play(tmp_path, "data_vm.yml", _data_vm_vars(env_dir, DATA_ENV), env)
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert expected in out
+    assert all(other not in out for other in LINES if other != expected)
+    assert "0123abcd" not in out
+
+
+def test_switch_traffic_on_the_lan_has_the_proxy_steps_time():
+    """The first switch creates the proxy hosts and requests certificates."""
+    assert steps.STEPS_BY_KEY["lan_switch"].timeout == steps.STEPS_BY_KEY["proxy"].timeout
+    assert steps.STEPS_BY_KEY["lan_switch"].timeout == 45 * 60
+    assert steps.timeout_of("lan_switch", bluegreen=True) == 45 * 60

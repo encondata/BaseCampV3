@@ -47,3 +47,12 @@ def password_expires_at(cfg: dict, password_hash: str | None,
     changed = _aware(password_updated_at)
     start = since if changed is None else max(changed, since)
     return start + timedelta(days=int(cfg.get("password_expiry_days", 90)))
+
+
+# A new environment's password bar: ServerSherpa's default
+# (api/src/serversherpa/config.py password_min_length; deploy/stack/api/compose.yml
+# never sets SS_PASSWORD_MIN_LENGTH). The environment's own bootstrap-admin
+# checks again and is the authority. test_portal_compat.py pins both.
+PASSWORD_MIN_LENGTH = 8
+FIRST_ADMIN_ROLE = "super_admin"
+FIRST_ADMIN_LINK_MINUTES = 240          # the change-password or set-password link: 4 hours

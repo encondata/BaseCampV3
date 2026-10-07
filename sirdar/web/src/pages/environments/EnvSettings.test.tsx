@@ -16,7 +16,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import EnvSettings from './EnvSettings';
-import { DEFAULTS, DO_ENV, ENV, ESXI_ENV, ESXI_TARGETS, PX_ENV, PX_NEW_ENV, PX_TARGETS, TARGETS } from './testData';
+import { DEFAULTS, DO_ENV, ENV, ESXI_ENV, ESXI_TARGETS, LAN_ENV, PX_ENV, PX_NEW_ENV, PX_TARGETS, TARGETS } from './testData';
 
 Element.prototype.scrollIntoView = () => {};
 beforeEach(() => {
@@ -257,4 +257,42 @@ it("DigitalOcean: what Sirdar built can't change here; the DigitalOcean section 
     expect(screen.queryByLabelText(label)).toBeNull();
   }
   expect(screen.getByRole('region', { name: 'DigitalOcean' })).toBeTruthy();
+});
+
+const FIRST_ADMIN = {
+  first_name: 'Ada', last_name: 'Lovelace', email: 'ada@example.com', password_mode: 'typed' as const, done: false,
+};
+
+it('the First admin card shows only while a first admin is still to be created', () => {
+  open({ ...ENV, first_admin: FIRST_ADMIN });
+  const card = screen.getByRole('group', { name: 'First admin' });
+  expect(within(card).getByText('Ada Lovelace')).toBeTruthy();
+  expect(within(card).getByRole('button', { name: 'Change…' })).toBeTruthy();
+  cleanup();
+  open({ ...ENV, first_admin: { ...FIRST_ADMIN, done: true } });
+  expect(screen.queryByRole('group', { name: 'First admin' })).toBeNull();
+  cleanup();
+  open({ ...ENV, first_admin: null });
+  expect(screen.queryByRole('group', { name: 'First admin' })).toBeNull();
+});
+
+it('Blue/Green: the target names its three VMs, sizes are not editable, and Delete names the VMs', () => {
+  render(<EnvSettings env={LAN_ENV} targets={ESXI_TARGETS.targets} onSaved={vi.fn()} onDeleteStarted={vi.fn()} />);
+  expect((screen.getByLabelText('Target') as HTMLInputElement).value)
+    .toBe('ESXi · Blue/Green (ss-lan9-data, ss-lan9-orange, ss-lan9-purple)');
+  expect(screen.queryByLabelText('vCPUs')).toBeNull();
+  expect(screen.queryByLabelText('VM snapshots to keep')).toBeNull();
+  const del = screen.getByText(/destroys its three VMs on ESXi/);
+  expect(del.textContent).toContain('ss-lan9-data, ss-lan9-orange and ss-lan9-purple');
+  expect(del.textContent).not.toMatch(/VM snapshots/);
+});
+
+it('the SMTP password is labeled and shown only when mail goes through SMTP', async () => {
+  open();
+  expect(screen.queryByText(/SS_SMTP_PASSWORD|SMTP password/)).toBeNull();
+  cleanup();
+  open({ ...ENV, mail: { ...ENV.mail, mode: 'smtp', host: 'smtp.example.com', port: 587, from_address: 'ops@example.com' },
+         secrets_set: { ...ENV.secrets_set, SS_SMTP_PASSWORD: true } });
+  expect(secret('SMTP password: set')).toBeTruthy();
+  expect(screen.queryByText(/SS_SMTP_PASSWORD/)).toBeNull();
 });

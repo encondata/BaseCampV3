@@ -311,6 +311,9 @@ const MESSAGES: Record<string, string> = {
   do_db_size_invalid: "That isn't a DigitalOcean database size.",
   db_standby_size_invalid: "That database size can't have a standby node. Choose a larger size first.",
   do_field_locked: "That can't change on a DigitalOcean environment after it's created.",
+  switch_unresolved:
+    "The last Switch traffic didn't finish cleanly, so Nginx Proxy Manager may point at the idle server. Retry that switch first.",
+  bluegreen_field_locked: "That can't change on a Blue/Green environment after it's created: its VMs and proxy hosts were built for it.",
   do_not_allowed: 'DigitalOcean settings only apply to an environment on DigitalOcean.',
   do_not_ready: "Nothing is built on DigitalOcean for this environment yet. Deploy it first.",
   snapshot_slot_unreachable: "The droplet Sirdar would take the snapshot on isn't reachable. Untick 'Save a snapshot first' to delete without one.",
@@ -339,10 +342,45 @@ const MESSAGES: Record<string, string> = {
   slot_already_active: 'That slot is already live.',
   production_retiring: 'This production environment is retiring: it can only be deactivated.',
   already_inactive: 'No slot is live.',
-  auto_activate_not_allowed: 'Only non-production DigitalOcean environments activate automatically.',
+  auto_activate_not_allowed: 'Only non-production environments with two servers activate automatically.',
   slots_full: 'This environment already has two slots.',
   slot_not_allowed: 'Production always has its Blue and Green slots.',
   do_shrink_refused: 'Sizes can only grow.',
+  // LAN Blue/Green
+  vm_static_required: 'Blue/Green needs a static address for each of the three VMs.',
+  vm_ips_not_distinct: 'The data VM and the two app VMs need three different addresses.',
+  vm_subnet_mismatch: 'The data VM and the two app VMs need addresses on the same network.',
+  vm_resize_not_supported: "A Blue/Green environment's VM sizes can't change yet.",
+  not_bluegreen_environment: "This environment has one server, so there's nothing to activate.",
+  not_supported_on_bluegreen:
+    'Both servers share one database, so that would change the live server too. Activate the other server to go back.',
+  bluegreen_not_allowed: 'Blue/Green on the LAN needs an ESXi or Proxmox target.',
+  vm_name_taken: 'Another environment already uses that VM name. Choose a different environment name.',
+  // the first admin
+  first_admin_not_allowed: 'The first admin is only for a new environment.',
+  first_admin_with_seed: 'An environment seeded from a snapshot already has its users. Start empty to add a first admin.',
+  first_admin_name_invalid: 'Enter a first and last name (up to 100 characters each).',
+  first_admin_email_invalid: 'Enter a valid email address for the first admin.',
+  first_admin_password_too_short: "The password is too short for ServerSherpa's password policy.",
+  first_admin_password_invalid: "The password can't contain line breaks or control characters.",
+  first_admin_password_not_allowed: 'An invite sends a set-password link: leave the password empty.',
+  first_admin_invalid: "Those first-admin settings aren't valid.",
+  first_admin_not_set: 'This environment has no first admin to change.',
+  first_admin_done: 'The first admin was already created; change their password in the portal.',
+  // optional apps and mail
+  apps_invalid: 'Choose the apps from Wiki, Kiosk, Status page and Mailpit.',
+  mailpit_required: 'Mail goes to Mailpit unless SMTP is set up: turn Mailpit on, or choose SMTP.',
+  mail_invalid: 'Choose Mailpit or SMTP for mail.',
+  apps_not_allowed: "An adopted environment runs the apps its own .env lists (STACK_APPS).",
+  mail_not_allowed: "An adopted environment keeps the mail settings its own .env has (SS_SMTP_*).",
+  smtp_required_for_first_admin: "On production the first admin's email goes out through SMTP: choose SMTP in Extras › Mail, or start from a snapshot.",
+  smtp_host_invalid: "Enter the SMTP server's host name or address.",
+  smtp_port_invalid: 'Use an SMTP port from 1 to 65535.',
+  smtp_username_invalid: "That SMTP user name can't be used: no spaces, quotes, $, # or backslashes.",
+  smtp_password_invalid:
+    "That SMTP password can't be saved. Use letters, numbers and ._~+/=:@%^*!?,;- only, with no spaces or quotes.",
+  smtp_from_invalid: 'Enter the address mail is sent from, like noreply@example.com.',
+  secrets_not_allowed: 'An adopted environment keeps its own secrets; change them on its Settings tab.',
 };
 
 export function errorText(err: unknown, fallback: string): string {
@@ -363,9 +401,12 @@ export function errorDetail<T extends object = Record<string, unknown>>(err: unk
 export function deployErrorText(err: unknown, fallback: string): string {
   const d = errorDetail<{
     reason?: unknown; missing?: unknown; key?: unknown; service?: unknown; kinds?: unknown; environments?: unknown;
-    production?: unknown;
+    production?: unknown; min_length?: unknown; name?: unknown;
   }>(err);
   if (d && typeof d.reason === 'string' && d.reason) return d.reason;
+  if (d && typeof d.name === 'string' && d.name && err instanceof ApiError && err.code === 'vm_name_taken') {
+    return `Another environment already uses the VM name ${d.name}. Choose a different environment name.`;
+  }
   if (d && Array.isArray(d.environments) && d.environments.length && err instanceof ApiError
       && err.code === 'integration_in_use') {
     return `Environments still use it: ${d.environments.join(', ')}. Delete them first.`;
@@ -378,6 +419,11 @@ export function deployErrorText(err: unknown, fallback: string): string {
   if (d && d.production === true && err instanceof ApiError && err.code === 'snapshot_slot_unreachable') {
     return "The droplet Sirdar would take the snapshot on isn't reachable, and production never goes "
       + 'without its snapshot. Retry once the droplet is back.';
+  }
+  if (d && typeof (d as { min_length?: unknown }).min_length === 'number' && err instanceof ApiError
+      && err.code === 'first_admin_password_too_short') {
+    const n = (d as { min_length: number }).min_length;
+    return `${errorText(err, fallback).replace(/\.$/, '')} (at least ${n} characters).`;
   }
   const base = errorText(err, fallback);
   let extra = '';
@@ -462,6 +508,25 @@ export type DeploymentMode = DeployMode | 'adopt' | 'snapshot' | 'rollback' | 'p
 export type DeploymentStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'adopted';
 export type StepStatus =
   'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'not_run' | 'cancelled' | 'interrupted';
+/** The first super admin step 11 of the first deploy creates (an environment that starts empty). */
+export interface NewFirstAdmin {
+  first_name: string; last_name: string; email: string; password_mode: 'typed' | 'invite';
+  /** typed only; write-only */
+  password?: string | null;
+}
+export interface EnvFirstAdmin {
+  first_name: string; last_name: string; email: string; password_mode: 'typed' | 'invite'; done: boolean;
+}
+/** An environment's mail: Mailpit, or an SMTP server (the password is write-only: only whether one is set). */
+export interface EnvMail {
+  mode: 'mailpit' | 'smtp'; host: string | null; port: number | null; username: string | null;
+  from_address: string | null; starttls: boolean; password_set: boolean;
+}
+/** Create's `mail`: Mailpit, or an SMTP server (the password is write-only). */
+export interface NewMail {
+  mode: 'mailpit' | 'smtp'; host?: string; port?: number; username?: string; password?: string;
+  from_address?: string; starttls?: boolean;
+}
 export interface EnvService { service: string; host_ip: string; port: number; hostname: string | null; proxied: boolean }
 export interface SnapshotRef { id: string; name: string }
 export interface DeploymentSummary {
@@ -485,6 +550,10 @@ export interface DeploymentSummary {
   started_at: string; finished_at: string | null; created_at: string;
   /** DigitalOcean: the slot it deploys or switches to, and whether it ends with Switch traffic. */
   cloud: boolean; slot: string | null; go_live: boolean;
+  /** A LAN Blue/Green deployment: `slot` and `go_live` as on DigitalOcean. */
+  bluegreen: boolean;
+  /** Its plan has step 11, Create the first admin. */
+  first_admin: boolean;
 }
 export interface DeploymentStep {
   number: number; key: string; name: string; status: StepStatus;
@@ -497,8 +566,13 @@ export interface Environment {
   id: string; name: string; type: EnvType; target: string; base_domain: string; env_dir: string;
   /** 'proxmox' | 'esxi': its host is a VM Sirdar builds (`vm`); 'ssh': a saved SSH target. */
   target_kind: 'ssh' | VmHostKind | 'digitalocean';
+  /** The single-server VM (role main); null on SSH, DigitalOcean and LAN Blue/Green. */
   vm: EnvVm | null;
-  /** DigitalOcean: its slots, the one the load balancer sends traffic to, auto-activate, retiring (production),
+  /** Every VM Sirdar built for it: a single-server VM environment's one, or Blue/Green's data, orange and purple. */
+  machines: EnvVm[];
+  /** LAN Blue/Green: its two app slots (null otherwise). */
+  lan_slots: LanSlot[] | null;
+  /** DigitalOcean and LAN Blue/Green: its slots, the one the load balancer sends traffic to, auto-activate, retiring (production),
    *  and what Sirdar built. */
   slots: string[]; active_slot: string | null; auto_activate: boolean; retiring: boolean; do: EnvDo | null;
   git_ref: string; current_sha: string | null; image_tag: string | null; status: EnvStatus;
@@ -508,8 +582,14 @@ export interface Environment {
   secrets_set: Record<string, boolean>;
   /** The snapshot the first deploy restores (kept afterwards). */
   seed_snapshot: SnapshotRef | null;
+  /** An environment that starts empty: the first super admin its first deploy creates. */
+  first_admin: EnvFirstAdmin | null;
   /** Deploys publish DNS records and proxy hosts (steps 12–14). */
   publish: boolean;
+  /** The optional apps it runs (API and Portal always run). */
+  apps: string[];
+  /** Where its mail goes. */
+  mail: EnvMail;
   /** What Sirdar manages for it in Cloudflare and Nginx Proxy Manager. */
   managed_records: ManagedRecordRef[];
   last_deployment: DeploymentSummary | null; created_at: string; updated_at: string;
@@ -520,7 +600,10 @@ export interface ManagedRecordRef {
 /** A VM environment's VM. `stage`: none before step 0 starts one, partial while it isn't finished, then built.
  *  `vmid`/`node` are Proxmox's, `moref` ESXi's; `ip` is null until the VM reports it. */
 export interface EnvVm {
-  kind: VmHostKind; stage: 'none' | 'partial' | 'built'; name: string;
+  kind: VmHostKind;
+  /** main: a single-server environment's VM; data, orange, purple: LAN Blue/Green's. */
+  role: 'main' | 'data' | 'orange' | 'purple';
+  stage: 'none' | 'partial' | 'built'; name: string;
   /** The Proxmox node, or the ESXi host's address. */
   host: string; node: string | null; vmid: number | null; moref: string | null;
   cores: number; memory_mb: number; disk_gb: number;
@@ -533,6 +616,17 @@ export interface VmDefaults {
 }
 export interface NewVm {
   cores?: number; memory_mb?: number; disk_gb?: number; ip_mode: 'static' | 'dhcp'; ip_cidr?: string; gateway?: string;
+  /** 2: LAN Blue/Green (a data VM, orange at `ip_cidr`, purple; static addresses only). */
+  slots?: 1 | 2; purple_ip_cidr?: string; data_ip_cidr?: string;
+  /** Blue/Green: the data VM's size (the app VMs take the sizes above). */
+  data?: { cores?: number; memory_mb?: number; disk_gb?: number };
+  /** Blue/Green, not production: an Update goes live by itself once its smoke test passes. */
+  auto_activate?: boolean;
+}
+/** A LAN Blue/Green app slot: its VM's address and the commit it last ran. */
+export interface LanSlot {
+  slot: string; ip: string | null; sha: string | null; image_tag: string | null; active: boolean;
+  last_check_ok: boolean | null; last_check_at: string | null;
 }
 /** A VM snapshot Sirdar took (GET …/vm-snapshots): `sha` is the commit it holds. */
 export interface VmSnapshot {
@@ -547,6 +641,10 @@ export interface EnvironmentDefaults {
   spaces_bucket: string; log_levels: string[]; optional_secrets: string[];
   vm: VmDefaults;
   do: DoDefaults;
+  first_admin: { password_min_length: number; role: string; link_minutes: number };
+  /** The apps a new environment can turn off, and the ones that always run. */
+  apps: { optional: string[]; always: string[] };
+  mail: { smtp_port: number };
 }
 export interface NewEnvironmentBody {
   name: string; type: EnvType; target: string; git_ref: string; base_domain?: string;
@@ -554,12 +652,20 @@ export interface NewEnvironmentBody {
   proxy_ip?: string; bind_ip?: string; ports: Record<string, number>;
   /** The first deploy restores this snapshot. */
   snapshot_id?: string;
+  /** An environment that starts empty: its first super admin. */
+  first_admin?: NewFirstAdmin;
   /** Deploys publish DNS records and proxy hosts (the API's default: true). */
   publish?: boolean;
   /** a VM target ('proxmox' or 'esxi') only: the VM step 0 builds. */
   vm?: NewVm;
   /** target 'digitalocean' only. */
   do?: NewDo;
+  /** The optional apps it runs (the API's default: all of them). */
+  apps?: string[];
+  /** Where its mail goes (the API's default: Mailpit). */
+  mail?: NewMail;
+  /** Optional secrets set at create (write-only), like SS_ANTHROPIC_API_KEY. */
+  secrets?: Record<string, string>;
 }
 export interface AdoptEnvironmentBody { name: string; type: EnvType; target: string; git_ref: string }
 /** PATCH body: an omitted field is kept; a secret set to "" is cleared. */
@@ -637,6 +743,9 @@ export const activateSlot = (name: string, slot: string | null, confirmName?: st
 /** A one-slot environment's second slot; `deployment` deploys the running commit to it (null before any deploy). */
 export const addSlot = (name: string) =>
   sendJson<{ environment: Environment; deployment: Deployment | null }>('POST', `${envPath(name)}/slots`);
+/** Fix the first admin before step 11 uses it: a new typed password, or switch to an invite. */
+export const setFirstAdmin = (name: string, body: NewFirstAdmin) =>
+  sendJson<Environment>('PUT', `${envPath(name)}/first-admin`, body);
 export const listBackups = (name: string) => getJson<{ backups: Backup[] }>(`${envPath(name)}/backups`);
 export const listVmSnapshots = (name: string) =>
   getJson<{ snapshots: VmSnapshot[] }>(`${envPath(name)}/vm-snapshots`);

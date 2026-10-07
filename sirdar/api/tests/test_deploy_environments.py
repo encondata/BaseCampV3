@@ -157,8 +157,9 @@ async def test_adopted_record_renders_the_same_env(db, target):
         bind_ip=env.bind_ip, ports={r.service: r.port for r in rows},
         keep_dumps=env.keep_dumps, spaces_bucket=env.spaces_bucket, log_level=env.log_level,
         secrets=await _secrets(db, env.id))))
+    # SS_SMTP_PASSWORD (phase 8c) postdates this .env: unset renders empty
     remote = envfile.parse_env(remote_env_text(SS_ANTHROPIC_API_KEY="sk-ant-api03-x",
-                                               STACK_API_PORT="8100"))
+                                               STACK_API_PORT="8100", SS_SMTP_PASSWORD=""))
     assert rendered == {k: v for k, v in remote.items() if k in envfile.KNOWN_KEYS}
 
 

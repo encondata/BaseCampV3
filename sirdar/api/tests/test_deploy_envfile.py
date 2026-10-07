@@ -146,3 +146,90 @@ def test_the_cert_worker_keys_close_the_extras():
     text = ENV_EXAMPLE.read_text()
     for key in envfile.EXTRA_KEYS:
         assert f"# {key}=" in text or f" {key}=" in text, key     # listed, commented out
+
+
+# ---- LAN Blue/Green (phase 8b): the data VM's .env ----
+
+def _data_cfg(**kw):
+    base = dict(name="lan9", domain="lan9.serversherpa.com", bind_ip="0.0.0.0", spaces_port=9000,
+                mailpit_port=8025, keep_dumps=5, spaces_bucket="serversherpa", db_port=5432,
+                allow=("10.10.48.48", "10.10.48.49"),
+                secrets={k: f"{k.lower()}-value" for k in envfile.REQUIRED_SECRETS})
+    return envfile.DataEnvConfig(**{**base, **kw})
+
+
+def test_the_data_vm_env_has_only_the_data_secrets():
+    secrets = {k: f"{k.lower()}-value" for k in envfile.REQUIRED_SECRETS}
+    text = envfile.render_data_env(envfile.DataEnvConfig(
+        name="lan9", domain="lan9.serversherpa.com", bind_ip="0.0.0.0", spaces_port=9000,
+        mailpit_port=8025, keep_dumps=5, spaces_bucket="serversherpa", db_port=5432,
+        allow=("10.10.48.48", "10.10.48.49"), secrets=secrets))
+    values = envfile.parse_env(text)
+    assert list(values) == list(envfile.DATA_KEYS)
+    assert (values["STACK_DB_PUBLISH"], values["STACK_DB_ALLOW"]) == (
+        "1", "10.10.48.48,10.10.48.49")
+    assert values["POSTGRES_PASSWORD"] == "postgres_password-value"
+    for key in ("SS_JWT_SECRET", "SS_PASSWORD_PEPPER", "SS_TOTP_ENCRYPTION_KEY",
+                "SS_WIKI_SERVICE_TOKEN"):
+        assert key not in values and secrets[key] not in text
+
+
+def test_the_data_vm_env_refuses_a_bad_address():
+    with pytest.raises(envfile.RenderError):
+        envfile.render_data_env(envfile.DataEnvConfig(
+            name="lan9", domain="lan9.serversherpa.com", bind_ip="0.0.0.0", spaces_port=9000,
+            mailpit_port=8025, keep_dumps=5, spaces_bucket="serversherpa", db_port=5432,
+            allow=("10.10.48.48\nX=1",),
+            secrets={k: "v" for k in envfile.REQUIRED_SECRETS}))
+
+
+@pytest.mark.parametrize("allow", [(), ("10.10.48.48", ""), ("10.10.48.48,10.10.48.49",),
+                                   ("::1",), ("10.10.48.256",)])
+def test_the_data_vm_env_refuses_other_allow_lists(allow):
+    with pytest.raises(envfile.RenderError) as err:
+        envfile.render_data_env(_data_cfg(allow=allow))
+    assert "STACK_DB_ALLOW" in err.value.reason
+
+
+@pytest.mark.parametrize("missing", ["POSTGRES_PASSWORD", "SPACES_SECRET_KEY"])
+def test_the_data_vm_env_needs_the_data_secrets(missing):
+    secrets = {k: "v" for k in envfile.REQUIRED_SECRETS if k != missing}
+    with pytest.raises(envfile.RenderError) as err:
+        envfile.render_data_env(_data_cfg(secrets=secrets))
+    assert missing in err.value.reason
+
+
+def test_the_data_vm_env_names_keys_never_values():
+    secrets = {k: "v" for k in envfile.REQUIRED_SECRETS}
+    secrets["POSTGRES_PASSWORD"] = "top\nsecret"
+    with pytest.raises(envfile.RenderError) as err:
+        envfile.render_data_env(_data_cfg(secrets=secrets))
+    assert "POSTGRES_PASSWORD" in err.value.reason and "secret" not in err.value.reason
+    assert "top" not in repr(_data_cfg(secrets=secrets))
+
+
+def test_stack_db_sslmode_is_an_extra_key():
+    assert "STACK_DB_SSLMODE" in envfile.EXTRA_KEYS
+    assert envfile.EXTRA_KEYS.index("STACK_DB_SSLMODE") == \
+        envfile.EXTRA_KEYS.index("STACK_DB_USER") + 1
+
+
+@pytest.mark.parametrize("field, key", [("db_port", "STACK_DB_PORT"),
+                                        ("spaces_port", "STACK_SPACES_PORT"),
+                                        ("mailpit_port", "STACK_MAILPIT_PORT")])
+@pytest.mark.parametrize("port", [0, 65536, 70000])
+def test_the_data_vm_env_caps_its_ports(field, key, port):
+    with pytest.raises(envfile.RenderError) as err:
+        envfile.render_data_env(_data_cfg(**{field: port}))
+    assert key in err.value.reason and "1-65535" in err.value.reason
+
+
+def test_the_data_vm_env_takes_the_top_port():
+    values = envfile.parse_env(envfile.render_data_env(_data_cfg(db_port=65535)))
+    assert values["STACK_DB_PORT"] == "65535"
+
+
+def test_apps_and_mail_keys():
+    assert "SS_SMTP_PASSWORD" in envfile.OPTIONAL_SECRETS
+    assert envfile.EXTRA_KEYS[:6] == ("STACK_APPS", "SS_SMTP_HOST", "SS_SMTP_PORT",
+                                      "SS_SMTP_USERNAME", "SS_SMTP_STARTTLS", "SS_SMTP_FROM")

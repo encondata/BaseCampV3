@@ -18,7 +18,9 @@ import EnvOverview from './EnvOverview';
 import EnvSettings from './EnvSettings';
 import PublishTab from './PublishTab';
 
-import { ENV_STATUS, StatusChip, TYPE_LABEL, deploymentRunning, failedStillLive, targetLabel } from './labels';
+import {
+  ENV_STATUS, StatusChip, TYPE_LABEL, deploymentRunning, failedStillLive, onBluegreen, targetLabel,
+} from './labels';
 
 /** While a deployment runs (the environment is deploying or deleting, or a
  *  publish or snapshot job is running) it is reloaded this often, on every tab,
@@ -155,8 +157,9 @@ function EnvironmentPage({ name }: { name: string }) {
       {deploying && <DeployModal env={env} onStarted={started} onClose={() => setDeploying(false)} />}
       {activating && (
         <ActivateModal envName={env.name} production={env.type === 'production'} slot={activating.slot}
-                       fromSlot={env.active_slot}
-                       version={env.do?.slots.find((s) => s.slot === activating.slot)?.image_tag ?? null}
+                       fromSlot={env.active_slot} lan={onBluegreen(env)}
+                       version={env.do?.slots.find((s) => s.slot === activating.slot)?.image_tag
+                         ?? env.lan_slots?.find((s) => s.slot === activating.slot)?.image_tag ?? null}
                        onStarted={(dep) => { setActivating(null); started(dep); }}
                        onClose={() => setActivating(null)} />
       )}

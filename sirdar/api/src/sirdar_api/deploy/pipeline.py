@@ -12,7 +12,10 @@ Destroy VM. A DigitalOcean environment's deployment (cloud) runs its own
 plans (steps.plan_for(cloud=True)); its steps 0, 14 and 18 go through the
 same provisioner seam, its host steps run on the slot's droplet, and Reset,
 Restore backup and Roll back are refused (the managed database is shared by
-both slots).
+both slots). A LAN Blue/Green environment's deployment (vm and bluegreen)
+runs steps.plan_for(bluegreen=True): the host steps on the slot's app VM,
+7 Prepare data VM on the data VM (data_target), 14 lan_switch through the
+Publisher; the same modes are refused there (both app VMs share the data VM).
 
 One asyncio task per running deployment, registered in _tasks; each task
 uses its own database sessions. Steps run in plan order through a Runner,
@@ -59,15 +62,19 @@ from sirdar_api.db.models import (
     EnvironmentSecret,
     EnvironmentService,
     Snapshot,
+    VmSlot,
 )
 from sirdar_api.deploy import (
     ConnectFailed,
+    apps as app_rules,
     certs,
     do_envs,
     do_provision,
     envfile,
     esxi_provision,
+    first_admins,
     known_hosts,
+    lan_slots,
     provision,
     publish,
     smoke,
@@ -90,7 +97,7 @@ from sirdar_api.deploy.runner import (
     RunResult,
     RunTarget,
 )
-from sirdar_api.deploy.steps import STEPS_BY_KEY, StepDef, plan_for
+from sirdar_api.deploy.steps import STEPS_BY_KEY, StepDef, plan_for, timeout_of
 from sirdar_api.services.audit import audit
 
 log = logging.getLogger(__name__)
@@ -107,6 +114,9 @@ SHUTDOWN_SECONDS = CANCEL_GRACE_SECONDS + 5
 INTERRUPTED = "Sirdar stopped while this deployment was running."
 CANCELLED = "Canceled."
 UNEXPECTED = "Sirdar couldn't run this step."
+FIRST_ADMIN_UNREADABLE = ("Sirdar can't read the first admin's password with the current "
+                          "SIRDAR_SECRETS_KEY. Set it again on the environment's Settings tab, "
+                          "then retry.")
 KEPT_DUMP = "Keeping the pre-deploy backup from the first attempt"
 RUNNER_DIR_UNWRITABLE = ("Sirdar can't write its runner folder (SIRDAR_RUNNER_DIR). It must "
                          "be owned by uid 10001 with mode 700.")
@@ -129,6 +139,17 @@ class NotSupportedOnDigitalOcean(Exception):
     """The mode isn't offered on DigitalOcean (routes answer 409 `code`)."""
 
     code = "not_supported_on_digitalocean"
+
+    def __init__(self, mode: str):
+        super().__init__(self.code)
+        self.mode = mode
+
+
+class NotSupportedOnBlueGreen(Exception):
+    """Both app VMs share the data VM: the mode would change the live one too
+    (routes answer 409 `code`)."""
+
+    code = "not_supported_on_bluegreen"
 
     def __init__(self, mode: str):
         super().__init__(self.code)
@@ -217,8 +238,10 @@ def restores(mode: str, snapshot_id: uuid.UUID | None) -> bool:
 
 
 def takes_snapshot(dep: Deployment) -> bool:
-    """A DigitalOcean Delete that saves a snapshot first (step 11)."""
-    return dep.mode == "teardown" and dep.cloud and dep.snapshot_id is not None
+    """A DigitalOcean or LAN Blue/Green Delete that saves a snapshot first
+    (step 11)."""
+    return (dep.mode == "teardown" and (dep.cloud or dep.bluegreen)
+            and dep.snapshot_id is not None)
 
 
 def smokes(mode: str, slot: str | None) -> bool:
@@ -236,7 +259,8 @@ def _exports_now(dep: Deployment) -> bool:
 def plan_of(dep: Deployment) -> list[StepDef]:
     return plan_for(dep.mode, restore=restores(dep.mode, dep.snapshot_id), publish=dep.publish,
                     vm=dep.vm, cloud=dep.cloud, go_live=dep.go_live,
-                    snapshot=takes_snapshot(dep), smoke=smokes(dep.mode, dep.slot))
+                    snapshot=takes_snapshot(dep), smoke=smokes(dep.mode, dep.slot),
+                    first_admin=dep.first_admin, bluegreen=dep.bluegreen)
 
 
 # ---- records -----------------------------------------------------------------
@@ -250,7 +274,9 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                             publish: bool = False, vm: bool = False,
                             take_vm_snapshot: bool = False,
                             vm_snapshot: str | None = None, cloud: bool = False,
-                            slot: str | None = None, go_live: bool = False) -> Deployment:
+                            slot: str | None = None, go_live: bool = False,
+                            first_admin: bool = False,
+                            bluegreen: bool = False) -> Deployment:
     """Add a running deployment and its step rows. The caller commits, then
     calls launch(). start_step None means the plan's first step (1, or 12
     for a publish job, 15 for a teardown). Raises DeployInProgress (only the
@@ -264,20 +290,47 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     switches to, and `go_live` ends it with 14 Switch traffic (always, for
     activate). A cloud teardown with a snapshot takes it first (step 11).
     Raises NotSupportedOnDigitalOcean for Reset, Restore backup, Roll back
-    and Restore VM snapshot there."""
+    and Restore VM snapshot there.
+
+    first_admin: its plan has step 11 Create the first admin (an Update that
+    starts empty). Dropped when the environment's first admin is already
+    done (or gone), so a retry after step 11 succeeded doesn't plan it again.
+
+    bluegreen: a LAN Blue/Green environment's deployment (it must match
+    lan_slots.is_bluegreen, except a publish job: the ordinary 12–14). Slots
+    as on DigitalOcean; NotSupportedOnBlueGreen for the same four modes; it
+    never takes a VM snapshot (take_vm_snapshot is dropped). An Update or
+    Activate names its slot (DoEnvError slot_required), and any slot given is
+    orange or purple (slot_invalid)."""
     on_do = env.target_id == targets.DO_TARGET
     if on_do and mode in NOT_ON_DIGITALOCEAN:
         raise NotSupportedOnDigitalOcean(mode)
     if cloud != on_do:
         raise ValueError("cloud must be set exactly for a DigitalOcean environment")
+    on_bg = lan_slots.is_bluegreen(env)
+    if on_bg and mode in NOT_ON_DIGITALOCEAN:
+        raise NotSupportedOnBlueGreen(mode)
+    if bluegreen != (on_bg and mode != "publish"):
+        raise ValueError("bluegreen must be set exactly for a LAN Blue/Green deployment")
+    if bluegreen:
+        take_vm_snapshot = False            # the other slot is the way back
+        if slot is None and mode in ("update", "activate"):
+            raise do_envs.DoEnvError("slot_required")
+        if slot is not None and slot not in lan_slots.SLOTS:
+            raise do_envs.DoEnvError("slot_invalid", slot=slot)
+        await _check_switch(db, env, mode=mode, slot=slot, start_step=start_step,
+                            retry_of=retry_of)
     go_live = go_live or mode == "activate"
-    if cloud:
-        await _check_cloud(db, env, mode=mode, slot=slot, snapshot_id=snapshot_id,
+    if cloud or bluegreen:
+        await _check_slots(db, env, mode=mode, slot=slot, snapshot_id=snapshot_id,
                            retry_of=retry_of)
-    taking_on_delete = mode == "teardown" and cloud and snapshot_id is not None
+    if first_admin and mode == "update" and not restores(mode, snapshot_id) \
+            and not await first_admins.pending(db, env.id):
+        first_admin = False
+    taking_on_delete = mode == "teardown" and (cloud or bluegreen) and snapshot_id is not None
     plan = plan_for(mode, restore=restores(mode, snapshot_id), publish=publish, vm=vm,
                     cloud=cloud, go_live=go_live, snapshot=taking_on_delete,
-                    smoke=smokes(mode, slot))
+                    smoke=smokes(mode, slot), first_admin=first_admin, bluegreen=bluegreen)
     if start_step is None:
         start_step = plan[0].number
     if start_step not in {step.number for step in plan}:
@@ -314,7 +367,8 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
                      snapshot_id=snapshot_id, restore_dump=restore_dump,
                      dump_path=dump_path, publish=publish, vm=vm,
                      take_vm_snapshot=take_vm_snapshot, vm_snapshot=vm_snapshot,
-                     cloud=cloud, slot=slot, go_live=go_live)
+                     cloud=cloud, slot=slot, go_live=go_live, first_admin=first_admin,
+                     bluegreen=bluegreen)
     try:
         async with db.begin_nested():
             db.add(dep)
@@ -335,22 +389,44 @@ async def create_deployment(db: AsyncSession, env: Environment, *, mode: str, gi
     return dep
 
 
-async def _check_cloud(db: AsyncSession, env: Environment, *, mode: str, slot: str | None,
+async def _check_switch(db: AsyncSession, env: Environment, *, mode: str, slot: str | None,
+                        start_step: int | None, retry_of: uuid.UUID | None) -> None:
+    """LAN Blue/Green: while the latest Switch traffic didn't end cleanly,
+    NPM may point at its slot (lan_slots.unresolved_switch), so nothing may
+    rebuild a slot (DoEnvError switch_unresolved). Allowed: an Activate of
+    that slot or of the live one, and a retry of an Update from 14 Switch
+    traffic to that slot: each ends with NPM on a known slot."""
+    if mode not in ("update", "activate"):
+        return
+    stuck = await lan_slots.unresolved_switch(db, env.id)
+    if stuck is None:
+        return
+    if mode == "activate" and slot in (stuck, env.active_slot):
+        return
+    switch = STEPS_BY_KEY["lan_switch"].number
+    if mode == "update" and retry_of is not None and start_step == switch and slot == stuck:
+        return
+    raise do_envs.DoEnvError("switch_unresolved", slot=stuck)
+
+
+async def _check_slots(db: AsyncSession, env: Environment, *, mode: str, slot: str | None,
                        snapshot_id: uuid.UUID | None, retry_of: uuid.UUID | None) -> None:
-    """DigitalOcean's own refusals (do_envs.DoEnvError):
+    """DigitalOcean's and LAN Blue/Green's own refusals (do_envs.DoEnvError;
+    do_slots or vm_slots):
     - slot_not_deployed: Activate of a slot that has never run a deploy (no
       commit to make the environment's);
     - seed_not_allowed: an Update that restores a snapshot (seeds) once any
       slot has run a deploy or anything is live. The managed database is
       shared by both slots: seeding again would wipe it. A retry of the
       seeding deploy itself is allowed while nothing is live."""
+    rows = (await do_envs.slots_of(db, env.id) if env.target_id == targets.DO_TARGET
+            else await lan_slots.slots_of(db, env.id))
     if mode == "activate" and slot is not None:
-        row = await db.get(DoSlot, (env.id, slot), populate_existing=True)
+        row = rows.get(slot)
         if row is None or not row.sha:
             raise do_envs.DoEnvError("slot_not_deployed", slot=slot)
     if mode == "update" and restores(mode, snapshot_id):
-        deployed = await db.scalar(select(func.count()).select_from(DoSlot).where(
-            DoSlot.environment_id == env.id, DoSlot.sha.is_not(None)))
+        deployed = sum(1 for r in rows.values() if r.sha)
         live = env.active_slot is not None or env.current_sha is not None
         parent = await db.get(Deployment, retry_of) if retry_of is not None else None
         same_seed = (parent is not None and parent.mode == "update"
@@ -430,7 +506,8 @@ async def recover_orphans() -> int:
         taken = list(await s.scalars(select(Deployment.snapshot_id).where(
             Deployment.id.in_(ids),
             or_(Deployment.mode == "snapshot",
-                and_(Deployment.mode == "teardown", Deployment.cloud)),
+                and_(Deployment.mode == "teardown",
+                     or_(Deployment.cloud, Deployment.bluegreen))),
             Deployment.snapshot_id.is_not(None))))
         if taken:
             await s.execute(update(Snapshot).where(Snapshot.id.in_(taken),
@@ -463,14 +540,15 @@ async def _close(deployment_id: uuid.UUID, env_id: uuid.UUID, step_number: int |
                  append_log: str = "") -> None:
     """End a deployment that didn't succeed, in a fresh session (the run's own
     session may be mid-transaction or cancelled). A snapshot job's (or a
-    DigitalOcean Delete's) pending snapshot becomes failed (and its
+    DigitalOcean or LAN Blue/Green Delete's) pending snapshot becomes failed (and its
     half-fetched bundle goes); any mode but a snapshot, publish or renew job
     leaves the environment failed."""
     now = _now()
     taken: uuid.UUID | None = None
     async with get_sessionmaker()() as s:
-        mode, snapshot_id, cloud = (await s.execute(
-            select(Deployment.mode, Deployment.snapshot_id, Deployment.cloud)
+        mode, snapshot_id, cloud, bluegreen = (await s.execute(
+            select(Deployment.mode, Deployment.snapshot_id, Deployment.cloud,
+                   Deployment.bluegreen)
             .where(Deployment.id == deployment_id))).one()
         if step_number is not None:
             values: dict = {"status": step_status, "finished_at": now}
@@ -487,7 +565,8 @@ async def _close(deployment_id: uuid.UUID, env_id: uuid.UUID, step_number: int |
         await s.execute(update(Deployment).where(Deployment.id == deployment_id)
                         .values(status=dep_status, finished_at=now, error=error,
                                 failed_step=failed_step))
-        if (mode == "snapshot" or (mode == "teardown" and cloud)) and snapshot_id is not None:
+        if (mode == "snapshot" or (mode == "teardown" and (cloud or bluegreen))) \
+                and snapshot_id is not None:
             taken = snapshot_id
             await s.execute(update(Snapshot).where(Snapshot.id == snapshot_id,
                                                    Snapshot.status == "pending")
@@ -572,13 +651,25 @@ class _Context:
     publishing: publish.PublishContext | None = field(default=None, repr=False)
     # Steps 0 and 15 of a VM environment: its VM and the host's credentials.
     vm: vmsteps.VmContext | None = field(default=None, repr=False)
+    # The values `redactor` hides: step 11 adds the first admin's password.
+    redact_values: tuple[str, ...] = field(default=(), repr=False)
+    # LAN Blue/Green Update: step 7 runs on the data VM with its own .env.
+    data_target: RunTarget | None = field(default=None, repr=False)
+    data_env_b64: str = field(default="", repr=False)
+
+    def target_for(self, step_key: str) -> RunTarget | None:
+        return self.data_target if step_key == "data_vm" else self.target
 
     def vars_for(self, step_key: str) -> dict:
         if step_key == "render":
             return {**self.common, "env_file_b64": self.env_file_b64}
         if step_key == "dump":
             return {**self.common, "dump_required": self.dump_required,
-                    "restores_snapshot": self.restores_snapshot}
+                    "restores_snapshot": self.restores_snapshot,
+                    **self.step_vars.get("dump", {})}
+        if step_key == "data_vm":
+            return {**self.common, **self.step_vars.get("data_vm", {}),
+                    "data_env_b64": self.data_env_b64}
         return {**self.common, **self.step_vars.get(step_key, {})}
 
 
@@ -596,31 +687,9 @@ async def _load_secrets(db: AsyncSession, env_id: uuid.UUID,
                            "SIRDAR_SECRETS_KEY.") from None
 
 
-async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings: Settings, *,
-                   needs_host: bool = True, more_secrets: tuple[str, ...] = ()) -> _Context:
-    """Everything the steps need. Without host steps (a publish job, or a
-    retry of only steps 12–14 or 16–17) there is no target to connect to:
-    only the redactor is built. more_secrets: the integration credentials."""
-    if not needs_host:
-        return _Context(target=None, common={"env_name": env.name}, env_file_b64="",
-                        redactor=Redactor(_redaction_values(more_secrets)))
-    if not dep.sha and dep.mode != "teardown":   # the .env names the commit's image
-        raise PrepareError(NO_COMMIT_ACTIVATE if dep.mode == "activate" else NO_COMMIT)
-    try:
-        # DigitalOcean: the slot this deployment works on (an Update targets
-        # the idle slot), not the active one.
-        cfg = await vms.host_config(db, settings, env, slot=dep.slot if dep.cloud else None)
-    except (vault.SecretsKeyMissing, vault.SecretUnreadable):
-        raise PrepareError("Sirdar can't read its key for this environment's VM with the "
-                           "current SIRDAR_SECRETS_KEY.") from None
-    if cfg is None and targets.is_built_target(env.target_id):
-        raise PrepareError(
-            "This environment's droplet has no address yet. Retry from step 0 (Prepare "
-            "DigitalOcean)." if env.target_id == targets.DO_TARGET else
-            "This environment's VM has no address yet. Retry from step 0 (Prepare VM).")
-    if cfg is None:
-        raise PrepareError("This environment's SSH target isn't configured any more. "
-                           "Pick another target, then retry.")
+async def _run_target(db: AsyncSession, cfg) -> tuple[RunTarget, str | None]:
+    """The pinned host key and the client key of a host: its RunTarget and
+    the private key's text (to redact). PrepareError when either is missing."""
     try:
         pinned = await ssh.pinned_host_key(db, cfg.host, cfg.port)
     except ssh.HostKeyUnknown:
@@ -635,18 +704,72 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
         client_key = await ssh.load_client_key(cfg)
     except ConnectFailed as e:
         raise PrepareError(e.reason) from None
+    private_key = client_key.export_private_key("openssh").decode() if client_key else None
+    target = RunTarget(
+        host=cfg.host, port=cfg.port, user=cfg.user,
+        known_hosts_line=known_hosts.openssh_line(cfg.host, cfg.port, pinned.public_key),
+        host_key_algorithms=known_hosts.host_key_algorithms(pinned.key_type),
+        password=cfg.password, private_key=private_key,
+        become_password=cfg.sudo_password or cfg.password)
+    return target, private_key
+
+
+VM_KEY_UNREADABLE = ("Sirdar can't read its key for this environment's VM with the current "
+                     "SIRDAR_SECRETS_KEY.")
+
+
+async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings: Settings, *,
+                   needs_host: bool = True, more_secrets: tuple[str, ...] = ()) -> _Context:
+    """Everything the steps need. Without host steps (a publish job, or a
+    retry of only steps 12–14 or 16–17) there is no target to connect to:
+    only the redactor is built. more_secrets: the integration credentials."""
+    if not needs_host:
+        return _Context(target=None, common={"env_name": env.name}, env_file_b64="",
+                        redactor=Redactor(_redaction_values(more_secrets)))
+    if not dep.sha and dep.mode != "teardown":   # the .env names the commit's image
+        raise PrepareError(NO_COMMIT_ACTIVATE if dep.mode == "activate" else NO_COMMIT)
+    try:
+        # DigitalOcean and LAN Blue/Green: the slot this deployment works on
+        # (an Update targets the idle slot), not the active one.
+        cfg = await vms.host_config(db, settings, env,
+                                    slot=dep.slot if (dep.cloud or dep.bluegreen) else None)
+    except (vault.SecretsKeyMissing, vault.SecretUnreadable):
+        raise PrepareError(VM_KEY_UNREADABLE) from None
+    if cfg is None and targets.is_built_target(env.target_id):
+        if env.target_id == targets.DO_TARGET:
+            raise PrepareError("This environment's droplet has no address yet. Retry from "
+                               "step 0 (Prepare DigitalOcean).")
+        if dep.bluegreen and dep.slot:
+            raise PrepareError(f"This environment's {dep.slot} VM has no address yet. Retry "
+                               "from step 0 (Prepare VM).")
+        if dep.bluegreen:
+            raise PrepareError("This environment's app VM has no address yet. Retry from "
+                               "step 0 (Prepare VM).")
+        raise PrepareError("This environment's VM has no address yet. Retry from step 0 "
+                           "(Prepare VM).")
+    if cfg is None:
+        raise PrepareError("This environment's SSH target isn't configured any more. "
+                           "Pick another target, then retry.")
+    target, private_key = await _run_target(db, cfg)
+    service_rows = list(await db.scalars(select(EnvironmentService)
+                                         .where(EnvironmentService.environment_id == env.id)))
+    ports = {**envfile.DEFAULT_PORTS, **{r.service: r.port for r in service_rows}}
     secrets = await _load_secrets(db, env.id, settings)
     step_vars, snapshot_keys, extra_secrets = await _snapshot_vars(db, env, dep, settings,
-                                                                   secrets)
+                                                                   secrets, ports=ports)
     secrets = {**secrets, **snapshot_keys}
-    extra: dict[str, str] = {}
+    # every render (Update, Reset, Restore backup, Roll back; any target)
+    # carries the apps and mail
+    extra: dict[str, str] = app_rules.env_extra(env)
     if dep.cloud:
         # Read again here, not only at the start: step 0 may have just made
         # the Spaces secret and the doadmin password.
         extra_secrets = [*extra_secrets, *await do_envs.secret_values(db, settings, env)]
     if dep.cloud and dep.mode == "update":           # only Update renders .env
         try:
-            extra, cloud_secrets = await do_envs.env_extra(db, settings, env, dep.slot, secrets)
+            cloud_extra, cloud_secrets = await do_envs.env_extra(db, settings, env, dep.slot,
+                                                                 secrets)
+            extra |= cloud_extra
         except do_envs.DoEnvError as e:
             found = e.extra.get("missing") or []
             if found == ["renewal token"]:       # the account's, not something step 0 builds
@@ -662,9 +785,40 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
             raise PrepareError("Sirdar can't read this environment's DigitalOcean secrets "
                                "with the current SIRDAR_SECRETS_KEY.") from None
         extra_secrets = [*extra_secrets, *cloud_secrets]
-    rows = await db.scalars(select(EnvironmentService)
-                            .where(EnvironmentService.environment_id == env.id))
-    ports = {**envfile.DEFAULT_PORTS, **{r.service: r.port for r in rows}}
+    data_target: RunTarget | None = None
+    data_b64, data_key = "", None
+    if dep.bluegreen and dep.mode == "update":       # only Update renders .env
+        try:
+            lan_extra, lan_secrets = await lan_slots.env_extra(db, env, secrets)
+            extra |= lan_extra
+        except do_envs.DoEnvError:
+            raise PrepareError("This environment's data VM isn't recorded. Retry from step 0 "
+                               "(Prepare VM).") from None
+        extra_secrets = [*extra_secrets, *lan_secrets]
+        try:
+            data_cfg = await vms.host_config(db, settings, env, role=vms.DATA)
+        except (vault.SecretsKeyMissing, vault.SecretUnreadable):
+            raise PrepareError(VM_KEY_UNREADABLE) from None
+        if data_cfg is None:
+            raise PrepareError("This environment's data VM has no address yet. Retry from "
+                               "step 0 (Prepare VM).")
+        data_target, data_key = await _run_target(db, data_cfg)
+        machines = await vms.machines(db, env)
+        try:
+            data_text = envfile.render_data_env(envfile.DataEnvConfig(
+                name=env.name, domain=env.base_domain, bind_ip=env.bind_ip,
+                spaces_port=ports["spaces"], mailpit_port=ports["mailpit"],
+                keep_dumps=env.keep_dumps, spaces_bucket=env.spaces_bucket,
+                db_port=lan_slots.DB_PORT, allow=tuple(lan_slots.app_ips(machines)),
+                secrets=secrets))
+        except envfile.RenderError as e:
+            raise PrepareError(f"Sirdar couldn't write this environment's .env: {e.reason}.") \
+                from None
+        data_b64 = base64.b64encode(data_text.encode()).decode()
+        step_vars["data_vm"] = await lan_slots.data_vars(db, env, ports)
+    if dep.bluegreen:
+        # The first deploy builds the shared database: nothing to dump yet.
+        step_vars["dump"] = {"data_new": not await lan_slots.ran(db, env)}
     try:
         text = envfile.render_env(envfile.EnvConfig(
             name=env.name, domain=env.base_domain, image_tag=envfile.image_tag(dep.sha),
@@ -675,34 +829,60 @@ async def _prepare(db: AsyncSession, env: Environment, dep: Deployment, settings
         raise PrepareError(f"Sirdar couldn't write this environment's .env: {e.reason}.") \
             from None
     env_b64 = base64.b64encode(text.encode()).decode()
-    private_key = client_key.export_private_key("openssh").decode() if client_key else None
     folder = envfile.env_dir(env.name)
-    target = RunTarget(
-        host=cfg.host, port=cfg.port, user=cfg.user,
-        known_hosts_line=known_hosts.openssh_line(cfg.host, cfg.port, pinned.public_key),
-        host_key_algorithms=known_hosts.host_key_algorithms(pinned.key_type),
-        password=cfg.password, private_key=private_key,
-        become_password=cfg.sudo_password or cfg.password)
+    if dep.bluegreen:
+        # The slot smoke test's names, each at its own port on the app VM
+        # (no Caddy); spaces lives on the data VM.
+        hosts = [{"service": r.service, "hostname": r.hostname,
+                  "path": smoke.PATHS.get(r.service, "/"), "port": r.port}
+                 for r in service_rows if r.hostname and r.service != "spaces"
+                 and app_rules.is_public(env, r.service)]
+    elif dep.cloud:
+        # no spaces (objects live in Spaces; Caddy has no route for it)
+        hosts = [{"service": s, "hostname": f"{s}.{env.base_domain}",
+                  "path": smoke.PATHS.get(s, "/")} for s in certs.PUBLIC_SERVICES
+                 if app_rules.is_public(env, s)]
+    else:
+        hosts = []
     common = {"env_name": env.name, "env_dir": folder, "repo_url": settings.deploy_repo_url,
               "sha": dep.sha, "ss_stack": f"{folder}/repo/deploy/stack/ss-stack",
               "min_disk_gb": ssh.MIN_DISK_GB, "min_memory_mb": MIN_MEMORY_MB,
-              "external_data": dep.cloud, "block_metadata": dep.cloud,
-              # the slot smoke test's names: no spaces (objects live in
-              # Spaces; Caddy has no route for it)
-              "public_hosts": ([{"service": s, "hostname": f"{s}.{env.base_domain}",
-                                 "path": smoke.PATHS.get(s, "/")} for s in certs.PUBLIC_SERVICES]
-                               if dep.cloud else [])}
-    redactor = Redactor(_redaction_values([*secrets.values(), env_b64, cfg.password,
-                                           cfg.passphrase, cfg.sudo_password, private_key,
-                                           *extra_secrets, *more_secrets]))
-    return _Context(target=target, common=common, env_file_b64=env_b64, redactor=redactor,
+              "external_data": dep.cloud or dep.bluegreen, "block_metadata": dep.cloud,
+              "public_hosts": hosts}
+    redact_values = tuple(_redaction_values([*secrets.values(), env_b64, cfg.password,
+                                             cfg.passphrase, cfg.sudo_password, private_key,
+                                             data_b64, data_key,
+                                             *extra_secrets, *more_secrets]))
+    return _Context(target=target, common=common, env_file_b64=env_b64,
+                    redactor=Redactor(redact_values), redact_values=redact_values,
                     dump_required=env.current_sha is not None,
                     restores_snapshot=restores(dep.mode, dep.snapshot_id), step_vars=step_vars,
-                    snapshot_keys=snapshot_keys)
+                    snapshot_keys=snapshot_keys, data_target=data_target,
+                    data_env_b64=data_b64)
+
+
+async def _with_first_admin(db: AsyncSession, settings: Settings, env_id: uuid.UUID,
+                            ctx: _Context) -> _Context:
+    """Step 11's vars (the typed password only there) and a redactor that
+    hides that password too. vault errors propagate."""
+    admin_vars, admin_secrets = await first_admins.step_vars(db, settings, env_id)
+    values = (*ctx.redact_values, *_redaction_values(admin_secrets))
+    return replace(ctx, step_vars={**ctx.step_vars, "first_admin": admin_vars},
+                   redactor=Redactor(values), redact_values=values)
+
+
+def _without_first_admin(ctx: _Context, kept_values: tuple[str, ...]) -> _Context:
+    """Step 11 is over: its vars and the plaintext in the redaction list go.
+    The compiled redactor stays as it is, so it still masks the password in
+    anything a later step prints."""
+    return replace(ctx, step_vars={k: v for k, v in ctx.step_vars.items()
+                                   if k != "first_admin"},
+                   redact_values=kept_values)
 
 
 async def _snapshot_vars(db: AsyncSession, env: Environment, dep: Deployment,
-                         settings: Settings, secrets: dict[str, str]
+                         settings: Settings, secrets: dict[str, str], *,
+                         ports: dict[str, int] | None = None
                          ) -> tuple[dict, dict[str, str], list[str]]:
     """(per-step vars, the restored snapshot's keys, more values to redact)."""
     step_vars: dict[str, dict] = {}
@@ -731,12 +911,12 @@ async def _snapshot_vars(db: AsyncSession, env: Environment, dep: Deployment,
             token_b64 = base64.b64encode(token).decode()
             extra += [token.decode(), token_b64]
             image_tag = env.image_tag
-            if dep.cloud:
-                # Each droplet runs its own image: the slot's, not the
-                # environment's (the active slot's, or none).
+            if dep.cloud or dep.bluegreen:
+                # Each droplet (app VM) runs its own image: the slot's, not
+                # the environment's (the active slot's, or none).
                 slot = dep.slot or env.active_slot or (env.slots[0] if env.slots else None)
-                row = await db.get(DoSlot, (env.id, slot), populate_existing=True) \
-                    if slot else None
+                row = await db.get(DoSlot if dep.cloud else VmSlot, (env.id, slot),
+                                   populate_existing=True) if slot else None
                 image_tag = row.image_tag if row is not None else None
                 if not image_tag:
                     raise PrepareError(f"The {slot or 'environment'} slot has never run a "
@@ -762,6 +942,16 @@ async def _snapshot_vars(db: AsyncSession, env: Environment, dep: Deployment,
             for key in ("export", "restore"):
                 if key in step_vars:
                     step_vars[key] |= external
+    elif dep.bluegreen and ("export" in step_vars or "restore" in step_vars):
+        # The data VM's database (the app VM's .env) and its object storage,
+        # reached directly on the LAN (the app VMs are allowed in).
+        spaces_port = (ports or envfile.DEFAULT_PORTS)["spaces"]
+        host = lan_slots.data_ip(await vms.machines(db, env))
+        external = {"external_data": True, "spaces_endpoint": f"http://{host}:{spaces_port}",
+                    "spaces_key_id": "serversherpa", "spaces_region": "us-east-1"}
+        for key in ("export", "restore"):
+            if key in step_vars:
+                step_vars[key] |= external
     return step_vars, keys, extra
 
 
@@ -797,9 +987,10 @@ async def _serving(env_id: uuid.UUID, sha: str) -> None:
         await s.commit()
 
 
-def _failure_reason(step: DeploymentStep, result: RunResult) -> str:
+def _failure_reason(step: DeploymentStep, result: RunResult, *,
+                    bluegreen: bool = False) -> str:
     if result.status == "timeout":
-        minutes = STEPS_BY_KEY[step.key].timeout // 60
+        minutes = timeout_of(step.key, bluegreen=bluegreen) // 60
         return f"Step {step.number} ({step.name}) timed out after {minutes} minutes."
     return f"Step {step.number} ({step.name}) failed. See its log."
 
@@ -815,7 +1006,8 @@ async def _run_step(runner: Runner, ctx: _Context, step: DeploymentStep) -> RunR
     flusher = asyncio.create_task(_flush_loop(step.id, buffer))
     try:
         return await runner.run(
-            RunRequest(step=step.key, playbook=definition.playbook, target=ctx.target,
+            RunRequest(step=step.key, playbook=definition.playbook,
+                       target=ctx.target_for(step.key),
                        timeout=definition.timeout, extravars=ctx.vars_for(step.key)),
             buffer.append)
     except asyncio.CancelledError:
@@ -868,16 +1060,16 @@ async def _run_python_step(publisher: publish.Publisher, ctx: _Context,
 
 
 async def _run_vm_step(provisioner: provision.Provisioner, ctx: _Context,
-                       step: DeploymentStep) -> RunResult:
+                       step: DeploymentStep, *, timeout: int | None = None) -> RunResult:
     """Step 0 or 15 of a VM environment, in Sirdar: a publish step's log
     handling, plus what step 0 found out (the resolved commit, the VM
-    snapshot) in the result's data."""
+    snapshot) in the result's data. timeout: the step's own by default."""
     definition = STEPS_BY_KEY[step.key]
     buffer = _LogBuffer(ctx.redactor)
     flusher = asyncio.create_task(_flush_loop(step.id, buffer))
     try:
         outcome = await asyncio.wait_for(provisioner.run(step.key, ctx.vm, buffer.append),
-                                         definition.timeout)
+                                         timeout or definition.timeout)
         return RunResult(status="successful", rc=0,
                          data={"sha": outcome.sha, "vm_snapshot": outcome.vm_snapshot})
     except asyncio.CancelledError:
@@ -919,6 +1111,9 @@ async def _run(deployment_id: uuid.UUID) -> None:
                 try:
                     publishing = (await publish.prepare(db, env, settings)
                                   if "python" in runs else None)
+                    if publishing is not None and dep.bluegreen:
+                        # 14 Switch traffic moves the proxy hosts to this slot.
+                        publishing = replace(publishing, slot=dep.slot)
                     vm_ctx = (await vmsteps.prepare(db, env, dep, settings)
                               if "vm" in runs else None)
                     more = (*(publishing.secret_values if publishing else ()),
@@ -967,23 +1162,64 @@ async def _run(deployment_id: uuid.UUID) -> None:
                         step.status, step.finished_at = "succeeded", _now()
                         await db.commit()
                         continue
+                    if step.key == "first_admin":
+                        if not await first_admins.pending(db, env.id):
+                            # Done by an earlier attempt (or the record was removed).
+                            await _save_log(step.id, first_admins.ALREADY_CREATED)
+                            step.status, step.finished_at = "succeeded", _now()
+                            await db.commit()
+                            continue
+                        # Read when the step starts: a retry uses the record as
+                        # the last PUT …/first-admin left it (the route refuses
+                        # a PUT while a deployment runs). A canceled step 11 may
+                        # leave bootstrap-admin running on the host; a retry
+                        # then sees exit 10 (it finished) or 6, never a second
+                        # account.
+                        kept_values = ctx.redact_values
+                        try:
+                            ctx = await _with_first_admin(db, settings, env.id, ctx)
+                        except (vault.SecretsKeyMissing, vault.SecretUnreadable):
+                            await db.rollback()
+                            await _close(deployment_id, env_id, current, step_status="failed",
+                                         dep_status="failed", error=FIRST_ADMIN_UNREADABLE,
+                                         failed_step=current,
+                                         append_log=FIRST_ADMIN_UNREADABLE + "\n")
+                            return
+                        await db.commit()
                     if runs_on == "python":
                         result = await _run_python_step(publisher, ctx, step)
                     elif runs_on == "vm":
-                        result = await _run_vm_step(provisioner, ctx, step)
+                        result = await _run_vm_step(
+                            provisioner, ctx, step,
+                            timeout=timeout_of(step.key, bluegreen=dep.bluegreen))
                     else:
                         result = await _run_step(runner, ctx, step)
+                    if step.key == "first_admin":
+                        # Whatever the result: later steps (12–14) get no
+                        # password; the redactor still hides it.
+                        ctx = _without_first_admin(ctx, kept_values)
                     if step.key == "slot_smoke" and dep.slot:
-                        await do_envs.set_slot(env.id, dep.slot,
-                                               last_check_ok=result.status == "successful",
-                                               last_check_at=_now())
+                        await (do_envs.set_slot if dep.cloud else lan_slots.set_slot)(
+                            env.id, dep.slot, last_check_ok=result.status == "successful",
+                            last_check_at=_now())
+                    admin_rc = (first_admins.exit_code(result.data)
+                                if step.key == "first_admin" else None)
+                    if admin_rc is not None and admin_rc not in first_admins.DONE_CODES \
+                            and result.status == "successful":
+                        # Only 0 and 10 count; anything else keeps the password.
+                        result = replace(result, status="failed")
                     if result.status != "successful":
                         # Before the rollback, which may expire `step`: reloading
                         # it would need a greenlet.
-                        reason = _failure_reason(step, result)
+                        reason = _failure_reason(step, result, bluegreen=dep.bluegreen)
                         in_place = _ran_in_place(env, dep, step.key)
                         sha = dep.sha
                         note = IN_PLACE_NOTE.format(step=step.name) if in_place else ""
+                        if admin_rc is not None and admin_rc >= 0:
+                            # Our copy for bootstrap-admin's exit code; the
+                            # record stays pending (PUT …/first-admin, Retry).
+                            # No code reported (-1): the step failed before it.
+                            note = first_admins.refusal(admin_rc)
                         await db.rollback()
                         await _close(deployment_id, env_id, current, step_status="failed",
                                      dep_status="failed",
@@ -1000,17 +1236,30 @@ async def _run(deployment_id: uuid.UUID) -> None:
                             dep.sha = result.data["sha"]
                         if result.data.get("vm_snapshot"):
                             dep.vm_snapshot = result.data["vm_snapshot"]
-                    elif step.key == "up" and dep.cloud and dep.slot:
+                    elif step.key == "up" and dep.slot and (dep.cloud or dep.bluegreen):
                         # The slot runs this commit now, whatever comes after.
-                        row = await db.get(DoSlot, (env.id, dep.slot), populate_existing=True)
+                        row = await db.get(DoSlot if dep.cloud else VmSlot, (env.id, dep.slot),
+                                           populate_existing=True)
                         if row is not None:
                             row.sha, row.image_tag = dep.sha, envfile.image_tag(dep.sha)
                             row.updated_at = _now()
-                    elif step.key == "go_live":
-                        # The load balancer points at the slot now (None: Deactivate).
+                    elif step.key in ("go_live", "lan_switch"):
+                        # The load balancer (NPM) points at the slot now (None:
+                        # Deactivate).
                         env.active_slot = dep.slot
                     elif step.key == "dump":
                         dep.dump_path = result.data.get("dump_path") or None
+                    elif step.key == "first_admin":
+                        if admin_rc == first_admins.EXISTS:
+                            row = await first_admins.get(db, env.id)
+                            # In this session: a second one would wait on the
+                            # step row this transaction has locked.
+                            await db.execute(
+                                update(DeploymentStep).where(DeploymentStep.id == step.id)
+                                .values(log=DeploymentStep.log + first_admins.EXISTS_NOTE
+                                        .format(email=row.email if row else "the first admin")))
+                        # Cleared in the same commit as the step's success.
+                        await first_admins.mark_done(db, env.id)
                     elif step.key == "restore":
                         await _keep_snapshot_keys(db, env.id, settings, ctx.snapshot_keys)
                     elif step.key == "export":
@@ -1052,9 +1301,9 @@ async def _run(deployment_id: uuid.UUID) -> None:
                       entity_type="environment", entity_id=env.name,
                       changes={"environment": env.name, "deployment": str(dep.id)})
                 await db.delete(env)
-            elif dep.cloud and dep.mode in ("update", "activate"):
+            elif (dep.cloud or dep.bluegreen) and dep.mode in ("update", "activate"):
                 try:
-                    await do_envs.after_success(db, env, dep)
+                    await (do_envs if dep.cloud else lan_slots).after_success(db, env, dep)
                 except do_envs.DoEnvError:
                     # create_deployment refuses this; a slot emptied meanwhile
                     reason = (f"The {dep.slot} slot has never run a deploy, so Sirdar can't "

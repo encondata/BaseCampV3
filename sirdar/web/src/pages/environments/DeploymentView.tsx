@@ -15,7 +15,7 @@ import {
 
 import {
   CHANGE_MODES, DEPLOYMENT_STATUS, RETRY_MODES, RETRYABLE, STEP_STATUS, StatusChip, baseName, deploymentLabel,
-  dumpTakenAt, duration, onDo, retryNeedsName, shortSha, stoppedStep, when,
+  dumpTakenAt, duration, onBluegreen, onDo, retryNeedsName, shortSha, stoppedStep, when,
 } from './labels';
 
 export const POLL_MS = 2000;
@@ -121,8 +121,9 @@ export default function DeploymentView({ id, env, isLatest, onFinished, onRetrie
     : phraseNeeded && env.active_slot !== null
       ? "Deactivate it first (Overview › DigitalOcean): a live slot can't be deleted."
     : null;
-  // Roll back isn't offered on DigitalOcean: activate the other slot instead.
-  const mayRollBack = !!dep && dep.rollback_available && can('deploy', 'add') && can('deploy', 'change') && !onDo(env);
+  // Roll back isn't offered on DigitalOcean or LAN Blue/Green: activate the other slot instead.
+  const mayRollBack = !!dep && dep.rollback_available && can('deploy', 'add') && can('deploy', 'change') && !onDo(env)
+    && !onBluegreen(env);
   // A failed deployment whose step 0 took a VM snapshot: put the whole VM back.
   const mayRestoreVm = !!dep && !!dep.vm_snapshot && dep.mode !== 'vm_restore' && RETRYABLE.includes(dep.status)
     && can('deploy', 'add') && can('deploy', 'change');

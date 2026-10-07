@@ -18,9 +18,11 @@ from starlette.requests import ClientDisconnect
 from sirdar_api.api.deps import AuthContext, DbSession, client_ip, require_permission
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import (Deployment, DeploymentStep, DoAccount, DoEnvironment,
-                                  Environment, EsxiVm, Snapshot, SshKnownHost)
+                                  Environment, EnvironmentFirstAdmin, EsxiVm, Snapshot,
+                                  SshKnownHost)
 from sirdar_api.deploy import (
     ConnectFailed,
+    apps as app_rules,
     digitalocean,
     do_accounts,
     do_api,
@@ -28,9 +30,11 @@ from sirdar_api.deploy import (
     envfile,
     environments,
     esxi,
+    first_admins,
     gitref,
     integrations,
     known_hosts,
+    lan_slots,
     names,
     outbound,
     pipeline,
@@ -46,6 +50,7 @@ from sirdar_api.deploy import (
 from sirdar_api.deploy.ssh import SshTargetConfig
 from sirdar_api.deploy.ssh_targets import SavedSshTarget, TargetError
 from sirdar_api.deploy.steps import STEPS_BY_KEY, plan_for
+from sirdar_api.services import portal_policy
 from sirdar_api.services.audit import audit
 
 router = APIRouter(prefix="/deploy", tags=["deploy"])
@@ -393,19 +398,35 @@ _ENV_STATUS = {"environment_exists": 409, "deploy_in_progress": 409,
                "integration_not_configured": 409, "ip_in_use": 409,
                "ssh_targets_unreadable": 409, "vm_invalid": 422,
                "do_account_not_configured": 409, "production_exists": 409,
-               "integration_unreadable": 409}
+               "integration_unreadable": 409, "first_admin_not_set": 404,
+               "first_admin_done": 409, "vm_name_taken": 409,
+               "vm_resize_not_supported": 409, "bluegreen_field_locked": 409}
 _NAME_CONSTRAINT = "environments_name_key"
 _PRODUCTION_CONSTRAINT = "environments_one_production"
 
 
+class VmSizeIn(BaseModel):
+    cores: int | None = None
+    memory_mb: int | None = None
+    disk_gb: int | None = None
+
+
 class VmIn(BaseModel):
-    """A VM environment's VM (mode "new", target "proxmox" or "esxi")."""
+    """A VM environment's VM (mode "new", target "proxmox" or "esxi"). With
+    slots 2 it is LAN Blue/Green: `ip_cidr` is orange's, plus purple's and
+    the data VM's (static, one gateway); `data` sizes the data VM."""
     cores: int | None = None
     memory_mb: int | None = None
     disk_gb: int | None = None
     ip_mode: str = Field(max_length=10)
     ip_cidr: str | None = Field(default=None, max_length=50)
     gateway: str | None = Field(default=None, max_length=45)
+    slots: int | None = None
+    purple_ip_cidr: str | None = Field(default=None, max_length=50)
+    data_ip_cidr: str | None = Field(default=None, max_length=50)
+    data: VmSizeIn | None = None
+    # Non-production Blue/Green only: an Update to the idle slot goes live by itself.
+    auto_activate: bool | None = None
 
 
 class VmPatch(BaseModel):
@@ -429,6 +450,30 @@ class DoIn(BaseModel):
     auto_activate: bool | None = None
 
 
+class FirstAdminIn(BaseModel):
+    """The first super admin of an environment that starts empty. The
+    password is write-only (typed mode); an invite has none. No min_length:
+    the bar is ServerSherpa's, checked by first_admins.check with its own
+    code; 1024 is the transport limit of every Sirdar password field."""
+    first_name: str = Field(max_length=100)
+    last_name: str = Field(max_length=100)
+    email: str = Field(max_length=254)
+    password_mode: Literal["typed", "invite"]
+    password: str | None = Field(default=None, max_length=1024, repr=False)
+
+
+class MailIn(BaseModel):
+    """Where the environment's mail goes: its Mailpit, or an SMTP server.
+    The password is write-only."""
+    mode: Literal["mailpit", "smtp"] = "mailpit"
+    host: str | None = Field(default=None, max_length=253)
+    port: int | None = None
+    username: str | None = Field(default=None, max_length=254)
+    password: str | None = Field(default=None, max_length=1024, repr=False)
+    from_address: str | None = Field(default=None, max_length=254)
+    starttls: bool | None = None
+
+
 class EnvironmentIn(BaseModel):
     mode: Literal["new", "adopt"]
     name: str = Field(max_length=64)
@@ -448,6 +493,13 @@ class EnvironmentIn(BaseModel):
     vm: VmIn | None = None
     # mode "new" with target "digitalocean" only: account, slots and sizes
     do: DoIn | None = None
+    # mode "new" only, without snapshot_id: the first deploy's step 11 creates it
+    first_admin: FirstAdminIn | None = None
+    # mode "new" only: the optional apps it runs (absent: all), its mail
+    # (absent: Mailpit) and optional secrets (write-only)
+    apps: list[str] | None = None
+    mail: MailIn | None = None
+    secrets: dict[str, str] | None = Field(default=None, repr=False)
 
 
 class ServicePatch(BaseModel):
@@ -486,6 +538,14 @@ class EnvironmentPatch(BaseModel):
     # Write-only. No pydantic constraint on the values, so no validation error
     # can describe one; the service answers secret_invalid / secret_not_editable.
     secrets: dict[str, str] | None = None
+
+
+def _warnings(env: Environment) -> list[str]:
+    """Blue/Green with Publish off: 14 Switch traffic still makes the proxy
+    hosts and their certificates through NPM (only DNS is left out)."""
+    if lan_slots.is_bluegreen(env) and not env.publish:
+        return ["bluegreen_npm_certificates"]
+    return []
 
 
 def _env_http(e: environments.EnvError) -> HTTPException:
@@ -529,6 +589,11 @@ async def environment_defaults(actor: AuthContext = require_permission("deploy",
         "do": {"droplet_size": do_envs.DEFAULT_DROPLET_SIZE, "db_size": do_envs.DEFAULT_DB_SIZE,
                "db_standby": False, "production_slots": list(do_envs.PRODUCTION_SLOTS),
                "one_slot": list(do_envs.ONE_SLOT), "two_slots": list(do_envs.TWO_SLOTS)},
+        "first_admin": {"password_min_length": portal_policy.PASSWORD_MIN_LENGTH,
+                        "role": portal_policy.FIRST_ADMIN_ROLE,
+                        "link_minutes": portal_policy.FIRST_ADMIN_LINK_MINUTES},
+        "apps": {"optional": list(app_rules.OPTIONAL_APPS), "always": list(app_rules.ALWAYS)},
+        "mail": {"smtp_port": app_rules.DEFAULT_SMTP_PORT},
     }
 
 
@@ -557,6 +622,16 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
         raise HTTPException(status_code=422, detail={"code": "vm_not_allowed"})
     if body.mode == "adopt" and body.do is not None:
         raise HTTPException(status_code=422, detail={"code": "do_not_allowed"})
+    if body.mode == "adopt" and body.first_admin is not None:
+        raise HTTPException(status_code=422, detail={"code": "first_admin_not_allowed"})
+    if body.mode == "adopt" and body.apps is not None:
+        # An adopted environment's apps and mail come from its own .env.
+        raise HTTPException(status_code=422, detail={"code": "apps_not_allowed"})
+    if body.mode == "adopt" and body.mail is not None:
+        raise HTTPException(status_code=422, detail={"code": "mail_not_allowed"})
+    if body.mode == "adopt" and body.secrets:
+        # An adopted environment keeps the secrets its own .env holds.
+        raise HTTPException(status_code=422, detail={"code": "secrets_not_allowed"})
     if body.mode == "adopt" and body.publish:
         # A hand-built environment's DNS and proxy were made by hand: turn
         # Publish on after claiming them on the Publish tab.
@@ -569,7 +644,11 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
                 bind_ip=body.bind_ip, ports=body.ports, actor_id=actor_id,
                 snapshot_id=body.snapshot_id, publish=body.publish is not False,
                 vm=body.vm.model_dump(exclude_none=True) if body.vm else None,
-                do=body.do.model_dump(exclude_none=True) if body.do else None)
+                do=body.do.model_dump(exclude_none=True) if body.do else None,
+                first_admin=body.first_admin.model_dump() if body.first_admin else None,
+                apps=body.apps,
+                mail=body.mail.model_dump(exclude_none=True) if body.mail else None,
+                secrets=body.secrets)
         else:
             env, _, report = await environments.adopt(
                 db, settings, name=body.name, type_=body.type, target_id=body.target,
@@ -595,7 +674,12 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
     if report is None:
         changes = {"name": env.name, "type": env.type, "target": env.target_id,
                    "base_domain": env.base_domain, "git_ref": env.git_ref,
-                   "proxy_ip": env.proxy_ip, "bind_ip": env.bind_ip, "publish": env.publish}
+                   "proxy_ip": env.proxy_ip, "bind_ip": env.bind_ip, "publish": env.publish,
+                   "apps": list(env.apps),
+                   # never the SMTP password or a secret's value: names only
+                   "mail": ({"mode": "smtp", "host": env.smtp_host} if env.smtp_host
+                            else {"mode": "mailpit"}),
+                   "secrets": sorted(k for k, v in (body.secrets or {}).items() if v)}
         seed = await snapshots.snapshot_ref(db, env.seed_snapshot_id)
         if seed is not None:
             changes["seed_snapshot"] = seed["name"]
@@ -603,6 +687,11 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
             changes["vm"] = body.vm.model_dump(exclude_none=True)
         if body.do is not None:
             changes["do"] = body.do.model_dump(exclude_none=True)
+        if _warnings(env):
+            changes["warnings"] = _warnings(env)
+        if body.first_admin is not None:          # never the password
+            changes["first_admin"] = {"email": body.first_admin.email.strip(),
+                                      "password_mode": body.first_admin.password_mode}
         audit(db, actor_id=actor_id, action="deploy.environment_create",
               entity_type="environment", entity_id=env.name, ip=client_ip(request),
               changes=changes)
@@ -616,6 +705,8 @@ async def create_environment(body: EnvironmentIn, request: Request, db: DbSessio
     await db.commit()
     await db.refresh(env)
     out = await serialize.environment_out(db, env)
+    if _warnings(env):
+        out["warnings"] = _warnings(env)
     if report is not None:
         # Names only: what adopt read from the target's .env.
         out["ignored_keys"] = report.ignored_keys
@@ -679,6 +770,44 @@ async def update_environment(name: str, body: EnvironmentPatch, request: Request
         raise
     if changed:
         await db.refresh(env)
+    out = await serialize.environment_out(db, env)
+    if _warnings(env):
+        out["warnings"] = _warnings(env)
+    return out
+
+
+@router.put("/environments/{name}/first-admin")
+async def set_first_admin(name: str, body: FirstAdminIn, request: Request, db: DbSession,
+                          actor: AuthContext = require_permission("deploy", "change")):
+    """Change the first admin before step 11 used it: a new password (the
+    environment refused the last one) or an invite instead."""
+    env = await _environment(db, name)
+    # Locked until this request commits, and the running-deployment check is
+    # made under the lock: step 11 marks the record done in its own commit,
+    # so a PUT can't land between it reading the record and marking it.
+    row = await db.get(EnvironmentFirstAdmin, env.id, with_for_update=True,
+                       populate_existing=True)
+    if row is None:
+        raise _refuse(404, "first_admin_not_set")
+    if row.done_at is not None:
+        raise _refuse(409, "first_admin_done")
+    if await environments.is_deploying(db, env.id):    # step 11 may be using it
+        raise _refuse(409, "deploy_in_progress")
+    settings = get_settings()
+    if not vault.is_configured(settings):
+        raise _refuse(400, "secrets_key_missing")
+    try:
+        spec = first_admins.check(body.model_dump())
+        await first_admins.put(db, settings, env.id, spec)
+    except first_admins.FirstAdminError as e:     # first_admin_done: step 11 got there first
+        await db.rollback()
+        raise _refuse(_ENV_STATUS.get(e.code, 422), e.code, **e.extra) from None
+    audit(db, actor_id=actor.user.person_id, action="deploy.first_admin_set",
+          entity_type="environment", entity_id=env.name, ip=client_ip(request),
+          changes={"environment": env.name, "email": spec["email"],
+                   "password_mode": spec["password_mode"]})
+    await db.commit()
+    await db.refresh(env)
     return await serialize.environment_out(db, env)
 
 
@@ -795,6 +924,23 @@ def _not_on_do() -> HTTPException:
                          detail={"code": pipeline.NotSupportedOnDigitalOcean.code})
 
 
+def _on_bg(env: Environment) -> bool:
+    """A LAN Blue/Green environment (two app VMs and a data VM)."""
+    return lan_slots.is_bluegreen(env)
+
+
+def _not_on_bg() -> HTTPException:
+    return HTTPException(status_code=409,
+                         detail={"code": pipeline.NotSupportedOnBlueGreen.code})
+
+
+async def _require_npm(db) -> None:
+    """Nginx Proxy Manager is a Blue/Green environment's switch, Publish on or off."""
+    if not await integrations.is_configured(db, "npm"):
+        raise HTTPException(status_code=409, detail={"code": "integration_not_configured",
+                                                     "kinds": ["npm"]})
+
+
 async def _require_vm_host(db, env: Environment) -> None:
     if _on_vm(env) and not await integrations.is_configured(db, env.target_id):
         raise HTTPException(status_code=409, detail={"code": "integration_not_configured",
@@ -840,7 +986,8 @@ async def _launch(db, env: Environment, request: Request, actor: AuthContext, *,
                   retry_of: uuid.UUID | None = None, snapshot: Snapshot | None = None,
                   restore_dump: str | None = None, publish: bool = False, vm: bool = False,
                   take_vm_snapshot: bool = False, vm_snapshot: str | None = None,
-                  cloud: bool = False, slot: str | None = None, go_live: bool = False) -> dict:
+                  cloud: bool = False, slot: str | None = None, go_live: bool = False,
+                  first_admin: bool = False, bluegreen: bool = False) -> dict:
     env_name = env.name           # read now: a lock conflict rolls the session back
     snapshot_id = snapshot.id if snapshot is not None else None
     snapshot_name = snapshot.name if snapshot is not None else None
@@ -852,12 +999,13 @@ async def _launch(db, env: Environment, request: Request, actor: AuthContext, *,
                                                restore_dump=restore_dump, publish=publish,
                                                vm=vm, take_vm_snapshot=take_vm_snapshot,
                                                vm_snapshot=vm_snapshot, cloud=cloud,
-                                               slot=slot, go_live=go_live)
+                                               slot=slot, go_live=go_live,
+                                               first_admin=first_admin, bluegreen=bluegreen)
     except pipeline.DeployInProgress:
         raise HTTPException(status_code=409, detail={"code": "deploy_in_progress"}) from None
-    except pipeline.NotSupportedOnDigitalOcean as e:
+    except (pipeline.NotSupportedOnDigitalOcean, pipeline.NotSupportedOnBlueGreen) as e:
         raise HTTPException(status_code=409, detail={"code": e.code}) from None
-    except do_envs.DoEnvError as e:      # slot_not_deployed {slot}, seed_not_allowed
+    except do_envs.DoEnvError as e:  # slot_not_deployed, switch_unresolved {slot}; seed_not_allowed
         await db.rollback()
         raise HTTPException(status_code=409, detail={"code": e.code, **e.extra}) from None
     except snapshots.SnapshotError as e:
@@ -880,8 +1028,10 @@ async def _launch(db, env: Environment, request: Request, actor: AuthContext, *,
         changes["take_vm_snapshot"] = True
     if vm_snapshot is not None:
         changes["vm_snapshot"] = vm_snapshot
-    if cloud:
+    if cloud or bluegreen:
         changes |= {"slot": slot, "go_live": go_live}
+    if dep.first_admin:          # as planned (create_deployment drops it once done)
+        changes["first_admin"] = True
     audit(db, actor_id=actor.user.person_id, action=action, entity_type="deployment",
           entity_id=str(dep.id), ip=client_ip(request), changes=changes)
     await db.commit()
@@ -957,7 +1107,8 @@ async def _start_do_update(db, env: Environment, body: DeploymentIn, request: Re
     return await _launch(db, env, request, actor, action="deploy.deployment_start",
                          mode="update", git_ref=ref,
                          sha=ref.lower() if gitref.is_full_sha(ref) else "", snapshot=snapshot,
-                         cloud=True, slot=slot, go_live=do_envs.goes_live(env, slot))
+                         cloud=True, slot=slot, go_live=do_envs.goes_live(env, slot),
+                         first_admin=snapshot is None and await first_admins.pending(db, env.id))
 
 
 async def _do_ran(db, env: Environment) -> bool:
@@ -979,7 +1130,8 @@ async def _snapshot_slot(db, env: Environment) -> str | None:
                 None)
 
 
-async def _begin_delete_snapshot(db, env: Environment, actor: AuthContext) -> Snapshot:
+async def _begin_delete_snapshot(db, env: Environment, actor: AuthContext, *,
+                                 deployed: bool | None = None) -> Snapshot:
     """The pending snapshot a DigitalOcean Delete takes in step 11. A retry
     in the same second as the failed attempt (whose snapshot keeps its
     name) gets a -2, -3, ... suffix, within the 64-character name limit."""
@@ -990,7 +1142,7 @@ async def _begin_delete_snapshot(db, env: Environment, actor: AuthContext) -> Sn
                 db, get_settings(), env,
                 name=base if n == 1 else f"{base[:62]}-{n}",
                 notes="Taken by Sirdar before Delete environment.",
-                actor_id=actor.user.person_id)
+                actor_id=actor.user.person_id, deployed=deployed)
         except snapshots.SnapshotError as e:
             if e.code == "snapshot_exists" and n < 9:
                 continue
@@ -1038,6 +1190,71 @@ async def _start_do_teardown(db, env: Environment, body: DeploymentIn, request: 
                          snapshot=snap, cloud=True, slot=slot)
 
 
+async def _start_lan_update(db, env: Environment, body: DeploymentIn, request: Request,
+                            actor: AuthContext) -> dict:
+    """Update on LAN Blue/Green: to the idle slot; it goes live when
+    do_envs.goes_live says so. Step 0 builds the data VM and the slot's VM
+    and resolves the ref there. No VM snapshot: the other slot is the way back."""
+    if not vault.is_configured(get_settings()):
+        raise _refuse(400, "secrets_key_missing")
+    if body.take_vm_snapshot is not None:
+        raise _refuse(422, "vm_snapshot_not_allowed")
+    await _require_vm_host(db, env)
+    await _require_npm(db)
+    if env.publish:
+        await _require_integrations(db, env)
+    ref = body.git_ref or env.git_ref
+    if not gitref.valid_ref(ref):
+        raise _refuse(422, "ref_invalid")
+    snapshot = None
+    if env.seed_snapshot_id is not None and not await lan_slots.ran(db, env):
+        try:
+            snapshot = await snapshots.ready_snapshot(db, env.seed_snapshot_id)
+        except snapshots.SnapshotError as e:
+            raise _snapshot_http(e) from None
+    slot = do_envs.target_slot(env)
+    return await _launch(db, env, request, actor, action="deploy.deployment_start",
+                         mode="update", git_ref=ref,
+                         sha=ref.lower() if gitref.is_full_sha(ref) else "", snapshot=snapshot,
+                         publish=env.publish, vm=True, bluegreen=True, slot=slot,
+                         go_live=do_envs.goes_live(env, slot),
+                         first_admin=snapshot is None and await first_admins.pending(db, env.id))
+
+
+async def _lan_snapshot_slot(db, env: Environment) -> str | None:
+    """Where a Blue/Green snapshot is taken: the live slot, else the first
+    slot that runs a commit and has an address."""
+    if env.active_slot:
+        return env.active_slot
+    rows = await lan_slots.slots_of(db, env.id)
+    ips = {m.role: m.ip for m in await vms.machines(db, env)}
+    return next((s for s in env.slots if s in rows and rows[s].sha and ips.get(s)), None)
+
+
+async def _start_lan_teardown(db, env: Environment, body: DeploymentIn, request: Request,
+                              actor: AuthContext) -> dict:
+    """Delete on LAN Blue/Green: a snapshot first (unless turned off), taken on
+    the live slot's VM against the data VM; then the three VMs, the proxy
+    hosts and the DNS records."""
+    if not vault.is_configured(get_settings()):
+        raise _refuse(400, "secrets_key_missing")
+    await _require_vm_host(db, env)
+    await _require_integrations(db, env, teardown=True)
+    slot = await _lan_snapshot_slot(db, env)
+    snap = None
+    # The shared database can hold data before anything went live (a slot
+    # that ran, the first admin): any slot with a commit counts.
+    if body.snapshot is not False and await lan_slots.ran(db, env):
+        cfg = await _host_target(db, env, slot=slot) if slot else None
+        if cfg is None:
+            raise _snapshot_slot_unreachable(env)
+        await _pinned(db, cfg)
+        snap = await _begin_delete_snapshot(db, env, actor, deployed=True)
+    return await _launch(db, env, request, actor, action="deploy.deployment_start",
+                         mode="teardown", git_ref=env.git_ref, sha=env.current_sha or "",
+                         snapshot=snap, vm=True, bluegreen=True, slot=slot)
+
+
 async def _read_production(db, env: Environment) -> None:
     """Production's retiring flag and live slot, read under the production
     lock (an un-retire takes it too), so an Activate, Deactivate or Update
@@ -1071,6 +1288,34 @@ def _refuse(status: int, code: str, **extra) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, **extra})
 
 
+async def _activate_lan(db, env: Environment, body: ActivateIn, request: Request,
+                        actor: AuthContext) -> dict:
+    """Activate on LAN Blue/Green: smoke-test the idle slot on its VM, then
+    repoint the proxy hosts at it (14 Switch traffic, through NPM)."""
+    if await environments.is_deploying(db, env.id):
+        raise _refuse(409, "deploy_in_progress")
+    if not vault.is_configured(get_settings()):
+        raise _refuse(400, "secrets_key_missing")
+    if body.slot is None:
+        raise _refuse(422, "slot_required")              # Deactivate is production's
+    if body.slot not in env.slots:
+        raise _refuse(422, "slot_invalid")
+    # While the last Switch traffic is unresolved, NPM may point at the idle
+    # slot: activating the live one puts it back (pipeline._check_switch).
+    if body.slot == env.active_slot and await lan_slots.unresolved_switch(db, env.id) is None:
+        raise _refuse(409, "slot_already_active")
+    row = (await lan_slots.slots_of(db, env.id)).get(body.slot)
+    if row is None or not row.sha:
+        raise _refuse(409, "slot_not_deployed", slot=body.slot)
+    await _require_vm_host(db, env)
+    await _require_npm(db)
+    if await _host_target(db, env, slot=body.slot) is None:
+        raise _refuse(409, "vm_not_ready")              # the slot's VM has no address
+    return await _launch(db, env, request, actor, action="deploy.activate", mode="activate",
+                         git_ref=row.sha, sha=row.sha, vm=True, bluegreen=True, slot=body.slot,
+                         go_live=True)
+
+
 @router.post("/environments/{name}/activate", status_code=201)
 async def activate(name: str, body: ActivateIn, request: Request, db: DbSession,
                    actor: AuthContext = require_permission("deploy", "change")):
@@ -1082,8 +1327,10 @@ async def activate(name: str, body: ActivateIn, request: Request, db: DbSession,
     if not actor.access.can("deploy", "add"):
         raise _forbidden()
     env = await _environment(db, name)
+    if _on_bg(env):
+        return await _activate_lan(db, env, body, request, actor)
     if not _on_do(env):
-        raise _refuse(409, "not_digitalocean_environment")
+        raise _refuse(409, "not_bluegreen_environment")
     if env.type == "production" and body.confirm_name != env.name:
         raise _refuse(422, "confirm_name_mismatch")
     if await environments.is_deploying(db, env.id):
@@ -1197,8 +1444,13 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
     on_vm = _on_vm(env)
     if _on_do(env) and body.mode in ("reset", "restore_dump", "vm_restore"):
         raise _not_on_do()
+    if _on_bg(env) and body.mode in ("reset", "restore_dump", "vm_restore"):
+        raise _not_on_bg()
+    # Delete's snapshot switch: DigitalOcean and Blue/Green; the production
+    # phrase: DigitalOcean only (a LAN environment is never production).
     if (body.snapshot is not None or body.confirm_production is not None) and not (
-            _on_do(env) and body.mode == "teardown"):
+            body.mode == "teardown" and (
+                _on_do(env) or (_on_bg(env) and body.confirm_production is None))):
         raise HTTPException(status_code=422, detail={"code": "snapshot_not_allowed"})
     if body.mode in GATED_MODES and body.confirm_name != env.name:
         raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
@@ -1227,6 +1479,10 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
         if body.mode == "teardown":
             return await _start_do_teardown(db, env, body, request, actor)
         return await _start_do_update(db, env, body, request, actor)
+    if _on_bg(env):          # update or teardown: every other mode was answered above
+        if body.mode == "teardown":
+            return await _start_lan_teardown(db, env, body, request, actor)
+        return await _start_lan_update(db, env, body, request, actor)
     await _require_vm_host(db, env)
     if body.mode == "teardown" and on_vm:
         # Step 15 Destroy VM needs no SSH (nor the VM's key).
@@ -1286,7 +1542,9 @@ async def start_deployment(name: str, body: DeploymentIn, request: Request, db: 
             raise _ssh_http(e) from None
     return await _launch(db, env, request, actor, action="deploy.deployment_start",
                          mode=body.mode, git_ref=ref, sha=sha, snapshot=snapshot,
-                         publish=env.publish, vm=on_vm, take_vm_snapshot=take)
+                         publish=env.publish, vm=on_vm, take_vm_snapshot=take,
+                         first_admin=body.mode == "update" and snapshot is None
+                         and await first_admins.pending(db, env.id))
 
 
 @router.get("/environments/{name}/deployments")
@@ -1336,6 +1594,8 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     env = await db.get(Environment, dep.environment_id)
     if _on_do(env) and dep.mode in pipeline.NOT_ON_DIGITALOCEAN:
         raise _not_on_do()
+    if _on_bg(env) and dep.mode in pipeline.NOT_ON_DIGITALOCEAN:
+        raise _not_on_bg()
     typed = dep.mode in GATED_MODES or (dep.mode == "activate" and env.type == "production")
     if typed and body.confirm_name != env.name:
         raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
@@ -1363,18 +1623,36 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
     # snapshot was deleted (snapshot_id is then NULL).
     restoring = dep.mode in ("update", "reset") and await _has_step(db, dep.id, "restore")
     # A DigitalOcean Delete that took a snapshot first (step 11).
-    taking = dep.mode == "teardown" and dep.cloud and await _has_step(db, dep.id, "export")
+    taking = dep.mode == "teardown" and (dep.cloud or dep.bluegreen) \
+        and await _has_step(db, dep.id, "export")
+    # Step 11 again only while the first admin is still to be created, as
+    # create_deployment plans it (a done record drops the step).
+    first_admin = dep.first_admin and await first_admins.pending(db, env.id)
     plan = plan_for(dep.mode, restore=restoring, publish=dep.publish, vm=dep.vm,
                     cloud=dep.cloud, go_live=dep.go_live, snapshot=taking,
-                    smoke=pipeline.smokes(dep.mode, dep.slot))
+                    smoke=pipeline.smokes(dep.mode, dep.slot), first_admin=first_admin,
+                    bluegreen=dep.bluegreen)
+    admin_step = STEPS_BY_KEY["first_admin"].number
+    if dep.first_admin and not first_admin and from_step == admin_step <= stopped:
+        # The admin was created since step 11 stopped: carry on with the step
+        # after it, or there's nothing left to retry.
+        later = [s.number for s in plan if s.number > admin_step]
+        if not later:
+            raise HTTPException(status_code=409, detail={"code": "not_retryable"})
+        from_step = later[0]
+        stopped = max(stopped, from_step)
     if from_step not in [s.number for s in plan] or from_step > stopped:
         raise HTTPException(status_code=422, detail={"code": "from_step_invalid"})
     # The Publish switch as it is now: a retry never publishes an environment
     # whose switch was turned off since. A data retry drops steps 12–14; one
     # that would start at them (or a publish job's retry) is refused.
     publishing = dep.publish and env.publish
+    # On Blue/Green only step 12 publishes: 13 and 14 run without it (the
+    # plan without publish simply drops 12).
+    dns_step = STEPS_BY_KEY["dns"].number
     if not env.publish and (dep.mode == "publish" or (
-            dep.publish and from_step >= STEPS_BY_KEY["dns"].number)):
+            dep.publish and (from_step == dns_step if dep.bluegreen
+                             else from_step >= dns_step))):
         raise HTTPException(status_code=409, detail={"code": "publish_off"})
     if restoring and dep.snapshot_id is None:
         if from_step <= STEPS_BY_KEY["restore"].number:
@@ -1393,7 +1671,7 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
         await _require_account(db, env)
     cfg = None
     if any(s.runs == "ansible" for s in plan if s.number >= from_step):
-        cfg = await _host_target(db, env, slot=dep.slot if dep.cloud else None)
+        cfg = await _host_target(db, env, slot=dep.slot if dep.cloud or dep.bluegreen else None)
         if not dep.vm and not dep.cloud:    # a built target's step 0 pins the key
             await _pinned(db, cfg)
     elif not vault.is_configured(get_settings()):
@@ -1406,12 +1684,16 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
         await _require_integrations(db, env, teardown=True)
     elif dep.mode == "publish" or publishing:
         await _require_integrations(db, env)
+    if dep.bluegreen and dep.mode in ("update", "activate"):
+        await _require_npm(db)
     if taking:
         if from_step <= STEPS_BY_KEY["export"].number:
             if cfg is None:             # the slot's droplet has no address
                 raise _snapshot_slot_unreachable(env)
             # A new pending snapshot; the failed attempt's stays failed.
-            snapshot = await _begin_delete_snapshot(db, env, actor)
+            snapshot = await _begin_delete_snapshot(
+                db, env, actor,
+                deployed=await lan_slots.ran(db, env) if dep.bluegreen else None)
         elif dep.snapshot_id is not None:
             try:
                 snapshot = await snapshots.ready_snapshot(db, dep.snapshot_id)
@@ -1427,7 +1709,8 @@ async def retry_deployment(deployment_id: uuid.UUID, body: RetryIn, request: Req
                          restore_dump=dep.restore_dump, publish=publishing, vm=dep.vm,
                          take_vm_snapshot=dep.take_vm_snapshot,
                          vm_snapshot=dep.vm_snapshot if dep.mode == "vm_restore" else None,
-                         cloud=dep.cloud, slot=dep.slot, go_live=dep.go_live)
+                         cloud=dep.cloud, slot=dep.slot, go_live=dep.go_live,
+                         first_admin=first_admin, bluegreen=dep.bluegreen)
 
 
 @router.post("/deployments/{deployment_id}/rollback", status_code=201)
@@ -1442,6 +1725,8 @@ async def rollback_deployment(deployment_id: uuid.UUID, body: RollbackIn, reques
     env = await db.get(Environment, dep.environment_id)
     if _on_do(env):
         raise _not_on_do()
+    if _on_bg(env):
+        raise _not_on_bg()
     if body.confirm_name != env.name:
         raise HTTPException(status_code=422, detail={"code": "confirm_name_mismatch"})
     latest = await serialize.latest_deployment(db, env.id)
@@ -1641,10 +1926,12 @@ async def take_snapshot(name: str, body: TakeSnapshotIn, request: Request, db: D
     except snapshots.SnapshotError as e:
         await db.rollback()
         raise _snapshot_http(e) from None
-    on_do = _on_do(env)
+    on_do, on_bg = _on_do(env), _on_bg(env)
+    # Blue/Green: on the live slot's VM, against the data VM.
     dep = await _launch(db, env, request, actor, action="deploy.snapshot_take",
                         mode="snapshot", git_ref=env.git_ref, sha=env.current_sha,
-                        snapshot=snap, cloud=on_do, slot=env.active_slot if on_do else None)
+                        snapshot=snap, cloud=on_do, vm=on_bg, bluegreen=on_bg,
+                        slot=env.active_slot if on_do or on_bg else None)
     await db.refresh(snap)
     return {"snapshot": await snapshots.snapshot_out(db, snap), "deployment": dep}
 

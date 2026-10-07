@@ -41,6 +41,10 @@ On a DigitalOcean droplet, Sirdar writes the droplet keys at the end of
 and `ss-stack revision <env-dir>` (the Alembic revision) serve snapshots in
 both modes.
 
+`ss-stack admin <env-dir> <args…>` runs `serversherpa bootstrap-admin` in the
+running api container (Sirdar's step 11, Create the first admin); stdin (a
+typed password) passes through, and its exit code is the command's.
+
 ## Accepted risk: staging CORS
 
 These stacks run the API with `SS_ENV=staging`, and outside production the
