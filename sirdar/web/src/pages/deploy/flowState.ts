@@ -256,6 +256,9 @@ export function stepErrors(step: FlowStep, s: FlowState, ctx: FlowContext): Erro
       const min = ctx.defaults.first_admin.password_min_length;
       const names = [s.adminFirst, s.adminLast].map((v) => v.trim());
       return only({
+        // The first admin's email must not sit in Mailpit on production.
+        data: s.type === 'production' && s.mailMode !== 'smtp'
+          ? "On production the first admin's email goes out through SMTP: choose SMTP in Extras › Mail, or start from a snapshot." : '',
         adminName: names.some((n) => !n || n.length > 100 || CONTROL_RE.test(n))
           ? 'Enter a first and last name (up to 100 characters each).' : '',
         adminEmail: !EMAIL_RE.test(s.adminEmail.trim()) ? 'Enter a valid email address for the first admin.' : '',
