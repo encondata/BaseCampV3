@@ -286,3 +286,13 @@ it('Blue/Green: the target names its three VMs, sizes are not editable, and Dele
   expect(del.textContent).toContain('ss-lan9-data, ss-lan9-orange and ss-lan9-purple');
   expect(del.textContent).not.toMatch(/VM snapshots/);
 });
+
+it('the SMTP password is labeled and shown only when mail goes through SMTP', async () => {
+  open();
+  expect(screen.queryByText(/SS_SMTP_PASSWORD|SMTP password/)).toBeNull();
+  cleanup();
+  open({ ...ENV, mail: { ...ENV.mail, mode: 'smtp', host: 'smtp.example.com', port: 587, from_address: 'ops@example.com' },
+         secrets_set: { ...ENV.secrets_set, SS_SMTP_PASSWORD: true } });
+  expect(secret('SMTP password: set')).toBeTruthy();
+  expect(screen.queryByText(/SS_SMTP_PASSWORD/)).toBeNull();
+});

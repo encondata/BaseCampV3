@@ -104,11 +104,11 @@ it('checks each step before Next and keeps choices on Back', async () => {
   expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('qa');
 });
 
-it('the Target step has Connect and Trusted SSH hosts as h3 under the step title', async () => {
+it('the Target step has Connect and Trusted SSH hosts as h3 under the step title (h2)', async () => {
   await open();
   await userEvent.type(screen.getByLabelText('Name'), 'qa');
   await next(); await next();
-  expect(screen.getByRole('heading', { name: 'Target', level: 3 })).toBeTruthy();
+  expect(screen.getByRole('heading', { name: 'Target', level: 2 })).toBeTruthy();
   expect(screen.getByRole('heading', { name: 'Connect', level: 3 })).toBeTruthy();
   expect(screen.getByRole('heading', { name: 'Trusted SSH hosts', level: 3 })).toBeTruthy();
 });
@@ -247,4 +247,70 @@ it('without deploy:add renders nothing', async () => {
   const { container } = render(<MemoryRouter><DeployFlow targets={FLOW_TARGETS} reloadTargets={vi.fn()} /></MemoryRouter>);
   await waitFor(() => expect(api.getEnvironmentDefaults).toHaveBeenCalled());
   expect(container.textContent).toBe('');
+});
+
+it('Next and Back move focus to the step title and announce the step', async () => {
+  await open();
+  const live = () => document.querySelector('[aria-live="polite"]')?.textContent;
+  await userEvent.type(screen.getByLabelText('Name'), 'qa');
+  await next();
+  const title = screen.getByRole('heading', { name: 'Servers', level: 2 });
+  await waitFor(() => expect(document.activeElement).toBe(title));
+  expect(live()).toBe('Step 2 of 7: Servers');
+  await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+  await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Environment', level: 2 })));
+  expect(live()).toBe('Step 1 of 7: Environment');
+});
+
+it('once created, the flow is locked on Review: no Back, no steps, the choices stay put', async () => {
+  api.createEnvironment.mockResolvedValue({ ...ENV, name: 'qa' });
+  api.startDeployment.mockRejectedValueOnce(new ApiError(409, 'deploy_in_progress', { code: 'deploy_in_progress' }));
+  await open();
+  await sshToReview();
+  await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+  await screen.findByText(/Created qa, but its first deployment didn't start/);
+  expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Next' })).toBeNull();
+  expect(document.querySelector('.rgm-steps')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Deploy' })).toBeTruthy();
+  expect(screen.getByRole('button', { name: 'Start over' })).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'Open the environment' })).toBeTruthy();
+  expect(document.querySelector('.sirdar-flow input')).toBeNull();
+});
+
+it('Start over after a create starts a new environment', async () => {
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  api.createEnvironment.mockResolvedValue({ ...ENV, name: 'qa' });
+  api.startDeployment.mockRejectedValueOnce(new ApiError(409, 'deploy_in_progress', { code: 'deploy_in_progress' }));
+  await open();
+  await sshToReview();
+  await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+  await screen.findByText(/Created qa, but its first deployment didn't start/);
+  await userEvent.click(screen.getByRole('button', { name: 'Start over' }));
+  expect(screen.getByRole('heading', { name: 'Environment' })).toBeTruthy();
+  expect(document.querySelector('.rgm-steps')).toBeTruthy();
+  confirm.mockRestore();
+});
+
+it('a lost create response, then environment_exists for that name, offers to open it', async () => {
+  api.createEnvironment.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    .mockRejectedValueOnce(new ApiError(409, 'environment_exists', { code: 'environment_exists' }));
+  await open();
+  await sshToReview();
+  await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+  await screen.findByRole('alert');
+  expect(screen.getByRole('heading', { name: 'Review & Deploy' })).toBeTruthy();
+  await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+  await screen.findByText('An environment with that name already exists.');
+  expect(screen.getByText(/It may have been created already/)).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'open it' }).getAttribute('href')).toBe('/deploy/environments/qa');
+});
+
+it('environment_exists on a first try is only the Name error', async () => {
+  api.createEnvironment.mockRejectedValue(new ApiError(409, 'environment_exists', { code: 'environment_exists' }));
+  await open();
+  await sshToReview();
+  await userEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+  await screen.findByText('An environment with that name already exists.');
+  expect(screen.queryByText(/It may have been created already/)).toBeNull();
 });

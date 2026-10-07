@@ -22,6 +22,7 @@ import {
 
 const SECRET_LABELS: Record<string, string> = {
   SS_ANTHROPIC_API_KEY: 'Anthropic API key', SS_DB_TESTING_PASSWORD: 'Database testing password',
+  SS_SMTP_PASSWORD: 'SMTP password',
 };
 const BUCKET_RE = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 const SECRET_RE = /^[A-Za-z0-9._~+/=:@%^*!?,;-]{1,1024}$/;
@@ -109,7 +110,8 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
     setForm((f) => ({ ...f, services: { ...f.services, [service]: { ...f.services[service], [key]: value } } }));
     setNotice('');
   };
-  const secretKeys = Object.keys(env.secrets_set);
+  // The SMTP password only means something while mail goes through SMTP.
+  const secretKeys = Object.keys(env.secrets_set).filter((k) => k !== 'SS_SMTP_PASSWORD' || env.mail?.mode === 'smtp');
   const ssh = sshTargets(targets).map((t) => ({ value: t.id, label: t.label }));
   const targetOptions = ssh.some((o) => o.value === form.target)
     ? ssh : [{ value: form.target, label: targetLabel(targets, form.target) }, ...ssh];

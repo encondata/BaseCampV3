@@ -62,6 +62,12 @@ export default function ReviewStep({ state, ctx, problem, created }: StepProps &
           <Link to={`/deploy/environments/${encodeURIComponent(created)}`}>Open the environment</Link>
         </p>
       )}
+      {created && !problem && (
+        <p className="page-hint">
+          Created {created}. Deploy starts its first deployment.{' '}
+          <Link to={`/deploy/environments/${encodeURIComponent(created)}`}>Open the environment</Link>
+        </p>
+      )}
       {!created && problem && <p className="form-error" role="alert">{problem}</p>}
     </>
   );

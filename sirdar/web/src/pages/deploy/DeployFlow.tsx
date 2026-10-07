@@ -2,11 +2,13 @@
  *  Servers, Target, Extras, Traffic, Data, Review & Deploy. A page section
  *  with the report-generate header; Deploy creates the environment, starts
  *  its first deployment and opens it. A start that fails after the create is
- *  retried on its own: the environment is never created twice. */
+ *  retried on its own: the environment is never created twice, and the flow
+ *  is locked on Review from then on (its choices are no longer used). */
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import { useAuth } from '@portal/auth/AuthContext';
+import { ApiError } from '@portal/lib/api';
 
 import { useHostKeyTrust } from '../../components/useHostKeyTrust';
 import {
@@ -38,9 +40,23 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
   const [problem, setProblem] = useState('');
   /** The environment this flow already created, so Deploy only retries its start. */
   const [created, setCreated] = useState<string | null>(null);
+  /** Names whose create got no clear answer (lost response, 5xx): they may exist already. */
+  const unsure = useRef(new Set<string>());
+  const [maybeCreated, setMaybeCreated] = useState('');
+  const [announce, setAnnounce] = useState('');
   const busyRef = useRef(false);
   const focusName = useRef(false);
+  const focusTitle = useRef(false);
+  const titleRef = useRef<HTMLHeadingElement>(null);
   const sectionRef = useRef<HTMLElement>(null);
+
+  /** Show a step: its title takes focus and the live region names it. */
+  const go = (to: FlowStep) => {
+    const i = FLOW_STEPS.findIndex(([s]) => s === to);
+    focusTitle.current = true;
+    setAnnounce(`Step ${i + 1} of ${FLOW_STEPS.length}: ${FLOW_STEPS[i][1]}`);
+    setStep(to);
+  };
 
   useEffect(() => {
     let live = true;
@@ -74,11 +90,14 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
     let name = alreadyCreated ?? created;
     try {
       if (!name) {
+        const body = buildBody(state, ctx);
         try {
-          name = (await createEnvironment(buildBody(state, ctx))).name;
+          name = (await createEnvironment(body)).name;
           setCreated(name);
         } catch (err) {
           const code = (err as { code?: string }).code ?? '';
+          if (!(err instanceof ApiError) || err.status >= 500) unsure.current.add(body.name);
+          setMaybeCreated(code === 'environment_exists' && unsure.current.has(body.name) ? body.name : '');
           const field = CODE_FIELD[code] ?? 'form';
           const to = stepOfCode(code);
           const text = deployErrorText(err, "Couldn't create the environment.");
@@ -89,8 +108,7 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
           }
           setErrors({ [field]: text });
           if (field === 'form') setProblem(text);
-          focusName.current = to === 'environment';
-          setStep(to);
+          if (to === 'environment') { focusName.current = true; setStep(to); } else if (to !== step) go(to);
           return;
         }
       }
@@ -110,10 +128,14 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
   });
   useLayoutEffect(() => { sectionRef.current?.toggleAttribute('inert', hostKey.open); }, [hostKey.open]);
 
+  // After the steps' own effects (an Environment step focuses its name on mount).
   useEffect(() => {
     if (focusName.current && step === 'environment') {
       focusName.current = false;
       document.getElementById('flow-name')?.focus();
+    } else if (focusTitle.current) {
+      focusTitle.current = false;
+      titleRef.current?.focus();
     }
   });
 
@@ -121,18 +143,23 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
   if (loadError) return <p className="form-error" role="alert">{loadError}</p>;
   if (!ctx || !state) return <section className="sirdar-flow"><p className="page-hint">Loading…</p></section>;
 
-  const at = FLOW_STEPS.findIndex(([s]) => s === step);
+  // Once created, only Review is left: Deploy retries the start, and the choices can't change.
+  const locked = created !== null;
+  const shown: FlowStep = locked ? 'review' : step;
+  const at = FLOW_STEPS.findIndex(([s]) => s === shown);
   const label = FLOW_STEPS[at][1];
   const props = { state, set, errors, ctx };
   const next = () => {
     const e = stepErrors(step, state, ctx);
     setErrors(e);
-    if (!Object.keys(e).length) setStep(nextStep(step));
+    if (!Object.keys(e).length) go(nextStep(step));
   };
-  const back = () => { setErrors({}); setStep(prevStep(step)); };
+  const back = () => { setErrors({}); go(prevStep(step)); };
   const startOver = () => {
     if (!window.confirm('Start over? Every choice in this flow is cleared.')) return;
-    setState(initialState(ctx)); setStep('environment'); setErrors({}); setProblem(''); setCreated(null);
+    setState(initialState(ctx)); setErrors({}); setProblem(''); setCreated(null); setMaybeCreated('');
+    unsure.current.clear();
+    go('environment');
   };
 
   return (
@@ -141,10 +168,11 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
         <div className="sirdar-flow-head">
           <div className="rgm-head-text">
             <div className="eyebrow">Deploy</div>
-            <h3 id="sirdar-flow-title">{label}</h3>
-            <p className="page-hint">{STEP_HINT[step]}</p>
+            <h2 id="sirdar-flow-title" ref={titleRef} tabIndex={-1}>{label}</h2>
+            <p className="page-hint">{STEP_HINT[shown]}</p>
           </div>
-          <div className="rgm-steps">
+          <p className="sr-only" aria-live="polite">{announce}</p>
+          {!locked && <div className="rgm-steps">
             {FLOW_STEPS.map(([s, text], i) => (
               <Fragment key={s}>
                 {i > 0 && <span className="rgm-step-sep" />}
@@ -154,22 +182,30 @@ export default function DeployFlow({ targets, reloadTargets }: { targets: Deploy
                 </span>
               </Fragment>
             ))}
-          </div>
+          </div>}
         </div>
         <div className="sirdar-flow-body pf-form">
-          {step === 'environment' && <EnvironmentStep {...props} />}
-          {step === 'servers' && <ServersStep {...props} />}
-          {step === 'target' && <TargetStep {...props} onTargetsChanged={reloadTargets} />}
-          {step === 'extras' && <ExtrasStep {...props} />}
-          {step === 'traffic' && <TrafficStep {...props} />}
-          {step === 'data' && <DataStep {...props} />}
-          {step === 'review' && <ReviewStep {...props} busy={busy} problem={problem} created={created} />}
-          {errors.form && step !== 'review' && <p className="form-error" role="alert">{errors.form}</p>}
+          {shown === 'environment' && <EnvironmentStep {...props} />}
+          {shown === 'environment' && maybeCreated && maybeCreated === state.name.trim() && (
+            <p className="page-hint" role="note">
+              It may have been created already:{' '}
+              <Link to={`/deploy/environments/${encodeURIComponent(maybeCreated)}`}>open it</Link>
+            </p>
+          )}
+          {shown === 'servers' && <ServersStep {...props} />}
+          {shown === 'target' && <TargetStep {...props} onTargetsChanged={reloadTargets} />}
+          {shown === 'extras' && <ExtrasStep {...props} />}
+          {shown === 'traffic' && <TrafficStep {...props} />}
+          {shown === 'data' && <DataStep {...props} />}
+          {shown === 'review' && <ReviewStep {...props} busy={busy} problem={problem} created={created} />}
+          {errors.form && shown !== 'review' && <p className="form-error" role="alert">{errors.form}</p>}
         </div>
         <div className="sirdar-flow-foot">
           <button type="button" className="btn-ghost" disabled={busy} onClick={startOver}>Start over</button>
-          {step !== 'environment' && <button type="button" className="btn-ghost" disabled={busy} onClick={back}>Back</button>}
-          {step === 'review'
+          {!locked && step !== 'environment' && (
+            <button type="button" className="btn-ghost" disabled={busy} onClick={back}>Back</button>
+          )}
+          {shown === 'review'
             ? <button type="button" className="btn-solid" disabled={busy} onClick={() => { void deploy(); }}>
                 {busy ? 'Deploying…' : 'Deploy'}
               </button>

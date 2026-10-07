@@ -246,7 +246,8 @@ export function stepErrors(step: FlowStep, s: FlowState, ctx: FlowContext): Erro
           : !inRange(port, [1, 65535]) ? 'Use an SMTP port from 1 to 65535.'
           : s.smtpUsername && !USER_RE.test(s.smtpUsername) ? "That SMTP user name can't be used: no spaces, quotes, $, # or backslashes."
           : s.smtpPassword && !SECRET_RE.test(s.smtpPassword) ? `That SMTP password ${SECRET_HELP}`
-          : !EMAIL_RE.test(s.smtpFrom.trim()) ? 'Enter the address mail is sent from, like noreply@example.com.' : '';
+          : !EMAIL_RE.test(s.smtpFrom.trim()) || !USER_RE.test(s.smtpFrom.trim()) || CONTROL_RE.test(s.smtpFrom)
+            ? 'Enter the address mail is sent from, like noreply@example.com.' : '';
       }
       if (s.aiKey && !SECRET_RE.test(s.aiKey)) errors.aiKey = `That key ${SECRET_HELP}`;
       return only(errors);
@@ -341,7 +342,7 @@ export const CODE_FIELD: Record<string, Field> = {
   auto_activate_not_allowed: 'hosting',
   apps_invalid: 'apps', mailpit_required: 'apps',
   mail_invalid: 'mail', smtp_host_invalid: 'mail', smtp_port_invalid: 'mail', smtp_username_invalid: 'mail',
-  smtp_password_invalid: 'mail', smtp_from_invalid: 'mail', smtp_required_for_first_admin: 'mail',
+  smtp_password_invalid: 'mail', smtp_from_invalid: 'mail', smtp_required_for_first_admin: 'data',
   secret_invalid: 'aiKey', secret_not_editable: 'aiKey',
   snapshot_not_found: 'data', snapshot_not_ready: 'data', first_admin_with_seed: 'data', first_admin_invalid: 'data',
   first_admin_name_invalid: 'adminName', first_admin_email_invalid: 'adminEmail',

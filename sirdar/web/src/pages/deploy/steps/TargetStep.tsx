@@ -27,6 +27,7 @@ export default function TargetStep({ state, set, errors, ctx, onTargetsChanged }
   const bg = state.servers === 'bluegreen';
   const name = state.name.trim() || '<name>';
   const account = ctx.accounts.find((a) => a.key === state.doAccount);
+  const prodReady = !!ctx.accounts.find((a) => a.key === 'production')?.configured;
   const vmBad = !!errors.machine;
   return (
     <>
@@ -41,14 +42,18 @@ export default function TargetStep({ state, set, errors, ctx, onTargetsChanged }
           <div className="sirdar-span2">
             <span className="field-label" id="flow-do-account-label">Account</span>
             <div className="segmented" role="radiogroup" aria-labelledby="flow-do-account-label">
-              {ctx.accounts.map((a) => (
-                <button key={a.key} type="button" role="radio" aria-checked={state.doAccount === a.key}
-                        className={state.doAccount === a.key ? 'on' : ''} tabIndex={state.doAccount === a.key ? 0 : -1}
-                        disabled={!a.configured} aria-disabled={!a.configured || undefined} onKeyDown={arrowNav}
-                        onClick={() => { if (a.configured && state.doAccount !== a.key) set({ doAccount: a.key }); }}>
-                  {a.label}
-                </button>
-              ))}
+              {ctx.accounts.map((a) => {
+                // Production lives in the Production account once it's set up (flowState.withRules).
+                const locked = state.type === 'production' && prodReady && a.key !== 'production';
+                return (
+                  <button key={a.key} type="button" role="radio" aria-checked={state.doAccount === a.key}
+                          className={state.doAccount === a.key ? 'on' : ''} tabIndex={state.doAccount === a.key ? 0 : -1}
+                          disabled={!a.configured} aria-disabled={!a.configured || locked || undefined} onKeyDown={arrowNav}
+                          onClick={() => { if (a.configured && !locked && state.doAccount !== a.key) set({ doAccount: a.key }); }}>
+                    {a.label}
+                  </button>
+                );
+              })}
             </div>
             <p className="page-hint">{account?.region ? `Built in ${account.region}. ` : ''}An environment stays in the account it is built in.</p>
             {state.type === 'production' && state.doAccount === 'development' && (

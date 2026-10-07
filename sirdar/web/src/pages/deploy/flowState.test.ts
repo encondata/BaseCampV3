@@ -95,6 +95,13 @@ describe('checks', () => {
       .toBe('Mail goes to Mailpit unless SMTP is set up: turn Mailpit on, or choose SMTP.');
     expect(stepErrors('extras', ssh({ aiKey: 'with space' }), ctx).aiKey).toMatch(/can't be saved/);
   });
+  it('extras: the From address refuses what the user name refuses', () => {
+    const smtp = ssh({ mailMode: 'smtp', smtpHost: 'smtp.example.com', smtpFrom: 'ops@example.com' });
+    for (const bad of ['o$ps@example.com', 'o"ps@example.com', "o'ps@example.com", 'o`ps@example.com', 'o#ps@example.com',
+                       'o\\ps@example.com', 'o\u0001ps@example.com', 'ops@exa\u2028mple.com', 'o ps@example.com', 'ops@example.com\tx'])
+      expect(stepErrors('extras', { ...smtp, smtpFrom: bad }, ctx).mail, bad).toBeTruthy();
+    expect(stepErrors('extras', { ...smtp, smtpFrom: 'no-reply+ops@mail.example.com' }, ctx)).toEqual({});
+  });
   it('data: the first admin against the policy hint, never a rule of our own', () => {
     expect(stepErrors('data', ssh(), ctx)).toEqual({});
     expect(stepErrors('data', ssh({ adminPassword: 'short', adminConfirm: 'short' }), ctx).adminPassword)
@@ -171,6 +178,7 @@ describe('errors', () => {
     expect(stepOfCode('bluegreen_not_allowed')).toBe('target');
     expect(stepOfCode('first_admin_email_invalid')).toBe('data');
     expect(stepOfCode('mailpit_required')).toBe('extras');
+    expect(stepOfCode('smtp_required_for_first_admin')).toBe('data');
     expect(stepOfCode('something_else')).toBe('review');
   });
 });

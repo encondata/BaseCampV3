@@ -124,3 +124,28 @@ it('never renders a native select', () => {
   renderStep({ mailMode: 'smtp', target: 'digitalocean' });
   expect(container.ownerDocument.querySelector('select')).toBeNull();
 });
+
+it('the SMTP fields and the API key point at their errors', () => {
+  renderStep({ mailMode: 'smtp' }, {}, { mail: 'Enter the SMTP server\'s host name or address.', aiKey: "That key can't be saved." });
+  for (const label of ['SMTP host', 'SMTP port', 'User name', 'SMTP password', 'From address']) {
+    const input = screen.getByLabelText(label);
+    expect(input.getAttribute('aria-invalid'), label).toBe('true');
+    expect(document.getElementById(input.getAttribute('aria-describedby')!.split(' ').pop()!)?.textContent, label)
+      .toBe("Enter the SMTP server's host name or address.");
+  }
+  const key = screen.getByLabelText('Anthropic API key');
+  expect(key.getAttribute('aria-invalid')).toBe('true');
+  expect(key.getAttribute('aria-describedby')!.split(' ').map((id) => document.getElementById(id)?.textContent))
+    .toContain("That key can't be saved.");
+});
+
+it('without errors nothing is marked invalid', () => {
+  renderStep({ mailMode: 'smtp' });
+  for (const label of ['SMTP host', 'From address', 'Anthropic API key'])
+    expect(screen.getByLabelText(label).getAttribute('aria-invalid'), label).toBeNull();
+});
+
+it('the section headings sit under the step title (h3)', () => {
+  renderStep();
+  for (const name of ['Apps', 'Hosting', 'Integrations']) expect(screen.getByRole('heading', { name, level: 3 })).toBeTruthy();
+});

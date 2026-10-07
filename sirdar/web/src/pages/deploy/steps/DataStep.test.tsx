@@ -96,3 +96,24 @@ it('shows the data error on Start empty too', () => {
   renderStep({ ...PROD }, {}, { data: 'Production needs SMTP.' });
   expect(screen.getByText('Production needs SMTP.')).toBeTruthy();
 });
+
+it('the admin fields point at their errors', () => {
+  renderStep({}, {}, { adminName: 'Enter their first and last name.', adminEmail: 'Enter a valid email.',
+                       adminPassword: 'Too short.' });
+  const describedText = (label: string) => {
+    const input = screen.getByLabelText(label);
+    expect(input.getAttribute('aria-invalid'), label).toBe('true');
+    return input.getAttribute('aria-describedby')!.split(' ').map((id) => document.getElementById(id)?.textContent);
+  };
+  expect(describedText('First name')).toContain('Enter their first and last name.');
+  expect(describedText('Last name')).toContain('Enter their first and last name.');
+  expect(describedText('Email')).toContain('Enter a valid email.');
+  expect(describedText('Password')).toContain('Too short.');
+  expect(describedText('Type it again')).toContain('Too short.');
+});
+
+it('without errors the admin fields are not marked invalid', () => {
+  renderStep();
+  for (const label of ['First name', 'Email', 'Password'])
+    expect(screen.getByLabelText(label).getAttribute('aria-invalid'), label).toBeNull();
+});

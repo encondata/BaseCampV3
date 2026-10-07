@@ -17,16 +17,20 @@ function Toggle({ label, checked, onChange, disabled }: {
   );
 }
 
-function Field({ id, label, value, onChange, type = 'text', hint, inputMode }: {
+function Field({ id, label, value, onChange, type = 'text', hint, inputMode, errorId }: {
   id: string; label: string; value: string; onChange: (v: string) => void; type?: string; hint?: string;
   inputMode?: 'numeric';
+  /** The id of the error this field shares, when there is one: marks it invalid and describes it. */
+  errorId?: string;
 }) {
+  const described = [hint ? `${id}-hint` : '', errorId ?? ''].filter(Boolean).join(' ');
   return (
     <div>
       <label className="field-label" htmlFor={id}>{label}</label>
       <input id={id} type={type} value={value} autoComplete={type === 'password' ? 'new-password' : 'off'}
-             inputMode={inputMode} spellCheck={false} onChange={(e) => onChange(e.target.value)} />
-      {hint && <p className="page-hint">{hint}</p>}
+             inputMode={inputMode} spellCheck={false} aria-invalid={errorId ? true : undefined}
+             aria-describedby={described || undefined} onChange={(e) => onChange(e.target.value)} />
+      {hint && <p className="page-hint" id={`${id}-hint`}>{hint}</p>}
     </div>
   );
 }
@@ -63,18 +67,19 @@ export default function ExtrasStep({ state, set, errors, ctx }: StepProps) {
     // Without Mailpit, mail can only go out through SMTP.
     set(app === 'mailpit' && !v && state.mailMode === 'mailpit' ? { apps, mailMode: 'smtp' } : { apps });
   };
+  const mailErr = errors.mail ? 'flow-mail-error' : undefined;
   return (
     <>
-      <h4 className="sirdar-sub">Apps</h4>
+      <h3 className="sirdar-sub">Apps</h3>
       <p className="page-hint">API and Portal always run.</p>
       <div className="sirdar-flow-grid">
         {OPTIONAL_APPS.map(([app, label]) => (
           <Toggle key={app} label={label} checked={state.apps[app]} onChange={(v) => setApp(app, v)} />
         ))}
       </div>
-      {errors.apps && <p className="form-error" role="alert">{errors.apps}</p>}
+      {errors.apps && <p className="form-error" id="flow-apps-error" role="alert">{errors.apps}</p>}
 
-      <h4 className="sirdar-sub">Hosting</h4>
+      <h3 className="sirdar-sub">Hosting</h3>
       {onDoTarget && (
         <div className="sirdar-flow-grid">
           <Toggle label="Standby node" checked={state.dbStandby} onChange={(v) => set({ dbStandby: v })} />
@@ -95,9 +100,9 @@ export default function ExtrasStep({ state, set, errors, ctx }: StepProps) {
         </>
       )}
       {!onDoTarget && !(bg && !production) && <p className="page-hint">Nothing to set for this target.</p>}
-      {errors.hosting && <p className="form-error" role="alert">{errors.hosting}</p>}
+      {errors.hosting && <p className="form-error" id="flow-hosting-error" role="alert">{errors.hosting}</p>}
 
-      <h4 className="sirdar-sub">Integrations</h4>
+      <h3 className="sirdar-sub">Integrations</h3>
       {onDoTarget ? (
         <p className="page-hint">DigitalOcean environments always publish their DNS records.</p>
       ) : (
@@ -110,7 +115,7 @@ export default function ExtrasStep({ state, set, errors, ctx }: StepProps) {
                 : 'On: each deploy keeps a Cloudflare record and a proxy host for every public name.'
               : 'Set up Cloudflare and Nginx Proxy Manager in Settings › Integrations to publish.'}
           </p>
-          {errors.publish && <p className="form-error" role="alert">{errors.publish}</p>}
+          {errors.publish && <p className="form-error" id="flow-publish-error" role="alert">{errors.publish}</p>}
         </>
       )}
       <Segmented id="flow-mail-label" caption="Mail" value={state.mailMode}
@@ -124,23 +129,24 @@ export default function ExtrasStep({ state, set, errors, ctx }: StepProps) {
       {state.mailMode === 'smtp' && (
         <>
           <div className="sirdar-flow-grid" role="group" aria-label="SMTP server">
-            <Field id="flow-smtp-host" label="SMTP host" value={state.smtpHost} onChange={(v) => set({ smtpHost: v })} />
-            <Field id="flow-smtp-port" label="SMTP port" value={state.smtpPort} inputMode="numeric"
+            <Field id="flow-smtp-host" label="SMTP host" value={state.smtpHost} errorId={mailErr} onChange={(v) => set({ smtpHost: v })} />
+            <Field id="flow-smtp-port" label="SMTP port" value={state.smtpPort} inputMode="numeric" errorId={mailErr}
                    onChange={(v) => set({ smtpPort: v })} />
             <Toggle label="STARTTLS" checked={state.smtpStarttls} onChange={(v) => set({ smtpStarttls: v })} />
           </div>
           <div className="sirdar-flow-grid">
-            <Field id="flow-smtp-user" label="User name" value={state.smtpUsername} onChange={(v) => set({ smtpUsername: v })} />
-            <Field id="flow-smtp-password" label="SMTP password" type="password" value={state.smtpPassword}
+            <Field id="flow-smtp-user" label="User name" value={state.smtpUsername} errorId={mailErr} onChange={(v) => set({ smtpUsername: v })} />
+            <Field id="flow-smtp-password" label="SMTP password" type="password" value={state.smtpPassword} errorId={mailErr}
                    onChange={(v) => set({ smtpPassword: v })} hint="Saved encrypted; never shown again." />
-            <Field id="flow-smtp-from" label="From address" value={state.smtpFrom} onChange={(v) => set({ smtpFrom: v })} />
+            <Field id="flow-smtp-from" label="From address" value={state.smtpFrom} errorId={mailErr} onChange={(v) => set({ smtpFrom: v })} />
           </div>
         </>
       )}
-      {errors.mail && <p className="form-error" role="alert">{errors.mail}</p>}
-      <Field id="flow-ai-key" label="Anthropic API key" type="password" value={state.aiKey} onChange={(v) => set({ aiKey: v })}
+      {errors.mail && <p className="form-error" id="flow-mail-error" role="alert">{errors.mail}</p>}
+      <Field id="flow-ai-key" label="Anthropic API key" type="password" value={state.aiKey}
+             errorId={errors.aiKey ? 'flow-ai-key-error' : undefined} onChange={(v) => set({ aiKey: v })}
              hint="For the Makes / Models spec lookup. Optional. Saved encrypted; never shown again." />
-      {errors.aiKey && <p className="form-error" role="alert">{errors.aiKey}</p>}
+      {errors.aiKey && <p className="form-error" id="flow-ai-key-error" role="alert">{errors.aiKey}</p>}
     </>
   );
 }

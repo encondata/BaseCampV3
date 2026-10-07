@@ -16,13 +16,17 @@ export default function DataStep({ state, set, errors, ctx }: StepProps) {
   const fa = ctx.defaults.first_admin;
   const none = ctx.snapshots.length === 0;
   const production = state.type === 'production';
-  const input = (id: string, label: string, key: AdminKey, type = 'text') => (
+  const input = (id: string, label: string, key: AdminKey, type = 'text', errorId?: string) => (
     <div>
       <label className="field-label" htmlFor={id}>{label}</label>
       <input id={id} type={type} value={state[key]} autoComplete={type === 'password' ? 'new-password' : 'off'}
-             spellCheck={false} onChange={(e) => set({ [key]: e.target.value } as Partial<FlowState>)} />
+             spellCheck={false} aria-invalid={errorId ? true : undefined} aria-describedby={errorId}
+             onChange={(e) => set({ [key]: e.target.value } as Partial<FlowState>)} />
     </div>
   );
+  const nameErr = errors.adminName ? 'flow-admin-name-error' : undefined;
+  const emailErr = errors.adminEmail ? 'flow-admin-email-error' : undefined;
+  const pwErr = errors.adminPassword ? 'flow-admin-password-error' : undefined;
   const dataError = errors.data && <p className="form-error sirdar-span2" role="alert">{errors.data}</p>;
   return (
     <div className="sirdar-flow-grid">
@@ -58,12 +62,12 @@ export default function DataStep({ state, set, errors, ctx }: StepProps) {
             </p>
           )}
           {dataError}
-          {input('flow-admin-first', 'First name', 'adminFirst')}
-          {input('flow-admin-last', 'Last name', 'adminLast')}
-          {errors.adminName && <p className="form-error sirdar-span2" role="alert">{errors.adminName}</p>}
+          {input('flow-admin-first', 'First name', 'adminFirst', 'text', nameErr)}
+          {input('flow-admin-last', 'Last name', 'adminLast', 'text', nameErr)}
+          {errors.adminName && <p className="form-error sirdar-span2" id="flow-admin-name-error" role="alert">{errors.adminName}</p>}
           <div className="sirdar-span2">
-            {input('flow-admin-email', 'Email', 'adminEmail')}
-            {errors.adminEmail && <p className="form-error" role="alert">{errors.adminEmail}</p>}
+            {input('flow-admin-email', 'Email', 'adminEmail', 'text', emailErr)}
+            {errors.adminEmail && <p className="form-error" id="flow-admin-email-error" role="alert">{errors.adminEmail}</p>}
           </div>
           <div className="sirdar-span2">
             <span className="field-label" id="flow-admin-pw-label">Their password</span>
@@ -77,8 +81,8 @@ export default function DataStep({ state, set, errors, ctx }: StepProps) {
           </div>
           {state.adminPasswordMode === 'typed' ? (
             <>
-              {input('flow-admin-password', 'Password', 'adminPassword', 'password')}
-              {input('flow-admin-confirm', 'Type it again', 'adminConfirm', 'password')}
+              {input('flow-admin-password', 'Password', 'adminPassword', 'password', pwErr)}
+              {input('flow-admin-confirm', 'Type it again', 'adminConfirm', 'password', pwErr)}
               <p className="page-hint sirdar-span2">
                 At least {fa.password_min_length} characters (ServerSherpa's password policy). They get an email with a link to
                 change it, valid {hours(fa.link_minutes)}. The password is never emailed.
@@ -90,7 +94,7 @@ export default function DataStep({ state, set, errors, ctx }: StepProps) {
               No password is ever emailed.
             </p>
           )}
-          {errors.adminPassword && <p className="form-error sirdar-span2" role="alert">{errors.adminPassword}</p>}
+          {errors.adminPassword && <p className="form-error sirdar-span2" id="flow-admin-password-error" role="alert">{errors.adminPassword}</p>}
         </>
       )}
     </div>

@@ -54,3 +54,9 @@ it('a create problem with nothing created is shown alone', () => {
   expect(screen.getByRole('alert').textContent).toBe('Something went wrong.');
   expect(screen.queryByRole('link')).toBeNull();
 });
+
+it('created with no problem (a host-key prompt canceled) still links to the environment', () => {
+  renderStep({}, { created: 'qa' });
+  expect(screen.getByText(/Created qa\. Deploy starts its first deployment\./)).toBeTruthy();
+  expect(screen.getByRole('link', { name: 'Open the environment' }).getAttribute('href')).toBe('/deploy/environments/qa');
+});

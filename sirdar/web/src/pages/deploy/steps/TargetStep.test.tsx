@@ -116,3 +116,12 @@ it('shows the DigitalOcean and bind IP errors', async () => {
   await renderStep({ target: 'ssh:lab' }, {}, { bindIp: 'The bind IP must be an IPv4 address.' });
   expect(screen.getByText('The bind IP must be an IPv4 address.')).toBeTruthy();
 });
+
+it('production with the Production account set up: Development is aria-disabled and does nothing', async () => {
+  const { set } = await renderStep({ target: 'digitalocean', type: 'production', servers: 'bluegreen', doAccount: 'production' });
+  const dev = screen.getByRole('radio', { name: 'Development' });
+  expect(dev.getAttribute('aria-disabled')).toBe('true');
+  await userEvent.click(dev);
+  expect(set).not.toHaveBeenCalledWith({ doAccount: 'development' });
+  expect(screen.getByRole('radio', { name: 'Production' }).getAttribute('aria-disabled')).toBeNull();
+});
