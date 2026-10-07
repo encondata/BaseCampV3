@@ -119,6 +119,9 @@ class EsxiVmContext:
     # service), and whether step 0 resolves the ref on this VM.
     services: tuple[str, ...] | None = None
     resolve: bool = True
+    # Once created, leave the VM as built: step 0 only starts it and checks
+    # its address and key (a Blue/Green data VM on an Update).
+    as_built: bool = False
 
     @property
     def secret_values(self) -> list[str]:
@@ -128,7 +131,7 @@ class EsxiVmContext:
 
 async def prepare(db: AsyncSession, env: Environment, dep: Deployment, settings: Settings,
                   *, role: str = vms.MAIN, services: tuple[str, ...] | None = None,
-                  resolve: bool = True) -> EsxiVmContext:
+                  resolve: bool = True, as_built: bool = False) -> EsxiVmContext:
     try:
         cfg = await integrations.load_esxi(db, settings)
     except IntegrationError as e:
@@ -152,7 +155,7 @@ async def prepare(db: AsyncSession, env: Environment, dep: Deployment, settings:
                          actor_id=dep.actor_id, mode=dep.mode, git_ref=dep.git_ref, sha=dep.sha,
                          repo_url=settings.deploy_repo_url, take_snapshot=dep.take_vm_snapshot,
                          vm_snapshot=dep.vm_snapshot, vm=EsxiVmState.of(row, private),
-                         esxi=cfg, services=services, resolve=resolve)
+                         esxi=cfg, services=services, resolve=resolve, as_built=as_built)
 
 
 def _moved(host: str, cfg: EsxiConfig) -> str | None:
@@ -257,6 +260,8 @@ class EsxiProvisioner:
 
     async def _provision(self, api: EsxiApi, ctx: EsxiVmContext, out: Output) -> VmOutcome:
         vm = ctx.vm
+        if vm.created and ctx.as_built:
+            return await self._keep(api, ctx, out)
         info: VmInfo | None = None
         if vm.instance_uuid is not None:
             info = await self._identify(api, ctx, vm.instance_uuid)
@@ -307,6 +312,32 @@ class EsxiProvisioner:
             repo_url=ctx.repo_url, out=out,
             slot=vm.role if vm.role in vms.APP_SLOTS else None)
         return VmOutcome(sha=sha, vm_snapshot=snapshot)
+
+    async def _keep(self, api: EsxiApi, ctx: EsxiVmContext, out: Output) -> VmOutcome:
+        """A built VM left as it is (no resize, no snapshot): it must still be
+        Sirdar's, running, at its address with its pinned key."""
+        vm = ctx.vm
+        info = (None if vm.instance_uuid is None
+                else await self._identify(api, ctx, vm.instance_uuid))
+        if info is None:
+            raise StepFailed(f"The VM Sirdar made for {ctx.env_name} ({vm.name}) is gone "
+                             "from ESXi. Sirdar won't build a new one silently: delete the "
+                             "environment, or fix it by hand, then retry.")
+        out(f"{vm.name} is built; leaving it as it is.\n")
+        uuid_ = info.instance_uuid
+        await self._start(api, uuid_, out)
+        ip = await self._address(api, uuid_, out, vm)
+        await vmcommon.settle_address(
+            self._settings, model=EsxiVm, env_id=ctx.env_id, previous_ip=vm.ip, ip=ip,
+            pin=lambda: self._pin(ctx, ip, out), actor_id=ctx.actor_id,
+            target_id=f"esxi:{ctx.env_name}", out=out, host_label=HOST_LABEL,
+            role=vm.role, services=ctx.services)
+        await self._scrub(api, ctx, uuid_, out)
+        sha = None if ctx.sha or not ctx.resolve else await vmcommon.resolve_ref(
+            self._settings, self._resolve, env_id=ctx.env_id, git_ref=ctx.git_ref,
+            repo_url=ctx.repo_url, out=out,
+            slot=vm.role if vm.role in vms.APP_SLOTS else None)
+        return VmOutcome(sha=sha)
 
     async def _create(self, api: EsxiApi, ctx: EsxiVmContext, out: Output) -> VmInfo:
         vm = ctx.vm
@@ -587,7 +618,7 @@ class EsxiProvisioner:
         if vm.instance_uuid is None:
             found = await api.find_vm_by_name(vm.name)
             if found is None or found.owner != owner:
-                out(f"Sirdar never created a VM for {ctx.env_name}.\n")
+                out(f"Sirdar never created {vm.name}.\n")
             else:
                 out(f"Found {vm.name} from an unfinished create (it carries this "
                     "environment's marker).\n")

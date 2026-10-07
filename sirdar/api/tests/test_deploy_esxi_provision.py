@@ -360,7 +360,7 @@ async def test_destroy_with_nothing_built(db, esxi_env, esxi_fake):
     foreign = esxi_fake.add_vm("ss-uat3", owner="", power_state="poweredOn")
     lines: list[str] = []
     await run(db, esxi_env, step="destroy", mode="teardown", lines=lines)
-    assert "never created a VM" in "".join(lines) and esxi_fake.by_name("ss-uat3") is foreign
+    assert "never created ss-uat3" in "".join(lines) and esxi_fake.by_name("ss-uat3") is foreign
 
 
 async def test_esxi_errors_end_as_our_copy(db, esxi_env, esxi_fake):

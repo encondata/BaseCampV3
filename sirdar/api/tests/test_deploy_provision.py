@@ -325,7 +325,7 @@ async def test_destroy_without_state_or_a_vm(db, vm_env, tf, proxmox_fake):
     lines: list[str] = []
     await provisioner(tf).run("destroy", await ctx_for(db, vm_env, mode="teardown"),
                               lines.append)
-    assert lines == ["Sirdar never created a VM for uat3.\n"]
+    assert lines == ["Sirdar never created ss-uat3.\n"]
     await _built(db, vm_env, tf)
     (terraform.workdir(get_settings(), vm_env.id) / "terraform.tfstate").unlink()
     with pytest.raises(StepFailed) as e:

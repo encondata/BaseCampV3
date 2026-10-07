@@ -125,6 +125,9 @@ class VmContext:
     # service), and whether step 0 resolves the ref on this VM.
     services: tuple[str, ...] | None = None
     resolve: bool = True
+    # Once created, leave the VM as built: step 0 only starts it and checks
+    # its address and key (a Blue/Green data VM on an Update).
+    as_built: bool = False
 
     @property
     def secret_values(self) -> list[str]:
@@ -134,7 +137,7 @@ class VmContext:
 
 async def prepare(db: AsyncSession, env: Environment, dep: Deployment, settings: Settings,
                   *, role: str = vms.MAIN, services: tuple[str, ...] | None = None,
-                  resolve: bool = True) -> VmContext:
+                  resolve: bool = True, as_built: bool = False) -> VmContext:
     try:
         cfg = await integrations.load_proxmox(db, settings)
     except IntegrationError as e:
@@ -150,7 +153,7 @@ async def prepare(db: AsyncSession, env: Environment, dep: Deployment, settings:
                      actor_id=dep.actor_id, mode=dep.mode, git_ref=dep.git_ref, sha=dep.sha,
                      repo_url=settings.deploy_repo_url, take_snapshot=dep.take_vm_snapshot,
                      vm_snapshot=dep.vm_snapshot, vm=VmState.of(row), proxmox=cfg,
-                     services=services, resolve=resolve)
+                     services=services, resolve=resolve, as_built=as_built)
 
 
 async def _set_vm(env_id: uuid.UUID, *, role: str = vms.MAIN, **values) -> None:
@@ -213,6 +216,8 @@ class ProxmoxProvisioner:
     async def _provision(self, api: Proxmox, ctx: VmContext, out: Output) -> VmOutcome:
         vm = ctx.vm
         vmid = vm.vmid
+        if vm.created and ctx.as_built:
+            return await self._keep(api, ctx, out)
         if not vm.created and vm.static_ip:
             # Before the apply that creates the VM (and before an id is
             # reserved): not an address another environment or host uses.
@@ -248,6 +253,25 @@ class ProxmoxProvisioner:
             repo_url=ctx.repo_url, out=out,
             slot=vm.role if vm.role in vms.APP_SLOTS else None)
         return VmOutcome(sha=sha, vm_snapshot=snapshot)
+
+    async def _keep(self, api: Proxmox, ctx: VmContext, out: Output) -> VmOutcome:
+        """A built VM left as it is (no Terraform, no snapshot): it must still
+        be Sirdar's, running, at its address with its pinned key."""
+        vm = ctx.vm
+        if vm.vmid is None or await self._identify(api, ctx) is None:
+            raise StepFailed(f"The VM Sirdar made for {ctx.env_name} ({vm.name}) is gone from "
+                             "Proxmox. Sirdar won't build a new one silently: delete the "
+                             "environment, or fix it by hand, then retry.")
+        out(f"{vm.name} is built; leaving it as it is.\n")
+        if await api.status(vm.vmid) != "running":
+            await api.start(vm.vmid)
+            out("Started the VM.\n")
+        await self._settle_address(api, ctx, vm.vmid, out)
+        sha = None if ctx.sha or not ctx.resolve else await vmcommon.resolve_ref(
+            self._settings, self._resolve, env_id=ctx.env_id, git_ref=ctx.git_ref,
+            repo_url=ctx.repo_url, out=out,
+            slot=vm.role if vm.role in vms.APP_SLOTS else None)
+        return VmOutcome(sha=sha)
 
     async def _reserve(self, api: Proxmox, ctx: VmContext) -> int:
         """Proxmox's next free id, recorded on the VM row. Another
@@ -449,7 +473,7 @@ class ProxmoxProvisioner:
         ours = (found is not None and found["name"] == vm.name
                 and "sirdar" in found["tags"])
         if vm.vmid is None:
-            out(f"Sirdar never created a VM for {ctx.env_name}.\n")
+            out(f"Sirdar never created {vm.name}.\n")
         elif not vm.created and not ours:
             # Reserved, never built (or someone else's VM took the id since):
             # nothing of Sirdar's to remove, and the id is released.

@@ -10,14 +10,18 @@ from sqlalchemy import delete, select, update
 from sirdar_api.config import get_settings
 from sirdar_api.db.models import Deployment, EnvironmentService, EsxiVm, ProxmoxVm
 from sirdar_api.deploy import provision, vms, vmsteps
+from sirdar_api.deploy.publish import StepFailed
 from sirdar_api.deploy.vmcommon import VmOutcome, VmPrepareError
 
 from .deploy_factories import secrets_key, trust_fake  # noqa: F401
 from .esxi_helpers import esxi_fake  # noqa: F401
 from .integration_helpers import configure, configure_esxi, configure_proxmox
 from .lan_helpers import make_bluegreen_environment
+from .proxmox_helpers import proxmox_fake  # noqa: F401
 from .ssh_server import ssh_server  # noqa: F401
 from .test_deploy_esxi_provision import provisioner
+from .test_deploy_provision import provisioner as px_provisioner
+from .test_deploy_provision import tf  # noqa: F401
 from .test_deploy_pipeline import SHA
 from .vm_helpers import make_vm_environment
 
@@ -35,9 +39,9 @@ async def lan(db, secrets_key, ssh_server, monkeypatch):
     return await make_bluegreen_environment(db, host_key=ssh_server.host_key)
 
 
-async def _dep(db, env, mode="update", slot="orange") -> Deployment:
+async def _dep(db, env, mode="update", slot="orange", **kw) -> Deployment:
     dep = Deployment(environment_id=env.id, mode=mode, git_ref="main", sha="",
-                     status="running", vm=True, bluegreen=True, slot=slot)
+                     status="running", vm=True, bluegreen=True, slot=slot, **kw)
     db.add(dep)
     await db.commit()
     return dep
@@ -162,3 +166,166 @@ async def test_proxmox_prepares_each_role_and_records_it_alone(db, secrets_key):
         .execution_options(populate_existing=True))}
     assert {r: (v.vmid, v.created) for r, v in rows.items()} == {
         "data": (None, True), "orange": (None, False), "purple": (731, False)}
+
+
+async def _rows(db, model, env_id) -> dict:
+    return {r.role: r for r in await db.scalars(
+        select(model).where(model.environment_id == env_id)
+        .execution_options(populate_existing=True))}
+
+
+async def _hosts(db) -> dict:
+    return dict((await db.execute(select(EnvironmentService.service,
+                                         EnvironmentService.host_ip))).all())
+
+
+async def test_the_slot_vm_is_built_and_moves_no_service(db, lan, esxi_fake):
+    await db.execute(update(EnvironmentService).where(
+        EnvironmentService.environment_id == lan.id).values(host_ip="0.0.0.0"))
+    await db.commit()
+    before = await _hosts(db)
+    data_before = (await _rows(db, EsxiVm, lan.id))["data"]
+    data_before = (data_before.created, data_before.ip, data_before.moref,
+                   data_before.host_key_private_enc)
+    ctx = await vmsteps.prepare(db, lan, await _dep(db, lan), get_settings())
+    outcome = await provisioner().run("provision", ctx.machines[1], lambda _: None)
+    assert outcome.sha == SHA
+    rows = await _rows(db, EsxiVm, lan.id)
+    assert (rows["orange"].created, rows["orange"].ip) == (True, "127.0.0.1")
+    assert rows["orange"].host_key_private_enc is None
+    assert (rows["data"].created, rows["data"].ip, rows["data"].moref,
+            rows["data"].host_key_private_enc) == data_before
+    assert await _hosts(db) == before and set(before.values()) == {"0.0.0.0"}
+
+
+class Failing(Recorder):
+    def __init__(self, failing: set[str]):
+        super().__init__()
+        self.failing = failing
+
+    async def run(self, step, ctx, out) -> VmOutcome:
+        await super().run(step, ctx, out)
+        if ctx.vm.role in self.failing:
+            raise StepFailed(f"{ctx.vm.name} broke.")
+        return VmOutcome()
+
+
+@pytest.mark.parametrize("failing", [{"purple"}, {"orange"}, {"purple", "orange"}])
+async def test_destroy_keeps_going_and_names_every_failure(db, lan, failing):
+    ctx = await vmsteps.prepare(db, lan, await _dep(db, lan, mode="teardown", slot=None),
+                                get_settings())
+    host = Failing(failing)
+    with pytest.raises(StepFailed) as e:
+        await vmsteps.HostProvisioner(proxmox=host, esxi=host).run("destroy", ctx,
+                                                                   lambda _: None)
+    assert host.seen == [("destroy", "purple"), ("destroy", "orange")]   # never the data VM
+    for role in ("purple", "orange"):
+        assert (f"ss-lan9-{role} broke." in e.value.reason) == (role in failing)
+    assert "ss-lan9-data" in e.value.reason
+
+
+async def test_a_data_vm_failure_is_named(db, lan):
+    ctx = await vmsteps.prepare(db, lan, await _dep(db, lan, mode="teardown", slot=None),
+                                get_settings())
+    host = Failing({"data"})
+    with pytest.raises(StepFailed, match="ss-lan9-data broke."):
+        await vmsteps.HostProvisioner(proxmox=host, esxi=host).run("destroy", ctx,
+                                                                   lambda _: None)
+    assert [r for _, r in host.seen] == ["purple", "orange", "data"]
+
+
+async def test_no_machine_takes_or_keeps_a_vm_snapshot(db, lan):
+    for mode, slot in (("update", "orange"), ("teardown", None)):
+        dep = await _dep(db, lan, mode=mode, slot=slot, take_vm_snapshot=True,
+                         vm_snapshot="sirdar-20261004T120000Z")
+        ctx = await vmsteps.prepare(db, lan, dep, get_settings())
+        dep.status = "succeeded"                          # one running deployment at a time
+        await db.commit()
+        assert [(m.take_snapshot, m.vm_snapshot) for m in ctx.machines] == [
+            (False, None)] * len(ctx.machines)
+
+
+async def test_an_update_leaves_a_built_data_vm_as_it_is(db, lan, esxi_fake):
+    await db.execute(update(EsxiVm).where(EsxiVm.environment_id == lan.id,
+                                          EsxiVm.role == "data").values(ip_cidr="127.0.0.1/8"))
+    await db.commit()
+    dep = await _dep(db, lan)
+    ctx = await vmsteps.prepare(db, lan, dep, get_settings())
+    assert [m.as_built for m in ctx.machines] == [True, False]
+    await provisioner().run("provision", ctx.machines[0], lambda _: None)
+    # Sizes changed on the record, and the VM is off: an Update only starts it.
+    await db.execute(update(EsxiVm).where(EsxiVm.environment_id == lan.id,
+                                          EsxiVm.role == "data")
+                     .values(cores=4, memory_mb=8192, disk_gb=120))
+    await db.commit()
+    built = esxi_fake.by_name("ss-lan9-data")
+    built.power_state, built.tools_running = "poweredOff", False
+    esxi_fake.calls.clear()
+    again = await vmsteps.prepare(db, lan, dep, get_settings())
+    lines: list[str] = []
+    outcome = await provisioner().run("provision", again.machines[0], lines.append)
+    assert outcome == VmOutcome()
+    changes = {"create_vm", "set_size", "grow_disk", "shutdown_guest", "take_snapshot",
+               "copy_disk", "attach_disk", "set_extra_config", "delete_snapshot"}
+    assert not changes & set(esxi_fake.calls)
+    assert "power_on" in esxi_fake.calls
+    assert (built.cores, built.memory_mb) == (2, 4096)
+    assert (await _rows(db, EsxiVm, lan.id))["data"].ip == "127.0.0.1"
+
+
+async def test_a_built_data_vm_that_is_gone_is_refused(db, lan, esxi_fake):
+    await db.execute(update(EsxiVm).where(EsxiVm.environment_id == lan.id,
+                                          EsxiVm.role == "data").values(ip_cidr="127.0.0.1/8"))
+    await db.commit()
+    dep = await _dep(db, lan)
+    ctx = await vmsteps.prepare(db, lan, dep, get_settings())
+    await provisioner().run("provision", ctx.machines[0], lambda _: None)
+    del esxi_fake.vms[esxi_fake.by_name("ss-lan9-data").instance_uuid]
+    again = await vmsteps.prepare(db, lan, dep, get_settings())
+    with pytest.raises(StepFailed, match="gone"):
+        await provisioner().run("provision", again.machines[0], lambda _: None)
+
+
+@pytest.fixture
+async def lan_px(db, secrets_key, ssh_server, proxmox_fake, monkeypatch, tmp_path):
+    monkeypatch.setenv("SIRDAR_TERRAFORM_DIR", str(tmp_path / "terraform"))
+    get_settings.cache_clear()
+    monkeypatch.setattr(vms, "VM_SSH_PORT", ssh_server.port)
+
+    async def free(*args, **kwargs) -> bool:
+        return False
+
+    monkeypatch.setattr(vms, "address_in_use", free)
+    await configure_proxmox(db)
+    await configure(db, cloudflare=True, npm=True)
+    env = await make_bluegreen_environment(db, name="lan7", target="proxmox")
+    await db.execute(update(ProxmoxVm).where(ProxmoxVm.environment_id == env.id,
+                                             ProxmoxVm.role == "data")
+                     .values(ip_cidr="127.0.0.1/8"))
+    await db.commit()
+    yield env
+    get_settings.cache_clear()
+
+
+async def test_proxmox_update_leaves_a_built_data_vm_as_it_is(db, lan_px, tf, proxmox_fake):
+    dep = await _dep(db, lan_px)
+    ctx = await vmsteps.prepare(db, lan_px, dep, get_settings())
+    await px_provisioner(tf).run("provision", ctx.machines[0], lambda _: None)
+    row = (await _rows(db, ProxmoxVm, lan_px.id))["data"]
+    assert (row.created, row.ip) == (True, "127.0.0.1")
+    assert tf.requests                                   # the build ran Terraform
+    await db.execute(update(ProxmoxVm).where(ProxmoxVm.environment_id == lan_px.id,
+                                             ProxmoxVm.role == "data").values(cores=8))
+    await db.commit()
+    tf.requests.clear()
+    again = await vmsteps.prepare(db, lan_px, dep, get_settings())
+    outcome = await px_provisioner(tf).run("provision", again.machines[0], lambda _: None)
+    assert outcome == VmOutcome() and tf.requests == []  # no plan, no apply
+
+
+async def test_destroy_names_the_vm_it_never_created(db, lan, esxi_fake):
+    ctx = await vmsteps.prepare(db, lan, await _dep(db, lan, mode="teardown", slot=None),
+                                get_settings())
+    lines: list[str] = []
+    await provisioner().run("destroy", ctx.machines[0], lines.append)
+    assert "Sirdar never created ss-lan9-purple.\n" in lines
