@@ -1,5 +1,6 @@
 """mail/: template rendering and the transactional outbox writer."""
 
+import pytest
 from sqlalchemy import func, select
 
 from serversherpa.db.models import EmailOutbox
@@ -58,3 +59,36 @@ async def test_enqueue_persists_when_caller_commits(db, seeded_user):
     assert row.template == "password_changed"
     assert row.to_address == "alice@test.example.com"
     assert row.person_id == seeded_user.id
+
+
+READY = dict(name="Ada", email="ada@test.example.com", link=LINK, ttl_text="4 hours",
+             login_url="https://portal.example.com/login")
+
+
+def test_render_account_ready_has_the_change_password_link():
+    r = render("account_ready", **READY)
+    assert r.subject == "Your ServerSherpa account is ready"
+    for part in (r.html, r.text):
+        assert LINK in part and "https://portal.example.com/login" in part
+        assert "4 hours" in part and "ada@test.example.com" in part
+    assert "Hi Ada" in r.text
+    assert "change your password" in r.text.lower()
+    assert r.html.lstrip().lower().startswith("<!doctype html>")
+
+
+def test_render_account_invite_has_the_set_password_link():
+    r = render("account_invite", **READY)
+    assert r.subject == "Your ServerSherpa account is ready: set your password"
+    for part in (r.html, r.text):
+        assert LINK in part and "4 hours" in part and "ada@test.example.com" in part
+    assert "set your password" in r.text.lower()
+
+
+@pytest.mark.parametrize("template", ["account_ready", "account_invite"])
+def test_account_emails_never_take_a_password(template):
+    """A typo'd context key fails (StrictUndefined); a password key is simply
+    never used by the template, so it can't reach the inbox."""
+    r = render(template, **READY, password="Never-In-Mail-123")
+    assert "Never-In-Mail-123" not in r.html and "Never-In-Mail-123" not in r.text
+    with pytest.raises(Exception):
+        render(template, name="Ada", email="ada@test.example.com", link=LINK)

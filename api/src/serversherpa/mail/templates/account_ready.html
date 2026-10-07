@@ -1,0 +1,10 @@
+{% extends "_base.html" %}
+{% block content %}
+<p style="margin:0 0 16px;">Hi {{ name }},</p>
+<p style="margin:0 0 16px;">An administrator account for <b>{{ email }}</b> was set up for you in ServerSherpa. Sign in at <a href="{{ login_url }}" style="color:#1b2129;">{{ login_url }}</a> with the password you were given.</p>
+<p style="margin:0 0 24px;">To change your password, use the button below. The link works once and expires in {{ ttl_text }}.</p>
+<p style="margin:0 0 24px;"><a href="{{ link }}" style="display:inline-block;background:#ffa12e;color:#0c1117;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:8px;">Change your password</a></p>
+<p style="margin:0 0 8px;font-size:13px;color:#667085;">If the button doesn't work, paste this address into your browser:</p>
+<p style="margin:0 0 24px;font-size:13px;word-break:break-all;"><a href="{{ link }}" style="color:#1b2129;">{{ link }}</a></p>
+<p style="margin:0;font-size:13px;color:#667085;">If you weren't expecting this account, contact your administrator.</p>
+{% endblock %}

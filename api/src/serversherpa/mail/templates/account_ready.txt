@@ -1,0 +1,9 @@
+Hi {{ name }},
+
+An administrator account for {{ email }} was set up for you in ServerSherpa. Sign in at {{ login_url }} with the password you were given.
+
+To change your password, open this link. It works once and expires in {{ ttl_text }}:
+
+{{ link }}
+
+If you weren't expecting this account, contact your administrator.
