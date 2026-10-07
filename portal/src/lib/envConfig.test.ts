@@ -80,9 +80,9 @@ describe('missing entries', () => {
     { key: 'SS_NEW_SECRET', secret: true, section: 'Misc', description: 'A new secret' },
   ];
 
-  it('changedMissing sends a typed non-secret, even when blank, but never an untouched or blank secret', () => {
+  it('changedMissing sends only non-empty values (a cleared field is unchanged)', () => {
     expect(changedMissing(missing, {})).toEqual({});
-    expect(changedMissing(missing, { SS_NEW: '' })).toEqual({ SS_NEW: '' });
+    expect(changedMissing(missing, { SS_NEW: '' })).toEqual({});
     expect(changedMissing(missing, { SS_NEW: '7' })).toEqual({ SS_NEW: '7' });
     expect(changedMissing(missing, { SS_NEW_SECRET: '' })).toEqual({});
     expect(changedMissing(missing, { SS_NEW_SECRET: 's' })).toEqual({ SS_NEW_SECRET: 's' });

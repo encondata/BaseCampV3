@@ -250,7 +250,7 @@ export default function EnvTab() {
             />
             {!entry.secret && (
               <button type="button" className="mini-btn envtab-example-btn" disabled={busy}
-                      onClick={() => setEdit(entry.key, entry.example ?? '')}>
+                      onClick={() => { if (entry.example) setEdit(entry.key, entry.example); }}>
                 Use example
               </button>
             )}
@@ -360,7 +360,7 @@ export default function EnvTab() {
             <input placeholder="Filter variables…" aria-label="Filter environment variables"
                    value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
-          <span className="result-count">{visibleEntries.length} of {entries.length} shown</span>
+          <span className="result-count">{visibleEntries.length + visibleMissing.length} of {entries.length + missing.length} shown</span>
           <ColumnsButton columns={COLUMNS} visible={visible} onChange={setVisible} />
           <GodEditToggle editing={editing} onToggle={toggleEditing} visible />
         </div>

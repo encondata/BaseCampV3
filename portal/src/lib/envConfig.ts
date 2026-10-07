@@ -59,9 +59,9 @@ export function filterMissing(
     || e.description.toLowerCase().includes(needle));
 }
 
-/** Edits to settings that aren't in .env yet. A typed non-secret goes
- *  through even when blank (the server adds `KEY=`); a secret only when
- *  something was typed, matching "an empty secret is skipped". */
+/** Edits to settings that aren't in .env yet. Only a non-empty value counts
+ *  — a field that was typed in and cleared is unchanged, and an empty
+ *  secret is skipped like the server does. */
 export function changedMissing(
   missing: EnvMissingEntry[], edits: Record<string, string>,
 ): Record<string, string> {
@@ -70,7 +70,7 @@ export function changedMissing(
   for (const [key, value] of Object.entries(edits)) {
     const entry = byKey.get(key);
     if (!entry) continue;
-    if (entry.secret && value === '') continue;
+    if (value === '') continue;
     out[key] = value;
   }
   return out;

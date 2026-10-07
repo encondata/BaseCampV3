@@ -251,3 +251,41 @@ it('sends a typed secret for a missing key', async () => {
     values: { SS_NEW_TOKEN: 'abc' }, descriptions: {},
   }));
 });
+
+it('a cleared missing non-secret is unchanged: not sent, not counted', async () => {
+  const user = userEvent.setup();
+  api.getEnvEntries.mockResolvedValue({ entries: ENTRIES, missing: MISSING });
+  render(<EnvTab />);
+  await screen.findByText('SS_NEW_LIMIT');
+  await enterEditMode(user);
+  const input = screen.getByLabelText('SS_NEW_LIMIT');
+  await user.type(input, '3');
+  expect(screen.getByRole('button', { name: /Save 1 change/ })).not.toBeNull();
+  await user.clear(input);
+  const save = screen.getByRole('button', { name: /Save 0 changes/ }) as HTMLButtonElement;
+  expect(save.disabled).toBe(true);
+});
+
+it('Use example with no example value does nothing', async () => {
+  const user = userEvent.setup();
+  api.getEnvEntries.mockResolvedValue({
+    entries: ENTRIES,
+    missing: [{ key: 'SS_NO_EXAMPLE', secret: false, section: '', description: 'd', example: '' }],
+  });
+  render(<EnvTab />);
+  await screen.findByText('SS_NO_EXAMPLE');
+  await enterEditMode(user);
+  await user.click(screen.getByRole('button', { name: 'Use example' }));
+  expect((screen.getByRole('button', { name: /Save 0 changes/ }) as HTMLButtonElement).disabled)
+    .toBe(true);
+});
+
+it('the result count includes missing rows', async () => {
+  const user = userEvent.setup();
+  api.getEnvEntries.mockResolvedValue({ entries: ENTRIES, missing: MISSING });
+  render(<EnvTab />);
+  await screen.findByText('SS_NEW_LIMIT');
+  expect(screen.getByText('4 of 4 shown')).not.toBeNull();
+  await user.type(screen.getByLabelText('Filter environment variables'), 'new_limit');
+  expect(screen.getByText('1 of 4 shown')).not.toBeNull();
+});
