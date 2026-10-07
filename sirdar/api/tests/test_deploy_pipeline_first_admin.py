@@ -22,6 +22,7 @@ from sirdar_api.deploy.runner import RunResult
 
 from .deploy_factories import (  # noqa: F401
     fake_provisioner,
+    fake_publisher,
     fake_runner,
     make_environment,
     secrets_key,
@@ -32,6 +33,7 @@ from .integration_helpers import configure_proxmox
 from .ssh_server import ssh_server  # noqa: F401
 from .test_deploy_api import _ssh_env, deploy_env  # noqa: F401
 from .test_deploy_pipeline import SHA, UPDATE_KEYS, _load
+from .test_deploy_pipeline_do import do_env  # noqa: F401
 from .test_deploy_pipeline_vm import _vm_up
 from .vm_helpers import make_vm_environment
 
@@ -273,3 +275,46 @@ async def test_an_unreadable_password_fails_step_11(db, fresh, fake_runner):
                                                          pipeline.FIRST_ADMIN_UNREADABLE)
     assert "first_admin" not in fake_runner.steps()
     assert await first_admins.pending(db, fresh.id) is True
+
+
+async def test_after_step_11_the_password_is_not_passed_on(db, do_env, fake_runner,
+                                                            fake_publisher, fake_provisioner,
+                                                            monkeypatch):
+    """DigitalOcean: 12 DNS records (in Sirdar), then 13 Slot smoke test, a
+    playbook. Neither gets the password (not in their extravars, nor in the
+    context's step vars or redaction list), and the redactor still hides it."""
+    contexts = {}
+    for name in ("_run_step", "_run_python_step"):
+        real = getattr(pipeline, name)
+
+        async def spy(worker, ctx, step, _real=real):
+            contexts[step.key] = ctx
+            return await _real(worker, ctx, step)
+        monkeypatch.setattr(pipeline, name, spy)
+    await first_admins.put(db, get_settings(), do_env.id, first_admins.check(ADMIN))
+    await db.commit()
+    fake_runner.results["first_admin"] = _rc(0)
+    fake_runner.output["slot_smoke"] = [f"leaked {TYPED}\n"]
+    dep = await pipeline.create_deployment(db, do_env, mode="update", git_ref="main", sha="",
+                                           actor_id=None, cloud=True, slot="orange",
+                                           first_admin=True)
+    await db.commit()
+    pipeline.launch(dep.id)
+    await pipeline.wait(dep.id)
+    dep, steps, _ = await _load(dep.id)
+    assert dep.status == "succeeded"
+    assert [s.key for s in steps][-3:] == ["first_admin", "dns", "slot_smoke"]
+    assert next(r for r in fake_runner.requests
+                if r.step == "first_admin").extravars["admin_password"] == TYPED
+    after = fake_runner.requests[fake_runner.steps().index("first_admin") + 1:]
+    assert [r.step for r in after] == ["slot_smoke"]
+    assert all("admin_password" not in r.extravars for r in after)
+    assert all(TYPED not in repr(c) for c in fake_publisher.contexts)
+    smoke = next(s for s in steps if s.key == "slot_smoke")
+    assert TYPED not in smoke.log and "[redacted]" in smoke.log
+    assert contexts["first_admin"].step_vars["first_admin"]["admin_password"] == TYPED
+    for key in ("dns", "slot_smoke"):
+        ctx = contexts[key]
+        assert "first_admin" not in ctx.step_vars, key
+        assert all(TYPED not in v for v in ctx.redact_values), key
+        assert ctx.redactor(TYPED) == "[redacted]", key

@@ -727,6 +727,15 @@ async def _with_first_admin(db: AsyncSession, settings: Settings, env_id: uuid.U
                    redactor=Redactor(values), redact_values=values)
 
 
+def _without_first_admin(ctx: _Context, kept_values: tuple[str, ...]) -> _Context:
+    """Step 11 is over: its vars and the plaintext in the redaction list go.
+    The compiled redactor stays as it is, so it still masks the password in
+    anything a later step prints."""
+    return replace(ctx, step_vars={k: v for k, v in ctx.step_vars.items()
+                                   if k != "first_admin"},
+                   redact_values=kept_values)
+
+
 async def _snapshot_vars(db: AsyncSession, env: Environment, dep: Deployment,
                          settings: Settings, secrets: dict[str, str]
                          ) -> tuple[dict, dict[str, str], list[str]]:
@@ -1006,6 +1015,7 @@ async def _run(deployment_id: uuid.UUID) -> None:
                         # leave bootstrap-admin running on the host; a retry
                         # then sees exit 10 (it finished) or 6, never a second
                         # account.
+                        kept_values = ctx.redact_values
                         try:
                             ctx = await _with_first_admin(db, settings, env.id, ctx)
                         except (vault.SecretsKeyMissing, vault.SecretUnreadable):
@@ -1022,6 +1032,10 @@ async def _run(deployment_id: uuid.UUID) -> None:
                         result = await _run_vm_step(provisioner, ctx, step)
                     else:
                         result = await _run_step(runner, ctx, step)
+                    if step.key == "first_admin":
+                        # Whatever the result: later steps (12–14) get no
+                        # password; the redactor still hides it.
+                        ctx = _without_first_admin(ctx, kept_values)
                     if step.key == "slot_smoke" and dep.slot:
                         await do_envs.set_slot(env.id, dep.slot,
                                                last_check_ok=result.status == "successful",
