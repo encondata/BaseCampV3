@@ -388,7 +388,9 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         raise EnvError("vm_not_allowed")
     env = await _insert(
         db, settings, name=name, type_=type_, target_id=target_id, git_ref=git_ref,
-        host=host, domain=domain, proxy_ip=proxy, bind_ip=bind, ports=all_ports,
+        host=host, domain=domain, proxy_ip=proxy,
+        # Blue/Green: NPM reaches each VM on its own address, so they bind everywhere.
+        bind_ip=DEFAULT_BIND_IP if bluegreen is not None else bind, ports=all_ports,
         keep_dumps=envfile.DEFAULT_KEEP_DUMPS, spaces_bucket=envfile.DEFAULT_SPACES_BUCKET,
         log_level=envfile.DEFAULT_LOG_LEVEL, status="new", current_sha=None, image_tag=None,
         secrets=vault.generate_env_secrets() | extra_secrets, actor_id=actor_id,
@@ -676,6 +678,12 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
         for key in ("target", "proxy_ip", "bind_ip", "base_domain", "spaces_bucket", "publish"):
             if fields.get(key) is not None and fields[key] != getattr(env, attrs.get(key, key)):
                 raise EnvError("do_field_locked", field=key)
+    on_bg = lan_slots.is_bluegreen(env)
+    if on_bg:
+        # The data VM's firewall and NPM's proxy hosts were built for these.
+        for key in ("proxy_ip", "bind_ip"):
+            if fields.get(key) is not None and fields[key] != getattr(env, key):
+                raise EnvError("bluegreen_field_locked", field=key)
     if fields.get("retiring") is not None:
         if env.type != "production":
             raise EnvError("retiring_not_allowed")
@@ -725,6 +733,10 @@ async def update(db: AsyncSession, settings: Settings, env: Environment,
         row, patch = rows[service], patch or {}
         if patch.get("port") is not None:
             port = _check_port(patch["port"], service)
+            if on_bg and service == "spaces" and row.port != port:
+                # NPM forwards spaces to the data VM's port: the live slot's
+                # storage would break until the next Activate.
+                raise EnvError("bluegreen_field_locked", field="services.spaces.port")
             if row.port != port:
                 row.port = port
                 changed.append(f"services.{service}.port")

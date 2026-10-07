@@ -311,6 +311,9 @@ const MESSAGES: Record<string, string> = {
   do_db_size_invalid: "That isn't a DigitalOcean database size.",
   db_standby_size_invalid: "That database size can't have a standby node. Choose a larger size first.",
   do_field_locked: "That can't change on a DigitalOcean environment after it's created.",
+  switch_unresolved:
+    "The last Switch traffic didn't finish cleanly, so Nginx Proxy Manager may point at the idle server. Retry that switch first.",
+  bluegreen_field_locked: "That can't change on a Blue/Green environment after it's created: its VMs and proxy hosts were built for it.",
   do_not_allowed: 'DigitalOcean settings only apply to an environment on DigitalOcean.',
   do_not_ready: "Nothing is built on DigitalOcean for this environment yet. Deploy it first.",
   snapshot_slot_unreachable: "The droplet Sirdar would take the snapshot on isn't reachable. Untick 'Save a snapshot first' to delete without one.",

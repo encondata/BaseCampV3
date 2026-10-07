@@ -172,7 +172,7 @@ it('every error code the deploy routes can return has its own message', () => {
                       'first_admin_not_set', 'first_admin_not_allowed',
                       'vm_static_required', 'vm_ips_not_distinct', 'bluegreen_not_allowed',
                       'not_supported_on_bluegreen', 'not_bluegreen_environment', 'vm_name_taken',
-                      'vm_resize_not_supported']) {
+                      'vm_resize_not_supported', 'bluegreen_field_locked']) {
     expect(codes).toContain(code);
   }
   for (const code of ['apps_invalid', 'mailpit_required', 'mail_invalid', 'smtp_host_invalid', 'smtp_port_invalid',
