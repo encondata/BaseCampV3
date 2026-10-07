@@ -21,6 +21,8 @@ case "$*" in
     # a dump that hangs halfway, so a test can kill ss-stack mid-dump
     [[ -n "${FAKE_SLOW_PG_DUMP:-}" ]] && { printf 'PGDMP-part'; sleep 30; exit 0; }
     printf 'PGDMP-fake' ;;
+  *bootstrap-admin*)
+    cat > "$DOCKER_LOG.stdin" ;;
   *pg_restore*)
     cat > "$DOCKER_LOG.stdin"
     [[ -n "${FAKE_FAIL_PG_RESTORE:-}" ]] && exit 1 ;;
@@ -299,6 +301,9 @@ def test_admin_runs_bootstrap_admin_in_the_api_container(env_dir: Path,
     assert calls(fake) == [dc(env_dir, "api", "exec -T api serversherpa bootstrap-admin "
                               "--email ada@test.example.com --password-stdin")]
     assert "Stdin-Only-Password-42" not in "\n".join(calls(fake))
+    # the password reaches the container's stdin byte for byte
+    assert Path(fake["DOCKER_LOG"] + ".stdin").read_bytes() == b"Stdin-Only-Password-42\n"
+    assert "Stdin-Only-Password-42" not in out.stdout + out.stderr
 
 
 def test_admin_passes_the_exit_code_through(env_dir: Path, fake: dict[str, str],

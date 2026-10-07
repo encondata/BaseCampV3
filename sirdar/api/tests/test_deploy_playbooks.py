@@ -285,16 +285,26 @@ def _target(tmp_path: Path, *, head: int = 89) -> tuple[Path, dict]:
     return env_dir, env
 
 
-def _play(tmp_path: Path, playbook: str, extra: dict, env: dict):
-    """Run a playbook here (connection local); (result, docker calls)."""
+def _play(tmp_path: Path, playbook: str, extra: dict, env: dict, *, verbose: bool = False,
+          unsafe: bool = False):
+    """Run a playbook here (connection local); (result, docker calls).
+    verbose adds -v; unsafe passes the extra vars as the runner does
+    (runner._unsafe, from a file)."""
     cfg = tmp_path / "ansible.cfg"
     cfg.write_text("[defaults]\n")
     env = {**env, "ANSIBLE_CONFIG": str(cfg), "ANSIBLE_HOME": str(tmp_path / "ah"),
            "ANSIBLE_LOCAL_TEMP": str(tmp_path / "tmp"), "ANSIBLE_NOCOLOR": "1"}
+    extra = {"snapshot_python": sys.executable, **extra}
+    if unsafe:
+        extravars = tmp_path / "extravars.json"
+        extravars.write_text(json.dumps(runner._unsafe(extra)))
+        extra_arg = f"@{extravars}"
+    else:
+        extra_arg = json.dumps(extra)
     result = subprocess.run(
-        [str(ANSIBLE_PLAYBOOK), "-i", "target,", "-c", "local",
+        [str(ANSIBLE_PLAYBOOK), "-i", "target,", "-c", "local", *(["-v"] if verbose else []),
          "-e", f"ansible_python_interpreter={sys.executable}",
-         "-e", json.dumps({"snapshot_python": sys.executable, **extra}),
+         "-e", extra_arg,
          str(PLAYBOOK_DIR / playbook)],
         capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, check=False)
     log = Path(env["DOCKER_LOG"])
@@ -884,6 +894,7 @@ case "${1:-}" in
 esac
 printf '%s\\n' "$*" >> "$ADMIN_LOG"
 cat > "$ADMIN_LOG.stdin"
+[[ "${FAKE_RC:-0}" == 0 ]] || echo "Error: the fake bootstrap-admin refused" >&2
 exit "${FAKE_RC:-0}"
 """
 
@@ -904,7 +915,7 @@ def _admin_target(tmp_path: Path) -> tuple[dict, dict, Path]:
 
 def test_first_admin_playbook_puts_the_password_on_stdin_only(tmp_path):
     vars_, env, log = _admin_target(tmp_path)
-    result, _ = _play(tmp_path, "first_admin.yml", vars_, env)
+    result, _ = _play(tmp_path, "first_admin.yml", vars_, env, verbose=True)
     out = result.stdout + result.stderr
     assert result.returncode == 0, out
     argv = log.read_text()
@@ -924,15 +935,41 @@ def test_first_admin_playbook_invites_without_stdin(tmp_path):
     assert Path(str(log) + ".stdin").read_text() == ""
 
 
-@pytest.mark.parametrize("rc, ok", [(0, True), (1, True), (2, False), (3, False), (5, False)])
+# 0 created and 10 the account exists are done; 1 (compose exec, ss-stack's
+# die, an uncaught error) and every other code fail the step.
+@pytest.mark.parametrize("rc, ok", [(0, True), (10, True), (1, False), (2, False),
+                                    (3, False), (4, False), (5, False), (6, False),
+                                    (7, False)])
 def test_first_admin_playbook_exit_codes(tmp_path, rc, ok):
     vars_, env, _ = _admin_target(tmp_path)
-    result, _ = _play(tmp_path, "first_admin.yml", vars_, {**env, "FAKE_RC": str(rc)})
+    result, _ = _play(tmp_path, "first_admin.yml", vars_, {**env, "FAKE_RC": str(rc)},
+                      verbose=True)
     out = result.stdout + result.stderr
     assert (result.returncode == 0) is ok, out
-    if not ok:
+    if ok:
+        assert "the fake bootstrap-admin refused" not in out
+    else:
         assert f"serversherpa bootstrap-admin exited with {rc}." in out
+        assert "the step's log" in out
+        # its own error text reaches the step's log
+        assert "Error: the fake bootstrap-admin refused" in out
     assert "Stdin-Only-Password-42" not in out
+
+
+def test_first_admin_playbook_takes_the_password_literally(tmp_path):
+    """The extra vars as the runner writes them (runner._unsafe): template
+    syntax and a trailing space reach stdin as typed, and never the log."""
+    vars_, env, log = _admin_target(tmp_path)
+    password = "{{ 7*7 }}-{% if true %}x{% endif %}-Pass "
+    vars_ = {**vars_, "admin_password": password}
+    for rc in ("0", "3"):
+        result, _ = _play(tmp_path, "first_admin.yml", vars_, {**env, "FAKE_RC": rc},
+                          verbose=True, unsafe=True)
+        out = result.stdout + result.stderr
+        assert (result.returncode == 0) is (rc == "0"), out
+        assert Path(str(log) + ".stdin").read_bytes() == (password + "\n").encode()
+        assert password not in out and password.strip() not in out
+        assert "7*7" not in out and "49-" not in out
 
 
 def test_first_admin_playbook_explains_an_old_checkout(tmp_path):

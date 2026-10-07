@@ -1,9 +1,12 @@
 # Step 11 — Create the first admin: the first Update of an environment that
 # starts empty runs `serversherpa bootstrap-admin` in its api container
 # (ss-stack admin). A typed password reaches the command only as stdin, and
-# the task is no_log; an invite has no password. Exit 1 (the account exists)
-# counts as done. The exit code goes to Sirdar through set_stats, which
-# explains the others in the step's log.
+# the task is no_log; an invite has no password. Exit 0 (created) and 10 (the
+# account exists) count as done; every other code fails the step, 1 included
+# (compose exec, ss-stack's die or an uncaught error). On a failure the
+# command's stderr goes to the step's log: bootstrap-admin never prints the
+# password, and Sirdar's redactor holds it. The exit code goes to Sirdar
+# through set_stats, which explains it.
 - name: Create the first admin
   hosts: target
   gather_facts: false
@@ -42,7 +45,14 @@
         per_host: false
         aggregate: true
 
+    - name: bootstrap-admin's error
+      ansible.builtin.debug:
+        msg: "{{ created.stderr | default('', true) }}"
+      when: created.rc not in [0, 10]
+
     - name: Stop when it refused
       ansible.builtin.fail:
-        msg: "serversherpa bootstrap-admin exited with {{ created.rc }}."
-      when: created.rc not in [0, 1]
+        msg: >-
+          serversherpa bootstrap-admin exited with {{ created.rc }}. Its error is
+          in the step's log above.
+      when: created.rc not in [0, 10]
