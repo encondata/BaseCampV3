@@ -35,7 +35,8 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
   // DigitalOcean and Blue/Green save a snapshot of the shared data first (optional, except for production).
   const snapshots = cloud || bluegreen;
   const production = cloud && env.type === 'production';
-  const deployed = env.current_sha !== null;
+  // Blue/Green: the API takes the snapshot once any slot ran a deploy, live or not (the data VM holds data then).
+  const deployed = env.current_sha !== null || (bluegreen && (env.lan_slots ?? []).some((s) => s.sha));
   const [snapshot, setSnapshot] = useState(true);
   const [phrase, setPhrase] = useState('');
   const phraseWanted = `delete production ${env.name}`;
@@ -180,10 +181,7 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
                 <span aria-hidden="true">Save a snapshot first (named {env.name}-before-delete-…, kept in Sirdar)</span>
               </div>
             ) : bluegreen ? (
-              // The API's _start_lan_teardown takes a snapshot only once a slot went live (current_sha).
-              <p className="page-hint">
-                No slot has gone live yet, so Sirdar saves no snapshot: the data VM's database goes with it.
-              </p>
+              <p className="page-hint">No slot has run a deploy yet, so there is no snapshot to save.</p>
             ) : (
               <p className="page-hint">Nothing was deployed, so there is no snapshot to save.</p>
             ))}
