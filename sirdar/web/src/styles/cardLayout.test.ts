@@ -52,3 +52,9 @@ it('card heads, target tops and button rows wrap', () => {
 it('long text inside a card wraps', () => {
   expect(decls('.sirdar-card')['overflow-wrap']).toBe('anywhere');
 });
+
+it('the Deploy flow keeps two columns on a desktop and one on a phone', () => {
+  expect(decls('.sirdar-flow-grid')['grid-template-columns']).toBe('repeat(2, minmax(0, 1fr))');
+  expect(decls('.sirdar-flow')['min-width']).toBe('0');
+  expect(decls('.sirdar-flow .sirdar-flow-grid')['grid-template-columns']).toBe('1fr');   // the phone rule
+});

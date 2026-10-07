@@ -364,6 +364,17 @@ const MESSAGES: Record<string, string> = {
   first_admin_invalid: "Those first-admin settings aren't valid.",
   first_admin_not_set: 'This environment has no first admin to change.',
   first_admin_done: 'The first admin was already created; change their password in the portal.',
+  // optional apps and mail
+  apps_invalid: 'Choose the apps from Wiki, Kiosk, Status page and Mailpit.',
+  mailpit_required: 'Mail goes to Mailpit unless SMTP is set up: turn Mailpit on, or choose SMTP.',
+  mail_invalid: 'Choose Mailpit or SMTP for mail.',
+  smtp_host_invalid: "Enter the SMTP server's host name or address.",
+  smtp_port_invalid: 'Use an SMTP port from 1 to 65535.',
+  smtp_username_invalid: "That SMTP user name can't be used: no spaces, quotes, $, # or backslashes.",
+  smtp_password_invalid:
+    "That SMTP password can't be saved. Use letters, numbers and ._~+/=:@%^*!?,;- only, with no spaces or quotes.",
+  smtp_from_invalid: 'Enter the address mail is sent from, like noreply@example.com.',
+  secrets_not_allowed: 'An adopted environment keeps its own secrets; change them on its Settings tab.',
 };
 
 export function errorText(err: unknown, fallback: string): string {
@@ -500,6 +511,16 @@ export interface NewFirstAdmin {
 export interface EnvFirstAdmin {
   first_name: string; last_name: string; email: string; password_mode: 'typed' | 'invite'; done: boolean;
 }
+/** An environment's mail: Mailpit, or an SMTP server (the password is write-only: only whether one is set). */
+export interface EnvMail {
+  mode: 'mailpit' | 'smtp'; host: string | null; port: number | null; username: string | null;
+  from_address: string | null; starttls: boolean; password_set: boolean;
+}
+/** Create's `mail`: Mailpit, or an SMTP server (the password is write-only). */
+export interface NewMail {
+  mode: 'mailpit' | 'smtp'; host?: string; port?: number; username?: string; password?: string;
+  from_address?: string; starttls?: boolean;
+}
 export interface EnvService { service: string; host_ip: string; port: number; hostname: string | null; proxied: boolean }
 export interface SnapshotRef { id: string; name: string }
 export interface DeploymentSummary {
@@ -559,6 +580,10 @@ export interface Environment {
   first_admin: EnvFirstAdmin | null;
   /** Deploys publish DNS records and proxy hosts (steps 12–14). */
   publish: boolean;
+  /** The optional apps it runs (API and Portal always run). */
+  apps: string[];
+  /** Where its mail goes. */
+  mail: EnvMail;
   /** What Sirdar manages for it in Cloudflare and Nginx Proxy Manager. */
   managed_records: ManagedRecordRef[];
   last_deployment: DeploymentSummary | null; created_at: string; updated_at: string;
@@ -611,6 +636,9 @@ export interface EnvironmentDefaults {
   vm: VmDefaults;
   do: DoDefaults;
   first_admin: { password_min_length: number; role: string; link_minutes: number };
+  /** The apps a new environment can turn off, and the ones that always run. */
+  apps: { optional: string[]; always: string[] };
+  mail: { smtp_port: number };
 }
 export interface NewEnvironmentBody {
   name: string; type: EnvType; target: string; git_ref: string; base_domain?: string;
@@ -626,6 +654,12 @@ export interface NewEnvironmentBody {
   vm?: NewVm;
   /** target 'digitalocean' only. */
   do?: NewDo;
+  /** The optional apps it runs (the API's default: all of them). */
+  apps?: string[];
+  /** Where its mail goes (the API's default: Mailpit). */
+  mail?: NewMail;
+  /** Optional secrets set at create (write-only), like SS_ANTHROPIC_API_KEY. */
+  secrets?: Record<string, string>;
 }
 export interface AdoptEnvironmentBody { name: string; type: EnvType; target: string; git_ref: string }
 /** PATCH body: an omitted field is kept; a secret set to "" is cleared. */

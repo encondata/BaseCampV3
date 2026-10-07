@@ -193,3 +193,21 @@
 .sirdar-other-hosts { margin-top: 16px; }
 .sirdar-other-hosts .sirdar-cards { margin-top: 12px; }
 .sirdar-other-hosts-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px; }
+
+/* The Deploy page's step-by-step flow: a page section with the report-generate
+   header and steps (the portal's .rgm-head-text / .rgm-steps), a body, and the
+   Back / Next / Deploy row. */
+.sirdar-flow { margin: 24px 0; padding: 20px; min-width: 0; border: 1px solid var(--paper-line, #e5e7eb);
+  border-radius: 12px; background: var(--surface, #fff); }
+.sirdar-flow-head { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
+.sirdar-flow-body { min-width: 0; }
+.sirdar-flow-body.pf-form > * { grid-column: 1 / -1; }
+.sirdar-flow-foot { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+.sirdar-flow-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; align-items: start; }
+.sirdar-flow-grid .sirdar-span2 { grid-column: 1 / -1; }
+@media (max-width: 720px) { .sirdar-flow .sirdar-flow-grid { grid-template-columns: 1fr; } }
+.sirdar-flow-details { margin-top: 16px; }
+.sirdar-flow-details > summary { cursor: pointer; font-weight: 600; }
+.sirdar-toggle-row { display: flex; align-items: center; gap: 10px; }
+/* The Adopt existing dialog sizes to its form. */
+.modal-card.reports-modal-card.rgm-card.sirdar-adopt-card { width: min(640px, 96vw); max-width: 96vw; }

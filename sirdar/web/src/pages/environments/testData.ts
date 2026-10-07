@@ -29,8 +29,10 @@ export const ENV: Environment = {
   spaces_bucket: 'serversherpa', log_level: 'INFO',
   services: [svc('api', 8000), svc('portal', 8091), svc('kiosk', 8090), svc('wiki', 8096),
              svc('spaces', 9000), svc('status', 8095), svc('mailpit', 8025)],
-  secrets_set: { SS_ANTHROPIC_API_KEY: true, SS_DB_TESTING_PASSWORD: false },
+  secrets_set: { SS_ANTHROPIC_API_KEY: true, SS_DB_TESTING_PASSWORD: false, SS_SMTP_PASSWORD: false },
   seed_snapshot: null, first_admin: null, publish: false, managed_records: [],
+  apps: ['wiki', 'kiosk', 'status', 'mailpit'],
+  mail: { mode: 'mailpit', host: null, port: null, username: null, from_address: null, starttls: true, password_set: false },
   slots: [], active_slot: null, auto_activate: false, retiring: false, do: null,
   last_deployment: ADOPTED, created_at: '2026-10-03T12:00:00Z', updated_at: '2026-10-03T12:00:00Z',
 };
@@ -63,6 +65,8 @@ export const DEFAULTS: EnvironmentDefaults = {
         limits: { cores: [1, 64], memory_mb: [2048, 262144], disk_gb: [20, 4096], keep_snapshots: [1, 10] } },
   do: DO_DEFAULTS,
   first_admin: { password_min_length: 8, role: 'super_admin', link_minutes: 240 },
+  apps: { optional: ['wiki', 'kiosk', 'status', 'mailpit'], always: ['api', 'portal'] },
+  mail: { smtp_port: 587 },
 };
 
 const UPDATE_PLAN: [number, string, string][] = [
