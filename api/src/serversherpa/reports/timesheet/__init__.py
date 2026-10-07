@@ -174,7 +174,7 @@ def _safe(text: str) -> str:
 async def build(db: AsyncSession, run: ReportRun) -> ReportResult:
     definition = await db.get(ReportDefinition, run.definition_id)
     filters, views, fmt = parse_run(run, (definition.options if definition else None) or {})
-    data = await gather_mod.gather(db, filters)     # TimesheetTooLarge propagates to the worker
+    data = await gather_mod.gather(db, filters, fmt=fmt)   # TimesheetTooLarge propagates to the worker
     generated_at = datetime.now(UTC)
 
     parts = [f"Timesheet - {filters.from_day.isoformat()} to {filters.to_day.isoformat()}"]

@@ -162,6 +162,38 @@ async def test_preview_too_many_is_a_flag_not_an_error(client, db, seeded_user, 
     assert resp.json()["entries"] == 0
 
 
+async def test_preview_too_many_follows_the_format(client, db, seeded_user, monkeypatch):
+    p = await _person(db)
+    db.add_all([_entry(p, BASE + timedelta(days=i), hours=1) for i in range(3)])
+    await db.commit()
+    monkeypatch.setattr(ts_gather, "MAX_PDF_ENTRIES", 2)    # Excel limit stays 20,000
+    hdrs = await login(client)
+    get = lambda **kw: client.get("/reports/timesheet/preview", headers=hdrs,
+                                  params={**RANGE, **kw})
+    assert (await get()).json()["too_many"] is False
+    assert (await get(format="xlsx")).json()["too_many"] is False
+    pdf = await get(format="pdf")
+    assert pdf.status_code == 200 and pdf.json()["too_many"] is True
+    assert pdf.json()["entries"] == 0
+    bad = await get(format="csv")
+    assert bad.status_code == 422 and bad.json()["detail"]["code"] == "bad_options"
+
+
+async def test_worker_maps_too_many_for_pdf_to_its_error_code(db, monkeypatch):
+    d = await _definition(db)
+    person = await _person(db, "Rae", "Requester")
+    db.add_all([_entry(person, BASE + timedelta(days=i), hours=1) for i in range(3)])
+    await db.commit()
+    monkeypatch.setattr(ts_gather, "MAX_PDF_ENTRIES", 2)
+    run_id = await _queued_run(db, d, person, options={**RANGE, "format": "pdf"})
+    assert await worker.run_once(get_sessionmaker()) is True
+    run = await db.get(ReportRun, run_id)
+    await db.refresh(run)
+    assert run.status == "failed" and run.error == "too_many_for_pdf"
+    n = await db.scalar(select(Notification).where(Notification.person_id == person.id))
+    assert n.kind == "report_failed" and n.body == "too_many_for_pdf"
+
+
 async def test_preview_validates_like_the_run(client, db, seeded_user):
     hdrs = await login(client)
     resp = await client.get("/reports/timesheet/preview", headers=hdrs,

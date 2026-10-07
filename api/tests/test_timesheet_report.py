@@ -334,6 +334,34 @@ def test_xlsx_free_text_is_stored_as_text_never_a_formula():
         assert not any(c.data_type == "f" for r in ws.iter_rows() for c in r)
 
 
+def test_xlsx_illegal_control_characters_are_stripped():
+    bad = _row(name="An\x01n", notes="line\x0bbreak\ttab\nnew", reason="r\x1fs")
+    wb = _wb(data=_data([bad], person_label="Ev\x02ery"))
+    row = {h: c.value for h, c in zip(
+        [c.value for c in wb["Punches"][1]], wb["Punches"][2], strict=True)}
+    assert row["Person"] == "Ann"
+    assert row["Notes"] == "linebreak\ttab\nnew"
+    assert row["Adjust reason"] == "rs"
+    assert wb["By day"]["B2"].value == "Ann"
+    assert wb["Summary"]["B3"].value == "Every"
+
+
+def test_xlsx_large_workbook_is_written_in_order_and_position():
+    # ws.max_row is O(cells) in openpyxl: asking it per row was quadratic.
+    n = 3000
+    entries = [_row(day=date(2026, 10, 1) + timedelta(days=i % 28), start_h=6 + (i % 5),
+                    end_h=7 + (i % 5), name=f"Person {i:04d}", person=uuid.uuid4())
+               for i in range(n)]
+    wb = _wb(data=_data(entries))
+    punches = wb["Punches"]
+    assert punches.max_row == n + 1
+    names = [punches.cell(row=r, column=2).value for r in range(2, n + 2)]
+    assert sorted(names) == sorted(f"Person {i:04d}" for i in range(n))
+    assert punches.cell(row=n + 1, column=1).number_format == "yyyy-mm-dd"
+    assert punches.cell(row=n + 1, column=9).number_format == "0.00"
+    assert wb["By day"].max_row == n + 1
+
+
 def test_xlsx_empty_result_still_builds():
     wb = _wb(data=_data([]))
     assert wb.sheetnames == ["Summary", "By day", "Punches"]
@@ -448,6 +476,17 @@ async def test_build_too_many_entries_propagates(db, monkeypatch):
     from serversherpa.reports.timesheet.gather import TimesheetTooLarge
     run = await _seed(db, run_options=dict(GOOD))
     real = g.gather
-    monkeypatch.setattr(g, "gather", lambda d, f: real(d, f, limit=0))
-    with pytest.raises(TimesheetTooLarge):
+    monkeypatch.setattr(g, "gather", lambda d, f, **kw: real(d, f, limit=0, **kw))
+    with pytest.raises(TimesheetTooLarge) as exc:
         await timesheet.build(db, run)
+    assert exc.value.code == "too_many_entries"
+
+
+async def test_build_pdf_over_the_pdf_limit_fails_with_its_own_code(db, monkeypatch):
+    from serversherpa.reports.timesheet import gather as g
+    from serversherpa.reports.timesheet.gather import TimesheetTooLarge
+    run = await _seed(db, run_options={**GOOD, "format": "pdf"})
+    monkeypatch.setattr(g, "MAX_PDF_ENTRIES", 0)
+    with pytest.raises(TimesheetTooLarge) as exc:
+        await timesheet.build(db, run)
+    assert exc.value.code == "too_many_for_pdf"

@@ -314,17 +314,20 @@ async def timesheet_preview(
     to_day: str | None = Query(None, alias="to"),
     person_id: str | None = None, initiative_id: uuid.UUID | None = None,
     site_id: str | None = None, statuses: str | None = None,
+    format: str | None = None,
     actor: AuthContext = require_permission("reports", "view"),
 ) -> TimesheetPreviewOut:
     """Feeds the Generate modal's KPI tiles from the same gather the run
     uses. Needs time:view on top of reports:view; validates exactly like a
     run (422 `bad_options`); an oversized range answers `too_many` instead
-    of failing."""
+    of failing; `format` (`xlsx` default, `pdf`) picks which limit applies."""
     if not actor.access.can("time", "view"):
         raise _err(403, "time_view_required")
     raw: dict = {"from": from_day, "to": to_day, "person_id": person_id, "site_id": site_id}
     if statuses is not None:
         raw["statuses"] = [s.strip() for s in statuses.split(",") if s.strip()]
+    if format is not None:
+        raw["format"] = format
     try:
         options = timesheet_report.validate_run_options(raw)
     except OptionsError as exc:
@@ -344,7 +347,8 @@ async def timesheet_preview(
         statuses=tuple(options.get("statuses") or
                        timesheet_report.default_options()["default_statuses"]))
     try:
-        data = await timesheet_report.gather.gather(db, filters)
+        data = await timesheet_report.gather.gather(
+            db, filters, fmt=options.get("format", "xlsx"))
     except timesheet_report.gather.TimesheetTooLarge:
         return TimesheetPreviewOut(entries=0, people=0, days=0, approved_minutes=0,
                                    pending_minutes=0, flagged_entries=0, too_many=True)

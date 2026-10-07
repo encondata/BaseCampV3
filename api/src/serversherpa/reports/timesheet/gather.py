@@ -32,6 +32,7 @@ __all__ = [
     "FLAG_OVER_10",
     "FLAG_OVER_16",
     "MAX_ENTRIES",
+    "MAX_PDF_ENTRIES",
     "STATUS_LABELS",
     "DayRow",
     "EntryRow",
@@ -47,6 +48,9 @@ __all__ = [
 ]
 
 MAX_ENTRIES = 20_000
+# A 20,000-entry PDF is ~1,800 pages, ~4 min and ~9 GB to render, past the
+# worker's timeout, so a PDF run carries far fewer.
+MAX_PDF_ENTRIES = 5_000
 
 FLAG_ADJUSTED = "Adjusted"
 FLAG_MANUAL = "Manual entry"
@@ -77,9 +81,15 @@ _NO_JOB = "No job"
 
 
 class TimesheetTooLarge(Exception):
-    """More matching entries than the report will carry."""
+    """More matching entries than the report will carry. `code` is
+    `too_many_entries` (Excel), or `too_many_for_pdf` for a PDF run."""
 
     code = "too_many_entries"
+
+    def __init__(self, message: str = "", code: str | None = None):
+        super().__init__(message)
+        if code is not None:
+            self.code = code
 
 
 @dataclass(frozen=True)
@@ -238,7 +248,7 @@ def day_rows(entries: list[EntryRow]) -> list[DayRow]:
             label = STATUS_LABELS.get(status, status)
         else:
             label = _MIXED
-        any_open = any(e.status == "open" for e in group)
+        any_open = any(e.status == "open" or e.clock_out is None for e in group)
         union = {f for e in group for f in e.flags}
         rows.append(DayRow(
             day=day, person_id=person_id, person_name=group[0].person_name,
@@ -336,9 +346,14 @@ def _window(f: TimesheetFilters) -> tuple[datetime, datetime]:
 
 async def gather(db: AsyncSession, filters: TimesheetFilters, *,
                  now: datetime | None = None,
-                 limit: int | None = None) -> TimesheetData:
+                 limit: int | None = None,
+                 fmt: str = "xlsx") -> TimesheetData:
+    """`fmt` picks the entry limit (and the error code) when `limit` is not
+    given: 20,000 for Excel, 5,000 for a PDF."""
     now = now or datetime.now(UTC)
-    limit = MAX_ENTRIES if limit is None else limit     # read at call time
+    pdf = fmt == "pdf"
+    if limit is None:                                   # read at call time
+        limit = MAX_PDF_ENTRIES if pdf else MAX_ENTRIES
     start, end = _window(filters)
 
     conds = [TimeEntry.clock_in_at >= start, TimeEntry.clock_in_at < end,
@@ -354,7 +369,8 @@ async def gather(db: AsyncSession, filters: TimesheetFilters, *,
     # boundary entries outside [from, to] may count toward the limit.
     total = await db.scalar(select(func.count()).select_from(TimeEntry).where(*conds))
     if (total or 0) > limit:
-        raise TimesheetTooLarge(f"{total} entries match; the limit is {limit}")
+        raise TimesheetTooLarge(f"{total} entries match; the limit is {limit}",
+                                code="too_many_for_pdf" if pdf else "too_many_entries")
 
     rows = (await db.execute(
         select(TimeEntry, Site.timezone, Site.name, Initiative.name)

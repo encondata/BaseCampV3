@@ -4,6 +4,7 @@ from datetime import datetime
 from io import BytesIO
 
 from openpyxl import Workbook
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.styles import Font
 
 from serversherpa.reports.timesheet import fmt
@@ -20,6 +21,14 @@ DAY_HEADERS = ["Date", "Person", "Entries", "First in", "Last out", "Worked",
 PUNCH_HEADERS = ["Date", "Person", "Job", "Site", "Clock in", "Clock out",
                  "Break (min)", "Worked", "Hours", "Status", "Source",
                  "Approved by", "Flags", "Adjust reason", "Notes"]
+
+
+def _clean(value):
+    """Strings lose the control characters Excel can't store (openpyxl
+    raises on them), e.g. a vertical tab pasted into a note."""
+    if isinstance(value, str):
+        return ILLEGAL_CHARACTERS_RE.sub("", value)
+    return value
 
 
 def _as_text(ws) -> None:
@@ -50,67 +59,84 @@ def _hours_cells(ws, row: int, columns: list[int]) -> None:
         ws.cell(row=row, column=c).number_format = _HOURS_FMT
 
 
+class _Sheet:
+    """A worksheet plus the index of the row last appended. openpyxl's
+    `ws.max_row` walks every cell, so asking it after each append is
+    quadratic; this counts instead."""
+
+    def __init__(self, ws) -> None:
+        self.ws = ws
+        self.row = 0
+
+    def append(self, values: list) -> int:
+        self.ws.append([_clean(v) for v in values])
+        self.row += 1
+        return self.row
+
+    def cell(self, row: int, column: int):
+        return self.ws.cell(row=row, column=column)
+
+
 def _summary(wb: Workbook, data: TimesheetData, generated_at: datetime) -> None:
     ws = wb.active
     ws.title = "Summary"
+    sh = _Sheet(ws)
     f = data.filters
-    ws.append([f"Timesheet: {f.from_day.isoformat()} to {f.to_day.isoformat()}"])
+    sh.append([f"Timesheet: {f.from_day.isoformat()} to {f.to_day.isoformat()}"])
     ws["A1"].font = _TITLE
-    ws.append([])
+    sh.append([])
     for label, value in (
             ("Person", data.person_label), ("Job", data.job_label),
             ("Site", data.site_label),
             ("Statuses", fmt.status_names(f.statuses)),
             ("Generated", fmt.generated_stamp(generated_at, data.default_tz)),
             ("Time zone", fmt.zone_note(data.default_tz))):
-        ws.append([label, value])
-        ws.cell(row=ws.max_row, column=1).font = _BOLD
-    ws.append([])
+        sh.cell(sh.append([label, value]), 1).font = _BOLD
+    sh.append([])
     for label, value, is_hours in (
             ("Entries", len(data.entries), False), ("People", data.people, False),
             ("Days", data.day_count, False),
             ("Approved hours", fmt.hours(data.approved_minutes), True),
             ("Pending hours", fmt.hours(data.pending_minutes), True),
             ("Flagged entries", data.flagged_entries, False)):
-        ws.append([label, value])
-        ws.cell(row=ws.max_row, column=1).font = _BOLD
+        r = sh.append([label, value])
+        sh.cell(r, 1).font = _BOLD
         if is_hours:
-            ws.cell(row=ws.max_row, column=2).number_format = _HOURS_FMT
+            sh.cell(r, 2).number_format = _HOURS_FMT
 
-    ws.append([])
-    ws.append(["By person"])
-    ws.cell(row=ws.max_row, column=1).font = _TITLE
-    ws.append(["Person", "Days", "Entries", "Approved", "Pending", "Total", "Flagged"])
-    _bold_row(ws, ws.max_row, 7)
+    sh.append([])
+    sh.cell(sh.append(["By person"]), 1).font = _TITLE
+    _bold_row(ws, sh.append(["Person", "Days", "Entries", "Approved", "Pending",
+                             "Total", "Flagged"]), 7)
     for p in data.by_person:
-        ws.append([p.person_name, p.days, p.entries,
-                   fmt.hours(p.approved_minutes), fmt.hours(p.pending_minutes),
-                   fmt.hours(p.total_minutes), p.flagged])
-        _hours_cells(ws, ws.max_row, [4, 5, 6])
+        r = sh.append([p.person_name, p.days, p.entries,
+                       fmt.hours(p.approved_minutes), fmt.hours(p.pending_minutes),
+                       fmt.hours(p.total_minutes), p.flagged])
+        _hours_cells(ws, r, [4, 5, 6])
 
-    ws.append([])
-    ws.append(["By job"])
-    ws.cell(row=ws.max_row, column=1).font = _TITLE
-    ws.append(["Job", "People", "Entries", "Approved", "Pending", "Total"])
-    _bold_row(ws, ws.max_row, 6)
+    sh.append([])
+    sh.cell(sh.append(["By job"]), 1).font = _TITLE
+    _bold_row(ws, sh.append(["Job", "People", "Entries", "Approved", "Pending",
+                             "Total"]), 6)
     for j in data.by_job:
-        ws.append([j.job_name, j.people, j.entries, fmt.hours(j.approved_minutes),
-                   fmt.hours(j.pending_minutes), fmt.hours(j.total_minutes)])
-        _hours_cells(ws, ws.max_row, [4, 5, 6])
+        r = sh.append([j.job_name, j.people, j.entries, fmt.hours(j.approved_minutes),
+                       fmt.hours(j.pending_minutes), fmt.hours(j.total_minutes)])
+        _hours_cells(ws, r, [4, 5, 6])
     _as_text(ws)
     _autofit(ws)
 
 
 def _by_day(wb: Workbook, data: TimesheetData) -> None:
     ws = wb.create_sheet("By day")
-    ws.append(DAY_HEADERS)
-    _bold_row(ws, 1, len(DAY_HEADERS))
+    sh = _Sheet(ws)
+    _bold_row(ws, sh.append(DAY_HEADERS), len(DAY_HEADERS))
     for d in data.days:
-        ws.append([d.day, d.person_name, d.entries, fmt.clock(d.first_in),
-                   fmt.clock(d.last_out), fmt.worked(d.worked_minutes),
-                   fmt.hours(d.worked_minutes), d.status_label, ", ".join(d.flags)])
-        ws.cell(row=ws.max_row, column=1).number_format = _DATE_FMT
-        _hours_cells(ws, ws.max_row, [7])
+        r = sh.append([d.day, d.person_name, d.entries, fmt.clock(d.first_in),
+                       fmt.clock(d.last_out), fmt.worked(d.worked_minutes),
+                       fmt.hours(d.worked_minutes), d.status_label,
+                       ", ".join(d.flags)])
+        sh.cell(r, 1).number_format = _DATE_FMT
+        _hours_cells(ws, r, [7])
     ws.freeze_panes = "A2"
     _as_text(ws)
     _autofit(ws)
@@ -118,18 +144,18 @@ def _by_day(wb: Workbook, data: TimesheetData) -> None:
 
 def _punches(wb: Workbook, data: TimesheetData) -> None:
     ws = wb.create_sheet("Punches")
-    ws.append(PUNCH_HEADERS)
-    _bold_row(ws, 1, len(PUNCH_HEADERS))
+    sh = _Sheet(ws)
+    _bold_row(ws, sh.append(PUNCH_HEADERS), len(PUNCH_HEADERS))
     for e in data.entries:
-        ws.append([e.local_day, e.person_name, e.job_name or "",
-                   e.site_name or "", fmt.clock(e.clock_in),
-                   fmt.clock(e.clock_out), e.break_minutes,
-                   fmt.worked(e.worked_minutes), fmt.hours(e.worked_minutes),
-                   fmt.STATUS_LABELS.get(e.status, e.status_label), e.source,
-                   e.approved_by_name or "", ", ".join(e.flags),
-                   e.adjust_reason or "", e.notes or ""])
-        ws.cell(row=ws.max_row, column=1).number_format = _DATE_FMT
-        _hours_cells(ws, ws.max_row, [9])
+        r = sh.append([e.local_day, e.person_name, e.job_name or "",
+                       e.site_name or "", fmt.clock(e.clock_in),
+                       fmt.clock(e.clock_out), e.break_minutes,
+                       fmt.worked(e.worked_minutes), fmt.hours(e.worked_minutes),
+                       fmt.STATUS_LABELS.get(e.status, e.status_label), e.source,
+                       e.approved_by_name or "", ", ".join(e.flags),
+                       e.adjust_reason or "", e.notes or ""])
+        sh.cell(r, 1).number_format = _DATE_FMT
+        _hours_cells(ws, r, [9])
     ws.freeze_panes = "A2"
     _as_text(ws)
     _autofit(ws)

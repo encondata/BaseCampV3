@@ -50,6 +50,7 @@ def flagged(*rows: EntryRow, now=NOW) -> list[EntryRow]:
 
 def test_constants():
     assert g.MAX_ENTRIES == 20_000
+    assert g.MAX_PDF_ENTRIES == 5_000
     assert g.CLOSED_COUNTED == ("approved", "pending")
     assert TimesheetTooLarge.code == "too_many_entries"
 
@@ -180,6 +181,13 @@ def test_day_row_last_out_follows_open_status():
     # An "open" status row is the open test, whatever its clock_out says.
     e = row(start_h=8, end_h=9)
     e.status = "open"
+    (d,) = day_rows(flagged(e))
+    assert d.last_out is None
+
+
+def test_day_row_non_open_entry_with_no_clock_out_does_not_crash():
+    e = row(start_h=8, end_h=9, status="approved")
+    e.clock_out = None
     (d,) = day_rows(flagged(e))
     assert d.last_out is None
 
@@ -492,6 +500,23 @@ async def test_gather_too_large(db):
         await gather(db, _filters(), now=NOW, limit=2)
     assert exc.value.code == "too_many_entries"
     assert len((await gather(db, _filters(), now=NOW, limit=3)).entries) == 3
+
+
+async def test_gather_pdf_limit_has_its_own_code(db, monkeypatch):
+    p = await _person(db)
+    t = datetime(2026, 10, 10, 14, 0, tzinfo=UTC)
+    db.add_all([_entry(p, t + timedelta(days=i), hours=1) for i in range(3)])
+    await db.commit()
+    monkeypatch.setattr(g, "MAX_PDF_ENTRIES", 2)
+    with pytest.raises(TimesheetTooLarge) as exc:
+        await gather(db, _filters(), now=NOW, fmt="pdf")
+    assert exc.value.code == "too_many_for_pdf"
+    # Excel keeps its own (larger) limit and code
+    assert len((await gather(db, _filters(), now=NOW, fmt="xlsx")).entries) == 3
+    monkeypatch.setattr(g, "MAX_ENTRIES", 2)
+    with pytest.raises(TimesheetTooLarge) as exc:
+        await gather(db, _filters(), now=NOW, fmt="xlsx")
+    assert exc.value.code == "too_many_entries"
 
 
 async def test_gather_empty(db):
