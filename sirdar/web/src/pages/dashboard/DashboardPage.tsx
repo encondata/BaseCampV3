@@ -161,7 +161,7 @@ export default function DashboardPage() {
               ))}
             </div>
             <InfraTree source={data.infrastructure.source} error={data.infrastructure.error}
-                       tree={data.infrastructure.tree} refreshing={loading}
+                       tree={data.infrastructure.tree} selected={selected?.id ?? null} refreshing={loading}
                        onRefresh={() => void load(true)} />
           </div>
         )}

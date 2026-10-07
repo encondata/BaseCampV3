@@ -4,32 +4,37 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import InfraTree from './InfraTree';
-import { DEMO_TREE } from './testData';
+import { CLOUD_TREE, DEMO_TREE } from './testData';
 
 afterEach(cleanup);
 
 const rowNames = () => screen.getAllByRole('row').slice(1)
   .map((r) => r.querySelector('.sd-tree-name')!.textContent);
+const expanded = (name: RegExp) => screen.getByRole('row', { name }).getAttribute('aria-expanded');
 
-function show(props: Partial<Parameters<typeof InfraTree>[0]> = {}) {
-  const onRefresh = vi.fn();
-  render(<InfraTree source="demo" error={null} tree={DEMO_TREE} refreshing={false}
-                    onRefresh={onRefresh} {...props} />);
-  return { onRefresh };
+type Props = Parameters<typeof InfraTree>[0];
+const props = (over: Partial<Props> = {}): Props => ({
+  source: 'demo', error: null, tree: DEMO_TREE, selected: 'production', refreshing: false,
+  onRefresh: vi.fn(), ...over,
+});
+function show(over: Partial<Props> = {}) {
+  const p = props(over);
+  const view = render(<InfraTree {...p} />);
+  return { ...p, rerender: (more: Partial<Props>) => view.rerender(<InfraTree {...p} {...more} />) };
 }
 
-it('renders every node expanded with its columns', () => {
+it('the selected environment comes first, expanded; the others are collapsed', () => {
   show();
   const grid = screen.getByRole('treegrid');
   const headers = within(grid).getAllByRole('columnheader').map((h) => h.textContent);
   expect(headers).toEqual(['Instance / resource', 'Type', 'Status', 'Region', 'Endpoint']);
   expect(rowNames()).toEqual([
     'Production', 'Blue', 'prod-blue-api', 'Green', 'prod-green-api',
-    'Shared production resources', 'prod-db', 'prod-spaces', 'Development', 'dev-web', 'dev-new',
+    'Shared production resources', 'prod-db', 'prod-spaces', 'Development',
   ]);
-  const prod = screen.getByRole('row', { name: /^Production/ });
-  expect(prod.getAttribute('aria-level')).toBe('1');
-  expect(prod.getAttribute('aria-expanded')).toBe('true');
+  expect(screen.getByRole('row', { name: /^Production/ }).getAttribute('aria-level')).toBe('1');
+  expect(expanded(/^Production/)).toBe('true');
+  expect(expanded(/^Development/)).toBe('false');
   const api = screen.getByRole('row', { name: /prod-blue-api/ });
   expect(api.getAttribute('aria-level')).toBe('3');
   expect(api.hasAttribute('aria-expanded')).toBe(false);
@@ -38,25 +43,83 @@ it('renders every node expanded with its columns', () => {
   expect(screen.getByText('Droplet instances and shared resources')).toBeTruthy();
 });
 
+it('order: the selected environment, the rest in card order, then the other resources', () => {
+  show({ source: 'digitalocean', tree: CLOUD_TREE, selected: 'uat' });
+  expect(rowNames()).toEqual([
+    'uat', 'Nginx Proxy Manager', 'Lab box', 'Certificate', 'prod', 'uat9', 'Other DigitalOcean resources',
+  ]);
+  expect(expanded(/^Other DigitalOcean resources/)).toBe('false');
+});
+
+it('a new selection moves to the top and expands; the old one collapses back', () => {
+  const { rerender } = show({ source: 'digitalocean', tree: CLOUD_TREE, selected: 'prod' });
+  expect(rowNames().slice(0, 4)).toEqual(['prod', 'ss-prod-lb', 'Blue (live)', 'Green (idle)']);
+  rerender({ selected: 'uat9' });
+  expect(rowNames()).toEqual([
+    'uat9', 'Orange (live)', 'Purple (idle)', 'prod', 'uat', 'Other DigitalOcean resources',
+  ]);
+  expect(expanded(/^prod/)).toBe('false');
+});
+
+it('an environment the user expanded by hand stays expanded when the selection moves on', async () => {
+  const { rerender } = show({ source: 'digitalocean', tree: CLOUD_TREE, selected: 'prod' });
+  await userEvent.click(screen.getByRole('button', { name: 'Expand uat' }));
+  rerender({ selected: 'uat9' });
+  expect(expanded(/^uat9/)).toBe('true');
+  expect(expanded(/^prod/)).toBe('false');
+  expect(expanded(/^uat$/)).toBe('true');
+  rerender({ selected: 'uat' });              // uat9 was only opened by the selection
+  expect(rowNames()[0]).toBe('uat');
+  expect(expanded(/^uat9/)).toBe('false');
+  rerender({ selected: 'prod' });             // uat was opened by hand first: it stays
+  expect(expanded(/^uat$/)).toBe('true');
+});
+
+it('the selected environment the user collapsed by hand reopens when picked again', async () => {
+  const { rerender } = show({ source: 'digitalocean', tree: CLOUD_TREE, selected: 'prod' });
+  await userEvent.click(screen.getByRole('button', { name: 'Collapse prod' }));
+  expect(expanded(/^prod/)).toBe('false');
+  rerender({ selected: 'uat' });
+  rerender({ selected: 'prod' });
+  expect(expanded(/^prod/)).toBe('true');
+});
+
+it('a selection with no environment node (a placeholder) keeps the order, all collapsed', () => {
+  show({ source: 'digitalocean', tree: CLOUD_TREE, selected: 'beta' });
+  expect(rowNames()).toEqual(['prod', 'uat9', 'uat', 'Other DigitalOcean resources']);
+});
+
+it('new data with the same nodes keeps what is open', async () => {
+  const { rerender } = show({ source: 'digitalocean', tree: CLOUD_TREE, selected: 'prod' });
+  await userEvent.click(screen.getByRole('button', { name: 'Expand Other DigitalOcean resources' }));
+  rerender({ tree: CLOUD_TREE.map((x) => ({ ...x })) });
+  expect(expanded(/^Other DigitalOcean resources/)).toBe('true');
+  expect(expanded(/^prod/)).toBe('true');
+});
+
 it('collapses and expands one node with its chevron', async () => {
   show();
   await userEvent.click(screen.getByRole('button', { name: 'Collapse Blue' }));
   expect(rowNames()).not.toContain('prod-blue-api');
-  expect(screen.getByRole('row', { name: /^Blue/ }).getAttribute('aria-expanded')).toBe('false');
+  expect(expanded(/^Blue/)).toBe('false');
   await userEvent.click(screen.getByRole('button', { name: 'Expand Blue' }));
   expect(rowNames()).toContain('prod-blue-api');
 });
 
-it('Collapse all and Expand all affect every node', async () => {
-  show();
+it('Collapse all and Expand all affect every node, and survive a new selection', async () => {
+  const { rerender } = show();
   await userEvent.click(screen.getByRole('button', { name: /Collapse all/ }));
   expect(rowNames()).toEqual(['Production', 'Development']);
   await userEvent.click(screen.getByRole('button', { name: /Expand all/ }));
   expect(rowNames()).toHaveLength(11);
+  rerender({ selected: 'dev' });
+  expect(rowNames()).toHaveLength(11);
+  expect(rowNames()[0]).toBe('Development');
 });
 
 it('status pills get classes by status', () => {
-  show();
+  show({ selected: null });
+  fireEvent.click(screen.getByRole('button', { name: /Expand all/ }));
   const pill = (name: RegExp) => screen.getByRole('row', { name }).querySelector('.sd-status')!.className;
   expect(pill(/prod-blue-api/)).toMatch(/is-ok/);
   expect(pill(/prod-db/)).toMatch(/is-ok/);
@@ -66,6 +129,13 @@ it('status pills get classes by status', () => {
   expect(pill(/dev-new/)).toMatch(/is-warn/);
 });
 
+it('a part missing from the inventory is red: Not found', () => {
+  const tree = [{ ...CLOUD_TREE[0], children: [{ ...CLOUD_TREE[0].children[0], status: 'not_found',
+                                                 status_label: 'Not found' }] }];
+  show({ source: 'digitalocean', tree, selected: 'prod' });
+  expect(screen.getByRole('row', { name: /ss-prod-lb/ }).querySelector('.sd-status')!.className).toMatch(/is-bad/);
+});
+
 it('keyboard: arrows move between rows, Left/Right collapse and expand', () => {
   show();
   const rows = () => screen.getAllByRole('row').slice(1);
@@ -73,15 +143,19 @@ it('keyboard: arrows move between rows, Left/Right collapse and expand', () => {
   fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
   expect(document.activeElement).toBe(screen.getByRole('row', { name: /^Blue/ }));
   fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' });
-  expect(screen.getByRole('row', { name: /^Blue/ }).getAttribute('aria-expanded')).toBe('false');
+  expect(expanded(/^Blue/)).toBe('false');
   fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
   expect(document.activeElement).toBe(screen.getByRole('row', { name: /^Green/ }));
   fireEvent.keyDown(document.activeElement!, { key: 'ArrowUp' });
   fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
-  expect(screen.getByRole('row', { name: /^Blue/ }).getAttribute('aria-expanded')).toBe('true');
+  expect(expanded(/^Blue/)).toBe('true');
   fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' });
   fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' });
   expect(document.activeElement).toBe(screen.getByRole('row', { name: /^Production/ }));
+  fireEvent.keyDown(document.activeElement!, { key: 'End' });
+  expect(document.activeElement).toBe(screen.getByRole('row', { name: /^Development/ }));
+  fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
+  expect(expanded(/^Development/)).toBe('true');
 });
 
 it('Refresh calls back and spins while refreshing', async () => {

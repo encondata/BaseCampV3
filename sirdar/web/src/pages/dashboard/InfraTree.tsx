@@ -1,14 +1,16 @@
-/** Infrastructure card: an expandable tree of environments, deployments,
- *  shared groups and their DigitalOcean resources, as a WAI-ARIA treegrid
- *  (rows move with Up/Down; Left/Right collapse and expand or step to the
- *  parent/first child). Everything starts expanded. */
+/** Infrastructure card: an expandable tree of every environment and its
+ *  parts, then the DigitalOcean resources Sirdar doesn't manage, as a
+ *  WAI-ARIA treegrid (rows move with Up/Down; Left/Right collapse and expand
+ *  or step to the parent/first child). The selected environment (the
+ *  spotlight's) comes first and opens; a new selection closes the previous
+ *  one again unless the user opened it by hand. */
 import { useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
 import type { DashNode } from '../../lib/sirdarApi';
 
 import {
   BranchIcon, BucketIcon, ChevronIcon, CollapseIcon, DatabaseIcon, DropletIcon, ExpandIcon,
-  FolderIcon, RefreshIcon,
+  FolderIcon, LoadBalancerIcon, LockIcon, RefreshIcon, ServerRackIcon,
 } from './icons';
 import { Dot, dotTone, statusTone } from './parts';
 
@@ -24,6 +26,18 @@ function parentIds(tree: DashNode[]): string[] {
   });
   walk(tree);
   return out;
+}
+
+/** The ids a selection opens: its top-level node and every branch under it. */
+function autoIds(tree: DashNode[], selected: string | null): string[] {
+  const top = selected ? tree.find((n) => n.id === selected) : undefined;
+  return top ? parentIds([top]) : [];
+}
+
+/** The selected environment first; the rest keep the API's order (card order, then other resources). */
+function ordered(tree: DashNode[], selected: string | null): DashNode[] {
+  const idx = selected ? tree.findIndex((n) => n.id === selected) : -1;
+  return idx > 0 ? [tree[idx], ...tree.slice(0, idx), ...tree.slice(idx + 1)] : tree;
 }
 
 function visibleRows(tree: DashNode[], open: Set<string>): Row[] {
@@ -47,37 +61,67 @@ function KindIcon({ node }: { node: DashNode }) {
       return <BucketIcon size={15} className="sd-ico is-ink" />;
     case 'load_balancer':
       return <BranchIcon size={15} className="sd-ico is-blue" />;
+    case 'proxy':
+      return <LoadBalancerIcon size={15} className="sd-ico is-blue" />;
+    case 'server':
+      return <ServerRackIcon size={15} className="sd-ico is-ink" />;
+    case 'certificate':
+      return <LockIcon size={15} className="sd-ico is-ink" />;
     default:
       return <FolderIcon size={15}
                          className={`sd-ico ${node.tone === 'shared' ? 'is-green' : 'is-blue'}`} />;
   }
 }
 
-export default function InfraTree({ source, error, tree, refreshing, onRefresh }: {
+export default function InfraTree({ source, error, tree, selected, refreshing, onRefresh }: {
   source: string;
   error: string | null;
   tree: DashNode[];
+  /** The selected card's id: its environment node comes first, open. */
+  selected: string | null;
   refreshing: boolean;
   onRefresh: () => void;
 }) {
   const headingId = useId();
   const allParents = useMemo(() => parentIds(tree), [tree]);
-  const [open, setOpen] = useState<Set<string>>(() => new Set(allParents));
+  const [open, setOpen] = useState<Set<string>>(() => new Set(autoIds(tree, selected)));
+  // ids the user opened by hand (a chevron, a key, Expand all): a new selection leaves them open
+  const [manual, setManual] = useState<Set<string>>(() => new Set());
   const [seenTree, setSeenTree] = useState(tree);
-  if (seenTree !== tree) {           // new data: start expanded again
+  const [seenSelected, setSeenSelected] = useState(selected);
+  if (seenTree !== tree) {           // new data (a refresh): keep what is open that still exists
+    const ids = new Set(allParents);
+    const keep = (prev: Set<string>) => new Set([...prev].filter((id) => ids.has(id)));
     setSeenTree(tree);
-    setOpen(new Set(allParents));
+    setOpen(keep);
+    setManual(keep);
   }
-  const rows = useMemo(() => visibleRows(tree, open), [tree, open]);
+  if (seenSelected !== selected) {   // a new pick opens; the old pick closes unless opened by hand
+    const before = autoIds(tree, seenSelected).filter((id) => !manual.has(id));
+    const after = autoIds(tree, selected);
+    setSeenSelected(selected);
+    setOpen((prev) => {
+      const next = new Set(prev);
+      before.forEach((id) => next.delete(id));
+      after.forEach((id) => next.add(id));
+      return next;
+    });
+  }
+  const rows = useMemo(() => visibleRows(ordered(tree, selected), open), [tree, selected, open]);
   const [focusId, setFocusId] = useState<string | null>(null);
   const rowEls = useRef(new Map<string, HTMLDivElement>());
   const tabStop = rows.some((r) => r.node.id === focusId) ? focusId : rows[0]?.node.id ?? null;
 
-  const toggle = (id: string, to?: boolean) => setOpen((prev) => {
-    const next = new Set(prev);
-    if (to ?? !next.has(id)) next.add(id); else next.delete(id);
-    return next;
-  });
+  const toggle = (id: string, to?: boolean) => {
+    const opening = to ?? !open.has(id);
+    const set = (prev: Set<string>) => {
+      const next = new Set(prev);
+      if (opening) next.add(id); else next.delete(id);
+      return next;
+    };
+    setOpen(set);
+    setManual(set);
+  };
 
   const focusRow = (id: string | null | undefined) => {
     if (!id) return;
@@ -109,9 +153,14 @@ export default function InfraTree({ source, error, tree, refreshing, onRefresh }
     e.preventDefault();
   };
 
-  const subtitle = source === 'none'
-    ? 'Connect DigitalOcean on the Deploy page to see your droplets and resources.'
-    : 'Droplet instances and shared resources';
+  let subtitle = 'Droplet instances and shared resources';
+  if (source === 'none') {
+    subtitle = tree.length
+      ? "Each environment's parts. Connect DigitalOcean on the Deploy page to see its resources too."
+      : 'Connect DigitalOcean on the Deploy page to see your droplets and resources.';
+  } else if (source !== 'demo') {
+    subtitle = "Each environment's parts, then DigitalOcean resources Sirdar doesn't manage";
+  }
 
   return (
     <section className="sd-card sd-infra" aria-labelledby={headingId}>
@@ -123,10 +172,10 @@ export default function InfraTree({ source, error, tree, refreshing, onRefresh }
         </div>
         <div className="sd-head-actions">
           <button type="button" className="sd-btn sd-btn-outline sd-btn-sm"
-                  onClick={() => setOpen(new Set(allParents))}>
+                  onClick={() => { setOpen(new Set(allParents)); setManual(new Set(allParents)); }}>
             <ExpandIcon size={14} />Expand all
           </button>
-          <button type="button" className="sd-btn sd-btn-outline sd-btn-sm" onClick={() => setOpen(new Set())}>
+          <button type="button" className="sd-btn sd-btn-outline sd-btn-sm" onClick={() => { setOpen(new Set()); setManual(new Set()); }}>
             <CollapseIcon size={14} />Collapse all
           </button>
           <button type="button" className={`sd-btn sd-btn-outline sd-btn-sm${refreshing ? ' is-spinning' : ''}`}
