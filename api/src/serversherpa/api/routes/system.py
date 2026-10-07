@@ -558,7 +558,10 @@ async def test_logging_config(
 async def get_env(
     actor: AuthContext = require_permission("devtools", "change"),
 ) -> dict:
-    return {"entries": env_file.read_entries(env_file.default_env_path())}
+    path = env_file.default_env_path()
+    return {"entries": env_file.read_entries(path),
+            "missing": env_file.read_missing(
+                path, env_file.default_example_path())}
 
 
 @router.put("/env")
@@ -587,14 +590,16 @@ async def put_env(
             env_file.has_linebreak(v) for v in descriptions.values()):
         raise _err(422, "invalid_env_update", unknown=[])
     try:
-        changed = env_file.apply_updates(
-            env_file.default_env_path(), values, descriptions)
+        changed, added = env_file.apply_updates_detailed(
+            env_file.default_env_path(), values, descriptions,
+            example_path=env_file.default_example_path())
     except env_file.EnvUpdateError as exc:
         raise _err(422, "invalid_env_update", unknown=exc.unknown) from None
     if changed:
         audit(db, actor_id=actor.person.id, entity_type="system",
               entity_id="env", action="env_update",
-              changes={"changed": sorted(changed)})
+              changes={"changed": sorted(changed),
+                       "added": sorted(added)})
         await db.commit()
     return {"changed": sorted(changed)}
 
