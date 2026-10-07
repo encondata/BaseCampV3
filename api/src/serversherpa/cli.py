@@ -25,7 +25,8 @@ from serversherpa.services.password_policy import (
     load_policy,
 )
 
-app = typer.Typer(no_args_is_help=True, help="ServerSherpa operations CLI")
+app = typer.Typer(no_args_is_help=True, help="ServerSherpa operations CLI",
+                  pretty_exceptions_show_locals=False)   # a traceback never shows a password
 
 
 @app.callback()
@@ -34,12 +35,18 @@ def _main() -> None:
 
 
 # bootstrap-admin's exit codes (Sirdar's step 11 reads them; 2 is typer's usage error).
-EXIT_ACCOUNT_EXISTS = 1
+# 1 is never used on purpose: docker compose exec, ss-stack's die and Python's
+# uncaught exceptions all exit 1. A crash here is 6; "already there, done" is 10.
+EXIT_ACCOUNT_EXISTS = 10
+EXIT_USAGE = 2
 EXIT_PASSWORD_REFUSED = 3
 EXIT_ROLE_UNKNOWN = 4
 EXIT_MAIL_OFF = 5
+EXIT_FAILED = 6
+EXIT_PERSON_EXISTS = 7
 _EXIT_CODES = {"account_exists": EXIT_ACCOUNT_EXISTS, "password_too_short": EXIT_PASSWORD_REFUSED,
-               "role_unknown": EXIT_ROLE_UNKNOWN, "mail_not_configured": EXIT_MAIL_OFF}
+               "role_unknown": EXIT_ROLE_UNKNOWN, "mail_not_configured": EXIT_MAIL_OFF,
+               "person_exists": EXIT_PERSON_EXISTS, "link_required": EXIT_USAGE}
 
 
 async def _create_first_admin(**kwargs):
@@ -76,14 +83,17 @@ def bootstrap_admin(
 
     if password_stdin and invite:
         typer.secho("Use --password-stdin or --invite, not both.", fg="red", err=True)
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=EXIT_USAGE)
     if invite and link_minutes is None:
         typer.secho("--invite needs --link-minutes (how long the set-password link works).",
                     fg="red", err=True)
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=EXIT_USAGE)
     password: str | None = None
     if password_stdin:
         password = sys.stdin.readline().rstrip("\r\n")
+        if not password:
+            typer.secho("No password was given on stdin.", fg="red", err=True)
+            raise typer.Exit(code=EXIT_USAGE)
     elif not invite:
         password = typer.prompt("Password", hide_input=True, confirmation_prompt=True)
     try:
@@ -95,18 +105,25 @@ def bootstrap_admin(
             "account_exists": f"An account for {email} already exists.",
             "password_too_short": "The password is too short: use at least "
                                   f"{e.extra.get('min_length')} characters.",
-            "role_unknown": f"There is no role named {role}.",
+            "person_exists": f"A person with the email {email} already exists but has no "
+                             "account; give them one from the portal, or use another email.",
+            "role_unknown": f"There is no global role named {role}.",
             "mail_not_configured": "Email isn't configured (SS_SMTP_HOST and SS_SMTP_FROM), "
                                    "so an invite can't be sent.",
             "link_required": "--invite needs --link-minutes.",
         }
         typer.secho(messages.get(e.code, e.code), fg="red", err=True)
-        raise typer.Exit(code=_EXIT_CODES.get(e.code, 2)) from None
+        raise typer.Exit(code=_EXIT_CODES.get(e.code, EXIT_USAGE)) from None
+    except Exception as e:
+        # the class name only: a message or repr can carry SQL parameters
+        typer.secho(f"Couldn't create the first admin ({type(e).__name__}); see the "
+                    "environment's API log.", fg="red", err=True)
+        raise typer.Exit(code=EXIT_FAILED) from None
     kind = "invited" if invite else "created"
     typer.secho(f"Admin {kind}: {first_name} {last_name} <{email}> as {role} "
                 f"(person {result.person_id})", fg="green")
     if link_minutes and not result.emailed:
-        typer.secho("No email was sent: email isn't configured.", fg="yellow")
+        typer.secho("No email was sent: email isn't configured.", fg="yellow", err=True)
 
 
 @app.command()

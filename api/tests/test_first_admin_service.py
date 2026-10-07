@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from serversherpa.config import get_settings
 from serversherpa.db.models import (
-    AuditLog, EmailOutbox, PasswordResetToken, PersonRole, UserAccount,
+    AuditLog, EmailOutbox, PasswordResetToken, Person, PersonRole, UserAccount,
 )
 from serversherpa.security.passwords import verify_password
 from serversherpa.services import password_reset
@@ -127,3 +127,74 @@ async def test_the_password_never_reaches_the_logs(db, email_on, caplog):
     await _make(db)
     await _make(db, email="ada2@test.example.com", password=None)
     assert TYPED not in caplog.text
+
+
+async def test_an_existing_account_with_different_case_is_refused(db, email_on, seeded_user):
+    with pytest.raises(FirstAdminError) as e:
+        await create_admin(db, email="Alice@Test.Example.COM", first_name="A",
+                           last_name="B", role="super_admin", password=TYPED,
+                           link_minutes=240, now=NOW)
+    assert e.value.code == "account_exists"
+
+
+async def test_account_exists_is_checked_before_the_password_and_role(db, seeded_user):
+    # a re-run is idempotent: the account is there, whatever else is wrong now
+    with pytest.raises(FirstAdminError) as e:
+        await create_admin(db, email="alice@test.example.com", first_name="A",
+                           last_name="B", role="no_such_role", password="short",
+                           link_minutes=240, now=NOW)
+    assert e.value.code == "account_exists"
+
+
+async def test_a_person_with_that_email_but_no_account_is_refused(db, email_on):
+    db.add(Person(first_name="Ada", last_name="Lovelace", email=EMAIL.upper()))
+    await db.commit()
+    with pytest.raises(FirstAdminError) as e:
+        await create_admin(db, email=EMAIL, first_name="Ada", last_name="Lovelace",
+                           role="super_admin", password=TYPED, link_minutes=240, now=NOW)
+    await db.rollback()
+    assert e.value.code == "person_exists"
+    assert await db.scalar(select(UserAccount)) is None
+
+
+async def test_a_person_with_that_email_and_an_account_is_account_exists(db, seeded_user):
+    # alice's login email differs from her people.email
+    account = await db.get(UserAccount, seeded_user.id)
+    account.email = "alice.login@test.example.com"
+    await db.commit()
+    with pytest.raises(FirstAdminError) as e:
+        await create_admin(db, email="alice@test.example.com", first_name="A",
+                           last_name="B", role="super_admin", password=TYPED,
+                           link_minutes=240, now=NOW)
+    assert e.value.code == "account_exists"
+
+
+async def test_a_client_anchored_role_is_refused(db, email_on):
+    with pytest.raises(FirstAdminError) as e:
+        await create_admin(db, email=EMAIL, first_name="Ada", last_name="Lovelace",
+                           role="client_admin", password=TYPED, link_minutes=240, now=NOW)
+    await db.rollback()
+    assert e.value.code == "role_unknown"
+    assert await db.scalar(select(UserAccount)) is None
+
+
+async def test_an_empty_password_is_refused(db, email_on):
+    with pytest.raises(FirstAdminError) as e:
+        await create_admin(db, email=EMAIL, first_name="Ada", last_name="Lovelace",
+                           role="super_admin", password="", link_minutes=240, now=NOW)
+    assert e.value.code == "password_too_short"
+
+
+async def test_a_failure_after_the_first_writes_leaves_nothing(db, email_on, monkeypatch):
+    from serversherpa.services import first_admin
+
+    async def boom(*a, **kw):
+        raise RuntimeError("smtp template exploded")
+
+    monkeypatch.setattr(first_admin, "enqueue", boom)
+    with pytest.raises(RuntimeError):
+        await create_admin(db, email=EMAIL, first_name="Ada", last_name="Lovelace",
+                           role="super_admin", password=TYPED, link_minutes=240, now=NOW)
+    await db.rollback()
+    for model in (UserAccount, Person, PersonRole, PasswordResetToken, EmailOutbox):
+        assert await db.scalar(select(model)) is None, model

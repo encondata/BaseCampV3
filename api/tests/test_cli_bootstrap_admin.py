@@ -81,7 +81,7 @@ def test_usage_errors_exit_2(calls, args):
 
 
 @pytest.mark.parametrize("code, extra, exit_code", [
-    ("account_exists", {}, 1),
+    ("account_exists", {}, 10),
     ("password_too_short", {"min_length": 8}, 3),
     ("role_unknown", {}, 4),
     ("mail_not_configured", {}, 5),
@@ -111,3 +111,45 @@ def test_the_password_never_reaches_argv_output_or_logs(calls, caplog):
     assert result.exit_code == 0, result.output
     assert SECRET not in result.output and SECRET not in caplog.text
     assert all(SECRET not in str(v) for k, v in calls[0].items() if k != "password")
+
+
+def test_a_crash_exits_6(calls):
+    calls.outcome["error"] = RuntimeError(f"connection refused; params={SECRET}")
+    result = runner.invoke(app, [*BASE, "--password-stdin", "--link-minutes", "240"],
+                           input=SECRET + "\n")
+    assert result.exit_code == 6
+    assert "RuntimeError" in result.output and "API log" in result.output
+    assert SECRET not in result.output and "connection refused" not in result.output
+
+
+def test_a_person_without_an_account_exits_7(calls):
+    calls.outcome["error"] = FirstAdminError("person_exists")
+    result = runner.invoke(app, [*BASE, "--password-stdin"], input=SECRET + "\n")
+    assert result.exit_code == 7
+    assert "ada@test.example.com" in result.output
+
+
+@pytest.mark.parametrize("stdin", ["", "\n"])
+def test_no_password_on_stdin_exits_2(calls, stdin):
+    result = runner.invoke(app, [*BASE, "--password-stdin"], input=stdin)
+    assert result.exit_code == 2
+    assert "No password was given on stdin." in result.output
+    assert calls == []
+
+
+def test_the_mail_off_note_goes_to_stderr(calls):
+    calls.outcome["emailed"] = False
+    result = runner.invoke(app, [*BASE, "--password-stdin", "--link-minutes", "240"],
+                           input=SECRET + "\n")
+    assert "No email was sent" in result.stderr
+    assert "No email was sent" not in result.stdout
+
+
+def test_tracebacks_never_show_locals():
+    assert cli.app.pretty_exceptions_show_locals is False
+
+
+def test_no_exit_code_is_1():
+    # 1 also comes from docker compose exec, ss-stack's die and Python itself
+    assert 1 not in cli._EXIT_CODES.values()
+    assert cli.EXIT_ACCOUNT_EXISTS == 10

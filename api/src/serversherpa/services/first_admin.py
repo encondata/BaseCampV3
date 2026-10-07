@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from serversherpa.config import get_settings
 from serversherpa.db.models import Person, PersonRole, Role, UserAccount
 from serversherpa.mail import email_enabled, enqueue
 from serversherpa.services import password_reset
@@ -20,8 +21,11 @@ from serversherpa.services.password_policy import apply_password, length_problem
 
 
 class FirstAdminError(Exception):
-    """Nothing was created. `code`: account_exists, password_too_short
-    (`min_length`), role_unknown, mail_not_configured, link_required."""
+    """Nothing was created. `code`: account_exists (the email has an account,
+    or the person with that email has one), person_exists (a person with that
+    email but no account), password_too_short (`min_length`), role_unknown
+    (no such role, or one that isn't global), mail_not_configured,
+    link_required."""
 
     def __init__(self, code: str, **extra):
         super().__init__(code)
@@ -50,14 +54,26 @@ async def create_admin(db: AsyncSession, *, email: str, first_name: str, last_na
     invite = password is None
     if invite and not link_minutes:
         raise FirstAdminError("link_required")
-    if not invite and (min_length := length_problem(password)) is not None:
-        raise FirstAdminError("password_too_short", min_length=min_length)
-    if await db.get(Role, role) is None:
-        raise FirstAdminError("role_unknown")
+    # first, so a re-run on an environment that already has its admin is a no-op
+    if await db.scalar(select(UserAccount.person_id)
+                       .where(UserAccount.email == email)) is not None:
+        raise FirstAdminError("account_exists")
+    person_id = await db.scalar(select(Person.id).where(Person.email == email))
+    if person_id is not None:
+        if await db.get(UserAccount, person_id) is not None:
+            raise FirstAdminError("account_exists")
+        raise FirstAdminError("person_exists")
+    if not invite:
+        if not password:
+            raise FirstAdminError("password_too_short",
+                                  min_length=get_settings().password_min_length)
+        if (min_length := length_problem(password)) is not None:
+            raise FirstAdminError("password_too_short", min_length=min_length)
+    found = await db.get(Role, role)
+    if found is None or found.scope_anchor != "global":
+        raise FirstAdminError("role_unknown")    # a client/partner/self role needs an org
     if invite and not email_enabled():
         raise FirstAdminError("mail_not_configured")
-    if await db.scalar(select(UserAccount).where(UserAccount.email == email)) is not None:
-        raise FirstAdminError("account_exists")
 
     person = Person(first_name=first_name, last_name=last_name, email=email, source="manual")
     db.add(person)
