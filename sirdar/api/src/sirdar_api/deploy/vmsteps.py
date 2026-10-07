@@ -2,20 +2,67 @@
 snapshot, 15 Destroy VM, or DigitalOcean's steps 0, 14 and 18): the one its
 target names. The pipeline calls prepare() and one HostProvisioner; each
 host's module does the work (provision.py for Proxmox, esxi_provision.py for
-ESXi, do_provision.py for DigitalOcean)."""
+ESXi, do_provision.py for DigitalOcean). A LAN Blue/Green environment's step
+runs on each of its VMs in turn (LanContext)."""
+
+from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
 from sirdar_api.db.models import Deployment, Environment
-from sirdar_api.deploy import do_provision, esxi_provision, provision, targets
+from sirdar_api.deploy import do_provision, esxi_provision, lan_slots, provision, targets, vms
 from sirdar_api.deploy.vmcommon import Output, Provisioner, VmOutcome, VmPrepareError
 
-VmContext = provision.VmContext | esxi_provision.EsxiVmContext | do_provision.DoContext
+# The data VM after the app VMs on Destroy: nothing is left using it.
+DESTROY_ORDER = ("purple", "orange", vms.DATA)
+
+
+@dataclass(frozen=True)
+class LanContext:
+    """A LAN Blue/Green environment's VM step: one context per VM, in order
+    (step 0: the data VM, then the deployment's slot; Destroy: purple,
+    orange, data)."""
+    env_id: object
+    machines: tuple
+
+    @property
+    def secret_values(self) -> list[str]:
+        return [v for m in self.machines for v in m.secret_values]
+
+
+VmContext = (provision.VmContext | esxi_provision.EsxiVmContext | do_provision.DoContext
+             | LanContext)
+
+
+async def _lan_prepare(db: AsyncSession, env: Environment, dep: Deployment,
+                       settings: Settings) -> LanContext:
+    host_prepare = (esxi_provision.prepare if env.target_id == targets.ESXI_TARGET
+                    else provision.prepare)
+    if dep.mode == "vm_restore":
+        raise VmPrepareError("A Blue/Green environment has no VM snapshots to restore. "
+                             "Activate the other server to go back.")
+    if dep.mode == "teardown":
+        present = {m.role for m in await vms.machines(db, env)}
+        machines = [await host_prepare(db, env, dep, settings, role=role, services=(),
+                                       resolve=False)
+                    for role in DESTROY_ORDER if role in present]
+    else:
+        if dep.slot not in lan_slots.SLOTS:
+            raise VmPrepareError("This deployment names no server to build.")
+        # The data VM's address moves only spaces (its SeaweedFS); an app
+        # VM's moves nothing: Switch traffic points the app services.
+        machines = [await host_prepare(db, env, dep, settings, role=vms.DATA,
+                                       services=("spaces",), resolve=False),
+                    await host_prepare(db, env, dep, settings, role=dep.slot, services=(),
+                                       resolve=True)]
+    return LanContext(env_id=env.id, machines=tuple(machines))
 
 
 async def prepare(db: AsyncSession, env: Environment, dep: Deployment,
                   settings: Settings) -> VmContext:
+    if lan_slots.is_bluegreen(env):
+        return await _lan_prepare(db, env, dep, settings)
     if env.target_id == targets.DO_TARGET:
         return await do_provision.prepare(db, env, dep, settings)
     if env.target_id == targets.ESXI_TARGET:
@@ -37,6 +84,15 @@ class HostProvisioner:
         self._do = digitalocean
 
     async def run(self, step: str, ctx, out: Output) -> VmOutcome:
+        if isinstance(ctx, LanContext):
+            # Each VM in order; the outcome is the slot's commit (the data VM
+            # resolves nothing), never a VM snapshot (Blue/Green takes none).
+            sha = None
+            for machine in ctx.machines:
+                out(f"— {machine.vm.name} —\n")
+                got = await self.run(step, machine, out)
+                sha = got.sha or sha
+            return VmOutcome(sha=sha)
         if isinstance(ctx, do_provision.DoContext):
             if self._do is None:
                 raise VmPrepareError("DigitalOcean steps can't run here.")

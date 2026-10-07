@@ -75,6 +75,7 @@ class EsxiVmState:
     host_key_public: str
     keep_snapshots: int
     created: bool
+    role: str = vms.MAIN           # main, or a Blue/Green VM's data / orange / purple
     host_key_pending: bool = False
     host_key_private: str | None = field(default=None, repr=False)
 
@@ -87,7 +88,7 @@ class EsxiVmState:
                    memory_mb=row.memory_mb, disk_gb=row.disk_gb, ip_mode=row.ip_mode,
                    ip_cidr=row.ip_cidr, gateway=row.gateway, ip=row.ip,
                    ssh_public_key=row.ssh_public_key, host_key_public=row.host_key_public,
-                   keep_snapshots=row.keep_snapshots, created=row.created,
+                   keep_snapshots=row.keep_snapshots, created=row.created, role=row.role,
                    host_key_pending=row.host_key_private_enc is not None,
                    host_key_private=host_key_private)
 
@@ -114,6 +115,10 @@ class EsxiVmContext:
     vm_snapshot: str | None
     vm: EsxiVmState
     esxi: EsxiConfig = field(repr=False)
+    # What the VM's address moves (vmcommon.record_address; None: every
+    # service), and whether step 0 resolves the ref on this VM.
+    services: tuple[str, ...] | None = None
+    resolve: bool = True
 
     @property
     def secret_values(self) -> list[str]:
@@ -121,8 +126,9 @@ class EsxiVmContext:
         return [v for v in (self.esxi.password, self.vm.host_key_private) if v]
 
 
-async def prepare(db: AsyncSession, env: Environment, dep: Deployment,
-                  settings: Settings) -> EsxiVmContext:
+async def prepare(db: AsyncSession, env: Environment, dep: Deployment, settings: Settings,
+                  *, role: str = vms.MAIN, services: tuple[str, ...] | None = None,
+                  resolve: bool = True) -> EsxiVmContext:
     try:
         cfg = await integrations.load_esxi(db, settings)
     except IntegrationError as e:
@@ -130,7 +136,7 @@ async def prepare(db: AsyncSession, env: Environment, dep: Deployment,
     if cfg is None:
         raise VmPrepareError("VMware ESXi isn't set up. Add it in Settings › Integrations, "
                              "then retry.")
-    row = await vms.get_for(db, env)
+    row = await vms.get_for(db, env, role)
     if not isinstance(row, EsxiVm):
         raise VmPrepareError("This environment has no VM record, so Sirdar won't build or "
                              "remove a VM for it.")
@@ -146,7 +152,7 @@ async def prepare(db: AsyncSession, env: Environment, dep: Deployment,
                          actor_id=dep.actor_id, mode=dep.mode, git_ref=dep.git_ref, sha=dep.sha,
                          repo_url=settings.deploy_repo_url, take_snapshot=dep.take_vm_snapshot,
                          vm_snapshot=dep.vm_snapshot, vm=EsxiVmState.of(row, private),
-                         esxi=cfg)
+                         esxi=cfg, services=services, resolve=resolve)
 
 
 def _moved(host: str, cfg: EsxiConfig) -> str | None:
@@ -161,8 +167,9 @@ def _moved(host: str, cfg: EsxiConfig) -> str | None:
 
 
 def _annotation(ctx: EsxiVmContext) -> str:
-    return (f"sirdar:{ctx.env_id}\nBuilt by Sirdar for the environment {ctx.env_name}. Sirdar "
-            "destroys this VM when the environment is deleted; don't change it by hand.")
+    return (f"sirdar:{ctx.env_id}\nBuilt by Sirdar for the environment {ctx.env_name} "
+            f"({ctx.vm.name}). Sirdar destroys this VM when the environment is deleted; "
+            "don't change it by hand.")
 
 
 class EsxiProvisioner:
@@ -218,7 +225,7 @@ class EsxiProvisioner:
         return found
 
     async def _record(self, ctx: EsxiVmContext, info: VmInfo) -> None:
-        await vmcommon.set_vm(EsxiVm, ctx.env_id, moref=info.moref,
+        await vmcommon.set_vm(EsxiVm, ctx.env_id, role=ctx.vm.role, moref=info.moref,
                               instance_uuid=info.instance_uuid, vm_path=info.vm_path)
 
     async def _lost_vm(self, api: EsxiApi, ctx: EsxiVmContext, out: Output) -> VmInfo | None:
@@ -259,8 +266,8 @@ class EsxiProvisioner:
                                  "environment, or fix it by hand, then retry.")
             if info is None:
                 out(f"The half-built {vm.name} is gone from ESXi; building it again.\n")
-                await vmcommon.set_vm(EsxiVm, ctx.env_id, moref=None, instance_uuid=None,
-                                      vm_path=None)
+                await vmcommon.set_vm(EsxiVm, ctx.env_id, role=vm.role, moref=None,
+                                      instance_uuid=None, vm_path=None)
         if info is None:
             info = await self._lost_vm(api, ctx, out) or await self._create(api, ctx, out)
         uuid_ = info.instance_uuid
@@ -288,15 +295,17 @@ class EsxiProvisioner:
         await vmcommon.settle_address(
             self._settings, model=EsxiVm, env_id=ctx.env_id, previous_ip=vm.ip, ip=ip,
             pin=lambda: self._pin(ctx, ip, out), actor_id=ctx.actor_id,
-            target_id=f"esxi:{ctx.env_name}", out=out, host_label=HOST_LABEL)
+            target_id=f"esxi:{ctx.env_name}", out=out, host_label=HOST_LABEL,
+            role=vm.role, services=ctx.services)
         await self._scrub(api, ctx, uuid_, out)
         if not vm.created:
-            await vmcommon.set_vm(EsxiVm, ctx.env_id, created=True)
+            await vmcommon.set_vm(EsxiVm, ctx.env_id, role=vm.role, created=True)
             # A VM built just now had nothing before: still before step 1.
             snapshot = await self._snapshot(api, ctx, uuid_, out)
-        sha = None if ctx.sha else await vmcommon.resolve_ref(
+        sha = None if ctx.sha or not ctx.resolve else await vmcommon.resolve_ref(
             self._settings, self._resolve, env_id=ctx.env_id, git_ref=ctx.git_ref,
-            repo_url=ctx.repo_url, out=out)
+            repo_url=ctx.repo_url, out=out,
+            slot=vm.role if vm.role in vms.APP_SLOTS else None)
         return VmOutcome(sha=sha, vm_snapshot=snapshot)
 
     async def _create(self, api: EsxiApi, ctx: EsxiVmContext, out: Output) -> VmInfo:
@@ -305,7 +314,8 @@ class EsxiProvisioner:
             # Before the VM exists: the address isn't Sirdar's or the host's in
             # the registry, no VM on the host reports it, nothing answers SSH there.
             await vmcommon.check_address(self._settings, ctx.env_id, vm.static_ip,
-                                         host_label=HOST_LABEL, before_boot=True)
+                                         host_label=HOST_LABEL, before_boot=True,
+                                         role=vm.role)
             for other, ips in await api.guest_ips():
                 if vm.static_ip in ips:
                     raise StepFailed(f"{other} on ESXi already reports {vm.static_ip}, so "
@@ -324,7 +334,7 @@ class EsxiProvisioner:
             raise StepFailed(f"Sirdar no longer has the host key it made for {vm.name}, so it "
                              "can't build the VM. Delete this environment and create it again.")
         meta = cloudinit.metadata(env_id=ctx.env_id, hostname=vm.name, ip_cidr=vm.ip_cidr,
-                                  gateway=vm.gateway, dns_servers=vm.dns_servers)
+                                  gateway=vm.gateway, dns_servers=vm.dns_servers, role=vm.role)
         user = cloudinit.userdata(hostname=vm.name, ssh_public_key=vm.ssh_public_key,
                                   host_key_private=vm.host_key_private,
                                   host_key_public=vm.host_key_public)
@@ -488,7 +498,7 @@ class EsxiProvisioner:
         if not ctx.vm.host_key_pending:
             return
         await api.set_extra_config(uuid_, cloudinit.scrub())
-        await vmcommon.set_vm(EsxiVm, ctx.env_id, host_key_private_enc=None)
+        await vmcommon.set_vm(EsxiVm, ctx.env_id, role=ctx.vm.role, host_key_private_enc=None)
         out("Removed the cloud-init user-data (it held the VM's host key) from the VM's "
             "settings.\n")
 
@@ -566,7 +576,8 @@ class EsxiProvisioner:
         await vmcommon.settle_address(
             self._settings, model=EsxiVm, env_id=ctx.env_id, previous_ip=vm.ip, ip=ip,
             pin=lambda: self._pin(ctx, ip, out), actor_id=ctx.actor_id,
-            target_id=f"esxi:{ctx.env_name}", out=out, host_label=HOST_LABEL)
+            target_id=f"esxi:{ctx.env_name}", out=out, host_label=HOST_LABEL,
+            role=vm.role, services=ctx.services)
         out(f"{vm.name} is back at {name}; Docker starts its containers.\n")
 
     # ---- Destroy VM ---------------------------------------------------------------------
