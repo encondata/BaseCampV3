@@ -18,7 +18,7 @@ from pydantic import SecretStr
 from serversherpa.config import _REPO_ROOT, Settings
 
 HIDDEN_PREFIXES = ("SS_DATABASE_", "SS_SPACES_", "POSTGRES_", "MINIO_")
-_SECRET_HINT = re.compile(r"SECRET|PASSWORD|KEY|TOKEN|DSN|PEPPER|WORDS")
+_SECRET_HINT = re.compile(r"SECRET|PASSWORD|KEY|TOKEN|DSN|PEPPER|WORDS", re.IGNORECASE)
 _LINE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 # A standalone full-line comment — NOT a trailing " # ..." description on a
 # KEY=... line (those match _LINE instead, since they start with the key).
@@ -38,6 +38,12 @@ def default_env_path() -> Path:
     return _REPO_ROOT / ".env"
 
 
+def default_example_path() -> Path:
+    """The template next to the .env being edited. Its keys are the only
+    ones the Env tab may ADD to .env."""
+    return default_env_path().with_name(".env.example")
+
+
 def _secret_keys() -> set[str]:
     keys = set()
     for name, field in Settings.model_fields.items():
@@ -47,11 +53,11 @@ def _secret_keys() -> set[str]:
 
 
 def is_hidden(key: str) -> bool:
-    return key.startswith(HIDDEN_PREFIXES)
+    return key.upper().startswith(HIDDEN_PREFIXES)
 
 
 def is_secret(key: str) -> bool:
-    return key in _secret_keys() or bool(_SECRET_HINT.search(key))
+    return key.upper() in _secret_keys() or bool(_SECRET_HINT.search(key))
 
 
 def _parse(path: Path) -> tuple[list[str], dict[str, int], dict[str, str]]:
@@ -122,6 +128,44 @@ def read_entries(path: Path) -> list[dict]:
     return entries
 
 
+def _missing_entries(
+    env_path: Path, example_path: Path | None,
+) -> list[dict]:
+    """Allowed additions, with the raw example value (internal — the
+    public read_missing drops it for secrets). One per key that
+    `example_path` defines, `env_path` lacks, and is not hidden, in
+    example order. No example file -> []."""
+    if example_path is None or not example_path.is_file():
+        return []
+    _lines, env_index, _sections = _parse(env_path)
+    lines, index, sections = _parse(example_path)
+    out = []
+    for key, i in index.items():
+        if key in env_index or is_hidden(key):
+            continue
+        rest = _LINE.match(lines[i]).group(2)
+        value, description = _split_value_comment(rest)
+        out.append({"key": key, "secret": is_secret(key),
+                    "section": sections.get(key, ""),
+                    "description": description, "_value": value})
+    return out
+
+
+def read_missing(env_path: Path, example_path: Path) -> list[dict]:
+    """Settings `.env.example` defines but `.env` lacks (hidden keys
+    excluded), in example order. A secret's example value is never
+    returned."""
+    out = []
+    for item in _missing_entries(env_path, example_path):
+        entry = {"key": item["key"], "secret": item["secret"],
+                 "section": item["section"],
+                 "description": item["description"]}
+        if not item["secret"]:
+            entry["example"] = item["_value"]
+        out.append(entry)
+    return out
+
+
 class EnvUpdateError(Exception):
     def __init__(self, unknown: list[str]) -> None:
         super().__init__(f"invalid env keys: {unknown}")
@@ -131,11 +175,29 @@ class EnvUpdateError(Exception):
 def apply_updates(
     path: Path, values: dict[str, str],
     descriptions: dict[str, str] | None = None,
+    *, example_path: Path | None = None,
 ) -> list[str]:
+    """Apply updates; returns the changed keys (added keys included)."""
+    return apply_updates_detailed(
+        path, values, descriptions, example_path=example_path)[0]
+
+
+def apply_updates_detailed(
+    path: Path, values: dict[str, str],
+    descriptions: dict[str, str] | None = None,
+    *, example_path: Path | None = None,
+) -> tuple[list[str], list[str]]:
+    """Like apply_updates, but returns (changed, added). `added` is the
+    subset of `changed` appended to .env because `example_path` defines
+    them and .env lacked them; with no example_path nothing can be added.
+    Added keys go at the end under a `# {section}` heading, one per
+    section, in example order."""
     descriptions = descriptions or {}
     lines, index, _sections = _parse(path)
-    unknown = [k for k in list(values) + list(descriptions)
-               if k not in index or is_hidden(k)]
+    missing = {m["key"]: m for m in _missing_entries(path, example_path)}
+    unknown = [k for k in values if (k not in index and k not in missing)
+               or is_hidden(k)]
+    unknown += [k for k in descriptions if k not in index or is_hidden(k)]
     if unknown:
         raise EnvUpdateError(sorted(set(unknown)))
 
@@ -153,9 +215,13 @@ def apply_updates(
         raise EnvUpdateError(sorted(set(invalid)))
 
     changed: set[str] = set()
+    added: list[str] = []
     for key, new_value in values.items():
         if is_secret(key) and new_value == "":
             continue                       # keep the stored secret
+        if key in missing:
+            added.append(key)
+            continue
         i = index[key]
         rest = _LINE.match(lines[i]).group(2)
         current, _description = _split_value_comment(rest)
@@ -183,7 +249,25 @@ def apply_updates(
                         f"  # {new_description}")
         changed.add(key)
 
+    # Appended after the in-place edits, in example order, so existing
+    # lines never move. One "# section" heading per section per save.
+    groups: dict[str, list[dict]] = {}
+    for key, m in missing.items():
+        if key in added:
+            groups.setdefault(m["section"], []).append(m)
+    for section, items in groups.items():
+        if lines and lines[-1].strip() != "":
+            lines.append("")
+        if section:
+            lines.append(f"# {section}")
+        for m in items:
+            # same rendering as an in-place edit of a comment-less line
+            lines.append(
+                f"{m['key']}={_value_token(values[m['key']], False)}")
+    changed |= set(added)
+
     changed = sorted(changed)
+    added = sorted(added)
     if changed:
         shutil.copy2(path, path.with_suffix(".bak"))
         fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".env.tmp")
@@ -195,7 +279,7 @@ def apply_updates(
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
             raise
-    return changed
+    return changed, added
 
 
 def touch_sentinel() -> None:

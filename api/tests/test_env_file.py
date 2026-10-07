@@ -2,8 +2,10 @@
 
 import pytest
 
+from serversherpa.system import env_file
 from serversherpa.system.env_file import (
-    EnvUpdateError, apply_updates, is_hidden, is_secret, read_entries,
+    EnvUpdateError, apply_updates, apply_updates_detailed, is_hidden,
+    is_secret, read_entries, read_missing,
 )
 
 SAMPLE = """# ServerSherpa dev environment
@@ -318,3 +320,270 @@ def test_clearing_value_that_has_description_quotes_it(tmp_path):
     from dotenv import dotenv_values
     assert dotenv_values(str(path))["SS_COOKIE_DOMAIN"] == ""
     assert 'SS_COOKIE_DOMAIN=""  # Cookie domain' in path.read_text()
+
+
+# ── Missing settings: in .env.example but not in .env ────────────────
+
+EXAMPLE = """SS_NO_SECTION_KEY=1
+
+# Runtime
+SS_ENV=production  # production | staging | development
+SS_LOG_LEVEL=INFO
+SS_FEATURE_FLAG=on  # Turns the feature on
+
+# Mail
+SS_MAIL_HOST=smtp.example.com  # Relay host
+SS_SMTP_PORT=587
+SS_SMTP_PASSWORD=hunter2  # Relay password
+
+# db
+SS_DATABASE_URL=postgresql+asyncpg://u:p@h/db
+POSTGRES_PASSWORD=pg
+"""
+
+
+@pytest.fixture
+def example_path(tmp_path):
+    path = tmp_path / ".env.example"
+    path.write_text(EXAMPLE)
+    return path
+
+
+def test_default_example_path_sits_next_to_env(monkeypatch, tmp_path):
+    monkeypatch.setattr(env_file, "default_env_path",
+                        lambda: tmp_path / ".env")
+    assert env_file.default_example_path() == tmp_path / ".env.example"
+
+
+def test_read_missing_lists_example_only_keys_in_order(env_path,
+                                                       example_path):
+    missing = read_missing(env_path, example_path)
+    # SS_ENV / SS_LOG_LEVEL are in .env; DB keys are hidden
+    assert [m["key"] for m in missing] == [
+        "SS_NO_SECTION_KEY", "SS_FEATURE_FLAG", "SS_MAIL_HOST",
+        "SS_SMTP_PORT", "SS_SMTP_PASSWORD"]
+    by_key = {m["key"]: m for m in missing}
+    assert by_key["SS_FEATURE_FLAG"] == {
+        "key": "SS_FEATURE_FLAG", "secret": False, "section": "Runtime",
+        "description": "Turns the feature on", "example": "on"}
+    assert by_key["SS_SMTP_PORT"] == {
+        "key": "SS_SMTP_PORT", "secret": False, "section": "Mail",
+        "description": "", "example": "587"}
+    assert by_key["SS_NO_SECTION_KEY"]["section"] == ""
+
+
+def test_read_missing_never_echoes_secret_example(env_path, example_path):
+    by_key = {m["key"]: m for m in read_missing(env_path, example_path)}
+    secret = by_key["SS_SMTP_PASSWORD"]
+    assert secret["secret"] is True
+    assert "example" not in secret
+    assert secret["description"] == "Relay password"
+    assert "hunter2" not in str(read_missing(env_path, example_path))
+
+
+def test_read_missing_never_lists_hidden_keys(env_path, example_path):
+    keys = [m["key"] for m in read_missing(env_path, example_path)]
+    assert "SS_DATABASE_URL" not in keys
+    assert "POSTGRES_PASSWORD" not in keys
+    assert "SS_DATABASE_URL" in example_path.read_text()
+
+
+def test_read_missing_without_example_file_is_empty(env_path, tmp_path):
+    assert read_missing(env_path, tmp_path / "nope.example") == []
+
+
+def test_apply_adds_missing_keys_under_one_heading_per_section(
+        env_path, example_path):
+    before = env_path.read_text()
+    changed, added = apply_updates_detailed(
+        env_path,
+        {"SS_MAIL_HOST": "smtp.local", "SS_SMTP_PORT": "2525",
+         "SS_FEATURE_FLAG": "off", "SS_LOG_LEVEL": "DEBUG"},
+        example_path=example_path)
+    assert added == ["SS_FEATURE_FLAG", "SS_MAIL_HOST", "SS_SMTP_PORT"]
+    assert changed == ["SS_FEATURE_FLAG", "SS_LOG_LEVEL", "SS_MAIL_HOST",
+                       "SS_SMTP_PORT"]
+    text = env_path.read_text()
+    # existing lines keep their order; the additions are appended at the end
+    assert text.startswith(before.replace(
+        "SS_LOG_LEVEL=INFO", "SS_LOG_LEVEL=DEBUG"))
+    tail = text[len(before.replace("SS_LOG_LEVEL=INFO",
+                                   "SS_LOG_LEVEL=DEBUG")):]
+    assert tail == ("\n# Runtime\nSS_FEATURE_FLAG=off\n"
+                    "\n# Mail\nSS_MAIL_HOST=smtp.local\n"
+                    "SS_SMTP_PORT=2525\n")
+    assert text.count("# Mail") == 1
+    # read back: keys now present with the right section, none missing
+    entries = {e["key"]: e for e in read_entries(env_path)}
+    assert entries["SS_SMTP_PORT"]["section"] == "Mail"
+    assert entries["SS_SMTP_PORT"]["value"] == "2525"
+    keys = [m["key"] for m in read_missing(env_path, example_path)]
+    assert "SS_MAIL_HOST" not in keys and "SS_SMTP_PASSWORD" in keys
+    # backup holds the pre-change file
+    assert env_path.with_suffix(".bak").read_text() == before
+
+
+def test_apply_adds_secret_and_skips_empty_secret(env_path, example_path):
+    changed, added = apply_updates_detailed(
+        env_path, {"SS_SMTP_PASSWORD": "s3cret"}, example_path=example_path)
+    assert (changed, added) == (["SS_SMTP_PASSWORD"], ["SS_SMTP_PASSWORD"])
+    assert "SS_SMTP_PASSWORD=s3cret" in env_path.read_text()
+
+    other = env_path.parent / "other" / ".env"
+    other.parent.mkdir()
+    other.write_text(SAMPLE)
+    before = other.read_text()
+    changed, added = apply_updates_detailed(
+        other, {"SS_SMTP_PASSWORD": ""}, example_path=example_path)
+    assert (changed, added) == ([], [])
+    assert other.read_text() == before
+    assert not other.with_suffix(".bak").exists()
+
+
+def test_apply_adds_non_secret_with_empty_value(env_path, example_path):
+    changed, added = apply_updates_detailed(
+        env_path, {"SS_MAIL_HOST": ""}, example_path=example_path)
+    assert (changed, added) == (["SS_MAIL_HOST"], ["SS_MAIL_HOST"])
+    assert env_path.read_text().endswith("\n# Mail\nSS_MAIL_HOST=\n")
+
+
+def test_apply_no_section_key_has_no_heading(env_path, example_path):
+    apply_updates_detailed(env_path, {"SS_NO_SECTION_KEY": "9"},
+                           example_path=example_path)
+    assert env_path.read_text().endswith(
+        "SS_SENTRY_DSN=https://key@sentry.example/1\n"
+        "\nSS_NO_SECTION_KEY=9\n")
+
+
+def test_apply_rejects_unknown_hidden_and_without_example(env_path,
+                                                          example_path):
+    before = env_path.read_text()
+    with pytest.raises(EnvUpdateError) as exc:
+        apply_updates_detailed(
+            env_path, {"SS_MAIL_HOST": "ok", "SS_NOT_ANYWHERE": "x",
+                       "SS_DATABASE_URL": "y"}, example_path=example_path)
+    assert exc.value.unknown == ["SS_DATABASE_URL", "SS_NOT_ANYWHERE"]
+    assert env_path.read_text() == before
+    # without an example file nothing can be added at all
+    with pytest.raises(EnvUpdateError) as exc:
+        apply_updates_detailed(env_path, {"SS_MAIL_HOST": "ok"})
+    assert exc.value.unknown == ["SS_MAIL_HOST"]
+    with pytest.raises(EnvUpdateError):
+        apply_updates(env_path, {"SS_MAIL_HOST": "ok"})
+    assert env_path.read_text() == before
+
+
+def test_apply_hidden_key_in_example_cannot_be_added(tmp_path, example_path):
+    path = tmp_path / "bare" / ".env"
+    path.parent.mkdir()
+    path.write_text("SS_ENV=development\n")
+    with pytest.raises(EnvUpdateError) as exc:
+        apply_updates_detailed(path, {"POSTGRES_PASSWORD": "x"},
+                               example_path=example_path)
+    assert exc.value.unknown == ["POSTGRES_PASSWORD"]
+
+
+def test_apply_added_value_linebreak_rejected(env_path, example_path):
+    before = env_path.read_text()
+    with pytest.raises(EnvUpdateError) as exc:
+        apply_updates_detailed(
+            env_path, {"SS_MAIL_HOST": "a\nSS_DATABASE_URL=evil"},
+            example_path=example_path)
+    assert exc.value.unknown == ["SS_MAIL_HOST"]
+    assert env_path.read_text() == before
+
+
+def test_apply_description_for_missing_key_is_unknown(env_path,
+                                                      example_path):
+    with pytest.raises(EnvUpdateError) as exc:
+        apply_updates_detailed(env_path, {}, {"SS_MAIL_HOST": "d"},
+                               example_path=example_path)
+    assert exc.value.unknown == ["SS_MAIL_HOST"]
+
+
+def test_apply_updates_returns_added_keys_in_changed(env_path,
+                                                     example_path):
+    changed = apply_updates(env_path, {"SS_SMTP_PORT": "1"},
+                            example_path=example_path)
+    assert changed == ["SS_SMTP_PORT"]
+
+
+# ── Review follow-ups: case, value tokens, odd example lines ─────────
+
+
+def _example_for(tmp_path, text):
+    path = tmp_path / ".env.example"
+    path.write_text(text)
+    return path
+
+
+def test_classification_ignores_case():
+    assert is_hidden("ss_database_url")
+    assert is_hidden("Postgres_Password")
+    assert is_hidden("minio_root_user")
+    assert is_secret("ss_jwt_secret")
+    assert is_secret("ss_smtp_password")
+    assert is_secret("ss_sentry_dsn")
+    assert not is_secret("ss_log_level")
+
+
+def test_lowercase_hidden_example_key_not_listed_or_addable(env_path,
+                                                            tmp_path):
+    example = _example_for(
+        tmp_path, "ss_database_url=postgresql://evil\npostgres_password=x\n"
+                  "SS_OK_KEY=1\n")
+    assert [m["key"] for m in read_missing(env_path, example)] == [
+        "SS_OK_KEY"]
+    before = env_path.read_text()
+    with pytest.raises(EnvUpdateError) as exc:
+        apply_updates_detailed(env_path, {"ss_database_url": "x"},
+                               example_path=example)
+    assert exc.value.unknown == ["ss_database_url"]
+    assert env_path.read_text() == before
+
+
+def test_lowercase_secret_example_value_never_returned(env_path, tmp_path):
+    example = _example_for(tmp_path, "ss_mail_password=hunter2  # pw\n")
+    [item] = read_missing(env_path, example)
+    assert item["secret"] is True
+    assert "example" not in item
+    assert "hunter2" not in str(item)
+
+
+def test_added_value_is_written_like_an_edit(env_path, example_path):
+    value = "abc #notacomment"
+    apply_updates(env_path, {"SS_SMTP_HOST": value})      # in-place edit
+    edited = [ln for ln in env_path.read_text().splitlines()
+              if ln.startswith("SS_SMTP_HOST=")][0]
+    apply_updates_detailed(env_path, {"SS_SMTP_PORT": value},
+                           example_path=example_path)
+    added = [ln for ln in env_path.read_text().splitlines()
+             if ln.startswith("SS_SMTP_PORT=")][0]
+    assert added == edited.replace("SS_SMTP_HOST", "SS_SMTP_PORT")
+
+
+def test_duplicate_example_key_listed_once_last_value_wins(env_path,
+                                                           tmp_path):
+    example = _example_for(tmp_path, "SS_DUP=first\nSS_OTHER=1\nSS_DUP=last\n")
+    missing = read_missing(env_path, example)
+    assert [m["key"] for m in missing] == ["SS_DUP", "SS_OTHER"]
+    assert missing[0]["example"] == "last"
+
+
+def test_key_only_inside_a_comment_is_not_missing(env_path, tmp_path):
+    example = _example_for(
+        tmp_path, "# SS_COMMENTED=1\n#SS_COMMENTED2=2\nSS_REAL=1\n")
+    assert [m["key"] for m in read_missing(env_path, example)] == ["SS_REAL"]
+    with pytest.raises(EnvUpdateError) as exc:
+        apply_updates_detailed(env_path, {"SS_COMMENTED": "x"},
+                               example_path=example)
+    assert exc.value.unknown == ["SS_COMMENTED"]
+
+
+def test_key_with_leading_whitespace_is_not_missing(env_path, tmp_path):
+    example = _example_for(tmp_path, "  SS_INDENTED=1\n\tSS_TABBED=2\nSS_REAL=1\n")
+    assert [m["key"] for m in read_missing(env_path, example)] == ["SS_REAL"]
+    with pytest.raises(EnvUpdateError) as exc:
+        apply_updates_detailed(env_path, {"SS_INDENTED": "x"},
+                               example_path=example)
+    assert exc.value.unknown == ["SS_INDENTED"]

@@ -3893,7 +3893,20 @@ export interface EnvEntry {
   section: string;
 }
 
-export async function getEnvEntries(): Promise<{ entries: EnvEntry[] }> {
+/** A setting `.env.example` has that this server's `.env` doesn't (yet).
+ *  `example` is sent for non-secrets only — a secret's example is never
+ *  echoed. */
+export interface EnvMissingEntry {
+  key: string;
+  secret: boolean;
+  section: string;
+  description: string;
+  example?: string;
+}
+
+export async function getEnvEntries(): Promise<{
+  entries: EnvEntry[]; missing: EnvMissingEntry[];
+}> {
   const resp = await apiFetch('/system/env');
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();

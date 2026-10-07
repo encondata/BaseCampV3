@@ -9,10 +9,11 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { useAuth } from '../../auth/AuthContext';
 import {
-  getEnvEntries, putEnvConfig, restartProcesses, type EnvEntry,
+  getEnvEntries, putEnvConfig, restartProcesses, type EnvEntry, type EnvMissingEntry,
 } from '../../lib/api';
 import {
-  changedDescriptions, changedValues, describeEntry, filterEntries,
+  changedDescriptions, changedMissing, changedValues, describeEntry, describeMissing,
+  filterEntries, filterMissing,
 } from '../../lib/envConfig';
 import { GodEditToggle } from '../../lib/godEdit';
 import {
@@ -40,6 +41,7 @@ export default function EnvTab() {
   const { preferences } = useAuth();
   const listGridScale = listScale(preferences?.list_size);
   const [entries, setEntries] = useState<EnvEntry[] | null>(null);
+  const [missing, setMissing] = useState<EnvMissingEntry[]>([]);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [descEdits, setDescEdits] = useState<Record<string, string>>({});
   const [q, setQ] = useState('');
@@ -59,8 +61,9 @@ export default function EnvTab() {
   // mount: getEnvEntries
   const load = useCallback(async () => {
     try {
-      const { entries: loaded } = await getEnvEntries();
+      const { entries: loaded, missing: notYet } = await getEnvEntries();
       setEntries(loaded);
+      setMissing(notYet ?? []);
     } catch {
       setError('Could not load the environment configuration.');
     }
@@ -93,7 +96,10 @@ export default function EnvTab() {
   // descEdits); Save disabled when both are empty
   const pendingValues = entries ? changedValues(entries, edits) : {};
   const pendingDescriptions = entries ? changedDescriptions(entries, descEdits) : {};
-  const pendingCount = Object.keys(pendingValues).length + Object.keys(pendingDescriptions).length;
+  // Settings that aren't in .env yet ride in `values` with the rest.
+  const pendingMissing = changedMissing(missing, edits);
+  const pendingCount = Object.keys(pendingValues).length
+    + Object.keys(pendingDescriptions).length + Object.keys(pendingMissing).length;
 
   // on save: putEnvConfig({ values, descriptions }) -> refetch entries,
   // clear edits, show "Saved N value(s). Changes take effect after a
@@ -104,10 +110,12 @@ export default function EnvTab() {
     setError(null);
     try {
       const { changed } = await putEnvConfig({
-        values: pendingValues, descriptions: pendingDescriptions,
+        values: { ...pendingValues, ...pendingMissing },
+        descriptions: pendingDescriptions,
       });
-      const { entries: reloaded } = await getEnvEntries();
+      const { entries: reloaded, missing: notYet } = await getEnvEntries();
       setEntries(reloaded);
+      setMissing(notYet ?? []);
       setEdits({});
       setDescEdits({});
       setSavedKeys(changed);
@@ -116,7 +124,7 @@ export default function EnvTab() {
     } finally {
       setBusy(false);
     }
-  }, [pendingValues, pendingDescriptions, pendingCount]);
+  }, [pendingValues, pendingMissing, pendingDescriptions, pendingCount]);
 
   // Restart: confirm dialog -> restartProcesses() -> banner; the page
   // itself may briefly lose the API.
@@ -145,6 +153,7 @@ export default function EnvTab() {
   }
 
   const visibleEntries = filterEntries(entries, q);
+  const visibleMissing = filterMissing(missing, q);
   const shownCols = visibleColumnsFor(COLUMNS, visible, false);
   const grid = listGridStyle(shownCols, [], undefined, listGridScale);
   const rowStyle = {
@@ -218,6 +227,52 @@ export default function EnvTab() {
     }
   };
 
+  // "Not in .env yet" rows: same columns as the list above; the value
+  // input's placeholder is the example (or "secret"), and a non-secret's
+  // example can be dropped in with "Use example".
+  const missingCellFor = (entry: EnvMissingEntry, key: string) => {
+    switch (key) {
+      case 'key':
+        return <span className="mono envtab-key">{entry.key}</span>;
+      case 'value': {
+        if (!editing) return <span className="cell-top cell-nowrap envtab-muted">—</span>;
+        const { placeholder } = describeMissing(entry);
+        return (
+          <>
+            <input
+              type={entry.secret ? 'password' : 'text'}
+              value={edits[entry.key] ?? ''}
+              placeholder={placeholder}
+              disabled={busy}
+              aria-label={entry.key}
+              autoComplete={entry.secret ? 'new-password' : 'off'}
+              onChange={(e) => setEdit(entry.key, e.target.value)}
+            />
+            {!entry.secret && (
+              <button type="button" className="mini-btn envtab-example-btn" disabled={busy}
+                      onClick={() => { if (entry.example) setEdit(entry.key, entry.example); }}>
+                Use example
+              </button>
+            )}
+          </>
+        );
+      }
+      case 'status': {
+        const { chip } = describeMissing(entry);
+        return <span className="chip c-slate">{chip}</span>;
+      }
+      case 'description':
+        return (
+          <span className={`cell-top cell-nowrap${entry.description ? '' : ' envtab-muted'}`}
+                title={entry.description}>
+            {entry.description || '—'}
+          </span>
+        );
+      default:
+        return null;
+    }
+  };
+
   // Section-header rows: iterate the FILTERED list in file order and emit
   // a full-width header whenever the section changes to a new non-empty
   // value — so a header only appears when at least one entry under it
@@ -253,6 +308,41 @@ export default function EnvTab() {
     });
   }
 
+  if (visibleMissing.length > 0) {
+    rows.push({
+      node: (
+        <div key="missing-head" className="mini-list-head envtab-section-row"
+             style={rowStyle}>
+          <b className="envtab-section-label">Not in .env yet</b>
+        </div>
+      ),
+    });
+    rows.push({
+      node: (
+        <p key="missing-hint" className="sysconf-hint envtab-missing-hint">
+          These settings are in .env.example but not in this server&apos;s .env, so they use their built-in defaults. Add one to set it here.
+        </p>
+      ),
+    });
+    for (const entry of visibleMissing) {
+      const changed = editing && entry.key in pendingMissing;
+      rows.push({
+        node: (
+          <div key={`missing-${entry.key}`}
+               className={`list-row mini-row${changed ? ' changed' : ''}`}
+               style={rowStyle}>
+            {shownCols.map((c) => (
+              <span key={c.key}
+                    className={`cell${c.key === 'status' ? ' envtab-col-center' : ''}`}>
+                {missingCellFor(entry, c.key)}
+              </span>
+            ))}
+          </div>
+        ),
+      });
+    }
+  }
+
   return (
     <div className="sysconf-tab-body sysconf-wide">
       {error && <p className="pf-error">{error}</p>}
@@ -270,7 +360,7 @@ export default function EnvTab() {
             <input placeholder="Filter variables…" aria-label="Filter environment variables"
                    value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
-          <span className="result-count">{visibleEntries.length} of {entries.length} shown</span>
+          <span className="result-count">{visibleEntries.length + visibleMissing.length} of {entries.length + missing.length} shown</span>
           <ColumnsButton columns={COLUMNS} visible={visible} onChange={setVisible} />
           <GodEditToggle editing={editing} onToggle={toggleEditing} visible />
         </div>
@@ -281,7 +371,7 @@ export default function EnvTab() {
           {shownCols.map((c) => <ColHead key={c.key} col={c} />)}
         </div>
         {rows.map((r) => r.node)}
-        {visibleEntries.length === 0 && (
+        {visibleEntries.length === 0 && visibleMissing.length === 0 && (
           <p className="sysconf-hint" style={{ padding: 16 }}>
             No keys match &quot;{q}&quot;.
           </p>
