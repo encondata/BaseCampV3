@@ -255,3 +255,23 @@ def test_the_lan_override_needs_the_hba_file(tmp_path) -> None:
          "-f", str(STACK_DIR / "db/lan.yml"), "config", "--format", "json"],
         capture_output=True, text=True, env=env)
     assert out.returncode != 0 and "STACK_DB_HBA_FILE" in out.stderr
+
+
+def test_smtp_comes_from_the_env_file_with_mailpit_by_default(tmp_path) -> None:
+    env = rendered("api")["services"]["api"]["environment"]
+    assert (env["SS_SMTP_HOST"], env["SS_SMTP_PORT"], env["SS_SMTP_STARTTLS"]) == (
+        "mailpit", "1025", "false")
+    assert (env["SS_SMTP_USERNAME"], env["SS_SMTP_PASSWORD"]) == ("", "")
+    assert env["SS_SMTP_FROM"] == f"noreply@{DOMAIN}"
+    env_file = tmp_path / ".env"
+    env_file.write_text(ENV_EXAMPLE.read_text() + (
+        "SS_SMTP_HOST=smtp.example.com\nSS_SMTP_PORT=587\nSS_SMTP_USERNAME=mailer\n"
+        "SS_SMTP_PASSWORD=Mail-Secret-1\nSS_SMTP_STARTTLS=true\nSS_SMTP_FROM=ops@example.com\n"))
+    out = subprocess.run(
+        ["docker", "compose", "--env-file", str(env_file), "-f", str(STACK_DIR / "api/compose.yml"),
+         "config", "--format", "json"], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    smtp = json.loads(out.stdout)["services"]["api"]["environment"]
+    assert (smtp["SS_SMTP_HOST"], smtp["SS_SMTP_PORT"], smtp["SS_SMTP_USERNAME"],
+            smtp["SS_SMTP_PASSWORD"], smtp["SS_SMTP_STARTTLS"], smtp["SS_SMTP_FROM"]) == (
+        "smtp.example.com", "587", "mailer", "Mail-Secret-1", "true", "ops@example.com")

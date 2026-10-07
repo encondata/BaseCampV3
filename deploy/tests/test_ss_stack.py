@@ -533,3 +533,61 @@ def test_a_data_vm_lets_only_its_app_servers_in(tmp_path: Path) -> None:
     finally:
         subprocess.run(["bash", str(SS_STACK), "down", str(env_dir), "--volumes"],
                        capture_output=True, text=True, check=False)
+
+
+def _apps(env_dir: Path, line: str) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(line)
+
+
+def test_apps_that_are_off_dont_run(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, "STACK_APPS=kiosk\n")
+    out = run(fake, "up", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    c = calls(fake)
+    assert dc(env_dir, "storage", f"{WAIT} --scale mailpit=0") in c
+    assert dc(env_dir, "api", f"{WAIT} --scale wiki-worker=0 --scale wiki-export-worker=0") in c
+    assert dc(env_dir, "web", f"{WAIT} --scale wiki=0") in c
+    assert dc(env_dir, "status", "down") in c
+    assert dc(env_dir, "status", WAIT) not in c
+
+
+def test_none_runs_only_the_api_and_the_portal(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, "STACK_APPS=none\n")
+    assert run(fake, "up", str(env_dir)).returncode == 0
+    c = calls(fake)
+    assert dc(env_dir, "web", f"{WAIT} --scale kiosk=0 --scale wiki=0") in c
+    assert dc(env_dir, "status", "down") in c
+
+
+def test_every_app_runs_when_the_key_is_absent_or_lists_them_all(env_dir: Path,
+                                                                 fake: dict[str, str]) -> None:
+    _apps(env_dir, "STACK_APPS=wiki,kiosk,status,mailpit\n")
+    assert run(fake, "up", str(env_dir)).returncode == 0
+    c = calls(fake)
+    for stack in ("storage", "api", "web", "status"):
+        assert dc(env_dir, stack, WAIT) in c, stack
+
+
+def test_external_data_without_mailpit_removes_it(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, "STACK_EXTERNAL_DATA=1\nSTACK_APPS=wiki,kiosk,status\n")
+    assert run(fake, "up", str(env_dir)).returncode == 0
+    c = calls(fake)
+    assert dc(env_dir, "storage", "rm -sf mailpit") in c
+    assert dc(env_dir, "storage", f"{WAIT} mailpit") not in c
+
+
+def test_data_without_mailpit_starts_only_seaweedfs_storage(env_dir: Path,
+                                                            fake: dict[str, str]) -> None:
+    _apps(env_dir, "STACK_APPS=wiki,kiosk,status\n")
+    assert run(fake, "data", str(env_dir)).returncode == 0
+    assert calls(fake) == ["network inspect ss-uat", "network create ss-uat",
+                           dc(env_dir, "db", WAIT),
+                           dc(env_dir, "storage", f"{WAIT} --scale mailpit=0")]
+
+
+def test_a_data_vm_ignores_stack_apps(env_dir: Path, fake: dict[str, str]) -> None:
+    _apps(env_dir, LAN_DATA + "STACK_APPS=none\n")
+    assert run(fake, "data", str(env_dir)).returncode == 0
+    storage = [c for c in calls(fake) if "/storage/compose.yml" in c]
+    assert storage == [dc(env_dir, "storage", f"{WAIT} seaweedfs")]

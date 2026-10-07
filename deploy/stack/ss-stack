@@ -25,6 +25,8 @@
 # With STACK_DB_PUBLISH=1 (a LAN Blue/Green data VM) the db stack listens on
 # the LAN for STACK_DB_ALLOW's addresses only (pg_hba.conf, written here).
 # STACK_DB_SSLMODE=disable: the external database is a LAN data VM (no TLS).
+# STACK_APPS lists the optional apps that run (wiki, kiosk, status, mailpit;
+# "none" for none); without it every app runs. API and portal always run.
 # Sirdar's deploy pipeline runs exactly these commands over SSH.
 set -euo pipefail
 # dumps hold every secret in the database: backups/ and its files are owner-only
@@ -67,6 +69,14 @@ SUBNET=$(env_value STACK_NETWORK_SUBNET)
 external() { [[ $(env_value STACK_EXTERNAL_DATA) == 1 ]]; }
 caddy() { [[ $(env_value STACK_CADDY) == 1 ]]; }
 lan_db() { [[ $(env_value STACK_DB_PUBLISH) == 1 ]]; }
+
+# An optional app runs unless STACK_APPS is set and doesn't name it.
+app_on() {
+  local apps
+  apps=$(env_value STACK_APPS)
+  [[ -z $apps ]] && return 0
+  [[ ",$apps," == *",$1,"* ]]
+}
 HBA_FILE="$env_dir/pg_hba.conf"
 
 # pg_hba.conf for a data VM: the local socket (ss-stack dump, the health
@@ -249,14 +259,20 @@ psql_run() {  # psql_run <sql> — on whichever database this environment uses
 
 data_up() {
   if external; then
-    dc storage up -d "${WAIT[@]}" mailpit
+    if app_on mailpit; then
+      dc storage up -d "${WAIT[@]}" mailpit
+    else
+      dc storage rm -sf mailpit
+    fi
   else
     dc db up -d "${WAIT[@]}"
     # a data VM keeps objects only: its app VMs run their own mail catchers
     if lan_db; then
       dc storage up -d "${WAIT[@]}" seaweedfs
-    else
+    elif app_on mailpit; then
       dc storage up -d "${WAIT[@]}"
+    else
+      dc storage up -d "${WAIT[@]}" --scale mailpit=0
     fi
   fi
 }
@@ -292,9 +308,15 @@ case $cmd in
     ensure_network
     data_up
     dc api run --rm migrate
-    dc api up -d "${WAIT[@]}"
-    dc web up -d "${WAIT[@]}"
-    dc status up -d "${WAIT[@]}"
+    # the apps STACK_APPS leaves out scale to zero (the status page stops)
+    api_off=()
+    app_on wiki || api_off=(--scale wiki-worker=0 --scale wiki-export-worker=0)
+    dc api up -d "${WAIT[@]}" ${api_off[@]+"${api_off[@]}"}
+    web_off=()
+    app_on kiosk || web_off+=(--scale kiosk=0)
+    app_on wiki || web_off+=(--scale wiki=0)
+    dc web up -d "${WAIT[@]}" ${web_off[@]+"${web_off[@]}"}
+    if app_on status; then dc status up -d "${WAIT[@]}"; else dc status down; fi
     if caddy; then dc proxy up -d "${WAIT[@]}"; fi
     ;;
   down)
