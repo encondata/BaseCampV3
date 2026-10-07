@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // The targets, connection test and trusted-host tests live in deploy/TargetPanel.test.tsx;
 // the flow's own tests in deploy/DeployFlow.test.tsx.
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -39,24 +39,45 @@ beforeEach(() => {
 Element.prototype.scrollIntoView = () => {};   // jsdom lacks it (ComboBox calls it)
 afterEach(cleanup);
 
-const renderPage = () => render(<MemoryRouter><Deploy /></MemoryRouter>);
+const renderPage = (url = '/deploy') => render(<MemoryRouter initialEntries={[url]}><Deploy /></MemoryRouter>);
+const panel = (name: string) => document.querySelector<HTMLElement>(`[role="tabpanel"][aria-label="${name}"]`)!;
 
-it('puts the flow first, then the Environments and Snapshots lists', async () => {
+it('opens on the New environment tab; the lists sit in their own tabs', async () => {
   renderPage();
   await screen.findByRole('heading', { name: 'Environment' });
-  expect(screen.getByText('Create an environment and deploy it, step by step. Your environments and snapshots are below.'))
-    .toBeTruthy();
-  const order = ['Environment', 'Environments', 'Snapshots'].map((n) => screen.getByRole('heading', { name: n }));
-  expect(order[0].compareDocumentPosition(order[1]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(order[1].compareDocumentPosition(order[2]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['New environment', 'Environments', 'Snapshots']);
+  expect(screen.getByRole('tab', { name: 'New environment' }).getAttribute('aria-selected')).toBe('true');
+  expect(panel('New environment').hidden).toBe(false);
+  expect(panel('Environments').hidden).toBe(true);
+  expect(panel('Snapshots').hidden).toBe(true);
 });
 
-it('without deploy:add there is no flow, only the lists and a note', async () => {
+it('switching tabs keeps the flow mounted, so its choices survive', async () => {
+  renderPage();
+  const heading = await screen.findByRole('heading', { name: 'Environment' });
+  fireEvent.click(screen.getByRole('tab', { name: 'Snapshots' }));
+  expect(panel('Snapshots').hidden).toBe(false);
+  expect(panel('New environment').hidden).toBe(true);
+  fireEvent.click(screen.getByRole('tab', { name: 'New environment' }));
+  expect(screen.getByRole('heading', { name: 'Environment' })).toBe(heading);
+  expect(panel('New environment').hidden).toBe(false);
+});
+
+it('?tab=environments opens the Environments tab', async () => {
+  renderPage('/deploy?tab=environments');
+  await screen.findByRole('heading', { name: 'Environments' });
+  expect(screen.getByRole('tab', { name: 'Environments' }).getAttribute('aria-selected')).toBe('true');
+  expect(panel('Environments').hidden).toBe(false);
+  expect(panel('New environment').hidden).toBe(true);
+});
+
+it('without deploy:add there is no flow tab, only the lists and a note', async () => {
   perms.add = false;
   renderPage();
   expect(await screen.findByText(/You can view deployments but not create them/)).toBeTruthy();
+  expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Environments', 'Snapshots']);
   expect(screen.queryByRole('heading', { name: 'Environment' })).toBeNull();
-  expect(screen.getByRole('heading', { name: 'Environments' })).toBeTruthy();
+  expect(panel('Environments').hidden).toBe(false);
 });
 
 it("a targets load failure is shown on the page", async () => {
