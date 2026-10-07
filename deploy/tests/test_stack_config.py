@@ -3,6 +3,7 @@ interpolation and anchors are resolved exactly as on a target)."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from functools import cache
 from typing import Any
@@ -225,3 +226,32 @@ def test_readme_rollback_restores_into_a_clean_schema() -> None:
     assert "ON_ERROR_STOP=1" in drop
     assert "pg_restore --exit-on-error -U serversherpa -d serversherpa" in restore
     assert "--clean" not in restore
+
+
+def test_the_lan_override_publishes_postgres_with_the_hba_file(tmp_path) -> None:
+    hba = tmp_path / "pg_hba.conf"
+    hba.write_text("local all all trust\n")
+    env = ENV_EXAMPLE.read_text() + "STACK_DB_PUBLISH=1\nSTACK_DB_PORT=5432\n"
+    env_file = tmp_path / ".env"
+    env_file.write_text(env)
+    out = subprocess.run(
+        ["docker", "compose", "--env-file", str(env_file), "-f", str(STACK_DIR / "db/compose.yml"),
+         "-f", str(STACK_DIR / "db/lan.yml"), "config", "--format", "json"],
+        capture_output=True, text=True, env={**os.environ, "STACK_DB_HBA_FILE": str(hba)})
+    assert out.returncode == 0, out.stderr
+    pg = json.loads(out.stdout)["services"]["postgres"]
+    assert published(pg) == [5432]
+    assert pg["command"] == ["postgres", "-c", "listen_addresses=*", "-c",
+                             "hba_file=/etc/ss/pg_hba.conf"]
+    assert any(v["target"] == "/etc/ss/pg_hba.conf" and v.get("read_only") for v in pg["volumes"])
+
+
+def test_the_lan_override_needs_the_hba_file(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(ENV_EXAMPLE.read_text() + "STACK_DB_PUBLISH=1\n")
+    env = {k: v for k, v in os.environ.items() if k != "STACK_DB_HBA_FILE"}
+    out = subprocess.run(
+        ["docker", "compose", "--env-file", str(env_file), "-f", str(STACK_DIR / "db/compose.yml"),
+         "-f", str(STACK_DIR / "db/lan.yml"), "config", "--format", "json"],
+        capture_output=True, text=True, env=env)
+    assert out.returncode != 0 and "STACK_DB_HBA_FILE" in out.stderr

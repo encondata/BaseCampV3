@@ -318,3 +318,149 @@ def test_admin_needs_arguments(env_dir: Path, fake: dict[str, str]) -> None:
     out = run(fake, "admin", str(env_dir))
     assert out.returncode == 2
     assert calls(fake) == []
+
+
+# ---- LAN Blue/Green (Sirdar phase 8b): the data VM and its app VMs ----
+
+LAN_DATA = ("STACK_DB_PUBLISH=1\nSTACK_DB_PORT=5432\n"
+            "STACK_DB_ALLOW=10.10.48.48,10.10.48.49\n")
+
+
+def test_a_data_vm_publishes_postgres_with_its_hba(env_dir: Path, fake: dict[str, str]) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    out = run(fake, "data", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    lan = f"-f {STACK_DIR}/db/lan.yml"
+    db_calls = [c for c in calls(fake) if "/db/compose.yml" in c]
+    assert db_calls and all(lan in c for c in db_calls)
+    hba = (env_dir / "pg_hba.conf").read_text()
+    assert "host serversherpa serversherpa 10.10.48.48/32 scram-sha-256" in hba
+    assert "host serversherpa serversherpa 10.10.48.49/32 scram-sha-256" in hba
+    assert "local all all trust" in hba and "0.0.0.0/0" not in hba
+    assert oct((env_dir / "pg_hba.conf").stat().st_mode & 0o777) == "0o644"
+
+
+@pytest.mark.parametrize("allow", ["", "10.10.48.48,not-an-ip", "10.10.48.48;rm -rf /",
+                                   "10.10.48.256", "10.10.48.48,"])
+def test_a_bad_allow_list_is_refused(env_dir: Path, fake: dict[str, str], allow: str) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(f"STACK_DB_PUBLISH=1\nSTACK_DB_ALLOW={allow}\n")
+    out = run(fake, "data", str(env_dir))
+    assert out.returncode != 0
+    assert "STACK_DB_ALLOW" in out.stderr
+    assert not any("/db/compose.yml" in c for c in calls(fake))
+
+
+@pytest.mark.parametrize("command", ["up", "restore"])
+def test_up_and_restore_on_a_data_vm_write_the_hba_too(env_dir: Path, fake: dict[str, str],
+                                                       command: str, tmp_path: Path) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    dump = tmp_path / "x.dump"
+    dump.write_bytes(b"PGDMP")
+    out = run(fake, command, str(env_dir), *([str(dump)] if command == "restore" else []))
+    assert out.returncode == 0, out.stderr
+    assert "10.10.48.49/32" in (env_dir / "pg_hba.conf").read_text()
+    db_calls = [c for c in calls(fake) if "/db/compose.yml" in c]
+    assert db_calls and all(f"-f {STACK_DIR}/db/lan.yml" in c for c in db_calls)
+
+
+@pytest.mark.parametrize("command", ["down", "ps", "dump", "pgdump", "revision"])
+def test_every_db_call_on_a_data_vm_takes_the_override(env_dir: Path, fake: dict[str, str],
+                                                       command: str, tmp_path: Path) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    extra = [str(tmp_path / "out.dump")] if command == "pgdump" else []
+    out = run(fake, command, str(env_dir), *extra)
+    assert out.returncode == 0, out.stderr
+    db_calls = [c for c in calls(fake) if "/db/compose.yml" in c]
+    assert db_calls and all(f"-f {STACK_DIR}/db/lan.yml" in c for c in db_calls)
+    # only up, data and restore (re)write the file
+    assert not (env_dir / "pg_hba.conf").exists()
+
+
+def test_an_app_vm_on_a_lan_data_vm_talks_without_tls(env_dir: Path,
+                                                      fake: dict[str, str]) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write("STACK_EXTERNAL_DATA=1\nSTACK_DB_HOST=10.10.48.47\nSTACK_DB_PORT=5432\n"
+                "STACK_DB_NAME=serversherpa\nSTACK_DB_USER=serversherpa\n"
+                "STACK_DB_SSLMODE=disable\n")
+    out = run(fake, "dump", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    dump = next(c for c in calls(fake) if "pg_dump" in c)
+    assert "-e PGSSLMODE=disable" in dump and "PGSSLMODE=require" not in dump
+    assert "-e PGHOST=10.10.48.47" in dump
+
+
+def test_the_managed_database_still_requires_tls(env_dir: Path, fake: dict[str, str]) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write("STACK_EXTERNAL_DATA=1\nSTACK_DB_HOST=db.internal\nSTACK_DB_PORT=25060\n"
+                "STACK_DB_NAME=serversherpa\nSTACK_DB_USER=serversherpa\n")
+    run(fake, "dump", str(env_dir))
+    assert "-e PGSSLMODE=require" in next(c for c in calls(fake) if "pg_dump" in c)
+
+
+def test_an_unknown_sslmode_is_refused(env_dir: Path, fake: dict[str, str]) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write("STACK_EXTERNAL_DATA=1\nSTACK_DB_HOST=db.internal\nSTACK_DB_PORT=25060\n"
+                "STACK_DB_NAME=serversherpa\nSTACK_DB_USER=serversherpa\n"
+                "STACK_DB_SSLMODE=allow\n")
+    out = run(fake, "dump", str(env_dir))
+    assert out.returncode != 0 and "STACK_DB_SSLMODE" in out.stderr
+    assert not any("pg_dump" in c for c in calls(fake))
+
+
+def _free_port() -> int:
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.mark.e2e
+@pytest.mark.skipif(os.environ.get("SS_STACK_E2E") != "1", reason="set SS_STACK_E2E=1")
+def test_a_data_vm_lets_only_its_app_servers_in(tmp_path: Path) -> None:
+    """Real Docker: ss-stack data with db/lan.yml. Postgres initializes with
+    the override's command, and its pg_hba.conf lets in the allowed address
+    only, and only to the serversherpa database."""
+    name = f"lanhba{os.getpid() % 10000}"
+    env_dir = tmp_path / name
+    env_dir.mkdir()
+    password = "hba-e2e-0123abcd"
+    text = (ENV_EXAMPLE.read_text().replace("=CHANGEME", f"={password}")
+            .replace("STACK_ENV=uat", f"STACK_ENV={name}")
+            .replace("STACK_BIND_IP=0.0.0.0", "STACK_BIND_IP=127.0.0.1")
+            .replace("STACK_SPACES_PORT=9000", f"STACK_SPACES_PORT={_free_port()}")
+            .replace("STACK_MAILPIT_PORT=8025", f"STACK_MAILPIT_PORT={_free_port()}"))
+    text += (f"STACK_NETWORK_SUBNET=172.31.77.0/24\nSTACK_DB_PUBLISH=1\n"
+             f"STACK_DB_PORT={_free_port()}\nSTACK_DB_ALLOW=172.31.77.10\n")
+    (env_dir / ".env").write_text(text)
+
+    def client(ip: str, db: str = "serversherpa") -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["docker", "run", "--rm", "--network", f"ss-{name}", "--ip", ip,
+             "-e", "PGPASSWORD", "postgres:16-alpine", "psql", "-h", "postgres",
+             "-U", "serversherpa", "-d", db, "-tAc", "SELECT 1"],
+            capture_output=True, text=True, env={**os.environ, "PGPASSWORD": password},
+            check=False)
+
+    try:
+        up = subprocess.run(["bash", str(SS_STACK), "data", str(env_dir)],
+                            capture_output=True, text=True, check=False)
+        assert up.returncode == 0, up.stdout + up.stderr
+        allowed = client("172.31.77.10")
+        assert allowed.returncode == 0 and allowed.stdout.strip() == "1", allowed.stderr
+        other = client("172.31.77.11")
+        assert other.returncode != 0 and "no pg_hba.conf entry" in other.stderr
+        wrong_db = client("172.31.77.10", "postgres")
+        assert wrong_db.returncode != 0 and "no pg_hba.conf entry" in wrong_db.stderr
+        # the local socket still answers (ss-stack dump, the health check)
+        rev = subprocess.run(["bash", str(SS_STACK), "pgdump", str(env_dir),
+                              str(tmp_path / "out.dump")], capture_output=True, text=True,
+                             check=False)
+        assert rev.returncode == 0, rev.stderr
+        assert (tmp_path / "out.dump").read_bytes().startswith(b"PGDMP")
+    finally:
+        subprocess.run(["bash", str(SS_STACK), "down", str(env_dir), "--volumes"],
+                       capture_output=True, text=True, check=False)

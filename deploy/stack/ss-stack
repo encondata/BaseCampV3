@@ -22,6 +22,9 @@
 # PostgreSQL and objects live in DigitalOcean Spaces: the db and storage
 # stacks don't run (mailpit does), and the database commands use one-off
 # postgres containers. With STACK_CADDY=1 the proxy stack (Caddy) runs last.
+# With STACK_DB_PUBLISH=1 (a LAN Blue/Green data VM) the db stack listens on
+# the LAN for STACK_DB_ALLOW's addresses only (pg_hba.conf, written here).
+# STACK_DB_SSLMODE=disable: the external database is a LAN data VM (no TLS).
 # Sirdar's deploy pipeline runs exactly these commands over SSH.
 set -euo pipefail
 # dumps hold every secret in the database: backups/ and its files are owner-only
@@ -63,6 +66,39 @@ NETWORK="ss-$STACK_ENV"
 SUBNET=$(env_value STACK_NETWORK_SUBNET)
 external() { [[ $(env_value STACK_EXTERNAL_DATA) == 1 ]]; }
 caddy() { [[ $(env_value STACK_CADDY) == 1 ]]; }
+lan_db() { [[ $(env_value STACK_DB_PUBLISH) == 1 ]]; }
+HBA_FILE="$env_dir/pg_hba.conf"
+
+# pg_hba.conf for a data VM: the local socket (ss-stack dump, the health
+# check), localhost, and the app servers in STACK_DB_ALLOW; nobody else.
+# Every address is checked before the file is replaced.
+write_hba() {
+  local allow ip ips octet octets
+  allow=$(env_value STACK_DB_ALLOW)
+  [[ $allow =~ ^[^,]+(,[^,]+)*$ ]] \
+    || die "STACK_DB_ALLOW must list the app servers' IPv4 addresses, comma-separated"
+  IFS=, read -ra ips <<<"$allow"
+  for ip in "${ips[@]}"; do
+    [[ $ip =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] \
+      || die "STACK_DB_ALLOW has '$ip', not an IPv4 address"
+    IFS=. read -ra octets <<<"$ip"
+    for octet in "${octets[@]}"; do
+      (( 10#$octet <= 255 )) || die "STACK_DB_ALLOW has '$ip', not an IPv4 address"
+    done
+  done
+  CLEANUP+=("$HBA_FILE.tmp")
+  {
+    echo "# Written by ss-stack from STACK_DB_ALLOW: edits are replaced."
+    echo "local all all trust"
+    echo "host all all 127.0.0.1/32 scram-sha-256"
+    for ip in "${ips[@]}"; do
+      echo "host serversherpa serversherpa $ip/32 scram-sha-256"
+    done
+  } > "$HBA_FILE.tmp"
+  chmod 644 "$HBA_FILE.tmp"          # the container's postgres user reads it
+  mv "$HBA_FILE.tmp" "$HBA_FILE"
+  export STACK_DB_HBA_FILE="$HBA_FILE"
+}
 
 # On a droplet the network is a fixed /24 whose lower half is for fixed
 # addresses (Caddy's STACK_PROXY_IP is .2) and whose upper half (.128/25) is
@@ -88,9 +124,12 @@ if caddy; then STACKS+=(proxy); fi
 
 dc() {  # dc <stack> <compose args…>
   local stack=$1; shift
+  local files=(-f "$STACK_DIR/$stack/compose.yml")
+  # A data VM's database listens on the LAN (db/lan.yml).
+  if [[ $stack == db ]] && lan_db; then files+=(-f "$STACK_DIR/db/lan.yml"); fi
   # On a droplet the api stack also runs the cert-worker (profile certs).
   if [[ $stack == api ]] && caddy; then set -- --profile certs "$@"; fi
-  docker compose --env-file "$env_file" -f "$STACK_DIR/$stack/compose.yml" "$@"
+  docker compose --env-file "$env_file" "${files[@]}" "$@"
 }
 
 ensure_network() {
@@ -151,11 +190,16 @@ pem_ok() {
 # network. The password reaches docker through the environment, never argv.
 # With the cluster's CA, the client verifies the server's certificate and
 # name (verify-full); without it, TLS is required but unverified.
+# STACK_DB_SSLMODE=disable (a LAN data VM) turns TLS off, CA or not.
 pg() {  # pg <client> [args…] — stdin and stdout pass through
   local client=$1; shift
-  local tls=(-e PGSSLMODE=require)
-  ca_file
-  if [[ -n $CA_FILE ]]; then
+  local mode tls
+  mode=$(env_value STACK_DB_SSLMODE)
+  mode=${mode:-require}
+  [[ $mode == require || $mode == disable ]] || die "STACK_DB_SSLMODE must be require or disable"
+  tls=(-e "PGSSLMODE=$mode")
+  if [[ $mode == require ]]; then ca_file; fi
+  if [[ $mode == require && -n $CA_FILE ]]; then
     tls=(-v "$CA_FILE:$CA_MOUNT:ro" -e PGSSLMODE=verify-full -e PGSSLROOTCERT="$CA_MOUNT")
   fi
   ensure_network
@@ -216,6 +260,7 @@ case $cmd in
   up)
     [[ $# -eq 0 ]] || usage
     refuse_placeholders
+    if lan_db; then write_hba; fi
     ensure_network
     data_up
     dc api run --rm migrate
@@ -228,6 +273,8 @@ case $cmd in
     volumes=""
     if [[ ${1:-} == --volumes ]]; then volumes="--volumes"; shift; fi
     [[ $# -eq 0 ]] || usage
+    # Compose interpolates db/lan.yml's ${STACK_DB_HBA_FILE:?} even to stop it
+    if lan_db; then export STACK_DB_HBA_FILE="$HBA_FILE"; fi
     for (( i=${#STACKS[@]}-1; i>=0; i-- )); do
       # $volumes is deliberately unquoted: empty means no argument at all
       # shellcheck disable=SC2086
@@ -238,6 +285,7 @@ case $cmd in
   data)
     [[ $# -eq 0 ]] || usage
     refuse_placeholders
+    if lan_db; then write_hba; fi
     ensure_network
     data_up
     ;;
@@ -251,6 +299,7 @@ case $cmd in
     fi
     [[ -f $dump && -r $dump ]] || die "no such dump file: $dump"
     refuse_placeholders
+    if lan_db; then write_hba; fi
     # a bad CA must stop us while the stack still runs, not after the stop
     if external; then ca_file; fi
     ensure_network
@@ -280,6 +329,8 @@ case $cmd in
     ;;
   ps)
     [[ $# -eq 0 ]] || usage
+    # Compose interpolates db/lan.yml's ${STACK_DB_HBA_FILE:?}
+    if lan_db; then export STACK_DB_HBA_FILE="$HBA_FILE"; fi
     for s in "${STACKS[@]}"; do dc "$s" ps; done
     ;;
   dump)
@@ -287,6 +338,8 @@ case $cmd in
     keep=$(env_value STACK_KEEP_DUMPS)
     keep=${keep:-5}
     [[ $keep =~ ^[1-9][0-9]*$ ]] || die "STACK_KEEP_DUMPS must be a whole number above 0"
+    # Compose interpolates db/lan.yml's ${STACK_DB_HBA_FILE:?}
+    if lan_db; then export STACK_DB_HBA_FILE="$HBA_FILE"; fi
     mkdir -p "$env_dir/backups"
     out="$env_dir/backups/$(date -u +%Y%m%dT%H%M%SZ).dump"
     # pg_dump writes to a .partial that becomes the .dump only once it
@@ -312,6 +365,8 @@ case $cmd in
     ;;
   pgdump)
     [[ $# -eq 1 ]] || usage
+    # Compose interpolates db/lan.yml's ${STACK_DB_HBA_FILE:?}
+    if lan_db; then export STACK_DB_HBA_FILE="$HBA_FILE"; fi
     out=$1
     partial="$out.partial"
     # as in dump: a signal becomes an exit, so the EXIT trap (cleanup) removes the partial
@@ -324,6 +379,8 @@ case $cmd in
     ;;
   revision)
     [[ $# -eq 0 ]] || usage
+    # Compose interpolates db/lan.yml's ${STACK_DB_HBA_FILE:?}
+    if lan_db; then export STACK_DB_HBA_FILE="$HBA_FILE"; fi
     if external; then
       pg psql -tAc 'SELECT version_num FROM alembic_version' </dev/null
     else

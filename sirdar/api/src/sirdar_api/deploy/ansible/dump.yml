@@ -6,7 +6,8 @@
 # "up" would migrate with no backup. So does a deployment that restores a
 # snapshot onto a database volume whose container is stopped.
 # On DigitalOcean (external_data) the managed database is dumped through
-# ss-stack's one-off client.
+# ss-stack's one-off client; so is a LAN Blue/Green data VM, from the slot's
+# app VM, unless this deploy just built it (data_new: no dump, dump_path '').
 # Reports the dump's path to Sirdar through set_stats.
 - name: Pre-deploy dump
   hosts: target
@@ -18,7 +19,10 @@
       ansible.builtin.command:
         argv: ["{{ ss_stack }}", dump, "{{ env_dir }}"]
       register: managed_dump
-      when: external_data | default(false) | bool
+      when:
+        - external_data | default(false) | bool
+        # a LAN Blue/Green data VM built by this very deploy has nothing to dump
+        - not (data_new | default(false) | bool)
 
     - name: The local database
       when: not (external_data | default(false) | bool)

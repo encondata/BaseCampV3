@@ -69,8 +69,9 @@ def test_publish_and_teardown_plans():
 
 
 def test_plans():
-    assert [s.number for s in steps.STEPS] == [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 10, 11,
-                                               11, 12, 13, 13, 14, 14, 15, 15, 16, 17, 18, 19]
+    assert [s.number for s in steps.STEPS] == [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 7, 8, 9, 9, 10,
+                                               11, 11, 12, 13, 13, 14, 14, 15, 15, 16, 17, 18,
+                                               19]
     assert [s.number for s in steps.plan_for("update")] == [1, 2, 3, 4, 5, 6, 10]
     build = ["preflight", "bootstrap", "fetch", "render", "build"]
     # a seeded first deploy backs up whatever database is already there
@@ -119,8 +120,8 @@ def test_playbook_shape(step):
         assert task.get("name"), f"{step.playbook}: every task needs a name"
         assert not SHELL_MODULES & set(task), f"{step.playbook}: {task['name']} uses a shell"
         text = yaml.safe_dump(task)
-        if (("env_file_b64" in text or "keys_enc_b64" in text or "admin_password" in text)
-                and "block" not in task):
+        if (("env_file_b64" in text or "keys_enc_b64" in text or "admin_password" in text
+                or "data_env_b64" in text) and "block" not in task):
             assert task.get("no_log") is True, f"{step.playbook}: {task['name']} needs no_log"
 
 
@@ -988,3 +989,146 @@ def test_first_admin_play_pipelines_so_the_password_never_lands_on_disk():
     connection's stdin instead of a temp file on the target."""
     plays = yaml.safe_load((PLAYBOOK_DIR / "first_admin.yml").read_text())
     assert [play.get("vars", {}).get("ansible_pipelining") for play in plays] == [True]
+
+
+# ---- LAN Blue/Green (phase 8b): the data VM, its dump and the slot smoke test ----
+
+DATA_VM_TEST_ENV = "SIRDAR_TEST_DATA_VM"
+
+
+def test_slot_smoke_uses_each_names_port(tmp_path):
+    _Answer.status, _Answer.seen = 200, []
+    server = HTTPServer(("127.0.0.1", 0), _Answer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        env_dir, env = _target(tmp_path)
+        hosts = [{"service": "api", "hostname": "api.lan9.serversherpa.com", "path": "/healthz",
+                  "port": server.server_port}]
+        result, _ = _play(tmp_path, "slot_smoke.yml", {
+            **_common(env_dir), "public_hosts": hosts, "slot_port": 1,
+            "slot_smoke_retries": 0, "slot_smoke_delay": 0}, env)
+    finally:
+        server.shutdown()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert ("api.lan9.serversherpa.com", "/healthz", "https") in _Answer.seen
+
+
+def test_dump_skips_a_brand_new_data_vm(tmp_path):
+    env_dir, env = _target(tmp_path)
+    _external(env_dir)
+    result, calls = _play(tmp_path, "dump.yml", {**_common(env_dir), "external_data": True,
+                                                "data_new": True, "dump_required": False}, env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not any("pg_dump" in c for c in calls)
+
+
+def test_bootstrap_and_the_data_vm_share_the_docker_tasks():
+    _, tasks = _tasks("bootstrap.yml")
+    assert any(t.get("ansible.builtin.include_tasks") == "tasks/docker.yml" for t in tasks)
+    _, tasks = _tasks("data_vm.yml")
+    assert any(t.get("ansible.builtin.include_tasks") == "tasks/docker.yml" for t in tasks)
+    text = (PLAYBOOK_DIR / "data_vm.yml").read_text()
+    assert "--ctorigdstport" in text and "DOCKER-USER" in text and "PartOf=docker.service" in text
+
+
+def test_the_docker_tasks_ship_with_the_package():
+    folder = resources.files("sirdar_api.deploy").joinpath("ansible").joinpath("tasks")
+    assert folder.joinpath("docker.yml").is_file()
+
+
+def test_the_docker_tasks_install_docker_and_the_folder():
+    tasks = yaml.safe_load((PLAYBOOK_DIR / "tasks" / "docker.yml").read_text())
+    names = [t["name"] for t in tasks]
+    assert names[0] == "Base packages" and names[-1] == "Docker answers without sudo"
+    assert "Install Docker" in names and "Environment folder, owned by the SSH user" in names
+    for task in tasks:
+        assert not SHELL_MODULES & set(task), task["name"]
+    # the metadata block stays DigitalOcean's, in bootstrap.yml
+    assert "169.254.169.254" not in (PLAYBOOK_DIR / "tasks" / "docker.yml").read_text()
+
+
+def _data_vm_vars(env_dir, data_env, **kw):
+    return {**_common(env_dir), "data_env_b64": base64.b64encode(data_env.encode()).decode(),
+            "db_clients": ["10.10.48.48", "10.10.48.49"],
+            "spaces_clients": ["10.10.48.48", "10.10.48.49", "10.10.48.6"],
+            "db_port": 5432, "spaces_port": 9000, "mailpit_port": 8025,
+            "data_vm_test_mode": True, **kw}
+
+
+def test_data_vm_playbook_writes_its_env_and_starts_the_data_stacks(tmp_path):
+    env_dir, env = _target(tmp_path)
+    env[DATA_VM_TEST_ENV] = "1"
+    data_env = ("STACK_ENV=e2e\nPOSTGRES_PASSWORD=0123abcd\nSPACES_SECRET_KEY=0123abcd\n"
+                "STACK_DB_PUBLISH=1\nSTACK_DB_PORT=5432\nSTACK_DB_ALLOW=10.10.48.48,10.10.48.49\n")
+    result, calls = _play(tmp_path, "data_vm.yml", _data_vm_vars(env_dir, data_env), env,
+                          verbose=True)
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert (env_dir / ".env").read_text() == data_env
+    assert oct((env_dir / ".env").stat().st_mode & 0o777) == "0o600"
+    assert "0123abcd" not in out
+    rules = (tmp_path / "sirdar-data-firewall").read_text()
+    assert "-s 10.10.48.48 -m conntrack --ctorigdstport 5432 -j RETURN" in rules
+    assert "-s 10.10.48.49 -m conntrack --ctorigdstport 5432 -j RETURN" in rules
+    assert "-s 10.10.48.6 -m conntrack --ctorigdstport 9000 -j RETURN" in rules
+    assert "-s 10.10.48.6 -m conntrack --ctorigdstport 5432" not in rules
+    assert rules.rstrip().endswith("--ctorigdstport 8025 -j DROP")
+    # every allow comes before the drops, and Postgres is dropped for everyone else
+    lines = [ln.strip() for ln in rules.splitlines() if ln.strip().startswith("iptables -A")]
+    drops = [i for i, ln in enumerate(lines) if ln.endswith("-j DROP")]
+    returns = [i for i, ln in enumerate(lines) if ln.endswith("-j RETURN")]
+    assert max(returns) < min(drops)
+    assert "iptables -A SIRDAR-DATA -p tcp -m conntrack --ctorigdstport 5432 -j DROP" in lines
+    syntax = subprocess.run(["sh", "-n", str(tmp_path / "sirdar-data-firewall")],
+                            capture_output=True, text=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
+    # ss-stack data ran: the db stack through the LAN override
+    db = [c for c in calls if "/db/compose.yml" in c]
+    assert db and all("/db/lan.yml" in c for c in db)
+
+
+def test_data_vm_playbook_refuses_a_test_mode_without_the_test_env(tmp_path):
+    """data_vm_test_mode alone (an extravar) never turns the firewall off:
+    the controller's SIRDAR_TEST_DATA_VM must say so too, and the runner's
+    job env never carries it."""
+    env_dir, env = _target(tmp_path)
+    env.pop(DATA_VM_TEST_ENV, None)
+    result, calls = _play(tmp_path, "data_vm.yml",
+                          _data_vm_vars(env_dir, "STACK_ENV=e2e\n"), env)
+    assert result.returncode != 0
+    assert "data_vm_test_mode is for the playbook tests only" in result.stdout
+    assert calls == []
+    assert not (tmp_path / "sirdar-data-firewall").exists()
+
+
+@pytest.mark.parametrize("bad", [["10.10.48.48", "10.10.48.49; reboot"], ["0.0.0.0/0"], []])
+def test_data_vm_playbook_refuses_bad_clients(tmp_path, bad):
+    env_dir, env = _target(tmp_path)
+    env[DATA_VM_TEST_ENV] = "1"
+    result, calls = _play(tmp_path, "data_vm.yml",
+                          _data_vm_vars(env_dir, "STACK_ENV=e2e\n", db_clients=bad), env)
+    assert result.returncode != 0
+    assert "must be IPv4 addresses" in result.stdout, result.stdout
+    assert calls == [] and not (tmp_path / "sirdar-data-firewall").exists()
+
+
+def test_the_data_vm_test_mode_never_reaches_a_real_run(tmp_path, monkeypatch):
+    """Sirdar's code never sends data_vm_test_mode, and SIRDAR_TEST_DATA_VM
+    is outside the runner's job-env allowlist."""
+    from .test_deploy_runner import _request
+    src = Path(steps.__file__).resolve().parents[1]
+    senders = [p for p in src.rglob("*") if p.is_file() and p.suffix in (".py", ".yml")
+               and p.name != "data_vm.yml"
+               and ("data_vm_test_mode" in p.read_text() or DATA_VM_TEST_ENV in p.read_text())]
+    assert senders == []
+    monkeypatch.setenv(DATA_VM_TEST_ENV, "1")
+    assert DATA_VM_TEST_ENV not in runner._INHERITED_ENV
+    assert not DATA_VM_TEST_ENV.startswith(runner._INHERITED_PREFIXES)
+    ansible = runner.AnsibleRunner(str(tmp_path / "runner"))
+    run_dir = ansible.prepare(_request())
+    try:
+        built = ansible.build_runner(run_dir, _request(), lambda e: False, lambda: False)
+        assert DATA_VM_TEST_ENV not in built.config.env
+    finally:
+        import shutil
+        shutil.rmtree(run_dir)

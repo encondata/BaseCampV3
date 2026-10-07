@@ -4,13 +4,14 @@
 # runs on the droplet. 200–399 passes; redirects aren't followed. Worst
 # case for the five public names: 5 × (5 tries × 5 s + 4 waits × 10 s)
 # = 325 s, inside the step's 10 minutes.
+# On a LAN Blue/Green app VM each name carries its own port (no Caddy).
 - name: Smoke test (slot)
   hosts: target
   gather_facts: false
   tasks:
     - name: Each public name answers through Caddy
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ slot_port | default(80) }}{{ item.path }}"
+        url: "http://127.0.0.1:{{ item.port | default(slot_port | default(80)) }}{{ item.path }}"
         headers:
           Host: "{{ item.hostname }}"
           X-Forwarded-Proto: https

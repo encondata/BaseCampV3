@@ -1,0 +1,127 @@
+# Step 7 — Prepare data VM (LAN Blue/Green): the environment's data VM runs
+# only the database and object storage, shared by both app VMs. Docker and
+# the checkout (for deploy/stack), a data-only .env (no app secrets; no_log),
+# a firewall that lets only the app VMs reach Postgres and only they and
+# Nginx Proxy Manager reach object storage (published ports bypass ufw, so
+# the rules sit in Docker's DOCKER-USER chain and come back with Docker),
+# then ss-stack data (Postgres on the LAN through db/lan.yml, pg_hba.conf from
+# STACK_DB_ALLOW).
+#
+# data_vm_test_mode is for the playbook tests only, and takes effect only
+# when the controller's SIRDAR_TEST_DATA_VM is 1 as well: the runner's job env
+# is an allowlist that never carries it, and Sirdar never sends the var, so a
+# real run always installs the firewall at its root path.
+- name: Prepare data VM
+  hosts: target
+  gather_facts: true
+  vars:
+    test_mode: >-
+      {{ (data_vm_test_mode | default(false) | bool)
+         and lookup('env', 'SIRDAR_TEST_DATA_VM') == '1' }}
+    firewall_script: >-
+      {{ (env_dir ~ '/../sirdar-data-firewall') if test_mode
+         else '/usr/local/sbin/sirdar-data-firewall' }}
+    ipv4: '^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$'
+  tasks:
+    - name: The test mode is the tests' alone
+      ansible.builtin.assert:
+        that:
+          - not (data_vm_test_mode | default(false) | bool) or test_mode
+        fail_msg: data_vm_test_mode is for the playbook tests only.
+        quiet: true
+
+    # The rules below are written into a root script: only checked addresses
+    # and port numbers may reach it.
+    - name: The clients are IPv4 addresses and the ports are numbers
+      ansible.builtin.assert:
+        that:
+          - db_clients | length > 0
+          - db_clients | select('match', ipv4) | list | length == db_clients | length
+          - spaces_clients | select('match', ipv4) | list | length == spaces_clients | length
+          - db_port | string is match('^[1-9][0-9]{0,4}$')
+          - spaces_port | string is match('^[1-9][0-9]{0,4}$')
+          - mailpit_port | string is match('^[1-9][0-9]{0,4}$')
+        fail_msg: The data VM's clients must be IPv4 addresses and its ports numbers.
+        quiet: true
+
+    - name: Docker, git and the environment folder
+      ansible.builtin.include_tasks: tasks/docker.yml
+      when: not test_mode
+
+    - name: Check out the commit (the stack's files)
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ env_dir }}/repo"
+        version: "{{ sha }}"
+        force: false
+      when: not test_mode
+
+    - name: Backups folder
+      ansible.builtin.file:
+        path: "{{ env_dir }}/backups"
+        state: directory
+        mode: "0700"
+
+    - name: Write .env
+      ansible.builtin.copy:
+        content: "{{ data_env_b64 | b64decode }}"
+        dest: "{{ env_dir }}/.env"
+        mode: "0600"
+      no_log: true
+
+    - name: The firewall's rules
+      ansible.builtin.copy:
+        dest: "{{ firewall_script }}"
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          # Written by Sirdar for {{ env_name }}'s data VM: Postgres only from the
+          # app VMs, object storage only from them and Nginx Proxy Manager.
+          set -e
+          iptables -N SIRDAR-DATA 2>/dev/null || iptables -F SIRDAR-DATA
+          iptables -C DOCKER-USER -j SIRDAR-DATA 2>/dev/null || iptables -I DOCKER-USER -j SIRDAR-DATA
+          iptables -A SIRDAR-DATA -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+          {% for ip in db_clients %}
+          iptables -A SIRDAR-DATA -p tcp -s {{ ip }} -m conntrack --ctorigdstport {{ db_port }} -j RETURN
+          {% endfor %}
+          {% for ip in spaces_clients %}
+          iptables -A SIRDAR-DATA -p tcp -s {{ ip }} -m conntrack --ctorigdstport {{ spaces_port }} -j RETURN
+          {% endfor %}
+          iptables -A SIRDAR-DATA -p tcp -m conntrack --ctorigdstport {{ db_port }} -j DROP
+          iptables -A SIRDAR-DATA -p tcp -m conntrack --ctorigdstport {{ spaces_port }} -j DROP
+          iptables -A SIRDAR-DATA -p tcp -m conntrack --ctorigdstport {{ mailpit_port }} -j DROP
+      become: "{{ not test_mode }}"
+
+    - name: The firewall's unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/sirdar-data-firewall.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Only the app VMs reach this data VM's database and storage (Sirdar)
+          After=docker.service
+          Requires=docker.service
+          PartOf=docker.service
+
+          [Service]
+          Type=oneshot
+          RemainAfterExit=yes
+          ExecStart=/usr/local/sbin/sirdar-data-firewall
+
+          [Install]
+          WantedBy=docker.service
+      become: true
+      when: not test_mode
+
+    - name: The firewall is on, and comes back with Docker
+      ansible.builtin.systemd_service:
+        name: sirdar-data-firewall
+        enabled: true
+        state: restarted
+        daemon_reload: true
+      become: true
+      when: not test_mode
+
+    - name: ss-stack data
+      ansible.builtin.command:
+        argv: ["{{ ss_stack }}", data, "{{ env_dir }}"]

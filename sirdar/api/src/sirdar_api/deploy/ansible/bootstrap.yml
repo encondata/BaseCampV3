@@ -5,53 +5,8 @@
   hosts: target
   gather_facts: true
   tasks:
-    - name: Base packages
-      ansible.builtin.apt:
-        name: [git, ca-certificates, curl]
-        state: present
-        update_cache: true
-        cache_valid_time: 3600
-      become: true
-
-    - name: Look for Docker
-      ansible.builtin.command:
-        argv: [docker, --version]
-      register: docker_cli
-      changed_when: false
-      failed_when: false
-
-    - name: Look for the Compose plugin
-      ansible.builtin.command:
-        argv: [docker, compose, version]
-      register: compose_cli
-      changed_when: false
-      failed_when: false
-
-    - name: Install Docker
-      when: docker_cli.rc != 0 or compose_cli.rc != 0
-      become: true
-      block:
-        - name: Download the Docker install script
-          ansible.builtin.get_url:
-            url: https://get.docker.com
-            dest: /root/sirdar-get-docker.sh
-            mode: "0700"
-
-        - name: Run the Docker install script
-          ansible.builtin.command:
-            argv: [sh, /root/sirdar-get-docker.sh]
-
-        - name: Remove the install script
-          ansible.builtin.file:
-            path: /root/sirdar-get-docker.sh
-            state: absent
-
-    - name: Docker starts on boot
-      ansible.builtin.systemd_service:
-        name: docker
-        state: started
-        enabled: true
-      become: true
+    - name: Docker, git and the environment folder
+      ansible.builtin.include_tasks: tasks/docker.yml
 
     # DigitalOcean: the droplet's user-data holds its SSH host key, and the
     # metadata service hands user-data to anything on the droplet. Containers
@@ -86,36 +41,3 @@
             enabled: true
             state: restarted
             daemon_reload: true
-
-    - name: The SSH user may run docker
-      ansible.builtin.user:
-        name: "{{ ansible_facts['user_id'] }}"
-        groups: [docker]
-        append: true
-      become: true
-      when: ansible_facts['user_id'] != 'root'
-
-    - name: Environments folder
-      ansible.builtin.file:
-        path: /opt/serversherpa
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
-      become: true
-
-    - name: Environment folder, owned by the SSH user
-      ansible.builtin.file:
-        path: "{{ env_dir }}"
-        state: directory
-        owner: "{{ ansible_facts['user_id'] }}"
-        mode: "0750"
-      become: true
-
-    - name: Pick up the docker group on the next connection
-      ansible.builtin.meta: reset_connection
-
-    - name: Docker answers without sudo
-      ansible.builtin.command:
-        argv: [docker, ps, --quiet]
-      changed_when: false

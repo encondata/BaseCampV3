@@ -36,6 +36,8 @@ PLACEHOLDER = "CHANGEME"
 EXTRA_KEYS = (
     "STACK_EXTERNAL_DATA", "STACK_CADDY", "STACK_NETWORK_SUBNET", "STACK_HOSTS_IP",
     "STACK_TRUSTED_PROXIES", "STACK_DB_HOST", "STACK_DB_PORT", "STACK_DB_NAME", "STACK_DB_USER",
+    # disable: an app VM's database is a LAN Blue/Green data VM (phase 8b), no TLS
+    "STACK_DB_SSLMODE",
     "SS_DATABASE_URL", "SS_DATABASE_SSL", "SS_DATABASE_CA_B64", "SS_SPACES_ENDPOINT",
     "SS_SPACES_REGION", "SS_SPACES_ACCESS_KEY", "SS_SPACES_SECRET_KEY", "SS_SPACES_USE_PATH_STYLE",
     "STACK_DROPLET_ID",
@@ -123,6 +125,56 @@ def render_env(cfg: EnvConfig) -> str:
     lines = ["# Written by Sirdar: edits here are replaced on the next deploy.",
              f"# Environment: {cfg.name}",
              *(f"{k}={v}" for k, v in values.items())]
+    return "\n".join(lines) + "\n"
+
+
+# A LAN Blue/Green data VM's .env (deploy phase 8b): the data stacks only, so
+# only the database and storage secrets (no JWT secret, pepper, TOTP key or
+# wiki token), and the app VMs allowed to reach Postgres.
+DATA_KEYS = ("STACK_ENV", "STACK_DOMAIN", "STACK_IMAGE_TAG", "STACK_BIND_IP",
+             "STACK_SPACES_PORT", "STACK_MAILPIT_PORT", "STACK_KEEP_DUMPS",
+             "POSTGRES_PASSWORD", "SPACES_SECRET_KEY", "SS_SPACES_BUCKET",
+             "STACK_DB_PUBLISH", "STACK_DB_PORT", "STACK_DB_ALLOW")
+DATA_SECRETS = ("POSTGRES_PASSWORD", "SPACES_SECRET_KEY")
+_OCTET = r"(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])"
+_IPV4_RE = re.compile(rf"{_OCTET}(\.{_OCTET}){{3}}")
+
+
+@dataclass(frozen=True)
+class DataEnvConfig:
+    name: str
+    domain: str
+    bind_ip: str
+    spaces_port: int
+    mailpit_port: int
+    keep_dumps: int
+    spaces_bucket: str
+    db_port: int
+    allow: tuple[str, ...]
+    secrets: dict[str, str] = field(repr=False)
+
+
+def render_data_env(cfg: DataEnvConfig) -> str:
+    missing = [k for k in DATA_SECRETS if not cfg.secrets.get(k)]
+    if missing:
+        raise RenderError(f"missing secrets: {', '.join(missing)}")
+    if not cfg.allow or not all(_IPV4_RE.fullmatch(ip) for ip in cfg.allow):
+        raise RenderError("STACK_DB_ALLOW must be IPv4 addresses")
+    values = {
+        "STACK_ENV": cfg.name, "STACK_DOMAIN": cfg.domain, "STACK_IMAGE_TAG": "data",
+        "STACK_BIND_IP": cfg.bind_ip, "STACK_SPACES_PORT": str(cfg.spaces_port),
+        "STACK_MAILPIT_PORT": str(cfg.mailpit_port), "STACK_KEEP_DUMPS": str(cfg.keep_dumps),
+        **{k: cfg.secrets[k] for k in DATA_SECRETS},
+        "SS_SPACES_BUCKET": cfg.spaces_bucket, "STACK_DB_PUBLISH": "1",
+        "STACK_DB_PORT": str(cfg.db_port), "STACK_DB_ALLOW": ",".join(cfg.allow),
+    }
+    for key, value in values.items():
+        if unsafe_value(value):
+            raise RenderError(f"{key} contains a control or line-break character")
+        if value == PLACEHOLDER:
+            raise RenderError(f"{key} is still {PLACEHOLDER}")
+    lines = ["# Written by Sirdar: edits here are replaced on the next deploy.",
+             f"# Environment: {cfg.name} (data VM)", *(f"{k}={v}" for k, v in values.items())]
     return "\n".join(lines) + "\n"
 
 

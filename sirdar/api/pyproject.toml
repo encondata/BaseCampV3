@@ -40,7 +40,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"sirdar_api.deploy" = ["ansible/*.yml"]
+"sirdar_api.deploy" = ["ansible/*.yml", "ansible/tasks/*.yml"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

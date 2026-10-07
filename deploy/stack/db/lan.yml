@@ -1,0 +1,12 @@
+# The db stack on a LAN Blue/Green data VM (STACK_DB_PUBLISH=1; ss-stack adds
+# this file to db/compose.yml). Postgres listens on the LAN for the
+# environment's app VMs only: ss-stack writes pg_hba.conf from STACK_DB_ALLOW,
+# and Sirdar's firewall on the VM drops everyone else. No TLS on the LAN, as
+# the local stacks have none.
+services:
+  postgres:
+    command: ["postgres", "-c", "listen_addresses=*", "-c", "hba_file=/etc/ss/pg_hba.conf"]
+    ports:
+      - "${STACK_BIND_IP:-0.0.0.0}:${STACK_DB_PORT:-5432}:5432"
+    volumes:
+      - ${STACK_DB_HBA_FILE:?ss-stack sets STACK_DB_HBA_FILE}:/etc/ss/pg_hba.conf:ro

@@ -71,6 +71,7 @@ STEPS: tuple[StepDef, ...] = (
     StepDef(5, "build", "Build images", "build.yml", 90 * 60),
     StepDef(6, "dump", "Pre-deploy dump", "dump.yml", 30 * 60),
     StepDef(7, "reset", "Reset data", "reset.yml", 15 * 60),
+    StepDef(7, "data_vm", "Prepare data VM", "data_vm.yml", 30 * 60),
     StepDef(8, "data", "Start data services", "data.yml", 15 * 60),
     StepDef(9, "restore", "Restore snapshot", "restore.yml", 120 * 60),
     StepDef(9, "restore_dump", "Restore backup", "restore_dump.yml", 60 * 60),
