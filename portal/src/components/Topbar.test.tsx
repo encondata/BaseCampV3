@@ -83,11 +83,11 @@ it('shows the AI button for a caller with ai:view', () => {
 it('shows the help button only for a caller with wiki:view', () => {
   auth.can = (resource) => resource !== 'wiki';
   renderTopbar();
-  expect(screen.queryByRole('button', { name: 'Help for this page' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Show Guide On Wiki' })).toBeNull();
   cleanup();
   auth.can = (resource, action) => resource === 'wiki' && action === 'view';
   renderTopbar();
-  expect(screen.getByRole('button', { name: 'Help for this page' })).toBeDefined();
+  expect(screen.getByRole('button', { name: 'Show Guide On Wiki' })).toBeDefined();
 });
 
 it('bell shows the unread badge and lists items; clicking one marks it read', async () => {

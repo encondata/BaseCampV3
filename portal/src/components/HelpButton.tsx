@@ -153,7 +153,8 @@ export default function HelpButton({ onOpen }: {
     }
   };
 
-  const label = guide ? `Guide for this page: “${guide.title}”` : 'Help for this page';
+  // one tooltip everywhere (Jimmy, 2026-10-06); the accent says a guide exists
+  const label = 'Show Guide On Wiki';
   return (
     <div className="pop-wrap" ref={wrapRef}>
       <button className={guide ? 'icon-btn has-guide' : 'icon-btn'} data-tip={label} aria-label={label}
