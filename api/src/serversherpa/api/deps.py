@@ -19,7 +19,7 @@ from serversherpa.db.engine import get_db
 from serversherpa.db.models import AuthSession, Person, UserAccount
 from serversherpa.security.tokens import TokenError, decode_access_token
 from serversherpa.services.password_policy import (
-    PasswordReused, assert_not_reused, expires_at, load_policy,
+    PasswordReused, assert_not_reused, expires_at, length_problem, load_policy,
 )
 
 _bearer = HTTPBearer(auto_error=False)
@@ -286,9 +286,9 @@ def require_permission(resource: str, action: str):
 def require_password_length(password: str) -> None:
     """One policy gate for every password the API accepts. The schemas keep
     only a non-empty floor — the real bar lives in settings so ops can
-    raise it without a deploy."""
-    min_length = get_settings().password_min_length
-    if len(password) < min_length:
+    raise it without a deploy (password_policy.length_problem)."""
+    min_length = length_problem(password)
+    if min_length is not None:
         raise HTTPException(
             status_code=422,
             detail={"code": "password_too_short", "min_length": min_length})
