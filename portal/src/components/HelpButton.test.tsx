@@ -384,3 +384,85 @@ it('never shows the old screen’s guide in the commit after navigating', async 
   fireEvent.click(screen.getByRole('button', { name: 'Help for this page' }));
   expect(open).not.toHaveBeenCalled();
 });
+
+// ── round 2: display vs freshness, in-flight stale write, popover scope ──
+
+it('keeps the accent past five minutes on a screen, and refetches once on arriving again', async () => {
+  let now = 1_000_000;
+  vi.spyOn(Date, 'now').mockImplementation(() => now);
+  vi.mocked(apiFetch).mockImplementation(async (path: string) =>
+    path.includes(encodeURIComponent('/bulk/time')) ? json(200, guideBody('/bulk/time')) : json(404, {}));
+  const ui = () => (
+    <MemoryRouter initialEntries={['/bulk/time']}>
+      <HelpButton />
+      <Go to="/assets" />
+      <Go to="/bulk/time" />
+    </MemoryRouter>
+  );
+  const { rerender } = render(ui());
+  await screen.findByRole('button', { name: GUIDE_LABEL });
+
+  now += 6 * 60_000;
+  rerender(ui());                         // a re-render is not an arrival
+  expect(screen.getByRole('button', { name: GUIDE_LABEL }).classList.contains('has-guide')).toBe(true);
+  expect(apiFetch).toHaveBeenCalledTimes(1);
+
+  fireEvent.click(screen.getByText('go /assets'));
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+  fireEvent.click(screen.getByText('go /bulk/time'));
+  // the expired answer still shows while the one refetch runs
+  expect(screen.getByRole('button', { name: GUIDE_LABEL })).toBeTruthy();
+  await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(3));
+  await new Promise((r) => setTimeout(r, 0));
+  expect(apiFetch).toHaveBeenCalledTimes(3);
+});
+
+it('ignores a lookup for the previous person that finishes after the person changed', async () => {
+  const pending: Array<(r: Response) => void> = [];
+  vi.mocked(apiFetch).mockImplementation(() => new Promise<Response>((res) => { pending.push(res); }));
+  const ui = () => <MemoryRouter initialEntries={['/bulk/time']}><HelpButton /></MemoryRouter>;
+  const { rerender } = render(ui());
+  await waitFor(() => expect(pending.length).toBe(1));
+
+  auth.person = { id: 'person-b' };
+  rerender(ui());
+  await waitFor(() => expect(pending.length).toBe(2));
+
+  pending[0](json(200, guideBody('/bulk/time')));   // A's answer arrives late
+  await new Promise((r) => setTimeout(r, 0));
+  expect(screen.getByRole('button', { name: 'Help for this page' }).classList.contains('has-guide')).toBe(false);
+
+  pending[1](json(404, {}));                         // B's own lookup decides
+  await new Promise((r) => setTimeout(r, 0));
+  expect(screen.getByRole('button', { name: 'Help for this page' }).classList.contains('has-guide')).toBe(false);
+  expect(apiFetch).toHaveBeenCalledTimes(2);
+});
+
+it('never renders the old screen’s popover in the commit after navigating', async () => {
+  open.mockReturnValue(null);
+  vi.mocked(apiFetch).mockImplementation((path: string) =>
+    path.includes(encodeURIComponent('/bulk/time'))
+      ? Promise.resolve(json(200, guideBody('/bulk/time')))
+      : new Promise<Response>(() => {}));
+  const seen: string[] = [];
+  function Probe() {
+    const { pathname } = useLocation();
+    useLayoutEffect(() => {
+      seen.push(`${pathname}|${document.querySelector('[role="dialog"]') ? 'popover' : 'none'}`);
+    });
+    return null;
+  }
+  render(
+    <MemoryRouter initialEntries={['/bulk/time']}>
+      <HelpButton />
+      <Probe />
+      <Go to="/assets" />
+    </MemoryRouter>,
+  );
+  fireEvent.click(await screen.findByRole('button', { name: GUIDE_LABEL }));
+  await screen.findByRole('link', { name: 'Open “Time Guide”' });   // blocked: link in a popover
+  fireEvent.click(screen.getByText('go /assets'));
+  const after = seen.filter((x) => x.startsWith('/assets|'));
+  expect(after.length).toBeGreaterThan(0);
+  expect(new Set(after)).toEqual(new Set(['/assets|none']));
+});

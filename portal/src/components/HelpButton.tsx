@@ -42,7 +42,10 @@ export function clearHelpCache(): void {
 
 /** Answers are per person (what they may view differs): a new person, or
  *  none after sign-out, starts empty. A lookup still in flight for the
- *  old person can no longer write — it isn't in `inflight` any more. */
+ *  old person can no longer write — it isn't in `inflight` any more.
+ *  Called during render, so it mutates module state there; that is safe
+ *  because it is idempotent (a no-op once the owner matches), and a render
+ *  React throws away costs at worst one extra lookup. */
 function scopeCacheTo(personId: string | null): void {
   if (cacheOwner === personId) return;
   guideCache.clear();
@@ -50,9 +53,11 @@ function scopeCacheTo(personId: string | null): void {
   cacheOwner = personId;
 }
 
-function cachedGuide(context: string): { guide: Guide | null } | undefined {
+/** Whether `context` has an answer young enough to skip a lookup. Only
+ *  arriving at a screen asks; what's *shown* never depends on age. */
+function isFresh(context: string): boolean {
   const hit = guideCache.get(context);
-  return hit && Date.now() - hit.at < CACHE_MS ? hit : undefined;
+  return !!hit && Date.now() - hit.at < CACHE_MS;
 }
 
 /** One request per context at a time; the answer is cached, an error isn't. */
@@ -83,25 +88,29 @@ export default function HelpButton({ onOpen }: {
 }) {
   const { can, person } = useAuth();
   const { pathname } = useLocation();
-  const [pop, setPop] = useState<Pop>(null);
+  // the popover belongs to the screen it was opened on
+  const [popState, setPopState] = useState<{ context: string; pop: Pop } | null>(null);
   const [busy, setBusy] = useState(false);
   const [, refresh] = useReducer((n: number) => n + 1, 0);
   const canView = can('wiki', 'view');
   const personId = person?.id ?? null;
   const context = helpContext('portal', pathname);
+  const pop = popState?.context === context ? popState.pop : null;
+  const setPop = (p: Pop) => setPopState(p ? { context, pop: p } : null);
   scopeCacheTo(personId);
   // read from the cache for *this* screen on every render, so the old
-  // screen's guide is never shown (or opened) after navigating
-  const guide = canView ? cachedGuide(context)?.guide ?? null : null;
+  // screen's guide is never shown (or opened) after navigating; an answer
+  // past its five minutes still shows until the arrival lookup replaces it
+  const guide = canView ? guideCache.get(context)?.guide ?? null : null;
   const wrapRef = useRef<HTMLDivElement>(null);
   // the newest click retires older ones; leaving the screen retires them too
   const seq = useRef(0);
 
   useEffect(() => {
     seq.current += 1;
-    setPop(null);
+    setPopState(null);
     setBusy(false);
-    if (!canView || cachedGuide(context)) return;
+    if (!canView || isFresh(context)) return;
     // the answer lands in the cache; re-render to pick it up if still here
     lookupGuide(context).then(refresh, () => { /* a click tries again */ });
   }, [context, canView, personId]);
