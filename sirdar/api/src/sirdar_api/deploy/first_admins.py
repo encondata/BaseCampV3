@@ -5,11 +5,11 @@ of `serversherpa bootstrap-admin`. A typed password is vault-encrypted until
 step 11 used it; it never reaches a response, log, audit row, error or argv
 (it travels only as the command's stdin). Callers audit and commit."""
 
-import re
 import unicodedata
 import uuid
 from datetime import UTC, datetime
 
+from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sirdar_api.config import Settings
@@ -18,7 +18,10 @@ from sirdar_api.deploy import vault
 from sirdar_api.services import portal_policy
 
 MODES = ("typed", "invite")
-_EMAIL_RE = re.compile(r"[^@\s]{1,64}@[^@\s]+\.[^@\s.]{2,}")
+# The portal's login form validates with pydantic's EmailStr (email-validator,
+# no deliverability check), which refuses special-use domains such as .local
+# and .test. The same type here, so a first admin we create can sign in.
+_EMAIL = TypeAdapter(EmailStr)
 _BAD_CATEGORIES = frozenset({"Cc", "Zl", "Zp"})
 ALREADY_CREATED = "The first admin was already created; nothing to do.\n"
 # bootstrap-admin's exit codes that mean done: created, or the account exists.
@@ -27,8 +30,9 @@ DONE_CODES = (CREATED, EXISTS)
 EXISTS_NOTE = ("An account for {email} already exists in this environment; Sirdar left it as "
                "it is.\n")
 _REFUSALS = {
-    2: ("This commit's serversherpa bootstrap-admin doesn't know --password-stdin, --invite or "
-        "--link-minutes. Deploy a newer commit, then retry."),
+    2: ("serversherpa bootstrap-admin refused its arguments or got no password (exit 2). "
+        "See the step's log. If this commit is older than phase 8a, deploy a newer one, "
+        "then retry."),
     3: ("The environment refused the first admin's password: it's shorter than its password "
         "policy allows. Set a new one on the environment's Settings tab, then retry from "
         "step 11."),
@@ -41,6 +45,8 @@ _REFUSALS = {
     7: ("A person with that email exists in this environment without an account. Give them "
         "an account there, or set another email on the environment's Settings tab, then "
         "retry from step 11."),
+    8: ("The environment refused the first admin's email address. Set another on the "
+        "environment's Settings tab, then retry from step 11."),
 }
 
 
@@ -59,6 +65,15 @@ def _clean(value) -> bool:
         unicodedata.category(ch) in _BAD_CATEGORIES for ch in value)
 
 
+def _email(value) -> str:
+    if not _clean(value) or len(value.strip()) > 254:
+        raise FirstAdminError("first_admin_email_invalid")
+    try:
+        return _EMAIL.validate_python(value.strip())
+    except ValidationError:
+        raise FirstAdminError("first_admin_email_invalid") from None
+
+
 def _name(value) -> str:
     if not _clean(value) or not 1 <= len(value.strip()) <= 100:
         raise FirstAdminError("first_admin_name_invalid")
@@ -71,9 +86,7 @@ def check(fields) -> dict:
     line on stdin); an invite has no password."""
     if not isinstance(fields, dict) or fields.get("password_mode") not in MODES:
         raise FirstAdminError("first_admin_invalid")
-    email = fields.get("email")
-    if not _clean(email) or len(email.strip()) > 254 or not _EMAIL_RE.fullmatch(email.strip()):
-        raise FirstAdminError("first_admin_email_invalid")
+    email = _email(fields.get("email"))
     mode, password = fields["password_mode"], fields.get("password")
     if mode == "invite":
         if password not in (None, ""):
@@ -88,7 +101,7 @@ def check(fields) -> dict:
         if not _clean(password):
             raise FirstAdminError("first_admin_password_invalid")
     return {"first_name": _name(fields.get("first_name")),
-            "last_name": _name(fields.get("last_name")), "email": email.strip(),
+            "last_name": _name(fields.get("last_name")), "email": email,
             "password_mode": mode, "password": password}
 
 

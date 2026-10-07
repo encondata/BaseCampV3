@@ -30,6 +30,11 @@ def test_check_accepts_typed_and_invite():
     ({"first_name": "A\nB"}, "first_admin_name_invalid"),
     ({"email": "not-an-email"}, "first_admin_email_invalid"),
     ({"email": "a@b"}, "first_admin_email_invalid"),
+    # The portal's login (pydantic EmailStr) refuses special-use domains, so
+    # an account created with one could never sign in.
+    ({"email": "admin@corp.local"}, "first_admin_email_invalid"),
+    ({"email": "admin@lab.test"}, "first_admin_email_invalid"),
+    ({"email": "admin@localhost"}, "first_admin_email_invalid"),
     ({"password": "x" * (portal_policy.PASSWORD_MIN_LENGTH - 1)},
      "first_admin_password_too_short"),
     ({"password": None}, "first_admin_password_too_short"),
@@ -112,7 +117,9 @@ def test_exit_codes_and_copy():
     assert first_admins.exit_code({}) == -1
     assert first_admins.exit_code({"first_admin_rc": "x"}) == -1
     assert "password policy" in first_admins.refusal(3)
-    assert "newer commit" in first_admins.refusal(2)
+    assert "exit 2" in first_admins.refusal(2) and "newer one" in first_admins.refusal(2)
+    assert "email address" in first_admins.refusal(8) \
+        and "step 11" in first_admins.refusal(8)
     assert "SMTP" in first_admins.refusal(5)
     assert "super_admin" in first_admins.refusal(4)
     assert "exit 9" in first_admins.refusal(9)
@@ -167,3 +174,28 @@ async def test_step_vars_after_done_is_empty(db, secrets_key):
     await db.commit()
     assert await first_admins.step_vars(db, get_settings(), env.id) == ({}, [])
     assert await first_admins.step_vars(db, get_settings(), env.id) == ({}, [])
+
+
+@pytest.mark.parametrize("email", ["admin@corp.lan", "admin@example.com",
+                                   "first.last+ops@mail.example.org"])
+def test_check_accepts_what_the_portal_login_accepts(email):
+    assert first_admins.check({**GOOD, "email": email})["email"] == email
+
+
+def test_check_matches_the_portals_email_type():
+    """The same verdict as pydantic's EmailStr, which the portal's LoginIn uses."""
+    from pydantic import EmailStr, TypeAdapter, ValidationError
+    adapter = TypeAdapter(EmailStr)
+    for email in ["admin@corp.local", "admin@lab.test", "admin@corp.lan", "a@b.co",
+                  "admin@example.invalid", "x@[127.0.0.1]"]:
+        try:
+            adapter.validate_python(email)
+            portal_ok = True
+        except ValidationError:
+            portal_ok = False
+        try:
+            first_admins.check({**GOOD, "email": email})
+            ours = True
+        except first_admins.FirstAdminError:
+            ours = False
+        assert ours == portal_ok, email
