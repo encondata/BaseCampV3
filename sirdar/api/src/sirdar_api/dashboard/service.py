@@ -42,6 +42,7 @@ from sirdar_api.deploy import (
     do_envs,
     envfile,
     integrations,
+    lan_slots,
     names,
     outbound,
     targets,
@@ -384,6 +385,33 @@ async def _lan_flow(db: AsyncSession, settings: Settings, env: Environment) -> d
             "deploying_slot": deploying, "failed_slot": failed}
 
 
+async def _lan_bluegreen_flow(db: AsyncSession, env: Environment, machines: list) -> dict:
+    """A LAN Blue/Green environment: Nginx Proxy Manager → its two app VMs
+    (orange, purple), each with its slot's commit and last smoke test."""
+    url = (await integrations.config_of(db, "npm")).get("url")
+    npm_host = urlsplit(url).hostname if url else None
+    rows = await lan_slots.slots_of(db, env.id)
+    by_role = {m.role: m for m in machines}
+    servers = []
+    for slot in env.slots:
+        r, m = rows.get(slot), by_role.get(slot)
+        built = bool(m and m.created) or bool(r and r.sha)
+        state = "live" if slot == env.active_slot else "idle" if built else "empty"
+        health = ("unknown" if r is None or r.last_check_ok is None
+                  else "healthy" if r.last_check_ok else "degraded")
+        servers.append({"id": slot, "label": slot.title(),
+                        "sub": m.ip if m and m.ip else "Not built yet", "state": state,
+                        "health": health, "version": r.image_tag if r else None,
+                        "deployed": bool(r and r.sha)})
+    deploying, failed = await _marks(db, env, lan=False)
+    return {"kind": "proxy",
+            "middle": {"label": "Nginx Proxy Manager", "sub": npm_host or "Not set up",
+                       "status": "ok" if npm_host else "unknown"},
+            "servers": servers, "active_slot": env.active_slot,
+            "certificate": None,    # from the live check (_certificates)
+            "deploying_slot": deploying, "failed_slot": failed}
+
+
 def _version(env: Environment) -> str | None:
     return env.image_tag or (env.current_sha[:8] if env.current_sha else None)
 
@@ -409,6 +437,10 @@ async def _environment_card(db: AsyncSession, settings: Settings, env: Environme
                                   inventories.get(row.account_key))
         else:
             flow = _empty_flow()
+    elif lan_slots.is_bluegreen(env):
+        # Read once: the infrastructure tree lists the same VMs (see environment_cards).
+        do = {"machines": await vms.machines(db, env)}
+        flow = await _lan_bluegreen_flow(db, env, do["machines"])
     else:
         do, flow = None, await _lan_flow(db, settings, env)
     running = await db.scalar(select(Deployment.id).where(
@@ -438,8 +470,9 @@ async def environment_cards(db: AsyncSession | None, settings: Settings, tagged:
     """Production first (the live one, else a retiring one, else a
     placeholder), Dev / Beta (placeholders until one exists), the rest by
     name, then DigitalOcean env tags no environment answers to. `built`
-    (when given) receives (environment, card, DigitalOcean reads or None)
-    for every real card, in card order; the reads never reach the card."""
+    (when given) receives (environment, card, reads or None) for every real
+    card, in card order: the DigitalOcean records, or a LAN Blue/Green
+    environment's VMs ({"machines": [...]}); the reads never reach the card."""
     rows: list[Environment] = []
     hostnames: dict = {}
     if db is not None:
@@ -603,12 +636,41 @@ def _do_parts(env: Environment, do: dict, inv: dict | None) -> tuple[list[dict],
     return parts, shown
 
 
+_HEALTH = {"healthy": ("healthy", "Healthy"), "degraded": ("degraded", "Degraded")}
+
+
+def _bluegreen_parts(env: Environment, flow: dict, machines: list) -> list[dict]:
+    """Nginx Proxy Manager, the data VM and both app VMs. The data VM is a
+    "database" part: it holds the data, and only an app VM makes the
+    environment Active."""
+    middle = flow["middle"]
+    ok = middle["status"] == "ok"
+    parts = [node(f"{env.name}:npm", "Nginx Proxy Manager", "proxy", "Reverse proxy",
+                  "active" if ok else "unknown", "Active" if ok else "Not set up",
+                  region="LAN", endpoint=middle["sub"] if ok else "—")]
+    data = next((m for m in machines if m.role == vms.DATA), None)
+    if data is not None:
+        parts.append(node(f"{env.name}:data", data.name, "database", "Data VM",
+                          "active" if data.created else "inactive",
+                          "Built" if data.created else "Not built yet", region="LAN",
+                          endpoint=data.ip or "—"))
+    vm_names = {m.role: m.name for m in machines}
+    for s in flow["servers"]:
+        live = ", live" if s["state"] == "live" else ""
+        status = (("inactive", "Not built yet") if s["state"] == "empty"
+                  else _HEALTH.get(s["health"], ("unknown", "Unknown")))
+        parts.append(node(f"{env.name}:{s['id']}",
+                          vm_names.get(s["id"]) or vms.vm_name(env.name, s["id"]), "server",
+                          f"App VM ({s['label']}{live})", *status, region="LAN",
+                          endpoint=s["sub"], badge=s["version"]))
+    return parts
+
+
 def _lan_parts(env: Environment, flow: dict) -> list[dict]:
     """Nginx Proxy Manager and the one host, as the card's flow shows them."""
     middle, server = flow["middle"], flow["servers"][0]
     ok = middle["status"] == "ok"
-    health = {"healthy": ("healthy", "Healthy"), "degraded": ("degraded", "Degraded")}.get(
-        server["health"], ("unknown", "Unknown"))
+    health = _HEALTH.get(server["health"], ("unknown", "Unknown"))
     kind = "VM" if targets.is_vm_target(env.target_id) else "SSH host"
     return [node(f"{env.name}:npm", "Nginx Proxy Manager", "proxy", "Reverse proxy",
                  "active" if ok else "unknown", "Active" if ok else "Not set up", region="LAN",
@@ -635,6 +697,8 @@ def environment_nodes(built: list[tuple], inventories: dict[str, dict],
                 unreadable = inv is None
                 region = row.region.upper()
                 type_label += f" · {labels.get(row.account_key, row.account_key.title())} account"
+        elif do is not None:
+            children, region = _bluegreen_parts(env, card["flow"], do["machines"]), "LAN"
         else:
             children, region = _lan_parts(env, card["flow"]), "LAN"
         if cert := _cert_node(env.name, card["flow"]["certificate"]):
