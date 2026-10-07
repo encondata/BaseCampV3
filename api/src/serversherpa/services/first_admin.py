@@ -9,6 +9,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,12 +26,25 @@ class FirstAdminError(Exception):
     or the person with that email has one), person_exists (a person with that
     email but no account), password_too_short (`min_length`), role_unknown
     (no such role, or one that isn't global), mail_not_configured,
-    link_required."""
+    link_required, email_invalid (`reason`: the portal couldn't sign in with it)."""
 
     def __init__(self, code: str, **extra):
         super().__init__(code)
         self.code = code
         self.extra = extra
+
+
+_LOGIN_EMAIL = TypeAdapter(EmailStr)   # the portal's LoginIn.email
+
+
+def email_problem(email: str) -> str | None:
+    """Why the portal couldn't sign in with `email` (LoginIn.email is an
+    EmailStr, which refuses e.g. .local and .test), else None."""
+    try:
+        _LOGIN_EMAIL.validate_python(email)
+    except ValidationError as e:
+        return str(e.errors()[0].get("msg") or "not a valid email address")
+    return None
 
 
 @dataclass(frozen=True)
@@ -54,6 +68,8 @@ async def create_admin(db: AsyncSession, *, email: str, first_name: str, last_na
     invite = password is None
     if invite and not link_minutes:
         raise FirstAdminError("link_required")
+    if (reason := email_problem(email)) is not None:
+        raise FirstAdminError("email_invalid", reason=reason)
     # first, so a re-run on an environment that already has its admin is a no-op
     if await db.scalar(select(UserAccount.person_id)
                        .where(UserAccount.email == email)) is not None:

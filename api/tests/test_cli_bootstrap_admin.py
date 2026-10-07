@@ -153,3 +153,10 @@ def test_no_exit_code_is_1():
     # 1 also comes from docker compose exec, ss-stack's die and Python itself
     assert 1 not in cli._EXIT_CODES.values()
     assert cli.EXIT_ACCOUNT_EXISTS == 10
+
+
+def test_an_invalid_email_exits_8(calls):
+    calls.outcome["error"] = FirstAdminError("email_invalid", reason="reserved name")
+    result = runner.invoke(app, [*BASE, "--password-stdin"], input=SECRET + "\n")
+    assert result.exit_code == 8
+    assert "reserved name" in result.stderr and SECRET not in result.output

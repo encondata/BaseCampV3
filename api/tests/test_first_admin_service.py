@@ -198,3 +198,15 @@ async def test_a_failure_after_the_first_writes_leaves_nothing(db, email_on, mon
     await db.rollback()
     for model in (UserAccount, Person, PersonRole, PasswordResetToken, EmailOutbox):
         assert await db.scalar(select(model)) is None, model
+
+
+@pytest.mark.parametrize("bad", ["ada@corp.local", "ada@box.test", "not-an-email", "ada@"])
+async def test_an_email_the_portal_cant_sign_in_with_is_refused(db, email_on, bad):
+    # the portal's LoginIn.email is an EmailStr: the same rules, before any write
+    with pytest.raises(FirstAdminError) as e:
+        await create_admin(db, email=bad, first_name="Ada", last_name="Lovelace",
+                           role="super_admin", password=TYPED, link_minutes=240, now=NOW)
+    await db.rollback()
+    assert e.value.code == "email_invalid" and e.value.extra["reason"]
+    assert TYPED not in e.value.extra["reason"]
+    assert await db.scalar(select(Person)) is None

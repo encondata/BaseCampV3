@@ -44,9 +44,11 @@ EXIT_ROLE_UNKNOWN = 4
 EXIT_MAIL_OFF = 5
 EXIT_FAILED = 6
 EXIT_PERSON_EXISTS = 7
+EXIT_EMAIL_INVALID = 8
 _EXIT_CODES = {"account_exists": EXIT_ACCOUNT_EXISTS, "password_too_short": EXIT_PASSWORD_REFUSED,
                "role_unknown": EXIT_ROLE_UNKNOWN, "mail_not_configured": EXIT_MAIL_OFF,
-               "person_exists": EXIT_PERSON_EXISTS, "link_required": EXIT_USAGE}
+               "person_exists": EXIT_PERSON_EXISTS, "link_required": EXIT_USAGE,
+               "email_invalid": EXIT_EMAIL_INVALID}
 
 
 async def _create_first_admin(**kwargs):
@@ -111,6 +113,8 @@ def bootstrap_admin(
             "mail_not_configured": "Email isn't configured (SS_SMTP_HOST and SS_SMTP_FROM), "
                                    "so an invite can't be sent.",
             "link_required": "--invite needs --link-minutes.",
+            "email_invalid": f"The portal can't sign in with {email}: "
+                             f"{e.extra.get('reason')}",
         }
         typer.secho(messages.get(e.code, e.code), fg="red", err=True)
         raise typer.Exit(code=_EXIT_CODES.get(e.code, EXIT_USAGE)) from None
