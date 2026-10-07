@@ -258,3 +258,20 @@ it("DigitalOcean: what Sirdar built can't change here; the DigitalOcean section 
   }
   expect(screen.getByRole('region', { name: 'DigitalOcean' })).toBeTruthy();
 });
+
+const FIRST_ADMIN = {
+  first_name: 'Ada', last_name: 'Lovelace', email: 'ada@example.com', password_mode: 'typed' as const, done: false,
+};
+
+it('the First admin card shows only while a first admin is still to be created', () => {
+  open({ ...ENV, first_admin: FIRST_ADMIN });
+  const card = screen.getByRole('group', { name: 'First admin' });
+  expect(within(card).getByText('Ada Lovelace')).toBeTruthy();
+  expect(within(card).getByRole('button', { name: 'Change…' })).toBeTruthy();
+  cleanup();
+  open({ ...ENV, first_admin: { ...FIRST_ADMIN, done: true } });
+  expect(screen.queryByRole('group', { name: 'First admin' })).toBeNull();
+  cleanup();
+  open({ ...ENV, first_admin: null });
+  expect(screen.queryByRole('group', { name: 'First admin' })).toBeNull();
+});

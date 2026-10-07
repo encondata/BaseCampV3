@@ -10,10 +10,10 @@ vi.mock('@portal/auth/AuthContext', () => ({
 }));
 const api = vi.hoisted(() => ({ listEnvironments: vi.fn() }));
 vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('../../lib/sirdarApi')>()), ...api }));
-vi.mock('./NewEnvironmentModal', () => ({
-  default: ({ onCreated, onClose }: { onCreated: (env: typeof ENV) => void; onClose: () => void }) => (
-    <div role="dialog" aria-label="New environment">
-      <button type="button" onClick={() => onCreated(ENV)}>fake create</button>
+vi.mock('./AdoptEnvironmentModal', () => ({
+  default: ({ onAdopted, onClose }: { onAdopted: (env: typeof ENV) => void; onClose: () => void }) => (
+    <div role="dialog" aria-label="Adopt an environment">
+      <button type="button" onClick={() => onAdopted(ENV)}>fake adopt</button>
       <button type="button" onClick={onClose}>fake close</button>
     </div>
   ),
@@ -68,24 +68,33 @@ it('shows the empty state, and a load error as an alert', async () => {
   expect((await screen.findByRole('alert')).textContent).toBe("Couldn't load environments.");
 });
 
-it('New environment needs deploy:add; creating one opens its page', async () => {
+it('Adopt existing opens the adopt dialog (deploy:add); adopting reloads the list and opens its page', async () => {
   show();
-  await userEvent.click(await screen.findByRole('button', { name: 'New environment' }));
-  await userEvent.click(within(screen.getByRole('dialog', { name: 'New environment' })).getByRole('button', { name: 'fake create' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Adopt existing' }));
+  expect(screen.getByRole('button', { name: 'Adopt existing' }).classList.contains('btn-ghost')).toBe(true);
+  await userEvent.click(within(screen.getByRole('dialog', { name: 'Adopt an environment' })).getByRole('button', { name: 'fake adopt' }));
   expect(await screen.findByText('detail page')).toBeTruthy();
+  expect(api.listEnvironments).toHaveBeenCalledTimes(2);
   cleanup();
   perms.add = false;
   show();
   await screen.findByText('No environments yet.');
+  expect(screen.queryByRole('button', { name: 'Adopt existing' })).toBeNull();
+});
+
+it('there is no New environment button (the flow is above)', async () => {
+  show();
+  await screen.findByText('No environments yet.');
+  expect(screen.getByRole('button', { name: 'Adopt existing' })).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'New environment' })).toBeNull();
 });
 
-it('closing the modal after an adopt (×, Escape or the scrim) refreshes the list', async () => {
+it('closing the adopt dialog (×, Escape or the scrim) refreshes the list', async () => {
   api.listEnvironments.mockResolvedValueOnce({ environments: [] }).mockResolvedValue({ environments: [ENV] });
   show();
   await screen.findByText('No environments yet.');
-  await userEvent.click(screen.getByRole('button', { name: 'New environment' }));
-  await userEvent.click(within(screen.getByRole('dialog', { name: 'New environment' })).getByRole('button', { name: 'fake close' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Adopt existing' }));
+  await userEvent.click(within(screen.getByRole('dialog', { name: 'Adopt an environment' })).getByRole('button', { name: 'fake close' }));
   expect(screen.queryByRole('dialog')).toBeNull();
   const table = await screen.findByRole('table', { name: 'Environments' });
   expect(await within(table).findByRole('link', { name: 'uat' })).toBeTruthy();

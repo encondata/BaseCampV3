@@ -80,7 +80,6 @@
 
 /* Environments (deploy step 2). The 4-class selectors out-rank the portal's
    `.modal-card.reports-modal-card.rgm-card` width. */
-.modal-card.reports-modal-card.rgm-card.sirdar-envmodal-card { width: min(860px, 96vw); max-width: 96vw; }
 .sirdar-env-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 20px; align-items: start; }
 .sirdar-env-grid .sirdar-span2 { grid-column: 1 / -1; }
 @media (max-width: 720px) { .sirdar-env-grid { grid-template-columns: 1fr; } }
@@ -124,10 +123,11 @@
   display: block;
   margin-bottom: 6px;
 }
-/* The New environment modal's body is a .pf-form (a 2-column grid) holding
-   whole sections — the mode switch, the field grid, the services table — so
-   each section spans the full width instead of filling one column. */
-.sirdar-envmodal-card .modal-body.pf-form > * { grid-column: 1 / -1; }
+/* The Adopt and First admin dialogs' bodies are a .pf-form (a 2-column grid)
+   holding whole sections (the field grid, the result list), so each section
+   spans the full width instead of filling one column. */
+.sirdar-adopt-card .modal-body.pf-form > *,
+.sirdar-firstadmin-card .modal-body.pf-form > * { grid-column: 1 / -1; }
 /* A back link inside a page eyebrow (the environment page's "Deploy") keeps
    the eyebrow's accent color instead of the browser's default link blue. */
 .eyebrow a { color: inherit; text-decoration: none; }
@@ -211,3 +211,6 @@
 .sirdar-toggle-row { display: flex; align-items: center; gap: 10px; }
 /* The Adopt existing dialog sizes to its form. */
 .modal-card.reports-modal-card.rgm-card.sirdar-adopt-card { width: min(640px, 96vw); max-width: 96vw; }
+/* The Settings tab's First admin dialog sizes to its form. */
+.modal-card.reports-modal-card.rgm-card.sirdar-firstadmin-card { width: min(560px, 96vw); max-width: 96vw; }
+.sirdar-firstadmin { margin-top: 20px; }

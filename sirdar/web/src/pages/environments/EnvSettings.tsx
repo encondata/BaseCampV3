@@ -15,6 +15,7 @@ import {
 
 import DeleteEnvironmentModal from './DeleteEnvironmentModal';
 import DoSettingsSection from './DoSettingsSection';
+import FirstAdminCard from './FirstAdminCard';
 import {
   deploymentRunning, gbOf, hostLabel, mbOf, onDo, onVmHost, sshTargets, targetLabel, vmRef, vmStage,
 } from './labels';
@@ -86,6 +87,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
   const [optional, setOptional] = useState<string[]>(Object.keys(SECRET_LABELS));
   // The API's Machine limits; until they load, only the shape is checked here (the API checks the range).
   const [vmLimits, setVmLimits] = useState<VmDefaults['limits'] | null>(null);
+  const [passwordMin, setPasswordMin] = useState<number | undefined>(undefined);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
@@ -96,7 +98,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
   const reset = (from: Environment) => { setForm(fromEnv(from)); setSecretAction({}); setSecretValue({}); };
   useEffect(() => { reset(env); }, [env.name]);  // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    getEnvironmentDefaults().then((d) => { setLevels(d.log_levels); setOptional(d.optional_secrets); setVmLimits(d.vm?.limits ?? null); }).catch(() => { /* only the current level is offered */ });
+    getEnvironmentDefaults().then((d) => { setLevels(d.log_levels); setOptional(d.optional_secrets); setVmLimits(d.vm?.limits ?? null); setPasswordMin(d.first_admin?.password_min_length); }).catch(() => { /* only the current level is offered */ });
   }, []);
 
   const set = <K extends keyof Form>(key: K, value: Form[K]) => { setForm((f) => ({ ...f, [key]: value })); setNotice(''); };
@@ -350,6 +352,9 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
             {saving ? 'Saving…' : 'Save settings'}
           </button>
         </div>
+      )}
+      {env.first_admin && !env.first_admin.done && (
+        <FirstAdminCard env={env} disabled={deploying} minLength={passwordMin} onSaved={onSaved} />
       )}
       {cloud && env.do && (
         <DoSettingsSection env={env} disabled={off} onSaved={onSaved} onDeployStarted={(dep) => onDeleteStarted?.(dep)} />
