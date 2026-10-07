@@ -186,3 +186,10 @@ it('Blue/Green: with the snapshot kept on, the default is sent', async () => {
   await userEvent.click(within(dialog).getByRole('button', { name: 'Delete environment' }));
   expect(api.startDeployment).toHaveBeenCalledWith('lan9', { mode: 'teardown', confirm_name: 'lan9' });
 });
+
+it('Blue/Green before anything went live: no snapshot, as the API takes none, and it says why', () => {
+  const { dialog } = show({ ...LAN_ENV, current_sha: null, active_slot: null });
+  expect(within(dialog).queryByRole('checkbox', { name: 'Save a snapshot first' })).toBeNull();
+  expect(within(dialog).queryByText('Nothing was deployed, so there is no snapshot to save.')).toBeNull();
+  expect(within(dialog).getByText(/No slot has gone live yet/)).toBeTruthy();
+});

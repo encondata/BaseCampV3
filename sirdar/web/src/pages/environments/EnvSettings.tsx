@@ -17,7 +17,7 @@ import DeleteEnvironmentModal from './DeleteEnvironmentModal';
 import DoSettingsSection from './DoSettingsSection';
 import FirstAdminCard from './FirstAdminCard';
 import {
-  deploymentRunning, gbOf, hostLabel, mbOf, onDo, onVmHost, sshTargets, targetLabel, vmRef, vmStage,
+  deploymentRunning, gbOf, hostLabel, mbOf, onBluegreen, onDo, onVmHost, sshTargets, targetLabel, vmRef, vmStage,
 } from './labels';
 
 const SECRET_LABELS: Record<string, string> = {
@@ -75,6 +75,9 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
   const onVm = onVmHost(env);
   // DigitalOcean: its target, names, proxy and bucket belong to what Sirdar built (the API's do_field_locked).
   const cloud = onDo(env);
+  // LAN Blue/Green: three VMs (env.machines), no single env.vm; their sizes can't change yet.
+  const bluegreen = onBluegreen(env);
+  const vmNames = env.machines.map((m) => m.name);
   // A VM's or the droplets' service addresses are set by step 0 (the API's host_ip_managed).
   const managedAddr = onVm || cloud;
   const esxi = env.target_kind === 'esxi';
@@ -244,8 +247,10 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
         <TextField id="env-set-ref" label="Default git ref" value={form.ref} error={errors.ref} disabled={off}
                    onChange={(v) => set('ref', v)} />
         {cloud ? null : onVm ? (
-          <TextField id="env-set-target" label="Target" value={`${hostLabel(env)} · ${env.vm?.name ?? ''}`} disabled
-                     error={errors.target} hint="It stays on the VM Sirdar built for it."
+          <TextField id="env-set-target" label="Target" value={bluegreen ? `${hostLabel(env)} · Blue/Green (${vmNames.join(', ')})`
+                       : `${hostLabel(env)} · ${env.vm?.name ?? ''}`} disabled
+                     error={errors.target}
+                     hint={bluegreen ? 'It stays on the VMs Sirdar built for it.' : 'It stays on the VM Sirdar built for it.'}
                      onChange={() => {}} />
         ) : (
           <div>
@@ -280,7 +285,7 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
         </div>
       </div>
 
-      {onVm && (
+      {onVm && !bluegreen && (
         <>
           <h3 className="sirdar-sub">Machine</h3>
           <p className="page-hint">
@@ -367,6 +372,10 @@ export default function EnvSettings({ env, targets, onSaved, onDeleteStarted }: 
               ? 'Saves a snapshot first (optional, except for production), removes the DNS records Sirdar made and '
                 + 'everything it built on DigitalOcean (droplets, database, bucket, load balancer, certificate and '
                 + 'firewall), and removes it from Sirdar.'
+              : bluegreen
+              ? `Saves a snapshot first (optional), destroys its three VMs on ${hostLabel(env)} (`
+                + `${vmNames.slice(0, -1).join(', ')} and ${vmNames[vmNames.length - 1]}) with everything on them, `
+                + 'removes the DNS records and proxy hosts Sirdar made, and removes it from Sirdar.'
               : onVm && env.vm && vmStage(env.vm) === 'none'
               ? `No VM was created yet; nothing on ${hostLabel(env)} is removed. Deleting it removes the DNS records `
                 + 'and proxy hosts Sirdar made, and removes it from Sirdar.'

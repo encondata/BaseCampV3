@@ -16,7 +16,7 @@ vi.mock('../../lib/sirdarApi', async (orig) => ({ ...(await orig<typeof import('
 import { ApiError } from '@portal/lib/api';
 
 import EnvSettings from './EnvSettings';
-import { DEFAULTS, DO_ENV, ENV, ESXI_ENV, ESXI_TARGETS, PX_ENV, PX_NEW_ENV, PX_TARGETS, TARGETS } from './testData';
+import { DEFAULTS, DO_ENV, ENV, ESXI_ENV, ESXI_TARGETS, LAN_ENV, PX_ENV, PX_NEW_ENV, PX_TARGETS, TARGETS } from './testData';
 
 Element.prototype.scrollIntoView = () => {};
 beforeEach(() => {
@@ -274,4 +274,15 @@ it('the First admin card shows only while a first admin is still to be created',
   cleanup();
   open({ ...ENV, first_admin: null });
   expect(screen.queryByRole('group', { name: 'First admin' })).toBeNull();
+});
+
+it('Blue/Green: the target names its three VMs, sizes are not editable, and Delete names the VMs', () => {
+  render(<EnvSettings env={LAN_ENV} targets={ESXI_TARGETS.targets} onSaved={vi.fn()} onDeleteStarted={vi.fn()} />);
+  expect((screen.getByLabelText('Target') as HTMLInputElement).value)
+    .toBe('ESXi · Blue/Green (ss-lan9-data, ss-lan9-orange, ss-lan9-purple)');
+  expect(screen.queryByLabelText('vCPUs')).toBeNull();
+  expect(screen.queryByLabelText('VM snapshots to keep')).toBeNull();
+  const del = screen.getByText(/destroys its three VMs on ESXi/);
+  expect(del.textContent).toContain('ss-lan9-data, ss-lan9-orange and ss-lan9-purple');
+  expect(del.textContent).not.toMatch(/VM snapshots/);
 });

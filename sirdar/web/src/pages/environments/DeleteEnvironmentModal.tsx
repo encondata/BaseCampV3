@@ -179,6 +179,11 @@ export default function DeleteEnvironmentModal({ env, onStarted, onClose }: {
                 <Switch checked={snapshot} disabled={busy} onChange={setSnapshot} label="Save a snapshot first" />
                 <span aria-hidden="true">Save a snapshot first (named {env.name}-before-delete-…, kept in Sirdar)</span>
               </div>
+            ) : bluegreen ? (
+              // The API's _start_lan_teardown takes a snapshot only once a slot went live (current_sha).
+              <p className="page-hint">
+                No slot has gone live yet, so Sirdar saves no snapshot: the data VM's database goes with it.
+              </p>
             ) : (
               <p className="page-hint">Nothing was deployed, so there is no snapshot to save.</p>
             ))}
