@@ -160,6 +160,10 @@ def render_data_env(cfg: DataEnvConfig) -> str:
         raise RenderError(f"missing secrets: {', '.join(missing)}")
     if not cfg.allow or not all(_IPV4_RE.fullmatch(ip) for ip in cfg.allow):
         raise RenderError("STACK_DB_ALLOW must be IPv4 addresses")
+    for key, port in (("STACK_SPACES_PORT", cfg.spaces_port),
+                      ("STACK_MAILPIT_PORT", cfg.mailpit_port), ("STACK_DB_PORT", cfg.db_port)):
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise RenderError(f"{key} must be a port number, 1-65535")
     values = {
         "STACK_ENV": cfg.name, "STACK_DOMAIN": cfg.domain, "STACK_IMAGE_TAG": "data",
         "STACK_BIND_IP": cfg.bind_ip, "STACK_SPACES_PORT": str(cfg.spaces_port),

@@ -5,7 +5,9 @@
 # Nginx Proxy Manager reach object storage (published ports bypass ufw, so
 # the rules sit in Docker's DOCKER-USER chain and come back with Docker),
 # then ss-stack data (Postgres on the LAN through db/lan.yml, pg_hba.conf from
-# STACK_DB_ALLOW).
+# STACK_DB_ALLOW). The data-only .env is the one source of truth: the ports
+# and Postgres clients Sirdar passes for the firewall must be the ones it
+# names, or nothing changes.
 #
 # data_vm_test_mode is for the playbook tests only, and takes effect only
 # when the controller's SIRDAR_TEST_DATA_VM is 1 as well: the runner's job env
@@ -22,6 +24,20 @@
       {{ (env_dir ~ '/../sirdar-data-firewall') if test_mode
          else '/usr/local/sbin/sirdar-data-firewall' }}
     ipv4: '^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$'
+    # The .env's own values (the last assignment wins, as in ss-stack). Only
+    # these non-secret keys are read; the text itself is never shown.
+    env_text: "{{ data_env_b64 | b64decode }}"
+    env_db_port: "{{ env_text | regex_findall('(?m)^STACK_DB_PORT=(.*)$') | last | default('') }}"
+    env_spaces_port: >-
+      {{ env_text | regex_findall('(?m)^STACK_SPACES_PORT=(.*)$') | last | default('') }}
+    env_mailpit_port: >-
+      {{ env_text | regex_findall('(?m)^STACK_MAILPIT_PORT=(.*)$') | last | default('') }}
+    env_db_allow: "{{ env_text | regex_findall('(?m)^STACK_DB_ALLOW=(.*)$') | last | default('') }}"
+    env_disagrees: >-
+      {{ (['STACK_DB_PORT'] if db_port | string != env_db_port else [])
+         + (['STACK_SPACES_PORT'] if spaces_port | string != env_spaces_port else [])
+         + (['STACK_MAILPIT_PORT'] if mailpit_port | string != env_mailpit_port else [])
+         + (['STACK_DB_ALLOW'] if db_clients | join(',') != env_db_allow else []) }}
   tasks:
     - name: The test mode is the tests' alone
       ansible.builtin.assert:
@@ -38,14 +54,36 @@
           - db_clients | length > 0
           - db_clients | select('match', ipv4) | list | length == db_clients | length
           - spaces_clients | select('match', ipv4) | list | length == spaces_clients | length
-          - db_port | string is match('^[1-9][0-9]{0,4}$')
-          - spaces_port | string is match('^[1-9][0-9]{0,4}$')
-          - mailpit_port | string is match('^[1-9][0-9]{0,4}$')
-        fail_msg: The data VM's clients must be IPv4 addresses and its ports numbers.
+        fail_msg: The data VM's clients must be IPv4 addresses.
+        quiet: true
+
+    - name: The ports are port numbers
+      ansible.builtin.assert:
+        that:
+          - item | string is match('^[1-9][0-9]{0,4}$')
+          - item | int <= 65535
+        fail_msg: The data VM's ports must be numbers, 1-65535.
+        quiet: true
+      loop: ["{{ db_port }}", "{{ spaces_port }}", "{{ mailpit_port }}"]
+
+    - name: The firewall's ports and clients are the .env's
+      ansible.builtin.assert:
+        that:
+          - env_disagrees | length == 0
+        fail_msg: >-
+          Sirdar's firewall settings don't match the data VM's .env
+          ({{ env_disagrees | join(', ') }}); nothing was changed.
         quiet: true
 
     - name: Docker, git and the environment folder
       ansible.builtin.include_tasks: tasks/docker.yml
+      when: not test_mode
+
+    - name: The firewall's tools
+      ansible.builtin.apt:
+        name: [iptables, conntrack]
+        state: present
+      become: true
       when: not test_mode
 
     - name: Check out the commit (the stack's files)
@@ -69,6 +107,12 @@
         mode: "0600"
       no_log: true
 
+    # The rules are built in the idle one of two chains, then DOCKER-USER
+    # jumps to it before the old jump goes: the ports are never open while the
+    # rules change. Only traffic from outside is filtered (the VM's own
+    # containers, on docker0 and the br- bridges, aren't). Connections already
+    # tracked from an address that is no longer allowed are forgotten, so they
+    # can't carry on as ESTABLISHED.
     - name: The firewall's rules
       ansible.builtin.copy:
         dest: "{{ firewall_script }}"
@@ -78,18 +122,50 @@
           # Written by Sirdar for {{ env_name }}'s data VM: Postgres only from the
           # app VMs, object storage only from them and Nginx Proxy Manager.
           set -e
-          iptables -N SIRDAR-DATA 2>/dev/null || iptables -F SIRDAR-DATA
-          iptables -C DOCKER-USER -j SIRDAR-DATA 2>/dev/null || iptables -I DOCKER-USER -j SIRDAR-DATA
-          iptables -A SIRDAR-DATA -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+          if iptables -C DOCKER-USER -j SIRDAR-DATA-A 2>/dev/null; then
+            old=SIRDAR-DATA-A new=SIRDAR-DATA-B
+          else
+            old=SIRDAR-DATA-B new=SIRDAR-DATA-A
+          fi
+          while iptables -D DOCKER-USER -j "$new" 2>/dev/null; do :; done
+          iptables -N "$new" 2>/dev/null || iptables -F "$new"
+          iptables -A "$new" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+          iptables -A "$new" -i docker0 -j RETURN
+          iptables -A "$new" -i br-+ -j RETURN
           {% for ip in db_clients %}
-          iptables -A SIRDAR-DATA -p tcp -s {{ ip }} -m conntrack --ctorigdstport {{ db_port }} -j RETURN
+          iptables -A "$new" -p tcp -s {{ ip }} -m conntrack --ctorigdstport {{ db_port }} -j RETURN
           {% endfor %}
           {% for ip in spaces_clients %}
-          iptables -A SIRDAR-DATA -p tcp -s {{ ip }} -m conntrack --ctorigdstport {{ spaces_port }} -j RETURN
+          iptables -A "$new" -p tcp -s {{ ip }} -m conntrack --ctorigdstport {{ spaces_port }} -j RETURN
           {% endfor %}
-          iptables -A SIRDAR-DATA -p tcp -m conntrack --ctorigdstport {{ db_port }} -j DROP
-          iptables -A SIRDAR-DATA -p tcp -m conntrack --ctorigdstport {{ spaces_port }} -j DROP
-          iptables -A SIRDAR-DATA -p tcp -m conntrack --ctorigdstport {{ mailpit_port }} -j DROP
+          iptables -A "$new" -p tcp -m conntrack --ctorigdstport {{ db_port }} -j DROP
+          iptables -A "$new" -p tcp -m conntrack --ctorigdstport {{ spaces_port }} -j DROP
+          iptables -A "$new" -p tcp -m conntrack --ctorigdstport {{ mailpit_port }} -j DROP
+          iptables -I DOCKER-USER -j "$new"
+          while iptables -D DOCKER-USER -j "$old" 2>/dev/null; do :; done
+          iptables -F "$old" 2>/dev/null || true
+          iptables -X "$old" 2>/dev/null || true
+
+          # forget <port> [allowed address…]: drop the tracked connections to
+          # <port> from every other address (without conntrack, nothing to do)
+          forget() {
+            port=$1; shift
+            conntrack -L -p tcp --orig-port-dst "$port" 2>/dev/null \
+              | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^src=/) { print substr($i, 5); break } }' \
+              | sort -u | while read -r src; do
+                  case " $* " in
+                    *" $src "*) ;;
+                    *) conntrack -D -p tcp --orig-src "$src" --orig-port-dst "$port" \
+                         >/dev/null 2>&1 || true ;;
+                  esac
+                done || true
+          }
+          if command -v conntrack >/dev/null 2>&1; then
+            forget {{ db_port }} {{ db_clients | join(' ') }}
+            forget {{ spaces_port }} {{ spaces_clients | join(' ') }}
+            forget {{ mailpit_port }}
+          fi
+      register: firewall_rules
       become: "{{ not test_mode }}"
 
     - name: The firewall's unit
@@ -110,6 +186,7 @@
 
           [Install]
           WantedBy=docker.service
+      register: firewall_unit
       become: true
       when: not test_mode
 
@@ -117,8 +194,12 @@
       ansible.builtin.systemd_service:
         name: sirdar-data-firewall
         enabled: true
-        state: restarted
-        daemon_reload: true
+        # rerun only when the rules (or the unit) changed; started is a no-op
+        # for the active oneshot otherwise
+        state: >-
+          {{ 'restarted' if (firewall_rules is changed or firewall_unit is changed)
+             else 'started' }}
+        daemon_reload: "{{ firewall_unit is changed }}"
       become: true
       when: not test_mode
 

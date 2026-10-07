@@ -212,3 +212,18 @@ def test_stack_db_sslmode_is_an_extra_key():
     assert "STACK_DB_SSLMODE" in envfile.EXTRA_KEYS
     assert envfile.EXTRA_KEYS.index("STACK_DB_SSLMODE") == \
         envfile.EXTRA_KEYS.index("STACK_DB_USER") + 1
+
+
+@pytest.mark.parametrize("field, key", [("db_port", "STACK_DB_PORT"),
+                                        ("spaces_port", "STACK_SPACES_PORT"),
+                                        ("mailpit_port", "STACK_MAILPIT_PORT")])
+@pytest.mark.parametrize("port", [0, 65536, 70000])
+def test_the_data_vm_env_caps_its_ports(field, key, port):
+    with pytest.raises(envfile.RenderError) as err:
+        envfile.render_data_env(_data_cfg(**{field: port}))
+    assert key in err.value.reason and "1-65535" in err.value.reason
+
+
+def test_the_data_vm_env_takes_the_top_port():
+    values = envfile.parse_env(envfile.render_data_env(_data_cfg(db_port=65535)))
+    assert values["STACK_DB_PORT"] == "65535"

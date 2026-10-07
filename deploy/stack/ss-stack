@@ -71,9 +71,18 @@ HBA_FILE="$env_dir/pg_hba.conf"
 
 # pg_hba.conf for a data VM: the local socket (ss-stack dump, the health
 # check), localhost, and the app servers in STACK_DB_ALLOW; nobody else.
-# Every address is checked before the file is replaced.
+# Every address (and STACK_DB_PORT) is checked before the file changes. The
+# container bind-mounts the file itself, which pins its inode: a changed
+# list is written into the same file (never mv'd over it), then a running
+# Postgres rereads it.
 write_hba() {
-  local allow ip ips octet octets
+  local allow ip ips octet octets port
+  port=$(env_value STACK_DB_PORT)
+  if [[ -n $port ]]; then
+    if ! { [[ $port =~ ^[1-9][0-9]{0,4}$ ]] && (( port <= 65535 )); }; then
+      die "STACK_DB_PORT must be a port number, 1-65535 (got '$port')"
+    fi
+  fi
   allow=$(env_value STACK_DB_ALLOW)
   [[ $allow =~ ^[^,]+(,[^,]+)*$ ]] \
     || die "STACK_DB_ALLOW must list the app servers' IPv4 addresses, comma-separated"
@@ -83,7 +92,10 @@ write_hba() {
       || die "STACK_DB_ALLOW has '$ip', not an IPv4 address"
     IFS=. read -ra octets <<<"$ip"
     for octet in "${octets[@]}"; do
-      (( 10#$octet <= 255 )) || die "STACK_DB_ALLOW has '$ip', not an IPv4 address"
+      # no leading zeros: some readers take 010 as octal
+      if ! { [[ $octet =~ ^(0|[1-9][0-9]{0,2})$ ]] && (( octet <= 255 )); }; then
+        die "STACK_DB_ALLOW has '$ip', not an IPv4 address"
+      fi
     done
   done
   CLEANUP+=("$HBA_FILE.tmp")
@@ -95,9 +107,20 @@ write_hba() {
       echo "host serversherpa serversherpa $ip/32 scram-sha-256"
     done
   } > "$HBA_FILE.tmp"
-  chmod 644 "$HBA_FILE.tmp"          # the container's postgres user reads it
-  mv "$HBA_FILE.tmp" "$HBA_FILE"
   export STACK_DB_HBA_FILE="$HBA_FILE"
+  if [[ ! -f $HBA_FILE ]]; then
+    chmod 644 "$HBA_FILE.tmp"        # the container's postgres user reads it
+    mv "$HBA_FILE.tmp" "$HBA_FILE"
+    return 0
+  fi
+  if cmp -s "$HBA_FILE.tmp" "$HBA_FILE"; then return 0; fi
+  cat "$HBA_FILE.tmp" > "$HBA_FILE"   # the same inode the container sees
+  chmod 644 "$HBA_FILE"
+  if [[ -n $(dc db ps --status running -q postgres </dev/null) ]]; then
+    dc db exec -T postgres psql -U serversherpa -d serversherpa -v ON_ERROR_STOP=1 \
+      -tAc 'SELECT pg_reload_conf()' </dev/null >/dev/null \
+      || die "couldn't make Postgres reread pg_hba.conf"
+  fi
 }
 
 # On a droplet the network is a fixed /24 whose lower half is for fixed
@@ -229,7 +252,12 @@ data_up() {
     dc storage up -d "${WAIT[@]}" mailpit
   else
     dc db up -d "${WAIT[@]}"
-    dc storage up -d "${WAIT[@]}"
+    # a data VM keeps objects only: its app VMs run their own mail catchers
+    if lan_db; then
+      dc storage up -d "${WAIT[@]}" seaweedfs
+    else
+      dc storage up -d "${WAIT[@]}"
+    fi
   fi
 }
 

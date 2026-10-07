@@ -16,6 +16,7 @@ FAKE_DOCKER = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_LOG"
 case "$*" in
   "network inspect "*) [[ -n "${FAKE_NETWORK_EXISTS:-}" ]] && exit 0 || exit 1 ;;
+  *" ps --status running -q postgres") [[ -n "${FAKE_DB_RUNNING:-}" ]] && echo 0123abcdef ;;
   *pg_dump*)
     [[ -n "${FAKE_FAIL_PG_DUMP:-}" ]] && { printf 'PGDMP-cut'; exit 1; }
     # a dump that hangs halfway, so a test can kill ss-stack mid-dump
@@ -342,7 +343,8 @@ def test_a_data_vm_publishes_postgres_with_its_hba(env_dir: Path, fake: dict[str
 
 
 @pytest.mark.parametrize("allow", ["", "10.10.48.48,not-an-ip", "10.10.48.48;rm -rf /",
-                                   "10.10.48.256", "10.10.48.48,"])
+                                   "10.10.48.256", "10.10.48.48,", "10.10.048.48",
+                                   "010.10.48.48"])
 def test_a_bad_allow_list_is_refused(env_dir: Path, fake: dict[str, str], allow: str) -> None:
     with (env_dir / ".env").open("a") as f:
         f.write(f"STACK_DB_PUBLISH=1\nSTACK_DB_ALLOW={allow}\n")
@@ -411,6 +413,63 @@ def test_an_unknown_sslmode_is_refused(env_dir: Path, fake: dict[str, str]) -> N
     assert not any("pg_dump" in c for c in calls(fake))
 
 
+RELOAD = ("exec -T postgres psql -U serversherpa -d serversherpa -v ON_ERROR_STOP=1 "
+          "-tAc SELECT pg_reload_conf()")
+
+
+def test_a_changed_allow_list_reaches_the_running_database(env_dir: Path,
+                                                           fake: dict[str, str]) -> None:
+    """The container bind-mounts the file itself, so it must keep its inode,
+    and a running Postgres rereads it (pg_reload_conf)."""
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    assert run(fake, "data", str(env_dir)).returncode == 0
+    hba = env_dir / "pg_hba.conf"
+    inode = hba.stat().st_ino
+    assert not any(RELOAD in c for c in calls(fake))   # nothing was running
+    with (env_dir / ".env").open("a") as f:
+        f.write("STACK_DB_ALLOW=10.10.48.50\n")
+    Path(fake["DOCKER_LOG"]).write_text("")
+    out = run({**fake, "FAKE_DB_RUNNING": "1"}, "data", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert hba.stat().st_ino == inode
+    assert oct(hba.stat().st_mode & 0o777) == "0o644"
+    text = hba.read_text()
+    assert "10.10.48.50/32" in text and "10.10.48.48" not in text
+    log = calls(fake)
+    reload = [i for i, c in enumerate(log) if RELOAD in c]
+    assert len(reload) == 1 and f"-f {STACK_DIR}/db/lan.yml" in log[reload[0]]
+    assert reload[0] < next(i for i, c in enumerate(log) if " up -d " in c)
+
+
+def test_an_unchanged_allow_list_doesnt_reload(env_dir: Path, fake: dict[str, str]) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    assert run(fake, "data", str(env_dir)).returncode == 0
+    out = run({**fake, "FAKE_DB_RUNNING": "1"}, "data", str(env_dir))
+    assert out.returncode == 0, out.stderr
+    assert not any(RELOAD in c for c in calls(fake))
+
+
+def test_a_data_vm_starts_no_mail_catcher(env_dir: Path, fake: dict[str, str]) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA)
+    assert run(fake, "data", str(env_dir)).returncode == 0
+    storage = [c for c in calls(fake) if "/storage/compose.yml" in c]
+    wait = "up -d --wait --wait-timeout 300 --remove-orphans"
+    assert storage == [dc(env_dir, "storage", f"{wait} seaweedfs")]
+
+
+@pytest.mark.parametrize("port", ["70000", "0", "54x", "05432"])
+def test_a_bad_db_port_on_a_data_vm_is_refused(env_dir: Path, fake: dict[str, str],
+                                               port: str) -> None:
+    with (env_dir / ".env").open("a") as f:
+        f.write(LAN_DATA + f"STACK_DB_PORT={port}\n")
+    out = run(fake, "data", str(env_dir))
+    assert out.returncode != 0 and "STACK_DB_PORT" in out.stderr
+    assert not any("/db/compose.yml" in c for c in calls(fake))
+
+
 def _free_port() -> int:
     import socket
     with socket.socket() as s:
@@ -461,6 +520,16 @@ def test_a_data_vm_lets_only_its_app_servers_in(tmp_path: Path) -> None:
                              check=False)
         assert rev.returncode == 0, rev.stderr
         assert (tmp_path / "out.dump").read_bytes().startswith(b"PGDMP")
+        # a new allow list reaches the running database: .11 in, .10 out
+        with (env_dir / ".env").open("a") as f:
+            f.write("STACK_DB_ALLOW=172.31.77.11\n")
+        again = subprocess.run(["bash", str(SS_STACK), "data", str(env_dir)],
+                               capture_output=True, text=True, check=False)
+        assert again.returncode == 0, again.stdout + again.stderr
+        now_in = client("172.31.77.11")
+        assert now_in.returncode == 0 and now_in.stdout.strip() == "1", now_in.stderr
+        now_out = client("172.31.77.10")
+        assert now_out.returncode != 0 and "no pg_hba.conf entry" in now_out.stderr
     finally:
         subprocess.run(["bash", str(SS_STACK), "down", str(env_dir), "--volumes"],
                        capture_output=True, text=True, check=False)

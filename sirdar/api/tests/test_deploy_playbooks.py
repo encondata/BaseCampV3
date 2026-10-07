@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -1047,6 +1048,11 @@ def test_the_docker_tasks_install_docker_and_the_folder():
     assert "169.254.169.254" not in (PLAYBOOK_DIR / "tasks" / "docker.yml").read_text()
 
 
+DATA_ENV = ("STACK_ENV=e2e\nPOSTGRES_PASSWORD=0123abcd\nSPACES_SECRET_KEY=0123abcd\n"
+            "STACK_SPACES_PORT=9000\nSTACK_MAILPIT_PORT=8025\n"
+            "STACK_DB_PUBLISH=1\nSTACK_DB_PORT=5432\nSTACK_DB_ALLOW=10.10.48.48,10.10.48.49\n")
+
+
 def _data_vm_vars(env_dir, data_env, **kw):
     return {**_common(env_dir), "data_env_b64": base64.b64encode(data_env.encode()).decode(),
             "db_clients": ["10.10.48.48", "10.10.48.49"],
@@ -1058,8 +1064,7 @@ def _data_vm_vars(env_dir, data_env, **kw):
 def test_data_vm_playbook_writes_its_env_and_starts_the_data_stacks(tmp_path):
     env_dir, env = _target(tmp_path)
     env[DATA_VM_TEST_ENV] = "1"
-    data_env = ("STACK_ENV=e2e\nPOSTGRES_PASSWORD=0123abcd\nSPACES_SECRET_KEY=0123abcd\n"
-                "STACK_DB_PUBLISH=1\nSTACK_DB_PORT=5432\nSTACK_DB_ALLOW=10.10.48.48,10.10.48.49\n")
+    data_env = DATA_ENV
     result, calls = _play(tmp_path, "data_vm.yml", _data_vm_vars(env_dir, data_env), env,
                           verbose=True)
     out = result.stdout + result.stderr
@@ -1072,13 +1077,16 @@ def test_data_vm_playbook_writes_its_env_and_starts_the_data_stacks(tmp_path):
     assert "-s 10.10.48.49 -m conntrack --ctorigdstport 5432 -j RETURN" in rules
     assert "-s 10.10.48.6 -m conntrack --ctorigdstport 9000 -j RETURN" in rules
     assert "-s 10.10.48.6 -m conntrack --ctorigdstport 5432" not in rules
-    assert rules.rstrip().endswith("--ctorigdstport 8025 -j DROP")
     # every allow comes before the drops, and Postgres is dropped for everyone else
-    lines = [ln.strip() for ln in rules.splitlines() if ln.strip().startswith("iptables -A")]
+    lines = [ln.strip() for ln in rules.splitlines() if ln.strip().startswith('iptables -A "$new"')]
     drops = [i for i, ln in enumerate(lines) if ln.endswith("-j DROP")]
     returns = [i for i, ln in enumerate(lines) if ln.endswith("-j RETURN")]
     assert max(returns) < min(drops)
-    assert "iptables -A SIRDAR-DATA -p tcp -m conntrack --ctorigdstport 5432 -j DROP" in lines
+    assert lines[-1].endswith("--ctorigdstport 8025 -j DROP")
+    assert 'iptables -A "$new" -p tcp -m conntrack --ctorigdstport 5432 -j DROP' in lines
+    # only traffic from outside: the data VM's own containers aren't filtered
+    for bridge in ("docker0", "br-+"):
+        assert any(ln.endswith(f"-i {bridge} -j RETURN") for ln in lines[:min(drops)])
     syntax = subprocess.run(["sh", "-n", str(tmp_path / "sirdar-data-firewall")],
                             capture_output=True, text=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
@@ -1132,3 +1140,183 @@ def test_the_data_vm_test_mode_never_reaches_a_real_run(tmp_path, monkeypatch):
     finally:
         import shutil
         shutil.rmtree(run_dir)
+
+
+
+# A stand-in iptables that keeps the filter table's user chains in a JSON
+# file and, after every change, records whether traffic from outside still
+# meets a complete set of rules (a chain DOCKER-USER jumps to that ends with
+# the mail catcher's DROP, the script's last rule).
+FAKE_IPTABLES = r"""#!/usr/bin/env python3
+import json, os, sys
+path = os.environ["FAKE_IPT_STATE"]
+state = json.load(open(path)) if os.path.exists(path) else {"DOCKER-USER": []}
+args = sys.argv[1:]
+op, chain, rule = args[0], args[1], " ".join(args[2:])
+with open(path + ".log", "a") as f:
+    f.write(" ".join(args) + "\n")
+def jumped():
+    return [r.split("-j ")[1] for r in state["DOCKER-USER"] if r.startswith("-j ")]
+code = 0
+if op == "-N":
+    code = 1 if chain in state else 0
+    state.setdefault(chain, [])
+elif op == "-F":
+    code = 0 if chain in state else 1
+    if chain in state: state[chain] = []
+elif op == "-X":
+    if chain not in state: code = 1
+    elif chain in jumped(): code = 1
+    else: del state[chain]
+elif op == "-C":
+    code = 0 if rule in state.get(chain, []) else 1
+elif op == "-I":
+    state[chain].insert(0, rule)
+elif op == "-A":
+    if chain not in state: sys.exit(1)
+    state[chain].append(rule)
+elif op == "-D":
+    if rule in state.get(chain, []): state[chain].remove(rule)
+    else: code = 1
+else:
+    sys.exit(2)
+json.dump(state, open(path, "w"))
+complete = [c for c in jumped() if state.get(c) and state[c][-1].endswith(
+    "--ctorigdstport " + os.environ["FAKE_LAST_PORT"] + " -j DROP")]
+with open(path + ".safe", "a") as f:
+    f.write(("1" if complete else "0") + "\n")
+sys.exit(code)
+"""
+
+FAKE_CONNTRACK = r"""#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FAKE_CT_LOG"
+if [[ $1 == -L ]]; then
+  port=${@: -1}
+  for src in $FAKE_CT_SOURCES; do
+    orig="src=$src dst=10.10.48.47 sport=40000 dport=$port"
+    reply="src=172.31.0.2 dst=$src sport=$port dport=40000"
+    echo "tcp 6 431999 ESTABLISHED $orig $reply [ASSURED] mark=0 use=1"
+  done
+fi
+exit 0
+"""
+
+
+def _firewall(tmp_path, name, **kw):
+    """Render the firewall script through the playbook (test mode)."""
+    run_dir = tmp_path / name
+    run_dir.mkdir()
+    env_dir, env = _target(run_dir)
+    env[DATA_VM_TEST_ENV] = "1"
+    data_env = DATA_ENV
+    if "db_clients" in kw:
+        data_env = data_env.replace("STACK_DB_ALLOW=10.10.48.48,10.10.48.49",
+                                    "STACK_DB_ALLOW=" + ",".join(kw["db_clients"]))
+    result, _ = _play(run_dir, "data_vm.yml", _data_vm_vars(env_dir, data_env, **kw), env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    return run_dir / "sirdar-data-firewall"
+
+
+def _fake_bin(tmp_path, *, conntrack=True):
+    bin_dir = tmp_path / "fwbin"
+    bin_dir.mkdir(exist_ok=True)
+    ipt = bin_dir / "iptables"
+    ipt.write_text(FAKE_IPTABLES.replace("#!/usr/bin/env python3", f"#!{sys.executable}"))
+    ipt.chmod(0o755)
+    if conntrack:
+        ct = bin_dir / "conntrack"
+        ct.write_text(FAKE_CONNTRACK)
+        ct.chmod(0o755)
+    return {"PATH": f"{bin_dir}:/usr/bin:/bin", "FAKE_IPT_STATE": str(tmp_path / "ipt.json"),
+            "FAKE_LAST_PORT": "8025", "FAKE_CT_LOG": str(tmp_path / "ct.log"),
+            "FAKE_CT_SOURCES": "10.10.48.48 10.10.48.50"}
+
+
+def _run_script(script, env):
+    return subprocess.run(["sh", str(script)], env=env, capture_output=True, text=True,
+                          check=False)
+
+
+def test_the_firewall_never_leaves_the_ports_open_while_it_changes(tmp_path):
+    first = _firewall(tmp_path, "a")
+    second = _firewall(tmp_path, "b", db_clients=["10.10.48.48", "10.10.48.51"])
+    env = _fake_bin(tmp_path)
+    out = _run_script(first, env)
+    assert out.returncode == 0, out.stderr
+    safe = (tmp_path / "ipt.json.safe").read_text().split()
+    # from the moment the rules first went live, they never lapsed
+    assert "1" in safe and "0" not in safe[safe.index("1"):]
+    (tmp_path / "ipt.json.safe").write_text("")
+    for script in (second, second, first):     # changes, a rerun, and back
+        out = _run_script(script, env)
+        assert out.returncode == 0, out.stderr
+        assert "0" not in (tmp_path / "ipt.json.safe").read_text().split()
+    state = json.loads((tmp_path / "ipt.json").read_text())
+    jumps = [r for r in state["DOCKER-USER"] if r.startswith("-j ")]
+    assert len(jumps) == 1
+    live = state[jumps[0].split("-j ")[1]]
+    assert "-p tcp -s 10.10.48.49 -m conntrack --ctorigdstport 5432 -j RETURN" in live
+    # the idle chain is gone; nothing else was left behind
+    assert set(state) == {"DOCKER-USER", jumps[0].split("-j ")[1]}
+
+
+def test_the_firewall_forgets_dropped_clients_connections(tmp_path):
+    script = _firewall(tmp_path, "a")
+    env = _fake_bin(tmp_path)
+    out = _run_script(script, env)
+    assert out.returncode == 0, out.stderr
+    log = (tmp_path / "ct.log").read_text().splitlines()
+    deletes = [ln for ln in log if ln.startswith("-D")]
+    assert "-D -p tcp --orig-src 10.10.48.50 --orig-port-dst 5432" in deletes
+    assert not any("--orig-src 10.10.48.48 --orig-port-dst 5432" in ln for ln in deletes)
+    # the mail catcher has no clients: every tracked connection to it goes
+    assert "-D -p tcp --orig-src 10.10.48.48 --orig-port-dst 8025" in deletes
+
+
+def test_the_firewall_runs_without_conntrack(tmp_path):
+    script = _firewall(tmp_path, "a")
+    env = _fake_bin(tmp_path, conntrack=False)
+    if shutil.which("conntrack", path=env["PATH"]):
+        pytest.skip("this machine has a real conntrack")
+    out = _run_script(script, env)
+    assert out.returncode == 0, out.stderr
+
+
+def test_the_firewall_restarts_only_when_its_rules_change():
+    _, tasks = _tasks("data_vm.yml")
+    by_name = {t["name"]: t for t in tasks}
+    assert by_name["The firewall's rules"].get("register") == "firewall_rules"
+    unit = by_name["The firewall is on, and comes back with Docker"]
+    state = unit["ansible.builtin.systemd_service"]["state"]
+    assert "restarted" in state and "started" in state and "firewall_rules is changed" in state
+    assert "conntrack" in yaml.safe_dump(by_name["The firewall's tools"])
+
+
+@pytest.mark.parametrize("override, key", [
+    ({"db_port": 5433}, "STACK_DB_PORT"),
+    ({"spaces_port": 9001}, "STACK_SPACES_PORT"),
+    ({"mailpit_port": 8026}, "STACK_MAILPIT_PORT"),
+    ({"db_clients": ["10.10.48.48", "10.10.48.52"]}, "STACK_DB_ALLOW"),
+    ({"db_clients": ["10.10.48.48"]}, "STACK_DB_ALLOW"),
+])
+def test_data_vm_playbook_refuses_vars_the_env_disagrees_with(tmp_path, override, key):
+    env_dir, env = _target(tmp_path)
+    env[DATA_VM_TEST_ENV] = "1"
+    result, calls = _play(tmp_path, "data_vm.yml", _data_vm_vars(env_dir, DATA_ENV, **override),
+                          env)
+    assert result.returncode != 0
+    assert key in result.stdout and "0123abcd" not in result.stdout + result.stderr
+    assert calls == [] and not (tmp_path / "sirdar-data-firewall").exists()
+    assert (env_dir / ".env").read_text() != DATA_ENV
+
+
+@pytest.mark.parametrize("override", [{"db_port": 70000}, {"spaces_port": 65536},
+                                      {"mailpit_port": 0}])
+def test_data_vm_playbook_caps_its_ports(tmp_path, override):
+    env_dir, env = _target(tmp_path)
+    env[DATA_VM_TEST_ENV] = "1"
+    result, calls = _play(tmp_path, "data_vm.yml", _data_vm_vars(env_dir, DATA_ENV, **override),
+                          env)
+    assert result.returncode != 0
+    assert "1-65535" in result.stdout
+    assert calls == []
