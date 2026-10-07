@@ -1000,8 +1000,12 @@ async def _run(deployment_id: uuid.UUID) -> None:
                             step.status, step.finished_at = "succeeded", _now()
                             await db.commit()
                             continue
-                        # Read now, not at the start: a PUT …/first-admin made
-                        # before this retry (or during the run) is what counts.
+                        # Read when the step starts: a retry uses the record as
+                        # the last PUT …/first-admin left it (the route refuses
+                        # a PUT while a deployment runs). A canceled step 11 may
+                        # leave bootstrap-admin running on the host; a retry
+                        # then sees exit 10 (it finished) or 6, never a second
+                        # account.
                         try:
                             ctx = await _with_first_admin(db, settings, env.id, ctx)
                         except (vault.SecretsKeyMissing, vault.SecretUnreadable):

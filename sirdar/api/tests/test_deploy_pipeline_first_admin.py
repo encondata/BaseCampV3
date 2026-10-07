@@ -9,20 +9,31 @@ import pytest
 from sqlalchemy import select
 
 from sirdar_api.config import get_settings
-from sirdar_api.db.models import AuditLog, Deployment, DeploymentStep, EnvironmentFirstAdmin
-from sirdar_api.deploy import first_admins, pipeline, serialize
+from sirdar_api.db.models import (
+    AuditLog,
+    Deployment,
+    DeploymentStep,
+    EnvironmentFirstAdmin,
+    Snapshot,
+)
+from sirdar_api.deploy import first_admins, pipeline, serialize, vms
+from sirdar_api.deploy.provision import VmOutcome
 from sirdar_api.deploy.runner import RunResult
 
 from .deploy_factories import (  # noqa: F401
+    fake_provisioner,
     fake_runner,
     make_environment,
     secrets_key,
     stop_pipeline,
     trust_fake,
 )
+from .integration_helpers import configure_proxmox
 from .ssh_server import ssh_server  # noqa: F401
 from .test_deploy_api import _ssh_env, deploy_env  # noqa: F401
-from .test_deploy_pipeline import SHA, _load
+from .test_deploy_pipeline import SHA, UPDATE_KEYS, _load
+from .test_deploy_pipeline_vm import _vm_up
+from .vm_helpers import make_vm_environment
 
 TYPED = "Correct-Horse-Battery-9"
 ADMIN = {"first_name": "Ada", "last_name": "Lovelace", "email": "ada@test.example.com",
@@ -141,12 +152,52 @@ async def test_a_retry_from_step_11_keeps_the_flag(db, fresh, fake_runner):
         .where(DeploymentStep.deployment_id == dep.id))).all())
     assert statuses["up"] == "skipped" and statuses["first_admin"] == "succeeded"
     assert (await db.get(Deployment, dep.id, populate_existing=True)).first_admin is True
+    retry_calls = [r.step for r in fake_runner.requests[len(UPDATE_KEYS) + 1:]]
+    assert retry_calls == ["first_admin"]
+    row = await db.get(EnvironmentFirstAdmin, fresh.id, populate_existing=True)
+    assert row.password_enc is None and row.done_at is not None
 
 
-async def test_a_seeded_update_has_no_step_11(db, fresh):
+async def test_a_reset_has_no_step_11(db, fresh):
     with pytest.raises(ValueError):
         await pipeline.create_deployment(db, fresh, mode="reset", git_ref="main", sha=SHA,
                                          actor_id=None, first_admin=True)
+
+
+async def test_a_seeded_update_has_no_step_11(db, fresh):
+    snap = Snapshot(name="seed", origin="upload", source="mac-dev", status="pending")
+    db.add(snap)
+    await db.commit()
+    with pytest.raises(ValueError):
+        await pipeline.create_deployment(db, fresh, mode="update", git_ref="main", sha=SHA,
+                                         actor_id=None, first_admin=True, snapshot_id=snap.id)
+
+
+async def test_step_11_runs_on_a_vm_once_the_host_is_built(db, deploy_env, secrets_key,
+                                                           ssh_server, monkeypatch,
+                                                           fake_runner, fake_provisioner):
+    monkeypatch.setattr(vms, "VM_SSH_PORT", ssh_server.port)
+    await configure_proxmox(db)
+    env = await make_vm_environment(db, current_sha=None)
+    await trust_fake(db, ssh_server)
+    await first_admins.put(db, get_settings(), env.id, first_admins.check(ADMIN))
+    await db.commit()
+    fake_provisioner.effects["provision"] = _vm_up
+    fake_provisioner.outcomes["provision"] = VmOutcome(sha=SHA)
+    fake_runner.results["first_admin"] = _rc(0)
+    dep = await pipeline.create_deployment(db, env, mode="update", git_ref="main", sha="",
+                                           actor_id=None, vm=True, first_admin=True)
+    await db.commit()
+    pipeline.launch(dep.id)
+    await pipeline.wait(dep.id)
+    dep, steps, _ = await _load(dep.id)
+    assert fake_provisioner.calls == ["provision"]
+    assert fake_runner.steps() == [*UPDATE_KEYS, "first_admin"]
+    assert [s.key for s in steps][-2:] == ["up", "first_admin"] and dep.status == "succeeded"
+    request = next(r for r in fake_runner.requests if r.step == "first_admin")
+    assert (request.target.host, request.target.port) == ("127.0.0.1", ssh_server.port)
+    assert request.extravars["admin_password"] == TYPED
+    assert await first_admins.pending(db, env.id) is False
 
 
 async def test_the_deployment_json_has_the_flag_and_never_the_password(db, fresh, fake_runner):
@@ -189,8 +240,9 @@ async def test_a_failure_before_bootstrap_admin_ran_keeps_the_password(db, fresh
 
 
 async def test_step_11_reads_the_password_when_it_runs(db, fresh, fake_runner):
-    """A PUT after the deployment was created (a retry after a refusal) is
-    what step 11 uses, and the new password is redacted too."""
+    """Step 11 uses the record as it is when the step starts, not when the
+    deployment was created, and redacts that password too. (Through the API
+    a PUT waits for no running deployment; this pins the read time.)"""
     newer = "Newer-Staple-Horse-42"
     dep = await pipeline.create_deployment(db, fresh, mode="update", git_ref="main", sha=SHA,
                                            actor_id=None, first_admin=True)

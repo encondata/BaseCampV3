@@ -7,9 +7,15 @@
 # command's stderr goes to the step's log: bootstrap-admin never prints the
 # password, and Sirdar's redactor holds it. The exit code goes to Sirdar
 # through set_stats, which explains it.
+#
+# Pipelining sends each module over the connection's stdin instead of a temp
+# file on the target, so the password (a module argument) never lands on its
+# disk.
 - name: Create the first admin
   hosts: target
   gather_facts: false
+  vars:
+    ansible_pipelining: true
   tasks:
     - name: Does this checkout's ss-stack have the admin command?
       ansible.builtin.command:

@@ -981,3 +981,10 @@ def test_first_admin_playbook_explains_an_old_checkout(tmp_path):
     assert result.returncode != 0
     assert "This commit's ss-stack has no admin command" in result.stdout
     assert log.read_text() == ""
+
+
+def test_first_admin_play_pipelines_so_the_password_never_lands_on_disk():
+    """With pipelining, the module (and its stdin argument) goes over the
+    connection's stdin instead of a temp file on the target."""
+    plays = yaml.safe_load((PLAYBOOK_DIR / "first_admin.yml").read_text())
+    assert [play.get("vars", {}).get("ansible_pipelining") for play in plays] == [True]
