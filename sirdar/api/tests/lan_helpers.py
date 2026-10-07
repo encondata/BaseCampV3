@@ -46,7 +46,8 @@ def lan_built(model=EsxiVm):
     127.0.0.1 (each Proxmox VM gets its own id: vmid is unique)."""
     async def effect(ctx) -> None:
         for n, machine in enumerate(ctx.machines):
-            extra = {"moref": str(n + 1)} if model is EsxiVm else {"vmid": 200 + n}
+            extra = ({"moref": str(n + 1), "instance_uuid": f"uuid-{machine.vm.role}"}
+                     if model is EsxiVm else {"vmid": 200 + n})
             await vmcommon.set_vm(model, ctx.env_id, role=machine.vm.role, created=True,
                                   ip="127.0.0.1", **extra)
     return effect

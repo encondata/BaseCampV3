@@ -61,7 +61,7 @@ def test_publish_and_teardown_plans():
         assert numbers == sorted(set(numbers)), f"{mode}: numbers must rise"
     runs = {s.key: s.runs for s in steps.STEPS}
     assert [k for k, r in runs.items() if r == "python"] == [
-        "dns", "proxy", "smoke", "unproxy", "undns"]
+        "dns", "proxy", "smoke", "lan_switch", "unproxy", "undns"]
     assert all(s.playbook == "" for s in steps.STEPS if s.runs == "python")
     assert all(s.playbook for s in steps.ANSIBLE_STEPS)
     assert steps.STEPS_BY_KEY["proxy"].timeout >= 30 * 60
@@ -71,8 +71,8 @@ def test_publish_and_teardown_plans():
 
 def test_plans():
     assert [s.number for s in steps.STEPS] == [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 7, 8, 9, 9, 10,
-                                               11, 11, 12, 13, 13, 14, 14, 15, 15, 16, 17, 18,
-                                               19]
+                                               11, 11, 12, 13, 13, 14, 14, 14, 15, 15, 16, 17,
+                                               18, 19]
     assert [s.number for s in steps.plan_for("update")] == [1, 2, 3, 4, 5, 6, 10]
     build = ["preflight", "bootstrap", "fetch", "render", "build"]
     # a seeded first deploy backs up whatever database is already there
@@ -1320,3 +1320,40 @@ def test_data_vm_playbook_caps_its_ports(tmp_path, override):
     assert result.returncode != 0
     assert "1-65535" in result.stdout
     assert calls == []
+
+
+def _bg(mode, **kw):
+    return [s.key for s in steps.plan_for(mode, vm=True, bluegreen=True, **kw)]
+
+
+def test_lan_bluegreen_plans():
+    build = ["provision", "preflight", "bootstrap", "fetch", "render", "build"]
+    assert _bg("update") == [*build, "dump", "data_vm", "up", "slot_smoke"]
+    assert _bg("update", go_live=True)[-1] == "lan_switch"
+    assert _bg("update", restore=True, publish=True, go_live=True) == [
+        *build, "dump", "data_vm", "restore", "up", "dns", "slot_smoke", "lan_switch"]
+    assert _bg("update", first_admin=True, publish=True) == [
+        *build, "dump", "data_vm", "up", "first_admin", "dns", "slot_smoke"]
+    assert [s.number for s in steps.plan_for("update", vm=True, bluegreen=True, restore=True,
+                                             publish=True, go_live=True)] == [
+        0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14]
+    assert _bg("activate") == ["slot_smoke", "lan_switch"]
+    assert _bg("snapshot") == ["preflight", "export"]
+    assert _bg("teardown") == ["destroy", "unproxy", "undns"]
+    assert _bg("teardown", snapshot=True) == ["export", "destroy", "unproxy", "undns"]
+    assert steps.STEPS_BY_KEY["data_vm"].name == "Prepare data VM"
+    assert steps.STEPS_BY_KEY["lan_switch"].runs == "python"
+    for mode in ("reset", "restore_dump", "rollback", "vm_restore", "publish", "renew"):
+        with pytest.raises(ValueError):
+            steps.plan_for(mode, vm=True, bluegreen=True)
+    with pytest.raises(ValueError):
+        steps.plan_for("update", bluegreen=True)           # a VM plan only
+    with pytest.raises(ValueError):
+        steps.plan_for("update", vm=True, bluegreen=True, cloud=True)
+
+
+def test_bluegreen_vm_steps_get_an_hour():
+    assert steps.timeout_of("provision", bluegreen=True) == 60 * 60
+    assert steps.timeout_of("destroy", bluegreen=True) == 60 * 60
+    assert steps.timeout_of("provision") == steps.timeout_of("destroy") == 30 * 60
+    assert steps.timeout_of("build", bluegreen=True) == steps.STEPS_BY_KEY["build"].timeout

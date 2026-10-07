@@ -82,3 +82,48 @@ async def slot_ip(env_id, slot: str) -> str | None:
         env = await s.get(Environment, env_id)
         row = await vms.get_for(s, env, slot) if env is not None else None
         return row.ip if row is not None else None
+
+
+DB_PORT = 5432
+
+
+def data_ip(machines: list) -> str | None:
+    """The data VM's address: its static one (Blue/Green VMs are static)."""
+    data = next((m for m in machines if m.role == vms.DATA), None)
+    return vms.static_ip(data.ip_cidr) if data is not None else None
+
+
+def app_ips(machines: list) -> list[str]:
+    """The app VMs' static addresses, in slot order."""
+    by_role = {m.role: m for m in machines}
+    return [vms.static_ip(by_role[s].ip_cidr) for s in SLOTS if s in by_role]
+
+
+async def env_extra(db: AsyncSession, env: Environment,
+                    secrets: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    """An app VM's .env keys on top of the usual ones: the data VM's database
+    (no TLS on the LAN) and the secret values among them. Objects stay at
+    https://spaces.<domain> through NPM, as on a single-server LAN host.
+    Raises do_envs.DoEnvError (do_not_ready) when the data VM isn't recorded."""
+    from urllib.parse import quote
+    host = data_ip(await vms.machines(db, env))
+    if host is None:
+        raise do_envs.DoEnvError("do_not_ready", missing=["data VM"])
+    password = quote(secrets["POSTGRES_PASSWORD"], safe="")
+    url = f"postgresql+asyncpg://{do_envs.DB_USER}:{password}@{host}:{DB_PORT}/{do_envs.DB_NAME}"
+    extra = {"STACK_EXTERNAL_DATA": "1", "STACK_DB_HOST": host, "STACK_DB_PORT": str(DB_PORT),
+             "STACK_DB_NAME": do_envs.DB_NAME, "STACK_DB_USER": do_envs.DB_USER,
+             "STACK_DB_SSLMODE": "disable", "SS_DATABASE_URL": url, "SS_DATABASE_SSL": "disable"}
+    found = [url]
+    if password != secrets["POSTGRES_PASSWORD"]:
+        found.append(password)
+    return extra, found
+
+
+async def data_vars(db: AsyncSession, env: Environment, ports: dict[str, int]) -> dict:
+    """data_vm.yml's firewall inputs: the app VMs reach Postgres; they and
+    Nginx Proxy Manager (the environment's proxy) reach object storage. The
+    same addresses and ports as the data VM's .env (the playbook checks)."""
+    apps = app_ips(await vms.machines(db, env))
+    return {"db_clients": apps, "spaces_clients": [*apps, env.proxy_ip], "db_port": DB_PORT,
+            "spaces_port": ports["spaces"], "mailpit_port": ports["mailpit"]}

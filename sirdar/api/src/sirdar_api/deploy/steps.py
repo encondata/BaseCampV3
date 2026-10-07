@@ -34,7 +34,18 @@ auto-activating one, or Activate). Activate is 13 then 14; Deactivate (a
 retiring production, no slot) is 14 alone. Delete is [11 Take snapshot], 17
 Remove DNS records, 18 Remove DigitalOcean resources. Reset, Restore backup, Roll
 back and Restore VM snapshot have no DigitalOcean plan. 19 Renew certificate
-is Sirdar's backup renewal, a job of its own (renewals.py)."""
+is Sirdar's backup renewal, a job of its own (renewals.py).
+
+A LAN Blue/Green environment (vm and bluegreen; ESXi or Proxmox, a data VM
+and two app VMs) has plans of its own too. Update is 0 Prepare VM (the data
+VM, then the slot's), 1–5 on the slot's VM, 6 Pre-deploy dump, 7 Prepare
+data VM (on the data VM), [9 Restore snapshot], 10 Start services, [11
+Create the first admin], [12 DNS records], 13 Smoke test (slot) and [14
+Switch traffic] (lan_switch: Nginx Proxy Manager's proxy hosts move to the
+slot's VM). Activate is 13 then 14; Delete is [11 Take snapshot], 15 Destroy
+VM (all three), 16 and 17. Reset, Restore backup, Roll back, Restore VM
+snapshot, renew and a Blue/Green publish job have no plan: both app VMs
+share the data VM (a publish job is the ordinary one, bluegreen=False)."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,6 +94,7 @@ STEPS: tuple[StepDef, ...] = (
     StepDef(13, "slot_smoke", "Smoke test (slot)", "slot_smoke.yml", 10 * 60),
     StepDef(14, "smoke", "Smoke test", "", 10 * 60, "python"),
     StepDef(14, "go_live", "Switch traffic", "", 15 * 60, "vm"),
+    StepDef(14, "lan_switch", "Switch traffic", "", 15 * 60, "python"),
     StepDef(15, "teardown", "Remove environment", "teardown.yml", 30 * 60),
     StepDef(15, "destroy", "Destroy VM", "", 30 * 60, "vm"),
     StepDef(16, "unproxy", "Remove proxy hosts", "", 15 * 60, "python"),
@@ -91,6 +103,17 @@ STEPS: tuple[StepDef, ...] = (
     StepDef(19, "do_renew", "Renew certificate", "", 30 * 60, "vm"),
 )
 STEPS_BY_KEY = {s.key: s for s in STEPS}
+# A LAN Blue/Green environment's step 0 builds up to two VMs (the data VM,
+# then the slot's) and its Destroy VM removes three: each gets an hour.
+BLUEGREEN_VM_TIMEOUT = 60 * 60
+_BLUEGREEN_VM_STEPS = ("provision", "destroy")
+
+
+def timeout_of(step_key: str, *, bluegreen: bool = False) -> int:
+    """A step's timeout in seconds for this deployment."""
+    if bluegreen and step_key in _BLUEGREEN_VM_STEPS:
+        return BLUEGREEN_VM_TIMEOUT
+    return STEPS_BY_KEY[step_key].timeout
 ANSIBLE_STEPS = tuple(s for s in STEPS if s.runs == "ansible")
 
 _BUILD = ("preflight", "bootstrap", "fetch", "render", "build")
@@ -132,6 +155,36 @@ _CLOUD_PLANS: dict[tuple[str, bool], tuple[str, ...]] = {
 }
 
 
+_BG_BUILD = ("provision", *_BUILD)
+# (mode, restores or takes a snapshot) -> step keys of a LAN Blue/Green plan.
+_BG_PLANS: dict[tuple[str, bool], tuple[str, ...]] = {
+    ("update", False): (*_BG_BUILD, "dump", "data_vm", "up", "slot_smoke"),
+    ("update", True): (*_BG_BUILD, "dump", "data_vm", "restore", "up", "slot_smoke"),
+    ("snapshot", False): ("preflight", "export"),
+    ("teardown", False): ("destroy", "unproxy", "undns"),
+    ("teardown", True): ("export", "destroy", "unproxy", "undns"),
+    ("activate", False): ("slot_smoke", "lan_switch"),
+}
+
+
+def _bg_plan(mode: str, *, restore: bool, publish: bool, go_live: bool,
+             snapshot: bool) -> tuple[str, ...]:
+    key = (mode, snapshot if mode == "teardown" else restore)
+    if key not in _BG_PLANS:
+        raise ValueError(f"no LAN Blue/Green plan for mode {mode!r}")
+    keys = _BG_PLANS[key]
+    if publish:
+        if mode != "update":
+            raise ValueError(f"mode {mode!r} doesn't publish")
+        at = keys.index("slot_smoke")
+        keys = (*keys[:at], "dns", *keys[at:])
+    if go_live and mode != "activate":
+        if mode != "update":
+            raise ValueError(f"mode {mode!r} doesn't switch traffic")
+        keys = (*keys, "lan_switch")
+    return keys
+
+
 def _with_first_admin(keys: tuple[str, ...]) -> tuple[str, ...]:
     """Step 11 right after Start services: the api is up, and nothing has
     published the environment yet."""
@@ -160,9 +213,20 @@ def _cloud_plan(mode: str, *, restore: bool, publish: bool, vm: bool, go_live: b
 
 def plan_for(mode: str, *, restore: bool = False, publish: bool = False, vm: bool = False,
              cloud: bool = False, go_live: bool = False, snapshot: bool = False,
-             smoke: bool = True, first_admin: bool = False) -> list[StepDef]:
+             smoke: bool = True, first_admin: bool = False,
+             bluegreen: bool = False) -> list[StepDef]:
     if first_admin and (mode != "update" or restore):
         raise ValueError("only an Update that starts empty creates the first admin")
+    if bluegreen:
+        if not vm or cloud:
+            raise ValueError("a LAN Blue/Green plan is a VM plan")
+        if not smoke:
+            raise ValueError("only Deactivate skips the slot smoke test")
+        keys = _bg_plan(mode, restore=restore, publish=publish, go_live=go_live,
+                        snapshot=snapshot)
+        if first_admin:
+            keys = _with_first_admin(keys)
+        return [STEPS_BY_KEY[k] for k in keys]
     if cloud:
         keys = _cloud_plan(mode, restore=restore, publish=publish, vm=vm, go_live=go_live,
                            snapshot=snapshot, smoke=smoke)
@@ -170,7 +234,7 @@ def plan_for(mode: str, *, restore: bool = False, publish: bool = False, vm: boo
             keys = _with_first_admin(keys)
         return [STEPS_BY_KEY[k] for k in keys]
     if mode == "activate":
-        raise ValueError("only a DigitalOcean environment activates a slot")
+        raise ValueError("only a DigitalOcean or LAN Blue/Green environment activates a slot")
     if go_live or snapshot:
         raise ValueError("only a DigitalOcean plan switches traffic or snapshots on delete")
     if not smoke:
