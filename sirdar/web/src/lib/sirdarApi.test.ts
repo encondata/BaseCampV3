@@ -101,6 +101,10 @@ const CALLS: { name: string; call: () => Promise<unknown>; path: string; method?
   { name: 'activateSlot (deactivate)', call: () => sirdar.activateSlot('prod', null, 'prod'),
     path: '/deploy/environments/prod/activate', method: 'POST', body: { slot: null, confirm_name: 'prod' } },
   { name: 'addSlot', call: () => sirdar.addSlot('solo'), path: '/deploy/environments/solo/slots', method: 'POST' },
+  { name: 'setFirstAdmin', call: () => sirdar.setFirstAdmin('fresh', {
+      first_name: 'Ada', last_name: 'Lovelace', email: 'ada@test.example.com', password_mode: 'invite', password: null }),
+    path: '/deploy/environments/fresh/first-admin', method: 'PUT',
+    body: { first_name: 'Ada', last_name: 'Lovelace', email: 'ada@test.example.com', password_mode: 'invite', password: null } },
   { name: 'updateEnvironment (sizes)', call: () => sirdar.updateEnvironment('uat9', { do: { droplet_size: 's-4vcpu-8gb' } }),
     path: '/deploy/environments/uat9', method: 'PATCH', body: { do: { droplet_size: 's-4vcpu-8gb' } } },
   { name: 'startDeployment (production delete)',
@@ -128,10 +132,11 @@ function deployCodes(): string[] {
   const found = new Set<string>(['sudo_password_too_long']);
   for (const file of ['api/routes/deploy.py', 'api/routes/integrations.py', 'deploy/environments.py',
                        'deploy/gitref.py', 'deploy/ssh_targets.py', 'deploy/snapshots.py', 'deploy/integrations.py',
-                       'deploy/vms.py', 'deploy/do_accounts.py', 'deploy/do_envs.py', 'deploy/pipeline.py']) {
+                       'deploy/vms.py', 'deploy/do_accounts.py', 'deploy/do_envs.py', 'deploy/pipeline.py',
+                       'deploy/first_admins.py']) {
     const src = readFileSync(join(root, file), 'utf8');
     for (const re of [/"code": "([a-z_]+)"/g,
-                      /(?:EnvError|RefError|TargetError|SnapshotError|IntegrationError|VmError|DoEnvError)\("([a-z_]+)"/g,
+                      /(?:EnvError|RefError|TargetError|SnapshotError|IntegrationError|VmError|DoEnvError|FirstAdminError)\("([a-z_]+)"/g,
                       /^\s+code = "([a-z_]+)"$/gm,
                       /"(vm_[a-z_]+_invalid)"/g, /, "([a-z_]+_invalid)"\)/g,
                       /"([a-z]+_too_long)"/g, /_check_ipv4\([^()]*,\s*"([a-z]+_[a-z_]+)"\)/g,
@@ -162,7 +167,9 @@ it('every error code the deploy routes can return has its own message', () => {
                       'esxi_url_invalid', 'source_vm_invalid', 'dns_servers_invalid', 'vm_name_invalid',
                       'do_token_invalid', 'do_account_invalid', 'label_invalid', 'region_invalid',
                       'not_supported_on_digitalocean', 'seed_not_allowed', 'slot_not_deployed',
-                      'snapshot_slot_unreachable', 'do_account_changed']) {
+                      'snapshot_slot_unreachable', 'do_account_changed',
+                      // first_admin_with_seed and first_admin_not_set join this list with Task 7's backend
+                      'first_admin_password_too_short', 'first_admin_done']) {
     expect(codes).toContain(code);
   }
   const missing = codes.filter((c) => sirdar.errorText(new ApiError(400, c), '__none__') === '__none__');
@@ -273,4 +280,20 @@ it('the phase 7b DigitalOcean codes have copy', () => {
     'do_shrink_refused']) {
     expect(sirdar.errorText(new ApiError(409, code), '__none__')).not.toBe('__none__');
   }
+});
+
+it('a short first-admin password names the bar', () => {
+  expect(sirdar.deployErrorText(new ApiError(422, 'first_admin_password_too_short',
+    { code: 'first_admin_password_too_short', min_length: 8 }), 'x'))
+    .toBe("The password is too short for ServerSherpa's password policy (at least 8 characters).");
+});
+
+it('every first-admin code has its own copy', () => {
+  const text = (code: string) => sirdar.errorText(new ApiError(422, code, { code }), '__none__');
+  for (const code of ['first_admin_not_allowed', 'first_admin_with_seed', 'first_admin_name_invalid',
+    'first_admin_email_invalid', 'first_admin_password_too_short', 'first_admin_password_invalid',
+    'first_admin_password_not_allowed', 'first_admin_invalid', 'first_admin_not_set']) {
+    expect(text(code)).not.toBe('__none__');
+  }
+  expect(text('first_admin_done')).toBe('The first admin was already created; change their password in the portal.');
 });

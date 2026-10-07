@@ -343,6 +343,17 @@ const MESSAGES: Record<string, string> = {
   slots_full: 'This environment already has two slots.',
   slot_not_allowed: 'Production always has its Blue and Green slots.',
   do_shrink_refused: 'Sizes can only grow.',
+  // the first admin
+  first_admin_not_allowed: 'The first admin is only for a new environment.',
+  first_admin_with_seed: 'An environment seeded from a snapshot already has its users. Start empty to add a first admin.',
+  first_admin_name_invalid: 'Enter a first and last name (up to 100 characters each).',
+  first_admin_email_invalid: 'Enter a valid email address for the first admin.',
+  first_admin_password_too_short: "The password is too short for ServerSherpa's password policy.",
+  first_admin_password_invalid: "The password can't contain line breaks or control characters.",
+  first_admin_password_not_allowed: 'An invite sends a set-password link: leave the password empty.',
+  first_admin_invalid: "Those first-admin settings aren't valid.",
+  first_admin_not_set: 'This environment has no first admin to change.',
+  first_admin_done: 'The first admin was already created; change their password in the portal.',
 };
 
 export function errorText(err: unknown, fallback: string): string {
@@ -363,7 +374,7 @@ export function errorDetail<T extends object = Record<string, unknown>>(err: unk
 export function deployErrorText(err: unknown, fallback: string): string {
   const d = errorDetail<{
     reason?: unknown; missing?: unknown; key?: unknown; service?: unknown; kinds?: unknown; environments?: unknown;
-    production?: unknown;
+    production?: unknown; min_length?: unknown;
   }>(err);
   if (d && typeof d.reason === 'string' && d.reason) return d.reason;
   if (d && Array.isArray(d.environments) && d.environments.length && err instanceof ApiError
@@ -378,6 +389,11 @@ export function deployErrorText(err: unknown, fallback: string): string {
   if (d && d.production === true && err instanceof ApiError && err.code === 'snapshot_slot_unreachable') {
     return "The droplet Sirdar would take the snapshot on isn't reachable, and production never goes "
       + 'without its snapshot. Retry once the droplet is back.';
+  }
+  if (d && typeof (d as { min_length?: unknown }).min_length === 'number' && err instanceof ApiError
+      && err.code === 'first_admin_password_too_short') {
+    const n = (d as { min_length: number }).min_length;
+    return `${errorText(err, fallback).replace(/\.$/, '')} (at least ${n} characters).`;
   }
   const base = errorText(err, fallback);
   let extra = '';
@@ -462,6 +478,15 @@ export type DeploymentMode = DeployMode | 'adopt' | 'snapshot' | 'rollback' | 'p
 export type DeploymentStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'adopted';
 export type StepStatus =
   'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'not_run' | 'cancelled' | 'interrupted';
+/** The first super admin step 11 of the first deploy creates (an environment that starts empty). */
+export interface NewFirstAdmin {
+  first_name: string; last_name: string; email: string; password_mode: 'typed' | 'invite';
+  /** typed only; write-only */
+  password?: string | null;
+}
+export interface EnvFirstAdmin {
+  first_name: string; last_name: string; email: string; password_mode: 'typed' | 'invite'; done: boolean;
+}
 export interface EnvService { service: string; host_ip: string; port: number; hostname: string | null; proxied: boolean }
 export interface SnapshotRef { id: string; name: string }
 export interface DeploymentSummary {
@@ -485,6 +510,8 @@ export interface DeploymentSummary {
   started_at: string; finished_at: string | null; created_at: string;
   /** DigitalOcean: the slot it deploys or switches to, and whether it ends with Switch traffic. */
   cloud: boolean; slot: string | null; go_live: boolean;
+  /** Its plan has step 11, Create the first admin. */
+  first_admin: boolean;
 }
 export interface DeploymentStep {
   number: number; key: string; name: string; status: StepStatus;
@@ -508,6 +535,8 @@ export interface Environment {
   secrets_set: Record<string, boolean>;
   /** The snapshot the first deploy restores (kept afterwards). */
   seed_snapshot: SnapshotRef | null;
+  /** An environment that starts empty: the first super admin its first deploy creates. */
+  first_admin: EnvFirstAdmin | null;
   /** Deploys publish DNS records and proxy hosts (steps 12–14). */
   publish: boolean;
   /** What Sirdar manages for it in Cloudflare and Nginx Proxy Manager. */
@@ -547,6 +576,7 @@ export interface EnvironmentDefaults {
   spaces_bucket: string; log_levels: string[]; optional_secrets: string[];
   vm: VmDefaults;
   do: DoDefaults;
+  first_admin: { password_min_length: number; role: string; link_minutes: number };
 }
 export interface NewEnvironmentBody {
   name: string; type: EnvType; target: string; git_ref: string; base_domain?: string;
@@ -554,6 +584,8 @@ export interface NewEnvironmentBody {
   proxy_ip?: string; bind_ip?: string; ports: Record<string, number>;
   /** The first deploy restores this snapshot. */
   snapshot_id?: string;
+  /** An environment that starts empty: its first super admin. */
+  first_admin?: NewFirstAdmin;
   /** Deploys publish DNS records and proxy hosts (the API's default: true). */
   publish?: boolean;
   /** a VM target ('proxmox' or 'esxi') only: the VM step 0 builds. */
@@ -637,6 +669,9 @@ export const activateSlot = (name: string, slot: string | null, confirmName?: st
 /** A one-slot environment's second slot; `deployment` deploys the running commit to it (null before any deploy). */
 export const addSlot = (name: string) =>
   sendJson<{ environment: Environment; deployment: Deployment | null }>('POST', `${envPath(name)}/slots`);
+/** Fix the first admin before step 11 uses it: a new typed password, or switch to an invite. */
+export const setFirstAdmin = (name: string, body: NewFirstAdmin) =>
+  sendJson<Environment>('PUT', `${envPath(name)}/first-admin`, body);
 export const listBackups = (name: string) => getJson<{ backups: Backup[] }>(`${envPath(name)}/backups`);
 export const listVmSnapshots = (name: string) =>
   getJson<{ snapshots: VmSnapshot[] }>(`${envPath(name)}/vm-snapshots`);

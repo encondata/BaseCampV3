@@ -16,7 +16,7 @@ const svc = (service: string, port: number): EnvService => ({
 export const ADOPTED: DeploymentSummary = {
   id: 'd0', mode: 'adopt', git_ref: 'main', sha: SHA, status: 'adopted', start_step: 1, retry_of: null,
   failed_step: null, dump_path: null, snapshot: null, restore_dump: null, rollback_available: false, publish: false,
-  vm: false, take_vm_snapshot: false, vm_snapshot: null, cloud: false, slot: null, go_live: false,
+  vm: false, take_vm_snapshot: false, vm_snapshot: null, cloud: false, slot: null, go_live: false, first_admin: false,
   previous_sha: null, error: null, actor_name: 'Jimmy Henderson',
   started_at: '2026-10-03T12:00:00Z', finished_at: '2026-10-03T12:00:00Z', created_at: '2026-10-03T12:00:00Z',
 };
@@ -30,7 +30,7 @@ export const ENV: Environment = {
   services: [svc('api', 8000), svc('portal', 8091), svc('kiosk', 8090), svc('wiki', 8096),
              svc('spaces', 9000), svc('status', 8095), svc('mailpit', 8025)],
   secrets_set: { SS_ANTHROPIC_API_KEY: true, SS_DB_TESTING_PASSWORD: false },
-  seed_snapshot: null, publish: false, managed_records: [],
+  seed_snapshot: null, first_admin: null, publish: false, managed_records: [],
   slots: [], active_slot: null, auto_activate: false, retiring: false, do: null,
   last_deployment: ADOPTED, created_at: '2026-10-03T12:00:00Z', updated_at: '2026-10-03T12:00:00Z',
 };
@@ -62,6 +62,7 @@ export const DEFAULTS: EnvironmentDefaults = {
   vm: { cores: 4, memory_mb: 8192, disk_gb: 64, keep_snapshots: 3,
         limits: { cores: [1, 64], memory_mb: [2048, 262144], disk_gb: [20, 4096], keep_snapshots: [1, 10] } },
   do: DO_DEFAULTS,
+  first_admin: { password_min_length: 8, role: 'super_admin', link_minutes: 240 },
 };
 
 const UPDATE_PLAN: [number, string, string][] = [
@@ -98,7 +99,7 @@ function deployment(status: DeploymentStatus, statuses: StepStatus[], logs: Reco
   return {
     id: 'd1', mode, git_ref: 'main', sha: NEW_SHA, status, start_step: 1, retry_of: null, failed_step: null,
     dump_path: null, snapshot: null, restore_dump: null, rollback_available: false, publish: false,
-    vm: false, take_vm_snapshot: false, vm_snapshot: null, cloud: false, slot: null, go_live: false,
+    vm: false, take_vm_snapshot: false, vm_snapshot: null, cloud: false, slot: null, go_live: false, first_admin: false,
     previous_sha: SHA, error: null, actor_name: 'Jimmy Henderson',
     started_at: '2026-10-03T13:00:00Z', finished_at: status === 'running' ? null : '2026-10-03T13:10:00Z',
     created_at: '2026-10-03T13:00:00Z', environment: 'uat',
@@ -160,7 +161,7 @@ export function summary(d: Deployment): DeploymentSummary {
     retry_of: d.retry_of, failed_step: d.failed_step, dump_path: d.dump_path, snapshot: d.snapshot,
     restore_dump: d.restore_dump, rollback_available: d.rollback_available, publish: d.publish,
     vm: d.vm, take_vm_snapshot: d.take_vm_snapshot, vm_snapshot: d.vm_snapshot,
-    cloud: d.cloud, slot: d.slot, go_live: d.go_live,
+    cloud: d.cloud, slot: d.slot, go_live: d.go_live, first_admin: d.first_admin,
     previous_sha: d.previous_sha,
     error: d.error, actor_name: d.actor_name, started_at: d.started_at, finished_at: d.finished_at,
     created_at: d.created_at,
