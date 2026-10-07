@@ -30,7 +30,7 @@ const fromHit = (hit: SearchHit): GuideRef => ({
 const fromNode = (node: NodeOut): GuideRef => ({ id: node.id, title: node.title, kind: node.kind });
 
 /** The guide ComboBox: server search over pages and files, debounced; with
- *  nothing typed it lists the pages and files you edited most recently
+ *  nothing typed it lists the most recently updated pages and files you can see
  *  (loaded once, the first time the list opens). */
 function GuidePicker({ value, onChange, disabled }: {
   value: GuideRef | null; onChange: (g: GuideRef | null) => void; disabled?: boolean;
