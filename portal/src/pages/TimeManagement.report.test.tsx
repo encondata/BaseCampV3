@@ -125,7 +125,7 @@ it('opens the Generate modal on the Timesheet options with the screen filters', 
   expect((screen.getByLabelText('To') as HTMLInputElement).value).toBe('2026-09-15');
   await waitFor(() => expect(api.getTimesheetPreview).toHaveBeenCalledWith({
     from: '2026-09-01', to: '2026-09-15', person_id: 'p1', initiative_id: 'i1', site_id: 's1',
-    statuses: ['pending'],
+    statuses: ['pending'], format: 'xlsx',
   }));
 });
 
@@ -171,5 +171,26 @@ it('says so when the definitions cannot be loaded', async () => {
   render(<TimeManagement />);
   await screen.findByRole('group', { name: 'Timesheet filters' });
   await user.click(screen.getByRole('button', REPORT_BTN));
-  expect(await screen.findByText("The Timesheet report isn't set up. Ask an administrator.")).not.toBeNull();
+  expect(await screen.findByText("Couldn't load the reports. Try again.")).not.toBeNull();
+  expect(screen.queryByText(/isn't set up/)).toBeNull();
+  expect(screen.queryByLabelText('From')).toBeNull();
+});
+
+it('only From set opens with To = today; only To set opens with From = the 1st of its month', async () => {
+  const user = userEvent.setup();
+  const { unmount } = render(<TimeManagement />);
+  let filters = await screen.findByRole('group', { name: 'Timesheet filters' });
+  fireEvent.change(within(filters).getByLabelText('From date'), { target: { value: '2026-09-10' } });
+  await user.click(screen.getByRole('button', REPORT_BTN));
+  expect(((await screen.findByLabelText('From')) as HTMLInputElement).value).toBe('2026-09-10');
+  const today = quickRange('this_month', new Date()).to;
+  expect((screen.getByLabelText('To') as HTMLInputElement).value).toBe(today);
+  unmount();
+
+  render(<TimeManagement />);
+  filters = await screen.findByRole('group', { name: 'Timesheet filters' });
+  fireEvent.change(within(filters).getByLabelText('To date'), { target: { value: '2026-08-20' } });
+  await user.click(screen.getByRole('button', REPORT_BTN));
+  expect(((await screen.findByLabelText('From')) as HTMLInputElement).value).toBe('2026-08-01');
+  expect((screen.getByLabelText('To') as HTMLInputElement).value).toBe('2026-08-20');
 });

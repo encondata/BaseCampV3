@@ -48,6 +48,17 @@ export function quickRange(kind: QuickRangeKind, today: Date): { from: string; t
   return { from: localDay(start), to: localDay(end) };
 }
 
+/** The From / To a prefill opens on: both given → as they are; neither →
+ *  This month; only From → To is today; only To → From is the 1st of To's
+ *  month. */
+export function initialRange(from: string | undefined, to: string | undefined,
+                             today: Date): { from: string; to: string } {
+  if (from && to) return { from, to };
+  if (from) return { from, to: localDay(today) };
+  if (to) return { from: `${to.slice(0, 7)}-01`, to };
+  return quickRange('this_month', today);
+}
+
 const pick = <T extends string>(raw: unknown, allowed: T[]): T[] =>
   Array.isArray(raw) ? allowed.filter((a) => raw.includes(a)) : [];
 

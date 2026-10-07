@@ -65,7 +65,7 @@ it('defaults to this month, the definition statuses/views/format, and previews t
 
   await waitFor(() => expect(api.getTimesheetPreview).toHaveBeenCalled(), { timeout: 2000 });
   expect(lastPreview()).toEqual({
-    from: '2026-10-01', to: '2026-10-06', statuses: ['approved', 'pending'],
+    from: '2026-10-01', to: '2026-10-06', statuses: ['approved', 'pending'], format: 'xlsx',
   });
 });
 
@@ -217,6 +217,46 @@ it('too_many shows the message and disables Generate', async () => {
   expect((screen.getByRole('button', { name: 'Generate Report' }) as HTMLButtonElement).disabled).toBe(true);
 });
 
+it('the preview carries the format and re-requests when it changes', async () => {
+  const user = userEvent.setup();
+  render(<TimesheetOptions definition={DEF} onGenerate={() => {}} />);
+  await waitFor(() => expect(api.getTimesheetPreview).toHaveBeenCalledTimes(1), { timeout: 2000 });
+  expect(lastPreview().format).toBe('xlsx');
+  await user.click(radio(/PDF document/));
+  await waitFor(() => expect(api.getTimesheetPreview).toHaveBeenCalledTimes(2), { timeout: 2000 });
+  expect(lastPreview().format).toBe('pdf');
+});
+
+it('too_many for a PDF says a PDF that long is not practical; Excel keeps its own message', async () => {
+  const user = userEvent.setup();
+  api.getTimesheetPreview.mockImplementation((p: { format?: string }) => Promise.resolve(PREVIEW({
+    entries: 0, people: 0, days: 0, approved_minutes: 0, pending_minutes: 0,
+    flagged_entries: 0, too_many: p.format === 'pdf',
+  })));
+  render(<TimesheetOptions definition={{
+    ...DEF, options: { ...DEF.options, default_format: 'pdf' },
+  }} onGenerate={() => {}} />);
+  await screen.findByText(
+    "More than 5,000 entries match. A PDF that long isn't practical — choose Excel or narrow the range.",
+    undefined, { timeout: 2000 });
+  expect(screen.queryByText(/more than 20,000/)).toBeNull();
+  expect((screen.getByRole('button', { name: 'Generate Report' }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(radio(/Excel workbook/));
+  await waitFor(() => expect(screen.queryByText(/A PDF that long/)).toBeNull(), { timeout: 2000 });
+  await waitFor(() => expect(
+    (screen.getByRole('button', { name: 'Generate Report' }) as HTMLButtonElement).disabled).toBe(false),
+  { timeout: 2000 });
+});
+
+it('prefill: only From → To is today; only To → From is the 1st of that month', async () => {
+  const { unmount } = render(<TimesheetOptions definition={DEF} onGenerate={() => {}}
+                                                initial={{ from: '2026-09-15' }} />);
+  expect([dateInput('From').value, dateInput('To').value]).toEqual(['2026-09-15', '2026-10-06']);
+  unmount();
+  render(<TimesheetOptions definition={DEF} onGenerate={() => {}} initial={{ to: '2026-08-20' }} />);
+  expect([dateInput('From').value, dateInput('To').value]).toEqual(['2026-08-01', '2026-08-20']);
+});
+
 it('a 403 says the viewer needs permission to view time', async () => {
   api.getTimesheetPreview.mockRejectedValue(new ApiError(403, 'time_view_required'));
   render(<TimesheetOptions definition={DEF} onGenerate={() => {}} />);
@@ -277,7 +317,7 @@ it('prefills from `initial`', async () => {
   expect(card(/^Approved/).getAttribute('aria-checked')).toBe('false');
   await waitFor(() => expect(lastPreview()).toEqual({
     from: '2026-09-01', to: '2026-09-15', person_id: 'p2', initiative_id: 'j1', site_id: 's1',
-    statuses: ['rejected'],
+    statuses: ['rejected'], format: 'xlsx',
   }), { timeout: 2000 });
   // the prefilled people/job/site read by name once the option lists load
   const person = screen.getByLabelText('Person', { selector: 'input' }) as HTMLInputElement;

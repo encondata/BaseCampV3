@@ -7,7 +7,7 @@ import { useAuth } from '../../auth/AuthContext';
 import { ApiError, getReportRun, getReportRunDownloadUrl, listReportRuns } from '../../lib/api';
 import type { ReportRun } from '../../lib/api';
 import { ColHead, listGridStyle, listScale, titleFor, type ColumnDef } from '../../lib/listTools';
-import { formatBytes, openPresigned } from '../../lib/reports';
+import { formatBytes, openPresigned, runErrorText } from '../../lib/reports';
 import { RowActionsMenu } from '../hardware/RowActionsMenu';
 
 export const HISTORY_POLL_MS = 3000;
@@ -200,7 +200,7 @@ export default function HistoryTab({ highlightRunId, onCount }: {
             <div className="modal-head"><h3>Report failed</h3>
               <button type="button" className="modal-close" aria-label="Close"
                       onClick={() => setViewing(null)}>×</button></div>
-            <div className="modal-body"><pre className="err">{viewing.error}</pre></div>
+            <div className="modal-body"><pre className="err">{runErrorText(viewing.error ?? '')}</pre></div>
           </div>
         </div>
       )}

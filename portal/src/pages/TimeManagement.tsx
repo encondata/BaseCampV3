@@ -97,6 +97,7 @@ const DEFAULT_VISIBLE = new Set<string>(TIMESHEET_COLUMNS.filter((c) => c.defaul
 const CHECKBOX_COL: ColumnDef = { key: 'select', label: '', width: '32px', default: true };
 
 const REPORT_MISSING = "The Timesheet report isn't set up. Ask an administrator.";
+const REPORT_LOAD_FAILED = "Couldn't load the reports. Try again.";
 
 /** The report's status filter for a status pill: All → every status, the
  *  rest → that one (the pill keys are the report's status names). */
@@ -195,7 +196,7 @@ export default function TimeManagement() {
       const def = (await listReportDefinitions()).find((d) => d.report_type === 'timesheet');
       if (def) setReportDef(def); else setReportError(REPORT_MISSING);
     } catch {
-      setReportError(REPORT_MISSING);
+      setReportError(REPORT_LOAD_FAILED);
     } finally {
       setReportBusy(false);
     }

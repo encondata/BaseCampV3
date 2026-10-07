@@ -24,6 +24,7 @@ vi.mock('../../lib/api', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/api')>()), ...api,
 }));
 
+const { ApiError } = await import('../../lib/api');
 const { default: GenerateReportModal } = await import('./GenerateReportModal');
 
 const DEF: ReportDefinition = {
@@ -258,6 +259,31 @@ it('a Timesheet run posts the options with no job and never mentions the job Fil
   })));
   await screen.findByText('timesheet.xlsx');
   expect(screen.queryByText(/saved to the initiative/)).toBeNull();
+});
+
+it.each([
+  ['too_many_entries', 'Too many entries for one report (over 20,000). Narrow the date range or filters.'],
+  ['too_many_for_pdf', 'Too many entries for a PDF (over 5,000). Choose Excel or narrow the range.'],
+  ['rack renderer unavailable: x', 'rack renderer unavailable: x'],
+])('a failed run with %s reads in words', async (code, text) => {
+  const user = userEvent.setup();
+  api.createReportRun.mockResolvedValue(run({
+    id: 'r9', definition_id: 'd10', report_type: 'timesheet', status: 'failed', error: code,
+  }));
+  api.getReportRun.mockResolvedValue(run({
+    id: 'r9', definition_id: 'd10', report_type: 'timesheet', status: 'failed', error: code,
+  }));
+  render(<GenerateReportModal definition={TS_DEF} onClose={() => {}} />);
+  await user.click(await screen.findByRole('button', { name: 'Generate Report' }));
+  await screen.findByText(text, undefined, { timeout: 6000 });
+});
+
+it('a 403 time_view_required when starting a run reads in words', async () => {
+  const user = userEvent.setup();
+  api.createReportRun.mockRejectedValue(new ApiError(403, 'time_view_required'));
+  render(<GenerateReportModal definition={TS_DEF} onClose={() => {}} />);
+  await user.click(await screen.findByRole('button', { name: 'Generate Report' }));
+  await screen.findByText('You need permission to view time to run this report.');
 });
 
 it('a Timesheet passes timesheetInitial through to the options', async () => {

@@ -16,7 +16,9 @@ import {
   setReportRunNotify,
 } from '../../lib/api';
 import type { InitiativeItem, ReportDefinition, ReportRun } from '../../lib/api';
-import { fmtDate, openPresigned, sortInitiativesForPicker } from '../../lib/reports';
+import {
+  fmtDate, openPresigned, runErrorText, RUN_ERROR_TEXT, sortInitiativesForPicker,
+} from '../../lib/reports';
 import { useSystemStatus } from '../../lib/systemStatusContext';
 import ContainerLabelsOptions from './ContainerLabelsOptions';
 import MoveReportOptions from './MoveReportOptions';
@@ -114,7 +116,8 @@ export default function GenerateReportModal({ definition, onClose, onToast, time
     try {
       setRun(await createReportRun({ definition_id: definition.id, ...use }));
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Couldn't start the report.");
+      setError(err instanceof ApiError
+        ? (RUN_ERROR_TEXT[err.code] ?? err.message) : "Couldn't start the report.");
     }
   };
 
@@ -327,7 +330,7 @@ export default function GenerateReportModal({ definition, onClose, onToast, time
                 </>
               )}
               {run?.status === 'failed' && (
-                <div className="err">{run.error ?? 'The report failed.'}</div>
+                <div className="err">{runErrorText(run.error ?? 'The report failed.')}</div>
               )}
               {error && <div className="err">{error}</div>}
             </div>

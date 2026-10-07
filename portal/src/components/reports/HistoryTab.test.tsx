@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
@@ -50,4 +51,21 @@ it('still links to the initiative when one is present', async () => {
   render(<MemoryRouter><HistoryTab highlightRunId={null} onCount={() => {}} /></MemoryRouter>);
   const link = await screen.findByRole('link', { name: 'Champagne Move' });
   expect(link.getAttribute('href')).toBe('/initiatives/i1');
+});
+
+it.each([
+  ['too_many_entries', 'Too many entries for one report (over 20,000). Narrow the date range or filters.'],
+  ['too_many_for_pdf', 'Too many entries for a PDF (over 5,000). Choose Excel or narrow the range.'],
+  ['boom', 'boom'],
+])('View error reads %s in words', async (code, text) => {
+  api.listReportRuns.mockResolvedValue([run({
+    status: 'failed', error: code, filename: null, report_type: 'timesheet',
+    definition_name: 'Timesheet',
+  })]);
+  const user = userEvent.setup();
+  render(<MemoryRouter><HistoryTab highlightRunId={null} onCount={() => {}} /></MemoryRouter>);
+  await screen.findByText('Timesheet');
+  await user.click(screen.getByRole('button', { name: /actions/i }));
+  await user.click(screen.getByText('View error'));
+  expect(screen.getByText(text, { selector: 'pre' })).toBeTruthy();
 });

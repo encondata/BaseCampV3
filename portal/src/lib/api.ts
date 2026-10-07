@@ -5274,13 +5274,14 @@ export interface TimesheetPreview {
 
 export async function getTimesheetPreview(params: {
   from: string; to: string; person_id?: string; initiative_id?: string;
-  site_id?: string; statuses?: string[];
+  site_id?: string; statuses?: string[]; format?: 'xlsx' | 'pdf';
 }): Promise<TimesheetPreview> {
   const qs = new URLSearchParams({ from: params.from, to: params.to });
   if (params.person_id) qs.set('person_id', params.person_id);
   if (params.initiative_id) qs.set('initiative_id', params.initiative_id);
   if (params.site_id) qs.set('site_id', params.site_id);
   if (params.statuses) qs.set('statuses', params.statuses.join(','));
+  if (params.format) qs.set('format', params.format);
   const resp = await apiFetch(`/reports/timesheet/preview?${qs.toString()}`);
   if (!resp.ok) throw await errorFrom(resp);
   return resp.json();

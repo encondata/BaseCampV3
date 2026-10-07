@@ -14,7 +14,7 @@ import {
 } from '../../lib/api';
 import { sortNatural } from '../../lib/naturalSort';
 import {
-  buildTimesheetRunOptions, quickRange, timesheetDateError, timesheetDefaults,
+  buildTimesheetRunOptions, initialRange, quickRange, timesheetDateError, timesheetDefaults,
   timesheetOptionsValid, TIMESHEET_STATUS_CARDS, TIMESHEET_STATUSES, TIMESHEET_VIEW_CARDS,
   TIMESHEET_VIEWS,
   type QuickRangeKind, type TimesheetFormat, type TimesheetStatus, type TimesheetView,
@@ -49,10 +49,10 @@ export default function TimesheetOptions({ definition, onBack, onGenerate, initi
   initial?: Partial<TimesheetInitial>;
 }) {
   const defaults = useMemo(() => timesheetDefaults(definition), [definition]);
-  const [range0] = useState(() => quickRange('this_month', new Date()));
+  const [range0] = useState(() => initialRange(initial?.from, initial?.to, new Date()));
 
-  const [from, setFrom] = useState(initial?.from || range0.from);
-  const [to, setTo] = useState(initial?.to || range0.to);
+  const [from, setFrom] = useState(range0.from);
+  const [to, setTo] = useState(range0.to);
   const [personId, setPersonId] = useState(initial?.personId ?? '');
   const [jobId, setJobId] = useState(initial?.initiativeId ?? '');
   const [siteId, setSiteId] = useState(initial?.siteId ?? '');
@@ -116,6 +116,7 @@ export default function TimesheetOptions({ definition, onBack, onGenerate, initi
         ...(jobId ? { initiative_id: jobId } : {}),
         ...(siteId ? { site_id: siteId } : {}),
         statuses: TIMESHEET_STATUSES.filter((s) => statusKey.split(',').includes(s)),
+        format,
       }).then((p) => {
         if (token !== requestToken.current) return;
         setPreview(p); setPreviewError(''); setLoading(false);
@@ -133,7 +134,7 @@ export default function TimesheetOptions({ definition, onBack, onGenerate, initi
     }, PREVIEW_DEBOUNCE_MS);
     return () => { clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [from, to, personId, jobId, siteId, statusKey, valid]);
+  }, [from, to, personId, jobId, siteId, statusKey, format, valid]);
   useEffect(() => () => { requestToken.current += 1; }, []);
 
   const tooMany = !!preview?.too_many;
@@ -159,7 +160,9 @@ export default function TimesheetOptions({ definition, onBack, onGenerate, initi
             {previewError && <div className="pf-error">{previewError}</div>}
             {valid && tooMany && (
               <p className="pf-notice">
-                That range has more than 20,000 entries — narrow the dates or add a filter.
+                {format === 'pdf'
+                  ? "More than 5,000 entries match. A PDF that long isn't practical — choose Excel or narrow the range."
+                  : 'That range has more than 20,000 entries — narrow the dates or add a filter.'}
               </p>
             )}
             {valid && preview && !tooMany && (
