@@ -18,16 +18,18 @@ LAN_VM = {"slots": 2, "ip_mode": "static", "ip_cidr": f"{ORANGE}/8",
 
 async def make_bluegreen_environment(db, *, name: str = "lan9", target: str = "esxi",
                                      publish: bool = False, host_key=None,
-                                     **vm):
+                                     check_addresses: bool = False, **vm):
     """Needs secrets_key, the target's integration and NPM (integration_helpers).
-    Loopback is allowed and the address check skipped, as in vm_helpers."""
+    Loopback is allowed and (unless check_addresses) the address check
+    skipped, as in vm_helpers."""
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(vms, "ALLOW_LOOPBACK", True)
 
         async def free(*args, **kwargs) -> bool:
             return False
 
-        mp.setattr(vms, "address_in_use", free)
+        if not check_addresses:
+            mp.setattr(vms, "address_in_use", free)
         if host_key is not None:
             mp.setattr(vms, "new_host_keypair", lambda env_name: (
                 host_key.export_private_key("openssh").decode(),

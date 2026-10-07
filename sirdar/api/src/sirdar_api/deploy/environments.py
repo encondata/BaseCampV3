@@ -275,7 +275,7 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
         except first_admins.FirstAdminError as e:
             raise EnvError(e.code, **e.extra) from None
     on_do = target_id == targets.DO_TARGET
-    if vm is not None and (not isinstance(vm, dict) or vm.get("slots") not in (None, 1, 2)):
+    if vm is not None and not _slots_ok(vm):
         raise EnvError("vm_invalid")
     if vm is not None and vm.get("slots") == 2 and not targets.is_vm_target(target_id):
         raise EnvError("bluegreen_not_allowed")
@@ -382,10 +382,18 @@ async def create_new(db: AsyncSession, settings: Settings, *, name: str, type_: 
             if any(key in str(e.orig) for key in _VM_NAME_KEYS):
                 raise EnvError("vm_name_taken", name=vms.vm_name(name, role)) from None
             raise
-        await db.flush()
     if admin_spec is not None:
         await first_admins.put(db, settings, env.id, admin_spec)
     return env
+
+
+def _slots_ok(vm) -> bool:
+    """`vm.slots`: absent, 1 (one server) or 2 (Blue/Green); never True,
+    2.0 or "2"."""
+    if not isinstance(vm, dict):
+        return False
+    s = vm.get("slots")
+    return s is None or (not isinstance(s, bool) and isinstance(s, int) and s in (1, 2))
 
 
 _VM_NAME_KEYS = ("proxmox_vms_name_key", "esxi_vms_name_key")

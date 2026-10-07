@@ -136,3 +136,90 @@ def test_vm_name_taken_is_a_conflict():
     err = deploy._env_http(environments.EnvError("vm_name_taken", name="ss-lan1-data"))
     assert (err.status_code, err.detail) == (409, {"code": "vm_name_taken",
                                                    "name": "ss-lan1-data"})
+
+
+# ---- review follow-ups ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("taken", [PURPLE, DATA])
+async def test_each_address_is_checked(db, esxi, taken):
+    """The real address check: another environment's VM already has purple's
+    (or the data VM's) address."""
+    from .vm_helpers import make_esxi_environment
+    await make_esxi_environment(db, name="other", ip_cidr=f"{taken}/8")
+    with pytest.raises(environments.EnvError) as e:
+        await make_bluegreen_environment(db, check_addresses=True)
+    assert e.value.code == "ip_in_use"
+
+
+async def test_the_real_address_check_passes_free_addresses(db, esxi):
+    env = await make_bluegreen_environment(db, check_addresses=True)
+    assert [r.role for r in await vms.machines(db, env)] == ["data", "orange", "purple"]
+
+
+async def test_not_on_digitalocean(db, secrets_key):
+    with pytest.raises(environments.EnvError) as e:
+        await environments.create_new(db, get_settings(), name="x1", type_="dev",
+                                      target_id="digitalocean", vm=LAN_VM)
+    assert (e.value.code, e.value.extra) == ("bluegreen_not_allowed", {})
+
+
+async def test_not_production(db, esxi):
+    with pytest.raises(environments.EnvError) as e:
+        await environments.create_new(db, get_settings(), name="x1", type_="production",
+                                      target_id="esxi", proxy_ip="10.0.0.2", vm=LAN_VM)
+    assert e.value.code == "production_requires_digitalocean"
+
+
+@pytest.mark.parametrize("change, code", [
+    ({"gateway": "10.0.0.1"}, "vm_gateway_invalid"),
+    ({"data": {"cores": 0}}, "vm_cores_invalid"),
+    ({"data": {"memory_mb": 1024}}, "vm_memory_invalid"),
+    ({"data": "big"}, "vm_invalid"),
+    ({"slots": True}, "vm_invalid"),
+    ({"slots": 2.0}, "vm_invalid"),
+    ({"slots": "2"}, "vm_invalid"),
+    # each has the gateway in its own network, but the networks differ
+    ({"purple_ip_cidr": f"{PURPLE}/24"}, "vm_subnet_mismatch"),
+    ({"data_ip_cidr": f"{DATA}/16"}, "vm_subnet_mismatch"),
+])
+async def test_more_refusals(db, esxi, change, code):
+    with pytest.raises(environments.EnvError) as e:
+        await make_bluegreen_environment(db, **change)
+    assert e.value.code == code
+
+
+@pytest.mark.parametrize("slots", [True, 1.0, "1", 0])
+async def test_a_single_server_slots_value_is_strict(db, esxi, slots):
+    from .vm_helpers import make_esxi_environment
+    with pytest.raises(environments.EnvError) as e:
+        await make_esxi_environment(db, name="solo", slots=slots)
+    assert e.value.code == "vm_invalid"
+
+
+async def test_slots_1_is_a_single_server(db, esxi):
+    from .vm_helpers import make_esxi_environment
+    env = await make_esxi_environment(db, name="solo", slots=1)
+    assert [r.role for r in await vms.machines(db, env)] == ["main"]
+
+
+async def _no_name_check(*args, **kwargs):
+    return None
+
+
+@pytest.mark.parametrize("target, other, taken", [
+    ("esxi", "lan1-purple", "ss-lan1-purple"),
+    ("proxmox", "lan1-data", "ss-lan1-data"),
+])
+async def test_a_bluegreen_lost_race_names_the_vm(db, secrets_key, monkeypatch,
+                                                  target, other, taken):
+    from .vm_helpers import make_esxi_environment, make_vm_environment
+    await configure_esxi(db)
+    await configure_proxmox(db)
+    await configure(db, cloudflare=True, npm=True)
+    make = make_esxi_environment if target == "esxi" else make_vm_environment
+    await make(db, name=other, ip_cidr="127.0.0.9/8")
+    monkeypatch.setattr(environments, "_vm_name_taken", _no_name_check)
+    with pytest.raises(environments.EnvError) as e:
+        await make_bluegreen_environment(db, name="lan1", target=target)
+    assert (e.value.code, e.value.extra) == ("vm_name_taken", {"name": taken})
+    await db.rollback()

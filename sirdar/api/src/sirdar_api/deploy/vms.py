@@ -153,8 +153,9 @@ def check_spec(fields: dict) -> dict:
 def check_bluegreen(fields: dict) -> dict:
     """A LAN Blue/Green environment's three VMs: orange (`ip_cidr`) and purple
     (`purple_ip_cidr`) with the app sizes, the data VM (`data_ip_cidr`, sizes
-    in `data`, default DEFAULTS) on the same gateway. Static addresses only:
-    the data VM's pg_hba.conf and firewall list the app VMs before they exist."""
+    in `data`, default DEFAULTS) on the same gateway and network
+    (vm_subnet_mismatch). Static addresses only: the data VM's pg_hba.conf
+    and firewall list the app VMs before they exist."""
     if not isinstance(fields, dict):
         raise VmError("vm_invalid")
     if fields.get("ip_mode") != "static":
@@ -166,6 +167,9 @@ def check_bluegreen(fields: dict) -> dict:
         raise VmError("vm_invalid")
     data = check_spec({**{k: data_sizes.get(k) for k in DEFAULTS}, "ip_mode": "static",
                        "ip_cidr": fields.get("data_ip_cidr"), "gateway": fields.get("gateway")})
+    if len({ipaddress.IPv4Interface(s["ip_cidr"]).network
+            for s in (orange, purple, data)}) != 1:
+        raise VmError("vm_subnet_mismatch")
     if len({static_ip(s["ip_cidr"]) for s in (orange, purple, data)}) != 3:
         raise VmError("vm_ips_not_distinct")
     auto = fields.get("auto_activate", False)
