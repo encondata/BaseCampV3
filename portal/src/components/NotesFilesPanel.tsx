@@ -3,14 +3,22 @@
  * rebuilt: one merged, newest-first stream of notes and file attachments
  * for any entity the notes/attachments APIs host. Read-only unless
  * canWrite (client-scoped actors read; staff write).
+ *
+ * Every note and file has a visibility level: Everyone (the default —
+ * clients and partners who can see the record included), Internal (staff
+ * only) or Admin (Admin rank and up). Writers pick the level when adding
+ * a note or file and can change it afterward; non-Everyone items carry a
+ * chip. The API already filters lists to what the viewer may see.
  */
 import { useEffect, useRef, useState } from 'react';
 
 import {
   ApiError, createNote, deleteAttachment, deleteNote, listAttachments,
-  listNotes, updateNote, uploadAttachmentRequest,
+  listNotes, updateAttachment, updateNote, uploadAttachmentRequest,
   type AttachmentOut, type NoteOut,
 } from '../lib/api';
+import { useAuth } from '../auth/AuthContext';
+import { VISIBILITY_LABEL, visibilityOptions, type Visibility } from '../lib/visibility';
 import CollapsePanel from './CollapsePanel';
 
 type Entry =
@@ -28,6 +36,34 @@ const KIND_LABEL: Record<string, string> = {
   survey_template: 'Survey template', report_asset: 'Document',
 };
 const kindLabel = (kind: string) => KIND_LABEL[kind] ?? kind;
+
+/** Chip for a non-default level; Everyone is the norm and shows nothing. */
+const visibilityChip = (v: Visibility) => v === 'everyone' ? null
+  : <span className="chip tag">{VISIBILITY_LABEL[v]}</span>;
+
+/** The house segmented control over the levels this user may choose. */
+function VisibilityPicker({ value, options, onChange, label, disabled }: {
+  value: Visibility; options: Visibility[]; onChange: (v: Visibility) => void;
+  label: string; disabled?: boolean;
+}) {
+  return (
+    <div className="segmented" role="group" aria-label={label}>
+      {options.map((o) => (
+        <button key={o} type="button" aria-pressed={value === o}
+                className={value === o ? 'on' : ''} disabled={disabled}
+                onClick={() => onChange(o)}>
+          {VISIBILITY_LABEL[o]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Failed-write message: the API's refusal to set a level the user can't
+ *  see reads the same everywhere; anything else keeps the caller's wording. */
+const writeError = (err: unknown, fallback: string) =>
+  err instanceof ApiError && err.code === 'visibility_not_allowed'
+    ? "You can't choose that visibility." : fallback;
 
 /** Full-size overlay for one image attachment. Closes on scrim click or
  *  Escape. Reuses the house modal-scrim so it sits above everything,
@@ -62,9 +98,14 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
   const [draft, setDraft] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editBody, setEditBody] = useState('');
+  const [draftVisibility, setDraftVisibility] = useState<Visibility>('everyone');
+  const [editVisibility, setEditVisibility] = useState<Visibility>('everyone');
+  const [visibilityFileId, setVisibilityFileId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [lightbox, setLightbox] = useState<AttachmentOut | null>(null);
+  const { maxRank, scope } = useAuth();
+  const options = visibilityOptions(scope?.global ?? true, maxRank ?? 0);
   const fileRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
@@ -112,12 +153,13 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
     setBusy(true);
     setError('');
     try {
-      await createNote(entityType, entityId, body);
+      await createNote(entityType, entityId, body, draftVisibility);
       setDraft('');
       if (composerRef.current) composerRef.current.style.height = '';
       await load();
     } catch (err) {
-      setError(err instanceof ApiError ? 'Could not save the note.' : 'Network error.');
+      setError(err instanceof ApiError
+        ? writeError(err, 'Could not save the note.') : 'Network error.');
     } finally {
       setBusy(false);
     }
@@ -128,11 +170,11 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
     setBusy(true);
     setError('');
     try {
-      await updateNote(editingId, editBody.trim());
+      await updateNote(editingId, { body: editBody.trim(), visibility: editVisibility });
       setEditingId(null);
       await load();
-    } catch {
-      setError('Could not update the note.');
+    } catch (err) {
+      setError(writeError(err, 'Could not update the note.'));
     } finally {
       setBusy(false);
     }
@@ -150,10 +192,11 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
         entityId,
         kind: file.type.startsWith('image/') ? 'photo' : 'document',
         file,
+        visibility: draftVisibility,
       });
       await load();
-    } catch {
-      setError('Upload failed.');
+    } catch (err) {
+      setError(writeError(err, 'Upload failed.'));
     } finally {
       setBusy(false);
       if (fileRef.current) fileRef.current.value = '';
@@ -186,6 +229,34 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
     }
   };
 
+  const changeFileVisibility = async (file: AttachmentOut, level: Visibility) => {
+    if (level === file.visibility) return;
+    setBusy(true);
+    setError('');
+    try {
+      await updateAttachment(file.id, { visibility: level });
+      setVisibilityFileId(null);
+      await load();
+    } catch (err) {
+      setError(writeError(err, 'Could not change the visibility.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Visibility button for a file (avatars are always Everyone, so none). */
+  const visibilityButton = (file: AttachmentOut) => canWrite && file.kind !== 'avatar' && (
+    <button className="mini-btn" disabled={busy} onClick={() => {
+      setVisibilityFileId(visibilityFileId === file.id ? null : file.id);
+    }}>Visibility</button>
+  );
+
+  const filePicker = (file: AttachmentOut) => visibilityFileId === file.id && (
+    <VisibilityPicker value={file.visibility} options={options} disabled={busy}
+                      label="File visibility"
+                      onChange={(v) => void changeFileVisibility(file, v)} />
+  );
+
   const badge = (
     <span className="badge-count">
       {status === 'loading' ? '…' : status === 'error' ? '—'
@@ -204,7 +275,8 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
           {imageFiles.length > 0 && (
             <div className="nf-thumbs">
               {imageFiles.map((file) => (
-                <div key={`t-${file.id}`} className="nf-thumb-wrap">
+                <div key={`t-${file.id}`}
+                     className={`nf-thumb-wrap${visibilityFileId === file.id ? ' nf-vis-open' : ''}`}>
                   <button type="button" className="nf-thumb"
                           onClick={() => setLightbox(file)}
                           aria-label={`Open ${file.filename}`}>
@@ -220,6 +292,13 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                       </span>
                     )}
                   </div>
+                  {(file.visibility !== 'everyone' || (canWrite && file.kind !== 'avatar')) && (
+                    <div className="nf-thumb-vis">
+                      {visibilityChip(file.visibility)}
+                      {visibilityButton(file)}
+                    </div>
+                  )}
+                  {filePicker(file)}
                 </div>
               ))}
             </div>
@@ -232,6 +311,18 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                         onChange={(e) => setDraft(e.target.value)}
                         onInput={(e) => autoGrow(e.currentTarget)}
                         disabled={busy} />
+              {options.length > 1 && (
+                <>
+                  <div className="nf-visibility">
+                    <span className="page-hint nf-visibility-label">Visible to</span>
+                    <VisibilityPicker value={draftVisibility} options={options}
+                                      label="Visible to" disabled={busy}
+                                      onChange={setDraftVisibility} />
+                  </div>
+                  <p className="page-hint nf-visibility-hint">
+                    Everyone includes client and partner users who can see this record.</p>
+                </>
+              )}
               <div className="nf-composer-actions">
                 <button className="mini-btn" onClick={() => void addNote()}
                         disabled={busy || !draft.trim()}>Add note</button>
@@ -258,6 +349,11 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                     <textarea rows={2} value={editBody} ref={autoGrow}
                               onChange={(e) => setEditBody(e.target.value)}
                               onInput={(e) => autoGrow(e.currentTarget)} />
+                    {options.length > 1 && (
+                      <VisibilityPicker value={editVisibility} options={options}
+                                        label="Note visibility" disabled={busy}
+                                        onChange={setEditVisibility} />
+                    )}
                     <div className="nf-actions">
                       <button className="mini-btn" onClick={() => void saveEdit()}
                               disabled={busy || !editBody.trim()}>Save</button>
@@ -271,11 +367,13 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                     <div className="nf-meta">
                       <span className="cell-top">{entry.note.author_name ?? 'Unknown'}</span>
                       <span className="mono">{new Date(entry.note.created_at).toLocaleString()}</span>
+                      {visibilityChip(entry.note.visibility)}
                       {canWrite && (
                         <span className="nf-actions">
                           <button className="mini-btn" disabled={busy} onClick={() => {
                             setEditingId(entry.note.id);
                             setEditBody(entry.note.body);
+                            setEditVisibility(entry.note.visibility);
                           }}>Edit</button>
                           <button className="mini-btn danger" disabled={busy} onClick={() => {
                             void removeNote(entry.note.id);
@@ -295,18 +393,23 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                     : <>📎 {entry.file.filename}</>}
                   <span className="chip tag" style={{ marginLeft: 8 }}>
                     {kindLabel(entry.file.kind)}</span>
+                  {entry.file.visibility !== 'everyone' && (
+                    <span style={{ marginLeft: 6 }}>{visibilityChip(entry.file.visibility)}</span>
+                  )}
                 </p>
                 <div className="nf-meta">
                   <span className="mono">{(entry.file.size_bytes / 1024).toFixed(0)} KB</span>
                   <span className="mono">{new Date(entry.file.created_at).toLocaleString()}</span>
                   {canWrite && (
                     <span className="nf-actions">
+                      {visibilityButton(entry.file)}
                       <button className="mini-btn danger" disabled={busy} onClick={() => {
                         void removeAttachment(entry.file.id);
                       }}>Delete</button>
                     </span>
                   )}
                 </div>
+                {filePicker(entry.file)}
               </li>
             ))}
           </ul>

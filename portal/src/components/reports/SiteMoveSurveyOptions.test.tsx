@@ -44,6 +44,7 @@ const TEMPLATE_FILE: AttachmentOut = {
   storage_key: 'k', filename: 'Move Survey.xlsx',
   content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   size_bytes: 4096, created_at: '2026-09-09T10:00:00Z', url: null,
+  visibility: 'everyone',
 };
 const USERS: UserSummary[] = [
   { person_id: 'me1', display_name: 'Me', login_email: 'me@example.com', avatar_url: null },
