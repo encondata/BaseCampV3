@@ -178,7 +178,10 @@ def _my_group_out(group: NotificationGroup, member_count: int,
         channels=group.channels, quiet_start=group.quiet_start,
         quiet_end=group.quiet_end, timezone=group.timezone,
         active_days=group.active_days, dnd_behavior=group.dnd_behavior,
-        urgent_bypass=group.urgent_bypass, member_count=member_count,
+        urgent_bypass=group.urgent_bypass, categories=group.categories,
+        effective_channels=(effective_settings(group, member)["channels"]
+                            if member is not None else group.channels),
+        member_count=member_count,
         is_member=member is not None,
         overrides=(NotificationMemberOverrides(
             channels=member.channels, quiet_mode=member.quiet_mode,

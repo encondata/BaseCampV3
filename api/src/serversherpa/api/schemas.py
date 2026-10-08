@@ -2551,6 +2551,8 @@ class NotificationGroupSettings(BaseModel):
     active_days: list[str] | None = None
     dnd_behavior: str | None = None
     urgent_bypass: bool | None = None
+    # Event categories the group's settings apply to (notifications/kinds.py).
+    categories: list[str] | None = None
 
 
 class NotificationGroupCreateIn(NotificationGroupSettings):
@@ -2577,6 +2579,7 @@ class NotificationGroupOut(BaseModel):
     active_days: list[str]
     dnd_behavior: str
     urgent_bypass: bool
+    categories: list[str]
     enabled: bool
     member_count: int
     created_at: datetime
@@ -2715,6 +2718,9 @@ class MyNotificationGroupOut(BaseModel):
     active_days: list[str]
     dnd_behavior: str
     urgent_bypass: bool
+    categories: list[str]
+    # The member's effective channels when a member, else the group's.
+    effective_channels: list[str]
     member_count: int
     is_member: bool
     overrides: NotificationMemberOverrides | None = None
