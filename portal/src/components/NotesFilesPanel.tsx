@@ -2,7 +2,9 @@
  * NotesFilesPanel — the old portal's "document, image, or note" panel,
  * rebuilt: one merged, newest-first stream of notes and file attachments
  * for any entity the notes/attachments APIs host. Read-only unless
- * canWrite (client-scoped actors read; staff write).
+ * canWrite AND the user holds a global role: the API requires a global
+ * role for every note and file write, so client, partner and self users
+ * read here even when their role grants the host resource's `change`.
  *
  * Every note and file has a visibility level: Everyone (the default —
  * clients and partners who can see the record included), Internal (staff
@@ -18,7 +20,9 @@ import {
   type AttachmentOut, type NoteOut,
 } from '../lib/api';
 import { useAuth } from '../auth/AuthContext';
-import { VISIBILITY_LABEL, visibilityOptions, type Visibility } from '../lib/visibility';
+import {
+  FIXED_VISIBILITY_KINDS, VISIBILITY_LABEL, visibilityOptions, type Visibility,
+} from '../lib/visibility';
 import CollapsePanel from './CollapsePanel';
 
 type Entry =
@@ -105,7 +109,10 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
   const [error, setError] = useState('');
   const [lightbox, setLightbox] = useState<AttachmentOut | null>(null);
   const { maxRank, scope } = useAuth();
-  const options = visibilityOptions(scope?.global ?? true, maxRank ?? 0);
+  // writes need a global role; an unknown scope counts as non-global
+  const isGlobal = scope?.global === true;
+  const writable = canWrite && isGlobal;
+  const options = visibilityOptions(isGlobal, maxRank ?? 0);
   const fileRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
@@ -230,7 +237,10 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
   };
 
   const changeFileVisibility = async (file: AttachmentOut, level: Visibility) => {
-    if (level === file.visibility) return;
+    if (level === file.visibility) {
+      setVisibilityFileId(null);   // same level: just close, no call
+      return;
+    }
     setBusy(true);
     setError('');
     try {
@@ -244,16 +254,21 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
     }
   };
 
-  /** Visibility button for a file (avatars are always Everyone, so none). */
-  const visibilityButton = (file: AttachmentOut) => canWrite && file.kind !== 'avatar' && (
-    <button className="mini-btn" disabled={busy} onClick={() => {
-      setVisibilityFileId(visibilityFileId === file.id ? null : file.id);
-    }}>Visibility</button>
+  /** Visibility button for a file (fixed-visibility kinds are always
+   *  Everyone, so none). */
+  const visibilityButton = (file: AttachmentOut) =>
+    writable && !FIXED_VISIBILITY_KINDS.has(file.kind) && (
+    <button className="mini-btn" disabled={busy}
+            aria-label={`Visibility of ${file.filename}`}
+            aria-expanded={visibilityFileId === file.id}
+            onClick={() => {
+              setVisibilityFileId(visibilityFileId === file.id ? null : file.id);
+            }}>Visibility</button>
   );
 
   const filePicker = (file: AttachmentOut) => visibilityFileId === file.id && (
     <VisibilityPicker value={file.visibility} options={options} disabled={busy}
-                      label="File visibility"
+                      label={`Visibility of ${file.filename} options`}
                       onChange={(v) => void changeFileVisibility(file, v)} />
   );
 
@@ -284,7 +299,7 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                   </button>
                   <div className="mini-row compact nf-thumb-cap">
                     <span className="cell-top">{file.filename}</span>
-                    {canWrite && (
+                    {writable && (
                       <span className="nf-actions">
                         <button className="mini-btn danger" disabled={busy} onClick={() => {
                           void removeAttachment(file.id);
@@ -292,7 +307,8 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                       </span>
                     )}
                   </div>
-                  {(file.visibility !== 'everyone' || (canWrite && file.kind !== 'avatar')) && (
+                  {(file.visibility !== 'everyone'
+                    || (writable && !FIXED_VISIBILITY_KINDS.has(file.kind))) && (
                     <div className="nf-thumb-vis">
                       {visibilityChip(file.visibility)}
                       {visibilityButton(file)}
@@ -304,7 +320,7 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
             </div>
           )}
 
-          {canWrite && (
+          {writable && (
             <div className="nf-composer">
               <textarea ref={composerRef} rows={2} placeholder="Add a note…"
                         value={draft}
@@ -368,7 +384,7 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                       <span className="cell-top">{entry.note.author_name ?? 'Unknown'}</span>
                       <span className="mono">{new Date(entry.note.created_at).toLocaleString()}</span>
                       {visibilityChip(entry.note.visibility)}
-                      {canWrite && (
+                      {writable && (
                         <span className="nf-actions">
                           <button className="mini-btn" disabled={busy} onClick={() => {
                             setEditingId(entry.note.id);
@@ -400,7 +416,7 @@ export default function NotesFilesPanel({ entityType, entityId, canWrite }: {
                 <div className="nf-meta">
                   <span className="mono">{(entry.file.size_bytes / 1024).toFixed(0)} KB</span>
                   <span className="mono">{new Date(entry.file.created_at).toLocaleString()}</span>
-                  {canWrite && (
+                  {writable && (
                     <span className="nf-actions">
                       {visibilityButton(entry.file)}
                       <button className="mini-btn danger" disabled={busy} onClick={() => {

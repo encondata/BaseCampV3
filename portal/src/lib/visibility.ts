@@ -13,3 +13,10 @@ export function visibilityOptions(isGlobal: boolean, maxRank: number): Visibilit
   if (!isGlobal) return ['everyone'];
   return maxRank >= ADMIN_RANK ? ['everyone', 'internal', 'admin'] : ['everyone', 'internal'];
 }
+
+/** Attachment kinds whose visibility is fixed at Everyone (api
+ *  FIXED_VISIBILITY_KINDS): avatars/logos, and the report-definition files
+ *  the report gather reads regardless of level. They get no Visibility button. */
+export const FIXED_VISIBILITY_KINDS: ReadonlySet<string> = new Set([
+  'avatar', 'survey_template', 'report_asset',
+]);

@@ -215,13 +215,55 @@ it('a reader sees no picker', async () => {
   expect(screen.queryByText(HINT)).toBeNull();
 });
 
-it('a client-scoped writer sees no picker (Everyone is the only level)', async () => {
+it('a non-global user with canWrite sees no composer, Edit/Delete or Visibility buttons', async () => {
   auth.scope = { global: false, client_ids: ['c1'], partner_ids: [] };
-  api.listNotes.mockResolvedValue([]);
+  api.listNotes.mockResolvedValue([note('n1')]);
+  api.listAttachments.mockResolvedValue([
+    attachment({ id: 'doc-1', filename: 'manual.pdf' }),
+    attachment({ id: 'img-1', filename: 'rack.png', content_type: 'image/png',
+                 url: 'https://x/rack.png', kind: 'photo' }),
+  ]);
+  await openPanel();
+
+  // the lists still load and render
+  expect(screen.getByText('Note n1')).toBeDefined();
+  expect(screen.getByText(/📎 manual\.pdf/)).toBeDefined();
+  expect(screen.getByRole('button', { name: 'Open rack.png' })).toBeDefined();
+
+  expect(screen.queryByPlaceholderText('Add a note…')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Add note' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Attach file' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Delete' })).toBeNull();
+  expect(screen.queryByRole('button', { name: /^Visibility/ })).toBeNull();
+  expect(screen.queryByRole('group', { name: 'Visible to' })).toBeNull();
+});
+
+it('an unknown scope counts as non-global: no write controls', async () => {
+  auth.scope = null;
+  api.listNotes.mockResolvedValue([note('n1')]);
   api.listAttachments.mockResolvedValue([]);
   await openPanel();
 
-  expect(screen.queryByRole('group', { name: 'Visible to' })).toBeNull();
+  expect(screen.getByText('Note n1')).toBeDefined();
+  expect(screen.queryByPlaceholderText('Add a note…')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull();
+});
+
+it('fixed-visibility kinds (avatar, survey template, report asset) get no Visibility button', async () => {
+  api.listNotes.mockResolvedValue([]);
+  api.listAttachments.mockResolvedValue([
+    attachment({ id: 'av-1', filename: 'me.png', kind: 'avatar', content_type: 'image/png',
+                 url: 'https://x/me.png' }),
+    attachment({ id: 'st-1', filename: 'tmpl.xlsx', kind: 'survey_template' }),
+    attachment({ id: 'ra-1', filename: 'std.docx', kind: 'report_asset' }),
+    attachment({ id: 'doc-1', filename: 'manual.pdf' }),
+  ]);
+  await openPanel();
+
+  const buttons = screen.getAllByRole('button', { name: /^Visibility of / });
+  expect(buttons.map((b) => b.getAttribute('aria-label')))
+    .toEqual(['Visibility of manual.pdf']);
 });
 
 it('shows Internal / Admin chips on notes, file rows and thumbnails, none for Everyone', async () => {
@@ -280,23 +322,30 @@ it('a file row\'s Visibility button opens the picker and saves the new level', a
   api.updateAttachment.mockResolvedValue(attachment({ visibility: 'internal' }));
   const user = await openPanel();
 
-  // an avatar never gets the button; the document does
-  expect(screen.getAllByRole('button', { name: 'Visibility' })).toHaveLength(1);
+  // an avatar never gets the button; the document does, named for its file
+  expect(screen.getAllByRole('button', { name: /^Visibility of / })).toHaveLength(1);
+  const button = screen.getByRole('button', { name: 'Visibility of manual.pdf' });
+  expect(button.getAttribute('aria-expanded')).toBe('false');
 
-  await user.click(screen.getByRole('button', { name: 'Visibility' }));
-  const group = screen.getByRole('group', { name: 'File visibility' });
+  await user.click(button);
+  expect(button.getAttribute('aria-expanded')).toBe('true');
+  const group = screen.getByRole('group', { name: 'Visibility of manual.pdf options' });
 
-  // no call when the level is unchanged
+  // picking the level the file already has closes the picker, no call
   await user.click(within(group).getByRole('button', { name: 'Everyone' }));
   expect(api.updateAttachment).not.toHaveBeenCalled();
+  expect(screen.queryByRole('group', { name: 'Visibility of manual.pdf options' })).toBeNull();
+  expect(button.getAttribute('aria-expanded')).toBe('false');
 
+  await user.click(button);
   api.listAttachments.mockClear();
-  await user.click(within(screen.getByRole('group', { name: 'File visibility' }))
+  await user.click(within(screen.getByRole('group', { name: 'Visibility of manual.pdf options' }))
     .getByRole('button', { name: 'Internal' }));
   await waitFor(() => expect(api.updateAttachment)
     .toHaveBeenCalledWith('doc-1', { visibility: 'internal' }));
   await waitFor(() => expect(api.listAttachments).toHaveBeenCalled());
-  await waitFor(() => expect(screen.queryByRole('group', { name: 'File visibility' })).toBeNull());
+  await waitFor(() => expect(
+    screen.queryByRole('group', { name: 'Visibility of manual.pdf options' })).toBeNull());
 });
 
 it('thumbnails get the Visibility button too', async () => {
@@ -308,8 +357,8 @@ it('thumbnails get the Visibility button too', async () => {
   api.updateAttachment.mockResolvedValue(attachment({}));
   const user = await openPanel();
 
-  await user.click(screen.getByRole('button', { name: 'Visibility' }));
-  await user.click(within(screen.getByRole('group', { name: 'File visibility' }))
+  await user.click(screen.getByRole('button', { name: 'Visibility of rack.png' }));
+  await user.click(within(screen.getByRole('group', { name: 'Visibility of rack.png options' }))
     .getByRole('button', { name: 'Internal' }));
   await waitFor(() => expect(api.updateAttachment)
     .toHaveBeenCalledWith('img-1', { visibility: 'internal' }));
