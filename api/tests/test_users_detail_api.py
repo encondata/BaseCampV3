@@ -224,6 +224,21 @@ async def test_activity_rows_acted_and_about(client, db, seeded_user):
     assert (await client.get(f"/users/{ghost.id}/activity", headers=admin)).status_code == 404
 
 
+async def test_activity_keeps_note_and_file_rows_by_others_for_admins(client, db, seeded_user):
+    """/auth/me/activity hides note/file changes others made on your record
+    (they can name Internal/Admin files); the admin view here keeps them."""
+    admin = await login_admin(client, db, seeded_user)
+    wan = await _add_user(db, first="Wan", last="Worker",
+                          email="wan@test.example.com", role="staff")
+    db.add(AuditLog(actor_person_id=seeded_user.id, entity_type="person",
+                    entity_id=str(wan.id), action="attachment.add",
+                    changes={"filename": {"from": None, "to": "review.pdf"}}))
+    await db.commit()
+
+    rows = (await client.get(f"/users/{wan.id}/activity", headers=admin)).json()
+    assert any(r["action"] == "attachment.add" for r in rows)
+
+
 # ── PUT /users/{id}/access-groups ───────────────────────────────────
 
 async def test_set_access_groups_diffs_and_audits(client, db, seeded_user):
