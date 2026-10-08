@@ -40,6 +40,27 @@ def testing_password(monkeypatch):
     get_settings.cache_clear()
 
 
+@pytest.fixture
+def unconfigured_password():
+    """Force db_testing_password to None however the environment is set.
+
+    Deleting SS_DB_TESTING_PASSWORD from os.environ isn't enough: Settings
+    falls back to the repo-root .env, and a developer's .env may set it.
+    get_settings() looks up ``Settings`` in serversherpa.config on every
+    build, so swapping that name for a factory reaches every caller."""
+    from serversherpa import config
+
+    real_settings = config.Settings
+    config.Settings = lambda: real_settings().model_copy(
+        update={"db_testing_password": None})
+    config.get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        config.Settings = real_settings
+        config.get_settings.cache_clear()
+
+
 class _FakeStorage:
     def __init__(self):
         self.objects: dict[str, bytes] = {}
@@ -154,28 +175,23 @@ async def test_start_missing_password_is_422(client, db, seeded_user, testing_pa
 
 
 async def test_start_without_configured_password_is_503(
-        client, db, seeded_user, monkeypatch):
+        client, db, seeded_user, unconfigured_password):
     """SS_DB_TESTING_PASSWORD has no default any more: unset → the Testing
     tab is disabled (503 db_testing_password_not_configured) no matter
     what the caller sends — including the old "admin" default."""
     from serversherpa.config import get_settings
 
-    monkeypatch.delenv("SS_DB_TESTING_PASSWORD", raising=False)
-    get_settings.cache_clear()
-    try:
-        assert get_settings().db_testing_password is None
-        hdrs = await _developer(db, client, seeded_user)
-        for supplied in ("admin", "nope", ""):
-            resp = await client.post("/devtools/db-testing/start", headers=hdrs,
-                                     json={"password": supplied})
-            assert resp.status_code == 503, resp.text
-            assert resp.json()["detail"]["code"] == "db_testing_password_not_configured"
-        # not an auth failure: nothing audited, nothing counted toward lockout
-        row = await db.scalar(select(AuditLog).where(
-            AuditLog.action == "db_testing.auth_failed"))
-        assert row is None
-    finally:
-        get_settings.cache_clear()
+    assert get_settings().db_testing_password is None
+    hdrs = await _developer(db, client, seeded_user)
+    for supplied in ("admin", "nope", ""):
+        resp = await client.post("/devtools/db-testing/start", headers=hdrs,
+                                 json={"password": supplied})
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["detail"]["code"] == "db_testing_password_not_configured"
+    # not an auth failure: nothing audited, nothing counted toward lockout
+    row = await db.scalar(select(AuditLog).where(
+        AuditLog.action == "db_testing.auth_failed"))
+    assert row is None
 
 
 async def test_start_with_empty_configured_password_is_503(
