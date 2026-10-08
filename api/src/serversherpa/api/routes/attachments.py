@@ -3,6 +3,14 @@
 One endpoint handles every "attach a file to a record" case: avatars
 today; asset photos, project documents, signatures later. Storage is
 S3-compatible (MinIO dev / DO Spaces prod) via services.storage.
+
+Visibility: every file carries a level (Everyone / Internal / Admin, see
+access/visibility.py). Reads of a record's files need only the host
+resource's `view` plus the host row inside the actor's scope, so a client
+can list the Everyone files on records they can see; writes still need the
+`attachments` grant and a global role. A file whose level the actor cannot
+see behaves as missing (404 on PATCH/DELETE, filtered out of lists), and an
+actor can only set a level they can see themselves.
 """
 
 import uuid
@@ -13,9 +21,10 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from sqlalchemy import select, update
 
-from serversherpa.access.scope import scope_conditions
+from serversherpa.access.hosts import authorize_host_view
+from serversherpa.access.visibility import can_set_visibility, visible_levels
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession
-from serversherpa.api.schemas import AttachmentOut
+from serversherpa.api.schemas import AttachmentOut, AttachmentUpdateIn, VisibilityLevel
 from serversherpa.db.models import (
     Asset, Attachment, Client, Container, Initiative, Partner, Person,
     ReportDefinition, Site, Truck,
@@ -108,31 +117,39 @@ async def _authorize(
         if not actor.access.can("reports", required):
             raise _err(403, "forbidden")
         return
+    if action == "view" and not actor.access.is_global:
+        # reads derive from the host resource (view + row scope) exactly
+        # like notes — attachments:view is never consulted, so a
+        # client-scoped actor can list the Everyone files on any record
+        # they can see. Per-file levels are filtered by the caller.
+        await authorize_host_view(db, actor, entity_type, entity_id)
+        return
     if entity_type == "asset" and action == "view":
-        # asset attachments inherit the asset's visibility: permission
-        # derives ENTIRELY from the host resource (assets:view + row
-        # scope), exactly like the notes router — attachments:view is
-        # never consulted for this case, so a client-scoped actor with
-        # only assets:view can see attachments on assets they can see.
+        # global actors read asset files on assets:view alone (no
+        # `attachments` grant needed), mirroring the asset notes rule.
         if not actor.access.can("assets", "view"):
             raise _err(403, "forbidden")
-        if not actor.access.is_global:
-            cond = scope_conditions("assets", actor.access, actor.person.id)
-            if cond is not None:
-                visible = await db.scalar(select(Asset.id).where(
-                    Asset.id == entity_id, cond))
-                if visible is None:
-                    raise _err(404, "entity_not_found")
         return
     if not actor.access.can("attachments", action):
         raise _err(403, "forbidden")
     # attachments has no SCOPE_COLUMNS entry to backstop a matrix/override
     # grant, so a non-global actor's "attachments" permission (even an
-    # admin-set override) is not enough on its own — deny until attachments
-    # get a real scope map. Other entity types (and asset add/delete) keep
-    # this interim hard deny.
+    # admin-set override) is not enough on its own for a write — deny until
+    # attachments get a real scope map.
     if not actor.access.is_global:
         raise _err(403, "forbidden")
+
+
+async def _get_live_attachment(
+    db: DbSession, attachment_id: uuid.UUID, actor: AuthContext,
+) -> Attachment:
+    """The attachment, or 404 when missing, deleted, or at a level the actor
+    cannot see (hidden files behave as missing)."""
+    att = await db.get(Attachment, attachment_id)
+    if att is None or att.deleted_at is not None \
+            or att.visibility not in visible_levels(actor.access):
+        raise _err(404, "attachment_not_found")
+    return att
 
 
 def _out(att: Attachment) -> AttachmentOut:
@@ -149,8 +166,13 @@ async def upload_attachment(
     entity_id: Annotated[uuid.UUID, Form()],
     kind: Annotated[Kind, Form()],
     file: Annotated[UploadFile, File()],
+    visibility: Annotated[VisibilityLevel, Form()] = "everyone",
 ) -> AttachmentOut:
     await _authorize(db, user, entity_type, entity_id, "add", kind)
+    if kind == "avatar" and visibility != "everyone":
+        raise _err(422, "visibility_not_supported")
+    if not can_set_visibility(user.access, visibility):
+        raise _err(403, "visibility_not_allowed")
 
     if kind == "avatar" and entity_type not in AVATAR_KEY_FIELD:
         raise _err(422, "avatar_not_supported")
@@ -211,6 +233,7 @@ async def upload_attachment(
         content_type=content_type,
         size_bytes=len(data),
         uploaded_by=user.person.id,
+        visibility=visibility,
     )
     db.add(attachment)
 
@@ -235,6 +258,7 @@ async def list_attachments(
         Attachment.entity_type == entity_type,
         Attachment.entity_id == entity_id,
         Attachment.deleted_at.is_(None),
+        Attachment.visibility.in_(visible_levels(user.access)),
     ).order_by(Attachment.created_at.desc())
     if kind is not None:
         stmt = stmt.where(Attachment.kind == kind)
@@ -242,13 +266,33 @@ async def list_attachments(
     return [_out(a) for a in rows]
 
 
+@router.patch("/{attachment_id}", response_model=AttachmentOut)
+async def update_attachment(
+    attachment_id: uuid.UUID, body: AttachmentUpdateIn, user: CurrentUser,
+    db: DbSession,
+) -> AttachmentOut:
+    att = await _get_live_attachment(db, attachment_id, user)
+    await _authorize(db, user, att.entity_type, att.entity_id, "change", att.kind)
+    if att.kind == "avatar":
+        raise _err(422, "visibility_not_supported")
+    if not can_set_visibility(user.access, body.visibility):
+        raise _err(403, "visibility_not_allowed")
+    if body.visibility != att.visibility:
+        audit(db, actor_id=user.person.id, entity_type=att.entity_type,
+              entity_id=str(att.entity_id), action="attachment.update",
+              changes={"filename": att.filename,
+                       "visibility": {"from": att.visibility,
+                                      "to": body.visibility}})
+        att.visibility = body.visibility
+        await db.commit()
+    return _out(att)
+
+
 @router.delete("/{attachment_id}", status_code=204)
 async def delete_attachment(
     attachment_id: uuid.UUID, user: CurrentUser, db: DbSession
 ) -> None:
-    att = await db.get(Attachment, attachment_id)
-    if att is None or att.deleted_at is not None:
-        raise _err(404, "attachment_not_found")
+    att = await _get_live_attachment(db, attachment_id, user)
     await _authorize(db, user, att.entity_type, att.entity_id, "delete", att.kind)
 
     att.deleted_at = datetime.now(UTC)

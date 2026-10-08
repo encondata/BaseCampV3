@@ -1686,6 +1686,11 @@ class NoteOut(BaseModel):
 VisibilityLevel = Literal["everyone", "internal", "admin"]
 
 
+class AttachmentUpdateIn(BaseModel):
+    visibility: VisibilityLevel
+    model_config = ConfigDict(extra="forbid")
+
+
 class NoteCreateIn(BaseModel):
     entity_type: str
     entity_id: uuid.UUID
