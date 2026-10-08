@@ -5,11 +5,17 @@ initiative / client records they can see."""
 from sqlalchemy import select
 
 from serversherpa.db.models import (
-    Asset, AuditLog, Initiative, Note, Person, PersonRole,
+    Asset,
+    AuditLog,
+    Initiative,
+    Note,
+    Person,
+    PersonRole,
 )
 from tests.test_assets_api import _client_contact, login, make_login
 from tests.test_initiatives_client_scope import (
-    _two_clients_with_initiatives, client_login,
+    _two_clients_with_initiatives,
+    client_login,
 )
 
 

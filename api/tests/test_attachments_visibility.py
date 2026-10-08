@@ -248,3 +248,33 @@ async def test_report_definition_files_still_need_reports_view(
     resp = await _list(client, cl, "report_definition", definition.id)
     assert resp.status_code == 403
     assert resp.json()["detail"]["code"] == "forbidden"
+
+
+async def test_report_definition_kinds_must_stay_everyone(
+        client, db, seeded_user):
+    """The report gather ignores visibility, so survey_template and
+    report_asset files cannot carry a level other than Everyone."""
+    definition = ReportDefinition(
+        name="Site & Move Survey", report_type="site_move_survey",
+        options={}, is_system=True)
+    db.add(definition)
+    await db.commit()
+    admin = await _admin(db, client, "att-vis-admin-fixed@test.example.com")
+
+    for kind, name, ctype in (
+            ("survey_template", "t.xlsx", "application/octet-stream"),
+            ("report_asset", "r.docx", "application/octet-stream")):
+        resp = await _upload(client, admin, "report_definition", definition.id,
+                             name, kind, b"bytes", ctype, visibility="internal")
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["detail"]["code"] == "visibility_not_supported"
+
+        resp = await _upload(client, admin, "report_definition", definition.id,
+                             name, kind, b"bytes", ctype)
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["visibility"] == "everyone"
+
+        r = await client.patch(f"/attachments/{resp.json()['id']}",
+                               headers=admin, json={"visibility": "internal"})
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["code"] == "visibility_not_supported"

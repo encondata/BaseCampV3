@@ -81,6 +81,11 @@ async def authorize_host_view(db, actor, entity_type, entity_id) -> None
   keeps its `reports:*` rule. Add, change and delete keep today's rules.
 - Resources whose `visible_to` is global-only (sites, containers, trucks)
   still deny non-global users at `can()`, so nothing changes there.
+- Non-global reads of files follow the host rule and ignore `attachments:view`,
+  so a deny override on `attachments` does not hide Everyone files from
+  client, partner or self users. Global users still need `attachments:view`.
+- Avatar and logo rows become listable by anyone who can see the record;
+  these images were already exposed through `avatar_url`/`logo_url`.
 
 Net effect for a client user: they now see **Everyone** notes and files on
 their own client's initiatives and on their own client record (and keep
@@ -140,7 +145,12 @@ one of the two is required → 422 `nothing_to_update`).
   column default covers it.
 - Avatars and logos presigned directly from `avatar_key`/`logo_key` are not
   panel files and are unaffected.
-- Audit rows keep only note ids and filenames; audit stays admin-only.
+- Audit rows keep only note ids and filenames. The audit log is admin-only,
+  and a person's own activity feed (`/auth/me/activity`) omits `note.*` and
+  `attachment.*` rows made by others, so hidden filenames never reach them.
+- Report-definition files (`survey_template`, `report_asset`) are fixed at
+  Everyone like avatars: the report gather ignores visibility, so upload with
+  another level and PATCH both return 422 `visibility_not_supported`.
 
 ## Portal
 

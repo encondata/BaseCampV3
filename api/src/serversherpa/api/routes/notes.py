@@ -17,8 +17,7 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
-from serversherpa.access.hosts import NOTE_HOSTS, SCOPE_PROBES, authorize_host_view
-from serversherpa.access.scope import scope_conditions
+from serversherpa.access.hosts import NOTE_HOSTS, authorize_host_view
 from serversherpa.access.visibility import can_set_visibility, visible_levels
 from serversherpa.api.deps import AuthContext, CurrentUser, DbSession
 from serversherpa.api.schemas import NoteCreateIn, NoteOut, NoteUpdateIn
@@ -37,7 +36,8 @@ async def _authorize_host(
     entity_id: uuid.UUID, action: str,
 ) -> None:
     """view: the shared host read rule (host view + scope, 404 outside).
-    write: host resource change + global anchor (client tiers are read-only)."""
+    write: host resource change + global anchor (client tiers are read-only).
+    The global anchor spans every row, so no scope probe is needed."""
     if action == "view":
         await authorize_host_view(db, actor, entity_type, entity_id)
         return
@@ -52,14 +52,6 @@ async def _authorize_host(
     row = await db.get(model, entity_id)
     if row is None:
         raise _err(404, "entity_not_found")
-    cond = scope_conditions(resource, actor.access, actor.person.id)
-    if cond is not None:
-        probe = SCOPE_PROBES.get(entity_type)
-        query = (probe(entity_id, cond) if probe
-                 else select(model.id).where(model.id == entity_id, cond))
-        visible = await db.scalar(query)
-        if visible is None:
-            raise _err(404, "entity_not_found")
 
 
 def _out(note: Note, authors: dict) -> NoteOut:

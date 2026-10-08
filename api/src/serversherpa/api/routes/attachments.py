@@ -47,6 +47,11 @@ ENTITY_MODEL = {
 AVATAR_KEY_FIELD = {"person": "avatar_key", "client": "logo_key", "partner": "logo_key"}
 Kind = Literal["avatar", "photo", "document", "survey_template", "report_asset"]
 
+# Kinds whose visibility is fixed at Everyone: avatars/logos are exposed via
+# avatar_url/logo_url, and the report gather (_newest_survey_template /
+# _newest_docx_report_asset) ignores visibility entirely.
+FIXED_VISIBILITY_KINDS = frozenset({"avatar", "survey_template", "report_asset"})
+
 # Some kinds only make sense on one entity type — the Site & Move Survey
 # report's xlsx questionnaire template and the standards docx/pdf, both
 # carried on the report definition itself (not the partner — templates
@@ -169,7 +174,7 @@ async def upload_attachment(
     visibility: Annotated[VisibilityLevel, Form()] = "everyone",
 ) -> AttachmentOut:
     await _authorize(db, user, entity_type, entity_id, "add", kind)
-    if kind == "avatar" and visibility != "everyone":
+    if kind in FIXED_VISIBILITY_KINDS and visibility != "everyone":
         raise _err(422, "visibility_not_supported")
     if not can_set_visibility(user.access, visibility):
         raise _err(403, "visibility_not_allowed")
@@ -273,7 +278,7 @@ async def update_attachment(
 ) -> AttachmentOut:
     att = await _get_live_attachment(db, attachment_id, user)
     await _authorize(db, user, att.entity_type, att.entity_id, "change", att.kind)
-    if att.kind == "avatar":
+    if att.kind in FIXED_VISIBILITY_KINDS:
         raise _err(422, "visibility_not_supported")
     if not can_set_visibility(user.access, body.visibility):
         raise _err(403, "visibility_not_allowed")
