@@ -31,6 +31,9 @@ The connector can't write cells, so write through **Claude in Chrome**, in the t
 - A percentage in the Summary is **text**: type it with a leading apostrophe (`'84%`).
 - Status cells are dropdown chips. Type the exact label and press Return.
 - **Line breaks inside one cell:** cmd+Return only works on every other press. Instead, enter `=JOIN(CHAR(10), {"• line one", "• line two"})`, then copy the cell and paste values only (cmd+shift+v) so it becomes plain text.
+  - **Check the paste before committing it.** Load the formula with `LANG=en_US.UTF-8 pbcopy`, open the cell (Return), paste, then zoom on the formula bar. It must start with `=JOIN(`, and only then press Return.
+  - **Why:** in a freshly opened tab the first paste can come up empty. The copy-to-values step's cmd+c then copies the blank cell, overwriting the clipboard. Both happened on 2026-10-08 and blanked the Weekly Summary cell until it was re-pasted.
+  - **After converting,** zoom again: the formula bar must show text starting with `•`.
 - **Switch tabs by clicking the tab name at the bottom.** Take a screenshot first; tab positions shift when tabs are added.
 - Batch several actions per `browser_batch`, then verify with a zoom or screenshot.
 
@@ -97,12 +100,20 @@ One row per week:
 - Columns: A Area, B Feature, C What it does, D In V2, E V3 status, F Notes / gap.
 - It lists only some features, so check whether a feature is listed before writing.
 - When a feature's status changes, keep its Gaps row in sync with Feature Parity.
-- Known rows:
-  - 7: Bulk actions hub
-  - 9: Bulk update existing assets
-  - 15: One-shot move creation
-  - 60: Bulk approve
-  - 61: Bulk import of time punches
+- **Sorted by Area, A to Z** (Jimmy, 2026-10-08). Inside an area the rows keep their existing order.
+  - **To add a row:** insert it at the end of its area's block (right-click a row number › Insert 1 row below), or append it after the last row. Then select `A2:F<last>` and run Data › Sort range › Sort range by column A (A to Z). The sort is stable, so each area keeps its order.
+  - **Never sort row 1** (the header). Keep the status dropdown's range (`E2:E<last>`) covering any new rows.
+- **Find rows by Area + Feature, not by a remembered number.** Every new row or re-sort shifts the numbers. Name-box to the row, then read `B<row>` before writing.
+- **Elsewhere in the sheet,** refer to a Gaps item by its feature name ("Gaps: Timesheet report"), never "Gaps row N". The Weekly Summary bullets follow this rule.
+- Rows as of 2026-10-08 (confirm before use):
+  - 9: Bulk actions hub
+  - 11: Bulk update existing assets
+  - 17: One-shot move creation
+  - 19: Spreadsheet reformatting tool
+  - 30: Bulk edit of the assigned team
+  - 62: Timesheet report
+  - 97: Bulk approve
+  - 98: Bulk import of time punches
 
 ### To-Do
 - Columns: A #, B Priority, C Time estimate, D Area, E What to build, F Why it matters, G Features it closes, H Rows, I Status.
@@ -122,7 +133,7 @@ Reference tabs. They rarely change.
 - `COMPLETE YYYY-MM-DD (merged to main <sha>): <what shipped, where, and anything from V2 not carried over>.`
 - `PARTIAL YYYY-MM-DD (merged to main <sha>): <what exists and what is missing>.`
 - `RETIRED YYYY-MM-DD: <why, and which V3 tool covers it>.`
-- **The Bulk actions hub notes** (Feature Parity G284 and Gaps F7) list every live Bulk Actions card and every merge sha under "later tools". Update both whenever a bulk tool ships.
+- **The Bulk actions hub notes** (Feature Parity G284 and the Gaps "Bulk actions hub" row's column F, row 9 as of 2026-10-08) list every live Bulk Actions card and every merge sha under "later tools". Update both whenever a bulk tool ships.
 - Write in American English, in plain sentences, and include the route.
 
 ## Checklist after a merge
