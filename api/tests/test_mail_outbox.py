@@ -92,3 +92,33 @@ def test_account_emails_never_take_a_password(template):
     assert "Never-In-Mail-123" not in r.html and "Never-In-Mail-123" not in r.text
     with pytest.raises(Exception):
         render(template, name="Ada", email="ada@test.example.com", link=LINK)
+
+
+async def test_enqueue_stores_kind_notification_id_and_send_at(db, seeded_user):
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import text
+
+    nid = await db.scalar(text(
+        "INSERT INTO notifications (person_id, kind, title) "
+        "VALUES (:p, 'report_ready', 't') RETURNING id"), {"p": seeded_user.id})
+    later = datetime.now(UTC) + timedelta(hours=3)
+    row = await enqueue(db, "password_changed", "alice@test.example.com",
+                        person_id=seeded_user.id, kind="report_ready",
+                        notification_id=nid, send_at=later,
+                        name="Alice", login_url="https://p/login")
+    await db.commit()
+    row = await db.scalar(select(EmailOutbox).where(EmailOutbox.id == row.id))
+    assert row.kind == "report_ready"
+    assert row.notification_id == nid
+    assert row.next_attempt_at == later
+
+
+async def test_enqueue_defaults_send_now_and_no_kind(db, seeded_user):
+    from datetime import UTC, datetime, timedelta
+
+    before = datetime.now(UTC) - timedelta(seconds=1)
+    row = await enqueue(db, "password_changed", "alice@test.example.com",
+                        name="Alice", login_url="https://p/login")
+    assert row.kind is None and row.notification_id is None
+    assert before <= row.next_attempt_at <= datetime.now(UTC) + timedelta(seconds=1)

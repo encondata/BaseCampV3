@@ -29,6 +29,7 @@ from serversherpa.db.models import (
 )
 from serversherpa.db.ordering import natural
 from serversherpa.notifications.requests import RequestError, decide_request
+from serversherpa.notifications.settings import effective_settings
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.storage import presign_get
@@ -132,33 +133,6 @@ def capabilities(person: Person, has_account: bool) -> dict[str, bool]:
     return {"can_email": person.email is not None,
             "can_text": person.phone is not None,
             "can_push": has_account, "can_web": has_account}
-
-
-def effective_settings(group: NotificationGroup,
-                        member: NotificationGroupMember) -> dict:
-    """Merge a member's overrides onto the group defaults — the single
-    implementation of inheritance, reused by the member detail payload and
-    (eventually) the notification sender."""
-    if member.quiet_mode is None:
-        quiet_start, quiet_end = group.quiet_start, group.quiet_end
-    elif member.quiet_mode == "none":
-        quiet_start, quiet_end = None, None
-    else:  # "custom"
-        quiet_start, quiet_end = member.quiet_start, member.quiet_end
-    return {
-        "channels": member.channels if member.channels is not None
-                    else group.channels,
-        "quiet_start": quiet_start,
-        "quiet_end": quiet_end,
-        "timezone": member.timezone if member.timezone is not None
-                    else group.timezone,
-        "active_days": member.active_days if member.active_days is not None
-                        else group.active_days,
-        "dnd_behavior": member.dnd_behavior if member.dnd_behavior is not None
-                        else group.dnd_behavior,
-        "urgent_bypass": member.urgent_bypass if member.urgent_bypass is not None
-                          else group.urgent_bypass,
-    }
 
 
 def _member_out(group: NotificationGroup, member: NotificationGroupMember,

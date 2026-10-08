@@ -17,6 +17,8 @@ from pydantic import (
     field_validator,
 )
 
+from serversherpa.notifications.kinds import CATEGORY_KEYS
+
 
 def _lower(v: str) -> str:
     return v.lower()
@@ -50,10 +52,11 @@ class PersonOut(BaseModel):
 class NotifPrefs(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    critical: bool = True
-    email: bool = True
-    maint: bool = True
-    digest: bool = False
+    # Per-category delivery choice (notifications/kinds.py CATEGORIES):
+    # "email" = inbox + email, "inbox" = inbox only, "off" = nothing.
+    # Account security is always emailed whatever is stored here.
+    categories: dict[str, Literal["email", "inbox", "off"]] = Field(
+        default_factory=lambda: {k: "email" for k in CATEGORY_KEYS})
     # in-app sound played when a new inbox item arrives while the portal is open
     sound: Literal["none", "chime", "ping", "pop", "bell"] = "chime"
 

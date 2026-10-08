@@ -8,7 +8,8 @@ PREFS = {
     "density": "compact",
     "list_size": "default",
     "motion": False,
-    "notif": {"critical": True, "email": False, "maint": True, "digest": True, "sound": "ping"},
+    "notif": {"categories": {"approvals": "email", "reports": "inbox", "wiki": "off",
+                             "security": "email"}, "sound": "ping"},
     "list_prefs": {
         "sites": {
             "visible": ["name", "status", "city"],
@@ -36,7 +37,8 @@ async def test_login_returns_default_preferences(client, seeded_user):
         "accent": "amber", "theme": "light", "density": "comfortable",
         "list_size": "default",
         "motion": True,
-        "notif": {"critical": True, "email": True, "maint": True, "digest": False, "sound": "chime"},
+        "notif": {"categories": {"approvals": "email", "reports": "email",
+                                 "wiki": "email", "security": "email"}, "sound": "chime"},
         "list_prefs": {},
         "nav_mode": "expanded",
         "nav_bg": "default",
@@ -176,6 +178,34 @@ async def test_invalid_notification_sound_rejected(client, seeded_user):
     bad = {**body["preferences"], "notif": {**body["preferences"]["notif"], "sound": "klaxon"}}
     resp = await client.put("/auth/me/preferences", headers=hdrs, json=bad)
     assert resp.status_code == 422
+
+
+async def test_invalid_category_choice_rejected(client, seeded_user):
+    body = await _login(client)
+    hdrs = {"Authorization": f"Bearer {body['access_token']}"}
+    notif = {**body["preferences"]["notif"], "categories": {"wiki": "sms"}}
+    resp = await client.put("/auth/me/preferences", headers=hdrs,
+                            json={**body["preferences"], "notif": notif})
+    assert resp.status_code == 422
+
+
+async def test_old_notif_blob_still_parses_and_defaults_categories():
+    from serversherpa.api.schemas import UiPreferences
+
+    old = {"notif": {"critical": False, "email": False, "maint": True,
+                     "digest": True, "sound": "pop"}}
+    prefs = UiPreferences.model_validate(old)
+    assert prefs.notif.sound == "pop"
+    assert prefs.notif.categories == {
+        "approvals": "email", "reports": "email", "wiki": "email", "security": "email"}
+    assert "critical" not in prefs.notif.model_dump()
+
+
+async def test_default_notif_categories_are_all_email():
+    from serversherpa.api.schemas import UiPreferences
+
+    assert UiPreferences().notif.categories == {
+        "approvals": "email", "reports": "email", "wiki": "email", "security": "email"}
 
 
 async def test_list_view_rejects_unknown_value(client, seeded_user):
