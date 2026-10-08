@@ -584,8 +584,14 @@ source's `SS_PASSWORD_PEPPER` and `SS_TOTP_ENCRYPTION_KEY`, encrypted with
 object of the bucket, content types kept). Bundles live in
 `sirdar/snapshots/` (mounted at `/app/snapshots`, owned by uid 10001, mode
 700; the installer creates it) and are never served to browsers. Make one
-from the Mac dev stack with `scripts/make-seed-snapshot.sh` and upload it on
-the Deploy page, or take one from a deployed environment. A new environment
+from the Mac dev stack with `scripts/make-seed-snapshot.sh` (the whole dev
+database and bucket), or from a plain-SQL ServerSherpa dump with
+`scripts/make-sql-seed-snapshot.sh --sql FILE` (it loads the dump into a
+throwaway database in the dev Postgres, finds every storage key the dump
+references, and bundles only those objects from the dev bucket; the bundle
+carries the env file's pepper and TOTP key, so the dump's password hashes
+must have been made with that pepper), and upload it on the Deploy page, or
+take one from a deployed environment. A new environment
 can start from a snapshot (its first deploy restores it) and Reset data can
 restore one. Restoring replaces the environment's pepper and TOTP key with
 the snapshot's, so its users sign in with their own passwords and 2FA, and
