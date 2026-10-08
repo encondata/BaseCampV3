@@ -9,7 +9,7 @@ vi.mock('../../auth/AuthContext', () => ({
     preferences: {
       accent: 'amber', theme: 'light', density: 'comfortable', list_size: 'default',
       motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default',
-      notif: { critical: true, email: true, maint: true, digest: false, sound: 'chime' },
+      notif: { sound: 'chime', categories: { approvals: 'email', reports: 'email', wiki: 'email', security: 'email' } },
       list_prefs: {},
     },
     updatePreferences: vi.fn(async () => true),

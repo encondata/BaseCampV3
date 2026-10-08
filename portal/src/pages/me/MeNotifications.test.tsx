@@ -23,7 +23,10 @@ vi.mock('../../auth/AuthContext', () => ({
       nav_bg: 'default',
       nav_size: 'default',
       list_view: 'expanded',
-      notif: { critical: true, email: true, maint: true, digest: false, sound: 'chime' },
+      notif: {
+        sound: 'chime',
+        categories: { approvals: 'email', reports: 'inbox', wiki: 'email', security: 'email' },
+      },
       list_prefs: {},
     } satisfies UiPreferences,
     updatePreferences: auth.updatePreferences,
@@ -34,6 +37,11 @@ vi.mock('../../auth/AuthContext', () => ({
 const sounds = vi.hoisted(() => ({ playNotificationSound: vi.fn(() => true) }));
 vi.mock('../../lib/notificationSounds', async (importActual) => ({
   ...(await importActual<typeof import('../../lib/notificationSounds')>()), ...sounds,
+}));
+
+const status = vi.hoisted(() => ({ email_enabled: true }));
+vi.mock('../../lib/systemStatusContext', () => ({
+  useSystemStatus: () => ({ status: { ...status }, refresh: () => {} }),
 }));
 
 const api = vi.hoisted(() => ({
@@ -77,25 +85,81 @@ beforeEach(() => {
 
 const { default: MeNotifications } = await import('./MeNotifications');
 
-it('renders the four notification rows', () => {
+const delivery = (label: string) => screen.getByRole('group', { name: `${label} delivery` });
+
+it('replaces the four old switches with a per-category delivery table', async () => {
   api.listMyNotificationGroups.mockResolvedValueOnce([]);
   render(<MeNotifications />);
   for (const label of ['Critical incidents', 'Email alerts', 'Maintenance windows', 'Weekly digest']) {
-    expect(screen.getByText(label)).toBeTruthy();
+    expect(screen.queryByText(label)).toBeNull();
   }
+  const table = screen.getByRole('table', { name: 'Notification delivery' });
+  for (const label of ['Approvals & requests', 'Reports & labels', 'Wiki', 'Account security']) {
+    expect(within(table).getByText(label)).toBeTruthy();
+  }
+  expect(screen.getByText(/Emails go to your contact email\. Your groups decide which categories can email you and when; here you can turn them down\./)).toBeTruthy();
   expect(screen.queryByText('Appearance')).toBeNull();
 });
 
-it('toggling a switch saves the merged notif object', async () => {
+it('shows each stored choice as the pressed segment', async () => {
   api.listMyNotificationGroups.mockResolvedValueOnce([]);
   render(<MeNotifications />);
-  const row = screen.getByText('Weekly digest').closest('.set-row') as HTMLElement;
-  fireEvent.click(within(row).getByRole('checkbox'));
+  const pressed = (label: string) =>
+    within(delivery(label)).getAllByRole('button').filter((b) => b.getAttribute('aria-pressed') === 'true')
+      .map((b) => b.textContent);
+  expect(pressed('Approvals & requests')).toEqual(['Inbox + Email']);
+  expect(pressed('Reports & labels')).toEqual(['Inbox only']);
+  expect(within(delivery('Wiki')).getAllByRole('button').map((b) => b.textContent))
+    .toEqual(['Inbox + Email', 'Inbox only', 'Off']);
+});
+
+it('choosing a delivery saves the merged notif.categories object', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([]);
+  render(<MeNotifications />);
+  fireEvent.click(within(delivery('Wiki')).getByRole('button', { name: 'Off' }));
   await waitFor(() => expect(auth.updatePreferences).toHaveBeenCalledTimes(1));
   const sent = auth.updatePreferences.mock.calls[0][0];
-  expect(sent.notif).toEqual({ critical: true, email: true, maint: true, digest: true, sound: 'chime' });
+  expect(sent.notif).toEqual({
+    sound: 'chime',
+    categories: { approvals: 'email', reports: 'inbox', wiki: 'off', security: 'email' },
+  });
   expect(sent.accent).toBe('amber');
   await waitFor(() => expect(screen.getByText('saved')).toBeTruthy());
+});
+
+it('Account security shows "Always emailed" and no delivery control', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([]);
+  render(<MeNotifications />);
+  expect(screen.queryByRole('group', { name: 'Account security delivery' })).toBeNull();
+  const row = screen.getByText('Account security').closest('tr') as HTMLElement;
+  expect(within(row).getByText('Always emailed')).toBeTruthy();
+});
+
+it('Email from lists the member groups that carry the category and can email', async () => {
+  api.listMyNotificationGroups.mockResolvedValueOnce([
+    { ...G1, categories: ['approvals', 'reports'], effective_channels: ['email', 'push'] },
+    { ...G1, id: 'g9', name: 'Night Desk', categories: ['approvals'], effective_channels: ['web'] },
+    { ...G1, id: 'g8', name: 'Wiki Watch', categories: ['wiki'], effective_channels: ['email'], is_member: false },
+  ]);
+  render(<MeNotifications />);
+  const table = screen.getByRole('table', { name: 'Notification delivery' });
+  await waitFor(() => expect(within(within(table).getByText('Approvals & requests').closest('tr') as HTMLElement).getByText('Ops')).toBeTruthy());
+  const rowOf = (l: string) => within(table).getByText(l).closest('tr') as HTMLElement;
+  expect(within(rowOf('Approvals & requests')).queryByText('Night Desk')).toBeNull();
+  expect(within(rowOf('Reports & labels')).getByText('Ops')).toBeTruthy();
+  expect(within(rowOf('Wiki')).getByText('No group — inbox only')).toBeTruthy();
+});
+
+it('shows the email-off hint only when the server has email off', async () => {
+  status.email_enabled = false;
+  api.listMyNotificationGroups.mockResolvedValueOnce([]);
+  const { unmount } = render(<MeNotifications />);
+  expect(screen.getByText("Email isn't set up on this server yet — notifications stay in the inbox.")).toBeTruthy();
+  unmount();
+  status.email_enabled = true;
+  api.listMyNotificationGroups.mockResolvedValueOnce([]);
+  render(<MeNotifications />);
+  expect(screen.queryByText("Email isn't set up on this server yet — notifications stay in the inbox.")).toBeNull();
 });
 
 it('Sound row saves the chosen sound and Preview plays the current one', async () => {
@@ -115,6 +179,7 @@ const G1: MyNotificationGroup = {
   quiet_start: '22:00:00', quiet_end: '07:00:00', timezone: 'America/New_York',
   active_days: ['mon', 'tue', 'wed', 'thu', 'fri'], dnd_behavior: 'defer', urgent_bypass: false,
   member_count: 3, is_member: true,
+  categories: [], effective_channels: ['email', 'push'],
   overrides: {
     channels: null, quiet_mode: null, quiet_start: null, quiet_end: null,
     timezone: null, active_days: null, dnd_behavior: null, urgent_bypass: true,
@@ -131,14 +196,14 @@ const G2: MyNotificationGroup = {
   id: 'g2', name: 'Warehouse Alerts', description: 'Forklift and stock alerts', channels: ['push'],
   quiet_start: null, quiet_end: null, timezone: 'America/New_York',
   active_days: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], dnd_behavior: 'skip', urgent_bypass: false,
-  member_count: 5, is_member: false, overrides: null, effective: null, pending_request: null,
+  member_count: 5, is_member: false, categories: [], effective_channels: [], overrides: null, effective: null, pending_request: null,
 };
 
 const G3: MyNotificationGroup = {
   id: 'g3', name: 'Fleet Updates', description: 'Truck status changes', channels: ['email'],
   quiet_start: null, quiet_end: null, timezone: 'America/New_York',
   active_days: ['mon', 'tue', 'wed', 'thu', 'fri'], dnd_behavior: 'defer', urgent_bypass: false,
-  member_count: 2, is_member: false, overrides: null, effective: null, pending_request: null,
+  member_count: 2, is_member: false, categories: [], effective_channels: [], overrides: null, effective: null, pending_request: null,
 };
 
 it('renders a member group with channel chips, quiet-hours text, days, and a Customized tag', async () => {

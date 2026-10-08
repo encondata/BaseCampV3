@@ -28,7 +28,9 @@ from serversherpa.db.models import (
     NotificationMembershipRequest, Person, UserAccount,
 )
 from serversherpa.db.ordering import natural
+from serversherpa.notifications.kinds import CATEGORY_KEYS
 from serversherpa.notifications.requests import RequestError, decide_request
+from serversherpa.notifications.settings import effective_settings
 from serversherpa.services.audit import audit, diff, snapshot
 from serversherpa.services.move_password import KIOSK_MOVE_SOURCE
 from serversherpa.services.storage import presign_get
@@ -40,7 +42,7 @@ DAYS: tuple[str, ...] = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 GROUP_FIELDS = ["name", "description", "channels", "quiet_start", "quiet_end",
                 "timezone", "active_days", "dnd_behavior", "urgent_bypass",
-                "enabled"]
+                "categories", "enabled"]
 
 # Every group column except quiet_start/quiet_end is NOT NULL — an explicit
 # null in a PATCH body must 422 here, not IntegrityError at commit.
@@ -79,6 +81,10 @@ def validate_settings(body, *, check_quiet_hours: bool = True) -> None:
             not active_days or not set(active_days) <= set(DAYS)):
         raise _err(422, "invalid_days")
 
+    categories = getattr(body, "categories", None)
+    if categories is not None and not set(categories) <= set(CATEGORY_KEYS):
+        raise _err(422, "invalid_category")
+
     dnd_behavior = getattr(body, "dnd_behavior", None)
     if dnd_behavior is not None and dnd_behavior not in ("defer", "skip"):
         raise _err(422, "invalid")
@@ -93,6 +99,11 @@ def validate_settings(body, *, check_quiet_hours: bool = True) -> None:
     if check_quiet_hours:
         _validate_quiet_hours(getattr(body, "quiet_start", None),
                                getattr(body, "quiet_end", None))
+
+
+def _normalize_categories(categories: list[str]) -> list[str]:
+    """De-duplicated, in registry (CATEGORY_KEYS) order."""
+    return [key for key in CATEGORY_KEYS if key in categories]
 
 
 async def _get_group(db: DbSession, group_id: uuid.UUID) -> NotificationGroup:
@@ -114,8 +125,8 @@ def _out(group: NotificationGroup, member_count: int) -> NotificationGroupOut:
         channels=group.channels, quiet_start=group.quiet_start,
         quiet_end=group.quiet_end, timezone=group.timezone,
         active_days=group.active_days, dnd_behavior=group.dnd_behavior,
-        urgent_bypass=group.urgent_bypass, enabled=group.enabled,
-        member_count=member_count, created_at=group.created_at)
+        urgent_bypass=group.urgent_bypass, categories=group.categories,
+        enabled=group.enabled, member_count=member_count, created_at=group.created_at)
 
 
 # ── members, overrides, recipients ─────────────────────────────────
@@ -132,33 +143,6 @@ def capabilities(person: Person, has_account: bool) -> dict[str, bool]:
     return {"can_email": person.email is not None,
             "can_text": person.phone is not None,
             "can_push": has_account, "can_web": has_account}
-
-
-def effective_settings(group: NotificationGroup,
-                        member: NotificationGroupMember) -> dict:
-    """Merge a member's overrides onto the group defaults — the single
-    implementation of inheritance, reused by the member detail payload and
-    (eventually) the notification sender."""
-    if member.quiet_mode is None:
-        quiet_start, quiet_end = group.quiet_start, group.quiet_end
-    elif member.quiet_mode == "none":
-        quiet_start, quiet_end = None, None
-    else:  # "custom"
-        quiet_start, quiet_end = member.quiet_start, member.quiet_end
-    return {
-        "channels": member.channels if member.channels is not None
-                    else group.channels,
-        "quiet_start": quiet_start,
-        "quiet_end": quiet_end,
-        "timezone": member.timezone if member.timezone is not None
-                    else group.timezone,
-        "active_days": member.active_days if member.active_days is not None
-                        else group.active_days,
-        "dnd_behavior": member.dnd_behavior if member.dnd_behavior is not None
-                        else group.dnd_behavior,
-        "urgent_bypass": member.urgent_bypass if member.urgent_bypass is not None
-                          else group.urgent_bypass,
-    }
 
 
 def _member_out(group: NotificationGroup, member: NotificationGroupMember,
@@ -220,6 +204,8 @@ async def create_group(
         raise _err(409, "group_exists")
 
     data = body.model_dump(exclude_none=True)
+    if "categories" in data:
+        data["categories"] = _normalize_categories(data["categories"])
     group = NotificationGroup(**data, created_by=actor.person.id)
     db.add(group)
     await db.flush()
@@ -253,6 +239,8 @@ async def patch_group(
     if any(data[field] is None
            for field in NON_NULLABLE_GROUP_FIELDS & data.keys()):
         raise _err(422, "invalid")
+    if "categories" in data:
+        data["categories"] = _normalize_categories(data["categories"])
 
     if "name" in data:
         exists = await db.scalar(select(NotificationGroup.id).where(

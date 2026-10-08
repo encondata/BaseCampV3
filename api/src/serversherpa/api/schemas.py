@@ -17,6 +17,8 @@ from pydantic import (
     field_validator,
 )
 
+from serversherpa.notifications.kinds import CATEGORY_KEYS
+
 
 def _lower(v: str) -> str:
     return v.lower()
@@ -50,10 +52,18 @@ class PersonOut(BaseModel):
 class NotifPrefs(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    critical: bool = True
-    email: bool = True
-    maint: bool = True
-    digest: bool = False
+    # Per-category delivery choice (notifications/kinds.py CATEGORIES):
+    # "email" = inbox + email, "inbox" = inbox only, "off" = nothing.
+    # Account security is always emailed whatever is stored here.
+    categories: dict[str, Literal["email", "inbox", "off"]] = Field(
+        default_factory=lambda: {k: "email" for k in CATEGORY_KEYS})
+
+    @field_validator("categories")
+    @classmethod
+    def _all_known_categories(cls, v: dict[str, str]) -> dict[str, str]:
+        """Drop unknown keys and fill missing ones with "email", so readers
+        always see exactly the registry's categories."""
+        return {k: v.get(k, "email") for k in CATEGORY_KEYS}
     # in-app sound played when a new inbox item arrives while the portal is open
     sound: Literal["none", "chime", "ping", "pop", "bell"] = "chime"
 
@@ -2541,6 +2551,8 @@ class NotificationGroupSettings(BaseModel):
     active_days: list[str] | None = None
     dnd_behavior: str | None = None
     urgent_bypass: bool | None = None
+    # Event categories the group's settings apply to (notifications/kinds.py).
+    categories: list[str] | None = None
 
 
 class NotificationGroupCreateIn(NotificationGroupSettings):
@@ -2567,6 +2579,7 @@ class NotificationGroupOut(BaseModel):
     active_days: list[str]
     dnd_behavior: str
     urgent_bypass: bool
+    categories: list[str]
     enabled: bool
     member_count: int
     created_at: datetime
@@ -2705,6 +2718,9 @@ class MyNotificationGroupOut(BaseModel):
     active_days: list[str]
     dnd_behavior: str
     urgent_bypass: bool
+    categories: list[str]
+    # The member's effective channels when a member, else the group's.
+    effective_channels: list[str]
     member_count: int
     is_member: bool
     overrides: NotificationMemberOverrides | None = None

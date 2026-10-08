@@ -73,7 +73,7 @@ vi.mock('../auth/AuthContext', () => ({
       nav_bg: 'default',
       nav_size: 'default',
       list_view: 'expanded',
-      notif: { critical: true, email: true, maint: true, digest: false, sound: 'chime' },
+      notif: { sound: 'chime', categories: { approvals: 'email', reports: 'email', wiki: 'email', security: 'email' } },
       list_prefs: {},
     } satisfies UiPreferences,
     updatePreferences: auth.updatePreferences,
@@ -153,7 +153,7 @@ it('/me/notifications shows the Notifications section only', async () => {
     screen.getByRole('heading', { name: 'Notifications', level: 3 }),
   ).toBeTruthy());
 
-  expect(screen.getByText('Weekly digest')).toBeTruthy();
+  expect(screen.getByText('Approvals & requests')).toBeTruthy();
   expect(screen.queryByText('Appearance')).toBeNull();
   expect(screen.queryByRole('heading', { name: 'Profile', level: 3 })).toBeNull();
   expect(screen.getByRole('tab', { name: 'Notifications' }).getAttribute('aria-selected')).toBe('true');

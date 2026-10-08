@@ -1,7 +1,7 @@
 """The in-app inbox writer. `notify()` is the ONLY code path that creates
-Notification rows; when email/SMS delivery arrives it fans out from here
-and the table shape stays. Adds to the caller's session — never commits —
-so a notification can't outlive a rolled-back mutation."""
+Notification rows; email fans out from here (notifications/email.py) and
+the table shape stays. Adds to the caller's session — never commits — so a
+notification (and its queued email) can't outlive a rolled-back mutation."""
 
 import uuid
 from datetime import UTC, datetime
@@ -9,11 +9,29 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from serversherpa.db.models import Notification
+from serversherpa.notifications.email import load_contact, maybe_email, personal_choice
+from serversherpa.notifications.kinds import kind_info
 
 
 async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, *,
                  body: str = "", link: str | None = None,
-                 payload: dict | None = None) -> Notification:
+                 payload: dict | None = None,
+                 owner_notice: bool = False) -> Notification | None:
+    """Write the inbox row and queue the email when the rules allow it.
+    Returns None (nothing written) when the person turned this category
+    off (except for kinds that are never emailed). `owner_notice` marks the copy sent to the account owner about
+    their own account (it can email regardless of group membership)."""
+    info = kind_info(kind)
+    contact = None
+    choice = "email"
+    if info is not None and info.category != "security":
+        contact = await load_contact(db, person_id)
+        choice = personal_choice(info, contact)
+        # A kind that is never emailed keeps its inbox row even when the
+        # category is off: password_reset_request is the only way a
+        # locked-out user reaches an admin when SMTP is off.
+        if choice == "off" and info.email:
+            return None
     # created_at is set here rather than left to the column's `now()`
     # server_default: several notify() calls commonly land in the same
     # caller transaction, where Postgres's now() is frozen at transaction
@@ -24,4 +42,6 @@ async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, 
                        link=link, payload=payload or {}, created_at=datetime.now(UTC))
     db.add(row)
     await db.flush()
+    await maybe_email(db, row, info=info, owner_notice=owner_notice,
+                      choice=choice, contact=contact)
     return row

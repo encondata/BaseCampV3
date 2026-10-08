@@ -220,7 +220,8 @@ async def confirm_enrollment(
              "If this was not you, tell an admin right away.",
         link="/me",
         payload={"person_id": str(account.person_id), "ip": ip,
-                 "user_agent": user_agent, "self": True})
+                 "user_agent": user_agent, "self": True},
+        owner_notice=True)
     for admin_id in await _user_admin_ids(db, exclude=account.person_id):
         await notify(
             db, admin_id, "totp_enrolled", f"{name} enrolled two-factor authentication",

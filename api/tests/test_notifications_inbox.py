@@ -117,3 +117,19 @@ async def test_clear_read_hides_only_read_rows(client, db, seeded_user):
     body = (await client.get("/notifications/inbox", headers=hdrs)).json()
     assert [i["title"] for i in body["items"]] == ["B"] and body["unread_count"] == 1
     assert (await client.post("/notifications/inbox/clear-read", headers=hdrs)).status_code == 204  # nothing left: fine
+
+
+async def test_notify_returns_none_when_the_category_is_off(db, seeded_user):
+    from serversherpa.db.models import UserAccount
+
+    account = await db.get(UserAccount, seeded_user.id)
+    account.ui_prefs = {"notif": {"categories": {"reports": "off"}}}
+    await db.commit()
+    assert await notify(db, seeded_user.id, "report_ready", "Hidden") is None
+    # other categories and unregistered kinds still land
+    assert await notify(db, seeded_user.id, "wiki_comment", "Shown") is not None
+    assert await notify(db, seeded_user.id, "mystery_kind", "Shown too") is not None
+    await db.commit()
+    titles = list(await db.scalars(select(Notification.title).where(
+        Notification.person_id == seeded_user.id)))
+    assert sorted(titles) == ["Shown", "Shown too"]

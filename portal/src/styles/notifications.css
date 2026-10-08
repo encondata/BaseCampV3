@@ -186,3 +186,11 @@
 .ov-body > .day-pills + .pf-form {
   margin-top: 18px;
 }
+
+/* "not available yet" note beside a channel that cannot deliver. */
+.channel-soon {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 300;
+  color: var(--text-mute);
+}

@@ -40,10 +40,15 @@ class TotpStatusOut(BaseModel):
 class NotifPrefs(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    critical: bool = True
-    email: bool = True
-    maint: bool = True
-    digest: bool = False
+    # Mirrors the portal API's per-category choice (its notifications/kinds.py).
+    categories: dict[str, Literal["email", "inbox", "off"]] = Field(
+        default_factory=lambda: {k: "email" for k in
+                                 ("approvals", "reports", "wiki", "security")})
+
+    @field_validator("categories")
+    @classmethod
+    def _all_known_categories(cls, v: dict[str, str]) -> dict[str, str]:
+        return {k: v.get(k, "email") for k in ("approvals", "reports", "wiki", "security")}
     sound: Literal["none", "chime", "ping", "pop", "bell"] = "chime"
 
 

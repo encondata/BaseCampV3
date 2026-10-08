@@ -518,3 +518,77 @@ async def test_staff_forbidden_from_recipients(client, db, seeded_user):
     hdrs = await login_staff(client, seeded_user)
     resp = await client.get("/notifications/recipients", headers=hdrs)
     assert resp.status_code == 403
+
+
+# ── categories ───────────────────────────────────────────────────────
+
+async def test_create_group_categories_deduped_in_registry_order(
+        client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/notifications/groups", headers=hdrs, json={
+        "name": "Cats", "categories": ["wiki", "reports", "wiki"]})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["categories"] == ["reports", "wiki"]
+
+    resp = await client.get("/notifications/groups", headers=hdrs)
+    assert resp.json()[0]["categories"] == ["reports", "wiki"]
+    resp = await client.get(f"/notifications/groups/{resp.json()[0]['id']}",
+                            headers=hdrs)
+    assert resp.json()["categories"] == ["reports", "wiki"]
+
+
+async def test_create_group_categories_default_empty(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/notifications/groups", headers=hdrs,
+                             json={"name": "No cats"})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["categories"] == []
+
+
+async def test_patch_group_categories_and_audit(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/notifications/groups", headers=hdrs, json={
+        "name": "Patchy", "categories": ["wiki"]})
+    gid = resp.json()["id"]
+
+    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
+                              json={"categories": ["security", "approvals"]})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["categories"] == ["approvals", "security"]
+    row = await db.scalar(select(AuditLog).where(
+        AuditLog.entity_type == "notification_group",
+        AuditLog.action == "group.update"))
+    assert row is not None
+    assert row.changes["categories"] == {
+        "from": ["wiki"], "to": ["approvals", "security"]}
+
+    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
+                              json={"categories": []})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["categories"] == []
+
+
+async def test_bad_category_rejected(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/notifications/groups", headers=hdrs, json={
+        "name": "Bogus", "categories": ["bogus"]})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_category"
+
+    resp = await client.post("/notifications/groups", headers=hdrs,
+                             json={"name": "Ok"})
+    gid = resp.json()["id"]
+    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
+                              json={"categories": ["wiki", "bogus"]})
+    assert resp.status_code == 422
+    assert resp.json()["detail"]["code"] == "invalid_category"
+
+
+async def test_patch_explicit_null_categories_rejected(client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    resp = await client.post("/notifications/groups", headers=hdrs,
+                             json={"name": "Nully"})
+    gid = resp.json()["id"]
+    resp = await client.patch(f"/notifications/groups/{gid}", headers=hdrs,
+                              json={"categories": None})
+    assert resp.status_code == 422

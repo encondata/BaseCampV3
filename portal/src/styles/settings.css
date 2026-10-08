@@ -221,3 +221,7 @@
 }
 .set-error { color: var(--c-red, #c03540); }
 .set-ok { display: block; margin-top: 4px; color: var(--c-green, #178a4c); }
+
+/* Notice line inside a .set-section (e.g. email-off hint on /me › Notifications). */
+.set-hint { margin: 0; padding: 12px 20px; border-bottom: 1px solid var(--paper-line); }
+.set-section .data-table-scroll { border-bottom: 1px solid var(--paper-line); }

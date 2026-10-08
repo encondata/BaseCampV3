@@ -165,29 +165,36 @@ async def _space_key(db: AsyncSession, node: WikiNode) -> str:
 
 async def _deliver(db: AsyncSession, node: WikiNode, person_ids: Iterable[uuid.UUID], *,
                    kind: str, title: str, body: str, event: str,
-                   link_suffix: str = "", space_key: str | None = None) -> None:
+                   link_suffix: str = "", space_key: str | None = None,
+                   ) -> set[uuid.UUID]:
+    """Write one notification per person; returns who actually got one
+    (`notify()` writes nothing for someone who turned the category off)."""
     person_ids = list(person_ids)
     if not person_ids:
-        return
+        return set()
     if space_key is None:
         space_key = await _space_key(db, node)
+    delivered: set[uuid.UUID] = set()
     for pid in person_ids:
-        await notify(db, pid, kind, title, body=body,
-                     link=node_link(node.id, link_suffix),
-                     payload={"node_id": str(node.id), "space_key": space_key,
-                              "event": event})
+        row = await notify(db, pid, kind, title, body=body,
+                           link=node_link(node.id, link_suffix),
+                           payload={"node_id": str(node.id), "space_key": space_key,
+                                    "event": event})
+        if row is not None:
+            delivered.add(pid)
+    return delivered
 
 
 async def _send(db: AsyncSession, node: WikiNode, candidates: Iterable[uuid.UUID], *,
                 actor_id: uuid.UUID | None, kind: str, title: str, body: str = "",
                 event: str, link_suffix: str = "") -> set[uuid.UUID]:
     """Notify the candidates who may receive it (not the actor, can view
-    the node); returns who was notified."""
+    the node); returns who actually was (not someone who turned wiki
+    notifications off)."""
     recipients = await recipients_who_can_view(
         db, node, (pid for pid in candidates if pid != actor_id))
-    await _deliver(db, node, recipients, kind=kind, title=title, body=body,
-                   event=event, link_suffix=link_suffix)
-    return recipients
+    return await _deliver(db, node, recipients, kind=kind, title=title, body=body,
+                          event=event, link_suffix=link_suffix)
 
 
 # ── events ──────────────────────────────────────────────────────────
@@ -337,7 +344,8 @@ async def to_person(db: AsyncSession, person_id: uuid.UUID, *, kind: str, title:
     (Phase 3's export-ready: the requester only, linking to
     `<wiki_origin><path>`) — still through `inbox.notify`, and still only
     to an active account. Who may see what it links to is the caller's
-    check. Returns whether it was sent."""
+    check. Returns whether a notification was written (False for an
+    inactive account, or someone who turned wiki notifications off)."""
     active = await db.scalar(
         select(UserAccount.person_id)
         .join(Person, Person.id == UserAccount.person_id)
@@ -345,7 +353,7 @@ async def to_person(db: AsyncSession, person_id: uuid.UUID, *, kind: str, title:
                Person.archived_at.is_(None)))
     if active is None:
         return False
-    await notify(db, person_id, kind, title, body=body,
-                 link=f"{get_settings().wiki_origin.rstrip('/')}{path}",
-                 payload={**(payload or {}), "event": event})
-    return True
+    row = await notify(db, person_id, kind, title, body=body,
+                       link=f"{get_settings().wiki_origin.rstrip('/')}{path}",
+                       payload={**(payload or {}), "event": event})
+    return row is not None

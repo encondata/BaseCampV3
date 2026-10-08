@@ -53,6 +53,7 @@ const BASE: NotificationGroupDetail = {
   name: 'Ops Alerts',
   description: 'Operational issues',
   channels: ['email', 'push'],
+  categories: ['approvals', 'security'],
   quiet_start: '21:00:00',
   quiet_end: '07:00:00',
   timezone: 'America/Chicago',
@@ -158,6 +159,76 @@ it('renders the hero and delivery defaults from the mocked detail payload', asyn
   expect(screen.getByText('Mon–Fri')).not.toBeNull();
   expect(screen.getByText('Defer until window opens')).not.toBeNull();
   expect(screen.getByText('Urgent notifications ignore quiet hours')).not.toBeNull();
+});
+
+it('delivery defaults list the categories by label, or say members get inbox only', async () => {
+  const { unmount } = renderPage();
+  await screen.findByText('Ops Alerts');
+  const dd = screen.getByText('Categories').nextElementSibling as HTMLElement;
+  expect(within(dd).getByText('Approvals & requests')).not.toBeNull();
+  expect(within(dd).getByText('Account security')).not.toBeNull();
+  expect(within(dd).queryByText('Wiki')).toBeNull();
+  unmount();
+
+  api.getNotificationGroup.mockResolvedValue({ ...BASE, categories: [] });
+  renderPage();
+  await screen.findByText('Ops Alerts');
+  expect(screen.getByText('None — members get inbox only')).not.toBeNull();
+});
+
+it('marks the text and push channels as not available yet on the page and in the modal', async () => {
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText('Ops Alerts');
+  const dd = screen.getByText('Channels').nextElementSibling as HTMLElement;
+  expect(within(dd).getAllByText(/not available yet/i)).toHaveLength(1); // push only (email is live)
+
+  const dialog = await openSettingsDialog(user);
+  expect(within(dialog).getAllByText(/not available yet/i)).toHaveLength(2); // text + push
+  expect(within(dialog.querySelector('.ngd-switch-row:nth-of-type(1)') as HTMLElement)
+    .queryByText(/not available yet/i)).toBeNull(); // email carries no note
+});
+
+it('settings modal Categories toggles save as the categories patch', async () => {
+  const user = userEvent.setup();
+  api.updateNotificationGroup.mockResolvedValue(BASE);
+  renderPage();
+  await screen.findByText('Ops Alerts');
+  const dialog = await openSettingsDialog(user);
+
+  const cats = within(dialog).getByRole('group', { name: 'Categories' });
+  expect(within(cats).getAllByRole('button').map((b) => b.textContent)).toEqual([
+    'Approvals & requests', 'Reports & labels', 'Wiki', 'Account security',
+  ]);
+  expect(within(cats).getByRole('button', { name: 'Approvals & requests' }).getAttribute('aria-pressed')).toBe('true');
+  expect(within(cats).getByRole('button', { name: 'Wiki' }).getAttribute('aria-pressed')).toBe('false');
+
+  await user.click(within(cats).getByRole('button', { name: 'Wiki' }));
+  await user.click(within(cats).getByRole('button', { name: 'Approvals & requests' }));
+  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
+  await waitFor(() => expect(api.updateNotificationGroup)
+    .toHaveBeenCalledWith('g1', { categories: ['wiki', 'security'] }));
+});
+
+it('settings modal sends no categories when they are untouched', async () => {
+  const user = userEvent.setup();
+  api.updateNotificationGroup.mockResolvedValue(BASE);
+  renderPage();
+  await screen.findByText('Ops Alerts');
+  const dialog = await openSettingsDialog(user);
+  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
+  await waitFor(() => expect(api.updateNotificationGroup).toHaveBeenCalledWith('g1', {}));
+});
+
+it('maps a server 422 invalid_category error on settings save', async () => {
+  const user = userEvent.setup();
+  api.updateNotificationGroup.mockRejectedValue(new ApiError(422, 'invalid_category'));
+  renderPage();
+  await screen.findByText('Ops Alerts');
+  const dialog = await openSettingsDialog(user);
+  await user.click(within(dialog).getByRole('button', { name: 'Wiki' }));
+  await user.click(within(dialog).getByRole('button', { name: /^save$/i }));
+  expect(await within(dialog).findByText(/category is not recognized/i)).not.toBeNull();
 });
 
 it('shows a Paused chip when the group is disabled', async () => {

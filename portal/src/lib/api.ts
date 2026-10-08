@@ -50,12 +50,14 @@ export interface PersonOut {
 
 export type NotificationSound = 'none' | 'chime' | 'ping' | 'pop' | 'bell';
 
+/** How one notification category reaches the person: inbox + email, inbox
+ *  only, or nothing. Mirrors notifications/kinds.py CATEGORIES. */
+export type DeliveryChoice = 'email' | 'inbox' | 'off';
+export type NotificationCategory = 'approvals' | 'reports' | 'wiki' | 'security';
+
 export interface NotifPrefs {
-  critical: boolean;
-  email: boolean;
-  maint: boolean;
-  digest: boolean;
   sound: NotificationSound; // in-app sound for new inbox items
+  categories: Record<NotificationCategory, DeliveryChoice>;
 }
 
 export type NamedAccent = 'amber' | 'aqua' | 'blue' | 'violet' | 'pink' | 'green';
@@ -4127,6 +4129,7 @@ export interface NotificationGroup {
   name: string;
   description: string;
   channels: string[];
+  categories: string[];
   quiet_start: string | null;
   quiet_end: string | null;
   timezone: string;
@@ -4198,6 +4201,7 @@ export interface NotificationRecipient {
  *  send a partial patch. */
 export interface NotificationGroupSettingsIn {
   channels?: string[];
+  categories?: string[];
   quiet_start?: string | null;
   quiet_end?: string | null;
   timezone?: string;
@@ -4314,6 +4318,8 @@ export interface MyNotificationGroup {
   name: string;
   description: string;
   channels: string[];
+  categories: string[];
+  effective_channels: string[];
   quiet_start: string | null;
   quiet_end: string | null;
   timezone: string;

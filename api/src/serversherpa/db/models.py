@@ -139,6 +139,10 @@ class EmailOutbox(Base):
     subject: Mapped[str]
     html_body: Mapped[str]
     text_body: Mapped[str]
+    # Set for notification mail: the registry kind and the inbox row it mirrors.
+    kind: Mapped[str | None]
+    notification_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("notifications.id", ondelete="SET NULL"))
     status: Mapped[str] = mapped_column(server_default="queued")
     attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"))
     next_attempt_at: Mapped[datetime] = mapped_column(server_default=text("now()"))
@@ -454,6 +458,9 @@ class NotificationGroup(Base):
     dnd_behavior: Mapped[str] = mapped_column(server_default="defer")
     urgent_bypass: Mapped[bool] = mapped_column(server_default=text("true"))
     enabled: Mapped[bool] = mapped_column(server_default=text("true"))
+    # Event categories this group's settings apply to (notifications/kinds.py).
+    categories: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), server_default=text("'{}'::text[]"))
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("people.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(server_default=text("now()"))

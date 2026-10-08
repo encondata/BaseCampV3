@@ -16,8 +16,9 @@ import {
 } from '../../lib/api';
 import ComboBox from '../ComboBox';
 import {
-  CHANNEL_LABELS, CHANNELS, DAYS, timezoneOptions, type Channel, type Day,
+  CHANNEL_LABELS, CHANNEL_NOTES, CHANNELS, DAYS, timezoneOptions, type Channel, type Day,
 } from '../../lib/notifications';
+import { NOTIFICATION_CATEGORIES, type NotificationCategory } from '../../lib/notificationKinds';
 
 const DAY_LABELS: Record<Day, string> = {
   mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat', sun: 'Sun',
@@ -27,6 +28,7 @@ const ERRORS: Record<string, string> = {
   invalid_quiet_hours: "Quiet hours need both a start and an end (and they can't be equal).",
   invalid_timezone: 'That timezone is not recognized.',
   invalid_days: 'Pick at least one active day.',
+  invalid_category: 'That category is not recognized.',
 };
 
 const msgFor = (err: unknown): string =>
@@ -68,6 +70,8 @@ export default function EditSettingsModal({ group, onClose, onSaved }: {
 }) {
   const [channels, setChannels] = useState<Set<Channel>>(
     () => new Set(group.channels as Channel[]));
+  const [categories, setCategories] = useState<Set<NotificationCategory>>(
+    () => new Set(group.categories as NotificationCategory[]));
   const [quietMode, setQuietMode] = useState<'off' | 'custom'>(
     group.quiet_start !== null ? 'custom' : 'off');
   const [quietStart, setQuietStart] = useState(
@@ -85,6 +89,12 @@ export default function EditSettingsModal({ group, onClose, onSaved }: {
   const toggleChannel = (c: Channel, on: boolean) => setChannels((prev) => {
     const next = new Set(prev);
     if (on) next.add(c); else next.delete(c);
+    return next;
+  });
+
+  const toggleCategory = (c: NotificationCategory) => setCategories((prev) => {
+    const next = new Set(prev);
+    if (next.has(c)) next.delete(c); else next.add(c);
     return next;
   });
 
@@ -113,6 +123,9 @@ export default function EditSettingsModal({ group, onClose, onSaved }: {
 
     const nextChannels = CHANNELS.filter((c) => channels.has(c));
     if (!sameMembers(nextChannels, group.channels)) patch.channels = nextChannels;
+
+    const nextCategories = NOTIFICATION_CATEGORIES.map((c) => c.key).filter((c) => categories.has(c));
+    if (!sameMembers(nextCategories, group.categories)) patch.categories = nextCategories;
 
     const origMode = group.quiet_start !== null ? 'custom' : 'off';
     const nextStart = quietMode === 'custom' ? `${quietStart}:00` : null;
@@ -159,10 +172,25 @@ export default function EditSettingsModal({ group, onClose, onSaved }: {
             <div className="pf-form">
               {CHANNELS.map((c) => (
                 <div className="full ngd-switch-row" key={c}>
-                  <span>{CHANNEL_LABELS[c]}</span>
+                  <span>
+                    {CHANNEL_LABELS[c]}
+                    {CHANNEL_NOTES[c] && <span className="channel-soon">{CHANNEL_NOTES[c]}</span>}
+                  </span>
                   <Switch checked={channels.has(c)} label={CHANNEL_LABELS[c]} disabled={saving}
                           onChange={(v) => toggleChannel(c, v)} />
                 </div>
+              ))}
+            </div>
+
+            <div className="ngd-section">Categories</div>
+            <div className="day-pills" role="group" aria-label="Categories">
+              {NOTIFICATION_CATEGORIES.map((c) => (
+                <button type="button" key={c.key} disabled={saving}
+                        aria-pressed={categories.has(c.key)}
+                        className={`mini-btn${categories.has(c.key) ? ' active' : ''}`}
+                        onClick={() => toggleCategory(c.key)}>
+                  {c.label}
+                </button>
               ))}
             </div>
 
@@ -199,9 +227,10 @@ export default function EditSettingsModal({ group, onClose, onSaved }: {
             </div>
 
             <div className="ngd-section">Active days</div>
-            <div className="day-pills">
+            <div className="day-pills" role="group" aria-label="Active days">
               {DAYS.map((d) => (
                 <button type="button" key={d} disabled={saving}
+                        aria-pressed={activeDays.has(d)}
                         className={`mini-btn${activeDays.has(d) ? ' active' : ''}`}
                         onClick={() => toggleDay(d)}>
                   {DAY_LABELS[d]}

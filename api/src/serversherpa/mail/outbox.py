@@ -20,13 +20,17 @@ def email_enabled() -> bool:
 
 
 async def enqueue(db: AsyncSession, template: str, to: str, *,
-                  person_id: uuid.UUID | None = None, **ctx) -> EmailOutbox:
+                  person_id: uuid.UUID | None = None, kind: str | None = None,
+                  notification_id: uuid.UUID | None = None,
+                  send_at: datetime | None = None, **ctx) -> EmailOutbox:
+    """`send_at` (aware) is the earliest delivery time; default now."""
     rendered = render(template, **ctx)
     now = datetime.now(UTC)
     row = EmailOutbox(
         template=template, to_address=to, person_id=person_id,
+        kind=kind, notification_id=notification_id,
         subject=rendered.subject, html_body=rendered.html, text_body=rendered.text,
-        status="queued", attempts=0, next_attempt_at=now, created_at=now)
+        status="queued", attempts=0, next_attempt_at=send_at or now, created_at=now)
     db.add(row)
     await db.flush()
     return row

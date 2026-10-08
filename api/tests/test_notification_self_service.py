@@ -480,3 +480,27 @@ async def test_worker_forbidden_on_notifications_requests(client, db, seeded_use
     resp = await client.post(f"/notifications/requests/{uuid.uuid4()}/approve",
                              headers=hdrs, json={})
     assert resp.status_code == 403
+
+
+# ── categories + effective channels in my groups ─────────────────────
+
+async def test_my_groups_include_categories_and_effective_channels(
+        client, db, seeded_user):
+    hdrs = await login_admin(client, db, seeded_user)
+    joined = NotificationGroup(name="Joined", categories=["reports", "wiki"],
+                               channels=["email", "web"])
+    other = NotificationGroup(name="Other", categories=["approvals"],
+                              channels=["email", "push"])
+    db.add_all([joined, other])
+    await db.commit()
+    db.add(NotificationGroupMember(group_id=joined.id, person_id=seeded_user.id,
+                                   channels=["web"]))
+    await db.commit()
+
+    resp = await client.get("/auth/me/notification-groups", headers=hdrs)
+    assert resp.status_code == 200, resp.text
+    by_name = {i["name"]: i for i in resp.json()}
+    assert by_name["Joined"]["categories"] == ["reports", "wiki"]
+    assert by_name["Joined"]["effective_channels"] == ["web"]
+    assert by_name["Other"]["categories"] == ["approvals"]
+    assert by_name["Other"]["effective_channels"] == ["email", "push"]

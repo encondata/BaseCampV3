@@ -1,0 +1,1 @@
+{{ title|replace("\r", " ")|replace("\n", " ") }}

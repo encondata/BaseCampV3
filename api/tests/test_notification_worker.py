@@ -152,3 +152,35 @@ async def test_delivery_errors_do_not_kill_the_loop(db, monkeypatch, caplog):
         await asyncio.gather(task, return_exceptions=True)
     assert len(calls) >= 2
     assert caplog.text.count("could not deliver the email outbox") == 1   # once per outage
+
+
+def test_cli_once_runs_the_status_pass_and_one_delivery_pass(monkeypatch):
+    """`notification-worker --once` delivers due mail too (CLI surface only:
+    the passes themselves are faked)."""
+    from typer.testing import CliRunner
+
+    from serversherpa import cli
+    from serversherpa.db import engine as engine_mod
+    from serversherpa.mail import delivery
+    from serversherpa.notifications import worker as worker_mod
+
+    calls: list[str] = []
+
+    async def fake_status(maker):
+        calls.append("status")
+
+    async def fake_deliver(maker):
+        calls.append("deliver")
+        return 3
+
+    async def no_dispose():
+        pass
+
+    monkeypatch.setattr(engine_mod, "get_sessionmaker", lambda: object())
+    monkeypatch.setattr(worker_mod, "run_once", fake_status)
+    monkeypatch.setattr(delivery, "deliver_once", fake_deliver)
+    monkeypatch.setattr(cli, "dispose_engine", no_dispose)
+    result = CliRunner().invoke(cli.app, ["notification-worker", "--once"])
+    assert result.exit_code == 0, result.output
+    assert calls == ["status", "deliver"]
+    assert "3" in result.output

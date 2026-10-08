@@ -99,6 +99,30 @@ async def test_future_rows_wait(db, email_on):
     assert await deliver_once(get_sessionmaker(), send=FakeSend()) == 0
 
 
+async def test_deferred_notification_email_waits_then_sends(db, email_on):
+    """A notification email queued with a future send_at (quiet hours) is
+    not claimed until that time passes, then goes out once."""
+    send_at = datetime.now(UTC) + timedelta(hours=3)
+    row = await enqueue(db, "notification", "pat@test.example.com",
+                        kind="report_ready", send_at=send_at, name="Pat",
+                        title="Move Report is ready", body="", link="https://p/reports",
+                        security=False, prefs_url="https://p/me/notifications")
+    await db.commit()
+    send = FakeSend()
+    assert await deliver_once(get_sessionmaker(), send=send) == 0
+    assert send.calls == []
+    assert (await _get(row.id)).status == "queued"
+    # time passes: the scheduled moment is now in the past
+    async with get_sessionmaker()() as s:
+        later = await s.get(EmailOutbox, row.id)
+        later.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
+        await s.commit()
+    assert await deliver_once(get_sessionmaker(), send=send) == 1
+    assert [c["to"] for c in send.calls] == ["pat@test.example.com"]
+    assert (await _get(row.id)).status == "sent"
+    assert await deliver_once(get_sessionmaker(), send=send) == 0
+
+
 async def test_requeue_stale_sending_rows(db):
     old = datetime.now(UTC) - timedelta(minutes=30)
     stale_id = await _queue(db, status="sending", heartbeat_at=old)

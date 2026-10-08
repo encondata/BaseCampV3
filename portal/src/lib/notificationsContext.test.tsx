@@ -13,7 +13,7 @@ const sounds = vi.hoisted(() => ({ playNotificationSound: vi.fn(() => true), ins
 vi.mock('./notificationSounds', () => sounds);
 const auth = vi.hoisted(() => ({
   person: { id: 'p1' } as { id: string } | null,
-  preferences: { notif: { critical: true, email: true, maint: true, digest: false, sound: 'ping' } },
+  preferences: { notif: { sound: 'ping', categories: { approvals: 'email', reports: 'email', wiki: 'email', security: 'email' } } },
 }));
 vi.mock('../auth/AuthContext', () => ({ useAuth: () => auth }));
 
