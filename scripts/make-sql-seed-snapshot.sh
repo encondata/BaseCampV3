@@ -21,6 +21,7 @@
 # encrypts them, its keys.env holds the two keys in plaintext.
 set -euo pipefail
 umask 077
+case $- in *x*) echo "make-sql-seed-snapshot: refusing to run under set -x (it would print the keys)" >&2; exit 1 ;; esac
 
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TOOL="$REPO/sirdar/api/src/sirdar_api/deploy/bundle.py"
@@ -102,6 +103,12 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 suffix=$(LC_ALL=C tr -dc 'a-z0-9' </dev/urandom | head -c 10 || true)
+# A dump made with -C (or pg_dumpall) switches databases or creates
+# roles: loading it would write outside the throwaway database.
+if grep -Eiq '^[[:space:]]*(\\(c|connect)([[:space:]]|$)|(create|drop|alter)[[:space:]]+(database|role|user)[[:space:]])' "$SQL"; then
+  die "$SQL connects to another database or creates databases/roles; dump it without -C/--create (plain pg_dump of one database)"
+fi
+
 name="seed_tmp_$suffix"
 exists=$(psql_admin -tAc "SELECT 1 FROM pg_database WHERE datname = '$name'" </dev/null) \
   || die "couldn't query $PG"
@@ -113,7 +120,7 @@ psql_admin -qc "CREATE DATABASE \"$name\"" </dev/null || die "couldn't create $n
 echo "==> Loading $SQL"
 if ! docker exec -i "$PG" psql -U "$PGUSER" -d "$name" -v ON_ERROR_STOP=1 -q \
      < "$SQL" > "$work/load.log" 2>&1; then
-  tail -n 20 "$work/load.log" >&2
+  grep -E '^(psql:.*)?ERROR:' "$work/load.log" | head -n 5 | cut -c1-300 >&2 || true
   die "loading the SQL failed"
 fi
 
@@ -123,17 +130,17 @@ revision=$(pgq -c 'SELECT version_num FROM alembic_version' </dev/null) \
 revision=${revision//[[:space:]]/}
 
 echo "==> Finding storage-key columns"
-pgq -F ' ' -c "SELECT table_name, column_name FROM information_schema.columns
-  WHERE table_schema = 'public' AND data_type IN ('text', 'character varying')
+pgq -F $'\t' -c "SELECT format('%I', table_name), format('%I', column_name) FROM information_schema.columns
+  WHERE table_schema = 'public' AND udt_name IN ('text', 'varchar', 'citext')
     AND (column_name IN ('storage_key', 'preview_key', 'avatar_key', 'logo_key', 'file_key')
          OR column_name LIKE '%\\_storage\\_key')
   ORDER BY table_name, column_name" </dev/null > "$work/columns.txt" \
   || die "couldn't list the storage-key columns"
 : > "$work/keys.txt"
 : > "$work/counts.txt"
-while read -r tbl col; do
+while IFS=$'\t' read -r tbl col; do
   [[ -n $tbl ]] || continue
-  pgq -c "SELECT DISTINCT \"$col\" FROM public.\"$tbl\" WHERE \"$col\" IS NOT NULL AND \"$col\" <> ''" \
+  pgq -c "SELECT DISTINCT $col FROM public.$tbl WHERE $col IS NOT NULL AND $col <> ''" \
     </dev/null > "$work/col.txt" || die "couldn't read $tbl.$col"
   n=$(grep -c . "$work/col.txt" || true)
   printf '%s.%s %s\n' "$tbl" "$col" "$n" >> "$work/counts.txt"

@@ -592,7 +592,7 @@ def main(argv: list[str] | None = None) -> int:
                     try:
                         with open(args.keys_file, encoding="utf-8") as f:
                             keys = [line.strip() for line in f if line.strip()]
-                    except OSError:
+                    except (OSError, ValueError):
                         raise BundleError("Couldn't read the keys file.") from None
                 count, total = export_objects(client, bucket, args.path, keys)
             else:
