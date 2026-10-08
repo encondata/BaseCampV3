@@ -41,6 +41,7 @@ class Contact:
     address: str | None     # Person.email, else the account's email
     choice_prefs: UiPreferences
     active: bool = True     # False: archived person or disabled account
+    login_email: str | None = None   # the account's email (owner notices go here first)
 
 
 def _now() -> datetime:
@@ -76,6 +77,7 @@ async def load_contact(db: AsyncSession, person_id: uuid.UUID) -> Contact | None
     except ValueError:      # malformed stored prefs: behave as defaults
         prefs = UiPreferences()
     return Contact(first_name, person_email or account_email or None, prefs,
+                   login_email=account_email or None,
                    active=archived_at is None and disabled_at is None)
 
 
@@ -121,11 +123,17 @@ async def maybe_email(db: AsyncSession, notification: Notification, *,
         return
     if contact is None:
         contact = await load_contact(db, notification.person_id)
-    if contact is None or not contact.address or not contact.active:
+    if contact is None or not contact.active:
+        return
+    owner_copy = owner_notice and info.owner_always
+    # An owner security notice goes to the login email first: whoever can
+    # edit a person's contact email must not receive that person's security
+    # notices. Everything else keeps the contact email first.
+    address = (contact.login_email or contact.address) if owner_copy else contact.address
+    if not address:
         return
 
     now = _now()
-    owner_copy = owner_notice and info.owner_always
     if owner_copy:
         send_at = now
     else:
@@ -137,7 +145,7 @@ async def maybe_email(db: AsyncSession, notification: Notification, *,
             return
 
     await enqueue(
-        db, "notification", contact.address, person_id=notification.person_id,
+        db, "notification", address, person_id=notification.person_id,
         kind=notification.kind, notification_id=notification.id, send_at=send_at,
         name=contact.first_name, title=notification.title,
         body="" if info.brief else notification.body,

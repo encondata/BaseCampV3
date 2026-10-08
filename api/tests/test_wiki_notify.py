@@ -523,3 +523,21 @@ async def test_to_person_links_anywhere_in_the_wiki_for_one_active_person(client
     assert await notify.to_person(db, person_id, kind="wiki_update", title="Again",
                                   path="/exports/abc", event="export_ready") is False
     assert len(await _inbox(db, person_id)) == 1
+
+
+async def test_counts_only_cover_notifications_actually_written(client, db):
+    """Someone who turned wiki notifications off gets no row, so they are
+    not counted as notified (to_person's bool, on_review_due's set)."""
+    s = await _setup(client, db)
+    off = {"notif": {"categories": {"wiki": "off"}}}
+    account = await db.scalar(select(UserAccount).where(UserAccount.person_id == s["owner_id"]))
+    account.ui_prefs = off
+    await db.flush()
+    page = await _create(client, s["owner"], s["space"], "Runbook", kind="page")
+    await publish_via_db(db, page["id"])
+    node = await _node(db, page["id"])
+    assert await notify.on_review_due(db, node, owner_id=s["owner_id"]) == set()
+    assert await _inbox(db, s["owner_id"], "wiki_review_due") == []
+    assert await notify.to_person(db, s["owner_id"], kind="wiki_update", title="Export",
+                                  path="/exports/abc", event="export_ready") is False
+    assert await _inbox(db, s["owner_id"]) == []

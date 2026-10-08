@@ -48,15 +48,19 @@ def _next_boundary(s: dict, cur_utc: datetime, tz: ZoneInfo) -> datetime:
     sooner. Returned in UTC (compared in UTC, never as same-zone wall time)."""
     local = cur_utc.astimezone(tz)
     day = local.date()
-    candidates = [datetime.combine(day + timedelta(days=1), time.min, tz)]
+    wall = [datetime.combine(day + timedelta(days=1), time.min)]
     window = _quiet_window(s)
     if window is not None:
-        end = window[1]
-        for offset in (0, 1):
-            candidates.append(
-                datetime.combine(day + timedelta(days=offset), end, tz))
-    later = [c.astimezone(UTC) for c in candidates]
-    later = [c for c in later if c > cur_utc]
+        wall += [datetime.combine(day + timedelta(days=offset), window[1])
+                 for offset in (0, 1)]
+    # A wall time inside a DST fall-back hour happens twice (fold 0 and 1),
+    # so both readings are candidates: with only fold=0, a "now" in the
+    # second pass would find the quiet end already behind it and skip a day.
+    # (In a spring-forward gap the two readings are the instants either side
+    # of the gap; the extra one is closed and the loop moves on.)
+    later = [c for w in wall for fold in (0, 1)
+             for c in (w.replace(tzinfo=tz, fold=fold).astimezone(UTC),)
+             if c > cur_utc]
     return min(later)
 
 

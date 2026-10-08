@@ -61,7 +61,8 @@ CATEGORIES = {"approvals": "Approvals & requests", "reports": "Reports & labels"
 | membership_request, membership_decided | approvals | |
 | router_approval | approvals | brief |
 | password_reset_request | approvals | email=False (exists only when email is off) |
-| report_ready, report_failed, labels_ready, labels_failed | reports | |
+| report_ready, labels_ready | reports | |
+| report_failed, labels_failed | reports | brief (the body can carry internal error text) |
 | wiki_update, wiki_comment, wiki_mention, wiki_review_request, wiki_review_decision, wiki_review_due, wiki_export_ready, wiki_export_failed | wiki | |
 | password_expiring | security | owner_always, urgent |
 | totp_enrolled | security | brief, owner_always, urgent |
@@ -96,6 +97,9 @@ account owner about their own account (`totp.py` self copy,
 1. **Personal choice** = `ui_prefs.notif.categories[category]` (default
    `"email"`). Security is fixed at `"email"`; a stored value is ignored.
    - `"off"` → no inbox row and no email; `notify()` returns `None`.
+     Exception: a kind whose registry `email` flag is false
+     (`password_reset_request`) keeps its inbox row. With SMTP off, that
+     card is the only way a locked-out user reaches an admin.
 2. Write the inbox row (unchanged).
 3. **Email gate** — stop (inbox only) when any of these hold:
    `email_enabled()` is false; the kind's `email` flag is false; the kind
@@ -125,7 +129,10 @@ effective timezone. All of this lives in a pure function
 -> datetime | None` so it is tested without a database.
 
 **Address:** `Person.email`, else the person's `UserAccount.email`, else
-none.
+none. The one exception is an owner security notice (`owner_notice` on an
+`owner_always` kind), which goes to `UserAccount.email` first and
+`Person.email` second: someone who can edit a person's contact email
+shouldn't receive that person's security notices.
 
 **Never an email:** a notification whose recipient has no account still
 gets its inbox row as today; email follows the same rules (Person.email can

@@ -35,9 +35,11 @@ KINDS: dict[str, KindInfo] = {
     # Exists only when email is off, so it is never emailed.
     "password_reset_request": KindInfo("approvals", "Password reset request", email=False),
     "report_ready": KindInfo("reports", "Report ready"),
-    "report_failed": KindInfo("reports", "Report failed"),
+    # Failure kinds carry internal error text: title + link only.
+    "report_failed": KindInfo("reports", "Report failed", brief=True),
     "labels_ready": KindInfo("reports", "Labels ready"),
-    "labels_failed": KindInfo("reports", "Label generation failed"),
+    "labels_failed": KindInfo("reports", "Label generation failed",
+                              brief=True),
     "wiki_update": KindInfo("wiki", "Page updated"),
     "wiki_comment": KindInfo("wiki", "New comment"),
     "wiki_mention": KindInfo("wiki", "You were mentioned"),

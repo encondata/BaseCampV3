@@ -149,6 +149,17 @@ async def test_security_ignores_a_stored_off(db, email_on):
     assert len(await _outbox(db, p)) == 1
 
 
+async def test_off_never_hides_the_password_reset_card(db):
+    # SMTP off: this card is the only way a locked-out user reaches an admin,
+    # so a category "off" must not swallow it (other approvals kinds still obey).
+    p = await _person(db, prefs=_prefs(approvals="off"))
+    assert await notify(db, p.id, "password_reset_request", "Pat asked for a reset") is not None
+    assert await notify(db, p.id, "membership_request", "Join?") is None
+    [row] = list(await db.scalars(select(Notification).where(
+        Notification.person_id == p.id)))
+    assert row.kind == "password_reset_request"
+
+
 # ── timing ──────────────────────────────────────────────────────────
 
 async def test_quiet_hours_defer(db, email_on, fixed_now):
@@ -331,6 +342,30 @@ async def test_admin_copy_gets_the_group_footer_owner_copy_the_security_one(db, 
     assert "Change what you receive" in adm.html_body
     assert "Change what you receive" in adm.text_body
     assert "security notice" not in adm.html_body
+
+
+async def test_owner_security_notice_goes_to_the_login_email_first(db, email_on):
+    # Someone who can edit a person's contact email must not receive that
+    # person's security notices: owner copies use the login email first.
+    p = await _person(db, "contact@test.example.com", account_email="login@test.example.com")
+    await notify(db, p.id, "totp_enrolled", "Two-factor is on", owner_notice=True)
+    [own] = await _outbox(db, p)
+    assert own.to_address == "login@test.example.com"
+
+
+async def test_owner_notice_falls_back_to_the_contact_email_without_a_login_email(db, email_on):
+    p = await _person(db, "contact@test.example.com")
+    await notify(db, p.id, "totp_enrolled", "Two-factor is on", owner_notice=True)
+    [own] = await _outbox(db, p)
+    assert own.to_address == "contact@test.example.com"
+
+
+async def test_other_mail_keeps_the_contact_email_first(db, email_on):
+    p = await _person(db, "contact@test.example.com", account_email="login@test.example.com")
+    await _group(db, p, categories=("security",))
+    await notify(db, p.id, "totp_enrolled", "Olive enrolled two-factor")
+    await notify(db, p.id, "password_expiring", "Expiring")   # not an owner notice
+    assert {m.to_address for m in await _outbox(db, p)} == {"contact@test.example.com"}
 
 
 async def test_disabled_account_gets_inbox_row_but_no_email(db, email_on):

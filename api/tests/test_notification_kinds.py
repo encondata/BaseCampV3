@@ -51,6 +51,8 @@ def test_flags_match_the_spec():
                if (v.brief, v.email, v.owner_always, v.urgent) != (False, True, False, False)}
     assert flagged == {
         "router_approval": (True, True, False, False),
+        "report_failed": (True, True, False, False),
+        "labels_failed": (True, True, False, False),
         "password_reset_request": (False, False, False, False),
         "password_expiring": (False, True, True, True),
         "totp_enrolled": (True, True, True, True),

@@ -19,7 +19,7 @@ async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, 
                  owner_notice: bool = False) -> Notification | None:
     """Write the inbox row and queue the email when the rules allow it.
     Returns None (nothing written) when the person turned this category
-    off. `owner_notice` marks the copy sent to the account owner about
+    off (except for kinds that are never emailed). `owner_notice` marks the copy sent to the account owner about
     their own account (it can email regardless of group membership)."""
     info = kind_info(kind)
     contact = None
@@ -27,7 +27,10 @@ async def notify(db: AsyncSession, person_id: uuid.UUID, kind: str, title: str, 
     if info is not None and info.category != "security":
         contact = await load_contact(db, person_id)
         choice = personal_choice(info, contact)
-        if choice == "off":
+        # A kind that is never emailed keeps its inbox row even when the
+        # category is off: password_reset_request is the only way a
+        # locked-out user reaches an admin when SMTP is off.
+        if choice == "off" and info.email:
             return None
     # created_at is set here rather than left to the column's `now()`
     # server_default: several notify() calls commonly land in the same

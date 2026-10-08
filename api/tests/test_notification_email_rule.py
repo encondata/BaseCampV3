@@ -205,6 +205,39 @@ def test_dst_spring_forward_window():
     assert got - ny(2026, 3, 8, 1, 30).astimezone(UTC) <= timedelta(hours=2)
 
 
+def test_dst_fall_back_second_pass_ends_the_same_day():
+    # 2026-11-01 01:00-02:00 NY happens twice. Quiet 00:00-01:30; now is
+    # 01:10 in the second pass (EST, fold=1). The quiet end 01:30 EST is
+    # 20 minutes away, not a day later.
+    s = make(quiet_start=time(0), quiet_end=time(1, 30))
+    now = datetime(2026, 11, 1, 1, 10, tzinfo=NY, fold=1)
+    assert now.utcoffset() == timedelta(hours=-5)
+    got = email_send_time([s], now, urgent=False)
+    # (compare in UTC: same-zone aware datetimes compare by wall time)
+    assert got == datetime(2026, 11, 1, 6, 30, tzinfo=UTC)
+    local = got.astimezone(NY)
+    assert (local.date().isoformat(), local.time()) == ("2026-11-01", time(1, 30))
+
+
+def test_dst_fall_back_first_pass_waits_for_the_first_quiet_end():
+    # The first pass (EDT, fold=0) ends quiet at 01:30 EDT, as before.
+    s = make(quiet_start=time(0), quiet_end=time(1, 30))
+    now = datetime(2026, 11, 1, 1, 10, tzinfo=NY, fold=0)
+    got = email_send_time([s], now, urgent=False)
+    assert got == datetime(2026, 11, 1, 5, 30, tzinfo=UTC)
+
+
+def test_dst_spring_forward_quiet_end_in_the_gap_opens_at_the_gap_end():
+    # Current, accepted behavior: quiet 01:00-02:30 ends at 02:30, which
+    # does not exist on 2026-03-08. Zoneinfo reads that wall time with the
+    # pre-transition offset (EST), i.e. 07:30 UTC = 03:30 EDT, so the
+    # email goes out at 03:30 EDT: after the gap, never earlier.
+    s = make(quiet_start=time(1), quiet_end=time(2, 30))
+    got = email_send_time([s], ny(2026, 3, 8, 1, 30), urgent=False)
+    assert got == datetime(2026, 3, 8, 7, 30, tzinfo=UTC)
+    assert got.astimezone(NY).time() == time(3, 30)
+
+
 def test_allowed_at_directly():
     now = ny(2026, 10, 5, 12)
     assert allowed_at(make(), now, urgent=False) == now
