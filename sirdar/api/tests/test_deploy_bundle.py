@@ -144,6 +144,54 @@ def test_objects_round_trip_keeps_content_types(tmp_path):
     assert source.buckets == {"src-bucket"}
 
 
+def _tar_members(path):
+    with tarfile.open(path) as tar:
+        return [(m.name, tar.extractfile(m).read(),
+                 m.pax_headers.get(bundle.CONTENT_TYPE_HEADER)) for m in tar]
+
+
+def test_export_of_listed_keys_only_dedupes_and_sorts(tmp_path):
+    source = FakeS3({"a/hello.txt": (b"hello", "text/plain"), "b/doc.pdf": (b"%PDF", "x/pdf"),
+                     "c/raw": (b"\x00", None)}, page_size=1)
+    out = tmp_path / "objects.tar"
+    assert bundle.export_objects(source, "b", out,
+                                 keys=["c/raw", "a/hello.txt", "c/raw"]) == (2, 6)
+    assert _tar_members(out) == [("a/hello.txt", b"hello", "text/plain"),
+                                 ("c/raw", b"\x00", None)]
+
+
+def test_export_of_a_missing_key_fails_and_writes_nothing(tmp_path):
+    source = FakeS3({"a": (b"1", None)})
+    out = tmp_path / "objects.tar"
+    with pytest.raises(BundleError, match=r"2 of the 3 .*gone/1, gone/2"):
+        bundle.export_objects(source, "b", out, keys=["a", "gone/1", "gone/2"])
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_missing_keys_list_at_most_ten(tmp_path):
+    source = FakeS3({})
+    with pytest.raises(BundleError) as err:
+        bundle.export_objects(source, "b", tmp_path / "o.tar",
+                              keys=[f"k{i:02d}" for i in range(12)])
+    assert "12 of the 12" in err.value.reason
+    assert "k09" in err.value.reason and "k10" not in err.value.reason
+
+
+def test_cli_export_with_a_keys_file(tmp_path, monkeypatch):
+    source = FakeS3({"a": (b"1", None), "b": (b"22", None)})
+    monkeypatch.setattr(bundle, "s3_client", lambda *a, **k: source)
+    monkeypatch.setenv("SNAP_S3_SECRET", "x")
+    keys = tmp_path / "keys.txt"
+    keys.write_text("b\n\n  \nb\n")
+    out = tmp_path / "o.tar"
+    assert bundle.main(["export-objects", "--out", str(out), "--keys-file", str(keys)]) == 0
+    assert [m[0] for m in _tar_members(out)] == ["b"]
+    keys.write_text("nope\n")
+    assert bundle.main(["export-objects", "--out", str(tmp_path / "p.tar"),
+                        "--keys-file", str(keys)]) == 1
+    assert not (tmp_path / "p.tar").exists()
+
+
 def test_a_failed_export_leaves_no_partial(tmp_path):
     source = FakeS3({"a": (b"1", None)}, fail_on="a")
     with pytest.raises(RuntimeError):

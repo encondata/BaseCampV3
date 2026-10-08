@@ -23,6 +23,7 @@ import re
 import sys
 import tarfile
 import zlib
+from collections.abc import Iterable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from pathlib import Path
@@ -440,37 +441,56 @@ def s3_client(endpoint: str, key_id: str, secret: str, region: str = "us-east-1"
                                       retries={"max_attempts": 5, "mode": "standard"}))
 
 
-def export_objects(client, bucket: str, out) -> tuple[int, int]:
-    """Every object of the bucket into a tar at `out` (written whole or not
-    at all); (count, bytes). Zero-byte "folder/" markers are skipped."""
+def _list_keys(client, bucket: str):
+    """(key, size) of every object of the bucket."""
+    token = None
+    while True:
+        kwargs = {"Bucket": bucket}
+        if token:
+            kwargs["ContinuationToken"] = token
+        page = client.list_objects_v2(**kwargs)
+        for item in page.get("Contents", []):
+            yield item["Key"], item.get("Size")
+        if not page.get("IsTruncated"):
+            return
+        token = page["NextContinuationToken"]
+
+
+def export_objects(client, bucket: str, out, keys: Iterable[str] | None = None
+                   ) -> tuple[int, int]:
+    """Every object of the bucket (or exactly `keys`: deduplicated, sorted,
+    BundleError if any is missing) into a tar at `out` (written whole or not
+    at all); (count, bytes). Whole-bucket exports skip zero-byte "folder/"
+    markers."""
     out = Path(out)
     partial = out.with_name(out.name + ".partial")
     count = total = 0
+    if keys is None:
+        names = (k for k, size in _list_keys(client, bucket)
+                 if not (k.endswith("/") and not size))
+    else:
+        wanted = sorted(set(keys))
+        present = {k for k, _ in _list_keys(client, bucket)}
+        missing = [k for k in wanted if k not in present]
+        if missing:
+            shown = ", ".join(missing[:10])
+            more = f" (first 10: {shown})" if len(missing) > 10 else f": {shown}"
+            raise BundleError(f"{len(missing)} of the {len(wanted)} requested keys "
+                              f"aren't in the bucket{more}")
+        names = iter(wanted)
     try:
         fd = _open_private(partial)
         with os.fdopen(fd, "wb") as raw, tarfile.open(fileobj=raw, mode="w",
                                                       format=tarfile.PAX_FORMAT) as tar:
-            token = None
-            while True:
-                kwargs = {"Bucket": bucket}
-                if token:
-                    kwargs["ContinuationToken"] = token
-                page = client.list_objects_v2(**kwargs)
-                for item in page.get("Contents", []):
-                    key = item["Key"]
-                    if key.endswith("/") and not item.get("Size"):
-                        continue
-                    obj = client.get_object(Bucket=bucket, Key=key)
-                    info = _member(key, int(obj["ContentLength"]),
-                                   obj["LastModified"].timestamp())
-                    if obj.get("ContentType"):
-                        info.pax_headers = {CONTENT_TYPE_HEADER: obj["ContentType"]}
-                    tar.addfile(info, obj["Body"])
-                    count += 1
-                    total += info.size
-                if not page.get("IsTruncated"):
-                    break
-                token = page["NextContinuationToken"]
+            for key in names:
+                obj = client.get_object(Bucket=bucket, Key=key)
+                info = _member(key, int(obj["ContentLength"]),
+                               obj["LastModified"].timestamp())
+                if obj.get("ContentType"):
+                    info.pax_headers = {CONTENT_TYPE_HEADER: obj["ContentType"]}
+                tar.addfile(info, obj["Body"])
+                count += 1
+                total += info.size
         os.replace(partial, out)
     except BaseException:
         partial.unlink(missing_ok=True)
@@ -549,6 +569,9 @@ def main(argv: list[str] | None = None) -> int:
         o.add_argument("--key-id", default=DEFAULT_KEY_ID)
         o.add_argument("--bucket", default="")
         o.add_argument("--region", default="us-east-1")
+        if name == "export-objects":
+            o.add_argument("--keys-file", default="",
+                           help="export only the keys listed here, one per line")
     args = parser.parse_args(argv)
     try:
         if args.command == "pack":
@@ -563,8 +586,17 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(unpack(args.bundle, args.dest, args.max_bytes)))
         else:
             client, bucket = _s3_from_args(args)
-            run = export_objects if args.command == "export-objects" else import_objects
-            count, total = run(client, bucket, args.path)
+            if args.command == "export-objects":
+                keys = None
+                if args.keys_file:
+                    try:
+                        with open(args.keys_file, encoding="utf-8") as f:
+                            keys = [line.strip() for line in f if line.strip()]
+                    except OSError:
+                        raise BundleError("Couldn't read the keys file.") from None
+                count, total = export_objects(client, bucket, args.path, keys)
+            else:
+                count, total = import_objects(client, bucket, args.path)
             print(json.dumps({"objects": count, "bytes": total}))
     except BundleError as e:
         print(f"bundle: {e.reason}", file=sys.stderr)
