@@ -285,6 +285,25 @@ async def test_forced_enrollment_leaves_an_inbox_notification(client, db, seeded
     assert rows[0]["payload"]["self"] is True
 
 
+async def test_forced_enrollment_emails_the_owner_copy(client, db, seeded_user, email_on):
+    """The owner's own totp_enrolled copy is an owner notice: it emails
+    without any notification group."""
+    from serversherpa.db.models import EmailOutbox
+
+    await _security(db, two_factor_enabled=True, two_factor_required=True)
+    login = await _login(client)
+    hdrs = {"X-Totp-Challenge": login.json()["challenge_token"]}
+    secret = (await client.post("/auth/totp/enroll/start", headers=hdrs)).json()["secret"]
+    good = await client.post("/auth/totp/enroll/confirm", headers=hdrs,
+                             json={"code": pyotp.TOTP(secret).now()})
+    assert good.status_code == 200, good.text
+    mails = list(await db.scalars(select(EmailOutbox).where(
+        EmailOutbox.person_id == seeded_user.id, EmailOutbox.kind == "totp_enrolled")))
+    assert len(mails) == 1
+    assert mails[0].to_address == "alice@test.example.com"
+    assert "An authenticator app" not in mails[0].html_body     # brief kind: no body
+
+
 async def test_verify_challenge_cannot_enroll(client, db, seeded_user):
     _secret, _codes, token = await _challenge(client, db, seeded_user)
     resp = await client.post("/auth/totp/enroll/start", headers={"X-Totp-Challenge": token})

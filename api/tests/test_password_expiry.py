@@ -654,3 +654,14 @@ async def test_run_reminders_once_swallows_errors(db, seeded_user, caplog, monke
     caplog.set_level(logging.ERROR, logger="serversherpa.notifications.password_reminders")
     assert await run_reminders_once(get_sessionmaker()) == 0
     assert "db is on fire" in caplog.text
+
+
+async def test_reminder_emails_the_owner_without_any_group(db, seeded_user, email_on):
+    from serversherpa.db.models import EmailOutbox
+    await _with_days_left(db, seeded_user.id, 2)
+    assert await _sweep(db) == 1
+    mails = list(await db.scalars(select(EmailOutbox).where(
+        EmailOutbox.person_id == seeded_user.id)))
+    assert [m.kind for m in mails] == [KIND]
+    assert mails[0].template == "notification"
+    assert mails[0].subject == "Your password expires in 2 days"

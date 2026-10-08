@@ -1,6 +1,6 @@
 """Password-expiry reminders (To-Do #32): 7, 3 and 1 day before a
 password expires, one inbox row per stage. Runs from the notification
-worker; email fans out from notify() when it exists."""
+worker; each reminder emails the owner from notify()."""
 
 import logging
 import math
@@ -64,7 +64,8 @@ async def run_password_reminders(db: AsyncSession, now: datetime) -> int:
             body=(f"Change it under My Profile › Security before "
                   f"{due.astimezone(UTC):%B %-d, %Y} to avoid being asked at sign-in."),
             link="/me",
-            payload={"expires_at": due_iso, "stage": stage, "days_left": days_left})
+            payload={"expires_at": due_iso, "stage": stage, "days_left": days_left},
+            owner_notice=True)
         sent += 1
     if sent:
         await db.commit()

@@ -2,7 +2,8 @@
 (`serversherpa notification-worker`). Each poll it delivers the email
 outbox (mail/delivery.py); once an hour it runs the password-expiry
 reminder sweep (notifications/password_reminders.py); every 15 minutes it
-logs a status line. Quiet hours / DND delivery is still a later task."""
+logs a status line. Quiet hours / DND are applied when a notification is
+queued (notifications/email.py), which sets the email's send time."""
 
 import asyncio
 import logging

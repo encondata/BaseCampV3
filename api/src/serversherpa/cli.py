@@ -895,15 +895,15 @@ def _run_notification_worker_process(poll_seconds: float) -> None:
 @app.command()
 def notification_worker(
     poll_seconds: float = typer.Option(
-        5.0, help="Seconds between status-log checks"),
+        5.0, help="Seconds between outbox delivery passes"),
     once: bool = typer.Option(
-        False, help="One status pass, then exit"),
+        False, help="One status pass and one email delivery pass, then exit"),
     reload: bool = typer.Option(
         False, help="Dev mode: restart when api/src changes "
                     "(uvicorn-style)"),
 ) -> None:
-    """Run the notification-worker placeholder — heartbeat + periodic
-    status logs only. No delivery pipeline yet."""
+    """Run the notification worker — delivers the email outbox, sends the
+    hourly password-expiry reminders, and logs periodic status lines."""
 
     if reload and once:
         typer.secho("--once cannot be combined with --reload", fg="red")
@@ -923,8 +923,13 @@ def notification_worker(
         from serversherpa.notifications import worker
 
         if once:
-            await worker.run_once(get_sessionmaker())
-            typer.secho("status pass complete", fg="green")
+            from serversherpa.mail.delivery import deliver_once
+
+            maker = get_sessionmaker()
+            await worker.run_once(maker)
+            sent = await deliver_once(maker)
+            typer.secho(f"status pass complete; processed {sent} queued email(s)",
+                        fg="green")
         else:
             await worker.run_forever(poll_seconds)
         await dispose_engine()
