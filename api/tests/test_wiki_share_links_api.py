@@ -557,12 +557,16 @@ async def test_public_response_says_how_long_its_urls_live(client, db, monkeypat
     page_token = _token(await _share(client, s["owner"], page["id"]))
     file_token = _token(await _share(client, s["owner"], file_id))
 
-    assert (await _public(client, page_token)).json()["url_ttl_seconds"] == 600
-    assert (await _public(client, file_token)).json()["url_ttl_seconds"] == 600
-
-    monkeypatch.setenv("SS_SPACES_PRESIGN_TTL_SECONDS", "300")
+    # pinned above the 600 s public cap, so the cap — not whatever the
+    # developer's .env sets — is what the first two asserts see
+    monkeypatch.setenv("SS_SPACES_PRESIGN_TTL_SECONDS", "3600")
     get_settings.cache_clear()
     try:
+        assert (await _public(client, page_token)).json()["url_ttl_seconds"] == 600
+        assert (await _public(client, file_token)).json()["url_ttl_seconds"] == 600
+
+        monkeypatch.setenv("SS_SPACES_PRESIGN_TTL_SECONDS", "300")
+        get_settings.cache_clear()
         body = (await _public(client, file_token)).json()
         assert body["url_ttl_seconds"] == 300
         assert parse_qs(urlparse(body["url"]).query)["X-Amz-Expires"] == ["300"]
