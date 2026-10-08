@@ -201,6 +201,14 @@ async def test_old_notif_blob_still_parses_and_defaults_categories():
     assert "critical" not in prefs.notif.model_dump()
 
 
+async def test_partial_categories_fill_missing_and_drop_unknown():
+    from serversherpa.api.schemas import NotifPrefs
+
+    prefs = NotifPrefs.model_validate({"categories": {"wiki": "off", "bogus": "inbox"}})
+    assert prefs.categories == {
+        "approvals": "email", "reports": "email", "wiki": "off", "security": "email"}
+
+
 async def test_default_notif_categories_are_all_email():
     from serversherpa.api.schemas import UiPreferences
 

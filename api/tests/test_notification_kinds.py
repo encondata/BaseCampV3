@@ -90,4 +90,5 @@ def test_every_notify_kind_in_the_codebase_is_registered():
     assert {"report_ready", "labels_failed", "membership_request", "router_approval",
             "totp_enrolled", "password_reset_request", "password_expiring",
             "wiki_comment", "wiki_export_ready"} <= found
-    assert found - set(KINDS) == set(), f"unregistered notify kinds: {found - set(KINDS)}"
+    assert found == set(KINDS), (
+        f"unregistered: {sorted(found - set(KINDS))}; never sent: {sorted(set(KINDS) - found)}")

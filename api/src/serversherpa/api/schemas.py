@@ -57,6 +57,13 @@ class NotifPrefs(BaseModel):
     # Account security is always emailed whatever is stored here.
     categories: dict[str, Literal["email", "inbox", "off"]] = Field(
         default_factory=lambda: {k: "email" for k in CATEGORY_KEYS})
+
+    @field_validator("categories")
+    @classmethod
+    def _all_known_categories(cls, v: dict[str, str]) -> dict[str, str]:
+        """Drop unknown keys and fill missing ones with "email", so readers
+        always see exactly the registry's categories."""
+        return {k: v.get(k, "email") for k in CATEGORY_KEYS}
     # in-app sound played when a new inbox item arrives while the portal is open
     sound: Literal["none", "chime", "ping", "pop", "bell"] = "chime"
 
