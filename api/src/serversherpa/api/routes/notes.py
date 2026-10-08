@@ -94,7 +94,7 @@ async def _authorize_host(
 def _out(note: Note, authors: dict) -> NoteOut:
     return NoteOut(
         id=note.id, entity_type=note.entity_type, entity_id=note.entity_id,
-        body=note.body, created_by=note.created_by,
+        body=note.body, visibility=note.visibility, created_by=note.created_by,
         author_name=authors.get(note.created_by),
         created_at=note.created_at, updated_at=note.updated_at)
 
