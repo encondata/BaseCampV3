@@ -23,7 +23,8 @@ import {
   ApiError, deleteNotificationGroup, getNotificationGroup, updateNotificationGroup,
   type NotificationGroupDetail as NotificationGroupDetailOut,
 } from '../lib/api';
-import { CHANNEL_LABELS, formatDays, formatQuietHours, type Channel } from '../lib/notifications';
+import { CHANNEL_LABELS, CHANNEL_NOTES, formatDays, formatQuietHours, type Channel } from '../lib/notifications';
+import { categoryLabels } from '../lib/notificationKinds';
 import '../styles/directory.css';
 import '../styles/profile.css';
 import '../styles/initiatives.css';
@@ -205,10 +206,27 @@ export default function NotificationGroupDetailPage() {
             <div className="chips">
               {group.channels.length
                 ? group.channels.map((c) => (
-                  <span key={c} className="chip tag">{CHANNEL_LABELS[c as Channel] ?? c}</span>
+                  <span key={c} className="chip tag">
+                    {CHANNEL_LABELS[c as Channel] ?? c}
+                    {CHANNEL_NOTES[c as Channel] && (
+                      <span className="channel-soon">{CHANNEL_NOTES[c as Channel]}</span>
+                    )}
+                  </span>
                 ))
                 : '—'}
             </div>
+          </dd>
+          <dt>Categories</dt>
+          <dd>
+            {categoryLabels(group.categories).length
+              ? (
+                <div className="chips">
+                  {categoryLabels(group.categories).map((l) => (
+                    <span key={l} className="chip tag">{l}</span>
+                  ))}
+                </div>
+              )
+              : 'None — members get inbox only'}
           </dd>
           <dt>Quiet hours</dt>
           <dd>{formatQuietHours(group.quiet_start, group.quiet_end, group.timezone)}</dd>

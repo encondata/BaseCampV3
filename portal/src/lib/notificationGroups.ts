@@ -79,6 +79,7 @@ export function toGroupDetail(g: MyNotificationGroup): NotificationGroupDetail {
     name: g.name,
     description: g.description,
     channels: g.channels,
+    categories: g.categories,
     quiet_start: g.quiet_start,
     quiet_end: g.quiet_end,
     timezone: g.timezone,

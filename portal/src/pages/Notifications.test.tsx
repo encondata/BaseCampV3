@@ -29,7 +29,7 @@ vi.mock('../auth/AuthContext', () => ({
     godMode: false,
     preferences: {
       accent: 'blue', theme: 'dark', density: 'comfortable', list_size: 'default', motion: true, nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', list_view: 'expanded',
-      notif: { critical: true, email: true, maint: true, digest: true, sound: 'chime' },
+      notif: { sound: 'chime', categories: { approvals: 'email', reports: 'email', wiki: 'email', security: 'email' } },
       list_prefs: {},
     } satisfies UiPreferences,
     updatePreferences: vi.fn(() => Promise.resolve()),
@@ -52,14 +52,14 @@ vi.mock('../lib/api', async (importActual) => ({
 const GROUPS: NotificationGroup[] = [
   {
     id: 'g1', name: 'Ops Alerts', description: 'Operational issues',
-    channels: ['email', 'push'], quiet_start: '21:00:00', quiet_end: '07:00:00',
+    channels: ['email', 'push'], categories: ['approvals'], quiet_start: '21:00:00', quiet_end: '07:00:00',
     timezone: 'America/Chicago', active_days: ['mon', 'tue', 'wed', 'thu', 'fri'],
     dnd_behavior: 'defer', urgent_bypass: true, enabled: true, member_count: 5,
     created_at: '2026-01-01T00:00:00Z',
   },
   {
     id: 'g2', name: 'Weekend Oncall', description: '',
-    channels: [], quiet_start: null, quiet_end: null,
+    channels: [], categories: [], quiet_start: null, quiet_end: null,
     timezone: 'America/New_York', active_days: ['sat', 'sun'],
     dnd_behavior: 'skip', urgent_bypass: false, enabled: false, member_count: 0,
     created_at: '2026-02-01T00:00:00Z',

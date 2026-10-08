@@ -39,7 +39,7 @@ const auth = vi.hoisted(() => ({
   preferences: {
     accent: 'amber', theme: 'light' as const, density: 'comfortable' as const, list_size: 'default' as const,
     motion: true, nav_mode: 'expanded' as const, nav_bg: 'default', nav_size: 'default' as const, list_view: 'expanded' as const,
-    notif: { critical: true, email: true, maint: true, digest: false, sound: 'chime' },
+    notif: { sound: 'chime', categories: { approvals: 'email', reports: 'email', wiki: 'email', security: 'email' } },
     list_prefs: {} as Record<string, unknown>,
   } as UiPreferences,
   updatePreferences: vi.fn(async (_prefs: UiPreferences) => true),
@@ -373,7 +373,7 @@ describe('usePersistentListState', () => {
     auth.preferences = {
       accent: 'amber', theme: 'light', density: 'comfortable', list_size: 'default', motion: true,
       nav_mode: 'expanded', nav_bg: 'default', nav_size: 'default', list_view: 'expanded',
-      notif: { critical: true, email: true, maint: true, digest: false, sound: 'chime' },
+      notif: { sound: 'chime', categories: { approvals: 'email', reports: 'email', wiki: 'email', security: 'email' } },
       list_prefs: {},
     };
     auth.updatePreferences.mockClear();

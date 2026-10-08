@@ -45,7 +45,7 @@ vi.mock('../auth/AuthContext', () => ({
       nav_bg: 'default',
       nav_size: 'default',
       list_view: 'expanded',
-      notif: { critical: true, email: true, maint: true, digest: true, sound: 'chime' },
+      notif: { sound: 'chime', categories: { approvals: 'email', reports: 'email', wiki: 'email', security: 'email' } },
       list_prefs: {},
     } satisfies UiPreferences,
     updatePreferences: auth.updatePreferences,

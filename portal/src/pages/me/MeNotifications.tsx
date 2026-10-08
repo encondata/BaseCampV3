@@ -14,15 +14,16 @@ import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../../auth/AuthContext';
 import MembershipRequestModal from '../../components/notifications/MembershipRequestModal';
 import OverrideEditorModal from '../../components/notifications/OverrideEditorModal';
-import { Switch } from '../../components/Switch';
 import {
   ApiError, cancelMembershipRequest, listMyNotificationGroups, updateMyGroupOverrides,
-  type MyNotificationGroup, type NotificationSound, type UiPreferences,
+  type MyNotificationGroup, type NotificationSound,
 } from '../../lib/api';
 import {
   GROUP_ERRORS, toGroupDetail, toMember,
 } from '../../lib/notificationGroups';
+import { useSystemStatus } from '../../lib/systemStatusContext';
 import { NOTIFICATION_SOUNDS, playNotificationSound } from '../../lib/notificationSounds';
+import CategoryDelivery from './CategoryDelivery';
 import GroupsList from './GroupsList';
 import SaveHint from './SaveHint';
 import { usePreferenceSave } from './usePreferenceSave';
@@ -38,13 +39,7 @@ export default function MeNotifications() {
   const { preferences, update, saveState } = usePreferenceSave();
   const { person } = useAuth();
 
-  const notifRow = (key: Exclude<keyof UiPreferences['notif'], 'sound'>, label: string, sub: string) => (
-    <div className="set-row">
-      <div className="set-label"><b>{label}</b><span>{sub}</span></div>
-      <Switch checked={preferences.notif[key]}
-              onChange={(v) => update({ notif: { ...preferences.notif, [key]: v } })} />
-    </div>
-  );
+  const { status } = useSystemStatus();
 
   const [groups, setGroups] = useState<MyNotificationGroup[] | null>(null);
   const [loadError, setLoadError] = useState('');
@@ -88,12 +83,25 @@ export default function MeNotifications() {
         <section className="set-section">
           <div className="set-head">
             <h3>Notifications</h3>
-            <p>Delivery wiring lands with the notification service.</p>
+            <p>
+              Emails go to your contact email. Your groups decide which categories can email
+              you and when; here you can turn them down.
+            </p>
           </div>
-          {notifRow('critical', 'Critical incidents', 'Immediate alerts for anything move-blocking.')}
-          {notifRow('email', 'Email alerts', 'Send notifications to your contact email.')}
-          {notifRow('maint', 'Maintenance windows', 'Scheduled downtime and system maintenance notices.')}
-          {notifRow('digest', 'Weekly digest', 'A summary of activity across your projects.')}
+          {!status.email_enabled && (
+            <p className="page-hint set-hint">
+              Email isn't set up on this server yet — notifications stay in the inbox.
+            </p>
+          )}
+          <CategoryDelivery
+            categories={preferences.notif.categories}
+            groups={groups}
+            onChange={(category, choice) => update({
+              notif: {
+                ...preferences.notif,
+                categories: { ...preferences.notif.categories, [category]: choice },
+              },
+            })} />
           <div className="set-row">
             <div className="set-label">
               <b>Sound</b>

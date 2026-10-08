@@ -14,6 +14,11 @@ export const CHANNEL_LABELS: Record<Channel, string> = {
   email: 'Email', text: 'Text (SMS)', push: 'Push', web: 'Web',
 };
 
+/** Channels the server cannot deliver on yet; shown next to them. */
+export const CHANNEL_NOTES: Partial<Record<Channel, string>> = {
+  text: 'not available yet', push: 'not available yet',
+};
+
 export const DAYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
 export type Day = typeof DAYS[number];
 

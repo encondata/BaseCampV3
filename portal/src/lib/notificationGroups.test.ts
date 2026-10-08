@@ -75,6 +75,7 @@ const GROUP: MyNotificationGroup = {
   quiet_start: '22:00:00', quiet_end: '07:00:00', timezone: 'America/New_York',
   active_days: ['mon', 'tue', 'wed', 'thu', 'fri'], dnd_behavior: 'defer', urgent_bypass: false,
   member_count: 3, is_member: true,
+  categories: ['approvals'], effective_channels: ['email', 'push'],
   overrides: { ...NO_OVERRIDES, urgent_bypass: true },
   effective: {
     channels: ['email', 'push'], quiet_start: '22:00:00', quiet_end: '07:00:00',
