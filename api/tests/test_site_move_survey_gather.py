@@ -65,11 +65,13 @@ def _asset(**kw):
 
 
 async def _attachment(db, *, entity_type, entity_id, kind, filename, content_type,
-                      storage_key, content, created_at, id=None):
+                      storage_key, content, created_at, id=None,
+                      visibility="everyone"):
     await put_object(storage_key, content, content_type)
     kwargs = dict(entity_type=entity_type, entity_id=entity_id, kind=kind,
                  storage_key=storage_key, filename=filename, content_type=content_type,
-                 size_bytes=len(content), created_at=created_at)
+                 size_bytes=len(content), created_at=created_at,
+                 visibility=visibility)
     if id is not None:
         kwargs["id"] = id
     att = Attachment(**kwargs)
@@ -111,12 +113,13 @@ async def _definition(db):
     return definition
 
 
-async def _run(db, *, requester, definition=None, initiative=None, options):
+async def _run(db, *, requester, definition=None, initiative=None, options,
+               requested_rank=0):
     if definition is None:
         definition = await _definition(db)
     run = ReportRun(definition_id=definition.id, report_type="site_move_survey",
                     initiative_id=initiative.id if initiative is not None else None,
-                    options=options, requested_by=requester.id, requested_rank=0)
+                    options=options, requested_by=requester.id, requested_rank=requested_rank)
     db.add(run)
     await db.flush()
     return run, definition
@@ -493,6 +496,40 @@ async def test_site_photos_are_capped_at_ten_newest_first(db, requester):
     assert len(images) == 10
     assert images[0] == b"photo-11"  # newest (index 11, created last) first
     assert images[-1] == b"photo-2"  # the two oldest (0, 1) were dropped
+
+
+@pytest.mark.parametrize("rank, expected", [
+    (40, [b"photo-internal", b"photo-everyone"]),
+    (60, [b"photo-admin", b"photo-internal", b"photo-everyone"]),
+])
+async def test_site_photos_respect_visibility_for_the_requesters_rank(
+        db, requester, rank, expected):
+    """A staff requester below Admin never gets Admin-only photos embedded
+    in a report; Admin and above get all three."""
+    times = _times(4)
+    partner = _partner()
+    origin = _site(name="Visibility Site")
+    db.add_all([partner, origin])
+    await db.flush()
+    definition = await _definition(db)
+    await _attachment(db, entity_type="report_definition", entity_id=definition.id,
+                      kind="survey_template", filename="template.xlsx",
+                      content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                      storage_key=f"test/sms/{definition.id}/t.xlsx", content=XLSX_BYTES_1,
+                      created_at=times[0])
+    for i, level in enumerate(("everyone", "internal", "admin"), start=1):
+        await _attachment(
+            db, entity_type="site", entity_id=origin.id, kind="photo",
+            filename=f"{level}.jpg", content_type="image/jpeg",
+            storage_key=f"test/sms/{origin.id}/{level}.jpg",
+            content=f"photo-{level}".encode(), created_at=times[i], visibility=level)
+
+    run, _ = await _run(db, requester=requester, definition=definition,
+                        requested_rank=rank, options={
+        "partner_id": str(partner.id), "source_site_id": str(origin.id)})
+
+    data = await gather(db, run)
+    assert data.photos == [("Origin: Visibility Site", expected)]
 
 
 async def test_photos_skip_destination_when_it_is_the_same_site_as_origin(db, requester):

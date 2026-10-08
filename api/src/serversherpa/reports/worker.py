@@ -127,10 +127,14 @@ async def process_run(db: AsyncSession, run: ReportRun, *, sessionmaker,
             # A timesheet is never attached: Files are readable with
             # attachments:view, which would expose hours to people without
             # time:view. Its file lives only on the run (History download).
+            # Report files may hold internal data, so they
+            # start staff-only (`internal`); staff can switch one to
+            # Everyone in the Notes & files panel.
             attachment = Attachment(
                 entity_type="initiative", entity_id=run.initiative_id, kind="document",
                 storage_key=key, filename=result.filename, content_type=result.content_type,
-                size_bytes=len(result.content), uploaded_by=run.requested_by)
+                size_bytes=len(result.content), uploaded_by=run.requested_by,
+                visibility="internal")
             db.add(attachment)
             await db.flush()
             # same audit row a manual upload writes (routes/attachments.py), so

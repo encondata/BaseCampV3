@@ -107,6 +107,7 @@ async def test_run_once_completes_uploads_attaches_and_notifies(db, monkeypatch)
     assert (att.entity_type, str(att.entity_id), att.kind, att.content_type,
             att.uploaded_by, att.filename) == (
         "initiative", str(ini_id), "document", "application/pdf", person_id, run.filename)
+    assert att.visibility == "internal", "report files start staff-only"
     log = await db.scalar(select(AuditLog).where(AuditLog.entity_type == "initiative",
                                                  AuditLog.action == "attachment.add"))
     assert log is not None, "the worker's attachment is audited like a manual upload"
