@@ -1683,15 +1683,20 @@ class NoteOut(BaseModel):
     updated_at: datetime
 
 
+VisibilityLevel = Literal["everyone", "internal", "admin"]
+
+
 class NoteCreateIn(BaseModel):
     entity_type: str
     entity_id: uuid.UUID
     body: str = Field(min_length=1)
+    visibility: VisibilityLevel = "everyone"
     model_config = ConfigDict(extra="forbid")
 
 
 class NoteUpdateIn(BaseModel):
-    body: str = Field(min_length=1)
+    body: str | None = Field(default=None, min_length=1)
+    visibility: VisibilityLevel | None = None
     model_config = ConfigDict(extra="forbid")
 
 

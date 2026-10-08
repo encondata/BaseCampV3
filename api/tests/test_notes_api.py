@@ -5,7 +5,7 @@ from sqlalchemy import select
 
 from serversherpa.db.models import (
     Asset, AuditLog, Client, Initiative, Note, Partner, Person, PersonRole,
-    Truck,
+    Truck, WorkerProfile,
 )
 from tests.test_assets_api import _client_contact, login, make_login
 
@@ -284,14 +284,13 @@ async def test_role_with_no_clients_grant_gets_403(client, db, seeded_user):
     assert resp.json()["detail"]["code"] == "forbidden"
 
 
-async def test_client_owner_cannot_read_own_org_notes(client, db, seeded_user):
-    """Notes are internal-only for reads by non-global actors across every
-    non-physical host (initiative/person/client/partner) — a client_owner
-    anchored to org A gets 403 on org A's OWN notes, not a scoped 200, and
-    still 403 on org B. (Security-fixes task 2 finding (b): this role
-    previously read notes on its own org; the generic "view = host view +
-    scope" rule is overridden for these hosts exactly like initiative
-    notes always were.)"""
+async def test_client_owner_reads_only_everyone_notes_on_own_org(
+        client, db, seeded_user):
+    """A client_owner anchored to org A (holds clients:view) reads the
+    Everyone notes on org A's own record, never the Internal ones; org B's
+    record is outside their scope (404, not a leak) and they still cannot
+    write. (Reverses the security-fixes internal-only rule: Everyone means
+    everyone, decided 2026-10-08; existing notes were backfilled Internal.)"""
     staff_hdrs = await login(client)
     org_a = Client(name="Org A")
     org_b = Client(name="Org B")
@@ -305,61 +304,84 @@ async def test_client_owner_cannot_read_own_org_notes(client, db, seeded_user):
     owner_hdrs = await make_login(db, client, owner, "owner-notes@test.example.com")
 
     for org in (org_a, org_b):
-        resp = await client.post("/notes", headers=staff_hdrs, json={
-            "entity_type": "client", "entity_id": str(org.id), "body": "note"})
-        assert resp.status_code == 201, resp.text
+        for body, level in (("public", "everyone"), ("private", "internal")):
+            resp = await client.post("/notes", headers=staff_hdrs, json={
+                "entity_type": "client", "entity_id": str(org.id),
+                "body": body, "visibility": level})
+            assert resp.status_code == 201, resp.text
 
     resp = await client.get(
         f"/notes?entity_type=client&entity_id={org_a.id}", headers=owner_hdrs)
-    assert resp.status_code == 403
+    assert resp.status_code == 200
+    assert [n["body"] for n in resp.json()] == ["public"]
 
     resp = await client.get(
         f"/notes?entity_type=client&entity_id={org_b.id}", headers=owner_hdrs)
-    assert resp.status_code == 403
+    assert resp.status_code == 404
 
     resp = await client.post("/notes", headers=owner_hdrs, json={
         "entity_type": "client", "entity_id": str(org_a.id), "body": "hi"})
     assert resp.status_code == 403
 
-    # global staff still reads org A's notes fine
+    # global staff reads both of org A's notes
     resp = await client.get(
         f"/notes?entity_type=client&entity_id={org_a.id}", headers=staff_hdrs)
-    assert resp.status_code == 200 and len(resp.json()) == 1
+    assert resp.status_code == 200 and len(resp.json()) == 2
 
 
-async def test_worker_cannot_read_notes_on_own_person(client, db, seeded_user):
-    """Notes are internal-only for non-global reads — a worker reading
-    notes on their OWN person record (entity_type='person') is denied,
-    same as the initiative/client/partner hosts, even though `worker`
-    holds workers:view and the row is in their own scope."""
+async def test_worker_reads_only_everyone_notes_on_own_person(
+        client, db, seeded_user):
+    """A worker (holds workers:view) reads the Everyone notes on their OWN
+    person record but not the Internal ones, can read no other worker's
+    record, and cannot write."""
     staff_hdrs = await login(client)
     worker = Person(first_name="W", last_name="Orker2")
-    db.add(worker)
+    other = Person(first_name="W", last_name="Orker3")
+    db.add_all([worker, other])
     await db.flush()
     db.add(PersonRole(person_id=worker.id, role="worker"))
+    db.add(PersonRole(person_id=other.id, role="worker"))
+    db.add(WorkerProfile(person_id=worker.id))
+    db.add(WorkerProfile(person_id=other.id))
     await db.commit()
     worker_hdrs = await make_login(db, client, worker, "worker-selfnotes@test.example.com")
 
-    resp = await client.post("/notes", headers=staff_hdrs, json={
-        "entity_type": "person", "entity_id": str(worker.id), "body": "punctual"})
-    assert resp.status_code == 201, resp.text
+    for person in (worker, other):
+        for body, level in (("punctual", "everyone"), ("watch", "internal")):
+            resp = await client.post("/notes", headers=staff_hdrs, json={
+                "entity_type": "person", "entity_id": str(person.id),
+                "body": body, "visibility": level})
+            assert resp.status_code == 201, resp.text
 
     resp = await client.get(
         f"/notes?entity_type=person&entity_id={worker.id}", headers=worker_hdrs)
+    assert resp.status_code == 200
+    assert [n["body"] for n in resp.json()] == ["punctual"]
+
+    # another worker's record is outside the worker's "self" scope
+    resp = await client.get(
+        f"/notes?entity_type=person&entity_id={other.id}", headers=worker_hdrs)
+    assert resp.status_code == 404
+
+    resp = await client.post("/notes", headers=worker_hdrs, json={
+        "entity_type": "person", "entity_id": str(worker.id), "body": "hi"})
     assert resp.status_code == 403
 
-    # global staff still reads it fine
+    # global staff still reads both
     resp = await client.get(
         f"/notes?entity_type=person&entity_id={worker.id}", headers=staff_hdrs)
-    assert resp.status_code == 200 and len(resp.json()) == 1
+    assert resp.status_code == 200 and len(resp.json()) == 2
 
 
-async def test_vendor_admin_cannot_read_own_partner_notes(client, db, seeded_user):
-    """Same internal-only rule for the partner host — a vendor_admin
-    anchored to their own partner org gets 403 reading its notes."""
+async def test_vendor_admin_reads_only_everyone_notes_on_own_partner(
+        client, db, seeded_user):
+    """A vendor_admin anchored to their own partner (holds partners:view)
+    reads its Everyone notes only; a foreign partner is 404 and writes are
+    refused."""
     staff_hdrs = await login(client)
     partner = Partner(name="Champagne Logistics")
-    db.add(partner)
+    foreign = Partner(name="Elsewhere Freight")
+    db.add_all([partner, foreign])
     await db.commit()
     vendor = Person(first_name="V", last_name="Endor")
     db.add(vendor)
@@ -368,10 +390,22 @@ async def test_vendor_admin_cannot_read_own_partner_notes(client, db, seeded_use
     await db.commit()
     vendor_hdrs = await make_login(db, client, vendor, "vendor-notes@test.example.com")
 
-    resp = await client.post("/notes", headers=staff_hdrs, json={
-        "entity_type": "partner", "entity_id": str(partner.id), "body": "insured"})
-    assert resp.status_code == 201, resp.text
+    for p in (partner, foreign):
+        for body, level in (("insured", "everyone"), ("rates", "internal")):
+            resp = await client.post("/notes", headers=staff_hdrs, json={
+                "entity_type": "partner", "entity_id": str(p.id),
+                "body": body, "visibility": level})
+            assert resp.status_code == 201, resp.text
 
     resp = await client.get(
         f"/notes?entity_type=partner&entity_id={partner.id}", headers=vendor_hdrs)
+    assert resp.status_code == 200
+    assert [n["body"] for n in resp.json()] == ["insured"]
+
+    resp = await client.get(
+        f"/notes?entity_type=partner&entity_id={foreign.id}", headers=vendor_hdrs)
+    assert resp.status_code == 404
+
+    resp = await client.post("/notes", headers=vendor_hdrs, json={
+        "entity_type": "partner", "entity_id": str(partner.id), "body": "hi"})
     assert resp.status_code == 403
