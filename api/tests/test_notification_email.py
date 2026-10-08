@@ -314,4 +314,41 @@ async def test_html_escapes_title_and_body(db, email_on):
     await notify(db, p.id, "report_ready", "<b>x</b>", body="<script>1</script>")
     [mail] = await _outbox(db, p)
     assert "<script>" not in mail.html_body
+    assert "&lt;b&gt;x&lt;/b&gt;" in mail.html_body
     assert "&lt;script&gt;" in mail.html_body
+
+
+async def test_admin_copy_gets_the_group_footer_owner_copy_the_security_one(db, email_on):
+    owner = await _person(db, "owner@test.example.com", first="Olive")
+    admin = await _person(db, "admin@test.example.com", first="Adam")
+    await _group(db, admin, categories=("security",))
+    await notify(db, owner.id, "totp_enrolled", "Two-factor is on", owner_notice=True)
+    await notify(db, admin.id, "totp_enrolled", "Olive enrolled two-factor")
+    [own] = await _outbox(db, owner)
+    [adm] = await _outbox(db, admin)
+    assert "This is a security notice about your account." in own.html_body
+    assert "Change what you receive" not in own.html_body
+    assert "Change what you receive" in adm.html_body
+    assert "Change what you receive" in adm.text_body
+    assert "security notice" not in adm.html_body
+
+
+async def test_disabled_account_gets_inbox_row_but_no_email(db, email_on):
+    p = await _person(db, account_email="off@test.example.com")
+    await _group(db, p)
+    account = await db.get(UserAccount, p.id)
+    account.disabled_at = NOW
+    await db.flush()
+    assert await notify(db, p.id, "report_ready", "Ready") is not None
+    assert await notify(db, p.id, "password_expiring", "Expiring", owner_notice=True) is not None
+    assert await _outbox(db) == []
+
+
+async def test_archived_person_gets_inbox_row_but_no_email(db, email_on):
+    p = await _person(db)
+    await _group(db, p)
+    p.archived_at = NOW
+    await db.flush()
+    assert await notify(db, p.id, "report_ready", "Ready") is not None
+    assert await notify(db, p.id, "password_expiring", "Expiring", owner_notice=True) is not None
+    assert await _outbox(db) == []

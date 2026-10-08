@@ -302,6 +302,7 @@ async def test_forced_enrollment_emails_the_owner_copy(client, db, seeded_user, 
     assert len(mails) == 1
     assert mails[0].to_address == "alice@test.example.com"
     assert "An authenticator app" not in mails[0].html_body     # brief kind: no body
+    assert "An authenticator app" not in mails[0].text_body
 
 
 async def test_verify_challenge_cannot_enroll(client, db, seeded_user):

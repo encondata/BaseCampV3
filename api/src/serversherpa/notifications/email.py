@@ -40,6 +40,7 @@ class Contact:
     first_name: str
     address: str | None     # Person.email, else the account's email
     choice_prefs: UiPreferences
+    active: bool = True     # False: archived person or disabled account
 
 
 def _now() -> datetime:
@@ -63,17 +64,19 @@ def _absolute(link: str | None) -> str:
 
 async def load_contact(db: AsyncSession, person_id: uuid.UUID) -> Contact | None:
     row = (await db.execute(
-        select(Person.first_name, Person.email, UserAccount.email, UserAccount.ui_prefs)
+        select(Person.first_name, Person.email, UserAccount.email, UserAccount.ui_prefs,
+               Person.archived_at, UserAccount.disabled_at)
         .outerjoin(UserAccount, UserAccount.person_id == Person.id)
         .where(Person.id == person_id))).first()
     if row is None:
         return None
-    first_name, person_email, account_email, raw_prefs = row
+    first_name, person_email, account_email, raw_prefs, archived_at, disabled_at = row
     try:
         prefs = UiPreferences.model_validate(raw_prefs or {})
     except ValueError:      # malformed stored prefs: behave as defaults
         prefs = UiPreferences()
-    return Contact(first_name, person_email or account_email or None, prefs)
+    return Contact(first_name, person_email or account_email or None, prefs,
+                   active=archived_at is None and disabled_at is None)
 
 
 def personal_choice(info: KindInfo | None, contact: Contact | None) -> str:
@@ -118,11 +121,12 @@ async def maybe_email(db: AsyncSession, notification: Notification, *,
         return
     if contact is None:
         contact = await load_contact(db, notification.person_id)
-    if contact is None or not contact.address:
+    if contact is None or not contact.address or not contact.active:
         return
 
     now = _now()
-    if owner_notice and info.owner_always:
+    owner_copy = owner_notice and info.owner_always
+    if owner_copy:
         send_at = now
     else:
         settings = await _group_settings(db, notification.person_id, info.category)
@@ -138,5 +142,5 @@ async def maybe_email(db: AsyncSession, notification: Notification, *,
         name=contact.first_name, title=notification.title,
         body="" if info.brief else notification.body,
         link=_absolute(notification.link),
-        security=info.category == "security",
+        security=owner_copy,
         prefs_url=portal_link(INBOX_PATH))
